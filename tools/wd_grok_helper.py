@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,8 @@ import uuid
 STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
 INTERVAL = timedelta(hours=1)
 SCHEMA = "wd.grok-hourly.v1"
+MAX_LIFECYCLE_RECEIPT_BYTES = 256 * 1024
+MAX_LIFECYCLE_RECEIPT_DEPTH = 32
 
 
 def emit_bridge_event(stage: str, state: dict) -> None:
@@ -32,10 +35,13 @@ def emit_bridge_event(stage: str, state: dict) -> None:
     # PS7's inherited module path must not shadow Windows PowerShell's modules.
     environment = {k: v for k, v in environment.items() if k.upper() != 'PSMODULEPATH'}
     environment['PSModulePath'] = str(system / 'Modules')
-    result = subprocess.run([str(system / 'powershell.exe'), '-NoLogo', '-NoProfile', '-NonInteractive',
-                             '-ExecutionPolicy', 'Bypass', '-File', str(wrapper), '-LifecycleBase64', payload],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace',
-                            timeout=45, env=environment)
+    try:
+        result = subprocess.run([str(system / 'powershell.exe'), '-NoLogo', '-NoProfile', '-NonInteractive',
+                                 '-ExecutionPolicy', 'Bypass', '-File', str(wrapper), '-LifecycleBase64', payload],
+                                capture_output=True, text=True, encoding='utf-8', errors='strict',
+                                timeout=45, env=environment)
+    except UnicodeError as exc:
+        raise OSError('Grok lifecycle was not confirmed canonical: invalid UTF-8') from exc
     if result.returncode:
         raise OSError('Grok bridge lifecycle writer failed')
     _confirm_canonical_receipt(result.stdout)
@@ -44,16 +50,48 @@ def emit_bridge_event(stage: str, state: dict) -> None:
 def _confirm_canonical_receipt(stdout: object) -> None:
     """The writer's -ReceiptJson must be a JSON object whose ``_bridge_delivery`` object has
     ``accepted`` and ``canonical_durable`` equal to the literal JSON ``true``. Anything else
-    (not JSON, a non-object, a truthy string or number) is a visible OSError. The caller makes
-    one attempt and never retries or refunds (RCO1 G2)."""
+    (not JSON, a non-object, a truthy string or number) is a visible OSError. Duplicate keys,
+    non-finite numbers, invalid Unicode, more than 256 KiB or depth greater than 32 refuse.
+    The size bound is an acceptance bound AFTER subprocess capture, not a bounded-capture
+    guarantee. This is syntax/delivery confirmation, NOT semantic event/reply binding.
+    The caller makes one attempt and never retries or refunds (RCO1 G2)."""
     try:
-        parsed = json.loads(stdout.lstrip('\ufeff')) if isinstance(stdout, str) else None
+        if type(stdout) is not str or len(stdout.encode('utf-8')) > MAX_LIFECYCLE_RECEIPT_BYTES:
+            raise ValueError('Invalid lifecycle receipt text or size')
+        # One optional UTF-8 BOM, never arbitrary repeated BOMs or replacement decoding.
+        raw = stdout[1:] if stdout.startswith('\ufeff') else stdout
+        parsed = json.loads(raw, object_pairs_hook=_unique_json_pairs,
+                            parse_constant=_reject_receipt_constant)
+        _validate_receipt_values(parsed)
     except (ValueError, RecursionError):
         parsed = None
     receipt = parsed.get('_bridge_delivery') if isinstance(parsed, dict) else None
     if (not isinstance(receipt, dict) or receipt.get('accepted') is not True
             or receipt.get('canonical_durable') is not True):
         raise OSError('Grok lifecycle was not confirmed canonical')
+
+
+def _reject_receipt_constant(value: str) -> None:
+    raise ValueError('Non-finite lifecycle receipt number')
+
+
+def _validate_receipt_values(parsed: object) -> None:
+    """Inspect decoded JSON, including escaped surrogate strings and overflowed exponents."""
+    remaining = [(parsed, 0)]
+    while remaining:
+        value, depth = remaining.pop()
+        if depth > MAX_LIFECYCLE_RECEIPT_DEPTH:
+            raise ValueError('Lifecycle receipt nesting exceeds limit')
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key.encode('utf-8')
+                remaining.append((child, depth + 1))
+        elif isinstance(value, list):
+            remaining.extend((child, depth + 1) for child in value)
+        elif isinstance(value, str):
+            value.encode('utf-8')
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError('Non-finite lifecycle receipt number')
 
 
 def record_lifecycle(emitter, stage: str, state: dict) -> None:

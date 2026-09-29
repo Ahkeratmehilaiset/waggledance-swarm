@@ -988,6 +988,7 @@ def _stub_writer_process(tmp_path, monkeypatch, returncode, stdout):
     def run(command, **kwargs):
         calls.append(command)
         assert command[-2] == "-LifecycleBase64" and "--prompt-file" not in command
+        assert kwargs["encoding"] == "utf-8" and kwargs["errors"] == "strict"
         return SimpleNamespace(returncode=returncode, stdout=stdout)
     monkeypatch.setattr(wd_grok_helper.subprocess, "run", run)
     return calls
@@ -1020,6 +1021,18 @@ def _delivery(**receipt):
     (0, ""),
     (0, None),                                                                   # no stdout at all
     (0, "[" * 100000 + "]" * 100000),                                            # nesting beyond the parser
+    (0, '{"_bridge_delivery":{"accepted":false,"accepted":true,"canonical_durable":true}}'),
+    (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":NaN}'),
+    (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":Infinity}'),
+    (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":1e999}'),
+    (0, json.dumps({**DELIVERED, "extra": chr(0xD800)})),                           # escaped lone surrogate value
+    (0, json.dumps({**DELIVERED, chr(0xDC00): None})),                             # escaped lone surrogate key
+    (0, chr(0xD800) + json.dumps(DELIVERED)),                                     # invalid Unicode before parsing
+    (0, chr(0xFEFF) * 2 + json.dumps(DELIVERED)),                                 # not one optional BOM
+    (0, json.dumps({**DELIVERED, "extra": "x" * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_BYTES})),
+    (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":'
+        + '[' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '0'
+        + ']' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '}'),
 ])
 def test_lifecycle_receipt_refusals_are_one_visible_os_error(tmp_path, monkeypatch, returncode, stdout):
     calls = _stub_writer_process(tmp_path, monkeypatch, returncode, stdout)
@@ -1043,7 +1056,41 @@ def test_a_canonical_receipt_is_confirmed_and_carries_the_exact_event(tmp_path, 
     assert command[command.index("-File") + 1].endswith("Invoke-WdGrok.ps1")
 
 
-@pytest.mark.parametrize("stdout", [_delivery(accepted=True), _delivery(accepted=True, canonical_durable="true")])
+def test_lifecycle_utf8_decode_failure_is_one_visible_os_error(tmp_path, monkeypatch):
+    calls = _stub_writer_process(tmp_path, monkeypatch, 0, "")
+
+    def invalid_decode(command, **kwargs):
+        calls.append(command)
+        assert kwargs["errors"] == "strict"
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(wd_grok_helper.subprocess, "run", invalid_decode)
+    with pytest.raises(OSError, match="not confirmed canonical: invalid UTF-8"):
+        wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL))
+    assert len(calls) == 1
+
+
+def test_lifecycle_receipt_acceptance_bounds_have_success_twins():
+    raw = json.dumps(DELIVERED)
+    limit = wd_grok_helper.MAX_LIFECYCLE_RECEIPT_BYTES
+    # ASCII padding is valid JSON whitespace; the byte limit is inclusive.
+    wd_grok_helper._confirm_canonical_receipt(raw + " " * (limit - len(raw)))
+    with pytest.raises(OSError, match="not confirmed canonical"):
+        wd_grok_helper._confirm_canonical_receipt(raw + " " * (limit - len(raw) + 1))
+    depth = wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH - 1
+    wd_grok_helper._confirm_canonical_receipt(
+        '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":'
+        + '[' * depth + '0' + ']' * depth + '}')
+    wd_grok_helper._confirm_canonical_receipt(json.dumps({**DELIVERED, "extra": "🦉"}))
+
+
+@pytest.mark.parametrize("stdout", [
+    _delivery(accepted=True),
+    _delivery(accepted=True, canonical_durable="true"),
+    '{"_bridge_delivery":{"accepted":false,"accepted":true,"canonical_durable":true}}',
+    json.dumps({**DELIVERED, "extra": chr(0xD800)}),
+    '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":NaN}',
+])
 def test_a_refused_receipt_is_recorded_and_never_refunds_or_retries(tmp_path, monkeypatch, stdout):
     calls = _stub_writer_process(tmp_path, monkeypatch, 0, stdout)
     seed(tmp_path, age=1)

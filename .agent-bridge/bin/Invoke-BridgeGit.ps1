@@ -29,6 +29,9 @@
     Pass-through:
       Any other git verb (status, log, diff, add, commit, push, ...)
       runs unchanged.
+      Leading --no-pager, --no-optional-locks and --no-replace-objects
+      are supported. Other leading options are refused: repository/config
+      redirection would make the guard inspect a different Git context.
 
     Exit codes:
       0 = git command ran (output passed through)
@@ -74,7 +77,7 @@ Set-StrictMode -Version Latest
 
 # Strip a leading "--" sentinel some shells insert before the trailing args.
 if ($GitArgs.Count -gt 0 -and $GitArgs[0] -eq '--') {
-    $GitArgs = @($GitArgs[1..($GitArgs.Count - 1)])
+    $GitArgs = @($GitArgs | Select-Object -Skip 1)
 }
 
 if ($GitArgs.Count -eq 0) {
@@ -87,7 +90,25 @@ if ($GitArgs.Count -eq 0) {
 # Keep this list narrow: anything not here passes through unguarded.
 $BranchMovingVerbs = @('switch','checkout','merge','rebase','pull')
 
-$verb = [string]$GitArgs[0]
+# Only context-preserving global flags are accepted. Do not guess the arity
+# of unknown Git options or allow -C/-c/--git-dir to redirect the guarded
+# command while claim identity is checked against the original cwd.
+$verbIndex = 0
+$safeGlobalFlags = @('--no-pager', '--no-optional-locks', '--no-replace-objects')
+while ($verbIndex -lt $GitArgs.Count -and $GitArgs[$verbIndex].StartsWith('-')) {
+    if ($safeGlobalFlags -cnotcontains $GitArgs[$verbIndex]) {
+        Write-Error -Message 'BLOCKED: unsupported leading Git option; repository/config redirection is not allowed by the branch guard.' `
+            -Category PermissionDenied -ErrorAction Continue
+        exit 2
+    }
+    $verbIndex++
+}
+if ($verbIndex -ge $GitArgs.Count -or [string]::IsNullOrWhiteSpace($GitArgs[$verbIndex])) {
+    Write-Error -Message 'Invoke-BridgeGit.ps1: no git command provided.' `
+        -Category InvalidArgument -ErrorAction Continue
+    exit 3
+}
+$verb = [string]$GitArgs[$verbIndex]
 $isBranchMoving = $BranchMovingVerbs -contains $verb
 
 # A hook's inherited GIT_DIR can make rev-parse report cwd as the worktree

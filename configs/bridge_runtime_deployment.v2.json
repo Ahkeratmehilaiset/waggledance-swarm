@@ -1,0 +1,45 @@
+{
+  "schema": "wd.bridge_runtime_deployment.v2",
+  "activation_state": "hold_pending_pr_a_and_python_writer_migration",
+  "protocol_stage": "v1_fail_closed",
+  "canonical": {
+    "source_root": "C:\\Python\\project2",
+    "git_common_dir": "C:\\Python\\project2\\.git",
+    "runtime_root": "C:\\Python\\project2-master\\.agent-bridge"
+  },
+  "git_policy": {
+    "origin_remote_url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "require_head_equals_origin_main": true,
+    "reject_replace_refs": true,
+    "reject_grafts": true,
+    "reject_alternates": true,
+    "reject_shallow_or_promisor": true
+  },
+  "host_policy": {
+    "expected_host_identity_sha256": null,
+    "expected_collector_sid": null,
+    "require_elevated": true,
+    "sample_gap_min_ms": 250,
+    "sample_gap_max_ms": 2000,
+    "collection_max_ms": 10000,
+    "evidence_max_age_ms": 10000
+  },
+  "collector": {
+    "source_path": "tools/collect_bridge_runtime_windows_evidence.ps1",
+    "sha256": null,
+    "size": null,
+    "powershell_toolchain_id": null
+  },
+  "toolchain": [],
+  "runtime_blobs": [],
+  "actions": {
+    "processes": [],
+    "scheduled_tasks": []
+  },
+  "pending_blockers": [
+    "PR-A spool/WAL writer commit and pushed exact SHA are not yet available",
+    "direct Python writers bridge_loop_tick.py, idle_protocol_activate.py, and close_bridge_rco_request.py are not yet migrated and committed",
+    "production host identity, collector/toolchain hashes, runtime dependency closure, process inventory, and Scheduled Task inventory are intentionally unpinned",
+    "complete non-heuristic process/task scope and independent collector/runtime dependency discovery proof are not implemented, so LIVE_MATCH is unreachable"
+  ]
+}

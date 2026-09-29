@@ -347,7 +347,10 @@ def exclusive(root: Path):
 
 def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             runner=subprocess.run, now: datetime | None = None, emitter=None,
-            exception_path: Path | None = None, exception_sha256: str | None = None) -> dict:
+            exception_path: Path | None = None, exception_sha256: str | None = None,
+            timeout_seconds: int = 300) -> dict:
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
+        raise ValueError("Consultation timeout must be an integer in 1..2400 seconds")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", task_id):
         raise ValueError("A bounded task ID is required")
     if not prompt.strip() or len(prompt.encode("utf-8")) > 48000:
@@ -425,7 +428,7 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                             "--tools", "", "--deny", "*", "--permission-mode", "plan",
                             "--disable-web-search", "--no-memory"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=300, env=environment, cwd=str(root))
+                            timeout=timeout_seconds, env=environment, cwd=str(root))
             report_path.write_text(result.stdout, encoding="utf-8")
             state.update(status="answered" if result.returncode == 0 else "failed",
                          exit_code=result.returncode, report_path=str(report_path),

@@ -12,6 +12,25 @@ Git comes from the hash-verified fleet configuration, not PATH. Grok's native
 tools remain denied. `-MaxRounds` is 2..8 (default 6); the existing consultation
 budget, task exceptions, lifecycle events and lock still apply.
 
+The shared hourly budget unit is one consultation, reserved once before any
+model round starts. All 2..8 rounds belong to that same reservation. Failure,
+timeout or interruption consumes it too; rounds do not reserve separate hours,
+and neither retries nor a separate ledger are used. The global consultation
+lock remains held for the complete session.
+
+The helper's keyword-only `consult(..., timeout_seconds=300)` accepts only a
+built-in integer from 1 through 2400 seconds, rejecting booleans and coercible
+values before acquiring the lock or reserving budget. It forwards that value to
+the runner. Text-only advisory mode keeps the 300-second default.
+
+The controller integration must pass `max_rounds * 300` as the session timeout:
+600..2400 seconds for 2..8 rounds, or 1800 seconds at the default six rounds.
+Each model process must use `min(300, remaining_session_seconds)`, so no process
+gets more than 300 seconds and the session deadline never exceeds 2400 seconds.
+This helper interface alone does not establish that the separately owned
+controller enforces these bounds; check its integrated implementation before
+claiming that behavior.
+
 No arguments (or `-Status`) checks the old helper status without a model call.
 `-Inventory` alone inventories inherited hooks/MCP/LSP without a model call.
 `-PromptPath` without `-ReadOnly` retains the existing text-only advisory mode.

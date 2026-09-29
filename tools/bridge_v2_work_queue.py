@@ -6,9 +6,10 @@ Same wire as ``waggledance/core/work_queue.py`` and the PowerShell claim scripts
 files ``<root>/work_queue/claims/<safe>.json`` (indent 2, sorted keys), release records
 ``done/<safe task>-<safe released_at>.json``, stale archives
 ``done/<safe task>.<stamp>.stale_lease.json``, the same field names, the same validation
-patterns and the same B7 ownership rules. It never imports ``waggledance``, never reads
-the environment (the owner identity and the clock are passed in), and has no default
-root. Every mutation goes through ``QueueTransactions`` (root mutex, then the legacy
+patterns and the same B7 ownership rules. It never imports ``waggledance``. The core
+operations take the owner identity and the clock explicitly and have no default root;
+only the legacy-compatible facade at the end (for the consumer cutover) resolves a root,
+and ``resolve_bridge_root`` there is the single documented environment reader. Every mutation goes through ``QueueTransactions`` (root mutex, then the legacy
 ``<claim>.json.lock``, re-check under the locks, compare-and-swap, WAL and outbox).
 
 B7 ownership (F10 alignment): the authority is the owner session id plus the SHA-256 of
@@ -16,16 +17,19 @@ the owner token; pid and process-start fields are informational and never checke
 An owned claim is refreshed, heartbeated or released only by its owning identity; an
 ``owner_identity: none`` claim only by an identity-less caller; a pre-B7 unowned claim is
 released only with ``allow_legacy_unowned_claim``. Heartbeat never recreates an archived
-claim. Owned claims are never swept here: the legacy sweep also consults the session
-heartbeat file, which this dormant slice does not port, so it refuses rather than guess.
+claim. The facade's ``archive_stale_claims`` keeps the core selection rules (operator and
+system never swept; an owned claim only when its lease expired AND its session heartbeat
+is provably not live; last heartbeat falling back to claimed_at) and applies only through
+injected transactions: without ports a sweep is refused, never defaulted.
 Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Sequence
@@ -128,7 +132,7 @@ def _done_dir(txns: QueueTransactions) -> Path:
     return txns.root / "work_queue" / "done"
 
 
-def list_claims(txns: QueueTransactions) -> list[tuple[Path, dict]]:
+def list_claim_entries(txns: QueueTransactions) -> list[tuple[Path, dict]]:
     """Read-only: every parseable claim (sorted by file name), as the legacy lister."""
     directory = _claims_dir(txns)
     entries = []
@@ -145,10 +149,10 @@ def list_claims(txns: QueueTransactions) -> list[tuple[Path, dict]]:
 def find_claim(txns: QueueTransactions, task_id: str) -> Path | None:
     """The claim file whose task_id is EXACTLY task_id; a file name is never trusted."""
     preferred = _claims_dir(txns) / f"{safe_name(task_id)}.json"
-    for path, obj in list_claims(txns):
+    for path, obj in list_claim_entries(txns):
         if path == preferred and obj.get("task_id") == task_id:
             return path
-    for path, obj in list_claims(txns):
+    for path, obj in list_claim_entries(txns):
         if obj.get("task_id") == task_id:
             return path
     return None
@@ -205,7 +209,7 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
         elif existing is not None:
             raise Refused("the claim was archived meanwhile; a refresh never recreates it")
         if mode == "write":
-            for other_path, other in list_claims(txns):
+            for other_path, other in list_claim_entries(txns):
                 if other_path == claim_path or other.get("task_id") == task_id:
                     continue
                 try:
@@ -298,7 +302,7 @@ def detect_stale_claims(txns: QueueTransactions, *, now: datetime,
     """Read-only: claims whose last heartbeat is older than max_age (unparseable = stale)."""
     cutoff = now - timedelta(seconds=max_age_seconds)
     stale = []
-    for _, claim in list_claims(txns):
+    for _, claim in list_claim_entries(txns):
         try:
             last = parse_utc(str(claim.get("last_heartbeat_utc", "")))
         except (ValueError, TypeError):
@@ -309,46 +313,235 @@ def detect_stale_claims(txns: QueueTransactions, *, now: datetime,
     return stale
 
 
-def archive_stale_claims(txns: QueueTransactions, *, now: datetime, apply: bool = False,
-                         max_age_seconds: int = DEFAULT_STALE_MAX_SECONDS) -> list[dict]:
-    """Archive unowned stale claims to done/*.stale_lease.json. Owned claims are refused
-    here (the legacy rule also needs the session heartbeat, not ported in this slice)."""
-    results = []
-    stamp = iso(now).replace(":", "").replace("-", "")
-    for claim in detect_stale_claims(txns, now=now, max_age_seconds=max_age_seconds):
-        task_id = str(claim.get("task_id", ""))
-        entry = {"task_id": task_id[:128], "agent": str(claim.get("agent", ""))[:64], "applied": False}
-        if _owned(claim):
-            results.append(dict(entry, outcome="owned_claim_needs_session_heartbeat_port"))
-            continue
-        claim_path = find_claim(txns, task_id) if TASK_ID_PATTERN.fullmatch(task_id) else None
-        if claim_path is None:
-            results.append(dict(entry, outcome="not_found_or_invalid"))
-            continue
-        archive_path = _done_dir(txns) / f"{safe_name(task_id)}.{stamp}.stale_lease.json"
-        if not apply:
-            results.append(dict(entry, outcome="planned", archive=archive_path.name))
-            continue
+# -- legacy-compatible facade (consumer cutover, RCO1 9f974e60) ---------------------------
+# The consumers import AGENT_ID_PATTERN, DEFAULT_BRIDGE_ROOT, ArchivedClaim, Claim,
+# WorkQueueError, archive_stale_claims, list_claims and resolve_bridge_root with the core
+# names and signatures. resolve_bridge_root is the ONLY environment reader in the v2 queue
+# (the consumer boundary, core-equal semantics); everything above stays explicit.
 
-        def plan(before: bytes | None, task_id=task_id, archive_path=archive_path) -> Plan:
-            current = _claim_object(before)
-            if current is None or current.get("task_id") != task_id or _owned(current):
-                raise Refused("the stale claim changed meanwhile")
-            try:
-                if parse_utc(str(current.get("last_heartbeat_utc", ""))) >= now - timedelta(seconds=max_age_seconds):
-                    raise Refused("the claim was refreshed meanwhile")
-            except (ValueError, TypeError):
-                pass
-            payload = dict(current, released_at_utc=iso(now), release_status="stale_lease",
-                           release_reason="stale_lease_archived")
-            return Plan(after=None, archive=(archive_path, payload), result=archive_path.name,
-                        event={"type": "stale_archive", "agent": current.get("agent"), "task_id": task_id,
-                               "status": "stale_lease", "generation_before": sha256_or_none(before)})
+DEFAULT_BRIDGE_ROOT = Path(__file__).resolve().parents[1] / ".agent-bridge"
+BRIDGE_ROOT_ENV_NAMES = ("AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT")
+PRIVILEGED_AGENTS = frozenset({"operator", "system"})
+SESSION_HEARTBEAT_TTL_DEFAULT = 180
+SESSION_HEARTBEAT_TTL_MAX = 900
 
+
+def resolve_bridge_root(bridge_root: Path | None = None) -> Path:
+    """Core-equal: an explicit root wins, then the environment, then the repo sidecar."""
+    if bridge_root is not None:
+        return Path(bridge_root)
+    for env_name in BRIDGE_ROOT_ENV_NAMES:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return Path(value)
+    return DEFAULT_BRIDGE_ROOT
+
+
+@dataclass(frozen=True)
+class Claim:
+    """One active claim, field for field as core ``Claim``."""
+    agent: str
+    task_id: str
+    summary: str
+    mode: str
+    write_scope: tuple[str, ...]
+    run_id: str
+    claimed_at_utc: str
+    last_heartbeat_utc: str
+    lease_seconds: int
+    claim_lease_expires_utc: str = ""
+    role: str = ""
+    agent_uuid: str = ""
+    capabilities: tuple[str, ...] = field(default_factory=tuple)
+    cwd: str = ""
+    owner_session_id: str = ""
+    owner_token_sha256: str = ""
+    owner_identity: str = ""
+
+
+@dataclass(frozen=True)
+class ArchivedClaim:
+    """Outcome of one stale-sweep entry (dry run or applied), as core ``ArchivedClaim``."""
+    claim: Claim
+    archived_path: Path
+    age_seconds: int
+    release_reason: str
+    applied: bool
+
+
+def _scope_entries(values: object) -> tuple[str, ...]:
+    source = (values,) if isinstance(values, str) else values if isinstance(values, (list, tuple)) else ()
+    result: list[str] = []
+    for value in source:
+        for item in str(value).split(","):
+            item = item.strip()
+            if item and item not in result:
+                result.append(item)
+    return tuple(result)
+
+
+def claim_from_object(data: dict) -> Claim:
+    """Core ``_claim_from_object``; a non-integer lease is refused (core would raise ValueError)."""
+    try:
+        lease = int(data.get("lease_seconds", DEFAULT_LEASE_SECONDS))
+    except (TypeError, ValueError):
+        raise WorkQueueError("claim lease_seconds is not an integer") from None
+    return Claim(agent=str(data.get("agent", "")), task_id=str(data.get("task_id", "")),
+                 summary=str(data.get("summary", "")), mode=str(data.get("mode", "read-only")),
+                 write_scope=_scope_entries(data.get("write_scope", [])), run_id=str(data.get("run_id", "")),
+                 claimed_at_utc=str(data.get("claimed_at_utc", "")),
+                 last_heartbeat_utc=str(data.get("last_heartbeat_utc", "")), lease_seconds=lease,
+                 claim_lease_expires_utc=str(data.get("claim_lease_expires_utc", "")),
+                 role=str(data.get("role", "")), agent_uuid=str(data.get("agent_uuid", "")),
+                 capabilities=tuple(str(s) for s in data.get("capabilities", []) or [] if s),
+                 cwd=str(data.get("cwd", "")), owner_session_id=str(data.get("owner_session_id", "") or ""),
+                 owner_token_sha256=str(data.get("owner_token_sha256", "") or ""),
+                 owner_identity=str(data.get("owner_identity", "") or ""))
+
+
+def _claim_entries(bridge: Path) -> list[tuple[Path, Claim]]:
+    directory = bridge / "work_queue" / "claims"
+    entries = []
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
         try:
-            name = txns.transact("stale_archive", claim_path,
-                                 _key("stale_archive", task_id, read_bytes_or_none(claim_path), now), plan)
-            results.append(dict(entry, outcome="archived", applied=True, archive=name))
-        except Refused as refusal:
-            results.append(dict(entry, outcome="skipped", reason=str(refusal)[:160]))
-    return results
+            obj = _claim_object(read_bytes_or_none(path))
+            if obj is not None:
+                entries.append((path, claim_from_object(obj)))
+        except Exception:  # noqa: BLE001 - an unreadable claim is skipped, as core does
+            continue
+    return entries
+
+
+def list_claims(bridge_root: Path | None = None) -> list[Claim]:
+    """Core signature, read-only: every parseable active claim."""
+    return [claim for _, claim in _claim_entries(resolve_bridge_root(bridge_root))]
+
+
+def _session_heartbeat_state(bridge: Path, claim: Claim, now: datetime) -> str:
+    """Core ``_session_heartbeat_state``: live, dead or unknown (an unreadable artifact is unknown)."""
+    if not claim.owner_session_id or not claim.owner_token_sha256:
+        return "dead"
+    digest = hashlib.sha256(f"{claim.owner_session_id}\n{claim.owner_token_sha256}".encode("utf-8")).hexdigest()
+    path = bridge / "work_queue" / "heartbeats" / f"{digest}.json"
+    if not path.exists():
+        return "dead"
+    try:
+        beat = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown"
+    if not isinstance(beat, dict) or any(name not in beat for name in
+                                         ("owner_session_id", "owner_token_sha256", "last_beat_utc")):
+        return "unknown"
+    if (str(beat["owner_session_id"]) != claim.owner_session_id
+            or str(beat["owner_token_sha256"]) != claim.owner_token_sha256):
+        return "unknown"
+    try:
+        parsed_ttl = int(str(beat.get("ttl_seconds", "")))
+    except ValueError:
+        parsed_ttl = 0
+    ttl = min(parsed_ttl if parsed_ttl > 0 else SESSION_HEARTBEAT_TTL_DEFAULT, SESSION_HEARTBEAT_TTL_MAX)
+    try:
+        beat_utc = parse_utc(str(beat["last_beat_utc"]))
+    except (ValueError, TypeError):
+        return "unknown"
+    if beat_utc > now + timedelta(seconds=60):
+        return "dead"  # a future-dated beat never keeps a claim alive
+    return "live" if (now - beat_utc).total_seconds() <= ttl else "dead"
+
+
+def _owned_claim_sweepable(bridge: Path, claim: Claim, now: datetime) -> bool:
+    """Core rule: the lease expired AND the owner's session heartbeat is provably not live."""
+    try:
+        base = parse_utc(claim.last_heartbeat_utc or claim.claimed_at_utc)
+    except (ValueError, TypeError):
+        return False
+    expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    if claim.claim_lease_expires_utc:
+        try:
+            recorded = parse_utc(claim.claim_lease_expires_utc)
+        except (ValueError, TypeError):
+            return False
+        if recorded > expires:
+            expires = recorded
+    if now < expires:
+        return False
+    return _session_heartbeat_state(bridge, claim, now) == "dead"
+
+
+def _stale_payload(claim: Claim, now: datetime, reason: str) -> dict:
+    payload = {"agent": claim.agent, "task_id": claim.task_id, "summary": claim.summary, "mode": claim.mode,
+               "write_scope": list(claim.write_scope), "run_id": claim.run_id,
+               "claimed_at_utc": claim.claimed_at_utc, "last_heartbeat_utc": claim.last_heartbeat_utc,
+               "lease_seconds": claim.lease_seconds, "claim_lease_expires_utc": claim.claim_lease_expires_utc,
+               "released_at_utc": iso(now), "release_status": "stale_lease", "release_reason": reason}
+    if claim.role:
+        payload["role"] = claim.role
+    if claim.agent_uuid:
+        payload["agent_uuid"] = claim.agent_uuid
+    if claim.capabilities:
+        payload["capabilities"] = list(claim.capabilities)
+    if claim.owner_session_id:
+        payload["owner_session_id"] = claim.owner_session_id
+    if claim.owner_token_sha256:
+        payload["owner_token_sha256"] = claim.owner_token_sha256
+    return payload
+
+
+def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime | None = None,
+                         max_age_seconds: int = DEFAULT_STALE_MAX_SECONDS, apply: bool = False,
+                         transactions: QueueTransactions | None = None) -> list[ArchivedClaim]:
+    """Core signature and selection rules. A dry run is read-only. ``apply=True`` mutates only
+    through injected ``transactions`` (root mutex, then the claim lock, compare-and-swap, WAL,
+    outbox) for the SAME root; without them the sweep is refused: there is no default port."""
+    if type(max_age_seconds) is not int or max_age_seconds <= 0:
+        raise WorkQueueError(f"max_age_seconds must be positive, got {max_age_seconds}")
+    bridge = resolve_bridge_root(bridge_root)
+    if apply and (transactions is None or transactions.mutex is None or transactions.claim_lock is None):
+        raise WorkQueueError("sweep refused: the v2 queue has no injected ports (dormant); dry run only")
+    if apply and Path(transactions.root) != bridge:
+        raise WorkQueueError("sweep refused: the transactions are for another runtime root")
+    now = now_utc or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=max_age_seconds)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    archived: list[ArchivedClaim] = []
+    for claim_file, claim in _claim_entries(bridge):
+        if claim.agent in PRIVILEGED_AGENTS:
+            continue
+        if claim.owner_session_id and claim.owner_token_sha256 and not _owned_claim_sweepable(bridge, claim, now):
+            continue
+        candidates = [value for value in (claim.last_heartbeat_utc, claim.claimed_at_utc) if value]
+        candidates = list(dict.fromkeys(candidates))
+        if not candidates:
+            continue
+        last = None
+        for candidate in candidates:
+            try:
+                last = parse_utc(candidate)
+                break
+            except (ValueError, TypeError):
+                continue
+        if last is None:
+            age_seconds = max_age_seconds
+        else:
+            if last >= cutoff:
+                continue
+            age_seconds = int((now - last).total_seconds())
+        archive_path = bridge / "work_queue" / "done" / f"{safe_name(claim.task_id)}.{stamp}.stale_lease.json"
+        reason = f"last_heartbeat_utc was {age_seconds}s old; lease threshold {max_age_seconds}s"
+        if apply:
+            def plan(before: bytes | None, claim=claim, archive_path=archive_path, reason=reason) -> Plan:
+                current = _claim_object(before)
+                # Exactly the claim this decision was made on; a successor claim is never deleted.
+                if current is None or claim_from_object(current) != claim:
+                    raise Refused("the claim changed since the listing")
+                return Plan(after=None, archive=(archive_path, _stale_payload(claim, now, reason)),
+                            event={"type": "stale_archive", "agent": claim.agent, "task_id": claim.task_id,
+                                   "status": "stale_lease", "generation_before": sha256_or_none(before)})
+            try:
+                transactions.transact("stale_archive", claim_file,
+                                      _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan)
+            except Refused:
+                continue  # as core: a changed claim is skipped, not reported as archived
+        archived.append(ArchivedClaim(claim=claim, archived_path=archive_path, age_seconds=age_seconds,
+                                      release_reason=reason, applied=apply))
+    return archived

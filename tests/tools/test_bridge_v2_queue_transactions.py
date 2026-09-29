@@ -264,14 +264,19 @@ def test_the_same_idempotency_key_is_one_outbox_record(tmp_path):
     assert len(list(txns.outbox_dir.glob("*.json"))) == 1
 
 
-def test_module_never_imports_waggledance_or_reads_the_environment():
+def test_module_never_imports_waggledance_and_reads_the_environment_in_one_place_only():
     for name in ("bridge_v2_queue_transactions.py", "bridge_v2_work_queue.py", "bridge_v2_resource_scope.py"):
         tree = ast.parse((ROOT / "tools" / name).read_text(encoding="utf-8"))
         modules = {getattr(n, "module", None) or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         modules |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         assert not any(m.split(".")[0] == "waggledance" for m in modules), name
-        assert not any(isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv")
-                       for n in ast.walk(tree)), name
+        readers = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
+                   for n in ast.walk(fn) if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv")}
+        module_level = [n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.ClassDef))
+                        for m in ast.walk(n) if isinstance(m, ast.Attribute) and m.attr in ("environ", "getenv")]
+        # The consumer-facing facade's resolve_bridge_root is the single documented env reader.
+        assert readers <= ({"resolve_bridge_root"} if name == "bridge_v2_work_queue.py" else set()), (name, readers)
+        assert not module_level, name
 
 @pytest.mark.parametrize("change", [{"claim_rel": "../../outside.json"}, {"archive_rel": "work_queue/claims/x.json"},
                                     {"op": "force_takeover"}, {"txid": "not-hex"}, {"event": ["not", "a", "dict"]},

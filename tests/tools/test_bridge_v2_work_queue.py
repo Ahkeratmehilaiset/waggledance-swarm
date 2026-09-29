@@ -137,17 +137,77 @@ def test_write_scope_overlap_is_refused_and_disjoint_scopes_coexist(env):
     claim(env, task="team/task-3", agent="fable-5", identity=OTHER, scope=("docs/x.md",))   # success twin
 
 
-def test_stale_sweep_archives_only_unowned_claims_and_refuses_owned_ones(env):
-    old = NOW - timedelta(hours=13)
-    claim(env, task="team/owned", now=old, scope=("tools/o.py",))
-    claim(env, task="team/unowned", identity=None, now=old, scope=("tools/u.py",))
-    planned = wq.archive_stale_claims(env[0], now=NOW, apply=False)
-    outcomes = {r["task_id"]: r["outcome"] for r in planned}
-    assert outcomes == {"team/owned": "owned_claim_needs_session_heartbeat_port", "team/unowned": "planned"}
-    applied = {r["task_id"]: r for r in wq.archive_stale_claims(env[0], now=NOW, apply=True)}
-    assert applied["team/unowned"]["applied"] is True and applied["team/unowned"]["archive"].endswith(".stale_lease.json")
-    assert wq.find_claim(env[0], "team/unowned") is None and wq.find_claim(env[0], "team/owned") is not None
+def _live_heartbeat(txns, identity, at):
+    digest = hashlib.sha256(f"{identity.owner_session_id}\n{identity.owner_token_sha256}".encode()).hexdigest()
+    path = txns.root / "work_queue" / "heartbeats" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"owner_session_id": identity.owner_session_id,
+                                "owner_token_sha256": identity.owner_token_sha256,
+                                "last_beat_utc": iso(at)}), encoding="utf-8")
 
+
+def test_the_facade_sweep_keeps_the_core_selection_rules(env):
+    txns = env[0]
+    old = NOW - timedelta(hours=13)
+    claim(env, task="team/owned-dead", now=old, scope=("tools/o.py",))                     # lease expired, no beat
+    claim(env, task="team/owned-live", now=old, scope=("tools/l.py",), identity=OTHER)     # lease expired, live beat
+    claim(env, task="team/unowned", identity=None, now=old, scope=("tools/u.py",))
+    claim(env, task="team/fresh", identity=None, scope=("tools/f.py",))
+    (txns.root / "work_queue" / "claims" / "op-task.json").write_bytes(claim_bytes(
+        {"agent": "operator", "task_id": "op-task", "last_heartbeat_utc": iso(old), "lease_seconds": 900}))
+    _live_heartbeat(txns, OTHER, NOW - timedelta(seconds=30))
+    planned = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW)
+    assert {a.claim.task_id for a in planned} == {"team/owned-dead", "team/unowned"}   # operator never swept
+    for entry in planned:
+        assert entry.applied is False and entry.age_seconds == 46800
+        assert entry.release_reason == "last_heartbeat_utc was 46800s old; lease threshold 43200s"
+        assert entry.archived_path.name.endswith(".20260929T220000Z.stale_lease.json")
+    assert wq.find_claim(txns, "team/unowned") is not None                             # a dry run writes nothing
+
+
+def test_the_facade_sweep_applies_only_through_injected_transactions(env, tmp_path):
+    txns = env[0]
+    claim(env, task="team/unowned", identity=None, now=NOW - timedelta(hours=13), scope=("tools/u.py",))
+    with pytest.raises(WorkQueueError, match="sweep refused"):
+        wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True)            # no default port
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    with pytest.raises(WorkQueueError, match="another runtime root"):
+        wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True,
+                                transactions=QueueTransactions(elsewhere, mutex=Lock(), claim_lock=Lock()))
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    payload = json.loads(entry.archived_path.read_text())
+    assert entry.applied is True and payload["release_status"] == "stale_lease"
+    assert payload["release_reason"] == entry.release_reason and wq.find_claim(txns, "team/unowned") is None
+
+
+def test_the_facade_exports_the_core_names_the_consumers_import():
+    for name in ("AGENT_ID_PATTERN", "DEFAULT_BRIDGE_ROOT", "ArchivedClaim", "Claim", "WorkQueueError",
+                 "archive_stale_claims", "list_claims", "resolve_bridge_root"):
+        assert hasattr(wq, name), name
+    assert wq.AGENT_ID_PATTERN.pattern == r"^[a-z][a-z0-9_-]{1,32}$"
+    assert wq.DEFAULT_BRIDGE_ROOT.name == ".agent-bridge"
+
+
+def test_resolve_bridge_root_is_core_equal(monkeypatch, tmp_path):
+    for name in wq.BRIDGE_ROOT_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    assert wq.resolve_bridge_root() == wq.DEFAULT_BRIDGE_ROOT
+    monkeypatch.setenv("AGENT_BRIDGE_ROOT", str(tmp_path / "b"))
+    assert wq.resolve_bridge_root() == tmp_path / "b"
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path / "a"))
+    assert wq.resolve_bridge_root() == tmp_path / "a"                      # the runtime root wins
+    assert wq.resolve_bridge_root(tmp_path / "x") == tmp_path / "x"        # an explicit root wins
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", "   ")
+    assert wq.resolve_bridge_root() == tmp_path / "b"                      # a blank value is ignored
+
+
+def test_list_claims_returns_core_claim_objects(env):
+    claim(env)
+    [record] = wq.list_claims(bridge_root=env[0].root)
+    assert isinstance(record, wq.Claim) and record.task_id == "team/task-1"
+    assert record.write_scope == ("tools/a.py",) and record.lease_seconds == 900
+    assert record.owner_session_id == "session-a" and record.claim_lease_expires_utc == "2026-09-29T22:15:00Z"
 
 @pytest.mark.parametrize("agent,task", [("Bad", "t/1"), ("claude-rco-2", "../x"), ("claude-rco-2", "a//b")])
 def test_invalid_names_refuse_before_any_lock(env, agent, task):

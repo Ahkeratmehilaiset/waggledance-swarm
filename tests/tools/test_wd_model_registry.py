@@ -48,7 +48,7 @@ def write(tmp_path, value, name="registry.json") -> Path:
 # ---------------------------------------------------------------- the shipped registry
 
 def test_the_shipped_registry_validates_and_is_sourced():
-    assert REGISTRY["schema"] == "wd.model-registry.v1" and len(REGISTRY_SHA) == 64
+    assert REGISTRY["schema"] == "wd.model-registry.v2" and len(REGISTRY_SHA) == 64
     assert all(url.startswith("https://") for url in REGISTRY["benchmark"]["sources"])
     assert {entry["provider"] for entry in REGISTRY["models"].values()} == {"codex", "claude"}
     assert REGISTRY["models"]["claude/claude-opus-5-5"]["efforts"]["medium"] == \
@@ -116,7 +116,7 @@ def test_a_registry_over_the_size_bound_is_refused(tmp_path, monkeypatch):
 def test_a_registry_exactly_at_the_size_bound_loads(tmp_path, monkeypatch):
     path = write(tmp_path, REGISTRY)
     monkeypatch.setattr(reg_module, "MAX_REGISTRY_BYTES", path.stat().st_size)
-    assert load_registry(path)[0]["schema"] == "wd.model-registry.v1"
+    assert load_registry(path)[0]["schema"] == "wd.model-registry.v2"
 
 
 def test_a_missing_registry_is_a_registry_error(tmp_path):
@@ -389,3 +389,226 @@ def test_only_the_benchmark_variant_is_optional():
     del missing["models"]["claude/claude-opus-5-5"]["coding_agent_index"]
     with pytest.raises(RegistryError, match="keys must be exactly"):
         validate_registry(missing)
+
+
+# ---------------------------------------------------------------- registry v2 (Bridge v2 F3 foundation)
+# Authored under the 2026-09-29 operator no-runs directive: NOT executed by the author.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from tools.wd_model_registry import model_table, observation_state  # noqa: E402
+
+T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def v1_projection(registry=None) -> dict:
+    """The same measured tables as a v1 document (what an old reader or writer holds)."""
+    source = copy.deepcopy(REGISTRY if registry is None else registry)
+    projected = {key: source[key] for key in reg_module.TOP_KEYS}
+    projected["schema"] = "wd.model-registry.v1"
+    return projected
+
+
+def observation(**changes) -> dict:
+    base = {"id": "obs-test", "subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": None},
+            "kind": "context", "class": None, "value": 400000, "unit": "tokens", "status": "measured",
+            "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01", "observer": "operator"},
+            "measured_at": "2026-10-01T11:00:00Z", "ttl_seconds": 7200,
+            "uncertainty": {"kind": "none_stated", "low": None, "high": None, "note": None}}
+    base.update(changes)
+    return base
+
+
+def with_v2(change) -> dict:
+    registry = copy.deepcopy(REGISTRY)
+    change(registry)
+    return registry
+
+
+VERIFIED_POOL = {"provider": "codex", "limit_id": "codex-weekly", "window": "weekly", "tier": "unknown",
+                 "verification": "verified",
+                 "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01",
+                                "observer": "operator"}}
+
+
+def test_v1_files_still_load_and_analyse_identically():
+    v1 = validate_registry(v1_projection())
+    assert v1["schema"] == "wd.model-registry.v1"
+    assert rows(v1) == rows(REGISTRY)
+    assert frontier(rows(v1)) == frontier(rows(REGISTRY))
+    assert lane_value_table(v1, CATALOG, CURRENT) == lane_value_table(REGISTRY, CATALOG, CURRENT)
+    assert catalog_diff(v1, CATALOG) == catalog_diff(REGISTRY, CATALOG)
+
+
+def test_v1_with_v2_tables_and_v2_without_them_are_refused():
+    mixed = v1_projection()
+    mixed["pools"] = {}
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(mixed)
+    bare = v1_projection()
+    bare["schema"] = "wd.model-registry.v2"
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(bare)
+
+
+def test_shipped_v2_marks_measured_rows_historical_and_adds_no_admission():
+    assert REGISTRY["historical"]["applies_to"] == ["benchmark", "coding_benchmark", "models"]
+    assert REGISTRY["historical"]["cost_basis"] == "api_price_not_quota"
+    assert REGISTRY["historical"]["source_measured_at"] == REGISTRY["benchmark"]["fetched_at"]
+    assert {c["admission"] for c in REGISTRY["candidates"].values()} == {"none"}
+    assert {c["capability"] for c in REGISTRY["candidates"].values()} == {"unknown"}
+    assert set(REGISTRY["candidates"]) == {"claude/claude-haiku-4-5", "grok/grok-4.7"}
+    assert all(pool["verification"] == "unverified" for pool in REGISTRY["pools"].values())
+    assert all(obs["status"] in ("historical", "unverified") for obs in REGISTRY["observations"])
+    assert not any(obs["subject"]["model"] == "claude-haiku-4-5" for obs in REGISTRY["observations"])
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r["historical"].update(status="measured"),
+    lambda r: r["historical"].update(applies_to=["models"]),
+    lambda r: r["historical"].update(cost_basis="usd"),
+    lambda r: r["historical"].update(source_measured_at="yesterday"),
+    lambda r: r["historical"].update(extra=1),
+    lambda r: r.update(pools=[]),
+    lambda r: r["pools"].update({"Grok Weekly": dict(VERIFIED_POOL, provider="grok")}),
+    lambda r: r["pools"]["grok-weekly-shared"].update(provider="gemini"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(window="hourly"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(tier="gold"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(verification="verified"),        # plan text never verifies
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, limit_id=None)}),     # verified needs a limit_id
+    lambda r: r["pools"]["grok-weekly-shared"].update(extra=1),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(admission="catalog"),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(capability="strong"),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(model="grok-5"),                # key mismatch
+    lambda r: r["candidates"]["grok/grok-4.7"].update(pool=["grok-weekly-shared"]),   # unhashable: refused, no crash
+    lambda r: r["candidates"].update({"codex/gpt-6-sol": {"provider": "codex", "model": "gpt-6-sol",
+                                                          "admission": "none", "capability": "unknown",
+                                                          "pool": None, "note": None}}),  # a rated model
+    lambda r: r["candidates"]["claude/claude-haiku-4-5"].update(pool="grok-weekly-shared"),  # other provider
+    lambda r: r.update(observations={}),
+    lambda r: r["observations"].append(copy.deepcopy(r["observations"][0])),          # duplicate id
+])
+def test_every_malformed_v2_table_is_refused(change):
+    with pytest.raises(RegistryError):
+        validate_registry(with_v2(change))
+
+
+@pytest.mark.parametrize("changes", [
+    {"kind": "speed"},
+    {"kind": ["context"]},                                                          # unhashable kind
+    {"unit": "usd_per_task_api_price"},                                             # wrong unit for context
+    {"value": 400000.5},
+    {"value": True},
+    {"status": "unknown"},                                                          # unknown needs null
+    {"value": None},                                                                # null needs unknown
+    {"provenance": {"kind": "external_benchmark", "reference": "https://x.example", "observer": None}},
+    {"ttl_seconds": None},
+    {"ttl_seconds": 0},
+    {"measured_at": "unknown"},
+    {"measured_at": "2026-13-01"},
+    {"uncertainty": {"kind": "unknown", "low": None, "high": None, "note": None}},
+    {"uncertainty": {"kind": "interval", "low": 1, "high": 2, "note": None}},        # does not contain the value
+    {"uncertainty": {"kind": "none_stated", "low": 1, "high": None, "note": None}},
+    {"class": "general"},                                                           # class only for quality
+    {"subject": {"provider": "codex", "model": "gpt-9", "effort": "high", "pool": None}},
+    {"subject": {"provider": "codex", "model": None, "effort": None, "pool": None}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "ultra", "pool": None}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": "grok-weekly-shared"}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": ["x"]}},
+    {"extra": 1},
+])
+def test_every_malformed_observation_is_refused(changes):
+    with pytest.raises(RegistryError):
+        validate_registry(with_v2(lambda r: r["observations"].append(observation(**changes))))
+
+
+def test_a_valid_measured_observation_is_accepted_and_is_fresh_then_stale():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    obs = registry["observations"][-1]
+    assert observation_state(obs, T0) == "fresh"
+    assert observation_state(obs, T0 + timedelta(hours=2)) == "stale"
+    assert observation_state(obs, T0 - timedelta(hours=2)) == "unknown"              # dated 1 h in the future
+    row = next(r for r in model_table(registry, T0)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "fresh" and row["context_tokens"]["value"] == 400000
+    stale = next(r for r in model_table(registry, T0 + timedelta(hours=3))["rows"]
+                 if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert stale["context_tokens"] == {"value": None, "state": "stale", "source": "operator reading 2026-10-01",
+                                       "measured_at": "2026-10-01T11:00:00Z", "note": None}
+
+
+def test_api_dollars_are_never_quota_units():
+    pooled_dollars = observation(kind="cost", unit="usd_per_task_api_price", value=1.0,
+                                 subject={"provider": "codex", "model": "gpt-6-sol", "effort": "high",
+                                          "pool": "codex-weekly"})
+    with pytest.raises(RegistryError, match="API-dollar"):
+        validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                             r["observations"].append(pooled_dollars))))
+    unpooled_quota = observation(kind="cost", unit="pool_points_per_mtok", value=3.5)
+    with pytest.raises(RegistryError, match="quota unit"):
+        validate_registry(with_v2(lambda r: r["observations"].append(unpooled_quota)))
+    pooled_quota = observation(kind="cost", unit="pool_points_per_mtok", value=3.5,
+                               subject={"provider": "codex", "model": "gpt-6-sol", "effort": "high",
+                                        "pool": "codex-weekly"})
+    registry = validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                    r["observations"].append(pooled_quota))))
+    row = next(r for r in model_table(registry, T0)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["cost_pool_points_per_mtok"]["value"] == 3.5
+    assert row["cost_api_usd_per_task"]["note"] == "api_price_not_quota"          # the two never merge
+
+
+def test_an_unverified_pool_is_never_verified_by_an_observation():
+    measured_membership = observation(id="grok-pool-measured", kind="pool", unit="pool_id",
+                                      value="grok-weekly-shared",
+                                      subject={"provider": "grok", "model": "grok-4.7", "effort": None, "pool": None})
+    with pytest.raises(RegistryError, match="never verifies"):
+        validate_registry(with_v2(lambda r: r["observations"].append(measured_membership)))
+    verified = with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}), r["observations"].append(
+        observation(id="codex-pool", kind="pool", unit="pool_id", value="codex-weekly",
+                    subject={"provider": "codex", "model": "gpt-6-sol", "effort": None, "pool": None}))))
+    assert validate_registry(verified)["pools"]["codex-weekly"]["verification"] == "verified"
+
+
+def test_a_limit_is_a_pool_level_observation():
+    limit = observation(id="codex-weekly-limit", kind="limit", unit="percent_of_pool", value=42.0,
+                        subject={"provider": "codex", "model": None, "effort": None, "pool": "codex-weekly"})
+    assert validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                r["observations"].append(limit))))
+    with pytest.raises(RegistryError, match="needs subject.pool"):
+        validate_registry(with_v2(lambda r: r["observations"].append(
+            dict(limit, subject={"provider": "codex", "model": None, "effort": None, "pool": None}))))
+
+
+def test_the_model_table_shows_unknown_cells_and_candidates_without_admission():
+    table = model_table(REGISTRY, T0)
+    assert table["execution_allowed"] is False and table["schema"] == "wd.model-table.v1"
+    by_key = {(r["provider"], r["model"], r["effort"]): r for r in table["rows"]}
+    haiku = by_key[("claude", "claude-haiku-4-5", None)]
+    assert haiku["admission"] == "none" and haiku["pool_verification"] == "unknown"
+    assert all(haiku[column] == {"value": None, "state": "unknown", "source": None, "measured_at": None,
+                                 "note": None} for column in reg_module.TABLE_COLUMNS)
+    grok_high, grok_xhigh = by_key[("grok", "grok-4.7", "high")], by_key[("grok", "grok-4.7", "xhigh")]
+    assert grok_high["quality_general"]["value"] == 46.33 and grok_high["quality_general"]["state"] == "historical"
+    assert grok_xhigh["quality_coding_agent"]["value"] == 56 and grok_high["quality_coding_agent"]["state"] == "unknown"
+    assert grok_high["pool"]["value"] == "grok-weekly-shared" and grok_high["pool"]["state"] == "unverified"
+    assert grok_high["pool_verification"] == "unverified" and grok_high["admission"] == "none"
+    opus = by_key[("claude", "claude-opus-5-5", "medium")]
+    assert opus["quality_general"] == {"value": 51, "state": "historical",
+                                       "source": "Artificial Analysis Intelligence Index v4.3.2",
+                                       "measured_at": "2026-09-27", "note": "with_fallback"}
+    assert opus["cost_pool_points_per_mtok"]["state"] == "unknown" and opus["context_tokens"]["state"] == "unknown"
+    assert opus["admission"] == "see_signed_catalog"
+
+
+def test_the_model_table_needs_an_aware_time_and_works_for_v1():
+    with pytest.raises(RegistryError, match="timezone-aware"):
+        model_table(REGISTRY, datetime(2026, 10, 1))
+    rows_v1 = model_table(validate_registry(v1_projection()), T0)["rows"]
+    assert {r["pool_verification"] for r in rows_v1} == {"unknown"}
+    assert not any(r["admission"] == "none" for r in rows_v1)                     # v1 has no candidates
+
+
+def test_the_report_carries_the_model_table_and_stays_advisory():
+    result = report(REGISTRY, REGISTRY_SHA, CATALOG, CATALOG_SHA, CURRENT, now=T0)
+    assert result["execution_allowed"] is False and result["registry_schema"] == "wd.model-registry.v2"
+    assert result["model_table"]["execution_allowed"] is False
+    assert json.loads(json.dumps(result)) == result                                # plain JSON, no datetimes

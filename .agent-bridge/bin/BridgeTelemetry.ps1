@@ -1,5 +1,37 @@
 #requires -Version 5.1
 # Local observation sidecars only. Never an ACK, task result, or authorization.
+# F1 (default OFF: no live caller passes the new parameters yet; F7/F30 wire them later):
+# optional reason/watermark/latency metadata and an explicit turn outcome. Metadata is a
+# separate object that never changes the correlation or authority fields, and no
+# observation grants processing: an enqueue or a seen event is never "handled".
+# Read-only report: tools/bridge_wake_telemetry.py.
+function ConvertTo-BridgeObservationMetadata {
+    # Only supplied fields are recorded. An invalid value throws before anything is
+    # written, so a future caller fails at wiring time instead of recording a guess.
+    param([string]$Reason='', [Nullable[long]]$Watermark=$null,
+          [Nullable[double]]$LatencyMs=$null, [string]$LatencyBasis='')
+    $metadata=[ordered]@{}
+    if($Reason){
+        if($Reason -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation reason must be a lowercase token'}
+        $metadata['reason']=$Reason
+    }
+    if($null -ne $Watermark){
+        if($Watermark -lt 0){throw 'Observation watermark must be a non-negative byte offset'}
+        $metadata['watermark']=[long]$Watermark
+    }
+    if($null -ne $LatencyMs -or $LatencyBasis){
+        if($null -eq $LatencyMs -or -not $LatencyBasis){throw 'Observation latency needs both LatencyMs and LatencyBasis'}
+        $ms=[double]$LatencyMs
+        if([double]::IsNaN($ms) -or [double]::IsInfinity($ms) -or $ms -lt 0 -or $ms -gt 86400000){
+            throw 'Observation latency must be finite and within 0..86400000 ms'
+        }
+        if($LatencyBasis -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation latency basis must be a lowercase token'}
+        $metadata['latency_ms']=$ms
+        $metadata['latency_basis']=$LatencyBasis
+    }
+    if($metadata.get_Count() -eq 0){return $null}
+    return $metadata
+}
 function ConvertTo-BridgeObservationTime {
     param($Value)
     if($Value -is [datetime] -or $Value -is [datetimeoffset]){return $Value.ToUniversalTime().ToString('o')}
@@ -26,7 +58,10 @@ function Get-BridgeStageBinding {
 }
 
 function Write-BridgeWakeObservation {
-    param([string]$Path,[object[]]$Events)
+    param([string]$Path,[object[]]$Events,
+          [string]$Reason='',[Nullable[long]]$Watermark=$null,[Nullable[double]]$LatencyMs=$null,[string]$LatencyBasis='')
+    # Validated before any read or write; $null when no metadata was supplied.
+    $metadata=ConvertTo-BridgeObservationMetadata -Reason $Reason -Watermark $Watermark -LatencyMs $LatencyMs -LatencyBasis $LatencyBasis
     $bindings=[Collections.Generic.List[object]]::new()
     $complete=$true
     if([IO.File]::Exists($Path)){
@@ -49,6 +84,8 @@ function Write-BridgeWakeObservation {
     if($bindings.Count -gt 256){$complete=$false}
     $value=[ordered]@{schema='wd.bridge-wake-observation.v1';observed_at_utc=[datetime]::UtcNow.ToString('o');
         requests=@($bindings|Select-Object -Last 256);correlation_complete=$complete;authority_effect='none'}
+    # Describes this wake only: never carried forward from the previous snapshot.
+    if($null -ne $metadata){$value['metadata']=$metadata}
     $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
     try{
         [IO.File]::WriteAllText($temp,($value|ConvertTo-Json -Depth 8 -Compress),(New-Object Text.UTF8Encoding($false)))
@@ -61,17 +98,31 @@ function Write-BridgeWakeObservation {
 
 function Write-BridgeStageObservation {
     param([string]$BridgeRoot, [string]$Stage, $Request, [string]$Target,
-          [string]$DeliveryId='', [string]$QueueId='', [string]$ReplyTimestamp='', [string]$ReportReference='')
-    if ($Stage -cnotin @('request_durable','watcher_seen','relay_enqueued','model_turn_started','answer_durable','lead_processed','user_reported')) {
+          [string]$DeliveryId='', [string]$QueueId='', [string]$ReplyTimestamp='', [string]$ReportReference='',
+          [string]$Reason='', [Nullable[long]]$Watermark=$null, [Nullable[double]]$LatencyMs=$null,
+          [string]$LatencyBasis='', [string]$ActionOutcome='')
+    if ($Stage -cnotin @('request_durable','watcher_seen','relay_enqueued','model_turn_started','answer_durable','lead_processed','user_reported','turn_completed')) {
         throw 'Unknown bridge observation stage'
     }
+    # turn_completed is the ONLY source of a no-op ratio: the agent states explicitly
+    # whether its turn acted. Nothing else (a pending or missing stage, a queue
+    # acceptance) may be read as a no-op.
+    if ($Stage -ceq 'turn_completed') {
+        if ($ActionOutcome -cnotin @('acted','noop')) { throw 'turn_completed needs ActionOutcome acted or noop' }
+    } elseif ($ActionOutcome) {
+        throw 'ActionOutcome is recorded only with stage turn_completed'
+    }
+    $metadata = ConvertTo-BridgeObservationMetadata -Reason $Reason -Watermark $Watermark -LatencyMs $LatencyMs -LatencyBasis $LatencyBasis
     $observation = [ordered]@{
         schema='wd.bridge-stage.v1'; stage=$Stage; observed_at_utc=[datetime]::UtcNow.ToString('o');
         target=$Target; request_id=$null; requester=$null; requester_session_id=$null;
         delivery_id=$DeliveryId; queue_id=$QueueId; observer_pid=$PID; authority_effect='none'
-        observation_source=$(if ($Stage -cin @('model_turn_started','lead_processed','user_reported')) {'agent_reported'} else {'runtime_observed'})
+        observation_source=$(if ($Stage -cin @('model_turn_started','lead_processed','user_reported','turn_completed')) {'agent_reported'} else {'runtime_observed'})
         reply_ts_utc=$ReplyTimestamp; report_reference=$ReportReference
     }
+    # Optional fields are appended only when present, so existing records keep their shape.
+    if ($Stage -ceq 'turn_completed') { $observation['action_outcome'] = $ActionOutcome }
+    if ($null -ne $metadata) { $observation['metadata'] = $metadata }
     if ($null -ne $Request) {
         $Request=Get-BridgeStageBinding $Request
         if($null -eq $Request){return}
@@ -85,5 +136,13 @@ function Write-BridgeStageObservation {
     $directory = Join-Path $BridgeRoot 'shared\telemetry'
     [void][IO.Directory]::CreateDirectory($directory)
     $path = Join-Path $directory ('stage-' + [guid]::NewGuid().ToString('N') + '.json')
-    [IO.File]::WriteAllText($path, ($observation | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+    # Atomic: a reader sees either no stage-*.json or the complete record. The temporary
+    # name ends in .tmp, which the stage-*.json readers never match.
+    $temp = $path + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temp, ($observation | ConvertTo-Json -Compress -Depth 4), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::Move($temp, $path)
+    } finally {
+        if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) }
+    }
 }

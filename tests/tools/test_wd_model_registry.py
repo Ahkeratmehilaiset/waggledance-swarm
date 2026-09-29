@@ -399,6 +399,7 @@ from datetime import datetime, timedelta, timezone  # noqa: E402
 from tools.wd_model_registry import model_table, observation_state  # noqa: E402
 
 T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+EXACT_NOTE = "exact token count read from the provider documentation by the operator"
 
 
 def v1_projection(registry=None) -> dict:
@@ -414,7 +415,7 @@ def observation(**changes) -> dict:
             "kind": "context", "class": None, "value": 400000, "unit": "tokens", "status": "measured",
             "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01", "observer": "operator"},
             "measured_at": "2026-10-01T11:00:00Z", "ttl_seconds": 7200,
-            "uncertainty": {"kind": "none_stated", "low": None, "high": None, "note": None}}
+            "uncertainty": {"kind": "exact", "low": None, "high": None, "note": EXACT_NOTE}}
     base.update(changes)
     return base
 
@@ -426,7 +427,7 @@ def with_v2(change) -> dict:
 
 
 VERIFIED_POOL = {"provider": "codex", "limit_id": "codex-weekly", "window": "weekly", "tier": "unknown",
-                 "verification": "verified",
+                 "verification": "verified", "measured_at": "2026-10-01T11:00:00Z", "ttl_seconds": 7200,
                  "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01",
                                 "observer": "operator"}}
 
@@ -476,6 +477,11 @@ def test_shipped_v2_marks_measured_rows_historical_and_adds_no_admission():
     lambda r: r["pools"]["grok-weekly-shared"].update(tier="gold"),
     lambda r: r["pools"]["grok-weekly-shared"].update(verification="verified"),        # plan text never verifies
     lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, limit_id=None)}),     # verified needs a limit_id
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, measured_at="unknown")}),  # ... a date
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, ttl_seconds=None)}),       # ... and a TTL
+    lambda r: r["pools"]["grok-weekly-shared"].update(ttl_seconds=0),
+    lambda r: r["pools"]["grok-weekly-shared"].update(measured_at="yesterday"),
+    lambda r: r["pools"]["grok-weekly-shared"].pop("measured_at"),
     lambda r: r["pools"]["grok-weekly-shared"].update(extra=1),
     lambda r: r["candidates"]["grok/grok-4.7"].update(admission="catalog"),
     lambda r: r["candidates"]["grok/grok-4.7"].update(capability="strong"),
@@ -509,6 +515,9 @@ def test_every_malformed_v2_table_is_refused(change):
     {"uncertainty": {"kind": "unknown", "low": None, "high": None, "note": None}},
     {"uncertainty": {"kind": "interval", "low": 1, "high": 2, "note": None}},        # does not contain the value
     {"uncertainty": {"kind": "none_stated", "low": 1, "high": None, "note": None}},
+    {"uncertainty": {"kind": "none_stated", "low": None, "high": None, "note": None}},   # measured needs a stated one
+    {"uncertainty": {"kind": "exact", "low": None, "high": None, "note": None}},         # exact needs a justification
+    {"uncertainty": {"kind": "exact", "low": None, "high": None, "note": "   "}},
     {"class": "general"},                                                           # class only for quality
     {"subject": {"provider": "codex", "model": "gpt-9", "effort": "high", "pool": None}},
     {"subject": {"provider": "codex", "model": None, "effort": None, "pool": None}},
@@ -533,7 +542,7 @@ def test_a_valid_measured_observation_is_accepted_and_is_fresh_then_stale():
     stale = next(r for r in model_table(registry, T0 + timedelta(hours=3))["rows"]
                  if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
     assert stale["context_tokens"] == {"value": None, "state": "stale", "source": "operator reading 2026-10-01",
-                                       "measured_at": "2026-10-01T11:00:00Z", "note": None}
+                                       "measured_at": "2026-10-01T11:00:00Z", "note": EXACT_NOTE}
 
 
 def test_api_dollars_are_never_quota_units():
@@ -590,7 +599,7 @@ def test_the_model_table_shows_unknown_cells_and_candidates_without_admission():
     assert grok_high["quality_general"]["value"] == 46.33 and grok_high["quality_general"]["state"] == "historical"
     assert grok_xhigh["quality_coding_agent"]["value"] == 56 and grok_high["quality_coding_agent"]["state"] == "unknown"
     assert grok_high["pool"]["value"] == "grok-weekly-shared" and grok_high["pool"]["state"] == "unverified"
-    assert grok_high["pool_verification"] == "unverified" and grok_high["admission"] == "none"
+    assert grok_high["pool_verification"] == "membership_unverified" and grok_high["admission"] == "none"
     opus = by_key[("claude", "claude-opus-5-5", "medium")]
     assert opus["quality_general"] == {"value": 51, "state": "historical",
                                        "source": "Artificial Analysis Intelligence Index v4.3.2",
@@ -612,3 +621,87 @@ def test_the_report_carries_the_model_table_and_stays_advisory():
     assert result["execution_allowed"] is False and result["registry_schema"] == "wd.model-registry.v2"
     assert result["model_table"]["execution_allowed"] is False
     assert json.loads(json.dumps(result)) == result                                # plain JSON, no datetimes
+
+
+# ---------------------------------------------------------------- RCO2 review fixes (S1-S3, nits)
+
+def test_a_verified_pool_expires_like_an_observation():
+    from tools.wd_model_registry import pool_state
+    assert pool_state(VERIFIED_POOL, T0) == "verified"
+    assert pool_state(VERIFIED_POOL, T0 + timedelta(hours=2)) == "stale"
+    assert pool_state(VERIFIED_POOL, T0 - timedelta(hours=2)) == "unknown"        # dated in the future
+    assert pool_state(VERIFIED_POOL, None) == "unknown"
+    assert pool_state(REGISTRY["pools"]["grok-weekly-shared"], T0) == "unverified"
+
+
+def test_pool_verification_speaks_only_through_a_fresh_membership():
+    membership = observation(id="codex-pool", kind="pool", unit="pool_id", value="codex-weekly",
+                             subject={"provider": "codex", "model": "gpt-6-sol", "effort": None, "pool": None})
+    registry = validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                    r["observations"].append(membership))))
+    def row_at(when):
+        return next(r for r in model_table(registry, when)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row_at(T0)["pool_verification"] == "verified"
+    assert row_at(T0 + timedelta(hours=3))["pool_verification"] == "membership_stale"   # membership expired too
+
+
+@pytest.mark.parametrize("kind,unit,value", [("tier", "label", "strong"),
+                                             ("pool", "pool_id", "grok-weekly-shared")])
+def test_an_interval_on_a_categorical_kind_is_refused(kind, unit, value):
+    subject = {"provider": "grok", "model": "grok-4.7", "effort": None, "pool": None}
+    bad = observation(id="categorical", kind=kind, unit=unit, value=value, status="unverified", subject=subject,
+                      provenance={"kind": "plan_transcription", "reference": "plan", "observer": None},
+                      ttl_seconds=None, uncertainty={"kind": "interval", "low": 0, "high": 1, "note": None})
+    with pytest.raises(RegistryError, match="only for numeric kinds"):
+        validate_registry(with_v2(lambda r: r["observations"].append(bad)))
+
+
+def _two(first: dict, second: dict) -> dict:
+    return validate_registry(with_v2(lambda r: r["observations"].extend([first, second])))
+
+
+def _context_cell(registry, when=T0) -> dict:
+    return next(r for r in model_table(registry, when)["rows"]
+                if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))["context_tokens"]
+
+
+def test_equal_state_disagreement_at_the_same_time_is_a_conflict_not_a_first_win():
+    cell = _context_cell(_two(observation(id="a"), observation(id="b", value=200000)))
+    assert cell["state"] == "conflict" and cell["value"] is None
+
+
+def test_the_latest_equal_state_value_wins_explicitly_and_counts_the_superseded():
+    older = observation(id="a", value=200000, measured_at="2026-10-01T10:30:00Z")
+    cell = _context_cell(_two(older, observation(id="b")))
+    assert cell["value"] == 400000 and cell["superseded"] == 1 and cell["state"] == "fresh"
+    same = _context_cell(_two(observation(id="a"), observation(id="b")))
+    assert same["value"] == 400000 and "superseded" not in same
+
+
+def test_an_unrepresentable_now_makes_freshness_unknown_not_an_error():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    extreme = datetime.max.replace(tzinfo=timezone(-timedelta(hours=23)))
+    table = model_table(registry, extreme)
+    assert table["generated_for_utc"] is None
+    row = next(r for r in table["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "unknown" and row["context_tokens"]["value"] is None
+    assert row["quality_general"]["state"] == "historical"                        # time-independent evidence stays
+
+
+def test_a_directory_or_fifo_registry_is_refused_without_blocking(tmp_path):
+    import os
+    with pytest.raises(RegistryError):
+        load_registry(tmp_path)
+    if not hasattr(os, "mkfifo"):
+        return
+    fifo = tmp_path / "registry.fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(RegistryError, match="not a regular file"):
+        load_registry(fifo)
+
+
+def test_input_keys_in_error_messages_are_bounded():
+    key = "codex/" + "x" * 500
+    with pytest.raises(RegistryError) as caught:
+        validate_registry(with_v2(lambda r: r["models"].update({key: {"provider": "codex"}})))
+    assert "x" * 100 not in str(caught.value)

@@ -888,6 +888,105 @@ def test_done_checkpoint_ignores_control_tokens():
     assert evaluate(snap(checkpoint=c), NOW)["verdict"] == "idle_ok"
 
 
+# --- F3: a fresh checkpoint defers alert gates (the lane is demonstrably alive) -------------
+# NOW = 2026-09-29T00:00:00Z. Stale = 1800 s, unbounded = 7200 s, clock skew = 60 s.
+
+def token_cp(**kw):
+    return dict(cp(**kw), blockers=["HOLD 1549 preserved"])
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated", ["2026-09-28T23:55:00Z", "2026-09-28T23:30:01Z",
+                                     "2026-09-29T00:00:59Z"])  # last one: within clock skew
+def test_fresh_checkpoint_with_control_token_waits_not_alerts(scope_snap, updated):
+    d = evaluate(scope_snap(checkpoint=token_cp(updated=updated)), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_fresh", "deferred:hold_possible_control_token"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated,wakeup", [
+    ("2026-09-28T23:30:00Z", None),                    # exactly stale: no longer fresh
+    ("2026-09-28T21:59:06Z", None),                    # the incident's 2 h old checkpoint
+    ("2026-09-29T00:01:01Z", None),                    # future-dated beyond skew: never fresh
+    ("2026-09-28T23:55:00Z", "2026-09-29T00:00:00Z"),  # declared wake is due
+    ("2026-09-28T23:55:00Z", "2026-09-29T02:00:00Z"),  # wake 2 h 5 min after update: unbounded
+])
+def test_stale_overdue_or_future_checkpoint_keeps_the_control_alert(scope_snap, updated, wakeup):
+    d = evaluate(scope_snap(checkpoint=token_cp(updated=updated, next_wakeup=wakeup)), NOW)
+    assert d["verdict"] == "unknown"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_fresh_bounded_future_wakeup_defers_even_when_older_than_stale(scope_snap):
+    c = token_cp(updated="2026-09-28T22:30:00Z", next_wakeup="2026-09-29T00:30:00Z")  # 2 h exactly
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"][0] == "checkpoint_fresh"
+
+
+@pytest.mark.parametrize("status,deferred", [
+    ("parked", "deferred:checkpoint_status_no_wake"),
+    ("weird", "deferred:checkpoint_status_unrecognized"),
+])
+def test_fresh_checkpoint_only_status_gates_defer(status, deferred):
+    d = evaluate(cponly(checkpoint=cp(status=status, updated="2026-09-28T23:50:00Z")), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_fresh", deferred]
+
+
+@pytest.mark.parametrize("with_token", [False, True])
+def test_fresh_never_defers_rco2_fm3_waiting_without_structured_predicate(with_token):
+    c = cp(status="waiting_on_rco", updated="2026-09-28T23:50:00Z")
+    if with_token:  # the token gate must not become a back door around FM3
+        c["blockers"] = ["HOLD 1549 preserved"]
+    d = evaluate(snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown"
+    assert {"waiting_without_structured_predicate", "hold_possible_control_token"} & \
+        set(only(d, "checkpoint")["reasons"])
+
+
+def test_fresh_covered_canonical_waiting_with_token_defers():
+    c = dict(cp(status="waiting_on_rco", updated="2026-09-28T23:50:00Z"), blockers=["HOLD 1549 preserved"])
+    d = evaluate(snap(checkpoint=c, waits=[wait(deadline="2026-09-29T01:00:00Z")]), NOW)
+    assert only(d, "checkpoint")["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_fresh", "deferred:hold_possible_control_token"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_explicit_holds_are_never_deferred_by_freshness(scope_snap):
+    fresh = "2026-09-28T23:55:00Z"
+    paused = evaluate(scope_snap(checkpoint=cp(status="on_hold", updated=fresh)), NOW)
+    assert paused["verdict"] == "hold"
+    if scope_snap is snap:  # checkpoint_only scope requires an empty holds list
+        held = evaluate(snap(checkpoint=token_cp(updated=fresh), holds=[hold([PKG_TASK])]), NOW)
+        assert held["verdict"] == "hold"
+        assert only(held, "checkpoint")["reasons"] == ["held"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_freshness_never_changes_clean_checkpoint_outcomes(scope_snap):
+    recent = evaluate(scope_snap(checkpoint=cp(updated="2026-09-28T23:55:00Z")), NOW)
+    assert only(recent, "checkpoint")["reasons"] == ["checkpoint_recent"]
+    due = evaluate(scope_snap(checkpoint=cp(updated="2026-09-28T23:55:00Z",
+                                            next_wakeup="2026-09-28T23:59:00Z")), NOW)
+    assert due["verdict"] == "dispatch"
+
+
+def test_done_and_cancelled_precede_freshness():
+    fresh = "2026-09-28T23:55:00Z"
+    assert evaluate(snap(checkpoint=dict(token_cp(status="done", updated=fresh))), NOW)["verdict"] == "idle_ok"
+    assert evaluate(snap(checkpoint=dict(token_cp(status="cancelled", updated=fresh))), NOW)["verdict"] == "idle_ok"
+
+
+@pytest.mark.parametrize("updated", ["2026-09-28 23:55:00", "not-a-time", "2026-09-28T23:55:00"])
+def test_malformed_checkpoint_timestamp_still_fails_closed(updated):
+    d = evaluate(snap(checkpoint=token_cp(updated=updated)), NOW)
+    assert d["verdict"] == "unknown"
+    assert d["reasons"] != ["checkpoint_fresh"]
+
+
 @pytest.mark.parametrize("blockers", ["HOLD", [1], None, {"a": 1}])
 def test_malformed_blockers_are_unknown(blockers):
     c = dict(cp(), blockers=blockers)

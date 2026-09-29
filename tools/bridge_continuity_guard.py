@@ -425,6 +425,29 @@ def _control_token(cp: dict) -> bool:
     return any(token in text.lower() for text in texts for token in CONTROL_TOKENS)
 
 
+def _alert_gate(snap: dict, cp: dict) -> str | None:
+    """The alert-raising checkpoint gate that would fire, in evaluation order, if any."""
+    scope = snap["evidence"]["scope"]
+    if _control_token(cp):
+        return "hold_possible_control_token"
+    if scope == "checkpoint_only" and any(t in cp["status"].lower() for t in NO_WAKE_STATUS_SUBSTRINGS):
+        return "checkpoint_status_no_wake"
+    if scope == "checkpoint_only" and cp["status"] not in RECOVERABLE_STATUSES and \
+            not _RECOVERABLE_STATUS_RE.match(cp["status"]):
+        return "checkpoint_status_unrecognized"
+    return None
+
+
+def _checkpoint_fresh(cp: dict, now: datetime, stale: timedelta, unbounded: timedelta) -> bool:
+    """Recently written, or a bounded scheduled wake not yet due. Never future-dated."""
+    age = now - cp["updated_at"]
+    if age < -CLOCK_SKEW:
+        return False
+    if cp["next_wakeup"] is None:
+        return age < stale
+    return now < cp["next_wakeup"] and cp["next_wakeup"] - cp["updated_at"] <= unbounded
+
+
 def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
     agent, policy = snap["agent"], snap["policy"]
     grace = timedelta(seconds=policy["grace_seconds"])
@@ -585,6 +608,15 @@ def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
         refs += [_ref("hold", h, cp["task_id"]) for h in hold_ids]
     elif cp["status"] in PAUSED_STATUSES:
         verdict, reasons = "hold", ["checkpoint_paused"]
+    elif _alert_gate(snap, cp) and _checkpoint_fresh(cp, now, stale, unbounded) and \
+            not (snap["evidence"]["scope"] == "canonical" and not covering and
+                 cp["status"].startswith(WAITING_STATUS_PREFIXES)):
+        # The lane wrote this checkpoint recently or scheduled a bounded wake that is not
+        # yet due: it is alive, so an alert gate would only page the operator about healthy
+        # work. Wait never dispatches; once the checkpoint goes stale the gate applies.
+        # RCO2 FM3 (an uncovered canonical "waiting" checkpoint) is structural, not a
+        # staleness signal: it escalates even when fresh and is never deferred.
+        verdict, reasons = "wait", ["checkpoint_fresh", "deferred:" + _alert_gate(snap, cp)]
     elif _control_token(cp):
         verdict, reasons = "unknown", ["hold_possible_control_token"]
     elif snap["evidence"]["scope"] == "checkpoint_only" and \

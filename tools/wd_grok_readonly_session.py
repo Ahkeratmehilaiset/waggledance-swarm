@@ -70,6 +70,8 @@ WALK_ENTRY_LIMIT = 50000
 WALK_DEPTH_LIMIT = 6
 TREE_FILE_LIMIT = 2000
 TREE_BYTE_LIMIT = 32 * 1024 * 1024
+# Every malformed or unreadable inventory source becomes a problem (refusal), never a crash.
+INVENTORY_ERRORS = (ValueError, AttributeError, TypeError, OSError, RecursionError)
 
 
 class BusyClock:
@@ -140,12 +142,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_json(path: Path):
+def _unique_object(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate JSON object key")
+    return dict(pairs)
+
+
+def _load_json(path: Path, *, strict: bool = False):
     # Deep nesting raises RecursionError, which no caller catches; report it as malformed.
+    # strict refuses duplicate keys, so Python and Grok cannot read different values.
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        return json.loads(path.read_text(encoding="utf-8-sig"),
+                          object_pairs_hook=_unique_object if strict else None)
     except RecursionError as exc:
         raise ValueError("JSON nesting too deep: " + str(path)) from exc
+
+
+def _walk_error(exc: OSError):
+    # os.walk skips unreadable directories silently unless onerror raises.
+    raise exc
 
 
 def _names(value) -> list[str]:
@@ -155,7 +171,7 @@ def _names(value) -> list[str]:
 def _tree_sha256(root: Path) -> str:
     digest = hashlib.sha256()
     count = size = 0
-    for current, dirs, files in os.walk(root):
+    for current, dirs, files in os.walk(root, onerror=_walk_error):
         dirs[:] = sorted(d for d in dirs if d != ".git")
         for name in sorted(files):
             path = Path(current) / name
@@ -183,7 +199,7 @@ class _Inventory:
             return
         try:
             hooks = _load_json(path).get("hooks")
-        except (ValueError, AttributeError, OSError) as exc:
+        except INVENTORY_ERRORS as exc:
             self.problems.append({"path": os.path.normcase(str(path)), "error": type(exc).__name__})
             return
         if hooks:
@@ -194,7 +210,7 @@ class _Inventory:
             for path in sorted(directory.glob("*.json")):
                 try:
                     events = _names(_load_json(path).get("hooks"))
-                except (ValueError, AttributeError, OSError) as exc:
+                except INVENTORY_ERRORS as exc:
                     self.problems.append({"path": os.path.normcase(str(path)), "error": type(exc).__name__})
                     continue
                 self.add("grok_hooks", path, events)
@@ -204,7 +220,7 @@ class _Inventory:
             return
         try:
             data = _load_json(path)
-        except (ValueError, OSError) as exc:
+        except INVENTORY_ERRORS as exc:
             self.problems.append({"path": os.path.normcase(str(path)), "error": type(exc).__name__})
             return
         servers = data.get("mcpServers", data) if isinstance(data, dict) else None
@@ -222,21 +238,22 @@ class _Inventory:
             return
         key = os.path.normcase(str(path))
         try:
-            data = _load_json(path)
+            data = _load_json(path, strict=True)
             if not isinstance(data, dict):
                 raise ValueError("not a JSON object")
+            # Membership, not truthiness: an explicit null or other non-object is malformed
+            # executable configuration and must refuse; only a missing key is absent.
             scopes = {}
-            top = data.get("mcpServers")
-            if top is not None:
-                scopes["user"] = top
-            projects = data.get("projects")
-            if projects is not None:
+            if "mcpServers" in data:
+                scopes["user"] = data["mcpServers"]
+            if "projects" in data:
+                projects = data["projects"]
                 if not isinstance(projects, dict):
                     raise ValueError("projects is not an object")
                 for project, entry in projects.items():
                     if not isinstance(entry, dict):
                         raise ValueError("project entry is not an object")
-                    if entry.get("mcpServers") is not None:
+                    if "mcpServers" in entry:
                         scopes["project:" + project] = entry["mcpServers"]
             names = []
             for scope, servers in scopes.items():
@@ -245,7 +262,7 @@ class _Inventory:
                 names.extend(scope + ":" + name for name in servers)
             canonical = json.dumps({s: v for s, v in scopes.items() if v}, sort_keys=True,
                                    separators=(",", ":"), ensure_ascii=True)
-        except (ValueError, OSError, AttributeError, TypeError, RecursionError) as exc:
+        except INVENTORY_ERRORS as exc:
             self.problems.append({"path": key, "error": type(exc).__name__})
             return
         if names:
@@ -260,10 +277,17 @@ class _Inventory:
             return
         base_depth = len(root.parts)
         plugins = {}
-        for current, dirs, files in os.walk(root):
+
+        def unreadable(exc: OSError):
+            self.problems.append({"path": os.path.normcase(str(exc.filename or root)), "error": type(exc).__name__})
+
+        for current, dirs, files in os.walk(root, onerror=unreadable):
             dirs[:] = sorted(d for d in dirs if d != ".git")
             here = Path(current)
             if len(here.parts) - base_depth >= WALK_DEPTH_LIMIT:
+                if dirs:
+                    # Pruning would hide deeper plugin files; refuse instead of skipping.
+                    self.problems.append({"path": os.path.normcase(str(here)), "error": "DepthLimitExceeded"})
                 dirs[:] = []
             self.walked += len(files) + len(dirs)
             if self.walked > WALK_ENTRY_LIMIT:
@@ -285,15 +309,20 @@ class _Inventory:
                         declared = sorted(k for k in ("hooks", "mcpServers", "lspServers") if data.get(k))
                         if declared:
                             owner, kind, names = here.parent, "plugin_manifest", declared
-                except (ValueError, AttributeError, OSError) as exc:
+                except INVENTORY_ERRORS as exc:
                     self.problems.append({"path": os.path.normcase(str(path)), "error": type(exc).__name__})
                     continue
                 if owner is not None:
                     self.add(kind, path, names, plugin=os.path.normcase(str(owner)))
                     plugins[os.path.normcase(str(owner))] = owner
         for key, owner in plugins.items():
+            try:
+                tree = _tree_sha256(owner)
+            except (OSError, RecursionError) as exc:
+                self.problems.append({"path": key, "error": type(exc).__name__})
+                continue
             self.entries[("plugin_tree", key)] = {"kind": "plugin_tree", "path": key,
-                                                  "sha256": _tree_sha256(owner), "names": []}
+                                                  "sha256": tree, "names": []}
 
 
 def inherited_surface(cwd: Path) -> dict:
@@ -312,14 +341,20 @@ def inherited_surface(cwd: Path) -> dict:
         if config.is_file():
             try:
                 data = tomllib.loads(config.read_text(encoding="utf-8-sig"))
-            except (tomllib.TOMLDecodeError, OSError, RecursionError) as exc:
+                # A present mcp_servers/plugins/paths of the wrong type is malformed, not absent.
+                table = data.get("mcp_servers", {})
+                plugins = data.get("plugins", {})
+                paths = plugins.get("paths", []) if isinstance(plugins, dict) else None
+                if not isinstance(table, dict) or not isinstance(paths, list):
+                    raise ValueError("mcp_servers/plugins.paths has the wrong type")
+                servers = {name: spec for name, spec in table.items()
+                           if not (isinstance(spec, dict) and spec.get("enabled") is False)}
+            except (tomllib.TOMLDecodeError, *INVENTORY_ERRORS) as exc:
                 inventory.problems.append({"path": os.path.normcase(str(config)), "error": type(exc).__name__})
             else:
-                servers = {name: spec for name, spec in (data.get("mcp_servers") or {}).items()
-                           if not (isinstance(spec, dict) and spec.get("enabled") is False)}
                 if servers:
                     inventory.add("config_mcp", config, _names(servers))
-                for extra in (data.get("plugins") or {}).get("paths") or []:
+                for extra in paths:
                     plugin_roots.append(Path(os.path.expanduser(str(extra))))
     for home in homes:
         claude = home / ".claude"
@@ -339,7 +374,7 @@ def inherited_surface(cwd: Path) -> dict:
                     for item in record if isinstance(record, list) else [record]:
                         if isinstance(item, dict) and item.get(field):
                             plugin_roots.append(Path(str(item[field])))
-            except (ValueError, AttributeError, OSError) as exc:
+            except INVENTORY_ERRORS as exc:
                 inventory.problems.append({"path": os.path.normcase(str(path)), "error": type(exc).__name__})
     inventory.hook_files(cwd / ".grok" / "hooks")
     inventory.settings_hooks(cwd / ".claude" / "settings.json")

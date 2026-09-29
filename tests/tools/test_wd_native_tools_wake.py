@@ -11,6 +11,7 @@ import pytest
 
 from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
+from test_wd_bridge_code_context import HAS_BRIDGE_PYTHON
 
 TOOLS = REBOOT / 'start-wd-tools-consumer.ps1'
 THREAD = '01a0a07b-ca98-71e1-90cb-d588435a2d8d'
@@ -24,17 +25,16 @@ def notice_registry(bundle):
     return {path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest().upper()}
 
 
+# Same guard as the _stage_fake_bundle tests in test_wd_bridge_code_context:
+# Install-WdBridgePythonSite is Windows-shaped (backslash site prefix) and
+# needs the pinned fleet interpreter, so the staged bundle cannot be built on
+# Linux with any interpreter (CI 36542115843 at d25ce2ae).
+@pytest.mark.skipif(not HAS_BRIDGE_PYTHON,
+                    reason='bundle staging is Windows-only and needs the pinned bridge interpreter')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps, monkeypatch):
-    import test_wd_bridge_code_context as code_context
+def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps):
+    from test_wd_bridge_code_context import _stage_fake_bundle
 
-    # The fleet pin is a Windows interpreter path. Where it is absent (Linux
-    # CI), stage and pin the bundle to this host's interpreter so the real
-    # wrapper and guard still run. The wrapper refuses Windows app-alias
-    # interpreters, so the pin is kept where it exists.
-    if not Path(code_context.BRIDGE_PYTHON).is_file():
-        monkeypatch.setattr(code_context, 'BRIDGE_PYTHON', sys.executable)
-    _stage_fake_bundle = code_context._stage_fake_bundle
     # Real deployment-shaped wrapper/context; unrelated dependency wheel is a
     # fixture. The continuity implementation itself is the real packaged code.
     bundle = _stage_fake_bundle(tmp_path)

@@ -91,6 +91,26 @@ def utc_stamp(moment: Any) -> str | None:
     return None if aware is None else _stamp(aware)
 
 
+def aware_utc(moment: Any) -> datetime | None:
+    """An aware datetime in UTC at full precision; None when it is naive, out of range or not a datetime."""
+    return _aware(moment)
+
+
+def parse_utc(value: Any) -> datetime | None:
+    """A port-supplied fact time (ISO 8601 with an offset or Z) in UTC; None when it is unknown."""
+    return _utc(value)
+
+
+def _utf8(text: Any) -> bytes | None:
+    """The UTF-8 bytes of exactly a str; None for a lone surrogate or a non-str (never raises)."""
+    if type(text) is not str:
+        return None
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
 def prompt_sha256(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
@@ -106,6 +126,7 @@ def prepare_grok_consult(*, task_id: Any, request_id: Any, request_revision: Any
         (_hex(request_id, HEX32), "request_id_invalid"),
         (type(request_revision) is int and request_revision >= 1, "request_revision_invalid"),
         (_text(prompt), "prompt_empty"),
+        (_utf8(prompt) is not None, "prompt_malformed"),  # a lone surrogate refuses, never raises
         (isinstance(snapshot, dict) and set(snapshot) == {"head", "tree"} and _hex(snapshot.get("head"), HEX40)
          and _hex(snapshot.get("tree"), HEX40), "snapshot_invalid"),
         (_text(model) and _text(effort), "model_effort_invalid"),
@@ -240,7 +261,7 @@ def bind_answer(intent: dict, admission: dict, report: Any, answer: Any) -> dict
     if not _hex(report.get("request_id"), HEX32) or attempted is None or admitted is None or expires is None \
             or not admitted <= attempted <= expires:
         return refuse("attempt_unbound")  # only an attempt inside [admission, intent expiry] answers this intent
-    if not isinstance(answer, dict) or not isinstance(answer.get("text"), str) \
+    if not isinstance(answer, dict) or _utf8(answer.get("text")) is None \
             or not isinstance(answer.get("tool_calls"), list):
         return refuse("answer_unknown")
     if not _hex(report.get("report_sha256"), HEX64) or answer.get("report_sha256") != report["report_sha256"]:

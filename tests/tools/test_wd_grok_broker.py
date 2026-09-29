@@ -1,7 +1,9 @@
 """F20 dormant Grok broker through INJECTED fake ports (AUTHORED, NOT RUN).
 
 The fakes stand in for the injected clock, the read-only snapshot, F0 activation, the
-unchanged helper (7da35242) and the durable admission ledger (not built). Nothing here
+unchanged helper (7da35242) and the durable admission ledger. Each fake port supplies its
+own fact time. The ledger fakes return MOCKED arbitration outcomes in one process; they
+prove the broker's handling of each outcome, not any real concurrency. Nothing here
 calls Grok, the real helper, F0, a clock or the network.
 """
 from __future__ import annotations
@@ -36,10 +38,15 @@ def intent(prompt=PROMPT):
                                 nonce="2" * 32, ttl_seconds=600, now=NOW - timedelta(seconds=30))
 
 
+def stamp(moment):
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def budget_state(**over):
-    # The helper's own status shape; the broker stamps observed_utc itself.
+    # The helper's own status shape plus the port's observed_utc (the now it passed to status).
     state = {"schema": "wd.grok-hourly.v1", "status": "answered",
-             "last_attempt_utc": (NOW - timedelta(hours=2)).isoformat(), "eligible": True}
+             "last_attempt_utc": (NOW - timedelta(hours=2)).isoformat(), "eligible": True,
+             "observed_utc": stamp(NOW)}
     state.update(over)
     return state
 
@@ -78,32 +85,38 @@ class BrokenClock(Clock):
 
 
 class Snapshot:
-    def __init__(self, value=None):
-        self.value = {"readonly": True, "head": HEAD, "tree": TREE} if value is None else value
+    def __init__(self, value=None, observed=NOW):
+        self.value = {"readonly": True, "head": HEAD, "tree": TREE, "observed_utc": stamp(observed)} \
+            if value is None else value
 
     def observe(self):
         return dict(self.value) if isinstance(self.value, dict) else self.value
 
 
 class Activation:
-    def __init__(self, decision=None, policy=None, raises=None):
+    """evaluated_utc is the port's own evaluation time: fixed, or live from a clock (an uncached port)."""
+
+    def __init__(self, decision=None, policy=None, raises=None, evaluated=NOW, live=None, then=None):
         self.decision = Decision("F20", True, "enabled", canonical_sha256(POLICY), 3) if decision is None else decision
         self.policy = POLICY if policy is None else policy
         self.raises, self.calls = raises, []
+        self.evaluated, self.live, self.then = evaluated, live, then
 
     def evaluate(self, feature, *, expected_head, expected_tree):
         self.calls.append((feature, expected_head, expected_tree))
         if self.raises is not None:
             raise self.raises
-        return self.decision, self.policy
+        decision = self.then if self.then is not None and len(self.calls) > 1 else self.decision
+        moment = self.live.moment if self.live is not None else self.evaluated
+        return decision, self.policy, stamp(moment) if isinstance(moment, datetime) else moment
 
 
 class Helper:
-    def __init__(self, state=None, report=None, reply=None, raises=None, status_raises=None):
+    def __init__(self, state=None, report=None, reply=None, raises=None, status_raises=None, read_raises=None):
         self.state = budget_state() if state is None else state
         self.report = answered_report() if report is None else report
         self.reply = {"text": "No blocker.", "tool_calls": [], "report_sha256": "5" * 64} if reply is None else reply
-        self.raises, self.status_raises = raises, status_raises
+        self.raises, self.status_raises, self.read_raises = raises, status_raises, read_raises
         self.calls, self.reads = [], []
 
     def status(self):
@@ -119,12 +132,22 @@ class Helper:
 
     def read_answer(self, report):
         self.reads.append(report)
+        if self.read_raises is not None:
+            raise self.read_raises
         return dict(self.reply)
 
 
+def ledger_state(**over):
+    state = {"open": [], "last_admitted_utc": None, "observed_utc": stamp(NOW)}
+    state.update(over)
+    return state
+
+
 class Ledger:
+    """A MOCKED ledger: it returns the arbitration outcome it is given, in one process."""
+
     def __init__(self, observed=None, win=True, finish_raises=None):
-        self.observed = {"open": [], "last_admitted_utc": None} if observed is None else observed
+        self.observed = ledger_state() if observed is None else observed
         self.win, self.finish_raises = win, finish_raises
         self.reserved, self.finished = [], []
 
@@ -144,6 +167,30 @@ class Ledger:
 class UnlockableLedger(Ledger):
     def reserve(self, admission):
         raise OSError("ledger lock unknown")
+
+
+class SlowLedger(Ledger):
+    """A reservation that takes ``by`` on the shared injected clock (no sleep)."""
+
+    def __init__(self, clock, by, **kwargs):
+        super().__init__(**kwargs)
+        self.clock, self.by = clock, by
+
+    def reserve(self, admission):
+        self.clock.moment = self.clock.moment + self.by
+        return super().reserve(admission)
+
+
+class AliasingLedger(Ledger):
+    """Mutates the caller's intent object while the reservation is in progress."""
+
+    def __init__(self, alias, **kwargs):
+        super().__init__(**kwargs)
+        self.alias = alias
+
+    def reserve(self, admission):
+        self.alias["task_id"] = "codex-lead-1/not-the-admitted-task"
+        return super().reserve(admission)
 
 
 def run(config=ON, prompt=PROMPT, it=None, **over):
@@ -192,7 +239,8 @@ def test_the_caller_supplies_only_the_intent_and_the_prompt():
 def test_valid_bounded_success_twin_calls_the_helper_exactly_once():
     result, ports = run()
     assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
-    assert ports["activation"].calls == [("F20", HEAD, TREE)]  # F0 evaluated against the observed snapshot
+    # F0 evaluated against the observed snapshot at admission, and again right before the one call
+    assert ports["activation"].calls == [("F20", HEAD, TREE)] * 2
     assert ports["helper"].calls == [(TASK, PROMPT)] and len(ports["helper"].reads) == 1
     assert len(ports["ledger"].reserved) == 1 and len(ports["ledger"].finished) == 1
     assert result["admission"]["verdict"] == "admit" and result["admission"]["admitted_utc"] == "2026-09-30T12:00:00Z"
@@ -220,7 +268,8 @@ def test_f0_never_runs_without_an_exact_read_only_snapshot(value):
 
 
 def test_a_snapshot_other_than_the_intents_refuses():
-    result, ports = run(snapshot=Snapshot({"readonly": True, "head": "c" * 40, "tree": TREE}))
+    result, ports = run(snapshot=Snapshot({"readonly": True, "head": "c" * 40, "tree": TREE,
+                                           "observed_utc": stamp(NOW)}))
     assert (result["verdict"], result["reasons"]) == ("refuse", ["snapshot_mismatch"])
     assert ports["activation"].calls == [("F20", "c" * 40, TREE)] and ports["helper"].calls == []
 
@@ -242,11 +291,8 @@ def test_f0_and_policy_come_from_the_activation_port(activation, verdict, reason
 @pytest.mark.parametrize("clock, verdict, reason", [
     (Clock(datetime(2026, 9, 30, 12, 0)), "blocked_unknown", "time_unknown"),  # naive
     (BrokenClock(), "blocked_unknown", "port_observation_unknown"),
-    # F0 evaluated at NOW, admission judged at NOW + 61 s: the F0 decision is stale
+    # F0 evaluated (by the port) at NOW, admission judged at NOW + 61 s: the F0 decision is stale
     (SequenceClock(NOW, NOW, NOW, NOW + timedelta(seconds=61)), "refuse", "f0_stale"),
-    # the snapshot read at NOW is 121 s old when admission is judged
-    (SequenceClock(NOW, NOW, NOW + timedelta(seconds=100), NOW + timedelta(seconds=121)), "blocked_unknown",
-     "snapshot_unknown"),
 ])
 def test_the_injected_clock_bounds_every_observation(clock, verdict, reason):
     result, ports = run(clock=clock)
@@ -278,11 +324,12 @@ def test_unknown_budget_or_unreadable_helper_blocks():
     assert ports["helper"].calls == []
 
 
-def test_concurrent_admission_is_serialized_by_the_ledger():
-    result, ports = run(ledger=Ledger(observed={"open": [{"intent_sha256": "9" * 64}]}))
+def test_mocked_ledger_arbitration_outcomes_never_reach_the_helper():
+    """MOCKED outcomes from a fake ledger; this is not a concurrency proof (the real CAS is the ledger's)."""
+    result, ports = run(ledger=Ledger(observed=ledger_state(open=[{"intent_sha256": "9" * 64}])))
     assert result["reasons"] == ["admission_in_flight"]
     assert ports["helper"].calls == [] and ports["ledger"].reserved == []
-    result, ports = run(ledger=Ledger(observed={"open": [], "last_admitted_utc": "2026-09-30T11:40:00Z"}))
+    result, ports = run(ledger=Ledger(observed=ledger_state(last_admitted_utc="2026-09-30T11:40:00Z")))
     assert result["reasons"] == ["hourly_budget_used"] and ports["helper"].calls == []
     result, ports = run(ledger=Ledger(win=False))
     assert (result["verdict"], result["reasons"]) == ("refuse", ["admission_lost_race"])
@@ -336,5 +383,139 @@ def test_broker_has_no_retry_exemption_or_side_channel():
             imported |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module)
-    assert imported == {"__future__", "typing", "tools.bridge_v2_grok_route"}
+    assert imported == {"__future__", "json", "typing", "tools.bridge_v2_grok_route"}
     assert "exception_path" not in source and "exception_sha256" not in source
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not names & {"getattr", "setattr", "hasattr", "exec", "eval", "compile", "globals", "vars", "__import__"}
+
+
+# --- fact freshness: the port's own fact time is kept, never restamped (Tools f907 #1) -----------
+
+OLD, FUTURE = NOW - timedelta(seconds=121), NOW + timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("over, verdict, reason", [
+    ({"snapshot": Snapshot(observed=OLD)}, "blocked_unknown", "snapshot_unknown"),  # a cached, stale fact
+    ({"snapshot": Snapshot(observed=FUTURE)}, "blocked_unknown", "snapshot_unknown"),  # later than the read
+    ({"snapshot": Snapshot({"readonly": True, "head": HEAD, "tree": TREE})}, "blocked_unknown", "snapshot_unknown"),
+    ({"helper": Helper(state=budget_state(observed_utc=stamp(OLD)))}, "blocked_unknown", "budget_unknown"),
+    ({"helper": Helper(state=budget_state(observed_utc=stamp(FUTURE)))}, "blocked_unknown", "budget_unknown"),
+    ({"helper": Helper(state=budget_state(observed_utc=None))}, "blocked_unknown", "budget_unknown"),
+    ({"ledger": Ledger(observed=ledger_state(observed_utc=stamp(OLD)))}, "blocked_unknown",
+     "admission_ledger_unknown"),
+    ({"ledger": Ledger(observed={"open": [], "last_admitted_utc": None})}, "blocked_unknown",
+     "admission_ledger_unknown"),
+    ({"activation": Activation(evaluated=NOW - timedelta(seconds=61))}, "refuse", "f0_stale"),  # a cached F0
+    ({"activation": Activation(evaluated=FUTURE)}, "blocked_unknown", "f0_unknown"),
+    ({"activation": Activation(evaluated=None)}, "blocked_unknown", "f0_unknown"),
+])
+def test_a_port_fact_time_is_kept_and_stale_future_or_missing_refuses(over, verdict, reason):
+    result, ports = run(**over)
+    assert (result["verdict"], result["reasons"]) == (verdict, [reason])
+    assert ports["helper"].calls == [] and ports["ledger"].reserved == []
+
+
+def test_facts_just_inside_their_bounds_are_the_success_twin():
+    edge = NOW - timedelta(seconds=120)
+    result, ports = run(snapshot=Snapshot(observed=edge), helper=Helper(state=budget_state(observed_utc=stamp(edge))),
+                        ledger=Ledger(observed=ledger_state(observed_utc=stamp(edge))),
+                        activation=Activation(evaluated=NOW - timedelta(seconds=60)))
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert len(ports["helper"].calls) == 1
+
+
+# --- a slow reservation is rechecked immediately before the one call (Tools f907 #2) ------------
+
+def test_a_slow_reservation_past_the_f0_bound_stops_before_the_call_and_finishes_the_entry():
+    clock = Clock()
+    result, ports = run(clock=clock, ledger=SlowLedger(clock, timedelta(seconds=61)))  # F0 fixed at NOW
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "f0_stale"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].reserved) == 1
+    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", "f0_stale"]]
+
+
+def test_an_intent_expiring_during_the_reservation_is_never_paid_for():
+    clock = Clock()
+    live = Activation(live=clock)  # an uncached F0 port: fresh on every evaluation
+    result, ports = run(clock=clock, activation=live, ledger=SlowLedger(clock, timedelta(seconds=570)))
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "intent_expired_or_future"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+
+
+def test_an_f0_revoked_during_the_reservation_is_never_paid_for():
+    clock = Clock()
+    revoked = Activation(live=clock, then=Decision("F20", False, "revoked", canonical_sha256(POLICY), 4))
+    result, ports = run(clock=clock, activation=revoked, ledger=SlowLedger(clock, timedelta(seconds=5)))
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "f0_disabled"])
+    assert ports["helper"].calls == [] and len(revoked.calls) == 2 and len(ports["ledger"].finished) == 1
+
+
+def test_a_failing_recheck_port_is_unknown_and_never_paid_for():
+    class FlakyActivation(Activation):
+        def evaluate(self, feature, *, expected_head, expected_tree):
+            if self.calls:
+                raise OSError("F0 store unreadable")
+            return super().evaluate(feature, expected_head=expected_head, expected_tree=expected_tree)
+
+    result, ports = run(activation=FlakyActivation())
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "recheck_unknown:OSError"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+
+
+def test_a_slow_but_still_valid_reservation_is_the_success_twin():
+    clock = Clock()
+    live = Activation(live=clock)
+    result, ports = run(clock=clock, activation=live, ledger=SlowLedger(clock, timedelta(seconds=30)))
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert len(ports["helper"].calls) == 1 and len(live.calls) == 2
+
+
+# --- the intent and the prompt (RCO2 SF1/SF2/N1/N2; Tools f907 #3) -------------------------------
+
+def test_an_alias_mutated_after_admission_cannot_redirect_the_call():
+    it = intent()
+    result, ports = run(it=it, ledger=AliasingLedger(it))
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert ports["helper"].calls == [(TASK, PROMPT)]  # the admitted task, not the mutated alias
+
+
+def test_an_exception_while_binding_still_finishes_the_reservation():
+    result, ports = run(helper=Helper(read_raises=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad report")))
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["answer_binding_unknown:UnicodeDecodeError"])
+    assert len(ports["helper"].calls) == 1 and len(ports["ledger"].finished) == 1
+
+
+def test_a_lone_surrogate_answer_is_refused_not_raised():
+    result, ports = run(helper=Helper(reply={"text": "\ud800", "tool_calls": [], "report_sha256": "5" * 64}))
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["answer_unknown"])
+    assert len(ports["ledger"].finished) == 1
+
+
+class _Str(str):
+    pass
+
+
+@pytest.mark.parametrize("prompt", ["\ud800", _Str(PROMPT), PROMPT.encode("utf-8"), None,
+                                    "x" * (broker.MAX_PROMPT_BYTES + 1)])
+def test_malformed_or_oversized_prompts_refuse_before_any_port(prompt):
+    result, ports = run(prompt=prompt)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
+    assert untouched(ports) and ports["clock"].reads == 0
+
+
+@pytest.mark.parametrize("it", [None, [], dict(intent(), extra={1, 2}), dict(intent(), pad="x" * (16 * 1024))])
+def test_non_json_or_oversized_intents_refuse_before_any_port(it):
+    result, ports = run(it=it)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
+    assert untouched(ports) and ports["clock"].reads == 0
+
+
+def test_a_multibyte_prompt_is_counted_in_utf8_bytes():
+    text = "Katselmoi pääsyportti: äöå ✓ — COMPLETE, no tools."
+    assert len(text.encode("utf-8")) > len(text)
+    result, ports = run(it=intent(prompt=text), prompt=text)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert ports["helper"].calls == [(TASK, text)]
+    result, ports = run(it=dict(intent(prompt=text), prompt_bytes=len(text)), prompt=text)  # counted in chars
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
+    assert untouched(ports)

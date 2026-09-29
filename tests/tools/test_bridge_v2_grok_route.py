@@ -98,6 +98,7 @@ def test_intent_is_typed_advice_and_never_a_worker_wake():
     ({"request_revision": 0}, "request_revision_invalid"),
     ({"request_revision": True}, "request_revision_invalid"),
     ({"prompt": "   "}, "prompt_empty"),
+    ({"prompt": "Review \ud800 this."}, "prompt_malformed"),  # a lone surrogate refuses, never raises
     ({"snapshot": {"head": HEAD}}, "snapshot_invalid"),
     ({"snapshot": {"head": HEAD, "tree": TREE, "dirty": False}}, "snapshot_invalid"),
     ({"snapshot": {"head": HEAD.upper(), "tree": TREE}}, "snapshot_invalid"),
@@ -112,6 +113,22 @@ def test_intent_rejects_malformed_inputs(change, code):
     with pytest.raises(route.RouteError) as raised:
         intent(**change)
     assert raised.value.code == code
+
+
+def test_a_multibyte_prompt_is_counted_in_utf8_bytes():
+    text = "Katselmoi pääsyportti: äöå ✓ — COMPLETE, no tools."
+    made = intent(prompt=text)
+    assert made["prompt_bytes"] == len(text.encode("utf-8")) > len(text)
+    assert made["prompt_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_port_time_helpers_keep_precision_and_refuse_unknown_times():
+    fine = NOW + timedelta(microseconds=500000)
+    assert route.aware_utc(fine) == fine and route.aware_utc(datetime(2026, 9, 30, 12, 0)) is None
+    assert route.aware_utc("2026-09-30T12:00:00Z") is None
+    assert route.parse_utc("2026-09-30T12:00:00Z") == NOW
+    assert route.parse_utc(fine.isoformat()) == fine
+    assert route.parse_utc("2026-09-30T12:00:00") is None and route.parse_utc(None) is None
 
 
 def test_valid_bounded_success_twin_admits_without_authority():

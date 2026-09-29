@@ -763,6 +763,31 @@ function Invoke-WdContinuityOperatorNotice {
         [string]$identity.Value -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
         throw 'Continuity notice lane identity invalid'
     }
+    # Shell-independent progress JSON. ConvertTo-Json differs between Windows
+    # PowerShell 5.1 and 7 (escaping, empty arrays) and an if-expression
+    # unrolls arrays, so a relay restarted in the other shell would re-key the
+    # same progress. Checkpoint progress fields are strings or null; only
+    # blockers may be a list of them. JSON numbers, booleans and objects
+    # deserialize differently per shell, so they fail closed, never rounded.
+    # Nested so the verified import lists stay unchanged.
+    function ConvertTo-WdCanonicalJson([object] $Value, [bool] $AllowList) {
+        if ($null -eq $Value) { return 'null' }
+        if ($Value -is [string]) {
+            $text = New-Object Text.StringBuilder
+            [void]$text.Append('"')
+            foreach ($c in $Value.ToCharArray()) {
+                $n = [int]$c
+                if ($n -lt 32 -or $n -gt 126 -or $n -eq 34 -or $n -eq 92) { [void]$text.Append('\u').Append($n.ToString('x4')) }
+                else { [void]$text.Append($c) }
+            }
+            return $text.Append('"').ToString()
+        }
+        if ($AllowList -and $Value -is [Collections.IList]) {
+            $items = foreach ($item in $Value) { ConvertTo-WdCanonicalJson $item $false }
+            return '[' + (@($items) -join ',') + ']'
+        }
+        throw 'Continuity progress value type unsupported'
+    }
     $digest = '0' * 64
     $progressKey = '0' * 64
     $task = $Agent + '/continuity-recovery'
@@ -772,20 +797,24 @@ function Invoke-WdContinuityOperatorNotice {
         if ((Get-Item -LiteralPath $path).Length -gt 32768) { throw 'oversized checkpoint' }
         $jsonArgs = @{ErrorAction='Stop'}
         if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
-        $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json @jsonArgs
+        # Explicit UTF-8: Windows PowerShell reads a BOM-less file as ANSI.
+        $record = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json @jsonArgs
         if ($record.agent -cne $Agent -or $record.task_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$') {
             throw 'checkpoint identity invalid'
         }
         $digest = (& $hashFile $path).ToLowerInvariant()
-        $progress = [ordered]@{}
-        foreach ($field in @('task_id','status','next_action','next_wakeup_utc','blockers')) {
+        # A missing field stays distinct from null; values are passed as
+        # arguments (never through an if-expression) so arrays keep shape.
+        $members = foreach ($field in @('task_id','status','next_action','next_wakeup_utc','blockers')) {
             $property = $record.PSObject.Properties[$field]
-            $progress[$field] = if ($null -eq $property) { $null } else { $property.Value }
+            if ($null -ne $property) {
+                (ConvertTo-WdCanonicalJson $field $false) + ':' + (ConvertTo-WdCanonicalJson $property.Value ($field -ceq 'blockers'))
+            }
         }
         $sha = [Security.Cryptography.SHA256]::Create()
         try {
             $progressKey = [BitConverter]::ToString($sha.ComputeHash(
-                [Text.Encoding]::UTF8.GetBytes(($progress | ConvertTo-Json -Depth 16 -Compress)))).Replace('-', '').ToLowerInvariant()
+                [Text.Encoding]::UTF8.GetBytes('{' + (@($members) -join ',') + '}'))).Replace('-', '').ToLowerInvariant()
         } finally { $sha.Dispose() }
         $task = [string]$record.task_id
         $reason = switch -Regex ($ErrorText) {
@@ -891,11 +920,38 @@ function Invoke-WdNativeContinuityStep {
     }
     $ledgerPath = Assert-WdTurnPath (Join-Path $Worktree ('.codex-audit\wd-turn-loop\continuity-v1-' + $ThreadId + '.json'))
     # A formatting/heartbeat-only rewrite must not reset the recovery budget.
-    $progress = [ordered]@{task_id=$checkpoint.task_id;status=$checkpoint.status;
-        next_action=$checkpoint.next_action;next_wakeup_utc=$checkpoint.next_wakeup_utc}
+    # Shell-independent progress JSON. ConvertTo-Json differs between Windows
+    # PowerShell 5.1 and 7 (escaping, empty arrays) and an if-expression
+    # unrolls arrays, so a relay restarted in the other shell would re-key the
+    # same progress. Checkpoint progress fields are strings or null; only
+    # blockers may be a list of them. JSON numbers, booleans and objects
+    # deserialize differently per shell, so they fail closed, never rounded.
+    # Nested so the verified import lists stay unchanged.
+    function ConvertTo-WdCanonicalJson([object] $Value, [bool] $AllowList) {
+        if ($null -eq $Value) { return 'null' }
+        if ($Value -is [string]) {
+            $text = New-Object Text.StringBuilder
+            [void]$text.Append('"')
+            foreach ($c in $Value.ToCharArray()) {
+                $n = [int]$c
+                if ($n -lt 32 -or $n -gt 126 -or $n -eq 34 -or $n -eq 92) { [void]$text.Append('\u').Append($n.ToString('x4')) }
+                else { [void]$text.Append($c) }
+            }
+            return $text.Append('"').ToString()
+        }
+        if ($AllowList -and $Value -is [Collections.IList]) {
+            $items = foreach ($item in $Value) { ConvertTo-WdCanonicalJson $item $false }
+            return '[' + (@($items) -join ',') + ']'
+        }
+        throw 'Continuity progress value type unsupported'
+    }
+    $members = foreach ($field in @('task_id','status','next_action','next_wakeup_utc')) {
+        $property = $checkpoint.PSObject.Properties[$field]
+        if ($null -ne $property) { (ConvertTo-WdCanonicalJson $field $false) + ':' + (ConvertTo-WdCanonicalJson $property.Value $false) }
+    }
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $progressHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(
-        ($progress | ConvertTo-Json -Compress)))).Replace('-','').ToLowerInvariant() }
+        '{' + (@($members) -join ',') + '}'))).Replace('-','').ToLowerInvariant() }
     finally { $sha.Dispose() }
     $key = $Agent + ':' + $decision.action_key + ':' + $progressHash
     $ledger = @{schema='wd.native-continuity.v1';thread_id=$ThreadId;agent=$Agent;entries=@()}

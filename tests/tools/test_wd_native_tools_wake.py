@@ -207,6 +207,43 @@ try {{Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_notice_real_writer_reaches_only_explicit_runtime(tmp_path, ps):
+    bundle = tmp_path / 'bundle'
+    bin_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
+    bin_dir.mkdir(parents=True)
+    for helper in (REBOOT.parents[2] / '.agent-bridge/bin').glob('*.ps1'):
+        shutil.copyfile(helper, bin_dir / helper.name)
+    registry = notice_registry(bundle)
+    publisher = bundle / 'Send-WdContinuityAlert.ps1'
+    shutil.copyfile(REBOOT / publisher.name, publisher)
+    files = {path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest().upper()
+             for path in [publisher, *bin_dir.glob('*.ps1')]}
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': {**files, **registry}}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    runtime = tmp_path / 'explicit-runtime'
+    runtime.mkdir()
+    script = "$ErrorActionPreference='Stop'\n"
+    script += "Get-ChildItem Env: | Where-Object Name -Match '^(AGENT_BRIDGE_|WD_|CLAUDE_CODE_|GIT_)' | ForEach-Object { Remove-Item -LiteralPath ('Env:'+$_.Name) }\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId tools-fixture -ErrorText 'checkpoint missing' | ConvertTo-Json -Depth 8 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['status'] == 'published', report
+    events = [json.loads(line) for line in (runtime / 'shared/events.jsonl').read_text(encoding='utf-8-sig').splitlines()]
+    assert len(events) == 1
+    assert events[0]['agent'] == 'codex-tools-1'
+    assert events[0]['agent_uuid'] == '7a8af68d-20bc-4598-9953-23c5dd98b102'
+    assert events[0]['session_id'] == 'tools-fixture'
+    assert events[0]['to'] == 'operator'
+    assert not (bundle / 'tools-bootstrap/.agent-bridge/shared/events.jsonl').exists()
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'foreign_broadcast', 'operator_retracted', 'camel_control', 'rewrite_prefix', 'corrupt_log', 'tampered_helper'])
 def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'

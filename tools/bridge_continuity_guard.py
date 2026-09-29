@@ -38,6 +38,8 @@ waited on another lane for hours. The guard therefore fails closed:
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -673,15 +675,48 @@ def _reject_constant(name: str) -> Any:
     raise ValueError("non-strict JSON constant " + name)
 
 
+_BASE64_RE = re.compile(r"^(?:[A-Za-z0-9+/]{4})+$|^(?:[A-Za-z0-9+/]{4})*"
+                        r"(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$")
+
+
+def _decode_snapshot_base64(text: str) -> str:
+    """Strict standard base64 (padded, canonical, no whitespace) of UTF-8 JSON text.
+
+    Windows PowerShell 5.1 strips embedded quotes from native argv, so the
+    adapter passes the snapshot as quote-free base64 instead of raw JSON.
+    """
+    if not _BASE64_RE.match(text):
+        raise _Invalid("snapshot_base64_invalid")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        raise _Invalid("snapshot_base64_invalid") from None
+    if base64.b64encode(raw).decode("ascii") != text:
+        raise _Invalid("snapshot_base64_invalid")  # non-canonical padding bits
+    try:
+        decoded = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise _Invalid("snapshot_utf8_invalid") from None
+    if decoded.startswith("\ufeff"):
+        raise _Invalid("snapshot_utf8_invalid")
+    return decoded
+
+
 def main(argv: list[str] | None = None, stdout: Any = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--snapshot-json", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--snapshot-json")
+    source.add_argument("--snapshot-base64")
     parser.add_argument("--now-utc", required=True)
     args = parser.parse_args(argv)
     out = stdout if stdout is not None else sys.stdout
     try:
-        snapshot = json.loads(args.snapshot_json, object_pairs_hook=_no_duplicate_keys,
+        text = args.snapshot_json if args.snapshot_base64 is None else \
+            _decode_snapshot_base64(args.snapshot_base64)
+        snapshot = json.loads(text, object_pairs_hook=_no_duplicate_keys,
                               parse_constant=_reject_constant)
+    except _Invalid as exc:
+        decision = _unknown(None, args.now_utc, [exc.code])
     except ValueError:
         decision = _unknown(None, args.now_utc, ["snapshot_json_invalid"])
     else:

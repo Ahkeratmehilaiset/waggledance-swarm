@@ -64,6 +64,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from typing import Any, Mapping
 
@@ -95,7 +96,8 @@ V2_TOP_KEYS = TOP_KEYS | {"historical", "pools", "candidates", "observations"}
 HISTORICAL_KEYS = frozenset({"status", "applies_to", "source_measured_at", "source_measured_at_basis",
                              "cost_basis"})
 HISTORICAL_TABLES = ["benchmark", "coding_benchmark", "models"]
-POOL_KEYS = frozenset({"provider", "limit_id", "window", "tier", "verification", "provenance"})
+POOL_KEYS = frozenset({"provider", "limit_id", "window", "tier", "verification", "provenance",
+                       "measured_at", "ttl_seconds"})
 CANDIDATE_KEYS = frozenset({"provider", "model", "admission", "capability", "pool", "note"})
 OBSERVATION_KEYS = frozenset({"id", "subject", "kind", "class", "value", "unit", "status", "provenance",
                               "measured_at", "ttl_seconds", "uncertainty"})
@@ -125,6 +127,10 @@ WHEN_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z)?")
 MAX_TTL_SECONDS = 400 * 86400
 FUTURE_SKEW = timedelta(minutes=5)
 STATE_RANK = {"fresh": 0, "historical": 1, "unverified": 2, "stale": 3, "unknown": 4}
+UNCERTAINTY_KINDS = ("none_stated", "interval", "exact", "unknown")
+# A measured (known) value needs a STATED uncertainty: an interval, or "exact" with a justification.
+MEASURED_UNCERTAINTY = ("interval", "exact")
+CATEGORICAL_KINDS = ("tier", "pool")  # no interval: containment is meaningless for a label
 DEFAULT_REGISTRY = Path(__file__).resolve().parents[1] / "configs" / "model_registry.json"
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
 
@@ -153,7 +159,11 @@ def _read_json(path: Path, limit: int, label: str) -> tuple[Any, bytes]:
     try:
         if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
             raise RegistryError(f"{label} path is a symlink or reparse point")
-        with path.open("rb") as stream:
+        # Non-blocking open and a regular-file check: a FIFO or device is refused, never waited on.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise RegistryError(f"{label} is not a regular file")
             data = stream.read(limit + 1)
     except OSError as exc:
         raise RegistryError(f"{label} unreadable: {exc.__class__.__name__}") from None
@@ -165,6 +175,11 @@ def _read_json(path: Path, limit: int, label: str) -> tuple[Any, bytes]:
         raise
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise RegistryError(f"{label} is not UTF-8 JSON: {exc.__class__.__name__}") from None
+
+
+def _short(value: Any) -> str:
+    """An input-derived key in an error message, bounded (never echoed at length)."""
+    return str(value)[:64]
 
 
 def _text(value: Any, label: str) -> str:
@@ -222,25 +237,25 @@ def _validate_v1_tables(registry: dict) -> None:
     if not isinstance(models, dict) or not models:
         raise RegistryError("models must be a non-empty object")
     for key, entry in models.items():
-        _exact_keys(entry, MODEL_KEYS, f"models.{key}", OPTIONAL_MODEL_KEYS)
+        _exact_keys(entry, MODEL_KEYS, f"models.{_short(key)}", OPTIONAL_MODEL_KEYS)
         if "benchmark_variant" in entry:
-            _text(entry["benchmark_variant"], f"models.{key}.benchmark_variant")
+            _text(entry["benchmark_variant"], f"models.{_short(key)}.benchmark_variant")
         if entry["provider"] not in PROVIDERS:
-            raise RegistryError(f"models.{key}.provider must be one of {PROVIDERS}")
-        _text(entry["model"], f"models.{key}.model")
+            raise RegistryError(f"models.{_short(key)}.provider must be one of {PROVIDERS}")
+        _text(entry["model"], f"models.{_short(key)}.model")
         if key != f"{entry['provider']}/{entry['model']}":
-            raise RegistryError(f"models.{key} key must be '<provider>/<model>'")
+            raise RegistryError(f"models.{_short(key)} key must be '<provider>/<model>'")
         if entry["coding_agent_index"] is not None:
-            _score(entry["coding_agent_index"], f"models.{key}.coding_agent_index", 100)
+            _score(entry["coding_agent_index"], f"models.{_short(key)}.coding_agent_index", 100)
         efforts = entry["efforts"]
         if not isinstance(efforts, dict) or not efforts:
-            raise RegistryError(f"models.{key}.efforts must be a non-empty object")
+            raise RegistryError(f"models.{_short(key)}.efforts must be a non-empty object")
         for effort, row in efforts.items():
             if effort not in EFFORTS:
-                raise RegistryError(f"models.{key}.efforts has unknown effort {effort!r}")
-            _exact_keys(row, EFFORT_KEYS, f"models.{key}.efforts.{effort}")
-            _score(row["intelligence_index"], f"models.{key}.efforts.{effort}.intelligence_index", 100)
-            _score(row["usd_per_task"], f"models.{key}.efforts.{effort}.usd_per_task", 1000)
+                raise RegistryError(f"models.{_short(key)}.efforts has unknown effort {_short(effort)!r}")
+            _exact_keys(row, EFFORT_KEYS, f"models.{_short(key)}.efforts.{effort}")
+            _score(row["intelligence_index"], f"models.{_short(key)}.efforts.{effort}.intelligence_index", 100)
+            _score(row["usd_per_task"], f"models.{_short(key)}.efforts.{effort}.usd_per_task", 1000)
 
 
 # ---------------------------------------------------------------- v2 tables (F3)
@@ -304,26 +319,34 @@ def _validate_v2_tables(registry: dict) -> None:
         provenance = _provenance(pool["provenance"], f"pools.{pool_id}.provenance")
         if pool["verification"] not in ("unverified", "verified"):
             raise RegistryError(f"pools.{pool_id}.verification must be 'unverified' or 'verified'")
+        if pool["measured_at"] != "unknown":
+            _when(pool["measured_at"], f"pools.{pool_id}.measured_at")
+        pool_ttl = pool["ttl_seconds"]
+        if pool_ttl is not None and (type(pool_ttl) is not int or not 1 <= pool_ttl <= MAX_TTL_SECONDS):
+            raise RegistryError(f"pools.{pool_id}.ttl_seconds must be null or an integer 1..{MAX_TTL_SECONDS}")
+        # A verified pool is a measurement like any other: provenance, a date and a TTL, and it expires.
         if pool["verification"] == "verified" and (provenance["kind"] not in MEASURING_KINDS
-                                                   or pool["limit_id"] is None):
-            raise RegistryError(f"pools.{pool_id} is verified only by a measuring provenance with a limit_id")
+                                                   or pool["limit_id"] is None
+                                                   or pool["measured_at"] == "unknown" or pool_ttl is None):
+            raise RegistryError(f"pools.{pool_id} is verified only by a measuring provenance with a limit_id, "
+                                f"a measured_at date and a ttl_seconds")
 
     candidates = registry["candidates"]
     if not isinstance(candidates, dict):
         raise RegistryError("candidates must be an object")
     for key, candidate in candidates.items():
-        _exact_keys(candidate, CANDIDATE_KEYS, f"candidates.{key}")
+        _exact_keys(candidate, CANDIDATE_KEYS, f"candidates.{_short(key)}")
         if candidate["provider"] not in PROVIDERS:
-            raise RegistryError(f"candidates.{key}.provider must be one of {PROVIDERS}")
-        _text(candidate["model"], f"candidates.{key}.model")
+            raise RegistryError(f"candidates.{_short(key)}.provider must be one of {PROVIDERS}")
+        _text(candidate["model"], f"candidates.{_short(key)}.model")
         if key != f"{candidate['provider']}/{candidate['model']}" or key in models:
-            raise RegistryError(f"candidates.{key} key must be '<provider>/<model>' and not a rated model")
+            raise RegistryError(f"candidates.{_short(key)} key must be '<provider>/<model>' and not a rated model")
         if candidate["admission"] != "none" or candidate["capability"] != "unknown":
-            raise RegistryError(f"candidates.{key} must have admission 'none' and capability 'unknown'")
+            raise RegistryError(f"candidates.{_short(key)} must have admission 'none' and capability 'unknown'")
         if candidate["pool"] is not None and (not isinstance(candidate["pool"], str) or candidate["pool"] not in pools
                                               or pools[candidate["pool"]]["provider"] != candidate["provider"]):
-            raise RegistryError(f"candidates.{key}.pool must name a pool of the same provider")
-        _optional_text(candidate["note"], f"candidates.{key}.note")
+            raise RegistryError(f"candidates.{_short(key)}.pool must name a pool of the same provider")
+        _optional_text(candidate["note"], f"candidates.{_short(key)}.note")
 
     observations = registry["observations"]
     if not isinstance(observations, list):
@@ -399,8 +422,12 @@ def _validate_observation(obs: dict, label: str, models: dict, candidates: dict,
     if ttl is not None and (type(ttl) is not int or not 1 <= ttl <= MAX_TTL_SECONDS):
         raise RegistryError(f"{label}.ttl_seconds must be null or an integer 1..{MAX_TTL_SECONDS}")
     uncertainty = _exact_keys(obs["uncertainty"], UNCERTAINTY_KEYS, f"{label}.uncertainty")
-    if uncertainty["kind"] not in ("none_stated", "interval", "unknown"):
-        raise RegistryError(f"{label}.uncertainty.kind must be none_stated, interval or unknown")
+    if uncertainty["kind"] not in UNCERTAINTY_KINDS:
+        raise RegistryError(f"{label}.uncertainty.kind must be one of {UNCERTAINTY_KINDS}")
+    if uncertainty["kind"] == "interval" and kind in CATEGORICAL_KINDS:
+        raise RegistryError(f"{label}.uncertainty interval is only for numeric kinds")
+    if uncertainty["kind"] == "exact" and not (isinstance(uncertainty["note"], str) and uncertainty["note"].strip()):
+        raise RegistryError(f"{label}.uncertainty exact needs a justification note")
     if uncertainty["kind"] == "interval":
         low = _number(uncertainty["low"], f"{label}.uncertainty.low", -1e12, 1e12)
         high = _number(uncertainty["high"], f"{label}.uncertainty.high", -1e12, 1e12)
@@ -413,24 +440,63 @@ def _validate_observation(obs: dict, label: str, models: dict, candidates: dict,
     if status == "measured":
         # Known = validated provenance + a date + a TTL + stated uncertainty (plan section 2.1).
         if provenance["kind"] not in MEASURING_KINDS or ttl is None or obs["measured_at"] == "unknown" \
-                or uncertainty["kind"] == "unknown":
+                or uncertainty["kind"] not in MEASURED_UNCERTAINTY:
             raise RegistryError(f"{label}: 'measured' needs a measuring provenance, a date, a TTL and "
-                                f"a stated uncertainty")
+                                f"a stated uncertainty (an interval, or exact with a justification)")
         if kind == "pool" and pools[value]["verification"] != "verified":
             raise RegistryError(f"{label}: an observation never verifies an unverified pool")
     if status == "historical" and obs["measured_at"] == "unknown":
         raise RegistryError(f"{label}: a historical value keeps its source measurement date")
 
 
-def observation_state(observation: dict, now: datetime) -> str:
-    """fresh | stale | historical | unverified | unknown. Only ``fresh`` is known (plan section 2.1)."""
+def observation_state(observation: dict, now: datetime | None) -> str:
+    """fresh | stale | historical | unverified | unknown. Only ``fresh`` is known (plan section 2.1).
+
+    ``now`` None (an unrepresentable evaluation time) makes every measured value unknown."""
     status = observation["status"]
     if status != "measured":
         return status
+    if now is None:
+        return "unknown"
     measured = _when(observation["measured_at"], "measured_at")
     if measured - now > FUTURE_SKEW:
         return "unknown"  # dated in the future: never trusted
     return "fresh" if now - measured <= timedelta(seconds=observation["ttl_seconds"]) else "stale"
+
+
+def pool_state(pool: dict, now: datetime | None) -> str:
+    """verified (inside its TTL), stale, unverified or unknown: a verified pool expires (RCO2 S1)."""
+    if pool["verification"] != "verified":
+        return "unverified"
+    if now is None:
+        return "unknown"
+    measured = _when(pool["measured_at"], "pool measured_at")
+    if measured - now > FUTURE_SKEW:
+        return "unknown"
+    return "verified" if now - measured <= timedelta(seconds=pool["ttl_seconds"]) else "stale"
+
+
+def _resolve(candidates: list) -> dict:
+    """One cell from every candidate for it, explicitly (RCO2 S2): the best state wins; within
+    it the latest measured_at wins; different values at that latest time are a ``conflict``
+    (no value). Older disagreeing values are counted in ``superseded``; nothing wins silently."""
+    best = min(rank for rank, _, _ in candidates)
+    group = [(when, cell) for rank, when, cell in candidates if rank == best]
+    if all(cell["value"] is None for _, cell in group):
+        return dict(group[0][1])
+    dated = [when for when, _ in group if when is not None]
+    latest = max(dated) if dated else None
+    top = [cell for when, cell in group if when == latest]
+    values = {json.dumps(cell["value"], sort_keys=True) for cell in top}
+    if len(values) > 1:
+        return _cell(None, "conflict", None, top[0]["measured_at"],
+                     str(len(top)) + " observations with the same state and date disagree")
+    chosen = dict(top[0])
+    superseded = sum(1 for when, cell in group
+                     if when != latest and json.dumps(cell["value"], sort_keys=True) not in values)
+    if superseded:
+        chosen["superseded"] = superseded
+    return chosen
 
 
 def _cell(value: Any = None, state: str = "unknown", source: str | None = None,
@@ -462,10 +528,15 @@ def model_table(registry: dict, now: datetime | None = None) -> dict:
     current = datetime.now(timezone.utc) if now is None else now
     if not isinstance(current, datetime) or current.tzinfo is None:
         raise RegistryError("model_table needs a timezone-aware time")
+    try:
+        current = current.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        current = None  # unrepresentable in UTC: every freshness-dependent cell is unknown
     v2 = registry["schema"] == SCHEMA_V2
     measured_at = registry["historical"]["source_measured_at"] if v2 else registry["benchmark"]["fetched_at"]
     benchmark = f"{registry['benchmark']['name']} {registry['benchmark']['version']}"
     table: dict[tuple, dict] = {}
+    pending: dict[tuple, list] = {}
 
     def row_for(provider: str, model: str, effort: str | None, admission: str) -> dict:
         key = (provider, model, effort)
@@ -474,17 +545,25 @@ def model_table(registry: dict, now: datetime | None = None) -> dict:
                           **{column: _cell() for column in TABLE_COLUMNS}, "task_quality": {}}
         return table[key]
 
+    def offer(row_key: tuple, scope: str, name: str, cell: dict) -> None:
+        try:
+            when = _when(cell["measured_at"], "measured_at") if cell["measured_at"] else None
+        except RegistryError:
+            when = None
+        pending.setdefault((row_key, scope, name), []).append((STATE_RANK[cell["state"]], when, cell))
+
     for entry in registry["models"].values():
         for effort, values in entry["efforts"].items():
-            row = row_for(entry["provider"], entry["model"], effort, "see_signed_catalog")
-            row["quality_general"] = _cell(values["intelligence_index"], "historical", benchmark, measured_at,
-                                           entry.get("benchmark_variant"))
-            row["cost_api_usd_per_task"] = _cell(values["usd_per_task"], "historical", benchmark, measured_at,
-                                                 "api_price_not_quota")
+            key = (entry["provider"], entry["model"], effort)
+            row_for(*key, "see_signed_catalog")
+            offer(key, "row", "quality_general", _cell(values["intelligence_index"], "historical", benchmark,
+                                                        measured_at, entry.get("benchmark_variant")))
+            offer(key, "row", "cost_api_usd_per_task", _cell(values["usd_per_task"], "historical", benchmark,
+                                                              measured_at, "api_price_not_quota"))
             if entry["coding_agent_index"] is not None:
-                row["quality_coding_agent"] = _cell(entry["coding_agent_index"], "historical",
-                                                    registry["coding_benchmark"]["name"],
-                                                    registry["coding_benchmark"]["fetched_at"])
+                offer(key, "row", "quality_coding_agent", _cell(entry["coding_agent_index"], "historical",
+                                                                 registry["coding_benchmark"]["name"],
+                                                                 registry["coding_benchmark"]["fetched_at"]))
     if v2:
         for candidate in registry["candidates"].values():
             efforts = sorted({o["subject"]["effort"] for o in registry["observations"]
@@ -505,27 +584,33 @@ def model_table(registry: dict, now: datetime | None = None) -> dict:
             efforts = [subject["effort"]] if subject["effort"] else [
                 effort for (p, m, effort) in list(table) if (p, m) == (subject["provider"], subject["model"])]
             for effort in efforts:
-                row = row_for(subject["provider"], subject["model"], effort,
-                              "none" if f"{subject['provider']}/{subject['model']}" in registry["candidates"]
-                              else "see_signed_catalog")
-                target = row["task_quality"] if column.startswith("quality:") else row
-                name = column.split(":", 1)[1] if column.startswith("quality:") else column
-                existing = target.get(name, _cell())
-                if STATE_RANK[state] < STATE_RANK[existing["state"]]:
-                    target[name] = cell
-        for row in table.values():
-            pool_id = row["pool"]["value"]
-            row["pool_verification"] = registry["pools"][pool_id]["verification"] if pool_id else "unknown"
-    else:
-        for row in table.values():
+                row_for(subject["provider"], subject["model"], effort,
+                        "none" if f"{subject['provider']}/{subject['model']}" in registry["candidates"]
+                        else "see_signed_catalog")
+                if column.startswith("quality:"):
+                    offer((subject["provider"], subject["model"], effort), "task", column.split(":", 1)[1], cell)
+                else:
+                    offer((subject["provider"], subject["model"], effort), "row", column, cell)
+    for (row_key, scope, name), candidates in pending.items():
+        target = table[row_key]["task_quality"] if scope == "task" else table[row_key]
+        target[name] = _resolve(candidates)
+    for row in table.values():
+        membership = row["pool"]
+        if not v2 or membership["state"] == "unknown":
             row["pool_verification"] = "unknown"
+        elif membership["state"] != "fresh":
+            # The pool table speaks only through a fresh membership (RCO2 nit b).
+            row["pool_verification"] = "membership_" + membership["state"]
+        else:
+            row["pool_verification"] = pool_state(registry["pools"][membership["value"]], current)
     rows_out = sorted(table.values(), key=lambda r: (r["provider"], r["model"],
                                                      EFFORTS.index(r["effort"]) if r["effort"] else -1))
     return {"schema": "wd.model-table.v1", "execution_allowed": False, "generated_for_utc":
-            current.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "rows": rows_out,
+            current.strftime("%Y-%m-%dT%H:%M:%SZ") if current is not None else None, "rows": rows_out,
             "limitations": ["unknown_cells_are_unknown_not_zero", "historical_benchmarks_are_not_our_workload",
                             "api_price_is_never_quota_cost", "stale_values_are_unknown",
-                            "candidates_have_no_admission"]}
+                            "candidates_have_no_admission", "pool_verification_needs_a_fresh_membership",
+                            "equal_state_disagreement_is_a_conflict_not_a_choice"]}
 
 
 def load_registry(path: str | Path = DEFAULT_REGISTRY) -> tuple[dict, str]:

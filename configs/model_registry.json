@@ -293,6 +293,8 @@
       "window": "weekly",
       "tier": "unknown",
       "verification": "unverified",
+      "measured_at": "2026-09-28",
+      "ttl_seconds": null,
       "provenance": {
         "kind": "plan_transcription",
         "reference": "docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297",

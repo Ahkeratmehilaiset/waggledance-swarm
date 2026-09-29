@@ -614,19 +614,25 @@ function Invoke-WdContinuityDecision {
 function Test-WdContinuityControlEvents {
     param([string] $RuntimeRoot, [string] $TaskId, [string] $Agent,
         [DateTimeOffset] $CheckpointAt)
+    $hashFile = {
+        param([string] $FilePath)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($FilePath))).Replace('-', '') }
+        finally { $sha.Dispose() }
+    }
     # Read-only canonical reader, not Read-AgentBridge (which also drains and
     # sweeps). Recheck both helper hashes against the externally anchored bundle.
     $bundle = Split-Path -Parent ([string]$env:WD_BRIDGE_PYTHON_WRAPPER)
     $manifestPath = Join-Path $bundle 'deployment-manifest.json'
     if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
-        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash -cne
+        (& $hashFile $manifestPath) -cne
         $env:WD_REBOOT_EXPECTED_MANIFEST_HASH.ToUpperInvariant()) { throw 'Continuity manifest anchor mismatch' }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -ErrorAction Stop
     foreach ($leaf in @('BridgeLogReader.ps1','BridgeIncrementalReader.ps1')) {
         $relative = 'tools-bootstrap/.agent-bridge/bin/' + $leaf
         $file = Assert-WdTurnPath (Join-Path $bundle $relative)
         $expected = $manifest.files.PSObject.Properties[$relative]
-        if ($null -eq $expected -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -cne
+        if ($null -eq $expected -or (& $hashFile $file) -cne
             ([string]$expected.Value).ToUpperInvariant()) { throw 'Continuity reader hash mismatch' }
     }
     . (Join-Path $bundle 'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1')
@@ -686,29 +692,63 @@ function Test-WdContinuityControlEvents {
 }
 
 function Invoke-WdContinuityOperatorNotice {
-    param([string] $Agent, [string] $ThreadId, [string] $Worktree, [string] $ErrorText)
+    param([string] $Agent, [string] $ThreadId, [string] $Worktree, [string] $ErrorText,
+        [string] $RuntimeRoot, [string] $SessionId)
+    $hashFile = {
+        param([string] $FilePath)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($FilePath))).Replace('-', '') }
+        finally { $sha.Dispose() }
+    }
     $bundle = Split-Path -Parent ([string]$env:WD_BRIDGE_PYTHON_WRAPPER)
     $manifestPath = Join-Path $bundle 'deployment-manifest.json'
     if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
-        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash -cne
+        (& $hashFile $manifestPath) -cne
         $env:WD_REBOOT_EXPECTED_MANIFEST_HASH.ToUpperInvariant()) { throw 'Continuity notice manifest mismatch' }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -ErrorAction Stop
     $leaf = 'Send-WdContinuityAlert.ps1'
     $publisher = Assert-WdTurnPath (Join-Path $bundle $leaf)
     $expected = $manifest.files.PSObject.Properties[$leaf]
-    if ($null -eq $expected -or (Get-FileHash -LiteralPath $publisher -Algorithm SHA256).Hash -cne
+    if ($null -eq $expected -or (& $hashFile $publisher) -cne
         ([string]$expected.Value).ToUpperInvariant()) { throw 'Continuity publisher hash mismatch' }
+    if (-not [IO.Path]::IsPathRooted($RuntimeRoot) -or $SessionId -cnotmatch '^[A-Za-z0-9._:-]{1,160}$') {
+        throw 'Continuity notice runtime or session identity missing'
+    }
+    $registryRelative = 'tools-bootstrap/configs/bridge_identity_registry.json'
+    $registryPath = Assert-WdTurnPath (Join-Path $bundle $registryRelative)
+    $registryHash = $manifest.files.PSObject.Properties[$registryRelative]
+    if ($null -eq $registryHash -or (& $hashFile $registryPath) -cne
+        ([string]$registryHash.Value).ToUpperInvariant()) { throw 'Continuity notice registry hash mismatch' }
+    $registry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $identity = $registry.identities.PSObject.Properties[$Agent]
+    if ($Agent -cnotin @('codex-lead-1','codex-tools-1') -or $null -eq $identity -or
+        [string]$identity.Value -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+        throw 'Continuity notice lane identity invalid'
+    }
     $digest = '0' * 64
+    $progressKey = '0' * 64
     $task = $Agent + '/continuity-recovery'
     $reason = 'checkpoint_unavailable'
     try {
         $path = Assert-WdTurnPath (Join-Path $Worktree '.codex-audit\wd-current-state.json')
         if ((Get-Item -LiteralPath $path).Length -gt 32768) { throw 'oversized checkpoint' }
-        $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = @{ErrorAction='Stop'}
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
+        $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json @jsonArgs
         if ($record.agent -cne $Agent -or $record.task_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$') {
             throw 'checkpoint identity invalid'
         }
-        $digest = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $digest = (& $hashFile $path).ToLowerInvariant()
+        $progress = [ordered]@{}
+        foreach ($field in @('task_id','status','next_action','next_wakeup_utc','blockers')) {
+            $property = $record.PSObject.Properties[$field]
+            $progress[$field] = if ($null -eq $property) { $null } else { $property.Value }
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $progressKey = [BitConverter]::ToString($sha.ComputeHash(
+                [Text.Encoding]::UTF8.GetBytes(($progress | ConvertTo-Json -Depth 16 -Compress)))).Replace('-', '').ToLowerInvariant()
+        } finally { $sha.Dispose() }
         $task = [string]$record.task_id
         $reason = switch -Regex ($ErrorText) {
             'delivery uncertain' { 'delivery_uncertain'; break }
@@ -717,9 +757,30 @@ function Invoke-WdContinuityOperatorNotice {
             'held|hold_possible' { 'hold_possible'; break }
             default { 'continuity_evidence_unknown' }
         }
-    } catch { $digest='0'*64; $task=$Agent+'/continuity-recovery'; $reason='checkpoint_unavailable' }
-    $result = & $publisher -Agent $Agent -TaskId $task -ThreadId $ThreadId -Worktree $Worktree `
-        -Reason $reason -CheckpointDigest $digest
+    } catch { $digest='0'*64; $progressKey='0'*64; $task=$Agent+'/continuity-recovery'; $reason='checkpoint_unavailable' }
+    # Tools deliberately scrubs inherited peer identity before bootstrap. Bind
+    # only this call to the verified own-lane identity and explicit runtime;
+    # restore absent variables as absent even on PowerShell 7 and on failure.
+    $noticeEnvironment = @{
+        AGENT_BRIDGE_RUNTIME_ROOT=[IO.Path]::GetFullPath($RuntimeRoot)
+        AGENT_BRIDGE_AGENT_UUID=[string]$identity.Value
+        AGENT_BRIDGE_SESSION_ID=$SessionId
+        AGENT_BRIDGE_RUN_ID=$SessionId
+    }
+    $savedEnvironment = @{}
+    try {
+        foreach ($name in $noticeEnvironment.Keys) {
+            $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+            [Environment]::SetEnvironmentVariable($name, $noticeEnvironment[$name], 'Process')
+        }
+        $result = & $publisher -Agent $Agent -TaskId $task -ThreadId $ThreadId -Worktree $Worktree `
+            -Reason $reason -CheckpointDigest $digest -ProgressKey $progressKey
+    } finally {
+        foreach ($name in $savedEnvironment.Keys) {
+            if ($null -eq $savedEnvironment[$name]) { Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
+        }
+    }
     $receipt = $result | Out-String | ConvertFrom-Json -ErrorAction Stop
     if ($receipt.schema -cne 'wd.continuity-alert-result.v1' -or
         $receipt.status -cnotin @('published','already_reported','queued','unknown')) { throw 'Continuity notice receipt invalid' }
@@ -846,7 +907,8 @@ function Invoke-WdNativeContinuityStep {
 function Invoke-WdNativeToolsWakeRelay {
     param($Native, [string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $RuntimeRoot, [string] $Generation, [string] $ExpectedCliHash,
-        [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1')
+        [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1',
+        [string] $SessionId)
     $journal = Join-Path $Worktree '.codex-audit\wd-turn-loop'
     $statePath = Join-Path $journal 'native-bridge-wake.json'
     $lockPath = Assert-WdTurnPath (Join-Path $journal 'native-bridge-wake.lock')
@@ -894,7 +956,7 @@ function Invoke-WdNativeToolsWakeRelay {
                     }
                     try {
                         $notice = Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId `
-                            -Worktree $Worktree -ErrorText $continuityError
+                            -Worktree $Worktree -ErrorText $continuityError -RuntimeRoot $RuntimeRoot -SessionId $SessionId
                         if ($notice.status -ceq 'unknown') { Write-Warning 'Continuity operator notice delivery is unknown; inspect durable alert ledger' }
                         if ($notice.status -ceq 'queued') { Write-Warning 'Continuity operator notice is spooled, not yet confirmed operator-visible' }
                     } catch {
@@ -953,7 +1015,7 @@ function Invoke-WdNativeToolsTerminal {
         try {
             Invoke-WdNativeToolsWakeRelay -Native $native -CliPath $CliPath -ThreadId ([string]$Saved.thread_id) `
                 -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation ([string]$BaseRecord.generation) `
-                -ExpectedCliHash ([string]$BaseRecord.codex_command_sha256)
+                -ExpectedCliHash ([string]$BaseRecord.codex_command_sha256) -SessionId ([string]$BaseRecord.session_id)
         } catch {
             $record.status='bridge_wake_blocked'
             $record.bridge_wake_error=$_.Exception.Message

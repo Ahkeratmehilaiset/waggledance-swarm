@@ -295,7 +295,7 @@ function Invoke-WdNativeLeadTerminal {
     $record.status='terminal_ready'
     Write-WdTurnJson $readyPath $record
     Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $native -CliPath $CliPath -ThreadId $ThreadId `
-      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash
+      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash -SessionId $SessionId
     if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
   } catch {
     $record.status='bridge_wake_blocked'; $record.error=$_.Exception.Message

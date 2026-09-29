@@ -14,6 +14,14 @@ TOOLS = REBOOT / 'start-wd-tools-consumer.ps1'
 THREAD = '01a0a07b-ca98-71e1-90cb-d588435a2d8d'
 
 
+def notice_registry(bundle):
+    path = bundle / 'tools-bootstrap/configs/bridge_identity_registry.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'identities': {'codex-lead-1': 'd3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101',
+                                               'codex-tools-1': '7a8af68d-20bc-4598-9953-23c5dd98b102'}}))
+    return {path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest().upper()}
+
+
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps):
     from test_wd_bridge_code_context import _stage_fake_bundle
@@ -52,21 +60,21 @@ Invoke-WdContinuityDecision -Snapshot $snapshot -NowUtc '2026-09-29T05:00:00Z' |
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['valid', 'missing', 'foreign', 'tampered', 'bad_receipt', 'queued'])
+@pytest.mark.parametrize('case', ['valid', 'missing', 'foreign', 'tampered', 'bad_receipt', 'queued', 'no_hash_module'])
 def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
     publisher = bundle / 'Send-WdContinuityAlert.ps1'
     capture = tmp_path / 'call.json'
     publisher.write_text(
-        'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest)\n'
+        'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest,$ProgressKey)\n'
         f'$PSBoundParameters | ConvertTo-Json -Compress | Set-Content -LiteralPath {q(capture)}\n'
         + ('\'{}\'\n' if case == 'bad_receipt' else
            '\'{"schema":"wd.continuity-alert-result.v1","status":"queued"}\'\n' if case == 'queued' else
            '\'{"schema":"wd.continuity-alert-result.v1","status":"published"}\'\n'),
         encoding='utf-8')
     manifest = bundle / 'deployment-manifest.json'
-    manifest.write_text(json.dumps({'files': {publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper()}}))
+    manifest.write_text(json.dumps({'files': {publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper(), **notice_registry(bundle)}}))
     anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
     if case == 'tampered':
         publisher.write_text('throw "untrusted"')
@@ -79,11 +87,13 @@ def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_p
     script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
     script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
     script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    if case == 'no_hash_module':
+        script += "function Get-FileHash { throw 'PS5 module unavailable' }\n"
     script += f"""
 $env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
 try {{
- $r=Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -ErrorText 'held'
+ $r=Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -SessionId fixture-session -ErrorText 'held'
  @{{ok=$true;receipt=$r}} | ConvertTo-Json -Compress
 }} catch {{@{{ok=$false;error=$_.Exception.Message}} | ConvertTo-Json -Compress}}
 """
@@ -122,9 +132,11 @@ def test_guard_errors_back_off_but_history_catchup_is_bounded_between_wakes(ps):
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_real_operator_publisher_and_caller_publish_once_without_ending_host(tmp_path, ps):
+@pytest.mark.parametrize('checkpoint_mode', ['missing', 'heartbeat'])
+def test_real_operator_publisher_and_caller_publish_once_without_ending_host(tmp_path, ps, checkpoint_mode):
     from test_wd_continuity_alert import MOCK_WRITER
 
+    (tmp_path / 'runtime').mkdir()
     bundle = tmp_path / 'bundle'
     bin_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
     bin_dir.mkdir(parents=True)
@@ -133,9 +145,9 @@ def test_real_operator_publisher_and_caller_publish_once_without_ending_host(tmp
     publisher = bundle / 'Send-WdContinuityAlert.ps1'
     shutil.copyfile(REBOOT / publisher.name, publisher)
     manifest = bundle / 'deployment-manifest.json'
-    manifest.write_text(json.dumps({'files': {
+    manifest.write_text(json.dumps({'files': {**notice_registry(bundle), **{
         path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest().upper()
-        for path in (writer, publisher)}}))
+        for path in (writer, publisher)}}}))
     anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
     capture = tmp_path / 'events.jsonl'
     script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
@@ -147,7 +159,11 @@ $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
 $env:WD_TEST_ALERT_CAPTURE={q(capture)}
 $env:WD_TEST_ALERT_MODE='canonical'
 $results=@(1..2 | ForEach-Object {{
- Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -ErrorText 'checkpoint missing'
+ if ('{checkpoint_mode}' -eq 'heartbeat') {{
+  [void][IO.Directory]::CreateDirectory({q(tmp_path / '.codex-audit')})
+  @{{agent='codex-lead-1';task_id='work';status='in_progress';next_action='same action';next_wakeup_utc='2026-09-29T10:00:00Z';blockers=@();updated_at_utc=[string]$_;history=@($_)}} | ConvertTo-Json | Set-Content {q(tmp_path / '.codex-audit/wd-current-state.json')}
+ }}
+ Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -SessionId fixture-session -ErrorText 'checkpoint missing'
 }})
 @{{alive=$true;results=$results}} | ConvertTo-Json -Depth 10 -Compress
 """
@@ -158,6 +174,36 @@ $results=@(1..2 | ForEach-Object {{
     assert len(events) == 1
     assert events[0]['To'] == 'operator' and events[0]['Type'] == 'message'
     assert json.loads(events[0]['PayloadJson'])['authority'] == 'none'
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('fails', [False, True])
+def test_tools_notice_binds_scrubbed_identity_and_restores_parent_environment(tmp_path, ps, fails):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    capture = tmp_path / 'identity.json'
+    publisher = bundle / 'Send-WdContinuityAlert.ps1'
+    publisher.write_text('param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest,$ProgressKey)\n'
+                        f'@{{root=$env:AGENT_BRIDGE_RUNTIME_ROOT;uuid=$env:AGENT_BRIDGE_AGENT_UUID;session=$env:AGENT_BRIDGE_SESSION_ID;run=$env:AGENT_BRIDGE_RUN_ID}}|ConvertTo-Json|Set-Content {q(capture)}\n'
+                        + ('throw "fixture failure"' if fails else '\'{"schema":"wd.continuity-alert-result.v1","status":"published"}\''))
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': {**notice_registry(bundle), publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper()}}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+foreach($key in @('AGENT_BRIDGE_RUNTIME_ROOT','AGENT_BRIDGE_AGENT_UUID','AGENT_BRIDGE_SESSION_ID','AGENT_BRIDGE_RUN_ID')) {{Remove-Item -LiteralPath ('Env:'+$key) -ErrorAction SilentlyContinue}}
+$env:AGENT_BRIDGE_RUN_ID='parent-run'
+try {{Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -SessionId 'tools-session' -ErrorText 'checkpoint missing' | Out-Null}} catch {{}}
+@{{uuid=(Test-Path Env:AGENT_BRIDGE_AGENT_UUID);root=(Test-Path Env:AGENT_BRIDGE_RUNTIME_ROOT);session=(Test-Path Env:AGENT_BRIDGE_SESSION_ID);run=$env:AGENT_BRIDGE_RUN_ID}}|ConvertTo-Json -Compress
+"""
+    restored = json.loads(_run_powershell(script, executable=ps).stdout)
+    observed = json.loads(capture.read_text(encoding='utf-8-sig'))
+    assert observed == dict(root=str(tmp_path / 'runtime'), uuid='7a8af68d-20bc-4598-9953-23c5dd98b102', session='tools-session', run='tools-session')
+    assert restored == dict(uuid=False, root=False, session=False, run='parent-run')
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

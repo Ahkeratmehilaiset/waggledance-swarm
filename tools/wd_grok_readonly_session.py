@@ -67,7 +67,9 @@ PERMISSION_MODES = ("plan", "dontAsk")
 
 # Inventory bounds: an unbounded or unreadable surface is refused, never skipped.
 WALK_ENTRY_LIMIT = 50000
-WALK_DEPTH_LIMIT = 6
+# Marketplace skill/reference trees can exceed six levels. Keep a depth bound
+# alongside the entry bound, but refuse only beyond a generous bounded depth.
+WALK_DEPTH_LIMIT = 16
 TREE_FILE_LIMIT = 2000
 TREE_BYTE_LIMIT = 32 * 1024 * 1024
 # Every malformed or unreadable inventory source becomes a problem (refusal), never a crash.
@@ -345,7 +347,8 @@ def inherited_surface(cwd: Path) -> dict:
                 table = data.get("mcp_servers", {})
                 plugins = data.get("plugins", {})
                 paths = plugins.get("paths", []) if isinstance(plugins, dict) else None
-                if not isinstance(table, dict) or not isinstance(paths, list):
+                if (not isinstance(table, dict) or not isinstance(paths, list)
+                        or not all(isinstance(extra, str) and extra.strip() for extra in paths)):
                     raise ValueError("mcp_servers/plugins.paths has the wrong type")
                 servers = {name: spec for name, spec in table.items()
                            if not (isinstance(spec, dict) and spec.get("enabled") is False)}

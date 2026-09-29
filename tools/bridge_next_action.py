@@ -24,23 +24,24 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
-from waggledance.core.bridge_workflow import worker_class  # noqa: E402
-from waggledance.core.bridge_request_contract import (  # noqa: E402
+# Bridge v2 consumer cutover: tools-owned kernel and queue modules (bridge-v2-control-interface.v1).
+from tools.bridge_v2_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from tools.bridge_v2_workflow import worker_class  # noqa: E402
+from tools.bridge_v2_request_contract import (  # noqa: E402
     field as correlation_field, reply_matches_request, request_is_bound, request_key, request_content,
     reply_follows_request, terminal_status_negated,
 )
-from waggledance.core.bridge_identity_registry import (  # noqa: E402
+from tools.bridge_v2_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
-from waggledance.core.bridge_log_reader import (  # noqa: E402
+from tools.bridge_v2_log_reader import (  # noqa: E402
     BridgeReadStatus,
     MAX_MAX_BYTES,
     MAX_MAX_ROWS,
     parse_bridge_json_object,
     read_bridge_log_tail_lines,
 )
-from waggledance.core.work_queue import (  # noqa: E402
+from tools.bridge_v2_work_queue import (  # noqa: E402  (RCO2 B-queue slice; pending composition)
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
     Claim,

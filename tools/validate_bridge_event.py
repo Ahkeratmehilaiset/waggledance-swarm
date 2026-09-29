@@ -14,14 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.bridge_event_schema import (
+from tools.bridge_v2_event_schema import (
     AGENT_ID_PATTERN,
     AGENT_UUID_PATTERN,
     BridgeEventValidationResult,
     KNOWN_EVENT_TYPES,
     validate_event_file,
 )
-from waggledance.core.work_queue import resolve_bridge_root
+from tools.bridge_v2_work_queue import resolve_bridge_root  # RCO2 B-queue slice; pending composition
 
 
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"

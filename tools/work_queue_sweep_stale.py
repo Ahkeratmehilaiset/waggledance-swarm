@@ -7,7 +7,7 @@ removes the active claim, mirroring
 ``.agent-bridge/bin/Invoke-StaleClaimSweep.ps1``.
 
 This is a thin Python parity wrapper around
-``waggledance.core.work_queue.archive_stale_claims``. It is intentionally
+``tools.bridge_v2_work_queue.archive_stale_claims``. It is intentionally
 side-effect-free under the default (no ``--apply``) so a curious agent or
 operator can run it to inspect the sweep plan.
 
@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from waggledance.core.work_queue import (
+from tools.bridge_v2_work_queue import (  # RCO2 B-queue slice; pending composition
     ArchivedClaim,
     WorkQueueError,
     archive_stale_claims,

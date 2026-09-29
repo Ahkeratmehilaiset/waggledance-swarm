@@ -46,14 +46,15 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
-from waggledance.core.bridge_identity_registry import (  # noqa: E402
+from tools.bridge_v2_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
+# Disclosed legacy product coupling (not a Bridge contract module; outside the cutover scope).
 from waggledance.core.idle_protocol_deferred_lift import (  # noqa: E402
     deferred_lift_state,
 )
-from waggledance.core.work_queue import (  # noqa: E402
+from tools.bridge_v2_work_queue import (  # noqa: E402  (RCO2 B-queue slice; pending composition)
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
     WorkQueueError,
@@ -379,7 +380,7 @@ def evaluate_agent_next_task(
     """Return one deterministic continuous-loop recommendation for ``agent``.
 
     Claims are always loaded from ``bridge_root/work_queue/claims`` via
-    ``waggledance.core.work_queue.list_claims``. The caller does not pass a
+    ``tools.bridge_v2_work_queue.list_claims``. The caller does not pass a
     separate claims directory because the bridge protocol treats
     ``bridge_root`` as the single source of truth for active claims; honoring
     a separate ``claims_dir`` would let a wrapper silently disagree with the

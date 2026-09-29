@@ -30,7 +30,10 @@ from typing import Any, Literal, Mapping, Protocol
 import uuid
 import warnings
 
-from waggledance.core.bridge_event_schema import validate_event
+# Bridge v2 consumer cutover: the tools-owned kernel, never the product package. F23: the writer
+# refuses a reserved label (operator/system) unless a reviewed trusted entrypoint supplies session
+# provenance; none exists yet, so such rows are refused here.
+from tools.bridge_v2_event_schema import validate_event_for_write
 from tools.bridge_named_mutex import create_bridge_named_mutex
 
 
@@ -534,7 +537,7 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
         ) from exc
     validate_v1_replayer_event(event_object)
     try:
-        validate_event(event_object)
+        validate_event_for_write(event_object)
     except Exception as exc:  # noqa: BLE001 - normalize every schema refusal
         raise BridgeEventWriteError(
             f"bridge event schema validation failed: {exc}"

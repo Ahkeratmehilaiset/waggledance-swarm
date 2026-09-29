@@ -1,7 +1,6 @@
 """Reporting must never impersonate an RCO or claim a failed write succeeded."""
 import ast
 import importlib.util
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -112,9 +111,12 @@ def test_reader_rejects_non_event_payload(monkeypatch, output):
         module.load_events('runtime', 'bundle', 'a'*64)
 
 
-@pytest.mark.skipif(shutil.which('pwsh') is None, reason='the reader runs under pwsh')
-def test_reader_decodes_non_ascii_event_text_from_pwsh(monkeypatch, tmp_path):
-    # 2026-09-29: redirected pwsh stdout used the OEM code page, and a Finnish 'ä'
+WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+
+
+@pytest.mark.skipif(not Path(WINDOWS_POWERSHELL).is_file(), reason='the reader runs under Windows PowerShell')
+def test_reader_decodes_non_ascii_event_text_from_powershell(monkeypatch, tmp_path):
+    # 2026-09-29: redirected PowerShell stdout used the OEM code page, and a Finnish 'ä'
     # in the window's events (byte 0x84) broke the UTF-8 decode before any report.
     module = load_metric()
     reader = tmp_path / 'Read-AgentBridge.ps1'
@@ -137,3 +139,45 @@ def test_reader_command_forces_utf8_output_before_the_pinned_reader():
     module = load_metric()
     source = SOURCE.read_text(encoding='utf-8')
     assert "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & '" in source
+
+
+def recorded_commands(module, monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/helper.ps1'))
+    return calls
+
+
+def test_reader_and_writer_run_windows_powershell_by_absolute_path(monkeypatch):
+    # 2026-09-29 (Grok d534c2b3): a bare 'pwsh' resolves through PATH, so an earlier
+    # PATH entry could stand in for the pinned reader or writer.
+    module = load_metric()
+    assert module.POWERSHELL == WINDOWS_POWERSHELL
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
+    monkeypatch.setenv('PSModulePath', 'C:\\pwsh7\\Modules')
+    calls = recorded_commands(module, monkeypatch)
+    module.load_events('runtime', 'bundle', 'a' * 64)
+    module.post_summary('summary', '20260929', 'runtime', 'bundle', 'a' * 64)
+    assert [command[:6] for command, _ in calls] == [
+        [WINDOWS_POWERSHELL, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']] * 2
+    assert [command[6] for command, _ in calls] == ['-Command', '-File']
+    for _, kwargs in calls:
+        assert not any(key.upper() == 'PSMODULEPATH' for key in kwargs['env'])
+    assert 'pwsh' not in SOURCE.read_text(encoding='utf-8').replace("bare 'pwsh'", '')
+
+
+def test_a_missing_windows_powershell_fails_closed_before_running_anything(monkeypatch, tmp_path):
+    module = load_metric()
+    monkeypatch.setattr(module, 'POWERSHELL', str(tmp_path / 'missing' / 'powershell.exe'))
+    calls = recorded_commands(module, monkeypatch)
+    with pytest.raises(FileNotFoundError):
+        module.load_events('runtime', 'bundle', 'a' * 64)
+    with pytest.raises(FileNotFoundError):
+        module.post_summary('summary', '20260929', 'runtime', 'bundle', 'a' * 64)
+    assert calls == []

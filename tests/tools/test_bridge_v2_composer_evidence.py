@@ -483,14 +483,59 @@ class _Clockwork(datetime):
     pass
 
 
+class _Stateful(_Offset):
+    """Names an offset on the first read, then none: astimezone would read it again as LOCAL time."""
+
+    def __init__(self, first):
+        super().__init__(first)
+        self.reads = 0
+
+    def utcoffset(self, dt):
+        self.reads += 1
+        return self.offset if self.reads == 1 else None
+
+
+class _Unimplemented(tzinfo):
+    """The base tzinfo.utcoffset raises NotImplementedError."""
+
+
+class _Delta(timedelta):
+    pass
+
+
+class _Walltime(datetime):
+    def utcoffset(self):
+        return timedelta(0)
+
+
 @pytest.mark.parametrize("now", [
     datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(timedelta(hours=25))),  # outside +-24 h: ValueError
     datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(5)),  # not a timedelta: TypeError
     datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(None)),  # a tzinfo that names no offset
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Unimplemented()),  # NotImplementedError (RCO1 23:30:44Z N1)
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(_Delta(hours=1))),  # not exactly a timedelta
     _Clockwork(2026, 9, 29, 21, 0, tzinfo=timezone.utc),  # not exactly a datetime
+    _Walltime(2026, 9, 29, 21, 0, tzinfo=timezone(timedelta(hours=3))),  # a subclass overriding utcoffset
+    datetime(9999, 12, 31, 23, 0, tzinfo=_Offset(timedelta(hours=-23, minutes=-59))),  # past datetime.max
+    datetime(1, 1, 1, 0, 30, tzinfo=_Offset(timedelta(hours=23, minutes=59))),  # before datetime.min
 ])
 def test_an_invalid_offsetless_or_foreign_clock_is_time_unknown(now):
     assert refusal(dict(inputs(), now=now)) == "time_unknown"  # RCO1 N1: visible, never a crash
+
+
+def test_a_stateful_offset_is_read_once_so_it_is_never_taken_as_local_time():
+    zone = _Stateful(timedelta(hours=3))
+    ev = compose(**dict(inputs(), now=datetime(2026, 9, 30, 0, 0, tzinfo=zone)))["evidence"]
+    assert zone.reads == 1 and ev["now_utc"] == "2026-09-29T21:00:00Z"  # 00:00+03:00, never local wall time
+
+
+@pytest.mark.parametrize("now", [datetime(2026, 9, 30, 0, 0, tzinfo=timezone(timedelta(hours=3))),
+                                 datetime(2026, 9, 29, 13, 30, 0, 999999, tzinfo=timezone(timedelta(hours=-7,
+                                                                                                    minutes=-30)))])
+def test_an_ordinary_non_utc_clock_is_the_same_instant_in_utc(now):
+    ev = compose(**dict(inputs(), now=now))["evidence"]
+    assert ev["now_utc"] == "2026-09-29T21:00:00Z"  # the same instant as NOW, whole seconds
+    assert models(ev) == ["claude-opus-5-5", "claude-sonnet-5"]
 
 
 def test_quota_counts_only_on_a_verified_f3_pool_of_the_same_provider():

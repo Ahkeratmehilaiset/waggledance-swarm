@@ -48,6 +48,14 @@ Quota: a profile's pool receipt counts only if all of these hold:
   (F3 ``model_table`` speaks only through a fresh membership; RCO1 S3). The
   membership must be effort-exact, and every fresh membership that applies
   (effort-exact or model-level) must name the same pool. Anything else is unknown.
+  So F24 needs ONE effort-exact fresh membership PER EFFORT it ranks. A model-level-only
+  membership, which F3 ``model_table`` spreads to every effort, deliberately stays
+  unknown here (conservative, not loosened). The only membership shipped in
+  ``configs/model_registry.json`` today (grok-4.7-pool-membership) is model-level and
+  unverified, and the file has no claude pool or membership at all. Under today's file
+  no receipt is kept, and every profile reads quota_unknown_or_stale.
+  An older fresh membership naming a previous pool also blocks receipts until its TTL
+  ends (stricter than F3 after a pool move).
 * The receipt was observed inside the verification window, so a later verification
   never upgrades an older receipt.
 A kept receipt gets ``valid_until_utc``, the earliest of its own age bound, the pool's
@@ -266,10 +274,13 @@ def compose(*, decision: Any, pins: Any, policy: Any, registry_source: Any, prof
     """Return the F24 evidence envelope and both registry digests. Raises Refusal and confers no authority."""
     _refuse(type(now) is datetime, "time_unknown")  # the exact type, like the Decision (RCO1 N1)
     try:
-        _refuse(now.utcoffset() is not None, "time_unknown")
-        now = now.astimezone(timezone.utc).replace(microsecond=0)  # one instant for F3 and for the selector
-    except (OverflowError, ValueError, TypeError):
-        # an extreme aware time has no UTC form; a tzinfo with an invalid offset fails visibly too
+        # The offset is read ONCE and must be exactly a timedelta; astimezone would call utcoffset
+        # again and fall back to LOCAL time if a stateful tzinfo then said None (RCO1 23:30:44Z N1).
+        offset = now.utcoffset()
+        if type(offset) is not timedelta:
+            raise ValueError("offset unknown")
+        now = (now.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc, microsecond=0)  # one instant
+    except Exception:  # noqa: BLE001 - NotImplementedError, an extreme or invalid offset: unknown, never a crash
         raise Refusal("time_unknown") from None
     policy, policy_sha256 = _bound_policy(decision, pins, policy, now)
     parameters = _parameters(policy)

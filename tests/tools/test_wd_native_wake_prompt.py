@@ -243,14 +243,14 @@ function Send-WdNativeToolsQueueMessage {{
  return 'test-queue-id'
 }}
 try {{
- $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session
  if ('{case}' -ne 'valid') {{
   foreach ($attempt in 1..2) {{
    $saved=Get-Content -LiteralPath {q(state)} -Raw | ConvertFrom-Json
    $saved.updated_at_utc='2026-01-01T00:00:00Z'
    Write-WdTurnJson {q(state)} $saved
    [IO.File]::WriteAllText({q(wake)},'next event')
-   $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1
+   $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session
   }}
  }}
  @{{ok=$true;sent=$script:sent;result=$result;alerts=$script:alerts;sends=$script:sends}} | ConvertTo-Json -Compress
@@ -274,3 +274,74 @@ try {{
         assert "WAKE_PROCEDURE_LEAD.md" not in result["sent"]
         assert saved["prompt_mode"] == "inline_degraded"
         assert result["alerts"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real canonical writer is Windows-only")
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("agent", ["codex-lead-1", "codex-tools-1"])
+@pytest.mark.parametrize("session", ["real-lane-session", "", "invalid session"])
+def test_degraded_notice_preserves_real_reply_identity(tmp_path, ps, agent, session):
+    import uuid
+    from test_wd_startup_recovery import load, q
+    from test_wd_reboot_bundle import _run_powershell
+    from test_wd_native_tools_wake import notice_registry
+
+    bundle = tmp_path / "bundle"
+    bin_dir = bundle / "tools-bootstrap/.agent-bridge/bin"
+    bin_dir.mkdir(parents=True)
+    mutex = "Local\\PromptIdentity-" + uuid.uuid4().hex + "-"
+    for helper in (REBOOT.parents[2] / ".agent-bridge/bin").glob("*.ps1"):
+        (bin_dir / helper.name).write_text(
+            helper.read_text(encoding="utf-8-sig").replace("Global\\WaggleDanceBridge", mutex),
+            encoding="utf-8-sig",
+        )
+    registry = notice_registry(bundle)
+    publisher = bundle / "Send-WdContinuityAlert.ps1"
+    shutil.copyfile(REBOOT / publisher.name, publisher)
+    manifest = bundle / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"files": {
+        **registry, **{p.relative_to(bundle).as_posix(): digest(p)
+                      for p in [publisher, *bin_dir.glob("*.ps1")]},
+    }}))
+    runtime = REBOOT.parents[2] / ".codex-audit" / ("pi-" + uuid.uuid4().hex[:12])
+    shared = runtime / "shared"
+    shared.mkdir(parents=True)
+    identities = json.loads((bundle / "tools-bootstrap/configs/bridge_identity_registry.json").read_text())["identities"]
+    last = shared / f"last_{agent}.json"
+    last.write_text(json.dumps(dict(agent=agent, agent_uuid=identities[agent],
+                                   session_id="real-lane-session", run_id="real-lane-session")))
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    (audit / "wd-current-state.json").write_text(json.dumps(dict(agent=agent, task_id="fixture/work")))
+    wake = runtime / ("wake_" + agent)
+    wake.write_text("pending")
+    state = tmp_path / "state.json"
+    consumer = REBOOT / "start-wd-tools-consumer.ps1"
+    script = "$ErrorActionPreference='Stop'\n$WarningPreference='SilentlyContinue'\n"
+    script += "Get-ChildItem Env: | Where-Object Name -Match '^(AGENT_BRIDGE_|WD_|CLAUDE_CODE_|GIT_)' | ForEach-Object { Remove-Item -LiteralPath ('Env:'+$_.Name) }\n"
+    for name in ("Assert-WdTurnPath", "Write-WdTurnJson", "Move-WdWakeSnapshot"):
+        script += load(REBOOT / "Invoke-WdLaneTurnLoop.ps1", name)
+    for name in ("Get-WdInlineNativeWakeMessage", "Invoke-WdContinuityOperatorNotice", "Invoke-WdNativeToolsWakeStep"):
+        script += load(consumer, name)
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{digest(manifest)}'
+function Get-WdVerifiedNativeWakeMessage {{ throw 'forced compact fault' }}
+function Send-WdNativeToolsQueueMessage {{ return 'decoy-queue' }}
+$step=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId 01a0a07b-ca98-71e1-90cb-d588435a2d8d -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation ('a'*40) -NativePid 1 -Agent {agent} -SessionId '{session}'
+$env:AGENT_BRIDGE_RUNTIME_ROOT={q(runtime)}
+$request=& {q(bin_dir / 'Write-AgentEvent.ps1')} -Agent operator -Type wake_request -Status assigned -To {agent} -TaskId fixture/after-alert -SessionId operator-session -RunId operator-session -ReceiptJson
+@{{step=$step;request=($request|ConvertFrom-Json)}} | ConvertTo-Json -Depth 16 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result["step"] == "queued"
+    identity = json.loads(last.read_text(encoding="utf-8-sig"))
+    assert identity["session_id"] == "real-lane-session"
+    assert identity["run_id"] == "real-lane-session"
+    expected = result["request"]["expected_responders"][agent]
+    assert expected["session_id"] == expected["run_id"] == "real-lane-session"
+    events = [json.loads(line) for line in (shared / "events.jsonl").read_text(encoding="utf-8-sig").splitlines()]
+    notices = [e for e in events if e["agent"] == agent]
+    assert len(notices) == (1 if session == "real-lane-session" else 0)
+    if notices:
+        assert notices[0]["payload"]["reason"] == "native_wake_prompt_degraded"

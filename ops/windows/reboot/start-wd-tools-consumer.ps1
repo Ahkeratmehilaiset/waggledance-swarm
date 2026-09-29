@@ -572,7 +572,8 @@ function Get-WdVerifiedNativeWakeMessage {
 function Invoke-WdNativeToolsWakeStep {
     param([string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $WakePath, [string] $StatePath, [string] $Generation, [int] $NativePid,
-        [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1')
+        [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1',
+        [string] $SessionId)
     [void](Assert-WdTurnPath $WakePath)
     [void](Assert-WdTurnPath $StatePath)
     $snapshot = $StatePath + '.wake'
@@ -630,10 +631,14 @@ function Invoke-WdNativeToolsWakeStep {
         if (-not $script:WdNativePromptAlerts.ContainsKey($alertKey)) {
             $script:WdNativePromptAlerts[$alertKey] = $true
             Write-Warning 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required'
-            try {
+            if ($SessionId -cnotmatch '^[A-Za-z0-9._:-]{1,160}$') {
+                # A deployment generation is not a lane session. Publishing
+                # under it poisons last_<lane> and future responder bindings.
+                Write-Warning 'Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state'
+            } else { try {
                 [void](Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId -Worktree $Worktree `
-                    -RuntimeRoot (Split-Path -Parent $WakePath) -SessionId $Generation -ErrorText 'native_wake_prompt_integrity')
-            } catch { Write-Warning 'Native wake prompt alert unavailable; degradation retained in relay state' }
+                    -RuntimeRoot (Split-Path -Parent $WakePath) -SessionId $SessionId -ErrorText 'native_wake_prompt_integrity')
+            } catch { Write-Warning 'Native wake prompt alert unavailable; degradation retained in relay state' } }
         }
     }
     if ($env:WD_BRIDGE_BIN) {
@@ -887,6 +892,7 @@ function Invoke-WdContinuityOperatorNotice {
         } finally { $sha.Dispose() }
         $task = [string]$record.task_id
         $reason = switch -Regex ($ErrorText) {
+            '^native_wake_prompt_integrity$' { 'native_wake_prompt_degraded'; break }
             'delivery uncertain' { 'delivery_uncertain'; break }
             'stalled after' { 'continuity_stalled_after_recovery'; break }
             'predates this native session' { 'checkpoint_stale_session'; break }
@@ -1087,7 +1093,7 @@ function Invoke-WdNativeToolsWakeRelay {
             }
             [void](Invoke-WdNativeToolsWakeStep -CliPath $CliPath -ThreadId $ThreadId -Worktree $Worktree `
                 -WakePath (Join-Path $RuntimeRoot ('wake_' + $Agent)) -StatePath $statePath `
-                -Generation $Generation -NativePid $Native.Id -Agent $Agent)
+                -Generation $Generation -NativePid $Native.Id -Agent $Agent -SessionId $SessionId)
             # Ordinary code checks a durable work condition; no periodic model
             # polling. Each overdue checkpoint queues at most once, then alerts
             # on ambiguous delivery instead of risking repeated side effects.

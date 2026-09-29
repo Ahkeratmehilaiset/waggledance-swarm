@@ -255,13 +255,13 @@ def test_relay_history_catchup_is_not_an_operator_incident(tmp_path, ps, catchin
     script += load(TOOLS, 'Invoke-WdNativeToolsWakeRelay')
     script += f"""
 $script:iterations=0; $script:wakes=0; $script:notices=0; $script:alerts=0
-function Invoke-WdNativeToolsWakeStep {{$script:wakes++}}
+function Invoke-WdNativeToolsWakeStep {{param($SessionId) if ($SessionId -cne 'launcher-session') {{throw 'Wake step lost launcher session'}}; $script:wakes++}}
 function Invoke-WdNativeContinuityStep {{throw '{error}'}}
 function Write-WdTurnJson {{$script:alerts++}}
 function Invoke-WdContinuityOperatorNotice {{$script:notices++; return @{{status='published'}}}}
 $native=[pscustomobject]@{{Id=123;StartTime=[DateTime]::UtcNow.AddMinutes(-3)}}
 $native|Add-Member ScriptMethod WaitForExit {{$script:iterations++; return $script:iterations -gt 1}}
-Invoke-WdNativeToolsWakeRelay -Native $native -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -Generation fixture -ExpectedCliHash ('a'*64) -SessionId fixture -WarningAction SilentlyContinue
+Invoke-WdNativeToolsWakeRelay -Native $native -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -Generation fixture -ExpectedCliHash ('a'*64) -SessionId launcher-session -WarningAction SilentlyContinue
 @{{wakes=$script:wakes;notices=$script:notices;alerts=$script:alerts}}|ConvertTo-Json -Compress
 """
     report = json.loads(_run_powershell(script, executable=ps).stdout)

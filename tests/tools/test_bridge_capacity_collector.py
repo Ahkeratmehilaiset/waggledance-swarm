@@ -356,3 +356,135 @@ def test_rpc_errors_do_not_invent_transport_failures(code, expected):
         assert failure.value.state==expected
         assert str(failure.value)=='metadata unavailable'
     asyncio.run(invoke())
+
+
+# -- F3 pool binding (dormant, additive); authored per operator directive, NOT executed yet --
+
+POOL_NOW = datetime.now(timezone.utc)
+
+
+def _pool_registry():
+    import copy
+    from tools.wd_model_registry import load_registry
+    registry, _ = load_registry(Path(__file__).resolve().parents[2] / 'configs' / 'model_registry.json')
+    registry = copy.deepcopy(registry)
+    registry['pools']['codex-plus-weekly'] = {
+        'provider': 'codex', 'limit_id': 'codex', 'window': 'weekly', 'tier': 'standard',
+        'verification': 'verified',
+        'provenance': {'kind': 'operator_reading', 'reference': 'plan page', 'observer': 'operator'}}
+    return registry
+
+
+def _pool_receipt(subject):
+    return {'schema': 'wd.pool-binding-receipt.v1', 'receipt_id': 'b' * 32, 'provider': 'codex',
+            'pool': 'codex-plus-weekly', 'limit_ids': ['codex'],
+            'subject': {'kind': 'auth_context', 'id': subject},
+            'issued_at_utc': (POOL_NOW - timedelta(hours=1)).isoformat(),
+            'expires_at_utc': (POOL_NOW + timedelta(hours=1)).isoformat(),
+            'provenance': {'kind': 'operator_reading', 'reference': 'reading by ops@example.test', 'observer': None}}
+
+
+def _pool_binder(subject, verifier=lambda receipt: True):
+    from tools.bridge_pool_binding import bind_pool
+    registry = _pool_registry()
+    return lambda observation: bind_pool(observation, _pool_receipt(subject), registry, verifier=verifier,
+                                         now=datetime.now(timezone.utc))
+
+
+# The collector's own auth context digest for the Client() fixture.
+POOL_SUBJECT = collector.digest(['context', {'type': 'chatgpt', 'email': 'private@example.test'}])
+
+
+def test_default_collection_is_unchanged_and_never_binds_a_pool():
+    row = collect_claude({'session_id': 'thread1'})
+    assert row['account_pool'] is None and row['pool_identity_state'] == 'unknown'
+    assert 'pool_binding' not in row
+    observation = asyncio.run(collect_codex(Client(), 'context'))
+    assert observation['account_pool'] is None and 'pool_binding' not in observation
+    assert observation['pool_identity_state'] == 'unverified_auth_context'
+    value = {'provider': 'codex', 'account_pool': None}
+    assert collector.apply_pool_binding(value) is value  # no binder: the very same object
+
+
+def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end():
+    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(POOL_SUBJECT)))
+    assert observation['auth_context_id'] == POOL_SUBJECT
+    assert observation['account_pool'] == 'codex-plus-weekly'
+    assert observation['pool_identity_state'] == 'verified_binding'
+    assert set(observation['pool_binding']) == {'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc'}
+    serialized = json.dumps(observation)
+    assert 'ops@example.test' not in serialized and 'private@example' not in serialized
+
+
+@pytest.mark.parametrize('binder,reason', [
+    (lambda observation: None, 'binding_refused'),
+    (lambda observation: ['verified_binding'], 'binding_refused'),
+    (lambda observation: {'schema': 'wd.pool-binding-decision.v1', 'pool_identity_state': 'unverified',
+                          'reason': 'receipt_expired'}, 'receipt_expired'),
+])
+def test_a_refused_or_malformed_decision_keeps_the_pool_unknown(binder, reason):
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=binder)
+    assert row['account_pool'] is None and row['pool_identity_state'] == 'unknown'
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': reason}
+
+
+def test_a_failing_binder_never_fails_the_collection():
+    def broken(observation):
+        raise RuntimeError('verifier backend down: secret-token')
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=broken)
+    assert row['account_pool'] is None
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binder_failed:RuntimeError'}
+    assert 'secret-token' not in json.dumps(row)
+
+
+def _verified_decision(**changes):
+    decision = {'schema': 'wd.pool-binding-decision.v1', 'pool_identity_state': 'verified_binding',
+                'execution_allowed': False, 'provider': 'codex', 'subject_id': POOL_SUBJECT,
+                'account_pool': 'codex-plus-weekly', 'receipt_id': 'b' * 32, 'receipt_sha256': 'f' * 64,
+                'provenance_kind': 'operator_reading',
+                'expires_at_utc': (POOL_NOW + timedelta(hours=1)).isoformat()}
+    decision.update(changes)
+    return decision
+
+
+@pytest.mark.parametrize('change', [
+    {'subject_id': 'd' * 64}, {'provider': 'claude'}, {'execution_allowed': True}, {'expires_at_utc': 'soon'},
+    {'account_pool': ''}, {'account_pool': 'Pool With Spaces'}, {'schema': 'other'},
+    {'receipt_id': 'reading by ops@example.test'}, {'receipt_sha256': None},
+    {'provenance_kind': 'plan_transcription'}, {'pool_identity_state': 'unverified'}])
+def test_a_verified_decision_for_another_subject_or_provider_is_not_applied(change):
+    observation = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_pool': None}
+    good = collector.apply_pool_binding(observation, lambda o: _verified_decision())
+    assert good['account_pool'] == 'codex-plus-weekly'  # success twin
+    assert good['pool_binding']['receipt_id'] == 'b' * 32
+    row = collector.apply_pool_binding(observation, lambda o: _verified_decision(**change))
+    assert row['account_pool'] is None and row['pool_binding']['state'] == 'unverified'
+    assert 'ops@example.test' not in json.dumps(row)
+
+
+def test_only_a_code_shaped_refusal_reason_is_kept():
+    observation = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_pool': None}
+    row = collector.apply_pool_binding(observation, lambda o: {'reason': 'mail ops@example.test'})
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
+    row = collector.apply_pool_binding(observation, lambda o: {'reason': 'receipt_expired'})
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'receipt_expired'}  # success twin
+
+def test_a_receipt_for_another_auth_context_does_not_bind():
+    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder('e' * 64)))
+    assert observation['account_pool'] is None
+    assert observation['pool_binding'] == {'state': 'unverified', 'reason': 'subject_mismatch'}
+
+
+def test_status_expires_a_stored_binding_without_rewriting_the_store(tmp_path):
+    path = tmp_path / 'observations.db'
+    now = datetime(2026, 9, 29, 22, tzinfo=timezone.utc)
+    for context, expires in (('live', now + timedelta(hours=1)), ('gone', now - timedelta(seconds=1))):
+        save_observation(path, dict(provider='codex', observed_at=now.isoformat(), auth_context_id=context,
+                                    account_pool='codex-plus-weekly', pool_identity_state='verified_binding',
+                                    pool_binding={'expires_at_utc': expires.isoformat()}))
+    before = path.read_bytes()
+    rows = {row['auth_context_id']: row for row in status(path, now=now)['observations']}
+    assert rows['live']['account_pool'] == 'codex-plus-weekly'
+    assert rows['live']['pool_identity_state'] == 'verified_binding'
+    assert rows['gone']['account_pool'] is None and rows['gone']['pool_identity_state'] == 'binding_expired'
+    assert path.read_bytes() == before

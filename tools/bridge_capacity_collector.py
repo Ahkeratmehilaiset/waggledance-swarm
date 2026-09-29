@@ -31,6 +31,10 @@ except ModuleNotFoundError:
 
 MAX_RESPONSE = 2 * 1024 * 1024
 READ_METHODS = frozenset({'account/read', 'account/rateLimits/read', 'model/list'})
+# F3 (dormant): the decision schema of tools/bridge_pool_binding.py. It is named, not
+# imported, so this module's imports and every existing code path stay unchanged.
+POOL_DECISION_SCHEMA = 'wd.pool-binding-decision.v1'
+POOL_SUBJECT_FIELDS = {'codex': 'auth_context_id', 'claude': 'native_thread_id'}
 
 
 def read_native_codex(home: Path, thread: str, *, now: datetime | None = None) -> dict:
@@ -263,7 +267,55 @@ class MetadataClient:
         return await asyncio.wait_for(receive(), self.timeout)
 
 
-async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
+def apply_pool_binding(observation: dict, binder=None) -> dict:
+    """F3, additive and dormant. Without a binder (the default on every existing path) the
+    observation is returned unchanged, so account_pool stays None: the raw auth context
+    or session is never a pool. A binder is a trusted caller's closure over
+    tools.bridge_pool_binding.bind_pool (receipt, registry, reviewed verifier, clock). Only
+    its verified decision for this exact provider and subject sets account_pool; any
+    other outcome, including a binder failure, keeps None and records a bounded reason.
+    Only the receipt id, digest, provenance kind and expiry are kept, never its text."""
+    if binder is None:
+        return observation
+    try:
+        decision = binder(dict(observation))
+    except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
+        decision = {'reason': 'binder_failed:' + type(exc).__name__}
+    decision = _dict(decision)
+    provider = observation.get('provider')
+    subject_field = POOL_SUBJECT_FIELDS.get(provider) if isinstance(provider, str) else None
+    verified = (decision.get('schema') == POOL_DECISION_SCHEMA
+                and decision.get('pool_identity_state') == 'verified_binding'
+                and decision.get('execution_allowed') is False
+                and subject_field is not None and decision.get('provider') == provider
+                and _text(observation.get(subject_field))
+                and decision.get('subject_id') == observation.get(subject_field)
+                and observation.get('account_pool') is None
+                and _token(decision.get('account_pool'), r'[a-z0-9][a-z0-9._-]{0,63}')
+                and _token(decision.get('receipt_id'), r'[0-9a-f]{32}')
+                and _token(decision.get('receipt_sha256'), r'[0-9a-f]{64}')
+                and decision.get('provenance_kind') in ('operator_reading', 'local_measurement', 'f21_receipt')
+                and _time(decision.get('expires_at_utc')) is not None)
+    result = dict(observation)
+    if verified:
+        result.update(account_pool=decision['account_pool'], pool_identity_state='verified_binding',
+                      pool_binding={'receipt_id': decision['receipt_id'],
+                                    'receipt_sha256': decision['receipt_sha256'],
+                                    'provenance_kind': decision['provenance_kind'],
+                                    'expires_at_utc': decision['expires_at_utc']})
+    else:
+        # Only a code-shaped reason is kept: no spaces, '@' or other free text is saved.
+        reason = decision.get('reason')
+        result['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
+                                  else 'binding_refused'}
+    return result
+
+
+def _token(value: Any, pattern: str) -> bool:
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binder=None) -> dict:
     started = utcnow()
     before = await client.request('account/read', {'refreshToken': False})
     if before.get('account') is None:
@@ -294,21 +346,21 @@ async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
     account = _dict(before.get('account'))
     # Hash context + visible account shape, not a credential or asserted account ID.
     context_id = digest([auth_context, account])
-    return {'schema': 'wd.capacity-observation.v1', 'provider': 'codex',
+    return apply_pool_binding({'schema': 'wd.capacity-observation.v1', 'provider': 'codex',
             'source_ref': 'codex:account/rateLimits/read', 'collection_started_at': started,
             'observed_at': utcnow(), 'auth_context_id': context_id,
             'account_pool': None, 'pool_identity_state': 'unverified_auth_context',
             'account_type': account['type'], 'plan_type': account.get('planType'),
             'payload': quota_payload(limits, 'codex'), 'catalog': catalog,
             'quota_freshness_basis': 'provider_metadata_request',
-            'execution_allowed': False}
+            'execution_allowed': False}, pool_binder)
 
 
-def collect_claude(payload: dict) -> dict:
+def collect_claude(payload: dict, *, pool_binder=None) -> dict:
     session = payload.get('session_id')
     if not _text(session):
         raise InputError('statusline session identity missing')
-    return {'schema': 'wd.capacity-observation.v1', 'provider': 'claude',
+    return apply_pool_binding({'schema': 'wd.capacity-observation.v1', 'provider': 'claude',
             'source_ref': 'claude:statusline', 'observed_at': utcnow(),
             'native_thread_id': session, 'account_pool': None,
             'pool_identity_state': 'unknown', 'execution_allowed': False,
@@ -317,7 +369,7 @@ def collect_claude(payload: dict) -> dict:
             'effort': _dict(payload.get('effort')).get('level'),
             'payload': quota_payload(payload, 'claude'),
             'usage': {k: _dict(payload.get('context_window')).get(k)
-                      for k in ('total_input_tokens', 'total_output_tokens')}}
+                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder)
 
 
 def save_observation(path: Path, observation: dict) -> None:
@@ -460,6 +512,12 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         row['freshness'] = 'fresh' if 0 <= age <= 300 else 'unknown_or_stale'
         if provider == 'claude':
             row['freshness'] = 'provider_timestamp_unknown'
+        # F3: a stored verified pool binding holds only until its receipt expires; after
+        # that the pool is unknown again (the stored row itself is never rewritten).
+        if row.get('pool_identity_state') == 'verified_binding':
+            expires = _time(_dict(row.get('pool_binding')).get('expires_at_utc'))
+            if expires is None or now >= expires:
+                row.update(account_pool=None, pool_identity_state='binding_expired')
         if failed.get(provider, 0) > sequence:
             row['freshness'] = 'superseded_by_collection_failure'
         row['sequence'] = sequence

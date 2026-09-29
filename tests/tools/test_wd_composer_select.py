@@ -34,7 +34,8 @@ def snapshot(*rows, **over):
 
 def pool_block(pid="a", provider="claude", **over):
     row = {"profile_id": pid, "provider": provider, "pool_id": provider + "/pool", "state": "available",
-           "observed_utc": FRESH, "projected_used_percent": 40.0, "provider_up": True}
+           "observed_utc": FRESH, "projected_used_percent": 40.0, "provider_up": True,
+           "valid_until_utc": "2026-09-29T21:30:00Z"}
     row.update(over)
     return row
 
@@ -192,6 +193,10 @@ FUTURE = "2026-09-29T21:05:00Z"
     ({"pool": pool_block(projected_used_percent="40")}, "quota_unknown_or_stale"),
     ({"pool": pool_block(projected_used_percent=-1)}, "quota_unknown_or_stale"),
     ({"pool": pool_block(provider_up="yes")}, "quota_unknown_or_stale"),
+    # The adapter's bound (receipt age and F3 pool TTL): passed, missing or malformed is unknown quota.
+    ({"pool": pool_block(valid_until_utc=NOW)}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(valid_until_utc=None)}, "quota_unknown_or_stale"),
+    ({"pool": {k: v for k, v in pool_block().items() if k != "valid_until_utc"}}, "quota_unknown_or_stale"),
     ({"pool": pool_block(projected_used_percent=70.5)}, "budget_over_trip_line"),
     # RCO/Tools unbound-eligibility: fresh positive receipts about another subject are refused.
     ({"identity": {"verified": True, "observed_utc": FRESH, "profile_id": "b", "provider": "claude",

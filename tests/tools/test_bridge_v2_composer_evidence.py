@@ -51,17 +51,23 @@ def quality(obs_id, key, value, *, effort="high", cls="general", unit="intellige
                                            "note": None}}
 
 
-def pool(provider, verification):
-    return {"provider": provider, "limit_id": provider + "-5h", "window": "5h", "tier": "unknown",
-            "verification": verification,
-            "provenance": {"kind": "operator_reading", "reference": "fixture reading", "observer": None}}
+def pool(provider, verification, **over):
+    """An F3 af1d0ef8 pool: a verified one is a measurement with a date and a TTL, and it expires."""
+    verified = verification == "verified"
+    row = {"provider": provider, "limit_id": provider + "-5h", "window": "5h", "tier": "unknown",
+           "verification": verification,
+           "provenance": {"kind": "operator_reading", "reference": "fixture reading", "observer": None},
+           "measured_at": iso(NOW - timedelta(hours=2)) if verified else "unknown",
+           "ttl_seconds": 86400 if verified else None}
+    row.update(over)
+    return row
 
 
-def registry(*observations) -> dict:
+def registry(*observations, pool_over=None) -> dict:
     """The shipped F3 v2 registry plus fixture pools and observations."""
     doc = json.loads((ROOT / "configs" / "model_registry.json").read_text(encoding="utf-8"))
-    doc["pools"].update({POOL: pool("claude", "verified"), "claude-unverified": pool("claude", "unverified"),
-                         "codex-plus-5h": pool("codex", "verified")})
+    doc["pools"].update({POOL: pool("claude", "verified", **(pool_over or {})),
+                         "claude-unverified": pool("claude", "unverified"), "codex-plus-5h": pool("codex", "verified")})
     doc["observations"] += list(observations)
     return doc
 
@@ -106,9 +112,9 @@ def profile(pid, key, effort="high", pool_id=POOL):
                                         workload="task:compose", value=1.0)}
 
 
-def inputs(observations=DEFAULT_OBS, *, data=None, edit=None, profiles=None, **param_over) -> dict:
+def inputs(observations=DEFAULT_OBS, *, data=None, edit=None, profiles=None, pool_over=None, **param_over) -> dict:
     """compose() keyword arguments: an honestly bound Decision, pins and policy over the given registry bytes."""
-    data = source(registry(*observations)) if data is None else data
+    data = source(registry(*observations, pool_over=pool_over)) if data is None else data
     policy = signed_policy(data, edit, **param_over)
     digest = activation.canonical_sha256(policy)
     return {"decision": Decision("F24", True, "enabled by the signed policy", digest, 3),
@@ -173,7 +179,8 @@ UNKNOWN_SOURCES = {
     "stale": dict(measured_at=iso(NOW - timedelta(days=8))),
     "future": dict(measured_at=iso(NOW + timedelta(hours=1))),
     "model_level": dict(effort=None),
-    "none_stated": dict(uncertainty={"kind": "none_stated", "low": None, "high": None, "note": None}),
+    # F3 af1d0ef8 allows a measured "exact" with a justification; the adapter maps intervals only.
+    "exact": dict(uncertainty={"kind": "exact", "low": None, "high": None, "note": "fixture: exact by construction"}),
     "task_class": dict(cls="task:compose"),
     "other_unit": dict(unit="score_0_100"),
     "other_version": dict(reference="fixture intelligence_index rerun r0"),
@@ -195,7 +202,7 @@ def test_two_current_values_for_one_cell_are_unknown_not_a_pick():
     assert models(ev) == ["claude-sonnet-5"]
 
 
-@pytest.mark.parametrize("change", ["stale", "model_level", "none_stated", "historical", "other_version"])
+@pytest.mark.parametrize("change", ["stale", "model_level", "exact", "historical", "other_version"])
 def test_a_coding_score_follows_the_same_rules(change):
     over = dict(UNKNOWN_SOURCES[change])
     if change == "other_version":
@@ -301,6 +308,43 @@ def test_the_shipped_policy_never_yields_evidence():
     kwargs = dict(inputs(), policy=config["policy"], decision=Decision("F24", True, "forged", digest, 3),
                   pins={"trusted_policy_sha256": digest, "min_revocation_version": 3})
     assert config["signature"] is None and refusal(kwargs) == "f0_policy_unbounded"
+
+
+@pytest.mark.parametrize("over", [
+    {"measured_at": iso(NOW - timedelta(days=2))},  # past its TTL: pool_state stale
+    {"measured_at": iso(NOW + timedelta(hours=1))},  # dated in the future: pool_state unknown
+])
+def test_a_stale_or_future_verified_pool_does_not_count(over):
+    ev = compose(**inputs(pool_over=over))["evidence"]
+    assert [p["pool"] for p in ev["profiles"]] == [None, None]
+    assert cs.select(ev)["ineligible"]["opus"] == ["quota_unknown_or_stale"]
+
+
+def test_a_later_verification_never_upgrades_an_older_receipt():
+    # The receipts were observed at 20:59:00, before the pool was verified at 20:59:30.
+    ev = compose(**inputs(pool_over={"measured_at": iso(NOW - timedelta(seconds=30))}))["evidence"]
+    assert [p["pool"] for p in ev["profiles"]] == [None, None]
+
+
+def test_a_kept_receipt_is_bounded_by_its_age_and_by_the_pool_ttl():
+    ev = compose(**inputs())["evidence"]
+    assert ev["profiles"][0]["pool"]["valid_until_utc"] == "2026-09-29T21:09:00Z"  # the receipt: 20:59 + 600 s
+    ev = compose(**inputs(pool_over={"ttl_seconds": 2 * 3600 + 300}))["evidence"]
+    assert ev["profiles"][0]["pool"]["valid_until_utc"] == "2026-09-29T21:05:00Z"  # the pool: 19:00 + 2 h 5 min
+    rows = [profile("opus", OPUS), profile("sonnet", SONNET)]
+    rows[0]["pool"]["valid_until_utc"] = "2026-09-29T21:01:00Z"  # a caller's own shorter bound is kept
+    rows[1]["pool"]["valid_until_utc"] = "soon"  # a malformed bound drops the receipt
+    ev = compose(**inputs(profiles=rows))["evidence"]
+    assert ev["profiles"][0]["pool"]["valid_until_utc"] == "2026-09-29T21:01:00Z" and ev["profiles"][1]["pool"] is None
+    rows[0]["pool"]["valid_until_utc"] = "2026-09-30T21:00:00Z"  # a longer caller bound never extends it
+    ev = compose(**inputs(profiles=rows))["evidence"]
+    assert ev["profiles"][0]["pool"]["valid_until_utc"] == "2026-09-29T21:09:00Z"
+
+
+@pytest.mark.parametrize("now", [datetime(9999, 12, 31, 23, 0, tzinfo=timezone(timedelta(hours=-5))),
+                                 datetime(1, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=5)))])
+def test_an_extreme_aware_time_is_unknown_not_a_crash(now):
+    assert refusal(dict(inputs(), now=now)) == "time_unknown"
 
 
 def test_quota_counts_only_on_a_verified_f3_pool_of_the_same_provider():

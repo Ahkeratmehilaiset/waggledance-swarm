@@ -322,6 +322,7 @@ def test_a_conserve_intent_is_classified_from_the_current_windows():
     ev["catalog_sha256"] = inputs_digest(ev["catalog"])
     record = decide(ev)
     assert record["verdict"] == "switch" and record["direction"] == "lower" and record["intent_class"] == "conserve"
+    assert record["execution_allowed"] is False and record["authority"] == "none"
 
 
 @pytest.mark.parametrize("precedence, expected", [

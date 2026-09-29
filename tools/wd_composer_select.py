@@ -16,6 +16,9 @@ cost is only a tie-breaker. It must be in an F3 quota unit (never an API price),
 on the profile's own pool, and on a stated window and workload basis.
 
 Every receipt (identity, auth, turn, pool) must name the profile it is about.
+A pool receipt must also carry ``valid_until_utc``, the adapter's bound from the
+receipt's age and the F3 pool's verification TTL; a missing or passed bound is
+unknown quota.
 The wait for an unavailable top is bounded per task: it starts at the task's
 creation, so no caller-held wait record can extend or shorten it.
 """
@@ -154,8 +157,9 @@ def _eligibility(profile: dict, parameters: dict, now: datetime) -> tuple[str, l
     elif turn.get("profile_id") != profile["profile_id"]:
         reasons.append("turn_unbound")
     pool = profile.get("pool")
+    until = _utc(pool.get("valid_until_utc")) if isinstance(pool, dict) else None
     if not (_fresh(pool, now, max_age) and _text(pool.get("pool_id")) and pool.get("state") in POOL_STATES
-            and type(pool.get("provider_up")) is bool):
+            and type(pool.get("provider_up")) is bool and until is not None and now < until):
         reasons.append("quota_unknown_or_stale")
     elif pool.get("profile_id") != profile["profile_id"] or pool.get("provider") != profile["provider"]:
         reasons.append("quota_unbound")

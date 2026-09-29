@@ -160,7 +160,11 @@ def _read_json(path: Path, limit: int, label: str) -> tuple[Any, bytes]:
         if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
             raise RegistryError(f"{label} path is a symlink or reparse point")
         # Non-blocking open and a regular-file check: a FIFO or device is refused, never waited on.
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        # O_NOFOLLOW (POSIX) fails the open (ELOOP) if a symlink replaced the file after the check
+        # above. Windows has no such flag: a reparse point swapped in between the check and the
+        # open is NOT closed here (disclosed in docs/BRIDGE_MODEL_REGISTRY.md).
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+                     | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise RegistryError(f"{label} is not a regular file")
@@ -449,31 +453,50 @@ def _validate_observation(obs: dict, label: str, models: dict, candidates: dict,
         raise RegistryError(f"{label}: a historical value keeps its source measurement date")
 
 
+def _evaluation_time(now: Any) -> datetime | None:
+    """``now`` as aware UTC, or None (a conservative unknown) when it is absent, not a datetime,
+    naive (no tzinfo, or a tzinfo that names no offset) or unrepresentable in UTC (RCO2 R1).
+    A naive time is never read as local time."""
+    if not isinstance(now, datetime):
+        return None
+    try:
+        if now.utcoffset() is None:
+            return None
+        return now.astimezone(timezone.utc)
+    except (OverflowError, ValueError, TypeError):
+        return None
+
+
 def observation_state(observation: dict, now: datetime | None) -> str:
     """fresh | stale | historical | unverified | unknown. Only ``fresh`` is known (plan section 2.1).
 
-    ``now`` None (an unrepresentable evaluation time) makes every measured value unknown."""
+    An evaluation time that is None, not a datetime, naive or unrepresentable in UTC makes every
+    measured value unknown; the other statuses never depend on the clock."""
     status = observation["status"]
     if status != "measured":
         return status
-    if now is None:
+    current = _evaluation_time(now)
+    if current is None:
         return "unknown"
     measured = _when(observation["measured_at"], "measured_at")
-    if measured - now > FUTURE_SKEW:
+    if measured - current > FUTURE_SKEW:
         return "unknown"  # dated in the future: never trusted
-    return "fresh" if now - measured <= timedelta(seconds=observation["ttl_seconds"]) else "stale"
+    return "fresh" if current - measured <= timedelta(seconds=observation["ttl_seconds"]) else "stale"
 
 
 def pool_state(pool: dict, now: datetime | None) -> str:
-    """verified (inside its TTL), stale, unverified or unknown: a verified pool expires (RCO2 S1)."""
+    """verified (inside its TTL), stale, unverified or unknown: a verified pool expires (RCO2 S1).
+
+    The clock is normalized as in ``observation_state``; an unverified pool never depends on it."""
     if pool["verification"] != "verified":
         return "unverified"
-    if now is None:
+    current = _evaluation_time(now)
+    if current is None:
         return "unknown"
     measured = _when(pool["measured_at"], "pool measured_at")
-    if measured - now > FUTURE_SKEW:
+    if measured - current > FUTURE_SKEW:
         return "unknown"
-    return "verified" if now - measured <= timedelta(seconds=pool["ttl_seconds"]) else "stale"
+    return "verified" if current - measured <= timedelta(seconds=pool["ttl_seconds"]) else "stale"
 
 
 def _resolve(candidates: list) -> dict:
@@ -528,10 +551,9 @@ def model_table(registry: dict, now: datetime | None = None) -> dict:
     current = datetime.now(timezone.utc) if now is None else now
     if not isinstance(current, datetime) or current.tzinfo is None:
         raise RegistryError("model_table needs a timezone-aware time")
-    try:
-        current = current.astimezone(timezone.utc)
-    except (OverflowError, ValueError):
-        current = None  # unrepresentable in UTC: every freshness-dependent cell is unknown
+    # None: unrepresentable in UTC, or a tzinfo that names no offset (never read as local time),
+    # so every freshness-dependent cell is unknown.
+    current = _evaluation_time(current)
     v2 = registry["schema"] == SCHEMA_V2
     measured_at = registry["historical"]["source_measured_at"] if v2 else registry["benchmark"]["fetched_at"]
     benchmark = f"{registry['benchmark']['name']} {registry['benchmark']['version']}"

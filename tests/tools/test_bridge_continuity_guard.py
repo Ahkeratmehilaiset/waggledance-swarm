@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import ast
+import base64
 import copy
 import hashlib
 import io
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -577,7 +581,7 @@ def test_module_imports_and_calls_stay_pure():
             imported |= {a.name for a in node.names}
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module)
-    assert imported <= {"__future__", "argparse", "hashlib", "json", "re", "sys",
+    assert imported <= {"__future__", "argparse", "base64", "binascii", "hashlib", "json", "re", "sys",
                         "datetime", "collections.abc", "typing"}
     banned = {"now", "utcnow", "today", "time", "getenv", "environ", "system", "open"}
     attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
@@ -888,3 +892,85 @@ def test_done_checkpoint_ignores_control_tokens():
 def test_malformed_blockers_are_unknown(blockers):
     c = dict(cp(), blockers=blockers)
     assert evaluate(snap(checkpoint=c), NOW)["reasons"] == ["bad_list:checkpoint.blockers"]
+
+
+# --- base64 snapshot transport (PS5 strips quotes from native argv) ------------------------
+
+def b64(text) -> str:
+    raw = text if isinstance(text, bytes) else text.encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def run_cli(*argv):
+    out = io.StringIO()
+    rc = guard.main(list(argv), stdout=out)
+    return rc, json.loads(out.getvalue())
+
+
+def test_cli_base64_snapshot_equals_json_snapshot():
+    s = snap(events=[event()], checkpoint=dict(cp(), next_action="\u00e4\u00f6 \"quoted\" work"))
+    rc, via_b64 = run_cli("--snapshot-base64", b64(json.dumps(s, ensure_ascii=False)), "--now-utc", NOW)
+    assert rc == 0
+    assert via_b64 == evaluate(s, NOW)
+    assert via_b64["verdict"] == "dispatch"
+
+
+@pytest.mark.parametrize("text,reason", [
+    ("", "snapshot_base64_invalid"),
+    ("!!!!", "snapshot_base64_invalid"),
+    ("eyJ", "snapshot_base64_invalid"),                       # missing padding
+    ("eyJ9\n", "snapshot_base64_invalid"),                    # whitespace
+    ("eyJ 9", "snapshot_base64_invalid"),
+    ("e30-", "snapshot_base64_invalid"),                      # url-safe alphabet
+    ("QR==", "snapshot_base64_invalid"),                      # non-canonical padding bits
+    ("e30===", "snapshot_base64_invalid"),
+    (b64(b"\xff\xfe{}"), "snapshot_utf8_invalid"),
+    (b64(b"\xef\xbb\xbf{}"), "snapshot_utf8_invalid"),        # UTF-8 BOM
+    (b64("{not json"), "snapshot_json_invalid"),
+    (b64('{"a": 1, "a": 2}'), "snapshot_json_invalid"),       # duplicate key
+    (b64('{"a": NaN}'), "snapshot_json_invalid"),
+])
+def test_cli_invalid_base64_utf8_or_json_is_unknown(text, reason):
+    rc, d = run_cli("--snapshot-base64", text, "--now-utc", NOW)
+    assert rc == 0
+    assert d["verdict"] == "unknown"
+    assert d["reasons"] == [reason]
+    assert d["escalation"] == "operator"
+
+
+def test_cli_base64_of_non_object_is_evaluated_as_unknown():
+    rc, d = run_cli("--snapshot-base64", b64("[]"), "--now-utc", NOW)
+    assert d["verdict"] == "unknown"
+
+
+@pytest.mark.parametrize("argv", [
+    ["--snapshot-json", "{}", "--snapshot-base64", "e30=", "--now-utc", NOW],
+    ["--now-utc", NOW],
+    ["--snapshot-base64", "e30="],
+])
+def test_cli_snapshot_sources_are_mutually_exclusive_and_required(argv):
+    with pytest.raises(SystemExit) as exc:
+        guard.main(argv, stdout=io.StringIO())
+    assert exc.value.code == 2
+
+
+@pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="Windows PowerShell 5.1 absent")
+def test_base64_survives_windows_powershell_native_argv(tmp_path):
+    # The raw JSON argv is mangled by PS5 (quotes stripped); base64 is quote-free.
+    s = snap(checkpoint=cp(status="done"))
+    script = tmp_path / "call.ps1"
+    script.write_text(
+        "param([string]$Py, [string]$Guard, [string]$Arg, [string]$Now)\n"
+        "& $Py -B $Guard '--snapshot-base64' $Arg '--now-utc' $Now\n"
+        "& $Py -B $Guard '--snapshot-json' ([Text.Encoding]::UTF8.GetString("
+        "[Convert]::FromBase64String($Arg))) '--now-utc' $Now\n", encoding="utf-8")
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(script), sys.executable, guard.__file__, b64(json.dumps(s)), NOW],
+        capture_output=True, text=True, timeout=120)
+    lines = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    assert lines, proc.stderr
+    assert lines[0] == evaluate(s, NOW)
+    # Control: the same snapshot as raw JSON argv is mangled by PS5 (usage error
+    # or invalid JSON), never the correct decision.
+    assert len(lines) == 1 or lines[1]["verdict"] == "unknown"

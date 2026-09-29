@@ -191,20 +191,22 @@ def fake_git(changed: tuple[str, ...], *, diff_code=0, object_code=0,
     def run(command, **kwargs):
         calls.append(tuple(command))
         assert kwargs.get("shell") is not True
-        assert command[0] == "git"
-        if command[1:3] == ["cat-file", "-t"]:
+        assert Path(command[0]).name.lower() in ("git", "git.exe")
+        assert command[1] == "-C"
+        args = command[3:]
+        if args[:2] == ["cat-file", "-t"]:
             return subprocess.CompletedProcess(command, object_code, b"commit\n", b"")
-        if command[1] == "merge-base":
+        if args[0] == "merge-base":
             return subprocess.CompletedProcess(command, 0, (merge_base + "\n").encode(), b"")
-        if command[1] == "show":
-            relative = command[2].split(":", 1)[1]
+        if args[0] == "show":
+            relative = args[1].split(":", 1)[1]
             source = ci_scope if relative == "tools/classify_bridge_ci_scope.py" else selector
             return subprocess.CompletedProcess(command, show_code, Path(source.__file__).read_bytes(), b"")
-        if command[1:3] == ["rev-parse", "HEAD"]:
+        if args[:2] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(command, 0, (head + "\n").encode(), b"")
-        if command[1] == "status":
+        if args[0] == "status":
             return subprocess.CompletedProcess(command, status_code, b"", b"")
-        assert command[1:] == ["diff", "--name-only", "-z", "--no-renames", BASE, HEAD]
+        assert args == ["diff", "--name-only", "-z", "--no-renames", BASE, HEAD]
         return subprocess.CompletedProcess(command, diff_code,
                                            b"\0".join(p.encode() for p in changed) + (b"\0" if changed else b""), b"")
 
@@ -273,7 +275,38 @@ def test_complete_eight_path_bridge_fixture_narrows(tmp_path):
     assert result["scope"] == "bridge", result
     assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in EIGHT)))
     assert result["changed_files"] == list(EIGHT)
-    assert any(command[1:5] == ("diff", "--name-only", "-z", "--no-renames") for command in calls)
+    assert any(command[3:7] == ("diff", "--name-only", "-z", "--no-renames") for command in calls)
+
+
+def test_git_process_uses_trusted_router_cwd_and_explicit_checkout(tmp_path):
+    root = fixture_repo(tmp_path)
+    original, _ = fake_git(EIGHT)
+    trusted = Path(ci_scope.__file__).resolve().parent
+    observed = []
+
+    def guarded(command, **kwargs):
+        observed.append((command, kwargs["cwd"]))
+        assert kwargs["cwd"] == trusted
+        assert command[1:3] == ["-C", str(root.resolve())]
+        return original(command, **kwargs)
+
+    result = classify_scope(BASE, HEAD, root, run_git=guarded)
+    assert result["scope"] == "bridge", result
+    assert observed
+
+
+def test_checkout_git_executable_is_rejected_before_invocation(tmp_path, monkeypatch):
+    root = fixture_repo(tmp_path)
+    checkout_git = root / "git.exe"
+    checkout_git.write_bytes(b"untrusted executable")
+    monkeypatch.setattr(ci_scope.shutil, "which", lambda name: str(checkout_git))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("checkout git.exe must not run")
+
+    result = classify_scope(BASE, HEAD, root, run_git=forbidden)
+    assert result["scope"] == "full"
+    assert "Git executable" in result["reason"]
 
 
 @pytest.mark.parametrize("policy", [
@@ -393,7 +426,7 @@ def test_malformed_or_non_utf8_diff_fails_closed(tmp_path, raw):
     normal, _ = fake_git(EIGHT)
 
     def malformed_git(command, **kwargs):
-        if command[1] == "diff":
+        if command[3] == "diff":
             return subprocess.CompletedProcess(command, 0, raw, b"")
         return normal(command, **kwargs)
 

@@ -204,7 +204,9 @@ def test_control_and_shell_characters_are_not_safe_paths(character):
 
 
 def test_deeply_nested_router_json_is_rejected(tmp_path):
-    depth = sys.getrecursionlimit() + 100
+    # CPython's JSON scanner can exceed the Python recursion limit. This depth
+    # distinguishes the old uncaught RecursionError from the guarded parser.
+    depth = 100000
     raw = b"[" * depth + b"0" + b"]" * depth
     assert caller._validate_output(raw, "a" * 40, "b" * 40, tmp_path) is None
 

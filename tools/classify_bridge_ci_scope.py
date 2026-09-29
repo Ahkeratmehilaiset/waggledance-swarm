@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Callable, Sequence
@@ -85,37 +86,45 @@ def classify_scope(base: str, head: str, repo_root: str | Path = ".",
         root = Path(repo_root).resolve(strict=True)
         if not root.is_dir():
             return full("checkout root is not a directory")
-        if Path(__file__).resolve().parent != Path(selector.__file__).resolve().parent:
+        trusted_dir = Path(__file__).resolve().parent
+        if trusted_dir != Path(selector.__file__).resolve().parent:
             return full("classifier and selector were loaded from different directories")
+        if trusted_dir.is_relative_to(root):
+            return full("classifier was loaded from proposed checkout")
+        git_name = shutil.which("git")
+        if not git_name:
+            return full("trusted Git executable unavailable")
+        git_executable = Path(git_name).resolve(strict=True)
+        if not git_executable.is_file() or git_executable.is_relative_to(root):
+            return full("Git executable resolves inside proposed checkout")
+
+        def git(*args: str):
+            return run_git([str(git_executable), "-C", str(root), *args], cwd=trusted_dir,
+                           capture_output=True, check=False)
+
         for commit in (base, head):
-            probe = run_git(["git", "cat-file", "-t", commit], cwd=root,
-                            capture_output=True, check=False)
+            probe = git("cat-file", "-t", commit)
             if probe.returncode != 0 or probe.stdout != b"commit\n":
                 return full(f"git commit unavailable or not a commit: {commit}")
-        common = run_git(["git", "merge-base", base, head], cwd=root,
-                         capture_output=True, check=False)
+        common = git("merge-base", base, head)
         if common.returncode != 0 or common.stdout.strip().decode("ascii", "strict").lower() != base.lower():
             return full("base is not the exact merge-base of head")
         for loaded, relative in ((Path(__file__), "tools/classify_bridge_ci_scope.py"),
                                  (Path(selector.__file__), "tools/select_affected_tests.py")):
-            original = run_git(["git", "show", f"{base}:{relative}"], cwd=root,
-                               capture_output=True, check=False)
+            original = git("show", f"{base}:{relative}")
             if original.returncode != 0 or not isinstance(original.stdout, bytes):
                 return full(f"trusted base policy missing: {relative}")
             if loaded.read_bytes() != original.stdout:
                 return full(f"loaded tool differs from trusted base: {relative}")
-        checkout = run_git(["git", "rev-parse", "HEAD"], cwd=root,
-                           capture_output=True, check=False)
+        checkout = git("rev-parse", "HEAD")
         if checkout.returncode != 0 or checkout.stdout.strip().decode("ascii", "strict").lower() != head.lower():
             return full("checked-out HEAD differs from requested head")
-        status = run_git(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-                         cwd=root, capture_output=True, check=False)
+        status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
         if status.returncode != 0 or not isinstance(status.stdout, bytes):
             return full("git status failed or returned malformed output")
         if status.stdout:
             return full("dirty checkout (tracked, staged, or untracked paths)")
-        diff = run_git(["git", "diff", "--name-only", "-z", "--no-renames", base, head],
-                       cwd=root, capture_output=True, check=False)
+        diff = git("diff", "--name-only", "-z", "--no-renames", base, head)
         if diff.returncode != 0:
             return full(f"git diff failed with exit {diff.returncode}")
         raw = diff.stdout

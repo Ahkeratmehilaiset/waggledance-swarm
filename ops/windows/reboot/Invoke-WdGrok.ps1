@@ -32,14 +32,26 @@ if ($LifecycleBase64) {
     $fleet=Get-Content -LiteralPath $fleetPath -Raw | ConvertFrom-Json
     $env:AGENT_BRIDGE_RUNTIME_ROOT=[string]$fleet.runtime_root
     $writer=Join-Path $PSScriptRoot 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
-    $payload=[ordered]@{schema='wd.grok-consultation-event.v1';consultation_id=[string]$state.request_id;
+    $requestId=[string]$state.request_id
+    $observationId=[string]$state.observation_id
+    if ($event.stage -ceq 'deferred') {
+        # A deferral reserves nothing: it names its own observation, never a consultation id.
+        if ($requestId -or $observationId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid Grok deferral observation' }
+        $consultationId=$null
+        $session='grok-deferral-' + $observationId
+    } else {
+        if ($observationId -or $requestId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid Grok consultation id' }
+        $consultationId=$requestId
+        $session='grok-consult-' + $requestId
+    }
+    $payload=[ordered]@{schema='wd.grok-consultation-event.v1';consultation_id=$consultationId;
         stage=[string]$event.stage;authority_effect='none';advisory_only=$true;
         budget_ref='C:\Python\grok-scout-reports\hourly-state.json'}
-    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','error_type','budget_exception')) {
+    if ($event.stage -ceq 'deferred') { $payload['observation_id']=$observationId }
+    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','hourly_budget_next_eligible_utc','error_type','budget_exception')) {
         if ($state.PSObject.Properties[$key]) { $payload[$key]=$state.$key }
     }
     $recipient=if ($event.stage -cin @('answered','failed')) { 'codex-lead-1' } else { 'operator' }
-    $session='grok-consult-' + [string]$state.request_id
     $message='Grok advisory consultation ' + $event.stage + '; task=' + $state.task_id
     if ($payload.Contains('report_path')) { $message+='; report=' + $payload.report_path }
     & $writer -Agent grok-scout-1 -Type status -Status ('consultation_' + $event.stage) `
@@ -92,10 +104,36 @@ if ($ExceptionPath -or $ExceptionSha256) {
     $arguments += @('--exception-path', ([IO.Path]::GetFullPath($ExceptionPath)), '--exception-sha256', $ExceptionSha256)
 }
 $previousGeneration = $env:WD_BRIDGE_GENERATION
+# A wrapper that ends without publishing an exit code is reported as a failure (1), never success.
+$global:LASTEXITCODE = 1
 try {
     $env:WD_BRIDGE_GENERATION = [string]$manifest.source_commit
     & $wrapper -Tool $tool -VerifyPackage @arguments
+    $toolExitCode = $global:LASTEXITCODE
 } finally {
     $env:WD_BRIDGE_GENERATION = $previousGeneration
+}
+# The Python exit code is the truthful result: 0 only for an answered consultation or a
+# successful read-only status/inventory, 1 failed, 2 deferred or blocked (the JSON status
+# tells them apart). When THIS script is the process's -File target, it exits with that
+# code; otherwise PowerShell -File would report 0 after a failed consultation. Every other
+# caller (a script using &, -Command, a dot-source) keeps the Invoke-WdBridgePython.ps1
+# convention: no exit, which would abandon the caller's output capture; the code stays in
+# $LASTEXITCODE.
+$global:LASTEXITCODE = $toolExitCode
+$processArguments = [Environment]::GetCommandLineArgs()
+$isFileTarget = $false
+for ($index = 1; $index -lt $processArguments.Count - 1; $index++) {
+    if ($processArguments[$index] -match '^[-/](?i:f|fi|fil|file)$') {
+        try {
+            $isFileTarget = [IO.Path]::GetFullPath($processArguments[$index + 1]) -ieq [IO.Path]::GetFullPath($PSCommandPath)
+        } catch {
+            $isFileTarget = $false
+        }
+        break
+    }
+}
+if ($isFileTarget) {
+    exit $toolExitCode
 }
 

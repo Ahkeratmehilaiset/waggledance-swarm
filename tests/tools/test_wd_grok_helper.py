@@ -568,7 +568,8 @@ def test_exception_parameters_reach_verified_python_wrapper(tmp_path, shell):
     shutil.copyfile(REBOOT / script.name, script)
     stub = tmp_path / "Invoke-WdBridgePython.ps1"
     stub.write_text('param([string]$Tool,[switch]$VerifyPackage)\n'
-                    '[pscustomobject]@{tool=$Tool;verified=[bool]$VerifyPackage;argv=@($args)} | ConvertTo-Json -Compress')
+                    '[pscustomobject]@{tool=$Tool;verified=[bool]$VerifyPackage;argv=@($args)} | ConvertTo-Json -Compress\n'
+                    '$global:LASTEXITCODE = 0\n')  # like the real wrapper, the stub publishes its tool code
     manifest = tmp_path / "deployment-manifest.json"
     manifest.write_text(json.dumps({"source_commit": "fixture", "files": {
         stub.name: hashlib.sha256(stub.read_bytes()).hexdigest().upper()}}))
@@ -677,3 +678,96 @@ def test_active_grok_blocks_migration_without_mutation(tmp_path):
     assert result.returncode != 0
     assert "invocation is active" in result.stderr
     assert not machine.exists()
+
+
+# ---------------------------------------------------------------------------
+# Deferral metadata and truthful wrapper exit codes (authored per the operator
+# no-runs directive 2026-09-29; NOT executed by the author).
+# ---------------------------------------------------------------------------
+
+def _reserved(root, age, timeout_seconds=300):
+    write_state(root, {"schema": SCHEMA, "status": "reserved", "task_id": "previous/task",
+                       "request_id": "previous-request", "timeout_seconds": timeout_seconds,
+                       "last_attempt_utc": (NOW - timedelta(seconds=age)).isoformat()})
+
+
+@pytest.mark.parametrize("age", [10, 5000])
+def test_status_of_an_unfinished_attempt_has_no_next_eligible_time(tmp_path, age):
+    _reserved(tmp_path, age)
+    report = status(tmp_path, NOW)
+    clock = (NOW - timedelta(seconds=age) + timedelta(hours=1)).isoformat()
+    assert report["next_eligible_utc"] is None and report["eligible"] is False
+    assert report["hourly_budget_next_eligible_utc"] == clock
+    assert report["hourly_budget_eligible"] is (age >= 3600)
+    assert report["status"] == ("reserved" if age < 300 else "interrupted_or_unknown")
+
+
+def test_unreconciled_deferral_has_no_next_eligible_time_and_mints_no_request_id(tmp_path):
+    import re
+    _reserved(tmp_path, 5000)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    events = []
+    report = consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW,
+                     runner=lambda *a, **k: pytest.fail("unfinished attempt bypass"),
+                     emitter=lambda stage, event: events.append((stage, event)))
+    clock = (NOW - timedelta(seconds=5000) + timedelta(hours=1)).isoformat()
+    assert report["decision"] == "deferred_unreconciled_attempt" and report["status"] == "deferred"
+    assert report["next_eligible_utc"] is None and report["hourly_budget_next_eligible_utc"] == clock
+    assert report["request_id"] is None and re.fullmatch(r"[0-9a-f]{32}", report["observation_id"])
+    (stage, event), = events
+    assert stage == "deferred" and event["request_id"] is None
+    assert event["observation_id"] == report["observation_id"]
+    assert event["next_eligible_utc"] is None and event["hourly_budget_next_eligible_utc"] == clock
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert wd_grok_helper.consultation_exit_code(report) == 2
+
+
+def test_hourly_deferral_keeps_the_clock_and_mints_no_request_id(tmp_path):
+    seed(tmp_path, age=1)
+    events = []
+    report = consult(tmp_path, "later/task", "ask", ["fake"], now=NOW,
+                     runner=lambda *a, **k: pytest.fail("budget bypass"),
+                     emitter=lambda stage, event: events.append((stage, event)))
+    clock = (NOW - timedelta(seconds=1) + timedelta(hours=1)).isoformat()
+    assert report["decision"] == "deferred_hourly_limit"
+    assert report["next_eligible_utc"] == clock == report["hourly_budget_next_eligible_utc"]
+    (stage, event), = events
+    assert event["request_id"] is None and event["observation_id"] == report["observation_id"]
+
+
+def test_lifecycle_writer_separates_deferral_observations_from_consultations():
+    # Static guard: the lifecycle branch needs the installed bundle and cannot run here.
+    wrapper = (REBOOT / "Invoke-WdGrok.ps1").read_text()
+    assert "'grok-deferral-' + $observationId" in wrapper and "'grok-consult-' + $requestId" in wrapper
+    assert "Invalid Grok deferral observation" in wrapper and "Invalid Grok consultation id" in wrapper
+    assert "$consultationId=$null" in wrapper and "'hourly_budget_next_eligible_utc'" in wrapper
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", sorted({p for p in (PS, shutil.which("pwsh")) if p}))
+@pytest.mark.parametrize("code", [0, 1, 2])
+def test_wrapper_exit_code_is_the_python_result_and_capture_is_kept(tmp_path, shell, code):
+    import hashlib
+    import os
+    script = tmp_path / "Invoke-WdGrok.ps1"
+    shutil.copyfile(REBOOT / script.name, script)
+    stub = tmp_path / "Invoke-WdBridgePython.ps1"
+    stub.write_text('param([string]$Tool,[switch]$VerifyPackage)\n'
+                    "'{\"status\":\"stub\"}'\n"
+                    f"$global:LASTEXITCODE = {code}\n")
+    manifest = tmp_path / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"source_commit": "fixture", "files": {
+        stub.name: hashlib.sha256(stub.read_bytes()).hexdigest().upper()}}))
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env["WD_REBOOT_EXPECTED_MANIFEST_HASH"] = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    # A top-level -File run exits with the Python code (it used to be 0 even after a failure).
+    top = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script), "-Status"],
+                         capture_output=True, text=True, timeout=30, env=env)
+    assert top.returncode == code, top.stdout + top.stderr
+    assert '"status":"stub"' in top.stdout
+    # An in-process caller keeps its output capture and reads the code from $LASTEXITCODE.
+    captured = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                               f"$out = & '{script}' -Status; if (-not ($out -match 'stub')) {{ exit 99 }}; "
+                               "exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=30, env=env)
+    assert captured.returncode == code, captured.stdout + captured.stderr

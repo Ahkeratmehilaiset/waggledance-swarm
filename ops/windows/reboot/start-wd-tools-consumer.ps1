@@ -688,7 +688,7 @@ function Invoke-WdContinuityOperatorNotice {
         -Reason $reason -CheckpointDigest $digest
     $receipt = $result | Out-String | ConvertFrom-Json -ErrorAction Stop
     if ($receipt.schema -cne 'wd.continuity-alert-result.v1' -or
-        $receipt.status -cnotin @('published','already_reported','unknown')) { throw 'Continuity notice receipt invalid' }
+        $receipt.status -cnotin @('published','already_reported','queued','unknown')) { throw 'Continuity notice receipt invalid' }
     return $receipt
 }
 
@@ -850,6 +850,7 @@ function Invoke-WdNativeToolsWakeRelay {
                         $notice = Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId `
                             -Worktree $Worktree -ErrorText $continuityError
                         if ($notice.status -ceq 'unknown') { Write-Warning 'Continuity operator notice delivery is unknown; inspect durable alert ledger' }
+                        if ($notice.status -ceq 'queued') { Write-Warning 'Continuity operator notice is spooled, not yet confirmed operator-visible' }
                     } catch {
                         Write-Warning ('Continuity operator notice unavailable: ' + $_.Exception.Message)
                     }

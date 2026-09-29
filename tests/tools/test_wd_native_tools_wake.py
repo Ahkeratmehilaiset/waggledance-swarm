@@ -52,7 +52,7 @@ Invoke-WdContinuityDecision -Snapshot $snapshot -NowUtc '2026-09-29T05:00:00Z' |
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['valid', 'missing', 'foreign', 'tampered', 'bad_receipt'])
+@pytest.mark.parametrize('case', ['valid', 'missing', 'foreign', 'tampered', 'bad_receipt', 'queued'])
 def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
@@ -62,6 +62,7 @@ def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_p
         'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest)\n'
         f'$PSBoundParameters | ConvertTo-Json -Compress | Set-Content -LiteralPath {q(capture)}\n'
         + ('\'{}\'\n' if case == 'bad_receipt' else
+           '\'{"schema":"wd.continuity-alert-result.v1","status":"queued"}\'\n' if case == 'queued' else
            '\'{"schema":"wd.continuity-alert-result.v1","status":"published"}\'\n'),
         encoding='utf-8')
     manifest = bundle / 'deployment-manifest.json'
@@ -109,6 +110,45 @@ def test_lead_imports_continuity_dependencies_from_verified_code():
     for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents',
                  'Invoke-WdContinuityOperatorNotice'):
         assert f"'{name}'" in imports
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_real_operator_publisher_and_caller_publish_once_without_ending_host(tmp_path, ps):
+    from test_wd_continuity_alert import MOCK_WRITER
+
+    bundle = tmp_path / 'bundle'
+    bin_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
+    bin_dir.mkdir(parents=True)
+    writer = bin_dir / 'Write-AgentEvent.ps1'
+    writer.write_text(MOCK_WRITER, encoding='utf-8')
+    publisher = bundle / 'Send-WdContinuityAlert.ps1'
+    shutil.copyfile(REBOOT / publisher.name, publisher)
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': {
+        path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest().upper()
+        for path in (writer, publisher)}}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    capture = tmp_path / 'events.jsonl'
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+$env:WD_TEST_ALERT_CAPTURE={q(capture)}
+$env:WD_TEST_ALERT_MODE='canonical'
+$results=@(1..2 | ForEach-Object {{
+ Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -ErrorText 'checkpoint missing'
+}})
+@{{alive=$true;results=$results}} | ConvertTo-Json -Depth 10 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['alive'] is True
+    assert [r['status'] for r in report['results']] == ['published', 'already_reported'], report
+    events = [json.loads(line) for line in capture.read_text(encoding='utf-8-sig').splitlines()]
+    assert len(events) == 1
+    assert events[0]['To'] == 'operator' and events[0]['Type'] == 'message'
+    assert json.loads(events[0]['PayloadJson'])['authority'] == 'none'
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

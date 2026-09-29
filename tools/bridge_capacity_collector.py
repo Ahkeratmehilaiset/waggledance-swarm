@@ -267,16 +267,22 @@ class MetadataClient:
         return await asyncio.wait_for(receive(), self.timeout)
 
 
-def apply_pool_binding(observation: dict, binder=None) -> dict:
+def apply_pool_binding(observation: dict, binder=None, *, now: datetime | None = None) -> dict:
     """F3, additive and dormant. Without a binder (the default on every existing path) the
     observation is returned unchanged, so account_pool stays None: the raw auth context
     or session is never a pool. A binder is a trusted caller's closure over
     tools.bridge_pool_binding.bind_pool (receipt, registry, reviewed verifier, clock). Only
     its verified decision for this exact provider and subject sets account_pool; any
     other outcome, including a binder failure, keeps None and records a bounded reason.
-    Only the receipt id, digest, provenance kind and expiry are kept, never its text."""
+    Only the receipt id, digest, provenance kind and expiry are kept, never its text.
+    The decision must still be valid at the apply boundary: ``now`` (aware, injectable;
+    the current UTC time by default) must be STRICTLY before its expiry, so a cached or
+    delayed decision never sets even a momentarily expired pool (Tools a673ecb4)."""
     if binder is None:
         return observation
+    current = datetime.now(timezone.utc) if now is None else now
+    if not isinstance(current, datetime) or current.tzinfo is None:
+        raise InputError('apply_pool_binding needs a timezone-aware time')
     try:
         decision = binder(dict(observation))
     except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
@@ -296,6 +302,8 @@ def apply_pool_binding(observation: dict, binder=None) -> dict:
                 and _token(decision.get('receipt_sha256'), r'[0-9a-f]{64}')
                 and decision.get('provenance_kind') in ('operator_reading', 'local_measurement', 'f21_receipt')
                 and _time(decision.get('expires_at_utc')) is not None)
+    expired = verified and not current < _time(decision['expires_at_utc'])
+    verified = verified and not expired
     result = dict(observation)
     if verified:
         result.update(account_pool=decision['account_pool'], pool_identity_state='verified_binding',
@@ -305,7 +313,7 @@ def apply_pool_binding(observation: dict, binder=None) -> dict:
                                     'expires_at_utc': decision['expires_at_utc']})
     else:
         # Only a code-shaped reason is kept: no spaces, '@' or other free text is saved.
-        reason = decision.get('reason')
+        reason = 'decision_expired' if expired else decision.get('reason')
         result['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
                                   else 'binding_refused'}
     return result
@@ -315,7 +323,8 @@ def _token(value: Any, pattern: str) -> bool:
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
 
-async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binder=None) -> dict:
+async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binder=None,
+                        pool_now: datetime | None = None) -> dict:
     started = utcnow()
     before = await client.request('account/read', {'refreshToken': False})
     if before.get('account') is None:
@@ -353,10 +362,10 @@ async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binde
             'account_type': account['type'], 'plan_type': account.get('planType'),
             'payload': quota_payload(limits, 'codex'), 'catalog': catalog,
             'quota_freshness_basis': 'provider_metadata_request',
-            'execution_allowed': False}, pool_binder)
+            'execution_allowed': False}, pool_binder, now=pool_now)
 
 
-def collect_claude(payload: dict, *, pool_binder=None) -> dict:
+def collect_claude(payload: dict, *, pool_binder=None, pool_now: datetime | None = None) -> dict:
     session = payload.get('session_id')
     if not _text(session):
         raise InputError('statusline session identity missing')
@@ -369,7 +378,7 @@ def collect_claude(payload: dict, *, pool_binder=None) -> dict:
             'effort': _dict(payload.get('effort')).get('level'),
             'payload': quota_payload(payload, 'claude'),
             'usage': {k: _dict(payload.get('context_window')).get(k)
-                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder)
+                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder, now=pool_now)
 
 
 def save_observation(path: Path, observation: dict) -> None:

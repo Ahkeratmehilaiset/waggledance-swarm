@@ -160,6 +160,30 @@ def test_the_verifier_sees_a_copy_and_cannot_change_the_decision():
     assert seen and seen[0] is not original
 
 
+def test_a_verifier_closing_over_the_original_receipt_cannot_change_the_result():
+    # Tools a673ecb4: the receipt is snapshotted before any check, so mutating the CALLER's
+    # object from inside the verifier (not only the verifier's own copy) changes nothing.
+    original = receipt()
+
+    def aliasing(_copy):
+        original["pool"] = "someone-else"
+        original["subject"]["id"] = "d" * 64
+        return True
+
+    decision = decide(body=original, verifier=aliasing)
+    assert decision["account_pool"] == "codex-plus-weekly" and decision["subject_id"] == CONTEXT
+    assert decision["receipt_sha256"] == binding.canonical_sha256(receipt())   # hash of the snapshot
+
+
+def test_a_pool_limit_the_observation_did_not_measure_is_never_lent_by_a_broader_receipt():
+    spark = registry(**{"codex-plus-weekly": dict(registry()["pools"]["codex-plus-weekly"], limit_id="codex_spark")})
+    broad = receipt(limit_ids=["codex", "codex_spark"])
+    assert_refused(decide(body=broad, reg=spark), "pool_limit_not_observed")   # only "codex" was observed
+    both = codex_observation(payload={"rateLimitsByLimitId": {
+        "codex": {"limitId": "codex", "primary": None, "secondary": None},
+        "codex_spark": {"limitId": "codex_spark", "primary": None, "secondary": None}}})
+    assert decide(observation=both, body=broad, reg=spark)["account_pool"] == "codex-plus-weekly"   # twin
+
 def test_the_verifier_is_consulted_only_after_every_other_check():
     calls = []
     decision = decide(body=receipt(limit_ids=["other"]), verifier=lambda r: calls.append(r) or True)

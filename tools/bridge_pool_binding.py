@@ -24,7 +24,10 @@ pool, and nothing here derives a pool from them.
 * the pool exists in a valid v2 model registry (RCO1 af1d0ef8 or later), belongs to the
   same provider, is ``verified`` at ``now`` by the registry's own ``pool_state`` (a verified
   pool past its TTL is stale, a future-dated one unknown: both refuse), and its
-  ``limit_id`` (when set) is covered by the receipt. The decision's ``expires_at_utc`` is
+  ``limit_id`` (when set) is covered by the receipt AND was measured by this observation
+  (an unobserved pool limit is unknown, never lent by a broader receipt). The observation
+  and receipt are deep-copied before any check, so no alias (for example a verifier that
+  closes over the caller's receipt) can change a validated value. The decision's ``expires_at_utc`` is
   the EARLIER of the receipt expiry and the pool's freshness expiry (``measured_at`` +
   ``ttl_seconds``), so a stored binding never outlives the registry verification;
 * last, an injected verifier returns exactly ``True`` for a copy of the receipt. The
@@ -246,6 +249,9 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
     try:
         _require(isinstance(now, datetime) and now.tzinfo is not None, "clock_invalid")
         current = now.astimezone(timezone.utc)
+        # Private snapshots first (Tools a673ecb4): the caller's objects may be aliased by the
+        # verifier or another holder; nothing validated below can change afterwards.
+        observation, receipt = copy.deepcopy(observation), copy.deepcopy(receipt)
         provider, subject, observed, limits = _observation(observation)
         decision.update(provider=provider, subject_kind=SUBJECT_KINDS[provider], subject_id=subject)
         body = _receipt(receipt)
@@ -259,20 +265,24 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         _require(observed - current <= FUTURE_SKEW, "observation_from_the_future")
         _require(issued <= observed < expires, "observation_outside_receipt_window")
         _require(limits <= set(body["limit_ids"]), "limit_not_covered")
-        pool, pool_fresh_until = _pool(registry, body["pool"], provider, current)
+        pool_id = body["pool"]  # captured now; the verifier below can never change it
+        pool, pool_fresh_until = _pool(registry, pool_id, provider, current)
         _require(pool["limit_id"] is None or pool["limit_id"] in body["limit_ids"], "pool_limit_not_covered")
+        # The pool's own limit must be one this observation actually measured: a receipt that
+        # lists more limits than were observed never lends the pool an unobserved quota.
+        _require(pool["limit_id"] is None or pool["limit_id"] in limits, "pool_limit_not_observed")
         # The binding lasts only while BOTH the receipt and the registry verification hold.
         decision.update(receipt_expires_at_utc=expires.isoformat(),
                         pool_fresh_until_utc=pool_fresh_until.isoformat(),
                         expires_at_utc=min(expires, pool_fresh_until).isoformat())
-        # Authenticity last, on a copy: the answer must be exactly True.
+        # Authenticity last, on its own copy: the answer must be exactly True.
         _require(verifier is not None and callable(verifier), "verifier_missing")
         try:
             verdict = verifier(copy.deepcopy(body))
         except Exception:  # noqa: BLE001 - a failing verifier is a refusal, never a pass
             raise Refused("verifier_failed") from None
         _require(verdict is True, "verifier_refused")
-        decision.update(account_pool=body["pool"], pool_identity_state=VERIFIED)
+        decision.update(account_pool=pool_id, pool_identity_state=VERIFIED)
     except Refused as refusal:
         decision.update(account_pool=None, pool_identity_state=UNVERIFIED, reason=refusal.code)
     except Exception as exc:  # noqa: BLE001 - malformed input refuses; it never crashes the caller

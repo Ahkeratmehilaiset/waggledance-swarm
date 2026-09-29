@@ -359,8 +359,16 @@ def test_rpc_errors_do_not_invent_transport_failures(code, expected):
 
 
 # -- F3 pool binding (dormant, additive); authored per operator directive, NOT executed yet --
+# Every clock here is fixed and injected (Tools a673ecb4): collection time via a stubbed
+# utcnow, binding time via bind_pool(now=...), apply time via apply_pool_binding(now=...).
 
-POOL_NOW = datetime.now(timezone.utc)
+POOL_NOW = datetime(2026, 9, 29, 22, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def pool_clock(monkeypatch):
+    monkeypatch.setattr(collector, 'utcnow', lambda: POOL_NOW.isoformat())
+    return POOL_NOW
 
 
 def _pool_registry(**overrides):
@@ -391,7 +399,11 @@ def _pool_binder(subject, verifier=lambda receipt: True, **pool_overrides):
     from tools.bridge_pool_binding import bind_pool
     registry = _pool_registry(**pool_overrides)
     return lambda observation: bind_pool(observation, _pool_receipt(subject), registry, verifier=verifier,
-                                         now=datetime.now(timezone.utc))
+                                         now=POOL_NOW)
+
+
+def _collect(binder):
+    return asyncio.run(collect_codex(Client(), 'context', pool_binder=binder, pool_now=POOL_NOW))
 
 
 # The collector's own auth context digest for the Client() fixture.
@@ -409,9 +421,9 @@ def test_default_collection_is_unchanged_and_never_binds_a_pool():
     assert collector.apply_pool_binding(value) is value  # no binder: the very same object
 
 
-def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end():
-    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(POOL_SUBJECT)))
-    assert observation['auth_context_id'] == POOL_SUBJECT
+def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end(pool_clock):
+    observation = _collect(_pool_binder(POOL_SUBJECT))
+    assert observation['auth_context_id'] == POOL_SUBJECT and observation['observed_at'] == POOL_NOW.isoformat()
     assert observation['account_pool'] == 'codex-plus-weekly'
     assert observation['pool_identity_state'] == 'verified_binding'
     assert set(observation['pool_binding']) == {'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc'}
@@ -426,7 +438,7 @@ def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end():
                           'reason': 'receipt_expired'}, 'receipt_expired'),
 ])
 def test_a_refused_or_malformed_decision_keeps_the_pool_unknown(binder, reason):
-    row = collect_claude({'session_id': 'thread1'}, pool_binder=binder)
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=binder, pool_now=POOL_NOW)
     assert row['account_pool'] is None and row['pool_identity_state'] == 'unknown'
     assert row['pool_binding'] == {'state': 'unverified', 'reason': reason}
 
@@ -434,7 +446,7 @@ def test_a_refused_or_malformed_decision_keeps_the_pool_unknown(binder, reason):
 def test_a_failing_binder_never_fails_the_collection():
     def broken(observation):
         raise RuntimeError('verifier backend down: secret-token')
-    row = collect_claude({'session_id': 'thread1'}, pool_binder=broken)
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=broken, pool_now=POOL_NOW)
     assert row['account_pool'] is None
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binder_failed:RuntimeError'}
     assert 'secret-token' not in json.dumps(row)
@@ -450,30 +462,50 @@ def _verified_decision(**changes):
     return decision
 
 
+OBSERVATION = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_pool': None}
+
+
 @pytest.mark.parametrize('change', [
     {'subject_id': 'd' * 64}, {'provider': 'claude'}, {'execution_allowed': True}, {'expires_at_utc': 'soon'},
     {'account_pool': ''}, {'account_pool': 'Pool With Spaces'}, {'schema': 'other'},
     {'receipt_id': 'reading by ops@example.test'}, {'receipt_sha256': None},
     {'provenance_kind': 'plan_transcription'}, {'pool_identity_state': 'unverified'}])
 def test_a_verified_decision_for_another_subject_or_provider_is_not_applied(change):
-    observation = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_pool': None}
-    good = collector.apply_pool_binding(observation, lambda o: _verified_decision())
+    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), now=POOL_NOW)
     assert good['account_pool'] == 'codex-plus-weekly'  # success twin
     assert good['pool_binding']['receipt_id'] == 'b' * 32
-    row = collector.apply_pool_binding(observation, lambda o: _verified_decision(**change))
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(**change), now=POOL_NOW)
     assert row['account_pool'] is None and row['pool_binding']['state'] == 'unverified'
     assert 'ops@example.test' not in json.dumps(row)
 
 
+@pytest.mark.parametrize('expires,applied', [
+    (POOL_NOW - timedelta(seconds=1), False),     # a cached or delayed decision that already expired
+    (POOL_NOW, False),                            # the exact boundary is expired (strictly before)
+    (POOL_NOW + timedelta(seconds=1), True),      # success twin
+])
+def test_the_apply_boundary_requires_now_strictly_before_the_decision_expiry(expires, applied):
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(expires_at_utc=expires.isoformat()),
+                                       now=POOL_NOW)
+    assert (row['account_pool'] == 'codex-plus-weekly') is applied
+    if not applied:
+        assert row['pool_binding'] == {'state': 'unverified', 'reason': 'decision_expired'}
+
+
+def test_the_apply_boundary_refuses_a_naive_clock():
+    with pytest.raises(InputError, match='timezone-aware'):
+        collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), now=datetime(2026, 9, 29, 22))
+
+
 def test_only_a_code_shaped_refusal_reason_is_kept():
-    observation = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_pool': None}
-    row = collector.apply_pool_binding(observation, lambda o: {'reason': 'mail ops@example.test'})
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'mail ops@example.test'}, now=POOL_NOW)
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
-    row = collector.apply_pool_binding(observation, lambda o: {'reason': 'receipt_expired'})
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'receipt_expired'}, now=POOL_NOW)
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'receipt_expired'}  # success twin
 
-def test_a_receipt_for_another_auth_context_does_not_bind():
-    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder('e' * 64)))
+
+def test_a_receipt_for_another_auth_context_does_not_bind(pool_clock):
+    observation = _collect(_pool_binder('e' * 64))
     assert observation['account_pool'] is None
     assert observation['pool_binding'] == {'state': 'unverified', 'reason': 'subject_mismatch'}
 
@@ -493,11 +525,10 @@ def test_status_expires_a_stored_binding_without_rewriting_the_store(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_path):
-    fresh_until = (POOL_NOW + timedelta(minutes=30)).replace(microsecond=0)
+def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_path, pool_clock):
+    fresh_until = POOL_NOW + timedelta(minutes=30)
     measured = (fresh_until - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(
-        POOL_SUBJECT, measured_at=measured, ttl_seconds=3600)))
+    observation = _collect(_pool_binder(POOL_SUBJECT, measured_at=measured, ttl_seconds=3600))
     assert observation['account_pool'] == 'codex-plus-weekly'
     # The receipt runs to POOL_NOW + 1 h; the stored binding ends with the pool TTL instead.
     assert observation['pool_binding']['expires_at_utc'] == fresh_until.isoformat()
@@ -509,9 +540,8 @@ def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_p
     assert gone['account_pool'] is None and gone['pool_identity_state'] == 'binding_expired'
 
 
-def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuses():
-    stale = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(
-        POOL_SUBJECT, measured_at='2026-01-01', ttl_seconds=3600)))
+def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuses(pool_clock):
+    stale = _collect(_pool_binder(POOL_SUBJECT, measured_at='2026-01-01', ttl_seconds=3600))
     assert stale['account_pool'] is None and stale['pool_binding']['reason'] == 'pool_state_stale'
-    missing = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(POOL_SUBJECT, verifier=None)))
+    missing = _collect(_pool_binder(POOL_SUBJECT, verifier=None))
     assert missing['account_pool'] is None and missing['pool_binding']['reason'] == 'verifier_missing'

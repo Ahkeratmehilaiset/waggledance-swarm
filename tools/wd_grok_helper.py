@@ -393,9 +393,14 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                     raise ValueError("Task exception request already attempted")
                 if len(attempts) >= grant["max_attempts"]:
                     raise ValueError("Task exception exhausted")
-        if not previous["eligible"] and grant is None:
-            deferred = {**previous, 'task_id': task_id, 'decision': 'deferred_hourly_limit'}
-            observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': 'deferred_hourly_limit',
+        # A task exception can waive a budget boundary, never reconcile an
+        # unfinished process or erase its durable reservation. Preserve both
+        # fresh reservations and deadline-expired unknown attempts unchanged.
+        unresolved = previous.get("status") in ("reserved", "interrupted_or_unknown")
+        if unresolved or (not previous["eligible"] and grant is None):
+            decision = 'deferred_unreconciled_attempt' if unresolved else 'deferred_hourly_limit'
+            deferred = {**previous, 'task_id': task_id, 'decision': decision}
+            observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': decision,
                            'next_eligible_utc': previous['next_eligible_utc']}
             record_lifecycle(emitter, 'deferred', observation)
             if observation.get('bridge_event_errors'):

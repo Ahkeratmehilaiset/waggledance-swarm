@@ -40,6 +40,11 @@ attempt reports `eligible=false` even after the hour passes; the separate
 `hourly_budget_eligible` field describes only the clock-based budget boundary,
 not readiness. Resolve the durable unknown attempt through an explicitly
 authorized reconciliation rather than treating elapsed time as completion.
+Neither a task exception nor an elapsed hour reconciles an unfinished attempt:
+consultation defers with `deferred_unreconciled_attempt` while the durable state
+is still `reserved`, before or after its deadline, without overwriting that
+reservation or consuming an exception attempt. An explicit reconciliation
+adapter is not included; no process-exit or readiness guarantee is implied.
 
 For long consultations, keep the caller window and its command wait alive long
 enough for the configured session (up to 2400 seconds) plus completion logging.

@@ -284,6 +284,7 @@ def test_answer_binds_request_prompt_snapshot_nonce_and_report():
     ({"task_id": "codex-lead-1/other-task"}, {}, "not_the_answered_attempt"),
     ({"request_id": None}, {}, "attempt_unbound"),
     ({"last_attempt_utc": (NOW - timedelta(hours=2)).isoformat()}, {}, "attempt_unbound"),  # an older attempt
+    ({"last_attempt_utc": (NOW + timedelta(minutes=10)).isoformat()}, {}, "attempt_unbound"),  # after the expiry
     ({}, {"tool_calls": "none"}, "answer_unknown"),
     ({}, {"text": None}, "answer_unknown"),
     ({}, {"report_sha256": "6" * 64}, "answer_not_from_report"),
@@ -297,6 +298,21 @@ def test_wrong_reply_or_transcript_is_refused(report_over, answer_over, reason):
     result = route.bind_answer(it, admission, answered_report(**report_over), answer(**answer_over))
     assert (result["verdict"], result["reasons"]) == ("refuse", [reason])
     assert "answer_sha256" not in result
+
+
+def test_an_attempt_at_the_intent_expiry_still_binds():
+    it = intent()
+    admission = route.admit(it, evidence())
+    report = answered_report(last_attempt_utc="2026-09-30T12:09:30+00:00")
+    assert route.bind_answer(it, admission, report, answer())["verdict"] == "answered_bound"
+
+
+def test_utc_stamp_is_whole_second_utc_or_unknown():
+    east = datetime(2026, 9, 30, 14, 0, 0, 999999, tzinfo=timezone(timedelta(hours=2)))
+    assert route.utc_stamp(east) == "2026-09-30T12:00:00Z"
+    assert route.utc_stamp(datetime(2026, 9, 30, 12, 0)) is None  # naive
+    assert route.utc_stamp(datetime(9999, 12, 31, 23, 0, tzinfo=timezone(-timedelta(hours=2)))) is None  # overflow
+    assert route.utc_stamp("2026-09-30T12:00:00Z") is None
 
 
 def test_wrong_prompt_or_snapshot_intent_cannot_claim_the_admission():

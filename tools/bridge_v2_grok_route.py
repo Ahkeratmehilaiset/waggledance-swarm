@@ -22,7 +22,8 @@ provider, and every result carries ``execution_allowed`` False and ``authority``
   readiness. There are no exemptions: an operator request or a relayed event text
   is not a signed activation.
 * ``bind_answer`` accepts the helper's result only if it is the answered attempt for
-  this task, the answer was read from exactly the report the helper hashed, its tool
+  this task, started between the admission and the intent's expiry, the answer was
+  read from exactly the report the helper hashed, its tool
   transcript uses allowlisted tools only (none by default), and the record binds the
   request, prompt, snapshot, nonce and answer.
 """
@@ -82,6 +83,12 @@ def _aware(now: Any) -> datetime | None:
         return now.astimezone(timezone.utc)
     except (OverflowError, ValueError):
         return None
+
+
+def utc_stamp(moment: Any) -> str | None:
+    """A whole-second UTC stamp of an aware datetime; None when it is naive or out of range (unknown)."""
+    aware = _aware(moment)
+    return None if aware is None else _stamp(aware)
 
 
 def prompt_sha256(prompt: str) -> str:
@@ -229,8 +236,10 @@ def bind_answer(intent: dict, admission: dict, report: Any, answer: Any) -> dict
     if report.get("status") != "answered" or report.get("task_id") != intent["task_id"]:
         return refuse("not_the_answered_attempt")
     attempted, admitted = _utc(report.get("last_attempt_utc")), _utc(admission.get("admitted_utc"))
-    if not _hex(report.get("request_id"), HEX32) or attempted is None or admitted is None or attempted < admitted:
-        return refuse("attempt_unbound")  # an older attempt can never answer this intent
+    expires = _utc(intent.get("expires_utc"))
+    if not _hex(report.get("request_id"), HEX32) or attempted is None or admitted is None or expires is None \
+            or not admitted <= attempted <= expires:
+        return refuse("attempt_unbound")  # only an attempt inside [admission, intent expiry] answers this intent
     if not isinstance(answer, dict) or not isinstance(answer.get("text"), str) \
             or not isinstance(answer.get("tool_calls"), list):
         return refuse("answer_unknown")

@@ -1,7 +1,7 @@
 {
   "schema": "wd.grok-admission-config.v1",
   "enabled": false,
-  "note": "Default OFF; this file grants nothing. Admission also needs: a fresh F0 Decision for F20 under an operator-signed policy whose parameters.F20 carry the caps; the observed read-only snapshot; the helper's shared hourly budget (one attempted consultation per 60 min, failures included); and a durable admission ledger port, which is NOT BUILT. An operator request or a relayed event is not a signed activation. There are no exemptions.",
+  "note": "Default OFF; this file grants nothing. Admission also needs five INJECTED ports, none of which is built or wired: a clock; the read-only snapshot; F0 activation, which evaluates F20 at that snapshot's head/tree under an operator-signed policy whose parameters.F20 carry the caps; the unchanged helper, whose shared hourly budget allows one attempted consultation per 60 min, failures included; and the durable admission ledger. Each port needs its own reviewed trust contract. An operator request or a relayed event is not a signed activation. There are no exemptions.",
   "proposed_caps_for_signing": {
     "model": null,
     "efforts": [],

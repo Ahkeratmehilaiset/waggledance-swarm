@@ -651,6 +651,47 @@ function Test-WdContinuityControlEvents {
     return $false
 }
 
+function Invoke-WdContinuityOperatorNotice {
+    param([string] $Agent, [string] $ThreadId, [string] $Worktree, [string] $ErrorText)
+    $bundle = Split-Path -Parent ([string]$env:WD_BRIDGE_PYTHON_WRAPPER)
+    $manifestPath = Join-Path $bundle 'deployment-manifest.json'
+    if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
+        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash -cne
+        $env:WD_REBOOT_EXPECTED_MANIFEST_HASH.ToUpperInvariant()) { throw 'Continuity notice manifest mismatch' }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $leaf = 'Send-WdContinuityAlert.ps1'
+    $publisher = Assert-WdTurnPath (Join-Path $bundle $leaf)
+    $expected = $manifest.files.PSObject.Properties[$leaf]
+    if ($null -eq $expected -or (Get-FileHash -LiteralPath $publisher -Algorithm SHA256).Hash -cne
+        ([string]$expected.Value).ToUpperInvariant()) { throw 'Continuity publisher hash mismatch' }
+    $digest = '0' * 64
+    $task = $Agent + '/continuity-recovery'
+    $reason = 'checkpoint_unavailable'
+    try {
+        $path = Assert-WdTurnPath (Join-Path $Worktree '.codex-audit\wd-current-state.json')
+        if ((Get-Item -LiteralPath $path).Length -gt 32768) { throw 'oversized checkpoint' }
+        $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop
+        if ($record.agent -cne $Agent -or $record.task_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$') {
+            throw 'checkpoint identity invalid'
+        }
+        $digest = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $task = [string]$record.task_id
+        $reason = switch -Regex ($ErrorText) {
+            'delivery uncertain' { 'delivery_uncertain'; break }
+            'stalled after' { 'continuity_stalled_after_recovery'; break }
+            'predates this native session' { 'checkpoint_stale_session'; break }
+            'held|hold_possible' { 'hold_possible'; break }
+            default { 'continuity_evidence_unknown' }
+        }
+    } catch { $digest='0'*64; $task=$Agent+'/continuity-recovery'; $reason='checkpoint_unavailable' }
+    $result = & $publisher -Agent $Agent -TaskId $task -ThreadId $ThreadId -Worktree $Worktree `
+        -Reason $reason -CheckpointDigest $digest
+    $receipt = $result | Out-String | ConvertFrom-Json -ErrorAction Stop
+    if ($receipt.schema -cne 'wd.continuity-alert-result.v1' -or
+        $receipt.status -cnotin @('published','already_reported','unknown')) { throw 'Continuity notice receipt invalid' }
+    return $receipt
+}
+
 function Invoke-WdNativeContinuityStep {
     param([string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $Generation, [string] $Agent, [string] $ExpectedCliHash, [string] $RuntimeRoot,
@@ -804,6 +845,13 @@ function Invoke-WdNativeToolsWakeRelay {
                             schema='wd.native-continuity-alert.v1';agent=$Agent;thread_id=$ThreadId;
                             observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');status='unknown';error=$continuityError}
                         Write-Warning ('Continuity guard blocked; ordinary bridge delivery remains active: ' + $continuityError)
+                    }
+                    try {
+                        $notice = Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId `
+                            -Worktree $Worktree -ErrorText $continuityError
+                        if ($notice.status -ceq 'unknown') { Write-Warning 'Continuity operator notice delivery is unknown; inspect durable alert ledger' }
+                    } catch {
+                        Write-Warning ('Continuity operator notice unavailable: ' + $_.Exception.Message)
                     }
                 }
             }

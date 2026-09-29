@@ -14,10 +14,100 @@ TOOLS = REBOOT / 'start-wd-tools-consumer.ps1'
 THREAD = '01a0a07b-ca98-71e1-90cb-d588435a2d8d'
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps):
+    from test_wd_bridge_code_context import _stage_fake_bundle
+
+    # Real deployment-shaped wrapper/context; unrelated dependency wheel is a
+    # fixture. The continuity implementation itself is the real packaged code.
+    bundle = _stage_fake_bundle(tmp_path)
+    relative = 'tools/bridge_continuity_guard.py'
+    guard = bundle / 'tools-bootstrap' / relative
+    shutil.copyfile(REBOOT.parents[2] / relative, guard)
+    definition_path = bundle / 'bridge-code-files.json'
+    definition = json.loads(definition_path.read_text())
+    definition['python_files'].append(relative)
+    definition['python_entrypoints']['continuity_guard'] = relative
+    definition_path.write_text(json.dumps(definition))
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    for key, path in [('bridge-code-files.json', definition_path), ('tools-bootstrap/' + relative, guard)]:
+        manifest['files'][key] = hashlib.sha256(path.read_bytes()).hexdigest().upper()
+    manifest_path.write_text(json.dumps(manifest))
+    anchor = hashlib.sha256(manifest_path.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\n"
+    script += load(TOOLS, 'Invoke-WdContinuityDecision')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+$snapshot=@{{schema='wd.continuity-snapshot.v1';agent='codex-lead-1';
+ checkpoint=@{{task_id='work';status='in_progress';next_action='Continue scoped work';next_wakeup_utc=$null;updated_at_utc='2026-09-28T20:00:00Z'}};
+ evidence=@{{scope='checkpoint_only';complete=$true;collected_at_utc='2026-09-29T05:00:00Z';source_digest=('a'*64);errors=@()}};
+ claims=@();inbound_requests=@();waits=@();events=@();processing=@();cancellations=@();holds=@()}}
+Invoke-WdContinuityDecision -Snapshot $snapshot -NowUtc '2026-09-29T05:00:00Z' | ConvertTo-Json -Depth 12 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['verdict'] == 'dispatch', result
+    assert result['authority'] == 'none', result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['valid', 'missing', 'foreign', 'tampered', 'bad_receipt'])
+def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_path, ps, case):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    publisher = bundle / 'Send-WdContinuityAlert.ps1'
+    capture = tmp_path / 'call.json'
+    publisher.write_text(
+        'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest)\n'
+        f'$PSBoundParameters | ConvertTo-Json -Compress | Set-Content -LiteralPath {q(capture)}\n'
+        + ('\'{}\'\n' if case == 'bad_receipt' else
+           '\'{"schema":"wd.continuity-alert-result.v1","status":"published"}\'\n'),
+        encoding='utf-8')
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': {publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper()}}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    if case == 'tampered':
+        publisher.write_text('throw "untrusted"')
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    checkpoint = audit / 'wd-current-state.json'
+    if case != 'missing':
+        checkpoint.write_text(json.dumps(dict(agent='other' if case == 'foreign' else 'codex-lead-1',
+                                             task_id='authorized-task', history='private history must not be sent')))
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+try {{
+ $r=Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -ErrorText 'held'
+ @{{ok=$true;receipt=$r}} | ConvertTo-Json -Compress
+}} catch {{@{{ok=$false;error=$_.Exception.Message}} | ConvertTo-Json -Compress}}
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['ok'] == (case not in ('tampered', 'bad_receipt')), result
+    if case == 'tampered':
+        assert not capture.exists()
+    else:
+        call = json.loads(capture.read_text(encoding='utf-8-sig'))
+        assert call['Agent'] == 'codex-lead-1' and call['ThreadId'] == THREAD
+        assert 'private history' not in json.dumps(call)
+        if case in ('missing', 'foreign'):
+            assert call['Reason'] == 'checkpoint_unavailable'
+            assert call['CheckpointDigest'] == '0' * 64
+            assert call['TaskId'] == 'codex-lead-1/continuity-recovery'
+        else:
+            assert call['Reason'] == 'hold_possible'
+            assert call['CheckpointDigest'] == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+
 def test_lead_imports_continuity_dependencies_from_verified_code():
     source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
     imports = source.split('$imports = @{', 1)[1].split('foreach ($file', 1)[0]
-    for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents'):
+    for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents',
+                 'Invoke-WdContinuityOperatorNotice'):
         assert f"'{name}'" in imports
 
 

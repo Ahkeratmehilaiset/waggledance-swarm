@@ -263,7 +263,9 @@ function Invoke-WdNativeLeadTerminal {
   $imports = @{
     'Invoke-WdLaneTurnLoop.ps1' = @('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot')
     'start-wd-tools-consumer.ps1' = @('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
-      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')
+      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
+      'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents',
+      'Invoke-WdContinuityOperatorNotice','Get-WdContinuityRetryDelay')
   }
   foreach ($file in $imports.Keys) {
     $tokens=$null; $parseErrors=$null
@@ -293,7 +295,7 @@ function Invoke-WdNativeLeadTerminal {
     $record.status='terminal_ready'
     Write-WdTurnJson $readyPath $record
     Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $native -CliPath $CliPath -ThreadId $ThreadId `
-      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash
+      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash -SessionId $SessionId
     if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
   } catch {
     $record.status='bridge_wake_blocked'; $record.error=$_.Exception.Message
@@ -2233,6 +2235,9 @@ $startupPrompt = (
   $stateRule,
   $laneStateWriter
 )
+$startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStatePath +
+  '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
+  $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +

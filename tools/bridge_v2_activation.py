@@ -26,6 +26,12 @@ Decision inputs, all re-read on EVERY call (no caching):
 Runtime stage state (``<runtime_root>/bridge_v2/stage_state.json``) records
 progress only and is deliberately NOT an input: it can never grant a flag.
 
+Caller pins: an ENABLED outcome also requires ``expected_head``/``expected_tree`` (from the
+deployed bundle) and ``min_revocation_version`` (the caller's persisted high-water mark).
+Dependencies are transitive: a revoked or disabled feature anywhere in the ``requires``
+closure disables its descendants, and dependency cycles are rejected at validation. An
+enabling policy must set both ``expires_utc`` and ``revocation_max_age_seconds``.
+
 Expiry: after the policy's absolute ``expires_utc`` every feature is disabled.
 The plan's carry-over for a stage that already met its coverage predicate (R15)
 needs a signed qualification record that does not exist yet; until it does,
@@ -96,7 +102,8 @@ def _reject_constant(value):
 
 def _read_json(path: Path, what: str):
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_FILE_BYTES + 1)  # bounded: never reads an oversized file whole
     except FileNotFoundError as exc:
         raise ActivationError(what + " is missing") from exc
     except OSError as exc:
@@ -158,6 +165,27 @@ def _check_parameters(value, depth: int = 0) -> None:
         raise ActivationError("parameters hold a non-JSON value")
 
 
+def _reject_cycles(graph: dict, what: str) -> None:
+    """Iterative depth-first search; any dependency cycle is invalid (no recursion, no hang)."""
+    state = dict.fromkeys(graph, 0)  # 0 unvisited, 1 on the current path, 2 done
+    for start in graph:
+        if state[start]:
+            continue
+        state[start] = 1
+        stack = [(start, iter(graph[start]))]
+        while stack:
+            node, children = stack[-1]
+            child = next(children, None)
+            if child is None:
+                state[node] = 2
+                stack.pop()
+            elif state.get(child) == 1:
+                raise ActivationError(what + " contain a dependency cycle through " + str(child)[:32])
+            elif state.get(child) == 0:
+                state[child] = 1
+                stack.append((child, iter(graph[child])))
+
+
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
@@ -214,6 +242,14 @@ def validate_policy(policy) -> dict:
                 raise ActivationError("feature " + name + " is enabled without its required features")
             if not all(bits[b] for b in requires_bits):
                 raise ActivationError("feature " + name + " is enabled without its required policy bits")
+    _reject_cycles({name: spec["requires"] for name, spec in features.items()}, "features.requires")
+    _reject_cycles({bit: bit_requires.get(bit, []) for bit in POLICY_BITS}, "policy_bit_requires")
+    if any(spec["enabled"] for spec in features.values()) or any(bits.values()):
+        # An enabling policy must be bounded in time and in revocation freshness (fail closed).
+        if policy["expires_utc"] is None:
+            raise ActivationError("an enabling policy must set an absolute expires_utc")
+        if age is None:
+            raise ActivationError("an enabling policy must set revocation_max_age_seconds")
     if not isinstance(policy["parameters"], dict):
         raise ActivationError("parameters must be an object")
     _check_parameters(policy["parameters"])
@@ -234,8 +270,9 @@ def validate_signature(signature, policy_sha256: str, *, expected_head: str | No
         raise ActivationError("signature head differs from the expected head")
     if expected_tree is not None and signature["tree"] != expected_tree:
         raise ActivationError("signature tree differs from the expected tree")
-    _parse_utc(signature["signed_utc"], "signature.signed_utc")
-    _parse_utc(signature["expires_utc"], "signature.expires_utc")
+    signed = _parse_utc(signature["signed_utc"], "signature.signed_utc")
+    if signed >= _parse_utc(signature["expires_utc"], "signature.expires_utc"):
+        raise ActivationError("signature.signed_utc must be earlier than signature.expires_utc")
     return signature
 
 
@@ -254,6 +291,10 @@ def load_policy(config_path: Path, trusted_policy_sha256: str | None, *,
         raise ActivationError("policy digest differs from the trusted signed digest")
     signature = validate_signature(document["signature"], digest,
                                    expected_head=expected_head, expected_tree=expected_tree)
+    if policy["expires_utc"] is not None and (
+            _parse_utc(signature["expires_utc"], "signature.expires_utc")
+            > _parse_utc(policy["expires_utc"], "policy expires_utc")):
+        raise ActivationError("signature outlives the policy's absolute expiry")
     return policy, digest, signature
 
 
@@ -299,11 +340,37 @@ def kill_switch_denies(environ: Mapping[str, str] | None = None) -> bool:
     return str(env[KILL_SWITCH_ENV]).strip().lower() not in KILL_SWITCH_PASS_VALUES
 
 
+def _blocked_dependency(feature: str, features: dict, revoked: set) -> str | None:
+    """First dependency in the transitive requires closure that is revoked or not enabled.
+
+    Iterative with a visited set, so it terminates even if a cycle ever slipped through."""
+    seen, stack = set(), list(features[feature]["requires"])
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        spec = features.get(name)
+        if spec is None or not spec["enabled"] or name in revoked:
+            return name
+        stack.extend(spec["requires"])
+    return None
+
+
 def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_policy_sha256: str | None,
              now: datetime | None = None, environ: Mapping[str, str] | None = None,
              min_revocation_version: int | None = None, expected_head: str | None = None,
              expected_tree: str | None = None) -> Decision:
-    """Full decision for one feature. Never raises; every failure is a disabled Decision."""
+    """Full decision for one feature. Never raises; every failure is a disabled Decision.
+
+    An ENABLED outcome additionally requires caller-owned pins: ``expected_head`` and
+    ``expected_tree`` (40-hex, from the deployed bundle, matched against the signature)
+    and ``min_revocation_version`` (the highest revocation version the caller has
+    persisted; rollback protection). ``trusted_policy_sha256`` must come from the
+    operator-signed packet and is the canonical digest of the PARSED policy, not of the
+    file bytes; a caller must never take it from this config file (for example from
+    ``signature.policy_sha256``), because that would let the file authorize itself.
+    Callers persist ``Decision.revocation_version`` as their new high-water mark."""
     if not isinstance(feature, str) or not FEATURE_NAME.fullmatch(feature):
         return Decision(str(feature)[:32], False, "unknown feature name")
     if kill_switch_denies(environ):
@@ -324,6 +391,8 @@ def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_pol
             return Decision(feature, False, "policy expired", digest)
         if current >= _parse_utc(signature["expires_utc"], "signature.expires_utc"):
             return Decision(feature, False, "signature expired", digest)
+        if _parse_utc(signature["signed_utc"], "signature.signed_utc") - current > MAX_FUTURE_SKEW:
+            return Decision(feature, False, "signature is dated in the future", digest)
         state = load_revocation(runtime_root, policy, digest, current, min_version=min_revocation_version)
     except (ActivationError, ValueError, TypeError, AttributeError, KeyError) as exc:
         return Decision(feature, False, "revocation/expiry: " + str(exc)[:200], digest)
@@ -336,9 +405,15 @@ def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_pol
         return Decision(feature, False, "feature not declared in the signed policy", digest, state["version"])
     if not spec["enabled"]:
         return Decision(feature, False, "feature off in the signed policy", digest, state["version"])
-    for required in spec["requires"]:
-        if required in state["revoked"]:
-            return Decision(feature, False, "required feature " + required + " revoked", digest, state["version"])
+    blocked = _blocked_dependency(feature, policy["features"], set(state["revoked"]))
+    if blocked is not None:
+        return Decision(feature, False, "required feature " + blocked + " revoked or disabled (transitive)",
+                        digest, state["version"])
+    if not all(isinstance(pin, str) and HEX40.fullmatch(pin) for pin in (expected_head, expected_tree)):
+        return Decision(feature, False, "caller did not pin the expected head and tree", digest, state["version"])
+    if type(min_revocation_version) is not int or min_revocation_version < 1:
+        return Decision(feature, False, "caller did not pass its persisted revocation high-water version",
+                        digest, state["version"])
     return Decision(feature, True, "enabled by the signed policy", digest, state["version"])
 
 

@@ -99,7 +99,8 @@ def _decide(env, feature="F1", now=NOW) -> act.Decision:
     config = env["tmp"] / "activation.json"
     config.write_text(json.dumps({"policy": env["policy"], "signature": signature}), encoding="utf-8")
     return act.evaluate(feature, config_path=config, runtime_root=env["root"],
-                        trusted_policy_sha256=env["digest"], now=now, environ={})
+                        trusted_policy_sha256=env["digest"], now=now, environ={},
+                        expected_head="a" * 40, expected_tree="b" * 40, min_revocation_version=1)
 
 
 # ---------------------------------------------------------------------------

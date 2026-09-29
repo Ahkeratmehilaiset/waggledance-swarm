@@ -28,6 +28,7 @@ def _policy(**overrides) -> dict:
     policy = json.loads((REPO / "configs" / "bridge_v2_activation.json").read_text(encoding="utf-8"))["policy"]
     policy = copy.deepcopy(policy)
     policy["expires_utc"] = _stamp(NOW + timedelta(days=14))
+    policy["revocation_max_age_seconds"] = 86400
     policy["features"]["F1"].update(enabled=True, stage=1)
     policy.update(overrides)
     return policy
@@ -51,7 +52,8 @@ def _write(tmp_path: Path, policy: dict, *, signature: dict | None | str = "auto
     if revocation is not None:
         (runtime / "bridge_v2" / "revocation.json").write_text(json.dumps(revocation), encoding="utf-8")
     return {"config_path": config, "runtime_root": runtime, "trusted_policy_sha256": digest,
-            "now": NOW, "environ": {}}
+            "now": NOW, "environ": {}, "expected_head": HEAD, "expected_tree": TREE,
+            "min_revocation_version": 1}
 
 
 def test_shipped_default_config_is_valid_all_off_and_unsigned():
@@ -105,9 +107,9 @@ def test_policy_edit_after_signing_disables(tmp_path):
 
 def test_expected_head_and_tree_are_enforced(tmp_path):
     kwargs = _write(tmp_path, _policy())
-    assert act.feature_enabled("F1", expected_head=HEAD, expected_tree=TREE, **kwargs) is True
-    assert act.feature_enabled("F1", expected_head="d" * 40, **kwargs) is False
-    assert act.feature_enabled("F1", expected_tree="d" * 40, **kwargs) is False
+    assert act.feature_enabled("F1", **kwargs) is True
+    assert act.feature_enabled("F1", **{**kwargs, "expected_head": "d" * 40}) is False
+    assert act.feature_enabled("F1", **{**kwargs, "expected_tree": "d" * 40}) is False
 
 
 @pytest.mark.parametrize("mutate", [
@@ -182,7 +184,8 @@ def test_policy_and_signature_expiry_disable(tmp_path):
     kwargs = _write(tmp_path, _policy())
     assert act.feature_enabled("F1", **{**kwargs, "now": NOW + timedelta(days=14)}) is False
     kwargs = _write(tmp_path / "b", _policy(expires_utc=None))
-    assert act.evaluate("F1", **kwargs).reason == "policy has no absolute expiry"
+    decision = act.evaluate("F1", **kwargs)
+    assert decision.enabled is False and "expires_utc" in decision.reason
 
 
 def test_naive_decision_time_disables(tmp_path):
@@ -225,8 +228,8 @@ def test_invalid_or_mismatched_revocation_disables(tmp_path, change):
 
 def test_revocation_version_rollback_disables(tmp_path):
     kwargs = _write(tmp_path, _policy())
-    assert act.feature_enabled("F1", min_revocation_version=3, **kwargs) is True
-    assert act.feature_enabled("F1", min_revocation_version=4, **kwargs) is False
+    assert act.feature_enabled("F1", **{**kwargs, "min_revocation_version": 3}) is True
+    assert act.feature_enabled("F1", **{**kwargs, "min_revocation_version": 4}) is False
 
 
 def test_stale_revocation_disables_when_policy_sets_max_age(tmp_path):
@@ -287,3 +290,100 @@ def test_module_is_pure_no_writes(tmp_path):
     act.evaluate("F2", **kwargs)
     after = sorted((p.relative_to(tmp_path).as_posix(), p.stat().st_mtime_ns) for p in tmp_path.rglob("*"))
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# RCO2 review fixes (F0-1 .. F0-6)
+# ---------------------------------------------------------------------------
+
+def _chain_policy() -> dict:
+    policy = _policy()
+    policy["features"]["F2"].update(enabled=True, stage=1, requires=["F1"])
+    policy["features"]["F3"].update(enabled=True, stage=1, requires=["F2"])
+    return policy
+
+
+def _state(policy, revoked, version=1):
+    return {"schema": act.REVOCATION_SCHEMA, "version": version, "policy_sha256": act.canonical_sha256(policy),
+            "frozen": False, "revoked": revoked, "updated_utc": _stamp(NOW)}
+
+
+def test_transitive_revocation_disables_descendants(tmp_path):
+    policy = _chain_policy()
+    kwargs = _write(tmp_path / "a", policy, revocation=_state(policy, ["F1"]))
+    for name in ("F1", "F2", "F3"):
+        assert act.feature_enabled(name, **kwargs) is False
+    assert "F1" in act.evaluate("F3", **kwargs).reason
+    kwargs = _write(tmp_path / "b", policy, revocation=_state(policy, ["F2"]))
+    assert act.feature_enabled("F1", **kwargs) is True
+    assert act.feature_enabled("F3", **kwargs) is False
+    kwargs = _write(tmp_path / "c", policy, revocation=_state(policy, []))
+    assert all(act.feature_enabled(name, **kwargs) for name in ("F1", "F2", "F3"))
+
+
+@pytest.mark.parametrize("edges", [
+    {"F1": ["F2"], "F2": ["F1"]},
+    {"F1": ["F2"], "F2": ["F3"], "F3": ["F1"]},
+])
+def test_feature_dependency_cycles_are_rejected_even_when_off(edges):
+    policy = _policy()
+    policy["features"]["F1"].update(enabled=False, stage=None)
+    for name, requires in edges.items():
+        policy["features"][name]["requires"] = requires
+    with pytest.raises(act.ActivationError, match="cycle"):
+        act.validate_policy(policy)
+
+
+def test_policy_bit_cycles_are_rejected():
+    policy = _policy(policy_bit_requires={"learning_2_11": ["f19_routing_policy"],
+                                          "f19_routing_policy": ["learning_2_11"]})
+    with pytest.raises(act.ActivationError, match="cycle"):
+        act.validate_policy(policy)
+
+
+def test_enabling_policy_requires_expiry_and_freshness():
+    with pytest.raises(act.ActivationError, match="revocation_max_age_seconds"):
+        act.validate_policy(_policy(revocation_max_age_seconds=None))
+    with pytest.raises(act.ActivationError, match="expires_utc"):
+        act.validate_policy(_policy(expires_utc=None))
+    bits_only = json.loads((REPO / "configs" / "bridge_v2_activation.json").read_text(encoding="utf-8"))["policy"]
+    act.validate_policy(copy.deepcopy(bits_only))  # all off: null expiry and max age are fine
+    bits_only["policy_bits"]["rule8_amendment"] = True
+    with pytest.raises(act.ActivationError, match="an enabling policy"):
+        act.validate_policy(bits_only)
+
+
+@pytest.mark.parametrize("change", [
+    {"expected_head": None}, {"expected_tree": None}, {"min_revocation_version": None},
+    {"expected_head": "A" * 40}, {"min_revocation_version": True}, {"min_revocation_version": 0},
+    {"min_revocation_version": "1"},
+])
+def test_enabled_outcome_requires_caller_pins(tmp_path, change):
+    kwargs = _write(tmp_path, _policy())
+    assert act.feature_enabled("F1", **kwargs) is True
+    assert act.feature_enabled("F1", **{**kwargs, **change}) is False
+
+
+@pytest.mark.parametrize("signed,expires,fragment", [
+    (NOW + timedelta(hours=1), NOW + timedelta(days=14), "future"),
+    (NOW + timedelta(days=14), NOW + timedelta(days=14), "earlier than"),
+    (NOW - timedelta(hours=1), NOW + timedelta(days=15), "outlives"),
+])
+def test_signature_time_consistency(tmp_path, signed, expires, fragment):
+    policy = _policy()
+    signature = {"schema": act.SIGNATURE_SCHEMA, "policy_sha256": act.canonical_sha256(policy), "head": HEAD,
+                 "tree": TREE, "signed_utc": _stamp(signed), "expires_utc": _stamp(expires)}
+    decision = act.evaluate("F1", **_write(tmp_path, policy, signature=signature))
+    assert decision.enabled is False and fragment in decision.reason
+
+
+def test_config_read_is_bounded(tmp_path, monkeypatch):
+    kwargs = _write(tmp_path, _policy())
+    kwargs["config_path"].write_bytes(b" " * (act.MAX_FILE_BYTES + 1))
+
+    def unbounded(_self):
+        raise AssertionError("unbounded read_bytes used")
+
+    monkeypatch.setattr(Path, "read_bytes", unbounded)
+    decision = act.evaluate("F1", **kwargs)
+    assert decision.enabled is False and "exceeds" in decision.reason

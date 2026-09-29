@@ -2,7 +2,8 @@
 <# Lead-only on-demand advisory helper. Default is read-only status, not a model call. #>
 [CmdletBinding()]
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
-    [string] $LifecycleBase64 = '', [string] $ExceptionPath = '', [string] $ExceptionSha256 = '')
+    [string] $LifecycleBase64 = '', [string] $ExceptionPath = '', [string] $ExceptionSha256 = '',
+    [string] $ReadOnlyCommit = '', [switch] $ReadOnlyInventory, [string] $AcknowledgeInheritedSurface = '')
 $ErrorActionPreference = 'Stop'
 $manifestPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
 if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
@@ -11,7 +12,8 @@ if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
 }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($LifecycleBase64) {
-    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status -or $ExceptionPath -or $ExceptionSha256) { throw 'Invalid lifecycle invocation' }
+    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status -or $ExceptionPath -or $ExceptionSha256 -or
+        $ReadOnlyCommit -or $ReadOnlyInventory -or $AcknowledgeInheritedSurface) { throw 'Invalid lifecycle invocation' }
     $event=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LifecycleBase64)) | ConvertFrom-Json
     if ($event.stage -cnotin @('started','answered','failed','deferred')) { throw 'Invalid Grok lifecycle stage' }
     $state=$event.state
@@ -48,8 +50,33 @@ $wrapper = Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1'
 if ((Get-FileHash -LiteralPath $wrapper).Hash -cne $manifest.files.'Invoke-WdBridgePython.ps1') {
     throw 'Bridge Python wrapper hash mismatch'
 }
+$tool = 'tools/wd_grok_helper.py'
 $arguments = @('--status')
-if ($PromptPath -and -not $Status) {
+if ($ReadOnlyInventory) {
+    # Lists inherited hooks/MCP/LSP and the digest to acknowledge; never a model call.
+    if ($PromptPath -or $TaskId -or $Status -or $ReadOnlyCommit -or $AcknowledgeInheritedSurface -or $ExceptionPath -or $ExceptionSha256) {
+        throw 'Read-only inventory takes no other arguments'
+    }
+    $tool = 'tools/wd_grok_readonly_session.py'
+    $arguments = @('--inventory')
+} elseif ($ReadOnlyCommit -or $AcknowledgeInheritedSurface) {
+    # Model-directed reads of one exact commit through the pinned Git broker. Native
+    # Grok tools stay denied; the controller refuses while inherited hooks are
+    # unacknowledged. Repo and trusted Git come only from the anchored fleet file.
+    if (-not $PromptPath -or -not $TaskId -or $Status) { throw 'Read-only session requires -PromptPath and -TaskId' }
+    if ($ReadOnlyCommit -cnotmatch '^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$') { throw 'Read-only session requires a full commit SHA' }
+    if ($AcknowledgeInheritedSurface -and $AcknowledgeInheritedSurface -cnotmatch '^[0-9a-fA-F]{64}$') {
+        throw 'Inherited surface acknowledgement must be the SHA256 digest from -ReadOnlyInventory'
+    }
+    $fleetPath = Join-Path $PSScriptRoot 'wd-fleet.json'
+    if ((Get-FileHash -LiteralPath $fleetPath).Hash -cne $manifest.files.'wd-fleet.json') { throw 'Fleet manifest hash mismatch' }
+    $fleet = Get-Content -LiteralPath $fleetPath -Raw | ConvertFrom-Json
+    $tool = 'tools/wd_grok_readonly_session.py'
+    $arguments = @('--prompt-file', ([IO.Path]::GetFullPath($PromptPath)), '--task-id', $TaskId,
+        '--repo', [string]$fleet.primary_repo_root, '--commit', $ReadOnlyCommit,
+        '--git-executable', [string]$fleet.git_executable)
+    if ($AcknowledgeInheritedSurface) { $arguments += @('--acknowledge-inherited-surface', $AcknowledgeInheritedSurface.ToLowerInvariant()) }
+} elseif ($PromptPath -and -not $Status) {
     if (-not $TaskId) { throw 'Lead must supply -TaskId for a consultation' }
     $arguments = @('--prompt-file', ([IO.Path]::GetFullPath($PromptPath)), '--task-id', $TaskId)
 }
@@ -62,7 +89,7 @@ if ($ExceptionPath -or $ExceptionSha256) {
 $previousGeneration = $env:WD_BRIDGE_GENERATION
 try {
     $env:WD_BRIDGE_GENERATION = [string]$manifest.source_commit
-    & $wrapper -Tool tools/wd_grok_helper.py -VerifyPackage @arguments
+    & $wrapper -Tool $tool -VerifyPackage @arguments
 } finally {
     $env:WD_BRIDGE_GENERATION = $previousGeneration
 }

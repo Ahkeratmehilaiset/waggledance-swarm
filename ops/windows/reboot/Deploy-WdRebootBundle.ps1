@@ -209,7 +209,8 @@ function New-ForwardingWrapper {
         'grok' {
 @'
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
-    [string] $ExceptionPath = '', [string] $ExceptionSha256 = '')
+    [string] $ExceptionPath = '', [string] $ExceptionSha256 = '',
+    [string] $ReadOnlyCommit = '', [switch] $ReadOnlyInventory, [string] $AcknowledgeInheritedSurface = '')
 '@
         }
         'fleet' {

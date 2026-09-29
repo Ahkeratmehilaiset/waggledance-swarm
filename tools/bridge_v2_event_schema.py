@@ -1,0 +1,659 @@
+# SPDX-License-Identifier: BUSL-1.1
+# SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
+"""Schema validation for the runtime agent bridge event stream (Bridge v2 tools-owned kernel).
+
+Bridge v2 contract kernel (dormant; interface bridge-v2-control-interface.v1): a tools-owned
+port of the core event schema with no product-package import. Wire shapes, errors, unknown
+and refusal handling are unchanged, with two additions:
+
+* F12: a ``decision`` with a commit status (``COMMIT_HEAD_STATUSES``) carries a full
+  lowercase 40-hex ``payload.head`` that the message also names (writer parity). Lines before
+  ``COMMIT_HEAD_STRICT_EPOCH_UTC`` keep their legacy acceptance.
+* F23: ``validate_event_for_write`` accepts a reserved label (``operator``/``system``, as the
+  agent or as the role) only with a ``SessionProvenance`` that a trusted entrypoint observed;
+  the event's own role, session or environment claims never suffice. Readers get
+  ``reserved_label_status`` = ``reserved_label_unverified``: a label in the log is not proof.
+
+The bridge PowerShell scripts write newline-delimited JSON to
+``.agent-bridge/shared/events.jsonl``. This module codifies the current
+event shape without changing the writer path: callers can validate events
+explicitly, and readers can degrade gracefully by reporting validation issues
+instead of failing the bridge loop.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+from typing import Any, Iterable, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import ValidationError, field_validator, model_validator
+
+BRIDGE_EVENT_SCHEMA_VERSION = "agent-bridge-event.v1"
+AGENT_ID_PATTERN = r"^[a-z][a-z0-9_-]{1,32}$"
+AGENT_UUID_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
+CAPABILITY_PATTERN = r"^[a-z][a-z0-9_.:-]{1,64}$"
+LEGACY_AGENTS = frozenset({"codex", "claude", "operator", "system"})
+KNOWN_AGENTS = LEGACY_AGENTS
+KNOWN_EVENT_TYPES = frozenset(
+    {
+        "blocked",
+        "claim",
+        "decision",
+        "done",
+        "finding",
+        "handoff",
+        "heartbeat",
+        "intent",
+        "liveness",
+        "message",
+        "release",
+        "status",
+        "test",
+        "wake_request",
+        "triage_disposition",
+        "consumer_tick",
+    }
+)
+KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
+KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
+FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
+GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
+GROK_REVIEW_STATUSES = frozenset({"grok_response"})
+ALLOWED_NON_AGENT_TARGETS = frozenset({"github/main"})
+GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
+# F12: decisions that assert a reviewed or consensus commit carry its full head (writer parity).
+COMMIT_HEAD_STATUSES = frozenset({"rco_pass", "build_consensus_pass"})
+# Lines before this instant keep their legacy acceptance, so the historical log still validates.
+COMMIT_HEAD_STRICT_EPOCH_UTC = "2026-09-30T00:00:00Z"
+# F23: labels that no lane may self-assert; they need provenance from a trusted entrypoint.
+RESERVED_AGENT_LABELS = frozenset({"operator", "system"})
+GROK_PR_WORKTREE_STRICT_EPOCH_UTC = "2026-06-04T08:32:00Z"
+GROK_FRESHNESS_REQUIRED_SHA_FIELDS = (
+    "remote_main_sha",
+    "local_origin_main_sha",
+    "worktree_head",
+)
+GROK_FRESHNESS_OPTIONAL_SHA_FIELDS = (
+    "pr_head_sha",
+    "reviewed_head_sha",
+    "target_head_sha",
+)
+
+
+class BridgeEvent(BaseModel):
+    """Canonical bridge event model for events written by Write-AgentEvent."""
+
+    model_config = ConfigDict(extra="allow")
+
+    ts_utc: StrictStr
+    agent: StrictStr
+    type: StrictStr
+    task_id: StrictStr = ""
+    status: StrictStr = ""
+    severity: StrictStr = ""
+    to: StrictStr = ""
+    message: StrictStr = ""
+    paths: list[StrictStr] = Field(default_factory=list)
+    write_scope: list[StrictStr] = Field(default_factory=list)
+    run_id: StrictStr = ""
+    role: StrictStr = ""
+    agent_uuid: StrictStr = ""
+    session_id: StrictStr = ""
+    capabilities: list[StrictStr] = Field(default_factory=list)
+    pid: StrictInt
+    cwd: StrictStr
+    payload: Any = Field(default_factory=dict)
+    request_id: StrictStr | None = None
+    in_reply_to_request_id: StrictStr | None = None
+    request_digest: StrictStr | None = None
+    in_reply_to_request_digest: StrictStr | None = None
+    in_reply_to_requester: dict[str, StrictStr] | None = None
+    expected_responders: dict[str, dict[str, StrictStr]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _payload_cannot_override_envelope(cls, value: Any) -> Any:
+        # Check raw presence before model defaults can manufacture an envelope.
+        if not isinstance(value, Mapping):
+            return value
+        contract_keys = (
+            "agent", "agent_uuid", "session_id", "run_id", "task_id",
+            "request_id", "request_digest", "expected_responders",
+            "in_reply_to_request_id", "in_reply_to_request_digest",
+            "in_reply_to_requester",
+        )
+        canonical_keys = {key.casefold(): key for key in cls.model_fields}
+        payload = value.get("payload")
+        # PowerShell's property lookup ignores case. Refuse alternate spellings
+        # and case-duplicates at the two parser-visible levels. Nested result
+        # objects remain application data, not bridge envelope fields.
+        for fields in (value, payload):
+            if not isinstance(fields, Mapping):
+                continue
+            seen: set[str] = set()
+            for key in fields:
+                if not isinstance(key, str):
+                    continue
+                folded = key.casefold()
+                if folded in seen:
+                    raise ValueError(f"duplicate case-insensitive bridge field {key}")
+                seen.add(folded)
+                if folded in canonical_keys and key != canonical_keys[folded]:
+                    raise ValueError(f"bridge field {key} requires canonical lower-case spelling")
+        if not isinstance(payload, Mapping):
+            return value
+        for key in contract_keys:
+            if key not in value["payload"]:
+                continue
+            if key not in value:
+                raise ValueError(f"payload contract field {key} requires top-level field")
+            try:
+                top = json.dumps(value[key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+                nested = json.dumps(value["payload"][key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"payload contract field {key} is not canonical JSON") from exc
+            if top != nested:
+                raise ValueError(f"payload contract field {key} conflicts with top-level field")
+        return value
+
+    @field_validator("request_id", "in_reply_to_request_id")
+    @classmethod
+    def _request_identifier(cls, value: str | None) -> str | None:
+        if value and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value):
+            raise ValueError("invalid request identifier")
+        return value
+
+    @field_validator("ts_utc")
+    @classmethod
+    def _timestamp_must_be_utc(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("ts_utc must be ISO-8601") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(
+            parsed
+        ):
+            raise ValueError("ts_utc must carry UTC offset")
+        return value
+
+    @field_validator("agent")
+    @classmethod
+    def _agent_must_be_valid_id(cls, value: str) -> str:
+        if not _is_valid_agent_id(value):
+            raise ValueError("agent must match bridge agent id pattern")
+        return value
+
+    @field_validator("type")
+    @classmethod
+    def _type_must_be_non_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("type must be a non-empty string")
+        if "\r" in value or "\n" in value:
+            raise ValueError("type must be a single-line string")
+        return value
+
+    @field_validator("severity")
+    @classmethod
+    def _severity_must_be_scalar(cls, value: str) -> str:
+        if "\r" in value or "\n" in value:
+            raise ValueError("severity must be a single-line string")
+        return value
+
+    @field_validator("to")
+    @classmethod
+    def _targets_must_be_known_agents(cls, value: str) -> str:
+        if not value:
+            return value
+        targets = [item.strip() for item in value.split(",") if item.strip()]
+        if not targets:
+            raise ValueError("to must be empty or comma-separated agents")
+        invalid = sorted(
+            target
+            for target in set(targets)
+            if not _is_valid_agent_id(target)
+            and target not in ALLOWED_NON_AGENT_TARGETS
+        )
+        if invalid:
+            raise ValueError(f"to contains invalid bridge agent id: {invalid[0]}")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def _role_must_be_valid_id_or_empty(cls, value: str) -> str:
+        if value and not _is_valid_agent_id(value):
+            raise ValueError("role must match bridge agent id pattern")
+        return value
+
+    @field_validator("agent_uuid")
+    @classmethod
+    def _agent_uuid_must_be_uuid_or_empty(cls, value: str) -> str:
+        if value and not re.fullmatch(AGENT_UUID_PATTERN, value):
+            raise ValueError("agent_uuid must be a UUID")
+        return value
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_must_be_safe_or_empty(cls, value: str) -> str:
+        if value and not re.fullmatch(SESSION_ID_PATTERN, value):
+            raise ValueError("session_id must match bridge session id pattern")
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def _capabilities_must_be_safe(cls, value: list[str]) -> list[str]:
+        for capability in value:
+            if not re.fullmatch(CAPABILITY_PATTERN, capability):
+                raise ValueError("capabilities must match bridge capability pattern")
+        return value
+
+    @model_validator(mode="after")
+    def _event_type_invariants(self) -> "BridgeEvent":
+        if self.type == "wake_request" and not self.to.strip():
+            raise ValueError("wake_request requires to")
+        if self.type in {"claim", "release", "done", "handoff", "blocked"}:
+            if not self.task_id.strip():
+                raise ValueError(f"{self.type} requires task_id")
+        if (
+            self.type == "message"
+            and self.status in KNOWN_ACK_STATUSES
+            and not self.task_id.strip()
+        ):
+            raise ValueError("ack message requires task_id")
+        self._validate_triage_disposition()
+        self._validate_grok_review_freshness()
+        self._validate_commit_head()
+        return self
+
+    def _validate_commit_head(self) -> None:
+        """F12: a commit-status decision names the exact full head it is about."""
+        if self.type != "decision" or self.status not in COMMIT_HEAD_STATUSES:
+            return
+        try:
+            strict = _is_at_or_after_utc(self.ts_utc, COMMIT_HEAD_STRICT_EPOCH_UTC)
+        except ValueError:
+            strict = True  # an unreadable time never exempts a line
+        if not strict:
+            return
+        head = self.payload.get("head") if isinstance(self.payload, Mapping) else None
+        if not _is_full_git_sha(head):
+            raise ValueError(f"{self.status} head must be lowercase 40-hex sha")
+        if head not in self.message:
+            raise ValueError(f"{self.status} message must contain exact head")
+
+    def _validate_triage_disposition(self) -> None:
+        if self.type != "triage_disposition":
+            return
+        if not self.task_id.strip():
+            raise ValueError("triage_disposition requires task_id")
+        if self.status != "recorded":
+            raise ValueError("triage_disposition status must be recorded")
+        if not isinstance(self.payload, Mapping):
+            raise ValueError("triage_disposition payload must be an object")
+        disposition = self.payload.get("disposition")
+        if not isinstance(disposition, str) or disposition not in {"ack_dispatch", "defer"}:
+            raise ValueError(
+                "triage_disposition payload.disposition must be "
+                "ack_dispatch or defer"
+            )
+        target_event_id = self.payload.get("target_event_id")
+        if not _is_nonempty_single_line(target_event_id):
+            raise ValueError(
+                "triage_disposition payload.target_event_id must be "
+                "non-empty single-line text"
+            )
+        if disposition == "defer":
+            for field_name in ("reason", "next_condition"):
+                if not _is_nonempty_single_line(self.payload.get(field_name)):
+                    raise ValueError(
+                        f"triage_disposition payload.{field_name} must be "
+                        "non-empty single-line text for defer"
+                    )
+
+    def _validate_grok_review_freshness(self) -> None:
+        if not (
+            self.agent in GROK_REVIEW_AGENTS
+            and self.type == "message"
+            and self.status in GROK_REVIEW_STATUSES
+        ):
+            return
+        if not _is_at_or_after_utc(self.ts_utc, GROK_FRESHNESS_EPOCH_UTC):
+            return
+        if not isinstance(self.payload, Mapping):
+            raise ValueError("grok freshness proof requires payload object")
+        freshness = self.payload.get("freshness")
+        if not isinstance(freshness, Mapping):
+            raise ValueError("grok freshness proof required")
+        if freshness.get("freshness_ok") is not True:
+            raise ValueError("grok freshness_ok must be true")
+        for field_name in GROK_FRESHNESS_REQUIRED_SHA_FIELDS:
+            value = freshness.get(field_name)
+            if not _is_full_git_sha(value):
+                raise ValueError(
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
+                )
+        remote_main_sha = freshness["remote_main_sha"]
+        local_origin_main_sha = freshness["local_origin_main_sha"]
+        if remote_main_sha != local_origin_main_sha:
+            raise ValueError("grok freshness main sha mismatch")
+        worktree_head = freshness["worktree_head"]
+        pr_review_worktree_heads = []
+        for field_name in GROK_FRESHNESS_OPTIONAL_SHA_FIELDS:
+            value = freshness.get(field_name)
+            if value is not None and not _is_full_git_sha(value):
+                raise ValueError(
+                    f"grok freshness {field_name} must be lowercase 40-hex sha"
+                )
+            if value is not None:
+                pr_review_worktree_heads.append(value)
+        if _is_at_or_after_utc(
+            self.ts_utc,
+            GROK_PR_WORKTREE_STRICT_EPOCH_UTC,
+        ):
+            expected_worktree_heads = [local_origin_main_sha]
+        else:
+            expected_worktree_heads = [
+                local_origin_main_sha,
+                *pr_review_worktree_heads,
+            ]
+        if worktree_head not in expected_worktree_heads:
+            raise ValueError("grok freshness worktree sha mismatch")
+
+
+@dataclass(frozen=True)
+class BridgeEventValidationIssue:
+    """One JSONL validation issue."""
+
+    line_no: int
+    error: str
+    raw_excerpt: str = ""
+    raw_sha256: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "line_no": self.line_no,
+            "error": self.error,
+            "raw_excerpt": self.raw_excerpt,
+            "raw_sha256": self.raw_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class BridgeEventValidationResult:
+    """Summary for a bridge event file validation run."""
+
+    schema_version: str
+    checked: int
+    valid: int
+    invalid: int
+    issues: tuple[BridgeEventValidationIssue, ...]
+    waived_invalid: int = 0
+    waived_issues: tuple[BridgeEventValidationIssue, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.invalid == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "checked": self.checked,
+            "valid": self.valid,
+            "invalid": self.invalid,
+            "waived_invalid": self.waived_invalid,
+            "ok": self.ok,
+            "issues": [issue.to_dict() for issue in self.issues],
+            "waived_issues": [issue.to_dict() for issue in self.waived_issues],
+        }
+
+
+def validate_event(event: Mapping[str, Any]) -> BridgeEvent:
+    """Validate one decoded bridge event mapping."""
+    return BridgeEvent.model_validate(event)
+
+
+@dataclass(frozen=True)
+class SessionProvenance:
+    """What a TRUSTED entrypoint observed about the writing session; never read from the event."""
+
+    agent: str
+    session_id: str
+    observed_by: str
+
+
+def validate_event_for_write(event: Mapping[str, Any], *,
+                             provenance: SessionProvenance | None = None) -> BridgeEvent:
+    """Writer-side validation (F23): a reserved label needs matching, externally observed provenance.
+
+    ``operator`` or ``system`` as the agent is accepted only when ``provenance`` is a
+    ``SessionProvenance`` (not a look-alike) for that agent, with the event's non-empty
+    session_id and a named observer. A reserved role on any other agent is refused. Ordinary
+    agents are unaffected (their identity binding stays with the registry checks)."""
+    model = validate_event(event)
+    if model.role in RESERVED_AGENT_LABELS and model.role != model.agent:
+        raise ValueError(f"reserved role {model.role} requires the matching reserved agent")
+    if model.agent in RESERVED_AGENT_LABELS:
+        if (type(provenance) is not SessionProvenance or provenance.agent != model.agent
+                or not model.session_id or provenance.session_id != model.session_id
+                or not isinstance(provenance.observed_by, str) or not provenance.observed_by.strip()):
+            raise ValueError(f"reserved agent label {model.agent} requires verified session provenance")
+    return model
+
+
+def reserved_label_status(event: BridgeEvent) -> str:
+    """For readers: a reserved label in the log is never proof of its origin."""
+    if event.agent in RESERVED_AGENT_LABELS or event.role in RESERVED_AGENT_LABELS:
+        return "reserved_label_unverified"
+    return "not_reserved"
+
+
+def _is_valid_agent_id(value: str) -> bool:
+    return bool(re.fullmatch(AGENT_ID_PATTERN, value))
+
+
+def _is_full_git_sha(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(FULL_GIT_SHA_PATTERN, value))
+
+
+def _is_nonempty_single_line(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "\r" not in value
+        and "\n" not in value
+    )
+
+
+def _is_at_or_after_utc(value: str, epoch: str) -> bool:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed_epoch = datetime.fromisoformat(epoch.replace("Z", "+00:00"))
+    return parsed >= parsed_epoch
+
+
+def validate_event_line(
+    line: str,
+    *,
+    line_no: int = 1,
+    agent_uuid_by_id: Mapping[str, str] | None = None,
+) -> BridgeEvent:
+    """Validate one JSONL line from ``events.jsonl``."""
+    try:
+        decoded = _decode_event_json_pairs(json.loads(line, object_pairs_hook=_JsonObjectPairs))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"line {line_no}: invalid JSON: {exc.msg}") from exc
+    except ValueError as exc:
+        raise ValueError(f"line {line_no}: {exc}") from exc
+    if not isinstance(decoded, Mapping):
+        raise ValueError(f"line {line_no}: event must be a JSON object")
+    try:
+        model = validate_event(decoded)
+    except ValidationError as exc:
+        raise ValueError(f"line {line_no}: {_format_validation_error(exc)}") from exc
+    _validate_agent_uuid_binding(
+        model,
+        agent_uuid_by_id=agent_uuid_by_id,
+        line_no=line_no,
+    )
+    return model
+
+
+class _JsonObjectPairs(list):
+    """Keep raw JSON object keys until event/payload duplicates are checked."""
+
+
+def _decode_event_json_pairs(
+    value: Any, *, check_keys: bool = True, event_root: bool = True
+) -> Any:
+    if isinstance(value, _JsonObjectPairs):
+        decoded: dict[str, Any] = {}
+        seen: set[str] = set()
+        for key, item in value:
+            folded = key.casefold()
+            if check_keys and folded in seen:
+                raise ValueError(f"duplicate case-insensitive bridge field {key}")
+            seen.add(folded)
+            decoded[key] = _decode_event_json_pairs(
+                item, check_keys=event_root and folded == "payload", event_root=False
+            )
+        return decoded
+    if isinstance(value, list):
+        return [
+            _decode_event_json_pairs(item, check_keys=False, event_root=False)
+            for item in value
+        ]
+    return value
+
+
+def validate_event_file(
+    events_path: str | Path,
+    *,
+    tail: int | None = None,
+    max_errors: int = 20,
+    waived_line_sha256: Mapping[int, str] | None = None,
+    waived_line_errors: Mapping[int, str] | None = None,
+    agent_uuid_by_id: Mapping[str, str] | None = None,
+) -> BridgeEventValidationResult:
+    """Validate a bridge JSONL file and return a non-throwing summary."""
+    path = Path(events_path)
+    waivers = dict(waived_line_sha256 or {})
+    waived_errors = dict(waived_line_errors or {})
+    lines = _select_lines(path.read_text(encoding="utf-8").splitlines(), tail=tail)
+    checked = 0
+    valid = 0
+    waived_invalid = 0
+    issues: list[BridgeEventValidationIssue] = []
+    waived_issues: list[BridgeEventValidationIssue] = []
+    for line_no, line in lines:
+        if not line.strip():
+            continue
+        checked += 1
+        try:
+            validate_event_line(
+                line,
+                line_no=line_no,
+                agent_uuid_by_id=agent_uuid_by_id,
+            )
+        except ValueError as exc:
+            issue = BridgeEventValidationIssue(
+                line_no=line_no,
+                error=str(exc),
+                raw_excerpt=line[:200],
+                raw_sha256=_line_sha256(line),
+            )
+            if (
+                waivers.get(line_no) == issue.raw_sha256
+                and waived_errors.get(line_no) == issue.error
+            ):
+                waived_invalid += 1
+                if len(waived_issues) < max_errors:
+                    waived_issues.append(issue)
+                continue
+            if len(issues) < max_errors:
+                issues.append(issue)
+            continue
+        valid += 1
+    return BridgeEventValidationResult(
+        schema_version=BRIDGE_EVENT_SCHEMA_VERSION,
+        checked=checked,
+        valid=valid,
+        invalid=checked - valid - waived_invalid,
+        issues=tuple(issues),
+        waived_invalid=waived_invalid,
+        waived_issues=tuple(waived_issues),
+    )
+
+
+def _select_lines(
+    lines: Iterable[str],
+    *,
+    tail: int | None,
+) -> list[tuple[int, str]]:
+    numbered = list(enumerate(lines, start=1))
+    if tail is None:
+        return numbered
+    if tail <= 0:
+        return []
+    return numbered[-tail:]
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    first = error.errors()[0]
+    loc = ".".join(str(item) for item in first.get("loc", ())) or "<event>"
+    return f"{loc}: {first.get('msg', 'validation failed')}"
+
+
+def _line_sha256(line: str) -> str:
+    return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
+
+
+def _validate_agent_uuid_binding(
+    event: BridgeEvent,
+    *,
+    agent_uuid_by_id: Mapping[str, str] | None,
+    line_no: int,
+) -> None:
+    if not agent_uuid_by_id:
+        return
+    expected_uuid = agent_uuid_by_id.get(event.agent)
+    if not expected_uuid:
+        return
+    if not event.agent_uuid:
+        raise ValueError(f"line {line_no}: agent_uuid required by bridge agent profile")
+    if event.agent_uuid != expected_uuid:
+        raise ValueError(
+            f"line {line_no}: agent_uuid does not match bridge agent profile"
+        )
+
+
+__all__ = [
+    "BRIDGE_EVENT_SCHEMA_VERSION",
+    "AGENT_ID_PATTERN",
+    "COMMIT_HEAD_STATUSES",
+    "COMMIT_HEAD_STRICT_EPOCH_UTC",
+    "RESERVED_AGENT_LABELS",
+    "SessionProvenance",
+    "validate_event_for_write",
+    "reserved_label_status",
+    "FULL_GIT_SHA_PATTERN",
+    "GROK_FRESHNESS_EPOCH_UTC",
+    "GROK_REVIEW_AGENTS",
+    "GROK_REVIEW_STATUSES",
+    "BridgeEvent",
+    "BridgeEventValidationIssue",
+    "BridgeEventValidationResult",
+    "KNOWN_AGENTS",
+    "LEGACY_AGENTS",
+    "KNOWN_EVENT_TYPES",
+    "KNOWN_SEVERITIES",
+    "validate_event",
+    "validate_event_file",
+    "validate_event_line",
+]

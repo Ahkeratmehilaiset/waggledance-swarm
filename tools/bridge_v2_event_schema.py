@@ -6,11 +6,14 @@ Bridge v2 contract kernel (dormant; interface bridge-v2-control-interface.v1): a
 port of the core event schema with no product-package import. Wire shapes, errors, unknown
 and refusal handling are unchanged, with two additions:
 
-* F12: a ``decision`` with a commit status (``COMMIT_HEAD_STATUSES``) carries a full
-  lowercase 40-hex ``payload.head`` that the message also names (writer parity). On READ,
-  lines before ``COMMIT_HEAD_STRICT_EPOCH_UTC`` keep their legacy acceptance; on WRITE,
-  ``validate_event_for_write`` enforces the guard whatever the event's own ``ts_utc`` says,
-  so a new event cannot be backdated past it.
+* F12 (WRITE only): ``validate_event_for_write`` requires a NEW commit approval to carry a
+  full lowercase 40-hex ``payload.head`` that the message also names, whatever its ``ts_utc``
+  says. A commit approval is a ``decision``, ``rco_review`` or ``finding`` with a status in
+  ``COMMIT_HEAD_STATUSES``, or a ``done`` with ``approved_ci_green``: the forms the gates
+  count. The READ path (``validate_event``/``validate_event_line``) stays exactly core at all
+  times, so the historical log keeps validating. Read acceptance is shape validity, NEVER
+  approval: each gate binds its own semantics (exact head, task, CI, author). Readers can use
+  ``commit_head_status`` to label a line's head format.
 * F23: ``validate_event_for_write`` accepts a reserved label (``operator``/``system``, as the
   agent or as the role) only with a ``SessionProvenance`` that a trusted entrypoint observed;
   the event's own role, session or environment claims never suffice. Readers get
@@ -72,10 +75,14 @@ GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
 ALLOWED_NON_AGENT_TARGETS = frozenset({"github/main"})
 GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
-# F12: decisions that assert a reviewed or consensus commit carry its full head (writer parity).
-COMMIT_HEAD_STATUSES = frozenset({"rco_pass", "build_consensus_pass"})
-# Lines before this instant keep their legacy acceptance, so the historical log still validates.
-COMMIT_HEAD_STRICT_EPOCH_UTC = "2026-09-30T00:00:00Z"
+# F12 (write side only): the commit approvals the gates count carry their full head.
+# check_rco_pass_present: decision/rco_review + rco_pass; idle_consensus_auto_merge: rco_pass
+# and build_consensus_pass on decision/rco_review/finding (its DECISION_EVENT_TYPES);
+# check_bridge_changes_requested: rco_pass_pending_ci and approved_ci_green as well, and on a
+# done event only approved_ci_green is an approval (its DONE_APPROVAL_STATUSES).
+COMMIT_HEAD_STATUSES = frozenset({"rco_pass", "build_consensus_pass", "rco_pass_pending_ci", "approved_ci_green"})
+COMMIT_HEAD_TYPES = frozenset({"decision", "rco_review", "finding"})
+DONE_COMMIT_HEAD_STATUSES = frozenset({"approved_ci_green"})  # a generic done is never an approval
 # F23: labels that no lane may self-assert; they need provenance from a trusted entrypoint.
 RESERVED_AGENT_LABELS = frozenset({"operator", "system"})
 GROK_PR_WORKTREE_STRICT_EPOCH_UTC = "2026-06-04T08:32:00Z"
@@ -272,19 +279,7 @@ class BridgeEvent(BaseModel):
             raise ValueError("ack message requires task_id")
         self._validate_triage_disposition()
         self._validate_grok_review_freshness()
-        self._validate_commit_head()
         return self
-
-    def _validate_commit_head(self) -> None:
-        """F12 on READ: the historical log before the strict epoch keeps its legacy acceptance."""
-        if self.type != "decision" or self.status not in COMMIT_HEAD_STATUSES:
-            return
-        try:
-            strict = _is_at_or_after_utc(self.ts_utc, COMMIT_HEAD_STRICT_EPOCH_UTC)
-        except ValueError:
-            strict = True  # an unreadable time never exempts a line
-        if strict:
-            _require_commit_head(self)
 
     def _validate_triage_disposition(self) -> None:
         if self.type != "triage_disposition":
@@ -413,7 +408,10 @@ class BridgeEventValidationResult:
 
 
 def validate_event(event: Mapping[str, Any]) -> BridgeEvent:
-    """Validate one decoded bridge event mapping."""
+    """Validate one decoded bridge event mapping.
+
+    Read path, exactly core: the result is shape validity only and NEVER an approval. A new
+    write goes through ``validate_event_for_write``."""
     return BridgeEvent.model_validate(event)
 
 
@@ -435,9 +433,10 @@ def validate_event_for_write(event: Mapping[str, Any], *,
     session_id and a named observer. A reserved role on any other agent is refused. Ordinary
     agents are unaffected (their identity binding stays with the registry checks).
 
-    F12: every commit-status decision must carry the exact full head, with no epoch exemption.
-    The read-side legacy acceptance exists for the historical log only; the writer never trusts
-    the event's own ``ts_utc`` to relax the guard."""
+    F12: every new commit approval (see ``COMMIT_HEAD_STATUSES``/``COMMIT_HEAD_TYPES``) must
+    carry the exact full head, with no time-based exemption; the event's own ``ts_utc`` never
+    relaxes it. This is a FORMAT floor, not an approval: the gates still bind the head to the
+    PR, the task, CI and the author. F23 is checked first."""
     model = validate_event(event)
     if model.role in RESERVED_AGENT_LABELS and model.role != model.agent:
         raise ValueError(f"reserved role {model.role} requires the matching reserved agent")
@@ -450,15 +449,36 @@ def validate_event_for_write(event: Mapping[str, Any], *,
     return model
 
 
+def _is_commit_approval(event: BridgeEvent) -> bool:
+    return event.status in COMMIT_HEAD_STATUSES and (
+        event.type in COMMIT_HEAD_TYPES
+        or (event.type == "done" and event.status in DONE_COMMIT_HEAD_STATUSES))
+
+
 def _require_commit_head(event: BridgeEvent) -> None:
-    """F12 head guard, independent of the event's own timestamp (the callers decide the scope)."""
-    if event.type != "decision" or event.status not in COMMIT_HEAD_STATUSES:
+    """F12 head FORMAT guard for a commit approval; independent of the event's own timestamp."""
+    if not _is_commit_approval(event):
         return
     head = event.payload.get("head") if isinstance(event.payload, Mapping) else None
     if not _is_full_git_sha(head):
         raise ValueError(f"{event.status} head must be lowercase 40-hex sha")
     if head not in event.message:
         raise ValueError(f"{event.status} message must contain exact head")
+
+
+def commit_head_status(event: BridgeEvent) -> str:
+    """For readers: the F12 head FORMAT of a line, never an approval.
+
+    ``not_commit_approval``, ``head_format_valid``, or ``head_format_invalid`` (for example a
+    historical line, or one from a writer without the guard). A gate must still bind the head
+    to the PR, the task, CI and the author itself."""
+    if not _is_commit_approval(event):
+        return "not_commit_approval"
+    try:
+        _require_commit_head(event)
+    except ValueError:
+        return "head_format_invalid"
+    return "head_format_valid"
 
 
 def reserved_label_status(event: BridgeEvent) -> str:
@@ -650,10 +670,12 @@ __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
     "AGENT_ID_PATTERN",
     "COMMIT_HEAD_STATUSES",
-    "COMMIT_HEAD_STRICT_EPOCH_UTC",
+    "COMMIT_HEAD_TYPES",
+    "DONE_COMMIT_HEAD_STATUSES",
     "RESERVED_AGENT_LABELS",
     "SessionProvenance",
     "validate_event_for_write",
+    "commit_head_status",
     "reserved_label_status",
     "FULL_GIT_SHA_PATTERN",
     "GROK_FRESHNESS_EPOCH_UTC",

@@ -94,7 +94,7 @@ def test_the_workflow_port_differs_from_core_only_by_its_import():
 
 
 # ---------------------------------------------------------------------------
-# Behaviour parity with the core modules (before the F12 epoch)
+# Behaviour parity with the core modules: the read path is exactly core at ALL times
 # ---------------------------------------------------------------------------
 
 EVENT_CORPUS = [
@@ -111,14 +111,20 @@ EVENT_CORPUS = [
     _event(type="wake_request", to="", status="request"),
     _event(type="message", status="acknowledged", task_id=""),
     _event(type="decision", status="rco_pass", message="short", payload={"head": "abc"}),
+    _event(type="rco_review", status="rco_pass", message="no head at all"),
+    _event(type="decision", status="rco_pass_pending_ci", payload={"head": HEAD.upper()}),
+    _event(type="done", status="approved_ci_green", message="ci green"),
     _event(agent="operator", role="operator", agent_uuid=""),
     {k: v for k, v in _event().items() if k != "pid"},
 ]
 
 
+@pytest.mark.parametrize("stamp", [None, AFTER_EPOCH, "2027-01-01T00:00:00.0000000Z"])
 @pytest.mark.parametrize("index", range(len(EVENT_CORPUS)))
-def test_event_validation_matches_core_before_the_f12_epoch(index):
+def test_event_validation_matches_core_at_all_times(index, stamp):
     event = EVENT_CORPUS[index]
+    if stamp is not None and event.get("ts_utc") == BEFORE_EPOCH:
+        event = dict(event, ts_utc=stamp)          # no time-based read behaviour: later stamps change nothing
     core, port = _core("bridge_v2_event_schema"), _kernel("bridge_v2_event_schema")
     assert _outcome(port.validate_event, event) == _outcome(core.validate_event, event)
     line = json.dumps(event)
@@ -217,76 +223,87 @@ def test_workflow_matches_core():
 
 
 # ---------------------------------------------------------------------------
-# F12: commit statuses carry the exact full head
+# F12 (WRITE only): a new commit approval carries the exact full head
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("status", ["rco_pass", "build_consensus_pass"])
-def test_f12_commit_status_decisions_carry_the_exact_full_head(status):
+APPROVALS = [(kind, status) for kind in ("decision", "rco_review", "finding")
+             for status in ("rco_pass", "build_consensus_pass", "rco_pass_pending_ci", "approved_ci_green")]
+APPROVALS += [("done", "approved_ci_green")]
+STAMPS = ("2020-01-01T00:00:00.0000000Z", BEFORE_EPOCH, AFTER_EPOCH)   # no stamp relaxes a new write
+BAD_HEADS = [
+    ({}, "no head", "lowercase 40-hex"),                                    # missing
+    ({"head": None}, "null head", "lowercase 40-hex"),
+    ({"head": ""}, "empty head", "lowercase 40-hex"),
+    ({"head": HEAD[:12]}, "at " + HEAD[:12], "lowercase 40-hex"),            # short
+    ({"head": HEAD + "0"}, "at " + HEAD + "0", "lowercase 40-hex"),          # 41 hex
+    ({"head": HEAD.upper()}, "at " + HEAD.upper(), "lowercase 40-hex"),      # uppercase
+    ({"head": " " + HEAD}, "at " + HEAD, "lowercase 40-hex"),                # padded
+    ({"head": int(HEAD[:15], 16)}, "numeric head", "lowercase 40-hex"),      # not a string
+    ({"Head": HEAD}, "at " + HEAD, "lowercase 40-hex"),                      # no case folding of the key
+    ({"head": HEAD}, "a message without the head", "exact head"),            # message does not name it
+    ({"head": HEAD}, "pass at " + HEAD.upper(), "exact head"),               # ordinal, case-sensitive
+]
+
+
+def test_the_commit_approval_contract_mirrors_the_gates():
     schema = _kernel("bridge_v2_event_schema")
-    good = _event(ts_utc=AFTER_EPOCH, type="decision", status=status, message="pass at " + HEAD,
-                  payload={"head": HEAD})
-    assert schema.validate_event(good).payload["head"] == HEAD
-    for payload, message in (({"head": HEAD[:12]}, "at " + HEAD[:12]), ({"head": HEAD.upper()}, "at " + HEAD.upper()),
-                             ({}, "no head"), ({"head": HEAD}, "a message without the head"),
-                             ({"head": None}, "null head")):
-        with pytest.raises(ValueError, match="head"):
-            schema.validate_event(_event(ts_utc=AFTER_EPOCH, type="decision", status=status, message=message,
-                                         payload=payload))
+    assert schema.COMMIT_HEAD_STATUSES == {"rco_pass", "build_consensus_pass", "rco_pass_pending_ci",
+                                           "approved_ci_green"}
+    assert schema.COMMIT_HEAD_TYPES == {"decision", "rco_review", "finding"}
+    assert schema.DONE_COMMIT_HEAD_STATUSES == {"approved_ci_green"}
+    assert not hasattr(schema, "COMMIT_HEAD_STRICT_EPOCH_UTC")                     # no time-based read epoch
+    # The gates' own vocabularies (skipped where a gate module is absent): a drift fails here.
+    rco = pytest.importorskip("tools.check_rco_pass_present")
+    changes = pytest.importorskip("tools.check_bridge_changes_requested")
+    idle = pytest.importorskip("tools.idle_consensus_auto_merge")
+    assert rco.RCO_PASS_STATUSES <= schema.COMMIT_HEAD_STATUSES
+    assert rco.DECISION_TYPES_FOR_PASS <= schema.COMMIT_HEAD_TYPES
+    assert idle.DECISION_EVENT_TYPES == schema.COMMIT_HEAD_TYPES                   # approvals are type-restricted there
+    assert idle.RCO_PASS_STATUSES <= schema.COMMIT_HEAD_STATUSES
+    assert "build_consensus_pass" in idle.BUILD_CONSENSUS_STATUSES
+    assert changes.DONE_APPROVAL_STATUSES == schema.DONE_COMMIT_HEAD_STATUSES
+    assert schema.COMMIT_HEAD_STATUSES <= changes.APPROVAL_STATUSES
 
 
-def test_f12_keeps_legacy_lines_and_other_types_unchanged():
+@pytest.mark.parametrize("kind,status", APPROVALS)
+def test_f12_every_new_commit_approval_carries_the_exact_full_head(kind, status):
     schema = _kernel("bridge_v2_event_schema")
-    legacy = _event(ts_utc=BEFORE_EPOCH, type="decision", status="rco_pass", message="short", payload={"head": "abc"})
-    assert schema.validate_event(legacy).status == "rco_pass"          # the historical log still validates
-    assert schema.validate_event(_event(ts_utc=AFTER_EPOCH, type="message", status="rco_pass")).type == "message"
-    assert schema.validate_event(_event(ts_utc=AFTER_EPOCH, type="decision", status="approved")).status == "approved"
-
-
-def test_f12_is_the_only_intended_difference_from_core():
-    core, port = _core("bridge_v2_event_schema"), _kernel("bridge_v2_event_schema")
-    short = _event(ts_utc=AFTER_EPOCH, type="decision", status="build_consensus_pass", message="x",
-                   payload={"head": "abc1234"})
-    assert _outcome(core.validate_event, short)[0] == "ok"
-    assert _outcome(port.validate_event, short)[0] == "error"
-
-
-@pytest.mark.parametrize("status", ["rco_pass", "build_consensus_pass"])
-def test_f12_write_guard_ignores_the_event_timestamp(status):
-    """A NEW commit-status write cannot be backdated past the guard; the historical read corpus stays accepted."""
-    schema = _kernel("bridge_v2_event_schema")
-    for ts in (BEFORE_EPOCH, "2026-01-01T00:00:00.0000000Z", AFTER_EPOCH):        # full-head success twins
-        good = _event(ts_utc=ts, type="decision", status=status, message="pass at " + HEAD, payload={"head": HEAD})
-        assert schema.validate_event(good).payload["head"] == HEAD
+    for ts in STAMPS:                                                                # full-head success twins
+        good = _event(ts_utc=ts, type=kind, status=status, message="pass at " + HEAD, payload={"head": HEAD})
         assert schema.validate_event_for_write(good).payload["head"] == HEAD
-    for payload, message, reason in (
-            ({}, "no head", "lowercase 40-hex"),                                    # missing
-            ({"head": None}, "null head", "lowercase 40-hex"),
-            ({"head": ""}, "empty head", "lowercase 40-hex"),
-            ({"head": HEAD[:12]}, "at " + HEAD[:12], "lowercase 40-hex"),            # short
-            ({"head": HEAD + "0"}, "at " + HEAD + "0", "lowercase 40-hex"),          # 41 hex
-            ({"head": HEAD.upper()}, "at " + HEAD.upper(), "lowercase 40-hex"),      # uppercase
-            ({"head": " " + HEAD}, "at " + HEAD, "lowercase 40-hex"),                # padded
-            ({"head": int(HEAD[:15], 16)}, "numeric head", "lowercase 40-hex"),      # not a string
-            ({"Head": HEAD}, "at " + HEAD, "lowercase 40-hex"),                      # no case folding of the key
-            ({"head": HEAD}, "a message without the head", "exact head"),            # message does not name it
-            ({"head": HEAD}, "pass at " + HEAD.upper(), "exact head")):              # ordinal, case-sensitive
-        backdated = _event(ts_utc=BEFORE_EPOCH, type="decision", status=status, message=message, payload=payload)
-        assert schema.validate_event(backdated).status == status                   # read: legacy acceptance kept
-        with pytest.raises(ValueError, match=reason):
-            schema.validate_event_for_write(backdated)                              # write: refused anyway
-        with pytest.raises(ValueError, match=reason):
-            schema.validate_event_for_write(dict(backdated, ts_utc="2020-01-01T00:00:00.0000000Z"))
-        with pytest.raises(ValueError, match=reason):
-            schema.validate_event(dict(backdated, ts_utc=AFTER_EPOCH))              # read after the epoch: strict
+        assert schema.commit_head_status(schema.validate_event(good)) == "head_format_valid"
+    for payload, message, reason in BAD_HEADS:
+        for ts in STAMPS:
+            event = _event(ts_utc=ts, type=kind, status=status, message=message, payload=payload)
+            with pytest.raises(ValueError, match=reason):
+                schema.validate_event_for_write(event)                              # a new write: refused at any stamp
+            read = schema.validate_event(event)                                     # read: accepted exactly like core
+            assert read.status == status
+            assert schema.commit_head_status(read) == "head_format_invalid"         # ... labelled, never an approval
 
 
-def test_f12_write_guard_leaves_other_statuses_and_types_alone():
+def test_f12_read_path_equals_core_at_every_stamp_and_only_new_writes_differ():
+    core, port = _core("bridge_v2_event_schema"), _kernel("bridge_v2_event_schema")
+    for kind, status in APPROVALS:
+        for ts in STAMPS + ("2027-01-01T00:00:00.0000000Z",):
+            short = _event(ts_utc=ts, type=kind, status=status, message="x", payload={"head": "abc1234"})
+            assert _outcome(port.validate_event, short) == _outcome(core.validate_event, short)
+            assert _outcome(port.validate_event, short)[0] == "ok"
+            assert _outcome(port.validate_event_for_write, short)[0] == "error"
+
+
+def test_f12_generic_done_and_other_statuses_or_types_stay_unguarded():
     schema = _kernel("bridge_v2_event_schema")
-    for event in (_event(type="decision", status="approved", message="no head needed"),
+    for event in (_event(type="done", status="done", message="finished, no head"),      # a generic done
+                  _event(type="done", status="rco_pass", message="a done is never a pass"),
+                  _event(type="done", status="build_consensus_pass", message="nor a consensus vote"),
+                  _event(type="decision", status="approved", message="no head needed"),
                   _event(type="decision", status="changes_requested", payload={"head": "abc"}),
+                  _event(type="finding", status="changes_requested", message="a veto needs no head"),
                   _event(type="message", status="rco_pass", message="informational, not a decision"),
                   _event()):
         assert schema.validate_event_for_write(event).status == event["status"]
+        assert schema.commit_head_status(schema.validate_event(event)) == "not_commit_approval"
 
 
 def test_f12_write_guard_composes_with_the_reserved_provenance_gate():
@@ -299,7 +316,7 @@ def test_f12_write_guard_composes_with_the_reserved_provenance_gate():
         schema.validate_event_for_write(operator)                                   # F23 still applies
     assert schema.validate_event_for_write(operator, provenance=provenance).payload["head"] == HEAD
     headless = dict(operator, message="consensus", payload={})
-    assert schema.validate_event(headless).status == "build_consensus_pass"         # backdated read: legacy
+    assert schema.validate_event(headless).status == "build_consensus_pass"         # read: accepted like core
     with pytest.raises(ValueError, match="lowercase 40-hex"):
         schema.validate_event_for_write(headless, provenance=provenance)           # provenance never relaxes F12
     with pytest.raises(ValueError, match="verified session provenance"):

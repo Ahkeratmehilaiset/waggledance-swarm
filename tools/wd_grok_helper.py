@@ -69,9 +69,22 @@ def read_state(root: Path) -> dict:
 def status(root: Path, now: datetime | None = None) -> dict:
     state = read_state(root)
     now = now or datetime.now(timezone.utc)
-    eligible = datetime.fromisoformat(state["last_attempt_utc"]) + INTERVAL
-    return {**state, "eligible": now >= eligible, "next_eligible_utc": eligible.isoformat(),
-            "role": "advisory helper for codex-lead-1", "automatic_calls": False}
+    reserved_at = datetime.fromisoformat(state["last_attempt_utc"])
+    eligible = reserved_at + INTERVAL
+    report = {**state, "eligible": now >= eligible, "next_eligible_utc": eligible.isoformat(),
+              "role": "advisory helper for codex-lead-1", "automatic_calls": False}
+    if state.get("status") == "reserved":
+        timeout_seconds = state.get("timeout_seconds", 2400)
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
+            raise ValueError("Invalid reserved consultation timeout")
+        deadline = reserved_at + timedelta(seconds=timeout_seconds)
+        report["reservation_deadline_utc"] = deadline.isoformat()
+        if now >= deadline:
+            # This is an observation only: preserve the durable reservation and
+            # do not infer process exit, refund budget or make it ready again.
+            report.update(status="interrupted_or_unknown", recorded_status=state["status"],
+                          raw_state=state, hourly_budget_eligible=report["eligible"], eligible=False)
+    return report
 
 
 def write_state(root: Path, state: dict) -> None:
@@ -391,6 +404,7 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         request_id = uuid.uuid4().hex
         state = {"schema": SCHEMA, "last_attempt_utc": now.isoformat(),
                  "task_id": task_id, "request_id": request_id, "status": "reserved",
+                 "timeout_seconds": timeout_seconds,
                  "previous_report": previous.get("report_path", previous.get("previous_report")),
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", "")}
         if ledger:

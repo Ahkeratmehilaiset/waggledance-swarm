@@ -1,6 +1,7 @@
 """Reporting must never impersonate an RCO or claim a failed write succeeded."""
 import ast
 import importlib.util
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,3 +110,30 @@ def test_reader_rejects_non_event_payload(monkeypatch, output):
     monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
     with pytest.raises(ValueError):
         module.load_events('runtime', 'bundle', 'a'*64)
+
+
+@pytest.mark.skipif(shutil.which('pwsh') is None, reason='the reader runs under pwsh')
+def test_reader_decodes_non_ascii_event_text_from_pwsh(monkeypatch, tmp_path):
+    # 2026-09-29: redirected pwsh stdout used the OEM code page, and a Finnish 'ä'
+    # in the window's events (byte 0x84) broke the UTF-8 decode before any report.
+    module = load_metric()
+    reader = tmp_path / 'Read-AgentBridge.ps1'
+    reader.write_text("param([switch]$Raw,[switch]$NoAckReceived,[switch]$NoContinuity,[int]$Tail)\n"
+                      "@(@{agent='operator';type='message';ts_utc='2026-09-29T18:00:00Z';"
+                      "message=('k' + [char]0x00E4 + 'ytt' + [char]0x00F6)}) | ConvertTo-Json -Compress\n",
+                      encoding='ascii')
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: reader)
+    # Like the hidden scheduled task, the reader gets its own console with the default
+    # code page. A shared test console keeps whatever code page an earlier child set.
+    real_run = module.subprocess.run
+    flags = getattr(module.subprocess, 'CREATE_NO_WINDOW', 0)
+    monkeypatch.setattr(module.subprocess, 'run',
+                        lambda *args, **kwargs: real_run(*args, creationflags=flags, **kwargs))
+    rows = module.load_events(str(tmp_path), 'bundle', 'a' * 64)
+    assert [row['message'] for row in rows] == ['käyttö']
+
+
+def test_reader_command_forces_utf8_output_before_the_pinned_reader():
+    module = load_metric()
+    source = SOURCE.read_text(encoding='utf-8')
+    assert "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & '" in source

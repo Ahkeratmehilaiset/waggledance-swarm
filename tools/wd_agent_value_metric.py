@@ -152,7 +152,10 @@ def classify_pr(files: list[str]) -> tuple[str, dict]:
 
 def load_events(bridge_root, bundle, manifest_sha256):
     reader = verified_writer(bundle, manifest_sha256, 'Read-AgentBridge.ps1')
-    command = "& '" + str(reader).replace("'", "''") + "' -Raw -NoAckReceived -NoContinuity -Tail 0 6>$null"
+    # Redirected pwsh stdout uses the OEM code page (0x84 for a Finnish 'ä'), which a
+    # UTF-8 decode rejects; the run then fails before reporting.
+    command = ("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & '"
+               + str(reader).replace("'", "''") + "' -Raw -NoAckReceived -NoContinuity -Tail 0 6>$null")
     result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-Command', command],
                             check=True, timeout=120, capture_output=True, text=True,
                             encoding='utf-8', env=reporting_env(bridge_root))

@@ -7,21 +7,27 @@ RFC: WD bridge throughput & resilience, item P2/D6 (stop re-running the full
 the test files that exercise them, so an agent can run ONLY the affected tests
 locally during iteration instead of the whole suite.
 
-CRITICAL CONTRACT — CI remains the authoritative full-suite gate. This selector
+CRITICAL CONTRACT — product-wide CI remains the authoritative full-suite gate.
+An explicitly authorized Bridge-only gate may use the narrower Bridge boundary
+below only when every changed source is mapped to existing, readable tests and
+no product source/configuration is mixed into the change. This selector
 is best-effort and **FAIL-SAFE**: whenever the affected set is uncertain (a
 broad-impact file changed, a changed source file maps to no test, an unknown
 file type, or empty input) it returns ``full_suite=True`` so nothing is ever
 silently under-run. It only ever NARROWS when the mapping is unambiguous.
 
-LIMITATION — import-grep detects only DIRECT imports (and the ``test_<stem>`` name
+LIMITATION — generic import-grep detects only DIRECT imports (and the ``test_<stem>`` name
 convention); it does NOT detect transitive/indirect imports (``importlib`` /
 ``__import__`` / re-exports / conftest-fixture-mediated coverage), so a
 transitively-affected test may not be selected for a LOCAL run. This is safe ONLY
-because CI stays the authoritative full suite.
+because product CI stays the authoritative full suite. The Bridge-only branch
+uses explicit mappings plus direct and transitive script/fixture references;
+uncertain Bridge coverage returns ``full_suite=True``.
 
-GUARDRAIL — this selector must NEVER replace the full suite in CI. If it is ever
-wired into CI it must be ADDITIVE (the full suite still runs); it may gate only
-LOCAL iteration.
+GUARDRAIL — this selector must NEVER replace product-wide full-suite CI for
+WD/product changes. Bridge-only CI requires an explicit operator-approved
+separate boundary; unknown Bridge files and mixed WD changes return full_suite.
+For generic changes it may narrow only LOCAL iteration.
 
 Read-only: it inspects the repo tree and runs no tests and mutates nothing.
 
@@ -85,9 +91,195 @@ EXPLICIT_AFFECTED_TESTS: dict[str, frozenset[str]] = {
     ),
 }
 
+# Reviewed against exact PR #1755 head 57d4b894 and native-wake commit
+# e7488916. Each entry names its concrete Bridge/launch/package consumers;
+# only these paths may narrow a Bridge-only change. New or unmapped files fail
+# closed until their consumers are reviewed and added here.
+BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
+    "docs/BRIDGE_TEST_BOUNDARY.md": frozenset({
+        "tests/tools/test_select_affected_tests.py",
+    }),
+    ".agent-bridge/bin/BridgeEventClassifier.ps1": frozenset("""
+        tests/tools/test_bridge_control_routing.py
+        tests/tools/test_bridge_event_classifier_wake_request.py
+        tests/tools/test_bridge_interim_reply_parity.py
+        tests/tools/test_bridge_session_watcher_probe.py
+        tests/tools/test_bridge_task_result.py
+        tests/tools/test_session_liveness_supervisor_report.py
+        tests/tools/test_wd_continuity_alert.py
+        tests/tools/test_wd_reboot_bundle.py
+    """.split()),
+    ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1": frozenset({
+        "tests/tools/test_bridge_stale_routing.py",
+    }),
+    ".agent-bridge/bin/Get-BridgeRequestInventory.ps1": frozenset({
+        "tests/tools/test_bridge_request_inventory.py",
+    }),
+    "docs/adr/ADR-continuity-recovery-20260929.md": frozenset({
+        "tests/tools/test_bridge_wake_continuity.py",
+        "tests/tools/test_wd_continuity_controls.py",
+        "tests/tools/test_wd_lead_continuity_imports.py",
+        "tests/tools/test_wd_native_tools_wake.py",
+    }),
+    "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1": frozenset({
+        "tests/tools/test_wd_continuity_status.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+        "tests/tools/test_wd_swarm_parallel_status.py",
+    }),
+    "ops/windows/reboot/Send-WdContinuityAlert.ps1": frozenset({
+        "tests/tools/test_wd_continuity_alert.py",
+        "tests/tools/test_wd_native_tools_wake.py",
+    }),
+    "ops/windows/reboot/bridge-code-files.json": frozenset("""
+        tests/tools/test_bridge_code_package_closure.py
+        tests/tools/test_lane_profile_launch_probe.py
+        tests/tools/test_wd_bridge_code_context.py
+        tests/tools/test_wd_grok_helper.py
+        tests/tools/test_wd_native_tools_wake.py
+    """.split()),
+    "ops/windows/reboot/start-wd-agent.ps1": frozenset("""
+        tests/tools/test_bridge_task_result.py
+        tests/tools/test_lane_launch_preflight.py
+        tests/tools/test_lane_profile_launch_probe.py
+        tests/tools/test_wd_bridge_code_context.py
+        tests/tools/test_wd_capacity_observer.py
+        tests/tools/test_wd_conversation_recovery.py
+        tests/tools/test_wd_conversation_resume.py
+        tests/tools/test_wd_dynamic_model_startup.py
+        tests/tools/test_wd_event_driven_wake.py
+        tests/tools/test_wd_grok_helper.py
+        tests/tools/test_wd_lane_context_window.py
+        tests/tools/test_wd_launcher_claude_marker_scrub.py
+        tests/tools/test_wd_lead_continuity_imports.py
+        tests/tools/test_wd_lead_reply_delivery.py
+        tests/tools/test_wd_native_lead.py
+        tests/tools/test_wd_native_tools_wake.py
+        tests/tools/test_wd_reboot_bundle.py
+        tests/tools/test_wd_startup_recovery.py
+        tests/tools/test_wd_startup_repair.py
+        tests/tools/test_wd_swarm_parallel_status.py
+    """.split()),
+    "ops/windows/reboot/start-wd-tools-consumer.ps1": frozenset("""
+        tests/tools/test_bridge_final_acceptance_20260927.py
+        tests/tools/test_bridge_inbox_recovery.py
+        tests/tools/test_bridge_wake_observation.py
+        tests/tools/test_lane_launch_preflight.py
+        tests/tools/test_lane_profile_launch_probe.py
+        tests/tools/test_wd_bridge_code_context.py
+        tests/tools/test_wd_continuity_controls.py
+        tests/tools/test_wd_conversation_recovery.py
+        tests/tools/test_wd_dynamic_model_startup.py
+        tests/tools/test_wd_launcher_claude_marker_scrub.py
+        tests/tools/test_wd_lead_continuity_imports.py
+        tests/tools/test_wd_lead_reply_delivery.py
+        tests/tools/test_wd_native_tools.py
+        tests/tools/test_wd_native_tools_wake.py
+        tests/tools/test_wd_reboot_bundle.py
+        tests/tools/test_wd_startup_recovery.py
+        tests/tools/test_wd_supervisor_opaque_process.py
+        tests/tools/test_wd_swarm_parallel_status.py
+        tests/tools/test_wd_tools_conversation.py
+    """.split()),
+    "ops/windows/reboot/Deploy-WdRebootBundle.ps1": frozenset({
+        "tests/tools/test_bridge_final_acceptance_20260927.py",
+        "tests/tools/test_wd_bridge_code_context.py",
+        "tests/tools/test_wd_dynamic_model_startup.py",
+        "tests/tools/test_wd_grok_helper.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
+    "ops/windows/reboot/Get-WdNativeWakePrompt.ps1": frozenset({
+        "tests/tools/test_wd_native_wake_prompt.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
+    "ops/windows/reboot/WAKE_PROCEDURE_LEAD.md": frozenset({
+        "tests/tools/test_wd_native_wake_prompt.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
+    "ops/windows/reboot/WAKE_PROCEDURE_TOOLS.md": frozenset({
+        "tests/tools/test_wd_native_wake_prompt.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+        "tests/tools/test_wd_tools_exact_incoming_retrieval.py",
+    }),
+    "tools/bridge_continuity_guard.py": frozenset({
+        "tests/tools/test_bridge_continuity_guard.py",
+        "tests/tools/test_wd_native_tools_wake.py",
+    }),
+    "ops/windows/reboot/wd-fleet.json": frozenset({
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
+    "ops/windows/reboot/wd_supervisor_loop.json": frozenset({
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
+}
+
+# Checked against the candidate tree's explicit sibling-test imports. These
+# are runtime fixture imports, not generic filename or import-grep inference.
+BRIDGE_SHARED_TEST_CONSUMERS: dict[str, frozenset[str]] = {
+    "tests/tools/test_wd_native_wake_prompt.py": frozenset({
+        "tests/tools/test_wd_lead_reply_delivery.py",
+        "tests/tools/test_wd_native_tools_wake.py",
+    }),
+    "tests/tools/test_wd_native_tools_wake.py": frozenset({
+        "tests/tools/test_wd_native_wake_prompt.py",
+    }),
+    "tests/tools/test_wd_continuity_alert.py": frozenset({
+        "tests/tools/test_wd_native_tools_wake.py",
+    }),
+}
+
+# Three shared providers are imported by tests throughout the independently
+# reviewed Bridge boundary. Include the complete explicit Bridge set when any
+# changes; two additional direct importers were checked at ec76 (request
+# preflight and task-console bridge-pin tests). No product test is inferred by
+# directory prefix. Missing members force full in both selector and router.
+BRIDGE_PROVIDER_CONSUMERS = frozenset(set().union(*BRIDGE_EXPLICIT_TESTS.values()) | {
+    "tests/tools/test_bridge_request_preflight.py",
+    "tests/tools/test_wd_task_console_containment_pin.py",
+})
+for _provider in (
+    "tests/tools/test_wd_reboot_bundle.py",
+    "tests/tools/test_wd_startup_recovery.py",
+    "tests/tools/test_wd_bridge_code_context.py",
+):
+    BRIDGE_SHARED_TEST_CONSUMERS[_provider] = BRIDGE_PROVIDER_CONSUMERS - {_provider}
+
+
+def bridge_test_closure(tests: set[str]) -> set[str]:
+    """Expand the reviewed shared-test edges to a transitive fixed point."""
+    closed = set(tests)
+    while True:
+        expanded = closed | set().union(*(BRIDGE_SHARED_TEST_CONSUMERS.get(t, ()) for t in closed))
+        if expanded == closed:
+            return closed
+        closed = expanded
+
 
 def _norm(path: str) -> str:
-    return path.replace("\\", "/").strip().lstrip("./")
+    p = path.replace("\\", "/").strip()
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _is_bridge_source(path: str) -> bool:
+    return _norm(path) in BRIDGE_EXPLICIT_TESTS
+
+
+def _bridge_tests_for(path: str, repo_root: Path) -> tuple[set[str], str | None]:
+    """Use only the reviewed source-to-test list; never infer completeness by grep."""
+    p = _norm(path)
+    mapped = BRIDGE_EXPLICIT_TESTS.get(p)
+    if not mapped:
+        return set(), f"unmapped Bridge source: {p}"
+    for test in sorted(mapped):
+        candidate = repo_root / test
+        if not candidate.is_file():
+            return set(), f"Bridge mapped test missing for {p}: {test}"
+        try:
+            candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return set(), f"unreadable Bridge mapped test for {p}: {test}: {exc}"
+    return set(mapped), None
 
 
 def _is_test_file(path: str) -> bool:
@@ -186,12 +378,26 @@ def select_affected_tests(
     files = [_norm(f) for f in changed_files if _norm(f)]
     if not files:
         return _full("no changed files provided")
+    bridge_sources = [f for f in files if _is_bridge_source(f)]
+    if bridge_sources and any(
+        not _is_bridge_source(f) and not (_is_test_file(f) and f.startswith("tests/tools/"))
+        for f in files
+    ):
+        return _full("Bridge boundary mixed with product/unknown changes")
     tests: set[str] = set()
     for f in files:
         if _is_broad_impact(f):
             return _full(f"broad-impact file changed: {f}")
         if _is_test_file(f):
+            if not (root / f).is_file():
+                return _full(f"changed test file missing: {f}")
             tests.add(f)
+            continue
+        if _is_bridge_source(f):
+            mapped, error = _bridge_tests_for(f, root)
+            if error:
+                return _full(error)
+            tests |= mapped
             continue
         if _is_source_file(f):
             explicit, explicit_error = _explicit_tests_for(f, root)
@@ -209,6 +415,15 @@ def select_affected_tests(
         return _full(f"unmapped changed file: {f}")
     if not tests:
         return _full("no tests selected")
+    tests = bridge_test_closure(tests)
+    for test in sorted(tests):
+        candidate = root / test
+        if not candidate.is_file():
+            return _full(f"shared Bridge test consumer missing: {test}")
+        try:
+            candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return _full(f"shared Bridge test consumer unreadable: {test}")
     return {"full_suite": False, "tests": sorted(tests), "reason": "affected-only"}
 
 

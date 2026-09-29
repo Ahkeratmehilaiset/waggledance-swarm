@@ -158,6 +158,8 @@ def test_lead_procedure_discovers_requests_without_tail_or_session_cutoff():
     assert "Discovery is not answer status" in lead
     assert "HOLD/cancel/finding controls are not enumerated" in lead
     assert "Do not bulk-resubmit historical requests" in lead
+    assert "Never discard an unprocessed reply using a timestamp high-water mark" in lead
+    assert "Reconcile by exact request ID and bound reply" in lead
 
 
 def test_every_inline_instruction_fragment_is_preserved_in_procedure():

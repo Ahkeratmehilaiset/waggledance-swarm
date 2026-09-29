@@ -95,12 +95,16 @@ def test_bound_answer_hidden_by_60_noise_rows_is_still_enumerated_and_resolved(
 
     extra = ("-NoCache",) if no_cache else ()
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", *extra)
-    assert result["schema"] == "wd.request-inventory.v1"
+    assert result["schema"] == "wd.request-inventory.v2"
     assert result["authority_effect"] == "none"
     assert result["request_count"] == 1
     entry = result["requests"][0]
     assert entry["request_id"] == "hidden-by-noise-v1"
-    assert entry["request"] == request
+    assert "request" not in entry
+    assert result["truncated"] is False
+    exact = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId",
+                       entry["request_id"], "-IncludeRequest", *extra)
+    assert exact["requests"][0]["request"] == request
     assert entry["answer_state"] == "not_evaluated"
     assert result["snapshot_bytes"] == len(before)
     assert result["snapshot_cursor"]["offset"] == len(before)
@@ -125,7 +129,7 @@ def test_no_tail_or_age_cutoff_beyond_5000_rows(tmp_path: Path, shell: str) -> N
     late, _ = _bound("late-after-noise", ts_utc="2026-09-18T09:00:00Z")
     _write(tmp_path, [old, *_noise(5200), late])
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
-    assert [entry["request_id"] for entry in result["requests"]] == ["old-before-5200-noise", "late-after-noise"]
+    assert [entry["request_id"] for entry in result["requests"]] == ["late-after-noise", "old-before-5200-noise"]
     assert result["parsed_rows"] == 5202
 
 
@@ -144,14 +148,14 @@ def test_exact_case_identity_session_filter_and_foreign_ids(tmp_path: Path, shel
 
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
     ids = [entry["request_id"] for entry in result["requests"]]
-    assert ids == ["Case-1", "case-1", "other-session-1"]
-    assert result["case_variant_request_ids"] == ["Case-1", "case-1"]
+    assert ids == ["other-session-1", "case-1", "Case-1"]
+    assert result["case_variant_request_ids"] == ["case-1", "Case-1"]
     by_id = {entry["request_id"]: entry for entry in result["requests"]}
     assert by_id["Case-1"]["id_also_used_by_other_requester"] is True
     assert by_id["case-1"]["id_also_used_by_other_requester"] is False
 
     filtered = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-SessionId", "lead-session", "-NoCache")
-    assert [entry["request_id"] for entry in filtered["requests"]] == ["Case-1", "case-1"]
+    assert [entry["request_id"] for entry in filtered["requests"]] == ["case-1", "Case-1"]
     assert filtered["session_id_filter"] == "lead-session"
 
 

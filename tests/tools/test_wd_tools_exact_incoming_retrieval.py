@@ -81,10 +81,16 @@ if ($routing.action -cne 'answer_incoming' -or $null -eq $incoming) { Blocked 'n
 if ($incoming.request_binding_conflict -eq $true) { Blocked 'request_binding_conflict' }
 $requestId = [string]$incoming.request_id
 if (-not $requestId) {
-    $text = Invoke-HelperText 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent)
+    $text = Invoke-HelperText 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent,
+        '-TaskId', [string]$routing.task_id, '-TsUtc', [string]$incoming.ts_utc)
     if ($null -eq $text) { Blocked 'inventory_failed' }
-    $inventoryMatches = @((From-Json $text).requests | Where-Object {
-        [string]$_.request.task_id -ceq [string]$routing.task_id -and [string]$_.request.ts_utc -ceq [string]$incoming.ts_utc })
+    $inventory = From-Json $text
+    if ($inventory.schema -cne 'wd.request-inventory.v2' -or
+        $inventory.truncated -isnot [bool] -or $inventory.truncated -ne $false) { Blocked 'inventory_incomplete' }
+    $inventoryMatches = @($inventory.requests | Where-Object {
+        [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })
+    if (($inventory.matched_count -isnot [int] -and $inventory.matched_count -isnot [long]) -or
+        $inventory.matched_count -ne $inventoryMatches.Count) { Blocked 'inventory_incomplete' }
     if ($inventoryMatches.Count -gt 1) { Blocked 'ambiguous_inventory_match' }
     if ($inventoryMatches.Count -eq 0) {
         # Zero inventory matches do not prove the ID absent: the row itself must lack one.
@@ -161,8 +167,9 @@ def test_procedure_prescribes_the_exact_retrieval_the_harness_runs() -> None:
     for fragment in (
         "Exact incoming request retrieval takes precedence over the recent 40-row view below.",
         "Get-BridgeReplySnapshot.ps1 -RequestId <incoming.request_id> -Requester <incoming.agent>",
-        "Get-BridgeRequestInventory.ps1 -Agent <incoming.agent>",
-        "request.task_id and request.ts_utc exactly equal the routing task_id and incoming.ts_utc",
+        "Get-BridgeRequestInventory.ps1 -Agent <incoming.agent> -TaskId <task_id> -TsUtc <incoming.ts_utc>",
+        "compact task_id and ts_utc exactly equal the routing task_id and incoming.ts_utc",
+        "schema wd.request-inventory.v2 and boolean truncated=false",
         "its to field lists codex-tools-1",
         "resolve that uniquely resolved request_id with the same snapshot command",
         "accept its single matching row only if that row itself carries no request_id, neither top-level nor in payload",
@@ -296,6 +303,35 @@ def test_duplicate_legacy_rows_in_recent_view_are_ambiguous(tmp_path: Path, shel
     legacy, routing = _legacy_routing()
     result = _retrieve(tmp_path, shell, [*_noise(60), legacy, legacy], routing)
     assert result == {"status": "blocked", "reason": "legacy_request_not_in_recent_view"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_incomplete_inventory_cannot_prove_unique_match_or_absence(tmp_path: Path, shell: str) -> None:
+    legacy, routing = _legacy_routing()
+    fake_bin = tmp_path / "bin"
+    shutil.copytree(BIN, fake_bin)
+    (fake_bin / "Get-BridgeRequestInventory.ps1").write_text("\n".join((
+        "param([string]$Agent,[string]$TaskId,[string]$TsUtc)",
+        "'{\"schema\":\"wd.request-inventory.v2\",\"truncated\":true,\"requests\":[]}'",
+    )), encoding="utf-8")
+    result = _retrieve(tmp_path, shell, [legacy], routing, fake_bin)
+    assert result == {"status": "blocked", "reason": "inventory_incomplete"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("matched_count", (None, 2, True))
+def test_inventory_count_must_agree_with_complete_exact_selection(tmp_path, shell, matched_count):
+    legacy, routing = _legacy_routing()
+    fake_bin = tmp_path / "bin"
+    shutil.copytree(BIN, fake_bin)
+    data = dict(schema="wd.request-inventory.v2", truncated=False,
+                matched_count=matched_count, requests=[])
+    (fake_bin / "Get-BridgeRequestInventory.ps1").write_text("\n".join((
+        "param([string]$Agent,[string]$TaskId,[string]$TsUtc)",
+        f"'{json.dumps(data)}'",
+    )), encoding="utf-8")
+    assert _retrieve(tmp_path, shell, [legacy], routing, fake_bin) == {
+        "status": "blocked", "reason": "inventory_incomplete"}
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)

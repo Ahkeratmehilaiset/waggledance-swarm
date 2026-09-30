@@ -10,9 +10,13 @@ unproven subjects stay unknown; unknown records retain their lane attribution.
 The policy pin is not itself signature verification or proof of a lane's
 current profile. No collector, production caller or activation is added.
 
-W1's typed-subject representation is a separately assigned source slice;
-its existing text-only evidence cannot establish known capacity. W3 load and
-claim-intent source is under independent review and is not an atomic reservation.
+The prepared source also composes W1's typed-subject representation from
+`386b68e83415313c89c445da72744d7b43c670b6`, together with the required frozen
+V3 dependency above. This represents caller evidence; it does not measure a
+lane's current profile or native subject ownership. Independent review remains
+separate. W3 claim-intent source has reproduced policy/provenance findings under
+repair and is not an atomic reservation. A v2-only mutex does not prove global
+idle while legacy claim writers do not participate; production wiring stays OFF.
 Installed signed `7779e9a2`, Supervisor OFF, policy OFF and merge-driver HOLD
 remain unchanged. This source composition is not a new release or deployment.
 

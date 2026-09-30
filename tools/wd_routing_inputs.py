@@ -12,6 +12,10 @@ What it never does:
 * It never synthesizes readiness, a subject, a role, a qualification or a signed policy. A foreign,
   duplicate, malformed, stale or future-dated lane record is withheld whole; a lane whose subject is
   unknown keeps its worker record but gets no subject, so compose() reports ``subject_unknown``.
+* It never binds a subject to a provider. A provider-typed subject (the pool-binding receipt's
+  ``{"kind", "id"}``) is checked for its grammar only and handed on as a fresh copy; compose() binds it
+  to its own provider's row against the signed ``profile_providers``, or refuses it. A text subject
+  stays representable, but compose() never binds it to capacity (``subject_unbound``).
 * It never supplies capacity, load or single-flight state: lane evidence carrying any of them is
   malformed. Capacity comes only through compose()'s adapter; reservation state is not assembled here.
 * It never alters the caller's task (id, revision, input digest, scope): the task is handed on as a
@@ -33,7 +37,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from tools.bridge_pool_binding import _aware_utc
+from tools.bridge_pool_binding import HEX64, SESSION_RE, SUBJECT_KEYS, SUBJECT_KINDS, _aware_utc
 from tools.wd_composer_select import digest
 from tools.wd_task_router import GROK, MEMBERS, WORKER_SCHEMA
 
@@ -53,6 +57,8 @@ HEX = frozenset("0123456789abcdef")
 CONTRACT_UNKNOWNS = (
     "profile_id is caller-bound: no registry-v2 lookup is made here",
     "subject is caller-bound: deriving it from a wd.pool-binding-decision.v1 is the reader's (W2)",
+    "a typed subject is checked for its pool-binding grammar only: it is not a measured current profile or"
+    " native ownership, and which provider it binds is compose's check against the signed profile_providers",
     "load and single_flight are not assembled: reservation state is W3's",
     "original bytes and the signed policy's signature are not verified here",
 )
@@ -61,6 +67,18 @@ CONTRACT_UNKNOWNS = (
 def _text(value: Any, limit: int = MAX_TEXT) -> bool:
     """Text compose's _label also admits (exact str, 1..limit characters, no outer whitespace), and printable."""
     return type(value) is str and 0 < len(value) <= limit and value.strip() == value and value.isprintable()
+
+
+def _typed_subject(value: Any) -> dict | None:
+    """A provider-typed subject in the pool-binding receipt grammar ({"kind", "id"}, exact types; an auth_context id
+    is 64 lowercase hex, a native_session id matches SESSION_RE) as a fresh dict, or None."""
+    if type(value) is not dict or set(value) != SUBJECT_KEYS:
+        return None
+    kind, ident = value["kind"], value["id"]
+    if type(kind) is not str or kind not in SUBJECT_KINDS.values() or type(ident) is not str:
+        return None
+    pattern = HEX64 if kind == SUBJECT_KINDS["codex"] else SESSION_RE
+    return {"kind": kind, "id": ident} if pattern.fullmatch(ident) is not None else None
 
 
 def _canonical_copy(value: Any) -> tuple[bool, Any]:
@@ -98,8 +116,9 @@ def _source(entry: Any) -> dict | None:
     return {"path": path, "byte_sha256": byte_sha256}
 
 
-def _lane(record: Any, now: datetime | None) -> tuple[dict | None, str | None, list[str]]:
-    """(worker record, subject, reasons) for one lane record; a None worker means withheld whole."""
+def _lane(record: Any, now: datetime | None) -> tuple[dict | None, Any, list[str]]:
+    """(worker record, subject, reasons) for one lane record; a None worker means withheld whole. The subject is
+    a text label (representable; compose never binds it to capacity) or a fresh typed {kind, id} dict."""
     if type(record) is not dict or not set(LANE_REQUIRED) <= set(record) \
             or not set(record) <= set(LANE_REQUIRED + LANE_OPTIONAL) or record["schema"] != LANE_EVIDENCE_SCHEMA \
             or not _text(record["worker"]) or not _text(record["kind"]) \
@@ -113,7 +132,9 @@ def _lane(record: Any, now: datetime | None) -> tuple[dict | None, str | None, l
     if worker == GROK and subject is not None:
         return None, None, ["grok_subject_refused"]
     if subject is not None and not _text(subject):
-        return None, None, ["subject_malformed"]
+        subject = _typed_subject(subject)
+        if subject is None:
+            return None, None, ["subject_malformed"]
     observed = _instant(record["observed_utc"])
     if observed is None:
         return None, None, ["lane_evidence_malformed"]
@@ -181,7 +202,7 @@ def assemble(task: Any, lanes: Any, rows: Any, paced: Any, prepared_artifacts: A
                             "byte_digest_verified": False}
     provenance["signed_policy"]["signature_verified"] = False
     workers: list[dict] = []
-    subjects: dict[str, str] = {}
+    subjects: dict[str, Any] = {}
     unknown: list[dict] = []
     records = documents["lanes"]
     if type(records) is not list:

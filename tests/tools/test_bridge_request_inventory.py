@@ -60,11 +60,15 @@ def _noise(count: int) -> list[dict]:
     return rows
 
 
-def _write(root: Path, rows: list[dict], tail: bytes = b"") -> Path:
+def _write(root: Path, rows: list[dict], tail: bytes = b"", *, raw_utf8: bool = False) -> Path:
+    """The fixture log. ``raw_utf8`` writes non-ASCII as UTF-8 bytes, as the bridge writers do: the canonical
+    reader blocks ANY escaped surrogate, a valid pair included (BridgeLogReader.ps1 \\u parser; conformance case
+    escaped_surrogate_pair_blocks), so an escaped non-BMP character would block the whole snapshot."""
     shared = root / "shared"
     shared.mkdir(parents=True, exist_ok=True)
     log = shared / "events.jsonl"
-    log.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in rows) + tail)
+    log.write_bytes(b"".join(json.dumps(row, ensure_ascii=not raw_utf8).encode("utf-8") + b"\n" for row in rows)
+                    + tail)
     return log
 
 
@@ -288,7 +292,7 @@ def test_a_single_sided_or_equal_value_is_malformed_never_a_binding_conflict(tmp
         row["payload"].update(payload)
         rows.append(row)
     good, _ = _bound("good-v1")
-    _write(tmp_path, [*rows, good])
+    _write(tmp_path, [*rows, good], raw_utf8=True)   # the surrogate-v1 emoji as UTF-8 bytes, as a writer emits it
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
     conflicts = result["conflicts"]
     assert [conflict["kind"] for conflict in conflicts] == [kind for *_, kind in KIND_CASES]

@@ -60,11 +60,16 @@ $rows=@($snapshot.rows)
 $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $order=[Collections.Generic.List[string]]::new()
 $foreignIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-# -DiagnosticPartial only: every invalid OWN row is listed (bounded), never silently dropped.
+# -DiagnosticPartial only: every invalid OWN row is counted and listed, never silently dropped.
+# The list is bounded (at most 50 entries AND 30000 JSON characters, always a prefix in indexed
+# order), so the receipt fits the 50000-character page cap with a small enough -PageSize.
 $conflicts=[Collections.Generic.List[object]]::new()
 $conflictedIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $conflictCount=0
 $maxConflicts=50
+$conflictChars=0
+$maxConflictChars=30000
+$conflictListClosed=$false
 function Get-InventoryFieldText {
     # The raw text of one field (top-level or payload), at most 160 UTF-16 units and never
     # cut inside a surrogate pair, or $null. A non-string value is shown as canonical JSON.
@@ -83,16 +88,23 @@ function Add-InventoryConflict {
     # occurrence it conflicts with; $null for a row that is invalid on its own.
     param([int] $Position, $Event, [string] $Kind, $FirstPosition = $null)
     $script:conflictCount++
-    if ($conflicts.Count -ge $maxConflicts) { return }
+    if ($script:conflictListClosed) { return }
     $payloadProperty=$Event.PSObject.Properties['payload']
     $payload=if ($null -ne $payloadProperty) { $payloadProperty.Value } else { $null }
-    $conflicts.Add([pscustomobject][ordered]@{
+    $entry=[pscustomobject][ordered]@{
         indexed_position=$Position; first_indexed_position=$FirstPosition; kind=$Kind
         ts_utc=(Get-InventoryFieldText $Event 'ts_utc'); task_id=(Get-InventoryFieldText $Event 'task_id')
         top_level_request_id=(Get-InventoryFieldText $Event 'request_id')
         payload_request_id=(Get-InventoryFieldText $payload 'request_id')
         top_level_agent=(Get-InventoryFieldText $Event 'agent'); payload_agent=(Get-InventoryFieldText $payload 'agent')
-    })
+    }
+    $size=($entry | ConvertTo-Json -Depth 4 -Compress).Length
+    if ($conflicts.Count -ge $maxConflicts -or $script:conflictChars+$size -gt $maxConflictChars) {
+        $script:conflictListClosed=$true   # later rows are still counted, never listed out of order
+        return
+    }
+    $script:conflictChars+=$size
+    $conflicts.Add($entry)
 }
 for ($position=0; $position -lt $rows.Count; $position++) {
     $event=$rows[$position]

@@ -233,6 +233,26 @@ def test_600_conflicting_rows_list_only_50_and_the_default_still_refuses(tmp_pat
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_long_conflict_fields_close_the_list_at_the_character_budget(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    log = runtime / "shared/events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()][:50]
+    for index, row in enumerate(rows):                                   # ~720 JSON characters per entry
+        row.update(task_id="t" * 200 + str(index), request_id="a" * 200 + str(index))
+        row["payload"]["request_id"] = "b" * 200 + str(index)
+    log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    result = _run(shell, runtime, script, "-DiagnosticPartial")
+    assert result.returncode == 0, result.stderr                       # 50 x ~720 would not fit 50000
+    assert len(result.stdout) < 50_000
+    data = json.loads(result.stdout)
+    listed = data["conflicts"]
+    assert data["conflict_count"] == 50 and data["conflicts_truncated"] is True and 0 < len(listed) < 50
+    assert [conflict["indexed_position"] for conflict in listed] == list(range(len(listed)))   # a prefix
+    assert len(json.dumps(listed, separators=(",", ":"))) <= 30_000 + len(listed) + 1
+    assert all(len(conflict["task_id"]) == len(conflict["top_level_request_id"]) == 160 for conflict in listed)
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_include_request_rejects_no_exact_match(tmp_path: Path, shell: str) -> None:
     runtime, script = _fixture(tmp_path)
     result = _run(shell, runtime, script, "-RequestId", "absent-request", "-IncludeRequest")

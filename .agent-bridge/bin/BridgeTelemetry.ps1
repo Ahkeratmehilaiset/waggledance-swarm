@@ -182,6 +182,15 @@ function Write-BridgeStageObservation {
     if ($Stage -cnotin @('request_durable','watcher_seen','relay_enqueued','model_turn_started','answer_durable','lead_processed','user_reported','turn_completed')) {
         throw 'Unknown bridge observation stage'
     }
+    # Refused-receipt visibility (RCO1 2026-09-30): an agent-reported stage is a receipt someone
+    # counts (the native relay waits for model_turn_started), so a record that cannot be written
+    # where the readers look throws; a runtime-observed stage stays best-effort and warns.
+    $agentReported = $Stage -cin @('model_turn_started','lead_processed','user_reported','turn_completed')
+    if (-not $BridgeRoot -or -not [IO.Path]::IsPathRooted($BridgeRoot)) {
+        if ($agentReported) { throw ($Stage + ' observation refused: the bridge root must be a rooted path') }
+        Write-Warning ($Stage + ' observation not recorded: the bridge root must be a rooted path')
+        return
+    }
     # turn_completed is the ONLY source of a no-op ratio: the agent states explicitly
     # whether its turn acted. Nothing else (a pending or missing stage, a queue
     # acceptance) may be read as a no-op.
@@ -215,24 +224,35 @@ function Write-BridgeStageObservation {
     if ($Stage -ceq 'turn_completed') { $observation['action_outcome'] = $ActionOutcome }
     if ($null -ne $metadata) { $observation['metadata'] = $metadata }
     if ($null -ne $Request) {
-        # Flow stages stay best-effort: an unbindable request records nothing (turn_completed threw above).
-        if($null -eq $binding){return}
-        foreach ($pair in @(@('request_id','request_id'),@('requester','agent'),@('requester_session_id','session_id'))) {
-            $property = $binding.PSObject.Properties[$pair[1]]
-            if ($null -ne $property) { $observation[$pair[0]] = $property.Value }
+        # An unbindable request records nothing (turn_completed threw above): an agent-reported
+        # receipt refuses visibly, a runtime stage warns.
+        $unbound = ''
+        if($null -eq $binding){ $unbound = 'the request does not bind a request_id' }
+        else {
+            foreach ($pair in @(@('request_id','request_id'),@('requester','agent'),@('requester_session_id','session_id'))) {
+                $property = $binding.PSObject.Properties[$pair[1]]
+                if ($null -ne $property) { $observation[$pair[0]] = $property.Value }
+            }
+            if (-not $observation.request_id) { $unbound = 'the request_id is empty' }
         }
-        if (-not $observation.request_id) { return }
+        if ($unbound) {
+            if ($agentReported) { throw ($Stage + ' observation refused: ' + $unbound) }
+            Write-Warning ($Stage + ' observation not recorded: ' + $unbound)
+            return
+        }
         if(-not $ReplyTimestamp -and $binding.PSObject.Properties['reply_ts_utc'] -and $binding.reply_ts_utc){$observation.reply_ts_utc=[string]$binding.reply_ts_utc}
     }
     # F1-WRITER-READER (Tools 381ee2ca, 2e4262ab): refuse the scalar/time values the reader's
-    # validate_stage would discard, BEFORE any directory or file exists. turn_completed throws
-    # visibly; for the live flow stages an invalid final scalar/time value records nothing (the
-    # reader would drop it anyway). That skip is ONLY for these values: an unknown stage, an
-    # invalid metadata/ActionOutcome argument (validated above) or an I/O failure still throws.
+    # validate_stage would discard, BEFORE any directory or file exists. An agent-reported stage
+    # (turn_completed, model_turn_started, lead_processed, user_reported) throws visibly; a
+    # runtime-observed flow stage records nothing (the reader would drop it anyway) and warns.
+    # That skip is ONLY for these values: an unknown stage, an invalid metadata/ActionOutcome
+    # argument (validated above) or an I/O failure still throws.
     # Parity is by source reading, not a differential proof (Unicode-database versions differ).
     $problem = Get-BridgeStageObservationProblem -Observation $observation
     if ($problem) {
-        if ($Stage -ceq 'turn_completed') { throw ('turn_completed observation refused: ' + $problem) }
+        if ($agentReported) { throw ($Stage + ' observation refused: ' + $problem) }
+        Write-Warning ($Stage + ' observation not recorded: ' + $problem)
         return
     }
     $directory = Join-Path $BridgeRoot 'shared\telemetry'

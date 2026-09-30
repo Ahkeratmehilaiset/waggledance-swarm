@@ -326,7 +326,7 @@ def test_source_is_read_only_and_never_reads_the_canonical_log():
 
 # -- writer (BridgeTelemetry.ps1), driven through PowerShell --------------------------
 
-def _ps(shell: str, tmp_path: Path, body: str) -> subprocess.CompletedProcess:
+def _ps(shell: str, tmp_path: Path, body: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     # $request is a variable: in argument mode a [type]@{...} literal would bind as a string.
     script = (f". '{WRITER}'\n$ErrorActionPreference = 'Stop'\n"
               "$request = [pscustomobject]@{request_id='r-1';agent='codex-lead-1';session_id='s-1'}\n" + body)
@@ -335,7 +335,7 @@ def _ps(shell: str, tmp_path: Path, body: str) -> subprocess.CompletedProcess:
     # -ExecutionPolicy Bypass for this isolated fixture only (as the repo harness does), so a
     # Restricted 5.1 policy cannot make every refusal case pass for the wrong reason.
     return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-                          capture_output=True, text=True, timeout=60, env=env)
+                          capture_output=True, text=True, timeout=60, env=env, cwd=cwd)
 
 
 def _stages(tmp_path: Path) -> list[dict]:
@@ -629,3 +629,81 @@ def test_wake_metadata_is_per_wake_and_never_carried_forward(tmp_path, shell):
     second = json.loads(wake.read_text(encoding="utf-8"))
     assert "metadata" not in second and len(second["requests"]) == 2
     assert set(second) == set(telemetry.WAKE_KEYS)
+
+
+# -- refused receipts are visible (RCO1 2026-09-30, Lead request 31ea9743) -------------------------------
+# The native relay counts a notified turn as consumed only when the woken conversation's own
+# model_turn_started record exists. A receipt the reader would discard (a mistyped target) or one written
+# under an empty or relative bridge root returned silently at 9d794346, so the relay's hold stayed outstanding
+# and nobody was told. Agent-reported stages now fail loudly; runtime stages stay best-effort but warn.
+
+DELIVERY = "0123456789abcdef0123456789abcdef"
+TURN = ROOT / ".agent-bridge" / "bin" / "Start-BridgeRequestTurn.ps1"
+
+
+def _receipt(root: str, target: str) -> str:
+    return ("try { Write-BridgeStageObservation -BridgeRoot '" + root + "' -Stage model_turn_started -Target " + target
+            + " -DeliveryId " + DELIVERY + "; Write-Output 'RECORDED' } catch { Write-Output ('REFUSED:' + "
+            "$_.Exception.Message) }")
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_receipt_the_relay_would_never_count_fails_loudly_and_its_twin_records(tmp_path, shell):
+    bad = _ps(shell, tmp_path / "bad", _receipt(str(tmp_path / "bad"), "Codex-Lead-1"))
+    assert "REFUSED:model_turn_started observation refused" in bad.stdout, bad.stdout + bad.stderr
+    assert "target must be a lowercase agent id" in bad.stdout
+    assert not (tmp_path / "bad" / "shared" / "telemetry").exists()
+    good = _ps(shell, tmp_path / "good", _receipt(str(tmp_path / "good"), "codex-lead-1"))
+    assert "RECORDED" in good.stdout, good.stdout + good.stderr
+    [record] = _stages(tmp_path / "good")
+    assert (record["stage"], record["target"], record["delivery_id"], record["observation_source"]) == (
+        "model_turn_started", "codex-lead-1", DELIVERY, "agent_reported")
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+@pytest.mark.parametrize("root", ["", "relative-root"], ids=["empty", "relative"])
+def test_an_agent_receipt_needs_a_rooted_bridge_root(tmp_path, shell, root):
+    work = tmp_path / "cwd"
+    work.mkdir()
+    result = _ps(shell, tmp_path, _receipt(root, "codex-lead-1"), cwd=work)
+    assert "REFUSED:" in result.stdout and "bridge root" in result.stdout, result.stdout + result.stderr
+    assert not list(work.rglob("stage-*.json"))                     # no stray receipt the relay never reads
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_refused_runtime_stage_stays_best_effort_but_warns(tmp_path, shell):
+    result = _ps(shell, tmp_path, f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage watcher_seen "
+                                  f"-Request {REQUEST} -Target claude-rco-2 -ReplyTimestamp 'not-a-time'")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "shared" / "telemetry").exists()
+    # Write-Warning goes to stdout on Windows PowerShell 5.1 and to stderr on pwsh here.
+    assert "watcher_seen observation not recorded" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_start_request_turn_fails_loudly_when_its_receipt_cannot_be_recorded(tmp_path, shell):
+    request = {"agent": "codex-lead-1", "to": "claude-rco-1", "type": "wake_request", "task_id": "t/1",
+               "request_id": "r-1", "session_id": "s-1\u0007"}              # a control character the reader drops
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(tmp_path)
+
+    def run(event: dict) -> subprocess.CompletedProcess:
+        request_file = tmp_path / ("request-" + uuid.uuid4().hex + ".json")
+        request_file.write_text(json.dumps(event), encoding="utf-8")
+        command = f"& '{TURN}' -Agent claude-rco-1 -RequestEventJson (Get-Content -Raw -LiteralPath '{request_file}')"
+        return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+                              capture_output=True, text=True, timeout=60, env=env, cwd=tmp_path)
+
+    bad = run(request)
+    assert bad.returncode != 0 and "model_turn_started observation refused" in bad.stdout + bad.stderr, (
+        bad.stdout + bad.stderr)
+    assert not (tmp_path / "shared" / "telemetry").exists()
+    good = run(dict(request, session_id="s-1"))                           # success twin
+    assert good.returncode == 0, good.stdout + good.stderr
+    [record] = _stages(tmp_path)
+    assert (record["stage"], record["request_id"], record["requester_session_id"]) == ("model_turn_started", "r-1",
+                                                                                       "s-1")

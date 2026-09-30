@@ -1209,3 +1209,53 @@ def test_g1_requester_reaches_the_verified_python_wrapper_only_with_a_consultati
     generated = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text()
     grok_parameters = generated.split("'grok' {", 1)[1].split("'@", 1)[0]
     assert "$RequestedBy" in grok_parameters
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_g1_a_failed_or_timed_out_consultation_keeps_its_requester(tmp_path, failure):
+    seed(tmp_path)
+    events = []
+
+    def runner(*args, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("fake", 5, output=b"partial", stderr=b"stalled")
+        return SimpleNamespace(returncode=1, stdout="", stderr="provider refused")
+
+    result = consult(tmp_path, "g1/failure", "ask", ["fake"], now=NOW, requested_by="fable-5", runner=runner,
+                     emitter=lambda stage, state: events.append((stage, dict(state))))
+    assert result["status"] == "failed"
+    assert [(stage, state["requested_by"]) for stage, state in events] == [("started", "fable-5"),
+                                                                            ("failed", "fable-5")]
+    saved = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "failed" and saved["requested_by"] == "fable-5"
+
+
+def test_g1_a_busy_deferral_carries_only_the_new_requester(tmp_path):
+    _reserved(tmp_path, 5000)
+    previous = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    write_state(tmp_path, dict(previous, requested_by="claude-rco-1"))
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    events = []
+    report = consult(tmp_path, "g1/busy", "ask", ["fake"], now=NOW, requested_by="fable-5",
+                     runner=lambda *a, **k: pytest.fail("a busy helper launched Grok"),
+                     emitter=lambda stage, event: events.append((stage, dict(event))))
+    assert report["status"] == "deferred" and report["requested_by"] == "fable-5"
+    (stage, event), = events
+    assert stage == "deferred" and event["requested_by"] == "fable-5"
+    assert "claude-rco-1" not in json.dumps(event)                   # the busy attempt's requester stays its own
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+
+
+def test_g1_a_later_consultation_without_a_requester_carries_no_stale_one(tmp_path):
+    seed(tmp_path)
+    consult(tmp_path, "g1/first", "ask", ["fake"], now=NOW, requested_by="claude-rco-2",
+            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice"))
+    assert json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))["requested_by"] == "claude-rco-2"
+    events = []
+    result = consult(tmp_path, "g1/second", "ask", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="more"),
+                     emitter=lambda stage, state: events.append((stage, dict(state))))
+    assert result["status"] == "answered" and "requested_by" not in result
+    assert [stage for stage, _ in events] == ["started", "answered"]
+    assert all("requested_by" not in state for _, state in events)
+    assert "requested_by" not in json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))

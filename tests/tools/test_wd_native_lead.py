@@ -20,7 +20,7 @@ RELAY_REFUSED = ("relay_submitting", "relay_snapshot", "relay_orphan_snapshot", 
                  "relay_agent", "relay_bad_stamp", "relay_fresh", "relay_rejected_count", "relay_rejected_badstamp",
                  "relay_rejected_legacy_snapshot", "relay_claiming_no_id", "relay_bad_snapshot_id", "relay_unowned",
                  "relay_miscased_snapshot", "relay_miscased_field", "relay_watching_named", "relay_claiming_legacy",
-                 "relay_snapshot_directory", "relay_submitting_receipt", "relay_live_lead")
+                 "relay_snapshot_directory", "relay_submitting_receipt", "relay_live_lead", "relay_state_directory")
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
@@ -87,7 +87,9 @@ def test_native_resume_never_guesses_or_bypasses_pending_work(tmp_path, ps, case
             relay.pop("agent")
         if case == "relay_miscased_field":
             relay["Status"] = relay.pop("status")
-        if case not in ("relay_orphan_snapshot", "relay_orphan_named"):
+        if case == "relay_state_directory":
+            (journal / "native-bridge-wake.json").mkdir()
+        elif case not in ("relay_orphan_snapshot", "relay_orphan_named"):
             (journal / "native-bridge-wake.json").write_text(json.dumps(relay))
         suffix = {"relay_snapshot": ".wake", "relay_queued_legacy_snapshot": ".wake",
                   "relay_orphan_snapshot": ".wake", "relay_rejected_legacy_snapshot": ".wake",

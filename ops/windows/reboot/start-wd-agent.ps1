@@ -244,6 +244,9 @@ function Get-WdNativeLeadResumeState {
   # it never clears Supervisor OFF. submitting stays UNKNOWN even beside a .refusal-* receipt: only the strict helper
   # may reconcile it. Fields are read by exact name, and a mis-cased known field refuses.
   $relay = $null
+  if (Test-Path -LiteralPath $relayPath -PathType Container) {
+    throw 'Native Lead resume requires a reconciled bridge wake relay state'
+  }
   $relayField = { param($Record, [string] $Name)
     foreach ($property in $Record.PSObject.Properties) { if ($property.Name -ceq $Name) { return ,$property.Value } }
     return $null }

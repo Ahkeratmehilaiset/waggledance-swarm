@@ -12,7 +12,7 @@ import copy
 import hashlib
 import json
 from dataclasses import asdict, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,7 @@ HEAD, TREE = "1" * 40, "2" * 40
 INDEX = "fixture intelligence_index rerun r1"  # the signed index_version is the exact provenance.reference
 CODING = "fixture coding_agent_index rerun r1"
 OPUS, SONNET, CANDIDATE = "claude/claude-opus-5-5", "claude/claude-sonnet-5", "grok/grok-4.7"
-POOL = "claude-max-5h"
+POOL, TEAM_POOL = "claude-max-5h", "claude-team-5h"
 
 
 def iso(moment: datetime) -> str:
@@ -63,12 +63,27 @@ def pool(provider, verification, **over):
     return row
 
 
-def registry(*observations, pool_over=None) -> dict:
-    """The shipped F3 v2 registry plus fixture pools and observations."""
+def membership(obs_id, key, pool_id=POOL, *, effort="high", measured_at=None):
+    """An F3 pool-membership observation (kind pool): F3 names pool_id as this model's quota pool."""
+    provider, model = key.split("/", 1)
+    return {"id": obs_id, "subject": {"provider": provider, "model": model, "effort": effort, "pool": None},
+            "kind": "pool", "class": None, "value": pool_id, "unit": "pool_id", "status": "measured",
+            "provenance": {"kind": "operator_reading", "reference": "fixture plan reading", "observer": "fixture"},
+            "measured_at": measured_at or iso(NOW - timedelta(hours=1)), "ttl_seconds": 7 * 86400,
+            "uncertainty": {"kind": "exact", "low": None, "high": None, "note": "fixture: the plan names the pool"}}
+
+
+# Every fixture profile's pool is named by a fresh, effort-exact F3 membership (RCO1 S3).
+MEMBERSHIPS = (membership("opus-pool", OPUS), membership("sonnet-pool", SONNET))
+
+
+def registry(*observations, pool_over=None, memberships=MEMBERSHIPS) -> dict:
+    """The shipped F3 v2 registry plus fixture pools, pool memberships and observations."""
     doc = json.loads((ROOT / "configs" / "model_registry.json").read_text(encoding="utf-8"))
     doc["pools"].update({POOL: pool("claude", "verified", **(pool_over or {})),
+                         TEAM_POOL: pool("claude", "verified", limit_id=TEAM_POOL),
                          "claude-unverified": pool("claude", "unverified"), "codex-plus-5h": pool("codex", "verified")})
-    doc["observations"] += list(observations)
+    doc["observations"] += list(memberships) + list(observations)
     return doc
 
 
@@ -112,9 +127,10 @@ def profile(pid, key, effort="high", pool_id=POOL):
                                         workload="task:compose", value=1.0)}
 
 
-def inputs(observations=DEFAULT_OBS, *, data=None, edit=None, profiles=None, pool_over=None, **param_over) -> dict:
+def inputs(observations=DEFAULT_OBS, *, data=None, edit=None, profiles=None, pool_over=None,
+           memberships=MEMBERSHIPS, **param_over) -> dict:
     """compose() keyword arguments: an honestly bound Decision, pins and policy over the given registry bytes."""
-    data = source(registry(*observations, pool_over=pool_over)) if data is None else data
+    data = source(registry(*observations, pool_over=pool_over, memberships=memberships)) if data is None else data
     policy = signed_policy(data, edit, **param_over)
     digest = activation.canonical_sha256(policy)
     return {"decision": Decision("F24", True, "enabled by the signed policy", digest, 3),
@@ -202,6 +218,45 @@ def test_two_current_values_for_one_cell_are_unknown_not_a_pick():
     assert models(ev) == ["claude-sonnet-5"]
 
 
+EXACT = {"kind": "exact", "low": None, "high": None, "note": "fixture: exact by construction"}
+LATER = iso(NOW - timedelta(minutes=30))  # newer than the 20:00 interval value
+EARLIER = iso(NOW - timedelta(hours=2))  # older than it
+R0 = "fixture intelligence_index rerun r0"  # another version of the signed index
+
+
+@pytest.mark.parametrize("second", [
+    quality("opus-high-exact", OPUS, 40.0, uncertainty=EXACT, measured_at=LATER),  # RCO1 S1: F3 would pick this
+    quality("opus-model", OPUS, 40.0, effort=None, measured_at=LATER),  # F3 offers a model-level value to every effort
+    quality("opus-high-older-exact", OPUS, 40.0, uncertainty=EXACT, measured_at=EARLIER),
+    # RCO2 residual (Lead option a): F3 _column keys quality_general by class only, so another index
+    # version or unit of class general is in the SAME F3 cell and competes, whether newer, older or same-time.
+    quality("opus-high-r0-newer", OPUS, 40.0, reference=R0, measured_at=LATER),
+    quality("opus-high-r0-older", OPUS, 40.0, reference=R0, measured_at=EARLIER),
+    quality("opus-high-r0-same-time", OPUS, 40.0, reference=R0),
+    quality("opus-high-r0-exact", OPUS, 40.0, reference=R0, uncertainty=EXACT, measured_at=LATER),
+    quality("opus-high-other-unit", OPUS, 40.0, unit="score_0_100", reference="fixture score run"),
+    quality("opus-model-r0", OPUS, 40.0, effort=None, reference=R0),
+])
+def test_any_second_fresh_value_in_the_f3_cell_makes_it_unknown_whatever_its_uncertainty_unit_or_version(second):
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), second, quality("sonnet-high", SONNET, 50.0))))["evidence"]
+    assert models(ev) == ["claude-sonnet-5"]  # the signed positive opus value is present, yet never ranked
+    assert "unranked:opus:no_registry_entry" in cs.select(ev)["reasons"]
+
+
+@pytest.mark.parametrize("second", [
+    quality("opus-high-stale", OPUS, 40.0, measured_at=iso(NOW - timedelta(days=8))),  # F3's fresh value wins
+    quality("opus-high-r0-stale", OPUS, 40.0, reference=R0, measured_at=iso(NOW - timedelta(days=8))),
+    quality("opus-high-r0-historical", OPUS, 40.0, reference=R0, status="historical", provenance="external_benchmark"),
+    quality("opus-high-task", OPUS, 40.0, cls="task:compose"),  # a genuinely separate F3 column
+    quality("opus-high-task-r0", OPUS, 40.0, cls="task:compose", reference=R0, measured_at=LATER),
+    quality("opus-xhigh", OPUS, 40.0, effort="xhigh"),  # another cell
+])
+def test_a_non_competing_observation_leaves_the_cell_ranked(second):
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), second, quality("sonnet-high", SONNET, 50.0))))["evidence"]
+    high = [(e["model"], e["score"]) for e in ev["registry_snapshot"]["entries"] if e["effort"] == "high"]
+    assert high == [("claude-opus-5-5", 60.0), ("claude-sonnet-5", 50.0)]
+
+
 @pytest.mark.parametrize("change", ["stale", "model_level", "exact", "historical", "other_version"])
 def test_a_coding_score_follows_the_same_rules(change):
     over = dict(UNKNOWN_SOURCES[change])
@@ -211,6 +266,23 @@ def test_a_coding_score_follows_the_same_rules(change):
                      **{"reference": CODING, **over})
     ev = compose(**inputs((quality("opus-high", OPUS, 60.0), coding)))["evidence"]
     assert ev["registry_snapshot"]["entries"][0]["coding_score"] is None
+
+
+@pytest.mark.parametrize("measured_at", [LATER, EARLIER, None])
+def test_another_coding_index_version_in_the_f3_cell_unranks_only_the_coding_score(measured_at):
+    signed = quality("opus-high-coding", OPUS, 70.0, cls="coding_agent", unit="coding_agent_index", reference=CODING)
+    other = quality("opus-high-coding-r0", OPUS, 75.0, cls="coding_agent", unit="coding_agent_index",
+                    reference="fixture coding_agent_index rerun r0", measured_at=measured_at)
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), signed, other)))["evidence"]
+    entry = ev["registry_snapshot"]["entries"][0]
+    assert (entry["score"], entry["coding_score"]) == (60.0, None)  # the separate general column stays ranked
+
+
+def test_with_no_signed_coding_index_coding_values_never_compete_with_the_score():
+    coding = quality("opus-high-coding", OPUS, 70.0, cls="coding_agent", unit="coding_agent_index", reference=CODING)
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), coding), coding_index_version=None))["evidence"]
+    entry = ev["registry_snapshot"]["entries"][0]
+    assert (entry["score"], entry["coding_score"]) == (60.0, None)
 
 
 def test_no_signed_coding_index_means_no_coding_score():
@@ -326,6 +398,50 @@ def test_a_later_verification_never_upgrades_an_older_receipt():
     assert [p["pool"] for p in ev["profiles"]] == [None, None]
 
 
+def test_a_date_only_pool_verification_cannot_order_a_same_day_receipt():
+    # Read as 00:00Z, a date-only verification would admit a receipt observed before the real verification (RCO1 S2).
+    ev = compose(**inputs(pool_over={"measured_at": "2026-09-29"}))["evidence"]
+    assert [p["pool"] for p in ev["profiles"]] == [None, None]
+    assert cs.select(ev)["ineligible"]["opus"] == ["quota_unknown_or_stale"]
+
+
+@pytest.mark.parametrize("opus", [
+    (),  # no membership: F3 names no pool for the profile
+    (membership("opus-pool", OPUS, TEAM_POOL),),  # F3 names another verified pool of the provider
+    (membership("opus-pool", OPUS), membership("opus-pool-later", OPUS, TEAM_POOL, measured_at=LATER)),  # superseded
+    (membership("opus-pool", OPUS, effort=None),),  # model-level only: conservative unknown
+    (membership("opus-pool", OPUS, effort="xhigh"),),  # another effort's membership
+    (membership("opus-pool", OPUS, measured_at=iso(NOW - timedelta(days=8))),),  # a stale membership
+])
+def test_the_receipt_needs_a_fresh_f3_membership_naming_its_pool(opus):
+    ev = compose(**inputs(memberships=opus + (membership("sonnet-pool", SONNET),)))["evidence"]
+    assert [p["pool"] is None for p in ev["profiles"]] == [True, False]
+    assert cs.select(ev)["ineligible"]["opus"] == ["quota_unknown_or_stale"]
+
+
+def test_agreeing_fresh_memberships_keep_the_receipt():
+    agreeing = (membership("opus-pool", OPUS), membership("opus-pool-model", OPUS, effort=None, measured_at=LATER),
+                membership("opus-pool-old", OPUS, TEAM_POOL, measured_at=iso(NOW - timedelta(days=8))),  # stale
+                membership("sonnet-pool", SONNET))
+    ev = compose(**inputs(memberships=agreeing))["evidence"]
+    assert [p["pool"] is None for p in ev["profiles"]] == [False, False]
+    assert cs.select(ev)["selected_profile"] == "opus"
+
+
+def test_a_receipt_that_has_already_expired_is_dropped_not_passed_on():
+    rows = [profile("opus", OPUS), profile("sonnet", SONNET)]
+    rows[0]["pool"]["observed_utc"] = iso(NOW - timedelta(minutes=11))  # 20:49 + 600 s = 20:59 <= now (RCO1 S4)
+    rows[1]["pool"]["valid_until_utc"] = iso(NOW - timedelta(minutes=30))  # a caller's bound in the past
+    ev = compose(**inputs(profiles=rows))["evidence"]
+    assert [p["pool"] for p in ev["profiles"]] == [None, None]
+    ev = compose(**inputs(pool_over={"ttl_seconds": 2 * 3600}))["evidence"]  # the pool's TTL ends exactly now
+    assert [p["pool"] for p in ev["profiles"]] == [None, None]
+    rows = [profile("opus", OPUS), profile("sonnet", SONNET)]
+    rows[0]["pool"]["observed_utc"] = "2026-09-29T20:50:00.500000Z"  # 21:00:00.5 truncates to now itself
+    ev = compose(**inputs(profiles=rows))["evidence"]
+    assert ev["profiles"][0]["pool"] is None and ev["profiles"][1]["pool"] is not None
+
+
 def test_a_kept_receipt_is_bounded_by_its_age_and_by_the_pool_ttl():
     ev = compose(**inputs())["evidence"]
     assert ev["profiles"][0]["pool"]["valid_until_utc"] == "2026-09-29T21:09:00Z"  # the receipt: 20:59 + 600 s
@@ -345,6 +461,81 @@ def test_a_kept_receipt_is_bounded_by_its_age_and_by_the_pool_ttl():
                                  datetime(1, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=5)))])
 def test_an_extreme_aware_time_is_unknown_not_a_crash(now):
     assert refusal(dict(inputs(), now=now)) == "time_unknown"
+
+
+class _Offset(tzinfo):
+    """A fixture tzinfo that returns whatever offset it was given."""
+
+    def __init__(self, offset):
+        self.offset = offset
+
+    def utcoffset(self, dt):
+        return self.offset
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "fixture"
+
+
+class _Clockwork(datetime):
+    pass
+
+
+class _Stateful(_Offset):
+    """Names an offset on the first read, then none: astimezone would read it again as LOCAL time."""
+
+    def __init__(self, first):
+        super().__init__(first)
+        self.reads = 0
+
+    def utcoffset(self, dt):
+        self.reads += 1
+        return self.offset if self.reads == 1 else None
+
+
+class _Unimplemented(tzinfo):
+    """The base tzinfo.utcoffset raises NotImplementedError."""
+
+
+class _Delta(timedelta):
+    pass
+
+
+class _Walltime(datetime):
+    def utcoffset(self):
+        return timedelta(0)
+
+
+@pytest.mark.parametrize("now", [
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(timedelta(hours=25))),  # outside +-24 h: ValueError
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(5)),  # not a timedelta: TypeError
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(None)),  # a tzinfo that names no offset
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Unimplemented()),  # NotImplementedError (RCO1 23:30:44Z N1)
+    datetime(2026, 9, 29, 21, 0, tzinfo=_Offset(_Delta(hours=1))),  # not exactly a timedelta
+    _Clockwork(2026, 9, 29, 21, 0, tzinfo=timezone.utc),  # not exactly a datetime
+    _Walltime(2026, 9, 29, 21, 0, tzinfo=timezone(timedelta(hours=3))),  # a subclass overriding utcoffset
+    datetime(9999, 12, 31, 23, 0, tzinfo=_Offset(timedelta(hours=-23, minutes=-59))),  # past datetime.max
+    datetime(1, 1, 1, 0, 30, tzinfo=_Offset(timedelta(hours=23, minutes=59))),  # before datetime.min
+])
+def test_an_invalid_offsetless_or_foreign_clock_is_time_unknown(now):
+    assert refusal(dict(inputs(), now=now)) == "time_unknown"  # RCO1 N1: visible, never a crash
+
+
+def test_a_stateful_offset_is_read_once_so_it_is_never_taken_as_local_time():
+    zone = _Stateful(timedelta(hours=3))
+    ev = compose(**dict(inputs(), now=datetime(2026, 9, 30, 0, 0, tzinfo=zone)))["evidence"]
+    assert zone.reads == 1 and ev["now_utc"] == "2026-09-29T21:00:00Z"  # 00:00+03:00, never local wall time
+
+
+@pytest.mark.parametrize("now", [datetime(2026, 9, 30, 0, 0, tzinfo=timezone(timedelta(hours=3))),
+                                 datetime(2026, 9, 29, 13, 30, 0, 999999, tzinfo=timezone(timedelta(hours=-7,
+                                                                                                    minutes=-30)))])
+def test_an_ordinary_non_utc_clock_is_the_same_instant_in_utc(now):
+    ev = compose(**dict(inputs(), now=now))["evidence"]
+    assert ev["now_utc"] == "2026-09-29T21:00:00Z"  # the same instant as NOW, whole seconds
+    assert models(ev) == ["claude-opus-5-5", "claude-sonnet-5"]
 
 
 def test_quota_counts_only_on_a_verified_f3_pool_of_the_same_provider():

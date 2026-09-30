@@ -605,7 +605,24 @@ function Invoke-WdNativeToolsWakeStep {
     param([string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $WakePath, [string] $StatePath, [string] $Generation, [int] $NativePid,
         [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1',
-        [string] $SessionId)
+        [string] $SessionId,
+        # Past this age an outstanding wake is reported as outstanding_stale with one durable observation;
+        # it is still never resubmitted (Fable candidate: the hold had no timeout or visibility).
+        [ValidateRange(60, 86400)] [int] $OutstandingAlertSeconds = 1800)
+    # One durable observation per outstanding delivery (wd.native-wake-outstanding.v1), created once and never
+    # rewritten: visibility only. It resolves nothing and grants nothing; only the woken conversation's own
+    # receipt, or an operator reconciliation, releases the hold.
+    function Write-WdNativeWakeOutstandingObservation {
+        param([string] $Path, $Previous, [string] $Agent, [DateTimeOffset] $QueuedAt, [double] $Age)
+        $record = [ordered]@{schema='wd.native-wake-outstanding.v1';agent=$Agent;thread_id=[string]$Previous.thread_id;
+            delivery_id=[string]$Previous.delivery_id;queued_at_utc=$QueuedAt.ToUniversalTime().ToString('o');
+            observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');age_seconds=[int][Math]::Floor($Age);status='outstanding';
+            meaning='the woken conversation has not recorded model_turn_started for this delivery; no further wake is submitted';
+            resolution='owner_receipt_or_operator_reconciliation';retry='never'}
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($record | ConvertTo-Json -Depth 3) + "`n")
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    }
     # Exact receipt only: a pinned-telemetry record that the woken conversation wrote from its
     # notification for this delivery_id. Relay-observed, foreign, malformed or oversized records
     # never count. The delivery_id is fresh per submission, so the time floor only skips older
@@ -823,6 +840,17 @@ function Invoke-WdNativeToolsWakeStep {
                     $outstanding = $previous.PSObject.Properties['delivery_id']
                     $outstandingId = if ($outstanding) { [string]$outstanding.Value } else { '' }
                     if (-not (Test-WdNativeWakeConsumed -BridgeRoot (Split-Path -Parent $WakePath) -Agent $Agent -DeliveryId $outstandingId -Since $queuedAt)) {
+                        if ($age -ge $OutstandingAlertSeconds -and $outstandingId -cmatch '^[0-9a-f]{32}$') {
+                            $observation = $StatePath + '.outstanding-' + $outstandingId
+                            if (-not [IO.File]::Exists($observation)) {
+                                try {
+                                    [void](Assert-WdTurnPath $observation)
+                                    Write-WdNativeWakeOutstandingObservation -Path $observation -Previous $previous -Agent $Agent `
+                                        -QueuedAt $queuedAt -Age $age
+                                } catch { Write-Warning ('Native wake outstanding observation could not be written: ' + $_.Exception.Message) }
+                            }
+                            return 'outstanding_stale'
+                        }
                         return 'outstanding'
                     }
                 }

@@ -1190,3 +1190,47 @@ try {{
     assert receipt['stdout'] == out and receipt['stdout_truncated'] is False
     assert receipt['stderr_sha256'] == hashlib.sha256(err.encode()).hexdigest().upper()
     assert receipt['stdout_sha256'] == hashlib.sha256(out.encode()).hexdigest().upper()
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('age, stale', [(3600, True), (60, False)])
+def test_a_long_outstanding_wake_becomes_observable_but_is_never_resubmitted(tmp_path, ps, age, stale):
+    """Fable candidate (outstanding hold with no timeout or alert): past the bound the Step reports
+    outstanding_stale and keeps ONE durable observation per delivery; it never submits another wake."""
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('wake before delivery')
+    delivery = '0123456789abcdef' * 2
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
+    state_path.write_text(json.dumps(dict(schema='wd.native-tools-wake.v1', status='queued', delivery_id=delivery,
+                                          thread_id=THREAD, updated_at_utc=stamp, receipt='model_turn_started',
+                                          agent='codex-tools-1')))
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += f"""
+$script:calls=0
+function Send-WdNativeToolsQueueMessage {{ $script:calls++; throw 'must not be called' }}
+$first=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
+$second=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
+@{{first=$first;second=$second;calls=$script:calls}}|ConvertTo-Json
+"""
+    before_state = state_path.read_bytes()
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    expected = 'outstanding_stale' if stale else 'outstanding'
+    assert (result['first'], result['second'], result['calls']) == (expected, expected, 0)
+    assert state_path.read_bytes() == before_state and wake.read_text() == 'wake before delivery'
+    observations = sorted(tmp_path.glob('native-bridge-wake.json.outstanding-*'))
+    if not stale:
+        assert observations == []
+        return
+    (observation,) = observations
+    assert observation.name == 'native-bridge-wake.json.outstanding-' + delivery
+    record = json.loads(observation.read_text(encoding='utf-8'))
+    assert {key: record[key] for key in ('schema', 'agent', 'thread_id', 'delivery_id', 'status', 'retry')} == dict(
+        schema='wd.native-wake-outstanding.v1', agent='codex-tools-1', thread_id=THREAD, delivery_id=delivery,
+        status='outstanding', retry='never')
+    assert record['age_seconds'] >= 3600 and record['queued_at_utc'] and record['observed_at_utc']

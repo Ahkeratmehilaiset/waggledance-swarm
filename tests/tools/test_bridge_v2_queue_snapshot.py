@@ -274,6 +274,13 @@ STRICT_BAD_CLAIMS = {
     "nan": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": NaN}',
     "minus_infinity": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": -Infinity}',
     "overflow": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": 1e400}',
+    # RCO1 F642-N1: keys that differ only by case are duplicates too; PowerShell 5.1 and 7 refuse them.
+    "case_agent": b'{"agent": "fable-5", "Agent": "codex-tools-1", "task_id": "t/x", "owner_session_id": "s", '
+                  + _TOKEN + b"}",
+    "case_nested": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                   + b', "resources": {"kind": "repo", "KIND": "resource"}}',
+    "case_in_array": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                     + b', "write_scope": [{"path": "a", "Path": "b"}]}',
 }
 
 
@@ -302,6 +309,34 @@ def test_a_wal_record_with_a_duplicate_key_is_unreadable_never_last_wins(root, m
     record.write_text('{"state": "outboxed", ' + text[1:], encoding="utf-8")    # an earlier duplicate "state"
     taken = _take(root)
     assert (taken["unreadable"], taken["pending"]) == (1, [])
+
+
+def test_a_wal_record_with_a_case_variant_duplicate_key_is_unreadable(root, monkeypatch):
+    _prepared(root, monkeypatch, "team/p")
+    [record] = QueueTransactions(root).wal_dir.glob("*.json")
+    text = record.read_text(encoding="utf-8").lstrip()
+    record.write_text('{"State": "outboxed", ' + text[1:], encoding="utf-8")    # "State" beside "state"
+    taken = _take(root)
+    assert (taken["unreadable"], taken["pending"]) == (1, [])
+
+
+def test_distinct_keys_that_only_look_alike_stay_readable(root):
+    raw = (b'{"agent": "fable-5", "agent_note": "x", "task_id": "t/x", "taskid": "y", "owner_session_id": "s", '
+           + _TOKEN + b"}")
+    (root / "work_queue" / "claims" / "zz-distinct.json").write_bytes(raw)
+    assert _take(root)["claims"] == [{"source": "claim", "agent": "fable-5", "task_id": "t/x", "owner_session_id": "s"}]
+
+
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_powershell_itself_refuses_case_variant_duplicate_keys(shell):
+    # The parity this repair mirrors, measured on the host: ConvertFrom-Json refuses {"agent": .., "Agent": ..}.
+    exe = shutil.which(shell)
+    if exe is None:
+        pytest.skip(shell + " is not available on this host")
+    result = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command",
+                             "'{\"agent\": \"a\", \"Agent\": \"b\"}' | ConvertFrom-Json | Out-Null"],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0 or result.stderr.strip()
 
 
 @pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(5, "io")], ids=["permission", "io"])

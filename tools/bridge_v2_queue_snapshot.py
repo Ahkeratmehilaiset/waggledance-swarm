@@ -48,7 +48,9 @@ class QueueSnapshotError(ValueError):
 
 
 def _strict_object(pairs: list) -> dict:
-    keys = [key for key, _ in pairs]
+    # Keys that differ only by case are duplicates too (RCO1 F642-N1): PowerShell 5.1 and 7 refuse them, so the
+    # snapshot never picks one. casefold() is at least as broad as PowerShell's ordinal ignore-case (conservative).
+    keys = [key.casefold() for key, _ in pairs]
     if len(set(keys)) != len(keys):
         raise ValueError("duplicate key")
     return dict(pairs)

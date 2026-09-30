@@ -316,7 +316,9 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                 other_key = other["dispatch_key"]
                 # B-F1 (Fable review 99897de5): a present key that is not exact lowercase hex may denote any key.
                 if type(other_key) is not str or DISPATCH_KEY_PATTERN.fullmatch(other_key) is None:
-                    raise Refused("an active claim carries a malformed dispatch_key; duplicate dispatch unknown")
+                    # N2 (Fable review 0286732f): one such claim blocks every new keyed claim, so name it.
+                    raise Refused("an active claim carries a malformed dispatch_key; duplicate dispatch unknown "
+                                  "(claim " + str(other.get("task_id"))[:128] + ")")
                 if other_key == dispatch_key:
                     raise Refused("duplicate dispatch: dispatch_key held by active claim " + str(other.get("task_id"))[:128])
         if mode == "write":
@@ -350,7 +352,7 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                     planned_key = planned["dispatch_key"]
                     if type(planned_key) is not str or DISPATCH_KEY_PATTERN.fullmatch(planned_key) is None:
                         raise Refused("an unfinished claim carries a malformed dispatch_key; "
-                                      "duplicate dispatch unknown")
+                                      "duplicate dispatch unknown (claim " + str(planned.get("task_id"))[:128] + ")")
                     if planned_key == dispatch_key:
                         raise Refused("duplicate dispatch: dispatch_key held by an unfinished claim of "
                                       + str(planned.get("task_id"))[:128])

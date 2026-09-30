@@ -500,8 +500,8 @@ MALFORMED_IDS = ["upper", "list", "padded", "newline", "null", "int"]
 def test_a_malformed_stored_dispatch_key_makes_a_keyed_claim_unknown_and_survives_release(env, stored):
     claim(env, task="team/stored", scope=("tools/s.py",), dispatch_key=KEY_A)
     _store_dispatch_key(env[0], "team/stored", stored)
-    for key in (KEY_A, KEY_B):
-        with pytest.raises(Refused, match="malformed dispatch_key; duplicate dispatch unknown"):
+    for key in (KEY_A, KEY_B):                                           # N2 (Fable 0286732f): it names the claim
+        with pytest.raises(Refused, match=r"malformed dispatch_key; duplicate dispatch unknown \(claim team/stored\)"):
             claim(env, task="team/new", agent="fable-5", identity=OTHER, scope=("tools/n.py",), dispatch_key=key)
     assert wq.find_claim(env[0], "team/new") is None
     for key in (KEY_A, None):                                            # nor refreshed: the key is immutable

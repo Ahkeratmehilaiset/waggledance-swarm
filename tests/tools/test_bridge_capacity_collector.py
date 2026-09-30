@@ -850,3 +850,70 @@ def test_a_non_str_decision_tag_is_refused_before_any_equality_hook_runs(field, 
     assert calls == ['clock', 'clock']      # exact-string positive twin: binds, and still no hook ran
     assert good['account_pool'] == 'codex-plus-weekly' and good['pool_identity_state'] == 'verified_binding'
     assert type(good['pool_identity_state']) is str
+
+
+# -- Lead 45b66035 (RCO2 f766 N2): a failure diagnostic never runs a hook of the exception's class ---------
+
+class _NameHookRan(Exception):
+    pass
+
+
+def _hostile_exception_classes(calls):
+    class Meta(type):
+        @property
+        def __name__(cls):                          # a metaclass __name__: caller code on every lookup
+            calls.append('name_hook')
+            raise _NameHookRan('metaclass __name__')
+
+    class ViaMetaclass(Exception, metaclass=Meta):
+        pass
+
+    class NameStr(str):                             # a class name stored as a str subclass
+        def __add__(self, other):
+            calls.append('name_hook')
+            raise _NameHookRan('__add__')
+
+        def __radd__(self, other):
+            calls.append('name_hook')
+            raise _NameHookRan('__radd__')
+
+    class ViaNameStr(Exception):
+        pass
+    ViaNameStr.__name__ = NameStr('ViaNameStr')     # type's own setter accepts a str subclass
+    return {'metaclass': (ViaMetaclass, 'ViaMetaclass'), 'str_subclass_name': (ViaNameStr, 'ViaNameStr')}
+
+
+@pytest.mark.parametrize('variant', ['metaclass', 'str_subclass_name'])
+def test_a_failure_diagnostic_never_runs_a_hook_of_the_exception_class(variant):
+    """At f766 the old type(exc).__name__ ran the metaclass property, and '+' ran the str subclass's
+    __radd__, raising out of the refusal instead of returning it. Here neither hook runs."""
+    calls = []
+    hostile, name = _hostile_exception_classes(calls)[variant]
+
+    def broken_binder(observation):
+        raise hostile('verifier backend down: secret-token')
+    row = collector.apply_pool_binding(OBSERVATION, broken_binder, clock=lambda: calls.append('clock') or POOL_NOW)
+    assert calls == ['clock']                        # one apply-boundary clock sample and zero name hooks
+    assert row['account_pool'] is None and 'secret-token' not in json.dumps(row)
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binder_failed:' + name}
+
+    def broken_clock():
+        calls.append('clock')
+        raise hostile('clock down')
+    with pytest.raises(InputError, match='clock failed: ' + name + '$'):
+        collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=broken_clock)
+    assert calls == ['clock', 'clock']               # still no name hook
+
+
+def test_an_ordinary_failure_diagnostic_keeps_its_class_name():
+    """The ordinary twin: the same contract as before (binder_failed:<Name>; clock failed: <Name>)."""
+    def binder(observation):
+        raise KeyError('x')
+
+    def clock():
+        raise OSError('down')
+    row = collector.apply_pool_binding(OBSERVATION, binder, clock=_fixed())
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binder_failed:KeyError'}
+    with pytest.raises(InputError, match='clock failed: OSError$'):
+        collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=clock)
+    assert collector._exception_name(ValueError('v')) == 'ValueError'

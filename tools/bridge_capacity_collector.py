@@ -353,8 +353,10 @@ def _applied_binding(fields: dict, own: dict) -> dict | None:
 
     Every field compared below is required to be EXACTLY a ``str`` BEFORE any comparison (Lead
     0468acc6, Tools f559): a custom object or a ``str`` subclass could run its own ``__eq__`` hook
-    (caller code) inside ``==``, so it is refused without being compared. This is about hooks
-    during validation only; what a binder decides is still trusted, not authenticated here."""
+    (caller code) inside ``==``, so it is refused without being compared. This is about hooks of
+    decision VALUES during validation only: a hash-colliding decision KEY can still run its ``__eq__``
+    in _decision_fields' dict.get (disclosed, not fixed), and what a binder decides is still
+    trusted, not authenticated here (Lead 45b66035)."""
     provider = own.get('provider')
     subject_field = POOL_SUBJECT_FIELDS.get(provider) if type(provider) is str else None
     subject = own.get(subject_field) if subject_field is not None else None
@@ -407,8 +409,12 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     or the clock runs. Every decision field of an EXACT dict decision is read ONCE and validated
     into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so a binder that
     keeps its returned dict and a clock that edits it (or the caller's observation) changes
-    nothing. Every compared decision field must be exactly a str before any comparison, so no
-    ``__eq__`` hook of a custom object or str subclass runs during validation (Lead 0468acc6).
+    nothing. Every compared decision field VALUE must be exactly a str before any comparison, so no
+    ``__eq__`` hook of a custom-object or str-subclass VALUE runs while it is validated (Lead 0468acc6).
+    That guard covers the values only. It does NOT prove the decision's KEYS safe: reading an exact-dict
+    decision (dict.get) can still run a hash-colliding key object's ``__eq__``. Nor does it authenticate
+    the binder, its verifier or the clock, which stay trusted callbacks (Lead 45b66035). A binder or
+    clock failure is named without any hook of the exception's class (see _exception_name).
 
     A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
     windows, freshness or headroom, which stay unknown unless separately evidenced."""
@@ -424,7 +430,7 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     try:
         decision = binder(argument)
     except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
-        decision = {'reason': 'binder_failed:' + type(exc).__name__}
+        decision = {'reason': 'binder_failed:' + _exception_name(exc)}   # no hook of the exception's class
     fields = _decision_fields(decision)
     applied = _applied_binding(fields, own)   # validated immutable locals, before any caller code runs again
     reason = fields.get('reason') if type(fields.get('reason')) is str else None
@@ -432,7 +438,7 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     try:
         moment = sample()
     except Exception as exc:  # noqa: BLE001 - an unreadable clock is refused, never guessed
-        raise InputError('apply_pool_binding clock failed: ' + type(exc).__name__) from None
+        raise InputError('apply_pool_binding clock failed: ' + _exception_name(exc)) from None
     current = _aware_utc(moment)
     expired = applied is not None and not current < applied['expires']
     if applied is not None and not expired:
@@ -446,6 +452,18 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
         own['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
                                else 'binding_refused'}
     return own
+
+
+_TYPE_NAME = type.__dict__['__name__']   # type's OWN __name__ descriptor, never a metaclass override
+
+
+def _exception_name(exc: BaseException) -> str:
+    """The exception's class name for a refusal diagnostic, read with NO hook of that class (Lead 45b66035,
+    RCO2 f766 N2). type() is the C-level type of the object, and type's own __name__ descriptor is called
+    directly, so a metaclass __name__ property (which could run code, raise, or return a non-str) is never
+    consulted. A name stored as a str subclass is copied to an exact str by str.__str__, so no __add__ or
+    __radd__ of it runs in the concatenation. The same contract as before for ordinary exceptions."""
+    return str.__str__(_TYPE_NAME.__get__(type(exc)))
 
 
 def _token(value: Any, pattern: str) -> bool:

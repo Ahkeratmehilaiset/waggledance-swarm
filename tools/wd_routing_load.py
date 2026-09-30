@@ -15,6 +15,12 @@ router's own rules), never a free caller number. Every output is advice: authori
   digest and the digest of THIS policy), and needs a fresh idle block for exactly that worker. It is not a
   reservation and grants nothing: the queue's keyed claim is the fence, a later caller.
 
+Trust boundary (what these checks do NOT prove): ``policy_sha256`` is verified only against the policy object
+the caller hands in, and nothing here verifies that policy's signature (no signature loader exists yet; none is
+fabricated), so the caller remains answerable for passing the signed policy. ``evidence_digest`` is only
+format-checked (64 lowercase hex) and carried into the intent for audit: a well-formed digest is not proof that
+the router saw that evidence. The snapshot's truth rests on its producer. The intent grants nothing either way.
+
 Every compared value is exact-typed first, so a hostile object is refused, never raised through. Caller-contract
 violations (``now``, the policy for ``load_blocks``, the worker list) raise ``RoutingLoadError``; evidence
 problems are unknown (no block) or a refused intent with stable reasons.

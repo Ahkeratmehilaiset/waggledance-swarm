@@ -211,6 +211,18 @@ def test_diagnostic_pages_like_the_default_but_never_shares_its_cursor(tmp_path:
     assert [row["request_id"] for row in json.loads(second.stdout)["requests"]] == ["request-597", "request-596"]
 
 
+def test_only_the_opt_in_diagnostic_changes_the_cursor_seed() -> None:
+    """fable-5 727 N1: a DEFAULT seed, and so every default cursor, stays byte-identical to the pre-diagnostic
+    getter (3125486a). Only -DiagnosticPartial adds its discriminator. Pinned on the source, since the old getter
+    is not run here: the key appears exactly once, set only under the switch, AFTER the shared fields."""
+    source = SOURCE.read_text(encoding="utf-8")
+    assert source.count("diagnostic_partial") == 1
+    guard = "if ($DiagnosticPartial) { $cursorFields['diagnostic_partial']=$true }"
+    assert guard in source
+    assert source.index("include_request=[bool]$IncludeRequest") < source.index(guard) < source.index(
+        "$cursorSeed=$cursorFields | ConvertTo-Json -Depth 8 -Compress")
+
+
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_600_conflicting_rows_list_only_50_and_the_default_still_refuses(tmp_path: Path, shell: str) -> None:
     runtime, script = _fixture(tmp_path)
@@ -242,7 +254,7 @@ def test_long_conflict_fields_close_the_list_at_the_character_budget(tmp_path: P
         row["payload"]["request_id"] = "b" * 200 + str(index)
     log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     result = _run(shell, runtime, script, "-DiagnosticPartial")
-    assert result.returncode == 0, result.stderr                       # 50 x ~720 would not fit 50000
+    assert result.returncode == 0, result.stderr   # 50 x ~720 = ~36000: fits the 50000 page cap, NOT the 30000 budget
     assert len(result.stdout) < 50_000
     data = json.loads(result.stdout)
     listed = data["conflicts"]

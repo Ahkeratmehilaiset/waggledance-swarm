@@ -266,6 +266,43 @@ def test_every_diagnostic_kind_is_reported_and_the_list_is_bounded(tmp_path: Pat
     assert refused.returncode != 0 and "Malformed request author binding at indexed position 0" in refused.stderr
 
 
+KIND_CASES = (   # (name, top-level fields, payload fields, the ONLY truthful kind); fable-5 727 S1/N3
+    ("number-v1", {"request_id": 123}, {}, "malformed_request_id"),
+    ("bool-v1", {"request_id": True}, {}, "malformed_request_id"),
+    ("array-v1", {"request_id": ["a", "b"]}, {}, "malformed_request_id"),
+    ("forged-v1", {"request_id": {"invalid_binding": True}}, {}, "malformed_request_id"),   # a forged marker
+    ("pattern-v1", {"request_id": "not a valid id"}, {}, "malformed_request_id"),
+    ("surrogate-v1", {"request_id": "x" * 159 + "\U0001F600" + "y" * 10}, {}, "malformed_request_id"),
+    ("equal-v1", {"request_id": 7}, {"request_id": 7}, "malformed_request_id"),   # both sides, same JSON
+    ("differ-v1", {"request_id": "top-v1"}, {"request_id": "payload-v1"}, "request_id_binding_conflict"),
+    ("typed-v1", {"request_id": "5"}, {"request_id": 5}, "request_id_binding_conflict"),   # canonical JSON differs
+)
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_a_single_sided_or_equal_value_is_malformed_never_a_binding_conflict(tmp_path: Path, shell: str) -> None:
+    rows = []
+    for name, top, payload, _ in KIND_CASES:
+        row, _ = _bound(name)
+        row.update(top)
+        row["payload"].update(payload)
+        rows.append(row)
+    good, _ = _bound("good-v1")
+    _write(tmp_path, [*rows, good])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    conflicts = result["conflicts"]
+    assert [conflict["kind"] for conflict in conflicts] == [kind for *_, kind in KIND_CASES]
+    assert [conflict["indexed_position"] for conflict in conflicts] == list(range(len(KIND_CASES)))
+    assert [conflict["top_level_request_id"] for conflict in conflicts[:4]] == [
+        "123", "true", '["a","b"]', '{"invalid_binding":true}']              # non-strings as canonical JSON
+    assert conflicts[5]["top_level_request_id"] == "x" * 159                  # never cut inside a surrogate pair
+    assert (conflicts[6]["top_level_request_id"], conflicts[6]["payload_request_id"]) == ("7", "7")
+    assert [entry["request_id"] for entry in result["requests"]] == ["good-v1"]   # the success twin
+    refused = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
+    assert refused.returncode != 0 and refused.stdout.strip() == ""           # the default text is unchanged
+    assert "Malformed request_id at indexed position 0" in refused.stderr
+
+
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_other_requesters_malformed_row_does_not_blind_the_inventory(tmp_path: Path, shell: str) -> None:
     mine, _ = _bound("mine-v1")

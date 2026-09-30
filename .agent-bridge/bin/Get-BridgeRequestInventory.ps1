@@ -16,7 +16,7 @@ param(
     [switch] $NoCache,
     # Explicit opt-in: instead of failing, return a typed DIAGNOSTIC partial/unknown receipt that
     # lists every invalid own row (conflicting top-level/payload request_id or author, malformed
-    # id, conflicting immutable content) with its exact metadata. It is NEVER a complete
+    # id or author, conflicting immutable content) with its exact metadata. It is NEVER a complete
     # inventory; the default (no switch) still fails closed on the first such row.
     [switch] $DiagnosticPartial
 )
@@ -43,15 +43,18 @@ $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
     -CachePath (Join-Path $root 'shared/cache/reply-index.json') -NoCache:$NoCache
 # A cursor is valid only for the same snapshot AND the same exact query. A
 # changed filter could otherwise silently skip older matching requests.
-$cursorSeed=[ordered]@{
+$cursorFields=[ordered]@{
     snapshot=$snapshot.candidate_cursor
     prefix_sha256=$snapshot.prefix_sha256
     agent=$Agent; session_id=$SessionId; request_id=$RequestId
     task_id=$TaskId; ts_utc=$TsUtc
     order='first_indexed_position_desc'; page_size=$PageSize
     include_request=[bool]$IncludeRequest
-    diagnostic_partial=[bool]$DiagnosticPartial
-} | ConvertTo-Json -Depth 8 -Compress
+}
+# Only the opt-in diagnostic adds a discriminator: a DEFAULT seed, and so every default cursor, stays
+# byte-identical to the pre-diagnostic getter, while default and diagnostic cursors never cross.
+if ($DiagnosticPartial) { $cursorFields['diagnostic_partial']=$true }
+$cursorSeed=$cursorFields | ConvertTo-Json -Depth 8 -Compress
 $cursorHasher=[Security.Cryptography.SHA256]::Create()
 try {
     $cursorHash=([BitConverter]::ToString($cursorHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($cursorSeed))) -replace '-','').Substring(0,16)
@@ -82,6 +85,23 @@ function Get-InventoryFieldText {
         $text=$text.Substring(0,$(if ([char]::IsHighSurrogate($text[159])) { 159 } else { 160 }))
     }
     return $text
+}
+function Get-InventoryBindingKind {
+    # A BINDING conflict only when BOTH raw sides (top level and payload) are present, non-null and differ
+    # in canonical JSON: the Get-BridgeContractField rule, recomputed from the raw event. Anything else is
+    # malformed. The returned invalid_binding object is never trusted, because a raw single-sided object
+    # value can carry that very property.
+    param($Event, [string] $Name, [string] $Conflict, [string] $Malformed)
+    $direct=$Event.PSObject.Properties[$Name]
+    $payloadProperty=$Event.PSObject.Properties['payload']
+    $nested=if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) {
+        $payloadProperty.Value.PSObject.Properties[$Name]
+    } else { $null }
+    if ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
+        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
+        return $Conflict
+    }
+    return $Malformed
 }
 function Add-InventoryConflict {
     # FirstPosition: for an immutable-content conflict, the indexed position of the first
@@ -114,7 +134,8 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     if ($author -isnot [string]) {
         if ([string]$event.agent -ceq $Agent) {
             if (-not $DiagnosticPartial) { throw "Malformed request author binding at indexed position $position" }
-            Add-InventoryConflict -Position $position -Event $event -Kind 'author_binding_conflict'
+            Add-InventoryConflict -Position $position -Event $event `
+                -Kind (Get-InventoryBindingKind $event 'agent' 'author_binding_conflict' 'malformed_author')
         }
         continue
     }
@@ -125,7 +146,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
         if (-not $DiagnosticPartial) { throw "Malformed request_id at indexed position $position; inventory is incomplete" }
         Add-InventoryConflict -Position $position -Event $event `
-            -Kind $(if ($id -is [string]) { 'malformed_request_id' } else { 'request_id_binding_conflict' })
+            -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
     if ($SessionId -and (Get-BridgeContractField $event 'session_id') -cne $SessionId) { continue }

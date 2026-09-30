@@ -284,6 +284,7 @@ param(
 @'
 param(
     [switch] $Apply,
+    [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
     [string] $LogPath = ''
 )
@@ -293,9 +294,6 @@ param(
 
     $targetInvocation = if ($WrapperKind -ceq 'fleet') {
 @'
-if ($SupervisorOff) {
-    throw 'Supervisor OFF: restore refused before Administrator checks, elevation or fleet invocation.'
-}
 if ($Auto -and ($Apply -or $DryRun)) {
     throw 'Auto cannot be combined with Apply or DryRun'
 }
@@ -322,6 +320,21 @@ function ConvertTo-WdSingleQuotedLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 if ($Auto -and -not (Test-WdWrapperAdministrator)) {
+    # Supervisor OFF is standing: WD-Supervisor stays exactly Disabled, so after the one elevated
+    # restore below, this non-elevated process starts the five bridge watchers and Tools through
+    # one run of the installed wd_supervisor.ps1 (WdBridgeLimitedBootstrap.ps1). Verify and load
+    # that helper first, so a bad bundle refuses before any elevation.
+    $wdBridgeBundleRoot = Split-Path -Parent $manifestPath
+    $wdBridgeHelper = Join-Path $wdBridgeBundleRoot 'WdBridgeLimitedBootstrap.ps1'
+    $wdBridgeManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+        -not (Test-Path -LiteralPath $wdBridgeHelper -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $wdBridgeHelper -Algorithm SHA256).Hash -cne
+            [string]$wdBridgeManifest.files.'WdBridgeLimitedBootstrap.ps1'
+    ) {
+        throw "WD reboot bundle integrity mismatch for $wdBridgeHelper"
+    }
+    . $wdBridgeHelper
     $elevationHost = [IO.Path]::Combine(
         [Environment]::SystemDirectory,
         'WindowsPowerShell',
@@ -334,7 +347,6 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    [void]$commandParts.Add('-Auto')
     foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
@@ -384,7 +396,10 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         ("  Start-Transcript -LiteralPath {0} -Force | Out-Null" -f
             (ConvertTo-WdSingleQuotedLiteral -Value $elevationLogPath)),
         '  $transcriptStarted = $true',
-        ("  {0}" -f $restoreCommand),
+        "  Write-Host 'Running byte-inert fleet preflight before automatic restore...'",
+        ("  {0} -DryRun" -f $restoreCommand),
+        "  Write-Host 'Preflight passed; applying the verified fleet restore...'",
+        ("  {0} -Apply" -f $restoreCommand),
         '}',
         'catch {',
         '  $restoreExitCode = 1',
@@ -446,17 +461,31 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         )
     }
     Write-Host "Elevated restore log: $elevationLogPath"
+    $wdBridgeFleetManifest = if ([string]$targetParameters['ManifestPath']) {
+        [string]$targetParameters['ManifestPath']
+    } else {
+        Join-Path $wdBridgeBundleRoot 'wd-fleet.json'
+    }
+    Write-Host 'Starting the five bridge watchers and Tools from this non-elevated wrapper (Supervisor OFF)...'
+    $wdBridgeResult = Invoke-WdBridgeWrapperBootstrap `
+        -BundleRoot $wdBridgeBundleRoot `
+        -FleetManifestPath $wdBridgeFleetManifest `
+        -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
+        -HostPath $elevationHost
+    Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
+    if (-not [bool]$wdBridgeResult.ok) {
+        throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f
+            [string]$wdBridgeResult.stage, (@($wdBridgeResult.reasons) -join '; '))
+    }
+    Write-Host 'Fleet restore complete: five bridge watchers and Tools are process-current (responsiveness unknown); WD-Supervisor untouched (Disabled).' -ForegroundColor Green
     return
 }
 if ($Auto) {
-    Write-Host 'Running byte-inert fleet preflight before automatic restore...'
-    $dryRunParameters = @{} + $targetParameters
-    $dryRunParameters['DryRun'] = $true
-    & $target @dryRunParameters
-    Write-Host 'Preflight passed; applying the verified fleet restore...'
-    $applyParameters = @{} + $targetParameters
-    $applyParameters['Apply'] = $true
-    & $target @applyParameters
+    # Supervisor OFF is standing: an elevated -Auto has no Limited context in which to start the
+    # five bridge watchers and Tools, and it never starts WD-Supervisor for them.
+    throw ('Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools. Run -Auto ' +
+        'from a non-elevated PowerShell: it elevates once for the fleet restore, then starts them from ' +
+        'that Limited wrapper. Nothing was changed.')
 }
 else {
     if ($Apply) { $targetParameters['Apply'] = $true }
@@ -788,6 +817,7 @@ foreach ($required in @(
         'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Get-WdNativeWakePrompt.ps1',
+        'Resolve-WdNativeWakeRejection.ps1',
         'WAKE_PROCEDURE_LEAD.md',
         'WAKE_PROCEDURE_TOOLS.md',
         'Invoke-WdToolsCodex.ps1',
@@ -795,6 +825,7 @@ foreach ($required in @(
         'wd-claude-event-driven-settings.json',
         'wd_supervisor.ps1',
         'wd_supervisor_loop.json',
+        'WdBridgeLimitedBootstrap.ps1',
         'Resolve-WdGrokModel.ps1',
         'Register-WdScheduledTasks.ps1',
         'Set-WdTaskConsoleContainment.ps1',

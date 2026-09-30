@@ -4,7 +4,7 @@
 
 Nothing calls this module, and it has no default ports. It reads no file, has no
 retry path, and changes no provider, payment, auth, account or credit setting. The
-unchanged hourly-budgeted helper (``tools/wd_grok_helper.py``, RCO1 7da35242) is
+helper (``tools/wd_grok_helper.py``, RCO1 7da35242; no local hourly quota since 2026-09-30) is
 reached only through an INJECTED helper port, at one authorized execution boundary:
 ``GrokBroker.consult(intent, prompt)``.
 
@@ -17,7 +17,7 @@ is unknown. The pure route then refuses stale facts. The facts are:
   - the read-only snapshot (``observed_utc``);
   - the F0 Decision, its signed policy and ``evaluated_utc``, evaluated with expected
     head/tree = that observed snapshot (F0 is never evaluated without an exact head/tree);
-  - the helper's hourly budget (``observed_utc``);
+  - the helper's own state (``observed_utc``): an unreconciled attempt or a not-eligible helper refuses;
   - the durable admission ledger (``observed_utc``).
 A missing port or an unreadable fact is blocked_unknown, never a simulated readiness.
 
@@ -32,8 +32,8 @@ refuses as f0_cached; a whole-second stamp in the sample's second as f0_time_pre
 clock again (never backwards), re-runs ``admit`` on the refreshed F0 and the original
 facts, and requires a non-decreasing revocation version and an unexpired signed policy.
 An expired intent, a revoked, cached or stale F0, an expired policy, or a fact now too old
-stops the call, and the reserved entry is finished as refused (the ledger never refunds
-the hour). The helper is called exactly ONCE. Its answered attempt must bind to the intent
+stops the call, and the reserved entry is finished as refused (never deleted, never
+retried). The helper is called exactly ONCE. Its answered attempt must bind to the intent
 (``bind_answer``). Every port receives a plain-JSON COPY of the admission and outcome.
 
 Any ORDINARY exception (``Exception``) after the reservation still finishes the entry. A
@@ -43,7 +43,7 @@ a silent refund). An exception leaves the helper's own durable reservation in pl
 admission then refuses as reserved or interrupted_or_unknown until the helper reconciles
 it: there is no refund and no retry. A prompt above the helper's own 48000-byte cap is
 refused before any port: the helper refuses it too (before its own reservation), but only
-after the broker's ledger has already reserved, and never refunds, the shared hour.
+after the broker's ledger has already reserved the admission (an entry that is never deleted).
 
 Every clock read goes through the route's ``aware_utc``: exactly a datetime, its offset
 read ONCE as exactly a timedelta inside +-24 h, the naive wall time minus that offset
@@ -59,11 +59,16 @@ What this does NOT prove (disclosed):
   FAILED recheck.
 * Port honesty is unproven: a port that stamps a stale fact as fresh, an F0 port that
   stamps a cached Decision with a fresh evaluated_utc or ignores the expected head/tree, a
-  clock that lies, or a helper that ignores its own hour defeats these checks. The ports'
-  own review, the pinned read-only source and the helper's independent hourly state are
+  clock that lies, or a helper that misreports its own state defeats these checks. The ports'
+  own review, the pinned read-only source and the helper's independent state are
   the backstops. The helper contract is pinned by blob (route HELPER_BLOBS).
 * read_utc is recorded for audit only; no decision reads it. The policy_changed branch of
   the recheck is defence in depth (admit already binds the policy digest).
+
+ADVISORY ONLY (operator direction 2026-09-30): any fleet role may submit an intent through this one
+shared broker, and there is no local rate quota. A disabled, refused, skipped (helper not eligible,
+provider-limited or unavailable) or blocked consult is advisory information: it is never a required
+RCO consensus, review slot or merge gate, and Grok stays optional.
 """
 from __future__ import annotations
 
@@ -125,8 +130,8 @@ class LedgerPort(Protocol):
     """The durable admission ledger (a dormant, separately reviewed LedgerPort; nothing here wires one).
 
     reserve must be a compare-and-set under the ledger's own lock: it re-reads the latest state,
-    and wins only if nothing is open, the shared hour is free and its apply time is within
-    [admitted_utc, admitted_utc + 60 s] of the admission. finish never refunds the hour."""
+    and wins only if nothing is open (one flight at a time) and its apply time is within
+    [admitted_utc, admitted_utc + 60 s] of the admission. finish never deletes an entry."""
 
     def observe(self) -> dict: ...  # {"open": [...], "last_admitted_utc", "observed_utc"}
 
@@ -174,7 +179,7 @@ def _prompt_ok(prompt: Any, intent: dict | None) -> bool:
 def _helper_inputs_ok(intent: dict, prompt: str) -> bool:
     """The helper's own input rules (790a7b08 consult: a bounded task ID and a non-blank prompt), checked BEFORE
     any port or reservation (RCO1 e932 SF2). prepare is not the only ingress, and the helper refuses these only
-    after the broker's ledger has reserved, and never refunds, the shared hour."""
+    after the broker's ledger has reserved the admission (an entry that is never deleted)."""
     task_id = intent.get("task_id")
     return type(task_id) is str and TASK_RE.fullmatch(task_id) is not None and bool(prompt.strip())
 
@@ -315,7 +320,7 @@ class GrokBroker:
             stopped = _result(BLOCKED, ["recheck_failed", "recheck_unknown:" + type(exc).__name__],
                               admission=admission)
         if stopped is not None:
-            return self._finish(admission, stopped)  # reserved, not called: the hour stays spent (no refund)
+            return self._finish(admission, stopped)  # reserved, not called: finished, never retried
         try:
             report = self.helper.consult(intent["task_id"], prompt)  # exactly one attempt; never retried
         except Exception as exc:  # noqa: BLE001 - the helper keeps its durable reservation; no refund

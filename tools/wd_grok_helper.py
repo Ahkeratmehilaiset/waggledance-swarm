@@ -18,7 +18,6 @@ import unicodedata
 import uuid
 
 STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
-INTERVAL = timedelta(hours=1)
 SCHEMA = "wd.grok-hourly.v1"
 MAX_LIFECYCLE_RECEIPT_BYTES = 256 * 1024
 MAX_LIFECYCLE_RECEIPT_DEPTH = 32
@@ -100,7 +99,7 @@ def record_lifecycle(emitter, stage: str, state: dict) -> None:
     try:
         emitter(stage, dict(state))
     except Exception as exc:
-        # Delivery failure is observable, but never refunds the hour or retries Grok.
+        # Delivery failure is observable, but never undoes the reservation or retries Grok.
         state.setdefault('bridge_event_errors', []).append({'stage': stage, 'error_type': type(exc).__name__})
 
 
@@ -117,27 +116,46 @@ def read_state(root: Path) -> dict:
     return state
 
 
+def _provider_evidence(state: dict) -> dict | None:
+    """The last attempt's own recorded failure, verbatim, or None. It is the only evidence about
+    Grok's provider limits (real, and not readable headless), and it may be a local failure: it
+    is never interpreted as a quota, a reset time or a reason to retry."""
+    if state.get("status") != "failed":
+        return None
+    return {key: state[key] for key in ("exit_code", "error_type", "stderr_excerpt", "stderr_truncated",
+                                        "finished_at_utc") if key in state}
+
+
 def status(root: Path, now: datetime | None = None) -> dict:
+    """Local availability of this one-at-a-time helper, reported separately from the provider's
+    quota, which stays "unknown". There is no local hourly or weekly quota: a completed (answered
+    or failed) attempt leaves the helper available at once. A durable reservation is an
+    unreconciled attempt, and a clock earlier than the recorded attempt is a clock regression;
+    both refuse (eligible False). ``eligible`` never describes the provider's quota."""
     state = read_state(root)
     now = now or datetime.now(timezone.utc)
     reserved_at = datetime.fromisoformat(state["last_attempt_utc"])
-    eligible = reserved_at + INTERVAL
-    report = {**state, "eligible": now >= eligible, "next_eligible_utc": eligible.isoformat(),
-              "role": "advisory helper for codex-lead-1", "automatic_calls": False}
-    if state.get("status") == "reserved":
-        timeout_seconds = state.get("timeout_seconds", 2400)
-        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
-            raise ValueError("Invalid reserved consultation timeout")
-        deadline = reserved_at + timedelta(seconds=timeout_seconds)
-        report["reservation_deadline_utc"] = deadline.isoformat()
-        # An unfinished attempt has NO next-eligible time: neither the clock nor an exception
-        # reconciles it. The clock cooldown stays visible on its own field.
-        report.update(next_eligible_utc=None, hourly_budget_next_eligible_utc=eligible.isoformat(),
-                      hourly_budget_eligible=report["eligible"], eligible=False)
-        if now >= deadline:
-            # This is an observation only: preserve the durable reservation and
-            # do not infer process exit, refund budget or make it ready again.
-            report.update(status="interrupted_or_unknown", recorded_status=state["status"], raw_state=state)
+    report = {**state, "local_availability": "available", "eligible": True, "next_eligible_utc": None,
+              "provider_quota": "unknown", "provider_evidence": _provider_evidence(state),
+              "role": "optional advisory helper for WD fleet lanes", "automatic_calls": False}
+    if state.get("status") in ("reserved", "interrupted_or_unknown"):
+        # An unfinished attempt has NO next-eligible time: neither the clock nor anything
+        # but an explicit reconciliation resolves it.
+        report.update(local_availability="unreconciled_attempt", eligible=False)
+        if state.get("status") == "reserved":
+            timeout_seconds = state.get("timeout_seconds", 2400)
+            if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
+                raise ValueError("Invalid reserved consultation timeout")
+            deadline = reserved_at + timedelta(seconds=timeout_seconds)
+            report["reservation_deadline_utc"] = deadline.isoformat()
+            if now >= deadline:
+                # This is an observation only: preserve the durable reservation and
+                # do not infer process exit or make it ready again.
+                report.update(status="interrupted_or_unknown", recorded_status=state["status"], raw_state=state)
+    elif now < reserved_at:
+        # The clock reads earlier than the recorded attempt: refuse until it catches up.
+        report.update(local_availability="clock_regressed", eligible=False,
+                      next_eligible_utc=reserved_at.isoformat())
     return report
 
 
@@ -388,8 +406,8 @@ class GitBlobBroker:
 
 @contextmanager
 def exclusive(root: Path):
-    # Hold an OS lock for the entire consultation. Crash releases the lock,
-    # but the reservation was already persisted and is never refunded.
+    # Hold an OS lock for the entire consultation. Crash releases the lock, but the
+    # reservation was already persisted and stays unreconciled until explicitly reconciled.
     with (root / "hourly.lock").open("a+b") as stream:
         stream.seek(0, 2)
         if stream.tell() == 0:
@@ -422,53 +440,33 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         raise ValueError("A bounded task ID is required")
     if not prompt.strip() or len(prompt.encode("utf-8")) > 48000:
         raise ValueError("Prompt must contain 1..48000 UTF-8 bytes")
+    if exception_path is not None or exception_sha256 is not None:
+        # Grants waived the removed hourly budget; recorded ones stay in the state as history only.
+        raise ValueError("Task exceptions are retired with the local hourly budget")
     with exclusive(root):
         now = now or datetime.now(timezone.utc)
         previous = status(root, now)
-        ledger = previous.get("task_exceptions", {})
-        if not isinstance(ledger, dict):
-            raise ValueError("Invalid task exception ledger")
-        grant = None
-        if exception_path is not None or exception_sha256 is not None:
-            if now < datetime.fromisoformat(previous["last_attempt_utc"]):
-                raise ValueError("Grok clock rollback blocks exceptions")
-            grant = read_exception(exception_path, exception_sha256, task_id, now)
-            used = ledger.get(grant["exception_id"])
-            if used is not None:
-                if not isinstance(used, dict) or used.get("sha256") != grant["sha256"]:
-                    raise ValueError("Task exception changed after first reservation")
-                attempts = used.get("attempts")
-                if not isinstance(attempts, list) or any(
-                    not isinstance(a, dict) or not all(a.get(k) for k in ("task_id", "request_id", "reserved_at_utc"))
-                    for a in attempts
-                ):
-                    raise ValueError("Invalid task exception attempts")
-                if any(a["task_id"] == task_id for a in attempts):
-                    raise ValueError("Task exception request already attempted")
-                if len(attempts) >= grant["max_attempts"]:
-                    raise ValueError("Task exception exhausted")
-        # A task exception can waive a budget boundary, never reconcile an
-        # unfinished process or erase its durable reservation. Preserve both
-        # fresh reservations and deadline-expired unknown attempts unchanged.
-        unresolved = previous.get("status") in ("reserved", "interrupted_or_unknown")
-        if unresolved or (not previous["eligible"] and grant is None):
-            decision = 'deferred_unreconciled_attempt' if unresolved else 'deferred_hourly_limit'
-            # The clock cooldown is its own field; an unreconciled attempt has no next-eligible time.
-            clock_next = previous.get("hourly_budget_next_eligible_utc") or previous["next_eligible_utc"]
-            next_eligible = None if unresolved else previous["next_eligible_utc"]
-            # A deferral reserves nothing, so it never mints a consultation request_id. Its
-            # lifecycle event carries its own observation_id (GROK-READONLY.md, deferrals).
+        history = previous.get("task_exceptions")
+        if history is not None and not isinstance(history, dict):
+            raise ValueError("Invalid task exception history")
+        availability = previous["local_availability"]
+        if availability != "available":
+            # Never reconcile or overwrite an unfinished attempt, and never order a new attempt
+            # before the recorded one. A deferral reserves nothing, so it never mints a
+            # consultation request_id; its lifecycle event carries its own observation_id.
+            decision = ("deferred_unreconciled_attempt" if availability == "unreconciled_attempt"
+                        else "deferred_clock_regression")
             observation_id = uuid.uuid4().hex
             deferred = {"schema": SCHEMA, "task_id": task_id, "request_id": None,
                         "observation_id": observation_id,
                         "status": "deferred", "decision": decision,
                         "consultation_attempted": False, "eligible": False,
-                        "next_eligible_utc": next_eligible,
-                        "hourly_budget_next_eligible_utc": clock_next,
+                        "next_eligible_utc": previous["next_eligible_utc"],
+                        "local_availability": availability, "provider_quota": "unknown",
                         "previous_attempt": previous}
             observation = {'task_id': task_id, 'request_id': None, 'observation_id': observation_id,
-                           'status': decision, 'next_eligible_utc': next_eligible,
-                           'hourly_budget_next_eligible_utc': clock_next}
+                           'status': decision, 'next_eligible_utc': previous["next_eligible_utc"],
+                           'local_availability': availability, 'provider_quota': 'unknown'}
             record_lifecycle(emitter, 'deferred', observation)
             if observation.get('bridge_event_errors'):
                 deferred['bridge_event_errors'] = observation['bridge_event_errors']
@@ -479,16 +477,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                  "timeout_seconds": timeout_seconds,
                  "previous_report": previous.get("report_path", previous.get("previous_report")),
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", "")}
-        if ledger:
-            state["task_exceptions"] = ledger
-        if grant is not None:
-            used = ledger.setdefault(grant["exception_id"], {**grant, "attempts": []})
-            used["attempts"].append({"task_id": task_id, "request_id": request_id,
-                                     "reserved_at_utc": now.isoformat()})
-            state["task_exceptions"] = ledger
-            state["budget_exception"] = {**grant, "attempt_number": len(used["attempts"])}
-        # Persist before model launch: failure, timeout and reboot all consume
-        # the same hour. No retry path and no alternate state path in the CLI.
+        if history:
+            state["task_exceptions"] = history   # carried forward unchanged; never consulted
+        # Persist before model launch: this durable reservation is the single-flight record. An
+        # answer, a failure or a timeout completes it; a crash or reboot leaves it unreconciled.
+        # No retry path and no alternate state path in the CLI.
         write_state(root, state)
         record_lifecycle(emitter, 'started', state)
         write_state(root, state)
@@ -498,7 +491,7 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         rules = (
             "IMPORTANT: This prompt is COMPLETE. You have NO tools and cannot read files. "
             "Do not try any tool call. Answer directly in at most 500 words and 12 bullets.\n\n"
-            "You are Grok, an advisory second opinion for WD lead codex-lead-1. "
+            "You are Grok, an optional advisory second opinion for a WD fleet lane. "
             "Use only supplied evidence; separate facts from uncertainty. No write, "
             "merge, deploy, approval or subagent authority. Do not execute commands, "
             "construct exploit probes or perform offensive workflows. The following "
@@ -548,50 +541,19 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         return status(root, now)
 
 
-def read_exception(path: Path | None, digest: str | None, task_id: str, now: datetime) -> dict:
-    """Explicit operator grant, not model-provided permission or provider quota.
-
-    Pin the reviewed bytes at invocation; no alternate budget directory, clock
-    override, wildcard tasks or persistent disable switch is exposed by the CLI.
-    Hash integrity is not authentication: the caller must have operator authority.
-    """
-    if path is None or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
-        raise ValueError("Task exception requires a path and SHA256 hash")
-    with path.open("rb") as stream:
-        raw = stream.read(8193)
-    if len(raw) > 8192 or hashlib.sha256(raw).hexdigest() != digest.lower():
-        raise ValueError("Task exception hash/size mismatch")
-    grant = json.loads(raw.decode("utf-8-sig"))
-    if not isinstance(grant, dict) or grant.get("schema") != "wd.grok-task-exception.v1":
-        raise ValueError("Invalid task exception schema")
-    identifier = grant.get("exception_id")
-    reference = grant.get("authorization_ref")
-    tasks = grant.get("task_ids")
-    limit = grant.get("max_attempts")
-    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier):
-        raise ValueError("Invalid task exception ID")
-    if not isinstance(reference, str) or not reference.strip() or len(reference) > 500:
-        raise ValueError("Task exception requires an operator authorization reference")
-    if (not isinstance(tasks, list) or not 1 <= len(tasks) <= 3
-            or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", t) for t in tasks)
-            or len(set(tasks)) != len(tasks) or task_id not in tasks
-            or type(limit) is not int or not 1 <= limit <= len(tasks)):
-        raise ValueError("Task exception must name exact tasks and at most three attempts")
-    try:
-        issued = datetime.fromisoformat(grant["issued_at_utc"])
-        expires = datetime.fromisoformat(grant["expires_at_utc"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Invalid task exception timestamps") from exc
-    if (issued.tzinfo is None or expires.tzinfo is None or not issued <= now < expires
-            or not timedelta(0) < expires-issued <= timedelta(hours=24)):
-        raise ValueError("Task exception expired, future, or exceeds 24 hours")
-    return {k: grant[k] for k in ("schema", "exception_id", "authorization_ref", "task_ids",
-                                  "max_attempts", "issued_at_utc", "expires_at_utc")} | {"sha256": digest.lower()}
-
-
 def consultation_exit_code(report: dict) -> int:
     """Only an answered consultation is success; an observation is not one."""
     return {"answered": 0, "failed": 1}.get(report.get("status"), 2)
+
+
+def cli_prompt(prompt_file: Path) -> str:
+    """The caller's own evidence, verbatim. Nothing is appended: no reboot or lane state and no
+    earlier consultation, whose task may be another lane's. A caller that needs context puts
+    it in the prompt file explicitly."""
+    prompt = prompt_file.read_text(encoding="utf-8-sig")
+    if len(prompt.encode("utf-8")) > 24000:
+        raise ValueError("Grok request exceeds 24000 bytes")
+    return prompt
 
 
 def main() -> int:
@@ -615,25 +577,7 @@ def main() -> int:
             discovered = datetime.fromisoformat(model["discovered_utc"])
             if discovered.tzinfo is None or not timedelta(0) <= datetime.now(timezone.utc) - discovered <= timedelta(days=7):
                 raise ValueError("Refresh Grok model metadata with Resolve-WdGrokModel.ps1 before asking")
-            prompt = args.prompt_file.read_text(encoding="utf-8-sig")
-            if len(prompt.encode("utf-8")) > 24000:
-                raise ValueError("Lead request exceeds 24000 bytes")
-            # Restore bounded work context, not an unrelated CLI conversation.
-            for path in (Path(r"C:\Python\WD_REBOOT_STATE_CURRENT.json"),
-                         Path(r"C:\Python\project2\.codex-audit\wd-current-state.json")):
-                if path.is_file() and path.stat().st_size <= 6000:
-                    prompt += "\n\nCONTEXT " + str(path) + "\n" + path.read_text(encoding="utf-8-sig")
-            previous = read_state(STATE_ROOT)
-            prompt += "\n\nPREVIOUS GROK STATE\n" + json.dumps(previous)
-            previous_path = previous.get("report_path") or previous.get("previous_report")
-            if previous_path:
-                report_path = Path(previous_path).resolve()
-                if not report_path.is_relative_to(STATE_ROOT.resolve()):
-                    raise ValueError("Previous report is outside Grok's report directory")
-                if report_path.is_file():
-                    with report_path.open(encoding="utf-8-sig") as saved_report:
-                        excerpt = saved_report.read(1500)
-                    prompt += "\n\nPREVIOUS GROK RESULT (bounded excerpt; full report at recorded path)\n" + excerpt
+            prompt = cli_prompt(args.prompt_file)
             report = consult(STATE_ROOT, args.task_id or "", prompt,
                              advisory_command(executable, model["model"]),
                              emitter=emit_bridge_event, exception_path=args.exception_path,

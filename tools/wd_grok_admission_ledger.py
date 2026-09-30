@@ -35,31 +35,31 @@ Trust (fail-closed; nothing here authenticates anything):
 * The cross-process mutex is a hard wiring requirement. With a no-op or in-process-only
   lock, two reservers can both read "nothing open" and both replace the ledger: the second
   write ERASES the first entry, a double admission plus an erased attempt.
-* The shared hour is per ledger ROOT and is not globally bound: two roots are two hours,
-  and other machines, other roots and the helper's own state are separate budgets. Every
-  consumer of the shared hour must use ONE root.
-* The clock must be honest. A clock earlier than a recorded time refuses (clock_regressed),
-  but a clock running AHEAD admits one early attempt (up to an hour early) and then wedges
-  every call on clock_regressed until real time catches up. The helper's own hourly state
-  is the independent backstop.
+* Exactly-once admission is per ledger ROOT and is not globally bound: two roots are two
+  ledgers, and other machines and roots are not serialized with this one. Every consumer of the
+  reservation must use ONE root. There is NO local rate budget (Lead e3cc3fa3, direct operator):
+  no hourly, weekly or per-agent cooldown; provider limits are the provider's and are not paced here.
+* The clock must be honest. A clock earlier than a recorded time refuses (clock_regressed); a
+  clock running AHEAD records future stamps and then wedges every call on clock_regressed until
+  real time catches up.
 
 Rules (fail-closed):
-* reserve re-reads the LATEST ledger under the lock. It admits only if nothing is open,
-  the last reservation is at least 60 minutes old (every reservation counts, whatever
-  its outcome), the admission is fresh at apply time (admitted <= apply <= admitted +
-  60 s) and its exact digest was never reserved. Losing any of these to another caller
-  returns False. The entry is appended and the ledger replaced atomically.
+* reserve re-reads the LATEST ledger under the lock. It admits only if nothing is open, the
+  admission is fresh at apply time (admitted <= apply <= admitted + 60 s: freshness, not a rate
+  limit) and its exact digest was never reserved. A finished attempt, answered or failed, never
+  delays the next distinct admission. Losing any of these to another caller returns False. The
+  entry is appended and the ledger replaced atomically.
 * finish closes the one entry with the exact admission digest (declared caller above).
   A repeat with the same outcome is a no-op; a different outcome is a conflict. Nothing is
-  ever removed or refunded: the hour counts from the reservation, and an unfinished
-  (interrupted) entry blocks every later reservation.
+  ever removed, rewritten or refunded: every attempt stays in the history, and an unfinished
+  (interrupted) entry blocks every later reservation until an operator reconciles it.
 * ``observe()["last_admitted_utc"]`` is the latest entry's ``applied_utc`` (its reservation
-  time, the value the hour rule needs); the name is the broker port's and is kept.
+  time); the name is the broker port's and is kept. No rule here uses it as a cooldown.
 * Time formats (Lead 7c8c3714): the ledger's OWN stamps (applied_utc, finished_utc, observed_utc,
   initialized_utc) are UTC at FULL precision, always six fraction digits (YYYY-MM-DDTHH:MM:SS.ffffffZ).
   An admission's admitted_utc is only ever the route's whole-second form (YYYY-MM-DDTHH:MM:SSZ). A
-  persisted legacy whole-second applied/finished stamp is unknown within its second, so the hour and the
-  clock-regression check read it one second later (never early); it is never rewritten or migrated.
+  persisted legacy whole-second applied/finished stamp is unknown within its second, so the
+  clock-regression check reads it one second later (never early); it is never rewritten or migrated.
 * A missing ledger, a leftover temp file (a crash between write and replace), an
   oversized, unparseable, duplicate-key, NaN, foreign-root, revision-inconsistent or
   schema-invalid ledger, and a clock earlier than a recorded time are UNKNOWN. They
@@ -95,8 +95,8 @@ the ledger is unchanged and the temp stays visible (partial_write_leftover); aft
 failed directory fsync) the new ledger IS in place, blocks as written, and may or may not
 survive a crash. On Windows the directory cannot be fsync'ed, and FlushFileBuffers/MoveFileEx
 crash-atomicity and disk write-cache behaviour are UNVERIFIED. A restored older copy of a
-valid ledger is not detectable (no external anchor); the helper's own hourly state is the
-independent second budget check. Not runtime-tested (the operator's no-runs directive,
+valid ledger is not detectable (no external anchor): a rollback can hide attempts, and nothing
+here detects it. Not runtime-tested (the operator's no-runs directive,
 2026-09-29).
 """
 from __future__ import annotations
@@ -123,10 +123,9 @@ MUTEX_PREFIX = "Global\\WaggleDanceGrokAdmission-"
 LOCK_TIMEOUT_SECONDS = 4.0  # the frozen queue ports' default
 PLATFORM_LOCK = "windows_named_mutex" if os.name == "nt" else "posix_flock"
 MAX_LEDGER_BYTES = 2 * 1024 * 1024
-MAX_ENTRIES = 2000  # at most one reservation per hour: about 83 days, then ledger_full (never erased)
+MAX_ENTRIES = 2000  # a capacity bound, not a rate: then ledger_full (never erased; an operator archives)
 MAX_RECORD_BYTES = 64 * 1024  # one admission or outcome, canonical JSON
 MAX_TOOLS = 64
-BUDGET_WINDOW = timedelta(hours=1)
 MAX_ADMISSION_AGE = timedelta(seconds=60)
 LANE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 VERDICT_RE = re.compile(r"[a-z][a-z_]{0,63}")
@@ -207,8 +206,8 @@ def _parse_stamp(value: Any) -> datetime | None:
 
 def _latest(value: str) -> datetime:
     """The LATEST instant a valid stamp can mean. A persisted legacy whole-second stamp is unknown within its
-    second, so it counts as one second later: the shared hour and the clock-regression check never read it
-    optimistically (at least one more second before the next admission). Nothing is rewritten or migrated."""
+    second, so it counts as one second later: the clock-regression check never reads it optimistically.
+    Nothing is rewritten or migrated."""
     parsed = _parse_stamp(value)
     if parsed is None:
         raise LedgerUnknown("ledger_invalid:entry")
@@ -610,7 +609,8 @@ class AdmissionLedger:
                 "last_admitted_utc": entries[-1]["applied_utc"] if entries else None}
 
     def reserve(self, admission: Any) -> bool:
-        """True only for the one admission that wins the shared hour under the lock; False if it lost."""
+        """True only for the one admission that wins under the lock (nothing open, fresh, never reserved);
+        False if it lost. No time since an earlier attempt is required: there is no local rate budget."""
         self._verify("reserve")
         record = _admission_record(admission)
         with self._locked():
@@ -623,8 +623,6 @@ class AdmissionLedger:
             entries = doc["entries"]
             if any(e["state"] == "open" for e in entries):
                 return False  # another admission is in flight, or an interrupted one is unresolved
-            if entries and now - _latest(entries[-1]["applied_utc"]) < BUDGET_WINDOW:
-                return False  # the shared hour is used, whatever that attempt's outcome
             if any(e["admission_sha256"] == record["admission_sha256"] for e in entries):
                 return False  # a replayed admission never gets a second attempt (defence in depth)
             if len(entries) >= MAX_ENTRIES:
@@ -635,7 +633,7 @@ class AdmissionLedger:
         return True
 
     def finish(self, admission: Any, outcome: Any) -> None:
-        """Close the exact reserved entry. Idempotent for the same outcome; it never refunds the hour."""
+        """Close the exact reserved entry. Idempotent for the same outcome; it never rewrites or refunds an attempt."""
         self._verify("finish")
         record = _admission_record(admission)
         if not (isinstance(outcome, dict) and _hex(outcome.get("verdict"), VERDICT_RE)):

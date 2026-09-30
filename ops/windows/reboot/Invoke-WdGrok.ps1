@@ -49,7 +49,7 @@ if ($LifecycleBase64) {
         stage=[string]$event.stage;authority_effect='none';advisory_only=$true;
         budget_ref='C:\Python\grok-scout-reports\hourly-state.json'}
     if ($event.stage -ceq 'deferred') { $payload['observation_id']=$observationId }
-    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','hourly_budget_next_eligible_utc','error_type','budget_exception')) {
+    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','local_availability','provider_quota','error_type','budget_exception')) {
         if ($state.PSObject.Properties[$key]) { $payload[$key]=$state.$key }
     }
     $recipient=if ($event.stage -cin @('answered','failed')) { 'codex-lead-1' } else { 'operator' }

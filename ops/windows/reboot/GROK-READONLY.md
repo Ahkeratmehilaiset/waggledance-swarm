@@ -9,18 +9,26 @@ The installed `C:\Python\Invoke-WdGrok.ps1` exposes the packaged session control
 `-ReadOnly` enables model-directed `read_file`, `list_dir` and literal `grep`
 requests against that immutable Git commit through the bounded Git blob broker.
 Git comes from the hash-verified fleet configuration, not PATH. Grok's native
-tools remain denied. `-MaxRounds` is 2..8 (default 6); the existing consultation
-budget, task exceptions, lifecycle events and lock still apply.
+tools remain denied. `-MaxRounds` is 2..8 (default 6); the helper's single-flight
+reservation, unfinished-attempt refusal, lifecycle events and lock still apply.
 
-The shared hourly budget unit is one consultation, reserved once before any
-model round starts. All 2..8 rounds belong to that same reservation. Failure,
-timeout or interruption consumes it too; rounds do not reserve separate hours,
-and neither retries nor a separate ledger are used. The global consultation
-lock remains held for the complete session.
+There is no local hourly or weekly quota (direct operator direction, 2026-09-30).
+One consultation is reserved once, durably, before any model round starts; all
+2..8 rounds belong to it. An answer, a failure or a timeout completes it, and
+the next consultation may start at once: no cooldown, no local budget and no
+automatic retry (each consultation is one explicit call). Grok's own provider
+limits are real but not readable headless, so `-Status` reports
+`provider_quota: "unknown"` separately from the local `local_availability`.
+`provider_evidence` is the last attempt's own recorded failure, verbatim; it may
+be local, and it is never read as a quota, a reset time or a reason to retry.
+Task exception grants waived the removed hourly budget and are retired: a
+consultation that presents one is refused before the lock, and grants already
+recorded in the state file are carried forward as history only. The global
+consultation lock remains held for the complete session.
 
 The helper's keyword-only `consult(..., timeout_seconds=300)` accepts only a
 built-in integer from 1 through 2400 seconds, rejecting booleans and coercible
-values before acquiring the lock or reserving budget. It forwards that value to
+values before acquiring the lock or reserving an attempt. It forwards that value to
 the runner. Text-only advisory mode keeps the 300-second default.
 
 The controller integration must pass `max_rounds * 300` as the session timeout:
@@ -35,28 +43,29 @@ Reservations record their actual `timeout_seconds`. A status read classifies a
 still-`reserved` attempt past that deadline as `interrupted_or_unknown`; older
 reservations with no recorded timeout use the conservative 2400-second bound.
 The response retains `recorded_status` and the complete `raw_state`. It never
-rewrites the ledger, refunds the reservation or kills a process. Such an unknown
-attempt reports `eligible=false` even after the hour passes; the separate
-`hourly_budget_eligible` field describes only the clock-based budget boundary,
-not readiness. Resolve the durable unknown attempt through an explicitly
-authorized reconciliation rather than treating elapsed time as completion.
-Neither a task exception nor an elapsed hour reconciles an unfinished attempt:
+rewrites the state file or kills a process. Such an unknown attempt reports
+`eligible=false` and `local_availability: "unreconciled_attempt"` however much
+time passes. Resolve the durable unknown attempt through an explicitly
+authorized reconciliation rather than treating elapsed time as completion:
 consultation defers with `deferred_unreconciled_attempt` while the durable state
 is still `reserved`, before or after its deadline, without overwriting that
-reservation or consuming an exception attempt. An explicit reconciliation
-adapter is not included; no process-exit or readiness guarantee is implied.
+reservation. An explicit reconciliation adapter is not included; no
+process-exit or readiness guarantee is implied.
 Deferred consultation responses have `status=deferred`,
 `consultation_attempted=false`, and a null new `request_id`. The prior attempt
 is kept under `previous_attempt`, never relabelled as the new caller's task.
 Both consultation entrypoints exit 2 for a deferral (0 only for an answered
 consultation, 1 for a failed attempt); `-Status` remains a read-only observation.
 
-Unfinished attempts have no next-eligible time. While the durable state is
-`reserved` (before or after its deadline), both `-Status` and a deferral report
-`next_eligible_utc: null`: neither the clock nor an exception reconciles the
-attempt. The clock cooldown stays visible, separately, as
-`hourly_budget_next_eligible_utc` (with `hourly_budget_eligible`). An
-hourly-limit deferral keeps the clock value in `next_eligible_utc`.
+Local availability (`local_availability`; `eligible` describes it, never the
+provider's quota): `available` after a completed attempt (`eligible=true`,
+`next_eligible_utc: null`); `unreconciled_attempt` while the durable state is
+`reserved`, before or after its deadline (`eligible=false`,
+`next_eligible_utc: null`: only an explicit reconciliation resolves it);
+`clock_regressed` when the clock reads earlier than the recorded attempt
+(`eligible=false`, `next_eligible_utc` = that recorded time), and a consultation
+then defers with `deferred_clock_regression`. The removed hourly fields
+(`hourly_budget_*`, `deferred_hourly_limit`) are no longer produced.
 
 Deferral observations (contract). A deferral reserves nothing, so it never mints
 a consultation `request_id`. The response and its `deferred` lifecycle event
@@ -113,7 +122,7 @@ enough for the configured session (up to 2400 seconds) plus completion logging.
 A detached launch with durable stdout/stderr logs and a recorded process
 identity is a recommended caller arrangement when a terminal wait is too short;
 this document does not launch it. Caller waiting must not introduce a free
-wrapper timeout, retry, additional consultation or budget bypass.
+wrapper timeout, retry, additional consultation or lock bypass.
 
 No arguments (or `-Status`) checks the old helper status without a model call.
 `-Inventory` alone inventories inherited hooks/MCP/LSP without a model call.

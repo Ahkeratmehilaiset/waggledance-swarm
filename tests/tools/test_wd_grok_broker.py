@@ -359,17 +359,37 @@ def test_the_injected_clock_bounds_every_observation(clock, verdict, reason):
     assert ports["helper"].calls == [] and ports["ledger"].reserved == []
 
 
-def test_exhausted_cooldown_failed_and_unreconciled_attempts_refuse_without_a_call():
+def test_not_eligible_and_unreconciled_attempts_refuse_without_a_call():
     for state, reason in (
-            (budget_state(eligible=False), "hourly_budget_used"),
-            (budget_state(last_attempt_utc=(NOW - timedelta(minutes=30)).isoformat()), "hourly_budget_used"),
+            (budget_state(eligible=False), "helper_not_eligible"),
             (budget_state(status="failed", eligible=False,
-                          last_attempt_utc=(NOW - timedelta(minutes=10)).isoformat()), "hourly_budget_used"),
+                          last_attempt_utc=(NOW - timedelta(minutes=10)).isoformat()), "helper_not_eligible"),
             (budget_state(status="reserved", eligible=False), "unreconciled_attempt:reserved"),
             (budget_state(status="interrupted_or_unknown", eligible=False),
              "unreconciled_attempt:interrupted_or_unknown")):
         result, ports = run(helper=Helper(state=state))
         assert (result["verdict"], result["reasons"]) == ("refuse", [reason])
+        assert ports["helper"].calls == [] and ports["ledger"].reserved == []
+
+
+def test_back_to_back_completed_attempts_are_consulted_without_a_local_hour():
+    """Operator direction 2026-09-30: an attempt that COMPLETED 30 s ago (helper eligible, ledger entry finished)
+    never refuses. Each consult still makes exactly ONE helper call and ONE ledger entry (no automatic retry)."""
+    recent = (NOW - timedelta(seconds=30)).isoformat()
+    result, ports = run(helper=Helper(state=budget_state(last_attempt_utc=recent)),
+                        ledger=Ledger(observed=ledger_state(last_admitted_utc="2026-09-30T11:59:30Z")))
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert ports["helper"].calls == [(TASK, PROMPT)] and len(ports["ledger"].reserved) == 1
+
+
+def test_a_skipped_consult_is_advisory_and_grants_nothing():
+    """Disabled, not eligible (provider-limited or deferred) or in flight: advisory information only. No helper
+    call, no reservation, no authority; nothing here can serve as a required consensus or a merge gate."""
+    for result, ports in (run(config={"schema": broker.CONFIG_SCHEMA, "enabled": False}),
+                          run(helper=Helper(state=budget_state(eligible=False))),
+                          run(ledger=Ledger(observed=ledger_state(open=[{"intent_sha256": "9" * 64}])))):
+        assert result["verdict"] in ("disabled", "refuse")
+        assert (result["execution_allowed"], result["authority"]) == (False, "none")
         assert ports["helper"].calls == [] and ports["ledger"].reserved == []
 
 
@@ -388,8 +408,8 @@ def test_mocked_ledger_arbitration_outcomes_never_reach_the_helper():
     result, ports = run(ledger=Ledger(observed=ledger_state(open=[{"intent_sha256": "9" * 64}])))
     assert result["reasons"] == ["admission_in_flight"]
     assert ports["helper"].calls == [] and ports["ledger"].reserved == []
-    result, ports = run(ledger=Ledger(observed=ledger_state(last_admitted_utc="2026-09-30T11:40:00Z")))
-    assert result["reasons"] == ["hourly_budget_used"] and ports["helper"].calls == []
+    result, ports = run(ledger=Ledger(observed=ledger_state(last_admitted_utc="an hour ago")))
+    assert result["reasons"] == ["admission_ledger_unknown"] and ports["helper"].calls == []
     result, ports = run(ledger=Ledger(win=False))
     assert (result["verdict"], result["reasons"]) == ("refuse", ["admission_lost_race"])
     assert ports["helper"].calls == [] and len(ports["ledger"].reserved) == 1 and ports["ledger"].finished == []
@@ -420,7 +440,7 @@ def test_wrong_reply_and_forbidden_transcript_are_refused():
              "forbidden_tool_in_transcript")):
         result, ports = run(helper=helper)
         assert (result["verdict"], result["reasons"]) == ("refuse", [reason])
-        assert len(ports["helper"].calls) == 1  # the attempt happened and counts against the hour
+        assert len(ports["helper"].calls) == 1  # the attempt happened: one call, never retried
 
 
 def test_a_ledger_finish_failure_stays_visible():
@@ -692,7 +712,8 @@ class _Str(str):
 
 
 @pytest.mark.parametrize("prompt", ["\ud800", _Str(PROMPT), PROMPT.encode("utf-8"), None,
-                                    "x" * (broker.MAX_PROMPT_BYTES + 1)])
+                                    "x" * (broker.MAX_PROMPT_BYTES + 1)],
+                         ids=["invalid_unicode", "string_subclass", "bytes", "none", "oversized"])
 def test_malformed_or_oversized_prompts_refuse_before_any_port(prompt):
     result, ports = run(prompt=prompt)
     assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
@@ -702,7 +723,7 @@ def test_malformed_or_oversized_prompts_refuse_before_any_port(prompt):
 @pytest.mark.parametrize("task_id,prompt", [("-x", PROMPT), (TASK, " "), (TASK, "\n\t ")],
                          ids=["dash_task_id", "blank_prompt", "whitespace_prompt"])
 def test_the_helpers_own_input_rules_refuse_before_any_port_or_reservation(task_id, prompt):
-    """RCO1 e932 SF2: the helper refuses these only after the ledger has reserved (and never refunded) the hour.
+    """RCO1 e932 SF2: the helper refuses these only after the ledger has reserved (never deleted) the admission.
     The digest and byte count match, so only the helper's own rules can refuse here."""
     it = dict(intent(), task_id=task_id, prompt_sha256=route.prompt_sha256(prompt),
               prompt_bytes=len(prompt.encode("utf-8")))
@@ -737,7 +758,7 @@ def _never_run(*args, **kwargs):
 
 def test_a_prompt_over_the_helpers_own_cap_is_refused_before_any_port(tmp_path):
     """RCO1 e855 N1: the helper refuses more than 48000 bytes before its own reservation, but only after the
-    broker's ledger would already have reserved (and never refunded) the hour. Its own intent, so not vacuous."""
+    broker's ledger would already have reserved (never deleted) the admission. Its own intent, so not vacuous."""
     assert broker.MAX_PROMPT_BYTES == route.HELPER_MAX_PROMPT_BYTES == 48000
     with pytest.raises(ValueError, match="48000"):
         real_helper.consult(tmp_path, TASK, "x" * 48001, ["never-run"], runner=_never_run, now=NOW)
@@ -794,11 +815,12 @@ class RealStatusHelper(Helper):
 
 
 class RealDeferringHelper(RealStatusHelper):
-    """Another caller takes the helper's hour after admission, so the REAL consult defers (its runner never runs)."""
+    """Another caller's attempt is still IN FLIGHT after admission (reserved 1 min ago, 300 s timeout), so the REAL
+    consult defers as deferred_unreconciled_attempt (0085e3e2 has no local hour; its runner never runs)."""
 
     def consult(self, task_id, prompt):
         self.calls.append((task_id, prompt))
-        self.write(status="answered", last_attempt_utc=(NOW - timedelta(minutes=10)).isoformat())
+        self.write(status="reserved", last_attempt_utc=(NOW - timedelta(minutes=1)).isoformat(), timeout_seconds=300)
         self.report = real_helper.consult(self.root, task_id, prompt, ["never-run"], runner=_never_run, now=NOW)
         return dict(self.report)
 
@@ -818,13 +840,28 @@ def test_the_helper_is_a_reviewed_blob_with_the_fields_admission_reads(tmp_path)
      "unreconciled_attempt:reserved"),
     ({"status": "reserved", "last_attempt_utc": (NOW - timedelta(minutes=10)).isoformat(), "timeout_seconds": 300},
      "unreconciled_attempt:interrupted_or_unknown"),  # the real helper's past-deadline observation
-    ({"status": "failed", "last_attempt_utc": (NOW - timedelta(minutes=10)).isoformat()}, "hourly_budget_used"),
+    # 0085e3e2: a clock earlier than the recorded attempt is clock_regressed (eligible False): skipped, no call
+    ({"status": "answered", "last_attempt_utc": (NOW + timedelta(minutes=5)).isoformat()}, "helper_not_eligible"),
 ])
 def test_the_real_helper_status_refuses_through_the_broker(tmp_path, state, reason):
     helper = RealStatusHelper(tmp_path, **state)
     result, ports = run(helper=helper)
     assert (result["verdict"], result["reasons"]) == ("refuse", [reason])
     assert helper.calls == [] and ports["ledger"].reserved == []
+
+
+@pytest.mark.parametrize("state", [
+    {"status": "failed", "last_attempt_utc": (NOW - timedelta(minutes=10)).isoformat()},
+    {"status": "answered", "last_attempt_utc": (NOW - timedelta(seconds=30)).isoformat()},
+], ids=["failed_10_min", "answered_30_s"])
+def test_the_real_helper_is_available_again_after_a_completed_attempt(tmp_path, state):
+    """0085e3e2 (Fable 0621), no local hour: a COMPLETED attempt, failed or answered, leaves the REAL helper
+    available at once, so the consult is admitted and made exactly once (the fake consult), never refused."""
+    helper = RealStatusHelper(tmp_path, **state)
+    assert (helper.status()["local_availability"], helper.status()["eligible"]) == ("available", True)
+    result, ports = run(helper=helper)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert helper.calls == [(TASK, PROMPT)] and len(ports["ledger"].reserved) == 1
 
 
 def test_the_real_helpers_deferred_report_is_refused_and_never_read(tmp_path):
@@ -835,4 +872,5 @@ def test_the_real_helpers_deferred_report_is_refused_and_never_read(tmp_path):
     assert (result["verdict"], result["reasons"]) == ("refuse", ["not_the_answered_attempt"])
     assert (helper.report["status"], helper.report["request_id"], helper.report["consultation_attempted"]) \
         == ("deferred", None, False)
+    assert helper.report["decision"] == "deferred_unreconciled_attempt"  # a live reservation, never a local hour
     assert len(helper.calls) == 1 and helper.reads == [] and len(ports["ledger"].finished) == 1

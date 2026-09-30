@@ -441,20 +441,38 @@ def test_a_second_caller_loses_after_rereading_under_the_lock(ready):
     assert ledger_bytes(ready) == before
 
 
-def test_the_hour_counts_every_attempt_including_failures(ready):
+def test_a_finished_attempt_never_delays_the_next_and_stays_in_the_history(ready):
+    """Lead e3cc3fa3 (direct operator): no local rate budget. A finished attempt, failed or answered, lets the
+    next DISTINCT admission reserve at once; every attempt stays recorded, in order, never refunded or erased."""
     clock = Clock(T0)
     ledger = make(ready, clock=clock)
     assert ledger.reserve(admission(1)) is True
-    clock.moment = T0 + timedelta(seconds=5)
+    clock.moment = T0 + timedelta(microseconds=1)
     ledger.finish(admission(1), FAILED)
-    late = T0 + timedelta(minutes=59, seconds=59)
-    clock.moment = late
-    assert ledger.reserve(admission(2, at=late)) is False
-    assert ledger.observe()["last_admitted_utc"] == precise(T0)  # the failed attempt is never refunded
-    hour = T0 + timedelta(hours=1)
-    clock.moment = hour
-    assert ledger.reserve(admission(2, at=hour)) is True  # the twin: exactly 60 minutes later
-    assert len(doc(ready)["entries"]) == 2
+    assert ledger.reserve(admission(2)) is True  # 1 us later, the same second: no cooldown
+    ledger.finish(admission(2), OUTCOME)
+    clock.moment = T0 + timedelta(microseconds=2)
+    assert ledger.reserve(admission(3)) is True
+    entries = doc(ready)["entries"]
+    assert [(e["admission_sha256"], e["state"], e["outcome_verdict"]) for e in entries] == [
+        (canonical_sha256(admission(1)), "finished", "blocked_unknown"),
+        (canonical_sha256(admission(2)), "finished", "answered_bound"), (canonical_sha256(admission(3)), "open", None)]
+    assert ledger.observe()["last_admitted_utc"] == precise(T0 + timedelta(microseconds=2))
+
+
+def test_an_open_attempt_still_refuses_every_other_request_until_it_is_finished(ready):
+    """No rate budget, but exactly-once still holds: while ONE admission is open (in flight or interrupted),
+    every other request is refused, even hours later and from another caller; finishing it frees the next."""
+    clock = Clock(T0)
+    first = make(ready, clock=clock)
+    other = make(ready, clock=clock, caller={"lane": "codex-tools-1", "reference": REF})
+    assert first.reserve(admission(1)) is True
+    for later in (T0 + timedelta(microseconds=1), T0 + timedelta(hours=3)):
+        clock.moment = later
+        assert other.reserve(admission(2, at=later)) is False and first.reserve(admission(3, at=later)) is False
+    first.finish(admission(1), OUTCOME)
+    assert other.reserve(admission(4, at=clock.moment)) is True  # the twin: the next request, at once
+    assert [e["state"] for e in doc(ready)["entries"]] == ["finished", "open"]
 
 
 def test_an_unfinished_attempt_stays_visible_and_blocks_forever(ready):
@@ -468,7 +486,6 @@ def test_an_unfinished_attempt_stays_visible_and_blocks_forever(ready):
 
 
 def test_a_replayed_admission_never_reserves_twice(ready, monkeypatch):
-    monkeypatch.setattr(ledger_mod, "BUDGET_WINDOW", timedelta(0))  # isolate the replay rule
     clock = Clock(T0)
     ledger = make(ready, clock=clock)
     assert ledger.reserve(admission(1)) is True
@@ -1058,7 +1075,7 @@ def test_nothing_imports_the_ledger():
 
 def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
     """The 1ed08c38 broker with fake non-ledger ports and this ledger (sequential, one process). Every fake fact
-    time follows the shared clock on each call, so the refusal at T0 + 10 min is the ledger's, never a stale fact."""
+    time follows the shared clock on each call, so the consult at T0 + 10 min is decided by the ledger alone."""
     from tools import wd_grok_broker as broker
 
     policy = {"schema": "fixture-signed-policy", "expires_utc": "2026-10-30T00:00:00Z", "parameters": {"F20": {
@@ -1089,7 +1106,7 @@ def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
             return Decision("F20", True, "enabled", canonical_sha256(policy), 3), policy, stamp(clock.moment)
 
     class Helper:
-        """Stays eligible, so only the ledger's durable last_admitted_utc can refuse the second consult."""
+        """Stays eligible, so only the durable ledger decides the second consult (no local hour)."""
 
         def __init__(self):
             self.calls = 0
@@ -1120,10 +1137,10 @@ def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
     assert closed[0]["admission_sha256"] == canonical_sha256(result["admission"])
     clock.moment = T0 + timedelta(minutes=10)
     again = grok.consult(intent(2, clock.moment), prompt)
-    assert (again["verdict"], again["reasons"], helper.calls) == ("refuse", ["hourly_budget_used"], 1)
-    assert activation.calls == 3  # refused at admission, before any reservation or recheck
-    assert len(doc(ready)["entries"]) == 1
-    assert ledger.observe()["last_admitted_utc"] == precise(T0)  # the durable hour that refused it
+    assert (again["verdict"], again["reasons"], helper.calls) == ("answered_bound", [], 2)  # no local hour (e3cc3fa3)
+    assert activation.calls == 4  # its own admission and recheck
+    assert [e["state"] for e in doc(ready)["entries"]] == ["finished", "finished"]  # both kept in the history
+    assert ledger.observe()["last_admitted_utc"] == precise(clock.moment)
 
 
 # --- RCO1 75f3c0eb: the caller is the descriptor's SOLE owner (authored, NOT RUN) --------------------------------
@@ -1249,9 +1266,9 @@ def test_a_clean_read_whose_close_fails_is_never_success(ready, monkeypatch):
 def test_the_real_broker_and_ledger_share_one_attempt_an_hour_failures_included(ready, fails):
     """The composed gap (fable-5, retained since fd005f72): the REAL GrokBroker on the REAL AdmissionLedger at this
     isolated temp root, every other trust port a strict fixture fake (no Grok, helper, model, F0, OS lock or native
-    input). One attempt per 60 min is shared: a consult while the attempt is live refuses as admission_in_flight,
-    a failed attempt still spends the hour (no refund), 59:59 later the ledger's durable hour refuses, and exactly
-    60 min later one new attempt is admitted. It shows the two dormant modules compose; it grants no readiness or
+    input). No local hour (Lead e3cc3fa3): a consult while the attempt is live refuses as admission_in_flight, a
+    failed attempt is recorded and never refunded, and the next DISTINCT attempts are admitted at once, one after
+    another. It shows the two dormant modules compose; it grants no readiness or
     approval: the enabled config exists only in memory here, and every other port is a fixture."""
     from tools import wd_grok_broker as broker
 
@@ -1285,7 +1302,7 @@ def test_the_real_broker_and_ledger_share_one_attempt_an_hour_failures_included(
 
     class Helper:
         """Strict: the exact task and prompt, and always eligible, so every refusal here is the ledger's (its open
-        entry or its durable hour), never the helper's own state. Only the first attempt may fail."""
+        entry), never the helper's own state. Only the first attempt may fail."""
 
         def __init__(self):
             self.calls, self.live = [], []
@@ -1321,17 +1338,17 @@ def test_the_real_broker_and_ledger_share_one_attempt_an_hour_failures_included(
     assert [(e["state"], e["outcome_verdict"]) for e in entries] == [("finished", outcome[0])]
     assert entries[0]["outcome_sha256"] == canonical_sha256(first)  # a failure is recorded, never refunded
 
-    clock.moment = T0 + timedelta(minutes=59, seconds=59)
+    clock.moment = T0 + timedelta(seconds=1)  # no local hour (Lead e3cc3fa3): the next DISTINCT attempt, at once
     held = grok.consult(intent(3), prompt)
-    assert (held["verdict"], held["reasons"], len(helper.calls)) == ("refuse", ["hourly_budget_used"], 1)
-    assert activation.calls == 4 and len(doc(ready)["entries"]) == 1  # refused at admission: no reservation
+    assert (held["verdict"], held["reasons"]) == ("answered_bound", []) and helper.calls == [T0, clock.moment]
+    assert activation.calls == 5  # its own admission and recheck
 
-    clock.moment = T0 + timedelta(hours=1)
+    clock.moment = T0 + timedelta(seconds=2)
     again = grok.consult(intent(4), prompt)
-    assert (again["verdict"], again["reasons"]) == ("answered_bound", []) and helper.calls == [T0, clock.moment]
-    assert activation.calls == 6  # its admission and its recheck
+    assert (again["verdict"], again["reasons"]) == ("answered_bound", []) and len(helper.calls) == 3
+    assert activation.calls == 7
     assert [(e["state"], e["outcome_verdict"]) for e in doc(ready)["entries"]] == \
-        [("finished", outcome[0]), ("finished", "answered_bound")]
+        [("finished", outcome[0]), ("finished", "answered_bound"), ("finished", "answered_bound")]
     assert ledger.observe()["last_admitted_utc"] == precise(clock.moment)
     results = (first, *helper.live, held, again)
     assert all(r["execution_allowed"] is False and r["authority"] == "none" for r in results)  # no authority
@@ -1403,20 +1420,17 @@ def _hour_broker(root, clock, *, caller=CALLER, interrupt=None):
     return grok, helper
 
 
-def test_two_real_brokers_on_one_root_share_one_durable_hour(ready):
-    """Two brokers, each with its OWN ledger instance, caller label and fake mutex on the SAME root: the second
-    is refused at 59:59 by the first one's durable entry (before any reservation) and admitted at exactly 60:00.
-    Sequential in one process: real cross-process exclusion is the concrete mutex's property, NOT exercised."""
+def test_two_real_brokers_on_one_root_share_one_durable_ledger(ready):
+    """Two brokers, each with its OWN ledger instance, caller label and fake mutex on the SAME root. No local hour
+    (Lead e3cc3fa3): once the first attempt is finished, the second broker's DISTINCT attempt is admitted at once
+    and both stay in the durable history. Sequential in one process: real cross-process exclusion is the concrete
+    mutex's property, NOT exercised."""
     clock = Clock(T0)
     first, first_helper = _hour_broker(ready, clock)
     second, second_helper = _hour_broker(ready, clock, caller=_OTHER_CALLER)
     assert first.consult(_hour_intent(clock, 1), _HOUR_PROMPT)["verdict"] == "answered_bound"
-    clock.moment = T0 + timedelta(minutes=59, seconds=59)
-    held = second.consult(_hour_intent(clock, 2), _HOUR_PROMPT)
-    assert (held["verdict"], held["reasons"], second_helper.calls) == ("refuse", ["hourly_budget_used"], [])
-    assert len(doc(ready)["entries"]) == 1                            # refused at admission: nothing reserved
-    clock.moment = T0 + timedelta(hours=1)
-    again = second.consult(_hour_intent(clock, 3), _HOUR_PROMPT)
+    clock.moment = T0 + timedelta(seconds=1)
+    again = second.consult(_hour_intent(clock, 2), _HOUR_PROMPT)
     assert (again["verdict"], again["reasons"], second_helper.calls) == ("answered_bound", [], [clock.moment])
     entries = doc(ready)["entries"]
     assert [(e["state"], e["caller"], e["applied_utc"]) for e in entries] == [
@@ -1452,56 +1466,57 @@ def test_an_interrupted_attempt_keeps_the_hour_open_while_a_failed_one_frees_it_
     assert [e["state"] for e in doc(ready)["entries"]] == ["open"] and helper.calls == [T0]
 
 
-def test_a_sub_second_first_attempt_holds_the_shared_hour_for_a_full_3600_seconds(ready):
-    """Lead 7c8c3714: the ledger stamps and compares FULL precision. A first attempt at 12:00:00.25 is refused
-    3599.999999 s later (13:00:00.249999) and admitted exactly 3600 s later (13:00:00.25). This replaces the
-    b28ad722 version, which pinned the old whole-second floor (a 59:59.75 hour) as the expected outcome."""
+def test_a_sub_second_attempt_is_followed_by_the_next_distinct_attempt_at_once(ready):
+    """Lead e3cc3fa3: no local hour. With every port at full precision, a first attempt at 12:00:00.25 is followed
+    by the next DISTINCT attempt 1 us later, admitted and answered; each keeps its own six-digit stamp."""
     start = T0 + timedelta(milliseconds=250)
     clock = Clock(start)
     grok, helper = _hour_broker(ready, clock)
     first = grok.consult(_hour_intent(clock, 1), _HOUR_PROMPT)
     assert (first["verdict"], first["reasons"]) == ("answered_bound", [])
-    assert doc(ready)["entries"][0]["applied_utc"] == precise(start) == "2026-09-30T12:00:00.250000Z"
-    clock.moment = start + timedelta(seconds=3599, microseconds=999999)
-    held = grok.consult(_hour_intent(clock, 2), _HOUR_PROMPT)
-    assert (held["verdict"], held["reasons"], helper.calls) == ("refuse", ["hourly_budget_used"], [start])
-    clock.moment = start + timedelta(seconds=3600)
-    again = grok.consult(_hour_intent(clock, 3), _HOUR_PROMPT)
+    clock.moment = start + timedelta(microseconds=1)
+    again = grok.consult(_hour_intent(clock, 2), _HOUR_PROMPT)
     assert (again["verdict"], again["reasons"], helper.calls) == ("answered_bound", [], [start, clock.moment])
+    assert [e["applied_utc"] for e in doc(ready)["entries"]] == [precise(start), "2026-09-30T12:00:00.250001Z"]
 
 
-def test_a_failed_sub_second_attempt_spends_the_same_full_hour(ready):
+def test_rapid_sequential_sub_second_attempts_each_reserve_once_and_a_rollback_refuses(ready):
+    """Distinct admissions reserve back to back at microsecond steps once each is finished; the same admission
+    never twice (replay), and a clock rolled back before a recorded stamp is clock_regressed with nothing written."""
     start = T0 + timedelta(milliseconds=250)
     clock = Clock(start)
     ledger = make(ready, clock=clock)
-    assert ledger.reserve(admission(1)) is True
-    clock.moment = start + timedelta(seconds=5)
-    ledger.finish(admission(1), FAILED)
-    clock.moment = start + timedelta(seconds=3599, microseconds=999999)
-    assert ledger.reserve(admission(2, at=clock.moment)) is False  # still the failed attempt's hour: no refund
-    clock.moment = start + timedelta(seconds=3600)
-    assert ledger.reserve(admission(3, at=clock.moment)) is True  # exactly 3600 s later
-    assert [e["applied_utc"] for e in doc(ready)["entries"]] == [precise(start), precise(clock.moment)]
+    for n in range(1, 6):
+        assert ledger.reserve(admission(n)) is True
+        ledger.finish(admission(n), OUTCOME if n % 2 else FAILED)
+        clock.moment += timedelta(microseconds=1)
+    assert ledger.reserve(admission(3)) is False  # a replayed admission never reserves again
+    before = ledger_bytes(ready)
+    clock.moment = start + timedelta(microseconds=3)  # rolled back before the last recorded stamps
+    with pytest.raises(LedgerUnknown, match="clock_regressed"):
+        ledger.reserve(admission(6))
+    assert ledger_bytes(ready) == before
+    applied = [e["applied_utc"] for e in doc(ready)["entries"]]
+    assert applied == [precise(start + timedelta(microseconds=k)) for k in range(5)]
 
 
-def test_a_persisted_legacy_whole_second_entry_is_read_conservatively_never_as_an_early_hour(ready):
-    """An entry written before full precision ("12:00:00Z") is unknown within its second, so it counts one second
-    later: no admission before 13:00:01, and a clock inside a legacy second is clock_regressed. The legacy
-    entry is never rewritten, migrated or erased, and every new stamp has six fraction digits."""
+def test_a_persisted_legacy_whole_second_entry_is_read_conservatively_and_kept(ready):
+    """An entry written before full precision ("12:00:00Z") is unknown within its second: a clock inside a legacy
+    second is clock_regressed (never an early reading); once past it, a new admission reserves at once (no local
+    hour). The legacy entry is never rewritten, migrated or erased, and every new stamp has six fraction digits."""
     legacy = entry(1, at=T0)  # applied 12:00:00Z, finished 12:00:01Z: whole seconds
     (ready / ledger_mod.LEDGER_NAME).write_bytes(_dump(ledger_doc(make(ready).root_identity, [legacy])))
     before = ledger_bytes(ready)
-    with pytest.raises(LedgerUnknown, match="clock_regressed"):
-        make(ready, clock=Clock(T0 + timedelta(seconds=1, milliseconds=500))).observe()  # inside 12:00:01Z
-    hour = T0 + timedelta(hours=1)
-    assert make(ready, clock=Clock(hour)).reserve(admission(2, at=hour)) is False  # NOT an early admission
-    late = hour + timedelta(milliseconds=999)
-    assert make(ready, clock=Clock(late)).reserve(admission(3, at=hour)) is False
+    inside = T0 + timedelta(seconds=1, milliseconds=500)  # inside 12:00:01Z
+    for call in (make(ready, clock=Clock(inside)).observe,
+                 lambda: make(ready, clock=Clock(inside)).reserve(admission(2, at=T0 + timedelta(seconds=1)))):
+        with pytest.raises(LedgerUnknown, match="clock_regressed"):
+            call()
     assert ledger_bytes(ready) == before  # refused: nothing written
-    ok = hour + timedelta(seconds=1)
-    assert make(ready, clock=Clock(ok)).reserve(admission(4, at=ok)) is True  # the twin: one second later
+    ok = T0 + timedelta(seconds=2)  # the legacy finish's latest possible instant
+    assert make(ready, clock=Clock(ok)).reserve(admission(3, at=ok)) is True  # the twin: no hour to wait
     entries = doc(ready)["entries"]
-    assert entries[0] == legacy and entries[1]["applied_utc"] == precise(ok) == "2026-09-30T13:00:01.000000Z"
+    assert entries[0] == legacy and entries[1]["applied_utc"] == precise(ok) == "2026-09-30T12:00:02.000000Z"
 
 
 @pytest.mark.parametrize("moment, text", [

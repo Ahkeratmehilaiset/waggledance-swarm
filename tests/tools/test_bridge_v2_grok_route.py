@@ -243,18 +243,14 @@ def _now(delta):
 
 
 BUDGET_USED = [
-    # exhausted: the helper itself says not eligible
-    (_budget(eligible=False), "refuse", "hourly_budget_used"),
-    # cooldown: an attempt 30 min ago refuses even if a status claims eligible
-    (_budget(last_attempt_utc=(NOW - timedelta(minutes=30)).isoformat()), "refuse", "hourly_budget_used"),
-    # a FAILED attempt 10 min ago counts against the hour
+    # no local hour (operator direction 2026-09-30): a helper that says it is not eligible (its own limit or
+    # deferral) is skipped; an unreconciled attempt refuses as before (one flight)
+    (_budget(eligible=False), "refuse", "helper_not_eligible"),
     (_budget(status="failed", eligible=False, last_attempt_utc=(NOW - timedelta(minutes=10)).isoformat()),
-     "refuse", "hourly_budget_used"),
+     "refuse", "helper_not_eligible"),
     (_budget(status="reserved", eligible=False), "refuse", "unreconciled_attempt:reserved"),
     (_budget(status="interrupted_or_unknown", eligible=False), "refuse",
      "unreconciled_attempt:interrupted_or_unknown"),
-    # the admission ledger has its own copy of the hour
-    (_ledger(last_admitted_utc=stamp(NOW - timedelta(minutes=20))), "refuse", "hourly_budget_used"),
 ]
 
 UNKNOWN = [
@@ -263,7 +259,6 @@ UNKNOWN = [
     (_budget(observed_utc=stamp(NOW + timedelta(seconds=1))), "blocked_unknown", "budget_unknown"),
     (_budget(schema="wd.grok-hourly.v0"), "blocked_unknown", "budget_unknown"),
     (_budget(eligible="yes"), "blocked_unknown", "budget_unknown"),
-    (_budget(last_attempt_utc=None), "blocked_unknown", "budget_unknown"),
     (_drop("admission_ledger"), "blocked_unknown", "admission_ledger_unknown"),
     (_ledger(open=None), "blocked_unknown", "admission_ledger_unknown"),
     (_ledger(last_admitted_utc="an hour ago"), "blocked_unknown", "admission_ledger_unknown"),
@@ -298,6 +293,23 @@ def test_admission_refuses_or_blocks_and_never_admits(mutate, verdict, reason):
     assert (result["verdict"], result["reasons"]) == (verdict, [reason])
     assert (result["execution_allowed"], result["authority"]) == (False, "none")
     assert "admitted_utc" not in result and "allowed_tools" not in result
+
+
+@pytest.mark.parametrize("mutate", [
+    _budget(last_attempt_utc=(NOW - timedelta(minutes=30)).isoformat()),  # a completed attempt 30 min ago
+    _budget(last_attempt_utc=(NOW - timedelta(seconds=1)).isoformat()),  # back to back
+    _budget(last_attempt_utc=None),  # no longer read by admit
+    _ledger(last_admitted_utc=stamp(NOW - timedelta(minutes=20))),  # the ledger's last completed admission
+    _ledger(last_admitted_utc=stamp(NOW)),  # even in the same second
+], ids=["helper_30_min", "helper_1_s", "helper_no_last_attempt", "ledger_20_min", "ledger_same_second"])
+def test_back_to_back_completed_attempts_admit_without_a_local_hour(mutate):
+    """Operator direction 2026-09-30: no local rate quota. A completed earlier attempt never refuses; one flight
+    still does (an open ledger entry, an unreconciled helper attempt: BUDGET_USED and REFUSED above)."""
+    it, ev = intent(), evidence()
+    mutate(ev)
+    result = route.admit(it, ev)
+    assert (result["verdict"], result["reasons"]) == ("admit", ["all_gates_passed"])
+    assert (result["execution_allowed"], result["authority"]) == (False, "none")
 
 
 def test_a_forged_f0_dict_is_not_a_decision():

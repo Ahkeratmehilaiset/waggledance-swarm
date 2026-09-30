@@ -236,49 +236,20 @@ def exception_file(root, **updates):
     return dict(exception_path=path, exception_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
-def test_task_exception_reserves_two_attempts_and_preserves_global_hour(tmp_path):
-    seed(tmp_path, age=1)
-    grant = exception_file(tmp_path)
-    calls = []
-    def run(*a, **k):
-        calls.append(1)
-        assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == len(calls)
-        return SimpleNamespace(returncode=0, stdout="advice")
-    for i in (2, 3):
-        result = consult(tmp_path, f"brainstorm/r{i}", "ask", ["fake"], now=NOW,
-                         runner=run, **grant)
-        assert result["status"] == "answered"
-        assert result["budget_exception"]["sha256"] == grant["exception_sha256"]
+def test_task_exceptions_are_retired_and_recorded_history_is_carried_unchanged(tmp_path):
+    history = {"operator-brainstorm": {"sha256": "a" * 64, "attempts": [
+        {"task_id": "brainstorm/r2", "request_id": "old", "reserved_at_utc": NOW.isoformat()}]}}
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (NOW - timedelta(seconds=1)).isoformat(),
+                           "status": "answered", "task_exceptions": history})
     before = (tmp_path / "hourly-state.json").read_bytes()
-    with pytest.raises(ValueError, match="exhausted|already"):
-        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, runner=run, **grant)
-    assert len(calls) == 2
+    with pytest.raises(ValueError, match="retired"):
+        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, **exception_file(tmp_path),
+                runner=lambda *a, **k: pytest.fail("a retired exception launched"))
     assert (tmp_path / "hourly-state.json").read_bytes() == before
-    assert consult(tmp_path, "unrelated", "ask", ["fake"], now=NOW, runner=run)["decision"] == "deferred_hourly_limit"
-    # Ordinary calls after cooldown must retain the spent exception, including after reload.
-    consult(tmp_path, "unrelated", "ask", ["fake"], now=NOW+timedelta(hours=1),
-            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok"))
-    assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == 2
-
-
-@pytest.mark.parametrize("failure", ["timeout", "interrupt", "exit"])
-def test_exception_failures_consume_attempt_before_launch(tmp_path, failure):
-    seed(tmp_path, age=1)
-    grant = exception_file(tmp_path)
-    def run(*a, **k):
-        if failure == "interrupt":
-            raise KeyboardInterrupt()
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired("fake", 1)
-        return SimpleNamespace(returncode=1, stdout="failed")
-    if failure == "interrupt":
-        with pytest.raises(KeyboardInterrupt):
-            consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
-    else:
-        assert consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)["status"] == "failed"
-    with pytest.raises(ValueError, match="already"):
-        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
-    assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == 1
+    result = consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok"))
+    assert result["status"] == "answered" and "budget_exception" not in result
+    assert json.loads((tmp_path / "hourly-state.json").read_text())["task_exceptions"] == history
 
 
 @pytest.mark.parametrize("update", [
@@ -298,24 +269,8 @@ def test_invalid_exception_never_launches_or_changes_state(tmp_path, update):
     assert (tmp_path / "hourly-state.json").read_bytes() == before
 
 
-def test_exception_hash_replay_mutation_and_clock_rollback_fail_closed(tmp_path):
-    seed(tmp_path, age=1)
-    grant = exception_file(tmp_path)
-    run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok")
-    with pytest.raises(ValueError, match="hash"):
-        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run,
-                **{**grant, "exception_sha256": "0"*64})
-    consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
-    changed = exception_file(tmp_path, authorization_ref="changed")
-    with pytest.raises(ValueError, match="changed"):
-        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, runner=run, **changed)
-    seed(tmp_path, age=-1)
-    with pytest.raises(ValueError, match="clock"):
-        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
-
-
 @pytest.mark.parametrize('failed', [False, True])
-def test_consult_emits_lifecycle_without_exposing_prompt_or_refunding_budget(tmp_path, failed):
+def test_consult_emits_lifecycle_without_exposing_prompt_and_needs_no_hour_wait(tmp_path, failed):
     seed(tmp_path)
     events = []
     def emit(stage, state):
@@ -328,15 +283,13 @@ def test_consult_emits_lifecycle_without_exposing_prompt_or_refunding_budget(tmp
     assert events[0][1]['request_id'] == events[1][1]['request_id']
     assert 'private prompt' not in json.dumps(events)
     assert events[1][1]['report_sha256']
-    assert result['status'] == 'answered' and not result['eligible']
+    assert result['status'] == 'answered' and result['eligible'] is True        # no local hour wait
     assert bool(result.get('bridge_event_errors')) is failed
-    before = (tmp_path / 'hourly-state.json').read_bytes()
-    deferred = consult(tmp_path, 'second-task', 'ask', ['fake'], now=NOW,
-                       runner=lambda *a, **k: pytest.fail('budget bypass'), emitter=emit)
-    assert deferred['decision'] == 'deferred_hourly_limit'
-    assert events[-1][0] == 'deferred'
-    assert events[-1][1]['task_id'] == 'second-task'
-    assert (tmp_path / 'hourly-state.json').read_bytes() == before
+    second = consult(tmp_path, 'second-task', 'ask', ['fake'], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout='more'), emitter=emit)
+    assert second['status'] == 'answered' and second['task_id'] == 'second-task'
+    assert [e[0] for e in events] == ['started', 'answered', 'started', 'answered']
+    assert events[2][1]['request_id'] != events[0][1]['request_id']
 
 
 def test_lifecycle_emitter_requires_canonical_receipt_and_never_runs_model(tmp_path, monkeypatch):
@@ -365,35 +318,35 @@ def seed(root, age=3600):
     write_state(root, {"schema": SCHEMA, "last_attempt_utc": (NOW-timedelta(seconds=age)).isoformat(), "status": "answered"})
 
 
-def test_one_call_per_rolling_hour_survives_reload(tmp_path):
-    seed(tmp_path)
+def test_sequential_consultations_need_no_local_hour_wait(tmp_path):
+    seed(tmp_path, age=1)
     calls = []
     def runner(command, **kwargs):
         calls.append(command)
-        assert status(tmp_path, NOW)["status"] == "reserved"
+        assert status(tmp_path, NOW)["status"] == "reserved"          # single-flight while running
         assert command[command.index("--tools") + 1] == ""
         assert "--no-subagents" in command and "--always-approve" not in command
         return SimpleNamespace(returncode=0, stdout="Evidence-based advice")
-    assert consult(tmp_path, "test/task", "Review supplied evidence", ["fake"], runner=runner, now=NOW)["status"] == "answered"
-    assert not status(tmp_path, NOW+timedelta(seconds=3599))["eligible"]
-    assert consult(tmp_path, "next", "Second ask", ["fake"], runner=runner, now=NOW)["decision"] == "deferred_hourly_limit"
-    assert len(calls) == 1
-    assert status(tmp_path, NOW+timedelta(hours=1))["eligible"]
+    for task in ("test/task", "next"):
+        assert consult(tmp_path, task, "Review supplied evidence", ["fake"], runner=runner, now=NOW)["status"] == "answered"
+        report = status(tmp_path, NOW)
+        assert (report["local_availability"], report["eligible"], report["next_eligible_utc"]) == ("available", True, None)
+        assert report["provider_quota"] == "unknown" and report["provider_evidence"] is None
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("age", [1, 5000])
 @pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("with_exception", [False, True])
-def test_unfinished_attempt_is_preserved_without_a_new_consultation(tmp_path, age, legacy, with_exception):
-    state = {"schema": SCHEMA, "status": "reserved", "task_id": "previous/task",
+@pytest.mark.parametrize("durable", ["reserved", "interrupted_or_unknown"])
+def test_unfinished_attempt_is_preserved_without_a_new_consultation(tmp_path, age, legacy, durable):
+    state = {"schema": SCHEMA, "status": durable, "task_id": "previous/task",
              "request_id": "previous-request", "last_attempt_utc": (NOW-timedelta(seconds=age)).isoformat()}
     if not legacy:
         state["timeout_seconds"] = 300
     write_state(tmp_path, state)
-    grant = exception_file(tmp_path) if with_exception else {}
     before = (tmp_path / "hourly-state.json").read_bytes()
     events = []
-    report = consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant,
+    report = consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW,
                      runner=lambda *a, **k: pytest.fail("unfinished attempt bypass"),
                      emitter=lambda stage, event: events.append((stage, event)))
     assert report["decision"] == "deferred_unreconciled_attempt"
@@ -430,12 +383,38 @@ def test_consult_uses_verbatim_prompt_mode(tmp_path):
     assert "--prompt-file" in commands[0]
 
 
+def test_cli_prompt_carries_only_the_callers_evidence(tmp_path, monkeypatch):
+    # Another task's answered attempt, its report and a lane checkpoint sit in the state root.
+    other = tmp_path / "other-response.md"
+    other.write_text("OTHER TASK REPORT", encoding="utf-8")
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (NOW - timedelta(seconds=5)).isoformat(),
+                           "status": "answered", "task_id": "other/task", "report_path": str(other)})
+    (tmp_path / "wd-current-state.json").write_text('{"task_id": "other/task"}', encoding="utf-8")
+    monkeypatch.setattr(wd_grok_helper, "STATE_ROOT", tmp_path)
+    ask = tmp_path / "ask.md"
+    ask.write_text("Evidence for mine/task only.", encoding="utf-8")
+    prompt = wd_grok_helper.cli_prompt(ask)
+    assert prompt == "Evidence for mine/task only."                   # nothing appended
+    sent = []
+    def runner(command, **kwargs):
+        sent.append(Path(command[command.index("--prompt-file") + 1]).read_text(encoding="utf-8"))
+        return SimpleNamespace(returncode=0, stdout="advice")
+    assert consult(tmp_path, "mine/task", prompt, ["fake"], runner=runner, now=NOW)["status"] == "answered"
+    assert len(sent) == 1 and sent[0].endswith("\n\nEvidence for mine/task only.")
+    for leaked in ("OTHER TASK REPORT", "other/task", "PREVIOUS GROK", "CONTEXT ", "codex-lead-1"):
+        assert leaked not in sent[0]
+    assert "codex-lead-1" not in status(tmp_path, NOW)["role"]
+    ask.write_text("x" * 24001, encoding="utf-8")
+    with pytest.raises(ValueError, match="exceeds 24000 bytes"):
+        wd_grok_helper.cli_prompt(ask)
+
+
 def test_default_advisory_command_uses_medium_effort():
     assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model") == [
         "grok.exe", "--model", "grok-model", "--effort", "medium"]
 
 
-def test_failed_consult_records_bounded_stderr_without_refunding_hour(tmp_path):
+def test_failed_consult_records_bounded_stderr_as_uninterpreted_evidence(tmp_path):
     seed(tmp_path)
     stderr = "noise" * 1000 + "CLI error: invalid option"
     result = consult(tmp_path, "stderr", "Review evidence", ["fake"], now=NOW,
@@ -444,11 +423,13 @@ def test_failed_consult_records_bounded_stderr_without_refunding_hour(tmp_path):
     assert result["stderr_excerpt"].endswith("CLI error: invalid option")
     assert len(result["stderr_excerpt"]) <= 2048
     assert result["stderr_truncated"] is True
-    assert not status(tmp_path, NOW)["eligible"]
+    report = status(tmp_path, NOW)
+    assert report["eligible"] is True and report["provider_quota"] == "unknown"      # no hour wait
+    assert report["provider_evidence"]["stderr_excerpt"] == result["stderr_excerpt"]  # verbatim evidence
 
 
 @pytest.mark.parametrize("failure", ["exit", "exception"])
-def test_failure_consumes_hour(tmp_path, failure):
+def test_a_failed_attempt_is_complete_and_needs_no_hour_wait(tmp_path, failure):
     seed(tmp_path)
     def runner(*args, **kwargs):
         if failure == "exception":
@@ -456,7 +437,7 @@ def test_failure_consumes_hour(tmp_path, failure):
         return SimpleNamespace(returncode=1, stdout="")
     result = consult(tmp_path, "test", "Ask", ["fake"], runner=runner, now=NOW)
     assert result["status"] == "failed"
-    assert not status(tmp_path, NOW)["eligible"]
+    assert status(tmp_path, NOW)["local_availability"] == "available"
 
 
 def test_corrupt_or_missing_state_blocks(tmp_path):
@@ -497,7 +478,7 @@ def test_consult_records_duration_in_existing_result_only(tmp_path, monkeypatch,
     assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
 
 
-def test_timeout_records_timing_without_refunding_budget(tmp_path, monkeypatch):
+def test_timeout_records_timing_and_completes_the_attempt(tmp_path, monkeypatch):
     seed(tmp_path)
     clock = iter([20.0, 25.0])
     monkeypatch.setattr(wd_grok_helper, "monotonic", lambda: next(clock))
@@ -507,7 +488,7 @@ def test_timeout_records_timing_without_refunding_budget(tmp_path, monkeypatch):
     assert result["status"] == "failed"
     assert result["error_type"] == "TimeoutExpired"
     assert result["duration_seconds"] == 5.0
-    assert not status(tmp_path, NOW + timedelta(minutes=59))["eligible"]
+    assert status(tmp_path, NOW)["eligible"] is True                       # completed: no hour wait
 
 
 def test_timeout_preserves_bounded_partial_output_and_stderr(tmp_path):
@@ -520,7 +501,7 @@ def test_timeout_preserves_bounded_partial_output_and_stderr(tmp_path):
     assert result["stderr_excerpt"] == "CLI stalled"
     assert result["partial_report"] is True
     assert Path(result["report_path"]).read_text(encoding="utf-8") == "partial advice"
-    assert not status(tmp_path, NOW)["eligible"]
+    assert status(tmp_path, NOW)["eligible"] is True                       # a timeout completes the attempt
 
 
 def test_interrupted_reservation_survives_new_process_and_partial_temp(tmp_path):
@@ -591,23 +572,14 @@ def test_exception_parameters_reach_verified_python_wrapper(tmp_path, shell):
     assert "$ExceptionPath" in grok_parameters and "$ExceptionSha256" in grok_parameters
 
 
-def test_exception_lock_and_status_preserve_budget(tmp_path):
+def test_the_single_flight_lock_refuses_a_concurrent_consultation_without_state_change(tmp_path):
     seed(tmp_path, age=1)
-    grant = exception_file(tmp_path)
     before = (tmp_path / "hourly-state.json").read_bytes()
     with exclusive(tmp_path), pytest.raises(OSError):
-        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant)
+        consult(tmp_path, "concurrent", "ask", ["fake"], now=NOW,
+                runner=lambda *a, **k: pytest.fail("a second consultation ran"))
     status(tmp_path, NOW)
     assert (tmp_path / "hourly-state.json").read_bytes() == before
-
-
-def test_exception_attempt_ceiling_with_unused_named_task(tmp_path):
-    seed(tmp_path, age=1)
-    grant = exception_file(tmp_path, max_attempts=1)
-    consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant,
-            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok"))
-    with pytest.raises(ValueError, match="exhausted"):
-        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, **grant)
 
 
 def test_reboot_uses_pinned_passive_grok_entrypoint():
@@ -650,11 +622,14 @@ def test_passive_recovery_preserves_budget_and_legacy_history(tmp_path, shell):
     state = json.loads((reports / "hourly-state.json").read_text())
     assert state["status"] == "initialized_conservative_cooldown"
     recovery = json.loads(result.stdout.strip().splitlines()[-1])
-    assert datetime.fromisoformat(recovery["next_eligible_utc"]) == (
-        datetime.fromisoformat(state["last_attempt_utc"]) + timedelta(hours=1)
+    assert "next_eligible_utc" not in recovery  # no artificial cooldown
+    assert (recovery["provider_auth"], recovery["provider_quota"]) == ("unknown", "unknown")
+    assert recovery["unfinished_attempt"].startswith("unknown")
+    assert datetime.fromisoformat(recovery["last_attempt_utc"]) == (
+        datetime.fromisoformat(state["last_attempt_utc"])
     )
     assert Path(state["previous_report"]) == report
-    assert not status(reports)["eligible"]
+    assert status(reports)["local_availability"] == "available"   # the helper imposes no recovery hour
     assert report.read_text() == "Previous result"
     assert "throw 'Use" in legacy.read_text()
     assert any(p.read_text() == "old worktree updater" for p in
@@ -695,10 +670,9 @@ def _reserved(root, age, timeout_seconds=300):
 def test_status_of_an_unfinished_attempt_has_no_next_eligible_time(tmp_path, age):
     _reserved(tmp_path, age)
     report = status(tmp_path, NOW)
-    clock = (NOW - timedelta(seconds=age) + timedelta(hours=1)).isoformat()
     assert report["next_eligible_utc"] is None and report["eligible"] is False
-    assert report["hourly_budget_next_eligible_utc"] == clock
-    assert report["hourly_budget_eligible"] is (age >= 3600)
+    assert report["local_availability"] == "unreconciled_attempt" and report["provider_quota"] == "unknown"
+    assert not any(key.startswith("hourly_budget") for key in report)
     assert report["status"] == ("reserved" if age < 300 else "interrupted_or_unknown")
 
 
@@ -710,29 +684,31 @@ def test_unreconciled_deferral_has_no_next_eligible_time_and_mints_no_request_id
     report = consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW,
                      runner=lambda *a, **k: pytest.fail("unfinished attempt bypass"),
                      emitter=lambda stage, event: events.append((stage, event)))
-    clock = (NOW - timedelta(seconds=5000) + timedelta(hours=1)).isoformat()
     assert report["decision"] == "deferred_unreconciled_attempt" and report["status"] == "deferred"
-    assert report["next_eligible_utc"] is None and report["hourly_budget_next_eligible_utc"] == clock
+    assert report["next_eligible_utc"] is None and report["local_availability"] == "unreconciled_attempt"
     assert report["request_id"] is None and re.fullmatch(r"[0-9a-f]{32}", report["observation_id"])
     (stage, event), = events
     assert stage == "deferred" and event["request_id"] is None
     assert event["observation_id"] == report["observation_id"]
-    assert event["next_eligible_utc"] is None and event["hourly_budget_next_eligible_utc"] == clock
+    assert event["next_eligible_utc"] is None and event["local_availability"] == "unreconciled_attempt"
     assert (tmp_path / "hourly-state.json").read_bytes() == before
     assert wd_grok_helper.consultation_exit_code(report) == 2
 
 
-def test_hourly_deferral_keeps_the_clock_and_mints_no_request_id(tmp_path):
-    seed(tmp_path, age=1)
+def test_a_clock_regression_defers_without_a_launch_a_state_change_or_a_request_id(tmp_path):
+    seed(tmp_path, age=-1)
+    before = (tmp_path / "hourly-state.json").read_bytes()
     events = []
     report = consult(tmp_path, "later/task", "ask", ["fake"], now=NOW,
-                     runner=lambda *a, **k: pytest.fail("budget bypass"),
+                     runner=lambda *a, **k: pytest.fail("clock regression launched"),
                      emitter=lambda stage, event: events.append((stage, event)))
-    clock = (NOW - timedelta(seconds=1) + timedelta(hours=1)).isoformat()
-    assert report["decision"] == "deferred_hourly_limit"
-    assert report["next_eligible_utc"] == clock == report["hourly_budget_next_eligible_utc"]
+    assert report["decision"] == "deferred_clock_regression" and report["local_availability"] == "clock_regressed"
+    assert report["next_eligible_utc"] == (NOW + timedelta(seconds=1)).isoformat() and report["request_id"] is None
     (stage, event), = events
     assert event["request_id"] is None and event["observation_id"] == report["observation_id"]
+    assert event["status"] == "deferred_clock_regression" and event["provider_quota"] == "unknown"
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert wd_grok_helper.consultation_exit_code(report) == 2
 
 
 def test_lifecycle_writer_separates_deferral_observations_from_consultations():
@@ -740,7 +716,7 @@ def test_lifecycle_writer_separates_deferral_observations_from_consultations():
     wrapper = (REBOOT / "Invoke-WdGrok.ps1").read_text()
     assert "'grok-deferral-' + $observationId" in wrapper and "'grok-consult-' + $requestId" in wrapper
     assert "Invalid Grok deferral observation" in wrapper and "Invalid Grok consultation id" in wrapper
-    assert "$consultationId=$null" in wrapper and "'hourly_budget_next_eligible_utc'" in wrapper
+    assert "$consultationId=$null" in wrapper and "'local_availability','provider_quota'" in wrapper
 
 
 @pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
@@ -1020,7 +996,7 @@ def _delivery(**receipt):
     (0, "not json"),
     (0, ""),
     (0, None),                                                                   # no stdout at all
-    (0, "[" * 100000 + "]" * 100000),                                            # nesting beyond the parser
+    pytest.param(0, "[" * 100000 + "]" * 100000, id="nesting-beyond-parser"),
     (0, '{"_bridge_delivery":{"accepted":false,"accepted":true,"canonical_durable":true}}'),
     (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":NaN}'),
     (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":Infinity}'),
@@ -1029,10 +1005,11 @@ def _delivery(**receipt):
     (0, json.dumps({**DELIVERED, chr(0xDC00): None})),                             # escaped lone surrogate key
     (0, chr(0xD800) + json.dumps(DELIVERED)),                                     # invalid Unicode before parsing
     (0, chr(0xFEFF) * 2 + json.dumps(DELIVERED)),                                 # not one optional BOM
-    (0, json.dumps({**DELIVERED, "extra": "x" * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_BYTES})),
-    (0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":'
-        + '[' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '0'
-        + ']' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '}'),
+    pytest.param(0, json.dumps({**DELIVERED, "extra": "x" * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_BYTES}),
+                 id="receipt-over-byte-limit"),
+    pytest.param(0, '{"_bridge_delivery":{"accepted":true,"canonical_durable":true},"extra":'
+                 + '[' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '0'
+                 + ']' * wd_grok_helper.MAX_LIFECYCLE_RECEIPT_DEPTH + '}', id="receipt-over-depth-limit"),
 ])
 def test_lifecycle_receipt_refusals_are_one_visible_os_error(tmp_path, monkeypatch, returncode, stdout):
     calls = _stub_writer_process(tmp_path, monkeypatch, returncode, stdout)
@@ -1093,11 +1070,25 @@ def test_lifecycle_receipt_acceptance_bounds_have_success_twins():
 ])
 def test_a_refused_receipt_is_recorded_and_never_refunds_or_retries(tmp_path, monkeypatch, stdout):
     calls = _stub_writer_process(tmp_path, monkeypatch, 0, stdout)
-    seed(tmp_path, age=1)
+    _reserved(tmp_path, 10)
     before = (tmp_path / "hourly-state.json").read_bytes()
     report = consult(tmp_path, "later/task", "ask", ["fake"], now=NOW,
                      runner=lambda *a, **k: pytest.fail("budget bypass"),
                      emitter=wd_grok_helper.emit_bridge_event)
-    assert report["decision"] == "deferred_hourly_limit" and len(calls) == 1
+    assert report["decision"] == "deferred_unreconciled_attempt" and len(calls) == 1
     assert [e["error_type"] for e in report["bridge_event_errors"]] == ["OSError"]
     assert (tmp_path / "hourly-state.json").read_bytes() == before
+
+
+def test_status_keeps_a_legacy_state_and_reports_provider_evidence_verbatim(tmp_path):
+    legacy = {"schema": SCHEMA, "last_attempt_utc": (NOW - timedelta(seconds=5)).isoformat(),
+              "status": "initialized_conservative_cooldown", "previous_report": "old.md"}
+    write_state(tmp_path, legacy)
+    report = status(tmp_path, NOW)
+    assert {k: report[k] for k in legacy} == legacy and report["local_availability"] == "available"
+    failed = dict(legacy, status="failed", exit_code=3, stderr_excerpt="provider: rate limited", stderr_truncated=False)
+    write_state(tmp_path, failed)
+    report = status(tmp_path, NOW)
+    assert report["provider_evidence"] == {"exit_code": 3, "stderr_excerpt": "provider: rate limited",
+                                           "stderr_truncated": False}
+    assert report["provider_quota"] == "unknown" and report["eligible"] is True        # never read as a quota

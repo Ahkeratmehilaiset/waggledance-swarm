@@ -8,9 +8,10 @@ resumed turn (``--resume <sessionId>``). The session ends on a validated
 ``{"op": "final"}``. A protocol error, a non-EndTurn stop, a session-id mismatch, a
 timeout, or an exhausted round budget ends the session failed; there is no retry.
 
-Budget: the whole session runs as the ``runner`` of ``wd_grok_helper.consult``. The
-global hourly reservation, task exceptions, OS lock and lifecycle events therefore stay
-the helper's own; there is no alternate budget. Each model round is accounted in
+Accounting: the whole session runs as the ``runner`` of ``wd_grok_helper.consult``. The
+single-flight reservation, OS lock, unfinished-attempt refusal and lifecycle events therefore
+stay the helper's own; there is no local hourly or weekly quota and no alternate state. Grok's
+provider limits are real and not readable headless. Each model round is accounted in
 ``<request_id>-rounds.jsonl`` beside the helper's request file. The session total is
 ``max_rounds * 300`` s (at most 2400 s), passed to consult as its one ``timeout_seconds``;
 each model process gets ``min(300, remaining)`` s. The inherited surface is re-inventoried
@@ -681,7 +682,7 @@ def main() -> int:
             return 0
         if not args.task_id or args.prompt_file is None or not args.repo or not args.commit or not args.git_executable:
             raise ValueError("--task-id, --prompt-file, --repo, --commit and --git-executable are required")
-        # Everything that can refuse runs BEFORE the hourly reservation is consumed.
+        # Everything that can refuse runs BEFORE the helper reserves the attempt.
         surface = surface_gate(helper.STATE_ROOT, args.acknowledge_inherited_surface)
         clock = BusyClock()
         try:

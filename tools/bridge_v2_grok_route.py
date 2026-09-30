@@ -14,10 +14,13 @@ provider, and every result carries ``execution_allowed`` False and ``authority``
     to the head/tree its signature was checked against;
   - caps from that same policy (``parameters.F20``);
   - the observed read-only snapshot, equal to that signed head/tree;
-  - the helper's shared hourly budget: at most ONE attempted consultation per 60
-    minutes, failures included, and a reserved or interrupted_or_unknown attempt
-    always refuses;
-  - a durable admission ledger that serializes admissions.
+  - the helper's own state: a reserved or interrupted_or_unknown (unreconciled) attempt
+    always refuses, and a helper that reports itself not eligible (its own provider
+    limit or deferral) refuses as helper_not_eligible. There is NO local rate quota
+    (operator direction 2026-09-30): completed attempts may follow back to back, and
+    provider limits stay the provider's, never a required gate;
+  - a durable admission ledger that serializes admissions: an open (unreconciled)
+    entry refuses as admission_in_flight, so there is one flight at a time.
   A missing port or an unreadable fact is blocked_unknown, never a simulated
   readiness. There are no exemptions: an operator request or a relayed event text
   is not a signed activation.
@@ -45,13 +48,14 @@ HELPER_STATE_SCHEMA = "wd.grok-hourly.v1"  # the unchanged helper contract (RCO1
 # tools/wd_grok_helper.py. A different blob fails the contract fixture until it is re-reviewed here.
 HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-reviewed contract)",
                 "790a7b0897c12eefe2bfc71d938d707db9e30ea5": "the F20 branch copy",
-                "9c2cb61c18197606ce64f3562246b8b2d797b29a": "55026fad (strict lifecycle receipts)"}
-HELPER_STATUS_FIELDS = ("schema", "status", "last_attempt_utc", "eligible")  # what admit reads from status()
+                "9c2cb61c18197606ce64f3562246b8b2d797b29a": "55026fad (strict lifecycle receipts)",
+                "0085e3e2255d4de7cc1a349e8e3c2a2106225d77": "Fable 0621 no-hour helper (eligible = local availability)",
+                "1b0299f436d6ed7fd1d625661764e6a4274f0767": "Fable 0700 fleet context isolation (same local eligibility)"}
+HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation
 FEATURE = "F20"
-BUDGET_CLASSES = ("shared_hourly",)
-BUDGET_WINDOW = timedelta(hours=1)  # one attempted consultation per 60 min, failures included
+BUDGET_CLASSES = ("shared_hourly",)  # the one shared broker lane's label; no local hourly quota (2026-09-30)
 MAX_F0_AGE = timedelta(seconds=60)
 MAX_OBSERVATION_AGE = timedelta(seconds=120)
 UNRESOLVED = ("reserved", "interrupted_or_unknown")
@@ -242,31 +246,27 @@ def admit(intent: Any, evidence: Any) -> dict:
     if {k: f0.get(k) for k in ("head", "tree")} != intent.get("snapshot"):
         return _result(REFUSE, ["snapshot_unsigned"], digest)  # F0 checked the signature at another head/tree
 
-    # The shared hourly budget, as the unchanged helper reports it.
+    # The helper's own state; no local rate quota (operator direction 2026-09-30). An unreconciled attempt
+    # refuses (one flight), and a helper that reports itself not eligible is skipped, never a local hour.
     budget = evidence.get("budget")
     if not _observed(budget, now) or budget.get("schema") != HELPER_STATE_SCHEMA:
         return _result(BLOCKED, ["budget_unknown"], digest)
     if budget.get("status") in UNRESOLVED:
         return _result(REFUSE, ["unreconciled_attempt:" + budget["status"]], digest)
-    last_attempt = _utc(budget.get("last_attempt_utc"))
-    if last_attempt is None or type(budget.get("eligible")) is not bool:
+    if type(budget.get("eligible")) is not bool:
         return _result(BLOCKED, ["budget_unknown"], digest)
-    if budget["eligible"] is not True or now - last_attempt < BUDGET_WINDOW:
-        return _result(REFUSE, ["hourly_budget_used"], digest)
+    if budget["eligible"] is not True:
+        return _result(REFUSE, ["helper_not_eligible"], digest)  # its own provider limit or deferral
 
-    # The durable admission ledger serializes admissions; without it, readiness is unknown.
+    # The durable admission ledger serializes admissions (one flight); without it, readiness is unknown.
     ledger = evidence.get("admission_ledger")
     if not _observed(ledger, now) or not isinstance(ledger.get("open"), list):
         return _result(BLOCKED, ["admission_ledger_unknown"], digest)
     if ledger["open"]:
         return _result(REFUSE, ["admission_in_flight"], digest)
     last_admitted = ledger.get("last_admitted_utc")
-    if last_admitted is not None:
-        admitted = _utc(last_admitted)
-        if admitted is None:
-            return _result(BLOCKED, ["admission_ledger_unknown"], digest)
-        if now - admitted < BUDGET_WINDOW:
-            return _result(REFUSE, ["hourly_budget_used"], digest)
+    if last_admitted is not None and _utc(last_admitted) is None:
+        return _result(BLOCKED, ["admission_ledger_unknown"], digest)  # a malformed view; there is no rate gate
     return _result(ADMIT, ["all_gates_passed"], digest, policy_sha256=policy_sha256,
                    admitted_utc=_stamp(now), allowed_tools=list(caps["allowed_tools"]))
 

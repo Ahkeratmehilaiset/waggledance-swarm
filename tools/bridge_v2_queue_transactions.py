@@ -62,6 +62,26 @@ an outbox record that binds to this root and to an ``outboxed`` WAL record with 
 txid, key, operation, claim, digests and event is published; anything else is reported
 as rejected and never published (S3). A record whose WAL is still ``applied`` waits.
 
+Paths (Tools 51ada Q-PATH-COVERAGE): the claim, its sibling lock, the archive, the WAL,
+final and outbox records and their directories are checked on EVERY component, the leaf
+included (no symlink, junction/reparse point, alias segment or '..'; an existing leaf must be
+a regular file or directory), at entry AND again in recovery, reconcile and publication,
+before any effect. Reads never follow a final symlink where O_NOFOLLOW exists. A
+check-then-use (TOCTOU) window remains, and physical aliases (hard links, bind mounts, subst
+or mapped drives) are NOT fenced.
+
+Outcomes (Q-OUTCOME-TRUTH): an exception refuses this call's OWN mutation; ``recovered`` on it
+lists earlier unfinished work on the claim that the call completed first (those effects
+happened). An error after the WAL record was written is outcome-unknown to the caller.
+
+Bounds and durability (Q-WAL-STATE-GROWTH, Q-DURABILITY-BOUND): a record is prepared only if
+it still fits the read bound with the longest later state and reason, so every bookkeeping
+and recovery write stays readable. A zero-progress write refuses, and a cleanup failure never
+masks the primary error. Files are fsynced; on POSIX the directory is fsynced after every
+link, replace and unlink. On Windows a directory cannot be fsynced, so a completed rename or
+link can be lost on POWER LOSS. The design covers process crashes; power-loss durability of
+directory entries is not claimed there, and elsewhere depends on the filesystem.
+
 Limits: legacy writers (``waggledance/core/work_queue.py``, the PowerShell claim
 scripts) do not take the runtime-root mutex, and the Python legacy writer does not take
 the sibling lock; while they run unchanged there is NO mixed-generation safety claim.
@@ -82,6 +102,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import time
 from typing import Any, Callable, ContextManager, Iterator, Protocol
 
@@ -100,6 +121,12 @@ OPS = ("claim", "release", "heartbeat", "stale_archive")
 UNFINISHED = ("prepared", "applied")
 FINAL = ("outboxed", "aborted", "diverged")
 FILED = ("outboxed", "aborted")        # moved to wal/final/; a diverged record stays and blocks
+# Every reason a WAL record can carry (bounded, Q-WAL-STATE-GROWTH): room for the longest one, with
+# the longest state, is reserved when the record is prepared, so no later serialization outgrows the bound.
+RECOVERY_REASONS = ("cas_mismatch", "found_applied_after_crash", "redone_after_crash", "archive_record_differs",
+                    "applied_record_not_on_disk", "claim_matches_neither_before_nor_after", "outbox_record_conflict")
+LONGEST_REASON = max(RECOVERY_REASONS, key=len)
+LONGEST_STATE = max(UNFINISHED + FINAL, key=len)
 TXN_KEYS = frozenset({"schema", "root_identity", "txid", "idempotency_key", "op", "claim_rel", "before_sha256",
                       "after", "after_sha256", "archive_rel", "archive", "archive_sha256", "event",
                       "event_sha256", "state", "created_utc"})
@@ -113,20 +140,27 @@ _OUTBOX_NAME = re.compile(r"[0-9a-f]{64}\.json")
 
 
 class QueueTransactionError(ValueError):
-    """A transaction was refused before any mutation (unless the message says otherwise)."""
+    """This call's OWN mutation was refused (unless the message says it may already be applied).
+
+    ``recovered`` (Tools 51ada Q-OUTCOME-TRUTH) lists earlier unfinished transactions on the same
+    claim that this call completed FIRST, under the locks, before refusing: those effects DID
+    happen. An error raised after the WAL record was written is outcome-unknown to the caller;
+    the next transaction on the claim, or reconcile, finishes it from what is on disk."""
+    recovered: tuple = ()
 
 
 class LockTimeout(QueueTransactionError):
-    """A lock was not acquired within its bounded timeout; nothing was mutated."""
+    """A lock was not acquired within its bounded timeout; nothing was read or mutated."""
 
 
 class Refused(QueueTransactionError):
-    """The operation's plan (or the claim's state) refused under the locks; nothing was mutated."""
+    """The operation's plan (or the claim's state) refused under the locks; its own mutation did
+    not happen (see ``recovered`` for earlier work this call completed first)."""
 
 
 class Blocked(QueueTransactionError):
     """A corrupt, diverged or ambiguous transaction record blocks this claim until an operator
-    reconciles it (moves the record out of ``wal/``); nothing was mutated."""
+    reconciles it (moves the record out of ``wal/``); the new mutation did not happen."""
 
 
 class RecordConflict(QueueTransactionError):
@@ -202,28 +236,93 @@ def _digest(value: Any) -> str | None:
     return hashlib.sha256(claim_bytes(value)).hexdigest()
 
 
-def read_bytes_or_none(path: Path, limit: int = MAX_RECORD_BYTES) -> bytes | None:
+_os_write = os.write   # the one write primitive; a fixture seam for zero-progress and short writes
+
+
+def _guard(path: Path, kind: str, leaf: str = "file") -> None:
+    """Conservative path check BEFORE any effect (Tools 51ada Q-PATH-COVERAGE): every existing
+    component of ``path``, the LEAF included, is lstat-checked: no symlink, no junction or other
+    reparse point, no alias segment (a trailing dot or space, a ``~digit`` short name) and no
+    '..'; an existing leaf must be a regular file (``leaf="file"``) or a directory
+    (``leaf="dir"``). A check-then-use window remains (TOCTOU) between this and the open, and
+    physical aliases (hard links, bind mounts, subst or mapped drives) are NOT fenced."""
     try:
-        with open(path, "rb") as stream:
-            data = stream.read(limit + 1)
+        _normalize_absolute(str(path), os.lstat)
+    except ScopeError as exc:
+        raise QueueTransactionError(kind + " path: " + str(exc)) from None
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise QueueTransactionError(kind + " path is unreadable") from None
+    if not (stat.S_ISREG(info.st_mode) if leaf == "file" else stat.S_ISDIR(info.st_mode)):
+        raise QueueTransactionError(kind + " path is not a " + ("regular file" if leaf == "file" else "directory"))
+
+
+def read_bytes_or_none(path: Path, limit: int | None = None) -> bytes | None:
+    """A bounded read of a REGULAR file, never following a final symlink where the platform can
+    refuse one (O_NOFOLLOW); None when it is absent. The bound is read at call time."""
+    limit = MAX_RECORD_BYTES if limit is None else limit
+    flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    try:
+        fd = os.open(path, flags)
     except FileNotFoundError:
         return None
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise QueueTransactionError("record is not a regular file: " + Path(path).name)
+        data = stream.read(limit + 1)
     if len(data) > limit:
         raise QueueTransactionError("record exceeds the size bound")
     return data
 
 
 def _write_exclusive(path: Path, data: bytes) -> None:
-    """Create a NEW file (O_EXCL) with exactly these bytes, fsynced. Used for temporary files."""
+    """Create a NEW file (O_EXCL) with exactly these bytes, fsynced. Used for temporary files. A
+    zero-progress write refuses (Q-DURABILITY-BOUND); closing never masks the primary error."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         view = memoryview(data)
         while view:
-            view = view[os.write(fd, view):]
+            written = _os_write(fd, view)
+            if type(written) is not int or written <= 0:
+                raise QueueTransactionError("a zero-progress write; the record was not committed")
+            view = view[written:]
+        os.fsync(fd)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass   # the primary error is the one that propagates
+        raise
+    os.close(fd)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """POSIX: make a link, replace or unlink inside ``directory`` durable. Windows cannot open a
+    directory for fsync, so there (and on filesystems without directory fsync) a completed
+    rename or link can be lost on POWER LOSS: the WAL covers process crashes, and power-loss
+    durability of a directory entry is NOT claimed (Q-DURABILITY-BOUND)."""
+    if os.name == "nt":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _discard(temp: Path) -> None:
+    """Remove a temporary file; a cleanup failure never masks the primary outcome (an unlinked
+    temporary name is inert: no reader globs it)."""
+    try:
+        temp.unlink()
+    except OSError:
+        pass
 
 
 def _temp_for(path: Path) -> Path:
@@ -234,6 +333,7 @@ def _create_atomic(path: Path, data: bytes) -> bool:
     """Create a whole record that never overwrites: temporary file + fsync + hard link.
     True when created; False when exactly these bytes are already there (an idempotent
     replay); RecordConflict when other or torn bytes are there (never swallowed, S2)."""
+    _guard(path, "record")
     temp = _temp_for(path)
     try:
         _write_exclusive(temp, data)
@@ -242,29 +342,26 @@ def _create_atomic(path: Path, data: bytes) -> bool:
         except FileExistsError:
             try:
                 same = read_bytes_or_none(path) == data
-            except QueueTransactionError:
+            except (QueueTransactionError, OSError):
                 same = False
             if same:
                 return False
             raise RecordConflict("an existing record differs from the intended bytes: " + path.name) from None
+        _fsync_directory(path.parent)
         return True
     finally:
-        try:
-            temp.unlink()
-        except FileNotFoundError:
-            pass
+        _discard(temp)
 
 
 def _replace_atomic(path: Path, data: bytes) -> None:
+    _guard(path, "record")
     temp = _temp_for(path)
     try:
         _write_exclusive(temp, data)
         os.replace(temp, path)
+        _fsync_directory(path.parent)
     finally:
-        try:
-            temp.unlink()
-        except FileNotFoundError:
-            pass
+        _discard(temp)
 
 
 class FileClaimLock:
@@ -339,6 +436,7 @@ class QueueTransactions:
             raise QueueTransactionError("queue ports are off: a mutex port and a claim-lock port are required")
         if type(self.lock_timeout_seconds) not in (int, float) or not 0 < self.lock_timeout_seconds <= 60:
             raise QueueTransactionError("lock timeout must be in (0, 60] seconds")
+        _guard(claim_lock_path(claim_path), "claim lock")   # a linked lock file would lock something else
         with self.mutex.hold(mutex_name(self.root), self.lock_timeout_seconds):
             with self.claim_lock.hold(claim_lock_path(claim_path), self.lock_timeout_seconds):
                 yield
@@ -351,32 +449,43 @@ class QueueTransactions:
         if not isinstance(idempotency_key, str) or not 0 < len(idempotency_key) <= MAX_KEY_CHARS:
             raise QueueTransactionError("an idempotency key of 1..512 characters is required")
         claim_rel = self._relative(claim_path, _REL_CLAIM, "claim")   # before any lock (N4, N5)
+        self._guard_state_dirs()                                      # before any lock or effect
         with self.locked(claim_path):
-            _, blocker = self._recover_claim(claim_rel)
-            if blocker is not None:
-                raise Blocked(blocker + " on this claim; nothing applied until an operator reconciles it")
-            before = read_bytes_or_none(claim_path)
-            plan = plan_fn(before)   # re-checks owner/session/token/generation; may raise Refused
-            if plan.keep:
+            recovered, blocker = self._recover_claim(claim_rel)
+            try:
+                if blocker is not None:
+                    raise Blocked(blocker + " on this claim; nothing applied until an operator reconciles it")
+                before = read_bytes_or_none(claim_path)
+                plan = plan_fn(before)   # re-checks owner/session/token/generation; may raise Refused
+                if plan.keep:
+                    return plan.result
+                if plan.expect_absent and plan.after is None:
+                    raise Refused("a create needs the claim to create")
+                if before is None and not plan.expect_absent:
+                    raise Refused("the claim does not exist; it is never recreated")
+                if before is not None and plan.expect_absent:
+                    raise Refused("a claim already exists at this path")
+                txn = self._record(op, claim_rel, idempotency_key, before, plan)
+                wal_path = self._wal_path(txn)
+                _create_atomic(wal_path, claim_bytes(txn))
+                if read_bytes_or_none(claim_path) != before:   # compare-and-swap
+                    self._file(wal_path, txn, "aborted", reason="cas_mismatch")
+                    raise Refused("the claim changed outside the lock; nothing applied")
+                self._apply(txn, claim_path, claim_present=before is not None)
+                if self._commit(wal_path, txn, reason=None) == "diverged":
+                    raise QueueTransactionError("the claim change WAS applied, but an existing outbox record for its "
+                                                "key differs; publication is blocked until an operator reconciles "
+                                                "txid " + txn["txid"])
                 return plan.result
-            if plan.expect_absent and plan.after is None:
-                raise Refused("a create needs the claim to create")
-            if before is None and not plan.expect_absent:
-                raise Refused("the claim does not exist; it is never recreated")
-            if before is not None and plan.expect_absent:
-                raise Refused("a claim already exists at this path")
-            txn = self._record(op, claim_rel, idempotency_key, before, plan)
-            wal_path = self._wal_path(txn)
-            _create_atomic(wal_path, claim_bytes(txn))
-            if read_bytes_or_none(claim_path) != before:   # compare-and-swap
-                self._file(wal_path, txn, "aborted", reason="cas_mismatch")
-                raise Refused("the claim changed outside the lock; nothing applied")
-            self._apply(txn, claim_path, claim_present=before is not None)
-            if self._commit(wal_path, txn, reason=None) == "diverged":
-                raise QueueTransactionError("the claim change WAS applied, but an existing outbox record for its "
-                                            "key differs; publication is blocked until an operator reconciles "
-                                            "txid " + txn["txid"])
-            return plan.result
+            except QueueTransactionError as exc:
+                exc.recovered = tuple(recovered)   # earlier work this call DID complete first (Q-OUTCOME-TRUTH)
+                raise
+
+    def _guard_state_dirs(self) -> None:
+        for directory, kind in ((self.claims_dir, "claims directory"), (self.root / "work_queue" / "done", "archive"
+                                 " directory"), (self.wal_dir, "WAL directory"), (self.final_dir, "WAL final directory"),
+                                (self.outbox_dir, "outbox directory")):
+            _guard(directory, kind, leaf="dir")
 
     def _record(self, op: str, claim_rel: str, key: str, before: bytes | None, plan: Plan) -> dict:
         archive_rel = None
@@ -395,8 +504,11 @@ class QueueTransactions:
                           if isinstance(txn["txid"], str) else None):
             raise QueueTransactionError("the transaction record is malformed (records must be JSON objects and an "
                                         "event's type must equal the operation); nothing was written")
-        if len(claim_bytes(txn)) > MAX_RECORD_BYTES:
-            raise QueueTransactionError("the transaction record exceeds the 256 KiB read bound; nothing was written")
+        # Q-WAL-STATE-GROWTH: reserve room for the longest later state AND reason before any effect,
+        # so every bookkeeping or recovery serialization of this record stays readable.
+        if len(claim_bytes(dict(txn, state=LONGEST_STATE, reason=LONGEST_REASON))) > MAX_RECORD_BYTES:
+            raise QueueTransactionError("the transaction record, with room for every later state and reason, "
+                                        "exceeds the read bound; nothing was written")
         return txn
 
     def _apply(self, txn: dict, claim_path: Path, *, claim_present: bool) -> None:
@@ -405,7 +517,9 @@ class QueueTransactions:
         if txn["after"] is not None:
             _replace_atomic(claim_path, claim_bytes(txn["after"]))
         elif claim_present:
+            _guard(claim_path, "claim")
             claim_path.unlink()
+            _fsync_directory(claim_path.parent)
 
     def _commit(self, wal_path: Path, txn: dict, reason: str | None) -> str:
         """applied -> outbox -> outboxed and filed; an outbox conflict makes it diverged instead."""
@@ -429,8 +543,15 @@ class QueueTransactions:
         unfinished: list[tuple[Path, dict]] = []
         blocker = None
         prefix = claim_key(claim_rel)
+        # Recovery re-checks every path it will touch, before any effect (Q-PATH-COVERAGE).
+        _guard(self.root / claim_rel, "claim")
+        self._guard_state_dirs()
         for wal_path in sorted(self.wal_dir.glob(prefix + ".*.json")) if self.wal_dir.is_dir() else []:
-            txn = self._load(wal_path)
+            try:
+                _guard(wal_path, "WAL record")
+                txn = self._load(wal_path)
+            except QueueTransactionError:
+                txn = None   # a linked or odd WAL entry is corrupt: reported, never acted on
             if txn is None or txn["claim_rel"] != claim_rel:
                 outcomes.append({"wal": wal_path.name, "outcome": "corrupt"})
                 blocker = blocker or "a corrupt transaction record (" + wal_path.name + ")"
@@ -480,9 +601,10 @@ class QueueTransactions:
     def _archive_state(self, txn: dict) -> str | None:
         if txn["archive_rel"] is None:
             return None
+        _guard(self.root / txn["archive_rel"], "archive")   # a linked archive refuses before any effect
         try:
             data = read_bytes_or_none(self.root / txn["archive_rel"])
-        except QueueTransactionError:
+        except (QueueTransactionError, OSError):
             return "differs"
         if data is None:
             return "absent"
@@ -493,15 +615,24 @@ class QueueTransactions:
         Corrupt, diverged and ambiguous records are reported and left for an operator."""
         outcomes: list[dict] = []
         claims: set[str] = set()
+        self._guard_state_dirs()
         for wal_path in sorted(self.wal_dir.glob("*.json")) if self.wal_dir.is_dir() else []:
-            txn = self._load(wal_path)
+            try:
+                _guard(wal_path, "WAL record")
+                txn = self._load(wal_path)
+            except QueueTransactionError:
+                txn = None
             if txn is None:
                 outcomes.append({"wal": wal_path.name, "outcome": "corrupt"})
             else:
                 claims.add(txn["claim_rel"])
         for claim_rel in sorted(claims):
-            with self.locked(self.root / claim_rel):
-                found, blocker = self._recover_claim(claim_rel)   # re-read under the lock (N8)
+            try:
+                with self.locked(self.root / claim_rel):
+                    found, blocker = self._recover_claim(claim_rel)   # re-read under the lock (N8)
+            except QueueTransactionError as exc:   # a guarded path or a lock refusal: reported, nothing done
+                outcomes.append({"claim_rel": claim_rel, "outcome": "blocked", "reason": str(exc)[:200]})
+                continue
             outcomes.extend(entry for entry in found if entry["outcome"] != "corrupt")   # reported above
             if blocker is not None:
                 outcomes.append({"claim_rel": claim_rel, "outcome": "blocked", "reason": blocker})
@@ -513,11 +644,18 @@ class QueueTransactions:
         bound to this root and to an outboxed WAL record are published; others are rejected."""
         report: dict[str, Any] = {"published": 0, "pending": 0, "failed": 0, "rejected": 0,
                                   "rejected_records": []}
+        self._guard_state_dirs()   # a linked outbox, WAL or final directory refuses the whole run
         for path in sorted(self.outbox_dir.glob("*.json")) if self.outbox_dir.is_dir() else []:
             marker = path.with_name(path.stem + ".published")
-            if marker.exists():
-                continue
-            record, state = self._bound_outbox_record(path)
+            try:
+                _guard(path, "outbox record")
+                _guard(marker, "publication marker")
+            except QueueTransactionError:
+                record, state = None, None   # a linked record or marker is never trusted or published
+            else:
+                if os.path.lexists(marker):
+                    continue
+                record, state = self._bound_outbox_record(path)
             if record is None:
                 report["rejected"] += 1
                 if len(report["rejected_records"]) < MAX_REJECTED_NAMES:
@@ -570,7 +708,7 @@ class QueueTransactions:
             raise QueueTransactionError("the " + kind + " path is outside the runtime root") from None
         if pattern.fullmatch(rel) is None:
             raise QueueTransactionError("the " + kind + " path is not a legal work_queue record name")
-        canonical_root(Path(path).parent)   # every existing component: no link or reparse point (N5)
+        _guard(Path(path), kind)   # every existing component, the leaf included (N5, Q-PATH-COVERAGE)
         return rel
 
     def _wal_path(self, txn: dict) -> Path:
@@ -589,15 +727,26 @@ class QueueTransactions:
         txn["state"] = state
         if reason:
             txn["reason"] = reason
-        _replace_atomic(wal_path, claim_bytes(txn))
+        data = claim_bytes(txn)
+        if len(data) > MAX_RECORD_BYTES:
+            # Unreachable after _record's reservation; if it ever happens the claim change MAY be applied.
+            raise QueueTransactionError("the WAL state could not be recorded inside the read bound; the claim "
+                                        "change MAY ALREADY BE APPLIED (txid " + str(txn.get("txid")) + ")")
+        _replace_atomic(wal_path, data)
 
     def _file(self, wal_path: Path, txn: dict, state: str, reason: str | None = None) -> None:
         self._set_state(wal_path, txn, state, reason)
         self._move_to_final(wal_path)
 
     def _move_to_final(self, wal_path: Path) -> None:
+        _guard(wal_path, "WAL record")
+        _guard(self.final_dir, "WAL final directory", leaf="dir")
         self.final_dir.mkdir(parents=True, exist_ok=True)
-        os.replace(wal_path, self.final_dir / wal_path.name)
+        target = self.final_dir / wal_path.name
+        _guard(target, "WAL record")
+        os.replace(wal_path, target)
+        _fsync_directory(self.wal_dir)
+        _fsync_directory(self.final_dir)
 
     def _outbox(self, txn: dict) -> None:
         if txn["event"] is None:
@@ -639,6 +788,6 @@ def _valid_txn(txn: Any, *, root_identity: str, name: str | None = None) -> bool
                                        and event.get("generation_before", txn["before_sha256"]) == txn["before_sha256"]))
                 and txn["state"] in UNFINISHED + FINAL
                 and isinstance(txn["created_utc"], str) and len(txn["created_utc"]) <= 64
-                and (txn.get("reason") is None or (isinstance(txn["reason"], str) and len(txn["reason"]) <= 200)))
+                and (txn.get("reason") is None or txn["reason"] in RECOVERY_REASONS))
     except Exception:  # noqa: BLE001 - unserializable or odd shapes are corrupt
         return False

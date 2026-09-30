@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -283,8 +284,10 @@ def test_s1_a_retried_release_after_a_failed_unlink_archives_once_and_publishes_
         if before is None:
             raise Refused("no active claim for task (archived or replaced meanwhile)")
         return Plan(after=None, archive=(done / "t_1-a2.json", {"r": 2}), event={"type": "release"})
-    with pytest.raises(Refused, match="no active claim"):
+    with pytest.raises(Refused, match="no active claim") as refused:
         txns.transact("release", path, "rel:2", retry)
+    # Q-OUTCOME-TRUTH: the refusal carries the earlier work this call DID complete first.
+    assert [o["outcome"] for o in refused.value.recovered] == ["rolled_forward"]
     assert not path.exists() and sorted(p.name for p in done.glob("*.json")) == ["t_1-a1.json"]   # one archive
     releases = [json.loads(p.read_text()) for p in outbox(txns) if json.loads(p.read_text())["op"] == "release"]
     assert [r["idempotency_key"] for r in releases] == ["rel:1"]                                  # one event
@@ -511,6 +514,108 @@ def test_an_existing_archive_record_is_a_conflict_refused_before_anything_is_wri
         txns.transact("release", path, "rel", lambda b: Plan(after=None, archive=(archive, {"r": 1}),
                                                              event={"type": "release"}))
     assert path.exists() and archive.read_bytes() == b'{"someone": "else"}\n' and wal_states(txns) == ["outboxed"]
+
+
+def _link_or_skip(link: Path, target: Path, directory: bool = False) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available to this account")
+
+
+def test_q_path_a_linked_claim_leaf_is_refused_before_any_lock_read_or_write(tmp_path):
+    txns, recorder = make(tmp_path / "root")
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b'{"secret": 1}\n')
+    path = txns.root / "work_queue" / "claims" / "task.json"
+    _link_or_skip(path, outside)
+    with pytest.raises(QueueTransactionError, match="link"):
+        txns.transact("heartbeat", path, "hb", lambda b: Plan(after=beat(1)))
+    assert recorder.events == [] and outside.read_bytes() == b'{"secret": 1}\n' and not txns.wal_dir.exists()
+
+
+@pytest.mark.parametrize("linked", ["work_queue/done", "work_queue/v2", "work_queue/v2/wal"])
+def test_q_path_a_linked_state_directory_is_refused_before_any_effect(tmp_path, linked):
+    txns, recorder = make(tmp_path / "root")
+    path = claim_path(txns)
+    path.write_bytes(claim_bytes(CLAIM))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _link_or_skip(txns.root / linked, elsewhere, directory=True)
+    archive = txns.root / "work_queue" / "done" / "t_1-x.json"
+    with pytest.raises(QueueTransactionError, match="link"):
+        txns.transact("release", path, "rel", lambda b: Plan(after=None, archive=(archive, {"r": 1}),
+                                                             event={"type": "release"}))
+    assert recorder.events == [] and path.read_bytes() == claim_bytes(CLAIM) and list(elsewhere.iterdir()) == []
+
+
+def test_q_path_recovery_rechecks_a_claim_that_became_a_link(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path / "root")
+    path = claim_path(txns)
+    create(txns, path)
+    _crash_on(monkeypatch, "_replace_atomic")
+    with pytest.raises(KeyboardInterrupt):
+        txns.transact("heartbeat", path, "hb:9", lambda b: Plan(after=beat(9)))
+    monkeypatch.undo()
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b'{"secret": 1}\n')
+    path.unlink()
+    _link_or_skip(path, outside)
+    outcomes = txns.reconcile()
+    assert [o["outcome"] for o in outcomes] == ["blocked"] and "link" in outcomes[0]["reason"]
+    assert outside.read_bytes() == b'{"secret": 1}\n' and wal_states(txns) == ["outboxed", "prepared"]
+
+
+def test_q_wal_every_later_state_and_reason_is_reserved_before_any_mutation(tmp_path, monkeypatch):
+    probe, _ = make(tmp_path / "probe")          # the same deterministic record on another root
+    create(probe, claim_path(probe))
+    [record] = wal_records(probe)
+    worst = len(claim_bytes(dict(record, state=qt.LONGEST_STATE, reason=qt.LONGEST_REASON)))
+    txns, _ = make(tmp_path / "real")
+    path = claim_path(txns)
+    monkeypatch.setattr(qt, "MAX_RECORD_BYTES", worst - 1)
+    with pytest.raises(QueueTransactionError, match="every later state and reason"):
+        create(txns, path)
+    assert not path.exists() and not txns.wal_dir.exists()             # refused before any mutation
+    monkeypatch.setattr(qt, "MAX_RECORD_BYTES", worst)                 # success twin: it exactly fits
+    real_set_state = QueueTransactions._set_state
+
+    def crash_on_applied(self, wal_path, txn, state, reason=None):
+        if state == "applied" and reason is None:
+            raise KeyboardInterrupt("crash after the mutation")
+        return real_set_state(self, wal_path, txn, state, reason)
+    monkeypatch.setattr(QueueTransactions, "_set_state", crash_on_applied)
+    with pytest.raises(KeyboardInterrupt):
+        create(txns, path)
+    monkeypatch.setattr(QueueTransactions, "_set_state", real_set_state)
+    assert [o["outcome"] for o in txns.reconcile()] == ["rolled_forward_bookkeeping"]   # a reason is recorded
+    assert [len(p.read_bytes()) <= worst for p in txns.final_dir.glob("*.json")] == [True]
+
+
+def test_q_durability_a_zero_progress_write_refuses_and_a_cleanup_failure_never_masks_it(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    monkeypatch.setattr(qt, "_os_write", lambda fd, data: 0)
+    real_unlink = Path.unlink
+
+    def failing_cleanup(self, *args, **kwargs):
+        if ".v2tmp." in self.name:
+            raise PermissionError(13, "cleanup refused")
+        return real_unlink(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", failing_cleanup)
+    with pytest.raises(QueueTransactionError, match="zero-progress"):   # the primary error, not the cleanup one
+        create(txns, path)
+    assert not path.exists() and wal_states(txns) == []
+
+
+def test_q_durability_short_writes_still_complete_the_record(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    real_write = os.write
+    monkeypatch.setattr(qt, "_os_write", lambda fd, data: real_write(fd, bytes(data[:7])))   # 7 bytes at a time
+    create(txns, path)
+    assert path.read_bytes() == claim_bytes(CLAIM) and wal_states(txns) == ["outboxed"]
 
 
 ENV_NAMES = {"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv"}

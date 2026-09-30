@@ -27,7 +27,12 @@ characters (S7). The facade's ``archive_stale_claims`` keeps the core selection 
 session heartbeat is provably not live; last heartbeat falling back to claimed_at) and
 applies only through injected transactions: without ports a sweep is refused, never
 defaulted. A changed claim is skipped as in core; every other transaction refusal (lock
-timeout, a blocked claim, a record conflict, a bound) is a ``WorkQueueError`` (S6).
+timeout, a blocked claim, a record conflict, a bound) is a ``WorkQueueError`` (S6). At apply
+time, under the locks, an owned claim's session heartbeat and lease are re-read with the
+transactions' own clock; live or unknown skips it (Tools 51ada Q-SWEEP-LIVE-RECHECK). The
+PowerShell session-heartbeat writer takes neither the claim lock nor the runtime mutex, so a
+beat written after that re-read and before the delete still races, until a shared fence
+exists.
 
 Consumer composition is DEFERRED (Lead's B1 decision): the consumers keep core until
 validated ports, publication and fencing exist. This module never falls back to or
@@ -62,7 +67,9 @@ MAX_TOKEN_CHARS = 4096
 
 
 class WorkQueueError(ValueError):
-    """Refused; nothing was mutated."""
+    """Refused: this call's own mutation did not happen. Recovery under the locks may first have
+    completed an earlier unfinished transaction on the same claim; the message says so when it
+    did (Tools 51ada Q-OUTCOME-TRUTH)."""
 
 
 @dataclass(frozen=True)
@@ -528,6 +535,21 @@ def _session_heartbeat_state(bridge: Path, claim: Claim, now: datetime) -> str:
     return "live" if (now - beat_utc).total_seconds() <= ttl else "dead"
 
 
+def _apply_time(txns: QueueTransactions) -> datetime | None:
+    """The transactions' own clock at apply time as aware UTC, or None (unknown): exactly a datetime,
+    one offset read that is exactly a timedelta, subtracted (never astimezone, never local time)."""
+    try:
+        moment = txns.clock()
+        if type(moment) is not datetime:
+            return None
+        offset = moment.utcoffset()
+        if type(offset) is not timedelta:
+            return None
+        return (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 - an unreadable clock is unknown, and unknown refuses the sweep
+        return None
+
+
 def _owned_claim_sweepable(bridge: Path, claim: Claim, now: datetime) -> bool:
     """Core rule: the lease expired AND the owner's session heartbeat is provably not live."""
     try:
@@ -614,6 +636,12 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                 # Exactly the claim this decision was made on; a successor claim is never deleted.
                 if current is None or claim_from_object(current) != claim:
                     raise Refused("the claim changed since the listing")
+                # Q-SWEEP-LIVE-RECHECK: the owner's session heartbeat and lease are re-read NOW, under
+                # the locks, at the transactions' own apply time. Live or unknown refuses (skipped).
+                if claim.owner_session_id and claim.owner_token_sha256:
+                    applied_at = _apply_time(transactions)
+                    if applied_at is None or not _owned_claim_sweepable(bridge, claim, applied_at):
+                        raise Refused("the owner session is live or unknown at apply time")
                 return Plan(after=None, archive=(archive_path, _stale_payload(claim, now, reason)),
                             event={"type": "stale_archive", "agent": claim.agent, "task_id": claim.task_id,
                                    "status": "stale_lease", "generation_before": sha256_or_none(before)})
@@ -623,7 +651,9 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
             except Refused:
                 continue  # as core: a changed claim is skipped, not reported as archived
             except QueueTransactionError as exc:   # timeout, blocked, conflict, bound: one error type (S6)
-                raise WorkQueueError(claim.task_id[:128] + ": " + str(exc)) from None
+                completed = (" (recovery first completed an earlier unfinished transaction on this claim)"
+                             if exc.recovered else "")
+                raise WorkQueueError(claim.task_id[:128] + ": " + str(exc) + completed) from None
         archived.append(ArchivedClaim(claim=claim, archived_path=archive_path, age_seconds=age_seconds,
                                       release_reason=reason, applied=apply))
     return archived

@@ -350,6 +350,40 @@ def test_s6_the_facade_maps_every_other_transaction_refusal_to_work_queue_error(
     assert entry.applied is True and wq.find_claim(txns, "team/unowned") is None   # success twin
 
 
+class BeatingTransactions(QueueTransactions):
+    """The owner's session beats AFTER the sweep listed the claim and before its apply plan runs."""
+
+    beat_text = None
+
+    def transact(self, op, claim_path, idempotency_key, plan_fn):
+        digest = hashlib.sha256(f"{OWNER.owner_session_id}\n{OWNER.owner_token_sha256}".encode()).hexdigest()
+        beat = self.root / "work_queue" / "heartbeats" / f"{digest}.json"
+        beat.parent.mkdir(parents=True, exist_ok=True)
+        beat.write_text(self.beat_text, encoding="utf-8")
+        return super().transact(op, claim_path, idempotency_key, plan_fn)
+
+
+@pytest.mark.parametrize("beat_text", [
+    json.dumps({"owner_session_id": "session-a", "owner_token_sha256": hashlib.sha256(b"token-a").hexdigest(),
+                "last_beat_utc": "2026-09-29T21:59:30Z"}),                  # live at apply time
+    "{not json",                                                           # unknown at apply time
+], ids=["live", "unknown"])
+def test_q_sweep_the_owner_session_is_rechecked_at_apply_under_the_locks(env, beat_text):
+    txns = env[0]
+    claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))   # lease long expired
+    beating = BeatingTransactions(txns.root, mutex=Lock(), claim_lock=Lock(), clock=lambda: NOW)
+    beating.beat_text = beat_text
+    assert wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=beating) == []
+    assert wq.find_claim(txns, "team/owned") is not None                   # skipped, never deleted
+
+
+def test_q_sweep_a_session_still_dead_at_apply_is_archived(env):
+    txns = env[0]
+    claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    assert entry.applied is True and wq.find_claim(txns, "team/owned") is None   # success twin
+
+
 def test_n7_a_deep_or_oversized_session_heartbeat_is_unknown_never_a_crash(env):
     txns = env[0]
     claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))

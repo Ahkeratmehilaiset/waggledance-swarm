@@ -108,6 +108,15 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
+# S2 (Lead 2026-09-30): the listing, the conflict checks and the create or
+# refresh run inside the v2 queue's runtime-root mutex, taken before the
+# claim lock as in the Python queue, so a v2 transaction or claims snapshot
+# never lists claims in the middle of this change. The sweep above takes and
+# releases it on its own, so it is never held twice. The claim event is
+# written after the release.
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 $resources = @(Resolve-BridgeResourceScopes -Scopes $WriteScope -Worktree (Get-Location).Path -BridgeRoot $bridgeRoot)
 $existingClaimPath = ''
@@ -329,6 +338,10 @@ if (-not $existingClaimPath) {
     } finally {
         Exit-BridgeClaimLock -Lock $refreshLock
     }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }
 
 & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `

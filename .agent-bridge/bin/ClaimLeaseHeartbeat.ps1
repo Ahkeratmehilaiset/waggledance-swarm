@@ -267,6 +267,53 @@ function Exit-BridgeClaimLock {
     }
 }
 
+function Enter-BridgeQueueRootMutex {
+    <#
+        S2 (Lead 2026-09-30): every legacy claim/done mutation runs inside the
+        v2 queue's runtime-root mutex, the SAME kernel object that
+        tools/bridge_v2_queue_transactions.mutex_name(root) names, and takes it
+        BEFORE any per-claim lock, as the Python queue does. Otherwise a v2
+        transaction or claims snapshot could list the claims while a legacy
+        writer changes them. Returns the held mutex, or throws with nothing
+        read or changed: busy within the timeout, an abandoned holder
+        (released and refused, never adopted), or a root with no canonical
+        form. Enter and exit on the same thread.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [int] $TimeoutMs = 0
+    )
+
+    if ($TimeoutMs -le 0) { $TimeoutMs = $script:BridgeClaimLockTimeoutMs }
+    # Loaded here, not when this file is dot-sourced: only a claim/done
+    # mutation needs it, so a missing helper refuses that mutation instead of
+    # breaking every script that shares this file.
+    . (Join-Path $PSScriptRoot 'BridgeV2QueueMutex.ps1')
+    return (Enter-BridgeV2QueueMutex -RuntimeRoot $Root -TimeoutMs $TimeoutMs)
+}
+
+function Exit-BridgeQueueRootMutex {
+    <#
+        Release a mutex Enter-BridgeQueueRootMutex returned; the handle is
+        always disposed. -Completed says the guarded work finished normally:
+        only then does a release failure surface. After an exception, an exit
+        or a cancellation the original outcome stands, and a release failure
+        (for example a disposed handle) is only warned.
+    #>
+    param(
+        $Mutex,
+        [switch] $Completed
+    )
+
+    if ($null -eq $Mutex) { return }
+    try {
+        try { $Mutex.ReleaseMutex() } finally { $Mutex.Dispose() }   # as Exit-BridgeV2QueueMutex
+    } catch {
+        if ($Completed) { throw }
+        Write-Warning ("runtime-root queue mutex release failed after an earlier failure: {0}" -f $_.Exception.Message)
+    }
+}
+
 function ConvertTo-BridgeIsoTimestamps {
     <#
         PowerShell's ConvertFrom-Json turns ISO-8601 strings into
@@ -330,7 +377,19 @@ function Update-BridgeClaimLease {
     $claimsDir = Get-BridgeClaimsDir -Root $Root
     if (-not (Test-Path -LiteralPath $claimsDir -PathType Container)) { return 0 }
 
+    # S2: a lease bump changes claims, so it runs inside the runtime-root
+    # mutex (root first, then each claim lock). A busy or abandoned root
+    # skips this round with a warning, as a busy claim lock skips a claim;
+    # the next beat retries.
+    try {
+        $rootMutex = Enter-BridgeQueueRootMutex -Root $Root
+    } catch {
+        Write-Warning ("claim lease bump skipped this round: {0}" -f $_.Exception.Message)
+        return 0
+    }
+    $rootWorkDone = $false
     $updated = 0
+    try {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     foreach ($file in @(Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' `
                 -File -ErrorAction SilentlyContinue)) {
@@ -392,6 +451,10 @@ function Update-BridgeClaimLease {
         } finally {
             Exit-BridgeClaimLock -Lock $lock
         }
+    }
+    $rootWorkDone = $true
+    } finally {
+        Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
     }
     return $updated
 }

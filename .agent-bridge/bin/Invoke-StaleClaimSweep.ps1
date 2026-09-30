@@ -185,6 +185,13 @@ if (-not (Test-Path -LiteralPath $doneDir -PathType Container)) {
 
 $now = (Get-Date).ToUniversalTime()
 
+# S2 (Lead 2026-09-30): the sweep archives claims, so it runs inside the v2
+# queue's runtime-root mutex, taken before any claim or beat lock as in the
+# Python queue. A busy or abandoned root throws with nothing read or changed;
+# the opportunistic callers catch it and sweep on a later round.
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
     # B7: take the same per-claim lock the keepalive and release use and
@@ -408,4 +415,8 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         Exit-BridgeClaimLock -Lock $beatLock
         Exit-BridgeClaimLock -Lock $claimLock
     }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }

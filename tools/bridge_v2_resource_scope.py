@@ -12,6 +12,12 @@ Ports the resolution rules of ``waggledance/core/bridge_resource_scope.py`` and
 * rootedness: PowerShell ``IsPathRooted`` and Python ``is_absolute`` differ for ``\\x``
   and ``C:x``. Here a rooted-but-not-fully-qualified scope is refused outright.
 
+The tools-owned resolver also refuses equal or nested lexical worktree/shared-root
+layouts for every entry except ``*``, which overlaps every claim. This fail-closed
+policy intentionally differs from the legacy Python and PowerShell resolvers; it
+does not prove physical-alias detection or runtime parity. Disjoint and cwd-less
+legacy layouts retain their previous handling.
+
 Every entry is split on commas (as PowerShell does). ``explain_scope`` returns what an
 entry resolves to or why it is refused, with examples (F22 ``-Explain``). Nothing is
 written; the only filesystem access is ``lstat`` on the worktree/shared paths to refuse
@@ -101,11 +107,34 @@ def _entries(scopes: Sequence[str] | str) -> list[str]:
     return result
 
 
+def _no_lstat(path: str):
+    raise FileNotFoundError(path)   # the layout check is lexical: it never reads the disk
+
+
+def _roots_overlap(worktree: str, bridge_root: str) -> bool:
+    """True when the worktree and the shared runtime root are the same directory or one contains the other,
+    compared lexically with the same normalization as every scope (the disk is never read). In such a layout one
+    physical file can be named both as a repo path and as a shared path, and resources_overlap compares those two
+    namespaces by path only, so a real conflict could be missed. An unusable root keeps its previous handling."""
+    if not worktree:
+        return False
+    try:
+        base, shared = _normalize_absolute(worktree, _no_lstat), _normalize_absolute(bridge_root, _no_lstat)
+    except ScopeError:
+        return False
+    return base == shared or base.startswith(shared + "/") or shared.startswith(base + "/")
+
+
 def resolve_entry(entry: str, *, worktree: str, bridge_root: str,
                   lstat: Callable[[str], os.stat_result] = os.lstat) -> ResourceScope:
     raw = entry.replace("\\", "/").strip()
     if not raw:
         raise ScopeError("scope must name a path or the whole repository (*)")
+    if raw != "*" and _roots_overlap(worktree, bridge_root):
+        # Fail-closed (RCO2 a7169ffe): a nested or equal worktree/shared layout refuses EVERY entry form; only *,
+        # which overlaps every claim by resources_overlap's first rule, can never miss a conflict.
+        raise ScopeError("the worktree and the shared runtime root overlap (the same directory, or one inside the "
+                         "other): every scope except * is refused, fail-closed")
     kind = "repo"
     explicit = _EXPLICIT_KIND.match(raw)
     if explicit and not _WINDOWS_ABSOLUTE.match(raw):

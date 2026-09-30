@@ -155,3 +155,30 @@ def test_an_explicit_shared_absolute_scope_is_rooted_at_the_shared_root():
         ResourceScope("shared", "work_queue/x.json", LOWER_SHARED),)          # the twin: under shared
     with pytest.raises(ScopeError, match="under the shared runtime root"):
         _resolve("shared:" + WORKTREE + "/.codex-audit/x.md")   # was ('shared', '.codex-audit/x.md', SHARED)
+
+
+# -- RCO2 a7169ffe: a non-disjoint (nested or equal) worktree/shared layout refuses every scope except * ------
+
+NESTED_SHARED = WORKTREE + "/.agent-bridge"                              # a shared root INSIDE the worktree
+OUTER_SHARED, INNER_WORKTREE = ROOT + "/rt", ROOT + "/rt/lanes/tree"     # a worktree INSIDE the shared root
+
+
+@pytest.mark.parametrize("worktree, shared", [(WORKTREE, NESTED_SHARED), (INNER_WORKTREE, OUTER_SHARED),
+                                              (WORKTREE, WORKTREE)], ids=["shared_in_worktree", "worktree_in_shared",
+                                                                          "equal"])
+@pytest.mark.parametrize("form", ["tools/a.py", "repo:docs/x.md", "shared:work_queue/x.json", "WT_ABS", "SH_ABS",
+                                  "shared:SH_ABS", ".codex-audit/wd-current-state.json",
+                                  "worktree:.codex-audit/notes.md"])
+def test_a_non_disjoint_root_layout_refuses_every_entry_form(worktree, shared, form):
+    entry = form.replace("WT_ABS", worktree + "/tools/a.py").replace("SH_ABS", shared + "/work_queue/x.json")
+    with pytest.raises(ScopeError, match="overlap"):
+        resolve_scopes([entry], worktree=worktree, bridge_root=shared, lstat=_absent)
+    assert resolve_scopes(["*"], worktree=worktree, bridge_root=shared, lstat=_absent) == (
+        ResourceScope("repo", "*"),)                        # the one provably safe entry: * overlaps every claim
+
+
+def test_disjoint_roots_keep_their_exact_previous_resolution():
+    for shared in (SHARED, WORKTREE + "2"):                 # siblings; the second shares a name prefix, no "/" boundary
+        assert resolve_scopes(["tools/a.py", "shared:work_queue/x.json"], worktree=WORKTREE, bridge_root=shared,
+                              lstat=_absent) == (ResourceScope("repo", "tools/a.py"),
+                                                 ResourceScope("shared", "work_queue/x.json", shared.lower()))

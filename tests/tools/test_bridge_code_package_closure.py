@@ -271,6 +271,16 @@ def test_f19_routing_and_shadow_learning_family_is_packaged_and_smoke_checked():
     assert modules <= set(definition["import_smoke"]["package_modules"])
 
 
+def test_passive_participants_and_dashboard_ship_without_new_entrypoints():
+    """F5/F6 are optional caller-fed libraries, not newly enabled collectors."""
+    modules = {"tools.bridge_lock_participants", "tools.bridge_v2_dashboard"}
+    definition = _definition()
+    paths = {module.replace(".", "/") + ".py" for module in modules}
+    assert paths <= set(definition["python_files"])
+    assert modules <= set(definition["import_smoke"]["package_modules"])
+    assert not paths & set(definition["python_entrypoints"].values())
+
+
 # --- the parser's own fail-open modes, reproduced -------------------------------
 
 
@@ -347,8 +357,9 @@ def test_real_route_constants_resolve_and_a_truly_missing_name_stays_unresolved(
 
 # --- the second delivery surface, parsed from the actual array ------------------
 #
-# The capacity modules are NOT in the reboot bundle. Install-WdCapacityObserver.ps1
-# carries its own list. That is by design; this section keeps the design true.
+# The observer installer carries its own delivery list, independently of the
+# reboot bundle's allowlist. Some capacity modules are shipped by both surfaces;
+# this section checks the observer's actual array rather than inferring delivery.
 
 _FILES_ARRAY = re.compile(r"\$files\s*=\s*@\((?P<body>.*?)\)", re.DOTALL)
 _QUOTED = re.compile(r"'([^']*)'")

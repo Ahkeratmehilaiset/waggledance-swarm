@@ -19,7 +19,6 @@ problems are unknown (no block) or a refused intent with stable reasons.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-import re
 from typing import Any
 
 from tools import wd_task_router as router
@@ -30,11 +29,14 @@ LOAD_SCHEMA = "wd.routing-load.v1"
 INTENT_SCHEMA = "wd.dispatch-claim-intent.v1"
 SNAPSHOT_KEYS = frozenset(("schema", "observed_utc", "complete", "unreadable", "claims", "pending"))
 ENTRY_KEYS = frozenset(("source", "agent", "task_id", "owner_session_id"))
-LOAD_KEYS = frozenset(("schema", "observed_utc", "state", "claims"))
+LOAD_KEYS = frozenset(("schema", "worker", "observed_utc", "state", "claims"))
 RECOMMENDED_KEYS = frozenset(("worker", "profile_id", "route"))
+# The advice is a closed record: exactly the keys the router's own output builder writes.
+ADVICE_KEYS = frozenset(router._advice(router.ROUTE, [], {}))
 MAX_EVIDENCE_AGE_SECONDS = 86400
 MAX_ENTRIES = 4096
-_AGENT = re.compile(r"[a-z][a-z0-9_-]{1,32}")
+MAX_TIME_TEXT = 64
+MAX_FIELD_TEXT = 512
 
 
 class RoutingLoadError(ValueError):
@@ -42,7 +44,7 @@ class RoutingLoadError(ValueError):
 
 
 def _moment(now: Any, max_age: Any) -> datetime:
-    moment = _utc(now) if type(now) is str else None
+    moment = _utc(now) if type(now) is str and len(now) <= MAX_TIME_TEXT else None
     if moment is None:
         raise RoutingLoadError("now must be aware ISO-8601 text, as the router takes it")
     if type(max_age) is not int or not 0 < max_age <= MAX_EVIDENCE_AGE_SECONDS:
@@ -52,7 +54,7 @@ def _moment(now: Any, max_age: Any) -> datetime:
 
 def _fresh(observed: Any, moment: datetime, max_age: int) -> bool:
     """The router's own freshness rule, on exact text."""
-    at = _utc(observed) if type(observed) is str else None
+    at = _utc(observed) if type(observed) is str and len(observed) <= MAX_TIME_TEXT else None
     return at is not None and moment - timedelta(seconds=max_age) <= at <= moment
 
 
@@ -83,9 +85,13 @@ def _holders(snapshot: Any, moment: datetime, max_age: int) -> dict[str, int] | 
             if type(entry) is not dict or entry.keys() != ENTRY_KEYS or entry["source"] != source:
                 return None                                 # an unreadable, foreign or case-variant fact
             agent, task_id, session = entry["agent"], entry["task_id"], entry["owner_session_id"]
-            if type(agent) is not str or _AGENT.fullmatch(agent) is None or type(task_id) is not str or not task_id:
+            # A holder that is not an exact member (case variant, padded, str subclass, stranger) is a foreign
+            # fact: the whole snapshot is unknown rather than letting any member read idle beside it.
+            if type(agent) is not str or agent not in router.MEMBERS:
                 return None
-            if session is not None and (type(session) is not str or not session):
+            if type(task_id) is not str or not 0 < len(task_id) <= MAX_FIELD_TEXT:
+                return None
+            if session is not None and (type(session) is not str or not 0 < len(session) <= MAX_FIELD_TEXT):
                 return None
             counts[agent] = counts.get(agent, 0) + 1
     return counts
@@ -98,7 +104,7 @@ def load_blocks(workers: Any, snapshot: Any, now: Any, max_evidence_age_seconds:
     counts = _holders(snapshot, moment, max_evidence_age_seconds)
     if counts is None:
         return {}
-    return {lane: {"schema": LOAD_SCHEMA, "observed_utc": snapshot["observed_utc"],
+    return {lane: {"schema": LOAD_SCHEMA, "worker": lane, "observed_utc": snapshot["observed_utc"],
                    "state": "busy" if counts.get(lane, 0) else "idle", "claims": counts.get(lane, 0)}
             for lane in lanes}
 
@@ -114,7 +120,7 @@ def claim_intent(task: Any, advice: Any, worker: Any, load: Any, now: Any, max_e
         checked = router._task(task, moment)                # the router's own task rules and dispatch key
     except router._Stop as stop:
         return _refused("task_" + stop.verdict, *stop.reasons)
-    if type(advice) is not dict:
+    if type(advice) is not dict or advice.keys() != ADVICE_KEYS:
         return _refused("advice_malformed")
     bound = {"schema": router.SCHEMA, "feature": router.FEATURE, "verdict": router.ROUTE, "mode": "advice_only",
              "authority": "none", "dispatch_authority": router.DISPATCH_AUTHORITY, "task_id": checked["task_id"],
@@ -139,6 +145,8 @@ def claim_intent(task: Any, advice: Any, worker: Any, load: Any, now: Any, max_e
     if (type(load) is not dict or load.keys() != LOAD_KEYS or load["schema"] != LOAD_SCHEMA
             or not _fresh(load["observed_utc"], moment, max_evidence_age_seconds)):
         return _refused("load_unknown_or_stale")
+    if type(load["worker"]) is not str or load["worker"] != worker:
+        return _refused("load_not_for_this_worker")        # another lane's idle block proves nothing here
     if load["state"] != "idle" or type(load["claims"]) is not int or load["claims"] != 0:
         return _refused("worker_not_idle")
     return {"verdict": "intent", "reasons": [], "intent": {

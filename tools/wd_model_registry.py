@@ -454,16 +454,24 @@ def _validate_observation(obs: dict, label: str, models: dict, candidates: dict,
 
 
 def _evaluation_time(now: Any) -> datetime | None:
-    """``now`` as aware UTC, or None (a conservative unknown) when it is absent, not a datetime,
-    naive (no tzinfo, or a tzinfo that names no offset) or unrepresentable in UTC (RCO2 R1).
-    A naive time is never read as local time."""
-    if not isinstance(now, datetime):
+    """``now`` as aware UTC, or None (a conservative unknown) when it is absent, not EXACTLY a
+    datetime (a subclass could override the offset or the arithmetic), naive (no tzinfo, or a
+    tzinfo that names no offset), has an offset that is not an exact timedelta, has a tzinfo that
+    fails in any way (NotImplementedError included), or is unrepresentable in UTC (RCO2 R1; RCO1
+    7f32cfea S2). The offset is read exactly ONCE and subtracted from the naive wall time;
+    astimezone is never used, so a stateful tzinfo cannot answer differently on a second read
+    and nothing is ever read as local time."""
+    if type(now) is not datetime or now.tzinfo is None:
         return None
     try:
-        if now.utcoffset() is None:
-            return None
-        return now.astimezone(timezone.utc)
-    except (OverflowError, ValueError, TypeError):
+        offset = now.utcoffset()                     # the single read
+    except Exception:  # noqa: BLE001 - a tzinfo that cannot say its offset gives no evaluation time
+        return None
+    if type(offset) is not timedelta or not -timedelta(days=1) < offset < timedelta(days=1):
+        return None
+    try:
+        return (now.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except (OverflowError, ValueError):
         return None
 
 

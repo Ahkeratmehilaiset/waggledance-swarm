@@ -750,6 +750,69 @@ def test_a_missing_naive_wrong_type_or_extreme_clock_is_a_conservative_unknown(n
     assert pool_state(dict(VERIFIED_POOL, verification="unverified"), now) == "unverified"
 
 
+class _Stateful(tzinfo):
+    """Answers its offset once, then None: only a single read can use it consistently."""
+
+    def __init__(self, first):
+        self.answers, self.calls = [first, None], 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        return self.answers[min(self.calls, 2) - 1]
+
+    def dst(self, dt):
+        return None
+
+
+class _Fixed(tzinfo):
+    def __init__(self, offset):
+        self.offset = offset
+
+    def utcoffset(self, dt):
+        return self.offset
+
+    def dst(self, dt):
+        return None
+
+
+class _SubDatetime(datetime):
+    pass
+
+
+class _SubDelta(timedelta):
+    pass
+
+
+@pytest.mark.parametrize("now", [
+    _SubDatetime(2026, 10, 1, 12, tzinfo=timezone.utc),                           # not exactly a datetime
+    T0.replace(tzinfo=tzinfo()),                                                  # utcoffset NotImplementedError
+    T0.replace(tzinfo=_Fixed(timedelta(hours=25))),                               # out of range
+    T0.replace(tzinfo=_Fixed(3600)),                                              # not a timedelta
+    T0.replace(tzinfo=_Fixed(_SubDelta(hours=3))),                                # not EXACTLY a timedelta
+    T0.replace(tzinfo=_Stateful(None)),                                           # names no offset on its read
+    datetime.max.replace(tzinfo=_Fixed(-timedelta(hours=23, minutes=59))),        # unrepresentable in UTC
+    datetime.min.replace(tzinfo=_Fixed(timedelta(hours=23, minutes=59))),
+], ids=["subclass", "unimplemented", "25h", "int", "delta_subclass", "stateful_none", "extreme_max", "extreme_min"])
+def test_an_invalid_offset_or_foreign_clock_is_never_a_success(now):
+    assert reg_module._evaluation_time(now) is None                              # the conservative unknown
+    assert observation_state(observation(), now) == "unknown" and pool_state(VERIFIED_POOL, now) == "unknown"
+
+
+def test_the_offset_is_read_once_and_never_as_local_time():
+    stateful = _Stateful(timedelta(hours=3))                                     # 3 h once, then None
+    wall = datetime(2026, 10, 1, 15, 0, 0)
+    assert reg_module._evaluation_time(wall.replace(tzinfo=stateful)) == T0     # 15:00+03:00 == 12:00Z
+    assert stateful.calls == 1                                                   # no second read, no local fallback
+
+
+@pytest.mark.parametrize("offset", [timedelta(hours=3), -timedelta(hours=7, minutes=30), timedelta(0),
+                                    timedelta(hours=23, minutes=59)])
+def test_an_ordinary_non_utc_clock_normalizes_to_exact_utc(offset):
+    for zone in (timezone(offset), _Fixed(offset)):
+        normalized = reg_module._evaluation_time(T0.astimezone(timezone(offset)).replace(tzinfo=zone))
+        assert normalized == T0 and type(normalized) is datetime and normalized.tzinfo is timezone.utc
+
+
 def test_an_aware_clock_in_any_offset_is_normalized_to_utc():
     helsinki = timezone(timedelta(hours=3))
     obs = observation()                                     # measured 11:00Z with a 2 h TTL, like VERIFIED_POOL

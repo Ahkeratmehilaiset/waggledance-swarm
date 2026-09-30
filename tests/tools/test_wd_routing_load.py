@@ -3,7 +3,9 @@
 
 The 670 starter was context only; its reproduced gaps (a month-old idle block reserved, unreadable=False
 admitted, a non-member given a block, the real advice field recommended.worker unread) are pinned here as
-refusals or unknowns: N1 to N4. RCO2's fixture plan (20:59:34Z, Lead ae1d4b41) added L3/L6/L10/R2/R3/R5/R7/R8.
+refusals or unknowns: N1 to N4. RCO2's fixture plan (20:59:34Z, Lead ae1d4b41) added L3/L6/L10/R2/R3/R5/R7/R8;
+RCO2's review of 4fd2d39d (21:13:10Z) added F1 (the age bound is the signed policy's, bound by policy_sha256),
+F2 (reasons and digests bound), F3 (hostile ranking objects refused, never raised) and F4 (exact-typed fields).
 """
 from __future__ import annotations
 
@@ -15,9 +17,19 @@ from tools import wd_routing_load as w3
 from tools import wd_task_router as router
 
 NOW = "2026-09-30T21:00:00Z"
-AGE = 900
 WORKERS = ["codex-tools-1", "fable-5", "claude-rco-2", "claude-rco-1", "grok"]
 RECOMMENDED = {"worker": "claude-rco-2", "profile_id": "p-impl", "route": "direct"}
+
+
+def _policy(age: object = 900, **changes) -> dict:
+    record = {"schema": router.POLICY_SCHEMA, "max_evidence_age_seconds": age, "budget_mode": "steady",
+              "class_roles": {name: ["impl"] for name in router.TASK_CLASSES},
+              "class_profiles": {name: ["p-impl"] for name in router.TASK_CLASSES}}
+    record.update(changes)
+    return record
+
+
+POLICY = _policy()
 
 
 def _task(**changes) -> dict:
@@ -28,7 +40,8 @@ def _task(**changes) -> dict:
     return record
 
 
-def _advice(task: dict | None = None, recommended: dict | None = None, **changes) -> dict:
+def _advice(task: dict | None = None, recommended: dict | None = None, policy: dict | None = None,
+            **changes) -> dict:
     """Built by the router's OWN output builder, so the positive twin has exactly the router's shape."""
     task = task or _task()
     rec = dict(recommended or RECOMMENDED)
@@ -36,7 +49,8 @@ def _advice(task: dict | None = None, recommended: dict | None = None, **changes
                               router.normalize_scope(task["scope"]))
     record = router._advice(router.ROUTE, ["ranked_eligible_worker"],
                             {"task_id": task["task_id"], "task_class": "implementation", "dispatch_key": key,
-                             "ranking": [rec], "evidence_digest": "e" * 64, "policy_sha256": "f" * 64})
+                             "ranking": [rec], "evidence_digest": "e" * 64,
+                             "policy_sha256": router.digest(policy or POLICY)})
     record.update(changes)
     return record
 
@@ -56,12 +70,32 @@ def _entry(**changes) -> dict:
     return entry
 
 
-def _block(worker: str = "claude-rco-2", **snapshot_changes) -> dict:
-    return w3.load_blocks(WORKERS, _snapshot(**snapshot_changes), NOW, AGE)[worker]
+def _block(worker: str = "claude-rco-2", policy: dict = POLICY, **snapshot_changes) -> dict:
+    return w3.load_blocks(WORKERS, _snapshot(**snapshot_changes), NOW, policy)[worker]
 
 
 class _Str(str):
     pass
+
+
+class _Hostile(dict):
+    def __eq__(self, other):
+        raise TypeError("hostile comparison")
+
+    def __ne__(self, other):
+        raise TypeError("hostile comparison")
+
+    __hash__ = None
+
+
+class _HostileText:
+    def __eq__(self, other):
+        raise TypeError("hostile comparison")
+
+    def __ne__(self, other):
+        raise TypeError("hostile comparison")
+
+    __hash__ = None
 
 
 # -- negatives first: evidence that cannot prove a lane's load is unknown (no block), never idle --------------
@@ -86,6 +120,7 @@ UNKNOWN_SNAPSHOTS = {
     "unreadable_huge": _snapshot(unreadable=10 ** 30),
     "unreadable_text": _snapshot(unreadable="0"),
     "schema": _snapshot(schema="wd.queue-claims-snapshot.v0"),
+    "schema_hostile": _snapshot(schema=_HostileText()),
     "extra_key": {**_snapshot(), "note": "x"},
     "missing_key": {k: v for k, v in _snapshot().items() if k != "pending"},
     "claims_not_list": _snapshot(claims={}),
@@ -97,6 +132,7 @@ UNKNOWN_SNAPSHOTS = {
     "entry_str_subclass_agent": _snapshot(claims=[_entry(agent=_Str("fable-5"))]),
     "entry_non_member_holder": _snapshot(claims=[_entry(agent="stranger")]),
     "entry_source_mismatch": _snapshot(claims=[_entry(source="pending")]),
+    "entry_source_hostile": _snapshot(claims=[_entry(source=_HostileText())]),
     "entry_empty_session": _snapshot(claims=[_entry(owner_session_id="")]),
     "entry_no_task": _snapshot(claims=[_entry(task_id="")]),
     "entry_oversized_task": _snapshot(claims=[_entry(task_id="t" * (w3.MAX_FIELD_TEXT + 1))]),
@@ -106,28 +142,30 @@ UNKNOWN_SNAPSHOTS = {
 
 @pytest.mark.parametrize("name", sorted(UNKNOWN_SNAPSHOTS))
 def test_evidence_that_cannot_prove_load_gives_no_block(name):
-    assert w3.load_blocks(WORKERS, UNKNOWN_SNAPSHOTS[name], NOW, AGE) == {}
+    assert w3.load_blocks(WORKERS, UNKNOWN_SNAPSHOTS[name], NOW, POLICY) == {}
 
 
-@pytest.mark.parametrize("workers,now,age", [
-    (("claude-rco-2",), NOW, AGE), (["intruder"], NOW, AGE), (["claude-rco-2", "claude-rco-2"], NOW, AGE),
-    ([], NOW, AGE), (["Claude-rco-2"], NOW, AGE), (["GROK"], NOW, AGE),
-    (["claude-rco-2"], "2026-09-30T21:00:00", AGE), (["claude-rco-2"], 1790000000, AGE),
-    (["claude-rco-2"], "now", AGE), (["claude-rco-2"], "2026-09-30T21:00:00." + "0" * 100 + "Z", AGE),
-    (["claude-rco-2"], NOW, 0),
-    (["claude-rco-2"], NOW, -1), (["claude-rco-2"], NOW, True), (["claude-rco-2"], NOW, 1.5),
-    (["claude-rco-2"], NOW, w3.MAX_EVIDENCE_AGE_SECONDS + 1),
+@pytest.mark.parametrize("workers,now,policy", [
+    (("claude-rco-2",), NOW, POLICY), (["intruder"], NOW, POLICY), (["claude-rco-2", "claude-rco-2"], NOW, POLICY),
+    ([], NOW, POLICY), (["Claude-rco-2"], NOW, POLICY), (["GROK"], NOW, POLICY),
+    (["claude-rco-2"], "2026-09-30T21:00:00", POLICY), (["claude-rco-2"], 1790000000, POLICY),
+    (["claude-rco-2"], "now", POLICY), (["claude-rco-2"], "2026-09-30T21:00:00." + "0" * 100 + "Z", POLICY),
+    (["claude-rco-2"], NOW, _policy(0)), (["claude-rco-2"], NOW, _policy(-1)), (["claude-rco-2"], NOW, _policy(True)),
+    (["claude-rco-2"], NOW, _policy(1.5)), (["claude-rco-2"], NOW, {**POLICY, "note": 1}),
+    (["claude-rco-2"], NOW, None),
 ], ids=["tuple", "non_member_N3", "repeated", "empty", "case_variant", "grok_upper", "naive_now", "numeric_now",
-        "garbage_now", "oversized_now", "age_zero", "age_negative", "age_bool", "age_float", "age_over_bound"])
-def test_caller_contract_violations_refuse(workers, now, age):
+        "garbage_now", "oversized_now", "policy_age_zero", "policy_age_negative", "policy_age_bool",
+        "policy_age_float", "policy_extra_key", "policy_missing"])
+def test_caller_contract_violations_refuse(workers, now, policy):
     with pytest.raises(w3.RoutingLoadError):
-        w3.load_blocks(workers, _snapshot(), now, age)
+        w3.load_blocks(workers, _snapshot(), now, policy)
 
 
 def _refusal(changes: dict) -> dict:
-    arguments = {"task": _task(), "advice": _advice(), "worker": "claude-rco-2", "load": _block()}
+    arguments = {"task": _task(), "advice": _advice(), "worker": "claude-rco-2", "load": _block(), "policy": POLICY}
     arguments.update(changes)
-    return w3.claim_intent(arguments["task"], arguments["advice"], arguments["worker"], arguments["load"], NOW, AGE)
+    return w3.claim_intent(arguments["task"], arguments["advice"], arguments["worker"], arguments["load"], NOW,
+                           arguments["policy"])
 
 
 BUSY_REC = {"worker": "codex-tools-1", "profile_id": "p", "route": "direct"}
@@ -137,9 +175,34 @@ INTENT_REFUSALS = {
     "future_load": ({"load": {**_block(), "observed_utc": "2026-09-30T21:00:05Z"}}, "load_unknown_or_stale"),
     "missing_load": ({"load": None}, "load_unknown_or_stale"),
     "load_extra_key": ({"load": {**_block(), "note": 1}}, "load_unknown_or_stale"),
+    "load_schema_hostile": ({"load": {**_block(), "schema": _HostileText()}}, "load_unknown_or_stale"),
+    "load_state_hostile": ({"load": {**_block(), "state": _HostileText()}}, "worker_not_idle"),
     "another_workers_idle_block": ({"load": _block("claude-rco-1")}, "load_not_for_this_worker"),
     "busy": ({"load": _block("codex-tools-1"), "worker": "codex-tools-1", "advice": _advice(recommended=BUSY_REC)},
              "worker_not_idle"),
+    # F1: the age bound is the signed policy's and the advice must have been decided under it.
+    "stale_under_the_advices_policy_F1": ({"load": {**_block(), "observed_utc": "2026-09-30T20:43:20Z"}},
+                                          "load_unknown_or_stale"),
+    "wider_policy_than_the_advices_F1": ({"load": {**_block(), "observed_utc": "2026-09-30T20:43:20Z"},
+                                          "policy": _policy(3600)}, "advice_not_bound:policy_sha256"),
+    "invalid_policy": ({"policy": _policy(0)}, "policy_invalid"),
+    # F2: reasons and both digests are bound.
+    "forged_reasons_F2": ({"advice": _advice(reasons=["forged"])}, "advice_not_bound:reasons"),
+    "extra_reason": ({"advice": _advice(reasons=["ranked_eligible_worker", "x"])}, "advice_not_bound:reasons"),
+    "evidence_digest_not_hex_F2": ({"advice": _advice(evidence_digest="E" * 64)}, "advice_not_bound:evidence_digest"),
+    "evidence_digest_none": ({"advice": _advice(evidence_digest=None)}, "advice_not_bound:evidence_digest"),
+    "policy_sha256_none_F2": ({"advice": _advice(policy_sha256=None)}, "advice_not_bound:policy_sha256"),
+    "policy_sha256_other_F2": ({"advice": _advice(policy_sha256="0" * 64)}, "advice_not_bound:policy_sha256"),
+    # F3/F4: exact types before any comparison.
+    "hostile_first_ranking_F3": ({"advice": _advice(ranking=[_Hostile(RECOMMENDED)])},
+                                 "advice_recommendation_malformed"),
+    "hostile_recommended_F3": ({"advice": {**_advice(), "recommended": _Hostile(RECOMMENDED)}},
+                               "advice_recommendation_malformed"),
+    "profile_id_int_F4": ({"advice": _advice(recommended={**RECOMMENDED, "profile_id": 7},
+                                             ranking=[{**RECOMMENDED, "profile_id": 7}])},
+                          "advice_recommendation_malformed"),
+    "route_empty_F4": ({"advice": _advice(recommended={**RECOMMENDED, "route": ""},
+                                          ranking=[{**RECOMMENDED, "route": ""}])}, "advice_recommendation_malformed"),
     "forged_key": ({"advice": _advice(dispatch_key="a" * 64)}, "advice_not_bound:dispatch_key"),
     "different_task": ({"task": _task(task_id="team/other")}, "advice_not_bound:task_id"),
     "changed_revision": ({"task": _task(revision="r2")}, "advice_not_bound:dispatch_key"),
@@ -159,6 +222,7 @@ INTENT_REFUSALS = {
                            "recommended_worker_listed:unavailable"),
     **{"verdict_" + verdict: ({"advice": _advice(verdict=verdict)}, "advice_not_bound:verdict")
        for verdict in (router.HOLD, router.WAIT, router.UNKNOWN, router.DUPLICATE, router.SATISFIED, router.SKIPPED)},
+    "verdict_hostile": ({"advice": _advice(verdict=_HostileText())}, "advice_not_bound:verdict"),
     "authority": ({"advice": _advice(authority="codex-lead-1")}, "advice_not_bound:authority"),
     "mode": ({"advice": _advice(mode="dispatch")}, "advice_not_bound:mode"),
     "schema": ({"advice": _advice(schema="wd.task-routing-advice.v0")}, "advice_not_bound:schema"),
@@ -188,7 +252,7 @@ def test_claim_intent_refusal_twins(name):
 # -- positives -------------------------------------------------------------------------------------------------
 
 def test_claim_and_pending_holders_are_busy_the_rest_idle_and_grok_gets_nothing():
-    blocks = w3.load_blocks(WORKERS, _snapshot(), NOW, AGE)
+    blocks = w3.load_blocks(WORKERS, _snapshot(), NOW, POLICY)
     assert {lane: (b["worker"], b["state"], b["claims"]) for lane, b in blocks.items()} == {
         "codex-tools-1": ("codex-tools-1", "busy", 1), "fable-5": ("fable-5", "busy", 1),
         "claude-rco-2": ("claude-rco-2", "idle", 0), "claude-rco-1": ("claude-rco-1", "idle", 0)}
@@ -199,30 +263,40 @@ def test_claim_and_pending_holders_are_busy_the_rest_idle_and_grok_gets_nothing(
                                       "2026-09-30T20:59:30.1234567+00:00", "2026-09-30T23:59:30+03:00"],
                          ids=["exactly_now_minus_age", "exactly_now", "dotnet_o_form", "offset_form"])
 def test_the_inclusive_boundaries_and_every_accepted_form_keep_the_observed_text_exactly(observed):
-    blocks = w3.load_blocks(WORKERS, _snapshot(observed_utc=observed), NOW, AGE)
+    blocks = w3.load_blocks(WORKERS, _snapshot(observed_utc=observed), NOW, POLICY)
     assert blocks["claude-rco-2"]["observed_utc"] == observed and blocks["claude-rco-2"]["state"] == "idle"
 
 
 def test_an_equivalent_offset_now_is_the_same_instant():
-    assert (w3.load_blocks(WORKERS, _snapshot(), "2026-09-30T23:00:00+02:00", AGE)
-            == w3.load_blocks(WORKERS, _snapshot(), NOW, AGE))
+    assert (w3.load_blocks(WORKERS, _snapshot(), "2026-09-30T23:00:00+02:00", POLICY)
+            == w3.load_blocks(WORKERS, _snapshot(), NOW, POLICY))
+
+
+def test_a_long_valid_policy_age_is_honoured_not_capped_F1():
+    # A router-valid policy of 172800 s: a day-old block is fresh under it (4fd2d39d raised on its 86400 cap).
+    policy = _policy(172800)
+    load = _block(policy=policy, observed_utc="2026-09-29T21:00:00Z")
+    result = w3.claim_intent(_task(), _advice(policy=policy), "claude-rco-2", load, NOW, policy)
+    assert result["verdict"] == "intent" and result["intent"]["policy_sha256"] == router.digest(policy)
+    assert w3.load_blocks(WORKERS, _snapshot(observed_utc="1990-01-01T00:00:00Z"), NOW, _policy(10 ** 17)) != {}
 
 
 def test_intent_for_the_recommended_idle_worker_is_exact_and_grants_nothing():
     task = _task()
-    result = w3.claim_intent(task, _advice(), "claude-rco-2", _block(), NOW, AGE)
+    result = w3.claim_intent(task, _advice(), "claude-rco-2", _block(), NOW, POLICY)
     assert (result["verdict"], result["reasons"]) == ("intent", [])
     intent = result["intent"]
     assert intent == {"schema": w3.INTENT_SCHEMA, "authority": "none", "execution_allowed": False,
                       "owner": "claude-rco-2", "task_id": "team/w3", "revision": "r1",
                       "dispatch_key": _advice()["dispatch_key"], "mode": "write", "write_scope": ["repo:tools/x.py"],
-                      "load_observed_utc": "2026-09-30T20:59:30Z"}
+                      "load_observed_utc": "2026-09-30T20:59:30Z", "evidence_digest": "e" * 64,
+                      "policy_sha256": router.digest(POLICY)}
     assert intent["write_scope"] is not task["scope"]                       # a copy, never an alias
 
 
 def test_an_equivalent_scope_spelling_is_the_same_dispatch_and_a_trailing_slash_is_not():
     spelled = _task(scope=["repo:Tools\\x.py", "repo:tools/x.py"])      # case-folded, backslashed, duplicated
-    result = w3.claim_intent(spelled, _advice(), "claude-rco-2", _block(), NOW, AGE)
+    result = w3.claim_intent(spelled, _advice(), "claude-rco-2", _block(), NOW, POLICY)
     assert result["verdict"] == "intent" and result["intent"]["write_scope"] == ["repo:tools/x.py"]
     key = router.dispatch_key
     assert (key("t", "r", "d" * 64, router.normalize_scope(["repo:tools/"]))
@@ -233,18 +307,18 @@ def test_intents_are_advisory_not_exclusive():
     # One idle snapshot yields an intent for two different tasks for the same worker: exclusivity is the
     # queue's (the worker's own keyed claim is the only atomic step), never this advice.
     other = _task(task_id="team/w3-b")
-    first = w3.claim_intent(_task(), _advice(), "claude-rco-2", _block(), NOW, AGE)
-    second = w3.claim_intent(other, _advice(task=other), "claude-rco-2", _block(), NOW, AGE)
+    first = w3.claim_intent(_task(), _advice(), "claude-rco-2", _block(), NOW, POLICY)
+    second = w3.claim_intent(other, _advice(task=other), "claude-rco-2", _block(), NOW, POLICY)
     assert first["verdict"] == second["verdict"] == "intent"
     assert first["intent"]["dispatch_key"] != second["intent"]["dispatch_key"]
 
 
 def test_outputs_are_fresh_objects_and_the_snapshot_is_not_aliased():
     snapshot = _snapshot()
-    first = w3.load_blocks(WORKERS, snapshot, NOW, AGE)
+    first = w3.load_blocks(WORKERS, snapshot, NOW, POLICY)
     first["claude-rco-2"]["state"] = "busy"
     snapshot["claims"].append(_entry(agent="claude-rco-2"))
-    assert w3.load_blocks(WORKERS, _snapshot(), NOW, AGE)["claude-rco-2"]["state"] == "idle"
+    assert w3.load_blocks(WORKERS, _snapshot(), NOW, POLICY)["claude-rco-2"]["state"] == "idle"
 
 
 def test_the_module_does_no_io_and_touches_no_queue():

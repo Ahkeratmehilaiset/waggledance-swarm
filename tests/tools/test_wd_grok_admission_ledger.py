@@ -902,14 +902,16 @@ def test_nothing_imports_the_ledger():
 
 
 def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
-    """The 49f14d92 broker with fake non-ledger ports and this ledger (sequential, one process)."""
+    """The 1ed08c38 broker with fake non-ledger ports and this ledger (sequential, one process). Every fake fact
+    time follows the shared clock on each call, so the refusal at T0 + 10 min is the ledger's, never a stale fact."""
     from tools import wd_grok_broker as broker
 
-    policy = {"schema": "fixture-signed-policy", "parameters": {"F20": {
+    policy = {"schema": "fixture-signed-policy", "expires_utc": "2026-10-30T00:00:00Z", "parameters": {"F20": {
         "model": "grok-4", "efforts": ["high"], "allowed_tools": [], "max_prompt_bytes": 48000,
         "max_intent_ttl_seconds": 900}}}
     prompt, head, tree = "Review the admission ledger. COMPLETE, no tools.", "a" * 40, "b" * 40
     task = "codex-lead-1/bridge-v2-grok-durable-ledger-20260930"
+    clock = Clock(T0)
 
     def intent(n, at):
         return prepare_grok_consult(task_id=task, request_id=format(n, "x") * 32, request_revision=1, prompt=prompt,
@@ -919,34 +921,44 @@ def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
 
     class Snapshot:
         def observe(self):
-            return {"readonly": True, "head": head, "tree": tree}
+            return {"readonly": True, "head": head, "tree": tree, "observed_utc": stamp(clock.moment)}
 
     class Activation:
+        """Uncached: evaluated at the clock's current time on every call, so the recheck never sees f0_cached."""
+
+        def __init__(self):
+            self.calls = 0
+
         def evaluate(self, feature, *, expected_head, expected_tree):
-            return Decision("F20", True, "enabled", canonical_sha256(policy), 3), policy
+            self.calls += 1
+            return Decision("F20", True, "enabled", canonical_sha256(policy), 3), policy, stamp(clock.moment)
 
     class Helper:
+        """Stays eligible, so only the ledger's durable last_admitted_utc can refuse the second consult."""
+
         def __init__(self):
             self.calls = 0
 
         def status(self):
             return {"schema": "wd.grok-hourly.v1", "status": "answered", "eligible": True,
-                    "last_attempt_utc": (T0 - timedelta(hours=2)).isoformat()}
+                    "last_attempt_utc": (T0 - timedelta(hours=2)).isoformat(), "observed_utc": stamp(clock.moment)}
 
         def consult(self, task_id, text):
             self.calls += 1
             return {"schema": "wd.grok-hourly.v1", "status": "answered", "task_id": task_id, "request_id": "4" * 32,
-                    "last_attempt_utc": (T0 + timedelta(seconds=1)).isoformat(), "report_sha256": "5" * 64}
+                    "last_attempt_utc": (clock.moment + timedelta(seconds=1)).isoformat(),
+                    "report_sha256": "5" * 64}
 
         def read_answer(self, report):
             return {"text": "No blocker.", "tool_calls": [], "report_sha256": "5" * 64}
 
-    clock, helper = Clock(T0), Helper()
+    helper, activation = Helper(), Activation()
     ledger = make(ready, clock=clock)
     grok = broker.GrokBroker({"schema": broker.CONFIG_SCHEMA, "enabled": True}, clock=clock, snapshot=Snapshot(),
-                             activation=Activation(), helper=helper, ledger=ledger)
+                             activation=activation, helper=helper, ledger=ledger)
     result = grok.consult(intent(1, T0), prompt)
     assert (result["verdict"], result["reasons"], helper.calls) == ("answered_bound", [], 1)
+    assert activation.calls == 2  # the admission and the recheck immediately before the one call
     closed = doc(ready)["entries"]
     assert len(closed) == 1 and closed[0]["state"] == "finished"
     assert closed[0]["outcome_sha256"] == canonical_sha256(result)
@@ -954,4 +966,6 @@ def test_the_ledger_satisfies_the_exact_broker_ledger_port(ready):
     clock.moment = T0 + timedelta(minutes=10)
     again = grok.consult(intent(2, clock.moment), prompt)
     assert (again["verdict"], again["reasons"], helper.calls) == ("refuse", ["hourly_budget_used"], 1)
+    assert activation.calls == 3  # refused at admission, before any reservation or recheck
     assert len(doc(ready)["entries"]) == 1
+    assert ledger.observe()["last_admitted_utc"] == stamp(T0)  # the durable hour that refused it

@@ -231,6 +231,7 @@ param(
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
     [switch] $NoBridgeConversation,
+    [switch] $SupervisorOff,
     [switch] $Auto,
     [switch] $Apply,
     [switch] $DryRun
@@ -348,6 +349,9 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     }
     if ([bool]$targetParameters['NoBridgeConversation']) {
         [void]$commandParts.Add('-NoBridgeConversation')
+    }
+    if ([bool]$targetParameters['SupervisorOff']) {
+        [void]$commandParts.Add('-SupervisorOff')
     }
     $elevationLogRoot = Join-Path (
         Split-Path -Parent $PSCommandPath

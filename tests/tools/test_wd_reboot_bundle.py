@@ -7267,6 +7267,7 @@ param(
   [ValidateRange(10, 300)] [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
   [switch] $NoBridgeConversation,
+  [switch] $SupervisorOff,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -7276,6 +7277,7 @@ $global:LASTEXITCODE = 7
   timeout = $HandshakeTimeoutSeconds
   skip_update = [bool]$SkipCliUpdate
   no_conversation = [bool]$NoBridgeConversation
+  supervisor_off = [bool]$SupervisorOff
   apply = [bool]$Apply
   dry_run = [bool]$DryRun
   handled_native_status = $LASTEXITCODE
@@ -7465,6 +7467,7 @@ $fleetDry = @(& '{fleet_wrapper}' `
   -HandshakeTimeoutSeconds 42 `
   -SkipCliUpdate `
   -NoBridgeConversation `
+  -SupervisorOff `
   -DryRun) | Where-Object {{ $_.PSObject.Properties['run_id'] }} |
     Select-Object -Last 1
 $fleetApply = @(& '{fleet_wrapper}' `
@@ -7484,6 +7487,7 @@ $tools = @(& '{tools_wrapper}' `
   fleet_dry_timeout = [int]$fleetDry.timeout
   fleet_dry_skip_update = [bool]$fleetDry.skip_update
   fleet_dry_no_conversation = [bool]$fleetDry.no_conversation
+  fleet_dry_supervisor_off = [bool]$fleetDry.supervisor_off
   fleet_dry_apply = [bool]$fleetDry.apply
   fleet_dry_dry_run = [bool]$fleetDry.dry_run
   fleet_dry_native_status = [int]$fleetDry.handled_native_status
@@ -7491,6 +7495,7 @@ $tools = @(& '{tools_wrapper}' `
   fleet_apply_timeout = [int]$fleetApply.timeout
   fleet_apply_skip_update = [bool]$fleetApply.skip_update
   fleet_apply_no_conversation = [bool]$fleetApply.no_conversation
+  fleet_apply_supervisor_off = [bool]$fleetApply.supervisor_off
   fleet_apply_apply = [bool]$fleetApply.apply
   fleet_apply_dry_run = [bool]$fleetApply.dry_run
   fleet_apply_native_status = [int]$fleetApply.handled_native_status
@@ -7511,6 +7516,7 @@ $tools = @(& '{tools_wrapper}' `
         "fleet_dry_timeout": 42,
         "fleet_dry_skip_update": True,
         "fleet_dry_no_conversation": True,
+        "fleet_dry_supervisor_off": True,
         "fleet_dry_apply": False,
         "fleet_dry_dry_run": True,
         "fleet_dry_native_status": 7,
@@ -7518,6 +7524,7 @@ $tools = @(& '{tools_wrapper}' `
         "fleet_apply_timeout": 43,
         "fleet_apply_skip_update": False,
         "fleet_apply_no_conversation": False,
+        "fleet_apply_supervisor_off": False,
         "fleet_apply_apply": True,
         "fleet_apply_dry_run": False,
         "fleet_apply_native_status": 7,
@@ -7738,3 +7745,41 @@ function Start-Process {{
     assert 'Administrator restore started' in progress
     assert 'Restore still running; elapsed=' in progress
     assert 'Waiting for a bounded worker reply' in progress
+
+
+def test_supervisor_off_refusal_precedes_every_fleet_read_and_survives_auto_elevation():
+    launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "[switch] $SupervisorOff" in launcher
+    guard = launcher.index("if ($SupervisorOff) {")
+    assert launcher.index("$DryRun = $launcherMode -ceq 'DryRun'") < guard
+    for later in (
+        'throw "fleet manifest is missing: $ManifestPath"',
+        "$supervisorTaskActivation = Get-WdSupervisorTaskActivationPlan -Task $supervisorTask",
+        "$supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld",
+        "$supervisorActivationResult = Enable-WdSupervisorTaskAfterRestore",
+    ):
+        assert guard < launcher.index(later)
+    # The fleet wrapper accepts the switch and forwards it directly; the elevated
+    # -Auto relaunch forwards only the parameters it names, so it must name it.
+    assert "[switch] $SupervisorOff" in deployer
+    assert "if ([bool]$targetParameters['SupervisorOff']) {" in deployer
+    assert "[void]$commandParts.Add('-SupervisorOff')" in deployer
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("mode", [[], ["-DryRun"], ["-Apply"]], ids=["default", "dry_run", "apply"])
+def test_supervisor_off_refuses_every_mode_before_the_fleet_manifest(tmp_path, ps, mode):
+    # The absent manifest is a second barrier: without the refusal the launcher
+    # stops at "fleet manifest is missing", still before any fleet read or change.
+    absent = tmp_path / "absent-wd-fleet.json"
+    result = subprocess.run(
+        [ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+         str(REBOOT / "start-wd-all.ps1"), "-ManifestPath", str(absent), "-SupervisorOff", *mode],
+        cwd=ROOT, capture_output=True, text=True, timeout=60, check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Supervisor OFF: restore refused" in output
+    assert "fleet manifest is missing" not in output

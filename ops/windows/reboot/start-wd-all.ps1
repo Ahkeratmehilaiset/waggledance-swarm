@@ -10,6 +10,9 @@
   DryRun performs validation and prints the update/launch plan without updating,
   writing handshake files, or starting fleet processes. With neither mode
   switch, the launcher defaults to DryRun; mutation always requires -Apply.
+  -SupervisorOff carries an explicit operator Supervisor OFF instruction: every
+  mode then refuses before any fleet read or mutation, because restore starts
+  WD-Supervisor once and enables it afterwards.
 #>
 [CmdletBinding()]
 param(
@@ -21,6 +24,7 @@ param(
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
   [switch] $NoBridgeConversation,
+  [switch] $SupervisorOff,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -141,6 +145,17 @@ $Apply = $launcherMode -ceq 'Apply'
 $DryRun = $launcherMode -ceq 'DryRun'
 if ($modeWasDefaulted) {
   Write-Warning 'No mode switch supplied; defaulting to byte-inert DryRun. Use -Apply to mutate.'
+}
+if ($SupervisorOff) {
+  # An explicit operator Supervisor OFF instruction forbids enabling, starting or
+  # one-shot bootstrapping WD-Supervisor. Restore starts the five bridge watchers
+  # and Tools only through that Limited task (Invoke-WdSupervisorTaskBootstrapHeld)
+  # and then enables it (Enable-WdSupervisorTaskAfterRestore); starting them
+  # directly would run them outside that task. Refuse before the first fleet read.
+  throw ('Supervisor OFF: restore refused before any fleet read or mutation. The five bridge ' +
+    'watchers and Tools start only through a one-shot enable and start of the Limited ' +
+    'WD-Supervisor task, and restore enables that task afterwards; both are forbidden while ' +
+    'the operator holds WD-Supervisor OFF. Nothing was changed.')
 }
 $bundleManifestAnchor = ''
 if (-not $ManifestPath) {

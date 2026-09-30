@@ -55,6 +55,11 @@ Rules (fail-closed):
   (interrupted) entry blocks every later reservation.
 * ``observe()["last_admitted_utc"]`` is the latest entry's ``applied_utc`` (its reservation
   time, the value the hour rule needs); the name is the broker port's and is kept.
+* Time formats (Lead 7c8c3714): the ledger's OWN stamps (applied_utc, finished_utc, observed_utc,
+  initialized_utc) are UTC at FULL precision, always six fraction digits (YYYY-MM-DDTHH:MM:SS.ffffffZ).
+  An admission's admitted_utc is only ever the route's whole-second form (YYYY-MM-DDTHH:MM:SSZ). A
+  persisted legacy whole-second applied/finished stamp is unknown within its second, so the hour and the
+  clock-regression check read it one second later (never early); it is never rewritten or migrated.
 * A missing ledger, a leftover temp file (a crash between write and replace), an
   oversized, unparseable, duplicate-key, NaN, foreign-root, revision-inconsistent or
   schema-invalid ledger, and a clock earlier than a recorded time are UNKNOWN. They
@@ -297,6 +302,7 @@ def _admission_record(admission: Any) -> dict:
             and admission["schema"] == ADMISSION_SCHEMA and admission["verdict"] == ADMIT
             and admission["reasons"] == ["all_gates_passed"] and _hex(admission["intent_sha256"], HEX64)
             and _hex(admission["policy_sha256"], HEX64) and _parse_stamp(admission["admitted_utc"]) is not None
+            and len(admission["admitted_utc"]) == 20  # the route's whole-second form only (Lead 7c8c3714)
             and isinstance(tools, list) and len(tools) <= MAX_TOOLS
             and all(isinstance(tool, str) and 0 < len(tool) <= 128 for tool in tools)
             and admission["execution_allowed"] is False and admission["authority"] == "none"):

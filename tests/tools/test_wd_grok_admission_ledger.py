@@ -480,6 +480,7 @@ def test_a_replayed_admission_never_reserves_twice(ready, monkeypatch):
 
 
 @pytest.mark.parametrize("offset, wins", [(timedelta(0), True), (timedelta(seconds=60), True),
+                                          (timedelta(seconds=60, microseconds=1), False),  # full precision: late
                                           (timedelta(seconds=61), False), (timedelta(seconds=-1), False)])
 def test_the_admission_must_be_fresh_at_apply_time(ready, offset, wins):
     ledger = make(ready, clock=Clock(T0 + offset))
@@ -569,6 +570,7 @@ def test_the_clock_offset_is_read_once_and_never_taken_as_local_time(ready):
     admission(intent_sha256="1" * 63),
     admission(policy_sha256="E" * 64),
     admission(admitted_utc="2026-09-30T12:00:00+00:00"),
+    admission(admitted_utc="2026-09-30T12:00:00.000000Z"),  # the ledger's own six-digit form, never the route's
     admission(admitted_utc="٢٠٢٦-09-30T12:00:00Z"),  # non-ASCII digits
     admission(execution_allowed=True),
     admission(authority="operator"),

@@ -13,12 +13,14 @@ and refusal handling are unchanged, with two additions:
   build-consensus vote, an approval (including the generic {rco, pass}, approved and
   acknowledged tokens) or a veto-clearing status, as the union of every gate's vocabulary
   (Lead 0465f1d7 option a). It is a FORMAT floor and a shape label, never an authorization.
-  Compatibility boundary, deliberately conservative: a new decision/rco_review/finding line
-  with approval vocabulary (even acknowledged, approved, concur, agree) and any
-  veto-clearing line now needs the head, as does a status mixing approval and veto tokens.
-  A canonical veto (the exact block statuses, changes_requested..., a canonical RCO's
-  finding) and the general types the gates never count (message, ack, handoff, ...) are
-  never floored. The READ path (``validate_event``/``validate_event_line``) stays exactly core
+  Compatibility boundary, deliberately conservative: a new decision/rco_review line, or a
+  finding by a non-canonical agent, with approval vocabulary (even acknowledged, approved,
+  concur, agree) and a veto-clearing line on those types now needs the head (for example
+  the ~11 historical headless decision/acknowledged lines would be refused if written anew).
+  The veto channel is never floored (RCO1 e855cb79): a canonical RCO's finding (a veto by type,
+  whatever its status), any status the changes gate classifies as a block (its
+  _is_blocking_status, ported source-equivalently, so a mixed approval/block status stays
+  writable), and the general types the gates never count (message, ack, handoff, ...). The READ path (``validate_event``/``validate_event_line``) stays exactly core
   at all times, so the historical log keeps validating. Read acceptance is shape validity,
   NEVER approval: each gate binds its own semantics (exact head, task, CI, author). Readers can
   use ``commit_head_status`` to label a line's head format.
@@ -110,12 +112,30 @@ FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES = frozenset({
     "concurrence", "payload_corrected", "addressed_exact_head_ci_pending", "resolved", "resolved_ci_green",
     "resolved_ci_pending", "cleared", "cleared_ci_green", "cleared_ci_pending", "block_clear", "block_cleared",
     "block_resolved", "retracted", "withdrawn"})
-FLOOR_EXACT_BLOCK_STATUSES = frozenset({"changes_requested", "rco_block", "blocked", "rco_blocked",
-                                        "block_requested"})
+# check_bridge_changes_requested._is_blocking_status and its helpers, ported SOURCE-EQUIVALENTLY
+# (RCO1 e855cb79 S1): a status that gate classifies as a block is never approval-shaped, so a
+# mixed approval/block status (rco_pass_blocked, rco_retraction_acknowledged_head_blocked) stays
+# writable without a head. A drift fixture compares every constant and the behaviour with the gate.
+GATE_BLOCKING_STATUSES = frozenset({"changes_requested", "rco_block", "blocked", "rco_blocked", "block_requested"})
+GATE_BLOCKING_EVENT_TYPES = frozenset({"decision", "rco_review", "finding", "blocked", "test"})
+GATE_BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
+GATE_BLOCKING_RESOLUTION_TOKENS = frozenset({"clear", "cleared", "resolved", "retracted", "withdrawn"})
+GATE_BLOCKING_RESOLUTION_NEGATION_TOKENS = frozenset({
+    "active", "arent", "cannot", "cant", "denied", "failed", "failing", "fails", "incomplete", "isnt", "never",
+    "no", "not", "open", "ongoing", "outstanding", "persist", "persistent", "persisting", "persists", "refused",
+    "rejected", "still", "uncleared", "unresolved", "unretracted", "unwithdrawn", "wont", "without", "yet"})
+GATE_BLOCKING_CLEAR_COORDINATION_TOKENS = frozenset({"needed", "required", "request", "requested", "supersede",
+                                                     "superseded"})
+GATE_BLOCKING_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
+GATE_NON_BLOCKING_BLOCK_PHRASES = frozenset({"not_blocked", "not_blocking", "not_a_blocker"})
+GATE_NON_BLOCKING_CONTEXT_STATUS_PREFIXES = ("ack_", "acknowledged_", "answered_", "received_")
+GATE_NON_BLOCKING_CONTEXT_STATUS_SEGMENTS = ("_advisory_", "_corrected_", "_correction_", "_forwarded_",
+                                             "_no_remaining_issues_", "_open_followup_", "_resolves_",
+                                             "_still_monitoring_")
 FLOOR_APPROVAL_TYPES = frozenset({"decision", "rco_review", "finding"})
 FLOOR_CLEAR_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
 FLOOR_DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})  # a generic done is never an approval
-FLOOR_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2"})   # the canonical RCOs: a finding is a veto
+FLOOR_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2"})   # canonical RCOs: their finding is a veto BY TYPE
 # Compatibility names (7f070e36): every exact approval status, the approval types, the done approval.
 COMMIT_HEAD_STATUSES = FLOOR_APPROVAL_STATUSES | FLOOR_BUILD_CONSENSUS_STATUSES
 COMMIT_HEAD_TYPES = FLOOR_APPROVAL_TYPES
@@ -470,7 +490,7 @@ def validate_event_for_write(event: Mapping[str, Any], *,
     session_id and a named observer. A reserved role on any other agent is refused. Ordinary
     agents are unaffected (their identity binding stays with the registry checks).
 
-    F12: every new commit approval (see ``COMMIT_HEAD_STATUSES``/``COMMIT_HEAD_TYPES``) must
+    F12: every new approval-shaped line (see ``approval_shape``; never a canonical RCO's finding) must
     carry the exact full head, with no time-based exemption; the event's own ``ts_utc`` never
     relaxes it. This is a FORMAT floor, not an approval: the gates still bind the head to the
     PR, the task, CI and the author. F23 is checked first."""
@@ -502,23 +522,80 @@ def _clear_shaped(status: str) -> bool:
     return False
 
 
-def _exact_block(status: str) -> bool:
-    """The first, exact block rules of check_bridge_changes_requested._is_blocking_status. A
-    canonical veto (changes_requested..., blocked, rco_block...) is therefore never floored."""
+def _gate_status_tokens(status: str) -> set:
+    """check_bridge_changes_requested._status_tokens."""
+    return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+
+
+def _gate_non_blocking_context(status: str) -> bool:
+    """check_bridge_changes_requested._has_non_blocking_context_status."""
     normalized = _separated(status)
-    if normalized in FLOOR_EXACT_BLOCK_STATUSES:
+    if normalized.startswith(GATE_NON_BLOCKING_CONTEXT_STATUS_PREFIXES):
+        return True
+    bounded = f"_{normalized}_"
+    return any(segment in bounded for segment in GATE_NON_BLOCKING_CONTEXT_STATUS_SEGMENTS)
+
+
+def _gate_non_blocking_block_phrase(status: str) -> bool:
+    """check_bridge_changes_requested._has_non_blocking_block_phrase."""
+    normalized = _separated(status)
+    if (normalized.startswith(("block_", "blocked_", "rco_block")) or "block_requested" in normalized
+            or "changes_requested" in normalized):
+        return False
+    bounded = f"_{normalized}_"
+    return any(f"_{phrase}_" in bounded for phrase in GATE_NON_BLOCKING_BLOCK_PHRASES)
+
+
+def _gate_blocking(status: str, event_type: str = "") -> bool:
+    """check_bridge_changes_requested._is_blocking_status, ported SOURCE-EQUIVALENTLY (the drift
+    fixture compares it with the gate's own function over a corpus). A block there is never an
+    approval there, so the floor must never refuse it: refusing to record a veto fails open."""
+    normalized = _separated(status)
+    normalized_event_type = _separated(event_type)
+    if normalized_event_type and normalized_event_type not in GATE_BLOCKING_EVENT_TYPES:
+        return False
+    if normalized in GATE_BLOCKING_STATUSES:
         return True
     for prefix in FLOOR_CHANGES_REQUESTED_PREFIXES:
         if normalized == prefix:
             return True
-        if normalized.startswith(prefix + "_"):
-            return normalized[len(prefix) + 1:] not in FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES
-    return False
+        if not normalized.startswith(prefix + "_"):
+            continue
+        suffix = normalized[len(prefix) + 1:]
+        if not suffix:
+            return True
+        if suffix in FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES:
+            return False
+        return True
+    if _clear_shaped(status):
+        return False
+    if _gate_non_blocking_context(status):
+        return False
+    if _gate_non_blocking_block_phrase(status):
+        return False
+    tokens = _gate_status_tokens(status)
+    if {"changes", "requested"}.issubset(tokens):
+        return True
+    if not tokens.intersection(GATE_BLOCKING_WORD_TOKENS):
+        return False
+    if "rco" in tokens:
+        return True
+    if tokens.intersection(GATE_BLOCKING_RESOLUTION_TOKENS):
+        if tokens.intersection(GATE_BLOCKING_RESOLUTION_NEGATION_TOKENS):
+            return True
+        return False
+    if "preflight" in tokens and tokens.intersection(GATE_BLOCKING_CLEAR_TOKENS):
+        return False
+    if tokens.intersection(GATE_BLOCKING_CLEAR_TOKENS) and tokens.intersection(GATE_BLOCKING_CLEAR_COORDINATION_TOKENS):
+        return False
+    if {"classifier", "artifact"}.issubset(tokens) and "veto" in tokens and tokens.intersection({"no", "false"}):
+        return False
+    return True
 
 
 def _approval_tokens(status: str) -> bool:
     """check_bridge_changes_requested._is_approval_status's generic token rule."""
-    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    tokens = _gate_status_tokens(status)
     return {"rco", "pass"} <= tokens or bool(tokens & FLOOR_APPROVAL_TOKENS)
 
 
@@ -526,23 +603,27 @@ def approval_shape(event: BridgeEvent) -> str | None:
     """How the gates would CLASSIFY this line: ``rco_pass``, ``build_consensus``, ``approval``,
     ``veto_clear``, or None for a general line the gates never count. A shape for the F12 format
     floor, NEVER an authorization: whether a line counts is still each gate's decision (agent,
-    task, exact head, CI, author). Deliberately conservative: a status that also carries veto
-    tokens (for example ``rco_pass_blocked``) is approval-shaped here although
-    check_bridge_changes_requested classifies it as a block first; only its EXACT block rules
-    are mirrored, so a canonical veto is never floored."""
+    task, exact head, CI, author).
+
+    The veto channel comes first (RCO1 e855cb79 B1): a canonical RCO's ``finding`` is a veto BY TYPE
+    in check_bridge_changes_requested, whatever its status (even clear- or pass-looking), so it is
+    NEVER floored; refusing to record a veto would fail open. idle_consensus_auto_merge's counting
+    of such a finding as a pass or a clear is that gate's own ordering issue, for a separate
+    operator-explicit gate change. A status the changes gate classifies as a block (the ported
+    ``_gate_blocking``) is never approval-shaped by the changes-gate token rule either."""
     kind, status = event.type.lower(), event.status.lower()
+    if kind == "finding" and event.agent in FLOOR_RCO_AGENTS:
+        return None
     kind_separated = _separated(event.type)
     if _clear_shaped(event.status) and (kind in FLOOR_CLEAR_TYPES or kind_separated in FLOOR_CLEAR_TYPES
                                         or not kind_separated):
         return "veto_clear"
     if kind in FLOOR_APPROVAL_TYPES:
         if status in FLOOR_RCO_PASS_STATUSES:
-            return "rco_pass"   # counted even on a canonical RCO's finding (idle_consensus_auto_merge)
-        if kind == "finding" and event.agent in FLOOR_RCO_AGENTS:
-            return None         # otherwise a canonical RCO's finding is a veto by type, never an approval
+            return "rco_pass"
         if status in FLOOR_BUILD_CONSENSUS_STATUSES:
             return "build_consensus"
-        if status in FLOOR_APPROVAL_STATUSES or (not _exact_block(event.status) and _approval_tokens(status)):
+        if (status in FLOOR_APPROVAL_STATUSES or _approval_tokens(status)) and not _gate_blocking(event.status, kind):
             return "approval"
     if kind == "done" and status in FLOOR_DONE_APPROVAL_STATUSES:
         return "approval"
@@ -778,7 +859,8 @@ __all__ = [
     "FLOOR_CLEAR_STATUSES",
     "FLOOR_CHANGES_REQUESTED_PREFIXES",
     "FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES",
-    "FLOOR_EXACT_BLOCK_STATUSES",
+    "GATE_BLOCKING_STATUSES",
+    "GATE_BLOCKING_EVENT_TYPES",
     "FLOOR_APPROVAL_TYPES",
     "FLOOR_CLEAR_TYPES",
     "FLOOR_DONE_APPROVAL_STATUSES",

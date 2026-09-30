@@ -11,7 +11,6 @@ import importlib
 import itertools
 import json
 from pathlib import Path
-import re
 
 import pytest
 
@@ -234,11 +233,11 @@ EXACT_APPROVALS = ("rco_pass", "rco_pass_pending_ci", "build_consensus_pass", "a
 APPROVALS = [(kind, status, PEER if kind == "finding" else RCO)
              for kind in ("decision", "rco_review", "finding") for status in EXACT_APPROVALS]
 APPROVALS += [
-    ("finding", "rco_pass", RCO),                        # counted as an RCO pass by idle_consensus_auto_merge
+    ("finding", "rco_pass", PEER),                       # a NON-canonical agent's finding is classified by status
     ("done", "approved_ci_green", RCO),
     ("decision", "no_changes_requested", RCO), ("rco_review", "changes_requested_retracted", RCO),   # veto clears
     ("test", "changes_requested_resolved", PEER), ("done", "approved_waiver_block_cleared", PEER),
-    ("finding", "no_changes_requested_approved", RCO),   # idle counts a clear from any agent
+    ("finding", "no_changes_requested_approved", PEER),
     ("decision", "RCO_PASS", RCO), ("Decision", "rco_pass", RCO), ("RCO_REVIEW", "Rco_Pass", RCO),  # mixed case
     ("decision", "rco-pass", RCO), ("rco_review", "rco pass final", RCO),                           # generic tokens
     ("decision", "not_approved", PEER), ("decision", "Acknowledged receipt", PEER),                 # gate tokens
@@ -262,9 +261,10 @@ BAD_HEADS = [
 
 
 def _gates():
-    return (pytest.importorskip("tools.check_rco_pass_present"),
-            pytest.importorskip("tools.check_bridge_changes_requested"),
-            pytest.importorskip("tools.idle_consensus_auto_merge"))
+    # A renamed or missing gate FAILS these drift tests loudly (no importorskip fallback; RCO1 e855cb79).
+    return (importlib.import_module("tools.check_rco_pass_present"),
+            importlib.import_module("tools.check_bridge_changes_requested"),
+            importlib.import_module("tools.idle_consensus_auto_merge"))
 
 
 def test_the_floor_vocabulary_covers_every_gate_set():
@@ -285,10 +285,41 @@ def test_the_floor_vocabulary_covers_every_gate_set():
     assert changes.CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES <= schema.FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES
     assert set(changes.CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES) == set(schema.FLOOR_CHANGES_REQUESTED_PREFIXES)
     # Exemptions (floor subset of gate): the floor never exempts more than the gate itself does.
-    assert schema.FLOOR_EXACT_BLOCK_STATUSES <= changes.BLOCKING_STATUSES
     assert schema.FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES <= changes.CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES
     assert schema.FLOOR_RCO_AGENTS <= changes._RECOGNIZED_RCOS
-    assert schema.COMMIT_HEAD_STATUSES == schema.FLOOR_APPROVAL_STATUSES | schema.FLOOR_BUILD_CONSENSUS_STATUSES
+    # The ported block classifier is source-equivalent: every constant EQUALS the gate's own.
+    assert schema.GATE_BLOCKING_STATUSES == changes.BLOCKING_STATUSES
+    assert schema.GATE_BLOCKING_EVENT_TYPES == changes.BLOCKING_EVENT_TYPES
+    assert schema.GATE_BLOCKING_CLEAR_TOKENS == changes.BLOCKING_CLEAR_TOKENS
+    assert schema.GATE_BLOCKING_RESOLUTION_TOKENS == changes.BLOCKING_RESOLUTION_TOKENS
+    assert schema.GATE_BLOCKING_RESOLUTION_NEGATION_TOKENS == changes.BLOCKING_RESOLUTION_NEGATION_TOKENS
+    assert schema.GATE_BLOCKING_CLEAR_COORDINATION_TOKENS == changes.BLOCKING_CLEAR_COORDINATION_TOKENS
+    assert schema.GATE_BLOCKING_WORD_TOKENS == changes.BLOCKING_WORD_TOKENS
+    assert schema.GATE_NON_BLOCKING_BLOCK_PHRASES == changes.NON_BLOCKING_BLOCK_PHRASES
+    assert tuple(schema.GATE_NON_BLOCKING_CONTEXT_STATUS_PREFIXES) == tuple(changes.NON_BLOCKING_CONTEXT_STATUS_PREFIXES)
+    assert tuple(schema.GATE_NON_BLOCKING_CONTEXT_STATUS_SEGMENTS) == tuple(changes.NON_BLOCKING_CONTEXT_STATUS_SEGMENTS)
+    assert schema.FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES == changes.CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES
+
+
+BLOCKING_EXTRAS = ("not_blocked", "not_a_blocker", "preflight_clear_blocked", "classifier_artifact_veto_no_block",
+                   "blocked_pending_clear", "block_requested_withdrawn", "changes requested", "RCO-Blocked",
+                   "unresolved_block", "block_cleared_required", "ack_block", "rco_blocked_withdrawn",
+                   "rco_retraction_acknowledged_head_blocked", "repeat_block_acknowledged_no_reopen",
+                   "rco_pass_blocked", "approved_but_blocked", "resolved_block_still_open", "cleared_block")
+
+
+def test_the_ported_blocking_classifier_equals_the_gates_own():
+    """Behavioural drift fixture: the kernel port answers exactly as the gate over a wide corpus."""
+    schema, gates = _kernel("bridge_v2_event_schema"), _gates()
+    changes = gates[1]
+    types = sorted({kind.lower() for kind in CORPUS_TYPES} | {"", "Blocked", "rco-review"})
+    compared = 0
+    for status in _corpus_statuses(gates) + list(BLOCKING_EXTRAS):
+        for kind in types:
+            assert schema._gate_blocking(status, kind) == changes._is_blocking_status(status, event_type=kind), \
+                (status, kind)
+            compared += 1
+    assert compared > 1000, compared
 
 
 def _gate_counts(gates, kind, status, agent):
@@ -297,6 +328,11 @@ def _gate_counts(gates, kind, status, agent):
     rco, changes, idle = gates
     t_low, s_low = kind.lower(), status.lower()
     canonical = agent in changes._RECOGNIZED_RCOS
+    if t_low == "finding" and canonical:
+        # The veto channel first (RCO1 e855cb79 B1): the changes gate latches a canonical RCO's finding as a
+        # VETO by type, whatever its status. idle's own counting of it (a pass or a clear) is that gate's
+        # ordering issue, out of this scope and pinned by the residual test below.
+        return False
     if t_low in rco.DECISION_TYPES_FOR_PASS and s_low in rco.RCO_PASS_STATUSES:
         return True                                                               # check_rco_pass_present
     if idle._is_consensus_clear(s_low, event_type=t_low):
@@ -415,17 +451,53 @@ def test_f12_general_lines_and_canonical_vetoes_are_never_floored():
         assert schema.commit_head_status(schema.validate_event(event)) == "not_approval_shaped"
 
 
-@pytest.mark.parametrize("status", ["rco_pass_blocked", "approved_but_blocked"])
-def test_f12_mixed_approval_and_veto_vocabulary_is_deliberately_floored(status):
-    # check_bridge_changes_requested classifies these as blocks first; the floor still asks for the head
-    # (conservative refusal of an ambiguous line). A canonical veto spelling is never floored (above).
+CANONICAL_FINDING_STATUSES = ("changes_requested_concurrence", "changes_requested_retracted",
+                              "changes_requested_withdrawn", "changes_requested_resolved",
+                              "no_changes_requested_approved", "rco_pass", "RCO_PASS", "approved", "acknowledged")
+
+
+@pytest.mark.parametrize("agent", sorted({"claude-rco-1", "claude-rco-2"}))
+@pytest.mark.parametrize("kind", ["finding", "Finding"])
+@pytest.mark.parametrize("status", CANONICAL_FINDING_STATUSES)
+def test_f12_a_canonical_rco_finding_is_never_floored_whatever_its_status(agent, kind, status):
+    """RCO1 e855cb79 B1: a veto that cannot be written fails open. The live shape is claude-rco-1
+    finding/changes_requested_concurrence with payload {} and no head."""
     schema = _kernel("bridge_v2_event_schema")
-    headless = _event(type="decision", status=status, message="ambiguous", payload={})
+    veto = _event(type=kind, status=status, agent=agent, message="This is an RCO block", payload={})
+    assert schema.validate_event_for_write(veto).status == status                 # written, no head needed
+    assert schema.approval_shape(schema.validate_event(veto)) is None
+    peer = dict(veto, agent=PEER)                                                  # twin: a peer's finding IS floored
     with pytest.raises(ValueError, match="lowercase 40-hex"):
-        schema.validate_event_for_write(headless)
-    assert schema.validate_event(headless).status == status                          # read: accepted like core
-    good = dict(headless, message="at " + HEAD, payload={"head": HEAD})
-    assert schema.validate_event_for_write(good).payload["head"] == HEAD            # success twin
+        schema.validate_event_for_write(peer)
+    good = dict(peer, message="at " + HEAD, payload={"head": HEAD})
+    assert schema.validate_event_for_write(good).payload["head"] == HEAD
+
+
+@pytest.mark.parametrize("status", ["rco_pass_blocked", "approved_but_blocked", "rco_retraction_acknowledged_head_blocked",
+                                    "repeat_block_acknowledged_no_reopen", "approved_but_rco_blocked"])
+def test_f12_a_status_the_changes_gate_calls_a_block_is_never_floored(status):
+    # RCO1 e855cb79 S1: check_bridge_changes_requested classifies these as BLOCKS before any approval token,
+    # and no other gate counts them, so a headless write must stay possible (the veto channel).
+    schema, changes = _kernel("bridge_v2_event_schema"), _gates()[1]
+    assert changes._is_blocking_status(status, event_type="decision")               # the gate's own verdict
+    for agent in (PEER, RCO):
+        block = _event(type="decision", status=status, agent=agent, message="still blocked", payload={})
+        assert schema.validate_event_for_write(block).status == status
+        assert schema.approval_shape(schema.validate_event(block)) is None
+    twin = _event(type="decision", status="acknowledged_and_approved", agent=PEER, message="no head", payload={})
+    with pytest.raises(ValueError, match="lowercase 40-hex"):                          # twin: no block word, floored
+        schema.validate_event_for_write(twin)
+
+
+def test_idle_counting_of_a_canonical_rco_finding_is_a_disclosed_gate_residual():
+    """Pinned, not hidden: idle_consensus_auto_merge counts a clear (and an rco_pass) on a canonical RCO's
+    finding before any type latch, while the changes gate vetoes it by type. The floor follows the veto
+    channel and never refuses it; the idle ordering needs its own operator-explicit gate change. When
+    that lands, the first assertion flips and this test must be updated deliberately."""
+    schema, idle = _kernel("bridge_v2_event_schema"), _gates()[2]
+    assert idle._is_consensus_clear("changes_requested_concurrence", event_type="finding")
+    veto = _event(type="finding", status="changes_requested_concurrence", agent=RCO, payload={})
+    assert schema.approval_shape(schema.validate_event(veto)) is None
 
 
 def test_f12_write_guard_composes_with_the_reserved_provenance_gate():

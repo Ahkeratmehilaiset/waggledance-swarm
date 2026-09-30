@@ -76,12 +76,22 @@ def test_kernel_modules_never_import_the_product_package(name):
         assert dynamic not in source, (name, dynamic)
 
 
+# The ONE intended source difference (Tools c013708e): the core original sits two levels below its repo, the
+# tools port one level, so each finds its OWN repo's configs file through its own depth (never the CWD).
+_CORE_REGISTRY_ROOT = 'Path(__file__).resolve().parents[2] / "configs" / "bridge_identity_registry.json"'
+_PORT_REGISTRY_ROOT = 'Path(__file__).resolve().parents[1] / "configs" / "bridge_identity_registry.json"'
+
+
 @pytest.mark.parametrize("name", ["bridge_v2_request_contract", "bridge_v2_identity_registry", "bridge_v2_log_reader"])
 def test_pure_ports_equal_the_core_source(name):
     core = ROOT / "waggledance" / "core" / f"{KERNEL[name]}.py"
     if not core.is_file():
         pytest.skip("core module absent")
-    assert _source(ROOT / "tools" / f"{name}.py") == _source(core)
+    expected = _source(core)
+    if name == "bridge_v2_identity_registry":
+        assert expected.count(_CORE_REGISTRY_ROOT) == 1   # the normalization is exact and never vacuous
+        expected = expected.replace(_CORE_REGISTRY_ROOT, _PORT_REGISTRY_ROOT)
+    assert _source(ROOT / "tools" / f"{name}.py") == expected
 
 
 def test_the_workflow_port_differs_from_core_only_by_its_import():

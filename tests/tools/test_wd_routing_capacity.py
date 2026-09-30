@@ -344,7 +344,17 @@ ROW_CASES = [
 def test_compose_needs_exactly_one_row_of_the_lanes_own_subject(subjects, rows, reasons):
     out = _compose(subjects=subjects, rows=rows)
     assert (out["capacity"][0]["verdict"], out["capacity"][0]["reasons"]) == ("unknown", reasons)
+    # RCO2 N-V3a (21:01:10Z): every unknown record still names the lane and profile it is about.
+    assert (out["capacity"][0]["worker"], out["capacity"][0]["profile_id"]) == ("codex-tools-1", "codex-sol-high")
     assert out["advice"]["unknown"] == {"codex-tools-1": ["capacity_unknown_or_stale"]}
+
+
+@pytest.mark.parametrize("subject", [SUBJECT, " ", {"kind": "account", "id": SUBJECT}, dict(BOUND, provider="codex")],
+                         ids=["text", "blank", "kind_unknown", "extra_key"])
+def test_an_unbound_subject_keeps_the_adapter_record_attributed(subject):
+    record = evidence(worker=dict(WORKER, subject=subject))
+    assert (record["worker"], record["profile_id"], record["reasons"], record["capacity"]) == (
+        "codex-tools-1", "codex-sol-high", ["subject_unbound"], None)
 
 
 def test_v3_a_lane_never_takes_capacity_from_another_providers_quota_row():

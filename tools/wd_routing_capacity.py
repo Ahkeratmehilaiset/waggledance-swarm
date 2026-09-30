@@ -157,7 +157,6 @@ def _worker(worker: Any) -> dict:
     _need(type(worker) is dict and set(worker) == WORKER_KEYS, "worker_invalid")
     _need(type(worker["worker"]) is str and worker["worker"] in MEMBERS, "worker_invalid")
     _need(_label(worker["profile_id"], 128), "worker_invalid")
-    _need(_subject(worker["subject"]) is not None, "subject_unbound")
     return worker
 
 
@@ -236,6 +235,8 @@ def capacity_evidence(worker: Any, row: Any, paced: Any, signed_policy: Any, now
         _need(record["evidence_digest"] is not None, "input_not_plain_data")
         own = _worker(worker)
         record.update(worker=own["worker"], profile_id=own["profile_id"])
+        # Checked only after the record names its worker and profile, so an unbound lane stays attributed (N-V3a).
+        _need(_subject(own["subject"]) is not None, "subject_unbound")
         policy, pin = _policy(signed_policy)
         record["policy_sha256"] = pin
         provider, pool, observed, expires = _row(row, own, policy, current)

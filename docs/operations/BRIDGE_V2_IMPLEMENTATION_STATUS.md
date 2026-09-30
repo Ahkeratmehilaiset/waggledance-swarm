@@ -1,5 +1,21 @@
 # Bridge v2 implementation status and ready queue (F0-F30)
 
+## Provider-bound capacity source composition (2026-09-30 21:12Z)
+
+The prepared source composes Fable's frozen
+`a132ebba83a67f07e8f6b17f37d96ba1d4838c20` provider-binding repair.
+A quota row supplies capacity only when its provider, a typed `{kind, id}`
+subject and the caller's signed `profile_providers` policy agree. Untyped or
+unproven subjects stay unknown; unknown records retain their lane attribution.
+The policy pin is not itself signature verification or proof of a lane's
+current profile. No collector, production caller or activation is added.
+
+W1's typed-subject representation is a separately assigned source slice;
+its existing text-only evidence cannot establish known capacity. W3 load and
+claim-intent source is under independent review and is not an atomic reservation.
+Installed signed `7779e9a2`, Supervisor OFF, policy OFF and merge-driver HOLD
+remain unchanged. This source composition is not a new release or deployment.
+
 ## Passive source composition (2026-09-30 20:45Z)
 
 The prepared integration source composes Tools' exact
@@ -15,7 +31,7 @@ facts. Installed `7779e9a2` is unchanged. The combined release, final manifest,
 independent acceptance and new exact operator signature are still pending.
 Supervisor OFF, source policy OFF and merge-driver HOLD remain in force.
 
-## Current source inventory (2026-09-30; supersedes historical status below)
+## Source inventory at 7779e9a2/c1400f20 (historical; F5/F6 superseded above)
 
 Installed package reference for this preparation wave:
 `7779e9a2145c82389dd97c333bbe3112e3c29ff0`, deployment-manifest SHA256

@@ -10,22 +10,29 @@ the worker unknown, never ready. This module reads no file, clock, environment, 
 provider or bridge, and it never raises for ordinary input errors.
 
 Inputs:
-* ``worker``: {worker, profile_id, subject}. ``subject`` is the lane's own quota subject (the
-  Codex auth context id or the Claude native session id) from the caller's lane evidence.
+* ``worker``: {worker, profile_id, subject}. ``subject`` is the lane's own quota subject in the
+  pool-binding receipt's provider-typed shape {kind, id}: {"auth_context", the 64-hex Codex auth
+  context id} or {"native_session", the Claude native session id}. A bare text subject names no
+  provider and is unknown (subject_unbound): a Codex lane bound to a Claude session id once took
+  that Claude pool's capacity and routed (RCO2 V3).
 * ``row``: one observation row of ``bridge_capacity_collector.status()``: a
   ``wd.capacity-observation.v1`` with its ``freshness`` label and, when bound, the verified
   pool binding that ``apply_pool_binding`` stored.
 * ``paced``: the output of ``wd_capacity_pacing.pace_windows`` over the observer's samples.
 * ``signed_policy``: {"policy": P, "sha256": pin}, and the canonical digest of P must equal
   the pin. P names the accepted freshness labels per provider, the maximum observation age,
-  and for each pool its billing (included or paid) and mode (normal or conserve). The caller
-  verifies the signature behind the pin; this module only binds to it.
+  for each pool its billing (included or paid) and mode (normal or conserve), and in
+  ``profile_providers`` the provider each profile runs on. A row is this worker's only when the
+  row's provider, the subject's kind and the signed provider of the worker's profile all agree;
+  a profile the policy does not bind is unknown (profile_provider_unsigned), never guessed from
+  its name. The caller verifies the signature behind the pin; this module only binds to it.
 * ``now``: an aware ``datetime``, like the collector and the pacer take. The router takes the
   ISO string of the same instant; any other ``now`` is unknown (clock_invalid).
 
 Each of these makes the capacity unknown (verdict "unknown", capacity None) with a stable
 reason: malformed or non-plain input, a policy that is malformed or does not match its pin,
-a row for another subject, a failed, stale or future observation, a freshness label the
+a subject without a provider kind, a row of another provider or subject, a profile whose
+provider the policy does not sign, a failed, stale or future observation, a freshness label the
 policy does not accept, a pool that is not a verified binding or whose binding expired, a
 pool the policy does not price, unknown quota windows, and any observed window the pacer
 did not pace in the same window instance with a measured rate. Claude rows carry
@@ -48,8 +55,9 @@ reported as paid, and the router refuses paid capacity. Authority: none;
 ``compose(task, workers, subjects, rows, paced, signed_policy, prepared_artifacts,
 routing_policy, now)`` is the one pure entry a caller needs: it gives each lane worker the
 capacity block ``capacity_evidence`` proves from its own quota row, or none, and then asks
-``wd_task_router.decide`` once. ``subjects`` maps a worker name to its quota subject. A lane
-needs exactly one row of that subject; none or several leave it unknown. A capacity block
+``wd_task_router.decide`` once. ``subjects`` maps a worker name to its provider-typed quota
+subject. A lane needs exactly one row of that subject from that subject's provider; none or
+several leave it unknown. A capacity block
 that a worker record already carries is dropped, so capacity reaches the router only through
 this adapter. Grok has no measured capacity source (its helper never observes the provider
 quota), so a Grok record carries none and the router keeps Grok unranked. ``now`` is one
@@ -61,7 +69,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from tools.bridge_capacity_collector import POOL_SUBJECT_FIELDS, quota_details
-from tools.bridge_pool_binding import POOL_ID_RE, _aware_utc
+from tools.bridge_pool_binding import HEX64, POOL_ID_RE, SESSION_RE, SUBJECT_KEYS, SUBJECT_KINDS, _aware_utc
 from tools.lane_profile_record import _utc
 from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS
 from tools.wd_composer_select import digest
@@ -79,7 +87,8 @@ BILLING = ("included", "paid")
 POOL_MODES = ("normal", "conserve")
 PACED_VERDICTS = ("exhausted", "overrun", "on_pace", "underused")
 WORKER_KEYS = frozenset({"worker", "profile_id", "subject"})
-POLICY_KEYS = frozenset({"schema", "max_observation_age_seconds", "accepted_freshness", "pools"})
+POLICY_KEYS = frozenset({"schema", "max_observation_age_seconds", "accepted_freshness", "pools", "profile_providers"})
+PROVIDER_OF_KIND = {kind: provider for provider, kind in SUBJECT_KINDS.items()}
 POOL_KEYS = frozenset({"billing", "mode"})
 MAX_OBSERVATION_AGE_SECONDS = 3600
 MAX_RESET_EPOCH = 253402300799  # the collector's own upper bound for a window reset
@@ -106,6 +115,19 @@ def _number(value: Any) -> bool:
     return type(value) in (int, float) and value == value and value not in (float("inf"), float("-inf"))
 
 
+def _subject(value: Any) -> tuple[str, str] | None:
+    """(provider, id) of a provider-typed quota subject: the pool-binding receipt's own {kind, id} shape, the kind
+    naming the provider (auth_context: codex, a 64-hex id; native_session: claude). A bare text subject names no
+    provider, so it is None (RCO2 V3)."""
+    if type(value) is not dict or set(value) != SUBJECT_KEYS:
+        return None
+    kind, ident = value["kind"], value["id"]
+    if type(kind) is not str or kind not in PROVIDER_OF_KIND or type(ident) is not str:
+        return None
+    pattern = HEX64 if kind == "auth_context" else SESSION_RE
+    return (PROVIDER_OF_KIND[kind], ident) if pattern.fullmatch(ident) is not None else None
+
+
 def _policy(signed: Any) -> tuple[dict, str]:
     _need(type(signed) is dict and set(signed) == {"policy", "sha256"}, "policy_invalid")
     policy, pin = signed["policy"], signed["sha256"]
@@ -124,13 +146,17 @@ def _policy(signed: Any) -> tuple[dict, str]:
         type(pool) is str and POOL_ID_RE.fullmatch(pool) is not None and type(entry) is dict
         and set(entry) == POOL_KEYS and entry["billing"] in BILLING and entry["mode"] in POOL_MODES
         for pool, entry in pools.items()), "policy_invalid")
+    # The signed provider of each profile: the only proof that binds a lane to a provider's quota rows (RCO2 V3).
+    profiles = policy["profile_providers"]
+    _need(type(profiles) is dict and all(_label(profile, 128) and provider in PROVIDERS
+                                         for profile, provider in profiles.items()), "policy_invalid")
     return policy, pin
 
 
 def _worker(worker: Any) -> dict:
     _need(type(worker) is dict and set(worker) == WORKER_KEYS, "worker_invalid")
     _need(type(worker["worker"]) is str and worker["worker"] in MEMBERS, "worker_invalid")
-    _need(_label(worker["profile_id"], 128) and _label(worker["subject"]), "worker_invalid")
+    _need(_label(worker["profile_id"], 128), "worker_invalid")
     return worker
 
 
@@ -140,7 +166,12 @@ def _row(row: Any, worker: dict, policy: dict, now: datetime) -> tuple[str, str,
     provider = row.get("provider")
     _need(type(provider) is str and provider in PROVIDERS, "observation_invalid")
     _need(row.get("reason") != "collection_failed", "observation_failed")
-    _need(row.get(POOL_SUBJECT_FIELDS[provider]) == worker["subject"], "subject_mismatch")
+    subject_provider, subject_id = _subject(worker["subject"])
+    _need(provider == subject_provider, "provider_mismatch")
+    _need(row.get(POOL_SUBJECT_FIELDS[provider]) == subject_id, "subject_mismatch")
+    signed_provider = policy["profile_providers"].get(worker["profile_id"])
+    _need(signed_provider is not None, "profile_provider_unsigned")
+    _need(signed_provider == provider, "provider_mismatch")
     freshness = row.get("freshness")
     _need(type(freshness) is str and freshness in policy["accepted_freshness"][provider],
           "freshness_not_accepted")
@@ -204,6 +235,8 @@ def capacity_evidence(worker: Any, row: Any, paced: Any, signed_policy: Any, now
         _need(record["evidence_digest"] is not None, "input_not_plain_data")
         own = _worker(worker)
         record.update(worker=own["worker"], profile_id=own["profile_id"])
+        # Checked only after the record names its worker and profile, so an unbound lane stays attributed (N-V3a).
+        _need(_subject(own["subject"]) is not None, "subject_unbound")
         policy, pin = _policy(signed_policy)
         record["policy_sha256"] = pin
         provider, pool, observed, expires = _row(row, own, policy, current)
@@ -238,14 +271,22 @@ def _unknown(worker: str, profile_id: Any, reasons: list[str]) -> dict:
 
 
 def _row_for(rows: Any, subject: Any) -> tuple[Any, list[str]]:
-    """The one observation row of this quota subject, or why there is none."""
-    if not _label(subject):
+    """The one observation row of this quota subject, or why there is none. A provider-typed subject matches rows of
+    its own provider only. A bare text subject is looked up as before, but it names no provider, so the adapter
+    never turns its row into a capacity (subject_unbound, RCO2 V3)."""
+    bound = _subject(subject)
+    if bound is None and not _label(subject):
         return None, ["subject_unknown"]
     if type(rows) is not list:
         return None, ["observations_invalid"]
     try:
-        matches = [row for row in rows if type(row) is dict and row.get("provider") in PROVIDERS
-                   and row.get(POOL_SUBJECT_FIELDS[row["provider"]]) == subject]
+        if bound is None:
+            matches = [row for row in rows if type(row) is dict and row.get("provider") in PROVIDERS
+                       and row.get(POOL_SUBJECT_FIELDS[row["provider"]]) == subject]
+        else:
+            provider, ident = bound
+            matches = [row for row in rows if type(row) is dict and row.get("provider") == provider
+                       and row.get(POOL_SUBJECT_FIELDS[provider]) == ident]
     except Exception:  # noqa: BLE001 - a row that cannot be compared is not evidence
         return None, ["observations_invalid"]
     if len(matches) != 1:

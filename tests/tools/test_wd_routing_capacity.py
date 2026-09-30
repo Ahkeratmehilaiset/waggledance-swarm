@@ -21,8 +21,10 @@ RESET_PRIMARY = int((NOW + timedelta(hours=3)).timestamp())
 RESET_SECONDARY = int((NOW + timedelta(days=4)).timestamp())
 RESET_FIVE = int((NOW + timedelta(hours=2)).timestamp())
 RESET_SEVEN = int((NOW + timedelta(days=5)).timestamp())
-WORKER = {"worker": "codex-tools-1", "profile_id": "codex-sol-high", "subject": SUBJECT}
-CLAUDE_WORKER = {"worker": "fable-5", "profile_id": "claude-strong", "subject": SESSION}
+BOUND = {"kind": "auth_context", "id": SUBJECT}                         # the pool-binding receipt's subject shape
+CLAUDE_BOUND = {"kind": "native_session", "id": SESSION}
+WORKER = {"worker": "codex-tools-1", "profile_id": "codex-sol-high", "subject": BOUND}
+CLAUDE_WORKER = {"worker": "fable-5", "profile_id": "claude-strong", "subject": CLAUDE_BOUND}
 CODEX_WINDOWS = (("primary", 30.0, 31.0, RESET_PRIMARY, 300), ("secondary", 20.0, 20.1, RESET_SECONDARY, 10080))
 CLAUDE_WINDOWS = (("five_hour", 11.0, 12.0, RESET_FIVE, 300), ("seven_day", 29.9, 30.0, RESET_SEVEN, 10080))
 BOTH_FRESHNESS = {"codex": ["fresh"], "claude": ["fresh", "provider_timestamp_unknown"]}
@@ -32,7 +34,8 @@ def policy_body(**over):
     body = {"schema": rc.POLICY_SCHEMA, "max_observation_age_seconds": 300,
             "accepted_freshness": {"codex": ["fresh"], "claude": ["fresh"]},
             "pools": {"codex-pro-a": {"billing": "included", "mode": "normal"},
-                      "claude-max-a": {"billing": "included", "mode": "normal"}}}
+                      "claude-max-a": {"billing": "included", "mode": "normal"}},
+            "profile_providers": {"codex-sol-high": "codex", "claude-strong": "claude"}}
     body.update(over)
     return body
 
@@ -168,7 +171,25 @@ UNKNOWN_CASES = [
     ("not_plain_data", dict(row=codex_row(extra=(1, 2))), ["input_not_plain_data"]),
     ("worker_extra_key", dict(worker=dict(WORKER, role="producer")), ["worker_invalid"]),
     ("worker_not_a_member", dict(worker=dict(WORKER, worker="grok")), ["worker_invalid"]),
-    ("worker_blank_subject", dict(worker=dict(WORKER, subject=" ")), ["worker_invalid"]),
+    ("worker_blank_subject", dict(worker=dict(WORKER, subject=" ")), ["subject_unbound"]),
+    # RCO2 V3: a subject must name its provider ({kind, id}); the row, the kind and the signed profile must agree.
+    ("text_subject", dict(worker=dict(WORKER, subject=SUBJECT)), ["subject_unbound"]),
+    ("subject_kind_unknown", dict(worker=dict(WORKER, subject={"kind": "account", "id": SUBJECT})),
+     ["subject_unbound"]),
+    ("subject_extra_key", dict(worker=dict(WORKER, subject=dict(BOUND, provider="codex"))), ["subject_unbound"]),
+    ("subject_id_not_hex", dict(worker=dict(WORKER, subject={"kind": "auth_context", "id": "A" * 64})),
+     ["subject_unbound"]),
+    ("subject_other_provider", dict(worker=dict(WORKER, subject=CLAUDE_BOUND)), ["provider_mismatch"]),
+    ("profile_unsigned", dict(worker=dict(WORKER, profile_id="codex-other")), ["profile_provider_unsigned"]),
+    ("profile_signed_for_other", dict(policy=signed(profile_providers={"codex-sol-high": "claude"})),
+     ["provider_mismatch"]),
+    ("policy_profile_provider", dict(policy=signed(profile_providers={"codex-sol-high": "openai"})),
+     ["policy_invalid"]),
+    ("policy_profiles_not_a_map", dict(policy=signed(profile_providers=[["codex-sol-high", "codex"]])),
+     ["policy_invalid"]),
+    ("policy_without_profiles", dict(policy={
+        "policy": {k: v for k, v in policy_body().items() if k != "profile_providers"},
+        "sha256": digest({k: v for k, v in policy_body().items() if k != "profile_providers"})}), ["policy_invalid"]),
     ("policy_pin", dict(policy=dict(signed(), sha256="0" * 64)), ["policy_digest_mismatch"]),
     ("policy_extra_key", dict(policy={"policy": dict(policy_body(), extra=1),
                                       "sha256": digest(dict(policy_body(), extra=1))}), ["policy_invalid"]),
@@ -182,7 +203,7 @@ UNKNOWN_CASES = [
      ["policy_invalid"]),
     ("policy_mode", dict(policy=signed(pools={"codex-pro-a": {"billing": "included", "mode": "eco"}})),
      ["policy_invalid"]),
-    ("subject", dict(worker=dict(WORKER, subject="f" * 64)), ["subject_mismatch"]),
+    ("subject", dict(worker=dict(WORKER, subject={"kind": "auth_context", "id": "f" * 64})), ["subject_mismatch"]),
     ("failed", dict(row=codex_row(reason="collection_failed")), ["observation_failed"]),
     ("stale_label", dict(row=codex_row(freshness="unknown_or_stale")), ["freshness_not_accepted"]),
     ("superseded", dict(row=codex_row(freshness="superseded_by_collection_failure")), ["freshness_not_accepted"]),
@@ -278,7 +299,7 @@ def test_a_projection_over_the_trip_line_waits():
 def _compose(workers=None, subjects=None, rows=None, now=NOW, task=None):
     base_task, base_workers, attempts, routing, _ = _router_inputs(None)
     return rc.compose(base_task if task is None else task, base_workers if workers is None else workers,
-                      {"codex-tools-1": SUBJECT} if subjects is None else subjects,
+                      {"codex-tools-1": BOUND} if subjects is None else subjects,
                       [codex_row()] if rows is None else rows, copy.deepcopy(PACED), signed(), attempts, routing, now)
 
 
@@ -301,14 +322,21 @@ def test_compose_drops_a_supplied_capacity_block():
 
 
 ROW_CASES = [
-    ("two_rows", {"codex-tools-1": SUBJECT}, [codex_row(), codex_row()], ["observation_ambiguous"]),
+    ("two_rows", {"codex-tools-1": BOUND}, [codex_row(), codex_row()], ["observation_ambiguous"]),
     ("no_subject", {}, None, ["subject_unknown"]),
     ("blank_subject", {"codex-tools-1": " "}, None, ["subject_unknown"]),
     ("subjects_not_a_map", ["codex-tools-1"], None, ["subject_unknown"]),
-    ("other_subject", {"codex-tools-1": SUBJECT}, [codex_row(auth_context_id="f" * 64)], ["observation_missing"]),
-    ("row_without_subject", {"codex-tools-1": SUBJECT},
+    ("other_subject", {"codex-tools-1": BOUND}, [codex_row(auth_context_id="f" * 64)], ["observation_missing"]),
+    ("row_without_subject", {"codex-tools-1": BOUND},
      [{k: v for k, v in codex_row().items() if k != "auth_context_id"}], ["observation_missing"]),
-    ("rows_not_a_list", {"codex-tools-1": SUBJECT}, "rows", ["observations_invalid"]),
+    ("rows_not_a_list", {"codex-tools-1": BOUND}, "rows", ["observations_invalid"]),
+    # RCO2 V3: a text subject still finds its row but never becomes a capacity; a typed subject ignores other providers.
+    ("text_subject", {"codex-tools-1": SUBJECT}, None, ["subject_unbound"]),
+    ("only_another_providers_row", {"codex-tools-1": BOUND}, [claude_row(native_thread_id=SUBJECT)],
+     ["observation_missing"]),
+    ("another_provider_row_with_the_same_field", {"codex-tools-1": BOUND}, [claude_row(auth_context_id=SUBJECT)],
+     ["observation_missing"]),
+    ("typed_subject_without_id", {"codex-tools-1": {"kind": "auth_context"}}, None, ["subject_unknown"]),
 ]
 
 
@@ -316,7 +344,40 @@ ROW_CASES = [
 def test_compose_needs_exactly_one_row_of_the_lanes_own_subject(subjects, rows, reasons):
     out = _compose(subjects=subjects, rows=rows)
     assert (out["capacity"][0]["verdict"], out["capacity"][0]["reasons"]) == ("unknown", reasons)
+    # RCO2 N-V3a (21:01:10Z): every unknown record still names the lane and profile it is about.
+    assert (out["capacity"][0]["worker"], out["capacity"][0]["profile_id"]) == ("codex-tools-1", "codex-sol-high")
     assert out["advice"]["unknown"] == {"codex-tools-1": ["capacity_unknown_or_stale"]}
+
+
+@pytest.mark.parametrize("subject", [SUBJECT, " ", {"kind": "account", "id": SUBJECT}, dict(BOUND, provider="codex")],
+                         ids=["text", "blank", "kind_unknown", "extra_key"])
+def test_an_unbound_subject_keeps_the_adapter_record_attributed(subject):
+    record = evidence(worker=dict(WORKER, subject=subject))
+    assert (record["worker"], record["profile_id"], record["reasons"], record["capacity"]) == (
+        "codex-tools-1", "codex-sol-high", ["subject_unbound"], None)
+
+
+def test_v3_a_lane_never_takes_capacity_from_another_providers_quota_row():
+    # RCO2 V3 (20:21:19Z, log ba092a8f): a Codex-profile lane whose subject equals a Claude statusline session id got
+    # capacity KNOWN from pool claude-max-a and was ROUTED direct: compose matched rows of ANY provider.
+    task, workers, attempts, routing, _ = _router_inputs(None)
+    paced = {**copy.deepcopy(PACED), **copy.deepcopy(CLAUDE_PACED)}
+    for subject, reasons in ((SESSION, ["subject_unbound"]), (CLAUDE_BOUND, ["provider_mismatch"])):
+        out = rc.compose(task, workers, {"codex-tools-1": subject}, [claude_row()], paced,
+                         signed(accepted_freshness=BOTH_FRESHNESS), attempts, routing, NOW)
+        assert out["advice"]["verdict"] != tr.ROUTE
+        assert (out["capacity"][0]["verdict"], out["capacity"][0]["reasons"], out["capacity"][0]["capacity"]) == (
+            "unknown", reasons, None)
+
+
+def test_v3_the_positive_twin_routes_on_its_own_providers_row_beside_a_colliding_foreign_one():
+    task, workers, attempts, routing, _ = _router_inputs(None)
+    paced = {**copy.deepcopy(PACED), **copy.deepcopy(CLAUDE_PACED)}
+    rows = [claude_row(native_thread_id=SUBJECT, auth_context_id=SUBJECT), codex_row()]   # a colliding Claude row
+    out = rc.compose(task, workers, {"codex-tools-1": BOUND}, rows, paced,
+                     signed(accepted_freshness=BOTH_FRESHNESS), attempts, routing, NOW)
+    assert (out["advice"]["verdict"], out["advice"]["recommended"]["worker"]) == (tr.ROUTE, "codex-tools-1")
+    assert out["capacity"][0]["capacity"]["pool"] == "codex-pro-a"
 
 
 def test_compose_never_gives_grok_a_capacity_so_the_router_never_ranks_it():

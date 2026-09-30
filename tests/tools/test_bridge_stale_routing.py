@@ -1,5 +1,6 @@
 """Stale-lease routing on both platforms, plus the real writer's platform fence."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -221,3 +222,59 @@ def test_real_writer_respects_platform_fence_after_stale_archive(
         assert not rows
         # Write-Warning is stdout on PowerShell 5.1 and can differ on pwsh.
         assert "Windows file identity" in completed.stdout + completed.stderr
+
+
+# F8 session-heartbeat fence (RCO1 2026-09-30, Lead request d79f933d): Write-BridgeSessionHeartbeat takes
+# only the beat's own sibling lock (<beat>.json.lock), never the claim lock. The sweep now holds that lock
+# from the liveness read through the archive; at 7779e9a2 it archived while a beat was being written.
+@pytest.mark.skipif(os.name != "nt", reason="the sweep's FileShare.None lock is proven on Windows")
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+def test_stale_sweep_leaves_an_owned_claim_while_its_owner_beat_lock_is_held(
+    tmp_path: Path, shell: str,
+) -> None:
+    from tools.bridge_v2_queue_transactions import FileClaimLock   # the Python twin of Enter-BridgeClaimLock
+
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    runtime = tmp_path / "runtime"
+    claims = runtime / "work_queue/claims"
+    claims.mkdir(parents=True)
+    (runtime / "shared").mkdir(parents=True)
+    past = datetime.now(timezone.utc) - timedelta(minutes=20)
+    session, token_sha = "tools-session-fence", hashlib.sha256(b"fence-token").hexdigest()
+    claim = claims / "stale-fence.json"
+    claim.write_text(json.dumps({
+        "task_id": "codex-lead-1/stale-fence", "agent": "codex-tools-1",
+        "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102", "owner_session_id": session,
+        "owner_token_sha256": token_sha, "run_id": session, "claimed_at_utc": past.isoformat(),
+        "last_heartbeat_utc": past.isoformat(), "lease_seconds": 60,
+        "claim_lease_expires_utc": (past + timedelta(minutes=1)).isoformat(),
+        "write_scope": ["tests/tools/test_bridge_stale_routing.py"],
+    }), encoding="utf-8")
+    digest = hashlib.sha256(f"{session}\n{token_sha}".encode("utf-8")).hexdigest()
+    beat = runtime / "work_queue/heartbeats" / f"{digest}.json"
+    beat.parent.mkdir(parents=True)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+    sweep = _fixture_sweep(tmp_path, real_writer=False)
+
+    def run() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [executable, "-NoProfile", "-NonInteractive", "-File", str(sweep), "-StaleSeconds", "1", "-Quiet"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False,
+        )
+
+    with FileClaimLock().hold(Path(str(beat) + ".lock"), 1):        # the owner's writer is mid-beat
+        busy = run()
+    assert busy.returncode == 0, busy.stdout + busy.stderr
+    done = runtime / "work_queue/done"
+    assert not list(done.glob("*.stale_lease.json")) and claim.exists()   # nothing decided this round
+    swept = run()                                                   # success twin: released, beat still dead
+    assert swept.returncode == 0, swept.stdout + swept.stderr
+    assert len(list(done.glob("*.stale_lease.json"))) == 1 and not claim.exists()
+    assert not Path(str(beat) + ".lock").exists()                   # the sweep removed its own lock file
+    events = [json.loads(line) for line in (runtime / "shared/events.jsonl").read_text(
+        encoding="utf-8-sig"
+    ).splitlines()]
+    assert [(event["type"], event["status"]) for event in events] == [("release", "stale_lease")]

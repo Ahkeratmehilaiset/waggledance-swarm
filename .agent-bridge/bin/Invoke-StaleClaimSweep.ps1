@@ -192,6 +192,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     # another writer is part-way through replacing.
     $claimLock = Enter-BridgeClaimLock -ClaimPath $file.FullName
     if ($null -eq $claimLock) { continue }
+    $beatLock = $null
     try {
     if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) { continue }
     $claim = $null
@@ -269,6 +270,29 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     if ($effectiveLeaseSeconds -lt 1) { $effectiveLeaseSeconds = 1 }
     if ($now -lt $effectiveExpiresUtc) { continue }
 
+    # F8 fence (RCO1 2026-09-30): Write-BridgeSessionHeartbeat takes only the
+    # beat's own sibling lock, never this claim lock. Hold that lock from the
+    # liveness read through the archive, so a beat being written is awaited
+    # and then seen; a beat lock still busy after the timeout decides nothing
+    # this round (the claim stays).
+    $beatPath = ''
+    if ($claim.PSObject.Properties['owner_session_id'] -and
+        $claim.PSObject.Properties['owner_token_sha256']) {
+        $beatPath = Get-BridgeSessionHeartbeatPath -Root $bridgeRoot `
+            -SessionId ([string]$claim.owner_session_id) `
+            -TokenSha256 ([string]$claim.owner_token_sha256)
+    }
+    if ($beatPath) {
+        $beatDir = Split-Path -Parent $beatPath
+        if (-not (Test-Path -LiteralPath $beatDir -PathType Container)) {
+            try {
+                [void](New-Item -ItemType Directory -Path $beatDir -Force -ErrorAction Stop)
+            } catch { continue }
+        }
+        $beatLock = Enter-BridgeClaimLock -ClaimPath $beatPath
+        if ($null -eq $beatLock) { continue }
+    }
+
     # B7: expiry alone is no longer sufficient. A claim whose owning
     # session is still beating is live work, not a leak. The check binds
     # owner_session_id plus owner_token_sha256; the recorded pid is
@@ -315,6 +339,9 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
             $file.Name, $_.Exception.Message)
         continue
     }
+    # Decided and archived: the owner's writer may beat again.
+    Exit-BridgeClaimLock -Lock $beatLock
+    $beatLock = $null
 
     # Emit release event (best-effort; lease sweep must not fail
     # because the bridge writer is momentarily contended).
@@ -375,6 +402,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         archived_path  = $donePath
     }
     } finally {
+        Exit-BridgeClaimLock -Lock $beatLock
         Exit-BridgeClaimLock -Lock $claimLock
     }
 }

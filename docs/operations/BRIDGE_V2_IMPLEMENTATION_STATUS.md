@@ -7,6 +7,43 @@ Status snapshot of base `8a7576af01e310add445266ed78753a3409f8f7e`, against the 
 No test, probe, inventory or model run backs any line here; "present" means
 the file exists at the base commit (`git cat-file -e`), not that it works.
 
+## 0. Installed baseline and candidates at `985f7109` (correction, 2026-09-30)
+
+Sections 1-5 are the 2026-09-29 snapshot of the installed base, kept as
+history. Their F0-F30 rows, owners, states and queue are historical map
+items, not new assignments. This doc assigns and promotes nothing and grants
+no WaggleDance core (`waggledance/core/**`) authority. The WD core edits named
+in historical rows F8a and F8 are OUT OF SCOPE; tools-owned Bridge queue source
+preparation remains within the operator-approved Bridge scope.
+
+- **Installed baseline `8a7576af`**: the only installed source, unchanged.
+  Nothing listed after it is installed, activated or restarted.
+- **NOT installed candidate: dormant integration `985f7109`**, pushed on
+  `codex-lead-1/bridge-v2-integration`. It is source only, 55 paths over the
+  baseline (`git diff --name-status 8a7576af 985f7109`), and includes the
+  activation files, the log-reader FFI handle-ownership fixes (`ec6d1f4f`,
+  `698e8226`), the pool binding (`bae1ac5a`) with its decision-key
+  hardening (`985f7109`: collector `0365de0a`, fixture `9a53278f`), the
+  resource scope (`043946c2`, `f77dc1ff`, `d6b76e59`), the six pure-port
+  paths (`e0041f0c`), Grok helper and controller fixes, and the inventory
+  diagnostics source checkpoint `9cde2f8f` (getter `165453d7`, fixtures
+  `ecf32274` and `42aa414c`; see `docs/BRIDGE_INBOX_OBSERVATIONS.md`).
+  No non-test path passes a pool binder, and a verified binding is pool
+  identity only, never quota. Presence in the tree is not activation,
+  runtime behavior, readiness or a passing test.
+- **NOT installed and UNCOMPOSED**: the Grok seven-path patch returned for
+  Lead request `363b347e` (add-only on `e0041f0c`) and the work-queue
+  four-path patch returned for `3002209a` (add-only on `ec6d1f4f`). They are
+  authorized for source preparation only, are patch text, and are not in
+  `985f7109`.
+
+The Bridge v2 fixtures of the candidates are NOT RUN. One disclosed
+deviation is kept distinct: the savepoint that composed `d6b76e59` omitted
+`-SkipTests` and ran the unrelated WaggleDance file
+`tests/test_phase7_hologram_news_wire.py` (20 passed). That run is not
+Bridge v2 evidence and backs no line here. Native, security, accounting,
+runtime and reboot behavior of the candidates stay UNKNOWN.
+
 ## 1. Installed today (base 8a7576af)
 
 **No F0-F30 deliverable is present at the base.** Every new file that the map

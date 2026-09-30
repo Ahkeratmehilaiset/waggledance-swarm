@@ -974,6 +974,11 @@ function Invoke-WdNativeContinuityStep {
         next_action=$checkpoint.next_action;next_wakeup_utc=$checkpoint.next_wakeup_utc;
         updated_at_utc=$checkpoint.updated_at_utc;blockers=@()}
     if ($checkpoint.PSObject.Properties['blockers']) { $guardCheckpoint.blockers=$checkpoint.blockers }
+    # Opt-in structured holds pass through verbatim under their exact names, never
+    # defaulted; the guard validates exact booleans and refuses one without the other.
+    foreach ($holdProperty in $checkpoint.PSObject.Properties) {
+        if ($holdProperty.Name -cin @('work_held', 'release_held')) { $guardCheckpoint[$holdProperty.Name] = $holdProperty.Value }
+    }
     $snapshot = @{schema='wd.continuity-snapshot.v1';agent=$Agent;checkpoint=$guardCheckpoint;
         evidence=@{scope='checkpoint_only';complete=$true;collected_at_utc=$Now.ToString('o');source_digest=$digest;errors=@()};
         claims=@();inbound_requests=@();waits=@();events=@();processing=@();cancellations=@();holds=@()}

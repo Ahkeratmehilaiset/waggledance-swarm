@@ -635,6 +635,43 @@ if ('{case}' -eq 'rollover') {{
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('fields', [{}, {'work_held': False, 'release_held': True}, {'work_held': True},
+                                    {'work_held': 'true', 'release_held': None},
+                                    {'Work_Held': True, 'Release_Held': True}])
+def test_checkpoint_collector_passes_hold_fields_verbatim_by_exact_name(tmp_path, ps, fields):
+    (tmp_path / '.codex-audit/wd-turn-loop').mkdir(parents=True)
+    checkpoint = dict(schema='wd.lane-current.v1', agent='codex-lead-1', worktree=str(tmp_path),
+                      status='in_progress', task_id='authorized-task', next_action='continue scoped work',
+                      next_wakeup_utc=None, updated_at_utc='2026-09-28T20:00:00Z', **fields)
+    (tmp_path / '.codex-audit/wd-current-state.json').write_text(json.dumps(checkpoint))
+    cli = tmp_path / 'queue-cli.bin'
+    cli.write_bytes(b'non-executable test double')
+    cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeContinuityStep')
+    script += f"""
+$script:seen=$null
+function Test-WdContinuityControlEvents {{param($RuntimeRoot,$TaskId) return $false}}
+function Invoke-WdContinuityDecision {{
+ param($Snapshot,$NowUtc)
+ $script:seen=$Snapshot.checkpoint
+ return [pscustomobject]@{{schema='wd.continuity-decision.v1';agent='codex-lead-1';
+ authority='none';verdict='wait';target='codex-lead-1';action_key=('a'*64);reasons=@('fixture')}}
+}}
+function Send-WdNativeToolsQueueMessage {{throw 'no queue call expected'}}
+$null=Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -SessionStartedAt '2026-09-28T00:00:00Z' -Now '2026-09-29T05:00:00Z'
+$script:seen | ConvertTo-Json -Compress
+"""
+    seen = json.loads(_run_powershell(script, executable=ps).stdout)
+    # Exact names pass verbatim (the guard judges the values); mis-cased names never pass.
+    expected = {key: value for key, value in fields.items() if key in ('work_held', 'release_held')}
+    assert {key: value for key, value in seen.items() if key.lower() in ('work_held', 'release_held')} == expected
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_native_recovery_progress_hash_is_canonical_across_shells(tmp_path, ps):
     cli = tmp_path / 'queue-cli.bin'
     cli.write_bytes(b'non-executable test double')

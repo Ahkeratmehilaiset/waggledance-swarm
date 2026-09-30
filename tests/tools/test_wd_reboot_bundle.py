@@ -7783,3 +7783,136 @@ def test_supervisor_off_refuses_every_mode_before_the_fleet_manifest(tmp_path, p
     assert result.returncode != 0
     assert "Supervisor OFF: restore refused" in output
     assert "fleet manifest is missing" not in output
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).name)
+@pytest.mark.parametrize(
+    "supervisor_off, administrator, mode",
+    [
+        (True, False, "-Auto"),
+        (True, True, "-Auto"),
+        (True, False, "-Apply"),
+        (True, True, "-Apply"),
+        (True, False, "-DryRun"),
+        (True, True, "-DryRun"),
+        (True, False, ""),
+        (True, True, ""),
+        (False, True, "-Auto"),
+    ],
+)
+def test_generated_fleet_wrapper_off_precedes_fake_elevation(
+    ps: str, supervisor_off: bool, administrator: bool, mode: str
+) -> None:
+    """Exercise generated fleet control flow, never the real integrity/target path."""
+    deploy = str(REBOOT / "Deploy-WdRebootBundle.ps1").replace("'", "''")
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    '__DEPLOY__', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) { throw 'deployer parse failed' }
+$generator = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'New-ForwardingWrapper'
+}, $true)
+if ($null -eq $generator) { throw 'generator missing' }
+. ([scriptblock]::Create($generator.Extent.Text))
+$hash = 'a' * 64
+$generation = @{
+    Target = 'fake-target.ps1'
+    ExpectedHash = $hash
+    ExpectedManifestHash = $hash
+    WrapperKind = 'fleet'
+    ExpectedFinalCommit = ('f' * 40)
+    ExpectedFinalManifestHash = $hash
+}
+$wrapper = New-ForwardingWrapper @generation
+$wrapperAst = [Management.Automation.Language.Parser]::ParseInput(
+    $wrapper, [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) { throw 'generated wrapper parse failed' }
+$guard = $wrapper.IndexOf('if ($SupervisorOff) {')
+if ($guard -lt 0) { throw 'early OFF guard missing' }
+foreach ($integrityCheck in @(
+    'Get-FileHash -LiteralPath $manifestPath',
+    'Get-FileHash -LiteralPath $target',
+    'WD_REBOOT_STATE_CURRENT.json'
+)) {
+    $index = $wrapper.IndexOf($integrityCheck)
+    if ($index -lt 0 -or $index -ge $guard) {
+        throw "integrity check lost or moved after OFF guard: $integrityCheck"
+    }
+}
+$admin = $wrapperAst.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Test-WdWrapperAdministrator'
+}, $true)
+if ($null -eq $admin -or $admin.Extent.StartOffset -le $guard) {
+    throw 'administrator check is not after OFF guard'
+}
+# Isolate the generated fleet tail: integrity prefix is inspected, not executed.
+# Replace WindowsIdentity BEFORE creating any runnable script.
+$fakeAdmin = @'
+function Test-WdWrapperAdministrator {
+    $global:wdCounters.admin++
+    return $global:wdFakeAdministrator
+}
+'@
+$body = $wrapper.Substring($guard).Replace($admin.Extent.Text, $fakeAdmin)
+$isolated = $wrapperAst.ParamBlock.Extent.Text + [Environment]::NewLine + $body
+if ($isolated.Contains('[Security.Principal.WindowsIdentity]::GetCurrent()')) {
+    throw 'real administrator implementation survived instrumentation'
+}
+$global:wdCounters = [ordered]@{
+    admin = 0; process = 0; log = 0; filesystem = 0; target = 0
+}
+$global:wdFakeAdministrator = __ADMIN__
+function Start-Process { $global:wdCounters.process++; throw 'FAKE process denied' }
+function Start-Transcript { $global:wdCounters.log++; throw 'FAKE log denied' }
+function Stop-Transcript { $global:wdCounters.log++; throw 'FAKE log denied' }
+function Write-Host { $global:wdCounters.log++ }
+function Test-Path { $global:wdCounters.filesystem++; throw 'FAKE filesystem denied' }
+function Get-Item { $global:wdCounters.filesystem++; throw 'FAKE filesystem denied' }
+function Get-Content { $global:wdCounters.filesystem++; throw 'FAKE filesystem denied' }
+function Get-FileHash { $global:wdCounters.filesystem++; throw 'FAKE filesystem denied' }
+function New-Item { $global:wdCounters.filesystem++; throw 'FAKE filesystem denied' }
+$target = {
+    param([switch]$SupervisorOff, [switch]$Apply, [switch]$DryRun)
+    $global:wdCounters.target++
+}
+$failure = $null
+try {
+    & ([scriptblock]::Create($isolated)) __MODE__ -SupervisorOff:__OFF__
+} catch {
+    $failure = $_.Exception.Message
+}
+[pscustomobject]@{ error = $failure; counters = $global:wdCounters } |
+    ConvertTo-Json -Compress
+"""
+    script = (
+        script.replace("__DEPLOY__", deploy)
+        .replace("__ADMIN__", "$true" if administrator else "$false")
+        .replace("__OFF__", "$true" if supervisor_off else "$false")
+        .replace("__MODE__", mode)
+    )
+    completed = _run_powershell(script, executable=ps, check=False)
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip())
+    counters = observed["counters"]
+    if supervisor_off:
+        assert "Supervisor OFF: restore refused" in observed["error"]
+        assert counters == {
+            "admin": 0, "process": 0, "log": 0, "filesystem": 0, "target": 0
+        }
+    else:
+        # Existing elevated Auto keeps the dry-run/apply pair when OFF is false.
+        assert observed["error"] is None
+        assert counters["admin"] == 1
+        assert counters["target"] == 2
+        assert counters["process"] == counters["filesystem"] == 0
+        assert counters["log"] == 2

@@ -293,6 +293,9 @@ param(
 
     $targetInvocation = if ($WrapperKind -ceq 'fleet') {
 @'
+if ($SupervisorOff) {
+    throw 'Supervisor OFF: restore refused before Administrator checks, elevation or fleet invocation.'
+}
 if ($Auto -and ($Apply -or $DryRun)) {
     throw 'Auto cannot be combined with Apply or DryRun'
 }

@@ -165,6 +165,35 @@ def _reject_constant(value):
     raise JournalError("journal_non_finite")
 
 
+JOURNAL_ROOT_RELATIVE = Path("bridge_v2") / "task_journal"
+COMPAT_SCHEMA = "wd.task-journal-compat.v1"
+
+
+def runtime_journal_root(runtime_root: Path) -> Path:
+    """The proposed runtime location of task journals: ``<runtime_root>/bridge_v2/task_journal``.
+
+    Returned only: nothing here creates it or writes there, and no runtime caller exists. Only the
+    trusted executor boundary would construct journals there once wiring is signed."""
+    root = Path(runtime_root)
+    _refuse(root.is_absolute(), "runtime_root_not_absolute")
+    return root / JOURNAL_ROOT_RELATIVE
+
+
+def compatibility_receipt(module_bytes: bytes) -> dict:
+    """What a signing packet pins so an executor and this journal agree: schemas, layout, file and key
+    rules, the owner identity, the fence evidence keys and principal, and the git blob id of the module
+    bytes AS COMMITTED (LF line endings, as ``git hash-object`` reads the repository copy)."""
+    _refuse(type(module_bytes) is bytes, "module_bytes_invalid")
+    blob = hashlib.sha1(b"blob " + str(len(module_bytes)).encode("ascii") + b"\0" + module_bytes).hexdigest()
+    return {"schema": COMPAT_SCHEMA, "journal_schema": SCHEMA, "root_relative": JOURNAL_ROOT_RELATIVE.as_posix(),
+            "file_rule": "<task_key(task_id)>-r<revision>.jsonl with a sibling .lock",
+            "key_rule": "task_id with characters outside [A-Za-z0-9._-] as '_', first 80, '-', sha256(task_id)[:16]",
+            "owner_identity": sorted(OWNER_KEYS), "fence_evidence_keys": list(FENCE_EVIDENCE_KEYS),
+            "fence_writer": "the trusted executor authority only: attest on append, verify on replay",
+            "unverified_fence": "reconcile HOLDs and every append refuses (fence_principal_unverified)",
+            "max_journal_bytes": MAX_JOURNAL_BYTES, "module_git_blob": blob}
+
+
 def task_key(task_id: str) -> str:
     """A filesystem-safe, collision-free key: readable prefix plus a digest of the exact id."""
     _refuse(_text(task_id), "task_id_invalid")

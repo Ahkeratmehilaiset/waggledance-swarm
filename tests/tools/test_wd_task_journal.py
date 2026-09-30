@@ -366,3 +366,25 @@ def test_success_twin_a_verified_fence_journal_keeps_growing(tmp_path):
     size = journal.path.stat().st_size
     journal.append("step_committed", {"step": 1, "head": HEAD}, credential=STANDIN, expected_seq=4, now=NOW)
     assert journal.path.stat().st_size > size and journal.replay().unverified_fences == []
+
+def test_the_runtime_layout_is_returned_never_created(tmp_path):
+    root = journal_module.runtime_journal_root(tmp_path)
+    assert root == tmp_path / "bridge_v2" / "task_journal" and not root.exists()
+    journal = TaskJournal(root, TASK, 1)
+    assert journal.path == root / (journal_module.task_key(TASK) + "-r1.jsonl") and not root.exists()
+    assert code(lambda: journal_module.runtime_journal_root(Path("relative/root"))) == "runtime_root_not_absolute"
+
+
+def test_the_compatibility_receipt_pins_the_contract_and_the_committed_module_blob():
+    assert journal_module.compatibility_receipt(b"")["module_git_blob"] == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    committed = (ROOT / "tools" / "wd_task_journal.py").read_bytes().replace(b"\r\n", b"\n")
+    receipt = journal_module.compatibility_receipt(committed)
+    header = b"blob " + str(len(committed)).encode() + b"\0"
+    assert receipt["module_git_blob"] == hashlib.sha1(header + committed).hexdigest()
+    assert {key: receipt[key] for key in ("schema", "journal_schema", "root_relative", "owner_identity",
+                                          "fence_evidence_keys", "max_journal_bytes")} == {
+        "schema": "wd.task-journal-compat.v1", "journal_schema": "wd.task-journal.v1",
+        "root_relative": "bridge_v2/task_journal", "owner_identity": ["agent", "generation", "token_sha256"],
+        "fence_evidence_keys": list(FENCE_EVIDENCE_KEYS), "max_journal_bytes": journal_module.MAX_JOURNAL_BYTES}
+    assert "trusted executor" in receipt["fence_writer"] and "fence_principal_unverified" in receipt["unverified_fence"]
+    assert code(lambda: journal_module.compatibility_receipt("text")) == "module_bytes_invalid"

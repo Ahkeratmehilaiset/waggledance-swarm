@@ -31,7 +31,8 @@ which must hash to the current owner's ``token_sha256``, so reading the journal 
 process write as its owner. A fence is NOT authenticated by any owner or by its six evidence
 booleans: it needs an injected ``fence_authority`` (the trusted executor boundary) that
 attests it on append and verifies it on replay. Without that authority a fence cannot be
-appended, and a fence found in a file makes ``reconcile`` HOLD (``fence_principal_unverified``):
+appended, a fence found in a file makes ``reconcile`` HOLD (``fence_principal_unverified``), and no
+append of any kind extends such a journal (the same reason, before any byte is written):
 the principal that may write fences is not built yet, and this module never infers it from a
 role label, a PID, a lease or a record. A writer with raw file access can still rewrite the
 whole file (the hash chain proves order, not authorship); that is why ownership moves only on
@@ -397,6 +398,9 @@ class TaskJournal:
         return state
 
     def _write(self, state: State, record: dict) -> dict:
+        # A journal holding an unverified fence is never extended, by anyone (RCO1 70716636): the fence is not
+        # obeyed as ownership, and the rightful owner cannot be proven either until an authority reconciles it.
+        _refuse(not state.unverified_fences, "fence_principal_unverified")
         state.apply(record)  # the same rules as replay, before anything is written
         line = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         _refuse(len(line) <= MAX_LINE_BYTES, "record_oversized")
@@ -421,6 +425,7 @@ class TaskJournal:
         self.root.mkdir(parents=True, exist_ok=True)
         with _exclusive_lock(self.lock_path, self.lock_wait_seconds):
             state = self.replay()
+            _refuse(not state.unverified_fences, "fence_principal_unverified")   # before any mutation or byte
             _refuse(state.seq == expected_seq, "journal_cas_conflict")
             record = {"schema": SCHEMA, "seq": state.seq + 1, "prev_sha256": state.last_sha256, "kind": kind,
                       "owner": writer, "at_utc": current.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), **fields}
@@ -441,6 +446,7 @@ class TaskJournal:
         self.root.mkdir(parents=True, exist_ok=True)
         with _exclusive_lock(self.lock_path, self.lock_wait_seconds):
             state = self.replay()
+            _refuse(not state.unverified_fences, "fence_principal_unverified")   # before any mutation or byte
             _refuse(state.seq == expected_seq, "journal_cas_conflict")
             record = {"schema": SCHEMA, "seq": state.seq + 1, "prev_sha256": state.last_sha256, "kind": "fence",
                       "owner": dict(new_owner), "at_utc": current.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), **fields}

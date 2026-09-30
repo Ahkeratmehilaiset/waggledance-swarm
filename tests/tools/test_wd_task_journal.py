@@ -313,3 +313,56 @@ def test_no_runtime_path_imports_the_journal():
                 if needle in path.read_text(encoding="utf-8", errors="replace"):
                     hits.append(str(path.relative_to(ROOT)))
     assert hits == []
+
+
+def _forge_fence(journal: TaskJournal) -> bytes:
+    """A fence written straight into the file (a valid chain, a made-up attestation); returns the bytes after."""
+    state = journal.replay()
+    record = {"schema": journal_module.SCHEMA, "seq": state.seq + 1, "prev_sha256": state.last_sha256, "kind": "fence",
+              "owner": identity(STANDIN), "at_utc": "2026-09-30T18:15:00.000000Z",
+              "previous_owner": identity(OWNER), "new_owner": identity(STANDIN), "evidence": FENCE,
+              "attestation": "self-asserted"}
+    with open(journal.path, "ab") as stream:
+        stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n")
+    return journal.path.read_bytes()
+
+
+def test_no_append_extends_a_journal_holding_an_unverified_fence_rco1_70716636(tmp_path):
+    """Reproduced first at 55e076d9: the forged new owner appended and the rightful owner was refused."""
+    journal = build(tmp_path, scenario()[:3])
+    before = _forge_fence(journal)
+    for credential in (OWNER, STANDIN):   # the rightful owner and the forged new owner alike
+        assert code(lambda: journal.append("wip_checkpoint", scenario()[3][1], credential=credential,
+                                           expected_seq=4, now=NOW)) == "fence_principal_unverified"
+    # A stale expected seq still reports the unverified fence first: one stable reason.
+    assert code(lambda: journal.append("hold", {"reason": "x"}, credential=OWNER, expected_seq=0, now=NOW)) \
+        == "fence_principal_unverified"
+    assert code(lambda: journal.append_fence(identity(STANDIN), identity(OWNER), FENCE, expected_seq=4, now=NOW)) \
+        == "fence_principal_unverified"
+    # With an authority the forged attestation fails replay itself, for fences and ordinary appends alike.
+    checked = TaskJournal(tmp_path, TASK, 1, fence_authority=Authority(), lock_wait_seconds=0.2)
+    assert code(lambda: checked.append_fence(identity(STANDIN), identity(OWNER), FENCE, expected_seq=4, now=NOW)) \
+        == "fence_attestation_invalid"
+    assert code(lambda: checked.append("wip_checkpoint", scenario()[3][1], credential=OWNER, expected_seq=4,
+                                       now=NOW)) == "fence_attestation_invalid"
+    assert journal.path.read_bytes() == before   # not one byte was written
+    assert journal.reconcile()["reasons"] == ["fence_principal_unverified:4"]
+
+
+def test_the_write_boundary_itself_refuses_before_any_state_mutation(tmp_path):
+    journal = build(tmp_path, scenario()[:3])
+    before = _forge_fence(journal)
+    state = journal.replay()
+    assert state.unverified_fences == [4] and state.steps == {1: "started"}
+    record = {"schema": journal_module.SCHEMA, "seq": 5, "prev_sha256": state.last_sha256, "kind": "step_committed",
+              "owner": identity(STANDIN), "at_utc": "2026-09-30T18:16:00.000000Z", "step": 1, "head": HEAD}
+    assert code(lambda: journal._write(state, record)) == "fence_principal_unverified"
+    assert state.steps == {1: "started"} and state.open_step == 1 and journal.path.read_bytes() == before
+
+
+def test_success_twin_a_verified_fence_journal_keeps_growing(tmp_path):
+    journal = build(tmp_path, scenario()[:3], authority=Authority())
+    journal.append_fence(identity(OWNER), identity(STANDIN), FENCE, expected_seq=3, now=NOW)
+    size = journal.path.stat().st_size
+    journal.append("step_committed", {"step": 1, "head": HEAD}, credential=STANDIN, expected_seq=4, now=NOW)
+    assert journal.path.stat().st_size > size and journal.replay().unverified_fences == []

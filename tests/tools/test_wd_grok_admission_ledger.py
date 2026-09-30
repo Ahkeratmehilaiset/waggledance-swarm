@@ -827,6 +827,83 @@ def test_a_failed_release_never_replaces_the_primary_error(ready):
     assert ledger_bytes(ready) == before
 
 
+class _HostileNotes(Exception):
+    pass
+
+
+class _HostileInterrupt(BaseException):
+    pass
+
+
+class _Sealed(LedgerRefused):
+    """A ledger error whose every attribute write raises once sealed: add_note and the flag both fail on it."""
+
+    sealed = False
+
+    def __setattr__(self, name, value):
+        if self.sealed:
+            raise AttributeError("sealed exception")
+        super().__setattr__(name, value)
+
+
+def _notes(error, notes):
+    error.__notes__ = notes  # not a list, so BaseException.add_note raises TypeError on it
+    return error
+
+
+def _sealed(code):
+    error = _Sealed(code)
+    object.__setattr__(error, "sealed", True)
+    return error
+
+
+def _throw(error):
+    raise error
+
+
+@pytest.mark.parametrize("build", [
+    lambda: _notes(_HostileNotes("body failed"), "not a list"),
+    lambda: _notes(_HostileInterrupt("body interrupted"), 5),  # a BaseException primary is kept as well
+    lambda: _sealed("sealed_refusal"),  # both the note and the lock_release_unknown write raise
+])
+def test_a_hostile_primary_is_re_raised_itself_when_the_release_also_fails(ready, monkeypatch, build):
+    """RCO2 347 nit: marking is best effort; an ordinary failure to mark the primary never replaces it."""
+    error, before, mutex = build(), ledger_bytes(ready), ReleaseMutex(fails=True)
+    monkeypatch.setattr(AdmissionLedger, "_check_clock", lambda self, doc, now: _throw(error))
+    with pytest.raises(type(error)) as caught:
+        make(ready, mutex=mutex, clock=Clock(T0)).reserve(admission())
+    assert caught.value is error  # never the TypeError or AttributeError raised while marking it
+    assert mutex.exits == [(None, None, None)] and ledger_bytes(ready) == before  # nothing written or refunded
+    if isinstance(error, _Sealed):
+        assert error.lock_release_unknown is False and "__notes__" not in vars(error)  # the mark is missing
+    else:
+        assert error.__notes__ in ("not a list", 5)  # left exactly as it was
+
+
+def test_a_hostile_primary_with_a_clean_release_is_the_twin(ready, monkeypatch):
+    """The same hostile primary with a clean release is re-raised and never marked; an ordinary body then wins."""
+    error, mutex = _notes(_HostileNotes("body failed"), "not a list"), ReleaseMutex()
+    monkeypatch.setattr(AdmissionLedger, "_check_clock", lambda self, doc, now: _throw(error))
+    with pytest.raises(_HostileNotes) as caught:
+        make(ready, mutex=mutex, clock=Clock(T0)).reserve(admission())
+    assert caught.value is error and error.__notes__ == "not a list"
+    monkeypatch.undo()
+    assert make(ready, mutex=mutex, clock=Clock(T0)).reserve(admission()) is True  # the ordinary clean twin
+    assert mutex.exits == [(None, None, None)] * 2 and [e["state"] for e in doc(ready)["entries"]] == ["open"]
+
+
+def test_marking_the_primary_is_guarded_in_the_source():
+    """Both the note and the attribute write sit inside their own try (the one mark helper)."""
+    tree = ast.parse(SOURCE)
+    helper = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef) and node.name == "_mark_release_unknown")
+    guarded = [node for node in ast.walk(helper) if isinstance(node, ast.Try)]
+    assert len(guarded) == 2 and all(len(node.handlers) == 1 and ast.unparse(node.handlers[0].type) == "Exception"
+                                     for node in guarded)
+    notes = [node for node in ast.walk(tree) if isinstance(node, ast.Attribute) and node.attr == "add_note"]
+    assert len(notes) == 1 and any(notes[0] in set(ast.walk(node)) for node in guarded)
+
+
 def test_a_suppressing_release_can_never_hide_a_ledger_error(ready, monkeypatch):
     mutex = ReleaseMutex(suppress=True)
     before = ledger_bytes(ready)

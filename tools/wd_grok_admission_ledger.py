@@ -70,8 +70,12 @@ Rules (fail-closed):
   error. A release that fails after the body succeeded is LedgerUnknown("lock_release_unknown");
   whatever the body applied (a reservation, a finish, the initial ledger) may already be
   durable and is never undone, retried, refunded or cleaned up. A release that fails after
-  the body raised never replaces that primary error: the primary is re-raised unchanged with
-  a "lock_release_unknown" note (and, for a ledger error, ``lock_release_unknown = True``).
+  the body raised never replaces that primary error: the primary is re-raised unchanged and
+  marked, best effort, with a "lock_release_unknown" note (and, for a ledger error,
+  ``lock_release_unknown = True``). An ordinary failure to mark it (a ``__notes__`` that is not
+  a list, an attribute write that raises) is swallowed: the mark may then be missing, but the
+  primary is never replaced. A BaseException (KeyboardInterrupt, SystemExit) raised by the
+  release or while marking is not swallowed; it propagates with the primary as its context.
 
 Durability contract: each write is an exclusive temp file in the root, written in full,
 os.fsync'ed, then os.replace'd over the ledger; on POSIX the root directory is fsync'ed
@@ -132,7 +136,8 @@ REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
 class LedgerError(Exception):
     """``code`` is a stable reason. The broker maps any exception to blocked_unknown.
 
-    ``lock_release_unknown`` is True when the mutex release ALSO failed after this error."""
+    ``lock_release_unknown`` is True when the mutex release ALSO failed after this error (best effort:
+    see _mark_release_unknown)."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -294,6 +299,23 @@ def _released(stack: ExitStack) -> bool:
     return True
 
 
+def _mark_release_unknown(primary: BaseException) -> None:
+    """Mark the primary, best effort: a "lock_release_unknown" note and, for a ledger error, the attribute.
+
+    An ORDINARY failure to mark it (a hostile ``__notes__`` that is not a list, an attribute write that
+    raises) is swallowed, so the primary is always the error re-raised (RCO2 347 nit). The mark may then be
+    missing; it is never forged. A BaseException raised while marking is not swallowed."""
+    try:
+        primary.add_note("lock_release_unknown")
+    except Exception:  # noqa: BLE001 - the note is diagnostic only and must never replace the primary
+        pass
+    try:
+        if isinstance(primary, LedgerError):
+            primary.lock_release_unknown = True
+    except Exception:  # noqa: BLE001 - the same for the attribute write
+        pass
+
+
 class AdmissionLedger:
     """Dormant. Implements the broker's LedgerPort; every argument is required and validated."""
 
@@ -339,9 +361,7 @@ class AdmissionLedger:
             yield
         except BaseException as primary:
             if not _released(stack):
-                primary.add_note("lock_release_unknown")  # visible on the primary, which is never replaced
-                if isinstance(primary, LedgerError):
-                    primary.lock_release_unknown = True
+                _mark_release_unknown(primary)  # best effort: the primary itself is never replaced
             raise
         if not _released(stack):
             raise LedgerUnknown("lock_release_unknown")  # what the body applied may be durable: never undone

@@ -195,6 +195,77 @@ def test_read_and_malformed_failures_fail_closed(tmp_path: Path, shell: str, cas
     assert process.stdout.strip() == ""
 
 
+# -- Tools 7e: individually valid but CONFLICTING top-level/payload request IDs (authored, NOT RUN) --
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_opt_in_diagnostic_lists_a_conflicting_own_id_and_is_never_complete(tmp_path: Path, shell: str) -> None:
+    good, good_reply = _bound("good-v1")
+    conflicted, _ = _bound("top-v1")
+    conflicted["payload"]["request_id"] = "payload-v1"                # each id is valid; together they conflict
+    _write(tmp_path, [conflicted, good, good_reply])
+    refused = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
+    assert refused.returncode != 0 and refused.stdout.strip() == ""    # the ordinary inventory still fails closed
+    assert "Malformed request_id at indexed position 0" in refused.stderr
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    assert result["schema"] == "wd.request-inventory-diagnostic.v1" and result["complete"] is False
+    assert result["status"] == "partial_unknown" and result["conflict_count"] == 1
+    assert result["conflicts_truncated"] is False
+    [conflict] = result["conflicts"]
+    assert conflict == {"indexed_position": 0, "first_indexed_position": None, "kind": "request_id_binding_conflict",
+                        "ts_utc": conflicted["ts_utc"], "task_id": conflicted["task_id"],
+                        "top_level_request_id": "top-v1", "payload_request_id": "payload-v1",
+                        "top_level_agent": "codex-lead-1", "payload_agent": conflicted["payload"].get("agent")}
+    assert [entry["request_id"] for entry in result["requests"]] == ["good-v1"]   # the valid row stays
+    identity = result["snapshot_identity"]
+    assert identity["bytes"] == result["snapshot_bytes"] and identity["cursor"] == result["snapshot_cursor"]
+    assert identity["prefix_sha256"] and identity["parsed_rows"] == result["parsed_rows"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_another_requesters_conflicting_row_never_contaminates_the_diagnostic(tmp_path: Path, shell: str) -> None:
+    mine, _ = _bound("mine-v1")
+    theirs, _ = _bound("theirs-v1", agent="codex-tools-1", to="codex-lead-1")
+    theirs["payload"]["request_id"] = "theirs-payload-v1"
+    impostor, _ = _bound("impostor-v1", agent="codex-tools-1", to="codex-lead-1")
+    impostor["payload"]["agent"] = "codex-lead-1"                       # only the PAYLOAD claims the requester
+    _write(tmp_path, [theirs, impostor, mine])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    assert (result["conflict_count"], result["conflicts"], result["status"]) == (0, [], "no_conflict_observed")
+    assert result["complete"] is False                                  # a diagnostic is never a complete inventory
+    assert [entry["request_id"] for entry in result["requests"]] == ["mine-v1"]
+    assert result["request_count"] == 1 and result["requests"][0]["id_also_used_by_other_requester"] is False
+    clean = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")   # the default twin, unchanged shape
+    assert clean["schema"] == "wd.request-inventory.v2" and "complete" not in clean and "conflicts" not in clean
+    assert [entry["request_id"] for entry in clean["requests"]] == ["mine-v1"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_every_diagnostic_kind_is_reported_and_the_list_is_bounded(tmp_path: Path, shell: str) -> None:
+    author, _ = _bound("author-v1")
+    author["payload"]["agent"] = "someone-else"                         # own top-level agent, conflicting payload
+    first, reply = _bound("immutable-v1")
+    changed = deepcopy(first)
+    changed["message"] = "different content under the same immutable id"
+    many = []
+    for index in range(60):
+        row, _ = _bound(f"many-{index}")
+        row["payload"]["request_id"] = f"other-{index}" + "x" * 300     # long: every field text is bounded
+        many.append(row)
+    _write(tmp_path, [author, first, reply, changed, *many])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    assert result["conflict_count"] == 62 and len(result["conflicts"]) == 50 and result["conflicts_truncated"] is True
+    assert [conflict["kind"] for conflict in result["conflicts"][:3]] == [
+        "author_binding_conflict", "immutable_id_content_conflict", "request_id_binding_conflict"]
+    immutable = result["conflicts"][1]
+    assert (immutable["indexed_position"], immutable["first_indexed_position"]) == (3, 1)
+    assert immutable["top_level_request_id"] == "immutable-v1" and result["conflicts"][0]["payload_agent"] == "someone-else"
+    assert all(len(conflict["payload_request_id"] or "") <= 160 for conflict in result["conflicts"])
+    assert result["requests"] == [] and result["request_count"] == 0     # reported, never inventoried
+    assert len(json.dumps(result)) < 50_000
+    refused = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
+    assert refused.returncode != 0 and "Malformed request author binding at indexed position 0" in refused.stderr
+
+
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_other_requesters_malformed_row_does_not_blind_the_inventory(tmp_path: Path, shell: str) -> None:
     mine, _ = _bound("mine-v1")

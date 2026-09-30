@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Bridge v2 F20: the DORMANT durable admission ledger behind the Grok broker's LedgerPort.
 
-Nothing imports this module. It has no default state root, no default ports and no
-wiring. ``AdmissionLedger`` implements exactly the ``LedgerPort`` that
-``tools/wd_grok_broker.py`` (49f14d92) calls: ``observe()``, ``reserve(admission)`` and
-``finish(admission, outcome)``, plus an explicit one-time ``initialize()``.
+Nothing imports this module. It has no default state root, no default ports, no default
+verifier and no wiring. ``AdmissionLedger`` implements exactly the ``LedgerPort`` that
+``tools/wd_grok_broker.py`` calls (unchanged from 49f14d92 through d4b22177): ``observe()``,
+``reserve(admission)`` and ``finish(admission, outcome)``, plus an explicit one-time
+``initialize()``. There is no deadline or generation parameter: the admission's own
+``admitted_utc`` + 60 s is the reserve deadline, and ``revision`` (in ``observe``) is the
+generation, re-read under the lock by every reserve instead of being passed as a token.
 
 Every read and write happens under an INJECTED runtime-root mutex. Its port shape
 ``hold(name, timeout_seconds) -> ContextManager`` is structurally the frozen queue
@@ -14,33 +17,72 @@ this base, so the shape is re-declared here; it is never imported or edited. The
 name is derived from the validated state root, so two roots never share a lock. The
 apply time comes from an INJECTED clock, read under the lock.
 
+Trust (fail-closed; nothing here authenticates anything):
+* The lock kind/reference and the caller {lane, reference} are DECLARED labels. Their shape
+  is checked, but a shape is never verification. The ONLY provenance signal is the injected
+  ``provenance_verifier``: before every initialize/observe/reserve/finish, and before the
+  lock is held or anything is read or written, ``verify(claim, mutex=<the injected mutex>)``
+  must return exactly ``True`` for a claim naming this exact state root, root identity,
+  mutex name, lock labels, caller and operation. A missing verifier refuses at construction;
+  an exception, or any answer that is not literally True (1, "True", a truthy object), refuses.
+  The ledger never infers trust from a port's type, attributes or callability, and a fake or
+  mock verifier in a test proves nothing about a real lock. No trusted concrete verifier or
+  mutex adapter exists on this base (dormant): binding the verifier to the reviewed
+  cross-process mutex instance and to an authenticated caller is the wiring review's job.
+* finish closes an entry only for the SAME DECLARED caller label that reserved it. That is
+  label equality, not authentication: any process constructing the ledger with the same
+  label (and a verifier that accepts it) can finish that entry.
+* The cross-process mutex is a hard wiring requirement. With a no-op or in-process-only
+  lock, two reservers can both read "nothing open" and both replace the ledger: the second
+  write ERASES the first entry, a double admission plus an erased attempt.
+* The shared hour is per ledger ROOT and is not globally bound: two roots are two hours,
+  and other machines, other roots and the helper's own state are separate budgets. Every
+  consumer of the shared hour must use ONE root.
+* The clock must be honest. A clock earlier than a recorded time refuses (clock_regressed),
+  but a clock running AHEAD admits one early attempt (up to an hour early) and then wedges
+  every call on clock_regressed until real time catches up. The helper's own hourly state
+  is the independent backstop.
+
 Rules (fail-closed):
 * reserve re-reads the LATEST ledger under the lock. It admits only if nothing is open,
   the last reservation is at least 60 minutes old (every reservation counts, whatever
   its outcome), the admission is fresh at apply time (admitted <= apply <= admitted +
   60 s) and its exact digest was never reserved. Losing any of these to another caller
   returns False. The entry is appended and the ledger replaced atomically.
-* finish closes the one entry with the exact admission digest, only for the caller that
-  reserved it. A repeat with the same outcome is a no-op; a different outcome is a
-  conflict. Nothing is ever removed or refunded: the hour counts from the reservation,
-  and an unfinished (interrupted) entry blocks every later reservation.
+* finish closes the one entry with the exact admission digest (declared caller above).
+  A repeat with the same outcome is a no-op; a different outcome is a conflict. Nothing is
+  ever removed or refunded: the hour counts from the reservation, and an unfinished
+  (interrupted) entry blocks every later reservation.
+* ``observe()["last_admitted_utc"]`` is the latest entry's ``applied_utc`` (its reservation
+  time, the value the hour rule needs); the name is the broker port's and is kept.
 * A missing ledger, a leftover temp file (a crash between write and replace), an
   oversized, unparseable, duplicate-key, NaN, foreign-root, revision-inconsistent or
   schema-invalid ledger, and a clock earlier than a recorded time are UNKNOWN. They
   raise; the ledger never repairs, cleans up or deletes anything. An operator inspects.
-* A missing port, an unvalidated state root (relative, missing, not a directory, a link
-  or junction anywhere on the path), a lock kind other than this platform's, or missing
-  lock/caller provenance refuses at construction. The provenance is RECORDED, not
-  verified: that the injected mutex is the reviewed concrete lock is the wiring
-  reviewer's responsibility.
+* A missing port or verifier, a state root that is not a fully-qualified LOCAL path in its
+  normalized spelling (Windows: a drive letter path only; root-relative ``\\x``, drive-relative
+  ``C:x``, UNC, ``\\\\?\\`` device, alternate-data-stream, forward-slash and trailing dot/space
+  forms refuse), a missing or non-directory root, a link, junction or alias anywhere on the
+  path (8.3 names, subst and mapped drives are expected to resolve differently and refuse),
+  a lock kind other than this platform's, or malformed lock/caller labels refuses at
+  construction.
+* The mutex release never sees the body's outcome, so a port can never suppress a ledger
+  error. A release that fails after the body succeeded is LedgerUnknown("lock_release_unknown");
+  whatever the body applied (a reservation, a finish, the initial ledger) may already be
+  durable and is never undone, retried, refunded or cleaned up. A release that fails after
+  the body raised never replaces that primary error: the primary is re-raised unchanged with
+  a "lock_release_unknown" note (and, for a ledger error, ``lock_release_unknown = True``).
 
 Durability contract: each write is an exclusive temp file in the root, written in full,
 os.fsync'ed, then os.replace'd over the ledger; on POSIX the root directory is fsync'ed
-too. On Windows the directory cannot be fsync'ed, and FlushFileBuffers/MoveFileEx
-crash-atomicity and disk write-cache behaviour are UNVERIFIED. A restored older copy of
-a valid ledger is not detectable (no external anchor); the helper's own hourly state is
-the independent second budget check. Not runtime-tested (the operator's no-runs
-directive, 2026-09-29).
+too. ``write_unknown`` means UNKNOWN, POSSIBLY DURABLE, never "failed": before the replace
+the ledger is unchanged and the temp stays visible (partial_write_leftover); after it (a
+failed directory fsync) the new ledger IS in place, blocks as written, and may or may not
+survive a crash. On Windows the directory cannot be fsync'ed, and FlushFileBuffers/MoveFileEx
+crash-atomicity and disk write-cache behaviour are UNVERIFIED. A restored older copy of a
+valid ledger is not detectable (no external anchor); the helper's own hourly state is the
+independent second budget check. Not runtime-tested (the operator's no-runs directive,
+2026-09-29).
 """
 from __future__ import annotations
 
@@ -59,6 +101,7 @@ from tools.bridge_v2_activation import canonical_sha256
 from tools.bridge_v2_grok_route import ADMISSION_SCHEMA, ADMIT, HEX40, HEX64
 
 LEDGER_SCHEMA = "wd.grok-admission-ledger.v1"
+PROVENANCE_CLAIM_SCHEMA = "wd.grok-admission-ledger-provenance.v1"
 LEDGER_NAME = "grok-admission-ledger.json"
 TEMP_MARK = ".tmp."
 MUTEX_PREFIX = "Global\\WaggleDanceGrokAdmission-"
@@ -73,6 +116,9 @@ MAX_ADMISSION_AGE = timedelta(seconds=60)
 LANE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 VERDICT_RE = re.compile(r"[a-z][a-z_]{0,63}")
 STAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")  # ASCII digits only
+# A drive letter, a colon, a backslash, then one or more plain components separated by single backslashes:
+# no control character, no <>:"/\|?* inside a component (so no stream, device or UNC form fits).
+WINDOWS_ROOT_RE = re.compile(r'[A-Za-z]:\\[^\x00-\x1f<>:"/\\|?*]+(?:\\[^\x00-\x1f<>:"/\\|?*]+)*')
 ADMISSION_KEYS = frozenset({"schema", "verdict", "reasons", "intent_sha256", "policy_sha256", "admitted_utc",
                             "allowed_tools", "execution_allowed", "authority"})
 LEDGER_KEYS = frozenset({"schema", "root_identity", "revision", "entries"})
@@ -84,11 +130,14 @@ REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 class LedgerError(Exception):
-    """``code`` is a stable reason. The broker maps any exception to blocked_unknown."""
+    """``code`` is a stable reason. The broker maps any exception to blocked_unknown.
+
+    ``lock_release_unknown`` is True when the mutex release ALSO failed after this error."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+        self.lock_release_unknown = False
 
 
 class LedgerRefused(LedgerError):
@@ -96,7 +145,7 @@ class LedgerRefused(LedgerError):
 
 
 class LedgerUnknown(LedgerError):
-    """The durable state cannot be trusted; nothing is written and nothing is repaired."""
+    """The durable state cannot be trusted, or may already hold this call's write; nothing is repaired."""
 
 
 class MutexPort(Protocol):
@@ -105,6 +154,12 @@ class MutexPort(Protocol):
 
 class ClockPort(Protocol):
     def now(self) -> datetime: ...
+
+
+class ProvenanceVerifierPort(Protocol):
+    """Answers exactly True only when the mutex instance and labels in the claim are the reviewed ones."""
+
+    def verify(self, claim: dict, *, mutex: MutexPort) -> bool: ...
 
 
 def _hex(value: Any, pattern: re.Pattern) -> bool:
@@ -153,22 +208,45 @@ def _digest(value: Any, code: str) -> str:
     return digest
 
 
+def _local_absolute(text: str) -> bool:
+    """A fully-qualified LOCAL path already in its normalized spelling, so every process derives ONE root.
+
+    abspath must not change it (no '.', '..', doubled or trailing separator, no relative form; a root-relative
+    '\\x', which Python < 3.13 isabs accepts, resolves against the CURRENT drive and so changes). Windows then
+    needs a drive letter path (WINDOWS_ROOT_RE: no UNC, device, stream or forward-slash form) whose components
+    never end in a dot or a space (Windows strips those: an alias). POSIX needs exactly one leading slash."""
+    try:
+        if os.path.abspath(text) != text:
+            return False
+    except (OSError, ValueError):
+        return False
+    if os.name == "nt":
+        return WINDOWS_ROOT_RE.fullmatch(text) is not None and not any(
+            part.endswith((".", " ")) for part in text[3:].split("\\"))
+    return text.startswith("/") and not text.startswith("//")
+
+
 def _validated_root(root: Any) -> Path:
     if not isinstance(root, (str, Path)):
         raise LedgerRefused("state_root_invalid")
     text = os.fspath(root)
-    if not text or "\x00" in text or not os.path.isabs(text):
+    if type(text) is not str or not text or "\x00" in text:
         raise LedgerRefused("state_root_invalid")
-    absolute = os.path.abspath(text)
+    if not _local_absolute(text):
+        raise LedgerRefused("state_root_not_local_absolute")
     try:
-        info = os.lstat(absolute)
+        info = os.lstat(text)
     except OSError:
         raise LedgerRefused("state_root_missing") from None
     if not _plain(info, stat.S_ISDIR):
         raise LedgerRefused("state_root_invalid")
-    if os.path.normcase(os.path.realpath(absolute)) != os.path.normcase(absolute):
-        raise LedgerRefused("state_root_linked")  # a link, junction or alias somewhere on the path
-    return Path(absolute)
+    try:
+        resolved = os.path.realpath(text)
+    except (OSError, ValueError):
+        raise LedgerRefused("state_root_linked") from None
+    if os.path.normcase(resolved) != os.path.normcase(text):
+        raise LedgerRefused("state_root_linked")  # a link, junction, 8.3, subst or mapped-drive alias on the path
+    return Path(text)
 
 
 def _caller_ok(value: Any) -> bool:
@@ -207,14 +285,26 @@ def _entry_ok(entry: Any, last: datetime | None) -> bool:
         and _hex(entry["outcome_verdict"], VERDICT_RE) and finished is not None and applied <= finished
 
 
+def _released(stack: ExitStack) -> bool:
+    """Release WITHOUT the body's exception (close() passes none), so the port can neither see nor suppress it."""
+    try:
+        stack.close()
+    except Exception:  # noqa: BLE001 - a failed release is reported by the caller, never swallowed silently
+        return False
+    return True
+
+
 class AdmissionLedger:
     """Dormant. Implements the broker's LedgerPort; every argument is required and validated."""
 
-    def __init__(self, *, state_root: Any, mutex: Any, lock_provenance: Any, clock: Any, caller: Any) -> None:
+    def __init__(self, *, state_root: Any, mutex: Any, lock_provenance: Any, clock: Any, caller: Any,
+                 provenance_verifier: Any) -> None:
         if mutex is None:
             raise LedgerRefused("mutex_port_missing")
         if clock is None:
             raise LedgerRefused("clock_port_missing")
+        if provenance_verifier is None:
+            raise LedgerRefused("provenance_verifier_missing")
         self.root = _validated_root(state_root)
         if not (isinstance(lock_provenance, dict) and set(lock_provenance) == PROVENANCE_KEYS
                 and lock_provenance["kind"] == PLATFORM_LOCK and _hex(lock_provenance["reference"], HEX40)):
@@ -222,31 +312,52 @@ class AdmissionLedger:
         if not _caller_ok(caller):
             raise LedgerRefused("caller_untrusted")
         self.lock_provenance, self.caller = dict(lock_provenance), dict(caller)
-        self.mutex, self.clock = mutex, clock
+        self.mutex, self.clock, self.provenance_verifier = mutex, clock, provenance_verifier
         self.root_identity = hashlib.sha256(os.path.normcase(str(self.root)).encode("utf-8")).hexdigest()
         self.mutex_name = MUTEX_PREFIX + self.root_identity[:32]
 
+    def _verify(self, operation: str) -> None:
+        """Before the lock and before any read or write: the injected verifier must answer exactly True."""
+        claim = {"schema": PROVENANCE_CLAIM_SCHEMA, "operation": operation, "state_root": str(self.root),
+                 "root_identity": self.root_identity, "mutex_name": self.mutex_name,
+                 "lock": dict(self.lock_provenance), "caller": dict(self.caller)}
+        try:
+            verdict = self.provenance_verifier.verify(claim, mutex=self.mutex)
+        except Exception:  # noqa: BLE001 - an unverifiable provenance refuses; nothing is read or written
+            raise LedgerRefused("provenance_unknown") from None
+        if verdict is not True:
+            raise LedgerRefused("provenance_unverified")  # False, None, 1, "True" or any other truthy object
+
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        with ExitStack() as stack:
-            try:
-                stack.enter_context(self.mutex.hold(self.mutex_name, LOCK_TIMEOUT_SECONDS))
-            except Exception:  # noqa: BLE001 - a lock that cannot be held is unknown; nothing is read or written
-                raise LedgerUnknown("lock_unavailable") from None
+        stack = ExitStack()
+        try:
+            stack.enter_context(self.mutex.hold(self.mutex_name, LOCK_TIMEOUT_SECONDS))
+        except Exception:  # noqa: BLE001 - a lock that cannot be held is unknown; nothing is read or written
+            raise LedgerUnknown("lock_unavailable") from None
+        try:
             yield
+        except BaseException as primary:
+            if not _released(stack):
+                primary.add_note("lock_release_unknown")  # visible on the primary, which is never replaced
+                if isinstance(primary, LedgerError):
+                    primary.lock_release_unknown = True
+            raise
+        if not _released(stack):
+            raise LedgerUnknown("lock_release_unknown")  # what the body applied may be durable: never undone
 
     def _now(self) -> datetime:
-        """The apply time: exactly a datetime, aware, and representable in UTC (whole seconds)."""
+        """The apply time: exactly a datetime whose offset is read ONCE as exactly a timedelta (UTC, whole seconds)."""
         try:
             moment = self.clock.now()
-            current = None
-            if type(moment) is datetime and moment.utcoffset() is not None:
-                current = moment.astimezone(timezone.utc).replace(microsecond=0)
-        except Exception:  # noqa: BLE001 - an unreadable clock or offset is unknown
-            current = None
-        if current is None:
-            raise LedgerUnknown("time_unknown")
-        return current
+            if type(moment) is not datetime:
+                raise TypeError("not exactly a datetime")
+            offset = moment.utcoffset()
+            if type(offset) is not timedelta:
+                raise TypeError("offset unknown")  # naive (None), a subclass or anything else
+            return (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc, microsecond=0)
+        except Exception:  # noqa: BLE001 - an unreadable clock or offset, or one out of range, is unknown
+            raise LedgerUnknown("time_unknown") from None
 
     def _leftovers(self) -> list:
         try:
@@ -311,7 +422,9 @@ class AdmissionLedger:
             raise LedgerUnknown("clock_regressed")  # an apply time before a recorded one is never trusted
 
     def _write(self, doc: dict) -> None:
-        """Exclusive temp file, full write, fsync, atomic replace. A failure leaves the temp VISIBLE."""
+        """Exclusive temp file, full write, fsync, atomic replace, root sync. write_unknown is POSSIBLY DURABLE:
+        a failure before the replace leaves the temp VISIBLE; one after it (the root sync) leaves the new
+        ledger in place. Neither is retried, undone or cleaned up."""
         data = (json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
                 + "\n").encode("ascii")
         if len(data) > MAX_LEDGER_BYTES:
@@ -331,17 +444,23 @@ class AdmissionLedger:
             finally:
                 os.close(fd)
             os.replace(temp, self.root / LEDGER_NAME)
-            if os.name != "nt":  # Windows cannot fsync a directory (disclosed above)
-                root_fd = os.open(self.root, os.O_RDONLY)
-                try:
-                    os.fsync(root_fd)
-                finally:
-                    os.close(root_fd)
+            self._sync_root()
         except OSError:
-            raise LedgerUnknown("write_unknown") from None  # never claimed done, never cleaned up
+            raise LedgerUnknown("write_unknown") from None  # unknown, possibly durable; never claimed done
+
+    def _sync_root(self) -> None:
+        """POSIX: fsync the root directory after the replace. Windows cannot fsync a directory (disclosed)."""
+        if os.name == "nt":
+            return
+        root_fd = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
 
     def initialize(self) -> dict:
         """Create the empty ledger exactly once. An explicit operator step: nothing calls it automatically."""
+        self._verify("initialize")
         with self._locked():
             if os.path.lexists(self.root / LEDGER_NAME) or self._leftovers():
                 raise LedgerRefused("ledger_exists")
@@ -352,6 +471,7 @@ class AdmissionLedger:
 
     def observe(self) -> dict:
         """The latest durable state, read under the lock; observed_utc is the ledger's own apply clock."""
+        self._verify("observe")
         with self._locked():
             doc = self._read()
             now = self._now()
@@ -364,6 +484,7 @@ class AdmissionLedger:
 
     def reserve(self, admission: Any) -> bool:
         """True only for the one admission that wins the shared hour under the lock; False if it lost."""
+        self._verify("reserve")
         record = _admission_record(admission)
         with self._locked():
             doc = self._read()
@@ -388,6 +509,7 @@ class AdmissionLedger:
 
     def finish(self, admission: Any, outcome: Any) -> None:
         """Close the exact reserved entry. Idempotent for the same outcome; it never refunds the hour."""
+        self._verify("finish")
         record = _admission_record(admission)
         if not (isinstance(outcome, dict) and _hex(outcome.get("verdict"), VERDICT_RE)):
             raise LedgerRefused("outcome_invalid")
@@ -402,7 +524,7 @@ class AdmissionLedger:
                 raise LedgerRefused("admission_not_reserved")
             entry = entries[index[0]]
             if entry["caller"] != self.caller:
-                raise LedgerRefused("finish_foreign_caller")
+                raise LedgerRefused("finish_foreign_caller")  # the declared label differs (not authentication)
             if entry["state"] == "finished":
                 if entry["outcome_sha256"] == outcome_sha256:
                     return  # the same finish again: nothing changes

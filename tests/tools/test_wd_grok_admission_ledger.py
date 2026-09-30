@@ -1,9 +1,11 @@
 """F20 durable admission ledger through INJECTED fake ports (AUTHORED, NOT RUN).
 
-The fakes stand in for the injected root mutex and clock. Every test is sequential in one
-process: the ledger re-reads under the injected mutex, but real cross-process exclusion is
-the concrete mutex's property and is NOT exercised here. Nothing calls Grok, the helper,
-F0, a real clock, a model or the network.
+The fakes stand in for the injected root mutex, clock and provenance verifier. Every test is
+sequential in one process: the ledger re-reads under the injected mutex, but real
+cross-process exclusion is the concrete mutex's property and is NOT exercised here. The
+fixture Verifier only shows that the ledger consults the seam and refuses without a literal
+True; it proves nothing about a real lock or caller (no trusted adapter exists). Nothing
+calls Grok, the helper, F0, a real clock, a model or the network.
 """
 from __future__ import annotations
 
@@ -91,9 +93,89 @@ class _Subclass(datetime):
     pass
 
 
-def make(root, *, mutex=None, clock=None, caller=CALLER):
-    return AdmissionLedger(state_root=str(root), mutex=mutex or Mutex(), lock_provenance=dict(LOCK),
-                           clock=clock or Clock(), caller=dict(caller))
+class _Stateful(tzinfo):
+    """+05:30 on the first utcoffset() read, None afterwards: a second read would look like LOCAL time."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def utcoffset(self, dt):
+        self.reads += 1
+        return timedelta(hours=5, minutes=30) if self.reads == 1 else None
+
+
+class _Unimplemented(tzinfo):
+    pass  # the base tzinfo.utcoffset raises NotImplementedError
+
+
+class _Delta(timedelta):
+    pass
+
+
+class _SubclassOffset(tzinfo):
+    def utcoffset(self, dt):
+        return _Delta(0)
+
+
+class _Truthy:
+    def __bool__(self):
+        return True
+
+
+class Verifier:
+    """A BOUND fixture verifier: exactly True only for the root, lock labels, caller and mutex INSTANCE it was
+    built for. It shows that the ledger consults the seam; it proves nothing about a real lock or caller."""
+
+    def __init__(self, root, mutex, *, lock=LOCK, caller=CALLER, answer=True, raises=None):
+        self.expected = {"state_root": str(root), "lock": dict(lock), "caller": dict(caller)}
+        self.mutex, self.answer, self.raises, self.claims, self.held = mutex, answer, raises, [], []
+
+    def verify(self, claim, *, mutex):
+        self.claims.append(claim)
+        self.held.append(getattr(mutex, "held", None))
+        if self.raises is not None:
+            raise self.raises
+        bound = mutex is self.mutex and {key: claim.get(key) for key in self.expected} == self.expected
+        return self.answer if bound else False
+
+
+class _Release:
+    """A held lock whose release raises (fails) or returns True (suppress); it records what it was shown."""
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def __enter__(self):
+        self.owner.held = True
+
+    def __exit__(self, *exc_info):
+        self.owner.held = False
+        self.owner.exits.append(exc_info)
+        if self.owner.fails:
+            raise OSError("release failed")
+        return self.owner.suppress
+
+
+class ReleaseMutex(Mutex):
+    def __init__(self, *, fails=False, suppress=False):
+        super().__init__()
+        self.fails, self.suppress, self.exits = fails, suppress, []
+
+    def hold(self, name, timeout_seconds):
+        self.calls.append((name, timeout_seconds))
+        return _Release(self)
+
+
+def make(root, *, mutex=None, clock=None, caller=CALLER, verifier=None):
+    mutex = mutex if mutex is not None else Mutex()
+    verifier = verifier if verifier is not None else Verifier(root, mutex, caller=caller)
+    return AdmissionLedger(state_root=str(root), mutex=mutex, lock_provenance=dict(LOCK),
+                           clock=clock or Clock(), caller=dict(caller), provenance_verifier=verifier)
+
+
+def every_call(ledger):
+    return (ledger.initialize, ledger.observe, lambda: ledger.reserve(admission()),
+            lambda: ledger.finish(admission(), OUTCOME))
 
 
 @pytest.fixture
@@ -136,17 +218,30 @@ def ledger_doc(identity, entries):
 
 def test_constructor_is_keyword_only_without_defaults():
     params = inspect.signature(AdmissionLedger).parameters
-    assert list(params) == ["state_root", "mutex", "lock_provenance", "clock", "caller"]
+    assert list(params) == ["state_root", "mutex", "lock_provenance", "clock", "caller", "provenance_verifier"]
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is inspect.Parameter.empty
                for p in params.values())
+
+
+class _Text(str):
+    pass
 
 
 @pytest.mark.parametrize("over, code", [
     ({"mutex": None}, "mutex_port_missing"),
     ({"clock": None}, "clock_port_missing"),
-    ({"state_root": "relative/state"}, "state_root_invalid"),
+    ({"provenance_verifier": None}, "provenance_verifier_missing"),
     ({"state_root": 7}, "state_root_invalid"),
     ({"state_root": ""}, "state_root_invalid"),
+    ({"state_root": "C:\\state\x00"}, "state_root_invalid"),
+    ({"state_root": _Text("C:\\state")}, "state_root_invalid"),  # a str subclass could override its methods
+    ({"state_root": "relative/state"}, "state_root_not_local_absolute"),
+    ({"state_root": "\\state"}, "state_root_not_local_absolute"),  # root-relative: the CURRENT drive decides
+    ({"state_root": "C:state"}, "state_root_not_local_absolute"),  # drive-relative
+    ({"state_root": "\\\\server\\share\\state"}, "state_root_not_local_absolute"),  # UNC: no cross-host mutex
+    ({"state_root": "\\\\?\\C:\\state"}, "state_root_not_local_absolute"),  # device namespace
+    ({"state_root": "C:\\state:stream"}, "state_root_not_local_absolute"),  # alternate data stream
+    ({"state_root": "C:/state"}, "state_root_not_local_absolute"),  # forward slashes
     ({"lock_provenance": None}, "lock_untrusted"),
     ({"lock_provenance": {"kind": "fake", "reference": REF}}, "lock_untrusted"),
     ({"lock_provenance": {"kind": OTHER_LOCK, "reference": REF}}, "lock_untrusted"),
@@ -158,12 +253,41 @@ def test_constructor_is_keyword_only_without_defaults():
     ({"caller": dict(CALLER, session_id="x")}, "caller_untrusted"),
 ])
 def test_constructor_refuses_missing_ports_roots_and_provenance(root, over, code):
-    kwargs = {"state_root": str(root), "mutex": Mutex(), "lock_provenance": dict(LOCK), "clock": Clock(),
-              "caller": dict(CALLER)}
+    mutex = Mutex()
+    kwargs = {"state_root": str(root), "mutex": mutex, "lock_provenance": dict(LOCK), "clock": Clock(),
+              "caller": dict(CALLER), "provenance_verifier": Verifier(root, mutex)}
     kwargs.update(over)
     with pytest.raises(LedgerRefused) as caught:
         AdmissionLedger(**kwargs)
     assert caught.value.code == code
+
+
+def _root_aliases(root):
+    """Other spellings of the SAME directory. Each would give another identity, mutex and hour: all refuse."""
+    text = str(root)
+    forms = [text + os.sep, text + os.sep + ".", os.path.join(text, "..", root.name), text + os.sep + os.sep]
+    if os.name == "nt":
+        forms += [text[2:],  # root-relative on the same drive (Python < 3.13 isabs accepts it)
+                  "\\\\?\\" + text,  # the device namespace
+                  "\\\\localhost\\" + text[0] + "$" + text[2:],  # the UNC admin share of the same directory
+                  text + ":stream", text + "::$DATA",  # alternate data streams
+                  text + ".", text + " ",  # Windows strips a trailing dot or space: an alias
+                  text.replace("\\", "/")]
+    else:
+        forms += ["/" + text]  # a leading double slash is implementation-defined on POSIX
+    return forms
+
+
+def test_only_the_normalized_local_absolute_root_is_accepted(root):
+    for form in _root_aliases(root):
+        with pytest.raises(LedgerRefused) as caught:
+            make(form)
+        assert caught.value.code == "state_root_not_local_absolute", form
+    ledger = make(root)  # the success twin: the normalized spelling itself
+    assert ledger.root == root
+    if os.name == "nt":  # another drive-letter case is the same normcase identity, mutex and hour
+        text = str(root)
+        assert make(text[0].swapcase() + text[1:]).root_identity == ledger.root_identity
 
 
 def test_the_root_must_exist_and_be_a_directory(tmp_path):
@@ -188,6 +312,77 @@ def test_a_linked_root_or_a_root_under_a_link_refuses(tmp_path):
     with pytest.raises(LedgerRefused, match="state_root_linked"):
         make(link / "sub")
     assert make(target / "sub").root == target / "sub"  # the unlinked twin
+
+
+# --- the injected provenance verifier ------------------------------------------------------------
+
+@pytest.mark.parametrize("answer", [False, None, 1, "True", [True], _Truthy()])
+def test_only_a_literal_true_verifies_and_nothing_is_touched_otherwise(ready, answer):
+    mutex, clock = Mutex(), Clock(T0)
+    ledger = make(ready, mutex=mutex, clock=clock, verifier=Verifier(ready, mutex, answer=answer))
+    before = ledger_bytes(ready)
+    for call in every_call(ledger):
+        with pytest.raises(LedgerRefused) as caught:
+            call()
+        assert caught.value.code == "provenance_unverified"
+    assert (mutex.calls, clock.reads, ledger_bytes(ready)) == ([], 0, before)
+
+
+@pytest.mark.parametrize("bind", [
+    lambda root, mutex: Verifier(root.parent, mutex),  # another root
+    lambda root, mutex: Verifier(root, Mutex()),  # another mutex INSTANCE with identical labels (a no-op lock)
+    lambda root, mutex: Verifier(root, mutex, lock=dict(LOCK, reference="0" * 40)),  # another lock reference
+    lambda root, mutex: Verifier(root, mutex, lock=dict(LOCK, kind=OTHER_LOCK)),  # another lock kind
+    lambda root, mutex: Verifier(root, mutex, caller={"lane": "codex-tools-1", "reference": REF}),  # another caller
+])
+def test_a_verifier_bound_to_another_root_lock_or_caller_refuses_before_the_lock(ready, bind):
+    mutex, clock = Mutex(), Clock(T0)
+    verifier = bind(ready, mutex)
+    ledger = make(ready, mutex=mutex, clock=clock, verifier=verifier)
+    before = ledger_bytes(ready)
+    for call in every_call(ledger):
+        with pytest.raises(LedgerRefused, match="provenance_unverified"):
+            call()
+    assert (mutex.calls, clock.reads, ledger_bytes(ready), len(verifier.claims)) == ([], 0, before, 4)
+
+
+class _NoVerify:
+    pass
+
+
+@pytest.mark.parametrize("verifier", [
+    lambda root, mutex: Verifier(root, mutex, raises=OSError("provenance service down")),
+    lambda root, mutex: Verifier(root, mutex, raises=RecursionError()),
+    lambda root, mutex: _NoVerify(),  # no verify at all: an AttributeError, never "shape means trusted"
+])
+def test_an_unknown_provenance_refuses_before_the_lock(ready, verifier):
+    mutex, clock = Mutex(), Clock(T0)
+    ledger = make(ready, mutex=mutex, clock=clock, verifier=verifier(ready, mutex))
+    before = ledger_bytes(ready)
+    for call in every_call(ledger):
+        with pytest.raises(LedgerRefused) as caught:
+            call()
+        assert caught.value.code == "provenance_unknown" and caught.value.__cause__ is None
+    assert (mutex.calls, clock.reads, ledger_bytes(ready)) == ([], 0, before)
+
+
+def test_the_bound_verifier_sees_the_exact_claim_before_the_lock_every_time(ready):
+    """The success twin of every provenance refusal above."""
+    mutex, clock = Mutex(), Clock(T0)
+    verifier = Verifier(ready, mutex)
+    ledger = make(ready, mutex=mutex, clock=clock, verifier=verifier)
+    assert ledger.observe()["revision"] == 0
+    assert ledger.reserve(admission()) is True
+    ledger.finish(admission(), OUTCOME)
+    with pytest.raises(LedgerRefused, match="ledger_exists"):
+        ledger.initialize()
+    assert [claim["operation"] for claim in verifier.claims] == ["observe", "reserve", "finish", "initialize"]
+    assert verifier.held == [False] * 4  # verified BEFORE the lock is held, every time
+    assert verifier.claims[0] == {"schema": ledger_mod.PROVENANCE_CLAIM_SCHEMA, "operation": "observe",
+                                  "state_root": str(ready), "root_identity": ledger.root_identity,
+                                  "mutex_name": ledger.mutex_name, "lock": LOCK, "caller": CALLER}
+    verifier.claims[1]["caller"]["lane"] = "codex-tools-1"  # a verifier cannot rewrite the ledger's caller
+    assert ledger.caller == CALLER
 
 
 # --- initialize / observe -------------------------------------------------------------------
@@ -308,11 +503,37 @@ def test_a_clock_before_a_recorded_time_is_unknown(ready):
     assert ledger_bytes(ready) == before
 
 
+def test_a_clock_running_ahead_admits_early_then_wedges_until_real_time_catches_up(ready):
+    """The disclosed honest-clock limit (RCO2 Q1c): the ledger cannot tell a fast clock from real time."""
+    clock = Clock(T0)
+    ledger = make(ready, clock=clock)
+    assert ledger.reserve(admission(1)) is True
+    clock.moment = T0 + timedelta(seconds=5)
+    ledger.finish(admission(1), OUTCOME)
+    ahead = T0 + timedelta(hours=1, seconds=10)  # the clock jumps an hour ahead, 10 s after the first attempt
+    clock.moment = ahead
+    assert ledger.reserve(admission(2, at=ahead)) is True  # an early second attempt (the helper's state backstops)
+    clock.moment = T0 + timedelta(seconds=20)  # the clock is corrected back to real time
+    wedged = ledger_bytes(ready)
+    for call in (ledger.observe, lambda: ledger.reserve(admission(3, at=clock.moment)),
+                 lambda: ledger.finish(admission(2, at=ahead), OUTCOME)):
+        with pytest.raises(LedgerUnknown, match="clock_regressed"):
+            call()
+    assert ledger_bytes(ready) == wedged  # nothing is repaired while wedged
+    clock.moment = ahead  # real time reaches the recorded time: the ledger works again
+    ledger.finish(admission(2, at=ahead), OUTCOME)
+    assert [e["state"] for e in doc(ready)["entries"]] == ["finished", "finished"]
+
+
 @pytest.mark.parametrize("clock", [
     Clock(datetime(2026, 9, 30, 12, 0)),  # naive
     Clock(_Subclass(2026, 9, 30, 12, 0, tzinfo=timezone.utc)),
     Clock("2026-09-30T12:00:00Z"),
     Clock(datetime(2026, 9, 30, 12, 0, tzinfo=_BadOffset())),
+    Clock(datetime(2026, 9, 30, 12, 0, tzinfo=_Unimplemented())),  # NotImplementedError
+    Clock(datetime(2026, 9, 30, 12, 0, tzinfo=_SubclassOffset())),  # a timedelta subclass offset
+    Clock(datetime.max.replace(tzinfo=timezone(-timedelta(hours=23, minutes=59)))),  # past datetime.max in UTC
+    Clock(datetime.min.replace(tzinfo=timezone(timedelta(hours=23, minutes=59)))),  # before datetime.min in UTC
     RaisingClock(),
 ])
 def test_an_untrusted_clock_is_unknown(ready, clock):
@@ -322,6 +543,17 @@ def test_an_untrusted_clock_is_unknown(ready, clock):
     with pytest.raises(LedgerUnknown, match="time_unknown"):
         ledger.reserve(admission())
     assert doc(ready)["entries"] == []
+
+
+def test_the_clock_offset_is_read_once_and_never_taken_as_local_time(ready):
+    zone = _Stateful()
+    ledger = make(ready, clock=Clock(datetime(2026, 9, 30, 17, 30, tzinfo=zone)))
+    assert ledger.observe()["observed_utc"] == stamp(T0)  # 17:30+05:30, never 17:30 host-local
+    assert zone.reads == 1
+    ordinary = make(ready, clock=Clock(datetime(2026, 9, 30, 4, 30, 0, 999999,
+                                                tzinfo=timezone(-timedelta(hours=7, minutes=30)))))
+    assert ordinary.reserve(admission()) is True  # the success twin: an ordinary non-UTC clock
+    assert doc(ready)["entries"][0]["applied_utc"] == stamp(T0)
 
 
 @pytest.mark.parametrize("value", [
@@ -515,6 +747,25 @@ def test_a_failed_replace_is_unknown_and_leaves_its_temp_visible(ready, monkeypa
         ledger.observe()
 
 
+def test_a_failed_root_sync_after_the_replace_is_unknown_and_possibly_durable(ready, monkeypatch):
+    """write_unknown is never "failed": here the replace succeeded and only the directory sync failed."""
+    def fail(self):
+        raise OSError("directory fsync failed")
+
+    monkeypatch.setattr(AdmissionLedger, "_sync_root", fail)
+    clock = Clock(T0)
+    ledger = make(ready, clock=clock)
+    with pytest.raises(LedgerUnknown, match="write_unknown"):
+        ledger.reserve(admission(1))
+    monkeypatch.undo()
+    entries = doc(ready)["entries"]  # the new ledger IS in place, and no temp is left behind
+    assert [(e["state"], e["admission_sha256"]) for e in entries] == [("open", canonical_sha256(admission(1)))]
+    assert [p.name for p in ready.iterdir()] == [ledger_mod.LEDGER_NAME]
+    later = T0 + timedelta(hours=2)
+    clock.moment = later
+    assert ledger.reserve(admission(2, at=later)) is False  # it blocks as written: no retry, undo or refund
+
+
 def test_a_full_ledger_refuses_and_never_erases(ready, monkeypatch):
     monkeypatch.setattr(ledger_mod, "MAX_ENTRIES", 1)
     clock = Clock(T0)
@@ -547,13 +798,59 @@ def test_a_lock_that_cannot_be_held_reads_and_writes_nothing(ready):
     assert ledger_bytes(ready) == before and clock.reads == 0 and len(mutex.calls) == 4
 
 
+def test_a_failed_release_after_a_won_reservation_is_unknown_and_the_entry_stays(ready):
+    clock, mutex = Clock(T0), ReleaseMutex(fails=True)
+    ledger = make(ready, mutex=mutex, clock=clock)
+    with pytest.raises(LedgerUnknown) as caught:
+        ledger.reserve(admission(1))
+    assert caught.value.code == "lock_release_unknown"  # never reported as a win
+    assert [e["state"] for e in doc(ready)["entries"]] == ["open"]  # applied, possibly durable, never undone
+    assert [p.name for p in ready.iterdir()] == [ledger_mod.LEDGER_NAME]
+    with pytest.raises(LedgerUnknown, match="lock_release_unknown"):
+        ledger.observe()  # a read-only call reports it as well, and changes nothing
+    later = T0 + timedelta(hours=2)
+    clock.moment = later
+    assert make(ready, clock=clock).reserve(admission(2, at=later)) is False  # no retry, refund or cleanup
+    assert mutex.exits == [(None, None, None)] * 2
+
+
+def test_a_failed_release_never_replaces_the_primary_error(ready):
+    late = T0 + timedelta(seconds=61)
+    before = ledger_bytes(ready)
+    with pytest.raises(LedgerRefused) as caught:
+        make(ready, mutex=ReleaseMutex(fails=True), clock=Clock(late)).reserve(admission())
+    assert caught.value.code == "admission_stale_or_future" and caught.value.lock_release_unknown is True
+    assert caught.value.__notes__ == ["lock_release_unknown"]
+    with pytest.raises(LedgerRefused) as clean:  # the twin: a clean release leaves no mark
+        make(ready, clock=Clock(late)).reserve(admission())
+    assert clean.value.lock_release_unknown is False and getattr(clean.value, "__notes__", []) == []
+    assert ledger_bytes(ready) == before
+
+
+def test_a_suppressing_release_can_never_hide_a_ledger_error(ready, monkeypatch):
+    mutex = ReleaseMutex(suppress=True)
+    before = ledger_bytes(ready)
+    with pytest.raises(LedgerRefused, match="admission_stale_or_future"):  # never turned into a win
+        make(ready, mutex=mutex, clock=Clock(T0 + timedelta(seconds=61))).reserve(admission())
+    assert ledger_bytes(ready) == before
+
+    def refuse(src, dst):
+        raise PermissionError("replace refused")
+
+    monkeypatch.setattr(ledger_mod.os, "replace", refuse)
+    with pytest.raises(LedgerUnknown, match="write_unknown"):
+        make(ready, mutex=mutex, clock=Clock(T0)).reserve(admission())
+    monkeypatch.undo()
+    assert mutex.exits == [(None, None, None)] * 2  # the port never saw the outcome it could suppress
+
+
 def test_every_read_clock_and_write_happens_under_the_root_mutex(ready, tmp_path, monkeypatch):
     mutex = Mutex()
     ledger = make(ready, mutex=mutex, clock=Clock(T0))
     identity = hashlib.sha256(os.path.normcase(str(ready)).encode("utf-8")).hexdigest()
     assert ledger.root_identity == identity
     assert ledger.mutex_name == ledger_mod.MUTEX_PREFIX + identity[:32]
-    for name in ("_read", "_now", "_write"):
+    for name in ("_read", "_now", "_write", "_sync_root"):
         real = getattr(AdmissionLedger, name)
 
         def guarded(self, *args, _real=real):
@@ -591,6 +888,9 @@ def test_the_module_is_dormant_and_non_reflective():
             if isinstance(node, ast.Attribute) and node.attr == "now"} == {"self.clock"}
     calls = {ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     assert "AdmissionLedger" not in calls  # never instantiated at import
+    verifiers = [node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+                 and any(isinstance(item, ast.FunctionDef) and item.name == "verify" for item in node.body)]
+    assert verifiers == ["ProvenanceVerifierPort"]  # the Protocol only: no default or built-in verifier
 
 
 def test_nothing_imports_the_ledger():

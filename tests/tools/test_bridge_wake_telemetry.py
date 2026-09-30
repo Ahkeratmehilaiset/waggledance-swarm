@@ -282,6 +282,29 @@ def test_cli_valid_run_and_help_without_docstring(tmp_path, capsys, monkeypatch)
     assert stopped.value.code == 0 and "--telemetry-directory" in capsys.readouterr().out
 
 
+_DATETIME_FIELDS = frozenset({"year", "month", "day", "hour", "minute", "second", "microsecond", "tzinfo", "fold"})
+
+
+def _attribute_calls(tree: ast.AST) -> set:
+    """Every attribute call name, except a keyword-only ``.replace(<datetime fields>=...)``: that is a value
+    operation of datetime/date/time (tools/bridge_wake_telemetry.py:119), never a filesystem call.
+    ``os.replace(src, dst)`` and ``Path.replace(target)`` take positional arguments and still count (RCO1
+    2026-09-30: the first run of these fixtures flagged the datetime call as a write)."""
+    return {node.func.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and not (node.func.attr == "replace" and not node.args and node.keywords
+                     and all(keyword.arg in _DATETIME_FIELDS for keyword in node.keywords))}
+
+
+@pytest.mark.parametrize("snippet,counted", [
+    ("os.replace(a, b)", True), ("path.replace(target)", True), ("os.replace(src=a, dst=b)", True),
+    ("path.replace(**changes)", True), ("moment.replace(tzinfo=timezone.utc)", False),
+    ("moment.replace(hour=0, minute=0)", False),
+], ids=["os_replace", "path_replace", "keyword_os_replace", "star_star", "tzinfo", "fields"])
+def test_the_read_only_check_counts_every_filesystem_replace_and_only_exempts_datetime_fields(snippet, counted):
+    assert ("replace" in _attribute_calls(ast.parse(snippet))) is counted
+
+
 def test_source_is_read_only_and_never_reads_the_canonical_log():
     source = SOURCE.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -290,8 +313,7 @@ def test_source_is_read_only_and_never_reads_the_canonical_log():
                 for alias in (node.names if isinstance(node, ast.Import) else [ast.alias(node.module or "")])}
     assert not imported & {"subprocess", "socket", "urllib", "http", "requests", "shutil", "ctypes",
                            "multiprocessing", "asyncio", "pty", "webbrowser", "tempfile"}
-    calls = {node.func.attr for node in ast.walk(tree)
-             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    calls = _attribute_calls(tree)
     exec_family = {name for name in dir(os) if name.startswith(("exec", "spawn", "posix_spawn"))}
     writers = {"system", "popen", "startfile", "fork", "kill", "remove", "unlink", "rmdir", "removedirs",
                "rename", "renames", "replace", "write_text", "write_bytes", "mkdir", "makedirs", "touch",

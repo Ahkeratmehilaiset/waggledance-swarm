@@ -272,6 +272,37 @@ def test_a_raising_close_never_masks_the_body_and_the_note_says_so(tmp_path):
         assert "ReleaseMutex returned FALSE" in _notes(caught.value) and "CloseHandle raised OSError" in _notes(caught.value)
 
 
+class NoNotes(KeyError):
+    def add_note(self, note):
+        raise TypeError("notes refused")
+
+
+def test_a_failing_note_never_replaces_the_primary_body_error(tmp_path):
+    # Tools 51ada W-SECONDARY-EXCEPTIONS: the diagnostic is secondary; the body error wins.
+    kernel32 = Kernel32(release_ok=False)
+    mutex, _ = port(kernel32)
+    with pytest.raises(NoNotes):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            raise NoNotes("body")
+    assert names(kernel32) == ["wait", "release", "close"]
+
+
+class InterruptingRelease(Kernel32):
+    def ReleaseMutex(self, handle):
+        self.calls.append(("release", handle))
+        raise KeyboardInterrupt
+
+
+def test_an_interrupt_inside_cleanup_propagates_after_close_was_attempted(tmp_path):
+    # The honest, documented limit: an interrupt is not a cleanup failure and is never swallowed.
+    kernel32 = InterruptingRelease()
+    mutex, _ = port(kernel32)
+    with pytest.raises(KeyboardInterrupt):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            raise KeyError("body")
+    assert names(kernel32) == ["wait", "release", "close"]
+
+
 class RaisingWait(Kernel32):
     def WaitForSingleObject(self, handle, milliseconds):
         self.calls.append(("wait", handle, milliseconds))

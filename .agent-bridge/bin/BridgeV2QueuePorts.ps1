@@ -25,9 +25,10 @@
     open failure is refused at once with its real type (Tools 8c6066ff F8-WALL-CLOCK).
     Cleanup (F8-CLEANUP): every Dispose/ReleaseMutex is attempted independently; a primary
     claim-lock or body error is rethrown unchanged, with the bounded secondary cleanup
-    diagnostic in Exception.Data['bridge_cleanup'] and a warning; after a clean body any
-    cleanup failure throws: no success on failed cleanup. A factory that throws or does not
-    return exactly one mutex is refused before any wait, disposing every returned object.
+    diagnostic in Exception.Data['bridge_cleanup'] and a warning that can never throw, even
+    under WarningPreference/-WarningAction Stop (Tools 51ada W-PRIMARY-WARNING); after a clean
+    body any cleanup failure throws: no success on failed cleanup. A factory that throws or
+    does not return exactly one mutex is refused before any wait, disposing every returned object.
     Existing-object ACL (F8-DACL-INHERITED): New-BridgeNamedMutex only PRINTS an
     existing-object DACL diagnostic; that is not an admission gate. -AclInspector must return
     exactly 'match' for the created/opened mutex before anything waits on it; anything else
@@ -35,7 +36,10 @@
     never a trust assertion) the call refuses and the adapter stays dormant.
     Claim containment (F8-ROOT-CLAIM): lexical only. The claim must be
     <root>/work_queue/claims/<name>.json, its components pass the same alias and reparse walk
-    as the root, and ':' (an alternate stream) is refused. No physical alias or open-race claim.
+    as the root, and ':' (an alternate stream) is refused. The sibling lock leaf is walked again
+    (every existing component, the leaf included; not a directory) right before its open, inside
+    the mutex hold (W-LOCK-PATH). No physical alias or open-race claim, and no legacy-writer fence.
+    The Python FileClaimLock is owned by the queue module (RCO2), not by this twin.
     Off Windows there is no fallback lock: without an injected -MutexFactory the call refuses.
     Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
 #>
@@ -102,11 +106,24 @@ function Invoke-BridgeV2QueueCleanup {
 }
 
 function Add-BridgeV2QueueCleanupDiagnostic {
-    # Keeps the primary error unchanged; the secondary cleanup failure is visible but bounded.
+    # Keeps the primary error unchanged; the secondary cleanup failure is visible but bounded, and
+    # emitting it can NEVER throw: -WarningAction Continue overrides a caller's WarningPreference
+    # or -WarningAction Stop, and each step is guarded (Tools 51ada W-PRIMARY-WARNING).
     param($ErrorRecord, [string] $Cleanup)
     if (-not $Cleanup) { return }
     try { $ErrorRecord.Exception.Data['bridge_cleanup'] = $Cleanup } catch { }
-    Write-Warning ('bridge v2 queue lock cleanup also failed: ' + $Cleanup)
+    try { Write-Warning ('bridge v2 queue lock cleanup also failed: ' + $Cleanup) -WarningAction Continue } catch { }
+}
+
+function Assert-BridgeV2QueueLockLeaf {
+    # The sibling "<claim>.json.lock" is its own filesystem object: every EXISTING component of
+    # its path, the leaf included, must pass the same alias/reparse walk as the root, and the leaf
+    # must not be a directory. Called right before the open, inside the mutex hold. A swap between
+    # this check and the open stays a residual race: there is no physical-alias or open-race
+    # guarantee and no fencing of legacy writers (Tools 51ada W-LOCK-PATH).
+    param([Parameter(Mandatory)] [string] $LockPath)
+    [void](ConvertTo-BridgeV2QueueRootIdentity -RuntimeRoot $LockPath)
+    if (Test-Path -LiteralPath $LockPath -PathType Container) { throw 'the claim lock path is a directory' }
 }
 
 function Test-BridgeV2LockContention {
@@ -210,6 +227,7 @@ function Invoke-BridgeV2QueueLocked {
         }
         if (-not $owned) { throw 'runtime-root mutex busy: bounded wait expired, nothing mutated' }
         try {
+            Assert-BridgeV2QueueLockLeaf -LockPath $lockPath   # the leaf and its ancestors, right before the open
             $clock = [Diagnostics.Stopwatch]::StartNew()   # monotonic, the claim lock's own budget
             while ($null -eq $lock) {
                 try {

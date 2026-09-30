@@ -231,11 +231,52 @@ def test_a_failed_dispose_is_never_success_and_never_masks_the_body(tmp_path, sh
 @pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
 def test_a_non_contention_claim_lock_failure_is_refused_at_once_with_its_real_type(tmp_path, shell):
-    (_claim(tmp_path).with_name("task.json.lock")).mkdir()                    # a directory: not a sharing violation
+    import stat
+    lock = _claim(tmp_path).with_name("task.json.lock")
+    lock.write_text("")
+    os.chmod(lock, stat.S_IREAD)                         # a plain read-only file: passes the leaf walk, open denied
     report = _report(_ps(shell, _invoke(tmp_path, "ok", timeout_ms=5000)))
     assert "claim lock open refused: UnauthorizedAccessException" in report["outcome"]
     assert "busy" not in report["outcome"] and not (tmp_path / "ran.txt").exists()
     assert report["log"] == ["create", "wait:5000", "release", "dispose"]
+
+
+# -- Tools 51ada: W-LOCK-PATH, W-PRIMARY-WARNING --------------------------------------
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_directory_at_the_lock_leaf_is_refused_before_the_open(tmp_path, shell):
+    (_claim(tmp_path).with_name("task.json.lock")).mkdir()
+    report = _report(_ps(shell, _invoke(tmp_path, "ok")))
+    assert "the claim lock path is a directory" in report["outcome"] and not (tmp_path / "ran.txt").exists()
+    assert report["log"] == ["create", "wait:300", "release", "dispose"]      # refused inside the hold, then released
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_linked_lock_leaf_is_refused_before_the_open(tmp_path, shell):
+    target = tmp_path / "elsewhere.lock"
+    target.write_text("")
+    lock = _claim(tmp_path).with_name("task.json.lock")
+    try:
+        os.symlink(target, lock)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    report = _report(_ps(shell, _invoke(tmp_path, "ok")))
+    assert "link/reparse point" in report["outcome"] and not (tmp_path / "ran.txt").exists()
+    assert report["log"] == ["create", "wait:300", "release", "dispose"]
+    assert target.read_text() == ""                                           # nothing opened through the link
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_stop_warning_preference_never_replaces_the_primary(tmp_path, shell):
+    stop = "$WarningPreference = 'Stop'"
+    failed = _report(_ps(shell, _invoke(tmp_path / "failed", "disposefail", extra=stop, body="throw 'body boom'")))
+    assert "body boom" in failed["outcome"] and "WarningPreference" not in failed["outcome"]
+    assert failed["log"] == ["create", "wait:300", "release", "dispose"]      # every cleanup still attempted
+    clean = _report(_ps(shell, _invoke(tmp_path / "clean", "disposefail", extra=stop)))
+    assert "cleanup failed after a clean body" in clean["outcome"]            # the twin: still never a success
 
 
 @pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")

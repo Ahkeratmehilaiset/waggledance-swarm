@@ -31,12 +31,16 @@ WAIT_ABANDONED means the previous holder died inside a transaction: the mutex is
 again WITHOUT running the body and ``MutexAbandoned`` asks for WAL reconciliation first;
 WAIT_FAILED or any other value raises ``MutexUnavailable``.
 
-Cleanup (Tools 8c6066ff F8-CLEANUP): ``ReleaseMutex`` and ``CloseHandle`` are each attempted
-independently and their BOOL results are checked (FALSE or an exception is a failure). A
-primary wait or body error is never masked: it is re-raised unchanged, with the bounded
-secondary cleanup diagnostic attached as an exception note. After a clean body, any cleanup
-failure raises ``MutexUnavailable``: there is no success on failed cleanup. A failed release
-leaves the mutex owned by this thread until it exits.
+Cleanup (Tools 8c6066ff F8-CLEANUP; 51ada W-SECONDARY-EXCEPTIONS): ``ReleaseMutex`` and
+``CloseHandle`` are each attempted independently and their BOOL results are checked (FALSE or
+an ordinary exception is a failure). A primary wait or body error is never masked by an
+ORDINARY cleanup failure (an ``Exception``, a FALSE BOOL, or a failing note): it is re-raised
+unchanged, with the bounded secondary cleanup diagnostic attached as an exception note when
+the note can be attached. After a clean body, any cleanup failure raises ``MutexUnavailable``:
+there is no success on failed cleanup. A failed release leaves the mutex owned by this thread
+until it exits. The honest limit: an asynchronous interrupt (a ``BaseException`` such as
+``KeyboardInterrupt`` or ``SystemExit``) raised INSIDE a cleanup call is not a cleanup failure
+and propagates, after the remaining cleanup calls were still attempted.
 
 A Windows mutex is owned by a thread: hold it on the thread that runs the transaction.
 Off Windows there is no fallback lock: ``hold`` raises ``MutexUnavailable``. This does not
@@ -129,9 +133,15 @@ def _suffix(failures: list[str]) -> str:
 
 
 def _note(exc: BaseException, failures: list[str]) -> None:
-    """Keep the primary error unchanged; attach the bounded secondary cleanup diagnostic."""
-    if failures and hasattr(exc, "add_note"):
+    """Keep the primary error unchanged; attach the bounded secondary cleanup diagnostic. The
+    note can never replace the primary: a missing or failing add_note (an old runtime, or an
+    exception type whose note machinery raises) is ignored (Tools 51ada W-SECONDARY-EXCEPTIONS)."""
+    if not failures:
+        return
+    try:
         exc.add_note("bridge v2 runtime-root mutex cleanup also failed: " + _diagnostic(failures))
+    except Exception:  # noqa: BLE001 - the diagnostic is secondary; the primary error wins
+        pass
 
 
 class WindowsRootMutex:

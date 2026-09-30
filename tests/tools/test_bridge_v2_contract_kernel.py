@@ -281,7 +281,9 @@ def test_the_floor_vocabulary_covers_every_gate_set():
     assert changes.APPROVAL_STATUSES <= schema.FLOOR_APPROVAL_STATUSES
     assert changes.DONE_APPROVAL_STATUSES <= schema.FLOOR_DONE_APPROVAL_STATUSES
     assert changes.CLEAR_EVENT_TYPES <= schema.FLOOR_CLEAR_TYPES
-    assert changes.NO_CHANGES_REQUESTED_CLEAR_STATUSES | changes.NO_BLOCK_CLEAR_STATUSES <= schema.FLOOR_CLEAR_STATUSES
+    # The clear set is EQUAL both ways (RCO1 18ea SF-1): a status the gate retires from its clear sets can
+    # become a BLOCK there, and a floor still calling it veto_clear would refuse that headless veto (B1 class).
+    assert changes.NO_CHANGES_REQUESTED_CLEAR_STATUSES | changes.NO_BLOCK_CLEAR_STATUSES == schema.FLOOR_CLEAR_STATUSES
     assert changes.CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES <= schema.FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES
     assert set(changes.CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES) == set(schema.FLOOR_CHANGES_REQUESTED_PREFIXES)
     # Exemptions (floor subset of gate): the floor never exempts more than the gate itself does.
@@ -306,6 +308,48 @@ BLOCKING_EXTRAS = ("not_blocked", "not_a_blocker", "preflight_clear_blocked", "c
                    "unresolved_block", "block_cleared_required", "ack_block", "rco_blocked_withdrawn",
                    "rco_retraction_acknowledged_head_blocked", "repeat_block_acknowledged_no_reopen",
                    "rco_pass_blocked", "approved_but_blocked", "resolved_block_still_open", "cleared_block")
+# Today's clear statuses as LITERALS (RCO1 18ea SF-1), so the behavioural corpus keeps them even after the gate
+# retires one from its own lists. The gate's token rules make these three a BLOCK once retired from its clear
+# sets; the other two then classify as not-a-block in the gate as well.
+CLEAR_STATUS_LITERALS = ("no_changes_requested", "no_changes_requested_approved", "approved_waiver_block_cleared",
+                         "lead_no_blocker_rco_pending", "producer_no_block_reemit_required")
+RETIRED_CLEAR_BECOMES_BLOCK = ("no_changes_requested", "no_changes_requested_approved",
+                               "producer_no_block_reemit_required")
+
+
+def _clear_set_drift(changes, schema) -> set:
+    gate = set(changes.NO_CHANGES_REQUESTED_CLEAR_STATUSES) | set(changes.NO_BLOCK_CLEAR_STATUSES)
+    return gate ^ set(schema.FLOOR_CLEAR_STATUSES)
+
+
+def _classifier_drift(changes, schema, statuses) -> set:
+    return {status for status in statuses for kind in ("", "decision", "finding")
+            if schema._gate_blocking(status, kind) != changes._is_blocking_status(status, event_type=kind)}
+
+
+def test_the_clear_set_literals_are_exact_and_classify_alike_today():
+    schema, changes = _kernel("bridge_v2_event_schema"), _gates()[1]
+    assert set(CLEAR_STATUS_LITERALS) == set(schema.FLOOR_CLEAR_STATUSES)   # a new clear status updates this pin
+    assert _clear_set_drift(changes, schema) == set()                         # success twin of the retirement case
+    assert _classifier_drift(changes, schema, CLEAR_STATUS_LITERALS) == set()
+
+
+@pytest.mark.parametrize("retired", CLEAR_STATUS_LITERALS)
+def test_a_clear_status_the_gate_retires_is_caught_by_the_drift_guards(monkeypatch, retired):
+    """RCO1 18ea SF-1 twin: the gate retires ONE clear status; the kernel keeps its own frozen copy. The equality
+    guard reports every retirement. Where the gate's own rules then call the status a block, the behavioural guard
+    reports it too, and the floor would refuse exactly that headless veto: the fail-open these guards prevent."""
+    schema, changes = _kernel("bridge_v2_event_schema"), _gates()[1]
+    for name in ("NO_CHANGES_REQUESTED_CLEAR_STATUSES", "NO_BLOCK_CLEAR_STATUSES"):
+        monkeypatch.setattr(changes, name, frozenset(getattr(changes, name)) - {retired})   # read at call time
+    assert _clear_set_drift(changes, schema) == {retired}
+    becomes_block = retired in RETIRED_CLEAR_BECOMES_BLOCK
+    assert changes._is_blocking_status(retired, event_type="decision") is becomes_block
+    assert (retired in _classifier_drift(changes, schema, CLEAR_STATUS_LITERALS)) is becomes_block
+    if becomes_block:
+        veto = _event(type="decision", status=retired, agent=PEER, message="a block in the gate now", payload={})
+        with pytest.raises(ValueError, match="lowercase 40-hex"):
+            schema.validate_event_for_write(veto)
 
 
 def test_the_ported_blocking_classifier_equals_the_gates_own():
@@ -364,6 +408,7 @@ def _corpus_statuses(gates):
     base = (set(rco.RCO_PASS_STATUSES) | set(idle.RCO_PASS_STATUSES) | set(idle.BUILD_CONSENSUS_STATUSES)
             | set(changes.APPROVAL_STATUSES) | set(changes.DONE_APPROVAL_STATUSES)
             | set(changes.NO_CHANGES_REQUESTED_CLEAR_STATUSES) | set(changes.NO_BLOCK_CLEAR_STATUSES)
+            | set(CLEAR_STATUS_LITERALS)                     # kept even when the gate retires one (SF-1)
             | {prefix + "_" + suffix for prefix in changes.CHANGES_REQUESTED_EXACT_BLOCK_PREFIXES
                for suffix in changes.CHANGES_REQUESTED_NON_BLOCKING_SUFFIXES}
             | set(changes.BLOCKING_STATUSES) | set(changes.INFORMATIONAL_FINDING_STATUSES)
@@ -492,8 +537,11 @@ def test_f12_a_status_the_changes_gate_calls_a_block_is_never_floored(status):
 def test_idle_counting_of_a_canonical_rco_finding_is_a_disclosed_gate_residual():
     """Pinned, not hidden: idle_consensus_auto_merge counts a clear (and an rco_pass) on a canonical RCO's
     finding before any type latch, while the changes gate vetoes it by type. The floor follows the veto
-    channel and never refuses it; the idle ordering needs its own operator-explicit gate change. When
-    that lands, the first assertion flips and this test must be updated deliberately."""
+    channel and never refuses it; the idle ordering needs its own operator-explicit gate change.
+    Scope, stated truthfully (RCO1 18ea N1): this pins only idle's CLASSIFIER (_is_consensus_clear) and the
+    floor. It does NOT observe idle's loop ORDER, and the rco_pass counting is described, not asserted. A
+    loop-order fix that adds a type latch leaves these assertions unchanged, so whoever lands it must replace
+    this pin with a loop-level fixture deliberately."""
     schema, idle = _kernel("bridge_v2_event_schema"), _gates()[2]
     assert idle._is_consensus_clear("changes_requested_concurrence", event_type="finding")
     veto = _event(type="finding", status="changes_requested_concurrence", agent=RCO, payload={})

@@ -273,6 +273,88 @@ def test_a_projection_over_the_trip_line_waits():
     assert (advice["verdict"], advice["unavailable"]) == (tr.WAIT, {"codex-tools-1": ["budget_over_trip_line"]})
 
 
+# --- compose: the one pure entry ---------------------------------------------------------------------
+
+def _compose(workers=None, subjects=None, rows=None, now=NOW, task=None):
+    base_task, base_workers, attempts, routing, _ = _router_inputs(None)
+    return rc.compose(base_task if task is None else task, base_workers if workers is None else workers,
+                      {"codex-tools-1": SUBJECT} if subjects is None else subjects,
+                      [codex_row()] if rows is None else rows, copy.deepcopy(PACED), signed(), attempts, routing, now)
+
+
+def test_compose_gives_a_lane_only_the_capacity_the_adapter_proves_then_routes():
+    workers = _router_inputs(None)[1]
+    out = _compose(workers=workers)
+    assert (out["schema"], out["reasons"], out["authority"], out["execution_allowed"]) == (
+        rc.COMPOSED_SCHEMA, [], "none", False)
+    assert (out["advice"]["verdict"], out["advice"]["recommended"]["worker"]) == (tr.ROUTE, "codex-tools-1")
+    assert out["capacity"] == [evidence()]  # the same record the adapter gives on its own
+    assert "capacity" not in workers[0] and out == _compose(workers=workers)  # inputs unchanged; deterministic
+
+
+def test_compose_drops_a_supplied_capacity_block():
+    workers = _router_inputs(evidence()["capacity"])[1]  # a block the caller brought itself
+    out = _compose(workers=workers, rows=[])
+    assert (out["advice"]["verdict"], out["advice"]["unknown"]) == (
+        tr.UNKNOWN, {"codex-tools-1": ["capacity_unknown_or_stale"]})
+    assert out["capacity"][0]["reasons"] == ["observation_missing"] and "capacity" in workers[0]
+
+
+ROW_CASES = [
+    ("two_rows", {"codex-tools-1": SUBJECT}, [codex_row(), codex_row()], ["observation_ambiguous"]),
+    ("no_subject", {}, None, ["subject_unknown"]),
+    ("blank_subject", {"codex-tools-1": " "}, None, ["subject_unknown"]),
+    ("subjects_not_a_map", ["codex-tools-1"], None, ["subject_unknown"]),
+    ("other_subject", {"codex-tools-1": SUBJECT}, [codex_row(auth_context_id="f" * 64)], ["observation_missing"]),
+    ("row_without_subject", {"codex-tools-1": SUBJECT},
+     [{k: v for k, v in codex_row().items() if k != "auth_context_id"}], ["observation_missing"]),
+    ("rows_not_a_list", {"codex-tools-1": SUBJECT}, "rows", ["observations_invalid"]),
+]
+
+
+@pytest.mark.parametrize("subjects, rows, reasons", [case[1:] for case in ROW_CASES], ids=[c[0] for c in ROW_CASES])
+def test_compose_needs_exactly_one_row_of_the_lanes_own_subject(subjects, rows, reasons):
+    out = _compose(subjects=subjects, rows=rows)
+    assert (out["capacity"][0]["verdict"], out["capacity"][0]["reasons"]) == ("unknown", reasons)
+    assert out["advice"]["unknown"] == {"codex-tools-1": ["capacity_unknown_or_stale"]}
+
+
+def test_compose_never_gives_grok_a_capacity_so_the_router_never_ranks_it():
+    lane = _router_inputs(None)[1][0]
+    grok = dict(copy.deepcopy(lane), worker="grok", kind="grok", profile_id="grok-default",
+                capacity=dict(evidence()["capacity"], profile_id="grok-default"),
+                single_flight={"state": "idle", "observed_utc": lane["load"]["observed_utc"]})
+    grok["role"]["worker"] = "grok"
+    out = _compose(workers=[lane, grok])
+    assert (out["advice"]["verdict"], out["advice"]["recommended"]["worker"]) == (tr.ROUTE, "codex-tools-1")
+    records = {record["worker"]: record for record in out["capacity"]}
+    assert (records["grok"]["verdict"], records["grok"]["reasons"]) == ("unknown", ["no_measured_grok_capacity"])
+    assert "capacity_unknown_or_stale" in {**out["advice"]["ineligible"], **out["advice"]["unknown"]}["grok"]
+
+
+def test_compose_takes_one_aware_clock_and_holds_without_it():
+    out = _compose(now=NOW.replace(tzinfo=None))
+    assert (out["advice"]["verdict"], out["advice"]["reasons"]) == (tr.HOLD, ["now_invalid"])
+    assert out["capacity"][0]["reasons"] == ["clock_invalid"]
+
+
+@pytest.mark.parametrize("workers", [None, "workers", [None], [{"worker": 7, "kind": "lane"}]],
+                         ids=["none", "text", "none_item", "bad_name"])
+def test_compose_never_raises_and_leaves_malformed_workers_to_the_router(workers):
+    task, _, attempts, routing, _ = _router_inputs(None)
+    out = rc.compose(task, workers, {"codex-tools-1": SUBJECT}, [codex_row()], PACED, signed(), attempts, routing, NOW)
+    assert (out["advice"]["verdict"], out["capacity"], out["execution_allowed"]) == (tr.HOLD, [], False)
+
+
+def test_compose_turns_an_unexpected_error_into_a_hold_with_nothing_unproven(monkeypatch):
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(rc, "_row_for", broken)
+    out = _compose()
+    assert (out["reasons"], out["capacity"], out["advice"]["verdict"]) == (["compose_error:RuntimeError"], [], tr.HOLD)
+
+
 # --- purity ------------------------------------------------------------------------------------------
 
 FORBIDDEN_IMPORTS = {"os", "sys", "subprocess", "socket", "pathlib", "time", "random", "urllib", "http",

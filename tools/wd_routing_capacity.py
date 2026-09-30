@@ -44,6 +44,16 @@ A known capacity:
 Billing comes only from the signed policy: the collector never reports it. A paid pool is
 reported as paid, and the router refuses paid capacity. Authority: none;
 ``execution_allowed`` is always False.
+
+``compose(task, workers, subjects, rows, paced, signed_policy, prepared_artifacts,
+routing_policy, now)`` is the one pure entry a caller needs: it gives each lane worker the
+capacity block ``capacity_evidence`` proves from its own quota row, or none, and then asks
+``wd_task_router.decide`` once. ``subjects`` maps a worker name to its quota subject. A lane
+needs exactly one row of that subject; none or several leave it unknown. A capacity block
+that a worker record already carries is dropped, so capacity reaches the router only through
+this adapter. Grok has no measured capacity source (its helper never observes the provider
+quota), so a Grok record carries none and the router keeps Grok unranked. ``now`` is one
+aware datetime, and the router gets its ISO string. The inputs are never changed.
 """
 from __future__ import annotations
 
@@ -55,9 +65,10 @@ from tools.bridge_pool_binding import POOL_ID_RE, _aware_utc
 from tools.lane_profile_record import _utc
 from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS
 from tools.wd_composer_select import digest
-from tools.wd_task_router import MEMBERS
+from tools.wd_task_router import MEMBERS, decide
 
 SCHEMA = "wd.routing-capacity.v1"
+COMPOSED_SCHEMA = "wd.routing-composed-advice.v1"
 POLICY_SCHEMA = "wd.routing-capacity-policy.v1"
 OBSERVATION_SCHEMA = "wd.capacity-observation.v1"
 FEATURE = "F19"
@@ -216,3 +227,68 @@ def capacity_evidence(worker: Any, row: Any, paced: Any, signed_policy: Any, now
     except Exception as exc:  # noqa: BLE001 - malformed input is unknown; it never crashes the caller
         record.update(verdict=UNKNOWN, reasons=["adapter_error:" + type(exc).__name__], capacity=None)
     return record
+
+
+def _unknown(worker: str, profile_id: Any, reasons: list[str]) -> dict:
+    """The unknown record of a worker that has no single quota row to adapt."""
+    return {"schema": SCHEMA, "feature": FEATURE, "worker": worker,
+            "profile_id": profile_id if _label(profile_id, 128) else None, "verdict": UNKNOWN,
+            "reasons": reasons, "capacity": None, "policy_sha256": None, "evidence_digest": None,
+            "authority": "none", "execution_allowed": False}
+
+
+def _row_for(rows: Any, subject: Any) -> tuple[Any, list[str]]:
+    """The one observation row of this quota subject, or why there is none."""
+    if not _label(subject):
+        return None, ["subject_unknown"]
+    if type(rows) is not list:
+        return None, ["observations_invalid"]
+    try:
+        matches = [row for row in rows if type(row) is dict and row.get("provider") in PROVIDERS
+                   and row.get(POOL_SUBJECT_FIELDS[row["provider"]]) == subject]
+    except Exception:  # noqa: BLE001 - a row that cannot be compared is not evidence
+        return None, ["observations_invalid"]
+    if len(matches) != 1:
+        return None, ["observation_ambiguous" if matches else "observation_missing"]
+    return matches[0], []
+
+
+def _with_capacity(workers: Any, subjects: Any, rows: Any, paced: Any, signed_policy: Any,
+                   now: Any) -> tuple[Any, dict]:
+    """Copies of the worker records with only adapter-proven capacity, and the evidence per worker."""
+    if type(workers) is not list:
+        return workers, {}
+    routed, evidence = [], {}
+    for worker in workers:
+        if type(worker) is not dict:
+            routed.append(worker)
+            continue
+        record = {key: value for key, value in worker.items() if key != "capacity"}
+        name, profile = worker.get("worker"), worker.get("profile_id")
+        if type(name) is str and name not in evidence and worker.get("kind") == "grok":
+            evidence[name] = _unknown(name, profile, ["no_measured_grok_capacity"])
+        elif type(name) is str and name not in evidence and worker.get("kind") == "lane":
+            subject = subjects.get(name) if type(subjects) is dict else None
+            row, reasons = _row_for(rows, subject)
+            evidence[name] = (_unknown(name, profile, reasons) if row is None else capacity_evidence(
+                {"worker": name, "profile_id": profile, "subject": subject}, row, paced, signed_policy, now))
+            if evidence[name]["verdict"] == KNOWN:
+                record["capacity"] = evidence[name]["capacity"]
+        routed.append(record)
+    return routed, evidence
+
+
+def compose(task: Any, workers: Any, subjects: Any, rows: Any, paced: Any, signed_policy: Any,
+            prepared_artifacts: Any, routing_policy: Any, now: Any, shadow_weights: Any = None) -> dict:
+    """Adapter-proven capacity, then one router decision; see the module docstring. Never raises."""
+    current = _aware_utc(now)
+    reasons: list[str] = []
+    try:
+        routed, evidence = _with_capacity(workers, subjects, rows, paced, signed_policy, now)
+    except Exception as exc:  # noqa: BLE001 - nothing unproven reaches the router; it then holds
+        routed, evidence, reasons = None, {}, ["compose_error:" + type(exc).__name__]
+    advice = decide(task, routed, prepared_artifacts, routing_policy,
+                    current.isoformat() if current is not None else None, shadow_weights)
+    return {"schema": COMPOSED_SCHEMA, "feature": FEATURE, "reasons": reasons, "advice": advice,
+            "capacity": [evidence[name] for name in sorted(evidence)], "authority": "none",
+            "execution_allowed": False}

@@ -50,7 +50,8 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 "790a7b0897c12eefe2bfc71d938d707db9e30ea5": "the F20 branch copy",
                 "9c2cb61c18197606ce64f3562246b8b2d797b29a": "55026fad (strict lifecycle receipts)",
                 "0085e3e2255d4de7cc1a349e8e3c2a2106225d77": "Fable 0621 no-hour helper (eligible = local availability)",
-                "1b0299f436d6ed7fd1d625661764e6a4274f0767": "Fable 0700 fleet context isolation (same local eligibility)"}
+                "1b0299f436d6ed7fd1d625661764e6a4274f0767": "Fable 0700 fleet context isolation (same local eligibility)",
+                "e985c1d7d56176044904041db3d65b709c69ceb7": "RCO1 G1 requester-bound results (same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

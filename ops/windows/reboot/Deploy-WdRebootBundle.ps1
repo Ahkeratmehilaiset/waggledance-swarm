@@ -217,7 +217,7 @@ function New-ForwardingWrapper {
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
     [string] $ExceptionPath = '', [string] $ExceptionSha256 = '',
     [switch] $ReadOnly, [switch] $Inventory, [string] $RepositoryPath = '', [string] $Commit = '',
-    [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '')
+    [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '', [string] $RequestedBy = '')
 '@
         }
         'fleet' {

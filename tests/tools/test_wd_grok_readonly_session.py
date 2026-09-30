@@ -182,3 +182,22 @@ def test_a_resumed_round_with_another_session_id_is_refused(iso, tmp_path):
     assert summary["outcome"] == "failed:ValueError:Resumed Grok session id changed"
     assert summary["session_id"] == "sess-1" and summary["read_only_guarantee"] is False
     assert "READ-ONLY SESSION FAILED" in result.stdout
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--inventory", "--requested-by", "fable-5"],
+    ["--inventory", "--requested-by", "Claude-RCO-2"],
+    ["--requested-by", "operator"],
+])
+def test_requester_refusal_precedes_inventory_surface_and_broker(iso, monkeypatch, capsys, arguments):
+    _, cwd = iso
+    monkeypatch.setattr(session.helper, "STATE_ROOT", cwd)
+    monkeypatch.setattr(session, "inherited_surface", _never)
+    monkeypatch.setattr(session, "surface_gate", _never)
+    monkeypatch.setattr(session.helper, "GitBlobBroker", _never)
+    monkeypatch.setattr(session.helper, "consult", _never)
+    monkeypatch.setattr(sys, "argv", ["wd_grok_readonly_session.py", *arguments])
+    assert session.main() == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "blocked" and "requester" in out["error"]
+    assert list(cwd.iterdir()) == []

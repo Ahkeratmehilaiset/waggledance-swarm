@@ -138,3 +138,14 @@ the wrapper never supplies it automatically. Unreadable inventory fails closed.
 Release integration was requested without additional tests or model trials.
 The controller's multi-round CLI behavior is not runtime-validated. Installation
 and inclusion in the bundle do not establish successful Grok execution.
+
+## Requester-bound results (G1)
+
+Lead brokers every consultation. `-RequestedBy <agent>` names the one other Bridge agent a
+consultation or `-ReadOnly` session is for: `codex-tools-1`, `claude-rco-1`, `claude-rco-2` or
+`fable-5`, in exact case. Lead itself, `grok-scout-1`, `operator`, any other value, and a requester
+without a consultation (`-Status`, `-Inventory`) are refused before the helper runs. The helper
+records `requested_by` in the reservation and in every lifecycle state. `answered` and `failed`
+then go to `codex-lead-1,<requester>` and carry `requested_by`, while `started` and `deferred`
+still go to `operator`. The requester receives an advisory result only: `authority_effect` stays
+`none`, and Lead remains the broker.

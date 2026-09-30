@@ -21,6 +21,10 @@ STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
 SCHEMA = "wd.grok-hourly.v1"
 MAX_LIFECYCLE_RECEIPT_BYTES = 256 * 1024
 MAX_LIFECYCLE_RECEIPT_DEPTH = 32
+# G1: Lead brokers every consultation; it may name ONE other Bridge agent the consultation is for,
+# and that agent also receives the answered or failed lifecycle event. Lead itself, grok-scout-1
+# and the operator are never requesters.
+REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 
 
 def emit_bridge_event(stage: str, state: dict) -> None:
@@ -433,13 +437,15 @@ def exclusive(root: Path):
 def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             runner=subprocess.run, now: datetime | None = None, emitter=None,
             exception_path: Path | None = None, exception_sha256: str | None = None,
-            timeout_seconds: int = 300) -> dict:
+            timeout_seconds: int = 300, requested_by: str | None = None) -> dict:
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
         raise ValueError("Consultation timeout must be an integer in 1..2400 seconds")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", task_id):
         raise ValueError("A bounded task ID is required")
     if not prompt.strip() or len(prompt.encode("utf-8")) > 48000:
         raise ValueError("Prompt must contain 1..48000 UTF-8 bytes")
+    if requested_by is not None and (type(requested_by) is not str or requested_by not in REQUESTERS):
+        raise ValueError("A requester must be one Bridge agent other than Lead")
     if exception_path is not None or exception_sha256 is not None:
         # Grants waived the removed hourly budget; recorded ones stay in the state as history only.
         raise ValueError("Task exceptions are retired with the local hourly budget")
@@ -467,6 +473,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             observation = {'task_id': task_id, 'request_id': None, 'observation_id': observation_id,
                            'status': decision, 'next_eligible_utc': previous["next_eligible_utc"],
                            'local_availability': availability, 'provider_quota': 'unknown'}
+            if requested_by is not None:
+                deferred["requested_by"] = observation["requested_by"] = requested_by
             record_lifecycle(emitter, 'deferred', observation)
             if observation.get('bridge_event_errors'):
                 deferred['bridge_event_errors'] = observation['bridge_event_errors']
@@ -477,6 +485,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                  "timeout_seconds": timeout_seconds,
                  "previous_report": previous.get("report_path", previous.get("previous_report")),
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", "")}
+        if requested_by is not None:
+            state["requested_by"] = requested_by   # the one agent that also receives the result
         if history:
             state["task_exceptions"] = history   # carried forward unchanged; never consulted
         # Persist before model launch: this durable reservation is the single-flight record. An
@@ -563,11 +573,14 @@ def main() -> int:
     parser.add_argument("--task-id")
     parser.add_argument("--exception-path", type=Path)
     parser.add_argument("--exception-sha256")
+    parser.add_argument("--requested-by")
     args = parser.parse_args()
     try:
         if args.status or args.prompt_file is None:
             if args.exception_path is not None or args.exception_sha256 is not None:
                 raise ValueError("Task exceptions require a consultation, not status")
+            if args.requested_by is not None:
+                raise ValueError("A requester requires a consultation, not status")
             report = status(STATE_ROOT)
         else:
             model = json.loads(Path(r"C:\Python\WD_GROK_MODEL_CURRENT.json").read_text(encoding="utf-8-sig"))
@@ -581,7 +594,7 @@ def main() -> int:
             report = consult(STATE_ROOT, args.task_id or "", prompt,
                              advisory_command(executable, model["model"]),
                              emitter=emit_bridge_event, exception_path=args.exception_path,
-                             exception_sha256=args.exception_sha256)
+                             exception_sha256=args.exception_sha256, requested_by=args.requested_by)
         print(json.dumps(report, ensure_ascii=False))
         if args.status or args.prompt_file is None:
             return 0 if report.get("status") != "failed" else 1

@@ -1098,3 +1098,114 @@ def test_status_keeps_a_legacy_state_and_reports_provider_evidence_verbatim(tmp_
     assert report["provider_evidence"] == {"exit_code": 3, "stderr_excerpt": "provider: rate limited",
                                            "stderr_truncated": False}
     assert report["provider_quota"] == "unknown" and report["eligible"] is True        # never read as a quota
+
+
+# --- G1: requester-bound results for a Lead-brokered consultation ------------------------------
+
+G1_REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+
+
+@pytest.mark.parametrize("requester", G1_REQUESTERS)
+def test_g1_requester_travels_in_the_reservation_and_every_lifecycle_state(tmp_path, requester):
+    seed(tmp_path)
+    events = []
+    result = consult(tmp_path, "g1/task", "ask", ["fake"], now=NOW, requested_by=requester,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice"),
+                     emitter=lambda stage, state: events.append((stage, dict(state))))
+    assert result["status"] == "answered"
+    assert [stage for stage, _ in events] == ["started", "answered"]
+    assert all(state["requested_by"] == requester for _, state in events)
+    saved = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert saved["requested_by"] == requester
+
+
+@pytest.mark.parametrize("requester", ["codex-lead-1", "grok-scout-1", "operator", "Claude-RCO-2", "unknown-1", "",
+                                       "fable-5\n", 7, ["fable-5"]])
+def test_g1_any_other_requester_is_refused_before_a_reservation(tmp_path, requester):
+    seed(tmp_path)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with pytest.raises(ValueError, match="requester"):
+        consult(tmp_path, "g1/task", "ask", ["fake"], now=NOW, requested_by=requester,
+                runner=lambda *a, **k: pytest.fail("a refused requester launched Grok"))
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+
+
+def test_g1_without_a_requester_the_state_and_events_have_no_requester(tmp_path):
+    seed(tmp_path)
+    events = []
+    consult(tmp_path, "g1/task", "ask", ["fake"], now=NOW,
+            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice"),
+            emitter=lambda stage, state: events.append((stage, dict(state))))
+    assert events and all("requested_by" not in state for _, state in events)
+    assert "requested_by" not in json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("stage,state,recipient", [
+    ("answered", {"request_id": OBSERVATION, "requested_by": "claude-rco-2"}, "codex-lead-1,claude-rco-2"),
+    ("failed", {"request_id": OBSERVATION, "requested_by": "fable-5"}, "codex-lead-1,fable-5"),
+    ("started", {"request_id": OBSERVATION, "requested_by": "claude-rco-2"}, "operator"),
+    ("deferred", {"observation_id": OBSERVATION, "requested_by": "codex-tools-1"}, "operator"),
+])
+def test_g1_answered_and_failed_also_reach_the_requesting_agent(tmp_path, shell, stage, state, recipient):
+    rc, out, err = _lifecycle(shell, tmp_path, stage, state)
+    assert rc == 0, out + err
+    written = json.loads(out)
+    assert written["to"] == recipient and written["payload"]["requested_by"] == state["requested_by"]
+    assert written["payload"]["authority_effect"] == "none" and written["agent"] == "grok-scout-1"
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("field,requester", [
+    ("requested_by", "codex-lead-1"), ("requested_by", "grok-scout-1"), ("requested_by", "operator"),
+    ("requested_by", "Claude-RCO-2"), ("requested_by", ""), ("requested_by", 7), ("requested_by", None),
+    ("requested_by", ["fable-5"]), ("Requested_By", "fable-5"),
+])
+def test_g1_lifecycle_refuses_any_other_requester_before_publishing(tmp_path, shell, field, requester):
+    rc, out, err = _lifecycle(shell, tmp_path, "answered", {"request_id": OBSERVATION, field: requester})
+    assert rc != 0 and "Invalid Grok requester" in err, out + err
+    assert '"session"' not in out
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_g1_requester_reaches_the_verified_python_wrapper_only_with_a_consultation(tmp_path, shell):
+    import hashlib
+    import os
+    import re
+    script = tmp_path / "Invoke-WdGrok.ps1"
+    shutil.copyfile(REBOOT / script.name, script)
+    stub = tmp_path / "Invoke-WdBridgePython.ps1"
+    stub.write_text('param([string]$Tool,[switch]$VerifyPackage)\n'
+                    '[pscustomobject]@{tool=$Tool;verified=[bool]$VerifyPackage;argv=@($args)} | ConvertTo-Json -Compress\n'
+                    '$global:LASTEXITCODE = 0\n')
+    manifest = tmp_path / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"source_commit": "fixture", "files": {
+        stub.name: hashlib.sha256(stub.read_bytes()).hexdigest().upper()}}))
+    expected = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    consultation = f"-PromptPath '{tmp_path / 'prompt.md'}' -TaskId task/g1"
+
+    def run(extra):
+        return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                               f"$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{expected}'; & '{script}' {extra}"],
+                              capture_output=True, text=True, timeout=30, env=env)
+
+    accepted = run(consultation + " -RequestedBy claude-rco-2")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    forwarded = json.loads(accepted.stdout)
+    assert forwarded["verified"] and forwarded["tool"] == "tools/wd_grok_helper.py"
+    assert forwarded["argv"][-2:] == ["--requested-by", "claude-rco-2"]
+    for extra, error in [(consultation + " -RequestedBy codex-lead-1", "other than Lead"),
+                         (consultation + " -RequestedBy Claude-RCO-2", "other than Lead"),
+                         ("-Status -RequestedBy claude-rco-2", "requires a consultation"),
+                         ("-Inventory -RequestedBy claude-rco-2", "requires a consultation")]:
+        refused = run(extra)
+        stderr = re.sub(r"\x1b\[[0-9;]*m", "", refused.stderr)
+        assert refused.returncode != 0 and error in stderr, (extra, refused.stdout, stderr)
+        assert '"tool"' not in refused.stdout, extra
+    generated = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text()
+    grok_parameters = generated.split("'grok' {", 1)[1].split("'@", 1)[0]
+    assert "$RequestedBy" in grok_parameters

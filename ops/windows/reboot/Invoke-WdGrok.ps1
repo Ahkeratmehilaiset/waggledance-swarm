@@ -4,8 +4,10 @@
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
     [string] $LifecycleBase64 = '', [string] $ExceptionPath = '', [string] $ExceptionSha256 = '',
     [switch] $ReadOnly, [switch] $Inventory, [string] $RepositoryPath = '', [string] $Commit = '',
-    [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '')
+    [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '', [string] $RequestedBy = '')
 $ErrorActionPreference = 'Stop'
+# G1: the one Bridge agent a Lead-brokered consultation is for; it also receives answered/failed.
+$requesters = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
 $manifestPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
 if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
     (Get-FileHash -LiteralPath $manifestPath).Hash -cne $env:WD_REBOOT_EXPECTED_MANIFEST_HASH) {
@@ -15,7 +17,7 @@ $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $sessionOptions = $ReadOnly -or $Inventory -or $RepositoryPath -or $Commit -or
     $AcknowledgeInheritedSurface -or $PSBoundParameters.ContainsKey('MaxRounds')
 if ($LifecycleBase64) {
-    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status -or $ExceptionPath -or $ExceptionSha256 -or $sessionOptions) { throw 'Invalid lifecycle invocation' }
+    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status -or $ExceptionPath -or $ExceptionSha256 -or $sessionOptions -or $RequestedBy) { throw 'Invalid lifecycle invocation' }
     $event=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LifecycleBase64)) | ConvertFrom-Json
     if ($event.stage -cnotin @('started','answered','failed','deferred')) { throw 'Invalid Grok lifecycle stage' }
     $state=$event.state
@@ -45,14 +47,26 @@ if ($LifecycleBase64) {
         $consultationId=$requestId
         $session='grok-consult-' + $requestId
     }
+    # The requester travels in the helper state by its exact name; any other shape refuses before publishing.
+    $requester = ''
+    $requesterFields = @($state.PSObject.Properties | Where-Object { $_.Name -ieq 'requested_by' })
+    if ($requesterFields.Count) {
+        if ($requesterFields.Count -ne 1 -or $requesterFields[0].Name -cne 'requested_by' -or
+            $requesterFields[0].Value -isnot [string] -or $requesterFields[0].Value -cnotin $requesters) {
+            throw 'Invalid Grok requester'
+        }
+        $requester = $requesterFields[0].Value
+    }
     $payload=[ordered]@{schema='wd.grok-consultation-event.v1';consultation_id=$consultationId;
         stage=[string]$event.stage;authority_effect='none';advisory_only=$true;
         budget_ref='C:\Python\grok-scout-reports\hourly-state.json'}
     if ($event.stage -ceq 'deferred') { $payload['observation_id']=$observationId }
+    if ($requester) { $payload['requested_by']=$requester }
     foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','local_availability','provider_quota','error_type','budget_exception')) {
         if ($state.PSObject.Properties[$key]) { $payload[$key]=$state.$key }
     }
     $recipient=if ($event.stage -cin @('answered','failed')) { 'codex-lead-1' } else { 'operator' }
+    if ($requester -and $event.stage -cin @('answered','failed')) { $recipient+=',' + $requester }
     $message='Grok advisory consultation ' + $event.stage + '; task=' + $state.task_id
     if ($payload.Contains('report_path')) { $message+='; report=' + $payload.report_path }
     & $writer -Agent grok-scout-1 -Type status -Status ('consultation_' + $event.stage) `
@@ -103,6 +117,11 @@ if ($ExceptionPath -or $ExceptionSha256) {
         throw 'Task exception requires a consultation, path and SHA256'
     }
     $arguments += @('--exception-path', ([IO.Path]::GetFullPath($ExceptionPath)), '--exception-sha256', $ExceptionSha256)
+}
+if ($RequestedBy) {
+    if ($RequestedBy -cnotin $requesters) { throw 'A requester must be one Bridge agent other than Lead' }
+    if (-not $PromptPath -or -not $TaskId -or $Status -or $Inventory) { throw 'A requester requires a consultation' }
+    $arguments += @('--requested-by', $RequestedBy)
 }
 $previousGeneration = $env:WD_BRIDGE_GENERATION
 # A wrapper that ends without publishing an exit code is reported as a failure (1), never success.

@@ -675,8 +675,12 @@ def main() -> int:
     parser.add_argument("--acknowledge-inherited-surface")
     parser.add_argument("--exception-path", type=Path)
     parser.add_argument("--exception-sha256")
+    parser.add_argument("--requested-by")
     args = parser.parse_args()
     try:
+        # G1: refuse a malformed requester before any inventory, surface or broker work, not only in consult.
+        if args.requested_by is not None and (args.inventory or args.requested_by not in getattr(helper, "REQUESTERS", ())):
+            raise ValueError("A requester needs one consultation for one Bridge agent other than Lead")
         if args.inventory:
             print(json.dumps(inherited_surface(helper.STATE_ROOT), ensure_ascii=False))
             return 0
@@ -704,12 +708,15 @@ def main() -> int:
                                        acknowledged=args.acknowledge_inherited_surface)
         if "timeout_seconds" not in inspect.signature(helper.consult).parameters:
             raise ValueError("wd_grok_helper.consult lacks the timeout_seconds keyword (Tools interface)")
+        requester = {} if args.requested_by is None else {"requested_by": args.requested_by}
+        if requester and "requested_by" not in inspect.signature(helper.consult).parameters:
+            raise ValueError("wd_grok_helper.consult lacks the requested_by keyword (G1 interface)")
         # Single source for the session total: max_rounds * 300 s, validated 2..8 rounds above.
         report = helper.consult(helper.STATE_ROOT, args.task_id, prompt,
                                 helper.advisory_command(executable, model["model"]),
                                 runner=runner, emitter=helper.emit_bridge_event,
                                 exception_path=args.exception_path, exception_sha256=args.exception_sha256,
-                                timeout_seconds=args.max_rounds * ROUND_TIMEOUT_SECONDS)
+                                timeout_seconds=args.max_rounds * ROUND_TIMEOUT_SECONDS, **requester)
         report["readonly_session"] = {"commit": broker.sha, "surface_digest": surface["digest"],
                                       "isolation": surface["isolation"], "read_only_guarantee": False,
                                       "runtime_tested": False}

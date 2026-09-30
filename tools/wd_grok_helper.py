@@ -49,7 +49,7 @@ FINISHED_FIELDS = ("task_id", "request_id", "requested_by", "purpose", "status",
                    "error_class", "model", "effort", "output_format", "reported_model", "session_id",
                    "stop_reason", "usage", "usage_status", "report_sha256", "output_sha256", "partial_report",
                    "partial_report_error", "stderr_excerpt", "stderr_truncated", "duration_seconds", "finished_at_utc",
-                   "bridge_generation")
+                   "bridge_generation", "request_bytes", "stdout_bytes", "stderr_bytes")
 
 
 def emit_bridge_event(stage: str, state: dict) -> None:
@@ -391,6 +391,18 @@ def _text(value: object) -> str | None:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value if isinstance(value, str) else None
+
+
+def _captured_bytes(value: object) -> int | None:
+    """The size of one captured CLI stream. The consult launch runs in text mode, so its capture is
+    the CLI's bytes decoded as UTF-8 (with replacement and newline translation) and is counted as its
+    UTF-8 length; a bytes capture is counted as is. 0 is an empty stream. None means the stream was
+    not observed, never that it was empty."""
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode("utf-8", errors="replace"))
+    return None
 
 
 def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -743,19 +755,26 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                               "--disable-web-search", "--no-memory", *OUTPUT_FORMAT]
             # F4: the ledger records the attempt BEFORE Grok starts; if it cannot, Grok never starts.
             stage = "ledger"
+            request = prompt_path.read_bytes()
+            state["request_bytes"] = len(request)   # the prompt file exactly as the CLI reads it
             failure = _record_ledger(root, {
                 "event": "started", "task_id": task_id, "request_id": request_id, "requested_by": requested_by,
                 "purpose": purpose, "reserved_utc": state["last_attempt_utc"], "timeout_seconds": timeout_seconds,
                 "model": state["model"], "effort": state["effort"],
                 "argv_sha256": hashlib.sha256(json.dumps([str(token) for token in argv],
                                                          ensure_ascii=True).encode("ascii")).hexdigest(),
-                "request_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+                "request_sha256": hashlib.sha256(request).hexdigest(), "request_bytes": state["request_bytes"],
                 "bridge_generation": state["bridge_generation"]})
             if failure is not None:
                 raise LedgerUnavailable(failure["error_type"])
             stage = "launch"
+            # stdin is the null device: the CLI's only input is the prompt file, and a CLI that reads
+            # a non-TTY stdin can never wait on the caller's console or pipe until the timeout.
             result = runner(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=timeout_seconds, env=environment, cwd=str(root))
+                            timeout=timeout_seconds, env=environment, cwd=str(root), stdin=subprocess.DEVNULL)
+            # Both stream sizes are recorded before anything below can fail.
+            state.update(stdout_bytes=_captured_bytes(getattr(result, "stdout", None)),
+                         stderr_bytes=_captured_bytes(getattr(result, "stderr", None)))
             stage = "report"
             reply = parse_json_reply(result.stdout)
             if reply is not None:
@@ -775,6 +794,9 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                 state.update(stderr_excerpt=stderr[-2048:], stderr_truncated=len(stderr) > 2048)
         except Exception as exc:
             state.update(status="failed", error_type=type(exc).__name__, error_class=_classify(exc, stage))
+            if isinstance(exc, subprocess.TimeoutExpired):
+                # What reached each pipe before the kill: 0/0 is an empty capture, not a lost one.
+                state.update(stdout_bytes=_captured_bytes(exc.stdout), stderr_bytes=_captured_bytes(exc.stderr))
             if isinstance(exc, subprocess.TimeoutExpired) and exc.stdout:
                 partial = exc.stdout
                 if isinstance(partial, bytes):

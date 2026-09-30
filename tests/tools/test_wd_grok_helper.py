@@ -1742,3 +1742,108 @@ def test_f4_the_cli_purpose_requires_a_consultation(tmp_path, monkeypatch, capsy
     monkeypatch.setattr("sys.argv", ["wd_grok_helper.py", "--status", "--purpose", "calibration"])
     assert wd_grok_helper.main() == 2
     assert json.loads(capsys.readouterr().out)["error"] == "A purpose requires a consultation, not status"
+
+
+def test_f4_the_cli_launch_reads_the_null_device_and_keeps_text_mode(tmp_path):
+    # T2 (Lead 18:42:36Z): at 99900c92 the consult launch passed no stdin, so the CLI inherited the
+    # caller's stdin. Text mode, and with it the verbatim plain-text answer, is unchanged.
+    seed(tmp_path)
+    launches = []
+
+    def runner(command, **kwargs):
+        launches.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="plain advice")
+
+    result = consult(tmp_path, "f4/stdin", "Review", ["fake"], runner=runner, now=NOW)
+    assert (result["status"], Path(result["report_path"]).read_text(encoding="utf-8")) == ("answered", "plain advice")
+    (launch,) = launches
+    assert launch["stdin"] is subprocess.DEVNULL
+    assert {key: launch[key] for key in ("capture_output", "text", "encoding", "errors", "timeout")} == {
+        "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "timeout": 300}
+
+
+def test_f4_a_cli_that_reads_stdin_gets_eof_although_the_caller_holds_an_open_pipe(tmp_path):
+    # T2 with real processes: the caller's stdin is a pipe that nobody writes or closes while the CLI
+    # runs. A CLI that inherited it would wait until the timeout; the null device gives EOF at once.
+    import sys
+    cli = "import sys; sys.stdout.write('read %d' % len(sys.stdin.read()))"
+    driver = (
+        "import json, sys; from datetime import datetime, timedelta, timezone; from pathlib import Path; "
+        "from tools import wd_grok_helper as h; root = Path(sys.argv[1]); now = datetime.now(timezone.utc); "
+        "h.write_state(root, {'schema': h.SCHEMA, 'status': 'answered', "
+        "'last_attempt_utc': (now - timedelta(hours=1)).isoformat()}); "
+        "report = h.consult(root, 'f4/stdin-eof', 'Review', [sys.executable, '-c', sys.argv[2]], now=now, "
+        "timeout_seconds=5); "
+        "print(json.dumps({key: report.get(key) for key in ('status', 'error_class', 'stdout_bytes')}))")
+    with subprocess.Popen([sys.executable, "-B", "-c", driver, str(tmp_path), cli], cwd=ROOT,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as caller:
+        try:
+            caller.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            caller.kill()
+            raise
+        finally:
+            caller.stdin.close()   # only now: the CLI's whole run saw an open, silent pipe
+        out, err = caller.stdout.read(), caller.stderr.read()
+    assert caller.returncode == 0, err
+    assert json.loads(out) == {"status": "answered", "error_class": None, "stdout_bytes": len(b"read 0")}
+
+
+def test_f4_the_request_size_is_the_prompt_file_as_the_cli_reads_it(tmp_path):
+    # T3: the ledger's started line (before launch), the finished line and the state carry it.
+    seed(tmp_path)
+    result = consult(tmp_path, "f4/request-size", "Review ä\nline two", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout=_json_reply()))
+    sent = (tmp_path / (result["request_id"] + "-request.md")).read_bytes()
+    started, finished = wd_grok_helper.read_ledger(tmp_path)["entries"]
+    assert started["request_bytes"] == finished["request_bytes"] == result["request_bytes"] == len(sent)
+    assert started["request_sha256"] == hashlib.sha256(sent).hexdigest()
+
+
+_STREAM_OUTCOMES = {
+    # outcome: (what the launch returns or raises, status, stdout_bytes, stderr_bytes)
+    "json_answer": (lambda: SimpleNamespace(returncode=0, stdout=_json_reply(), stderr=""),
+                    "answered", len(_json_reply().encode("utf-8")), 0),
+    "plain_text_answer_without_stderr": (lambda: SimpleNamespace(returncode=0, stdout="plain ä advice"),
+                                         "answered", len("plain ä advice".encode("utf-8")), None),
+    "nonzero_exit_with_bytes_stderr": (lambda: SimpleNamespace(returncode=3, stdout="", stderr=b"provider: refused"),
+                                       "failed", 0, len(b"provider: refused")),
+    "silent_timeout_windows_shape": (lambda: subprocess.TimeoutExpired("grok", 300, output="", stderr=""),
+                                     "failed", 0, 0),
+    "partial_timeout_posix_shape": (lambda: subprocess.TimeoutExpired("grok", 300, output=b"partial",
+                                                                      stderr=b"stalled"), "failed", 7, 7),
+    "timeout_without_captures": (lambda: subprocess.TimeoutExpired("grok", 300), "failed", None, None),
+    "launch_error": (lambda: FileNotFoundError("grok.exe"), "failed", None, None),
+}
+
+
+@pytest.mark.parametrize("outcome", sorted(_STREAM_OUTCOMES))
+def test_f4_each_captured_stream_size_is_recorded_and_an_unobserved_one_stays_unknown(tmp_path, outcome):
+    # T3: at 99900c92 a timeout with no report and no stderr recorded no sizes at all, so a silent CLI
+    # could not be told from a lost capture. 0 is an empty stream; None is a stream never observed.
+    make, expected_status, stdout_bytes, stderr_bytes = _STREAM_OUTCOMES[outcome]
+    seed(tmp_path)
+
+    def runner(*args, **kwargs):
+        made = make()
+        if isinstance(made, BaseException):
+            raise made
+        return made
+
+    consult(tmp_path, "f4/streams", "Review", ["fake"], runner=runner, now=NOW)
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert (state["status"], state.get("stdout_bytes"), state.get("stderr_bytes")) == (
+        expected_status, stdout_bytes, stderr_bytes)
+    finished = wd_grok_helper.read_ledger(tmp_path)["entries"][-1]
+    assert (finished["event"], finished["stdout_bytes"], finished["stderr_bytes"]) == (
+        "finished", stdout_bytes, stderr_bytes)
+
+
+def test_f4_stream_sizes_are_kept_when_the_report_write_fails_after_the_run(tmp_path, monkeypatch):
+    seed(tmp_path)
+    request_id = _fixed_request_id(monkeypatch)
+    (tmp_path / (request_id + "-response.md")).mkdir()   # the report write raises an OSError
+    result = consult(tmp_path, "f4/report-io", "Review", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice", stderr="warn"))
+    assert (result["status"], result["error_class"], result["stdout_bytes"], result["stderr_bytes"]) == (
+        "failed", "io_error", len(b"advice"), len(b"warn"))

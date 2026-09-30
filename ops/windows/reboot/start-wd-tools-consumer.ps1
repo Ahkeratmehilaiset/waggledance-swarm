@@ -1029,6 +1029,21 @@ function Invoke-WdNativeContinuityStep {
         $property = $checkpoint.PSObject.Properties[$field]
         if ($null -ne $property) { (ConvertTo-WdCanonicalJson $field $false) + ':' + (ConvertTo-WdCanonicalJson $property.Value $false) }
     }
+    # Exact paired HOLD declarations are progress; absent fields retain legacy keys.
+    # Do not include updated_at_utc: a heartbeat must not replenish the wake budget.
+    $progressHolds = @($checkpoint.PSObject.Properties | Where-Object {
+        $_.Name -cin @('work_held', 'release_held')
+    })
+    if ($progressHolds.Count -gt 0) {
+        if ($progressHolds.Count -ne 2 -or @($progressHolds | Where-Object { $_.Value -isnot [bool] }).Count -gt 0) {
+            throw 'Continuity progress hold fields must be paired exact booleans'
+        }
+        foreach ($field in @('work_held', 'release_held')) {
+            $property = @($progressHolds | Where-Object { $_.Name -ceq $field })[0]
+            $literal = if ($property.Value) { 'true' } else { 'false' }
+            $members = @($members) + ((ConvertTo-WdCanonicalJson $field $false) + ':' + $literal)
+        }
+    }
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $progressHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(
         '{' + (@($members) -join ',') + '}'))).Replace('-','').ToLowerInvariant() }

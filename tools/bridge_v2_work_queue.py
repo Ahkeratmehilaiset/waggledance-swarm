@@ -300,7 +300,8 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                               else "force claim across agents refused")
             if not (_owns(current, identity) or _identityless_pair(current, identity)):
                 raise Refused("claim is held by another session; only the owning session refreshes it")
-            if current.get("dispatch_key") != dispatch_key:
+            # A stored key of ANY value (a malformed one or null included) is never changed or dropped.
+            if ("dispatch_key" in current) != (dispatch_key is not None) or current.get("dispatch_key") != dispatch_key:
                 raise Refused("dispatch_key is immutable for an active claim")
         elif existing is not None:
             raise Refused("the claim was archived meanwhile; a refresh never recreates it")
@@ -310,7 +311,13 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                     continue
                 if other is None:
                     raise Refused("an active claim is unreadable or over the size bound; duplicate dispatch unknown")
-                if other.get("dispatch_key") == dispatch_key:
+                if "dispatch_key" not in other:
+                    continue
+                other_key = other["dispatch_key"]
+                # B-F1 (Fable review 99897de5): a present key that is not exact lowercase hex may denote any key.
+                if type(other_key) is not str or DISPATCH_KEY_PATTERN.fullmatch(other_key) is None:
+                    raise Refused("an active claim carries a malformed dispatch_key; duplicate dispatch unknown")
+                if other_key == dispatch_key:
                     raise Refused("duplicate dispatch: dispatch_key held by active claim " + str(other.get("task_id"))[:128])
         if mode == "write":
             for other_path, other in _strict_claim_entries(txns):
@@ -375,8 +382,8 @@ def release_task(txns: QueueTransactions, *, agent: str, task_id: str, release_s
         record = {"agent": agent, "task_id": task_id, "summary": current.get("summary", ""),
                   "release_status": release_status.strip(), "release_message": release_message.strip(),
                   "claimed_at_utc": current.get("claimed_at_utc", ""), "released_at_utc": released_at}
-        if isinstance(current.get("dispatch_key"), str):
-            record["dispatch_key"] = current["dispatch_key"]   # the dispatch evidence outlives the claim
+        if "dispatch_key" in current:
+            record["dispatch_key"] = current["dispatch_key"]   # the dispatch evidence outlives the claim, verbatim
         return Plan(after=None, archive=(done_path, record), result=record,
                     event={"type": "release", "agent": agent, "task_id": task_id,
                            "status": record["release_status"], "generation_before": sha256_or_none(before)})
@@ -687,8 +694,8 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                     if applied_at is None or not _owned_claim_sweepable(bridge, claim, applied_at):
                         raise Refused("the owner session is live or unknown at apply time")
                 payload = _stale_payload(claim, now, reason)
-                if isinstance(current.get("dispatch_key"), str):
-                    payload["dispatch_key"] = current["dispatch_key"]
+                if "dispatch_key" in current:
+                    payload["dispatch_key"] = current["dispatch_key"]   # verbatim, a malformed value included
                 return Plan(after=None, archive=(archive_path, payload),
                             event={"type": "stale_archive", "agent": claim.agent, "task_id": claim.task_id,
                                    "status": "stale_lease", "generation_before": sha256_or_none(before)})

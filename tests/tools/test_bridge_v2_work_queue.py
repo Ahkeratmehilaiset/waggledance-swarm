@@ -482,6 +482,46 @@ def test_a_stale_archive_keeps_the_dispatch_key(env):
     assert json.loads(entry.archived_path.read_text())["dispatch_key"] == KEY_A
 
 
+def _store_dispatch_key(txns, task_id, stored):
+    path = wq.find_claim(txns, task_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["dispatch_key"] = stored
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+# B-F1 (Fable review 99897de5, Lead d06fbf85): a stored dispatch_key that is present but malformed was compared with
+# == only, so a new claim with the same valid key became active beside it. It now makes the dispatch unknown
+# (refused), the claim cannot be refreshed, and release and stale archive keep the stored value verbatim.
+MALFORMED_STORED = ["A" * 64, ["a" * 64], " " + "a" * 64, "a" * 64 + "\n", None, 12]
+MALFORMED_IDS = ["upper", "list", "padded", "newline", "null", "int"]
+
+
+@pytest.mark.parametrize("stored", MALFORMED_STORED, ids=MALFORMED_IDS)
+def test_a_malformed_stored_dispatch_key_makes_a_keyed_claim_unknown_and_survives_release(env, stored):
+    claim(env, task="team/stored", scope=("tools/s.py",), dispatch_key=KEY_A)
+    _store_dispatch_key(env[0], "team/stored", stored)
+    for key in (KEY_A, KEY_B):
+        with pytest.raises(Refused, match="malformed dispatch_key; duplicate dispatch unknown"):
+            claim(env, task="team/new", agent="fable-5", identity=OTHER, scope=("tools/n.py",), dispatch_key=key)
+    assert wq.find_claim(env[0], "team/new") is None
+    for key in (KEY_A, None):                                            # nor refreshed: the key is immutable
+        with pytest.raises(Refused, match="immutable"):
+            claim(env, task="team/stored", scope=("tools/s.py",), now=NOW + timedelta(minutes=1), dispatch_key=key)
+    assert claim(env, task="team/plain", agent="fable-5", identity=OTHER, scope=("tools/p.py",))["mode"] == "write"
+    released = wq.release_task(env[0], agent="claude-rco-2", task_id="team/stored", identity=OWNER,
+                               now=NOW + timedelta(minutes=2))
+    assert released["dispatch_key"] == stored                            # verbatim evidence, never dropped
+    assert claim(env, task="team/new", agent="fable-5", identity=OTHER, scope=("tools/n.py",),
+                 dispatch_key=KEY_A)["dispatch_key"] == KEY_A            # success twin once it is released
+
+
+def test_a_stale_archive_keeps_a_malformed_dispatch_key_verbatim(env):
+    claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",), dispatch_key=KEY_A)
+    _store_dispatch_key(env[0], "team/owned", ["a" * 64])
+    [entry] = wq.archive_stale_claims(bridge_root=env[0].root, now_utc=NOW, apply=True, transactions=env[0])
+    assert json.loads(entry.archived_path.read_text())["dispatch_key"] == ["a" * 64]
+
+
 # -- F8 session-heartbeat fence (RCO1 2026-09-30, Lead request d79f933d) -----------------------------------
 # The PowerShell session-heartbeat writer (Write-BridgeSessionHeartbeat, ClaimLeaseHeartbeat.ps1) takes only the
 # sibling lock of the BEAT file (Enter-BridgeClaimLock -ClaimPath <beat>: "<beat>.json.lock", FileShare.None),

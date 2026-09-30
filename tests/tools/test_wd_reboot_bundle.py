@@ -7331,6 +7331,10 @@ param(
     agent_wrapper = str(tmp_path / "agent-wrapper.ps1").replace("'", "''")
     tools_wrapper = str(tmp_path / "tools-wrapper.ps1").replace("'", "''")
     deployment_manifest_quoted = str(deployment_manifest).replace("'", "''")
+    # The 684ceba6 launcher guard: every generated launcher pins this exact final pair and refuses unless the
+    # state pointer next to it matches (all fake targets share tmp_path as their bundle directory).
+    final_commit = "f" * 40
+    pointer_quoted = str(tmp_path / "WD_REBOOT_STATE_CURRENT.json").replace("'", "''")
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'
@@ -7358,11 +7362,24 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $manifestHash = (
   Get-FileHash -LiteralPath '{deployment_manifest_quoted}' -Algorithm SHA256
 ).Hash
+$pointer = [ordered]@{{
+  source_commit = '{final_commit}'
+  final_commit = '{final_commit}'
+  manifest_sha256 = $manifestHash
+  final_manifest_sha256 = $manifestHash
+  active_bundle = (Split-Path -Parent '{target_quoted}')
+}}
+[IO.File]::WriteAllBytes(
+  '{pointer_quoted}',
+  $utf8.GetBytes([string]($pointer | ConvertTo-Json -Compress))
+)
 $fleetText = New-ForwardingWrapper `
   -Target '{target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
-  -WrapperKind fleet
+  -WrapperKind fleet `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{fleet_wrapper}',
   $utf8.GetBytes([string]$fleetText)
@@ -7372,7 +7389,9 @@ $agentText = New-ForwardingWrapper `
   -ExpectedHash (Get-FileHash -LiteralPath '{agent_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
   -WrapperKind agent `
-  -FixedAgent fable-5
+  -FixedAgent fable-5 `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{agent_wrapper}',
   $utf8.GetBytes([string]$agentText)
@@ -7381,7 +7400,9 @@ $toolsText = New-ForwardingWrapper `
   -Target '{tools_target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{tools_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
-  -WrapperKind tools
+  -WrapperKind tools `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{tools_wrapper}',
   $utf8.GetBytes([string]$toolsText)
@@ -7407,6 +7428,7 @@ foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
     assert "Start-Transcript -LiteralPath" in fleet_wrapper_text
     assert "Elevated restore failure log" in fleet_wrapper_text
     assert "Set-WdWrapperWindowsPowerShellModulePath" in fleet_wrapper_text
+    assert "WD_REBOOT_STATE_CURRENT.json" in fleet_wrapper_text  # the fail-closed pointer guard is generated
     assert fleet_wrapper_text.index(
         "Set-WdWrapperWindowsPowerShellModulePath"
     ) < fleet_wrapper_text.index("Get-FileHash -LiteralPath $manifestPath")

@@ -588,6 +588,12 @@ def test_reboot_uses_pinned_passive_grok_entrypoint():
     assert "tools/wd_grok_helper.py" in definition["python_files"]
     assert "Initialize-WdGrokRecovery.ps1" in (REBOOT / "start-wd-all.ps1").read_text()
     assert "Invoke-WdGrok.ps1 -Status" in (REBOOT / "start-wd-agent.ps1").read_text()
+    startup = (REBOOT / "start-wd-agent.ps1").read_text()
+    grok_prompt = startup.split("' Grok is an on-demand", 1)[1].split("' Shared capacity status:", 1)[0]
+    assert "per 60 minutes" not in grok_prompt
+    assert "Only the lead requests" not in grok_prompt
+    assert "no artificial local hour, week or per-agent quota" in grok_prompt
+    assert "Only explicit caller evidence" in grok_prompt
     wrapper = (REBOOT / "Invoke-WdGrok.ps1").read_text()
     assert "WD_REBOOT_EXPECTED_MANIFEST_HASH" in wrapper
     assert "-VerifyPackage" in wrapper

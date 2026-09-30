@@ -496,6 +496,24 @@ def test_a_replayed_admission_never_reserves_twice(ready, monkeypatch):
     assert ledger.reserve(admission(2)) is True  # the twin: a new admission passes the same checks
 
 
+def test_the_same_intent_is_never_reserved_twice_even_in_a_later_second(ready):
+    """Lead 67a2c911 (RCO2 07:21:54Z finding, RCO1 b619d1b4): exactly once per bound request. The admission
+    digest covers the route's whole-second admitted_utc, so the SAME intent admitted one second later is a new
+    admission; reserve must still refuse it. A DISTINCT intent back to back is the success twin (no rate budget)."""
+    clock = Clock(T0)
+    ledger = make(ready, clock=clock)
+    assert ledger.reserve(admission(1)) is True
+    clock.moment = T0 + timedelta(milliseconds=500)
+    ledger.finish(admission(1), OUTCOME)
+    later = T0 + timedelta(seconds=1)
+    clock.moment = later
+    before = ledger_bytes(ready)
+    assert ledger.reserve(admission(1, at=later)) is False  # same intent_sha256, new admitted_utc and digest
+    assert ledger_bytes(ready) == before  # refused under the lock: nothing written
+    assert ledger.reserve(admission(2, at=later)) is True  # a distinct intent, back to back
+    assert [e["intent_sha256"] for e in doc(ready)["entries"]] == ["1" * 64, "2" * 64]
+
+
 @pytest.mark.parametrize("offset, wins", [(timedelta(0), True), (timedelta(seconds=60), True),
                                           (timedelta(seconds=60, microseconds=1), False),  # full precision: late
                                           (timedelta(seconds=61), False), (timedelta(seconds=-1), False)])

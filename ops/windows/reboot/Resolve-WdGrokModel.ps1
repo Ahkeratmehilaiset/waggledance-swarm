@@ -259,7 +259,7 @@ function Get-CacheRecord {
         throw 'Grok model cache is missing exact usage examples.'
     }
     # A valid provider cache may contain retired direct-CLI examples. Never
-    # return those as instructions that bypass the fleet's shared hourly gate.
+    # return those as instructions that bypass the fleet's controlled single-flight helper.
     $cache.usage = New-UsageExamples -Executable ([string]$cache.grok_command) -Model $model
 
     return [pscustomobject][ordered]@{

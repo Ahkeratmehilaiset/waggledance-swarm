@@ -609,8 +609,9 @@ class AdmissionLedger:
                 "last_admitted_utc": entries[-1]["applied_utc"] if entries else None}
 
     def reserve(self, admission: Any) -> bool:
-        """True only for the one admission that wins under the lock (nothing open, fresh, never reserved);
-        False if it lost. No time since an earlier attempt is required: there is no local rate budget."""
+        """True only for the one admission that wins under the lock (nothing open, fresh, and neither it nor its
+        INTENT ever reserved: exactly once per bound request); False if it lost. No time since an earlier attempt
+        is required: there is no local rate budget."""
         self._verify("reserve")
         record = _admission_record(admission)
         with self._locked():
@@ -623,8 +624,9 @@ class AdmissionLedger:
             entries = doc["entries"]
             if any(e["state"] == "open" for e in entries):
                 return False  # another admission is in flight, or an interrupted one is unresolved
-            if any(e["admission_sha256"] == record["admission_sha256"] for e in entries):
-                return False  # a replayed admission never gets a second attempt (defence in depth)
+            if any(e["admission_sha256"] == record["admission_sha256"] or e["intent_sha256"] == record["intent_sha256"]
+                   for e in entries):
+                return False  # a replayed admission or INTENT never gets a second attempt: exactly once per request
             if len(entries) >= MAX_ENTRIES:
                 raise LedgerRefused("ledger_full")  # never erase an attempt to make room
             entry = dict(record, applied_utc=_stamp(now), caller=dict(self.caller), state="open",

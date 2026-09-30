@@ -174,6 +174,17 @@ function Write-BridgeWakeObservation {
     }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
 }
 
+function Test-BridgeObservationRoot {
+    # C-T1 (RCO1 2026-09-30; Fable review 99897de5): [IO.Path]::IsPathRooted also accepts 'C:x' (the current
+    # directory of drive C) and '\x' (the root of the current drive), which resolve against process state, so a
+    # receipt could land where no reader looks. Only a drive letter plus separator, or a UNC or device prefix, is
+    # fully qualified (Path.IsPathFullyQualified is not in .NET Framework: Windows PowerShell needs this check).
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    if ([IO.Path]::DirectorySeparatorChar -ne [char]92) { return $Path.StartsWith('/', [StringComparison]::Ordinal) }
+    return ($Path -cmatch '^[A-Za-z]:[\\/]' -or $Path -cmatch '^[\\/]{2}[^\\/]+[\\/][^\\/]')
+}
+
 function Write-BridgeStageObservation {
     param([string]$BridgeRoot, [string]$Stage, $Request, [string]$Target,
           [string]$DeliveryId='', [string]$QueueId='', [string]$ReplyTimestamp='', [string]$ReportReference='',
@@ -186,9 +197,10 @@ function Write-BridgeStageObservation {
     # counts (the native relay waits for model_turn_started), so a record that cannot be written
     # where the readers look throws; a runtime-observed stage stays best-effort and warns.
     $agentReported = $Stage -cin @('model_turn_started','lead_processed','user_reported','turn_completed')
-    if (-not $BridgeRoot -or -not [IO.Path]::IsPathRooted($BridgeRoot)) {
-        if ($agentReported) { throw ($Stage + ' observation refused: the bridge root must be a rooted path') }
-        Write-Warning ($Stage + ' observation not recorded: the bridge root must be a rooted path')
+    if (-not (Test-BridgeObservationRoot -Path $BridgeRoot)) {
+        $rootProblem = 'the bridge root must be fully qualified (a drive letter and separator, or UNC)'
+        if ($agentReported) { throw ($Stage + ' observation refused: ' + $rootProblem) }
+        Write-Warning ($Stage + ' observation not recorded: ' + $rootProblem)
         return
     }
     # turn_completed is the ONLY source of a no-op ratio: the agent states explicitly

@@ -663,13 +663,36 @@ def test_a_receipt_the_relay_would_never_count_fails_loudly_and_its_twin_records
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
-@pytest.mark.parametrize("root", ["", "relative-root"], ids=["empty", "relative"])
+@pytest.mark.parametrize("root", ["", "relative-root", "drive-relative", "current-drive-rooted"],
+                         ids=["empty", "relative", "drive_relative", "current_drive_rooted"])
 def test_an_agent_receipt_needs_a_rooted_bridge_root(tmp_path, shell, root):
     work = tmp_path / "cwd"
     work.mkdir()
+    # C-T1 (Fable review 99897de5, Lead d06fbf85): 'C:x' and '\x' pass [IO.Path]::IsPathRooted but resolve against
+    # the current drive and directory. Both forms point INTO work/ here, so a stray receipt would be found there.
+    if root == "drive-relative":
+        root = work.drive + "stray-drive-relative"
+    elif root == "current-drive-rooted":
+        root = str(work / "stray-current-drive")[len(work.drive):]
     result = _ps(shell, tmp_path, _receipt(root, "codex-lead-1"), cwd=work)
     assert "REFUSED:" in result.stdout and "bridge root" in result.stdout, result.stdout + result.stderr
     assert not list(work.rglob("stage-*.json"))                     # no stray receipt the relay never reads
+
+
+@pytest.mark.skipif(os.name != "nt" or not SHELLS, reason="drive-relative roots are a Windows form")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_runtime_stage_under_a_drive_relative_root_warns_and_a_forward_slash_root_records(tmp_path, shell):
+    work = tmp_path / "cwd"
+    work.mkdir()
+    stray = _ps(shell, tmp_path, f"Write-BridgeStageObservation -BridgeRoot '{work.drive}stray' -Stage watcher_seen "
+                                 f"-Request {REQUEST} -Target claude-rco-2", cwd=work)
+    assert stray.returncode == 0, stray.stderr                      # a runtime stage stays best-effort
+    assert "watcher_seen observation not recorded" in stray.stdout + stray.stderr
+    assert not list(work.rglob("stage-*.json"))
+    good = tmp_path / "good"                                         # success twin: fully qualified, '/' separators
+    recorded = _ps(shell, tmp_path, _receipt(str(good).replace("\\", "/"), "codex-lead-1"), cwd=work)
+    assert "RECORDED" in recorded.stdout, recorded.stdout + recorded.stderr
+    assert [record["stage"] for record in _stages(good)] == ["model_turn_started"]
 
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell is required")

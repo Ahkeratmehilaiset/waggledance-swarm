@@ -1541,6 +1541,8 @@ def _ledger_event(event, **fields):
         row.update(request_id=None, observation_id="c" * 32, grok_launched=False)
     else:
         row["request_id"] = "a" * 32
+    if event == "finished":
+        row["status"] = "answered"
     row.update(fields)
     return row
 
@@ -1639,6 +1641,78 @@ def test_f4_every_malformed_line_is_counted_and_the_first_are_listed(tmp_path):
 def test_f4_the_read_bound_must_be_a_positive_integer(tmp_path, bound):
     with pytest.raises(ValueError):
         wd_grok_helper.read_ledger(tmp_path, max_bytes=bound)
+
+
+# Grok review of 2cbfba7a forwarded by Lead 18:25:23Z (G1-G4), folded into the F4 repair.
+
+@pytest.mark.parametrize("status", [None, "reserved", "", ["failed"]], ids=["missing", "reserved", "empty", "list"])
+def test_f4_a_finished_event_needs_a_final_status_to_close_its_attempt(tmp_path, status):
+    finished = _ledger_event("finished", status=status)
+    if status is None:
+        finished.pop("status")
+    ledger = _read_rows(tmp_path, _ledger_event("started"), finished)
+    assert ledger["malformed_examples"] == [{"line": 2, "reason": "finished_status_invalid"}]
+    assert ledger["open_request_ids"] == ["a" * 32]  # nothing closed the start
+    failed = _read_rows(tmp_path, _ledger_event("started"), _ledger_event("finished", status="failed"))
+    assert (failed["malformed_lines"], failed["open_request_ids"]) == (0, [])  # success twin
+
+
+def test_f4_a_whitespace_line_is_counted_and_an_empty_line_is_no_record(tmp_path):
+    body = json.dumps(_ledger_event("started")).encode("ascii")
+    (tmp_path / "ledger.jsonl").write_bytes(body + b"\n   \n\n\t\n" + body.replace(b"a" * 32, b"b" * 32) + b"\n")
+    ledger = wd_grok_helper.read_ledger(tmp_path)
+    assert ledger["malformed_examples"] == [{"line": 2, "reason": "blank_line"}, {"line": 4, "reason": "blank_line"}]
+    assert ledger["open_request_ids"] == ["a" * 32, "b" * 32]
+
+
+def test_f4_the_writer_refuses_a_record_the_reader_would_not_parse(tmp_path, monkeypatch):
+    monkeypatch.setattr(wd_grok_helper, "MAX_LEDGER_LINE_BYTES", 150)
+    with pytest.raises(ValueError):
+        wd_grok_helper.append_ledger(tmp_path, _ledger_event("started", padding="x" * 200))
+    assert not (tmp_path / "ledger.jsonl").exists()
+    wd_grok_helper.append_ledger(tmp_path, _ledger_event("started"))  # success twin under the bound
+    assert wd_grok_helper.read_ledger(tmp_path)["open_request_ids"] == ["a" * 32]
+
+
+def test_f4_a_started_record_over_the_bound_means_grok_is_not_launched(tmp_path, monkeypatch):
+    seed(tmp_path)
+    monkeypatch.setattr(wd_grok_helper, "MAX_LEDGER_LINE_BYTES", 200)
+    launched = []
+    consult(tmp_path, "f4/over-bound", "Review", ["fake"], now=NOW,
+            runner=lambda *a, **k: launched.append(a) or SimpleNamespace(returncode=0, stdout="advice"))
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert (launched, state["status"], state["error_class"]) == ([], "failed", "ledger_unavailable")
+
+
+def test_f4_the_ledger_envelope_cannot_be_overridden_and_an_event_is_required(tmp_path):
+    overriding = {**_ledger_event("deferred"), "schema": "x", "recorded_utc": "y"}
+    assert wd_grok_helper._record_ledger(tmp_path, overriding) is None
+    (entry,) = wd_grok_helper.read_ledger(tmp_path)["entries"]
+    assert entry["schema"] == "wd.grok-ledger.v1" and entry["recorded_utc"] != "y"
+    assert wd_grok_helper._record_ledger(tmp_path, {"task_id": "t"}) == {"event": None, "error_type": "ValueError"}
+    ledger = wd_grok_helper.read_ledger(tmp_path)
+    assert (len(ledger["entries"]), ledger["malformed_lines"]) == (1, 0)  # nothing was written for it
+
+
+def test_f4_a_failed_partial_report_write_still_records_the_known_timeout(tmp_path, monkeypatch):
+    # G4: at 2cbfba7a (and 5e38872d) an OSError from the optional partial-report write escaped the
+    # except path, so neither the finished ledger line nor the final state was written.
+    seed(tmp_path)
+    request_id = _fixed_request_id(monkeypatch)
+    (tmp_path / (request_id + "-response.md")).mkdir()  # the report write now raises an OSError
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("fake", 5, output=b"partial", stderr=b"stalled")
+
+    consult(tmp_path, "f4/report-write", "Review", ["fake"], now=NOW, runner=timeout)
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert (state["status"], state["error_type"], state["partial_report"]) == ("failed", "TimeoutExpired", False)
+    assert state["partial_report_error"] in ("PermissionError", "IsADirectoryError")
+    assert state["stderr_excerpt"] == "stalled"
+    ledger = wd_grok_helper.read_ledger(tmp_path)
+    assert (ledger["entries"][-1]["event"], ledger["entries"][-1]["partial_report_error"]) == (
+        "finished", state["partial_report_error"])
+    assert ledger["open_request_ids"] == []
 
 
 def test_f4_stderr_is_kept_for_an_answered_attempt_and_is_never_provider_evidence(tmp_path):

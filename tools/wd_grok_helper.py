@@ -48,7 +48,7 @@ USAGE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 FINISHED_FIELDS = ("task_id", "request_id", "requested_by", "purpose", "status", "exit_code", "error_type",
                    "error_class", "model", "effort", "output_format", "reported_model", "session_id",
                    "stop_reason", "usage", "usage_status", "report_sha256", "output_sha256", "partial_report",
-                   "stderr_excerpt", "stderr_truncated", "duration_seconds", "finished_at_utc",
+                   "partial_report_error", "stderr_excerpt", "stderr_truncated", "duration_seconds", "finished_at_utc",
                    "bridge_generation")
 
 
@@ -210,8 +210,12 @@ class LedgerUnavailable(Exception):
 
 def append_ledger(root: Path, record: dict) -> None:
     """Append one ASCII JSON line and fsync it. A torn earlier line is terminated first, so it stays
-    one malformed line and never swallows this record. Nothing is ever rewritten or removed."""
-    line = json.dumps(record, ensure_ascii=True, sort_keys=True, allow_nan=False).encode("ascii") + b"\n"
+    one malformed line and never swallows this record. Nothing is ever rewritten or removed. A
+    record longer than the reader's line bound is refused (ValueError) before the file is opened."""
+    body = json.dumps(record, ensure_ascii=True, sort_keys=True, allow_nan=False).encode("ascii")
+    if len(body) > MAX_LEDGER_LINE_BYTES:
+        raise ValueError("ledger record longer than MAX_LEDGER_LINE_BYTES")
+    line = body + b"\n"
     with (root / LEDGER_NAME).open("a+b") as stream:
         stream.seek(0, os.SEEK_END)
         if stream.tell():
@@ -224,8 +228,12 @@ def append_ledger(root: Path, record: dict) -> None:
 
 
 def _record_ledger(root: Path, fields: dict) -> dict | None:
-    """Append one ledger event; a failure is returned as {event, error_type}, never raised."""
-    record = {"schema": LEDGER_SCHEMA, "recorded_utc": datetime.now(timezone.utc).isoformat(), **fields}
+    """Append one ledger event; a failure is returned as {event, error_type}, never raised. The
+    envelope (schema, recorded_utc) always wins over ``fields``, and a record without a known
+    event is refused before anything is written."""
+    if fields.get("event") not in LEDGER_EVENTS:
+        return {"event": fields.get("event"), "error_type": "ValueError"}
+    record = {**fields, "schema": LEDGER_SCHEMA, "recorded_utc": datetime.now(timezone.utc).isoformat()}
     try:
         append_ledger(root, record)
     except (OSError, ValueError, TypeError) as exc:
@@ -236,8 +244,8 @@ def _record_ledger(root: Path, fields: dict) -> dict | None:
 def _ledger_shape_error(entry: object) -> str | None:
     """Why a parsed line is not one wd.grok-ledger.v1 event, or None. The correlation fields are
     strict: a started or finished event names its attempt by consult's uuid4-hex request_id and a
-    task id; a deferred event is an observation only (request_id None, a uuid4-hex observation id,
-    grok_launched False)."""
+    task id, and a finished event carries its final status (answered or failed); a deferred event
+    is an observation only (request_id None, a uuid4-hex observation id, grok_launched False)."""
     if not isinstance(entry, dict) or entry.get("schema") != LEDGER_SCHEMA:
         return "not_a_ledger_event"
     if entry.get("event") not in LEDGER_EVENTS:
@@ -250,7 +258,11 @@ def _ledger_shape_error(entry: object) -> str | None:
         observation_id = entry.get("observation_id")
         return None if type(observation_id) is str and LEDGER_ID.fullmatch(observation_id) else "observation_id_invalid"
     request_id = entry.get("request_id")
-    return None if type(request_id) is str and LEDGER_ID.fullmatch(request_id) else "request_id_invalid"
+    if not (type(request_id) is str and LEDGER_ID.fullmatch(request_id)):
+        return "request_id_invalid"
+    if entry["event"] == "finished" and entry.get("status") not in ("answered", "failed"):
+        return "finished_status_invalid"
+    return None
 
 
 def read_ledger(root: Path, max_bytes: int = MAX_LEDGER_READ_BYTES) -> dict:
@@ -282,9 +294,10 @@ def read_ledger(root: Path, max_bytes: int = MAX_LEDGER_READ_BYTES) -> dict:
     complete = size <= max_bytes
     entries, malformed, examples = [], 0, []
     for number, raw in enumerate(data.split(b"\n"), start=1):
-        if not raw.strip():
+        if not raw:  # the end of the file, or an empty line: no record at all
             continue
-        entry, reason = None, "line_too_long" if len(raw) > MAX_LEDGER_LINE_BYTES else None
+        entry, reason = None, ("line_too_long" if len(raw) > MAX_LEDGER_LINE_BYTES
+                               else "blank_line" if not raw.strip() else None)
         if reason is None:
             try:
                 entry = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_pairs,
@@ -766,10 +779,15 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                 partial = exc.stdout
                 if isinstance(partial, bytes):
                     partial = partial.decode("utf-8", errors="replace")
-                report_path.write_text(partial[-8192:], encoding="utf-8")
-                state.update(partial_report=True, stdout_truncated=len(partial) > 8192,
-                             report_path=str(report_path),
-                             report_sha256=hashlib.sha256(report_path.read_bytes()).hexdigest())
+                try:
+                    report_path.write_text(partial[-8192:], encoding="utf-8")
+                    state.update(partial_report=True, stdout_truncated=len(partial) > 8192,
+                                 report_path=str(report_path),
+                                 report_sha256=hashlib.sha256(report_path.read_bytes()).hexdigest())
+                except OSError as report_error:
+                    # The failed outcome is known; only the optional partial report is missing. It is
+                    # recorded, and the finished ledger line and final state below are still written.
+                    state.update(partial_report=False, partial_report_error=type(report_error).__name__)
             stderr = getattr(exc, "stderr", None)
             if stderr:
                 if isinstance(stderr, bytes):

@@ -54,9 +54,10 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 "e985c1d7d56176044904041db3d65b709c69ceb7": "RCO1 G1 requester-bound results (same local eligibility)",
                 # F4 re-review: status() and the answered report keep every field admit/bind read; the
                 # report is still the hashed answer text, and a deferral keeps its request_id None shape.
-                # Replaces the unreleased 3b02d0cc, whose read_ledger raised on a malformed request_id
-                # (Lead 18:19:52Z); only the ledger reader changed.
-                "dbdd62d44b4815a64cc059278cedb66511d5a9bc": "Fable F4 JSON output + strict bounded measurement "
+                # Replaces the unreleased 3b02d0cc and dbdd62d4 (read_ledger raised on a malformed request_id,
+                # Lead 18:19:52Z; then the Grok-review items G1-G4, Lead 18:25:23Z). Only the ledger and the
+                # timeout path's optional partial report changed; status() and the report are unchanged.
+                "626d437303591419d72f4e22d04af5d08b1ffbe3": "Fable F4 JSON output + strict bounded measurement "
                                                             "ledger (same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")

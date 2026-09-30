@@ -114,10 +114,34 @@ def test_stale_and_future_checkpoints_are_reported_never_refreshed(tmp_path, upd
 
 def test_a_checkpoint_900s_old_is_fresh_but_still_yields_no_worker(tmp_path):
     lanes = {"fable-5": _write(tmp_path / "lanes/fable-5.json", _checkpoint("fable-5", NOW - timedelta(seconds=900)))}
+    data = Path(lanes["fable-5"]).read_bytes()
     result = wr.read_routing_inputs(_paths(tmp_path, lanes), NOW)
     assert _lane(result, "fable-5") == {"worker": "fable-5", "checkpoint_fresh": True,
+                                        "checkpoint_byte_sha256": hashlib.sha256(data).hexdigest(),
+                                        "checkpoint_size": len(data),
                                         "reasons": ["profile_unproven", "subject_unbound"]}
     assert result["assembled"]["inputs"]["workers"] == []
+
+
+def test_each_lane_report_is_bound_to_the_bytes_it_read_and_only_those(tmp_path):
+    # RCO2 N1 (20:30:13Z): checkpoint_fresh must be bound to the exact checkpoint bytes it was judged on.
+    lanes = {"fable-5": _write(tmp_path / "lanes/f.json", _checkpoint("fable-5")),
+             "codex-lead-1": _write(tmp_path / "lanes/c.json", _checkpoint("FABLE-5")),
+             "codex-tools-1": str(tmp_path / "lanes/absent.json"),
+             "claude-rco-1": _write(tmp_path / "lanes/r.json", raw=b'{"schema": "wd.lane-current.v1",'),
+             "FABLE-5": _write(tmp_path / "lanes/x.json", _checkpoint("FABLE-5"))}
+    result = wr.read_routing_inputs(_paths(tmp_path, lanes), NOW)
+    for worker in ("fable-5", "codex-lead-1"):
+        data = Path(lanes[worker]).read_bytes()
+        assert _lane(result, worker)["checkpoint_byte_sha256"] == hashlib.sha256(data).hexdigest()
+        assert _lane(result, worker)["checkpoint_size"] == len(data)
+    assert _lane(result, "fable-5")["checkpoint_fresh"] is True
+    assert _lane(result, "codex-lead-1")["checkpoint_fresh"] is False
+    for worker in ("codex-tools-1", "claude-rco-1", "FABLE-5"):        # unread, refused or never opened
+        report = _lane(result, worker)
+        assert report["checkpoint_fresh"] is False
+        assert report["checkpoint_byte_sha256"] is None and report["checkpoint_size"] is None
+    assert str(tmp_path) not in json.dumps(result["lanes"])
 
 
 def test_profile_stays_unproven_despite_a_catalog_default_and_a_claimed_profile(tmp_path, monkeypatch):
@@ -163,6 +187,20 @@ def test_a_capacity_status_of_another_shape_gives_no_rows(tmp_path, status):
     assert "capacity_status_malformed" in result["reasons"]
     assert result["assembled"]["inputs"]["rows"] is None
     assert result["assembled"]["provenance"]["rows"]["caller_path"] is None
+
+
+def test_the_rows_hash_is_labelled_as_the_container_file_hash(tmp_path):
+    # RCO2 N2 (20:30:13Z): rows come from inside the capacity-status file, so their byte hash is that file's.
+    status = {"schema": "wd.capacity-status.v1", "observed_at": NOW.isoformat(), "execution_allowed": False,
+              "observations": [_codex_row()]}
+    result = wr.read_routing_inputs(_paths(tmp_path, capacity_status=status), NOW)
+    assert result["rows_basis"] == wr.ROWS_BASIS
+    rows = result["assembled"]["provenance"]["rows"]
+    assert rows["caller_byte_sha256"] == result["reads"]["capacity_status"]["byte_sha256"]
+    assert rows["document_digest"] == digest([_codex_row()])
+    assert result["reads"]["capacity_status"]["document_digest"] == digest(status) != rows["document_digest"]
+    malformed = wr.read_routing_inputs(_paths(tmp_path / "m", capacity_status={"schema": "other"}), NOW)
+    assert malformed["rows_basis"] is None
 
 
 def test_a_codex_row_without_a_lane_mapping_binds_no_subject(tmp_path):

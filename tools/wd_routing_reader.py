@@ -10,7 +10,9 @@ Reading: each path is checked with ``lstat`` (a regular file, not a link or repa
 parsed document both come from those same captured bytes; the file is never reopened. Parsing is strict
 UTF-8 and strict JSON: a BOM, NaN, Infinity or a duplicate key refuses the document. A refused document
 is ``None`` with the reason ``<name>_unreadable:<kind>``, never a default. No reason carries path text or
-file content.
+file content. Each lane report carries the byte sha256 and size of the checkpoint bytes it was judged on.
+Rows are the observations inside the capacity-status file, so their byte hash is that container file's
+(``rows_basis`` says so).
 
 What it never infers (Lead 20:10:11Z):
 
@@ -50,6 +52,9 @@ MAX_BYTES = 1048576
 MAX_PATH_TEXT = 1024
 REPARSE_POINT = 0x400       # FILE_ATTRIBUTE_REPARSE_POINT
 GROK_BASIS = "caller listing at now; not an observation, never ranked"
+ROWS_BASIS = ("rows are the observations list inside the capacity_status file: provenance.rows.caller_byte_sha256 is "
+              "the byte sha256 of that whole container file, while provenance.rows.document_digest covers the "
+              "observations list only")
 PREREQUISITES = (
     "a proven running-profile source per lane (the executor's launched block); until then profile_unproven",
     "a lane-attested subject source (none for Codex; for Claude the handshake plus the proven session_id premise)",
@@ -116,10 +121,12 @@ def _read(path: Any) -> tuple[Any, dict | None, str | None]:
 
 
 def _lane_report(worker: Any, path: Any, now: Any) -> dict:
-    """What one lane checkpoint proves: at most that it is fresh. Never a profile or a subject."""
-    if type(worker) is not str or worker not in MEMBERS:
-        return {"worker": worker if type(worker) is str and len(worker) <= 64 else None, "reasons": ["foreign_worker"]}
-    document, _, refusal = _read(path)
+    """What one lane checkpoint proves: at most that it is fresh, bound to the byte sha256 and size of the exact
+    bytes it was judged on (RCO2 N1); None when nothing was read. Never a profile or a subject."""
+    if type(worker) is not str or worker not in MEMBERS:          # never opened
+        return {"worker": worker if type(worker) is str and len(worker) <= 64 else None, "checkpoint_fresh": False,
+                "checkpoint_byte_sha256": None, "checkpoint_size": None, "reasons": ["foreign_worker"]}
+    document, record, refusal = _read(path)
     reasons: list[str] = []
     fresh = False
     if refusal is not None:
@@ -140,7 +147,10 @@ def _lane_report(worker: Any, path: Any, now: Any) -> dict:
             reasons.append("lane_evidence_stale")
         else:
             fresh = True
-    return {"worker": worker, "checkpoint_fresh": fresh, "reasons": reasons + ["profile_unproven", "subject_unbound"]}
+    return {"worker": worker, "checkpoint_fresh": fresh,
+            "checkpoint_byte_sha256": record["byte_sha256"] if record is not None else None,
+            "checkpoint_size": record["size"] if record is not None else None,
+            "reasons": reasons + ["profile_unproven", "subject_unbound"]}
 
 
 def read_routing_inputs(paths: Any, now: Any, *, grok_profile_id: Any = None) -> dict:
@@ -169,12 +179,13 @@ def read_routing_inputs(paths: Any, now: Any, *, grok_profile_id: Any = None) ->
         else:
             sources[name] = {"path": paths[name], "byte_sha256": record["byte_sha256"]}
     status = documents.pop("capacity_status")
-    rows = None
+    rows = rows_basis = None
     if "capacity_status" in sources:
         if type(status) is dict and status.get("schema") == STATUS_SCHEMA and status.get("execution_allowed") is False \
                 and type(status.get("observations")) is list:
             rows = status["observations"]           # passed through unchanged
             sources["rows"] = sources["capacity_status"]
+            rows_basis = ROWS_BASIS                 # the container file's hash, labelled as such (RCO2 N2)
         else:
             reasons.append("capacity_status_malformed")
     sources.pop("capacity_status", None)
@@ -197,6 +208,6 @@ def read_routing_inputs(paths: Any, now: Any, *, grok_profile_id: Any = None) ->
                          shadow_weights=None, sources=sources)
     composed = compose(**assembled["inputs"], now=now)
     return {"schema": SCHEMA, "authority": "none", "execution_allowed": False,
-            "now_utc": current.isoformat() if current is not None else None, "reads": reads, "lanes": reports,
-            "grok": grok, "reasons": reasons, "prerequisites": list(PREREQUISITES), "assembled": assembled,
-            "composed": composed}
+            "now_utc": current.isoformat() if current is not None else None, "reads": reads, "rows_basis": rows_basis,
+            "lanes": reports, "grok": grok, "reasons": reasons, "prerequisites": list(PREREQUISITES),
+            "assembled": assembled, "composed": composed}

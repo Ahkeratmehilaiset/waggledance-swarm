@@ -8,8 +8,10 @@
 # root mutex before the claim lock. A different name would silently exclude nothing, so the
 # derivation is pinned against Python by tests/tools/test_bridge_v2_queue_mutex_ps.py.
 #
-# Pure: nothing here creates, opens or waits on a mutex (New-BridgeNamedMutex in
-# BridgeNamedMutex.ps1 owns creation); wiring the claim scripts is a later, reviewed slice.
+# Get-BridgeV2QueueMutexName is pure. Enter-BridgeV2QueueMutex takes that SAME kernel object
+# through New-BridgeNamedMutex (BridgeNamedMutex.ps1: the bridge's creation policy) and
+# Exit-BridgeV2QueueMutex releases it; nothing calls them yet: wiring the claim scripts (this
+# mutex FIRST, then the claim lock, as the Python queue) is a later, reviewed slice.
 
 $script:BridgeV2QueueMutexPrefix = 'Global\WaggleDanceBridgeV2Queue-'
 
@@ -55,4 +57,41 @@ function Get-BridgeV2QueueMutexName {
         $hex = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($canonical)))).Replace('-', '').ToLowerInvariant()
     } finally { $sha.Dispose() }
     return $script:BridgeV2QueueMutexPrefix + $hex.Substring(0, 32)
+}
+
+function Enter-BridgeV2QueueMutex {
+    # Take the runtime-root queue mutex within TimeoutMs, or throw; a returned mutex is always held.
+    # Abandoned ownership (a holder that ended inside a transaction) is released at once and refused,
+    # as the Python NamedMutexPort does: nothing was read or changed, and the next attempt acquires
+    # normally. A Windows mutex is owned by a thread: enter and exit on the same thread.
+    param(
+        [Parameter(Mandatory)] [string] $RuntimeRoot,
+        [ValidateRange(1, 60000)] [int] $TimeoutMs = 4000
+    )
+
+    $name = Get-BridgeV2QueueMutexName -RuntimeRoot $RuntimeRoot
+    . (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
+    $mutex = New-BridgeNamedMutex -Name $name
+    $acquired = $false
+    $abandoned = $false
+    try {
+        try { $acquired = $mutex.WaitOne($TimeoutMs) }
+        catch [System.Threading.AbandonedMutexException] { $acquired = $true; $abandoned = $true }
+    } catch { $mutex.Dispose(); throw }
+    if (-not $acquired) {
+        $mutex.Dispose()
+        throw ('runtime-root queue mutex busy: ' + $name)
+    }
+    if ($abandoned) {
+        try { $mutex.ReleaseMutex() } finally { $mutex.Dispose() }
+        throw ('runtime-root queue mutex was abandoned by a holder that ended inside a transaction; ' +
+            'nothing was read or changed, retry: ' + $name)
+    }
+    return $mutex
+}
+
+function Exit-BridgeV2QueueMutex {
+    # Release a mutex Enter-BridgeV2QueueMutex returned; the handle is always disposed.
+    param([Parameter(Mandatory)] $Mutex)
+    try { $Mutex.ReleaseMutex() } finally { $Mutex.Dispose() }
 }

@@ -896,15 +896,18 @@ function Invoke-WdNativeToolsWakeStep {
         if (-not $_.Exception.Message.StartsWith('Codex queue rejected the submission; nothing was queued: ', [StringComparison]::Ordinal)) {
             # Any other COMPLETED call stays submitting (UNKNOWN) and is never retried, but its exact evidence
             # is kept durably beside the state for the operator's reconciliation (a timeout has none to keep).
+            # Extraction and receipt are secondary (RCO1 b814): their failure is only a warning and never replaces
+            # the ORIGINAL error object, which is rethrown unchanged; a stopping pipeline still stops.
             $primary = $_
-            $ambiguous = Get-WdCompletedAmbiguousEvidence -Data $primary.Exception.Data -ThreadId $ThreadId
-            if ($null -ne $ambiguous) {
-                try {
+            try {
+                $ambiguous = Get-WdCompletedAmbiguousEvidence -Data $primary.Exception.Data -ThreadId $ThreadId
+                if ($null -ne $ambiguous) {
                     $ambiguousPath = $StatePath + '.ambiguous-' + $deliveryId
                     [void](Assert-WdTurnPath $ambiguousPath)
                     Write-WdNativeQueueAmbiguousReceipt -Path $ambiguousPath -State $state -Evidence $ambiguous
-                } catch { Write-Warning ('Native queue ambiguous-outcome receipt could not be written: ' + $_.Exception.Message) }
-            }
+                }
+            } catch [Management.Automation.PipelineStoppedException] { throw }
+            catch { Write-Warning ('Native queue ambiguous-outcome receipt could not be written: ' + $_.Exception.Message) }
             throw $primary
         }
         $evidence = Get-WdCompletedRefusalEvidence -Data $_.Exception.Data -ThreadId $ThreadId

@@ -1234,3 +1234,62 @@ $second=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Workt
         schema='wd.native-wake-outstanding.v1', agent='codex-tools-1', thread_id=THREAD, delivery_id=delivery,
         status='outstanding', retry='never')
     assert record['age_seconds'] >= 3600 and record['queued_at_utc'] and record['observed_at_utc']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('classifier_fails', [True, False], ids=['classifier_throws', 'success_twin'])
+def test_a_failing_ambiguity_classifier_never_replaces_the_original_queue_error(tmp_path, ps, classifier_fails):
+    """RCO1 b814 (frozen 487995d3): the evidence extraction ran outside the receipt try, so a classifier that
+    throws replaced the ORIGINAL queue error. The original error object must reach the caller unchanged and the
+    attempt must stay submitting with no retry; the success twin still keeps the exact ambiguous receipt."""
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('wake before delivery')
+    source = TOOLS.read_text(encoding='utf-8')
+    start = source.index('    function Get-WdNativeQueueOutcome {')
+    classifier = source[start:source.index('\n    }\n', start) + 6]
+    if classifier_fails:
+        classifier = "    function Get-WdNativeQueueOutcome { throw 'classifier exploded' }\n"
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += load(TOOLS, 'Get-WdVerifiedNativeWakeMessage')
+    script += load(TOOLS, 'Get-WdInlineNativeWakeMessage')
+    from test_wd_native_wake_prompt import relay_bundle_setup
+    script += relay_bundle_setup(tmp_path)
+    code, out, err = AMBIGUOUS['reworded']
+    script += f"""
+$script:calls=0;$script:primary=$null
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+{classifier}
+ $script:calls++
+ $e=[InvalidOperationException]::new('Codex queue did not confirm exact-thread delivery: ' + {q(err)})
+ $e.Data['wd_exit_code']={code};$e.Data['wd_stdout']={q(out)};$e.Data['wd_stderr']={q(err)}
+ $script:primary=$e
+ throw $e
+}}
+try {{
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123 3>$null
+ @{{ok=$true;result=$result;calls=$script:calls}}|ConvertTo-Json
+}} catch {{
+ @{{ok=$false;error=$_.Exception.Message;original=[object]::ReferenceEquals($_.Exception,$script:primary);calls=$script:calls}}|ConvertTo-Json
+}}
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+    assert (result['ok'], result['original'], result['calls']) == (False, True, 1)
+    assert result['error'] == 'Codex queue did not confirm exact-thread delivery: ' + err
+    assert state['status'] == 'submitting'   # UNKNOWN: never retried, never guessed complete
+    assert not list(tmp_path.glob('native-bridge-wake.json.refusal-*'))
+    receipts = sorted(tmp_path.glob('native-bridge-wake.json.ambiguous-*'))
+    if classifier_fails:
+        assert receipts == []   # nothing could be classified, so nothing is kept
+        return
+    (receipt_path,) = receipts
+    assert receipt_path.name == 'native-bridge-wake.json.ambiguous-' + state['delivery_id']
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+    assert (receipt['outcome'], receipt['exit_code'], receipt['stderr'], receipt['delivery_id']) == (
+        'ambiguous', code, err, state['delivery_id'])

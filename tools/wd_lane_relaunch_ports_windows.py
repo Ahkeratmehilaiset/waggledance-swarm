@@ -13,8 +13,9 @@ Ports do not decide policy; they only refuse. Before any effect ``stop``:
 1. re-checks the F0 gate: the injected ``gate()`` must return an enabled F0 ``Decision`` for
    ``F16`` at that moment (a decision taken earlier is never reused);
 2. re-measures the process through the ONE injected source (``process_facts(pid)``, the same
-   source the executor measured ``started_at`` from) and requires the same pid and a creation
-   time within the executor's own binding skew (``_same_instant``: 2.0 s). A missing, reused
+   source the executor measured ``started_at`` from) and requires the same pid and EXACTLY the
+   same creation instant (``_same_source_instant``; RCO1 N5: the executor's 2.0 s skew is for
+   different sources and would accept a different process started nearby). A missing, reused
    or unreadable process is refused: an unknown process tree is never touched.
 
 The injected ``terminate(pid, started_at)`` receives the verified creation time and, in a
@@ -30,6 +31,7 @@ started, a truthy value or an exception is "not confirmed".
 """
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -37,14 +39,17 @@ from tools.bridge_v2_activation import Decision
 from tools.lane_profile_record import _utc
 
 FEATURE = "F16"
-EPOCH_SKEW_SECONDS = 2.0  # equal to tools.wd_lane_relaunch_executor.EPOCH_SKEW_SECONDS (pinned by a test)
 MAX_EVIDENCE = 256
 
 
-def _same_instant(a: Any, b: Any) -> bool:
-    """The executor's rule, with its parser: both times parse and agree within the skew."""
+def _same_source_instant(a: Any, b: Any) -> bool:
+    """Both creation times parse and are the SAME instant (RCO1 N5, the #1751 same-source lesson).
+
+    ``started_at`` and ``process_facts`` come from one measuring source, so no tolerance applies: the
+    executor's 2.0 s skew is for comparing DIFFERENT sources, and here it would accept another process
+    that started within two seconds of the recorded one."""
     left, right = _utc(a), _utc(b)
-    return left is not None and right is not None and abs((left - right).total_seconds()) <= EPOCH_SKEW_SECONDS
+    return left is not None and right is not None and left == right
 
 
 class WindowsRelaunchPorts:
@@ -60,7 +65,9 @@ class WindowsRelaunchPorts:
         self._terminate = terminate
         self._confirm_continuity = confirm_continuity
         self._clock = clock
-        self.evidence: list[dict] = []
+        # A ring of the newest outcomes; the count of older entries it dropped is kept (RCO1 N7).
+        self.evidence: deque[dict] = deque(maxlen=MAX_EVIDENCE)
+        self.evidence_dropped = 0
 
     # -- evidence ---------------------------------------------------------------------------
     def _record(self, port: str, lane: Any, outcome: bool, cause: str, **facts: Any) -> bool:
@@ -74,9 +81,10 @@ class WindowsRelaunchPorts:
                     stamp = (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc).isoformat()
             except Exception:  # noqa: BLE001 - evidence time is best effort, never a decision input
                 stamp = None
-        if len(self.evidence) < MAX_EVIDENCE:
-            self.evidence.append({"port": port, "lane": str(lane)[:64], "outcome": outcome, "cause": cause,
-                                  "observed_at_utc": stamp, **facts})
+        if len(self.evidence) == MAX_EVIDENCE:
+            self.evidence_dropped += 1
+        self.evidence.append({"port": port, "lane": str(lane)[:64], "outcome": outcome, "cause": cause,
+                              "observed_at_utc": stamp, **facts})
         return outcome
 
     # -- gate and identity ------------------------------------------------------------------
@@ -108,7 +116,7 @@ class WindowsRelaunchPorts:
             return "process_absent"
         if not isinstance(facts, dict) or facts.get("pid") != pid:
             return "process_facts_invalid"
-        if not _same_instant(facts.get("process_started_at"), started_at):
+        if not _same_source_instant(facts.get("process_started_at"), started_at):
             return "process_identity_mismatch"
         return None
 
@@ -131,9 +139,13 @@ class WindowsRelaunchPorts:
         if after is not None:
             if not isinstance(after, dict) or after.get("pid") != pid or _utc(after.get("process_started_at")) is None:
                 return self._record("stop", lane, False, "post_stop_facts_invalid", pid=pid)
-            if _same_instant(after.get("process_started_at"), started_at):
+            if _same_source_instant(after.get("process_started_at"), started_at):
                 return self._record("stop", lane, False, "still_running", pid=pid)
-        # Gone, or the pid now names a different (newer) process: the verified instance is stopped.
+            # Only a STRICTLY LATER start means the pid was reused by a new process (RCO1 N6); an older start
+            # from the same source is inconsistent, so the verified instance is not proven gone.
+            if not _utc(after.get("process_started_at")) > _utc(started_at):
+                return self._record("stop", lane, False, "post_stop_identity_unknown", pid=pid)
+        # Gone, or the pid now names a strictly newer process: the verified instance is stopped.
         return self._record("stop", lane, True, "stopped", pid=pid)
 
     def resume_lane(self, lane: str, epoch: dict, checkpoint: str) -> bool:

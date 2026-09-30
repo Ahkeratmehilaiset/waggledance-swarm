@@ -113,11 +113,18 @@ def test_a_reused_unknown_or_invalid_process_is_never_touched(fakes, pid, starte
     assert ports.evidence[-1]["cause"] == cause
 
 
-def test_the_executor_skew_is_the_binding_skew():
-    assert ports_module.EPOCH_SKEW_SECONDS == executor.EPOCH_SKEW_SECONDS
-    within = (datetime(2026, 9, 30, 16, 24, 30, 508449, tzinfo=timezone.utc) + timedelta(seconds=1.9))
-    fakes = Fakes(started=within.isoformat())
-    assert fakes.ports().stop("codex-tools-1", PID, STARTED) is True
+def test_same_source_identity_needs_the_exact_instant_rco1_n5():
+    # Failure twin: a DIFFERENT process that started 1.9 s after the recorded one (inside the executor's
+    # cross-source skew) is refused and never terminated.
+    nearby = datetime(2026, 9, 30, 16, 24, 30, 508449, tzinfo=timezone.utc) + timedelta(seconds=1.9)
+    fakes = Fakes(started=nearby.isoformat())
+    ports = fakes.ports()
+    assert ports.stop("codex-tools-1", PID, STARTED) is False
+    assert fakes.effects() == [] and ports.evidence[-1]["cause"] == "process_identity_mismatch"
+    # Success twin: the same instant in another spelling is the same process.
+    exact = Fakes(started="2026-09-30T16:24:30.508449+00:00")
+    assert exact.ports().stop("codex-tools-1", PID, STARTED) is True
+    assert not hasattr(ports_module, "EPOCH_SKEW_SECONDS")  # no cross-source tolerance in the same-source port
 
 
 def test_unwired_effects_refuse_after_verification():
@@ -131,6 +138,8 @@ def test_unwired_effects_refuse_after_verification():
 @pytest.mark.parametrize("after, outcome, cause", [
     ({"pid": PID, "process_started_at": STARTED}, False, "still_running"),
     ({"pid": PID, "process_started_at": "2026-09-30T17:00:00Z"}, True, "stopped"),  # pid now reused
+    ({"pid": PID, "process_started_at": "2026-09-30T16:20:00Z"}, False, "post_stop_identity_unknown"),  # N6: older
+    ({"pid": PID, "process_started_at": "2026-09-30T16:24:30.508448Z"}, False, "post_stop_identity_unknown"),
     ({"pid": PID + 1, "process_started_at": STARTED}, False, "post_stop_facts_invalid"),
     ("gone", False, "post_stop_facts_invalid"),
 ])
@@ -193,3 +202,12 @@ def test_no_default_effect_exists_and_nothing_imports_the_module():
                 if needle in path.read_text(encoding="utf-8", errors="replace"):
                     hits.append(str(path.relative_to(ROOT)))
     assert hits == []
+
+
+def test_evidence_keeps_the_newest_outcomes_and_counts_what_it_dropped_rco1_n7():
+    ports = WindowsRelaunchPorts()
+    for index in range(300):
+        ports.stop("lane-" + str(index), PID, STARTED)
+    assert len(ports.evidence) == ports_module.MAX_EVIDENCE == 256
+    assert ports.evidence_dropped == 44
+    assert ports.evidence[-1]["lane"] == "lane-299" and ports.evidence[0]["lane"] == "lane-44"

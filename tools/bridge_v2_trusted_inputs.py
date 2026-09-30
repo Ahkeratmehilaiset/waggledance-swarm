@@ -19,11 +19,24 @@ contract, section 3, "REQUIRED and NOT BUILT"), from inputs whose provenance it 
   merely being installed, a valid bootstrap or a live process is never a pin.
 * ``min_revocation_version`` is the persisted high-water mark: the larger of the stored mark
   and the packet floor. It only ratchets up, through a compare-and-swap under an exclusive
-  OS lock, and it is advanced to each Decision's ``revocation_version``. A missing mark is
-  initialized from the packet floor; a corrupt one refuses.
+  OS lock. After F0 decided, ONE locked step re-reads the durable mark: a decision below a
+  mark another caller raised meanwhile is refused, and a decision above it advances it
+  (RCO1 N8). A missing mark is initialized from the packet floor; a corrupt one refuses.
 * F0 ``evaluate`` is called once with exactly those pins. The activation config and the
   revocation state are read once, as bytes, before ``evaluate`` and must be byte-identical
   after it: otherwise the inputs changed under the decision and the adapter refuses.
+
+Residual limits, stated rather than claimed solved (RCO1 N9, N10):
+
+* A-B-A: ``evaluate`` reads both files by path itself. The byte-identity check before and
+  after it cannot see bytes that were swapped out and back around F0's own read, so F0 may have
+  decided on other bytes than the returned ``document``/``revocation``. The switch adapter
+  re-derives the policy digest from the returned document and requires the Decision to agree,
+  which catches a different POLICY; a revocation state swapped and restored around F0's read
+  is not detected. Closing that needs an F0 entry point that takes the exact bytes.
+* The mark is only as durable as its file: deleting it resets the floor to the packet's
+  ``min_revocation_version`` (so each signed packet must carry a current floor), and on Windows
+  ``os.replace`` without a directory flush can be lost on power failure, with the same effect.
 
 Every failure raises ``TrustRefusal`` with a stable ``code``. A disabled Decision is still
 returned as evidence (the switch adapter refuses it first). The adapter never enables a
@@ -267,29 +280,49 @@ class HighWaterStore:
             _refuse(current is None or new >= current, "high_water_rollback")
             if new == current:
                 return current
-            stamp = _aware_utc(now).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            payload = json.dumps({"schema": HIGH_WATER_SCHEMA, "version": new, "updated_utc": stamp},
-                                 sort_keys=True).encode("utf-8") + b"\n"
-            temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
-            try:
-                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-                try:
-                    view = memoryview(payload)
-                    while view:
-                        view = view[os.write(descriptor, view):]
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-                os.replace(temporary, self.path)
-            except OSError:
-                raise TrustRefusal("high_water_unwritable") from None
-            finally:
-                if temporary.exists():
-                    try:
-                        os.unlink(temporary)
-                    except OSError:
-                        pass
+            self._write_locked(new, now)
             return new
+
+    def settle_after_decision(self, pin: int, version: Any, now: datetime) -> int:
+        """ONE locked step after F0 decided with ``pin`` (RCO1 N8): the durable mark must still be at least
+        ``pin``; if another caller raised it meanwhile, a decision below the new mark is refused; a decision
+        above it advances it. Returns the mark after the step."""
+        with _exclusive_lock(self.lock_path):
+            durable = self.read()
+            _refuse(durable is not None and durable >= pin, "high_water_rollback")
+            if durable > pin and not (activation._is_int(version) and version >= durable):
+                raise TrustRefusal("high_water_advanced_during_decision")
+            if activation._is_int(version) and version > durable:
+                self._write_locked(version, now)
+                return version
+            return durable
+
+    def _write_locked(self, new: int, now: datetime) -> None:
+        """Temp file, fsync, atomic replace; the caller holds the lock."""
+        stamp = _aware_utc(now).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        payload = json.dumps({"schema": HIGH_WATER_SCHEMA, "version": new, "updated_utc": stamp},
+                             sort_keys=True).encode("utf-8") + b"\n"
+        temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = os.write(descriptor, view)
+                    _refuse(written > 0, "high_water_unwritable")   # a zero-progress write never spins (RCO1 N10)
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.replace(temporary, self.path)
+        except OSError:
+            raise TrustRefusal("high_water_unwritable") from None
+        finally:
+            if temporary.exists():
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
 
 def load_trusted_inputs(feature: str, *, packet_path: Path, packet_sha256: Any, manifest_path: Path,
@@ -328,9 +361,9 @@ def load_trusted_inputs(feature: str, *, packet_path: Path, packet_sha256: Any, 
     _refuse(_read_bytes(config_path, activation.MAX_FILE_BYTES, "config") == config_raw
             and _read_bytes(revocation_path, activation.MAX_FILE_BYTES, "revocation") == revocation_raw,
             "inputs_changed_during_decision")
-    version = decision.revocation_version
-    if activation._is_int(version) and version > pin:
-        store.advance(pin, version, current)
+    # The durable floor is re-read and advanced in ONE locked step; a decision below a floor another caller
+    # raised meanwhile is refused (RCO1 N8).
+    store.settle_after_decision(pin, decision.revocation_version, current)
     return {"decision": asdict(decision),
             "pins": {"trusted_policy_sha256": packet["trusted_policy_sha256"],
                      "expected_head": packet["expected_head"], "expected_tree": packet["expected_tree"],

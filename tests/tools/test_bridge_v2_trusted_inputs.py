@@ -272,3 +272,54 @@ def test_no_runtime_path_imports_the_adapter():
                 if needle in path.read_text(encoding="utf-8", errors="replace"):
                     hits.append(str(path.relative_to(ROOT)))
     assert hits == []
+
+
+def test_n8_a_floor_raised_during_the_decision_refuses_a_decision_below_it(tmp_path):
+    world = World(tmp_path, floor=3)
+
+    def evaluate_while_another_caller_advances(feature, **kwargs):
+        decision = activation.evaluate(feature, **kwargs)
+        HighWaterStore(world.runtime).advance(3, 5, NOW)
+        return decision
+
+    assert world.refusal(evaluate=evaluate_while_another_caller_advances) == "high_water_advanced_during_decision"
+    assert HighWaterStore(world.runtime).read() == 5
+
+
+def test_n8_success_twin_a_concurrent_raise_to_the_decision_version_is_accepted(tmp_path):
+    world = World(tmp_path, floor=2)
+
+    def evaluate_while_another_caller_advances(feature, **kwargs):
+        decision = activation.evaluate(feature, **kwargs)
+        HighWaterStore(world.runtime).advance(2, 3, NOW)
+        return decision
+
+    evidence = world.load(evaluate=evaluate_while_another_caller_advances)
+    assert evidence["decision"]["enabled"] is True and evidence["decision"]["revocation_version"] == 3
+    assert HighWaterStore(world.runtime).read() == 3
+
+
+def test_n8_a_mark_removed_during_the_decision_is_a_rollback(tmp_path):
+    world = World(tmp_path)
+
+    def evaluate_then_remove_the_mark(feature, **kwargs):
+        decision = activation.evaluate(feature, **kwargs)
+        HighWaterStore(world.runtime).path.unlink()
+        return decision
+
+    assert world.refusal(evaluate=evaluate_then_remove_the_mark) == "high_water_rollback"
+
+
+def test_n10_a_zero_progress_write_refuses_instead_of_spinning(tmp_path, monkeypatch):
+    store = HighWaterStore(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(trusted.os, "write", lambda descriptor, data: 0)
+        with pytest.raises(TrustRefusal) as caught:
+            store.advance(None, 2, NOW)
+    assert caught.value.code == "high_water_unwritable"
+    assert store.read() is None and not list(store.path.parent.glob("*.tmp"))
+
+
+def test_the_residual_limits_are_stated_in_the_module():
+    text = (ROOT / "tools" / "bridge_v2_trusted_inputs.py").read_text(encoding="utf-8")
+    assert "A-B-A" in text and "power failure" in text and "resets the floor" in text

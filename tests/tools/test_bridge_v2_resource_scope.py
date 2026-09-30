@@ -136,3 +136,22 @@ def test_explain_scope_says_what_an_entry_is_or_why_it_is_refused():
     refused = explain_scope("x" * 300 + "/../y", worktree=WORKTREE, bridge_root=SHARED, lstat=_absent)
     assert (refused["accepted"], len(refused["entry"]), refused["examples"]) == (False, 256, list(EXAMPLES))
     assert "traversal" in refused["reason"] and set(refused) == {"entry", "accepted", "reason", "examples"}
+
+
+# -- RCO2 d91feafd: no NTFS stream after a drive; an explicit shared: absolute path is rooted at shared ------
+
+@pytest.mark.skipif(os.name != "nt", reason="only a drive-letter path carries ':' past the colon guard")
+@pytest.mark.parametrize("suffix", ["a.py:stream", "a.py::$DATA", "dir:stream/a.py"])
+def test_an_absolute_drive_path_with_a_stream_is_refused(suffix):
+    with pytest.raises(ScopeError, match="alternate stream"):
+        _resolve(WORKTREE + "/" + suffix)                # was ('repo', 'a.py:stream'); a.py::$DATA IS a.py
+    with pytest.raises(ScopeError, match="alternate stream"):
+        _normalize_absolute(WORKTREE + "/" + suffix, _absent)
+    assert _resolve(WORKTREE + "/a.py") == (ResourceScope("repo", "a.py"),)   # the twin: the plain file resolves
+
+
+def test_an_explicit_shared_absolute_scope_is_rooted_at_the_shared_root():
+    assert _resolve("shared:" + SHARED + "/work_queue/x.json") == (
+        ResourceScope("shared", "work_queue/x.json", LOWER_SHARED),)          # the twin: under shared
+    with pytest.raises(ScopeError, match="under the shared runtime root"):
+        _resolve("shared:" + WORKTREE + "/.codex-audit/x.md")   # was ('shared', '.codex-audit/x.md', SHARED)

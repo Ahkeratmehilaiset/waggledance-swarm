@@ -69,6 +69,10 @@ def _normalize_absolute(path: str, lstat: Callable[[str], os.stat_result]) -> st
         if not _WINDOWS_ABSOLUTE.match(text):
             raise ScopeError("a root must be a local drive-letter path")
         drive, rest = text[:2], text[2:]
+        # After the drive, ':' only ever names an NTFS stream (a.py:s; a.py::$DATA IS a.py), which every
+        # relative and POSIX-absolute entry already refuses in resolve_entry's colon guard.
+        if ":" in rest:
+            raise ScopeError("resource traversal or alternate stream is forbidden")
     else:
         if not text.startswith("/") or text.startswith("//"):
             raise ScopeError("a root must be a local absolute path")
@@ -121,7 +125,11 @@ def resolve_entry(entry: str, *, worktree: str, bridge_root: str,
         full = _normalize_absolute(raw, lstat)
         base = _normalize_absolute(worktree, lstat) if worktree else ""
         shared = _normalize_absolute(bridge_root, lstat)
-        if base and full.startswith(base + "/"):
+        if kind == "shared":   # an explicit shared: absolute path is rooted at the shared root, or refused
+            if not full.startswith(shared + "/"):
+                raise ScopeError("a shared: absolute scope must be under the shared runtime root")
+            raw = full[len(shared) + 1:]
+        elif base and full.startswith(base + "/"):
             raw = full[len(base) + 1:]
             if raw == CHECKPOINT:
                 kind = "worktree"

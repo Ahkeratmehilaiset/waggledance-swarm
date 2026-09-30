@@ -15,9 +15,13 @@ param(
     [switch] $IncludeRequest,
     [switch] $NoCache,
     # Explicit opt-in: instead of failing, return a typed DIAGNOSTIC partial/unknown receipt that
-    # lists every invalid own row (conflicting top-level/payload request_id or author, malformed
-    # id or author, conflicting immutable content) with its exact metadata. It is NEVER a complete
-    # inventory; the default (no switch) still fails closed on the first such row.
+    # lists every invalid own row THAT THE REPLY INDEX KEEPS (conflicting top-level/payload
+    # request_id or author, malformed id or author, conflicting immutable content) with its exact
+    # metadata. It is NEVER a complete inventory; the default (no switch) still fails closed on the
+    # first such row. LIMIT (pre-existing, shared index): Read-BridgeReplyIndex keeps a row only when
+    # its request_id or in_reply_to_request_id is TRUTHY, so a request row whose id is false, 0, "",
+    # [] or a one-element falsy array is dropped before either mode sees it: it is neither
+    # inventoried nor refused, and the diagnostic cannot list it.
     [switch] $DiagnosticPartial
 )
 $ErrorActionPreference='Stop'
@@ -63,7 +67,8 @@ $rows=@($snapshot.rows)
 $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $order=[Collections.Generic.List[string]]::new()
 $foreignIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-# -DiagnosticPartial only: every invalid OWN row is counted and listed, never silently dropped.
+# -DiagnosticPartial only: every invalid OWN row the reply index kept is counted and listed, never
+# silently dropped here (a falsy-id row never reaches this loop: see the -DiagnosticPartial LIMIT).
 # The list is bounded (at most 50 entries AND 30000 JSON characters, always a prefix in indexed
 # order), so the receipt fits the 50000-character page cap with a small enough -PageSize.
 $conflicts=[Collections.Generic.List[object]]::new()
@@ -132,6 +137,9 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     if ($null -eq $id -or -not (Test-BridgeRequestLikeEvent $event)) { continue }
     $author=Get-BridgeContractField $event 'agent'
     if ($author -isnot [string]) {
+        # Pre-existing, both modes: under StrictMode, ANY indexed request-like row (of any requester) with no
+        # top-level agent and an absent or non-string payload agent throws here on $event.agent (fail-closed,
+        # generic). Skipping such an unattributable row instead is an unresolved policy choice.
         if ([string]$event.agent -ceq $Agent) {
             if (-not $DiagnosticPartial) { throw "Malformed request author binding at indexed position $position" }
             Add-InventoryConflict -Position $position -Event $event `
@@ -249,7 +257,7 @@ if ($DiagnosticPartial) {
     }
     # Only ids that are actually inventoried are counted; every conflicted id is in $order.
     $diagnostic['request_count']=$order.Count-$conflictedIds.Count
-    $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; answer_state never evaluated.'
+    $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; a row whose request_id is falsy is dropped by the reply index and never seen; answer_state never evaluated.'
     $output=[pscustomobject]$diagnostic
 }
 $json=$output | ConvertTo-Json -Depth 64 -Compress

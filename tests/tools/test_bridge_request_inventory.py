@@ -304,6 +304,48 @@ def test_a_single_sided_or_equal_value_is_malformed_never_a_binding_conflict(tmp
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_a_falsy_request_id_is_dropped_by_the_index_in_both_modes_a_known_limit(tmp_path: Path, shell: str) -> None:
+    """fable-5 a8530218 S1, pinned as a LIMIT (not a feature): Read-BridgeReplyIndex keeps a row only when its
+    request_id is truthy, so own rows with a falsy id are neither inventoried nor refused nor listed."""
+    rows = []
+    for name, falsy in (("false-v1", False), ("empty-v1", ""), ("zero-v1", 0)):
+        row, _ = _bound(name)
+        row["request_id"] = falsy
+        rows.append(row)
+    good, _ = _bound("good-v1")
+    _write(tmp_path, [*rows, good])
+    default = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")   # no refusal: the limit
+    assert [entry["request_id"] for entry in default["requests"]] == ["good-v1"] and default["parsed_rows"] == 4
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    assert (result["conflict_count"], result["status"], result["complete"]) == (0, "no_conflict_observed", False)
+    assert "falsy" in result["note"]                                          # the receipt says so itself
+    truthy, _ = _bound("truthy-v1")
+    truthy["request_id"] = 123                                               # twin: a TRUTHY malformed id is seen
+    _write(tmp_path, [*rows, truthy, good])
+    seen = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-DiagnosticPartial")
+    assert [(c["indexed_position"], c["kind"]) for c in seen["conflicts"]] == [(0, "malformed_request_id")]
+    refused = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
+    assert refused.returncode != 0 and "Malformed request_id at indexed position 0" in refused.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_malformed_author_is_reachable_for_a_requester_named_true(tmp_path: Path, shell: str) -> None:
+    """fable-5 a8530218 N2 (corrects RCO1's earlier "unreachable"): -Agent's ValidatePattern is case-insensitive,
+    so "True" is a valid requester, and a JSON true author stringifies to it: [string]$true -ceq 'True'."""
+    single, _ = _bound("single-v1", agent=True)                             # one raw side, a bool
+    dual, _ = _bound("dual-v1", agent=True)
+    dual["payload"]["agent"] = "True"                                        # both raw sides, JSON differs
+    text, _ = _bound("text-v1", agent="True")                                # the string twin: a valid author
+    _write(tmp_path, [single, dual, text])
+    result = _inventory(shell, tmp_path, "-Agent", "True", "-NoCache", "-DiagnosticPartial")
+    assert [(c["indexed_position"], c["kind"], c["top_level_agent"], c["payload_agent"]) for c in result["conflicts"]] == [
+        (0, "malformed_author", "true", None), (1, "author_binding_conflict", "true", "True")]
+    assert [entry["request_id"] for entry in result["requests"]] == ["text-v1"]
+    refused = _run(shell, INVENTORY, tmp_path, "-Agent", "True", "-NoCache")
+    assert refused.returncode != 0 and "Malformed request author binding at indexed position 0" in refused.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_other_requesters_malformed_row_does_not_blind_the_inventory(tmp_path: Path, shell: str) -> None:
     mine, _ = _bound("mine-v1")
     theirs, _ = _bound("theirs-v1", agent="codex-tools-1", to="codex-lead-1")

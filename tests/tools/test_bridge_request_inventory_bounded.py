@@ -221,6 +221,16 @@ def test_only_the_opt_in_diagnostic_changes_the_cursor_seed() -> None:
     assert guard in source
     assert source.index("include_request=[bool]$IncludeRequest") < source.index(guard) < source.index(
         "$cursorSeed=$cursorFields | ConvertTo-Json -Depth 8 -Compress")
+    # fable-5 a8530218 N3: pin the default seed's fields too (names, order and values exactly as 3125486a's).
+    fields = ("$cursorFields=[ordered]@{\n"
+              "    snapshot=$snapshot.candidate_cursor\n"
+              "    prefix_sha256=$snapshot.prefix_sha256\n"
+              "    agent=$Agent; session_id=$SessionId; request_id=$RequestId\n"
+              "    task_id=$TaskId; ts_utc=$TsUtc\n"
+              "    order='first_indexed_position_desc'; page_size=$PageSize\n"
+              "    include_request=[bool]$IncludeRequest\n"
+              "}\n")
+    assert fields in source
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)

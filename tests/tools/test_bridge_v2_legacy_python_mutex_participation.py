@@ -6,9 +6,11 @@ Windows named mutex every v2 writer takes first, so a v2 participant holding it 
 waits a bounded time and refuses without writing. Fixture roots only; the lane environment is scrubbed.
 
 Scope stated, not claimed: only this CLI's writer commands participate. Other direct callers of
-waggledance.core.work_queue and the legacy PowerShell writers (Fable's slice) are not covered here, so a complete
-queue snapshot still cannot prove a lane idle. The mutex exists only on Windows; elsewhere nothing is excluded
-and nothing is claimed. run_idle_protocol_once.py mutates no claim or done file (pinned below).
+waggledance.core.work_queue (tools/work_queue_sweep_stale.py --apply archives and unlinks claims without the mutex)
+and the legacy PowerShell writers (Fable's slice) are not covered here, so a complete queue snapshot still cannot
+prove a lane idle. The mutex exists only on Windows; elsewhere nothing is excluded and nothing is claimed. A writer
+given a relative --bridge-root is refused (the mutex name needs the absolute root). run_idle_protocol_once.py
+mutates no claim or done file (pinned below).
 """
 from __future__ import annotations
 
@@ -144,9 +146,23 @@ def test_an_abandoned_root_mutex_refuses_once_and_is_never_silently_recovered(br
         holder.process.wait(timeout=20)
         assert _cli(bridge, *CLAIM) != 0 and _claims(bridge) == []
         assert "abandoned" in capsys.readouterr().out
+        # fable-5 23:19:55Z: while the witness keeps the SAME object alive, another process takes it at once, so the
+        # refusal released the ownership its abandoned wait was granted. A port that closed the handle unreleased
+        # would leave this thread the owner (an in-process retry would re-enter it), and this take would time out.
+        _python_holder(bridge).release()
     finally:
         kernel32.CloseHandle(witness)
-    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the refusal consumed the abandoned state
+    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the positive twin once nothing holds the root
+
+
+def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypatch, capsys):
+    # A behaviour change, pinned (fable-5 23:19:55Z): the mutex name needs the canonical absolute root, so a writer
+    # given a relative --bridge-root is refused before it writes (fail-closed); reads take no mutex and still work.
+    monkeypatch.chdir(bridge.parent)
+    assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) != 0 and _claims(bridge) == []
+    assert "runtime-root mutex: runtime root" in capsys.readouterr().out
+    assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
+    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin
 
 
 def test_reads_do_not_take_the_mutex(bridge):

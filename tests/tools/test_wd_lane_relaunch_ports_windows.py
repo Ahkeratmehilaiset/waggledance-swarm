@@ -211,3 +211,50 @@ def test_evidence_keeps_the_newest_outcomes_and_counts_what_it_dropped_rco1_n7()
     assert len(ports.evidence) == ports_module.MAX_EVIDENCE == 256
     assert ports.evidence_dropped == 44
     assert ports.evidence[-1]["lane"] == "lane-299" and ports.evidence[0]["lane"] == "lane-44"
+
+# --- the read-only Windows process-facts source (GetProcessTimes) ---------------------------------------------
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+from tools.lane_profile_record import _utc  # noqa: E402
+
+windows_only = pytest.mark.skipif(os.name != "nt", reason="the process-facts source reads the Windows kernel")
+
+
+@windows_only
+def test_windows_process_facts_reads_one_live_process_identically_twice():
+    first = ports_module.windows_process_facts(os.getpid())
+    assert first == ports_module.windows_process_facts(os.getpid())
+    assert first["pid"] == os.getpid() and first["source"] == "GetProcessTimes"
+    started = _utc(first["process_started_at"])
+    assert started is not None and started <= datetime.now(timezone.utc)
+
+
+@windows_only
+def test_windows_process_facts_of_an_exited_or_absent_process_is_none():
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()   # Popen keeps its handle, so this pid cannot be reused while it is queried
+    assert ports_module.windows_process_facts(child.pid) is None
+    assert ports_module.windows_process_facts(0xFFFFFFF0) is None
+
+
+@pytest.mark.parametrize("pid", [0, -1, True, 2 ** 33, "12", 1.0])
+def test_windows_process_facts_refuses_a_malformed_pid_before_any_call(pid):
+    with pytest.raises(ValueError):
+        ports_module.windows_process_facts(pid)
+
+
+@windows_only
+def test_the_real_source_feeds_the_stop_port_and_nothing_is_signalled():
+    facts = ports_module.windows_process_facts(os.getpid())
+    recorded = []
+    ports = WindowsRelaunchPorts(gate=lambda: ENABLED, process_facts=ports_module.windows_process_facts,
+                                 terminate=lambda pid, started: recorded.append(pid))
+    # The recording fake stands in for the effect; this live test process is, correctly, still running.
+    assert ports.stop("self", os.getpid(), facts["process_started_at"]) is False
+    assert recorded == [os.getpid()] and ports.evidence[-1]["cause"] == "still_running"
+    # One microsecond off is another process: refused before the effect is ever reached.
+    off = (_utc(facts["process_started_at"]) + timedelta(microseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    assert ports.stop("self", os.getpid(), off) is False
+    assert recorded == [os.getpid()] and ports.evidence[-1]["cause"] == "process_identity_mismatch"

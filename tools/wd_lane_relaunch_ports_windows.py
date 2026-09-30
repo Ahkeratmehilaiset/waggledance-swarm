@@ -52,6 +52,56 @@ def _same_source_instant(a: Any, b: Any) -> bool:
     return left is not None and right is not None and left == right
 
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_INVALID_PARAMETER = 87
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+
+
+def windows_process_facts(pid: int) -> dict | None:
+    """READ-ONLY facts of one live process from ONE kernel source: ``{pid, process_started_at, source}``.
+
+    The creation instant comes from GetProcessTimes (100 ns FILETIME, reported in whole microseconds, so the
+    same process always yields the same string). A process that does not exist, or has exited, is None. Any
+    other failure to read it (for example access denied) raises OSError: unknown, never "absent". It opens
+    the process for limited query only and closes the handle; it never signals, suspends or stops anything.
+    The executor's ``processes``/``measure`` ports must use this same source for the exact-instant identity."""
+    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        raise ValueError("a process id must be a positive 32-bit integer")
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == _ERROR_INVALID_PARAMETER:
+            return None   # no such process
+        raise OSError(error, "OpenProcess failed; the process facts are unknown")
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise OSError(ctypes.get_last_error(), "GetExitCodeProcess failed; the process facts are unknown")
+        if code.value != _STILL_ACTIVE:
+            return None   # exited: its times still exist, but it is not a live process
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel),
+                                        ctypes.byref(user)):
+            raise OSError(ctypes.get_last_error(), "GetProcessTimes failed; the process facts are unknown")
+    finally:
+        kernel32.CloseHandle(handle)
+    ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+    started = _FILETIME_EPOCH + timedelta(microseconds=ticks // 10)
+    return {"pid": pid, "process_started_at": started.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "source": "GetProcessTimes"}
+
+
 class WindowsRelaunchPorts:
     """The stop/resume ports; every effect is injected and gated, none is defaulted."""
 

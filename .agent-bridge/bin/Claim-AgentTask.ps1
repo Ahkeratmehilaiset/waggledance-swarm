@@ -305,6 +305,13 @@ if (-not $existingClaimPath) {
                   (Test-BridgeIdentitylessClaimPair -Claim $current -Identity $ownerIdentity))) {
             Stop-BridgeClaim -Message ("claim changed before refresh: {0}" -f $claimPath) -Code 3
         }
+        # B-F3 (RCO1 2026-09-30; Fable review 99897de5): this writer has no dispatch_key and rebuilds
+        # the claim, so a refresh here would erase the key a v2 claim stores as immutable dispatch
+        # evidence, and a later claim with the same key would pass the v2 duplicate check. As in the
+        # v2 queue, a refresh that cannot present the stored key is refused; the claim is untouched.
+        if ($current.PSObject.Properties['dispatch_key']) {
+            Stop-BridgeClaim -Message ("refusing to refresh a keyed claim without its dispatch_key: {0}" -f $claimPath) -Code 3
+        }
         # Internal review fix R7 (2026-05-09): write to a temp sibling and
         # Replace() so readers always see the old or the new claim, never a
         # torn write.

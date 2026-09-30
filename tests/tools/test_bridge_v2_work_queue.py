@@ -522,6 +522,58 @@ def test_a_stale_archive_keeps_a_malformed_dispatch_key_verbatim(env):
     assert json.loads(entry.archived_path.read_text())["dispatch_key"] == ["a" * 64]
 
 
+# B-F3 (Fable review 99897de5, Lead d06fbf85): the legacy Claim-AgentTask.ps1 rebuilds a claim on a -Force refresh
+# without dispatch_key, so it erased a v2 key and a later claim with the same key passed. As in v2 (a refresh must
+# present the stored key), the legacy writer, which has no key parameter, refuses to refresh a keyed claim; an
+# unkeyed claim still refreshes. The bin runs from a copy: Global mutex names become Local, events are not written.
+@pytest.mark.skipif(os.name != "nt", reason="the legacy claim writer is PowerShell")
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"], ids=["ps51", "pwsh7"])
+def test_b_f3_the_legacy_writer_refuses_to_refresh_a_keyed_claim_and_refreshes_an_unkeyed_one(tmp_path, shell):
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(shell + " is not on PATH")
+    code = tmp_path / "fixture" / ".agent-bridge" / "bin"
+    shutil.copytree(REPO / ".agent-bridge" / "bin", code)
+    (tmp_path / "fixture" / "configs").mkdir()
+    shutil.copy2(REPO / "configs" / "bridge_identity_registry.json", tmp_path / "fixture" / "configs")
+    prefix = "Local\\WdLegacyClaimFixture-" + os.urandom(8).hex() + "-"
+    for script in code.glob("*.ps1"):
+        source = script.read_text(encoding="utf-8-sig")
+        if "Global\\WaggleDanceBridge" in source:
+            script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    (code / "Write-AgentEvent.ps1").write_text("$null = $args\n'fixture: no event written'\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    (worktree / "tools").mkdir(parents=True)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    now = datetime.now(timezone.utc).replace(microsecond=0)              # live leases: the pre-claim sweep keeps them
+    txns = QueueTransactions(runtime, mutex=Lock(), claim_lock=Lock(), clock=lambda: now)
+    live = (txns, str(worktree))
+    claim(live, task="team/keyed", scope=("tools/k.py",), now=now, dispatch_key=KEY_A)
+    claim(live, task="team/plain", scope=("tools/p.py",), now=now)
+    child_env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_"))}
+    child_env.update(AGENT_BRIDGE_RUNTIME_ROOT=str(runtime), AGENT_BRIDGE_OWNER_SESSION_ID=OWNER.owner_session_id,
+                     AGENT_BRIDGE_OWNER_TOKEN=OWNER.owner_token)          # the raw token; PS hashes it as v2 does
+
+    def legacy_refresh(task: str, scope: str) -> subprocess.CompletedProcess:
+        return subprocess.run([executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                               str(code / "Claim-AgentTask.ps1"), "-Agent", "claude-rco-2", "-TaskId", task,
+                               "-Summary", "legacy refresh", "-Mode", "write", "-WriteScope", scope, "-Force"],
+                              cwd=worktree, env=child_env, capture_output=True, text=True, timeout=120)
+
+    keyed = legacy_refresh("team/keyed", "tools/k.py")
+    assert keyed.returncode == 3 and "keyed claim" in keyed.stderr, keyed.stdout + keyed.stderr
+    stored = json.loads(wq.find_claim(txns, "team/keyed").read_text(encoding="utf-8"))
+    assert (stored["dispatch_key"], stored["summary"]) == (KEY_A, "work")   # untouched: the key survives
+    with pytest.raises(Refused, match="duplicate dispatch"):
+        claim(live, task="team/other", agent="fable-5", identity=OTHER, scope=("tools/o.py",), now=now,
+              dispatch_key=KEY_A)
+    plain = legacy_refresh("team/plain", "tools/p.py")                  # success twin: no key, refreshed
+    assert plain.returncode == 0, plain.stdout + plain.stderr
+    refreshed = json.loads(wq.find_claim(txns, "team/plain").read_text(encoding="utf-8-sig"))
+    assert refreshed["summary"] == "legacy refresh" and "dispatch_key" not in refreshed
+
+
 # -- F8 session-heartbeat fence (RCO1 2026-09-30, Lead request d79f933d) -----------------------------------
 # The PowerShell session-heartbeat writer (Write-BridgeSessionHeartbeat, ClaimLeaseHeartbeat.ps1) takes only the
 # sibling lock of the BEAT file (Enter-BridgeClaimLock -ClaimPath <beat>: "<beat>.json.lock", FileShare.None),

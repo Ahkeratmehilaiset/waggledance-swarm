@@ -130,7 +130,8 @@ UNKNOWN_SNAPSHOTS = {
     "entry_case_variant_agent": _snapshot(claims=[_entry(agent="Claude-rco-2")]),
     "entry_padded_agent": _snapshot(claims=[_entry(agent=" fable-5")]),
     "entry_str_subclass_agent": _snapshot(claims=[_entry(agent=_Str("fable-5"))]),
-    "entry_non_member_holder": _snapshot(claims=[_entry(agent="stranger")]),
+    "entry_malformed_agent": _snapshot(claims=[_entry(agent="Stranger!")]),
+    "entry_upper_member": _snapshot(claims=[_entry(agent="CLAUDE-RCO-2")]),
     "entry_source_mismatch": _snapshot(claims=[_entry(source="pending")]),
     "entry_source_hostile": _snapshot(claims=[_entry(source=_HostileText())]),
     "entry_empty_session": _snapshot(claims=[_entry(owner_session_id="")]),
@@ -186,6 +187,10 @@ INTENT_REFUSALS = {
     "wider_policy_than_the_advices_F1": ({"load": {**_block(), "observed_utc": "2026-09-30T20:43:20Z"},
                                           "policy": _policy(3600)}, "advice_not_bound:policy_sha256"),
     "invalid_policy": ({"policy": _policy(0)}, "policy_invalid"),
+    # RCO2 21:43Z: where the router's freshness arithmetic overflows it holds; W3 must not call the load fresh.
+    "overflowing_policy_age": ({"policy": _policy(10 ** 12), "advice": _advice(policy=_policy(10 ** 12)),
+                                "load": {**_block(), "observed_utc": "1995-01-01T00:00:00Z"}},
+                               "load_unknown_or_stale"),
     # F2: reasons and both digests are bound.
     "forged_reasons_F2": ({"advice": _advice(reasons=["forged"])}, "advice_not_bound:reasons"),
     "extra_reason": ({"advice": _advice(reasons=["ranked_eligible_worker", "x"])}, "advice_not_bound:reasons"),
@@ -278,7 +283,25 @@ def test_a_long_valid_policy_age_is_honoured_not_capped_F1():
     load = _block(policy=policy, observed_utc="2026-09-29T21:00:00Z")
     result = w3.claim_intent(_task(), _advice(policy=policy), "claude-rco-2", load, NOW, policy)
     assert result["verdict"] == "intent" and result["intent"]["policy_sha256"] == router.digest(policy)
-    assert w3.load_blocks(WORKERS, _snapshot(observed_utc="1990-01-01T00:00:00Z"), NOW, _policy(10 ** 17)) != {}
+
+
+@pytest.mark.parametrize("age", [10 ** 12, 10 ** 17], ids=["year_underflow", "timedelta_overflow"])
+def test_an_age_whose_arithmetic_overflows_is_never_fresh_as_the_router_holds(age):
+    # RCO2 21:43Z (reproduced at 1ab8d8b9): W3 marked a 31-year-old snapshot idle where the router's own
+    # now - timedelta(max_age) overflows and it holds input_malformed. W3 now mirrors that arithmetic.
+    snapshot = _snapshot(observed_utc="1995-01-01T00:00:00Z")
+    assert w3.load_blocks(WORKERS, snapshot, NOW, _policy(age)) == {}
+    with pytest.raises(OverflowError):
+        router._fresh({"observed_utc": "1995-01-01T00:00:00Z"}, router._utc(NOW), age)
+
+
+def test_a_well_formed_non_member_holder_is_counted_apart_and_blinds_no_lane():
+    # RCO2 21:43Z liveness: one claim by a real non-member id (grok-scout-1, operator) made EVERY lane unknown.
+    claims = [_entry(agent="grok-scout-1", task_id="t/g"), _entry(agent="operator", task_id="t/o"),
+              _entry(agent="codex-tools-1")]
+    blocks = w3.load_blocks(WORKERS, _snapshot(claims=claims), NOW, POLICY)
+    assert {lane: b["state"] for lane, b in blocks.items()} == {
+        "codex-tools-1": "busy", "fable-5": "busy", "claude-rco-2": "idle", "claude-rco-1": "idle"}
 
 
 def test_intent_for_the_recommended_idle_worker_is_exact_and_grants_nothing():

@@ -28,6 +28,7 @@ problems are unknown (no block) or a refused intent with stable reasons.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 from typing import Any
 
 from tools import wd_task_router as router
@@ -47,6 +48,8 @@ MAX_ENTRIES = 4096
 MAX_TIME_TEXT = 64
 MAX_FIELD_TEXT = 512
 _HEX = frozenset("0123456789abcdef")
+_AGENT_ID = re.compile(r"[a-z][a-z0-9_-]{1,32}")       # the bridge agent-id pattern
+_MEMBER_FOLDS = frozenset(member.casefold() for member in router.MEMBERS)
 
 
 class RoutingLoadError(ValueError):
@@ -77,14 +80,17 @@ def _hex64(value: Any) -> bool:
 
 
 def _fresh(observed: Any, moment: datetime, max_age: int) -> bool:
-    """The router's own freshness rule (now - max_age <= observed <= now) on exact text, without overflow."""
+    """The router's own freshness rule and arithmetic (now - timedelta(max_age) <= observed <= now) on exact
+    text. Where that arithmetic overflows the router holds, so here the evidence is not fresh (RCO2, 21:43Z):
+    W3 is never fresher than the router."""
     at = _utc(observed) if type(observed) is str and len(observed) <= MAX_TIME_TEXT else None
-    if at is None or at > moment:
+    if at is None:
         return False
     try:
-        return moment - at <= timedelta(seconds=max_age)
-    except OverflowError:                                    # an age beyond timedelta's range bounds nothing
-        return True
+        low = moment - timedelta(seconds=max_age)
+    except OverflowError:
+        return False
+    return low <= at <= moment
 
 
 def _lanes(workers: Any) -> list[str]:
@@ -117,9 +123,15 @@ def _holders(snapshot: Any, moment: datetime, max_age: int) -> dict[str, int] | 
             agent, task_id, session = entry["agent"], entry["task_id"], entry["owner_session_id"]
             if entry["source"] != source:
                 return None
-            # A holder that is not an exact member (case variant, padded, str subclass, stranger) is a foreign
-            # fact: the whole snapshot is unknown rather than letting any member read idle beside it.
-            if type(agent) is not str or agent not in router.MEMBERS:
+            # Membership is by exact agent id (a lane always claims under its own validated id). A spelling that
+            # folds to a member (case variant, padding), a str subclass or a malformed id is an ambiguous member
+            # fact: the whole snapshot is unknown rather than letting that member read idle. A well-formed
+            # non-member id (grok-scout-1, operator) holds work that is no member's: it is counted apart and
+            # never makes a member busy or idle (RCO2 21:43Z liveness: one such claim no longer blinds W3).
+            if type(agent) is not str:
+                return None
+            if agent not in router.MEMBERS and (agent.strip().casefold() in _MEMBER_FOLDS
+                                                or _AGENT_ID.fullmatch(agent) is None):
                 return None
             if not _text(task_id) or (session is not None and not _text(session)):
                 return None

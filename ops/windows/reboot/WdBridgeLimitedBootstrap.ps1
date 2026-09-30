@@ -20,7 +20,9 @@
     WD-Supervisor must still be exactly Disabled. Observations are injected
     ports, so fakes prove every refusal without a process or a task. The result claims
     process currency only: responsiveness and any pre-boot (legacy) record stay unknown,
-    and nothing here replays, rewrites or clears a record.
+    and nothing here replays, rewrites or clears a record. Each supervisor run is bounded
+    (Invoke-WdBridgeSupervisorOnce -TimeoutSeconds, 900 by default): a run past its bound is
+    UNKNOWN, refused by the verdict, and left running rather than stopped.
 #>
 
 function Get-WdBridgeLimitedBootstrapDecision {
@@ -96,11 +98,20 @@ function Get-WdBridgeReconcileVerdict {
     $notes = New-Object System.Collections.Generic.List[string]
     $exitCode = $null
     $lines = @()
+    $timedOut = $false
+    $runPid = $null
     if ($null -ne $Run) {
         foreach ($property in @($Run.PSObject.Properties)) {
             if ($property.Name -ceq 'exit_code') { $exitCode = $property.Value }
             if ($property.Name -ceq 'lines') { $lines = @($property.Value) }
+            if ($property.Name -ceq 'timed_out') { $timedOut = $property.Value -is [bool] -and $property.Value }
+            if ($property.Name -ceq 'process_id') { $runPid = $property.Value }
         }
+    }
+    if ($timedOut) {
+        # A reconcile past its bound is UNKNOWN: never success, never a failure that invites a retry.
+        $reasons.Add("the $Mode reconcile did not finish within its bound: its outcome is UNKNOWN (never success), and its process (pid $runPid) was left running, not stopped")
+        return [pscustomobject]@{ ok = $false; reasons = @($reasons); notes = @($notes); summary = '' }
     }
     if ($exitCode -isnot [int] -or $exitCode -ne 0) { $reasons.Add("the $Mode reconcile did not exit 0") }
     # wd_supervisor.ps1 prints one line: [utc] [APPLY|dry-run] host=...; note :: action; action
@@ -418,7 +429,11 @@ function Invoke-WdBridgeSupervisorOnce {
         [Parameter(Mandatory)] [string] $HostPath,
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
-        [Parameter(Mandatory)] [bool] $Apply
+        [Parameter(Mandatory)] [bool] $Apply,
+        # The reconcile's bound. Past it the outcome is UNKNOWN: the run is reported as timed_out and
+        # its process is left running, because its partial launches are unknown and stopping it could
+        # strand a half-started worker.
+        [ValidateRange(1, 3600)] [int] $TimeoutSeconds = 900
     )
 
     $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply)
@@ -436,13 +451,25 @@ function Invoke-WdBridgeSupervisorOnce {
             (Join-Path (Join-Path (Join-Path (Join-Path $env:SystemRoot 'System32') 'WindowsPowerShell') 'v1.0') 'Modules')
         ) -join ';')
     $process = [Diagnostics.Process]::Start($info)
+    # Both streams are read asynchronously, so the bounded wait below is the only place that waits.
     $errorText = $process.StandardError.ReadToEndAsync()
-    $output = $process.StandardOutput.ReadToEnd()
-    $process.WaitForExit()
+    $outputText = $process.StandardOutput.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        return [pscustomobject]@{
+            exit_code = $null
+            lines = @()
+            error_text = ''
+            timed_out = $true
+            process_id = [int]$process.Id
+        }
+    }
+    $process.WaitForExit()   # after a bounded wait succeeded: lets the redirected readers finish
     return [pscustomobject]@{
         exit_code = [int]$process.ExitCode
-        lines = @($output -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+        lines = @([string]$outputText.Result -split "`r?`n" | Where-Object { $_.Length -gt 0 })
         error_text = [string]$errorText.Result
+        timed_out = $false
+        process_id = [int]$process.Id
     }
 }
 

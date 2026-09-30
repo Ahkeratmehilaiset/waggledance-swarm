@@ -337,6 +337,37 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                     raise Refused("an active claim has an unresolvable write scope; overlap unknown") from None
                 if any(resources_overlap(a, b) for a in scopes for b in other_scopes):
                     raise Refused("write-scope conflict with active claim " + str(other.get("task_id"))[:128])
+        # B-F2 (RCO1 2026-09-30; Fable review 99897de5): another claim's UNFINISHED transaction (a crash between
+        # its WAL record and its claim write) is applied later by recovery without re-checking this claim, so what
+        # it would write is compared as a pending claim; one that cannot be read makes the comparison unknown.
+        keyed_new = dispatch_key is not None and current is None
+        if keyed_new or mode == "write":
+            for planned in txns.pending_claims(claim_path):
+                if planned is None:
+                    raise Refused("an unfinished transaction record is unreadable; "
+                                  + ("duplicate dispatch unknown" if keyed_new else "overlap unknown"))
+                if keyed_new and "dispatch_key" in planned:
+                    planned_key = planned["dispatch_key"]
+                    if type(planned_key) is not str or DISPATCH_KEY_PATTERN.fullmatch(planned_key) is None:
+                        raise Refused("an unfinished claim carries a malformed dispatch_key; "
+                                      "duplicate dispatch unknown")
+                    if planned_key == dispatch_key:
+                        raise Refused("duplicate dispatch: dispatch_key held by an unfinished claim of "
+                                      + str(planned.get("task_id"))[:128])
+                if (mode != "write" or planned.get("task_id") == task_id
+                        or str(planned.get("mode", "read-only")) != "write"):
+                    continue
+                planned_entries = _stored_scope(planned.get("write_scope"))
+                try:
+                    planned_scopes = None if planned_entries is None else resolve_scopes(
+                        list(planned_entries), worktree=str(planned.get("cwd", "")), bridge_root=str(txns.root))
+                except ScopeError:
+                    planned_scopes = None
+                if planned_scopes is None:
+                    raise Refused("an unfinished claim has an unresolvable write scope; overlap unknown")
+                if any(resources_overlap(a, b) for a in scopes for b in planned_scopes):
+                    raise Refused("write-scope conflict with an unfinished claim of "
+                                  + str(planned.get("task_id"))[:128])
         claim = {"agent": agent, "task_id": task_id, "summary": summary.strip(), "mode": mode,
                  "write_scope": list(normalized), "run_id": run_id, "claimed_at_utc": stamp,
                  "last_heartbeat_utc": stamp, "lease_seconds": lease_seconds,

@@ -960,6 +960,26 @@ class QueueTransactions:
                 outcomes.append({"claim_rel": claim_rel, "outcome": "blocked", "reason": blocker})
         return outcomes
 
+    def pending_claims(self, claim_path: Path) -> list[dict | None]:
+        """B-F2 (RCO1 2026-09-30; Fable review 99897de5): the claims that OTHER claims' unfinished transactions
+        (prepared or applied, not yet filed) would write. Recovery applies such a record later without
+        re-checking anything outside its own claim, so a plan comparing claims must count them as pending
+        claims. None stands for a record that cannot be read: what it would write is unknown. Called from a
+        plan, under this root's locks, so no transaction adds or finishes a record meanwhile."""
+        claim_rel = self._relative(claim_path, _REL_CLAIM, "claim")
+        pending: list[dict | None] = []
+        for wal_path in sorted(self.wal_dir.glob("*.json")) if self.wal_dir.is_dir() else []:
+            try:
+                _guard(wal_path, "WAL record")
+                txn = self._load(wal_path)
+            except QueueTransactionError:
+                txn = None
+            if txn is None:
+                pending.append(None)
+            elif txn["claim_rel"] != claim_rel and txn["state"] not in FINAL and isinstance(txn["after"], dict):
+                pending.append(txn["after"])
+        return pending
+
     # -- publication, outside the locks ----------------------------------------------
     def publish_pending(self, publisher: PublisherPort | None) -> dict:
         """AT LEAST ONCE (S4): the publisher must be idempotent by idempotency_key. Only records

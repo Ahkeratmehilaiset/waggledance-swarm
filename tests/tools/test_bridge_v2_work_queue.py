@@ -515,6 +515,60 @@ def test_a_malformed_stored_dispatch_key_makes_a_keyed_claim_unknown_and_survive
                  dispatch_key=KEY_A)["dispatch_key"] == KEY_A            # success twin once it is released
 
 
+def _crash_the_first_claim_write(monkeypatch):
+    from tools import bridge_v2_queue_transactions as qt
+
+    real = qt._replace_atomic
+    calls = {"n": 0}
+
+    def crashing(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt("simulated crash after the WAL record, before the claim write")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(qt, "_replace_atomic", crashing)
+
+
+# B-F2 (Fable review 99897de5, reasoning-only there; Lead d06fbf85: reproduce first). Reproduced at 6e2153a5: claim X
+# with key K crashed after its WAL record and before its claim file existed; claim Y (another task) with K scanned
+# claim files only and became active; reconcile() then redid X, so two active claims carried K. An overlapping write
+# scope behaved the same. Another claim's UNFINISHED transaction is now compared as a pending claim.
+@pytest.mark.parametrize("second", ["same_key", "overlapping_scope"])
+def test_b_f2_a_claim_left_prepared_by_a_crash_blocks_a_duplicate_until_recovery_decides_it(env, monkeypatch, second):
+    _crash_the_first_claim_write(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        claim(env, task="team/x", scope=("tools/x.py",), dispatch_key=KEY_A)
+    monkeypatch.undo()
+    assert wq.find_claim(env[0], "team/x") is None                       # only its prepared WAL record exists
+    y = dict(task="team/y", agent="fable-5", identity=OTHER)
+    y.update(scope=("tools/y.py",), dispatch_key=KEY_A) if second == "same_key" else y.update(scope=("tools/x.py",))
+    match = "duplicate dispatch" if second == "same_key" else "write-scope conflict"
+    with pytest.raises(Refused, match=match + ".* an unfinished claim of team/x"):
+        claim(env, **y)
+    assert wq.find_claim(env[0], "team/y") is None
+    assert [entry["outcome"] for entry in env[0].reconcile()] == ["rolled_forward"]   # X redone, exactly once
+    assert json.loads(claim_file(env, "team/x").read_text())["dispatch_key"] == KEY_A
+    with pytest.raises(Refused, match=match + ".* active claim team/x"):
+        claim(env, **y)                                                   # still one holder, now as a claim file
+    twin = dict(y, scope=("tools/y.py",), dispatch_key=KEY_B)             # success twin: another key and scope
+    assert claim(env, **twin)["dispatch_key"] == KEY_B
+
+
+def test_b_f2_an_unreadable_unfinished_record_makes_a_keyed_or_write_claim_unknown(env):
+    txns = env[0]
+    claim(env, task="team/setup", scope=("tools/s.py",))                  # creates the state directories
+    assert txns.wal_dir.is_dir()
+    garbage = txns.wal_dir / "unknown.json"
+    garbage.write_bytes(b"{not json")
+    with pytest.raises(Refused, match="unreadable; duplicate dispatch unknown"):
+        claim(env, task="team/keyed", mode="read-only", scope=(), dispatch_key=KEY_A)
+    with pytest.raises(Refused, match="unreadable; overlap unknown"):
+        claim(env, task="team/write", scope=("tools/w.py",))
+    assert claim(env, task="team/plain", mode="read-only", scope=())["mode"] == "read-only"   # twin: neither
+    garbage.unlink()
+    assert claim(env, task="team/keyed", scope=("tools/k.py",), dispatch_key=KEY_A)["dispatch_key"] == KEY_A
+
+
 def test_a_stale_archive_keeps_a_malformed_dispatch_key_verbatim(env):
     claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",), dispatch_key=KEY_A)
     _store_dispatch_key(env[0], "team/owned", ["a" * 64])

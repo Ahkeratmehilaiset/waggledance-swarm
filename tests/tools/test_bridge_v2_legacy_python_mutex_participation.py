@@ -127,6 +127,28 @@ def test_a_legacy_release_and_heartbeat_wait_and_change_nothing_while_held(bridg
     assert _claims(bridge) == [] and list((bridge / "work_queue" / "done").glob("*"))
 
 
+def test_an_abandoned_root_mutex_refuses_once_and_is_never_silently_recovered(bridge, capsys):
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    holder = _python_holder(bridge)
+    # A second open handle keeps the named object alive, so the holder's death abandons it (without one the
+    # object would be destroyed with its last handle and simply created anew).
+    witness = kernel32.OpenMutexW(0x00100000, False, mutex_name(bridge))      # SYNCHRONIZE only
+    assert witness, "could not open the holder's mutex"
+    try:
+        holder.process.kill()                                        # ends while holding: the mutex is abandoned
+        holder.process.wait(timeout=20)
+        assert _cli(bridge, *CLAIM) != 0 and _claims(bridge) == []
+        assert "abandoned" in capsys.readouterr().out
+    finally:
+        kernel32.CloseHandle(witness)
+    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the refusal consumed the abandoned state
+
+
 def test_reads_do_not_take_the_mutex(bridge):
     holder = _python_holder(bridge)
     try:

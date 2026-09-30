@@ -129,6 +129,54 @@ def test_a_plan_for_one_task_beside_an_active_other_at_the_same_claim_is_incompl
     assert _take(root)["complete"] is False
 
 
+def test_a_duplicate_key_claim_is_unreadable_never_attributed_s1(root):
+    # RCO2 S1: last-wins read {"agent": fable-5, "agent": codex-tools-1} as codex-tools-1 busy and fable-5 IDLE.
+    (root / "work_queue" / "claims" / "dup.json").write_bytes(
+        b'{"agent": "fable-5", "agent": "codex-tools-1", "task_id": "t/x", "owner_identity": "none"}')
+    taken = _take(root)
+    assert (taken["complete"], taken["unreadable"], taken["claims"]) == (True, 1, [])
+
+
+def test_a_duplicate_key_wal_record_is_unreadable_s1(root, monkeypatch):
+    _prepared(root, monkeypatch, "team/p")
+    [record] = list(QueueTransactions(root).wal_dir.glob("*.json"))
+    record.write_bytes(record.read_bytes().replace(b"{", b'{"state": "prepared", ', 1))   # "state" twice
+    taken = _take(root)
+    assert (taken["unreadable"], taken["pending"]) == (1, [])
+
+
+def test_a_wal_guard_os_error_is_unreadable_not_raised_s3(root, monkeypatch):
+    _prepared(root, monkeypatch, "team/p")
+    mutex, real = RecordingMutex(), snap._guard
+
+    def failing(path, kind, leaf="file"):
+        if kind == "WAL record":
+            raise OSError("injected")
+        return real(path, kind, leaf)
+    monkeypatch.setattr(snap, "_guard", failing)
+    taken = _take(root, mutex)
+    assert (taken["unreadable"], taken["pending"]) == (1, []) and not mutex.held
+
+
+def test_a_claim_written_after_the_listing_without_the_mutex_is_invisible_s2_wiring_gate(root, monkeypatch):
+    # RCO2 S2, reproduced: the legacy writers do not take the v2 root mutex, so a claim they write after the
+    # listing is simply absent while complete stays True. This pins the documented limit (module WIRING GATE):
+    # producer -> W3 must not drive dispatch until every claims writer takes mutex_name(root) first.
+    real = snap._listed
+
+    def listed_then_written(directory, kind):
+        result = real(directory, kind)
+        if kind == "claims directory":
+            (directory / "late.json").write_bytes(claim_bytes({"agent": "fable-5", "task_id": "t/late",
+                                                               "owner_identity": "none"}))
+        return result
+    monkeypatch.setattr(snap, "_listed", listed_then_written)
+    taken = _take(root)
+    assert (taken["complete"], taken["unreadable"], taken["claims"]) == (True, 0, [])
+    monkeypatch.undo()
+    assert [e["agent"] for e in _take(root)["claims"]] == ["fable-5"]      # the next snapshot sees it
+
+
 def test_a_diverged_record_is_final_not_pending(root, monkeypatch):
     # Recovery marks it diverged (the claim matches neither side) and never applies it; the claim file is the fact.
     _prepared(root, monkeypatch, "team/d")

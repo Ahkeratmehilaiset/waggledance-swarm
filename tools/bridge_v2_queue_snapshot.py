@@ -12,9 +12,13 @@ snapshot incomplete; it is never reported as an empty queue. A holder is passed 
 decides membership); a claim or plan without exact agent, task and session evidence is unreadable.
 
 Advisory: the timestamp says what the queue held while the mutex was held. It does not prove continuous
-readiness and does not make a worker exclusive (the worker's own keyed claim is the only atomic step). The
-legacy PowerShell claim writer does not take this mutex yet: its concurrent write shows as unreadable or is
-seen before or after.
+readiness and does not make a worker exclusive (the worker's own keyed claim is the only atomic step).
+
+WIRING GATE (RCO2 S2, reproduced): ``complete: True`` is NOT a global idle proof while any claims writer skips
+this mutex. As of 627ef7c7 the PowerShell claim scripts (Claim-AgentTask, Release-AgentTask, the stale sweep,
+the keepalive) and the core Python work queue do not take ``mutex_name(root)``, so a claim they write after the
+listing is invisible here and W3 would read that worker idle. Producer -> W3 must not drive dispatch until every
+claims writer takes this mutex first.
 """
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tools.bridge_v2_queue_transactions import (FINAL, QueueTransactionError, QueueTransactions, _guard,
-                                                mutex_name, read_bytes_or_none)
+                                                _valid_txn, mutex_name, read_bytes_or_none)
 
 SNAPSHOT_SCHEMA = "wd.queue-claims-snapshot.v1"
 MAX_ENTRIES = 4096            # W3's bound on claims plus pending records
@@ -34,6 +38,18 @@ OWNER_IDENTITY_NONE = "none"
 
 class QueueSnapshotError(ValueError):
     """A caller contract was violated; no snapshot was taken."""
+
+
+def _unique_pairs(pairs: list) -> dict:
+    """RCO2 S1: a repeated key hides which value the writer meant (last-wins would misattribute a holder)."""
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate JSON key")
+    return dict(pairs)
+
+
+def _strict_json(data: bytes, encoding: str) -> Any:
+    return json.loads(data.decode(encoding), object_pairs_hook=_unique_pairs)
 
 
 def _listed(directory: Path, kind: str) -> tuple[list[Path], str]:
@@ -89,7 +105,7 @@ def _read(txns: QueueTransactions, now: datetime) -> dict:
             complete = False
             continue
         try:
-            obj = json.loads(data.decode("utf-8-sig"))
+            obj = _strict_json(data, "utf-8-sig")               # BOM tolerated for legacy writers
         except (ValueError, RecursionError):
             unreadable += 1
             continue
@@ -102,11 +118,19 @@ def _read(txns: QueueTransactions, now: datetime) -> dict:
     for path in wal_paths:
         try:
             _guard(path, "WAL record")
-        except QueueTransactionError:
+            data = read_bytes_or_none(path)
+        except (QueueTransactionError, OSError):               # RCO2 S3: an OSError is unreadable, not raised
             unreadable += 1
             continue
-        txn = txns._load(path)                               # bound to this root and its own name, or None
-        if txn is None:
+        if data is None:
+            complete = False
+            continue
+        try:
+            txn = _strict_json(data, "utf-8")
+        except (ValueError, RecursionError):
+            unreadable += 1
+            continue
+        if not _valid_txn(txn, root_identity=txns.root_id, name=path.name):   # the rule _load applies
             unreadable += 1
             continue
         if txn["state"] in FINAL or txn["after"] is None:    # filed, diverged (applied) or a release in flight

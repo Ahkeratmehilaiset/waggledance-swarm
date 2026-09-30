@@ -733,7 +733,112 @@ def test_n2_an_unreadable_component_is_a_refusal_never_a_raw_os_error(tmp_path, 
     assert txns.reconcile() == []                                   # success twin: nothing to reconcile
 
 
-ENV_NAMES ={"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv"}
+# --- Fable 8c091: recovery truth (S1), an unfiled aborted record (N1), a typed bound error (N3) ----------
+
+def _leave_heartbeat_prepared(txns, path, monkeypatch):
+    create(txns, path)                                              # txid 0, outboxed and filed
+    _crash_on(monkeypatch, "_replace_atomic")
+    with pytest.raises(KeyboardInterrupt):
+        txns.transact("heartbeat", path, "hb:9", lambda b: Plan(after=beat(9)))   # txid 1, left prepared
+    monkeypatch.undo()
+
+
+def test_s1_a_commit_failing_after_a_redo_is_outcome_unknown_for_the_earlier_record(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    _leave_heartbeat_prepared(txns, path, monkeypatch)
+    real_set_state = QueueTransactions._set_state
+
+    def failing_commit(self, wal_path, txn, state, reason=None):
+        if state == "applied" and reason == "redone_after_crash":
+            raise OSError(errno.EIO, "WAL state write failed")
+        return real_set_state(self, wal_path, txn, state, reason)
+    monkeypatch.setattr(QueueTransactions, "_set_state", failing_commit)
+    with pytest.raises(OutcomeUnknown, match="recovery of an earlier transaction") as unknown:
+        txns.transact("heartbeat", path, "hb:10", lambda b: Plan(after=beat(10)))
+    assert unknown.value.txid == f"{1:032x}" and isinstance(unknown.value.__cause__, OSError)
+    assert path.read_bytes() == claim_bytes(beat(9))                 # the redo DID write the earlier change
+    assert wal_states(txns) == ["outboxed", "prepared"]
+    monkeypatch.undo()
+    assert [o["outcome"] for o in txns.reconcile()] == ["rolled_forward_bookkeeping"]   # completed from disk
+    assert path.read_bytes() == claim_bytes(beat(9)) and wal_states(txns) == ["outboxed", "outboxed"]
+
+
+def test_s1_a_partial_redo_of_an_earlier_release_is_outcome_unknown(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    done = txns.root / "work_queue" / "done"
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "a reader holds the claim open")
+        return real_unlink(self, *args, **kwargs)
+
+    def release(before):
+        return Plan(after=None, archive=(done / "t_1-a1.json", {"r": 1}), event={"type": "release"})
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OutcomeUnknown, match="MAY ALREADY BE APPLIED"):   # its own record, txid 1
+        txns.transact("release", path, "rel:1", release)
+    with pytest.raises(OutcomeUnknown, match="recovery of an earlier transaction") as unknown:
+        txns.transact("release", path, "rel:2", release)   # recovery redoes txid 1: archive exact, unlink fails
+    assert unknown.value.txid == f"{1:032x}" and isinstance(unknown.value.__cause__, PermissionError)
+    assert path.exists() and sorted(p.name for p in done.glob("*.json")) == ["t_1-a1.json"]   # still one archive
+    monkeypatch.undo()
+    assert [o["outcome"] for o in txns.reconcile()] == ["rolled_forward"] and not path.exists()
+
+
+def test_s1_recovered_work_survives_a_later_raw_error_before_the_own_wal(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    _leave_heartbeat_prepared(txns, path, monkeypatch)
+
+    def raw_plan(before):
+        raise OSError(errno.EIO, "the plan's own read failed")
+    with pytest.raises(QueueTransactionError, match="own mutation did not happen") as refused:
+        txns.transact("heartbeat", path, "hb:10", raw_plan)            # recovery first rolled hb:9 forward
+    assert [o["outcome"] for o in refused.value.recovered] == ["rolled_forward"]
+    assert isinstance(refused.value.__cause__, OSError) and path.read_bytes() == claim_bytes(beat(9))
+    with pytest.raises(OSError):                                    # twin: no recovered work, so the raw error
+        txns.transact("heartbeat", path, "hb:11", raw_plan)
+
+
+def test_n1_an_aborted_record_that_cannot_be_filed_is_still_refused(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+
+    def racing_plan(before):
+        path.write_bytes(b'{"written": "by a writer that ignores the lock"}\n')   # legacy unfenced writer
+        return Plan(after=beat(2))
+    real_move = QueueTransactions._move_to_final
+
+    def failing_move(self, wal_path):
+        if json.loads(wal_path.read_text())["state"] == "aborted":
+            raise OSError(errno.EIO, "rename failed")
+        return real_move(self, wal_path)
+    monkeypatch.setattr(QueueTransactions, "_move_to_final", failing_move)
+    with pytest.raises(Refused, match="nothing applied") as refused:
+        txns.transact("heartbeat", path, "hb", racing_plan)
+    assert type(refused.value) is Refused and isinstance(refused.value.__cause__, OSError)   # never OutcomeUnknown
+    assert json.loads(path.read_text()) == {"written": "by a writer that ignores the lock"}
+    monkeypatch.undo()
+    assert wal_states(txns) == ["aborted", "outboxed"] and len(list(txns.wal_dir.glob("*.json"))) == 1
+    assert txns.reconcile() == [] and list(txns.wal_dir.glob("*.json")) == []   # recovery only files it
+
+
+def test_n3_a_wal_state_over_the_bound_is_typed_outcome_unknown(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    record = bound_record(txns, state="prepared")
+    name = write_record(txns, record)
+    monkeypatch.setattr(qt, "MAX_RECORD_BYTES", 64)
+    with pytest.raises(OutcomeUnknown, match="MAY ALREADY BE APPLIED") as unknown:
+        txns._set_state(txns.wal_dir / name, dict(record), "applied")
+    assert unknown.value.txid == "a" * 32
+
+
+ENV_NAMES = {"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv"}
 
 
 def test_modules_never_import_waggledance_and_read_the_environment_in_one_place_only():

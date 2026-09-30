@@ -71,7 +71,12 @@ class WorkQueueError(ValueError):
     "outcome unknown ... MAY ALREADY BE APPLIED (txid ...)" (an OutcomeUnknown after its WAL record
     was on disk), or "the claim change WAS applied" (its publication is blocked). Recovery under the
     locks may first have finished earlier unfinished work on the same claim, and the message names
-    only those effect-bearing outcomes (Tools 51ada Q-OUTCOME-TRUTH, RCO1 Q-F2/Q-F3)."""
+    only those effect-bearing outcomes (Tools 51ada Q-OUTCOME-TRUTH, RCO1 Q-F2/Q-F3).
+
+    Only archive_stale_claims translates transaction errors into WorkQueueError (Fable 8c091 N6).
+    claim_task, release_task and heartbeat raise the QueueTransactionError itself: its ``recovered`` lists that
+    earlier work, and an OutcomeUnknown's ``txid`` names this call's record, or an earlier one when
+    the error came from recovery."""
 
 
 @dataclass(frozen=True)

@@ -77,7 +77,10 @@ any ordinary error after this call's WAL record is on disk, other than the clean
 compare-and-swap refusal: the change MAY ALREADY BE APPLIED, or recovery may complete it, and the
 txid is named. ``recovered`` on an exception lists only the effect-bearing outcomes of earlier
 unfinished work that the call completed first (EFFECT_OUTCOMES). A corrupt, diverged or ambiguous
-record that merely blocks the claim is never listed.
+record that merely blocks the claim is never listed. An ordinary error inside recovery, after a
+step that can have an effect began, is OutcomeUnknown naming the EARLIER record; a raw ordinary error
+before this call's own WAL record keeps any recovered work (as a QueueTransactionError); an aborted
+record that cannot be filed is still Refused (Fable 8c091 S1, N1).
 
 Bounds and durability (Q-WAL-STATE-GROWTH, Q-DURABILITY-BOUND): a record is prepared only if
 it still fits the read bound with the longest later state and reason, so every bookkeeping
@@ -179,10 +182,14 @@ class RecordConflict(QueueTransactionError):
 
 
 class OutcomeUnknown(QueueTransactionError):
-    """An ordinary error AFTER this call's WAL record was on disk (RCO1 Q-F3), other than the clean
-    compare-and-swap refusal. The claim change MAY ALREADY BE APPLIED, or the next transaction's
-    recovery (or reconcile) may complete it from what is on disk. ``txid`` names the record, and
-    the original error is the ``__cause__``."""
+    """The outcome of the transaction named by ``txid`` is unknown; the original error is the ``__cause__``.
+
+    Raised for an ordinary error AFTER this call's WAL record was on disk (RCO1 Q-F3), other than the
+    clean compare-and-swap refusal: this call's change MAY ALREADY BE APPLIED, or the next transaction's
+    recovery (or reconcile) may complete it from what is on disk. Also raised for an ordinary error
+    inside RECOVERY after it began to finish an EARLIER record (Fable 8c091 S1): then ``txid`` names that
+    earlier record, which MAY have been partly applied, and this call's own mutation did not happen. A
+    WAL state that cannot fit the read bound is this type too (N3). A BaseException is never wrapped."""
     txid: str | None = None
 
 
@@ -562,11 +569,23 @@ class QueueTransactions:
                 # Earlier work this call DID complete first, and nothing else (Q-OUTCOME-TRUTH, RCO1 Q-F2).
                 exc.recovered = tuple(entry for entry in recovered if entry["outcome"] in EFFECT_OUTCOMES)
                 raise
+            except Exception as exc:  # noqa: BLE001 - only to keep recovered work visible (Fable 8c091 S1)
+                # A raw ordinary error here is BEFORE this call's own WAL record (_logged wraps everything after
+                # it), so this call's own mutation did not happen. When recovery first did work, that work is
+                # never lost behind the raw error; with no recovered work the error propagates unchanged.
+                effects = tuple(entry for entry in recovered if entry["outcome"] in EFFECT_OUTCOMES)
+                if not effects:
+                    raise
+                error = QueueTransactionError("this call's own mutation did not happen (" + type(exc).__name__ + ": "
+                                              + str(exc)[:200] + "); recovery first finished earlier work on this "
+                                              "claim")
+                error.recovered = effects
+                raise error from exc
 
     def _logged(self, txn: dict, claim_path: Path, before: bytes | None) -> str:
         """Steps 5-7 (RCO1 Q-F3). Until the WAL record is on disk nothing has happened, and an error
         propagates as it is. After that the known outcomes are "aborted" (the compare-and-swap refused
-        before any effect and the record is filed), "diverged" (the change WAS applied; its outbox
+        before any effect and the record says so), "diverged" (the change WAS applied; its outbox
         record conflicts) and "outboxed". Any other ordinary error is OutcomeUnknown with the txid,
         because recovery may redo a record left on disk. A BaseException is never wrapped."""
         wal_path = self._wal_path(txn)
@@ -579,23 +598,46 @@ class QueueTransactions:
                 raise   # nothing was written: this call's own mutation did not happen
             raise self._unknown(txn, exc) from exc   # linked, but its completion is unconfirmed
         try:
-            if read_bytes_or_none(claim_path) != before:   # compare-and-swap, before any effect
-                self._file(wal_path, txn, "aborted", reason="cas_mismatch")
-                return "aborted"
-            self._apply(txn, claim_path, claim_present=before is not None)
-            return self._commit(wal_path, txn, reason=None)
+            changed = read_bytes_or_none(claim_path) != before   # compare-and-swap, before any effect
+            if changed:
+                self._set_state(wal_path, txn, "aborted", reason="cas_mismatch")
+            else:
+                self._apply(txn, claim_path, claim_present=before is not None)
+                return self._commit(wal_path, txn, reason=None)
         except OutcomeUnknown:
             raise
         except Exception as exc:  # noqa: BLE001 - after the WAL record, an ordinary error is outcome-unknown
             raise self._unknown(txn, exc) from exc
+        # The record now durably SAYS aborted, and recovery only ever files an aborted record, never redoes
+        # it: a failure to file it is still "nothing applied" (Fable 8c091 N1), never "MAY ALREADY BE APPLIED".
+        try:
+            self._move_to_final(wal_path)
+        except Exception as exc:  # noqa: BLE001 - filing is bookkeeping; the change is known NOT applied
+            raise Refused("the claim changed outside the lock; nothing applied (its aborted record " + txn["txid"]
+                          + " is left for recovery to file: " + type(exc).__name__ + ")") from exc
+        return "aborted"
 
     @staticmethod
-    def _unknown(txn: dict, exc: Exception) -> OutcomeUnknown:
-        error = OutcomeUnknown("outcome unknown: the claim change MAY ALREADY BE APPLIED, or the next transaction or "
-                               "reconcile may complete it from disk (txid " + str(txn.get("txid")) + "): "
-                               + type(exc).__name__ + ": " + str(exc)[:200])
+    def _unknown(txn: dict, exc: Exception, *, recovery: bool = False) -> OutcomeUnknown:
+        if recovery:   # Fable 8c091 S1: an error inside recovery, after it began to finish an EARLIER record
+            text = ("outcome unknown: recovery of an earlier transaction on this claim MAY have partly applied it "
+                    "(txid " + str(txn.get("txid")) + "); the next transaction or reconcile completes it from disk, "
+                    "and this call's own mutation did not happen: ")
+        else:
+            text = ("outcome unknown: the claim change MAY ALREADY BE APPLIED, or the next transaction or "
+                    "reconcile may complete it from disk (txid " + str(txn.get("txid")) + "): ")
+        error = OutcomeUnknown(text + type(exc).__name__ + ": " + str(exc)[:200])
         error.txid = txn.get("txid")
         return error
+
+    def _recovering(self, txn: dict, step: Callable[[], str]) -> str:
+        """A recovery step that can have effects (a redo's archive or claim write, an outbox record, a WAL
+        state): an ordinary error inside it is OutcomeUnknown naming the EARLIER record (Fable 8c091 S1). A
+        BaseException is never wrapped; errors before such a step (guards, reads) propagate unchanged."""
+        try:
+            return step()
+        except Exception as exc:  # noqa: BLE001 - after a recovery effect began, the outcome is unknown
+            raise self._unknown(txn, exc, recovery=True) from exc   # steps never nest, so no double wrap
 
     def _guard_state_dirs(self) -> None:
         for directory, kind in ((self.claims_dir, "claims directory"), (self.root / "work_queue" / "done", "archive"
@@ -703,18 +745,24 @@ class QueueTransactions:
             self._set_state(wal_path, txn, "diverged", reason="archive_record_differs")
             return "diverged"
         after_on_disk = sha256_or_none(current) == txn["after_sha256"] and archive in (None, "exact")
+        # Fable 8c091 S1: every step below that can have an effect (a commit's outbox record and WAL states, a
+        # redo's archive and claim write) runs through _recovering, so an ordinary error after it began is
+        # OutcomeUnknown naming THIS earlier record; the reads and guards above propagate unchanged (no effect).
         if txn["state"] == "applied":
             if not after_on_disk:   # S3: an applied record outboxes only a mutation that is on disk
                 self._set_state(wal_path, txn, "diverged", reason="applied_record_not_on_disk")
                 return "diverged"
-            return self._commit(wal_path, txn, reason=None)
+            return self._recovering(txn, lambda: self._commit(wal_path, txn, reason=None))
         if after_on_disk:
-            outcome = self._commit(wal_path, txn, reason="found_applied_after_crash")
+            outcome = self._recovering(
+                txn, lambda: self._commit(wal_path, txn, reason="found_applied_after_crash"))
             return "rolled_forward_bookkeeping" if outcome == "outboxed" else outcome
         if sha256_or_none(current) == txn["before_sha256"]:
             # Redo: the plan was decided under the locks against exactly these bytes.
-            self._apply(txn, claim_path, claim_present=current is not None)
-            outcome = self._commit(wal_path, txn, reason="redone_after_crash")
+            def redo() -> str:
+                self._apply(txn, claim_path, claim_present=current is not None)
+                return self._commit(wal_path, txn, reason="redone_after_crash")
+            outcome = self._recovering(txn, redo)
             # The redo DID apply the change even when its outbox record conflicts (effect-bearing, Q-F2).
             return "rolled_forward" if outcome == "outboxed" else "rolled_forward_diverged"
         self._set_state(wal_path, txn, "diverged", reason="claim_matches_neither_before_nor_after")
@@ -854,9 +902,12 @@ class QueueTransactions:
             txn["reason"] = reason
         data = claim_bytes(txn)
         if len(data) > MAX_RECORD_BYTES:
-            # Unreachable after _record's reservation; if it ever happens the claim change MAY be applied.
-            raise QueueTransactionError("the WAL state could not be recorded inside the read bound; the claim "
-                                        "change MAY ALREADY BE APPLIED (txid " + str(txn.get("txid")) + ")")
+            # Unreachable after _record's reservation (a forged or older record can still reach it in recovery);
+            # if it ever happens the claim change MAY be applied, so it is typed OutcomeUnknown (Fable 8c091 N3).
+            error = OutcomeUnknown("the WAL state could not be recorded inside the read bound; the claim change MAY "
+                                   "ALREADY BE APPLIED (txid " + str(txn.get("txid")) + ")")
+            error.txid = txn.get("txid")
+            raise error
         _replace_atomic(wal_path, data)
 
     def _file(self, wal_path: Path, txn: dict, state: str, reason: str | None = None) -> None:

@@ -65,7 +65,6 @@ from tools.wd_composer_select import UNKNOWN as COMPOSER_UNKNOWN
 from tools.wd_composer_select import WAIT as COMPOSER_WAIT
 from tools.wd_composer_select import digest
 from tools.wd_composer_select import select as composer_select
-from tools.wd_switch_policy import MEMBERS, TRIP_LINES
 
 SCHEMA = "wd.task-routing-advice.v1"
 TASK_SCHEMA = "wd.routing-task.v1"
@@ -78,6 +77,11 @@ SHADOW_WEIGHTS_SCHEMA = "wd.routing-shadow-weights.v1"
 FEATURE = "F19"
 DISPATCH_AUTHORITY = "codex-lead-1"
 GROK = "grok"
+# tools/wd_switch_policy.MEMBERS and TRIP_LINES, repeated here so this module does not import the
+# switch policy and, through it, the switch evidence, relaunch and planner modules; a test pins
+# them together.
+MEMBERS = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")
+TRIP_LINES = {"steady": 70.0, "burst": 90.0, "sprint": 95.0}
 
 ROUTE, DUPLICATE, SATISFIED, WAIT, UNKNOWN, SKIPPED, HOLD = (
     "route", "duplicate", "satisfied", "wait", "unknown", "skipped", "hold")

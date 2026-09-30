@@ -10,6 +10,7 @@ import pytest
 
 import tools.wd_composer_select as cs
 import tools.wd_routing_weights as rw
+import tools.wd_switch_policy as sp
 import tools.wd_task_router as tr
 
 NOW = "2026-09-30T17:00:00Z"
@@ -526,6 +527,42 @@ def test_invalid_shadow_weights_are_ignored(mutate):
 
 def test_shadow_schema_is_pinned_to_the_learning_module():
     assert tr.SHADOW_WEIGHTS_SCHEMA == rw.SCHEMA
+
+
+def test_members_and_trip_lines_are_pinned_to_the_switch_policy():
+    assert (tr.MEMBERS, tr.TRIP_LINES) == (sp.MEMBERS, sp.TRIP_LINES)
+
+
+def _tools_closure(module: str) -> set:
+    """Every tools module a module imports, transitively, read from source (nothing is imported)."""
+    root = Path(tr.__file__).resolve().parent
+    seen, todo = set(), [module]
+    while todo:
+        name = todo.pop()
+        path = root / (name.split(".", 1)[-1] + ".py")
+        if name in seen or not path.is_file():
+            continue
+        seen.add(name)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and node.module == "tools":
+                todo.extend("tools." + alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tools."):
+                todo.append(node.module)
+            elif isinstance(node, ast.Import):
+                todo.extend(alias.name for alias in node.names if alias.name.startswith("tools."))
+    return seen
+
+
+# Advisory modules must not carry the switch policy's actuation-side closure into their package.
+SWITCH_SIDE = {"tools.wd_switch_policy", "tools.bridge_v2_switch_evidence", "tools.lane_profile_binding",
+               "tools.wd_lane_profile_planner", "tools.wd_lane_relaunch"}
+
+
+@pytest.mark.parametrize("module", ["tools.wd_task_router", "tools.wd_routing_weights",
+                                    "tools.wd_profile_qualification", "tools.wd_routing_capacity"])
+def test_the_routing_family_never_imports_the_switch_side(module):
+    closure = _tools_closure(module)
+    assert module in closure and not closure & SWITCH_SIDE
 
 
 # --- purity ------------------------------------------------------------------------------------------

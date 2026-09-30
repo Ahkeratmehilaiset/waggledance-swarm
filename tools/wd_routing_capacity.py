@@ -55,7 +55,7 @@ from tools.bridge_pool_binding import POOL_ID_RE, _aware_utc
 from tools.lane_profile_record import _utc
 from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS
 from tools.wd_composer_select import digest
-from tools.wd_switch_policy import MEMBERS
+from tools.wd_task_router import MEMBERS
 
 SCHEMA = "wd.routing-capacity.v1"
 POLICY_SCHEMA = "wd.routing-capacity-policy.v1"

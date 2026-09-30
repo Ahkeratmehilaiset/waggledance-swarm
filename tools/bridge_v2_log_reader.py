@@ -266,7 +266,12 @@ def _open_log(path: Path) -> BinaryIO:
         try:
             descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
         except BaseException:
-            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+            # Still ours: close it through a PRIVATE pointer-width signature, because
+            # a bare call converts it to a C int, which a wide HANDLE overflows.
+            close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+            close_handle.argtypes = (wintypes.HANDLE,)
+            close_handle.restype = wintypes.BOOL
+            close_handle(handle)
             raise
         return os.fdopen(descriptor, "rb", buffering=0)
     return path.open("rb", buffering=0)

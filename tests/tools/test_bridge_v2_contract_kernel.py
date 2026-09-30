@@ -76,10 +76,22 @@ def test_kernel_modules_never_import_the_product_package(name):
         assert dynamic not in source, (name, dynamic)
 
 
-# The ONE intended source difference (Tools c013708e): the core original sits two levels below its repo, the
-# tools port one level, so each finds its OWN repo's configs file through its own depth (never the CWD).
+# The intended source differences, each exact and counted once:
+# - Tools c013708e: the core original sits two levels below its repo, the tools port one level, so each finds
+#   its OWN repo's configs file through its own depth (never the CWD);
+# - fable-5 e004 review N1: the tools log reader closes a still-owned handle through a private, pointer-width
+#   CloseHandle signature (a tools-only FFI correction; the core copy keeps its bare call).
 _CORE_REGISTRY_ROOT = 'Path(__file__).resolve().parents[2] / "configs" / "bridge_identity_registry.json"'
 _PORT_REGISTRY_ROOT = 'Path(__file__).resolve().parents[1] / "configs" / "bridge_identity_registry.json"'
+_CORE_CLOSE_HANDLE = '            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)\n'
+_PORT_CLOSE_HANDLE = (
+    "            # Still ours: close it through a PRIVATE pointer-width signature, because\n"
+    "            # a bare call converts it to a C int, which a wide HANDLE overflows.\n"
+    '            close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle\n'
+    "            close_handle.argtypes = (wintypes.HANDLE,)\n"
+    "            close_handle.restype = wintypes.BOOL\n"
+    "            close_handle(handle)\n"
+)
 
 
 @pytest.mark.parametrize("name", ["bridge_v2_request_contract", "bridge_v2_identity_registry", "bridge_v2_log_reader"])
@@ -91,6 +103,9 @@ def test_pure_ports_equal_the_core_source(name):
     if name == "bridge_v2_identity_registry":
         assert expected.count(_CORE_REGISTRY_ROOT) == 1   # the normalization is exact and never vacuous
         expected = expected.replace(_CORE_REGISTRY_ROOT, _PORT_REGISTRY_ROOT)
+    if name == "bridge_v2_log_reader":
+        assert expected.count(_CORE_CLOSE_HANDLE) == 1    # the one bare call only: exact, never vacuous
+        expected = expected.replace(_CORE_CLOSE_HANDLE, _PORT_CLOSE_HANDLE)
     assert _source(ROOT / "tools" / f"{name}.py") == expected
 
 

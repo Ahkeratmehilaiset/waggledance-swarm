@@ -79,19 +79,55 @@ def test_kernel_modules_never_import_the_product_package(name):
 # The intended source differences, each exact and counted once:
 # - Tools c013708e: the core original sits two levels below its repo, the tools port one level, so each finds
 #   its OWN repo's configs file through its own depth (never the CWD);
-# - fable-5 e004 review N1: the tools log reader closes a still-owned handle through a private, pointer-width
-#   CloseHandle signature (a tools-only FFI correction; the core copy keeps its bare call).
+# - fable-5 e004 review N1 and RCO1 096e L1/L2: the tools log reader's owned-resource block closes a still-owned
+#   handle through a private, pointer-width CloseHandle signature, closes the CRT descriptor when fdopen fails, and
+#   never lets an ordinary cleanup failure replace the primary (a tools-only correction; the core keeps its block).
 _CORE_REGISTRY_ROOT = 'Path(__file__).resolve().parents[2] / "configs" / "bridge_identity_registry.json"'
 _PORT_REGISTRY_ROOT = 'Path(__file__).resolve().parents[1] / "configs" / "bridge_identity_registry.json"'
-_CORE_CLOSE_HANDLE = '            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)\n'
-_PORT_CLOSE_HANDLE = (
-    "            # Still ours: close it through a PRIVATE pointer-width signature, because\n"
-    "            # a bare call converts it to a C int, which a wide HANDLE overflows.\n"
-    '            close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle\n'
-    "            close_handle.argtypes = (wintypes.HANDLE,)\n"
-    "            close_handle.restype = wintypes.BOOL\n"
-    "            close_handle(handle)\n"
-)
+_CORE_OWNED_BLOCK = "".join(line + "\n" for line in (
+    '        try:',
+    '            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)',
+    '        except BaseException:',
+    '            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)',
+    '            raise',
+    '        return os.fdopen(descriptor, "rb", buffering=0)',
+))
+_PORT_OWNED_BLOCK = "".join(line + "\n" for line in (
+    '        def release(close, primary: BaseException, what: str) -> None:',
+    '            # Best-effort cleanup of a resource the failed call still owns (RCO1 096e L1/L2). An ORDINARY',
+    '            # failure (an Exception, a FALSE CloseHandle included) never replaces the primary: it is recorded on',
+    '            # the primary as a note (itself best effort), never hidden as success, and the resource may still be',
+    '            # open. A BaseException from the cleanup (KeyboardInterrupt, SystemExit) is NOT swallowed: it',
+    '            # propagates with the primary as its context. Nothing here guarantees the native close.',
+    '            try:',
+    '                close()',
+    '            except Exception as failure:  # noqa: BLE001 - never replace the primary',
+    '                try:',
+    '                    primary.add_note(what + " cleanup failed: " + type(failure).__name__)',
+    '                except Exception:  # noqa: BLE001 - the note is diagnostic only',
+    '                    pass',
+    '',
+    '        def close_handle() -> None:',
+    '            # Still ours: close it through a PRIVATE pointer-width signature, because',
+    '            # a bare call converts it to a C int, which a wide HANDLE overflows.',
+    '            closer = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle',
+    '            closer.argtypes = (wintypes.HANDLE,)',
+    '            closer.restype = wintypes.BOOL',
+    '            if not closer(handle):',
+    '                raise ctypes.WinError(ctypes.get_last_error())',
+    '',
+    '        try:',
+    '            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)',
+    '        except BaseException as primary:',
+    '            release(close_handle, primary, "CloseHandle")',
+    '            raise',
+    '        try:',
+    '            return os.fdopen(descriptor, "rb", buffering=0)',
+    '        except BaseException as primary:',
+    '            # The CRT descriptor owns the handle now: close the descriptor, never the handle (no double close).',
+    '            release(lambda: os.close(descriptor), primary, "os.close")',
+    '            raise',
+))
 
 
 @pytest.mark.parametrize("name", ["bridge_v2_request_contract", "bridge_v2_identity_registry", "bridge_v2_log_reader"])
@@ -104,8 +140,8 @@ def test_pure_ports_equal_the_core_source(name):
         assert expected.count(_CORE_REGISTRY_ROOT) == 1   # the normalization is exact and never vacuous
         expected = expected.replace(_CORE_REGISTRY_ROOT, _PORT_REGISTRY_ROOT)
     if name == "bridge_v2_log_reader":
-        assert expected.count(_CORE_CLOSE_HANDLE) == 1    # the one bare call only: exact, never vacuous
-        expected = expected.replace(_CORE_CLOSE_HANDLE, _PORT_CLOSE_HANDLE)
+        assert expected.count(_CORE_OWNED_BLOCK) == 1     # the one owned block only: exact, never vacuous
+        expected = expected.replace(_CORE_OWNED_BLOCK, _PORT_OWNED_BLOCK)
     assert _source(ROOT / "tools" / f"{name}.py") == expected
 
 

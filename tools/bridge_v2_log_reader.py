@@ -263,17 +263,40 @@ def _open_log(path: Path) -> BinaryIO:
         invalid_handle = ctypes.c_void_p(-1).value
         if handle == invalid_handle:
             raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
-        except BaseException:
+        def release(close, primary: BaseException, what: str) -> None:
+            # Best-effort cleanup of a resource the failed call still owns (RCO1 096e L1/L2). An ORDINARY
+            # failure (an Exception, a FALSE CloseHandle included) never replaces the primary: it is recorded on
+            # the primary as a note (itself best effort), never hidden as success, and the resource may still be
+            # open. A BaseException from the cleanup (KeyboardInterrupt, SystemExit) is NOT swallowed: it
+            # propagates with the primary as its context. Nothing here guarantees the native close.
+            try:
+                close()
+            except Exception as failure:  # noqa: BLE001 - never replace the primary
+                try:
+                    primary.add_note(what + " cleanup failed: " + type(failure).__name__)
+                except Exception:  # noqa: BLE001 - the note is diagnostic only
+                    pass
+
+        def close_handle() -> None:
             # Still ours: close it through a PRIVATE pointer-width signature, because
             # a bare call converts it to a C int, which a wide HANDLE overflows.
-            close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
-            close_handle.argtypes = (wintypes.HANDLE,)
-            close_handle.restype = wintypes.BOOL
-            close_handle(handle)
+            closer = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+            closer.argtypes = (wintypes.HANDLE,)
+            closer.restype = wintypes.BOOL
+            if not closer(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+        try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        except BaseException as primary:
+            release(close_handle, primary, "CloseHandle")
             raise
-        return os.fdopen(descriptor, "rb", buffering=0)
+        try:
+            return os.fdopen(descriptor, "rb", buffering=0)
+        except BaseException as primary:
+            # The CRT descriptor owns the handle now: close the descriptor, never the handle (no double close).
+            release(lambda: os.close(descriptor), primary, "os.close")
+            raise
     return path.open("rb", buffering=0)
 
 

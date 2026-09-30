@@ -48,8 +48,15 @@ MAX_ENTRIES = 4096
 MAX_TIME_TEXT = 64
 MAX_FIELD_TEXT = 512
 _HEX = frozenset("0123456789abcdef")
-_AGENT_ID = re.compile(r"[a-z][a-z0-9_-]{1,32}")       # the bridge agent-id pattern
-_MEMBER_FOLDS = frozenset(member.casefold() for member in router.MEMBERS)
+_AGENT_ID = re.compile(r"[a-z][a-z0-9_-]{1,32}")       # the bridge agent id (v2 queue AGENT_ID_PATTERN)
+
+
+def _alias_key(agent: str) -> str:
+    """How a spelling could denote a member: case, padding and the '_'/'-' separator do not change the name."""
+    return agent.strip().casefold().replace("_", "-")
+
+
+_MEMBER_FOLDS = frozenset(_alias_key(member) for member in router.MEMBERS)
 
 
 class RoutingLoadError(ValueError):
@@ -130,7 +137,7 @@ def _holders(snapshot: Any, moment: datetime, max_age: int) -> dict[str, int] | 
             # never makes a member busy or idle (RCO2 21:43Z liveness: one such claim no longer blinds W3).
             if type(agent) is not str:
                 return None
-            if agent not in router.MEMBERS and (agent.strip().casefold() in _MEMBER_FOLDS
+            if agent not in router.MEMBERS and (_alias_key(agent) in _MEMBER_FOLDS
                                                 or _AGENT_ID.fullmatch(agent) is None):
                 return None
             if not _text(task_id) or (session is not None and not _text(session)):

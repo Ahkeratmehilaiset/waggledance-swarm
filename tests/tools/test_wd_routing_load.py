@@ -132,6 +132,8 @@ UNKNOWN_SNAPSHOTS = {
     "entry_str_subclass_agent": _snapshot(claims=[_entry(agent=_Str("fable-5"))]),
     "entry_malformed_agent": _snapshot(claims=[_entry(agent="Stranger!")]),
     "entry_upper_member": _snapshot(claims=[_entry(agent="CLAUDE-RCO-2")]),
+    "entry_separator_member_alias": _snapshot(claims=[_entry(agent="claude_rco_2")]),   # never "external"
+    "entry_overlong_external": _snapshot(claims=[_entry(agent="g" + "x" * 33)]),
     "entry_source_mismatch": _snapshot(claims=[_entry(source="pending")]),
     "entry_source_hostile": _snapshot(claims=[_entry(source=_HostileText())]),
     "entry_empty_session": _snapshot(claims=[_entry(owner_session_id="")]),
@@ -293,6 +295,20 @@ def test_an_age_whose_arithmetic_overflows_is_never_fresh_as_the_router_holds(ag
     assert w3.load_blocks(WORKERS, snapshot, NOW, _policy(age)) == {}
     with pytest.raises(OverflowError):
         router._fresh({"observed_utc": "1995-01-01T00:00:00Z"}, router._utc(NOW), age)
+
+
+@pytest.mark.parametrize("age", [10 ** 12, 10 ** 14], ids=["1e12", "1e14"])
+def test_the_actual_router_decide_holds_under_an_overflowing_age_and_w3_never_reads_fresh(age):
+    # Lead 9252bfad: reproduce with the ACTUAL router.decide (its own test builders), not only its _fresh.
+    rt = pytest.importorskip("test_wd_task_router")
+    extreme = rt.policy(max_evidence_age_seconds=age)
+    assert tr_decide_verdict(rt, extreme) == router.HOLD
+    assert tr_decide_verdict(rt, rt.policy()) != router.HOLD                  # twin: the same inputs route
+    assert w3.load_blocks(WORKERS, _snapshot(), NOW, _policy(age)) == {}      # W3 is never fresher than it
+
+
+def tr_decide_verdict(rt, policy: dict) -> str:
+    return router.decide(rt.task(), rt.fleet(), [], policy, rt.NOW)["verdict"]
 
 
 def test_a_well_formed_non_member_holder_is_counted_apart_and_blinds_no_lane():

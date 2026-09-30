@@ -8,6 +8,7 @@ import pytest
 
 from tools import wd_routing_inputs as wi
 from tools.wd_composer_select import digest
+from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS
 from tools.wd_routing_capacity import COMPOSED_SCHEMA, compose
 
 NOW = datetime(2026, 9, 30, 19, 30, tzinfo=timezone.utc)
@@ -199,3 +200,25 @@ def test_sources_for_an_unknown_document_are_refused_whole():
     result = _assemble([_lane("fable-5")], sources={"workers": {"path": "x", "byte_sha256": "b" * 64}})
     assert result["reasons"] == ["sources_malformed"]
     assert all(entry["caller_path"] is None for entry in result["provenance"].values())
+
+
+def test_the_inputs_are_private_copies_that_a_later_caller_change_cannot_reach():
+    task, rows, lanes = _task(), [{"provider": "codex"}], [_lane("fable-5", role={"worker": "fable-5"})]
+    result = _assemble(lanes, task=task, rows=rows)
+    task["scope"].append("repo:tools/y.py")
+    rows[0]["provider"] = "claude"
+    lanes[0]["role"]["worker"] = "claude-rco-1"
+    inputs = result["inputs"]
+    assert (inputs["task"]["scope"], inputs["rows"]) == (["repo:tools/x.py"], [{"provider": "codex"}])
+    assert inputs["workers"][0]["role"] == {"worker": "fable-5"}
+    assert result["provenance"]["task"]["document_digest"] == digest(inputs["task"])
+
+
+def test_the_lane_age_bound_is_the_capacity_adapter_sample_bound():
+    assert wi.MAX_LANE_EVIDENCE_AGE_SECONDS == MAX_SAMPLE_AGE_SECONDS == 900
+
+
+def test_a_document_deepcopy_refuses_is_withheld_not_passed_on_shared():
+    result = _assemble([_lane("fable-5")], rows=(row for row in []))
+    assert (result["inputs"]["rows"], result["reasons"]) == (None, ["document_uncopyable:rows"])
+    assert result["provenance"]["rows"]["document_digest"] == digest(None)

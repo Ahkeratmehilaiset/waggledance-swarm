@@ -15,7 +15,8 @@ What it never does:
 * It never supplies capacity, load or single-flight state: lane evidence carrying any of them is
   malformed. Capacity comes only through compose()'s adapter; reservation state is not assembled here.
 * It never alters the caller's task (id, revision, input digest, scope): the task is handed on as a
-  deep copy and its digest recorded. Grok gets no subject and stays consult-only and unranked; shadow
+  deep copy and its digest recorded. Every document is deep-copied once, so a later change by the
+  caller cannot reach the inputs; a document deepcopy refuses is withheld as uncopyable. Grok gets no subject and stays consult-only and unranked; shadow
   weights are passed through untouched for compose() to keep separate from the ranked order.
 
 Provenance: ``document_digest`` is ``tools.wd_composer_select.digest`` of the parsed document (the
@@ -109,13 +110,13 @@ def _lane(record: Any, now: datetime | None) -> tuple[dict | None, str | None, l
     if "role" in record:
         role = record["role"]
         if type(role) is dict and role.get("worker") == worker:
-            assembled["role"] = copy.deepcopy(role)
+            assembled["role"] = role            # the lanes document is already a private copy
         else:
             reasons.append("role_foreign_or_malformed")
     if "qualification" in record:
         receipts = record["qualification"]
         if type(receipts) is list and all(type(receipt) is dict for receipt in receipts):
-            assembled["qualification"] = copy.deepcopy(receipts)
+            assembled["qualification"] = receipts
         else:
             reasons.append("qualification_malformed")
     return assembled, subject, reasons
@@ -131,7 +132,12 @@ def assemble(task: Any, lanes: Any, rows: Any, paced: Any, prepared_artifacts: A
     documents = {"task": task, "lanes": lanes, "rows": rows, "paced": paced, "signed_policy": signed_policy,
                  "prepared_artifacts": prepared_artifacts, "routing_policy": routing_policy,
                  "shadow_weights": shadow_weights}
-    documents = {name: copy.deepcopy(value) for name, value in documents.items()}
+    for name in DOCUMENTS:      # private copies: a later change by the caller cannot reach the inputs
+        try:
+            documents[name] = copy.deepcopy(documents[name])
+        except Exception:       # not a parsed document; withheld, never passed on shared
+            documents[name] = None
+            reasons.append("document_uncopyable:" + name)
     if documents["signed_policy"] is not None and type(documents["signed_policy"]) is not dict:
         documents["signed_policy"] = None
         reasons.append("signed_policy_malformed")

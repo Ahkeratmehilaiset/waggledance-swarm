@@ -1073,3 +1073,74 @@ def test_base64_survives_windows_powershell_native_argv(tmp_path):
     # Control: the same snapshot as raw JSON argv is mangled by PS5 (usage error
     # or invalid JSON), never the correct decision.
     assert len(lines) == 1 or lines[1]["verdict"] == "unknown"
+
+
+# --- structured holds: a HOLD of the work versus a deployment / final-signature HOLD ------
+
+def held_cp(work_held=False, release_held=True, **kw) -> dict:
+    return dict(cp(**kw), work_held=work_held, release_held=release_held)
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_release_held_preparation_still_self_wakes_as_preparation_only(scope_snap):
+    d = evaluate(scope_snap(checkpoint=held_cp()), NOW)
+    item = only(d, "checkpoint")
+    assert d["verdict"] == "dispatch" and item["verdict"] == "dispatch"
+    assert "release_held_preparation_only" in item["reasons"]
+    assert d["authority"] == "none"
+    due = evaluate(scope_snap(checkpoint=held_cp(next_wakeup="2026-09-28T23:30:00Z",
+                                                 updated="2026-09-28T23:00:00Z")), NOW)
+    assert "checkpoint_wakeup_due" in only(due, "checkpoint")["reasons"]
+    assert "release_held_preparation_only" in only(due, "checkpoint")["reasons"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("release_held", [False, True])
+@pytest.mark.parametrize("updated", ["2026-09-28T21:59:06Z", "2026-09-28T23:55:00Z"])
+def test_work_held_checkpoint_is_hold_never_woken_or_deferred(scope_snap, release_held, updated):
+    d = evaluate(scope_snap(checkpoint=held_cp(True, release_held, updated=updated)), NOW)
+    assert d["verdict"] == "hold"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_work_held"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field,text", [
+    ("blockers", ["ONE final exact-package signature HOLD"]),
+    ("next_action", "Freeze until the final signature"),
+])
+def test_release_held_never_exempts_free_text_control_tokens(scope_snap, field, text):
+    c = held_cp()
+    c[field] = text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+
+
+@pytest.mark.parametrize("case,verdict,reason", [
+    ("live_hold", "hold", "held"), ("paused", "hold", "checkpoint_paused"),
+    ("cancelled", "idle_ok", "checkpoint_cancelled"),
+])
+def test_structured_fields_never_erase_a_live_hold_pause_or_cancel(case, verdict, reason):
+    status = {"paused": "paused", "cancelled": "cancelled"}.get(case, "in_progress")
+    holds = [hold(task_ids=[PKG_TASK])] if case == "live_hold" else []
+    item = only(evaluate(snap(checkpoint=held_cp(status=status), holds=holds), NOW), "checkpoint")
+    assert item["verdict"] == verdict and reason in item["reasons"]
+    assert "release_held_preparation_only" not in item["reasons"]
+
+
+@pytest.mark.parametrize("fields", [
+    {"work_held": False}, {"release_held": True}, {"work_held": 0, "release_held": True},
+    {"work_held": False, "release_held": "true"}, {"work_held": None, "release_held": True},
+])
+def test_hold_fields_are_exact_booleans_declared_together(fields):
+    d = evaluate(snap(checkpoint=dict(cp(), **fields)), NOW)
+    assert d["verdict"] == "unknown" and not d["items"]
+
+
+def test_declared_clear_hold_fields_change_nothing_versus_the_legacy_checkpoint():
+    legacy = evaluate(snap(), NOW)
+    assert evaluate(snap(checkpoint=held_cp(release_held=False)), NOW) == legacy
+    assert legacy["verdict"] == "dispatch"
+    token = dict(cp(), blockers=["HOLD 1549 preserved"])
+    declared = dict(token, work_held=False, release_held=False)
+    assert evaluate(snap(checkpoint=declared), NOW) == evaluate(snap(checkpoint=token), NOW)

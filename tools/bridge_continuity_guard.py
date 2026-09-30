@@ -34,6 +34,14 @@ waited on another lane for hours. The guard therefore fails closed:
   are held and unrecognised statuses are ``unknown``. In either scope, a
   control token in the checkpoint's free text (blockers, next action) means a
   HOLD is possible, so it is ``unknown``.
+* A checkpoint may opt in to structured holds by carrying BOTH ``work_held``
+  and ``release_held`` as exact booleans; one without the other is
+  ``unknown``, and absent fields keep the legacy contract. ``work_held`` is a
+  HOLD of the work itself: never woken, never deferred. ``release_held`` only
+  records a deployment or final-signature HOLD: preparation may still be
+  recovered, and a dispatch then carries ``release_held_preparation_only``
+  (no authority). Neither field clears a live hold, a pause, a cancellation
+  or the control-token scan of the free text.
 """
 from __future__ import annotations
 
@@ -240,6 +248,13 @@ def _validate(snapshot: Any, now: datetime) -> dict:
         }
         if checkpoint["blockers"] is None or not all(isinstance(b, str) for b in checkpoint["blockers"]):
             raise _Invalid("bad_list:checkpoint.blockers")
+        # Opt-in structured holds: both or neither, exact booleans. Absent fields are
+        # never defaulted, so a missing declaration is never read as "not held".
+        hold_keys = [key for key in ("work_held", "release_held") if key in c]
+        if hold_keys and len(hold_keys) != 2:
+            raise _Invalid("bad_hold_fields:checkpoint")
+        for key in ("work_held", "release_held"):
+            checkpoint[key] = _flag(c, key, "checkpoint") if hold_keys else None
 
     claims = []
     for raw in _items(snap, "claims"):
@@ -608,6 +623,9 @@ def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
         refs += [_ref("hold", h, cp["task_id"]) for h in hold_ids]
     elif cp["status"] in PAUSED_STATUSES:
         verdict, reasons = "hold", ["checkpoint_paused"]
+    elif cp["work_held"]:
+        # An explicit HOLD of the work itself: never woken, and never deferred as fresh.
+        verdict, reasons = "hold", ["checkpoint_work_held"]
     elif _alert_gate(snap, cp) and _checkpoint_fresh(cp, now, stale, unbounded) and \
             not (snap["evidence"]["scope"] == "canonical" and not covering and
                  cp["status"].startswith(WAITING_STATUS_PREFIXES)):
@@ -642,6 +660,9 @@ def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
         verdict, reasons = "wait", ["checkpoint_recent"]
     if verdict == "dispatch" and snap["evidence"]["scope"] == "checkpoint_only":
         reasons.append("bounded_reconcile_not_acceptance")
+    if verdict == "dispatch" and cp["release_held"]:
+        # Deployment and final signature stay held: this wake is for preparation only.
+        reasons.append("release_held_preparation_only")
     if verdict == "dispatch":
         # Tell the woken lane exactly which addressed events it never processed.
         refs += [_ref("unprocessed_event", e["event_sha256"], e["task_id"]) for e in unprocessed]

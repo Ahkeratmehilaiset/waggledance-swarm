@@ -9,8 +9,10 @@ Scope stated, not claimed: only this CLI's writer commands participate. Other di
 waggledance.core.work_queue (tools/work_queue_sweep_stale.py --apply archives and unlinks claims without the mutex)
 and the legacy PowerShell writers (Fable's slice) are not covered here, so a complete queue snapshot still cannot
 prove a lane idle. The mutex exists only on Windows; elsewhere nothing is excluded and nothing is claimed. A writer
-given a relative --bridge-root is refused (the mutex name needs the absolute root). run_idle_protocol_once.py
-mutates no claim or done file (pinned below).
+is refused before it writes for any --bridge-root the v2 canonical-root rule refuses (not a local drive-letter path,
+such as a relative, drive- or root-relative, UNC or device form; a .. or alias segment; an alternate stream; a link
+or reparse point on the path), since the mutex is named from that canonical root; the relative case is pinned
+below. run_idle_protocol_once.py mutates no claim or done file (pinned below).
 """
 from __future__ import annotations
 

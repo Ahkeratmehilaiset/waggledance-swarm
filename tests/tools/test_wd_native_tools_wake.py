@@ -1,10 +1,12 @@
 """Native terminal bridge delivery preserves wakes without overlapping sessions."""
+import base64
 import json
 import hashlib
 import os
 import shutil
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -733,19 +735,74 @@ function Send-WdNativeToolsQueueMessage {param($CliPath,$ThreadId,$Message,$Work
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['idle', 'accepted', 'new_wake', 'failed', 'uncertain', 'foreign', 'orphan', 'debounce'])
+@pytest.mark.parametrize('case', ['idle', 'accepted', 'new_wake', 'failed', 'uncertain', 'foreign', 'orphan', 'debounce',
+                                  'outstanding', 'outstanding_old', 'consumed', 'foreign_receipt', 'legacy',
+                                  'rejected', 'rejected_retry', 'rejected_backoff', 'miscased_receipt',
+                                  'linked_receipt', 'oversized_receipt', 'stale_receipt', 'cached_then_consumed'])
 def test_native_wake_delivery_and_crash_boundaries(tmp_path, ps, case):
     state_path = tmp_path / 'native-bridge-wake.json'
     wake = tmp_path / 'wake_codex-tools-1'
     snapshot = Path(str(state_path) + '.wake')
+    owned = '5' * 32  # an attempt-bound snapshot id (RCO1 c97)
+    named = Path(str(state_path) + '.wake.' + owned)
     if case != 'idle':
         wake.write_text('wake before delivery')
-    if case in ('uncertain', 'foreign', 'debounce'):
-        state = dict(schema='wd.native-tools-wake.v1', status='submitting' if case == 'uncertain' else 'queued',
-                     thread_id=THREAD if case != 'foreign' else 'other-thread', updated_at_utc='2099-01-01T00:00:00Z')
+    ago = dict(outstanding=60, outstanding_old=600, consumed=60, foreign_receipt=60, legacy=60,
+               rejected_retry=60, rejected_backoff=5, miscased_receipt=60, linked_receipt=60, oversized_receipt=60,
+               stale_receipt=60, cached_then_consumed=60)
+    delivery = '0123456789abcdef' * 2
+    if case in ('uncertain', 'foreign', 'debounce') or case in ago:
+        stamp = ((datetime.now(timezone.utc) - timedelta(seconds=ago[case])).isoformat() if case in ago
+                 else '2099-01-01T00:00:00Z')
+        status = 'submitting' if case == 'uncertain' else 'rejected' if case.startswith('rejected_') else 'queued'
+        state = dict(schema='wd.native-tools-wake.v1', status=status, rejections=1, delivery_id=delivery,
+                     thread_id=THREAD if case != 'foreign' else 'other-thread', updated_at_utc=stamp)
+        if case != 'legacy':
+            state['receipt'] = 'model_turn_started'
+        if case.startswith('rejected_'):
+            state['snapshot_id'] = owned
         state_path.write_text(json.dumps(state))
-    if case in ('uncertain', 'orphan'):
+    if case in ('uncertain', 'orphan'):  # a fixed-name snapshot: submitting or no record, both blocked
         snapshot.write_text('evidence')
+    if case in ('rejected_retry', 'rejected_backoff'):
+        named.write_text('evidence')
+    # Only the woken conversation's own receipt for the outstanding delivery releases the hold.
+    receipts = dict(
+        consumed=[('model_turn_started', 'codex-tools-1', delivery, 'agent_reported')],
+        foreign_receipt=[('relay_enqueued', 'codex-tools-1', delivery, 'runtime_observed'),
+                         ('model_turn_started', 'codex-tools-1', 'f' * 32, 'agent_reported'),
+                         ('model_turn_started', 'codex-lead-1', delivery, 'agent_reported')],
+        outstanding_old=[('model_turn_started', 'codex-tools-1', delivery, 'runtime_observed')],
+        # Links, mis-cased keys, oversized or stale files never count; a cached miss never hides a later receipt.
+        **{name: [('model_turn_started', 'codex-tools-1', delivery, 'agent_reported')]
+           for name in ('miscased_receipt', 'linked_receipt', 'oversized_receipt', 'stale_receipt')},
+        cached_then_consumed=[('model_turn_started', 'codex-lead-1', delivery, 'agent_reported')])
+    telemetry = tmp_path / 'shared' / 'telemetry'
+    for index, (stage, target, delivery_id, source) in enumerate(receipts.get(case, [])):
+        telemetry.mkdir(parents=True, exist_ok=True)
+        (telemetry / f'stage-{index:032x}.json').write_text(json.dumps(dict(
+            schema='wd.bridge-stage.v1', stage=stage, target=target, delivery_id=delivery_id,
+            observation_source=source)))
+    first_receipt = telemetry / ('stage-' + '0' * 32 + '.json')
+    late_receipt = json.dumps(dict(schema='wd.bridge-stage.v1', stage='model_turn_started', target='codex-tools-1',
+                                   delivery_id=delivery, observation_source='agent_reported'))
+    if case == 'miscased_receipt':
+        first_receipt.write_text(first_receipt.read_text().replace('"delivery_id"', '"Delivery_Id"'))
+    if case == 'oversized_receipt':
+        first_receipt.write_text(json.dumps(dict(json.loads(first_receipt.read_text()), pad='x' * 65536)))
+    if case == 'stale_receipt':
+        old = (datetime.now(timezone.utc) - timedelta(seconds=600)).timestamp()
+        os.utime(first_receipt, (old, old))
+    if case == 'linked_receipt':
+        target = first_receipt.replace(tmp_path / 'receipt-target.json')
+        try:
+            os.symlink(target, first_receipt)
+        except OSError:
+            pytest.skip('creating a symbolic link needs a privilege this host lacks')
+    if case == 'outstanding_old':
+        # A lane checkpoint write is not consumption.
+        (tmp_path / '.codex-audit').mkdir(exist_ok=True)
+        (tmp_path / '.codex-audit' / 'wd-current-state.json').write_text('{}')
     script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
@@ -762,30 +819,287 @@ function Send-WdNativeToolsQueueMessage {{
  if($ThreadId -cne '{THREAD}' -or $Message -notmatch 'WAKE_PROCEDURE_TOOLS.md') {{throw 'bad routing'}}
  if('{case}' -eq 'new_wake') {{[IO.File]::WriteAllText({q(wake)},'new concurrent wake')}}
  if('{case}' -eq 'failed') {{throw 'uncertain queue failure'}}
+ if('{case}' -eq 'rejected') {{throw 'Codex queue rejected the submission; nothing was queued: Error: failed to queue session message: thread/queue/add failed: queue cannot contain more than 100 submissions (code -32600)'}}
  return '01a0adff-4558-7e80-8936-6aad0d6df821'
 }}
 try {{
+ if('{case}' -eq 'cached_then_consumed') {{
+  $first=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+  -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
+  if($first -cne 'outstanding' -or $script:calls) {{throw ('first poll ' + $first)}}
+  [IO.File]::WriteAllText({q(telemetry / ('stage-' + 'f' * 32 + '.json'))},{q(late_receipt)})
+ }}
  $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
  -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
  @{{ok=$true;result=$result;calls=$script:calls}}|ConvertTo-Json
 }} catch {{ @{{ok=$false;error=$_.Exception.Message;calls=$script:calls}}|ConvertTo-Json }}
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
-    assert result['ok'] == (case in ('idle', 'accepted', 'new_wake', 'debounce')), result
-    assert result['calls'] == (1 if case in ('accepted', 'new_wake', 'failed') else 0)
-    if case in ('accepted', 'new_wake'):
+    delivered = ('accepted', 'new_wake', 'consumed', 'legacy', 'rejected_retry', 'cached_then_consumed')
+    held = ('outstanding', 'outstanding_old', 'foreign_receipt', 'miscased_receipt', 'linked_receipt',
+            'oversized_receipt', 'stale_receipt')
+    assert result['ok'] == (case not in ('failed', 'uncertain', 'foreign', 'orphan', 'rejected')), result
+    assert result['calls'] == (1 if case in delivered + ('failed', 'rejected') else 0)
+    if case in delivered:
         state = json.loads(state_path.read_text(encoding='utf-8-sig'))
         assert state['status'] == 'queued' and state['thread_id'] == THREAD
-        assert state['task_completion_verified'] is False
-        assert not snapshot.exists()
-        assert wake.exists() == (case == 'new_wake')
+        assert state['task_completion_verified'] is False and state['receipt'] == 'model_turn_started'
+        assert len(state['delivery_id']) == 32 and state['delivery_id'] != delivery
+        assert not snapshot.exists() and not list(tmp_path.glob('native-bridge-wake.json.wake.*'))
+        assert wake.exists() == (case in ('new_wake', 'rejected_retry'))
+    if case in held:
+        state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+        assert result['result'] == 'outstanding' and wake.read_text() == 'wake before delivery'
+        assert state['status'] == 'queued' and state['delivery_id'] == delivery and not snapshot.exists()
     if case == 'failed':
-        assert snapshot.exists() and not wake.exists()
+        assert len(list(tmp_path.glob('native-bridge-wake.json.wake.*'))) == 1 and not wake.exists()
         assert json.loads(state_path.read_text(encoding='utf-8-sig'))['status'] == 'submitting'
+    if case == 'rejected':  # a refusal message without the completed call's evidence stays unresolved
+        state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+        (moved,) = tmp_path.glob('native-bridge-wake.json.wake.*')
+        assert state['status'] == 'submitting' and moved.name.endswith('.' + state['snapshot_id'])
+        assert moved.read_text() == 'wake before delivery' and not wake.exists()
+    if case == 'rejected_backoff':
+        assert result['result'] == 'rejected_backoff' and wake.exists() and named.read_text() == 'evidence'
     if case in ('uncertain', 'orphan'):
         assert snapshot.read_text() == 'evidence' and wake.exists()
     if case in ('foreign', 'debounce'):
         assert wake.exists()
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['receipt_then_state', 'crash_after_receipt', 'no_evidence', 'ambiguous_evidence', 'ambiguous'])
+def test_only_a_reclassified_completed_refusal_writes_a_receipt_and_rejected(tmp_path, ps, case):
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('wake before delivery')
+    refusal = ('Error: failed to queue session message: thread/queue/add failed: '
+               'queue cannot contain more than 100 submissions (code -32600)')
+    source = TOOLS.read_text(encoding='utf-8')
+    start = source.index('    function Get-WdNativeQueueOutcome {')
+    classifier = source[start:source.index('\n    }\n', start) + 6]  # the real nested classifier the Step re-reads
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += load(TOOLS, 'Get-WdVerifiedNativeWakeMessage')
+    script += load(TOOLS, 'Get-WdInlineNativeWakeMessage')
+    from test_wd_native_wake_prompt import relay_bundle_setup
+    script += relay_bundle_setup(tmp_path)
+    stdout = 'noise' if case == 'ambiguous_evidence' else ''
+    script += f"""
+$real=${{function:Write-WdTurnJson}}
+$script:atWrite=-1
+function Write-WdTurnJson {{
+ if($args[1].status -ceq 'rejected') {{
+  $script:atWrite=@([IO.Directory]::GetFiles({q(tmp_path)},'native-bridge-wake.json.refusal-*')).Count
+  if('{case}' -eq 'crash_after_receipt') {{throw 'simulated crash before the rejected state'}}
+ }}
+ & $real @args
+}}
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+{classifier}
+ if('{case}' -eq 'ambiguous') {{throw 'Codex queue did not confirm exact-thread delivery: {refusal}'}}
+ $refusal=[InvalidOperationException]::new('Codex queue rejected the submission; nothing was queued: {refusal}')
+ if('{case}' -ne 'no_evidence') {{$refusal.Data['wd_exit_code']=1;$refusal.Data['wd_stdout']='{stdout}';$refusal.Data['wd_stderr']='{refusal}'+[char]10}}
+ throw $refusal
+}}
+try {{
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
+ @{{ok=$true;result=$result;at_write=$script:atWrite}}|ConvertTo-Json
+}} catch {{ @{{ok=$false;error=$_.Exception.Message;at_write=$script:atWrite}}|ConvertTo-Json }}
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+    receipts = sorted(tmp_path.glob('native-bridge-wake.json.refusal-*'))
+    (named,) = tmp_path.glob('native-bridge-wake.json.wake.*')
+    assert named.name == 'native-bridge-wake.json.wake.' + state['snapshot_id'] and not wake.exists()
+    assert named.read_text() == 'wake before delivery'  # the claimed wake is kept byte-exact in every case
+    if case in ('ambiguous', 'no_evidence', 'ambiguous_evidence'):  # never a refusal: submitting, no receipt, no retry
+        assert not result['ok'] and state['status'] == 'submitting' and not receipts and result['at_write'] == -1
+    elif case == 'crash_after_receipt':
+        assert not result['ok'] and state['status'] == 'submitting' and len(receipts) == 1
+        assert receipts[0].name == 'native-bridge-wake.json.refusal-' + state['delivery_id']
+        receipt = json.loads(receipts[0].read_text(encoding='utf-8'))
+        assert {key: receipt[key] for key in ('schema', 'agent', 'thread_id', 'generation', 'native_pid', 'delivery_id',
+                                              'snapshot_id', 'outcome', 'exit_code', 'stdout', 'stderr', 'code', 'cap')} == dict(
+            schema='wd.native-queue-refusal.v1', agent='codex-tools-1', thread_id=THREAD, generation='pinned',
+            native_pid=123, delivery_id=state['delivery_id'], snapshot_id=state['snapshot_id'], outcome='rejected',
+            exit_code=1, stdout='', stderr=refusal + '\n', code=-32600, cap=100)
+        assert receipt['relay_pid'] == state['relay_pid'] and receipt['completed_at_utc']
+        assert receipt['stderr_sha256'] == hashlib.sha256((refusal + '\n').encode()).hexdigest().upper()
+        assert receipt['stdout_sha256'] == hashlib.sha256(b'').hexdigest().upper()
+    else:  # the rejected state now holds the refusal and keeps the named snapshot for the relay retry
+        assert result['ok'] and result['result'] == 'rejected' and state['status'] == 'rejected'
+        assert result['at_write'] == 1 and not receipts and state['rejections'] == 1
+
+
+C97 = {'crash_after_claim': (True, 'queued', 1), 'crash_after_move': (True, 'queued', 1),
+       'crash_after_move_new_wake': (True, 'queued', 1), 'claiming_nothing': (True, 'idle', 0),
+       'crash_after_submitting': (False, 'unresolved', 0), 'confirmed_cleared': (True, 'queued', 1),
+       'identical_bytes_unowned': (False, 'Unowned native bridge wake snapshot', 0), 'legacy_queued_fixed': (True, 'queued', 1),
+       'legacy_fixed_other': (False, 'Legacy native bridge wake snapshot', 0),
+       'orphan_named': (False, 'Unowned native bridge wake snapshot', 0),
+       'claiming_without_id': (False, 'claim has no snapshot id', 0), 'rejected_owned_retry': (True, 'queued', 1),
+       'move_blocked': (True, 'retry_snapshot', 0), 'watching_owned': (False, 'unexpected status', 0)}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', sorted(C97))
+def test_named_snapshot_crash_twins(tmp_path, ps, case):
+    # RCO1 c97 twins: each writes the on-disk state a crash leaves, then runs ONE step.
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    w, x = '5' * 32, '6' * 32
+    owned = Path(str(state_path) + '.wake.' + w)
+    old_delivery = '0123456789abcdef' * 2
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+
+    def record(status, **extra):
+        fields = dict(schema='wd.native-tools-wake.v1', status=status, thread_id=THREAD,
+                      agent='codex-tools-1', delivery_id=old_delivery, queue_id='', rejections=0,
+                      updated_at_utc=stamp)
+        fields.update(extra)
+        state_path.write_text(json.dumps(fields))
+
+    if case in ('crash_after_claim', 'move_blocked'):
+        record('claiming', snapshot_id=w)
+        wake.write_text('claimed wake')
+    elif case in ('crash_after_move', 'crash_after_move_new_wake'):
+        record('claiming', snapshot_id=w)
+        owned.write_text('claimed wake')
+        if case.endswith('new_wake'):
+            wake.write_text('newer wake')
+    elif case == 'claiming_nothing':
+        record('claiming', snapshot_id=w)
+    elif case == 'crash_after_submitting':
+        record('submitting', snapshot_id=w)
+        owned.write_text('claimed wake')
+    elif case == 'confirmed_cleared':
+        record('queued', snapshot_id=w, receipt='model_turn_started')
+        owned.write_text('delivered wake')
+        wake.write_text('next wake')
+        telemetry = tmp_path / 'shared' / 'telemetry'
+        telemetry.mkdir(parents=True)
+        (telemetry / ('stage-' + '0' * 32 + '.json')).write_text(json.dumps(dict(
+            schema='wd.bridge-stage.v1', stage='model_turn_started', target='codex-tools-1', delivery_id=old_delivery,
+            observation_source='agent_reported')))
+    elif case == 'identical_bytes_unowned':
+        record('queued', snapshot_id=w, receipt='model_turn_started')
+        Path(str(state_path) + '.wake.' + x).write_text('delivered wake')
+    elif case == 'legacy_queued_fixed':
+        record('queued')
+        Path(str(state_path) + '.wake').write_text('legacy wake')
+        wake.write_text('next wake')
+    elif case == 'legacy_fixed_other':
+        record('rejected', rejections=1)
+        Path(str(state_path) + '.wake').write_text('legacy wake')
+    elif case == 'orphan_named':
+        owned.write_text('orphan wake')
+    elif case == 'claiming_without_id':
+        record('claiming')
+        wake.write_text('wake')
+    elif case == 'rejected_owned_retry':
+        record('rejected', snapshot_id=w, rejections=1)
+        owned.write_text('refused wake')
+        wake.write_text('newer wake')
+    else:  # watching_owned: a new claim would strand the owned file (RCO1 preflight rule)
+        record('watching', snapshot_id=w)
+        owned.write_text('claimed wake')
+        wake.write_text('newer wake')
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += load(TOOLS, 'Get-WdVerifiedNativeWakeMessage')
+    script += load(TOOLS, 'Get-WdInlineNativeWakeMessage')
+    from test_wd_native_wake_prompt import relay_bundle_setup
+    script += relay_bundle_setup(tmp_path)
+    script += f"""
+$script:calls=0
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ $script:calls++
+ return '01a0adff-4558-7e80-8936-6aad0d6df821'
+}}
+try {{
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123
+ @{{ok=$true;result=$result;calls=$script:calls}}|ConvertTo-Json
+}} catch {{ @{{ok=$false;result=$_.Exception.Message;calls=$script:calls}}|ConvertTo-Json }}
+"""
+    if case == 'move_blocked':
+        with wake.open('rb'):  # a watcher holding the wake file without delete sharing
+            result = json.loads(_run_powershell(script, executable=ps).stdout)
+    else:
+        result = json.loads(_run_powershell(script, executable=ps).stdout)
+    ok, outcome, calls = C97[case]
+    assert (result['ok'], result['calls']) == (ok, calls) and outcome in result['result'], result
+    after = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    if not ok or case in ('claiming_nothing', 'move_blocked'):
+        assert after == before  # every refusal, idle step and retryable move leaves the bytes exactly as found
+        return
+    state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+    named = [path.name for path in tmp_path.glob('native-bridge-wake.json.wake.*') if '.wake.legacy-' not in path.name]
+    assert state['status'] == 'queued' and state['delivery_id'] != old_delivery and not named
+    if case in ('crash_after_claim', 'crash_after_move', 'crash_after_move_new_wake', 'rejected_owned_retry'):
+        assert state['snapshot_id'] == w  # the claimed or refused wake itself was sent, never a new claim
+    else:
+        assert state['snapshot_id'] not in ('', w)
+    if case in ('crash_after_move_new_wake', 'rejected_owned_retry'):
+        assert wake.read_text() == 'newer wake'  # a newer wake is not consumed by this send
+    if case == 'legacy_queued_fixed':
+        (kept,) = tmp_path.glob('native-bridge-wake.json.wake.legacy-*')
+        assert kept.read_bytes() == before['native-bridge-wake.json.wake']  # set aside byte-exact, never sent
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_queue_outcome_classifier_is_exact(ps):
+    # Pure fixtures for the nested classifier: no fake executable, process or queue call.
+    refusal = ('Error: failed to queue session message: thread/queue/add failed: queue cannot contain more than'
+               ' 100 submissions (code -32600)')
+    queued = f'Queued message 01a0adff-4558-7e80-8936-6aad0d6df821 for thread {THREAD}.\n'
+    cases = dict(
+        queued=(0, queued, '', 'queued'),
+        queued_other_thread=(0, queued.replace(THREAD, 'other-thread'), '', 'ambiguous'),
+        queued_nonzero_exit=(1, queued, '', 'ambiguous'),
+        refusal_lf=(1, ' \n', refusal + '\n', 'rejected'),
+        refusal_crlf=(1, '', refusal + '\r\n', 'rejected'),
+        near_miss_code=(1, '', refusal.replace('-32600', '-32601') + '\n', 'ambiguous'),
+        embedded=(1, '', 'warning: retrying\n' + refusal + '\n', 'ambiguous'),
+        quoted=(1, '', "'" + refusal + "'\n", 'ambiguous'),
+        trailing_text=(1, '', refusal + ' (retry later)\n', 'ambiguous'),
+        stdout_noise=(1, 'partial output\n', refusal + '\n', 'ambiguous'),
+        exit_zero=(0, '', refusal + '\n', 'ambiguous'),
+    )
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + load(TOOLS, 'Get-WdNativeQueueOutcome')
+    script += ("function Get-FixtureText($Value) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value)) }\n"
+               "$outcomes=[ordered]@{}\n")
+    for name, (code, out, err, _) in cases.items():
+        stdout, stderr = (base64.b64encode(text.encode('utf-8')).decode('ascii') for text in (out, err))
+        script += (f"$r=Get-WdNativeQueueOutcome -ExitCode {code} -Stdout (Get-FixtureText '{stdout}')"
+                   f" -Stderr (Get-FixtureText '{stderr}') -ThreadId '{THREAD}'\n"
+                   f"$outcomes['{name}']=$r.outcome + '|' + $r.queue_id\n")
+    script += "$outcomes | ConvertTo-Json\n"
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    for name, (_, _, _, expected) in cases.items():
+        queue_id = '01a0adff-4558-7e80-8936-6aad0d6df821' if expected == 'queued' else ''
+        assert result[name] == expected + '|' + queue_id, (name, result)
+
+
+def test_wake_procedures_and_fallback_require_the_exact_consumption_receipt():
+    source = TOOLS.read_text(encoding='utf-8')
+    for agent, procedure in (('codex-tools-1', 'WAKE_PROCEDURE_TOOLS.md'), ('codex-lead-1', 'WAKE_PROCEDURE_LEAD.md')):
+        command = ('Write-BridgeStageObservation -BridgeRoot $env:AGENT_BRIDGE_RUNTIME_ROOT -Stage model_turn_started'
+                   f' -Target {agent} -DeliveryId')
+        assert command + ' <current delivery_id>.' in (REBOOT / procedure).read_text(encoding='utf-8')
+        assert command + " ' + $deliveryId + '. ' +" in source
+    step = source[source.index('function Invoke-WdNativeToolsWakeStep'):]
+    assert "(& $value 'observation_source') -ceq 'agent_reported'" in step
+    assert "return 'outstanding'" in step
 
 
 def test_native_relay_uses_queue_and_lifetime_lock_without_focus_or_second_resume():

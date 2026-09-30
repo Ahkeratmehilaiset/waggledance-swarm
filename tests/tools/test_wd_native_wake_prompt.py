@@ -267,6 +267,10 @@ try {{
    $saved=Get-Content -LiteralPath {q(state)} -Raw | ConvertFrom-Json
    $saved.updated_at_utc='2026-01-01T00:00:00Z'
    Write-WdTurnJson {q(state)} $saved
+   # Only the woken conversation's exact receipt for the queued delivery releases the next add.
+   $receipts={q(tmp_path / 'shared' / 'telemetry')}
+   [void][IO.Directory]::CreateDirectory($receipts)
+   [IO.File]::WriteAllText((Join-Path $receipts ('stage-' + $attempt + '.json')),(@{{schema='wd.bridge-stage.v1';stage='model_turn_started';target='codex-lead-1';delivery_id=[string]$saved.delivery_id;observation_source='agent_reported'}}|ConvertTo-Json -Compress))
    [IO.File]::WriteAllText({q(wake)},'next event')
    $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session
   }}

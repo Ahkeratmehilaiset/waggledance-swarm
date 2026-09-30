@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+import tools.wd_routing_capacity as rc
+import tools.wd_task_router as tr
 from tools import wd_routing_inputs as wi
 from tools.wd_composer_select import digest
-from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS
+from tools.wd_capacity_pacing import MAX_SAMPLE_AGE_SECONDS, pace_windows
 from tools.wd_routing_capacity import COMPOSED_SCHEMA, compose
 
 NOW = datetime(2026, 9, 30, 19, 30, tzinfo=timezone.utc)
@@ -287,3 +289,183 @@ def test_grok_never_carries_a_role_or_qualification_into_the_inputs():
     assert set(grok) == {"schema", "worker", "kind", "profile_id"} and grok["worker"] == "grok"
     assert result["unknown"] == [{"index": 0, "worker": "grok",
                                   "reasons": ["grok_role_refused", "grok_qualification_refused"]}]
+
+
+# --- provider-typed subjects (Lead 21:09:28Z): the pool-binding grammar; compose binds the provider ---------------
+HEX_SUBJECT = "a" * 64
+SESSION = "sess-claude-1"
+CODEX_SUBJECT = {"kind": "auth_context", "id": HEX_SUBJECT}      # the pool-binding receipt's subject shape
+CLAUDE_SUBJECT = {"kind": "native_session", "id": SESSION}
+PROVIDER_BOUND_COMPOSE = "profile_providers" in rc.POLICY_KEYS    # the frozen V3 compose (a132ebba)
+
+
+@pytest.mark.parametrize("subject", [CODEX_SUBJECT, CLAUDE_SUBJECT, {"kind": "native_session", "id": HEX_SUBJECT}],
+                         ids=["codex", "claude", "claude-hex-session"])
+def test_a_typed_subject_in_the_pool_binding_grammar_is_carried_as_a_fresh_exact_copy(subject):
+    lanes = [_lane("fable-5", subject=subject)]
+    result = _assemble(lanes)
+    assert result["unknown"] == [] and result["inputs"]["subjects"] == {"fable-5": subject}
+    carried = result["inputs"]["subjects"]["fable-5"]
+    assert type(carried) is dict and [type(carried["kind"]), type(carried["id"])] == [str, str]
+    assert carried is not subject and carried is not lanes[0]["subject"]
+
+
+TYPED_MALFORMED = [
+    ("kind_unknown", {"kind": "account", "id": HEX_SUBJECT}),
+    ("kind_is_the_provider", {"kind": "codex", "id": HEX_SUBJECT}),
+    ("kind_case_variant", {"kind": "Auth_Context", "id": HEX_SUBJECT}),
+    ("key_case_variant", {"Kind": "auth_context", "id": HEX_SUBJECT}),
+    ("extra_key", {**CODEX_SUBJECT, "provider": "codex"}),
+    ("missing_id", {"kind": "auth_context"}),
+    ("empty", {}),
+    ("hex_uppercase", {"kind": "auth_context", "id": "A" * 64}),
+    ("hex_short", {"kind": "auth_context", "id": "a" * 63}),
+    ("hex_kind_with_a_session_id", {"kind": "auth_context", "id": SESSION}),
+    ("hex_trailing_newline", {"kind": "auth_context", "id": HEX_SUBJECT + "\n"}),
+    ("session_bad_character", {"kind": "native_session", "id": "sess claude"}),
+    ("session_leading_separator", {"kind": "native_session", "id": "-sess"}),
+    ("session_too_long", {"kind": "native_session", "id": "s" * 129}),
+    ("session_empty", {"kind": "native_session", "id": ""}),
+    ("id_not_text", {"kind": "auth_context", "id": 7}),
+    ("kind_not_text", {"kind": ["auth_context"], "id": HEX_SUBJECT}),
+]
+
+
+@pytest.mark.parametrize("subject", [case[1] for case in TYPED_MALFORMED], ids=[case[0] for case in TYPED_MALFORMED])
+def test_a_malformed_typed_subject_withholds_the_lane_whole(subject):
+    result = _assemble([_lane("fable-5", subject=subject)])
+    assert (result["inputs"]["workers"], result["inputs"]["subjects"]) == ([], {})
+    assert result["unknown"] == [{"index": 0, "worker": "fable-5", "reasons": ["subject_malformed"]}]
+
+
+def test_the_longest_session_id_the_grammar_admits_is_carried():
+    subject = {"kind": "native_session", "id": "s" * 128}
+    assert _assemble([_lane("fable-5", subject=subject)])["inputs"]["subjects"] == {"fable-5": subject}
+
+
+def test_grok_never_carries_a_typed_subject():
+    result = _assemble([_lane(wi.GROK, subject=CODEX_SUBJECT, kind=wi.GROK, profile="grok-4.7")])
+    assert result["unknown"][0]["reasons"] == ["grok_subject_refused"] and result["inputs"]["subjects"] == {}
+
+
+class _Text(str):
+    pass
+
+
+class _Map(dict):
+    pass
+
+
+@pytest.mark.parametrize("subject", [_Map(CODEX_SUBJECT), {"kind": _Text("auth_context"), "id": HEX_SUBJECT},
+                                     {"kind": "auth_context", "id": _Text(HEX_SUBJECT)}],
+                         ids=["dict-subclass", "kind-subclass", "id-subclass"])
+def test_the_grammar_takes_exact_types_and_assemble_hands_on_only_plain_json_types(subject):
+    assert wi._typed_subject(subject) is None       # exact types, as compose's own _subject
+    carried = _assemble([_lane("fable-5", subject=subject)])["inputs"]["subjects"]["fable-5"]
+    assert carried == CODEX_SUBJECT and type(carried) is dict   # the canonical copy left no subclass to carry
+    assert [type(carried["kind"]), type(carried["id"])] == [str, str]
+
+
+def test_one_subject_object_shared_by_two_lanes_gives_two_private_copies():
+    shared = dict(CODEX_SUBJECT)
+    result = _assemble([_lane("fable-5", subject=shared), _lane("claude-rco-1", subject=shared)])
+    subjects = result["inputs"]["subjects"]
+    assert subjects["fable-5"] is not subjects["claude-rco-1"]
+    assert all(value is not shared for value in subjects.values())
+    shared["id"] = "b" * 64
+    subjects["fable-5"]["id"] = "c" * 64
+    assert subjects["claude-rco-1"] == CODEX_SUBJECT
+
+
+def _routed_lane(worker, profile, subject):
+    stamp = (NOW - timedelta(minutes=1)).isoformat()
+    return _lane(worker, subject=subject, profile=profile,
+                 role={"worker": worker, "roles": ["producer"], "verified": True, "observed_utc": stamp},
+                 qualification=[{"task_class": "implementation", "profile_id": profile, "qualified": True,
+                                 "observed_utc": stamp, "valid_until_utc": (NOW + timedelta(days=1)).isoformat(),
+                                 "receipt_sha256": "d" * 64}])
+
+
+def _twin_documents():
+    """The caller's evidence for compose: rows, pacing and the signed provider policy (all caller-supplied)."""
+    reset = {name: int((NOW + delta).timestamp()) for name, delta in (
+        ("primary", timedelta(hours=3)), ("secondary", timedelta(days=4)),
+        ("five_hour", timedelta(hours=2)), ("seven_day", timedelta(days=5)))}
+    binding = {"receipt_id": "b" * 32, "receipt_sha256": "c" * 64, "provenance_kind": "operator_reading",
+               "expires_at_utc": (NOW + timedelta(hours=12)).isoformat()}
+    observed = (NOW - timedelta(seconds=30)).isoformat()
+    codex_row = {"schema": "wd.capacity-observation.v1", "provider": "codex", "observed_at": observed,
+                 "auth_context_id": HEX_SUBJECT, "account_pool": "codex-pro-a",
+                 "pool_identity_state": "verified_binding", "pool_binding": binding, "freshness": "fresh",
+                 "execution_allowed": False,
+                 "payload": {"rateLimits": {"limitId": "codex",
+                                            "primary": {"usedPercent": 31.0, "resetsAt": reset["primary"],
+                                                        "windowDurationMins": 300},
+                                            "secondary": {"usedPercent": 20.1, "resetsAt": reset["secondary"],
+                                                          "windowDurationMins": 10080}}}}
+    claude_row = {"schema": "wd.capacity-observation.v1", "provider": "claude", "source_ref": "claude:statusline",
+                  "observed_at": observed, "native_thread_id": SESSION, "account_pool": "claude-max-a",
+                  "pool_identity_state": "verified_binding", "pool_binding": binding,
+                  "freshness": "provider_timestamp_unknown", "execution_allowed": False,
+                  "payload": {"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": reset["five_hour"]},
+                                              "seven_day": {"used_percentage": 30, "resets_at": reset["seven_day"]}}}}
+    samples = []
+    for provider, window, first, last, duration in (("codex", "primary", 30.0, 31.0, 300),
+                                                     ("codex", "secondary", 20.0, 20.1, 10080),
+                                                     ("claude", "five_hour", 11.0, 12.0, 300),
+                                                     ("claude", "seven_day", 29.9, 30.0, 10080)):
+        for used, age in ((first, 41), (last, 1)):
+            samples.append({"provider": provider, "limit_id": provider, "window": window, "used_percent": used,
+                            "resets_at": float(reset[window]), "duration_minutes": duration,
+                            "observed_at": NOW - timedelta(minutes=age)})
+    body = {"schema": rc.POLICY_SCHEMA, "max_observation_age_seconds": 300,
+            "accepted_freshness": {"codex": ["fresh"], "claude": ["fresh", "provider_timestamp_unknown"]},
+            "pools": {"codex-pro-a": {"billing": "included", "mode": "normal"},
+                      "claude-max-a": {"billing": "included", "mode": "normal"}},
+            "profile_providers": {"codex-sol-high": "codex", "claude-strong": "claude"}}
+    routing = {"schema": tr.POLICY_SCHEMA, "max_evidence_age_seconds": 900, "budget_mode": "steady",
+               "class_roles": {c: ["producer"] for c in tr.TASK_CLASSES},
+               "class_profiles": {c: ["codex-sol-high", "claude-strong"] for c in tr.TASK_CLASSES}}
+    return {"rows": [claude_row, codex_row], "paced": pace_windows(samples, now=NOW),
+            "signed_policy": {"policy": body, "sha256": digest(body)}, "routing_policy": routing}
+
+
+def _twin(lane):
+    result = _assemble([lane], **_twin_documents())
+    for worker in result["inputs"]["workers"]:      # the caller's load evidence: W3's, never assembled here
+        worker["load"] = {"state": "idle", "observed_utc": (NOW - timedelta(minutes=1)).isoformat()}
+    return result, compose(**result["inputs"], now=NOW)
+
+
+@pytest.mark.skipif(not PROVIDER_BOUND_COMPOSE, reason="needs the frozen V3 compose (a132ebba) that Lead composes")
+@pytest.mark.parametrize("worker, profile, subject, pool", [
+    ("codex-tools-1", "codex-sol-high", CODEX_SUBJECT, "codex-pro-a"),
+    ("fable-5", "claude-strong", CLAUDE_SUBJECT, "claude-max-a"),
+], ids=["codex", "claude"])
+def test_an_assembled_typed_subject_routes_through_compose_on_its_own_providers_row(worker, profile, subject, pool):
+    result, composed = _twin(_routed_lane(worker, profile, subject))
+    assert result["reasons"] == [] and result["unknown"] == []
+    assert (composed["advice"]["verdict"], composed["advice"]["recommended"]["worker"]) == (tr.ROUTE, worker)
+    [record] = composed["capacity"]
+    assert (record["verdict"], record["capacity"]["pool"], record["profile_id"]) == ("known", pool, profile)
+
+
+@pytest.mark.skipif(not PROVIDER_BOUND_COMPOSE, reason="needs the frozen V3 compose (a132ebba) that Lead composes")
+@pytest.mark.parametrize("subject, reasons", [
+    (CLAUDE_SUBJECT, ["provider_mismatch"]),        # a Codex-signed profile with a Claude session subject
+    (HEX_SUBJECT, ["subject_unbound"]),             # a text subject stays representable, never bound capacity
+    (SESSION, ["subject_unbound"]),
+], ids=["cross-provider", "text-hex", "text-session"])
+def test_a_cross_provider_or_text_subject_never_becomes_capacity(subject, reasons):
+    result, composed = _twin(_routed_lane("codex-tools-1", "codex-sol-high", subject))
+    assert result["unknown"] == [] and result["inputs"]["subjects"] == {"codex-tools-1": subject}
+    [record] = composed["capacity"]
+    assert (record["verdict"], record["reasons"], record["capacity"]) == ("unknown", reasons, None)
+    assert composed["advice"]["verdict"] != tr.ROUTE
+
+
+def test_a_cross_provider_typed_subject_never_becomes_capacity_with_either_compose():
+    result, composed = _twin(_routed_lane("codex-tools-1", "codex-sol-high", CLAUDE_SUBJECT))
+    [record] = composed["capacity"]
+    assert (record["verdict"], record["capacity"]) == ("unknown", None)
+    assert composed["advice"]["verdict"] != tr.ROUTE

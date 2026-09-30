@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 
 from tools import bridge_v2_queue_transactions as qt
-from tools.bridge_v2_queue_transactions import (Blocked, LockTimeout, Plan, QueueTransactionError, QueueTransactions,
-                                                RecordConflict, Refused, claim_bytes, claim_key, claim_lock_path,
-                                                mutex_name)
+from tools.bridge_v2_queue_transactions import (Blocked, LockTimeout, OutcomeUnknown, Plan, QueueTransactionError,
+                                                QueueTransactions, RecordConflict, Refused, claim_bytes, claim_key,
+                                                claim_lock_path, mutex_name)
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 9, 29, 22, 0, tzinfo=timezone.utc)
@@ -275,9 +275,11 @@ def test_s1_a_retried_release_after_a_failed_unlink_archives_once_and_publishes_
             raise PermissionError(13, "a reader holds the claim open")
         return real_unlink(self, *args, **kwargs)
     monkeypatch.setattr(Path, "unlink", unlink)
-    with pytest.raises(PermissionError):
+    # RCO1 Q-F3: the archive was written before the unlink failed, so this is outcome-unknown, never "not applied".
+    with pytest.raises(OutcomeUnknown, match="MAY ALREADY BE APPLIED") as unknown:
         txns.transact("release", path, "rel:1", lambda b: Plan(after=None, archive=(done / "t_1-a1.json", {"r": 1}),
                                                                event={"type": "release"}))
+    assert unknown.value.txid == f"{1:032x}" and isinstance(unknown.value.__cause__, PermissionError)
     monkeypatch.undo()
     assert path.exists() and (done / "t_1-a1.json").exists()
 
@@ -306,8 +308,9 @@ def test_a_claim_changed_after_a_crash_is_diverged_blocks_and_is_left_alone(tmp_
     path.write_bytes(b'{"someone": "else"}\n')
     assert [o["outcome"] for o in txns.reconcile()] == ["diverged", "blocked"]
     assert path.read_bytes() == b'{"someone": "else"}\n'
-    with pytest.raises(Blocked, match="diverged"):
+    with pytest.raises(Blocked, match="diverged") as blocked:
         txns.transact("heartbeat", path, "hb:2", lambda b: Plan(after=beat(2)))
+    assert blocked.value.recovered == ()                            # Q-F2: a blocking record did no work
     assert path.read_bytes() == b'{"someone": "else"}\n'
 
 
@@ -320,8 +323,9 @@ def test_a_corrupt_wal_record_is_reported_never_acted_on_and_blocks_its_claim(tm
     create(txns, path)                                             # success twin: "bad.json" names no claim
     own = txns.wal_dir / f"{claim_key('work_queue/claims/task.json')}.{'e' * 32}.json"
     own.write_text("{not json", encoding="utf-8")
-    with pytest.raises(Blocked, match="corrupt"):
+    with pytest.raises(Blocked, match="corrupt") as blocked:
         txns.transact("heartbeat", path, "hb", lambda b: Plan(after=beat(1)))
+    assert blocked.value.recovered == ()                            # RCO1 Q-F2: corrupt is never "recovered"
     assert path.read_bytes() == claim_bytes(CLAIM)
 
 
@@ -605,8 +609,9 @@ def test_q_durability_a_zero_progress_write_refuses_and_a_cleanup_failure_never_
             raise PermissionError(13, "cleanup refused")
         return real_unlink(self, *args, **kwargs)
     monkeypatch.setattr(Path, "unlink", failing_cleanup)
-    with pytest.raises(QueueTransactionError, match="zero-progress"):   # the primary error, not the cleanup one
+    with pytest.raises(QueueTransactionError, match="zero-progress") as refused:   # the primary, not the cleanup
         create(txns, path)
+    assert type(refused.value) is QueueTransactionError               # before the WAL record: never OutcomeUnknown
     assert not path.exists() and wal_states(txns) == []
 
 
@@ -619,7 +624,116 @@ def test_q_durability_short_writes_still_complete_the_record(tmp_path, monkeypat
     assert path.read_bytes() == claim_bytes(CLAIM) and wal_states(txns) == ["outboxed"]
 
 
-ENV_NAMES = {"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv"}
+# --- RCO1 18ea: outcome truth (Q-F1 bound text, Q-F2 recovered, Q-F3 post-WAL errors, N2) ----------
+
+def test_q_f1_the_bound_message_names_the_bound_it_enforces(monkeypatch):
+    assert qt._bound_text() == "256 KiB"                            # the default the S9 fixture matches
+    monkeypatch.setattr(qt, "MAX_RECORD_BYTES", 4096)
+    assert qt._bound_text() == "4 KiB"
+    monkeypatch.setattr(qt, "MAX_RECORD_BYTES", 1000)
+    assert qt._bound_text() == "1000 bytes"                         # never a rounded, false KiB figure
+
+
+def test_q_f2_an_ambiguous_claim_blocks_and_recovered_lists_no_work(tmp_path):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    write_record(txns, bound_record(txns, state="prepared", txid="a" * 32))
+    write_record(txns, bound_record(txns, state="prepared", txid="b" * 32))
+    with pytest.raises(Blocked, match="several unfinished") as blocked:
+        txns.transact("heartbeat", path, "hb", lambda b: Plan(after=beat(1)))
+    assert blocked.value.recovered == () and path.read_bytes() == claim_bytes(CLAIM)
+
+
+def test_q_f2_a_redo_whose_outbox_record_conflicts_is_reported_as_work_done(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    _crash_on(monkeypatch, "_replace_atomic")
+    with pytest.raises(KeyboardInterrupt):
+        txns.transact("heartbeat", path, "hb:9", lambda b: Plan(after=beat(9), event={"type": "heartbeat"}))
+    monkeypatch.undo()
+    txns._outbox_path("hb:9").write_bytes(b'{"someone": "else"}\n')   # a squatter under the retried key
+    with pytest.raises(Blocked, match="outbox_record_conflict") as blocked:
+        txns.transact("heartbeat", path, "hb:10", lambda b: Plan(after=beat(10)))
+    assert [o["outcome"] for o in blocked.value.recovered] == ["rolled_forward_diverged"]
+    assert path.read_bytes() == claim_bytes(beat(9))                # the redo DID apply the earlier change
+
+
+@pytest.mark.parametrize("kind", ["directory", "link"])
+def test_q_f3_a_linked_or_directory_outbox_leaf_is_refused_before_any_effect(tmp_path, kind):
+    txns, _ = make(tmp_path / "root")
+    path = claim_path(txns)
+    leaf = txns._outbox_path("claim:t/1")
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_bytes(b'{"secret": 1}\n')
+    if kind == "directory":
+        leaf.mkdir(parents=True)
+    else:
+        _link_or_skip(leaf, elsewhere)
+    with pytest.raises(QueueTransactionError, match="outbox record path") as refused:
+        create(txns, path)
+    assert type(refused.value) is QueueTransactionError               # refused, never "MAY ALREADY BE APPLIED"
+    assert not path.exists() and not txns.wal_dir.exists() and elsewhere.read_bytes() == b'{"secret": 1}\n'
+    leaf.rmdir() if kind == "directory" else leaf.unlink()
+    create(txns, path)                                              # success twin: a clean leaf
+    assert path.read_bytes() == claim_bytes(CLAIM) and len(outbox(txns)) == 1
+
+
+def test_q_f3_an_outbox_leaf_swapped_in_after_the_check_is_a_conflict_after_the_change(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    real_apply = QueueTransactions._apply
+
+    def apply_then_swap(self, txn, claim_path, *, claim_present):
+        real_apply(self, txn, claim_path, claim_present=claim_present)
+        self._outbox_path(txn["idempotency_key"]).mkdir(parents=True)   # a directory where the record goes
+    monkeypatch.setattr(QueueTransactions, "_apply", apply_then_swap)
+    with pytest.raises(QueueTransactionError, match="WAS applied"):
+        create(txns, path)
+    assert path.read_bytes() == claim_bytes(CLAIM)                  # the change did happen, and says so
+    [record] = wal_records(txns)
+    assert record["state"] == "diverged" and record["reason"] == "outbox_record_conflict"
+
+
+def test_q_f3_an_ordinary_error_after_the_wal_record_is_outcome_unknown_and_recovery_completes_it(tmp_path,
+                                                                                                    monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    calls = {"n": 0}
+    real_fsync = qt._fsync_directory
+
+    def fsync_fails_once(directory):
+        calls["n"] += 1
+        if calls["n"] == 1:                                         # the WAL record's own directory fsync
+            raise OSError(errno.EIO, "directory fsync failed")
+        return real_fsync(directory)
+    monkeypatch.setattr(qt, "_fsync_directory", fsync_fails_once)
+    with pytest.raises(OutcomeUnknown, match="MAY ALREADY BE APPLIED") as unknown:
+        create(txns, path)
+    assert unknown.value.txid == f"{0:032x}" and isinstance(unknown.value.__cause__, OSError)
+    assert not path.exists() and wal_states(txns) == ["prepared"]      # linked, so recovery will redo it
+    monkeypatch.undo()
+    assert [o["outcome"] for o in txns.reconcile()] == ["rolled_forward"]
+    assert path.read_bytes() == claim_bytes(CLAIM)                  # "may be completed" was the truth
+
+
+def test_n2_an_unreadable_component_is_a_refusal_never_a_raw_os_error(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    real_normalize = qt._normalize_absolute
+
+    def not_a_directory(text, lstat):
+        if "v2" in Path(text).parts:
+            raise NotADirectoryError(errno.ENOTDIR, "Not a directory", text)
+        return real_normalize(text, lstat)
+    monkeypatch.setattr(qt, "_normalize_absolute", not_a_directory)
+    with pytest.raises(QueueTransactionError, match="unreadable"):
+        txns.reconcile()
+    monkeypatch.undo()
+    assert txns.reconcile() == []                                   # success twin: nothing to reconcile
+
+
+ENV_NAMES ={"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv"}
 
 
 def test_modules_never_import_waggledance_and_read_the_environment_in_one_place_only():

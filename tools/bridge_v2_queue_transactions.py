@@ -30,7 +30,8 @@ One transaction (``QueueTransactions.transact``):
    event's type must equal the operation. A malformed record, or one over the 256 KiB
    read bound, is refused before anything is written (S9), so everything written stays
    readable to recovery and to the overlap checks. An existing archive record at the
-   target path is a conflict, refused before anything is written;
+   target path is a conflict, and a linked or non-regular outbox leaf is refused, both
+   before anything is written (RCO1 Q-F3);
 6. compare-and-swap: the claim bytes must still equal what the plan saw, then the archive
    (``done/``) record is created and the claim is replaced atomically or deleted. A claim
    that is absent is never recreated by a plan that did not expect absence;
@@ -70,9 +71,13 @@ before any effect. Reads never follow a final symlink where O_NOFOLLOW exists. A
 check-then-use (TOCTOU) window remains, and physical aliases (hard links, bind mounts, subst
 or mapped drives) are NOT fenced.
 
-Outcomes (Q-OUTCOME-TRUTH): an exception refuses this call's OWN mutation; ``recovered`` on it
-lists earlier unfinished work on the claim that the call completed first (those effects
-happened). An error after the WAL record was written is outcome-unknown to the caller.
+Outcomes (Q-OUTCOME-TRUTH, RCO1 Q-F2/Q-F3): an exception refuses this call's OWN mutation,
+with two exceptions. The diverged message says the change WAS applied. ``OutcomeUnknown`` covers
+any ordinary error after this call's WAL record is on disk, other than the clean
+compare-and-swap refusal: the change MAY ALREADY BE APPLIED, or recovery may complete it, and the
+txid is named. ``recovered`` on an exception lists only the effect-bearing outcomes of earlier
+unfinished work that the call completed first (EFFECT_OUTCOMES). A corrupt, diverged or ambiguous
+record that merely blocks the claim is never listed.
 
 Bounds and durability (Q-WAL-STATE-GROWTH, Q-DURABILITY-BOUND): a record is prepared only if
 it still fits the read bound with the longest later state and reason, so every bookkeeping
@@ -122,6 +127,9 @@ OPS = ("claim", "release", "heartbeat", "stale_archive")
 UNFINISHED = ("prepared", "applied")
 FINAL = ("outboxed", "aborted", "diverged")
 FILED = ("outboxed", "aborted")        # moved to wal/final/; a diverged record stays and blocks
+# Recovery outcomes that did work (RCO1 Q-F2): the only ones ``recovered`` reports. Corrupt,
+# diverged and ambiguous records are reported by reconcile and block the claim, but did nothing.
+EFFECT_OUTCOMES = ("rolled_forward", "rolled_forward_bookkeeping", "outboxed", "rolled_forward_diverged")
 # Every reason a WAL record can carry (bounded, Q-WAL-STATE-GROWTH): room for the longest one, with
 # the longest state, is reserved when the record is prepared, so no later serialization outgrows the bound.
 RECOVERY_REASONS = ("cas_mismatch", "found_applied_after_crash", "redone_after_crash", "archive_record_differs",
@@ -141,12 +149,13 @@ _OUTBOX_NAME = re.compile(r"[0-9a-f]{64}\.json")
 
 
 class QueueTransactionError(ValueError):
-    """This call's OWN mutation was refused (unless the message says it may already be applied).
+    """This call's OWN mutation was refused, unless this is an ``OutcomeUnknown`` or the message
+    says the change WAS applied.
 
-    ``recovered`` (Tools 51ada Q-OUTCOME-TRUTH) lists earlier unfinished transactions on the same
-    claim that this call completed FIRST, under the locks, before refusing: those effects DID
-    happen. An error raised after the WAL record was written is outcome-unknown to the caller;
-    the next transaction on the claim, or reconcile, finishes it from what is on disk."""
+    ``recovered`` (Tools 51ada Q-OUTCOME-TRUTH, RCO1 Q-F2) lists only the EFFECT_OUTCOMES of
+    earlier unfinished transactions on the same claim that this call completed FIRST, under the
+    locks, before refusing: those effects DID happen. A corrupt, diverged or ambiguous record that
+    only blocked the claim is not listed."""
     recovered: tuple = ()
 
 
@@ -165,7 +174,16 @@ class Blocked(QueueTransactionError):
 
 
 class RecordConflict(QueueTransactionError):
-    """A record already exists at its path with other (or torn) bytes; it is never overwritten."""
+    """A record already exists at its path with other (or torn) bytes, or as a link or a non-regular
+    file; it is never overwritten."""
+
+
+class OutcomeUnknown(QueueTransactionError):
+    """An ordinary error AFTER this call's WAL record was on disk (RCO1 Q-F3), other than the clean
+    compare-and-swap refusal. The claim change MAY ALREADY BE APPLIED, or the next transaction's
+    recovery (or reconcile) may complete it from what is on disk. ``txid`` names the record, and
+    the original error is the ``__cause__``."""
+    txid: str | None = None
 
 
 class MutexPort(Protocol):
@@ -251,6 +269,9 @@ def _guard(path: Path, kind: str, leaf: str = "file") -> None:
         _normalize_absolute(str(path), os.lstat)
     except ScopeError as exc:
         raise QueueTransactionError(kind + " path: " + str(exc)) from None
+    except OSError as exc:   # RCO1 N2: ENOTDIR, EACCES or ELOOP on a component is a refusal, never a raw error
+        raise QueueTransactionError(kind + " path is unreadable (" + (errno.errorcode.get(exc.errno, "")
+                                                                      or type(exc).__name__) + ")") from None
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -330,11 +351,45 @@ def _temp_for(path: Path) -> Path:
     return path.with_name(path.name + ".v2tmp." + secrets.token_hex(8))
 
 
+def _bound_text() -> str:
+    """The read bound as messages state it, read at call time (256 KiB by default, RCO1 Q-F1)."""
+    kib, rest = divmod(MAX_RECORD_BYTES, 1024)
+    return str(kib) + " KiB" if not rest else str(MAX_RECORD_BYTES) + " bytes"
+
+
+def _on_disk(path: Path) -> bool | None:
+    """Whether anything is at ``path`` (lstat, never following it); None when that is unknown."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return True
+
+
+def _leaf_conflicts(path: Path) -> bool:
+    """An existing leaf that is a link, a reparse point or not a regular file (RCO1 Q-F3)."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return not stat.S_ISREG(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & reparse)
+
+
 def _create_atomic(path: Path, data: bytes) -> bool:
     """Create a whole record that never overwrites: temporary file + fsync + hard link.
     True when created; False when exactly these bytes are already there (an idempotent
-    replay); RecordConflict when other or torn bytes are there (never swallowed, S2)."""
-    _guard(path, "record")
+    replay); RecordConflict when other or torn bytes are there (never swallowed, S2), or when
+    the existing leaf is a link or not a regular file (RCO1 Q-F3). Any other guard failure is
+    a plain QueueTransactionError, raised before anything is written."""
+    try:
+        _guard(path, "record")
+    except QueueTransactionError:
+        if _leaf_conflicts(path):
+            raise RecordConflict("an existing record is a link or not a regular file: " + path.name) from None
+        raise
     temp = _temp_for(path)
     try:
         _write_exclusive(temp, data)
@@ -494,21 +549,53 @@ class QueueTransactions:
                     raise Refused("the claim does not exist; it is never recreated")
                 if before is not None and plan.expect_absent:
                     raise Refused("a claim already exists at this path")
-                txn = self._record(op, claim_rel, idempotency_key, before, plan)
-                wal_path = self._wal_path(txn)
-                _create_atomic(wal_path, claim_bytes(txn))
-                if read_bytes_or_none(claim_path) != before:   # compare-and-swap
-                    self._file(wal_path, txn, "aborted", reason="cas_mismatch")
+                txn = self._record(op, claim_rel, idempotency_key, before, plan)   # every pre-effect check
+                outcome = self._logged(txn, claim_path, before)
+                if outcome == "aborted":
                     raise Refused("the claim changed outside the lock; nothing applied")
-                self._apply(txn, claim_path, claim_present=before is not None)
-                if self._commit(wal_path, txn, reason=None) == "diverged":
+                if outcome == "diverged":
                     raise QueueTransactionError("the claim change WAS applied, but an existing outbox record for its "
                                                 "key differs; publication is blocked until an operator reconciles "
                                                 "txid " + txn["txid"])
                 return plan.result
             except QueueTransactionError as exc:
-                exc.recovered = tuple(recovered)   # earlier work this call DID complete first (Q-OUTCOME-TRUTH)
+                # Earlier work this call DID complete first, and nothing else (Q-OUTCOME-TRUTH, RCO1 Q-F2).
+                exc.recovered = tuple(entry for entry in recovered if entry["outcome"] in EFFECT_OUTCOMES)
                 raise
+
+    def _logged(self, txn: dict, claim_path: Path, before: bytes | None) -> str:
+        """Steps 5-7 (RCO1 Q-F3). Until the WAL record is on disk nothing has happened, and an error
+        propagates as it is. After that the known outcomes are "aborted" (the compare-and-swap refused
+        before any effect and the record is filed), "diverged" (the change WAS applied; its outbox
+        record conflicts) and "outboxed". Any other ordinary error is OutcomeUnknown with the txid,
+        because recovery may redo a record left on disk. A BaseException is never wrapped."""
+        wal_path = self._wal_path(txn)
+        try:
+            _create_atomic(wal_path, claim_bytes(txn))
+        except RecordConflict:
+            raise   # another record already holds this txid's name: this call wrote nothing
+        except Exception as exc:  # noqa: BLE001 - classified by what is on disk
+            if _on_disk(wal_path) is False:
+                raise   # nothing was written: this call's own mutation did not happen
+            raise self._unknown(txn, exc) from exc   # linked, but its completion is unconfirmed
+        try:
+            if read_bytes_or_none(claim_path) != before:   # compare-and-swap, before any effect
+                self._file(wal_path, txn, "aborted", reason="cas_mismatch")
+                return "aborted"
+            self._apply(txn, claim_path, claim_present=before is not None)
+            return self._commit(wal_path, txn, reason=None)
+        except OutcomeUnknown:
+            raise
+        except Exception as exc:  # noqa: BLE001 - after the WAL record, an ordinary error is outcome-unknown
+            raise self._unknown(txn, exc) from exc
+
+    @staticmethod
+    def _unknown(txn: dict, exc: Exception) -> OutcomeUnknown:
+        error = OutcomeUnknown("outcome unknown: the claim change MAY ALREADY BE APPLIED, or the next transaction or "
+                               "reconcile may complete it from disk (txid " + str(txn.get("txid")) + "): "
+                               + type(exc).__name__ + ": " + str(exc)[:200])
+        error.txid = txn.get("txid")
+        return error
 
     def _guard_state_dirs(self) -> None:
         for directory, kind in ((self.claims_dir, "claims directory"), (self.root / "work_queue" / "done", "archive"
@@ -522,6 +609,11 @@ class QueueTransactions:
             archive_rel = self._relative(plan.archive[0], _REL_ARCHIVE, "archive")
             if os.path.lexists(plan.archive[0]):
                 raise RecordConflict("an archive record already exists at " + archive_rel + "; nothing was written")
+        if plan.event is not None:
+            # RCO1 Q-F3: the outbox leaf is checked here, before the WAL record and any effect. Otherwise
+            # a linked leaf would surface only after the claim change. An existing REGULAR outbox record
+            # for the key stays the S2 conflict: diverged, and the change WAS applied.
+            _guard(self._outbox_path(key), "outbox record")
         txn = {"schema": TXN_SCHEMA, "root_identity": self.root_id, "txid": self.new_id(),
                "idempotency_key": key, "op": op, "claim_rel": claim_rel,
                "before_sha256": sha256_or_none(before), "after": plan.after, "after_sha256": _digest(plan.after),
@@ -537,7 +629,7 @@ class QueueTransactions:
         # so every bookkeeping or recovery serialization of this record stays readable.
         if len(claim_bytes(dict(txn, state=LONGEST_STATE, reason=LONGEST_REASON))) > MAX_RECORD_BYTES:
             raise QueueTransactionError("the transaction record, with room for every later state and reason, "
-                                        "exceeds the read bound; nothing was written")
+                                        "exceeds the " + _bound_text() + " read bound; nothing was written")
         return txn
 
     def _apply(self, txn: dict, claim_path: Path, *, claim_present: bool) -> None:
@@ -599,7 +691,7 @@ class QueueTransactions:
             for wal_path, txn in unfinished:
                 outcome = self._resolve(wal_path, txn, self.root / claim_rel)
                 outcomes.append({"wal": wal_path.name, "txid": txn["txid"], "outcome": outcome})
-                if outcome == "diverged":
+                if outcome in ("diverged", "rolled_forward_diverged"):
                     blocker = "diverged transaction " + txn["txid"] + " (" + str(txn.get("reason")) + ")"
         return outcomes, blocker
 
@@ -623,7 +715,8 @@ class QueueTransactions:
             # Redo: the plan was decided under the locks against exactly these bytes.
             self._apply(txn, claim_path, claim_present=current is not None)
             outcome = self._commit(wal_path, txn, reason="redone_after_crash")
-            return "rolled_forward" if outcome == "outboxed" else outcome
+            # The redo DID apply the change even when its outbox record conflicts (effect-bearing, Q-F2).
+            return "rolled_forward" if outcome == "outboxed" else "rolled_forward_diverged"
         self._set_state(wal_path, txn, "diverged", reason="claim_matches_neither_before_nor_after")
         return "diverged"
 
@@ -743,6 +836,9 @@ class QueueTransactions:
     def _wal_path(self, txn: dict) -> Path:
         return self.wal_dir / (claim_key(txn["claim_rel"]) + "." + txn["txid"] + ".json")
 
+    def _outbox_path(self, key: str) -> Path:
+        return self.outbox_dir / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json")
+
     def _load(self, wal_path: Path) -> dict | None:
         """A WAL record bound to this root and to its own file name, or None (corrupt)."""
         try:
@@ -784,8 +880,7 @@ class QueueTransactions:
                   "txid": txn["txid"], "op": txn["op"], "claim_rel": txn["claim_rel"],
                   "before_sha256": txn["before_sha256"], "after_sha256": txn["after_sha256"],
                   "event": txn["event"], "event_sha256": txn["event_sha256"]}
-        name = hashlib.sha256(txn["idempotency_key"].encode("utf-8")).hexdigest() + ".json"
-        _create_atomic(self.outbox_dir / name, claim_bytes(record))
+        _create_atomic(self._outbox_path(txn["idempotency_key"]), claim_bytes(record))
 
 
 def _hex(value: Any, pattern: re.Pattern) -> bool:

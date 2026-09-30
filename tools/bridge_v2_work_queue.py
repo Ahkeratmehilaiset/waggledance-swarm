@@ -67,9 +67,11 @@ MAX_TOKEN_CHARS = 4096
 
 
 class WorkQueueError(ValueError):
-    """Refused: this call's own mutation did not happen. Recovery under the locks may first have
-    completed an earlier unfinished transaction on the same claim; the message says so when it
-    did (Tools 51ada Q-OUTCOME-TRUTH)."""
+    """Refused: this call's own mutation did not happen. The message says otherwise in two cases:
+    "outcome unknown ... MAY ALREADY BE APPLIED (txid ...)" (an OutcomeUnknown after its WAL record
+    was on disk), or "the claim change WAS applied" (its publication is blocked). Recovery under the
+    locks may first have finished earlier unfinished work on the same claim, and the message names
+    only those effect-bearing outcomes (Tools 51ada Q-OUTCOME-TRUTH, RCO1 Q-F2/Q-F3)."""
 
 
 @dataclass(frozen=True)
@@ -650,8 +652,10 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                                       _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan)
             except Refused:
                 continue  # as core: a changed claim is skipped, not reported as archived
-            except QueueTransactionError as exc:   # timeout, blocked, conflict, bound: one error type (S6)
-                completed = (" (recovery first completed an earlier unfinished transaction on this claim)"
+            except QueueTransactionError as exc:   # timeout, blocked, conflict, bound, unknown: one type (S6)
+                # exc.recovered holds only effect-bearing outcomes (RCO1 Q-F2), so this never over-claims.
+                completed = (" (recovery first finished earlier work on this claim: "
+                             + ", ".join(str(entry.get("outcome")) for entry in exc.recovered) + ")"
                              if exc.recovered else "")
                 raise WorkQueueError(claim.task_id[:128] + ": " + str(exc) + completed) from None
         archived.append(ArchivedClaim(claim=claim, archived_path=archive_path, age_seconds=age_seconds,

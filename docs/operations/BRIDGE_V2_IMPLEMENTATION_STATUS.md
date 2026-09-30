@@ -1,5 +1,52 @@
 # Bridge v2 implementation status and ready queue (F0-F30)
 
+## Current source inventory (2026-09-30; supersedes historical status below)
+
+Installed package reference for this preparation wave:
+`7779e9a2145c82389dd97c333bbe3112e3c29ff0`, deployment-manifest SHA256
+`8B073EAC5F6232D9FEDC8F68DE5FBFAB2BE58BA6683DBCCEB8FD096863238E4B`.
+This is the inherited, hash-pinned Tools generation, not a measurement of
+every fleet process. The source preparation head is
+`c1400f2065fce292341a2b33479f36de4a3a9437` on
+`codex-tools-1/bridge-v2-observability-20260930`; it is **not installed**.
+Lead's exact request `2dd5f6a1-1fbb-408e-b74f-c901899bda17` reports its
+dashboard checkpoint inspected, committed and pushed. Tools independently
+checked that source head and its two-path commit; no remote reachability or
+fleet-wide continuity claim follows from this inventory.
+
+| Feature | Present source | Tested evidence | Wired / packaged | Activation / live observation |
+|---|---|---|---|---|
+| F5 participants | `tools/bridge_lock_participants.py` absent at both exact heads | No F5 test run | Not packaged or wired at these heads | OFF; live coverage unknown |
+| F6 dashboard | Absent at installed7779; pure library present at source c1400f20 | Tools' 12 isolated unittest contracts passed before handoff; Lead reports 12 pytest/savepoint passes | Library only, not a CLI; absent from7779 package | Not installed or activated; no live collector/provider observation |
+| F25 capacity status | Existing `ops/windows/reboot/Get-WdCapacityStatus.ps1` at7779 | Not rerun for this documentation inventory | Do not duplicate the installed capacity observer; current consumer closure not reverified here | F25 policy OFF; provider headroom unknown |
+| F29 doctor | Manifest, Python doctor and PS front end present at7779 | Doctor and PS relay fixture files present; presence alone is not a test pass | `bridge-code-files.json` includes Python file and `bridge_doctor` entrypoint; no direct doctor invocation reference found in either launcher | F29 policy OFF; no live provider/readiness proof |
+
+At7779 the activation config has a null signature and every feature flag
+false. Supervisor OFF and merge-driver HOLD remain controls for this wave.
+Source preparation is eligible; new installation/activation requires a new
+exact operator signature. Existing7779 approvals do not carry forward.
+CLI presence, authentication, provider quota and an observed model turn are
+independent facts. A process or callback proves neither readiness nor the
+next turn. Missing/stale evidence stays unknown. No F0-F30 row below is a
+current claim, ownership assignment or proof that work remains missing.
+
+Reproduce this bounded source inventory from the task worktree:
+
+```powershell
+git -c safe.directory=C:/Python/project2 rev-parse HEAD
+git -c safe.directory=C:/Python/project2 show --stat c1400f2065fce292341a2b33479f36de4a3a9437
+git -c safe.directory=C:/Python/project2 ls-tree -r 7779e9a2145c82389dd97c333bbe3112e3c29ff0 -- tools/bridge_lock_participants.py tools/bridge_v2_dashboard.py tools/wd_bridge_doctor.py
+rg -n 'wd_bridge_doctor|bridge_doctor' ops/windows/reboot/bridge-code-files.json
+rg -n 'Test-WdBridgeComponents|wd_bridge_doctor' ops/windows/reboot/start-wd-agent.ps1 ops/windows/reboot/start-wd-tools-consumer.ps1
+```
+
+The final `rg` has no matches at this source head (exit1); it is a narrow
+reference check, not proof of complete transitive launch behavior. Test
+commands, actual outcomes and log hashes belong to each exact slice reply;
+this inventory never substitutes for a frozen-head acceptance review.
+
+## Historical snapshots (retained verbatim below)
+
 Status snapshot of base `8a7576af01e310add445266ed78753a3409f8f7e`, against the map
 `docs/architecture/BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md` at
 `c099c211a6fd71c109b6349e9e6ccd8794def297`. Written by fable-5 on 2026-09-29 as a

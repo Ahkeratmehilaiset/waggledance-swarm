@@ -1519,15 +1519,126 @@ def test_f4_malformed_or_torn_ledger_lines_are_counted_and_never_swallow_a_recor
             runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice"))
     ledger = wd_grok_helper.read_ledger(tmp_path)
     assert ledger["malformed_lines"] == 6
+    assert [(e["line"], e["reason"]) for e in ledger["malformed_examples"]] == [
+        (1, "not_a_ledger_event"), (2, "not_json"), (3, "unknown_event"), (4, "not_json"), (5, "not_json"),
+        (6, "not_json")]
     assert [entry["event"] for entry in ledger["entries"]] == ["started", "finished"]
     assert ledger["open_request_ids"] == []
 
 
 def test_f4_an_empty_or_missing_ledger_reads_as_no_events(tmp_path):
-    assert wd_grok_helper.read_ledger(tmp_path) == {"schema": "wd.grok-ledger.v1", "entries": [],
-                                                    "malformed_lines": 0, "open_request_ids": []}
+    assert wd_grok_helper.read_ledger(tmp_path) == {
+        "schema": "wd.grok-ledger.v1", "complete": True, "size_bytes": 0, "skipped_bytes": 0, "entries": [],
+        "malformed_lines": 0, "malformed_examples": [], "open_request_ids": [],
+        "unmatched_finished_request_ids": [], "duplicate_request_ids": []}
     (tmp_path / "ledger.jsonl").write_bytes(b"")
     assert wd_grok_helper.read_ledger(tmp_path)["entries"] == []
+
+
+def _ledger_event(event, **fields):
+    row = {"schema": "wd.grok-ledger.v1", "event": event, "task_id": "f4/ledger"}
+    if event == "deferred":
+        row.update(request_id=None, observation_id="c" * 32, grok_launched=False)
+    else:
+        row["request_id"] = "a" * 32
+    row.update(fields)
+    return row
+
+
+def _read_rows(tmp_path, *rows, **bound):
+    (tmp_path / "ledger.jsonl").write_bytes(b"".join(json.dumps(row).encode("ascii") + b"\n" for row in rows))
+    return wd_grok_helper.read_ledger(tmp_path, **bound)
+
+
+def test_f4_the_2cbfba7a_regression_rows_are_counted_not_raised(tmp_path):
+    # Lead 18:19:52Z: at 2cbfba7a these rows raised TypeError (an unhashable request_id in a set).
+    ledger = _read_rows(tmp_path, {"schema": "wd.grok-ledger.v1", "event": "finished", "request_id": []},
+                        {"schema": "wd.grok-ledger.v1", "event": "finished", "request_id": {}},
+                        _ledger_event("finished"), _ledger_event("started", request_id=[]))
+    assert [e["reason"] for e in ledger["malformed_examples"]] == [
+        "task_id_invalid", "task_id_invalid", "request_id_invalid"]
+    assert (ledger["unmatched_finished_request_ids"], ledger["open_request_ids"]) == (["a" * 32], [])
+
+
+@pytest.mark.parametrize("event", ["started", "finished"])
+@pytest.mark.parametrize("request_id", [[], {}, 7, None, True, "A" * 32, "a" * 31, "a" * 33, " " + "a" * 31],
+                         ids=["list", "dict", "int", "none", "bool", "upper", "short", "long", "space"])
+def test_f4_a_malformed_correlation_id_is_counted_never_raised(tmp_path, event, request_id):
+    ledger = _read_rows(tmp_path, _ledger_event(event, request_id=request_id))
+    assert (ledger["entries"], ledger["malformed_lines"], ledger["malformed_examples"]) == (
+        [], 1, [{"line": 1, "reason": "request_id_invalid"}])
+    assert (ledger["open_request_ids"], ledger["unmatched_finished_request_ids"]) == ([], [])
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"request_id": "a" * 32}, "deferred_not_observation_only"), ({"grok_launched": True}, "deferred_not_observation_only"),
+    ({"grok_launched": None}, "deferred_not_observation_only"), ({"observation_id": []}, "observation_id_invalid"),
+    ({"observation_id": "x"}, "observation_id_invalid"), ({"task_id": ""}, "task_id_invalid"),
+    ({"task_id": ["t"]}, "task_id_invalid"),
+], ids=["request_id", "launched", "launched_none", "observation_list", "observation_short", "task_empty", "task_list"])
+def test_f4_a_deferred_event_must_be_an_observation_only(tmp_path, change, reason):
+    ledger = _read_rows(tmp_path, _ledger_event("deferred", **change))
+    assert (ledger["entries"], ledger["malformed_examples"]) == ([], [{"line": 1, "reason": reason}])
+
+
+def test_f4_a_deferred_event_without_its_observation_keys_is_malformed(tmp_path):
+    rows = [{k: v for k, v in _ledger_event("deferred").items() if k != key}
+            for key in ("request_id", "grok_launched", "observation_id")]
+    ledger = _read_rows(tmp_path, *rows)
+    assert [e["reason"] for e in ledger["malformed_examples"]] == [
+        "deferred_not_observation_only", "deferred_not_observation_only", "observation_id_invalid"]
+
+
+def test_f4_valid_events_correlate_and_a_finish_without_a_start_closes_nothing(tmp_path):
+    other = "b" * 32
+    ledger = _read_rows(tmp_path, _ledger_event("started"), _ledger_event("finished", request_id=other),
+                        _ledger_event("deferred"))
+    assert [e["event"] for e in ledger["entries"]] == ["started", "finished", "deferred"]
+    assert (ledger["open_request_ids"], ledger["unmatched_finished_request_ids"]) == (["a" * 32], [other])
+    assert (ledger["complete"], ledger["malformed_lines"], ledger["duplicate_request_ids"]) == (True, 0, [])
+
+
+def test_f4_an_id_started_or_finished_twice_is_named(tmp_path):
+    other = "b" * 32
+    ledger = _read_rows(tmp_path, _ledger_event("started"), _ledger_event("started"), _ledger_event("finished"),
+                        _ledger_event("started", request_id=other), _ledger_event("finished", request_id=other),
+                        _ledger_event("finished", request_id=other))
+    assert (ledger["duplicate_request_ids"], ledger["open_request_ids"]) == (["a" * 32, other], [])
+
+
+def test_f4_a_ledger_over_the_bound_reads_the_newest_lines_and_leaves_the_correlation_unknown(tmp_path):
+    lines = [json.dumps(_ledger_event("started", request_id=f"{n:032x}")).encode("ascii") + b"\n" for n in range(10)]
+    (tmp_path / "ledger.jsonl").write_bytes(b"".join(lines))
+    size, tail = sum(map(len, lines)), len(lines[-1]) + len(lines[-2])
+    for bound in (tail, tail + 5):  # the window starts at a line start, or inside a line that is then not read
+        ledger = wd_grok_helper.read_ledger(tmp_path, max_bytes=bound)
+        assert [e["request_id"] for e in ledger["entries"]] == [f"{8:032x}", f"{9:032x}"]
+        assert (ledger["complete"], ledger["size_bytes"], ledger["skipped_bytes"]) == (False, size, size - tail)
+        assert (ledger["open_request_ids"], ledger["unmatched_finished_request_ids"]) == (None, None)
+        assert ledger["malformed_lines"] == 0
+    whole = wd_grok_helper.read_ledger(tmp_path, max_bytes=size)  # success twin: exactly the whole file
+    assert (whole["complete"], whole["skipped_bytes"], len(whole["open_request_ids"])) == (True, 0, 10)
+
+
+def test_f4_an_oversized_line_is_counted_without_parsing(tmp_path, monkeypatch):
+    monkeypatch.setattr(wd_grok_helper, "MAX_LEDGER_LINE_BYTES", 150)
+    ledger = _read_rows(tmp_path, _ledger_event("started", padding="x" * 200), _ledger_event("started"))
+    assert ledger["malformed_examples"] == [{"line": 1, "reason": "line_too_long"}]
+    assert [e["request_id"] for e in ledger["entries"]] == ["a" * 32]
+
+
+def test_f4_every_malformed_line_is_counted_and_the_first_are_listed(tmp_path):
+    (tmp_path / "ledger.jsonl").write_bytes(b"x\n" * 25 + json.dumps(_ledger_event("started")).encode("ascii") + b"\n")
+    ledger = wd_grok_helper.read_ledger(tmp_path)
+    assert (ledger["malformed_lines"], len(ledger["malformed_examples"])) == (25, 20)
+    assert ledger["malformed_examples"][-1] == {"line": 20, "reason": "not_json"}
+    assert ledger["open_request_ids"] == ["a" * 32]
+
+
+@pytest.mark.parametrize("bound", [0, -1, 1.5, True, "8"])
+def test_f4_the_read_bound_must_be_a_positive_integer(tmp_path, bound):
+    with pytest.raises(ValueError):
+        wd_grok_helper.read_ledger(tmp_path, max_bytes=bound)
 
 
 def test_f4_stderr_is_kept_for_an_answered_attempt_and_is_never_provider_evidence(tmp_path):

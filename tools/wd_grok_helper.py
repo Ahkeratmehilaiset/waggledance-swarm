@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
@@ -33,6 +34,10 @@ REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 LEDGER_SCHEMA = "wd.grok-ledger.v1"
 LEDGER_NAME = "ledger.jsonl"
 LEDGER_EVENTS = ("started", "finished", "deferred")
+LEDGER_ID = re.compile(r"[0-9a-f]{32}")  # uuid4().hex: consult's request_id and observation_id
+MAX_LEDGER_READ_BYTES = 8 * 1024 * 1024  # read_ledger reads at most the newest 8 MiB
+MAX_LEDGER_LINE_BYTES = 64 * 1024        # a longer line is counted as malformed, never parsed
+MAX_LEDGER_EXAMPLES = 20                 # malformed lines listed by line number and reason
 OUTPUT_FORMAT = ("--output-format", "json")
 PURPOSES = ("advisory", "calibration")
 ERROR_CLASSES = ("timeout", "nonzero_exit", "launch_error", "io_error", "ledger_unavailable", "unclassified")
@@ -228,30 +233,80 @@ def _record_ledger(root: Path, fields: dict) -> dict | None:
     return None
 
 
-def read_ledger(root: Path) -> dict:
-    """Every ledger event in file order. A line that is not one wd.grok-ledger.v1 event is counted
-    as malformed, never dropped silently. ``open_request_ids`` are started attempts without a
-    finished event: still running, or interrupted (the state file says which)."""
+def _ledger_shape_error(entry: object) -> str | None:
+    """Why a parsed line is not one wd.grok-ledger.v1 event, or None. The correlation fields are
+    strict: a started or finished event names its attempt by consult's uuid4-hex request_id and a
+    task id; a deferred event is an observation only (request_id None, a uuid4-hex observation id,
+    grok_launched False)."""
+    if not isinstance(entry, dict) or entry.get("schema") != LEDGER_SCHEMA:
+        return "not_a_ledger_event"
+    if entry.get("event") not in LEDGER_EVENTS:
+        return "unknown_event"
+    if not (type(entry.get("task_id")) is str and entry["task_id"]):
+        return "task_id_invalid"
+    if entry["event"] == "deferred":
+        if entry.get("request_id", 0) is not None or entry.get("grok_launched", True) is not False:
+            return "deferred_not_observation_only"
+        observation_id = entry.get("observation_id")
+        return None if type(observation_id) is str and LEDGER_ID.fullmatch(observation_id) else "observation_id_invalid"
+    request_id = entry.get("request_id")
+    return None if type(request_id) is str and LEDGER_ID.fullmatch(request_id) else "request_id_invalid"
+
+
+def read_ledger(root: Path, max_bytes: int = MAX_LEDGER_READ_BYTES) -> dict:
+    """The newest ledger events in file order, bounded. At most ``max_bytes`` of the newest bytes
+    are read; ``complete`` says whether that was the whole file and ``skipped_bytes`` how much
+    older history was left unread (it stays on disk, untouched). A line that is not one valid
+    event (see _ledger_shape_error; torn, oversized or not JSON) is counted in ``malformed_lines``
+    and the first ones are listed by line number (from the first byte read) and reason: never
+    dropped silently. ``open_request_ids`` are started attempts without a finished event (still
+    running, or interrupted: the state file says which). ``unmatched_finished_request_ids`` are
+    finished events whose start was never recorded; they close nothing. After an incomplete read
+    both are None (unknown): an unread line could start or finish any attempt.
+    ``duplicate_request_ids`` names ids started, or finished, more than once in the lines read."""
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
     path = root / LEDGER_NAME
-    data = path.read_bytes() if path.is_file() else b""
-    entries, malformed = [], 0
-    for raw in data.split(b"\n"):
+    size, data = 0, b""
+    if path.is_file():
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if size <= max_bytes:
+                data = stream.read(size)
+            else:
+                stream.seek(size - max_bytes - 1)
+                at_line_start = stream.read(1) == b"\n"
+                data = stream.read(max_bytes)
+                if not at_line_start:  # the window starts inside a line: that partial line is not read
+                    data = data[data.index(b"\n") + 1:] if b"\n" in data else b""
+    complete = size <= max_bytes
+    entries, malformed, examples = [], 0, []
+    for number, raw in enumerate(data.split(b"\n"), start=1):
         if not raw.strip():
             continue
-        try:
-            entry = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_pairs,
-                               parse_constant=_reject_receipt_constant)
-        except (ValueError, RecursionError):
-            entry = None
-        if (not isinstance(entry, dict) or entry.get("schema") != LEDGER_SCHEMA
-                or entry.get("event") not in LEDGER_EVENTS):
+        entry, reason = None, "line_too_long" if len(raw) > MAX_LEDGER_LINE_BYTES else None
+        if reason is None:
+            try:
+                entry = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_pairs,
+                                   parse_constant=_reject_receipt_constant)
+            except (ValueError, RecursionError):
+                reason = "not_json"
+        reason = reason or _ledger_shape_error(entry)
+        if reason is not None:
             malformed += 1
+            if len(examples) < MAX_LEDGER_EXAMPLES:
+                examples.append({"line": number, "reason": reason})
             continue
         entries.append(entry)
-    finished = {e.get("request_id") for e in entries if e["event"] == "finished"}
-    return {"schema": LEDGER_SCHEMA, "entries": entries, "malformed_lines": malformed,
-            "open_request_ids": [e.get("request_id") for e in entries
-                                 if e["event"] == "started" and e.get("request_id") not in finished]}
+    started = Counter(e["request_id"] for e in entries if e["event"] == "started")
+    finished = Counter(e["request_id"] for e in entries if e["event"] == "finished")
+    return {"schema": LEDGER_SCHEMA, "complete": complete, "size_bytes": size,
+            "skipped_bytes": 0 if complete else size - len(data), "entries": entries,
+            "malformed_lines": malformed, "malformed_examples": examples,
+            "open_request_ids": [i for i in started if i not in finished] if complete else None,
+            "unmatched_finished_request_ids": [i for i in finished if i not in started] if complete else None,
+            "duplicate_request_ids": sorted({i for i, n in (started + finished).items()
+                                             if started[i] > 1 or finished[i] > 1})}
 
 
 def parse_json_reply(stdout: object) -> dict | None:

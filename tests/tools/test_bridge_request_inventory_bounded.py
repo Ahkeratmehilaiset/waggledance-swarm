@@ -188,6 +188,92 @@ def test_all_pages_cover_every_id_once_without_loss(tmp_path: Path, shell: str) 
     assert seen == [f"request-{index:03d}" for index in range(599, -1, -1)]
 
 
+# -- Opt-in -DiagnosticPartial receipt (authored, NOT RUN) --
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_diagnostic_pages_like_the_default_but_never_shares_its_cursor(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    default = json.loads(_run(shell, runtime, script, "-PageSize", "2").stdout)
+    first = _run(shell, runtime, script, "-PageSize", "2", "-DiagnosticPartial")
+    assert first.returncode == 0, first.stderr
+    diagnostic = json.loads(first.stdout)
+    assert (diagnostic["schema"], diagnostic["complete"], diagnostic["status"]) == (
+        "wd.request-inventory-diagnostic.v1", False, "no_conflict_observed")   # clean, yet never complete
+    assert (diagnostic["request_count"], diagnostic["conflicts"]) == (600, [])
+    assert [row["request_id"] for row in diagnostic["requests"]] == ["request-599", "request-598"]
+    assert diagnostic["next_cursor"] != default["next_cursor"]
+    for cursor, extra in ((default["next_cursor"], ("-DiagnosticPartial",)), (diagnostic["next_cursor"], ())):
+        crossed = _run(shell, runtime, script, "-PageSize", "2", "-Cursor", cursor, *extra)
+        assert crossed.returncode != 0 and "cursor does not match" in crossed.stderr
+        assert not crossed.stdout.strip()
+    second = _run(shell, runtime, script, "-PageSize", "2", "-Cursor", diagnostic["next_cursor"], "-DiagnosticPartial")
+    assert second.returncode == 0, second.stderr
+    assert [row["request_id"] for row in json.loads(second.stdout)["requests"]] == ["request-597", "request-596"]
+
+
+def test_only_the_opt_in_diagnostic_changes_the_cursor_seed() -> None:
+    """fable-5 727 N1: a DEFAULT seed, and so every default cursor, stays byte-identical to the pre-diagnostic
+    getter (3125486a). Only -DiagnosticPartial adds its discriminator. Pinned on the source, since the old getter
+    is not run here: the key appears exactly once, set only under the switch, AFTER the shared fields."""
+    source = SOURCE.read_text(encoding="utf-8")
+    assert source.count("diagnostic_partial") == 1
+    guard = "if ($DiagnosticPartial) { $cursorFields['diagnostic_partial']=$true }"
+    assert guard in source
+    assert source.index("include_request=[bool]$IncludeRequest") < source.index(guard) < source.index(
+        "$cursorSeed=$cursorFields | ConvertTo-Json -Depth 8 -Compress")
+    # fable-5 a8530218 N3: pin the default seed's fields too (names, order and values exactly as 3125486a's).
+    fields = ("$cursorFields=[ordered]@{\n"
+              "    snapshot=$snapshot.candidate_cursor\n"
+              "    prefix_sha256=$snapshot.prefix_sha256\n"
+              "    agent=$Agent; session_id=$SessionId; request_id=$RequestId\n"
+              "    task_id=$TaskId; ts_utc=$TsUtc\n"
+              "    order='first_indexed_position_desc'; page_size=$PageSize\n"
+              "    include_request=[bool]$IncludeRequest\n"
+              "}\n")
+    assert fields in source
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_600_conflicting_rows_list_only_50_and_the_default_still_refuses(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    log = runtime / "shared/events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["payload"]["request_id"] = "payload-" + row["request_id"]      # valid alone, conflicting together
+    log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    refused = _run(shell, runtime, script)
+    assert refused.returncode != 0 and not refused.stdout.strip()
+    result = _run(shell, runtime, script, "-DiagnosticPartial")
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout) < 50_000
+    data = json.loads(result.stdout)
+    assert (data["conflict_count"], len(data["conflicts"]), data["conflicts_truncated"]) == (600, 50, True)
+    assert (data["status"], data["complete"], data["requests"], data["request_count"]) == (
+        "partial_unknown", False, [], 0)
+    assert [conflict["indexed_position"] for conflict in data["conflicts"]] == list(range(50))
+    assert {conflict["kind"] for conflict in data["conflicts"]} == {"request_id_binding_conflict"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_long_conflict_fields_close_the_list_at_the_character_budget(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    log = runtime / "shared/events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()][:50]
+    for index, row in enumerate(rows):                                   # ~720 JSON characters per entry
+        row.update(task_id="t" * 200 + str(index), request_id="a" * 200 + str(index))
+        row["payload"]["request_id"] = "b" * 200 + str(index)
+    log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    result = _run(shell, runtime, script, "-DiagnosticPartial")
+    assert result.returncode == 0, result.stderr   # 50 x ~720 = ~36000: fits the 50000 page cap, NOT the 30000 budget
+    assert len(result.stdout) < 50_000
+    data = json.loads(result.stdout)
+    listed = data["conflicts"]
+    assert data["conflict_count"] == 50 and data["conflicts_truncated"] is True and 0 < len(listed) < 50
+    assert [conflict["indexed_position"] for conflict in listed] == list(range(len(listed)))   # a prefix
+    assert len(json.dumps(listed, separators=(",", ":"))) <= 30_000 + len(listed) + 1
+    assert all(len(conflict["task_id"]) == len(conflict["top_level_request_id"]) == 160 for conflict in listed)
+
+
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_include_request_rejects_no_exact_match(tmp_path: Path, shell: str) -> None:
     runtime, script = _fixture(tmp_path)

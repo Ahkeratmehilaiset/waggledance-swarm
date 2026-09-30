@@ -341,11 +341,18 @@ def _plain_copy(value: Any) -> Any:
 def _decision_fields(decision: Any) -> dict:
     """Every field the apply step uses, read from the binder's decision exactly ONCE, before any
     caller code runs again (RCO1 7f32cfea S1). Only an EXACT dict counts (a subclass could
-    override ``get``); anything else, or an unreadable decision, has none."""
+    override ``get``); anything else, or an unreadable decision, has none. Its KEYS are proven exact
+    ``str`` BEFORE any lookup (Lead 7a0871c1): one pass over the items hashes and compares nothing, and
+    a decision with any other key has none, so a key object whose hash collides with a field name never
+    gets to run its ``__eq__`` inside a lookup."""
     if type(decision) is not dict:
         return {}
     try:
-        return {key: decision.get(key) for key in _DECISION_FIELDS}
+        entries = list(decision.items())   # the ONE read: iterating an exact dict runs no key hook
+        if not all(type(key) is str for key, _ in entries):
+            return {}
+        plain = dict(entries)              # exact str keys only, so no __hash__ or __eq__ hook runs below
+        return {key: plain.get(key) for key in _DECISION_FIELDS}
     except Exception:  # noqa: BLE001 - an unreadable decision is a refusal
         return {}
 
@@ -356,10 +363,9 @@ def _applied_binding(fields: dict, own: dict) -> dict | None:
 
     Every field compared below is required to be EXACTLY a ``str`` BEFORE any comparison (Lead
     0468acc6, Tools f559): a custom object or a ``str`` subclass could run its own ``__eq__`` hook
-    (caller code) inside ``==``, so it is refused without being compared. This is about hooks of
-    decision VALUES during validation only: a hash-colliding decision KEY can still run its ``__eq__``
-    in _decision_fields' dict.get (disclosed, not fixed), and what a binder decides is still
-    trusted, not authenticated here (Lead 45b66035)."""
+    (caller code) inside ``==``, so it is refused without being compared. The decision's KEYS were
+    already proven exact ``str`` in _decision_fields before any lookup (Lead 7a0871c1), so no key hook
+    ran either. What a binder decides is still trusted, not authenticated here (Lead 45b66035)."""
     provider = own.get('provider')
     subject_field = POOL_SUBJECT_FIELDS.get(provider) if type(provider) is str else None
     subject = own.get(subject_field) if subject_field is not None else None
@@ -414,10 +420,10 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     keeps its returned dict and a clock that edits it (or the caller's observation) changes
     nothing. Every compared decision field VALUE must be exactly a str before any comparison, so no
     ``__eq__`` hook of a custom-object or str-subclass VALUE runs while it is validated (Lead 0468acc6).
-    That guard covers the values only. It does NOT prove the decision's KEYS safe: reading an exact-dict
-    decision (dict.get) can still run a hash-colliding key object's ``__eq__``. Nor does it authenticate
-    the binder, its verifier or the clock, which stay trusted callbacks (Lead 45b66035). A binder or
-    clock failure is named without any hook of the exception's class (see _exception_name).
+    Every decision KEY must also be exactly a str before any lookup, so no hash-colliding key object's
+    ``__eq__`` runs either; a decision with any other key binds nothing (Lead 7a0871c1). Neither guard
+    authenticates the binder, its verifier or the clock, which stay trusted callbacks (Lead 45b66035). A
+    binder or clock failure is named without any hook of the exception's class (see _exception_name).
 
     A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
     windows, freshness or headroom, which stay unknown unless separately evidenced."""

@@ -852,6 +852,44 @@ def test_a_non_str_decision_tag_is_refused_before_any_equality_hook_runs(field, 
     assert type(good['pool_identity_state']) is str
 
 
+# -- Lead 7a0871c1: every decision KEY is an exact str BEFORE any lookup (authored, NOT run) ----------------
+# A key object whose hash equals a field name's is met first by dict.get('schema') and would run its own
+# __eq__ there. It is disarmed while the fixture builds the decision and armed before the binder returns it.
+
+def _colliding_key(calls, name):
+    class CollidingKey:                     # a custom key object: never a str, with a field name's hash
+        armed = False
+
+        def __hash__(self):
+            return hash(name)
+
+        def __eq__(self, other):
+            if self.armed:
+                calls.append('key_hook')
+                raise _HookRan('key __eq__')
+            return False
+
+    return CollidingKey()
+
+
+@pytest.mark.parametrize('kind', ['colliding_key', 'int_key'])
+def test_a_non_str_decision_key_binds_nothing_and_runs_no_key_hook(kind):
+    calls = []
+    key = _colliding_key(calls, 'schema') if kind == 'colliding_key' else 7
+    decision = {key: 'extra', **_verified_decision()}   # inserted FIRST, so a lookup of 'schema' meets it first
+    if kind == 'colliding_key':
+        key.armed = True
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: decision,
+                                       clock=lambda: calls.append('clock') or POOL_NOW)
+    assert calls == ['clock']               # zero key hooks; the apply boundary still samples the clock once
+    assert row['account_pool'] is None and 'pool_identity_state' not in row
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
+    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(extra='ignored'),
+                                        clock=lambda: calls.append('clock') or POOL_NOW)
+    assert calls == ['clock', 'clock']      # exact-str-key positive twin: an unused extra str key still binds
+    assert good['account_pool'] == 'codex-plus-weekly' and good['pool_identity_state'] == 'verified_binding'
+
+
 # -- Lead 45b66035 (RCO2 f766 N2): a failure diagnostic never runs a hook of the exception's class ---------
 
 class _NameHookRan(Exception):

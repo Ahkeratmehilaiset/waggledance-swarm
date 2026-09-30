@@ -286,16 +286,24 @@ def test_a_live_child_gives_facts_and_a_missing_pid_is_none():
 
 
 class _FakeKernel32:
-    """A kernel32 stand-in for one process whose wait returns ``wait``; it records every call."""
+    """A kernel32 stand-in for one process whose wait returns ``wait``; it records every call. The call named
+    ``fail`` fails; given an ``error``, the failing call (or a WAIT_FAILED wait) sets it as the thread's last
+    error, as the kernel does."""
 
-    def __init__(self, wait: int) -> None:
-        self.calls, self.wait = [], wait
+    def __init__(self, wait: int, *, fail: str | None = None, error: int | None = None) -> None:
+        self.calls, self.wait, self.fail, self.error = [], wait, fail, error
         for name in ("OpenProcess", "GetExitCodeProcess", "GetProcessTimes", "CloseHandle", "WaitForSingleObject"):
             setattr(self, name, self._recorder(name))
 
     def _recorder(self, name):
         def call(*args):
+            import ctypes
             self.calls.append(name)
+            failing = name == self.fail or (name == "WaitForSingleObject" and self.wait == 0xFFFFFFFF)
+            if failing and self.error is not None:
+                ctypes.set_last_error(self.error)
+            if name == self.fail:
+                return 0
             if name == "OpenProcess":
                 return 1234
             if name == "WaitForSingleObject":
@@ -318,3 +326,62 @@ def test_a_wait_that_is_neither_signalled_nor_timeout_is_unknown_and_the_handle_
         ports_module.windows_process_facts(4242)
     assert "WaitForSingleObject" in fake.calls and fake.calls[-1] == "CloseHandle"
     assert "GetProcessTimes" not in fake.calls                                # never measured after an unknown wait
+
+
+# -- fable-5 23:13:27Z (advisory nit on 13d374e5): OSError(code, msg) picks its subclass from the code as an errno, so
+# -- a stale last error read after a wait that set none named a wrong one (a stale 3 became ProcessLookupError in the
+# -- evidence), and a Windows error passed as an errno was mislabelled (access denied, 5, read as EIO).
+
+@pytest.fixture
+def fake_kernel(monkeypatch):
+    """Installs a _FakeKernel32 as kernel32; the thread's ctypes last error is restored afterwards."""
+    import ctypes
+    saved = ctypes.get_last_error()
+
+    def install(wait, **failure):
+        fake = _FakeKernel32(wait, **failure)
+        monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: fake)
+        return fake
+
+    yield install
+    ctypes.set_last_error(saved)
+
+
+@windows_only
+@pytest.mark.parametrize("stale", [2, 3, 5], ids=["stale_2", "stale_3", "stale_5"])
+@pytest.mark.parametrize("wait", [0x00000080, 0x00000001], ids=["abandoned", "other"])
+def test_an_unexpected_wait_reads_no_stale_last_error(fake_kernel, wait, stale):
+    import ctypes
+    fake_kernel(wait)
+    ctypes.set_last_error(stale)                                   # left by an earlier, unrelated call
+    with pytest.raises(OSError) as raised:
+        ports_module.windows_process_facts(PID)
+    assert type(raised.value) is OSError and (raised.value.errno, raised.value.winerror) == (None, None)
+    assert "0x%08x" % wait in str(raised.value)
+    ports = WindowsRelaunchPorts(gate=lambda: ENABLED, process_facts=ports_module.windows_process_facts)
+    assert ports.stop("lane", PID, STARTED) is False
+    assert ports.evidence[-1]["cause"] == "process_query_failed:OSError"
+
+
+@windows_only
+def test_a_failed_wait_raises_the_error_the_kernel_set(fake_kernel):
+    fake = fake_kernel(0xFFFFFFFF, error=6)                        # ERROR_INVALID_HANDLE
+    with pytest.raises(OSError) as raised:
+        ports_module.windows_process_facts(PID)
+    assert raised.value.winerror == 6 and "WaitForSingleObject failed" in str(raised.value)
+    assert fake.calls[-1] == "CloseHandle" and "GetProcessTimes" not in fake.calls
+
+
+@windows_only
+def test_open_and_times_failures_raise_the_windows_error_not_an_errno(fake_kernel):
+    fake = fake_kernel(0x102, fail="OpenProcess", error=5)         # ERROR_ACCESS_DENIED
+    with pytest.raises(PermissionError) as raised:
+        ports_module.windows_process_facts(PID)
+    assert raised.value.winerror == 5 and fake.calls == ["OpenProcess"]      # nothing opened, nothing to close
+    fake = fake_kernel(0x102, fail="OpenProcess", error=87)        # ERROR_INVALID_PARAMETER: no such process
+    assert ports_module.windows_process_facts(PID) is None and fake.calls == ["OpenProcess"]
+    fake = fake_kernel(0x102, fail="GetProcessTimes", error=6)
+    with pytest.raises(OSError) as raised:
+        ports_module.windows_process_facts(PID)
+    assert raised.value.winerror == 6 and "GetProcessTimes failed" in str(raised.value)
+    assert fake.calls[-1] == "CloseHandle"

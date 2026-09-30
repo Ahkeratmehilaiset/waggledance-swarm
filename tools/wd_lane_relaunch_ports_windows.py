@@ -56,6 +56,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _SYNCHRONIZE = 0x00100000
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
+_WAIT_FAILED = 0xFFFFFFFF
 _ERROR_INVALID_PARAMETER = 87
 _FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 
@@ -68,9 +69,11 @@ def windows_process_facts(pid: int) -> dict | None:
     Liveness is the process handle's signalled state (WaitForSingleObject with a zero timeout), never its exit
     code: 259 (STILL_ACTIVE) is a legal exit code, so a process that exited with it is not live (RCO1 F16-N1).
     Any other failure to read it (access denied, a failed or unexpected wait) raises OSError: unknown, never
-    "absent" or "live". It opens the process for limited query and SYNCHRONIZE only and closes the handle; it
-    never signals, suspends or stops anything. The executor's ``processes``/``measure`` ports must use this
-    same source for the exact-instant identity."""
+    "absent" or "live". A failed kernel call raises its own Windows error (``ctypes.WinError``: ``winerror`` is
+    set and picks the subclass); an unexpected wait value sets no error, so none is read and the OSError has no
+    errno (a stale code would name a wrong subclass in the evidence; fable-5 23:13:27Z). It opens the process for
+    limited query and SYNCHRONIZE only and closes the handle; it never signals, suspends or stops anything. The
+    executor's ``processes``/``measure`` ports must use this same source for the exact-instant identity."""
     if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
         raise ValueError("a process id must be a positive 32-bit integer")
     import ctypes
@@ -89,18 +92,21 @@ def windows_process_facts(pid: int) -> dict | None:
         error = ctypes.get_last_error()
         if error == _ERROR_INVALID_PARAMETER:
             return None   # no such process
-        raise OSError(error, "OpenProcess failed; the process facts are unknown")
+        raise ctypes.WinError(error, "OpenProcess failed; the process facts are unknown")
     try:
         wait = kernel32.WaitForSingleObject(handle, 0)
         if wait == _WAIT_OBJECT_0:
             return None   # signalled: exited, whatever its exit code (its times still exist; it is not live)
+        if wait == _WAIT_FAILED:
+            error = ctypes.get_last_error()
+            raise ctypes.WinError(error, "WaitForSingleObject failed; the process facts are unknown")
         if wait != _WAIT_TIMEOUT:
-            raise OSError(ctypes.get_last_error(), "WaitForSingleObject returned 0x%08x; the process facts are "
-                                                   "unknown" % wait)
+            # No other value sets a last error, so none is read: a stale code would pick a wrong OSError subclass.
+            raise OSError("WaitForSingleObject returned 0x%08x; the process facts are unknown" % wait)
         created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
         if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel),
                                         ctypes.byref(user)):
-            raise OSError(ctypes.get_last_error(), "GetProcessTimes failed; the process facts are unknown")
+            raise ctypes.WinError(ctypes.get_last_error(), "GetProcessTimes failed; the process facts are unknown")
     finally:
         kernel32.CloseHandle(handle)
     ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime

@@ -196,7 +196,7 @@ def test_a_corrupt_high_water_mark_refuses_before_any_decision(world):
     store.path.write_text('{"schema": "wd.bridge-v2-revocation-high-water.v1", "version": 0, '
                           '"updated_utc": "2026-09-30T16:00:00Z"}', encoding="utf-8")
     calls = []
-    assert world.refusal(evaluate=lambda *a, **k: calls.append(a)) == "high_water_corrupt"
+    assert world.refusal(evaluate_bytes=lambda *a, **k: calls.append(a)) == "high_water_corrupt"
     assert calls == []
 
 
@@ -223,19 +223,42 @@ def test_a_held_lock_refuses_instead_of_waiting(tmp_path):
     assert store.read() is None
 
 
-def test_inputs_changed_during_the_decision_are_refused(world):
-    def evaluate_then_bump(feature, **kwargs):
-        decision = activation.evaluate(feature, **kwargs)
-        state = json.loads(world.revocation.read_text(encoding="utf-8"))
-        write_json(world.revocation, {**state, "version": state["version"] + 1})
-        return decision
+def test_n9_a_swap_around_the_decision_cannot_change_it(world):
+    """Failure twin of the a4aa17b8 A-B-A (reproduced first there: an enabled decision beside a frozen state).
+    The file says frozen (A); B is swapped in only while F0 runs, then A is restored. F0 now decides on the
+    captured A bytes, so the decision and the returned revocation agree."""
+    state = json.loads(world.revocation.read_text(encoding="utf-8"))
+    a_bytes = write_json(world.revocation, {**state, "frozen": True})
+    b_bytes = json.dumps({**state, "frozen": False}, indent=2).encode("utf-8")
 
-    assert world.refusal(evaluate=evaluate_then_bump) == "inputs_changed_during_decision"
+    def swap_around_f0(feature, **kwargs):
+        world.revocation.write_bytes(b_bytes)
+        try:
+            return activation.evaluate_bytes(feature, **kwargs)
+        finally:
+            world.revocation.write_bytes(a_bytes)
+
+    evidence = world.load(evaluate_bytes=swap_around_f0)
+    assert evidence["revocation"]["frozen"] is True
+    assert evidence["decision"]["enabled"] is False and evidence["decision"]["reason"] == "fleet freeze is active"
+
+
+def test_n9_success_twin_the_decision_uses_exactly_the_returned_bytes(world):
+    seen = {}
+
+    def recording(feature, **kwargs):
+        seen.update(config=kwargs["config_bytes"], revocation=kwargs["revocation_bytes"])
+        return activation.evaluate_bytes(feature, **kwargs)
+
+    evidence = world.load(evaluate_bytes=recording)
+    assert seen["config"] == world.config.read_bytes() and seen["revocation"] == world.revocation.read_bytes()
+    assert json.loads(seen["config"]) == evidence["document"] and json.loads(seen["revocation"]) == evidence["revocation"]
+    assert evidence["decision"]["enabled"] is True
 
 
 def test_a_decision_that_is_not_an_f0_decision_is_refused(world):
-    assert world.refusal(evaluate=lambda feature, **kwargs: {"feature": feature, "enabled": True}) == "decision_invalid"
-    assert world.refusal(evaluate=lambda feature, **kwargs: activation.Decision("F16", True, "x")) == "decision_invalid"
+    assert world.refusal(evaluate_bytes=lambda feature, **kwargs: {"feature": feature, "enabled": True}) == "decision_invalid"
+    assert world.refusal(evaluate_bytes=lambda feature, **kwargs: activation.Decision("F16", True, "x")) == "decision_invalid"
 
 
 @pytest.mark.parametrize("now", [datetime(2026, 9, 30, 17, 0), "2026-09-30T17:00:00Z", None])
@@ -278,11 +301,11 @@ def test_n8_a_floor_raised_during_the_decision_refuses_a_decision_below_it(tmp_p
     world = World(tmp_path, floor=3)
 
     def evaluate_while_another_caller_advances(feature, **kwargs):
-        decision = activation.evaluate(feature, **kwargs)
+        decision = activation.evaluate_bytes(feature, **kwargs)
         HighWaterStore(world.runtime).advance(3, 5, NOW)
         return decision
 
-    assert world.refusal(evaluate=evaluate_while_another_caller_advances) == "high_water_advanced_during_decision"
+    assert world.refusal(evaluate_bytes=evaluate_while_another_caller_advances) == "high_water_advanced_during_decision"
     assert HighWaterStore(world.runtime).read() == 5
 
 
@@ -290,11 +313,11 @@ def test_n8_success_twin_a_concurrent_raise_to_the_decision_version_is_accepted(
     world = World(tmp_path, floor=2)
 
     def evaluate_while_another_caller_advances(feature, **kwargs):
-        decision = activation.evaluate(feature, **kwargs)
+        decision = activation.evaluate_bytes(feature, **kwargs)
         HighWaterStore(world.runtime).advance(2, 3, NOW)
         return decision
 
-    evidence = world.load(evaluate=evaluate_while_another_caller_advances)
+    evidence = world.load(evaluate_bytes=evaluate_while_another_caller_advances)
     assert evidence["decision"]["enabled"] is True and evidence["decision"]["revocation_version"] == 3
     assert HighWaterStore(world.runtime).read() == 3
 
@@ -303,11 +326,11 @@ def test_n8_a_mark_removed_during_the_decision_is_a_rollback(tmp_path):
     world = World(tmp_path)
 
     def evaluate_then_remove_the_mark(feature, **kwargs):
-        decision = activation.evaluate(feature, **kwargs)
+        decision = activation.evaluate_bytes(feature, **kwargs)
         HighWaterStore(world.runtime).path.unlink()
         return decision
 
-    assert world.refusal(evaluate=evaluate_then_remove_the_mark) == "high_water_rollback"
+    assert world.refusal(evaluate_bytes=evaluate_then_remove_the_mark) == "high_water_rollback"
 
 
 def test_n10_a_zero_progress_write_refuses_instead_of_spinning(tmp_path, monkeypatch):

@@ -387,3 +387,75 @@ def test_config_read_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_bytes", unbounded)
     decision = act.evaluate("F1", **kwargs)
     assert decision.enabled is False and "exceeds" in decision.reason
+
+# --- the exact-bytes entry point (RCO1 N9, Lead 89514277) ---------------------------------------------------
+
+def _bytes_kwargs(kwargs: dict) -> dict:
+    """evaluate_bytes arguments for the very inputs _write laid out on disk."""
+    revocation_path = Path(kwargs["runtime_root"]) / act.REVOCATION_RELATIVE
+    rest = {key: value for key, value in kwargs.items() if key not in ("config_path", "runtime_root")}
+    return {"config_bytes": Path(kwargs["config_path"]).read_bytes(),
+            "revocation_bytes": revocation_path.read_bytes(), **rest}
+
+
+def _scenario(tmp_path: Path, case: str) -> tuple[str, dict]:
+    policy = _policy()
+    digest = act.canonical_sha256(policy)
+    state = {"schema": act.REVOCATION_SCHEMA, "version": 3, "policy_sha256": digest, "frozen": False, "revoked": [],
+             "updated_utc": _stamp(NOW - timedelta(minutes=1))}
+    if case == "frozen":
+        state["frozen"] = True
+    if case == "revoked":
+        state["revoked"] = ["F1"]
+    if case == "stale":
+        state["updated_utc"] = _stamp(NOW - timedelta(days=2))
+    kwargs = _write(tmp_path, policy, signature=None if case == "unsigned" else "auto", revocation=state)
+    if case == "rollback":
+        kwargs["min_revocation_version"] = 5
+    if case == "kill":
+        kwargs["environ"] = {act.KILL_SWITCH_ENV: "0"}
+    if case == "wrong_digest":
+        kwargs["trusted_policy_sha256"] = "0" * 64
+    return ("F2" if case == "feature_off" else "F1"), kwargs
+
+
+@pytest.mark.parametrize("case", ["enabled", "feature_off", "frozen", "revoked", "stale", "rollback", "unsigned",
+                                  "kill", "wrong_digest"])
+def test_evaluate_bytes_decides_exactly_like_evaluate_on_the_same_bytes(tmp_path, case):
+    feature, kwargs = _scenario(tmp_path, case)
+    by_path = act.evaluate(feature, **kwargs)
+    assert act.evaluate_bytes(feature, **_bytes_kwargs(kwargs)) == by_path
+    assert by_path.enabled is (case == "enabled")
+
+
+def test_the_path_api_reads_each_file_once_and_the_bytes_api_reads_none(tmp_path, monkeypatch):
+    feature, kwargs = _scenario(tmp_path, "enabled")
+    reads = []
+    real = act._read_raw
+    monkeypatch.setattr(act, "_read_raw", lambda path, what: (reads.append(what), real(path, what))[1])
+    assert act.evaluate(feature, **kwargs).enabled is True
+    assert reads == ["activation config", "revocation state"]
+    reads.clear()
+    arguments = _bytes_kwargs(kwargs)   # captured before the files go away
+    Path(kwargs["config_path"]).unlink()
+    (Path(kwargs["runtime_root"]) / act.REVOCATION_RELATIVE).unlink()
+    assert act.evaluate_bytes(feature, **arguments).enabled is True and reads == []
+
+
+@pytest.mark.parametrize("config, revocation, fragment", [
+    ("{}", b"{}", "policy: activation config must be exact bytes"),
+    (bytearray(b"{}"), b"{}", "policy: activation config must be exact bytes"),
+    (b"x" * (act.MAX_FILE_BYTES + 1), b"{}", "policy: activation config exceeds"),
+    (None, b"{}", "policy: activation config must be exact bytes"),
+], ids=["str", "bytearray", "oversized", "none"])
+def test_evaluate_bytes_refuses_anything_but_bounded_exact_bytes(tmp_path, config, revocation, fragment):
+    feature, kwargs = _scenario(tmp_path, "enabled")
+    arguments = dict(_bytes_kwargs(kwargs), config_bytes=config, revocation_bytes=revocation)
+    decision = act.evaluate_bytes(feature, **arguments)
+    assert decision.enabled is False and decision.reason.startswith(fragment)
+
+
+def test_evaluate_bytes_refuses_a_non_bytes_revocation_after_the_policy_binds(tmp_path):
+    feature, kwargs = _scenario(tmp_path, "enabled")
+    decision = act.evaluate_bytes(feature, **dict(_bytes_kwargs(kwargs), revocation_bytes="{}"))
+    assert decision.enabled is False and decision.reason == "revocation/expiry: revocation state must be exact bytes"

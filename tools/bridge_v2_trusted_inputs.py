@@ -22,18 +22,14 @@ contract, section 3, "REQUIRED and NOT BUILT"), from inputs whose provenance it 
   OS lock. After F0 decided, ONE locked step re-reads the durable mark: a decision below a
   mark another caller raised meanwhile is refused, and a decision above it advances it
   (RCO1 N8). A missing mark is initialized from the packet floor; a corrupt one refuses.
-* F0 ``evaluate`` is called once with exactly those pins. The activation config and the
-  revocation state are read once, as bytes, before ``evaluate`` and must be byte-identical
-  after it: otherwise the inputs changed under the decision and the adapter refuses.
+* The activation config and the revocation state are read ONCE, as exact bytes, and F0
+  decides on those same bytes (``activation.evaluate_bytes``, RCO1 N9): the decision, the
+  returned ``document`` and the returned ``revocation`` all come from that one read, so no swap
+  of a file around a second read (an A-B-A) can make them disagree. A file changed after the
+  read is simply not part of this decision; the next call reads it.
 
-Residual limits, stated rather than claimed solved (RCO1 N9, N10):
+Residual limit, stated rather than claimed solved (RCO1 N10):
 
-* A-B-A: ``evaluate`` reads both files by path itself. The byte-identity check before and
-  after it cannot see bytes that were swapped out and back around F0's own read, so F0 may have
-  decided on other bytes than the returned ``document``/``revocation``. The switch adapter
-  re-derives the policy digest from the returned document and requires the Decision to agree,
-  which catches a different POLICY; a revocation state swapped and restored around F0's read
-  is not detected. Closing that needs an F0 entry point that takes the exact bytes.
 * The mark is only as durable as its file: deleting it resets the floor to the packet's
   ``min_revocation_version`` (so each signed packet must carry a current floor), and on Windows
   ``os.replace`` without a directory flush can be lost on power failure, with the same effect.
@@ -328,10 +324,10 @@ class HighWaterStore:
 def load_trusted_inputs(feature: str, *, packet_path: Path, packet_sha256: Any, manifest_path: Path,
                         manifest_anchor_sha256: Any, config_path: Path, runtime_root: Path, now: Any,
                         environ: Mapping[str, str] | None = None,
-                        evaluate: Callable[..., activation.Decision] | None = None) -> dict:
+                        evaluate_bytes: Callable[..., activation.Decision] | None = None) -> dict:
     """Assemble ``evidence.f0`` = {decision, pins, document, revocation} for one feature.
 
-    Raises TrustRefusal. ``evaluate`` defaults to F0's own and is injectable only for tests."""
+    Raises TrustRefusal. ``evaluate_bytes`` defaults to F0's own and is injectable only for tests."""
     _refuse(isinstance(feature, str) and activation.FEATURE_NAME.fullmatch(feature) is not None, "feature_unknown")
     current = _aware_utc(now)
     config_path, runtime_root = Path(config_path), Path(runtime_root)
@@ -353,14 +349,13 @@ def load_trusted_inputs(feature: str, *, packet_path: Path, packet_sha256: Any, 
     revocation_raw = _read_bytes(revocation_path, activation.MAX_FILE_BYTES, "revocation")
     document = _strict_json(config_raw, "config")
     revocation = _strict_json(revocation_raw, "revocation")
-    decision = (activation.evaluate if evaluate is None else evaluate)(
-        feature, config_path=config_path, runtime_root=runtime_root,
+    # F0 decides on the SAME captured bytes the evidence returns (RCO1 N9): no second read of the paths,
+    # so no A-B-A swap around a read can make the decision differ from the returned document and state.
+    decision = (activation.evaluate_bytes if evaluate_bytes is None else evaluate_bytes)(
+        feature, config_bytes=config_raw, revocation_bytes=revocation_raw,
         trusted_policy_sha256=packet["trusted_policy_sha256"], now=current, environ=environ,
         min_revocation_version=pin, expected_head=packet["expected_head"], expected_tree=packet["expected_tree"])
     _refuse(type(decision) is activation.Decision and decision.feature == feature, "decision_invalid")
-    _refuse(_read_bytes(config_path, activation.MAX_FILE_BYTES, "config") == config_raw
-            and _read_bytes(revocation_path, activation.MAX_FILE_BYTES, "revocation") == revocation_raw,
-            "inputs_changed_during_decision")
     # The durable floor is re-read and advanced in ONE locked step; a decision below a floor another caller
     # raised meanwhile is refused (RCO1 N8).
     store.settle_after_decision(pin, decision.revocation_version, current)

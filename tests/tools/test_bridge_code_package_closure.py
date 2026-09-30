@@ -249,6 +249,12 @@ def test_every_entrypoint_is_packaged():
     assert not missing, f"entrypoints that would not be delivered: {missing}"
 
 
+def test_the_shipped_bridge_component_doctor_is_packaged():
+    definition = _definition()
+    assert "tools/wd_bridge_doctor.py" in definition["python_files"]
+    assert definition["python_entrypoints"].get("bridge_doctor") == "tools/wd_bridge_doctor.py"
+
+
 # --- the parser's own fail-open modes, reproduced -------------------------------
 
 

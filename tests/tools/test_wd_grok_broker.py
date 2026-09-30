@@ -9,7 +9,7 @@ calls Grok, the real helper, F0, a clock or the network.
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import inspect
 import json
 from pathlib import Path
@@ -82,6 +82,47 @@ class SequenceClock(Clock):
 class BrokenClock(Clock):
     def now(self):
         raise OSError("clock unreadable")
+
+
+class _Stateful(tzinfo):
+    """+05:30 on the first utcoffset() read, None afterwards: a second read would look like LOCAL time."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def utcoffset(self, dt):
+        self.reads += 1
+        return timedelta(hours=5, minutes=30) if self.reads == 1 else None
+
+
+class _Unimplemented(tzinfo):
+    pass  # the base tzinfo.utcoffset raises NotImplementedError
+
+
+class _Delta(timedelta):
+    pass
+
+
+class _SubclassOffset(tzinfo):
+    def utcoffset(self, dt):
+        return _Delta(0)
+
+
+class _Sub(datetime):
+    pass
+
+
+class FreshZoneClock(Clock):
+    """Every read is a NEW +05:30 wall time for ``moment`` whose zone answers once, then None."""
+
+    def __init__(self, moment=NOW):
+        super().__init__(moment)
+        self.zones = []
+
+    def now(self):
+        self.reads += 1
+        self.zones.append(_Stateful())
+        return (self.moment + timedelta(hours=5, minutes=30)).replace(tzinfo=self.zones[-1])
 
 
 class Snapshot:
@@ -193,11 +234,14 @@ class AliasingLedger(Ledger):
         return super().reserve(admission)
 
 
-def run(config=ON, prompt=PROMPT, it=None, **over):
+_VALID = object()  # a sentinel, so it=None really passes None (RCO1 B2)
+
+
+def run(config=ON, prompt=PROMPT, it=_VALID, **over):
     ports = {"clock": Clock(), "snapshot": Snapshot(), "activation": Activation(), "helper": Helper(),
              "ledger": Ledger()}
     ports.update(over)
-    result = broker.GrokBroker(config, **ports).consult(intent() if it is None else it, prompt)
+    result = broker.GrokBroker(config, **ports).consult(intent() if it is _VALID else it, prompt)
     return result, ports
 
 
@@ -255,10 +299,11 @@ def test_wrong_or_understated_prompt_is_refused_before_any_port_is_read():
         assert untouched(ports) and ports["clock"].reads == 0
 
 
-@pytest.mark.parametrize("value", [
-    {"readonly": False, "head": HEAD, "tree": TREE},
-    {"readonly": True, "head": HEAD},
-    {"readonly": True, "head": HEAD.upper(), "tree": TREE},
+@pytest.mark.parametrize("value", [  # each dict is fresh, so the read-only/head/tree guard itself decides (RCO1 S2)
+    {"readonly": False, "head": HEAD, "tree": TREE, "observed_utc": stamp(NOW)},
+    {"readonly": 1, "head": HEAD, "tree": TREE, "observed_utc": stamp(NOW)},
+    {"readonly": True, "head": HEAD, "observed_utc": stamp(NOW)},
+    {"readonly": True, "head": HEAD.upper(), "tree": TREE, "observed_utc": stamp(NOW)},
     "a0633ef2",
 ])
 def test_f0_never_runs_without_an_exact_read_only_snapshot(value):
@@ -290,6 +335,9 @@ def test_f0_and_policy_come_from_the_activation_port(activation, verdict, reason
 
 @pytest.mark.parametrize("clock, verdict, reason", [
     (Clock(datetime(2026, 9, 30, 12, 0)), "blocked_unknown", "time_unknown"),  # naive
+    (Clock(_Sub(2026, 9, 30, 12, 0, tzinfo=timezone.utc)), "blocked_unknown", "time_unknown"),  # a subclass
+    (Clock(datetime(2026, 9, 30, 12, 0, tzinfo=_Unimplemented())), "blocked_unknown", "time_unknown"),  # raised
+    (Clock(datetime(2026, 9, 30, 12, 0, tzinfo=_SubclassOffset())), "blocked_unknown", "time_unknown"),
     (BrokenClock(), "blocked_unknown", "port_observation_unknown"),
     # F0 evaluated (by the port) at NOW, admission judged at NOW + 61 s: the F0 decision is stale
     (SequenceClock(NOW, NOW, NOW, NOW + timedelta(seconds=61)), "refuse", "f0_stale"),
@@ -468,6 +516,45 @@ def test_a_slow_but_still_valid_reservation_is_the_success_twin():
     result, ports = run(clock=clock, activation=live, ledger=SlowLedger(clock, timedelta(seconds=30)))
     assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
     assert len(ports["helper"].calls) == 1 and len(live.calls) == 2
+
+
+# --- every clock read takes the offset once (RCO2 23:49:44Z S1) -----------------------------------
+
+def test_every_clock_read_takes_the_offset_once_including_the_final_recheck():
+    """Read order: start, snapshot, F0, budget, ledger, now; then the recheck's F0 and now (8 reads)."""
+    clock = FreshZoneClock()
+    result, ports = run(clock=clock)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+    assert clock.reads == 8 and [zone.reads for zone in clock.zones] == [1] * 8  # never a second (local) read
+    assert result["admission"]["admitted_utc"] == "2026-09-30T12:00:00Z"
+
+
+@pytest.mark.parametrize("late", [
+    _Sub(2026, 9, 30, 12, 0, 5, tzinfo=timezone.utc),  # a datetime subclass
+    datetime(2026, 9, 30, 12, 0, 5, tzinfo=_Unimplemented()),  # NotImplementedError, never raised out
+    datetime(2026, 9, 30, 12, 0, 5, tzinfo=_SubclassOffset()),  # a timedelta subclass offset
+    datetime.max.replace(tzinfo=timezone(-timedelta(hours=23, minutes=59))),  # past datetime.max in UTC
+    datetime(2026, 9, 30, 12, 0, 5),  # naive
+])
+def test_an_unknown_time_at_the_final_recheck_is_never_paid_for(late):
+    clock = SequenceClock(*([NOW] * 7), late)
+    result, ports = run(clock=clock)
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "time_unknown"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].reserved) == 1  # spent: reserved, never refunded
+    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", "time_unknown"]]
+
+
+@pytest.mark.parametrize("zone_now", [
+    lambda: datetime(2026, 9, 30, 17, 30, 5, tzinfo=_Stateful()),  # a stateful zone, read once
+    lambda: datetime(2026, 9, 30, 4, 30, 5, 999999, tzinfo=timezone(-timedelta(hours=7, minutes=30))),
+])
+def test_a_zoned_clock_at_the_final_recheck_is_the_success_twin(zone_now):
+    late = zone_now()
+    clock = SequenceClock(*([NOW] * 7), late)
+    result, ports = run(clock=clock)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and len(ports["helper"].calls) == 1
+    if isinstance(late.tzinfo, _Stateful):
+        assert late.tzinfo.reads == 1
 
 
 # --- the intent and the prompt (RCO2 SF1/SF2/N1/N2; Tools f907 #3) -------------------------------

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import hashlib
 from pathlib import Path
 
@@ -15,6 +15,35 @@ import pytest
 
 from tools import bridge_v2_grok_route as route
 from tools.bridge_v2_activation import Decision, canonical_sha256
+
+
+class _Stateful(tzinfo):
+    """+05:30 on the first utcoffset() read, None afterwards: a second read would look like LOCAL time."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def utcoffset(self, dt):
+        self.reads += 1
+        return timedelta(hours=5, minutes=30) if self.reads == 1 else None
+
+
+class _Unimplemented(tzinfo):
+    pass  # the base tzinfo.utcoffset raises NotImplementedError
+
+
+class _Delta(timedelta):
+    pass
+
+
+class _SubclassOffset(tzinfo):
+    def utcoffset(self, dt):
+        return _Delta(0)
+
+
+class _Sub(datetime):
+    pass
+
 
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 HEAD, TREE = "a" * 40, "b" * 40
@@ -92,6 +121,13 @@ def test_intent_is_typed_advice_and_never_a_worker_wake():
 
 @pytest.mark.parametrize("change, code", [
     ({"now": datetime(2026, 9, 30, 12, 0)}, "time_unknown"),
+    ({"now": "2026-09-30T11:59:30Z"}, "time_unknown"),
+    ({"now": _Sub(2026, 9, 30, 11, 59, 30, tzinfo=timezone.utc)}, "time_unknown"),  # a datetime subclass
+    ({"now": datetime(2026, 9, 30, 11, 59, 30, tzinfo=_Unimplemented())}, "time_unknown"),  # NotImplementedError
+    ({"now": datetime(2026, 9, 30, 11, 59, 30, tzinfo=_SubclassOffset())}, "time_unknown"),  # a timedelta subclass
+    ({"now": datetime.max.replace(tzinfo=timezone(-timedelta(hours=23, minutes=59)))}, "time_unknown"),  # > max
+    ({"now": datetime.min.replace(tzinfo=timezone(timedelta(hours=23, minutes=59)))}, "time_unknown"),  # < min
+    ({"now": datetime.max.replace(tzinfo=timezone.utc)}, "time_unknown"),  # its expiry would pass datetime.max
     ({"task_id": "-leading-dash"}, "task_id_invalid"),
     ({"task_id": "a" * 161}, "task_id_invalid"),
     ({"request_id": "Z" * 32}, "request_id_invalid"),
@@ -122,10 +158,33 @@ def test_a_multibyte_prompt_is_counted_in_utf8_bytes():
     assert made["prompt_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def test_prepare_reads_the_offset_once_and_never_takes_local_time():
+    zone = _Stateful()
+    made = intent(now=datetime(2026, 9, 30, 17, 29, 30, tzinfo=zone))
+    assert (made["created_utc"], made["expires_utc"]) == ("2026-09-30T11:59:30Z", "2026-09-30T12:09:30Z")
+    assert zone.reads == 1  # read once: a second read (astimezone) would answer None and mean local time
+
+
+def test_ordinary_zones_and_the_range_edge_are_the_success_twins():
+    west = datetime(2026, 9, 30, 4, 29, 30, 999999, tzinfo=timezone(-timedelta(hours=7, minutes=30)))
+    assert intent(now=west) == intent()  # the same instant as NOW - 30 s, whole seconds
+    edge = intent(now=datetime(9999, 12, 31, 22, 0, tzinfo=timezone.utc), ttl_seconds=3600)
+    assert (edge["created_utc"], edge["expires_utc"]) == ("9999-12-31T22:00:00Z", "9999-12-31T23:00:00Z")
+    assert route.utc_stamp(datetime(999, 1, 1, tzinfo=timezone.utc)) == "0999-01-01T00:00:00Z"  # four digits
+
+
 def test_port_time_helpers_keep_precision_and_refuse_unknown_times():
     fine = NOW + timedelta(microseconds=500000)
     assert route.aware_utc(fine) == fine and route.aware_utc(datetime(2026, 9, 30, 12, 0)) is None
     assert route.aware_utc("2026-09-30T12:00:00Z") is None
+    east = datetime(2026, 9, 30, 17, 30, 0, 250000, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    assert route.aware_utc(east) == NOW + timedelta(microseconds=250000)  # full precision, in UTC
+    zone = _Stateful()
+    assert route.aware_utc(datetime(2026, 9, 30, 17, 30, tzinfo=zone)) == NOW and zone.reads == 1
+    for unknown in (_Sub(2026, 9, 30, 12, 0, tzinfo=timezone.utc), datetime(2026, 9, 30, 12, 0, tzinfo=_Unimplemented()),
+                    datetime(2026, 9, 30, 12, 0, tzinfo=_SubclassOffset()),
+                    datetime.min.replace(tzinfo=timezone(timedelta(hours=23, minutes=59)))):
+        assert route.aware_utc(unknown) is None and route.utc_stamp(unknown) is None  # never raised
     assert route.parse_utc("2026-09-30T12:00:00Z") == NOW
     assert route.parse_utc(fine.isoformat()) == fine
     assert route.parse_utc("2026-09-30T12:00:00") is None and route.parse_utc(None) is None
@@ -366,4 +425,6 @@ def test_route_module_is_pure():
     called = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
     assert not attributes & {"now", "utcnow", "today", "environ", "getenv", "read_text", "write_text", "run", "Popen"}
     assert not called & {"open", "exec", "eval", "__import__"}
+    assert "astimezone" not in attributes  # no zone conversion and no local-time fallback anywhere in the route
+    assert sum(isinstance(node, ast.Attribute) and node.attr == "utcoffset" for node in ast.walk(tree)) == 1
     assert "exception_path" not in source and "exception_sha256" not in source

@@ -72,27 +72,40 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+MAX_OFFSET = timedelta(hours=24)  # datetime's own bound: an offset strictly inside +-24 h
+
+
 def _stamp(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """'YYYY-MM-DDTHH:MM:SSZ' (four-digit year, whole seconds) of a datetime that is ALREADY UTC: every caller
+    passes an _aware or _utc result. Nothing here reads an offset or converts a zone."""
+    return moment.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
 
 
 def _aware(now: Any) -> datetime | None:
-    if not isinstance(now, datetime) or now.utcoffset() is None:
-        return None
+    """``now`` in UTC at full precision, or None (unknown). The one rule of the F3/F24 normalizers: exactly a
+    datetime; its offset read ONCE, inside the try; exactly a timedelta strictly inside +-24 h; the naive wall
+    time minus that offset, marked UTC. There is no astimezone and no local-time fallback, so a stateful
+    tzinfo (an offset, then None) or a subclass can never make a wall time pass as local time. Every
+    ordinary error (NotImplementedError, TypeError, ValueError, OverflowError past datetime.min/max) is None."""
     try:
-        return now.astimezone(timezone.utc)
-    except (OverflowError, ValueError):
+        if type(now) is not datetime:
+            return None
+        offset = now.utcoffset()
+        if type(offset) is not timedelta or not -MAX_OFFSET < offset < MAX_OFFSET:
+            return None  # naive (None), a timedelta subclass, anything else, or out of range
+        return (now.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 - an unreadable or unrepresentable time is unknown, never raised
         return None
 
 
 def utc_stamp(moment: Any) -> str | None:
-    """A whole-second UTC stamp of an aware datetime; None when it is naive or out of range (unknown)."""
+    """A whole-second UTC stamp; None when the time is unknown (see _aware)."""
     aware = _aware(moment)
     return None if aware is None else _stamp(aware)
 
 
 def aware_utc(moment: Any) -> datetime | None:
-    """An aware datetime in UTC at full precision; None when it is naive, out of range or not a datetime."""
+    """The time in UTC at full precision; None when it is unknown (see _aware)."""
     return _aware(moment)
 
 
@@ -138,12 +151,15 @@ def prepare_grok_consult(*, task_id: Any, request_id: Any, request_revision: Any
     for ok, code in checks:
         if not ok:
             raise RouteError(code)
+    try:
+        expires = moment + timedelta(seconds=ttl_seconds)
+    except OverflowError:
+        raise RouteError("time_unknown") from None  # an expiry past datetime.max is unknown, never raised raw
     return {"schema": INTENT_SCHEMA, "feature": FEATURE, "task_id": task_id, "request_id": request_id,
             "request_revision": request_revision, "prompt_sha256": prompt_sha256(prompt),
             "prompt_bytes": len(prompt.encode("utf-8")), "snapshot": dict(snapshot), "model": model,
             "effort": effort, "budget_class": budget_class, "authorization_ref": authorization_ref,
-            "nonce": nonce, "created_utc": _stamp(moment),
-            "expires_utc": _stamp(moment + timedelta(seconds=ttl_seconds)), "wakes_worker": False}
+            "nonce": nonce, "created_utc": _stamp(moment), "expires_utc": _stamp(expires), "wakes_worker": False}
 
 
 def _result(verdict: str, reasons: list, intent_sha256: str | None, **extra) -> dict:

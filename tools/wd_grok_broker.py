@@ -24,7 +24,7 @@ A missing port or an unreadable fact is blocked_unknown, never a simulated readi
 Order: the admission config must be on (default OFF), every port must exist, and the
 prompt must be exactly a str, valid UTF-8, bounded, and match the intent's digest and
 byte count. Then the pure ``admit`` runs and the durable ledger reserves the admission.
-The reservation may be slow, so IMMEDIATELY before the one helper call the broker
+The reservation may be slow, so as the last step before the one helper call the broker
 re-evaluates F0 at the same snapshot, reads the clock again and re-runs ``admit`` on the
 refreshed F0 and the original facts: an expired intent, a revoked or stale F0, or a fact
 now too old stops the call, and the reserved entry is finished as refused (the ledger
@@ -33,6 +33,23 @@ bind to the intent (``bind_answer``); any exception after the reservation still 
 the entry. An exception leaves the helper's own durable reservation in place, so
 admission then refuses as reserved or interrupted_or_unknown until the helper reconciles
 it: there is no refund and no retry.
+
+Every clock read goes through the route's ``aware_utc``: exactly a datetime, its offset
+read ONCE as exactly a timedelta inside +-24 h, the naive wall time minus that offset
+marked UTC, with no astimezone and no local-time fallback. An unknown time at any read
+(including the final recheck) is time_unknown, so consult stays total.
+
+What this does NOT prove (disclosed):
+* The gap between the passed recheck and the helper actually starting its attempt is NOT
+  bounded: a scheduler delay, a slow process or a slow helper start can let the intent
+  expire in that gap. bind_answer then refuses the late attempt, but the attempt (and any
+  cost) is already spent. The broker does NOT claim that no paid call can happen after
+  expiry under an arbitrary scheduling delay; it claims only that no call starts after a
+  FAILED recheck.
+* Port honesty is unproven: a port that stamps a stale fact as fresh, an F0 port that
+  ignores the expected head/tree, a clock that lies, or a helper that ignores its own hour
+  defeats these checks. The ports' own review, the pinned read-only source and the
+  helper's independent hourly state are the backstops.
 """
 from __future__ import annotations
 
@@ -53,7 +70,7 @@ MAX_INTENT_BYTES = 16 * 1024
 
 
 class ClockPort(Protocol):
-    def now(self) -> Any: ...  # an aware datetime
+    def now(self) -> Any: ...  # exactly an aware datetime; anything else reads as time_unknown (aware_utc)
 
 
 class SnapshotPort(Protocol):

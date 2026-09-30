@@ -533,13 +533,39 @@ function Remove-BridgeSessionHeartbeat {
 
 function Test-BridgeSessionHeartbeatLive {
     <#
-        Is the session that owns this claim still beating?
+        Is the session that owns this claim provably still beating?
 
-        Fail-closed in every ambiguous direction: no owner fields on the
-        claim, no artifact, unreadable artifact, a missing or malformed
-        timestamp, identity mismatch, or a beat older than the recorded
-        TTL all return $false, which means the sweeper behaves exactly as
-        it did before B7.
+        $true only when Get-BridgeSessionHeartbeatLiveness says 'live'.
+        $false is NOT proof of abandonment: a sweeper must call
+        Get-BridgeSessionHeartbeatLiveness and act on 'not_live' only.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] $Claim,
+        [Parameter(Mandatory)] [DateTime] $NowUtc,
+        [int] $MaxTtlSeconds = 0
+    )
+
+    return ((Get-BridgeSessionHeartbeatLiveness -Root $Root -Claim $Claim -NowUtc $NowUtc `
+        -MaxTtlSeconds $MaxTtlSeconds) -ceq 'live')
+}
+
+function Get-BridgeSessionHeartbeatLiveness {
+    <#
+        'live', 'not_live' or 'unknown' for the session that owns this claim.
+
+        'not_live' is proof: no owner fields on the claim (no heartbeat
+        protection, the rule before B7), no artifact, a readable beat that
+        names another identity, a future-dated beat, or a beat older than
+        the recorded TTL.
+
+        A-F1 (RCO1 2026-09-30; Fable review 99897de5, Lead d06fbf85): an
+        artifact that EXISTS but cannot be read or evaluated (an access,
+        sharing or I/O error, invalid UTF-8, torn, empty or non-object JSON,
+        a missing or malformed timestamp on the owner's own beat, a
+        directory in its place) is 'unknown', never 'not_live': a sweeper
+        keeps a claim it cannot prove abandoned, as the core sweeper
+        (waggledance/core/work_queue.py _session_heartbeat_state) does.
     #>
     param(
         [Parameter(Mandatory)] [string] $Root,
@@ -549,26 +575,41 @@ function Test-BridgeSessionHeartbeatLive {
     )
 
     if ($MaxTtlSeconds -le 0) { $MaxTtlSeconds = $script:BridgeSessionHeartbeatTtlMax }
-    if (-not $Claim.PSObject.Properties['owner_session_id']) { return $false }
-    if (-not $Claim.PSObject.Properties['owner_token_sha256']) { return $false }
+    if (-not $Claim.PSObject.Properties['owner_session_id']) { return 'not_live' }
+    if (-not $Claim.PSObject.Properties['owner_token_sha256']) { return 'not_live' }
     $claimSession = [string]$Claim.owner_session_id
     $claimToken = [string]$Claim.owner_token_sha256
-    if (-not $claimSession -or -not $claimToken) { return $false }
+    if (-not $claimSession -or -not $claimToken) { return 'not_live' }
 
     $path = Get-BridgeSessionHeartbeatPath -Root $Root -SessionId $claimSession `
         -TokenSha256 $claimToken
-    if (-not $path) { return $false }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    if (-not $path) { return 'not_live' }
+    # Only a missing file or directory proves absence: Test-Path also
+    # answers $false when the probe itself fails.
     try {
-        $beat = Get-Content -Raw -LiteralPath $path -Encoding UTF8 |
-            ConvertFrom-Json -ErrorAction Stop
-    } catch { return $false }
-
-    foreach ($field in @('owner_session_id', 'owner_token_sha256', 'last_beat_utc')) {
-        if (-not $beat.PSObject.Properties[$field]) { return $false }
+        $attributes = [IO.File]::GetAttributes($path)
+    } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+        return 'not_live'
+    } catch { return 'unknown' }
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return 'unknown' }
+    try {
+        $text = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding($false, $true)))
+    } catch { return 'unknown' }
+    # One JSON object only: pwsh 7 would unroll '[{...}]' into its element.
+    if ($null -eq $text -or -not $text.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) {
+        return 'unknown'
     }
-    if ([string]$beat.owner_session_id -cne $claimSession) { return $false }
-    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return $false }
+    try {
+        $beat = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch { return 'unknown' }
+    if ($beat -isnot [System.Management.Automation.PSCustomObject]) { return 'unknown' }
+
+    foreach ($field in @('owner_session_id', 'owner_token_sha256')) {
+        if (-not $beat.PSObject.Properties[$field]) { return 'not_live' }
+    }
+    if ([string]$beat.owner_session_id -cne $claimSession) { return 'not_live' }
+    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return 'not_live' }
+    if (-not $beat.PSObject.Properties['last_beat_utc']) { return 'unknown' }
 
     $ttl = $script:BridgeSessionHeartbeatTtlDefault
     if ($beat.PSObject.Properties['ttl_seconds']) {
@@ -589,10 +630,11 @@ function Test-BridgeSessionHeartbeatLive {
             [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
                 [System.Globalization.DateTimeStyles]::AdjustToUniversal
         ).ToUniversalTime()
-    } catch { return $false }
-    if ($null -eq $beatUtc) { return $false }
+    } catch { return 'unknown' }
+    if ($null -eq $beatUtc) { return 'unknown' }
     # A future-dated beat is treated as not live: clock skew must not be
     # a way to pin a claim open forever.
-    if ($beatUtc -gt $NowUtc.AddSeconds(60)) { return $false }
-    return ((($NowUtc - $beatUtc).TotalSeconds) -le $ttl)
+    if ($beatUtc -gt $NowUtc.AddSeconds(60)) { return 'not_live' }
+    if ((($NowUtc - $beatUtc).TotalSeconds) -le $ttl) { return 'live' }
+    return 'not_live'
 }

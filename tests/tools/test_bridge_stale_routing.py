@@ -1,5 +1,6 @@
 """Stale-lease routing on both platforms, plus the real writer's platform fence."""
 
+import contextlib
 import hashlib
 import json
 import os
@@ -278,3 +279,93 @@ def test_stale_sweep_leaves_an_owned_claim_while_its_owner_beat_lock_is_held(
         encoding="utf-8-sig"
     ).splitlines()]
     assert [(event["type"], event["status"]) for event in events] == [("release", "stale_lease")]
+
+
+@contextlib.contextmanager
+def _held_without_sharing(path: Path):
+    """Keep ``path`` open with share mode 0, as an antivirus or backup reader can: every other open fails."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)   # GENERIC_READ, OPEN_EXISTING
+    assert handle not in (None, wintypes.HANDLE(-1).value), ctypes.get_last_error()
+    try:
+        yield
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+# A-F1 (Fable review 99897de5, Lead d06fbf85): an owner beat that EXISTS but cannot be read or evaluated is
+# unknown, never "not live", so the sweep keeps the expired claim this round, as the core sweeper
+# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment is unchanged: no beat, a
+# readable beat of another identity, an expired or a future-dated beat. At 7bf841ff the unknown rows archived.
+@pytest.mark.skipif(os.name != "nt", reason="the share-locked beat and the sweep's file locks are Windows-only")
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize(("beat_kind", "archived"), [
+    ("absent", True), ("expired", True), ("future", True), ("foreign", True), ("fresh", False),
+    ("fresh_share_locked", False), ("torn", False), ("empty", False), ("not_object", False),
+    ("bad_time", False), ("directory", False),
+])
+def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_evaluated(
+    tmp_path: Path, shell: str, beat_kind: str, archived: bool,
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    runtime = tmp_path / "runtime"
+    claims = runtime / "work_queue/claims"
+    claims.mkdir(parents=True)
+    (runtime / "shared").mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=20)
+    session, token_sha = "tools-session-unknown", hashlib.sha256(b"unknown-token").hexdigest()
+    claim = claims / "stale-unknown.json"
+    claim.write_text(json.dumps({
+        "task_id": "codex-lead-1/stale-unknown", "agent": "codex-tools-1",
+        "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102", "owner_session_id": session,
+        "owner_token_sha256": token_sha, "run_id": session, "claimed_at_utc": past.isoformat(),
+        "last_heartbeat_utc": past.isoformat(), "lease_seconds": 60,
+        "claim_lease_expires_utc": (past + timedelta(minutes=1)).isoformat(),
+        "write_scope": ["tests/tools/test_bridge_stale_routing.py"],
+    }), encoding="utf-8")
+    digest = hashlib.sha256(f"{session}\n{token_sha}".encode("utf-8")).hexdigest()
+    beat = runtime / "work_queue/heartbeats" / f"{digest}.json"
+    beat.parent.mkdir(parents=True)
+
+    def body(owner_token: str, last_beat: str) -> str:
+        return json.dumps({"owner_session_id": session, "owner_token_sha256": owner_token,
+                           "last_beat_utc": last_beat, "ttl_seconds": 180})
+
+    def stamp(moment: datetime) -> str:                              # the writer's own UTC 'o' form
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    contents = {
+        "expired": body(token_sha, stamp(now - timedelta(minutes=30))),
+        "future": body(token_sha, stamp(now + timedelta(minutes=10))),
+        "foreign": body(hashlib.sha256(b"someone-else").hexdigest(), stamp(now)),
+        "fresh": body(token_sha, stamp(now)), "fresh_share_locked": body(token_sha, stamp(now)),
+        "torn": '{"owner_session_id": "', "empty": "", "not_object": "[]",
+        "bad_time": body(token_sha, "not a time"),
+    }
+    if beat_kind == "directory":
+        beat.mkdir()
+    elif beat_kind in contents:
+        beat.write_bytes(contents[beat_kind].encode("utf-8"))
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+    sweep = _fixture_sweep(tmp_path, real_writer=False)
+    command = [executable, "-NoProfile", "-NonInteractive", "-File", str(sweep), "-StaleSeconds", "1", "-Quiet"]
+    held = _held_without_sharing(beat) if beat_kind == "fresh_share_locked" else contextlib.nullcontext()
+    with held:
+        done = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    swept = list((runtime / "work_queue/done").glob("*.stale_lease.json"))
+    if archived:
+        assert len(swept) == 1 and not claim.exists(), beat_kind
+    else:
+        assert not swept and claim.exists(), (beat_kind, done.stdout + done.stderr)

@@ -297,8 +297,11 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     # session is still beating is live work, not a leak. The check binds
     # owner_session_id plus owner_token_sha256; the recorded pid is
     # deliberately never consulted, because pids are recycled.
-    if (Test-BridgeSessionHeartbeatLive -Root $bridgeRoot -Claim $claim `
-            -NowUtc $now) {
+    # A-F1 (RCO1 2026-09-30): only a PROVEN not-live owner is swept; a beat
+    # that exists but cannot be read or evaluated is 'unknown' and the
+    # claim stays this round, as in the core sweeper.
+    if ((Get-BridgeSessionHeartbeatLiveness -Root $bridgeRoot -Claim $claim `
+            -NowUtc $now) -cne 'not_live') {
         continue
     }
 

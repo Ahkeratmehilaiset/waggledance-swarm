@@ -258,3 +258,63 @@ def test_the_real_source_feeds_the_stop_port_and_nothing_is_signalled():
     off = (_utc(facts["process_started_at"]) + timedelta(microseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     assert ports.stop("self", os.getpid(), off) is False
     assert recorded == [os.getpid()] and ports.evidence[-1]["cause"] == "process_identity_mismatch"
+
+
+# -- RCO1 F16-N1: an exit code is not liveness. 259 (STILL_ACTIVE) is a legal exit code, so a process that EXITED
+# -- with it was reported live; the handle's signalled state is the only liveness fact.
+
+@windows_only
+@pytest.mark.parametrize("code", [259, 3, 0], ids=["exit_259", "exit_3", "exit_0"])
+def test_an_exited_child_is_none_whatever_its_exit_code(code):
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(%d)" % code])
+    assert child.wait() == code  # Popen keeps its handle, so the exited process object stays openable by pid
+    assert ports_module.windows_process_facts(child.pid) is None
+
+
+@windows_only
+def test_a_live_child_gives_facts_and_a_missing_pid_is_none():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        facts = ports_module.windows_process_facts(child.pid)
+        assert facts is not None and (facts["pid"], facts["source"]) == (child.pid, "GetProcessTimes")
+        assert facts == ports_module.windows_process_facts(child.pid)          # the same instant, read twice
+    finally:
+        child.kill()
+        child.wait()
+    assert ports_module.windows_process_facts(child.pid) is None             # killed: signalled, not live
+    assert ports_module.windows_process_facts(0xFFFFFFF0) is None            # no such process
+
+
+class _FakeKernel32:
+    """A kernel32 stand-in for one process whose wait returns ``wait``; it records every call."""
+
+    def __init__(self, wait: int) -> None:
+        self.calls, self.wait = [], wait
+        for name in ("OpenProcess", "GetExitCodeProcess", "GetProcessTimes", "CloseHandle", "WaitForSingleObject"):
+            setattr(self, name, self._recorder(name))
+
+    def _recorder(self, name):
+        def call(*args):
+            self.calls.append(name)
+            if name == "OpenProcess":
+                return 1234
+            if name == "WaitForSingleObject":
+                return self.wait
+            if name == "GetExitCodeProcess":
+                args[1]._obj.value = 259                                  # "still active" by exit code
+            if name == "GetProcessTimes":
+                args[1]._obj.dwLowDateTime, args[1]._obj.dwHighDateTime = 0, 0x01DB0000
+            return 1
+        return call
+
+
+@windows_only
+@pytest.mark.parametrize("wait", [0xFFFFFFFF, 0x00000080, 0x00000001], ids=["wait_failed", "abandoned", "other"])
+def test_a_wait_that_is_neither_signalled_nor_timeout_is_unknown_and_the_handle_is_closed(monkeypatch, wait):
+    import ctypes
+    fake = _FakeKernel32(wait)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: fake)
+    with pytest.raises(OSError):
+        ports_module.windows_process_facts(4242)
+    assert "WaitForSingleObject" in fake.calls and fake.calls[-1] == "CloseHandle"
+    assert "GetProcessTimes" not in fake.calls                                # never measured after an unknown wait

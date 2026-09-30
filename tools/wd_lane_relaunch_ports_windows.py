@@ -53,7 +53,9 @@ def _same_source_instant(a: Any, b: Any) -> bool:
 
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_STILL_ACTIVE = 259
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
 _ERROR_INVALID_PARAMETER = 87
 _FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 
@@ -62,10 +64,13 @@ def windows_process_facts(pid: int) -> dict | None:
     """READ-ONLY facts of one live process from ONE kernel source: ``{pid, process_started_at, source}``.
 
     The creation instant comes from GetProcessTimes (100 ns FILETIME, reported in whole microseconds, so the
-    same process always yields the same string). A process that does not exist, or has exited, is None. Any
-    other failure to read it (for example access denied) raises OSError: unknown, never "absent". It opens
-    the process for limited query only and closes the handle; it never signals, suspends or stops anything.
-    The executor's ``processes``/``measure`` ports must use this same source for the exact-instant identity."""
+    same process always yields the same string). A process that does not exist, or has exited, is None.
+    Liveness is the process handle's signalled state (WaitForSingleObject with a zero timeout), never its exit
+    code: 259 (STILL_ACTIVE) is a legal exit code, so a process that exited with it is not live (RCO1 F16-N1).
+    Any other failure to read it (access denied, a failed or unexpected wait) raises OSError: unknown, never
+    "absent" or "live". It opens the process for limited query and SYNCHRONIZE only and closes the handle; it
+    never signals, suspends or stops anything. The executor's ``processes``/``measure`` ports must use this
+    same source for the exact-instant identity."""
     if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
         raise ValueError("a process id must be a positive 32-bit integer")
     import ctypes
@@ -75,22 +80,23 @@ def windows_process_facts(pid: int) -> dict | None:
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
     kernel32.GetProcessTimes.restype = wintypes.BOOL
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, pid)
     if not handle:
         error = ctypes.get_last_error()
         if error == _ERROR_INVALID_PARAMETER:
             return None   # no such process
         raise OSError(error, "OpenProcess failed; the process facts are unknown")
     try:
-        code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            raise OSError(ctypes.get_last_error(), "GetExitCodeProcess failed; the process facts are unknown")
-        if code.value != _STILL_ACTIVE:
-            return None   # exited: its times still exist, but it is not a live process
+        wait = kernel32.WaitForSingleObject(handle, 0)
+        if wait == _WAIT_OBJECT_0:
+            return None   # signalled: exited, whatever its exit code (its times still exist; it is not live)
+        if wait != _WAIT_TIMEOUT:
+            raise OSError(ctypes.get_last_error(), "WaitForSingleObject returned 0x%08x; the process facts are "
+                                                   "unknown" % wait)
         created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
         if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel),
                                         ctypes.byref(user)):

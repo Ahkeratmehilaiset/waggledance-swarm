@@ -96,6 +96,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -364,18 +365,42 @@ def _replace_atomic(path: Path, data: bytes) -> None:
         _discard(temp)
 
 
+def _open_lock(lock_path: Path) -> Any:
+    """Open (creating if needed) the sibling lock file read/write without truncating it. Where the
+    platform supports it (POSIX), O_NOFOLLOW makes a symlink swapped in after the guard fail the
+    open instead of being followed."""
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                 0o600)
+    try:
+        return os.fdopen(fd, "r+b")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 class FileClaimLock:
     """The legacy sibling lock, Python side. Windows: an open handle (a PowerShell
     ``FileShare.None`` open fails while it exists, and ours fails while PowerShell holds
-    one) plus a byte lock against other Python holders. POSIX: ``flock``."""
+    one) plus a byte lock against other Python holders. POSIX: ``flock``.
+
+    The sibling ``<claim>.json.lock`` is its own filesystem object (Tools 51ada W-LOCK-PATH, RCO1
+    214bb4f6 notice). Immediately BEFORE EACH open attempt, inside the runtime-root mutex hold when
+    used through QueueTransactions, its path is re-walked with ``_guard``: every existing component,
+    the leaf included, must be free of links, junctions/reparse points, alias segments and '..',
+    and an existing leaf must be a regular file. A directory or linked leaf is refused AT ONCE
+    (``QueueTransactionError``, never waited on as contention). Where O_NOFOLLOW exists, a link
+    swapped in after the check fails the open and is refused. On Windows (no O_NOFOLLOW) a
+    check-then-open race remains; physical aliases (hard links) and fencing of legacy writers are
+    NOT proven."""
 
     @contextmanager
     def hold(self, lock_path: Path, timeout_seconds: float) -> Iterator[None]:
         deadline = time.monotonic() + timeout_seconds
         while True:
             stream = None
+            _guard(Path(lock_path), "claim lock")   # every attempt: the leaf and all its ancestors
             try:
-                stream = open(lock_path, "a+b")
+                stream = _open_lock(Path(lock_path))
                 if os.name == "nt":
                     import msvcrt
                     stream.seek(0)
@@ -384,11 +409,15 @@ class FileClaimLock:
                     import fcntl
                     fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
                 if stream is not None:
                     stream.close()
+                if getattr(exc, "errno", None) == getattr(errno, "ELOOP", None) or isinstance(exc, IsADirectoryError):
+                    # O_NOFOLLOW refused a link (or the leaf is a directory) that appeared after the
+                    # guard: a refusal, never contention to wait on.
+                    raise QueueTransactionError("claim lock path is a link or directory at open time") from None
                 if time.monotonic() >= deadline:
-                    raise LockTimeout("claim lock busy: " + lock_path.name) from None
+                    raise LockTimeout("claim lock busy: " + Path(lock_path).name) from None
                 time.sleep(LOCK_RETRY_SECONDS)
         try:
             yield

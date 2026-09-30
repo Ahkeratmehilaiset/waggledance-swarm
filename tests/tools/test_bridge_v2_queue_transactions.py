@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -640,3 +641,60 @@ def test_modules_never_import_waggledance_and_read_the_environment_in_one_place_
         # The consumer-facing facade's resolve_bridge_root is the single documented env reader.
         assert readers <= ({"resolve_bridge_root"} if name == "bridge_v2_work_queue.py" else set()), (name, readers)
         assert not module_level, name
+
+
+# -- W-LOCK-PATH: FileClaimLock re-walks the sibling lock leaf before EACH open attempt --
+
+def test_file_claim_lock_refuses_a_linked_leaf_before_any_open(tmp_path, monkeypatch):
+    outside = tmp_path / "outside.lock"
+    outside.write_bytes(b"")
+    lock = tmp_path / "root" / "work_queue" / "claims" / "task.json.lock"
+    _link_or_skip(lock, outside)
+    opened = []
+    monkeypatch.setattr(qt, "_open_lock", lambda path: opened.append(path))
+    with pytest.raises(QueueTransactionError, match="link"):
+        with qt.FileClaimLock().hold(lock, 2.0):
+            pytest.fail("the body must not run")
+    assert opened == [] and outside.read_bytes() == b""       # refused at once: no open, no wait
+
+
+def test_file_claim_lock_refuses_a_directory_leaf_before_any_open(tmp_path, monkeypatch):
+    lock = tmp_path / "work_queue" / "claims" / "task.json.lock"
+    lock.mkdir(parents=True)
+    opened = []
+    monkeypatch.setattr(qt, "_open_lock", lambda path: opened.append(path))
+    with pytest.raises(QueueTransactionError, match="not a regular file"):
+        with qt.FileClaimLock().hold(lock, 2.0):
+            pytest.fail("the body must not run")
+    assert opened == []
+
+
+def test_file_claim_lock_rechecks_the_leaf_before_each_attempt_and_survives_short_contention(tmp_path, monkeypatch):
+    lock = tmp_path / "work_queue" / "claims" / "task.json.lock"
+    lock.parent.mkdir(parents=True)
+    guarded, attempts = [], []
+    real_guard, real_open = qt._guard, qt._open_lock
+    monkeypatch.setattr(qt, "_guard", lambda path, kind, leaf="file": guarded.append(kind) or real_guard(path, kind, leaf))
+
+    def contended_once(path):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise BlockingIOError(errno.EAGAIN, "held by another process")   # contention: retried
+        return real_open(path)
+    monkeypatch.setattr(qt, "_open_lock", contended_once)
+    ran = []
+    with qt.FileClaimLock().hold(lock, 2.0):
+        ran.append(True)
+    assert ran == [True] and len(attempts) == 2 and guarded == ["claim lock", "claim lock"]   # a guard per open
+
+
+def test_file_claim_lock_refuses_a_link_swapped_in_after_the_guard(tmp_path, monkeypatch):
+    lock = tmp_path / "work_queue" / "claims" / "task.json.lock"
+    lock.parent.mkdir(parents=True)
+
+    def swapped(path):
+        raise OSError(errno.ELOOP, "O_NOFOLLOW refused a symbolic link")   # the race, as POSIX reports it
+    monkeypatch.setattr(qt, "_open_lock", swapped)
+    with pytest.raises(QueueTransactionError, match="link or directory at open time"):
+        with qt.FileClaimLock().hold(lock, 2.0):
+            pytest.fail("the body must not run")

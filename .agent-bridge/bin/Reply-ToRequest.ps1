@@ -52,6 +52,34 @@ function Get-ExactField {
     return $null
 }
 
+function Get-JsonNestingDepth {
+    # Containers only: each object or array is one level, a scalar adds none.
+    param($Value)
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return 0 }
+    $deepest = 0
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $depth = Get-JsonNestingDepth $property.Value
+            if ($depth -gt $deepest) { $deepest = $depth }
+        }
+    } elseif ($Value -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Value) {
+            $depth = Get-JsonNestingDepth $item
+            if ($depth -gt $deepest) { $deepest = $depth }
+        }
+    } else {
+        return 0
+    }
+    return 1 + $deepest
+}
+
+# C-F1 (RCO1 2026-09-30; Fable review 99897de5): the reader's -Raw view is ConvertTo-Json -Depth 12, which
+# replaces anything nested deeper with its string form (Windows PowerShell silently, pwsh with a warning).
+# Measured in both shells: an event 13 containers deep (the event itself counts one) comes back intact, a
+# deeper one comes back exactly 13 deep with strings in place of its deepest containers. A reply binds the
+# request as logged, so a request that reaches this depth is refused, never bound to a changed copy.
+$script:ReaderRawIntactDepth = 13
+
 $candidates = @($events | Where-Object { (Get-ExactField $_ 'request_id') -ceq $RequestId })
 if ($candidates.Count -eq 0) {
     throw ('Reply-ToRequest: no event carries request id ' + $RequestId + ' in the last ' + $Tail + ' events')
@@ -62,6 +90,10 @@ if ($distinct.Count -ne 1) {
     throw ('Reply-ToRequest: ' + $distinct.Count + ' different events carry request id ' + $RequestId + '; refusing an ambiguous reply')
 }
 $request = $candidates[0]
+if ((Get-JsonNestingDepth $request) -ge $script:ReaderRawIntactDepth) {
+    throw ('Reply-ToRequest: request ' + $RequestId + ' is nested ' + $script:ReaderRawIntactDepth +
+        ' or more levels deep, where the reader view may have replaced values; it cannot be bound exactly here')
+}
 if (Get-ExactField $request 'in_reply_to_request_id') {
     throw ('Reply-ToRequest: the event carrying ' + $RequestId + ' is itself a reply')
 }

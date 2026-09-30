@@ -94,6 +94,39 @@ def test_absent_ambiguous_foreign_or_malformed_requests_are_refused_before_any_w
     assert not (runtime / "reply-capture.json").exists()
 
 
+def _nest(levels: int) -> object:
+    value: object = "leaf"
+    for level in range(levels):
+        value = {"level": level, "next": value}
+    return value
+
+
+# C-F1 (Fable review 99897de5, reproduced in both shells; Lead d06fbf85): the reader's -Raw view is ConvertTo-Json
+# -Depth 12, so a request nested deeper reached the writer with its deepest values replaced by strings, and the
+# reply bound to that changed copy. A request 14 containers deep (the event counts one) is now refused before any
+# write; the depth-7 control binds exactly, its nonce, digest and expected responders included.
+BINDING = {"request_digest": "sha256:" + "d" * 64, "expected_responders": ["claude-rco-1"]}
+
+
+@pytest.mark.skipif(not SHELLS, reason="Windows PowerShell or pwsh is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+@pytest.mark.parametrize("levels,refused", [(5, False), (12, True)], ids=["control_depth_7", "deep_depth_14"])
+def test_c_f1_a_request_deeper_than_the_reader_view_is_refused_and_a_shallow_one_binds_exactly(tmp_path, shell,
+                                                                                               levels, refused):
+    event = dict(REQUEST, **BINDING, payload={"nonce": "n1", "deep": _nest(levels)})
+    script, runtime = _fixture(tmp_path, [event])
+    done = _run(shell, script, runtime)
+    if refused:
+        assert "REFUSED:" in done.stdout and "cannot be bound exactly" in done.stdout, done.stdout + done.stderr
+        assert not (runtime / "reply-capture.json").exists()
+        return
+    assert "CAPTURED" in done.stdout, done.stdout + done.stderr
+    captured = json.loads(json.loads((runtime / "reply-capture.json").read_text(encoding="utf-8-sig"))["request"])
+    assert captured["payload"] == event["payload"]                       # exact, all the way down
+    keys = (*BINDING, "request_id", "to", "session_id", "agent_uuid")
+    assert {key: captured[key] for key in keys} == {key: event[key] for key in keys}
+
+
 @pytest.mark.skipif(not SHELLS, reason="Windows PowerShell or pwsh is required")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
 def test_the_wrapper_offers_no_way_to_pass_a_request_body(shell):

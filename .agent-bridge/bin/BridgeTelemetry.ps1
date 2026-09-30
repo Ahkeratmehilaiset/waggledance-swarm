@@ -12,7 +12,8 @@ function ConvertTo-BridgeObservationMetadata {
           [Nullable[double]]$LatencyMs=$null, [string]$LatencyBasis='')
     $metadata=[ordered]@{}
     if($Reason){
-        if($Reason -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation reason must be a lowercase token'}
+        # \z, not $: .NET $ also matches before a final newline, which the reader's fullmatch refuses.
+        if($Reason -cnotmatch '^[a-z][a-z0-9_]{0,63}\z'){throw 'Observation reason must be a lowercase token'}
         $metadata['reason']=$Reason
     }
     if($null -ne $Watermark){
@@ -25,7 +26,7 @@ function ConvertTo-BridgeObservationMetadata {
         if([double]::IsNaN($ms) -or [double]::IsInfinity($ms) -or $ms -lt 0 -or $ms -gt 86400000){
             throw 'Observation latency must be finite and within 0..86400000 ms'
         }
-        if($LatencyBasis -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation latency basis must be a lowercase token'}
+        if($LatencyBasis -cnotmatch '^[a-z][a-z0-9_]{0,63}\z'){throw 'Observation latency basis must be a lowercase token'}
         $metadata['latency_ms']=$ms
         $metadata['latency_basis']=$LatencyBasis
     }
@@ -70,11 +71,25 @@ function Test-BridgeObservationPrintable {
     }
     return $true
 }
+function Get-BridgeObservationScalarCount {
+    # Python len(): Unicode scalar count, so a surrogate PAIR counts once (a lone surrogate once too).
+    param([string]$Value)
+    $count = 0
+    $index = 0
+    while ($index -lt $Value.Length) {
+        if ([char]::IsSurrogatePair($Value, $index)) { $index += 2 } else { $index += 1 }
+        $count += 1
+    }
+    return $count
+}
 function Test-BridgeObservationId {
-    # The reader's _bounded_id: a string of at most 256 printable characters (non-empty unless allowed).
+    # The reader's _bounded_id: a string of at most 256 printable code points, non-empty unless
+    # allowed. An EMPTY string is accepted with AllowEmpty exactly as the reader does: Python's
+    # ''.isprintable() is True ("or the string is empty"), so _bounded_id('', allow_empty=True)
+    # accepts it. $null (absent) is decided by the caller, never here.
     param($Value, [switch]$AllowEmpty)
-    return ($Value -is [string] -and ($AllowEmpty -or $Value -ne '') -and $Value.Length -le 256 -and
-            (Test-BridgeObservationPrintable $Value))
+    return ($Value -is [string] -and ($AllowEmpty -or $Value -ne '') -and
+            (Get-BridgeObservationScalarCount $Value) -le 256 -and (Test-BridgeObservationPrintable $Value))
 }
 function Test-BridgeObservationTime {
     # The reader's parse_utc: at most 40 characters, YYYY-MM-DDTHH:MM:SS[.1-9 digits] then Z or
@@ -102,7 +117,7 @@ function Get-BridgeStageObservationProblem {
     if (-not ($target -is [string]) -or $target -cnotmatch '^[a-z][a-z0-9-]{0,63}\z') { return 'target must be a lowercase agent id' }
     foreach ($name in @('delivery_id', 'queue_id', 'report_reference')) {
         $value = $Observation[$name]
-        if (-not ($value -is [string]) -or $value.Length -gt 1024) { return ($name + ' must be a string of at most 1024 characters') }
+        if (-not ($value -is [string]) -or (Get-BridgeObservationScalarCount $value) -gt 1024) { return ($name + ' must be a string of at most 1024 characters') }
     }
     if ($null -eq $Observation['request_id']) {
         if ($null -ne $Observation['requester'] -or $null -ne $Observation['requester_session_id']) { return 'a requester needs a request_id' }
@@ -209,9 +224,12 @@ function Write-BridgeStageObservation {
         if (-not $observation.request_id) { return }
         if(-not $ReplyTimestamp -and $binding.PSObject.Properties['reply_ts_utc'] -and $binding.reply_ts_utc){$observation.reply_ts_utc=[string]$binding.reply_ts_utc}
     }
-    # F1-WRITER-READER (Tools 381ee2ca): refuse exactly what the reader's validate_stage would
-    # discard, BEFORE any directory or file exists. turn_completed throws visibly; the live flow
-    # stages stay best-effort and record nothing (the reader would drop that record anyway).
+    # F1-WRITER-READER (Tools 381ee2ca, 2e4262ab): refuse the scalar/time values the reader's
+    # validate_stage would discard, BEFORE any directory or file exists. turn_completed throws
+    # visibly; for the live flow stages an invalid final scalar/time value records nothing (the
+    # reader would drop it anyway). That skip is ONLY for these values: an unknown stage, an
+    # invalid metadata/ActionOutcome argument (validated above) or an I/O failure still throws.
+    # Parity is by source reading, not a differential proof (Unicode-database versions differ).
     $problem = Get-BridgeStageObservationProblem -Observation $observation
     if ($problem) {
         if ($Stage -ceq 'turn_completed') { throw ('turn_completed observation refused: ' + $problem) }

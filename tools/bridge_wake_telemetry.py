@@ -51,7 +51,9 @@ STAGE_NAME_RE = re.compile(r"stage-[0-9a-f]{32}\.json\Z")
 TOKEN_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 AGENT_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 WINDOWS_DRIVE_PATH_RE = re.compile(r"[A-Za-z]:[\\/]")
-TIMESTAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})\Z")
+# ASCII digits only (a str pattern's \d would also match other Unicode decimal digits).
+TIMESTAMP_RE = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?"
+                          r"(Z|[+-][0-9]{2}:[0-9]{2})\Z")
 
 STAGE_KEYS = frozenset({"schema", "stage", "observed_at_utc", "target", "request_id", "requester",
                         "requester_session_id", "delivery_id", "queue_id", "observer_pid",
@@ -91,18 +93,42 @@ class _ArgumentParser(argparse.ArgumentParser):
         raise TelemetryInputError("invalid command-line arguments; use --help for usage")
 
 
-def parse_utc(value: Any) -> datetime | None:
-    """Strict ISO-8601 with a timezone; up to 9 fraction digits (PowerShell writes 7)."""
+def _utc_parts(value: Any) -> tuple[datetime, str] | None:
+    """The ONE strict parse behind parse_utc and reply_token: (the whole-second instant in UTC,
+    the original fraction digits) or None. At most 40 characters, ASCII
+    YYYY-MM-DDTHH:MM:SS[.1-9 digits] then Z or +HH:MM/-HH:MM with zone hours <= 23 and
+    minutes <= 59 (the writer's rule; datetime.fromisoformat alone would normalize +00:60 to
+    +01:00), a real calendar time, representable in UTC (Tools F1-OFFSET-MINUTE-STRICTNESS).
+    The offset is whole minutes, so it never touches the fraction."""
     if type(value) is not str or len(value) > 40:
         return None
     match = TIMESTAMP_RE.match(value)
     if match is None:
         return None
     base, fraction, zone = match.groups()
-    text = base + ("." + (fraction + "000000")[:6] if fraction else "") + ("+00:00" if zone == "Z" else zone)
+    offset = timedelta(0)
+    if zone != "Z":
+        hours, minutes = int(zone[1:3]), int(zone[4:6])
+        if hours > 23 or minutes > 59:
+            return None
+        offset = timedelta(hours=hours, minutes=minutes) * (-1 if zone[0] == "-" else 1)
     try:
-        return datetime.fromisoformat(text).astimezone(timezone.utc)
+        whole = datetime.fromisoformat(base) - offset
     except (ValueError, OverflowError):
+        return None
+    return whole.replace(tzinfo=timezone.utc), fraction or ""
+
+
+def parse_utc(value: Any) -> datetime | None:
+    """Strict ISO-8601 with a timezone; up to 9 fraction digits (PowerShell writes 7). Keeps
+    MICROSECONDS, for duration arithmetic only; identity uses reply_token."""
+    parts = _utc_parts(value)
+    if parts is None:
+        return None
+    whole, fraction = parts
+    try:
+        return whole + timedelta(microseconds=int((fraction + "000000")[:6]))
+    except OverflowError:
         return None
 
 
@@ -111,13 +137,13 @@ def reply_token(value: Any) -> str | None:
     as YYYY-MM-DDTHH:MM:SS.fffffffffZ. Two replies that differ only in the 7th fraction digit
     stay distinct, and zone-equivalent spellings of one instant (Z, +00:00, +03:00) are equal.
     parse_utc keeps only microseconds and is for duration arithmetic, never identity (Tools
-    F1-PRECISION). The zone is whole minutes, so it never touches the fraction."""
-    if parse_utc(value) is None:
+    F1-PRECISION). It accepts exactly what parse_utc accepts (the same _utc_parts)."""
+    parts = _utc_parts(value)
+    if parts is None or parse_utc(value) is None:
         return None
-    base, fraction, zone = TIMESTAMP_RE.match(value).groups()
-    whole = datetime.fromisoformat(base + ("+00:00" if zone == "Z" else zone)).astimezone(timezone.utc)
+    whole, fraction = parts
     return (f"{whole.year:04d}-{whole.month:02d}-{whole.day:02d}T{whole.hour:02d}:{whole.minute:02d}:"
-            f"{whole.second:02d}.{(fraction or '').ljust(9, '0')}Z")
+            f"{whole.second:02d}.{fraction.ljust(9, '0')}Z")
 
 
 def _local_absolute(raw: str) -> bool:

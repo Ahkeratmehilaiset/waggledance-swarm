@@ -385,6 +385,15 @@ def test_writer_records_metadata_and_explicit_outcome_that_the_reporter_accepts(
     ("-Stage turn_completed -ActionOutcome noop -ReplyTimestamp '2026-09-29T21:00:00Z' "
      "-Request ([pscustomobject]@{request_id='r-1';agent='codex-lead-1';session_id=('s' * 257)})",
      "requester_session_id must be a printable string"),                                             # overlong session
+    # Tools 2e4262ab: the metadata tokens end with \z (no final newline), and ids count code points.
+    ("-Stage watcher_seen -Reason \"addressed_event`n\"", "lowercase token"),
+    ("-Stage watcher_seen -LatencyMs 5 -LatencyBasis \"event_ts`n\"", "lowercase token"),
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-8 -Request ([pscustomobject]@{request_id='r-1';"
+     "agent=([char]::ConvertFromUtf32(0x1F600) * 257);session_id='s-1'})", "requester must be a printable string"),
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-8 -Request ([pscustomobject]@{request_id='r-1';"
+     "agent=[string][char]0xD800;session_id='s-1'})", "requester must be a printable string"),      # lone surrogate
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00+00:60'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # minute 60
     ("-Stage answer_durable -ActionOutcome acted", "recorded only with stage turn_completed"),
     ("-Stage watcher_seen -Reason 'Free Text'", "lowercase token"),
     ("-Stage watcher_seen -Watermark -1", "non-negative byte offset"),
@@ -483,6 +492,66 @@ def test_a_flow_stage_the_reader_would_discard_records_nothing_and_its_twin_reco
     [record] = _stages(tmp_path / "good")
     assert record["reply_ts_utc"] == "2026-09-29T21:01:00.1234567Z"
     assert _report(tmp_path / "good" / "shared" / "telemetry", now=None)["errors"] == {}
+
+
+@pytest.mark.parametrize("value", [
+    "2026-09-29T21:00:00+00:60", "2026-09-29T21:00:00-00:60", "2026-09-29T21:00:00+01:99",
+    "2026-09-29T21:00:00+24:00", "0001-01-01T00:00:00+00:01", "9999-12-31T23:59:59-00:01",
+    "２026-09-29T21:00:00Z", "2026-09-29T21:00:00Z\n"])
+def test_invalid_zones_and_utc_range_edges_are_refused_by_both_parsers(value):
+    # Tools F1-OFFSET-MINUTE-STRICTNESS: fromisoformat alone would normalize +00:60 to +01:00.
+    assert telemetry.parse_utc(value) is None and telemetry.reply_token(value) is None
+
+
+@pytest.mark.parametrize("value,token", [
+    ("2026-09-29T21:00:00+23:59", "2026-09-28T21:01:00.000000000Z"),
+    ("2026-09-29T21:00:00-23:59", "2026-09-30T20:59:00.000000000Z"),
+    ("0001-01-01T00:00:00Z", "0001-01-01T00:00:00.000000000Z"),
+    ("0001-01-01T00:01:00+00:01", "0001-01-01T00:00:00.000000000Z"),
+    ("9999-12-31T23:59:59.999999999Z", "9999-12-31T23:59:59.999999999Z")])
+def test_valid_zone_and_utc_range_edges_keep_their_exact_token(value, token):
+    assert telemetry.reply_token(value) == token and telemetry.parse_utc(value) is not None
+
+
+def test_post_answer_stages_pair_per_exact_reply_token(tmp_path):
+    # Two replies one 7th digit apart are two post-answer flows, not one merged slot.
+    first, second = "2026-09-29T21:01:00.1234567Z", "2026-09-29T21:01:00.1234568Z"
+    records = [_stage("answer_durable", 60, reply=first), _stage("lead_processed", 62, reply=first),
+               _stage("answer_durable", 61, reply=second), _stage("lead_processed", 65, reply=second)]
+    latency = _report(_write(tmp_path / "t", *records))["latency"]["answer_durable->lead_processed"]
+    assert latency["known"] == 2 and (latency["min_seconds"], latency["max_seconds"]) == (2.0, 4.0)
+
+
+def test_the_reader_bounds_ids_by_code_points_and_accepts_empty_but_not_unprintable():
+    bounded = telemetry._bounded_id
+    assert "".isprintable() is True                           # the documented premise ("or the string is empty")
+    assert bounded("", allow_empty=True) is True and bounded("", allow_empty=False) is False
+    smile = "\U0001F600"
+    assert bounded(smile * 256) is True and bounded(smile * 257) is False   # code points, not UTF-16 units
+    assert bounded("\ud800") is False and bounded("a\nb") is False
+
+
+@pytest.mark.parametrize("requester,session", [("", ""), (None, None), ("codex-lead-1", "")])
+def test_empty_or_null_requester_and_session_with_a_delivery_are_one_identified_turn(tmp_path, requester, session):
+    record = _stage("turn_completed", 10, action_outcome="noop", delivery="d-1")
+    record.update(requester=requester, requester_session_id=session)
+    report = _report(_write(tmp_path / "t", record))
+    assert report["errors"] == {}
+    assert (report["noop_ratio"]["turns"], report["noop_ratio"]["unidentified_outcomes"]) == (1, 0)
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_the_writer_counts_code_points_and_accepts_empty_ids_like_the_reader(tmp_path, shell):
+    body = (f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage turn_completed -Target claude-rco-2 "
+            "-ActionOutcome noop -DeliveryId d-9 -Request ([pscustomobject]@{request_id='r-1';"
+            "agent=([char]::ConvertFromUtf32(0x1F600) * 256);session_id=''})")
+    result = _ps(shell, tmp_path, body)
+    assert result.returncode == 0, result.stderr
+    [record] = _stages(tmp_path)
+    assert record["requester"] == "\U0001F600" * 256 and record["requester_session_id"] == ""
+    report = _report(tmp_path / "shared" / "telemetry", now=None)
+    assert report["errors"] == {} and report["noop_ratio"]["turns"] == 1
 
 
 def test_one_turn_written_with_two_identities_counts_twice_as_documented(tmp_path):

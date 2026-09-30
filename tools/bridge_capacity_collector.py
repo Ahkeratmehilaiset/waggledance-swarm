@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import copy
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
@@ -298,10 +297,49 @@ _DECISION_FIELDS = ('schema', 'pool_identity_state', 'execution_allowed', 'provi
 _STORED_FIELDS = ('account_pool', 'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc')
 
 
+_MAX_PLAIN_DEPTH = 32
+_MAX_PLAIN_ITEMS = 200_000
+
+
+def _plain_copy(value: Any) -> Any:
+    """A deterministic PLAIN-DATA copy (Tools 7e; the same rule as
+    tools.bridge_pool_binding.plain_snapshot): exact dict with str keys, list, tuple, str, bool,
+    int, finite float and None, bounded; anything else (a subclass, a custom object with its own
+    copy hooks, a non-str key, NaN) is InputError, so no caller hook runs and no alias survives."""
+    budget = [_MAX_PLAIN_ITEMS]
+
+    def copy_value(item: Any, depth: int) -> Any:
+        budget[0] -= 1
+        if depth > _MAX_PLAIN_DEPTH or budget[0] < 0:
+            raise InputError('apply_pool_binding needs a plain-data observation record')
+        kind = type(item)
+        if item is None or kind is bool or kind is str or kind is int:
+            return item
+        if kind is float:
+            if item != item or item in (float('inf'), float('-inf')):
+                raise InputError('apply_pool_binding needs a plain-data observation record')
+            return item
+        if kind is list:
+            return [copy_value(element, depth + 1) for element in item]
+        if kind is tuple:
+            return tuple(copy_value(element, depth + 1) for element in item)
+        if kind is dict:
+            copied = {}
+            for key, element in item.items():
+                if type(key) is not str:
+                    raise InputError('apply_pool_binding needs a plain-data observation record')
+                copied[key] = copy_value(element, depth + 1)
+            return copied
+        raise InputError('apply_pool_binding needs a plain-data observation record')
+
+    return copy_value(value, 0)
+
+
 def _decision_fields(decision: Any) -> dict:
     """Every field the apply step uses, read from the binder's decision exactly ONCE, before any
-    caller code runs again (RCO1 7f32cfea S1). A non-dict or unreadable decision has none."""
-    if not isinstance(decision, dict):
+    caller code runs again (RCO1 7f32cfea S1). Only an EXACT dict counts (a subclass could
+    override ``get``); anything else, or an unreadable decision, has none."""
+    if type(decision) is not dict:
         return {}
     try:
         return {key: decision.get(key) for key in _DECISION_FIELDS}
@@ -356,12 +394,14 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     clock, a subclass or non-datetime, a naive time, an offsetless, stateful-None or broken
     tzinfo is refused with InputError, never a TypeError.
 
-    No caller code can change a validated value (RCO1 7f32cfea S1): the observation is
-    deep-copied once into a private record (the result is built from it), the binder gets its
-    own deep copy (no shared nested payload), and every decision field is read ONCE and
-    validated into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so
-    a binder that keeps its returned dict and a clock that edits it (or the caller's
-    observation) changes nothing.
+    No caller code can change a validated value (RCO1 7f32cfea S1, Tools 7e): the observation is
+    copied as PLAIN DATA once into a private record (the result is built from it) before any
+    callback, and the binder gets its own plain copy (no shared nested payload). A non-plain
+    observation (a dict subclass, a custom object with copy hooks) is InputError before the binder
+    or the clock runs. Every decision field of an EXACT dict decision is read ONCE and validated
+    into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so a binder that
+    keeps its returned dict and a clock that edits it (or the caller's observation) changes
+    nothing.
 
     A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
     windows, freshness or headroom, which stay unknown unless separately evidenced."""
@@ -370,11 +410,10 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     sample = _utc_now if clock is None else clock
     if not callable(sample):
         raise InputError('apply_pool_binding clock must be callable')
-    try:
-        own = copy.deepcopy(observation)      # private: neither the binder nor the clock can reach it
-        argument = copy.deepcopy(own)
-    except Exception:  # noqa: BLE001 - only a plain JSON-shaped record is bound
-        raise InputError('apply_pool_binding needs a deep-copyable observation record') from None
+    # Plain-data entry snapshots BEFORE any caller code (binder, clock) runs (Tools 7e); a
+    # non-plain observation is InputError before either callback is invoked.
+    own = _plain_copy(observation)       # private: neither the binder nor the clock can reach it
+    argument = _plain_copy(own)
     try:
         decision = binder(argument)
     except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection

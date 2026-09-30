@@ -36,9 +36,12 @@ pool, and nothing here derives a pool from them.
   limit is unknown, never lent by a broader receipt). That is identity coverage only: the
   presence of a limit id says nothing about its numeric quota, windows, freshness or
   headroom (an observed limit may carry no window at all), which stay UNKNOWN unless
-  separately evidenced. A verified binding is never quota readiness. The observation
-  and receipt are deep-copied before any check, so no alias (for example a verifier that
-  closes over the caller's receipt) can change a validated value. The decision's ``expires_at_utc`` is
+  separately evidenced. A verified binding is never quota readiness. The observation,
+  receipt AND registry are copied as PLAIN DATA (``plain_snapshot``) at entry, before any
+  caller code runs (the clock's tzinfo and the verifier included). Anything that is not exact
+  built-in JSON data (a dict subclass, a custom object, a non-str key, NaN) is refused as
+  ``input_not_plain_data``, so no alias and no custom copy hook can change a validated value
+  (Tools a673ecb4, 7e). The decision's ``expires_at_utc`` is
   the EARLIER of the receipt expiry and the pool's freshness expiry (``measured_at`` +
   ``ttl_seconds``), so a stored binding never outlives the registry verification;
 * last, an injected verifier returns exactly ``True`` for a copy of the receipt. The
@@ -52,7 +55,6 @@ Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
 """
 from __future__ import annotations
 
-import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -112,6 +114,46 @@ def _utc(value: Any) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except (ValueError, OverflowError):
         return None
+
+
+MAX_SNAPSHOT_DEPTH = 32
+MAX_SNAPSHOT_ITEMS = 200_000
+
+
+def plain_snapshot(value: Any) -> Any:
+    """A deterministic PLAIN-DATA copy (Tools 7e), or Refused("input_not_plain_data"). Only exact
+    built-in values pass: dict with str keys, list, tuple, str, bool, int, finite float and None,
+    bounded in depth and item count. A subclass, a custom object, a non-str key, NaN or infinity
+    is refused, so no ``__deepcopy__``, ``__reduce__``, ``__eq__`` or other hook of a caller object
+    ever runs and no alias survives. This is the explicit trusted boundary: inputs are plain JSON
+    data; anything else is refused, never copied on its own terms."""
+    budget = [MAX_SNAPSHOT_ITEMS]
+
+    def copy_value(item: Any, depth: int) -> Any:
+        budget[0] -= 1
+        if depth > MAX_SNAPSHOT_DEPTH or budget[0] < 0:
+            raise Refused("input_not_plain_data")
+        kind = type(item)
+        if item is None or kind is bool or kind is str or kind is int:
+            return item
+        if kind is float:
+            if item != item or item in (float("inf"), float("-inf")):
+                raise Refused("input_not_plain_data")
+            return item
+        if kind is list:
+            return [copy_value(element, depth + 1) for element in item]
+        if kind is tuple:
+            return tuple(copy_value(element, depth + 1) for element in item)
+        if kind is dict:
+            copied = {}
+            for key, element in item.items():
+                if type(key) is not str:
+                    raise Refused("input_not_plain_data")
+                copied[key] = copy_value(element, depth + 1)
+            return copied
+        raise Refused("input_not_plain_data")
+
+    return copy_value(value, 0)
 
 
 def _aware_utc(moment: Any) -> datetime | None:
@@ -275,11 +317,12 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         "expires_at_utc": None, "receipt_expires_at_utc": None, "pool_fresh_until_utc": None,
         "execution_allowed": False, "authority_effect": "none"}
     try:
+        # The entry snapshot comes FIRST (Tools a673ecb4, 7e), before ANY caller code runs: the
+        # clock's tzinfo (utcoffset) and the verifier. Plain data only, so no custom copy hook of a
+        # caller object ever runs; nothing below reads the caller's objects again.
+        observation, receipt, registry = plain_snapshot(observation), plain_snapshot(receipt), plain_snapshot(registry)
         current = _aware_utc(now)
         _require(current is not None, "clock_invalid")
-        # Private snapshots first (Tools a673ecb4): the caller's objects may be aliased by the
-        # verifier or another holder; nothing validated below can change afterwards.
-        observation, receipt = copy.deepcopy(observation), copy.deepcopy(receipt)
         provider, subject, observed, limits = _observation(observation)
         decision.update(provider=provider, subject_kind=SUBJECT_KINDS[provider], subject_id=subject)
         body = _receipt(receipt)
@@ -307,7 +350,7 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         # Authenticity last, on its own copy: the answer must be exactly True.
         _require(verifier is not None and callable(verifier), "verifier_missing")
         try:
-            verdict = verifier(copy.deepcopy(body))
+            verdict = verifier(plain_snapshot(body))   # its own plain copy; ours is never reachable
         except Exception:  # noqa: BLE001 - a failing verifier is a refusal, never a pass
             raise Refused("verifier_failed") from None
         _require(verdict is True, "verifier_refused")

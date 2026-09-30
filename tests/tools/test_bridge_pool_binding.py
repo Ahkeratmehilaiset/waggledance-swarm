@@ -416,3 +416,76 @@ def test_an_undated_verified_pool_is_refused_by_the_registry_itself():
     no_ttl = registry(**{"codex-plus-weekly": dict(registry()["pools"]["codex-plus-weekly"], ttl_seconds=None)})
     assert_refused(decide(reg=no_ttl), "registry_invalid")
     assert decide()["account_pool"] == "codex-plus-weekly"  # success twin
+
+# -- Tools 7e: a plain-data entry snapshot BEFORE any caller code (the clock's tzinfo, the verifier) --
+
+class MutatingZone(tzinfo):
+    """utcoffset() is caller code: it edits the caller's observation, receipt and registry."""
+
+    def __init__(self, observation, body, reg):
+        self.targets, self.calls = (observation, body, reg), 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        observation, body, reg = self.targets
+        observation["auth_context_id"] = "f" * 64
+        body["pool"] = "another-pool"
+        reg["pools"]["codex-plus-weekly"]["verification"] = "unverified"
+        return timedelta(0)
+
+
+def test_the_entry_snapshot_is_taken_before_the_clock_offset_runs():
+    observation, body, reg = codex_observation(), receipt(), registry()
+    zone = MutatingZone(observation, body, reg)
+    decision = binding.bind_pool(observation, body, reg, verifier=trusting,
+                                 now=datetime(2026, 9, 29, 22, 0, tzinfo=zone))
+    assert zone.calls == 1 and body["pool"] == "another-pool"                   # the edits really happened
+    assert decision["account_pool"] == "codex-plus-weekly" and decision["subject_id"] == CONTEXT   # the snapshot
+
+
+class AliasingDict(dict):
+    def __deepcopy__(self, memo):
+        return self   # a "copy" that is the caller's own object
+
+
+class Hooked:
+    def __deepcopy__(self, memo):
+        raise AssertionError("a caller copy hook must never run")
+
+
+class CountingZone(tzinfo):
+    def __init__(self):
+        self.calls = 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        return timedelta(0)
+
+
+@pytest.mark.parametrize("which,value", [
+    ("observation", AliasingDict(codex_observation())),
+    ("body", receipt(provenance=AliasingDict({"kind": "operator_reading", "reference": REFERENCE,
+                                              "observer": "operator"}))),
+    ("body", receipt(limit_ids=["codex", Hooked()])),
+    ("reg", dict(registry(), note=float("nan"))),
+    ("reg", dict(registry(), pools={1: "not a str key"})),
+], ids=["aliasing_observation", "aliasing_nested_receipt", "hooked_value", "nan_in_registry", "int_key_in_registry"])
+def test_hostile_or_custom_values_are_refused_before_any_callback(which, value):
+    zone, verified = CountingZone(), []
+    args = {"observation": codex_observation(), "body": receipt(), "reg": registry()}
+    args[which] = value
+    decision = binding.bind_pool(args["observation"], args["body"], args["reg"],
+                                 verifier=lambda r: verified.append(r) or True,
+                                 now=datetime(2026, 9, 29, 22, 0, tzinfo=zone))
+    assert_refused(decision, "input_not_plain_data")
+    assert zone.calls == 0 and verified == []                                   # no caller code ran
+
+
+def test_a_plain_snapshot_is_equal_unaliased_and_the_plain_path_still_binds():
+    original = {"a": [1, 2.5, None, True, ("t", {"k": "v"})], "b": {"c": "d"}}
+    copied = binding.plain_snapshot(original)
+    assert copied == original and copied is not original and copied["b"] is not original["b"]
+    zone = CountingZone()
+    decision = binding.bind_pool(codex_observation(), receipt(), registry(), verifier=trusting,
+                                 now=datetime(2026, 9, 29, 22, 0, tzinfo=zone))
+    assert decision["account_pool"] == "codex-plus-weekly" and zone.calls == 1   # success twin

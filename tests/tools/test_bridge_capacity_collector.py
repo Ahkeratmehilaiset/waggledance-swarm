@@ -752,3 +752,46 @@ def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuse
     assert stale['account_pool'] is None and stale['pool_binding']['reason'] == 'pool_state_stale'
     missing = _collect(_pool_binder(POOL_SUBJECT, verifier=None))
     assert missing['account_pool'] is None and missing['pool_binding']['reason'] == 'verifier_missing'
+
+# -- Tools 7e: plain-data entry snapshots before the binder and the clock; an exact-dict decision --
+
+class _AliasingDict(dict):
+    def __deepcopy__(self, memo):
+        return self
+
+
+@pytest.mark.parametrize('observation', [
+    _AliasingDict(OBSERVATION),                                   # a subclass with an aliasing copy hook
+    dict(OBSERVATION, payload={'bad': {1: 'non-str key'}}),
+    dict(OBSERVATION, payload={'bad': float('nan')}),
+    dict(OBSERVATION, payload={'bad': object()}),
+], ids=['aliasing_subclass', 'int_key', 'nan', 'custom_object'])
+def test_a_non_plain_observation_is_refused_before_the_binder_or_clock_runs(observation):
+    calls = []
+    with pytest.raises(InputError, match='plain-data'):
+        collector.apply_pool_binding(observation, lambda o: calls.append('binder') or _verified_decision(),
+                                     clock=lambda: calls.append('clock') or POOL_NOW)
+    assert calls == []
+
+
+class _DecisionDict(dict):
+    def get(self, key, default=None):   # a subclass could answer differently on each read
+        return 'unverified' if key == 'pool_identity_state' else super().get(key, default)
+
+
+def test_only_an_exact_dict_decision_can_bind():
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _DecisionDict(_verified_decision()), clock=_fixed())
+    assert row['account_pool'] is None and row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
+    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=_fixed())
+    assert good['account_pool'] == 'codex-plus-weekly'             # success twin: an exact dict binds
+
+
+def test_the_collector_and_pool_binding_plain_copies_agree():
+    from tools import bridge_pool_binding as binding
+    for value in [{'a': [1, 2.5, None, True, ('t', {'k': 'v'})]}, [], 'x', 3, None]:
+        assert collector._plain_copy(value) == binding.plain_snapshot(value) == value
+    for value in [_AliasingDict(a=1), {1: 'x'}, float('nan'), object(), {'deep': float('inf')}]:
+        with pytest.raises(InputError):
+            collector._plain_copy(value)
+        with pytest.raises(binding.Refused):
+            binding.plain_snapshot(value)

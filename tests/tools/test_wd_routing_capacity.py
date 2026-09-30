@@ -1,0 +1,293 @@
+"""Bridge v2 F19/F25 capacity adapter: measured evidence to one router capacity block, or unknown."""
+
+from __future__ import annotations
+
+import ast
+import copy
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+import tools.wd_routing_capacity as rc
+import tools.wd_task_router as tr
+from tools.wd_capacity_pacing import pace_windows
+from tools.wd_composer_select import digest
+
+NOW = datetime(2026, 9, 30, 18, 0, tzinfo=timezone.utc)
+SUBJECT = "a" * 64
+SESSION = "sess-claude-1"
+RESET_PRIMARY = int((NOW + timedelta(hours=3)).timestamp())
+RESET_SECONDARY = int((NOW + timedelta(days=4)).timestamp())
+RESET_FIVE = int((NOW + timedelta(hours=2)).timestamp())
+RESET_SEVEN = int((NOW + timedelta(days=5)).timestamp())
+WORKER = {"worker": "codex-tools-1", "profile_id": "codex-sol-high", "subject": SUBJECT}
+CLAUDE_WORKER = {"worker": "fable-5", "profile_id": "claude-strong", "subject": SESSION}
+CODEX_WINDOWS = (("primary", 30.0, 31.0, RESET_PRIMARY, 300), ("secondary", 20.0, 20.1, RESET_SECONDARY, 10080))
+CLAUDE_WINDOWS = (("five_hour", 11.0, 12.0, RESET_FIVE, 300), ("seven_day", 29.9, 30.0, RESET_SEVEN, 10080))
+BOTH_FRESHNESS = {"codex": ["fresh"], "claude": ["fresh", "provider_timestamp_unknown"]}
+
+
+def policy_body(**over):
+    body = {"schema": rc.POLICY_SCHEMA, "max_observation_age_seconds": 300,
+            "accepted_freshness": {"codex": ["fresh"], "claude": ["fresh"]},
+            "pools": {"codex-pro-a": {"billing": "included", "mode": "normal"},
+                      "claude-max-a": {"billing": "included", "mode": "normal"}}}
+    body.update(over)
+    return body
+
+
+def signed(**over):
+    body = policy_body(**over)
+    return {"policy": body, "sha256": digest(body)}
+
+
+def binding(expires=NOW + timedelta(hours=12)):
+    return {"receipt_id": "b" * 32, "receipt_sha256": "c" * 64, "provenance_kind": "operator_reading",
+            "expires_at_utc": expires.isoformat()}
+
+
+def codex_row(primary=31.0, secondary=20.1, **over):
+    row = {"schema": "wd.capacity-observation.v1", "provider": "codex",
+           "observed_at": (NOW - timedelta(seconds=30)).isoformat(), "auth_context_id": SUBJECT,
+           "account_pool": "codex-pro-a", "pool_identity_state": "verified_binding", "pool_binding": binding(),
+           "freshness": "fresh", "execution_allowed": False,
+           "payload": {"rateLimits": {"limitId": "codex",
+                                      "primary": {"usedPercent": primary, "resetsAt": RESET_PRIMARY,
+                                                  "windowDurationMins": 300},
+                                      "secondary": {"usedPercent": secondary, "resetsAt": RESET_SECONDARY,
+                                                    "windowDurationMins": 10080}}}}
+    row.update(over)
+    return row
+
+
+def claude_row(**over):
+    row = {"schema": "wd.capacity-observation.v1", "provider": "claude", "source_ref": "claude:statusline",
+           "observed_at": (NOW - timedelta(seconds=30)).isoformat(), "native_thread_id": SESSION,
+           "account_pool": "claude-max-a", "pool_identity_state": "verified_binding", "pool_binding": binding(),
+           "freshness": "provider_timestamp_unknown", "execution_allowed": False,
+           "payload": {"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": RESET_FIVE},
+                                       "seven_day": {"used_percentage": 30, "resets_at": RESET_SEVEN}}}}
+    row.update(over)
+    return row
+
+
+def samples(provider="codex", limit="codex", windows=CODEX_WINDOWS, ages=(41, 1)):
+    rows = []
+    for name, first, last, reset, duration in windows:
+        for used, age in zip((first, last), ages):
+            rows.append({"provider": provider, "limit_id": limit, "window": name, "used_percent": used,
+                         "resets_at": float(reset), "duration_minutes": duration,
+                         "observed_at": NOW - timedelta(minutes=age)})
+    return rows
+
+
+PACED = pace_windows(samples(), now=NOW)
+CLAUDE_PACED = pace_windows(samples("claude", "claude", CLAUDE_WINDOWS), now=NOW)
+
+
+def evidence(worker=None, row=None, paced=None, policy=None, now=NOW):
+    return rc.capacity_evidence(copy.deepcopy(WORKER if worker is None else worker),
+                                codex_row() if row is None else row,
+                                copy.deepcopy(PACED if paced is None else paced),
+                                signed() if policy is None else policy, now)
+
+
+# --- the known block -------------------------------------------------------------------------------
+
+def test_measured_verified_capacity_becomes_one_router_block():
+    record = evidence()
+    assert (record["verdict"], record["reasons"], record["authority"], record["execution_allowed"]) == (
+        "known", [], "none", False)
+    assert (record["worker"], record["profile_id"], record["policy_sha256"]) == (
+        "codex-tools-1", "codex-sol-high", signed()["sha256"])
+    assert record["capacity"] == {
+        "observed_utc": (NOW - timedelta(seconds=60)).isoformat(),        # the OLDEST evidence: a paced sample
+        "valid_until_utc": (NOW + timedelta(seconds=270)).isoformat(),    # the row age limit comes first
+        "state": "available", "billing": "included", "projected_used_percent": 35.5,
+        "profile_id": "codex-sol-high", "pool": "codex-pro-a",
+        "windows": ["codex/codex/primary", "codex/codex/secondary"], "policy_sha256": signed()["sha256"]}
+    assert len(record["evidence_digest"]) == 64 and record == evidence()   # deterministic
+
+
+def test_the_earliest_limit_bounds_validity():
+    # The binding expires first.
+    early = evidence(row=codex_row(pool_binding=binding(NOW + timedelta(seconds=100))))
+    assert early["capacity"]["valid_until_utc"] == (NOW + timedelta(seconds=100)).isoformat()
+    # The pacer's sample age limit after the oldest paced sample comes first (samples 14 min old).
+    old_samples = pace_windows(samples(ages=(55, 14)), now=NOW)
+    paced = evidence(paced=old_samples, policy=signed(max_observation_age_seconds=3600))
+    assert paced["capacity"]["valid_until_utc"] == (NOW + timedelta(seconds=60)).isoformat()
+
+
+def test_the_age_bound_is_inclusive_but_a_zero_length_validity_is_expired():
+    at_bound = evidence(row=codex_row(observed_at=(NOW - timedelta(seconds=300)).isoformat()))
+    assert (at_bound["verdict"], at_bound["reasons"]) == ("unknown", ["evidence_expired"])
+    inside = evidence(row=codex_row(observed_at=(NOW - timedelta(seconds=299)).isoformat()))
+    assert inside["verdict"] == "known"                                  # success twin
+    over = evidence(row=codex_row(observed_at=(NOW - timedelta(seconds=301)).isoformat()))
+    assert over["reasons"] == ["observation_stale"]
+
+
+def test_claude_statusline_capacity_needs_a_signed_acceptance_of_its_unknown_provider_timestamp():
+    refused = rc.capacity_evidence(CLAUDE_WORKER, claude_row(), CLAUDE_PACED, signed(), NOW)
+    assert (refused["verdict"], refused["reasons"]) == ("unknown", ["freshness_not_accepted"])
+    accepted = rc.capacity_evidence(CLAUDE_WORKER, claude_row(), CLAUDE_PACED,
+                                    signed(accepted_freshness=BOTH_FRESHNESS), NOW)
+    assert accepted["verdict"] == "known"
+    assert (accepted["capacity"]["windows"], accepted["capacity"]["projected_used_percent"]) == (
+        ["claude/claude/five_hour", "claude/claude/seven_day"], 48.0)
+
+
+def test_exhausted_conserve_and_paid_pools_are_reported_as_such():
+    spent = pace_windows(samples(windows=(("primary", 99.0, 100.0, RESET_PRIMARY, 300),
+                                          CODEX_WINDOWS[1])), now=NOW)
+    exhausted = evidence(row=codex_row(primary=100.0), paced=spent)
+    assert (exhausted["capacity"]["state"], exhausted["capacity"]["projected_used_percent"]) == ("exhausted", 100.0)
+    conserve = evidence(policy=signed(pools={"codex-pro-a": {"billing": "included", "mode": "conserve"}}))
+    assert conserve["capacity"]["state"] == "conserve"
+    paid = evidence(policy=signed(pools={"codex-pro-a": {"billing": "paid", "mode": "normal"}}))
+    assert (paid["capacity"]["billing"], paid["capacity"]["state"]) == ("paid", "available")
+
+
+# --- unknown, with a stable reason -------------------------------------------------------------------
+
+def _without(paced, suffix):
+    return {key: value for key, value in paced.items() if not key.endswith(suffix)}
+
+
+def _shifted(paced, key, seconds):
+    changed = copy.deepcopy(paced)
+    changed[key]["resets_at"] += seconds
+    return changed
+
+
+UNKNOWN_CASES = [
+    ("clock_naive", dict(now=NOW.replace(tzinfo=None)), ["clock_invalid"]),
+    ("clock_not_datetime", dict(now="2026-09-30T18:00:00Z"), ["clock_invalid"]),
+    ("not_plain_data", dict(row=codex_row(extra=(1, 2))), ["input_not_plain_data"]),
+    ("worker_extra_key", dict(worker=dict(WORKER, role="producer")), ["worker_invalid"]),
+    ("worker_not_a_member", dict(worker=dict(WORKER, worker="grok")), ["worker_invalid"]),
+    ("worker_blank_subject", dict(worker=dict(WORKER, subject=" ")), ["worker_invalid"]),
+    ("policy_pin", dict(policy=dict(signed(), sha256="0" * 64)), ["policy_digest_mismatch"]),
+    ("policy_extra_key", dict(policy={"policy": dict(policy_body(), extra=1),
+                                      "sha256": digest(dict(policy_body(), extra=1))}), ["policy_invalid"]),
+    ("policy_age_zero", dict(policy=signed(max_observation_age_seconds=0)), ["policy_invalid"]),
+    ("policy_age_over", dict(policy=signed(max_observation_age_seconds=3601)), ["policy_invalid"]),
+    ("policy_label", dict(policy=signed(accepted_freshness={"codex": ["stale"], "claude": ["fresh"]})),
+     ["policy_invalid"]),
+    ("policy_no_labels", dict(policy=signed(accepted_freshness={"codex": [], "claude": ["fresh"]})),
+     ["policy_invalid"]),
+    ("policy_billing", dict(policy=signed(pools={"codex-pro-a": {"billing": "free", "mode": "normal"}})),
+     ["policy_invalid"]),
+    ("policy_mode", dict(policy=signed(pools={"codex-pro-a": {"billing": "included", "mode": "eco"}})),
+     ["policy_invalid"]),
+    ("subject", dict(worker=dict(WORKER, subject="f" * 64)), ["subject_mismatch"]),
+    ("failed", dict(row=codex_row(reason="collection_failed")), ["observation_failed"]),
+    ("stale_label", dict(row=codex_row(freshness="unknown_or_stale")), ["freshness_not_accepted"]),
+    ("superseded", dict(row=codex_row(freshness="superseded_by_collection_failure")), ["freshness_not_accepted"]),
+    ("future", dict(row=codex_row(observed_at=(NOW + timedelta(seconds=1)).isoformat())),
+     ["observation_from_the_future"]),
+    ("bad_time", dict(row=codex_row(observed_at="yesterday")), ["observation_time_invalid"]),
+    ("unverified", dict(row=codex_row(pool_identity_state="binding_expired", account_pool=None)),
+     ["pool_unverified"]),
+    ("collector_state", dict(row=codex_row(pool_identity_state="unverified_auth_context")), ["pool_unverified"]),
+    ("binding_expired", dict(row=codex_row(pool_binding=binding(NOW))), ["pool_binding_expired"]),
+    ("binding_missing", dict(row={k: v for k, v in codex_row().items() if k != "pool_binding"}),
+     ["pool_binding_expired"]),
+    ("pool_unpriced", dict(row=codex_row(account_pool="codex-pro-b")), ["pool_not_in_policy"]),
+    ("quota_unknown", dict(row=codex_row(payload={})), ["quota_unknown"]),
+    ("paced_not_a_map", dict(paced=[]), ["paced_invalid"]),
+    ("window_not_paced", dict(paced=_without(PACED, "secondary")), ["window_not_paced:codex/codex/secondary"]),
+    ("rate_unknown", dict(paced=pace_windows(samples(ages=(1, 1)), now=NOW)),
+     ["window_rate_unknown:codex/codex/primary", "window_rate_unknown:codex/codex/secondary"]),
+    ("other_instance", dict(paced=_shifted(PACED, "codex/codex/primary", 3600)),
+     ["window_instance_mismatch:codex/codex/primary"]),
+]
+
+
+@pytest.mark.parametrize("change, reasons", [case[1:] for case in UNKNOWN_CASES], ids=[c[0] for c in UNKNOWN_CASES])
+def test_any_gap_in_the_evidence_is_unknown_never_a_capacity(change, reasons):
+    record = evidence(**change)
+    assert (record["verdict"], record["reasons"], record["capacity"]) == ("unknown", reasons, None)
+    assert (record["authority"], record["execution_allowed"]) == ("none", False)
+
+
+@pytest.mark.parametrize("args", [
+    (None, None, None, None, None),
+    (object(), object(), object(), object(), NOW),
+    ([], "row", 7, {"policy": None, "sha256": None}, NOW),
+])
+def test_hostile_or_missing_input_never_raises(args):
+    record = rc.capacity_evidence(*args)
+    assert (record["verdict"], record["capacity"], record["execution_allowed"]) == ("unknown", None, False)
+
+
+# --- end to end with the F19 router -------------------------------------------------------------------
+
+def _router_inputs(capacity):
+    stamp = (NOW - timedelta(minutes=1)).isoformat()
+    worker = {"schema": tr.WORKER_SCHEMA, "worker": "codex-tools-1", "kind": "lane", "profile_id": "codex-sol-high",
+              "role": {"worker": "codex-tools-1", "roles": ["producer"], "verified": True, "observed_utc": stamp},
+              "qualification": [{"task_class": "implementation", "profile_id": "codex-sol-high", "qualified": True,
+                                 "observed_utc": stamp, "valid_until_utc": (NOW + timedelta(days=1)).isoformat(),
+                                 "receipt_sha256": "d" * 64}],
+              "load": {"state": "idle", "observed_utc": stamp}}
+    if capacity is not None:
+        worker["capacity"] = capacity
+    policy = {"schema": tr.POLICY_SCHEMA, "max_evidence_age_seconds": 900, "budget_mode": "steady",
+              "class_roles": {c: ["producer"] for c in tr.TASK_CLASSES},
+              "class_profiles": {c: ["codex-sol-high"] for c in tr.TASK_CLASSES}}
+    task = {"schema": tr.TASK_SCHEMA, "task_id": "t", "revision": "1", "input_digest": "e" * 64,
+            "task_class": "implementation", "scope": ["repo:tools/x.py"], "author": "codex-lead-1",
+            "created_utc": (NOW - timedelta(hours=1)).isoformat()}
+    return task, [worker], [], policy, NOW.isoformat()                # the router takes the ISO string
+
+
+def test_the_router_routes_on_the_adapted_block_and_keeps_the_worker_unknown_without_it():
+    advice = tr.decide(*_router_inputs(evidence()["capacity"]))
+    assert (advice["verdict"], advice["recommended"]) == (
+        tr.ROUTE, {"worker": "codex-tools-1", "profile_id": "codex-sol-high", "route": "direct"})
+    unknown = tr.decide(*_router_inputs(evidence(row=codex_row(freshness="unknown_or_stale"))["capacity"]))
+    assert (unknown["verdict"], unknown["unknown"]) == (tr.UNKNOWN, {"codex-tools-1": ["capacity_unknown_or_stale"]})
+
+
+def test_the_router_waits_on_an_exhausted_or_conserving_pool_and_refuses_a_paid_one():
+    spent = pace_windows(samples(windows=(("primary", 99.0, 100.0, RESET_PRIMARY, 300),
+                                          CODEX_WINDOWS[1])), now=NOW)
+    exhausted = tr.decide(*_router_inputs(evidence(row=codex_row(primary=100.0), paced=spent)["capacity"]))
+    assert (exhausted["verdict"], exhausted["unavailable"]) == (tr.WAIT, {"codex-tools-1": ["pool_exhausted"]})
+    conserve = evidence(policy=signed(pools={"codex-pro-a": {"billing": "included", "mode": "conserve"}}))
+    waiting = tr.decide(*_router_inputs(conserve["capacity"]))
+    assert (waiting["verdict"], waiting["unavailable"]) == (tr.WAIT, {"codex-tools-1": ["pool_conserve"]})
+    paid = evidence(policy=signed(pools={"codex-pro-a": {"billing": "paid", "mode": "normal"}}))
+    refused = tr.decide(*_router_inputs(paid["capacity"]))
+    assert (refused["verdict"], refused["ineligible"]) == (tr.HOLD, {"codex-tools-1": ["paid_capacity_not_requestable"]})
+
+
+def test_a_projection_over_the_trip_line_waits():
+    busy = pace_windows(samples(windows=(("primary", 30.0, 50.0, RESET_PRIMARY, 300), CODEX_WINDOWS[1])), now=NOW)
+    record = evidence(row=codex_row(primary=50.0), paced=busy)
+    assert record["capacity"]["projected_used_percent"] == 140.0         # 30 %/h for 3 h after 50 %
+    advice = tr.decide(*_router_inputs(record["capacity"]))
+    assert (advice["verdict"], advice["unavailable"]) == (tr.WAIT, {"codex-tools-1": ["budget_over_trip_line"]})
+
+
+# --- purity ------------------------------------------------------------------------------------------
+
+FORBIDDEN_IMPORTS = {"os", "sys", "subprocess", "socket", "pathlib", "time", "random", "urllib", "http",
+                     "requests", "shutil", "io", "tempfile", "threading", "asyncio", "sqlite3"}
+FORBIDDEN_CALLS = {"open", "print", "exec", "eval", "compile", "__import__", "input", "now", "utcnow",
+                   "today", "getenv", "system", "read_samples", "status"}
+
+
+def test_module_is_pure_by_construction():
+    tree = ast.parse(Path(rc.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not {a.name.split(".")[0] for a in node.names} & FORBIDDEN_IMPORTS
+        elif isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] not in FORBIDDEN_IMPORTS
+        elif isinstance(node, ast.Call):
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            assert name not in FORBIDDEN_CALLS, name

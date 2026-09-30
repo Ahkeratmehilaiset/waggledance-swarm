@@ -11,20 +11,31 @@ file, and takes no claim lock. Anything it cannot read or prove is counted as un
 snapshot incomplete; it is never reported as an empty queue. A holder is passed through as written (W3
 decides membership); a claim or plan without exact agent, task and session evidence is unreadable.
 
+Claim files and WAL records are parsed as strict JSON: a duplicate key at any depth, NaN, Infinity or a
+number that overflows to infinity makes the record unreadable, never "the last duplicate wins" (RCO2 S1).
+Claims keep the legacy writers' UTF-8 byte-order-mark tolerance; WAL records are UTF-8 as the queue writes
+them. A path check that fails with an OSError counts as unreadable for a WAL record exactly as for a claim
+(RCO2 S3); cancellation (KeyboardInterrupt, SystemExit) is never caught.
+
 Advisory: the timestamp says what the queue held while the mutex was held. It does not prove continuous
-readiness and does not make a worker exclusive (the worker's own keyed claim is the only atomic step). The
-legacy PowerShell claim writer does not take this mutex yet: its concurrent write shows as unreadable or is
-seen before or after.
+readiness and does not make a worker exclusive (the worker's own keyed claim is the only atomic step).
+``complete`` is complete for the v2 writers that take this mutex ONLY. The legacy claim writers
+(Claim-AgentTask, Release-AgentTask, ClaimLeaseHeartbeat, Invoke-StaleClaimSweep, and the legacy Python
+work-queue writers) do not take it yet, so a claim they write after this snapshot listed the claims
+directory is not in it while ``complete`` stays True (RCO2 S2, reproduced 21:24:58Z). Until every claims
+writer takes this mutex first, a complete snapshot cannot prove a lane idle and must not drive W3 idle
+dispatch; this module neither proves that condition nor decides it.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable
 
 from tools.bridge_v2_queue_transactions import (FINAL, QueueTransactionError, QueueTransactions, _guard,
-                                                mutex_name, read_bytes_or_none)
+                                                _valid_txn, mutex_name, read_bytes_or_none)
 
 SNAPSHOT_SCHEMA = "wd.queue-claims-snapshot.v1"
 MAX_ENTRIES = 4096            # W3's bound on claims plus pending records
@@ -34,6 +45,40 @@ OWNER_IDENTITY_NONE = "none"
 
 class QueueSnapshotError(ValueError):
     """A caller contract was violated; no snapshot was taken."""
+
+
+def _strict_object(pairs: list) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _non_finite(token: str) -> Any:
+    raise ValueError("non-finite number")
+
+
+def _finite_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")      # 1e400: NaN's twin by another route
+    return value
+
+
+def _strict_json(text: str) -> Any:
+    """Strict JSON (RCO2 S1): a duplicate key at any depth or a non-finite number raises ValueError."""
+    return json.loads(text, object_pairs_hook=_strict_object, parse_constant=_non_finite, parse_float=_finite_float)
+
+
+def _wal_record(txns: QueueTransactions, path: Path) -> dict | None:
+    """The WAL record at ``path``: the checks of QueueTransactions._load (bound to this root and to its own
+    file name) with a strict parse, or None when it is unreadable. Only read and parse errors are caught."""
+    try:
+        data = read_bytes_or_none(path)
+        txn = None if data is None else _strict_json(data.decode("utf-8"))
+    except (QueueTransactionError, OSError, ValueError, RecursionError):
+        return None
+    return txn if _valid_txn(txn, root_identity=txns.root_id, name=path.name) else None
 
 
 def _listed(directory: Path, kind: str) -> tuple[list[Path], str]:
@@ -89,7 +134,7 @@ def _read(txns: QueueTransactions, now: datetime) -> dict:
             complete = False
             continue
         try:
-            obj = json.loads(data.decode("utf-8-sig"))
+            obj = _strict_json(data.decode("utf-8-sig"))
         except (ValueError, RecursionError):
             unreadable += 1
             continue
@@ -102,10 +147,10 @@ def _read(txns: QueueTransactions, now: datetime) -> dict:
     for path in wal_paths:
         try:
             _guard(path, "WAL record")
-        except QueueTransactionError:
+        except (QueueTransactionError, OSError):             # as for a claim (RCO2 S3); cancellation propagates
             unreadable += 1
             continue
-        txn = txns._load(path)                               # bound to this root and its own name, or None
+        txn = _wal_record(txns, path)                        # strict, bound to this root and its own name, or None
         if txn is None:
             unreadable += 1
             continue

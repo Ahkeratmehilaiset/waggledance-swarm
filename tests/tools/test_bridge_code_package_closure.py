@@ -281,6 +281,15 @@ def test_passive_participants_and_dashboard_ship_without_new_entrypoints():
     assert not paths & set(definition["python_entrypoints"].values())
 
 
+def test_advisory_input_assembler_and_reader_ship_without_new_entrypoints():
+    modules = {"tools.wd_routing_inputs", "tools.wd_routing_reader"}
+    definition = _definition()
+    paths = {module.replace(".", "/") + ".py" for module in modules}
+    assert paths <= set(definition["python_files"])
+    assert modules <= set(definition["import_smoke"]["package_modules"])
+    assert not paths & set(definition["python_entrypoints"].values())
+
+
 # --- the parser's own fail-open modes, reproduced -------------------------------
 
 

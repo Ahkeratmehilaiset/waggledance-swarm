@@ -43,6 +43,8 @@
     "tools/wd_model_registry.py",
     "tools/wd_profile_qualification.py",
     "tools/wd_routing_capacity.py",
+    "tools/wd_routing_inputs.py",
+    "tools/wd_routing_reader.py",
     "tools/wd_routing_weights.py",
     "tools/wd_task_router.py",
     "waggledance/__init__.py",
@@ -128,6 +130,8 @@
       "tools.wd_composer_select",
       "tools.wd_profile_qualification",
       "tools.wd_routing_capacity",
+      "tools.wd_routing_inputs",
+      "tools.wd_routing_reader",
       "tools.wd_routing_weights",
       "tools.wd_task_router",
       "waggledance.core.idle_protocol_deferred_lift"

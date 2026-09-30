@@ -795,3 +795,58 @@ def test_the_collector_and_pool_binding_plain_copies_agree():
             collector._plain_copy(value)
         with pytest.raises(binding.Refused):
             binding.plain_snapshot(value)
+
+
+# -- Lead 0468acc6 (Tools f559): an exact str schema and pool_identity_state BEFORE either comparison --
+# A decision value's own __eq__ is caller code. Each tag below counts and raises on any equality
+# call, so a comparison made before the exact-type guard shows up as a 'hook' entry or a raise.
+
+class _HookRan(Exception):
+    pass
+
+
+def _equality_tags(calls):
+    class EqualityTag:                      # a custom object: never a str
+        __hash__ = object.__hash__
+
+        def __eq__(self, other):
+            calls.append('hook')
+            raise _HookRan('__eq__')
+
+        def __ne__(self, other):
+            calls.append('hook')
+            raise _HookRan('__ne__')
+
+    class StrTag(str):                      # a str subclass carrying the exact valid text
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            calls.append('hook')
+            raise _HookRan('__eq__')
+
+        def __ne__(self, other):
+            calls.append('hook')
+            raise _HookRan('__ne__')
+
+    return EqualityTag, StrTag
+
+
+@pytest.mark.parametrize('kind', ['custom_object', 'str_subclass'])
+@pytest.mark.parametrize('field,valid', [('schema', 'wd.pool-binding-decision.v1'),
+                                         ('pool_identity_state', 'verified_binding')])
+def test_a_non_str_decision_tag_is_refused_before_any_equality_hook_runs(field, valid, kind):
+    calls = []
+    equality_tag, str_tag = _equality_tags(calls)
+    tag = equality_tag() if kind == 'custom_object' else str_tag(valid)
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(**{field: tag}),
+                                       clock=lambda: calls.append('clock') or POOL_NOW)
+    # Zero hook calls. The apply boundary still samples the clock exactly once (the 90a contract:
+    # with a binder the clock is always read once, after the binder, even for a refusal).
+    assert calls == ['clock']
+    assert row['account_pool'] is None and 'pool_identity_state' not in row
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
+    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(**{field: valid}),
+                                        clock=lambda: calls.append('clock') or POOL_NOW)
+    assert calls == ['clock', 'clock']      # exact-string positive twin: binds, and still no hook ran
+    assert good['account_pool'] == 'codex-plus-weekly' and good['pool_identity_state'] == 'verified_binding'
+    assert type(good['pool_identity_state']) is str

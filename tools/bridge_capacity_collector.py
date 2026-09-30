@@ -349,13 +349,19 @@ def _decision_fields(decision: Any) -> dict:
 
 def _applied_binding(fields: dict, own: dict) -> dict | None:
     """The validated binding as immutable locals: exact ``str`` values for everything stored and
-    the parsed expiry. None unless this is a verified binding for this exact provider and subject."""
+    the parsed expiry. None unless this is a verified binding for this exact provider and subject.
+
+    Every field compared below is required to be EXACTLY a ``str`` BEFORE any comparison (Lead
+    0468acc6, Tools f559): a custom object or a ``str`` subclass could run its own ``__eq__`` hook
+    (caller code) inside ``==``, so it is refused without being compared. This is about hooks
+    during validation only; what a binder decides is still trusted, not authenticated here."""
     provider = own.get('provider')
     subject_field = POOL_SUBJECT_FIELDS.get(provider) if type(provider) is str else None
     subject = own.get(subject_field) if subject_field is not None else None
     stored = {key: fields.get(key) for key in _STORED_FIELDS}
     if not (all(type(value) is str for value in stored.values())
-            and type(fields.get('provider')) is str and type(fields.get('subject_id')) is str):
+            and all(type(fields.get(key)) is str
+                    for key in ('schema', 'pool_identity_state', 'provider', 'subject_id'))):
         return None
     expires = _time(stored['expires_at_utc'])
     if not (fields.get('schema') == POOL_DECISION_SCHEMA
@@ -401,7 +407,8 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     or the clock runs. Every decision field of an EXACT dict decision is read ONCE and validated
     into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so a binder that
     keeps its returned dict and a clock that edits it (or the caller's observation) changes
-    nothing.
+    nothing. Every compared decision field must be exactly a str before any comparison, so no
+    ``__eq__`` hook of a custom object or str subclass runs during validation (Lead 0468acc6).
 
     A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
     windows, freshness or headroom, which stay unknown unless separately evidenced."""

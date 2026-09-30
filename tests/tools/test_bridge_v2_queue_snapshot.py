@@ -281,6 +281,10 @@ STRICT_BAD_CLAIMS = {
                    + b', "resources": {"kind": "repo", "KIND": "resource"}}',
     "case_in_array": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
                      + b', "write_scope": [{"path": "a", "Path": "b"}]}',
+    # fable-5 23:24:53Z: one non-ASCII pin. MICRO SIGN (U+00B5) and GREEK CAPITAL MU (U+039C), raw UTF-8, fold to one
+    # key; pwsh 7 refuses the pair, while key.lower() or an ASCII-only fold would read it.
+    "case_non_ascii": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                      + b', "x\xc2\xb5": 1, "x\xce\x9c": 2}',
 }
 
 
@@ -321,8 +325,9 @@ def test_a_wal_record_with_a_case_variant_duplicate_key_is_unreadable(root, monk
 
 
 def test_distinct_keys_that_only_look_alike_stay_readable(root):
+    # The non-ASCII twin: MICRO SIGN (U+00B5) beside a plain "m" folds to two keys, so non-ASCII keys stay readable.
     raw = (b'{"agent": "fable-5", "agent_note": "x", "task_id": "t/x", "taskid": "y", "owner_session_id": "s", '
-           + _TOKEN + b"}")
+           + _TOKEN + b', "x\xc2\xb5": 1, "xm": 2}')
     (root / "work_queue" / "claims" / "zz-distinct.json").write_bytes(raw)
     assert _take(root)["claims"] == [{"source": "claim", "agent": "fable-5", "task_id": "t/x", "owner_session_id": "s"}]
 

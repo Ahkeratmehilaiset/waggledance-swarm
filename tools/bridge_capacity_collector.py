@@ -31,6 +31,13 @@ except ModuleNotFoundError:
 
 MAX_RESPONSE = 2 * 1024 * 1024
 READ_METHODS = frozenset({'account/read', 'account/rateLimits/read', 'model/list'})
+# F3 (dormant): the decision schema of tools/bridge_pool_binding.py. It is named, not
+# imported, so this module's imports and every existing code path stay unchanged.
+POOL_DECISION_SCHEMA = 'wd.pool-binding-decision.v1'
+POOL_SUBJECT_FIELDS = {'codex': 'auth_context_id', 'claude': 'native_thread_id'}
+# The measuring provenance kinds a verified binding may carry: they must EQUAL
+# tools.wd_model_registry.MEASURING_KINDS (pinned by a fixture; named, not imported, as above).
+POOL_PROVENANCE_KINDS = ('operator_reading', 'local_measurement', 'f21_receipt')
 
 
 def read_native_codex(home: Path, thread: str, *, now: datetime | None = None) -> dict:
@@ -263,7 +270,211 @@ class MetadataClient:
         return await asyncio.wait_for(receive(), self.timeout)
 
 
-async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
+def _utc_now() -> datetime:
+    """The default apply clock. It is looked up at call time, never frozen into a default."""
+    return datetime.now(timezone.utc)
+
+
+def _aware_utc(moment: Any) -> datetime:
+    """``moment`` as aware UTC (RCO1 7f32cfea S2): exactly a ``datetime`` (no subclass), its UTC
+    offset read ONCE and required to be exactly a ``timedelta``, subtracted from the naive wall
+    time and marked UTC. There is no ``astimezone``, so a missing, stateful or broken offset can
+    never fall back to LOCAL time. A naive time, a None or non-timedelta offset, a tzinfo that
+    raises (even NotImplementedError) or an unrepresentable time is InputError, never TypeError.
+    The same rule as ``tools.bridge_pool_binding._aware_utc`` (there: None, clock_invalid)."""
+    if type(moment) is not datetime:
+        raise InputError('apply_pool_binding clock must return exactly a datetime')
+    try:
+        offset = moment.utcoffset()
+        current = None if type(offset) is not timedelta else \
+            (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 - an unreadable offset or an unrepresentable time is not a time
+        current = None
+    if current is None:
+        raise InputError('apply_pool_binding needs a timezone-aware time with a real UTC offset')
+    return current
+
+
+_DECISION_FIELDS = ('schema', 'pool_identity_state', 'execution_allowed', 'provider', 'subject_id', 'account_pool',
+                    'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc', 'reason')
+_STORED_FIELDS = ('account_pool', 'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc')
+
+
+_MAX_PLAIN_DEPTH = 32
+_MAX_PLAIN_ITEMS = 200_000
+
+
+def _plain_copy(value: Any) -> Any:
+    """A deterministic PLAIN-DATA copy (Tools 7e; the same rule as
+    tools.bridge_pool_binding.plain_snapshot): exact dict with str keys, list, tuple, str, bool,
+    int, finite float and None, bounded; anything else (a subclass, a custom object with its own
+    copy hooks, a non-str key, NaN) is InputError, so no caller hook runs and no alias survives."""
+    budget = [_MAX_PLAIN_ITEMS]
+
+    def copy_value(item: Any, depth: int) -> Any:
+        budget[0] -= 1
+        if depth > _MAX_PLAIN_DEPTH or budget[0] < 0:
+            raise InputError('apply_pool_binding needs a plain-data observation record')
+        kind = type(item)
+        if item is None or kind is bool or kind is str or kind is int:
+            return item
+        if kind is float:
+            if item != item or item in (float('inf'), float('-inf')):
+                raise InputError('apply_pool_binding needs a plain-data observation record')
+            return item
+        if kind is list:
+            return [copy_value(element, depth + 1) for element in item]
+        if kind is tuple:
+            return tuple(copy_value(element, depth + 1) for element in item)
+        if kind is dict:
+            copied = {}
+            for key, element in item.items():
+                if type(key) is not str:
+                    raise InputError('apply_pool_binding needs a plain-data observation record')
+                copied[key] = copy_value(element, depth + 1)
+            return copied
+        raise InputError('apply_pool_binding needs a plain-data observation record')
+
+    return copy_value(value, 0)
+
+
+def _decision_fields(decision: Any) -> dict:
+    """Every field the apply step uses, read from the binder's decision exactly ONCE, before any
+    caller code runs again (RCO1 7f32cfea S1). Only an EXACT dict counts (a subclass could
+    override ``get``); anything else, or an unreadable decision, has none."""
+    if type(decision) is not dict:
+        return {}
+    try:
+        return {key: decision.get(key) for key in _DECISION_FIELDS}
+    except Exception:  # noqa: BLE001 - an unreadable decision is a refusal
+        return {}
+
+
+def _applied_binding(fields: dict, own: dict) -> dict | None:
+    """The validated binding as immutable locals: exact ``str`` values for everything stored and
+    the parsed expiry. None unless this is a verified binding for this exact provider and subject.
+
+    Every field compared below is required to be EXACTLY a ``str`` BEFORE any comparison (Lead
+    0468acc6, Tools f559): a custom object or a ``str`` subclass could run its own ``__eq__`` hook
+    (caller code) inside ``==``, so it is refused without being compared. This is about hooks of
+    decision VALUES during validation only: a hash-colliding decision KEY can still run its ``__eq__``
+    in _decision_fields' dict.get (disclosed, not fixed), and what a binder decides is still
+    trusted, not authenticated here (Lead 45b66035)."""
+    provider = own.get('provider')
+    subject_field = POOL_SUBJECT_FIELDS.get(provider) if type(provider) is str else None
+    subject = own.get(subject_field) if subject_field is not None else None
+    stored = {key: fields.get(key) for key in _STORED_FIELDS}
+    if not (all(type(value) is str for value in stored.values())
+            and all(type(fields.get(key)) is str
+                    for key in ('schema', 'pool_identity_state', 'provider', 'subject_id'))):
+        return None
+    expires = _time(stored['expires_at_utc'])
+    if not (fields.get('schema') == POOL_DECISION_SCHEMA
+            and fields.get('pool_identity_state') == 'verified_binding'
+            and fields.get('execution_allowed') is False
+            and subject_field is not None and fields['provider'] == provider
+            and type(subject) is str and subject.strip() and fields['subject_id'] == subject
+            and own.get('account_pool') is None
+            and _token(stored['account_pool'], r'[a-z0-9][a-z0-9._-]{0,63}')
+            and _token(stored['receipt_id'], r'[0-9a-f]{32}')
+            and _token(stored['receipt_sha256'], r'[0-9a-f]{64}')
+            and stored['provenance_kind'] in POOL_PROVENANCE_KINDS
+            and expires is not None):
+        return None
+    return dict(stored, expires=expires)
+
+
+def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
+    """F3, additive and dormant. Without a binder (the default on every existing path) the
+    observation is returned unchanged, as the very same object, and the clock is never read,
+    so account_pool stays None: the raw auth context or session is never a pool. A binder
+    is a trusted caller's closure over tools.bridge_pool_binding.bind_pool (receipt,
+    registry, reviewed verifier, clock). Only its verified decision for this exact provider
+    and subject sets account_pool; any other outcome, including a binder failure, keeps
+    None and records a bounded reason. Only the receipt id, digest, provenance kind and
+    expiry are kept, never its text.
+
+    The decision must still be valid at the apply boundary (Tools a673ecb4, 5b2af2cd):
+    ``clock`` (an injectable zero-argument callable; the current UTC time by default) is
+    sampled exactly once, AFTER the binder returns and immediately before the expiry
+    comparison, and that time must be STRICTLY before the decision's expiry. Time spent in
+    the binder or its verifier therefore counts, so a slow, cached or delayed decision never
+    sets even a momentarily expired pool. The sample must be exactly a datetime whose one
+    offset read is exactly a timedelta; it is normalized to UTC without astimezone (never a
+    local-time fallback). A non-callable clock (refused before the binder runs), a failing
+    clock, a subclass or non-datetime, a naive time, an offsetless, stateful-None or broken
+    tzinfo is refused with InputError, never a TypeError.
+
+    No caller code can change a validated value (RCO1 7f32cfea S1, Tools 7e): the observation is
+    copied as PLAIN DATA once into a private record (the result is built from it) before any
+    callback, and the binder gets its own plain copy (no shared nested payload). A non-plain
+    observation (a dict subclass, a custom object with copy hooks) is InputError before the binder
+    or the clock runs. Every decision field of an EXACT dict decision is read ONCE and validated
+    into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so a binder that
+    keeps its returned dict and a clock that edits it (or the caller's observation) changes
+    nothing. Every compared decision field VALUE must be exactly a str before any comparison, so no
+    ``__eq__`` hook of a custom-object or str-subclass VALUE runs while it is validated (Lead 0468acc6).
+    That guard covers the values only. It does NOT prove the decision's KEYS safe: reading an exact-dict
+    decision (dict.get) can still run a hash-colliding key object's ``__eq__``. Nor does it authenticate
+    the binder, its verifier or the clock, which stay trusted callbacks (Lead 45b66035). A binder or
+    clock failure is named without any hook of the exception's class (see _exception_name).
+
+    A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
+    windows, freshness or headroom, which stay unknown unless separately evidenced."""
+    if binder is None:
+        return observation
+    sample = _utc_now if clock is None else clock
+    if not callable(sample):
+        raise InputError('apply_pool_binding clock must be callable')
+    # Plain-data entry snapshots BEFORE any caller code (binder, clock) runs (Tools 7e); a
+    # non-plain observation is InputError before either callback is invoked.
+    own = _plain_copy(observation)       # private: neither the binder nor the clock can reach it
+    argument = _plain_copy(own)
+    try:
+        decision = binder(argument)
+    except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
+        decision = {'reason': 'binder_failed:' + _exception_name(exc)}   # no hook of the exception's class
+    fields = _decision_fields(decision)
+    applied = _applied_binding(fields, own)   # validated immutable locals, before any caller code runs again
+    reason = fields.get('reason') if type(fields.get('reason')) is str else None
+    # The apply boundary: sampled once, after the binder returned, right before the comparison.
+    try:
+        moment = sample()
+    except Exception as exc:  # noqa: BLE001 - an unreadable clock is refused, never guessed
+        raise InputError('apply_pool_binding clock failed: ' + _exception_name(exc)) from None
+    current = _aware_utc(moment)
+    expired = applied is not None and not current < applied['expires']
+    if applied is not None and not expired:
+        own.update(account_pool=applied['account_pool'], pool_identity_state='verified_binding',
+                   pool_binding={'receipt_id': applied['receipt_id'], 'receipt_sha256': applied['receipt_sha256'],
+                                 'provenance_kind': applied['provenance_kind'],
+                                 'expires_at_utc': applied['expires_at_utc']})
+    else:
+        # Only a code-shaped reason is kept: no spaces, '@' or other free text is saved.
+        reason = 'decision_expired' if expired else reason
+        own['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
+                               else 'binding_refused'}
+    return own
+
+
+_TYPE_NAME = type.__dict__['__name__']   # type's OWN __name__ descriptor, never a metaclass override
+
+
+def _exception_name(exc: BaseException) -> str:
+    """The exception's class name for a refusal diagnostic, read with NO hook of that class (Lead 45b66035,
+    RCO2 f766 N2). type() is the C-level type of the object, and type's own __name__ descriptor is called
+    directly, so a metaclass __name__ property (which could run code, raise, or return a non-str) is never
+    consulted. A name stored as a str subclass is copied to an exact str by str.__str__, so no __add__ or
+    __radd__ of it runs in the concatenation. The same contract as before for ordinary exceptions."""
+    return str.__str__(_TYPE_NAME.__get__(type(exc)))
+
+
+def _token(value: Any, pattern: str) -> bool:
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binder=None,
+                        pool_clock=None) -> dict:
     started = utcnow()
     before = await client.request('account/read', {'refreshToken': False})
     if before.get('account') is None:
@@ -294,21 +505,21 @@ async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
     account = _dict(before.get('account'))
     # Hash context + visible account shape, not a credential or asserted account ID.
     context_id = digest([auth_context, account])
-    return {'schema': 'wd.capacity-observation.v1', 'provider': 'codex',
+    return apply_pool_binding({'schema': 'wd.capacity-observation.v1', 'provider': 'codex',
             'source_ref': 'codex:account/rateLimits/read', 'collection_started_at': started,
             'observed_at': utcnow(), 'auth_context_id': context_id,
             'account_pool': None, 'pool_identity_state': 'unverified_auth_context',
             'account_type': account['type'], 'plan_type': account.get('planType'),
             'payload': quota_payload(limits, 'codex'), 'catalog': catalog,
             'quota_freshness_basis': 'provider_metadata_request',
-            'execution_allowed': False}
+            'execution_allowed': False}, pool_binder, clock=pool_clock)
 
 
-def collect_claude(payload: dict) -> dict:
+def collect_claude(payload: dict, *, pool_binder=None, pool_clock=None) -> dict:
     session = payload.get('session_id')
     if not _text(session):
         raise InputError('statusline session identity missing')
-    return {'schema': 'wd.capacity-observation.v1', 'provider': 'claude',
+    return apply_pool_binding({'schema': 'wd.capacity-observation.v1', 'provider': 'claude',
             'source_ref': 'claude:statusline', 'observed_at': utcnow(),
             'native_thread_id': session, 'account_pool': None,
             'pool_identity_state': 'unknown', 'execution_allowed': False,
@@ -317,7 +528,7 @@ def collect_claude(payload: dict) -> dict:
             'effort': _dict(payload.get('effort')).get('level'),
             'payload': quota_payload(payload, 'claude'),
             'usage': {k: _dict(payload.get('context_window')).get(k)
-                      for k in ('total_input_tokens', 'total_output_tokens')}}
+                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder, clock=pool_clock)
 
 
 def save_observation(path: Path, observation: dict) -> None:
@@ -422,8 +633,17 @@ def quota_details(row: dict, now: datetime) -> tuple[str, list]:
 
 
 def status(path: Path, *, now: datetime | None = None) -> dict:
-    """Read-only recent observations; session/auth context is not a quota identity."""
-    now = now or datetime.now(timezone.utc)
+    """Read-only recent observations; session/auth context is not a quota identity.
+
+    ``now`` (the current UTC time by default) is normalized ONCE, before the store is opened, by the apply
+    clock's rule (_aware_utc: exactly a datetime, one offset read, subtraction, no astimezone), and every age,
+    expiry and quota computation below uses that exact aware-UTC value. A naive, offsetless, subclass,
+    non-timedelta, broken or unrepresentable ``now`` is InputError (Lead 5aa78f56; RCO1 a39cb2aa N1); a
+    KeyboardInterrupt or SystemExit raised by a tzinfo still propagates. The report's observed_at is UTC."""
+    try:
+        now = _aware_utc(datetime.now(timezone.utc) if now is None else now)
+    except InputError:
+        raise InputError('status needs now as exactly a timezone-aware datetime with a real UTC offset') from None
     # Our producer uses rollback journals. SQLite's read-only WAL connections
     # can create/update shared-memory sidecars; never silently do that to a
     # foreign database, or ignore its WAL by claiming an immutable snapshot.
@@ -460,6 +680,12 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         row['freshness'] = 'fresh' if 0 <= age <= 300 else 'unknown_or_stale'
         if provider == 'claude':
             row['freshness'] = 'provider_timestamp_unknown'
+        # F3: a stored verified pool binding holds only until its receipt expires; after
+        # that the pool is unknown again (the stored row itself is never rewritten).
+        if row.get('pool_identity_state') == 'verified_binding':
+            expires = _time(_dict(row.get('pool_binding')).get('expires_at_utc'))
+            if expires is None or now >= expires:
+                row.update(account_pool=None, pool_identity_state='binding_expired')
         if failed.get(provider, 0) > sequence:
             row['freshness'] = 'superseded_by_collection_failure'
         row['sequence'] = sequence

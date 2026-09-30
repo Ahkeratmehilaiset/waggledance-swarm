@@ -384,6 +384,30 @@ def test_the_decision_is_deterministic():
     assert decide() == decide()
 
 
+_DATETIME_FIELDS = frozenset({"year", "month", "day", "hour", "minute", "second", "microsecond", "tzinfo", "fold"})
+
+
+def _call_names(tree: ast.AST) -> set:
+    """Every call name, except a keyword-only ``.replace(<datetime fields>=...)``: that is a datetime value
+    operation (``_aware_utc`` marks UTC with ``.replace(tzinfo=...)``), never a filesystem call.
+    ``os.replace(src, dst)``, ``Path.replace(target)``, keyword ``os.replace(src=..., dst=...)`` and
+    ``**kwargs`` calls still count. The same rule as tests/tools/test_bridge_wake_telemetry.py (9d794346):
+    this check was red at 7779e9a2, whose composition did not run these fixtures."""
+    return {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and not (isinstance(node.func, ast.Attribute) and node.func.attr == "replace" and not node.args
+                     and node.keywords and all(keyword.arg in _DATETIME_FIELDS for keyword in node.keywords))}
+
+
+@pytest.mark.parametrize("snippet,counted", [
+    ("os.replace(a, b)", True), ("path.replace(target)", True), ("os.replace(src=a, dst=b)", True),
+    ("path.replace(**changes)", True), ("replace(a, b)", True), ("moment.replace(tzinfo=timezone.utc)", False),
+    ("moment.replace(hour=0, minute=0)", False),
+], ids=["os_replace", "path_replace", "keyword_os_replace", "star_star", "bare_name", "tzinfo", "fields"])
+def test_the_purity_check_counts_every_filesystem_replace_and_only_exempts_datetime_fields(snippet, counted):
+    assert ("replace" in _call_names(ast.parse(snippet))) is counted
+
+
 def test_module_is_pure_by_construction():
     source = (ROOT / "tools" / "bridge_pool_binding.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -391,8 +415,7 @@ def test_module_is_pure_by_construction():
                 if isinstance(node, (ast.Import, ast.ImportFrom))
                 for alias in (node.names if isinstance(node, ast.Import) else [ast.alias(node.module or "")])}
     assert imported <= {"__future__", "copy", "datetime", "hashlib", "json", "re", "typing", "tools"}, imported
-    calls = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-             for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    calls = _call_names(tree)
     assert not calls & {"open", "write", "write_text", "write_bytes", "unlink", "remove", "replace", "rename",
                         "system", "popen", "run", "now", "utcnow", "getenv"}, calls
 

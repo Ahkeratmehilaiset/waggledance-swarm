@@ -417,6 +417,71 @@ def test_resource_scopes_explain_and_refuse_ambiguity(env):
         resolve_scopes(["/outside/the/roots"], worktree=cwd, bridge_root=str(txns.root))
 
 
+# -- dispatch_key claim evidence (RCO1 2026-09-30, Lead request 31ea9743) ---------------------------------
+# The router's immutable dispatch digest travels with the claim; deduplication happens at the claim layer.
+
+KEY_A, KEY_B = "a" * 64, "b" * 64
+
+
+def test_dispatch_key_is_immutable_and_carried_through_refresh_heartbeat_and_release(env):
+    assert claim(env, dispatch_key=KEY_A)["dispatch_key"] == KEY_A
+    assert claim(env, now=NOW + timedelta(minutes=1), dispatch_key=KEY_A)["dispatch_key"] == KEY_A   # same key
+    for other in (KEY_B, None):                                          # a claim never changes or drops its key
+        with pytest.raises(Refused, match="immutable"):
+            claim(env, now=NOW + timedelta(minutes=2), dispatch_key=other)
+    beat = wq.heartbeat(env[0], agent="claude-rco-2", task_id="team/task-1", identity=OWNER,
+                        now=NOW + timedelta(minutes=3))
+    assert beat["dispatch_key"] == KEY_A
+    released = wq.release_task(env[0], agent="claude-rco-2", task_id="team/task-1", identity=OWNER,
+                               now=NOW + timedelta(minutes=4))
+    assert released["dispatch_key"] == KEY_A                             # evidence outlives the claim
+    claim(env, task="team/plain", scope=("tools/p.py",))                  # an unkeyed claim never gains a key
+    with pytest.raises(Refused, match="immutable"):
+        claim(env, task="team/plain", scope=("tools/p.py",), dispatch_key=KEY_B)
+
+
+def test_a_duplicate_active_dispatch_is_refused_at_the_claim_layer(env):
+    claim(env, task="team/task-1", scope=("tools/a.py",), dispatch_key=KEY_A)
+    with pytest.raises(Refused, match="duplicate dispatch: dispatch_key held by active claim team/task-1"):
+        claim(env, task="team/task-2", agent="fable-5", identity=OTHER, scope=("tools/b.py",), dispatch_key=KEY_A)
+    assert wq.find_claim(env[0], "team/task-2") is None
+    claim(env, task="team/task-2", agent="fable-5", identity=OTHER, scope=("tools/b.py",), dispatch_key=KEY_B)  # twin
+    wq.release_task(env[0], agent="claude-rco-2", task_id="team/task-1", identity=OWNER, now=NOW)
+    # Only ACTIVE claims are compared: whether a released key may be dispatched again is dispatcher policy.
+    assert claim(env, task="team/task-3", scope=("tools/c.py",), dispatch_key=KEY_A)["dispatch_key"] == KEY_A
+
+
+@pytest.mark.parametrize("key", ["A" * 64, "a" * 63, "a" * 65, "g" * 64, 12, b"a" * 64],
+                         ids=["upper", "short", "long", "non_hex", "int", "bytes"])
+def test_a_malformed_dispatch_key_is_refused_before_any_lock(tmp_path, key):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (tmp_path / "wt" / "tools").mkdir(parents=True)
+    lock = RecordingLock()
+    txns = QueueTransactions(runtime, mutex=lock, claim_lock=lock, clock=lambda: NOW)
+    with pytest.raises(WorkQueueError, match="dispatch_key"):
+        claim((txns, str(tmp_path / "wt")), dispatch_key=key)
+    assert lock.entered == [] and not (runtime / "work_queue").exists()
+
+
+def test_an_unreadable_active_claim_makes_a_duplicate_dispatch_unknown(env):
+    txns = env[0]
+    huge = txns.root / "work_queue" / "claims" / "huge.json"
+    huge.parent.mkdir(parents=True)
+    huge.write_bytes(b'{"pad": "' + b"x" * (300 * 1024) + b'"}')
+    with pytest.raises(Refused, match="duplicate dispatch unknown"):
+        claim(env, task="team/keyed", mode="read-only", scope=(), dispatch_key=KEY_A)
+    assert claim(env, task="team/plain", mode="read-only", scope=())["mode"] == "read-only"   # twin: no key
+    huge.unlink()
+    assert claim(env, task="team/keyed", mode="read-only", scope=(), dispatch_key=KEY_A)["dispatch_key"] == KEY_A
+
+
+def test_a_stale_archive_keeps_the_dispatch_key(env):
+    claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",), dispatch_key=KEY_A)
+    [entry] = wq.archive_stale_claims(bridge_root=env[0].root, now_utc=NOW, apply=True, transactions=env[0])
+    assert json.loads(entry.archived_path.read_text())["dispatch_key"] == KEY_A
+
+
 # -- F8 session-heartbeat fence (RCO1 2026-09-30, Lead request d79f933d) -----------------------------------
 # The PowerShell session-heartbeat writer (Write-BridgeSessionHeartbeat, ClaimLeaseHeartbeat.ps1) takes only the
 # sibling lock of the BEAT file (Enter-BridgeClaimLock -ClaimPath <beat>: "<beat>.json.lock", FileShare.None),

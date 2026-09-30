@@ -60,6 +60,7 @@ from tools.bridge_v2_queue_transactions import (Plan, QueueTransactionError, Que
 from tools.bridge_v2_resource_scope import ScopeError, resolve_scopes, resources_overlap
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
+DISPATCH_KEY_PATTERN = re.compile(r"[0-9a-f]{64}")   # the router's immutable dispatch digest
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
 ALLOWED_MODES = ("read-only", "write")
 OWNER_IDENTITY_NONE = "none"
@@ -253,9 +254,19 @@ def _key(op: str, task_id: str, before: bytes | None, now: datetime) -> str:
 
 def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: str, mode: str = "read-only",
                write_scope: Sequence[str] = (), run_id: str = "", lease_seconds: int = DEFAULT_LEASE_SECONDS,
-               identity: OwnerIdentity | None, cwd: str, now: datetime, force: bool = False) -> dict:
+               identity: OwnerIdentity | None, cwd: str, now: datetime, force: bool = False,
+               dispatch_key: str | None = None) -> dict:
+    """Claim or refresh one task. ``dispatch_key`` (Lead request 31ea9743) is the router's immutable dispatch
+    digest (64 lowercase hex): it is claim EVIDENCE, stored with the claim, kept by heartbeats and copied
+    into the release and stale-archive records. Deduplication happens HERE, under the locks: a new claim
+    whose key an ACTIVE claim already holds is refused, and an unreadable active claim makes that unknown
+    (refused). A refresh must present exactly the stored key (a claim can neither gain, change nor drop
+    one). Only active claims are compared; whether a released key may be dispatched again is the
+    dispatcher's policy, and router advice itself never deduplicates."""
     _validate(agent, task_id)
     identity = _identity(identity)
+    if dispatch_key is not None and (type(dispatch_key) is not str or DISPATCH_KEY_PATTERN.fullmatch(dispatch_key) is None):
+        raise WorkQueueError("dispatch_key must be 64 lowercase hex characters")
     if not isinstance(summary, str) or not summary.strip():
         raise WorkQueueError("summary required")
     if len(summary) > MAX_SUMMARY_CHARS:
@@ -289,8 +300,18 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                               else "force claim across agents refused")
             if not (_owns(current, identity) or _identityless_pair(current, identity)):
                 raise Refused("claim is held by another session; only the owning session refreshes it")
+            if current.get("dispatch_key") != dispatch_key:
+                raise Refused("dispatch_key is immutable for an active claim")
         elif existing is not None:
             raise Refused("the claim was archived meanwhile; a refresh never recreates it")
+        if dispatch_key is not None and current is None:
+            for other_path, other in _strict_claim_entries(txns):
+                if other_path == claim_path:
+                    continue
+                if other is None:
+                    raise Refused("an active claim is unreadable or over the size bound; duplicate dispatch unknown")
+                if other.get("dispatch_key") == dispatch_key:
+                    raise Refused("duplicate dispatch: dispatch_key held by active claim " + str(other.get("task_id"))[:128])
         if mode == "write":
             for other_path, other in _strict_claim_entries(txns):
                 if other_path == claim_path:
@@ -318,9 +339,11 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                          owner_token_sha256=identity.owner_token_sha256)
         else:
             claim["owner_identity"] = OWNER_IDENTITY_NONE
-        return Plan(after=claim, expect_absent=current is None, result=claim,
-                    event={"type": "claim", "agent": agent, "task_id": task_id, "status": "active",
-                           "generation_before": sha256_or_none(before)})
+        event = {"type": "claim", "agent": agent, "task_id": task_id, "status": "active",
+                 "generation_before": sha256_or_none(before)}
+        if dispatch_key is not None:
+            claim["dispatch_key"] = event["dispatch_key"] = dispatch_key
+        return Plan(after=claim, expect_absent=current is None, result=claim, event=event)
 
     return txns.transact("claim", claim_path, _key("claim", task_id, read_bytes_or_none(claim_path), now), plan)
 
@@ -352,6 +375,8 @@ def release_task(txns: QueueTransactions, *, agent: str, task_id: str, release_s
         record = {"agent": agent, "task_id": task_id, "summary": current.get("summary", ""),
                   "release_status": release_status.strip(), "release_message": release_message.strip(),
                   "claimed_at_utc": current.get("claimed_at_utc", ""), "released_at_utc": released_at}
+        if isinstance(current.get("dispatch_key"), str):
+            record["dispatch_key"] = current["dispatch_key"]   # the dispatch evidence outlives the claim
         return Plan(after=None, archive=(done_path, record), result=record,
                     event={"type": "release", "agent": agent, "task_id": task_id,
                            "status": record["release_status"], "generation_before": sha256_or_none(before)})
@@ -661,7 +686,10 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                     applied_at = _apply_time(transactions)
                     if applied_at is None or not _owned_claim_sweepable(bridge, claim, applied_at):
                         raise Refused("the owner session is live or unknown at apply time")
-                return Plan(after=None, archive=(archive_path, _stale_payload(claim, now, reason)),
+                payload = _stale_payload(claim, now, reason)
+                if isinstance(current.get("dispatch_key"), str):
+                    payload["dispatch_key"] = current["dispatch_key"]
+                return Plan(after=None, archive=(archive_path, payload),
                             event={"type": "stale_archive", "agent": claim.agent, "task_id": claim.task_id,
                                    "status": "stale_lease", "generation_before": sha256_or_none(before)})
             # F8 fence: the owner's beat lock is held from before the plan's re-read through the delete.

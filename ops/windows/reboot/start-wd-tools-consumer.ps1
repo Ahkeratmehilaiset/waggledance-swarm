@@ -897,7 +897,8 @@ function Invoke-WdNativeToolsWakeStep {
             # Any other COMPLETED call stays submitting (UNKNOWN) and is never retried, but its exact evidence
             # is kept durably beside the state for the operator's reconciliation (a timeout has none to keep).
             # Extraction and receipt are secondary (RCO1 b814): their failure is only a warning and never replaces
-            # the ORIGINAL error object, which is rethrown unchanged; a stopping pipeline still stops.
+            # the ORIGINAL error object, which is rethrown unchanged; a stopping pipeline still stops. The warning
+            # is never terminating, even under $WarningPreference='Stop' (Lead 9373acdc).
             $primary = $_
             try {
                 $ambiguous = Get-WdCompletedAmbiguousEvidence -Data $primary.Exception.Data -ThreadId $ThreadId
@@ -907,7 +908,7 @@ function Invoke-WdNativeToolsWakeStep {
                     Write-WdNativeQueueAmbiguousReceipt -Path $ambiguousPath -State $state -Evidence $ambiguous
                 }
             } catch [Management.Automation.PipelineStoppedException] { throw }
-            catch { Write-Warning ('Native queue ambiguous-outcome receipt could not be written: ' + $_.Exception.Message) }
+            catch { Write-Warning -WarningAction Continue ('Native queue ambiguous-outcome receipt could not be written: ' + $_.Exception.Message) }
             throw $primary
         }
         $evidence = Get-WdCompletedRefusalEvidence -Data $_.Exception.Data -ThreadId $ThreadId
@@ -924,7 +925,8 @@ function Invoke-WdNativeToolsWakeStep {
         Write-WdTurnJson $StatePath $state
         # The receipt covers only the window before the rejected state, which now holds the refusal.
         if ([IO.File]::Exists($receiptPath)) {
-            try { [IO.File]::Delete($receiptPath) } catch { Write-Warning ('Native queue refusal receipt cleanup failed: ' + $_.Exception.Message) }
+            try { [IO.File]::Delete($receiptPath) } catch {
+                Write-Warning -WarningAction Continue ('Native queue refusal receipt cleanup failed: ' + $_.Exception.Message) }
         }
         return 'rejected'
     }

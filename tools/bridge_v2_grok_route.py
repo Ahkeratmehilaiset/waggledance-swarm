@@ -41,6 +41,14 @@ INTENT_SCHEMA = "wd.grok-consult-intent.v1"
 ADMISSION_SCHEMA = "wd.grok-consult-admission.v1"
 ANSWER_SCHEMA = "wd.grok-consult-answer.v1"
 HELPER_STATE_SCHEMA = "wd.grok-hourly.v1"  # the unchanged helper contract (RCO1 7da35242)
+# The helper contract this route and the broker rely on (RCO1 e855 S3), pinned to the reviewed helper blobs of
+# tools/wd_grok_helper.py. A different blob fails the contract fixture until it is re-reviewed here.
+HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-reviewed contract)",
+                "790a7b0897c12eefe2bfc71d938d707db9e30ea5": "the F20 branch copy",
+                "9c2cb61c18197606ce64f3562246b8b2d797b29a": "55026fad (strict lifecycle receipts)"}
+HELPER_STATUS_FIELDS = ("schema", "status", "last_attempt_utc", "eligible")  # what admit reads from status()
+HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
+HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation
 FEATURE = "F20"
 BUDGET_CLASSES = ("shared_hourly",)
 BUDGET_WINDOW = timedelta(hours=1)  # one attempted consultation per 60 min, failures included
@@ -213,13 +221,16 @@ def admit(intent: Any, evidence: Any) -> dict:
     caps = policy["parameters"].get(FEATURE) if isinstance(policy.get("parameters"), dict) else None
     if not (isinstance(caps, dict) and set(caps) == CAP_KEYS and isinstance(caps["efforts"], list)
             and isinstance(caps["allowed_tools"], list) and type(caps["max_prompt_bytes"]) is int
-            and type(caps["max_intent_ttl_seconds"]) is int):
+            and type(caps["max_intent_ttl_seconds"]) is int and caps["max_prompt_bytes"] >= 1
+            and caps["max_intent_ttl_seconds"] >= 1):
         return _result(BLOCKED, ["caps_unknown"], digest)
     if intent.get("model") != caps["model"] or intent.get("effort") not in caps["efforts"]:
         return _result(REFUSE, ["model_effort_outside_caps"], digest)
-    if type(intent.get("prompt_bytes")) is not int or intent["prompt_bytes"] > caps["max_prompt_bytes"]:
+    # The helper's own cap binds too: a signed cap above it would admit a prompt the helper then refuses.
+    if type(intent.get("prompt_bytes")) is not int \
+            or intent["prompt_bytes"] > min(caps["max_prompt_bytes"], HELPER_MAX_PROMPT_BYTES):
         return _result(REFUSE, ["prompt_outside_caps"], digest)
-    if expires - created > timedelta(seconds=caps["max_intent_ttl_seconds"]):
+    if (expires - created).total_seconds() > caps["max_intent_ttl_seconds"]:  # never builds a timedelta from a cap
         return _result(REFUSE, ["intent_ttl_outside_caps"], digest)
 
     # The read-only snapshot the consultation will see: exactly the intent's.

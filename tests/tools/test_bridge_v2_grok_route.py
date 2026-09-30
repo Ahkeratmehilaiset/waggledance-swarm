@@ -313,12 +313,46 @@ def test_a_forged_f0_dict_is_not_a_decision():
     ({"max_prompt_bytes": 10}, "refuse", "prompt_outside_caps"),
     ({"max_intent_ttl_seconds": 300}, "refuse", "intent_ttl_outside_caps"),
     ({"max_prompt_bytes": "48000"}, "blocked_unknown", "caps_unknown"),
+    ({"max_prompt_bytes": 0}, "blocked_unknown", "caps_unknown"),
+    ({"max_intent_ttl_seconds": 0}, "blocked_unknown", "caps_unknown"),
     ({"exemptions": ["operator"]}, "blocked_unknown", "caps_unknown"),  # a signed caps block has exact keys
 ])
 def test_caps_come_only_from_the_signed_policy(caps_over, verdict, reason):
     it, ev = bound(policy(**caps_over))
     assert route.admit(it, ev)["reasons"] == [reason]
     assert route.admit(it, ev)["verdict"] == verdict
+
+
+@pytest.mark.parametrize("ttl_cap", [10 ** 15, 10 ** 400])  # timedelta(seconds=10 ** 15) itself overflows
+def test_a_huge_signed_ttl_cap_is_compared_never_built_into_a_timedelta(ttl_cap):
+    """RCO1 e855 N7: the TTL cap is compared as a number, so a huge signed cap never raises OverflowError."""
+    it, ev = bound(policy(max_intent_ttl_seconds=ttl_cap))
+    assert route.admit(it, ev)["verdict"] == "admit"
+    it, ev = bound(policy(max_intent_ttl_seconds=599))  # the intent's own 600 s TTL is one second over
+    assert route.admit(it, ev)["reasons"] == ["intent_ttl_outside_caps"]
+    it, ev = bound(policy(max_intent_ttl_seconds=600))
+    assert route.admit(it, ev)["verdict"] == "admit"
+
+
+def test_a_signed_prompt_cap_above_the_helpers_is_bounded_by_the_helpers():
+    """RCO1 e855 N1: a signed cap above 48000 must not admit a prompt the helper then refuses."""
+    it, ev = bound(policy(max_prompt_bytes=100000), prompt="x" * 48001)
+    assert route.admit(it, ev)["reasons"] == ["prompt_outside_caps"]
+    it, ev = bound(policy(max_prompt_bytes=100000), prompt="x" * 48000)
+    assert route.admit(it, ev)["verdict"] == "admit"
+
+
+def test_a_deferred_helper_report_never_binds():
+    """RCO1 e855 S3: the helper's deferred shape (request_id None, no attempt) is not the answered attempt."""
+    it = intent()
+    admission = route.admit(it, evidence())
+    deferred = {"schema": "wd.grok-hourly.v1", "task_id": TASK, "request_id": None, "status": "deferred",
+                "decision": "deferred_hourly_limit", "consultation_attempted": False, "eligible": False,
+                "next_eligible_utc": (NOW + timedelta(minutes=50)).isoformat()}
+    assert route.bind_answer(it, admission, deferred, None)["reasons"] == ["not_the_answered_attempt"]
+    relabelled = dict(deferred, status="answered", last_attempt_utc=(NOW + timedelta(seconds=1)).isoformat(),
+                      report_sha256="5" * 64)  # even relabelled answered, no helper request_id never binds
+    assert route.bind_answer(it, admission, relabelled, answer())["reasons"] == ["attempt_unbound"]
 
 
 def test_policy_without_f20_caps_is_unknown():

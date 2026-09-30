@@ -4,19 +4,24 @@ The fakes stand in for the injected clock, the read-only snapshot, F0 activation
 unchanged helper (7da35242) and the durable admission ledger. Each fake port supplies its
 own fact time. The ledger fakes return MOCKED arbitration outcomes in one process; they
 prove the broker's handling of each outcome, not any real concurrency. Nothing here
-calls Grok, the real helper, F0, a clock or the network.
+calls Grok, F0, a clock or the network. The real helper runs only in the contract
+fixtures (RCO1 e855 S3): its status(), its prompt-cap refusal and its DEFERRING consult,
+each on a pytest tmp state root with a runner that fails the test if it is ever started.
 """
 from __future__ import annotations
 
 import ast
 from datetime import datetime, timedelta, timezone, tzinfo
+import hashlib
 import inspect
 import json
 from pathlib import Path
 
 import pytest
 
+from tools import bridge_v2_grok_route as route
 from tools import wd_grok_broker as broker
+from tools import wd_grok_helper as real_helper
 from tools.bridge_v2_activation import Decision, canonical_sha256
 from tools.bridge_v2_grok_route import prepare_grok_consult
 
@@ -24,17 +29,18 @@ NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 HEAD, TREE = "a" * 40, "b" * 40
 TASK = "codex-lead-1/bridge-v2-grok-route-20260930"
 PROMPT = "Review the admission gate. COMPLETE, no tools."
-POLICY = {"schema": "fixture-signed-policy", "parameters": {"F20": {
+POLICY = {"schema": "fixture-signed-policy", "expires_utc": "2026-10-30T00:00:00Z", "parameters": {"F20": {
     "model": "grok-4", "efforts": ["high"], "allowed_tools": [], "max_prompt_bytes": 48000,
     "max_intent_ttl_seconds": 900}}}
 ON = {"schema": broker.CONFIG_SCHEMA, "enabled": True}
 CONFIG = Path(__file__).resolve().parents[2] / "configs" / "bridge_v2_grok_admission.json"
+HELPER_PATH = Path(__file__).resolve().parents[2] / "tools" / "wd_grok_helper.py"
 
 
-def intent(prompt=PROMPT):
+def intent(prompt=PROMPT, policy=POLICY):
     return prepare_grok_consult(task_id=TASK, request_id="1" * 32, request_revision=1, prompt=prompt,
                                 snapshot={"head": HEAD, "tree": TREE}, model="grok-4", effort="high",
-                                budget_class="shared_hourly", authorization_ref=canonical_sha256(POLICY),
+                                budget_class="shared_hourly", authorization_ref=canonical_sha256(policy),
                                 nonce="2" * 32, ttl_seconds=600, now=NOW - timedelta(seconds=30))
 
 
@@ -68,7 +74,8 @@ class Clock:
 
 
 class SequenceClock(Clock):
-    """Read order in consult(): start, snapshot stamp, F0 stamp, budget stamp, ledger stamp, now."""
+    """Read order in consult(): start, snapshot stamp, F0 stamp, budget stamp, ledger stamp, now (1-6); then
+    the recheck's sample (7), its F0 stamp (8) and its final now (9)."""
 
     def __init__(self, *moments):
         super().__init__()
@@ -135,13 +142,15 @@ class Snapshot:
 
 
 class Activation:
-    """evaluated_utc is the port's own evaluation time: fixed, or live from a clock (an uncached port)."""
+    """evaluated_utc is the port's own evaluation time: fixed (a CACHED port), live from a clock (an uncached
+    port), or then_evaluated on the recheck's evaluation."""
 
-    def __init__(self, decision=None, policy=None, raises=None, evaluated=NOW, live=None, then=None):
+    def __init__(self, decision=None, policy=None, raises=None, evaluated=NOW, live=None, then=None,
+                 then_evaluated=None):
         self.decision = Decision("F20", True, "enabled", canonical_sha256(POLICY), 3) if decision is None else decision
         self.policy = POLICY if policy is None else policy
         self.raises, self.calls = raises, []
-        self.evaluated, self.live, self.then = evaluated, live, then
+        self.evaluated, self.live, self.then, self.then_evaluated = evaluated, live, then, then_evaluated
 
     def evaluate(self, feature, *, expected_head, expected_tree):
         self.calls.append((feature, expected_head, expected_tree))
@@ -149,6 +158,8 @@ class Activation:
             raise self.raises
         decision = self.then if self.then is not None and len(self.calls) > 1 else self.decision
         moment = self.live.moment if self.live is not None else self.evaluated
+        if self.then_evaluated is not None and len(self.calls) > 1:
+            moment = self.then_evaluated
         return decision, self.policy, stamp(moment) if isinstance(moment, datetime) else moment
 
 
@@ -467,7 +478,7 @@ def test_facts_just_inside_their_bounds_are_the_success_twin():
     edge = NOW - timedelta(seconds=120)
     result, ports = run(snapshot=Snapshot(observed=edge), helper=Helper(state=budget_state(observed_utc=stamp(edge))),
                         ledger=Ledger(observed=ledger_state(observed_utc=stamp(edge))),
-                        activation=Activation(evaluated=NOW - timedelta(seconds=60)))
+                        activation=Activation(evaluated=NOW - timedelta(seconds=60), then_evaluated=NOW))
     assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
     assert len(ports["helper"].calls) == 1
 
@@ -476,10 +487,73 @@ def test_facts_just_inside_their_bounds_are_the_success_twin():
 
 def test_a_slow_reservation_past_the_f0_bound_stops_before_the_call_and_finishes_the_entry():
     clock = Clock()
-    result, ports = run(clock=clock, ledger=SlowLedger(clock, timedelta(seconds=61)))  # F0 fixed at NOW
-    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "f0_stale"])
+    result, ports = run(clock=clock, ledger=SlowLedger(clock, timedelta(seconds=61)))  # F0 fixed (cached) at NOW
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "f0_cached"])
     assert ports["helper"].calls == [] and len(ports["ledger"].reserved) == 1
-    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", "f0_stale"]]
+    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", "f0_cached"]]
+
+
+def test_a_cached_f0_inside_its_60_s_window_is_still_refused_at_the_recheck():
+    """RCO1 e855 S1: a port caching per head/tree could serve a pre-revocation Decision for up to 60 s."""
+    clock = Clock()
+    result, ports = run(clock=clock, ledger=SlowLedger(clock, timedelta(seconds=5)))  # evaluated NOW, sampled NOW+5
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "f0_cached"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+    clock = Clock()
+    fresh = Activation(live=clock)  # the twin: evaluated at the recheck itself
+    result, ports = run(clock=clock, activation=fresh, ledger=SlowLedger(clock, timedelta(seconds=5)))
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and len(ports["helper"].calls) == 1
+
+
+@pytest.mark.parametrize("version, verdict, reason", [
+    (2, "refuse", "revocation_regressed"),
+    (None, "blocked_unknown", "revocation_unknown"),
+])
+def test_a_regressed_or_unknown_revocation_version_is_never_paid_for(version, verdict, reason):
+    then = Decision("F20", True, "enabled", canonical_sha256(POLICY), version)
+    result, ports = run(activation=Activation(then=then))
+    assert (result["verdict"], result["reasons"]) == (verdict, ["recheck_failed", reason])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+    newer, ports = run(activation=Activation(then=Decision("F20", True, "enabled", canonical_sha256(POLICY), 4)))
+    assert (newer["verdict"], newer["reasons"]) == ("answered_bound", [])  # the twin: a newer version is fine
+
+
+def _policy_run(policy, by):
+    clock = Clock()
+    decision = Decision("F20", True, "enabled", canonical_sha256(policy), 3)
+    return run(it=intent(policy=policy), clock=clock, ledger=SlowLedger(clock, by),
+               activation=Activation(decision=decision, policy=policy, live=clock))
+
+
+def test_a_policy_expiring_before_the_call_is_never_paid_for():
+    expiring = dict(POLICY, expires_utc=stamp(NOW + timedelta(seconds=3)))
+    result, ports = _policy_run(expiring, timedelta(seconds=5))
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["recheck_failed", "policy_expired"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+    unknown = {key: value for key, value in POLICY.items() if key != "expires_utc"}
+    result, ports = _policy_run(unknown, timedelta(seconds=5))
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "policy_expiry_unknown"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+    later = dict(POLICY, expires_utc=stamp(NOW + timedelta(seconds=6)))
+    result, ports = _policy_run(later, timedelta(seconds=5))  # the twin: still ahead at the final read
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
+
+
+@pytest.mark.parametrize("moments", [
+    [NOW] * 6 + [NOW - timedelta(seconds=1)],  # the recheck sample is before the admission's now
+    [NOW] * 8 + [NOW - timedelta(seconds=1)],  # the final read is before the sample
+])
+def test_a_clock_running_backwards_at_the_recheck_is_never_paid_for(moments):
+    result, ports = run(clock=SequenceClock(*moments))
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "clock_regressed"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+
+
+def test_a_fact_that_aged_past_its_bound_during_the_reservation_stops_the_call():
+    clock = Clock()
+    result, ports = run(clock=clock, activation=Activation(live=clock), ledger=SlowLedger(clock, timedelta(seconds=121)))
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "snapshot_unknown"])
+    assert ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
 
 
 def test_an_intent_expiring_during_the_reservation_is_never_paid_for():
@@ -521,14 +595,19 @@ def test_a_slow_but_still_valid_reservation_is_the_success_twin():
 # --- every clock read takes the offset once (RCO2 23:49:44Z S1) -----------------------------------
 
 def test_every_clock_read_takes_the_offset_once_including_the_final_recheck():
-    """Read order: start, snapshot, F0, budget, ledger, now; then the recheck's F0 and now (8 reads)."""
+    """Read order: start, snapshot, F0, budget, ledger, now; then the recheck's sample, F0 and final now (9)."""
     clock = FreshZoneClock()
     result, ports = run(clock=clock)
     assert (result["verdict"], result["reasons"]) == ("answered_bound", [])
-    assert clock.reads == 8 and [zone.reads for zone in clock.zones] == [1] * 8  # never a second (local) read
+    assert clock.reads == 9 and [zone.reads for zone in clock.zones] == [1] * 9  # never a second (local) read
     assert result["admission"]["admitted_utc"] == "2026-09-30T12:00:00Z"
 
 
+@pytest.mark.parametrize("position, reason", [
+    (7, "time_unknown"),  # the recheck's sample, before F0 is evaluated
+    (8, "f0_unknown"),  # the recheck's F0 stamp
+    (9, "time_unknown"),  # the final now
+])
 @pytest.mark.parametrize("late", [
     _Sub(2026, 9, 30, 12, 0, 5, tzinfo=timezone.utc),  # a datetime subclass
     datetime(2026, 9, 30, 12, 0, 5, tzinfo=_Unimplemented()),  # NotImplementedError, never raised out
@@ -536,12 +615,13 @@ def test_every_clock_read_takes_the_offset_once_including_the_final_recheck():
     datetime.max.replace(tzinfo=timezone(-timedelta(hours=23, minutes=59))),  # past datetime.max in UTC
     datetime(2026, 9, 30, 12, 0, 5),  # naive
 ])
-def test_an_unknown_time_at_the_final_recheck_is_never_paid_for(late):
-    clock = SequenceClock(*([NOW] * 7), late)
-    result, ports = run(clock=clock)
-    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", "time_unknown"])
+def test_an_unknown_time_at_the_final_recheck_is_never_paid_for(late, position, reason):
+    moments = [NOW] * 9
+    moments[position - 1] = late
+    result, ports = run(clock=SequenceClock(*moments))
+    assert (result["verdict"], result["reasons"]) == ("blocked_unknown", ["recheck_failed", reason])
     assert ports["helper"].calls == [] and len(ports["ledger"].reserved) == 1  # spent: reserved, never refunded
-    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", "time_unknown"]]
+    assert [outcome["reasons"] for _, outcome in ports["ledger"].finished] == [["recheck_failed", reason]]
 
 
 @pytest.mark.parametrize("zone_now", [
@@ -550,7 +630,7 @@ def test_an_unknown_time_at_the_final_recheck_is_never_paid_for(late):
 ])
 def test_a_zoned_clock_at_the_final_recheck_is_the_success_twin(zone_now):
     late = zone_now()
-    clock = SequenceClock(*([NOW] * 7), late)
+    clock = SequenceClock(*([NOW] * 8), late)
     result, ports = run(clock=clock)
     assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and len(ports["helper"].calls) == 1
     if isinstance(late.tzinfo, _Stateful):
@@ -606,3 +686,110 @@ def test_a_multibyte_prompt_is_counted_in_utf8_bytes():
     result, ports = run(it=dict(intent(prompt=text), prompt_bytes=len(text)), prompt=text)  # counted in chars
     assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
     assert untouched(ports)
+
+
+def _never_run(*args, **kwargs):
+    raise AssertionError("the real helper's runner must never start in these fixtures")
+
+
+def test_a_prompt_over_the_helpers_own_cap_is_refused_before_any_port(tmp_path):
+    """RCO1 e855 N1: the helper refuses more than 48000 bytes before its own reservation, but only after the
+    broker's ledger would already have reserved (and never refunded) the hour. Its own intent, so not vacuous."""
+    assert broker.MAX_PROMPT_BYTES == route.HELPER_MAX_PROMPT_BYTES == 48000
+    with pytest.raises(ValueError, match="48000"):
+        real_helper.consult(tmp_path, TASK, "x" * 48001, ["never-run"], runner=_never_run, now=NOW)
+    assert list(tmp_path.iterdir()) == []  # refused before the helper's lock or state
+    over = "x" * 48001
+    result, ports = run(it=intent(prompt=over), prompt=over)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
+    assert untouched(ports) and ports["clock"].reads == 0
+    edge = "x" * 48000
+    result, ports = run(it=intent(prompt=edge), prompt=edge)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and ports["helper"].calls == [(TASK, edge)]
+
+
+class MutatingLedger(Ledger):
+    """Mutates every admission and outcome it is handed, as a buggy or hostile port could."""
+
+    def reserve(self, admission):
+        admission["allowed_tools"].append("bash")
+        admission["intent_sha256"] = "0" * 64
+        return super().reserve(admission)
+
+    def finish(self, admission, outcome):
+        admission["allowed_tools"].append("bash")
+        outcome["reasons"].append("forged")
+        super().finish(admission, outcome)
+
+
+def test_a_port_mutating_its_copy_changes_nothing_the_broker_trusts():
+    """RCO1 e855 N4: reserve and finish get copies, so bind_answer's allowlist and the result stay the broker's."""
+    ledger = MutatingLedger()
+    helper = Helper(reply={"text": "x", "tool_calls": ["bash"], "report_sha256": "5" * 64})
+    result, _ = run(ledger=ledger, helper=helper)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["forbidden_tool_in_transcript"])
+    assert result["admission"]["allowed_tools"] == [] and result["admission"]["intent_sha256"] != "0" * 64
+    assert ledger.reserved[0]["allowed_tools"] == ["bash"] and len(ledger.finished) == 1  # only the copies changed
+
+
+# --- the real helper's contract (RCO1 e855 S3): a reviewed blob, the fields admit reads, deferred ---------
+
+class RealStatusHelper(Helper):
+    """The REAL helper's status() on a tmp state root; the fake consult and read_answer otherwise."""
+
+    def __init__(self, root, **state):
+        super().__init__()
+        self.root = root
+        self.write(**state)
+
+    def write(self, **state):
+        text = json.dumps(dict({"schema": real_helper.SCHEMA}, **state))
+        (self.root / "hourly-state.json").write_text(text, encoding="utf-8")
+
+    def status(self):
+        return dict(real_helper.status(self.root, NOW), observed_utc=stamp(NOW))
+
+
+class RealDeferringHelper(RealStatusHelper):
+    """Another caller takes the helper's hour after admission, so the REAL consult defers (its runner never runs)."""
+
+    def consult(self, task_id, prompt):
+        self.calls.append((task_id, prompt))
+        self.write(status="answered", last_attempt_utc=(NOW - timedelta(minutes=10)).isoformat())
+        self.report = real_helper.consult(self.root, task_id, prompt, ["never-run"], runner=_never_run, now=NOW)
+        return dict(self.report)
+
+
+def test_the_helper_is_a_reviewed_blob_with_the_fields_admission_reads(tmp_path):
+    data = HELPER_PATH.read_bytes().replace(b"\r\n", b"\n")  # the committed LF bytes under core.autocrlf
+    assert hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() in route.HELPER_BLOBS
+    assert real_helper.SCHEMA == route.HELPER_STATE_SCHEMA
+    helper = RealStatusHelper(tmp_path, status="answered", last_attempt_utc=(NOW - timedelta(hours=2)).isoformat())
+    assert set(route.HELPER_STATUS_FIELDS) <= set(helper.status())
+    result, _ = run(helper=helper)
+    assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and len(helper.calls) == 1
+
+
+@pytest.mark.parametrize("state, reason", [
+    ({"status": "reserved", "last_attempt_utc": (NOW - timedelta(minutes=1)).isoformat(), "timeout_seconds": 300},
+     "unreconciled_attempt:reserved"),
+    ({"status": "reserved", "last_attempt_utc": (NOW - timedelta(minutes=10)).isoformat(), "timeout_seconds": 300},
+     "unreconciled_attempt:interrupted_or_unknown"),  # the real helper's past-deadline observation
+    ({"status": "failed", "last_attempt_utc": (NOW - timedelta(minutes=10)).isoformat()}, "hourly_budget_used"),
+])
+def test_the_real_helper_status_refuses_through_the_broker(tmp_path, state, reason):
+    helper = RealStatusHelper(tmp_path, **state)
+    result, ports = run(helper=helper)
+    assert (result["verdict"], result["reasons"]) == ("refuse", [reason])
+    assert helper.calls == [] and ports["ledger"].reserved == []
+
+
+def test_the_real_helpers_deferred_report_is_refused_and_never_read(tmp_path):
+    """A deferred report has request_id None and no attempt: it never binds, and read_answer never runs."""
+    helper = RealDeferringHelper(tmp_path, status="answered",
+                                 last_attempt_utc=(NOW - timedelta(hours=2)).isoformat())
+    result, ports = run(helper=helper)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["not_the_answered_attempt"])
+    assert (helper.report["status"], helper.report["request_id"], helper.report["consultation_attempted"]) \
+        == ("deferred", None, False)
+    assert len(helper.calls) == 1 and helper.reads == [] and len(ports["ledger"].finished) == 1

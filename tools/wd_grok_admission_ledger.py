@@ -76,6 +76,10 @@ Rules (fail-closed):
   a list, an attribute write that raises) is swallowed: the mark may then be missing, but the
   primary is never replaced. A BaseException (KeyboardInterrupt, SystemExit) raised by the
   release or while marking is not swallowed; it propagates with the primary as its context.
+  One limit (RCO2 01:04:16Z): _locked is a @contextmanager, and CPython's wrapper assigns
+  ``__traceback__`` on the primary it re-raises (contextlib ``_GeneratorContextManager.__exit__``).
+  A primary whose ``__setattr__`` refuses that write is replaced there by its AttributeError,
+  with the primary as the context; still fail-closed.
 
 Durability contract: each write is an exclusive temp file in the root, written in full,
 os.fsync'ed, then os.replace'd over the ledger; on POSIX the root directory is fsync'ed

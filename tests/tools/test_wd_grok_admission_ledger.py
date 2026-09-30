@@ -836,12 +836,15 @@ class _HostileInterrupt(BaseException):
 
 
 class _Sealed(LedgerRefused):
-    """A ledger error whose every attribute write raises once sealed: add_note and the flag both fail on it."""
+    """A ledger error whose attribute writes raise once sealed: add_note's __notes__ and the flag both fail on it.
+
+    Only __traceback__ stays writable (RCO2 01:04:16Z): contextlib's @contextmanager wrapper itself assigns it
+    when it re-raises the primary, and a primary refusing that write is replaced there (see the module docs)."""
 
     sealed = False
 
     def __setattr__(self, name, value):
-        if self.sealed:
+        if self.sealed and name != "__traceback__":
             raise AttributeError("sealed exception")
         super().__setattr__(name, value)
 

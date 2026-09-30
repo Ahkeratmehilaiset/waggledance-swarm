@@ -161,7 +161,7 @@ def test_the_module_reads_no_clock_file_environment_or_provider():
     tree = ast.parse(Path(wi.__file__).read_text(encoding="utf-8"))
     imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     imported |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-    assert imported <= {"__future__", "copy", "datetime", "typing", "tools.bridge_pool_binding",
+    assert imported <= {"__future__", "datetime", "json", "typing", "tools.bridge_pool_binding",
                         "tools.wd_composer_select", "tools.wd_task_router"}
     called = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
               for node in ast.walk(tree) if isinstance(node, ast.Call)}
@@ -218,7 +218,72 @@ def test_the_lane_age_bound_is_the_capacity_adapter_sample_bound():
     assert wi.MAX_LANE_EVIDENCE_AGE_SECONDS == MAX_SAMPLE_AGE_SECONDS == 900
 
 
-def test_a_document_deepcopy_refuses_is_withheld_not_passed_on_shared():
+def test_a_document_json_cannot_encode_is_withheld_not_passed_on_shared():
     result = _assemble([_lane("fable-5")], rows=(row for row in []))
-    assert (result["inputs"]["rows"], result["reasons"]) == (None, ["document_uncopyable:rows"])
+    assert (result["inputs"]["rows"], result["reasons"]) == (None, ["document_not_canonical_json:rows"])
     assert result["provenance"]["rows"]["document_digest"] == digest(None)
+
+
+# RCO2 independent review of 54bea007 (20:00:06Z): W1-F1 to W1-F4.
+@pytest.mark.parametrize("name, value", [
+    ("rows", [{"used_percent": float("nan")}]),
+    ("rows", {"codex"}),
+    ("task", {**_task(), "scope": ("repo:tools/x.py",)}),
+    ("routing_policy", {1: "a non-string key"}),
+], ids=["nan", "set", "tuple", "int-key"])
+def test_a_document_without_an_exact_json_form_is_withheld_with_a_reason(name, value):
+    result = _assemble([_lane("fable-5")], **{name: value})
+    assert result["inputs"][name] is None
+    assert result["reasons"] == ["document_not_canonical_json:" + name]
+    assert result["provenance"][name]["document_digest"] == digest(None)
+
+
+def test_a_lane_role_holding_a_tuple_withholds_the_whole_lanes_document():
+    result = _assemble([_lane("fable-5", role={"worker": "fable-5", "roles": ("producer",)})])
+    assert result["inputs"]["workers"] == []
+    assert result["reasons"] == ["document_not_canonical_json:lanes", "lanes_malformed"]
+
+
+class _SelfCopyingList(list):
+    def __deepcopy__(self, memo):
+        return self
+
+
+def test_a_document_whose_deepcopy_returns_itself_is_still_a_private_copy():
+    rows = _SelfCopyingList([{"provider": "codex"}])
+    result = _assemble([_lane("fable-5")], rows=rows)
+    rows.append({"provider": "claude"})
+    rows[0]["provider"] = "changed"
+    assert result["inputs"]["rows"] == [{"provider": "codex"}] and type(result["inputs"]["rows"]) is list
+    assert result["provenance"]["rows"]["document_digest"] == digest([{"provider": "codex"}])
+
+
+@pytest.mark.parametrize("field, value, reason", [
+    ("subject", " ", "subject_malformed"),
+    ("subject", " auth-1", "subject_malformed"),
+    ("subject", "auth-1 ", "subject_malformed"),
+    ("profile_id", " ", "lane_evidence_malformed"),
+    ("profile_id", "p" * 129, "lane_evidence_malformed"),
+])
+def test_padded_whitespace_or_overlong_text_is_malformed_as_compose_would_judge_it(field, value, reason):
+    record = _lane("fable-5")
+    record[field] = value
+    result = _assemble([record])
+    assert result["inputs"]["workers"] == [] and result["unknown"][0]["reasons"] == [reason]
+
+
+@pytest.mark.parametrize("value", ["a", " a", "a ", " ", "", "a\tb", "x" * 256, "x" * 257, "\u00e9", "\u2028"])
+def test_every_subject_the_assembler_admits_compose_admits_too(value):
+    from tools.wd_routing_capacity import _label
+    assert not wi._text(value) or _label(value)
+
+
+def test_grok_never_carries_a_role_or_qualification_into_the_inputs():
+    role = {"worker": "grok", "verified": True, "roles": ["producer"], "observed_utc": NOW.isoformat()}
+    record = _lane(wi.GROK, subject=None, kind=wi.GROK, profile="grok-4.7", role=role,
+                   qualification=[{"task_class": "implementation", "profile_id": "grok-4.7"}])
+    result = _assemble([record])
+    [grok] = result["inputs"]["workers"]
+    assert set(grok) == {"schema", "worker", "kind", "profile_id"} and grok["worker"] == "grok"
+    assert result["unknown"] == [{"index": 0, "worker": "grok",
+                                  "reasons": ["grok_role_refused", "grok_qualification_refused"]}]

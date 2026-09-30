@@ -15,9 +15,11 @@ What it never does:
 * It never supplies capacity, load or single-flight state: lane evidence carrying any of them is
   malformed. Capacity comes only through compose()'s adapter; reservation state is not assembled here.
 * It never alters the caller's task (id, revision, input digest, scope): the task is handed on as a
-  deep copy and its digest recorded. Every document is deep-copied once, so a later change by the
-  caller cannot reach the inputs; a document deepcopy refuses is withheld as uncopyable. Grok gets no subject and stays consult-only and unranked; shadow
-  weights are passed through untouched for compose() to keep separate from the ranked order.
+  copy and its digest recorded. Every document is copied through its canonical JSON text, so the
+  copy shares nothing with the caller whatever the caller's types do; a document with no exact JSON
+  form (NaN, a set, a tuple, a non-string key) is withheld as ``document_not_canonical_json``.
+* Grok gets no subject, role or qualification and stays consult-only and unranked. Shadow weights
+  are passed through untouched for compose() to keep separate from the ranked order.
 
 Provenance: ``document_digest`` is ``tools.wd_composer_select.digest`` of the parsed document (the
 sha256 of its canonical JSON). A parsed document cannot prove the bytes it was read from, so the
@@ -27,7 +29,7 @@ path and byte sha256 a caller reports are passed through as caller claims with
 """
 from __future__ import annotations
 
-import copy
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -43,7 +45,8 @@ DOCUMENTS = ("task", "lanes", "rows", "paced", "signed_policy", "prepared_artifa
              "shadow_weights")
 DIGEST_BASIS = "sha256 of the canonical JSON of the parsed document; not the original bytes"
 MAX_LANE_EVIDENCE_AGE_SECONDS = 900     # the capacity adapter's own sample bound (wd_capacity_pacing)
-MAX_TEXT = 256
+MAX_TEXT = 256                          # compose's _label bound for a subject
+MAX_PROFILE_TEXT = 128                  # compose's _label bound for a profile_id (wd_routing_capacity._worker)
 MAX_PATH_TEXT = 1024
 HEX = frozenset("0123456789abcdef")
 # What this slice does NOT derive, stated instead of guessed (Lead 19:23:43Z).
@@ -56,7 +59,21 @@ CONTRACT_UNKNOWNS = (
 
 
 def _text(value: Any, limit: int = MAX_TEXT) -> bool:
-    return type(value) is str and 0 < len(value) <= limit and value.isprintable()
+    """Text compose's _label also admits (exact str, 1..limit characters, no outer whitespace), and printable."""
+    return type(value) is str and 0 < len(value) <= limit and value.strip() == value and value.isprintable()
+
+
+def _canonical_copy(value: Any) -> tuple[bool, Any]:
+    """(True, a fresh copy built from the canonical JSON text), or (False, None) when the value has no exact JSON
+    form (NaN, a set, a tuple, a non-string key, anything json cannot encode). Built from the text, the copy shares
+    nothing with the caller, whatever the caller's types do on deepcopy (RCO2 W1-F1, W1-F2)."""
+    try:
+        copied = json.loads(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                                       allow_nan=False))
+        exact = copied == value
+    except Exception:  # noqa: BLE001 - a value json cannot encode or compare is not a parsed document
+        return False, None
+    return (True, copied) if exact is True else (False, None)
 
 
 def _instant(value: Any) -> datetime | None:
@@ -85,7 +102,8 @@ def _lane(record: Any, now: datetime | None) -> tuple[dict | None, str | None, l
     """(worker record, subject, reasons) for one lane record; a None worker means withheld whole."""
     if type(record) is not dict or not set(LANE_REQUIRED) <= set(record) \
             or not set(record) <= set(LANE_REQUIRED + LANE_OPTIONAL) or record["schema"] != LANE_EVIDENCE_SCHEMA \
-            or not _text(record["worker"]) or not _text(record["kind"]) or not _text(record["profile_id"]):
+            or not _text(record["worker"]) or not _text(record["kind"]) \
+            or not _text(record["profile_id"], MAX_PROFILE_TEXT):
         return None, None, ["lane_evidence_malformed"]
     worker, kind, subject = record["worker"], record["kind"], record["subject"]
     if worker != GROK and worker not in MEMBERS:
@@ -109,13 +127,17 @@ def _lane(record: Any, now: datetime | None) -> tuple[dict | None, str | None, l
     reasons = [] if subject is not None or worker == GROK else ["subject_unknown"]
     if "role" in record:
         role = record["role"]
-        if type(role) is dict and role.get("worker") == worker:
+        if worker == GROK:
+            reasons.append("grok_role_refused")     # consult-only: never a role to rank on (RCO2 W1-F4)
+        elif type(role) is dict and role.get("worker") == worker:
             assembled["role"] = role            # the lanes document is already a private copy
         else:
             reasons.append("role_foreign_or_malformed")
     if "qualification" in record:
         receipts = record["qualification"]
-        if type(receipts) is list and all(type(receipt) is dict for receipt in receipts):
+        if worker == GROK:
+            reasons.append("grok_qualification_refused")
+        elif type(receipts) is list and all(type(receipt) is dict for receipt in receipts):
             assembled["qualification"] = receipts
         else:
             reasons.append("qualification_malformed")
@@ -133,11 +155,9 @@ def assemble(task: Any, lanes: Any, rows: Any, paced: Any, prepared_artifacts: A
                  "prepared_artifacts": prepared_artifacts, "routing_policy": routing_policy,
                  "shadow_weights": shadow_weights}
     for name in DOCUMENTS:      # private copies: a later change by the caller cannot reach the inputs
-        try:
-            documents[name] = copy.deepcopy(documents[name])
-        except Exception:       # not a parsed document; withheld, never passed on shared
-            documents[name] = None
-            reasons.append("document_uncopyable:" + name)
+        exact, documents[name] = _canonical_copy(documents[name])
+        if not exact:           # not a parsed JSON document; withheld, never passed on shared
+            reasons.append("document_not_canonical_json:" + name)
     if documents["signed_policy"] is not None and type(documents["signed_policy"]) is not dict:
         documents["signed_policy"] = None
         reasons.append("signed_policy_malformed")

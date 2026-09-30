@@ -14,8 +14,13 @@ One transaction (``QueueTransactions.transact``):
    reparse point on any existing component;
 2. takes the runtime-root mutex (``mutex_name(root)``) FIRST, then the exact legacy
    sibling claim lock ``<claim>.json.lock`` (``Enter-BridgeClaimLock`` spelling, an
-   exclusive open retried every 25 ms, 4 s default like PowerShell). A timeout on either
-   raises ``LockTimeout`` and mutates nothing;
+   exclusive open retried every 25 ms, 4 s default like PowerShell), then, innermost, the
+   sibling lock ``<beat>.json.lock`` of each session-heartbeat FENCE the caller names
+   (``work_queue/heartbeats/<64 hex>.json`` only, at most MAX_FENCES, validated before any
+   lock; an absent heartbeats directory is created so the lock is real). That is the one lock
+   the PowerShell session-heartbeat writer takes (``Write-BridgeSessionHeartbeat``), so no
+   beat lands between the plan's read of it and the effect. A timeout on any lock raises
+   ``LockTimeout`` and mutates nothing;
 3. RECOVERS the claim first (RCO1 9dd2f32c S1): an earlier WAL record for the same claim
    that is still unfinished is resolved from disk (see recovery) before the new plan reads
    the claim, so a retry always sees the outcome of the attempt it retries. A corrupt or
@@ -93,11 +98,14 @@ directory entries is not claimed there, and elsewhere depends on the filesystem.
 Limits: legacy writers (``waggledance/core/work_queue.py``, the PowerShell claim
 scripts) do not take the runtime-root mutex, and the Python legacy writer does not take
 the sibling lock; while they run unchanged there is NO mixed-generation safety claim.
-The bindings catch accidents, stale copies and cross-root mix-ups; a writer with the
-lane's own file access can still forge a consistent record set. There is no retention
-for filed WAL records or published outbox records yet. The Windows named-mutex adapter
-and the PowerShell twin are separate (F8 ports).
-Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
+The PowerShell session-heartbeat writer is fenced only through its own beat lock (a fence),
+never through the mutex. The bindings catch accidents, stale copies and cross-root
+mix-ups; a writer with the lane's own file access can still forge a consistent record set.
+There is no retention for filed WAL records or published outbox records yet. The Windows
+named-mutex port is ``tools/bridge_v2_queue_ports_windows.py``; a PowerShell twin of the
+mutex does not exist yet.
+Written under the operator's no-runs directive (2026-09-29); its fixtures were run on 2026-09-30
+(RCO1, Windows, isolated tmp roots) and never against a live root.
 """
 from __future__ import annotations
 
@@ -113,7 +121,7 @@ import re
 import secrets
 import stat
 import time
-from typing import Any, Callable, ContextManager, Iterator, Protocol
+from typing import Any, Callable, ContextManager, Iterator, Protocol, Sequence
 
 from tools.bridge_v2_resource_scope import ScopeError, _normalize_absolute
 
@@ -126,6 +134,7 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 4.0     # legacy $script:BridgeClaimLockTimeoutMs
 MAX_RECORD_BYTES = 256 * 1024
 MAX_KEY_CHARS = 512
 MAX_REJECTED_NAMES = 32
+MAX_FENCES = 4                         # session-heartbeat fences per transaction (the sweep needs one)
 OPS = ("claim", "release", "heartbeat", "stale_archive")
 UNFINISHED = ("prepared", "applied")
 FINAL = ("outboxed", "aborted", "diverged")
@@ -146,6 +155,7 @@ OUTBOX_KEYS = frozenset({"schema", "root_identity", "idempotency_key", "txid", "
                          "after_sha256", "event", "event_sha256"})
 _REL_CLAIM = re.compile(r"work_queue/claims/[A-Za-z0-9._-]{1,200}\.json")
 _REL_ARCHIVE = re.compile(r"work_queue/done/[A-Za-z0-9._-]{1,240}\.json")
+_REL_FENCE = re.compile(r"work_queue/heartbeats/[0-9a-f]{64}\.json")   # a session-heartbeat artifact
 _HEX32 = re.compile(r"[0-9a-f]{32}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _OUTBOX_NAME = re.compile(r"[0-9a-f]{64}\.json")
@@ -625,7 +635,9 @@ class QueueTransactions:
 
     # -- locks, in the one order ------------------------------------------------------
     @contextmanager
-    def locked(self, claim_path: Path) -> Iterator[None]:
+    def locked(self, claim_path: Path, fences: tuple = ()) -> Iterator[None]:
+        """The root mutex, then the claim's sibling lock, then (innermost, in the order given) the sibling
+        lock of each fence; ``fences`` must come from ``_fence_paths``."""
         if not self.ports_on:
             raise QueueTransactionError("queue ports are off: a mutex port and a claim-lock port are required")
         if type(self.lock_timeout_seconds) not in (int, float) or not 0 < self.lock_timeout_seconds <= 60:
@@ -633,18 +645,55 @@ class QueueTransactions:
         _guard(claim_lock_path(claim_path), "claim lock")   # a linked lock file would lock something else
         with self.mutex.hold(mutex_name(self.root), self.lock_timeout_seconds):
             with self.claim_lock.hold(claim_lock_path(claim_path), self.lock_timeout_seconds):
+                with self._fenced(tuple(fences)):
+                    yield
+
+    @contextmanager
+    def _fenced(self, fences: tuple) -> Iterator[None]:
+        """Each fence's sibling ``<beat>.json.lock`` through the claim-lock port (the lock the PowerShell
+        session-heartbeat writer takes), held until the transaction ends. An absent heartbeats directory is
+        created first: without it the lock could not be taken, and a writer that creates the directory later
+        would then meet no lock at all."""
+        if not fences:
+            yield
+            return
+        fence = fences[0]
+        _guard(fence.parent, "fence directory", leaf="dir")
+        fence.parent.mkdir(parents=True, exist_ok=True)
+        _guard(claim_lock_path(fence), "fence lock")   # re-walked after the mkdir; the port re-checks each attempt
+        with self.claim_lock.hold(claim_lock_path(fence), self.lock_timeout_seconds):
+            with self._fenced(fences[1:]):
                 yield
+
+    def _fence_paths(self, fences: Sequence[Path]) -> tuple[Path, ...]:
+        """The session-heartbeat fences of one transaction, validated BEFORE any lock: a list or tuple of at most
+        MAX_FENCES paths, each a ``work_queue/heartbeats/<64 hex>.json`` beat inside this root (every existing
+        component guarded like a claim), deduplicated and sorted by that name, so every caller takes them in one
+        order."""
+        if not isinstance(fences, (tuple, list)):
+            raise QueueTransactionError("fences must be a list or tuple of session-heartbeat paths")
+        if len(fences) > MAX_FENCES:
+            raise QueueTransactionError("more than " + str(MAX_FENCES) + " fences")
+        names = set()
+        for fence in fences:
+            if not isinstance(fence, Path):
+                raise QueueTransactionError("a fence must be a path")
+            names.add(self._relative(fence, _REL_FENCE, "fence"))
+        return tuple(self.root.joinpath(*name.split("/")) for name in sorted(names))
 
     # -- one transaction --------------------------------------------------------------
     def transact(self, op: str, claim_path: Path, idempotency_key: str,
-                 plan_fn: Callable[[bytes | None], Plan]) -> Any:
+                 plan_fn: Callable[[bytes | None], Plan], *, fences: Sequence[Path] = ()) -> Any:
+        """One transaction on one claim (module docstring). ``fences`` names session-heartbeat artifacts whose
+        sibling locks are held, innermost, from before the plan reads anything until the transaction ends."""
         if op not in OPS:
             raise QueueTransactionError("unknown queue operation")
         if not isinstance(idempotency_key, str) or not 0 < len(idempotency_key) <= MAX_KEY_CHARS:
             raise QueueTransactionError("an idempotency key of 1..512 characters is required")
         claim_rel = self._relative(claim_path, _REL_CLAIM, "claim")   # before any lock (N4, N5)
+        fence_paths = self._fence_paths(fences)                       # before any lock
         self._guard_state_dirs()                                      # before any lock or effect
-        with self.locked(claim_path):
+        with self.locked(claim_path, fence_paths):
             recovered, blocker = self._recover_claim(claim_rel)
             try:
                 if blocker is not None:

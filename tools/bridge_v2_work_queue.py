@@ -29,16 +29,20 @@ applies only through injected transactions: without ports a sweep is refused, ne
 defaulted. A changed claim is skipped as in core; every other transaction refusal (lock
 timeout, a blocked claim, a record conflict, a bound) is a ``WorkQueueError`` (S6). At apply
 time, under the locks, an owned claim's session heartbeat and lease are re-read with the
-transactions' own clock; live or unknown skips it (Tools 51ada Q-SWEEP-LIVE-RECHECK). The
-PowerShell session-heartbeat writer takes neither the claim lock nor the runtime mutex, so a
-beat written after that re-read and before the delete still races, until a shared fence
-exists.
+transactions' own clock; live or unknown skips it (Tools 51ada Q-SWEEP-LIVE-RECHECK). That
+re-read and the delete are one FENCED step (F8 session-heartbeat fence, RCO1 2026-09-30): the
+PowerShell session-heartbeat writer takes neither the claim lock nor the runtime mutex, only the
+beat's own sibling lock ``<beat>.json.lock``, so the sweep names the owner's beat as a fence and
+holds that same lock (innermost) from before the re-read through the delete. A beat attempted
+meanwhile waits or is skipped by its writer; a writer holding the lock past the timeout fails the
+sweep closed (WorkQueueError, nothing archived).
 
 Consumer composition is DEFERRED (Lead's B1 decision): the consumers keep core until
 validated ports, publication and fencing exist. This module never falls back to or
 imports core, and its ports-less apply refusal must not be hidden by weakening a core
 CLI test.
-Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
+Written under the operator's no-runs directive (2026-09-29); its fixtures were run on 2026-09-30
+(RCO1, Windows, isolated tmp roots) and never against a live root.
 """
 from __future__ import annotations
 
@@ -507,12 +511,20 @@ def list_claims(bridge_root: Path | None = None) -> list[Claim]:
     return [claim for _, claim in _claim_entries(resolve_bridge_root(bridge_root))]
 
 
+def _session_heartbeat_path(bridge: Path, claim: Claim) -> Path | None:
+    """The owner's session-heartbeat artifact (core and ``Get-BridgeSessionHeartbeatPath``: the SHA-256 of
+    session and token hash), or None for a claim without both owner fields."""
+    if not claim.owner_session_id or not claim.owner_token_sha256:
+        return None
+    digest = hashlib.sha256(f"{claim.owner_session_id}\n{claim.owner_token_sha256}".encode("utf-8")).hexdigest()
+    return bridge / "work_queue" / "heartbeats" / f"{digest}.json"
+
+
 def _session_heartbeat_state(bridge: Path, claim: Claim, now: datetime) -> str:
     """Core ``_session_heartbeat_state``: live, dead or unknown (an unreadable artifact is unknown)."""
-    if not claim.owner_session_id or not claim.owner_token_sha256:
+    path = _session_heartbeat_path(bridge, claim)
+    if path is None:
         return "dead"
-    digest = hashlib.sha256(f"{claim.owner_session_id}\n{claim.owner_token_sha256}".encode("utf-8")).hexdigest()
-    path = bridge / "work_queue" / "heartbeats" / f"{digest}.json"
     if not path.exists():
         return "dead"
     try:   # bounded like every other record; a deep nesting is unknown, never a crash (N7)
@@ -652,9 +664,12 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                 return Plan(after=None, archive=(archive_path, _stale_payload(claim, now, reason)),
                             event={"type": "stale_archive", "agent": claim.agent, "task_id": claim.task_id,
                                    "status": "stale_lease", "generation_before": sha256_or_none(before)})
+            # F8 fence: the owner's beat lock is held from before the plan's re-read through the delete.
+            beat = _session_heartbeat_path(bridge, claim)
             try:
                 transactions.transact("stale_archive", claim_file,
-                                      _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan)
+                                      _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan,
+                                      fences=() if beat is None else (beat,))
             except Refused:
                 continue  # as core: a changed claim is skipped, not reported as archived
             except QueueTransactionError as exc:   # timeout, blocked, conflict, bound, unknown: one type (S6)

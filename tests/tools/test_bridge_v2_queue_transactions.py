@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""F8 queue transaction fixtures (authored per operator directive; NOT executed yet).
+"""F8 queue transaction fixtures (authored per operator directive; run 2026-09-30 by RCO1 on Windows).
 
 Deterministic: ports are recording doubles, cut points are injected by monkeypatching the
 module's own write helpers, and every runtime root is a tmp_path (never a live root).
@@ -1171,3 +1171,81 @@ def test_q2_a_sealed_non_exception_primary_propagates_without_the_record_a_known
         qt.read_bytes_or_none(path)
     assert caught.value is primary and spy.closed == spy.opened
     assert not hasattr(primary, "descriptor_close_unknown")            # the documented limitation
+
+
+# -- F8 session-heartbeat fences (RCO1 2026-09-30, Lead request d79f933d) ---------------------------------
+
+def beat_file(txns, digit="a"):
+    return txns.root / "work_queue" / "heartbeats" / (digit * 64 + ".json")
+
+
+def test_f8_fences_are_taken_innermost_sorted_and_deduplicated_and_their_directory_is_created(tmp_path):
+    txns, recorder = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    recorder.events.clear()
+    txns.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)),
+                  fences=[beat_file(txns, "b"), beat_file(txns, "a"), beat_file(txns, "b")])
+    assert [e[:2] for e in recorder.events] == [("enter", "mutex")] + [("enter", "claim")] * 3 + \
+        [("exit", "claim")] * 3 + [("exit", "mutex")]
+    entered = [Path(e[2]).name for e in recorder.events if e[:2] == ("enter", "claim")]
+    assert entered == ["task.json.lock", "a" * 64 + ".json.lock", "b" * 64 + ".json.lock"]
+    assert (txns.root / "work_queue" / "heartbeats").is_dir() and json.loads(path.read_text()) == beat(1)
+
+
+@pytest.mark.parametrize("fence", [
+    lambda txns: txns.root / "work_queue" / "claims" / "task.json",                  # the claim itself
+    lambda txns: txns.root / "work_queue" / "heartbeats" / ("A" * 64 + ".json"),     # upper-case hex
+    lambda txns: txns.root / "work_queue" / "heartbeats" / ("a" * 63 + ".json"),
+    lambda txns: txns.root / "work_queue" / "heartbeats" / ("a" * 64 + ".json.lock"),
+    lambda txns: txns.root / "work_queue" / "heartbeats",
+    lambda txns: txns.root.parent / "elsewhere" / "work_queue" / "heartbeats" / ("a" * 64 + ".json"),
+    lambda txns: str(beat_file(txns)),                                               # a path, never a string
+], ids=["claim", "upper_hex", "short_hex", "lock_name", "directory", "outside_root", "string"])
+def test_f8_an_illegal_fence_is_refused_before_any_lock_or_write(tmp_path, fence):
+    txns, recorder = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    recorder.events.clear()
+    with pytest.raises(QueueTransactionError, match="fence|outside"):
+        txns.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)), fences=[fence(txns)])
+    assert recorder.events == [] and json.loads(path.read_text()) == CLAIM
+    assert not (txns.root / "work_queue" / "heartbeats").exists()
+    txns.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)), fences=[beat_file(txns)])  # twin
+    assert json.loads(path.read_text()) == beat(1)
+
+
+@pytest.mark.parametrize("fences", [
+    lambda txns: [beat_file(txns, digit) for digit in "abcde"],                      # over MAX_FENCES
+    lambda txns: str(beat_file(txns)),                                               # a bare string
+    lambda txns: {beat_file(txns)},                                                  # unordered
+], ids=["too_many", "bare_string", "set"])
+def test_f8_a_malformed_fence_list_is_refused_before_any_lock(tmp_path, fences):
+    txns, recorder = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    recorder.events.clear()
+    with pytest.raises(QueueTransactionError, match="fence"):
+        txns.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)), fences=fences(txns))
+    assert recorder.events == [] and json.loads(path.read_text()) == CLAIM
+
+
+def test_f8_a_busy_fence_is_a_lock_timeout_that_mutates_nothing(tmp_path):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    before = wal_records(txns)
+
+    class BusyFence:
+        @contextmanager
+        def hold(self, target, timeout_seconds):
+            if Path(target).parent.name == "heartbeats":
+                raise LockTimeout("claim lock busy: " + Path(target).name)
+            yield
+
+    busy = QueueTransactions(tmp_path, mutex=Recorder().port("mutex"), claim_lock=BusyFence(), clock=lambda: NOW)
+    with pytest.raises(LockTimeout, match="busy"):
+        busy.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)), fences=[beat_file(busy)])
+    assert json.loads(path.read_text()) == CLAIM and wal_records(txns) == before
+    busy.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)))       # twin: no fence, applied
+    assert json.loads(path.read_text()) == beat(1)

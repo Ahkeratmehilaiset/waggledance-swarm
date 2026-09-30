@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""F8/F8a/F10/F22 work-queue fixtures (authored per operator directive; NOT executed yet).
+"""F8/F8a/F10/F22 work-queue fixtures (authored per operator directive; run 2026-09-30 by RCO1 on Windows).
 
 Every root is a tmp_path with recording lock doubles; identities and clocks are explicit.
 Refusals have same-fixture success twins; race schedules are deterministic.
@@ -12,13 +12,17 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import threading
 
 import pytest
 
 from tools import bridge_v2_work_queue as wq
-from tools.bridge_v2_queue_transactions import LockTimeout, QueueTransactions, Refused, claim_bytes
+from tools.bridge_v2_queue_transactions import FileClaimLock, LockTimeout, QueueTransactions, Refused, claim_bytes
 from tools.bridge_v2_resource_scope import ScopeError, explain_scope, resolve_scopes
 from tools.bridge_v2_work_queue import OwnerIdentity, WorkQueueError
 
@@ -355,12 +359,12 @@ class BeatingTransactions(QueueTransactions):
 
     beat_text = None
 
-    def transact(self, op, claim_path, idempotency_key, plan_fn):
+    def transact(self, op, claim_path, idempotency_key, plan_fn, **fenced):
         digest = hashlib.sha256(f"{OWNER.owner_session_id}\n{OWNER.owner_token_sha256}".encode()).hexdigest()
         beat = self.root / "work_queue" / "heartbeats" / f"{digest}.json"
         beat.parent.mkdir(parents=True, exist_ok=True)
         beat.write_text(self.beat_text, encoding="utf-8")
-        return super().transact(op, claim_path, idempotency_key, plan_fn)
+        return super().transact(op, claim_path, idempotency_key, plan_fn, **fenced)
 
 
 @pytest.mark.parametrize("beat_text", [
@@ -411,3 +415,202 @@ def test_resource_scopes_explain_and_refuse_ambiguity(env):
                                            bridge_root=str(txns.root))] == ["tools/a.py", "tools/b.py"]
     with pytest.raises(ScopeError):
         resolve_scopes(["/outside/the/roots"], worktree=cwd, bridge_root=str(txns.root))
+
+
+# -- F8 session-heartbeat fence (RCO1 2026-09-30, Lead request d79f933d) -----------------------------------
+# The PowerShell session-heartbeat writer (Write-BridgeSessionHeartbeat, ClaimLeaseHeartbeat.ps1) takes only the
+# sibling lock of the BEAT file (Enter-BridgeClaimLock -ClaimPath <beat>: "<beat>.json.lock", FileShare.None),
+# never the claim lock or the runtime mutex. So the sweep holds that same sibling lock from its apply-time re-read
+# of the beat through the delete: no beat can land in between. Each test below failed at 7779e9a2 (no fence).
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _beat_path(txns, identity=OWNER):
+    digest = hashlib.sha256(f"{identity.owner_session_id}\n{identity.owner_token_sha256}".encode()).hexdigest()
+    return txns.root / "work_queue" / "heartbeats" / f"{digest}.json"
+
+
+def _beat_json(at, identity=OWNER):
+    return json.dumps({"owner_session_id": identity.owner_session_id, "owner_token_sha256": identity.owner_token_sha256,
+                       "last_beat_utc": iso(at), "ttl_seconds": 180})
+
+
+def _writer_beat(path, at, timeout_seconds=0.2):
+    """The PowerShell writer's protocol in Python: the beat's sibling lock, then the beat. False: the lock was
+    busy and the beat was skipped, as Write-BridgeSessionHeartbeat returns $false."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileClaimLock().hold(Path(str(path) + ".lock"), timeout_seconds):
+            path.write_text(_beat_json(at), encoding="utf-8")
+    except LockTimeout:
+        return False
+    return True
+
+
+@pytest.fixture
+def fenced(tmp_path):
+    """Real sibling file locks (the PowerShell-compatible claim-lock port); the mutex stays a no-op double."""
+    worktree = tmp_path / "wt"
+    (worktree / "tools").mkdir(parents=True)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    return QueueTransactions(runtime, mutex=Lock(), claim_lock=FileClaimLock(), clock=lambda: NOW,
+                             lock_timeout_seconds=0.5), str(worktree)
+
+
+class LateBeatTransactions(QueueTransactions):
+    """Cut point: the owner's writer tries to beat AFTER the sweep plan's apply-time re-read and BEFORE its
+    delete (``_record`` runs between the two, under the locks)."""
+
+    attempts = None
+
+    def _record(self, op, claim_rel, key, before, plan):
+        if op == "stale_archive":
+            self.attempts.append(_writer_beat(_beat_path(self), NOW))
+        return super()._record(op, claim_rel, key, before, plan)
+
+
+def test_f8_fence_no_session_beat_lands_between_the_apply_time_recheck_and_the_delete(fenced):
+    txns = fenced[0]
+    claim(fenced, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))   # lease long expired
+    late = LateBeatTransactions(txns.root, mutex=Lock(), claim_lock=FileClaimLock(), clock=lambda: NOW,
+                                lock_timeout_seconds=0.5)
+    late.attempts = []
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=late)
+    assert entry.applied is True and wq.find_claim(txns, "team/owned") is None
+    # The writer found the beat's lock held, so the decision and the delete were one fenced step: no beat that
+    # the sweep did not see exists beside the archived claim (at 7779 the beat landed and the claim still went).
+    assert late.attempts == [False] and not _beat_path(txns).exists()
+    assert _writer_beat(_beat_path(txns), NOW) is True                          # success twin: fence released
+
+
+def test_f8_fence_a_beat_in_progress_when_the_sweep_arrives_is_seen_and_keeps_the_claim(fenced):
+    txns = fenced[0]
+    claim(fenced, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    beat = _beat_path(txns)
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    holding, go = threading.Event(), threading.Event()
+
+    def writer():
+        with FileClaimLock().hold(Path(str(beat) + ".lock"), 5):
+            holding.set()
+            go.wait(5)
+            beat.write_text(_beat_json(NOW - timedelta(seconds=5)), encoding="utf-8")   # live at apply time
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    release = threading.Timer(0.3, go.set)
+    try:
+        assert holding.wait(5)
+        release.start()
+        patient = QueueTransactions(txns.root, mutex=Lock(), claim_lock=FileClaimLock(), clock=lambda: NOW,
+                                    lock_timeout_seconds=5)
+        # Listed while the beat was absent (dead); the apply waits for the writer and re-reads a live beat.
+        assert wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=patient) == []
+    finally:
+        go.set()
+        release.cancel()
+        thread.join(5)
+    assert wq.find_claim(txns, "team/owned") is not None
+
+
+def test_f8_fence_a_writer_holding_the_beat_lock_past_the_timeout_fails_the_sweep_closed(fenced):
+    txns = fenced[0]
+    claim(fenced, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    beat = _beat_path(txns)
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    with FileClaimLock().hold(Path(str(beat) + ".lock"), 1):
+        with pytest.raises(WorkQueueError, match="busy"):
+            wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    assert wq.find_claim(txns, "team/owned") is not None                       # unknown never deletes
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    assert entry.applied is True                                               # success twin once released
+
+
+class OrderedPorts:
+    """One event list for a mutex double and the REAL sibling locks, to prove the one lock order."""
+
+    def __init__(self):
+        self.events, self.files = [], FileClaimLock()
+        ports = self
+
+        class Mutex:
+            @contextmanager
+            def hold(self, name, timeout_seconds):
+                ports.events.append("mutex")
+                try:
+                    yield
+                finally:
+                    ports.events.append("/mutex")
+
+        class Files:
+            @contextmanager
+            def hold(self, lock_path, timeout_seconds):
+                kind = Path(lock_path).parent.name
+                with ports.files.hold(lock_path, timeout_seconds):
+                    ports.events.append(kind)
+                    try:
+                        yield
+                    finally:
+                        ports.events.append("/" + kind)
+
+        self.mutex, self.claim_lock = Mutex(), Files()
+
+
+def test_f8_fence_order_is_mutex_then_claim_lock_then_beat_lock_and_only_owned_claims_take_it(fenced):
+    txns = fenced[0]
+    claim(fenced, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    claim(fenced, task="team/unowned", identity=None, now=NOW - timedelta(hours=13), scope=("tools/u.py",))
+    ports = OrderedPorts()
+    ordered = QueueTransactions(txns.root, mutex=ports.mutex, claim_lock=ports.claim_lock, clock=lambda: NOW,
+                                lock_timeout_seconds=0.5)
+    archived = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=ordered)
+    assert sorted(a.claim.task_id for a in archived) == ["team/owned", "team/unowned"]
+    chunks, current = [], []
+    for event in ports.events:
+        current.append(event)
+        if event == "/mutex":
+            chunks.append(current)
+            current = []
+    assert current == [] and sorted(chunks) == sorted([
+        ["mutex", "claims", "heartbeats", "/heartbeats", "/claims", "/mutex"],   # owned: fenced, innermost
+        ["mutex", "claims", "/claims", "/mutex"]])                               # identity-less: no beat, no fence
+
+
+def test_f8_fence_an_absent_heartbeats_directory_is_created_so_the_fence_is_real(fenced):
+    txns = fenced[0]
+    claim(fenced, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    heartbeats = txns.root / "work_queue" / "heartbeats"
+    assert not heartbeats.exists()
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    # A writer that creates the directory later still meets the lock file the sweep held; no beat was invented.
+    assert entry.applied is True and heartbeats.is_dir() and not _beat_path(txns).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell writer and FileShare.None are Windows-only")
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"], ids=["ps51", "pwsh7"])
+def test_f8_fence_the_real_powershell_session_writer_skips_its_beat_while_the_fence_is_held(fenced, shell):
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(shell + " is not on PATH")
+    txns = fenced[0]
+    beat = _beat_path(txns)
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    script = REPO / ".agent-bridge" / "bin" / "ClaimLeaseHeartbeat.ps1"
+    command = ("$ErrorActionPreference = 'Stop'; . '" + str(script) + "'; $script:BridgeClaimLockTimeoutMs = 300; "
+               "$id = [pscustomobject]@{ owner_session_id = '" + OWNER.owner_session_id + "'; owner_token_sha256 = '"
+               + OWNER.owner_token_sha256 + "' }; 'RESULT=' + (Write-BridgeSessionHeartbeat -Root '" + str(txns.root)
+               + "' -AgentName 'claude-rco-2' -Identity $id -TtlSeconds 180)")
+
+    def run():
+        return subprocess.run([executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                               "-Command", command], capture_output=True, text=True, timeout=120).stdout
+
+    with FileClaimLock().hold(Path(str(beat) + ".lock"), 1):                   # the sweep's fence, held
+        assert "RESULT=False" in run()
+        assert not beat.exists()
+    assert "RESULT=True" in run()                                              # success twin: fence released
+    written = json.loads(beat.read_text(encoding="utf-8"))
+    assert (written["owner_session_id"], written["owner_token_sha256"]) == (OWNER.owner_session_id,
+                                                                           OWNER.owner_token_sha256)

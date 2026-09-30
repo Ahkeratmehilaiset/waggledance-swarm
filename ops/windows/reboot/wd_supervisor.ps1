@@ -9,10 +9,14 @@
     driver tasks that are running or enabled without proven non-Apply legacy
     arguments. It never enables a scheduled task and emits no synthetic bridge
     events.
+    With -BridgeWorkersOnly (Supervisor OFF), containment is verify-only: it never disables,
+    stops or otherwise changes a scheduled task, and an enabled, running, missing or unreadable
+    merge-driver task refuses before any watcher or Tools reconciliation.
 #>
 [CmdletBinding()]
 param(
     [switch] $Apply,
+    [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
     [string] $LogPath = ''
 )
@@ -2636,6 +2640,18 @@ function Invoke-TaskContainment {
     )
 
     $task = Get-OptionalScheduledTask -TaskName $TaskName
+    if ($BridgeWorkersOnly) {
+        # Supervisor OFF, Bridge workers only: verify the HOLD and never mutate a task. Anything but
+        # a visible, disabled, not-running task refuses here, BEFORE any watcher or Tools reconcile.
+        if ($null -eq $task) {
+            throw "BridgeWorkersOnly: scheduled task '$TaskName' is not observable as this user; the $Reason cannot be proven"
+        }
+        if ([bool]$task.Settings.Enabled -or [string]$task.State -eq 'Running') {
+            throw "BridgeWorkersOnly: scheduled task '$TaskName' is enabled or running; refusing without Disable or Stop ($Reason)"
+        }
+        $actions.Add("HOLD verified $TaskName disabled/not-running ($Reason)")
+        return
+    }
     if ($null -eq $task) {
         $actions.Add("WARN scheduled task '$TaskName' not found for $Reason")
         return
@@ -2695,6 +2711,9 @@ function Invoke-WdReconciliationUnderDriverHold {
     Invoke-TaskContainment $standingTaskName 'deliberate standing-driver HOLD'
 
     $legacyTask = Get-OptionalScheduledTask -TaskName $legacyTaskName
+    if ($BridgeWorkersOnly -and $null -eq $legacyTask) {
+        throw "BridgeWorkersOnly: scheduled task '$legacyTaskName' is not observable as this user; legacy verification cannot be proven"
+    }
     if ($null -eq $legacyTask) {
         $actions.Add(
             "WARN scheduled task '$legacyTaskName' not found for legacy verification"

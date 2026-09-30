@@ -60,10 +60,12 @@ MAX_SESSION_SECONDS = MAX_ROUNDS * ROUND_TIMEOUT_SECONDS
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUEST_FILE = re.compile(r"([0-9a-f]{32})-request\.md")
 
-# Exactly the argv wd_grok_helper.consult builds; anything else is refused.
-VALUE_OPTIONS = ("--model", "--effort", "--prompt-file", "--max-turns", "--tools", "--deny", "--permission-mode")
+# Exactly the argv wd_grok_helper.consult builds; anything else is refused. Since F4 consult asks
+# for JSON output itself; each round below sets its own output format regardless.
+VALUE_OPTIONS = ("--model", "--effort", "--prompt-file", "--max-turns", "--tools", "--deny", "--permission-mode",
+                 "--output-format")
 FLAG_OPTIONS = ("--verbatim", "--no-alt-screen", "--no-subagents", "--disable-web-search", "--no-memory")
-REQUIRED_VALUES = {"--tools": "", "--deny": "*", "--max-turns": "1"}
+REQUIRED_VALUES = {"--tools": "", "--deny": "*", "--max-turns": "1", "--output-format": "json"}
 PERMISSION_MODES = ("plan", "dontAsk")
 
 # Inventory bounds: an unbounded or unreadable surface is refused, never skipped.

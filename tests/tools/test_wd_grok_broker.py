@@ -505,6 +505,22 @@ def test_a_cached_f0_inside_its_60_s_window_is_still_refused_at_the_recheck():
     assert (result["verdict"], result["reasons"]) == ("answered_bound", []) and len(ports["helper"].calls) == 1
 
 
+@pytest.mark.parametrize("then_evaluated,reasons", [
+    ("2026-09-30T12:00:00.050000Z", ["recheck_failed", "f0_cached"]),  # cached 650 ms before the sample
+    ("2026-09-30T12:00:00Z", ["recheck_failed", "f0_time_precision_unknown"]),  # a whole second proves nothing
+    ("2026-09-30T12:00:00.700000Z", []),  # the genuine fresh twin: evaluated at the sample itself
+], ids=["cached_050", "whole_second", "fresh_700"])
+def test_a_same_second_cached_f0_is_refused_at_full_precision(then_evaluated, reasons):
+    """RCO1 e932 SF1: the old whole-second floor let a Decision evaluated at .050 pass a recheck sampled at .700."""
+    clock = Clock(NOW + timedelta(milliseconds=700))  # every read, the recheck's sample included, is 12:00:00.700
+    result, ports = run(clock=clock, activation=Activation(then_evaluated=then_evaluated))
+    assert result["reasons"] == reasons and len(ports["activation"].calls) == 2
+    if reasons:
+        assert result["verdict"] == "refuse" and ports["helper"].calls == [] and len(ports["ledger"].finished) == 1
+    else:
+        assert result["verdict"] == "answered_bound" and len(ports["helper"].calls) == 1
+
+
 @pytest.mark.parametrize("version, verdict, reason", [
     (2, "refuse", "revocation_regressed"),
     (None, "blocked_unknown", "revocation_unknown"),
@@ -668,6 +684,20 @@ def test_malformed_or_oversized_prompts_refuse_before_any_port(prompt):
     result, ports = run(prompt=prompt)
     assert (result["verdict"], result["reasons"]) == ("refuse", ["prompt_or_inputs_mismatch"])
     assert untouched(ports) and ports["clock"].reads == 0
+
+
+@pytest.mark.parametrize("task_id,prompt", [("-x", PROMPT), (TASK, " "), (TASK, "\n\t ")],
+                         ids=["dash_task_id", "blank_prompt", "whitespace_prompt"])
+def test_the_helpers_own_input_rules_refuse_before_any_port_or_reservation(task_id, prompt):
+    """RCO1 e932 SF2: the helper refuses these only after the ledger has reserved (and never refunded) the hour.
+    The digest and byte count match, so only the helper's own rules can refuse here."""
+    it = dict(intent(), task_id=task_id, prompt_sha256=route.prompt_sha256(prompt),
+              prompt_bytes=len(prompt.encode("utf-8")))
+    result, ports = run(it=it, prompt=prompt)
+    assert (result["verdict"], result["reasons"]) == ("refuse", ["helper_inputs_invalid"])
+    assert untouched(ports) and ports["clock"].reads == 0 and ports["ledger"].finished == []
+    twin, ports = run()  # the same path with the helper's rules met
+    assert (twin["verdict"], twin["reasons"]) == ("answered_bound", []) and len(ports["helper"].calls) == 1
 
 
 @pytest.mark.parametrize("it", [None, [], dict(intent(), extra={1, 2}), dict(intent(), pad="x" * (16 * 1024))])

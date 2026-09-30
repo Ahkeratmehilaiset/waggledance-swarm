@@ -895,6 +895,37 @@ def test_a_hostile_primary_with_a_clean_release_is_the_twin(ready, monkeypatch):
     assert mutex.exits == [(None, None, None)] * 2 and [e["state"] for e in doc(ready)["entries"]] == ["open"]
 
 
+class _InterruptingRelease(_Release):
+    def __exit__(self, *exc_info):
+        self.owner.held = False
+        self.owner.exits.append(exc_info)
+        raise KeyboardInterrupt("release interrupted")
+
+
+class _InterruptRelease(ReleaseMutex):
+    """A held lock whose release raises a BaseException (KeyboardInterrupt), not an ordinary error."""
+
+    def hold(self, name, timeout_seconds):
+        self.calls.append((name, timeout_seconds))
+        return _InterruptingRelease(self)
+
+
+def test_a_release_interrupt_keeps_the_primary_as_its_context(ready, monkeypatch):
+    """RCO1 e932 S1: ExitStack.close() clears the release BaseException's __context__; _locked re-attaches it."""
+    error, before, mutex = LedgerUnknown("write_unknown"), ledger_bytes(ready), _InterruptRelease()
+    monkeypatch.setattr(AdmissionLedger, "_check_clock", lambda self, doc, now: _throw(error))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        make(ready, mutex=mutex, clock=Clock(T0)).reserve(admission())
+    assert caught.value.__context__ is error  # the primary is kept, never lost (it was None before the fix)
+    assert error.lock_release_unknown is False and getattr(error, "__notes__", []) == []  # not marked
+    assert mutex.exits == [(None, None, None)] and ledger_bytes(ready) == before  # nothing written or refunded
+    monkeypatch.undo()
+    twin = _InterruptRelease()
+    with pytest.raises(KeyboardInterrupt) as clean:  # twin: a clean body has no primary, so none is invented
+        make(ready, mutex=twin, clock=Clock(T0)).reserve(admission())
+    assert clean.value.__context__ is None and twin.exits == [(None, None, None)]
+
+
 def test_marking_the_primary_is_guarded_in_the_source():
     """Both the note and the attribute write sit inside their own try (the one mark helper)."""
     tree = ast.parse(SOURCE)

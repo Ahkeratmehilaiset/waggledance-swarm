@@ -76,6 +76,8 @@ Rules (fail-closed):
   a list, an attribute write that raises) is swallowed: the mark may then be missing, but the
   primary is never replaced. A BaseException (KeyboardInterrupt, SystemExit) raised by the
   release or while marking is not swallowed; it propagates with the primary as its context.
+  For the release, _locked re-attaches that context (best effort, never a cycle), because
+  ExitStack.close() clears it (RCO1 e932 S1); the primary is then not marked.
   One limit (RCO2 01:04:16Z): _locked is a @contextmanager, and CPython's wrapper assigns
   ``__traceback__`` on the primary it re-raises (contextlib ``_GeneratorContextManager.__exit__``).
   A primary whose ``__setattr__`` refuses that write is replaced there by its AttributeError,
@@ -320,6 +322,27 @@ def _mark_release_unknown(primary: BaseException) -> None:
         pass
 
 
+def _reattach_primary(interrupt: BaseException, primary: BaseException) -> None:
+    """Re-attach the primary as the context of a BaseException raised by the release (RCO1 e932 S1).
+
+    _released runs the release through ExitStack.close(), i.e. __exit__(None, None, None). Its exception-context
+    fix-up then sets that BaseException's __context__ to None, which drops the primary. This is best effort: it
+    never writes onto the primary itself, never makes a cycle, and never overrides a context that is already
+    set. An ordinary failure to set it is swallowed; the BaseException itself still propagates."""
+    try:
+        if interrupt is primary or interrupt.__context__ is not None:
+            return
+        link, seen = primary, set()
+        while link is not None and id(link) not in seen:
+            if link is interrupt:
+                return  # the primary's own chain already holds it: re-attaching would make a cycle
+            seen.add(id(link))
+            link = link.__context__
+        interrupt.__context__ = primary
+    except Exception:  # noqa: BLE001 - diagnostic only
+        pass
+
+
 class AdmissionLedger:
     """Dormant. Implements the broker's LedgerPort; every argument is required and validated."""
 
@@ -364,7 +387,12 @@ class AdmissionLedger:
         try:
             yield
         except BaseException as primary:
-            if not _released(stack):
+            try:
+                released = _released(stack)
+            except BaseException as interrupt:  # only a BaseException escapes _released
+                _reattach_primary(interrupt, primary)  # ExitStack.close() cleared it (RCO1 e932 S1)
+                raise
+            if not released:
                 _mark_release_unknown(primary)  # best effort: the primary itself is never replaced
             raise
         if not _released(stack):

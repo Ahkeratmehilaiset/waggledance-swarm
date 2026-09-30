@@ -23,10 +23,12 @@ A missing port or an unreadable fact is blocked_unknown, never a simulated readi
 
 Order: the admission config must be on (default OFF), every port must exist, and the
 prompt must be exactly a str, valid UTF-8, bounded, and match the intent's digest and
-byte count. Then the pure ``admit`` runs and the durable ledger reserves the admission.
-The reservation may be slow, so as the last step before the one helper call the broker
-samples the clock, re-evaluates F0 at the same snapshot, and requires that F0 to be
-evaluated at or after that sample (a cached Decision refuses as f0_cached). It reads the
+byte count. The helper's own input rules (a bounded task ID, a non-blank prompt) are checked
+too, before any port read (RCO1 e932 SF2). Then the pure ``admit`` runs and the durable
+ledger reserves the admission. The reservation may be slow, so as the last step before the
+one helper call the broker samples the clock, re-evaluates F0 at the same snapshot, and
+requires that F0 to be evaluated at or after that sample at full precision (a cached Decision
+refuses as f0_cached; a whole-second stamp in the sample's second as f0_time_precision_unknown). It reads the
 clock again (never backwards), re-runs ``admit`` on the refreshed F0 and the original
 facts, and requires a non-decreasing revocation version and an unexpired signed policy.
 An expired intent, a revoked, cached or stale F0, an expired policy, or a fact now too old
@@ -68,8 +70,8 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from tools.bridge_v2_grok_route import (ADMIT, BLOCKED, FEATURE, HELPER_MAX_PROMPT_BYTES, HEX40, REFUSE, admit,
-                                        aware_utc, bind_answer, parse_utc, prompt_sha256, utc_stamp)
+from tools.bridge_v2_grok_route import (ADMIT, BLOCKED, FEATURE, HELPER_MAX_PROMPT_BYTES, HEX40, REFUSE, TASK_RE,
+                                        admit, aware_utc, bind_answer, parse_utc, prompt_sha256, utc_stamp)
 
 CONFIG_SCHEMA = "wd.grok-admission-config.v1"
 RESULT_SCHEMA = "wd.grok-broker-result.v1"
@@ -98,7 +100,10 @@ class ActivationPort(Protocol):
 
     Returns (Decision, policy, evaluated_utc). The Decision carries no head/tree, so the port MUST
     evaluate the signature at expected_head/expected_tree (it is the only binding), and evaluated_utc
-    is when it evaluated, never merely when it returned a cached Decision."""
+    is when it evaluated, never merely when it returned a cached Decision. evaluated_utc must carry the
+    evaluation's own FULL precision (microseconds). It is never a fabricated current stamp and never goes
+    with a reused cached Decision. A whole-second stamp is refused at the recheck whenever it falls in the
+    sample's own second (RCO1 e932 SF1)."""
 
     def evaluate(self, feature: str, *, expected_head: str, expected_tree: str) -> tuple: ...
 
@@ -163,6 +168,14 @@ def _prompt_ok(prompt: Any, intent: dict | None) -> bool:
         and prompt_sha256(prompt) == intent.get("prompt_sha256")
 
 
+def _helper_inputs_ok(intent: dict, prompt: str) -> bool:
+    """The helper's own input rules (790a7b08 consult: a bounded task ID and a non-blank prompt), checked BEFORE
+    any port or reservation (RCO1 e932 SF2). prepare is not the only ingress, and the helper refuses these only
+    after the broker's ledger has reserved, and never refunds, the shared hour."""
+    task_id = intent.get("task_id")
+    return type(task_id) is str and TASK_RE.fullmatch(task_id) is not None and bool(prompt.strip())
+
+
 def _copy(value: dict) -> dict:
     """A plain-JSON copy handed to a port, so a port can never change the broker's own admission or outcome."""
     return json.loads(json.dumps(value))
@@ -200,8 +213,10 @@ class GrokBroker:
         """None if the admission still holds at the last check before the call; else the refusal (RCO1 e855 S1).
 
         The clock is sampled BEFORE F0 is evaluated, and the F0 used must be evaluated at or after that sample
-        (whole seconds): a cached Decision from before this recheck began refuses as f0_cached, so a revocation
-        cannot hide behind the 60 s freshness window. The clock never runs backwards (from the admission's now
+        at FULL precision (RCO1 e932 SF1; no whole-second floor): a cached Decision from before this recheck
+        began refuses as f0_cached, so a revocation cannot hide behind the 60 s freshness window or inside the
+        sample's own second. A whole-second stamp in the sample's own second cannot prove it came after the
+        sample and refuses as f0_time_precision_unknown. The clock never runs backwards (from the admission's now
         to the sample to the final read). After admit re-runs at the final read, the revocation version must
         not regress and the signed policy's expires_utc must still be ahead."""
         def stop(verdict: str, reason: str) -> dict:
@@ -216,8 +231,11 @@ class GrokBroker:
         f0, policy = self._evaluate(evidence["f0"]["head"], evidence["f0"]["tree"])
         if f0 is None:
             return stop(BLOCKED, "f0_unknown")
-        if parse_utc(f0["evaluated_utc"]) < sample.replace(microsecond=0):
-            return stop(REFUSE, "f0_cached")  # evaluated before this recheck began
+        evaluated = parse_utc(f0["evaluated_utc"])
+        if evaluated < sample:  # full precision (RCO1 e932 SF1): evaluated before this recheck began
+            # A whole-second stamp in the sample's own second cannot show it came after the sample.
+            unknown = evaluated.microsecond == 0 and evaluated == sample.replace(microsecond=0)
+            return stop(REFUSE, "f0_time_precision_unknown" if unknown else "f0_cached")
         now = aware_utc(self.clock.now())
         if now is None:
             return stop(BLOCKED, "time_unknown")
@@ -260,6 +278,8 @@ class GrokBroker:
         intent = _private_intent(intent)
         if not _prompt_ok(prompt, intent):
             return _result(REFUSE, ["prompt_or_inputs_mismatch"])
+        if not _helper_inputs_ok(intent, prompt):
+            return _result(REFUSE, ["helper_inputs_invalid"])  # the helper would refuse only after our reservation
         try:
             if aware_utc(self.clock.now()) is None:
                 return _result(BLOCKED, ["time_unknown"])

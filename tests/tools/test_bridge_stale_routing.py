@@ -310,6 +310,10 @@ def _held_without_sharing(path: Path):
     ("absent", True), ("expired", True), ("future", True), ("foreign", True), ("fresh", False),
     ("fresh_share_locked", False), ("torn", False), ("empty", False), ("not_object", False),
     ("bad_time", False), ("directory", False),
+    # S1 (Fable review 0286732f): pwsh 7 read an explicit-offset timestamp as local wall time taken for UTC, so
+    # on a host east of UTC a FRESH beat stamped +03:00 or +00:00 looked future-dated (not live) and was reaped.
+    ("fresh_plus3", False), ("fresh_utc_offset", False), ("expired_plus3", True),
+    ("fresh_minus5", False), ("fresh_no_zone", False), ("future_plus3", True), ("numeric_time", False),
 ])
 def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_evaluated(
     tmp_path: Path, shell: str, beat_kind: str, archived: bool,
@@ -337,9 +341,12 @@ def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_e
     beat = runtime / "work_queue/heartbeats" / f"{digest}.json"
     beat.parent.mkdir(parents=True)
 
-    def body(owner_token: str, last_beat: str) -> str:
+    def body(owner_token: str, last_beat: object) -> str:
         return json.dumps({"owner_session_id": session, "owner_token_sha256": owner_token,
                            "last_beat_utc": last_beat, "ttl_seconds": 180})
+
+    def offset(moment: datetime, hours: int) -> str:                 # the same instant, another zone
+        return moment.astimezone(timezone(timedelta(hours=hours))).isoformat()
 
     def stamp(moment: datetime) -> str:                              # the writer's own UTC 'o' form
         return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -351,6 +358,12 @@ def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_e
         "fresh": body(token_sha, stamp(now)), "fresh_share_locked": body(token_sha, stamp(now)),
         "torn": '{"owner_session_id": "', "empty": "", "not_object": "[]",
         "bad_time": body(token_sha, "not a time"),
+        "fresh_plus3": body(token_sha, offset(now, 3)), "fresh_utc_offset": body(token_sha, now.isoformat()),
+        "expired_plus3": body(token_sha, offset(now - timedelta(minutes=30), 3)),
+        "fresh_minus5": body(token_sha, offset(now, -5)),
+        "fresh_no_zone": body(token_sha, now.replace(tzinfo=None).isoformat()),   # read as UTC, as before
+        "future_plus3": body(token_sha, offset(now + timedelta(minutes=10), 3)),
+        "numeric_time": body(token_sha, 1790000000),
     }
     if beat_kind == "directory":
         beat.mkdir()

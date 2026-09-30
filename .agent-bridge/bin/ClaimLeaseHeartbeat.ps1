@@ -623,14 +623,30 @@ function Get-BridgeSessionHeartbeatLiveness {
     if ($ttl -gt $MaxTtlSeconds) { $ttl = $MaxTtlSeconds }
 
     $beatUtc = $null
-    try {
-        $beatUtc = [DateTime]::Parse(
-            [string]$beat.last_beat_utc,
-            [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
-                [System.Globalization.DateTimeStyles]::AdjustToUniversal
-        ).ToUniversalTime()
-    } catch { return 'unknown' }
+    $rawBeat = $beat.last_beat_utc
+    if ($rawBeat -is [DateTime]) {
+        # S1 (RCO1 2026-09-30; Fable review 0286732f): pwsh 7's ConvertFrom-Json has already made an
+        # ISO string a DateTime, converting an explicit offset to LOCAL time. [string] would drop the
+        # kind and AssumeUniversal would read that local wall time as UTC (a fresh +03:00 beat looked
+        # 3 h in the future on a UTC+3 host, so not live). Use the kind instead: Utc as is, Local
+        # converted, Unspecified taken as UTC (as AssumeUniversal does for a string without a zone).
+        if ($rawBeat.Kind -eq [DateTimeKind]::Utc) {
+            $beatUtc = $rawBeat
+        } elseif ($rawBeat.Kind -eq [DateTimeKind]::Local) {
+            $beatUtc = $rawBeat.ToUniversalTime()
+        } else {
+            $beatUtc = [DateTime]::SpecifyKind($rawBeat, [DateTimeKind]::Utc)
+        }
+    } else {
+        try {
+            $beatUtc = [DateTime]::Parse(
+                [string]$rawBeat,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                    [System.Globalization.DateTimeStyles]::AdjustToUniversal
+            ).ToUniversalTime()
+        } catch { return 'unknown' }
+    }
     if ($null -eq $beatUtc) { return 'unknown' }
     # A future-dated beat is treated as not live: clock skew must not be
     # a way to pin a claim open forever.

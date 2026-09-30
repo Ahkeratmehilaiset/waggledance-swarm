@@ -141,10 +141,10 @@ def test_noop_ratio_is_null_without_explicit_outcomes_even_with_pending_stages(t
 
 
 def test_noop_ratio_comes_only_from_explicit_turn_outcomes(tmp_path):
-    records = [_stage("turn_completed", 10, action_outcome="noop"),
-               _stage("turn_completed", 20, action_outcome="noop", request_id=None),
-               _stage("turn_completed", 30, action_outcome="acted"),
-               _stage("turn_completed", 40, action_outcome="acted", target="fable-5")]
+    records = [_stage("turn_completed", 10, action_outcome="noop", delivery="d-1"),
+               _stage("turn_completed", 20, action_outcome="noop", request_id=None, delivery="d-2"),
+               _stage("turn_completed", 30, action_outcome="acted", delivery="d-3"),
+               _stage("turn_completed", 40, action_outcome="acted", target="fable-5", delivery="d-4")]
     ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
     assert (ratio["acted"], ratio["noop"], ratio["value"]) == (2, 2, 0.5)
     assert ratio["by_target"]["claude-rco-2"] == {"acted": 1, "noop": 2, "value": round(2 / 3, 6)}
@@ -310,7 +310,9 @@ def _ps(shell: str, tmp_path: Path, body: str) -> subprocess.CompletedProcess:
               "$request = [pscustomobject]@{request_id='r-1';agent='codex-lead-1';session_id='s-1'}\n" + body)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_"))}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(tmp_path / "decoy-root")  # never the live bridge
-    return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+    # -ExecutionPolicy Bypass for this isolated fixture only (as the repo harness does), so a
+    # Restricted 5.1 policy cannot make every refusal case pass for the wrong reason.
+    return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
                           capture_output=True, text=True, timeout=60, env=env)
 
 
@@ -339,7 +341,7 @@ def test_writer_records_metadata_and_explicit_outcome_that_the_reporter_accepts(
             "-Target claude-rco-2 -Reason addressed_event -Watermark 4096 -LatencyMs 12.5 "
             "-LatencyBasis event_ts_to_observed\n"
             f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage turn_completed -Target claude-rco-2 "
-            "-ActionOutcome noop -Reason informational_notice")
+            "-ActionOutcome noop -Reason informational_notice -DeliveryId d-9")
     result = _ps(shell, tmp_path, body)
     assert result.returncode == 0, result.stderr
     records = {r["stage"]: r for r in _stages(tmp_path)}
@@ -354,15 +356,240 @@ def test_writer_records_metadata_and_explicit_outcome_that_the_reporter_accepts(
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
-@pytest.mark.parametrize("arguments", [
-    "-Stage turn_completed", "-Stage turn_completed -ActionOutcome maybe",
-    "-Stage answer_durable -ActionOutcome acted", "-Stage watcher_seen -Reason 'Free Text'",
-    "-Stage watcher_seen -Watermark -1", "-Stage watcher_seen -LatencyMs 5",
-    "-Stage watcher_seen -LatencyMs 99999999999 -LatencyBasis x", "-Stage processed"])
-def test_writer_refuses_invalid_metadata_before_writing(tmp_path, shell, arguments):
-    result = _ps(shell, tmp_path, f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Target claude-rco-2 {arguments}")
-    assert result.returncode != 0
+@pytest.mark.parametrize("arguments,guard", [
+    ("-Stage turn_completed", "needs ActionOutcome acted or noop"),
+    ("-Stage turn_completed -ActionOutcome maybe", "needs ActionOutcome acted or noop"),
+    ("-Stage turn_completed -ActionOutcome noop", "needs a turn identity"),
+    # RCO1 SF2: identity is checked AFTER binding, as the reader keys it.
+    ("-Stage turn_completed -ActionOutcome noop -Request $request", "needs a turn identity"),         # no reply
+    ("-Stage turn_completed -ActionOutcome noop -ReplyTimestamp '2026-09-29T21:00:00.0000000Z' "
+     "-Request ([pscustomobject]@{request_id='r-1';agent='codex-lead-1'})", "needs a turn identity"),  # no session
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-5 "
+     "-Request ([pscustomobject]@{agent='codex-lead-1'})", "does not bind a request"),              # never silent
+    # Tools F1-WRITER-READER: what the reader would discard is refused before any file exists.
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp 'not-a-time'",
+     "reply_ts_utc must be empty or ISO-8601"),
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp \"2026-09-29T21:00:00Z`n\"",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # final newline
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00.1234567890Z'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # 10 digits
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-02-30T21:00:00Z'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # no such day
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00+24:00'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # no such zone
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId ('d' * 1025)",
+     "delivery_id must be a string of at most 1024 characters"),                                     # overlong
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-7 "
+     "-Request ([pscustomobject]@{request_id=\"r-1`n\";agent='codex-lead-1';session_id='s-1'})",
+     "request_id must be a non-empty printable string"),                                             # newline id
+    ("-Stage turn_completed -ActionOutcome noop -ReplyTimestamp '2026-09-29T21:00:00Z' "
+     "-Request ([pscustomobject]@{request_id='r-1';agent='codex-lead-1';session_id=('s' * 257)})",
+     "requester_session_id must be a printable string"),                                             # overlong session
+    # Tools 2e4262ab: the metadata tokens end with \z (no final newline), and ids count code points.
+    ("-Stage watcher_seen -Reason \"addressed_event`n\"", "lowercase token"),
+    ("-Stage watcher_seen -LatencyMs 5 -LatencyBasis \"event_ts`n\"", "lowercase token"),
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-8 -Request ([pscustomobject]@{request_id='r-1';"
+     "agent=([char]::ConvertFromUtf32(0x1F600) * 257);session_id='s-1'})", "requester must be a printable string"),
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-8 -Request ([pscustomobject]@{request_id='r-1';"
+     "agent=[string][char]0xD800;session_id='s-1'})", "requester must be a printable string"),      # lone surrogate
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00+00:60'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # minute 60
+    ("-Stage answer_durable -ActionOutcome acted", "recorded only with stage turn_completed"),
+    ("-Stage watcher_seen -Reason 'Free Text'", "lowercase token"),
+    ("-Stage watcher_seen -Watermark -1", "non-negative byte offset"),
+    ("-Stage watcher_seen -LatencyMs 5", "needs both LatencyMs and LatencyBasis"),
+    ("-Stage watcher_seen -LatencyMs 99999999999 -LatencyBasis x", "within 0..86400000"),
+    ("-Stage processed", "Unknown bridge observation stage")])
+def test_writer_refuses_invalid_metadata_before_writing(tmp_path, shell, arguments, guard):
+    # RCO1 T2: the SPECIFIC guard text must appear. A failed dot-source would also reach the
+    # catch (exit 7, "not recognized"), so the guard-text check is what makes this strict.
+    body = ("try { Write-BridgeStageObservation -BridgeRoot '" + str(tmp_path) + "' -Target claude-rco-2 "
+            + arguments + " } catch { Write-Output ('REFUSED:' + $_.Exception.Message); exit 7 }")
+    result = _ps(shell, tmp_path, body)
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert "REFUSED:" in result.stdout and guard in result.stdout
     assert not (tmp_path / "shared" / "telemetry").exists() or not _stages(tmp_path)
+
+
+def test_replayed_outcomes_count_once_and_conflicting_turns_are_unknown(tmp_path):
+    records = [_stage("turn_completed", 10, action_outcome="noop", delivery="d-1"),
+               _stage("turn_completed", 11, action_outcome="noop", delivery="d-1"),      # replay
+               _stage("turn_completed", 20, action_outcome="acted", delivery="d-2"),
+               _stage("turn_completed", 21, action_outcome="noop", delivery="d-2"),      # conflicting
+               _stage("turn_completed", 30, action_outcome="acted", delivery="d-3")]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["acted"], ratio["noop"], ratio["turns"]) == (1, 1, 2)
+    assert ratio["duplicate_outcomes"] == 2 and ratio["conflicting_turns"] == 1 and ratio["value"] == 0.5
+
+
+def test_request_bound_turns_are_identified_by_session_and_reply(tmp_path):
+    first, second = _ts(60), _ts(90)
+    records = [_stage("turn_completed", 70, action_outcome="acted", reply=first),
+               _stage("turn_completed", 71, action_outcome="acted", reply=first),       # same turn replayed
+               _stage("turn_completed", 95, action_outcome="noop", reply=second),       # another reply: new turn
+               _stage("turn_completed", 96, action_outcome="noop", reply=second,
+                      requester_session_id="other-session")]                              # another session
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["acted"], ratio["noop"], ratio["turns"], ratio["duplicate_outcomes"]) == (1, 2, 3, 1)
+
+
+def test_separate_reply_less_wakes_on_one_request_are_never_one_turn(tmp_path):
+    # RCO1 SF1: without a delivery id or a reply, the request names the REQUEST, not the turn.
+    records = [_stage("turn_completed", 10, action_outcome="noop"),
+               _stage("turn_completed", 20, action_outcome="noop"),
+               _stage("turn_completed", 30, action_outcome="acted")]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert ratio["unidentified_outcomes"] == 3 and ratio["turns"] == 0 and ratio["value"] is None
+    assert ratio["duplicate_outcomes"] == 0 and ratio["conflicting_turns"] == 0      # not collapsed, not a conflict
+    assert ratio["reason"] == "no_identified_consistent_outcomes"
+    # Success twins: per-turn delivery ids, or the reply each turn wrote, give three turns.
+    for tag, change in (("d", lambda i: {"delivery": f"d-{i}"}), ("r", lambda i: {"reply": _ts(5 + i)})):
+        twins = [_stage("turn_completed", 10 * i, action_outcome=outcome, **change(i))
+                 for i, outcome in enumerate(("noop", "noop", "acted"), 1)]
+        ratio = _report(_write(tmp_path / tag, *twins))["noop_ratio"]
+        assert (ratio["turns"], ratio["noop"], ratio["acted"], ratio["unidentified_outcomes"]) == (3, 2, 1, 0)
+
+
+def test_the_reply_identity_keeps_every_fraction_digit_and_normalizes_the_zone():
+    # Tools F1-PRECISION: the identity is the exact token; parse_utc (microseconds) is for durations.
+    token = telemetry.reply_token
+    assert token("2026-09-29T21:01:00Z") == "2026-09-29T21:01:00.000000000Z"
+    assert token("2026-09-29T21:01:00.123456789+00:00") == "2026-09-29T21:01:00.123456789Z"
+    assert token("2026-09-30T00:01:00.1234567+03:00") == "2026-09-29T21:01:00.123456700Z"
+    assert token("2026-09-29T21:01:00.1234567Z") != token("2026-09-29T21:01:00.1234568Z")
+    assert telemetry.parse_utc("2026-09-29T21:01:00.1234567Z") == telemetry.parse_utc("2026-09-29T21:01:00.1234568Z")
+    for bad in (None, "", "not-a-time", "2026-09-29T21:01:00", "2026-02-30T21:01:00Z", "2026-09-29T21:01:00Z\n"):
+        assert token(bad) is None
+
+
+def test_replies_differing_only_in_the_seventh_digit_are_two_turns(tmp_path):
+    first, second = "2026-09-29T21:01:00.1234567Z", "2026-09-29T21:01:00.1234568Z"
+    records = [_stage("turn_completed", 70, action_outcome="noop", reply=first),
+               _stage("turn_completed", 71, action_outcome="acted", reply=second)]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["turns"], ratio["conflicting_turns"], ratio["noop"], ratio["acted"]) == (2, 0, 1, 1)
+
+
+def test_zone_equivalent_spellings_of_one_reply_are_one_turn(tmp_path):
+    records = [_stage("turn_completed", 70, action_outcome="noop", reply="2026-09-29T21:01:00.5Z"),
+               _stage("turn_completed", 71, action_outcome="noop", reply="2026-09-30T00:01:00.5000000+03:00")]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["turns"], ratio["duplicate_outcomes"], ratio["unidentified_outcomes"]) == (1, 1, 0)
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_flow_stage_the_reader_would_discard_records_nothing_and_its_twin_records(tmp_path, shell):
+    # Live flow stages stay best-effort (no new exception for their callers) but never write garbage.
+    bad = _ps(shell, tmp_path / "bad", f"Write-BridgeStageObservation -BridgeRoot '{tmp_path / 'bad'}' "
+                                       f"-Stage watcher_seen -Request {REQUEST} -Target claude-rco-2 -ReplyTimestamp 'not-a-time'")
+    assert bad.returncode == 0, bad.stderr
+    assert not (tmp_path / "bad" / "shared" / "telemetry").exists()                   # not even the directory
+    good = _ps(shell, tmp_path / "good", f"Write-BridgeStageObservation -BridgeRoot '{tmp_path / 'good'}' "
+                                         f"-Stage watcher_seen -Request {REQUEST} -Target claude-rco-2 "
+                                         "-ReplyTimestamp '2026-09-29T21:01:00.1234567Z'")
+    assert good.returncode == 0, good.stderr
+    [record] = _stages(tmp_path / "good")
+    assert record["reply_ts_utc"] == "2026-09-29T21:01:00.1234567Z"
+    assert _report(tmp_path / "good" / "shared" / "telemetry", now=None)["errors"] == {}
+
+
+@pytest.mark.parametrize("value", [
+    "2026-09-29T21:00:00+00:60", "2026-09-29T21:00:00-00:60", "2026-09-29T21:00:00+01:99",
+    "2026-09-29T21:00:00+24:00", "0001-01-01T00:00:00+00:01", "9999-12-31T23:59:59-00:01",
+    "２026-09-29T21:00:00Z", "2026-09-29T21:00:00Z\n"])
+def test_invalid_zones_and_utc_range_edges_are_refused_by_both_parsers(value):
+    # Tools F1-OFFSET-MINUTE-STRICTNESS: fromisoformat alone would normalize +00:60 to +01:00.
+    assert telemetry.parse_utc(value) is None and telemetry.reply_token(value) is None
+
+
+@pytest.mark.parametrize("value,token", [
+    ("2026-09-29T21:00:00+23:59", "2026-09-28T21:01:00.000000000Z"),
+    ("2026-09-29T21:00:00-23:59", "2026-09-30T20:59:00.000000000Z"),
+    ("0001-01-01T00:00:00Z", "0001-01-01T00:00:00.000000000Z"),
+    ("0001-01-01T00:01:00+00:01", "0001-01-01T00:00:00.000000000Z"),
+    ("9999-12-31T23:59:59.999999999Z", "9999-12-31T23:59:59.999999999Z")])
+def test_valid_zone_and_utc_range_edges_keep_their_exact_token(value, token):
+    assert telemetry.reply_token(value) == token and telemetry.parse_utc(value) is not None
+
+
+def test_post_answer_stages_pair_per_exact_reply_token(tmp_path):
+    # Two replies one 7th digit apart are two post-answer flows, not one merged slot.
+    first, second = "2026-09-29T21:01:00.1234567Z", "2026-09-29T21:01:00.1234568Z"
+    records = [_stage("answer_durable", 60, reply=first), _stage("lead_processed", 62, reply=first),
+               _stage("answer_durable", 61, reply=second), _stage("lead_processed", 65, reply=second)]
+    latency = _report(_write(tmp_path / "t", *records))["latency"]["answer_durable->lead_processed"]
+    assert latency["known"] == 2 and (latency["min_seconds"], latency["max_seconds"]) == (2.0, 4.0)
+
+
+def test_the_reader_bounds_ids_by_code_points_and_accepts_empty_but_not_unprintable():
+    bounded = telemetry._bounded_id
+    assert "".isprintable() is True                           # the documented premise ("or the string is empty")
+    assert bounded("", allow_empty=True) is True and bounded("", allow_empty=False) is False
+    smile = "\U0001F600"
+    assert bounded(smile * 256) is True and bounded(smile * 257) is False   # code points, not UTF-16 units
+    assert bounded("\ud800") is False and bounded("a\nb") is False
+
+
+@pytest.mark.parametrize("requester,session", [("", ""), (None, None), ("codex-lead-1", "")])
+def test_empty_or_null_requester_and_session_with_a_delivery_are_one_identified_turn(tmp_path, requester, session):
+    record = _stage("turn_completed", 10, action_outcome="noop", delivery="d-1")
+    record.update(requester=requester, requester_session_id=session)
+    report = _report(_write(tmp_path / "t", record))
+    assert report["errors"] == {}
+    assert (report["noop_ratio"]["turns"], report["noop_ratio"]["unidentified_outcomes"]) == (1, 0)
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_the_writer_counts_code_points_and_accepts_empty_ids_like_the_reader(tmp_path, shell):
+    body = (f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage turn_completed -Target claude-rco-2 "
+            "-ActionOutcome noop -DeliveryId d-9 -Request ([pscustomobject]@{request_id='r-1';"
+            "agent=([char]::ConvertFromUtf32(0x1F600) * 256);session_id=''})")
+    result = _ps(shell, tmp_path, body)
+    assert result.returncode == 0, result.stderr
+    [record] = _stages(tmp_path)
+    assert record["requester"] == "\U0001F600" * 256 and record["requester_session_id"] == ""
+    report = _report(tmp_path / "shared" / "telemetry", now=None)
+    assert report["errors"] == {} and report["noop_ratio"]["turns"] == 1
+
+
+def test_one_turn_written_with_two_identities_counts_twice_as_documented(tmp_path):
+    # A turn must keep ONE identity: the reader cannot tell that a mixed pair is one turn.
+    reply = _ts(5)
+    records = [_stage("turn_completed", 10, action_outcome="noop", delivery="d-1", reply=reply),
+               _stage("turn_completed", 11, action_outcome="noop", reply=reply)]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["turns"], ratio["duplicate_outcomes"], ratio["unidentified_outcomes"]) == (2, 0, 0)
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_writer_accepts_only_a_turn_identity_the_reader_can_key(tmp_path, shell):
+    reply = _ts(60)
+    body = (f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage turn_completed -Target claude-rco-2 "
+            f"-ActionOutcome acted -Request {REQUEST} -ReplyTimestamp '{reply}'\n"      # request + session + reply
+            f"Write-BridgeStageObservation -BridgeRoot '{tmp_path}' -Stage turn_completed -Target claude-rco-2 "
+            "-ActionOutcome noop -DeliveryId d-6 "
+            "-Request ([pscustomobject]@{request_id='r-2';agent='codex-lead-1'})")      # a DeliveryId needs no session
+    result = _ps(shell, tmp_path, body)
+    assert result.returncode == 0, result.stderr
+    records = sorted(_stages(tmp_path), key=lambda r: r["action_outcome"])
+    assert [(r["action_outcome"], r["request_id"], r["requester_session_id"], r["delivery_id"]) for r in records] == [
+        ("acted", "r-1", "s-1", ""), ("noop", "r-2", None, "d-6")]
+    ratio = _report(tmp_path / "shared" / "telemetry", now=None)["noop_ratio"]
+    assert (ratio["turns"], ratio["unidentified_outcomes"], ratio["acted"], ratio["noop"]) == (2, 0, 1, 1)
+
+
+def test_an_outcome_without_a_turn_identity_stays_unknown(tmp_path):
+    lone = _stage("turn_completed", 10, action_outcome="noop", request_id=None)          # no delivery either
+    ratio = _report(_write(tmp_path / "t", lone))["noop_ratio"]
+    assert ratio["value"] is None and ratio["unidentified_outcomes"] == 1
+    assert ratio["reason"] == "no_identified_consistent_outcomes" and ratio["turns"] == 0
+    # Success twin: the same outcome with a delivery id counts.
+    ratio = _report(_write(tmp_path / "u", _stage("turn_completed", 10, action_outcome="noop", request_id=None,
+                                                  delivery="d-7")))["noop_ratio"]
+    assert ratio["value"] == 1.0 and ratio["unidentified_outcomes"] == 0
 
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell is required")

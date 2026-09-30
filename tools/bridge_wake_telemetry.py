@@ -51,7 +51,9 @@ STAGE_NAME_RE = re.compile(r"stage-[0-9a-f]{32}\.json\Z")
 TOKEN_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 AGENT_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 WINDOWS_DRIVE_PATH_RE = re.compile(r"[A-Za-z]:[\\/]")
-TIMESTAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})\Z")
+# ASCII digits only (a str pattern's \d would also match other Unicode decimal digits).
+TIMESTAMP_RE = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?"
+                          r"(Z|[+-][0-9]{2}:[0-9]{2})\Z")
 
 STAGE_KEYS = frozenset({"schema", "stage", "observed_at_utc", "target", "request_id", "requester",
                         "requester_session_id", "delivery_id", "queue_id", "observer_pid",
@@ -91,19 +93,57 @@ class _ArgumentParser(argparse.ArgumentParser):
         raise TelemetryInputError("invalid command-line arguments; use --help for usage")
 
 
-def parse_utc(value: Any) -> datetime | None:
-    """Strict ISO-8601 with a timezone; up to 9 fraction digits (PowerShell writes 7)."""
+def _utc_parts(value: Any) -> tuple[datetime, str] | None:
+    """The ONE strict parse behind parse_utc and reply_token: (the whole-second instant in UTC,
+    the original fraction digits) or None. At most 40 characters, ASCII
+    YYYY-MM-DDTHH:MM:SS[.1-9 digits] then Z or +HH:MM/-HH:MM with zone hours <= 23 and
+    minutes <= 59 (the writer's rule; datetime.fromisoformat alone would normalize +00:60 to
+    +01:00), a real calendar time, representable in UTC (Tools F1-OFFSET-MINUTE-STRICTNESS).
+    The offset is whole minutes, so it never touches the fraction."""
     if type(value) is not str or len(value) > 40:
         return None
     match = TIMESTAMP_RE.match(value)
     if match is None:
         return None
     base, fraction, zone = match.groups()
-    text = base + ("." + (fraction + "000000")[:6] if fraction else "") + ("+00:00" if zone == "Z" else zone)
+    offset = timedelta(0)
+    if zone != "Z":
+        hours, minutes = int(zone[1:3]), int(zone[4:6])
+        if hours > 23 or minutes > 59:
+            return None
+        offset = timedelta(hours=hours, minutes=minutes) * (-1 if zone[0] == "-" else 1)
     try:
-        return datetime.fromisoformat(text).astimezone(timezone.utc)
+        whole = datetime.fromisoformat(base) - offset
     except (ValueError, OverflowError):
         return None
+    return whole.replace(tzinfo=timezone.utc), fraction or ""
+
+
+def parse_utc(value: Any) -> datetime | None:
+    """Strict ISO-8601 with a timezone; up to 9 fraction digits (PowerShell writes 7). Keeps
+    MICROSECONDS, for duration arithmetic only; identity uses reply_token."""
+    parts = _utc_parts(value)
+    if parts is None:
+        return None
+    whole, fraction = parts
+    try:
+        return whole + timedelta(microseconds=int((fraction + "000000")[:6]))
+    except OverflowError:
+        return None
+
+
+def reply_token(value: Any) -> str | None:
+    """The exact reply IDENTITY: the instant in UTC with every fraction digit kept (up to 9),
+    as YYYY-MM-DDTHH:MM:SS.fffffffffZ. Two replies that differ only in the 7th fraction digit
+    stay distinct, and zone-equivalent spellings of one instant (Z, +00:00, +03:00) are equal.
+    parse_utc keeps only microseconds and is for duration arithmetic, never identity (Tools
+    F1-PRECISION). It accepts exactly what parse_utc accepts (the same _utc_parts)."""
+    parts = _utc_parts(value)
+    if parts is None or parse_utc(value) is None:
+        return None
+    whole, fraction = parts
+    return (f"{whole.year:04d}-{whole.month:02d}-{whole.day:02d}T{whole.hour:02d}:{whole.minute:02d}:"
+            f"{whole.second:02d}.{fraction.ljust(9, '0')}Z")
 
 
 def _local_absolute(raw: str) -> bool:
@@ -247,7 +287,7 @@ def validate_stage(record: Any, now: datetime | None) -> dict:
     result = {"stage": stage, "observed": observed, "target": record["target"], "request_id": request_id,
               "requester": record["requester"], "session": record["requester_session_id"],
               "delivery_id": record["delivery_id"], "reply": parse_utc(reply) if reply else None,
-              "outcome": record.get("action_outcome")}
+              "reply_token": reply_token(reply) if reply else None, "outcome": record.get("action_outcome")}
     if "metadata" in record:
         result["metadata"] = _metadata(record["metadata"])
     return result
@@ -284,6 +324,26 @@ def validate_wake(snapshot: Any, now: datetime | None) -> dict:
     if "metadata" in snapshot:
         report["metadata"] = _metadata(snapshot["metadata"])
     return report
+
+
+def turn_identity(record: dict) -> tuple | None:
+    """A reliable identity for one turn_completed outcome, or None (unknown, never invented).
+
+    A delivery id is the per-turn id: the relay's per-wake id, or one id minted once at
+    model_turn_started for a non-relay turn and passed to every stage of that turn. Without
+    one, only a request-bound outcome that names its requester session AND the reply the turn
+    wrote identifies a turn: that reply is the turn's own answer. A request alone names the
+    REQUEST, not the turn, so two separate reply-less wakes on one request stay two
+    unidentified outcomes, never one merged turn (RCO1 SF1). One turn must keep ONE identity:
+    written once with a delivery id and once without, it is counted twice (documented): only a
+    genuine binding could prove them one turn, and none exists. The reply part of the key is the
+    exact normalized reply token (reply_token), never a microsecond datetime."""
+    if record["delivery_id"]:
+        return ("delivery", record["target"], record["delivery_id"])
+    if record["request_id"] is not None and record["session"] and record.get("reply_token"):
+        return ("reply", record["target"], record["request_id"], record["requester"], record["session"],
+                record["reply_token"])
+    return None
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
@@ -332,7 +392,7 @@ def build_report(records: list[dict], *, wake: list[dict], inputs: dict, errors:
         key = (record["request_id"], record["requester"], record["session"], record["target"])
         flow = flows.setdefault(key, {"stages": {}, "replies": {}, "deliveries": set()})
         if record["stage"] in REPLY_STAGES:
-            reply_key = record["reply"].isoformat() if record["reply"] else ""
+            reply_key = record["reply_token"] or ""   # exact identity; durations still use the datetimes
             slot = flow["replies"].setdefault(reply_key, {})
             slot[record["stage"]] = min(filter(None, (slot.get(record["stage"]), record["observed"])))
         current = flow["stages"].get(record["stage"])
@@ -370,18 +430,44 @@ def build_report(records: list[dict], *, wake: list[dict], inputs: dict, errors:
                 else:
                     durations[name].append(seconds)
 
-    acted = sum(1 for r in outcomes if r["outcome"] == "acted")
-    noop = sum(1 for r in outcomes if r["outcome"] == "noop")
-    by_target = {}
-    for target in sorted({r["target"] for r in outcomes}):
-        a = sum(1 for r in outcomes if r["target"] == target and r["outcome"] == "acted")
-        n = sum(1 for r in outcomes if r["target"] == target and r["outcome"] == "noop")
-        by_target[target] = {"acted": a, "noop": n, "value": round(n / (a + n), 6)}
+    # One outcome per TURN (RCO1 S1): a replayed record is counted once, a turn whose records
+    # disagree is unknown, and an outcome without a reliable turn identity is unknown too.
+    turns: dict[tuple, list[str]] = {}
+    unidentified = duplicates = 0
+    for record in outcomes:
+        key = turn_identity(record)
+        if key is None:
+            unidentified += 1
+            continue
+        seen = turns.setdefault(key, [])
+        duplicates += bool(seen)
+        seen.append(record["outcome"])
+    acted = noop = conflicts = 0
+    per_target: dict[str, list[int]] = {}
+    for key, values in turns.items():
+        if len(set(values)) > 1:
+            conflicts += 1
+            continue
+        counts = per_target.setdefault(key[1], [0, 0])
+        if values[0] == "acted":
+            acted += 1
+            counts[0] += 1
+        else:
+            noop += 1
+            counts[1] += 1
+    by_target = {target: {"acted": a, "noop": n, "value": round(n / (a + n), 6)}
+                 for target, (a, n) in sorted(per_target.items())}
+    reason = None
+    if not acted + noop:
+        reason = "no_explicit_outcomes" if not outcomes else "no_identified_consistent_outcomes"
     noop_ratio = {"value": round(noop / (acted + noop), 6) if acted + noop else None,
-                  "acted": acted, "noop": noop, "by_target": by_target,
-                  "reason": None if acted + noop else "no_explicit_outcomes",
-                  "basis": ("explicit turn_completed outcomes only; never inferred from pending or "
-                            "missing stages or from queue acceptance")}
+                  "acted": acted, "noop": noop, "by_target": by_target, "reason": reason,
+                  "turns": acted + noop, "duplicate_outcomes": duplicates, "conflicting_turns": conflicts,
+                  "unidentified_outcomes": unidentified,
+                  "basis": ("explicit turn_completed outcomes only, one per turn identity (delivery id, or "
+                            "request + requester + session + reply per target); unidentified or conflicting "
+                            "turns are unknown; never inferred from pending or missing stages or from queue "
+                            "acceptance")}
     metadata_reasons: dict[str, int] = {}
     for record in records:
         reason = record.get("metadata", {}).get("reason")

@@ -12,7 +12,8 @@ function ConvertTo-BridgeObservationMetadata {
           [Nullable[double]]$LatencyMs=$null, [string]$LatencyBasis='')
     $metadata=[ordered]@{}
     if($Reason){
-        if($Reason -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation reason must be a lowercase token'}
+        # \z, not $: .NET $ also matches before a final newline, which the reader's fullmatch refuses.
+        if($Reason -cnotmatch '^[a-z][a-z0-9_]{0,63}\z'){throw 'Observation reason must be a lowercase token'}
         $metadata['reason']=$Reason
     }
     if($null -ne $Watermark){
@@ -25,7 +26,7 @@ function ConvertTo-BridgeObservationMetadata {
         if([double]::IsNaN($ms) -or [double]::IsInfinity($ms) -or $ms -lt 0 -or $ms -gt 86400000){
             throw 'Observation latency must be finite and within 0..86400000 ms'
         }
-        if($LatencyBasis -cnotmatch '^[a-z][a-z0-9_]{0,63}$'){throw 'Observation latency basis must be a lowercase token'}
+        if($LatencyBasis -cnotmatch '^[a-z][a-z0-9_]{0,63}\z'){throw 'Observation latency basis must be a lowercase token'}
         $metadata['latency_ms']=$ms
         $metadata['latency_basis']=$LatencyBasis
     }
@@ -55,6 +56,83 @@ function Get-BridgeStageBinding {
         }
     }
     return $null
+}
+
+function Test-BridgeObservationPrintable {
+    # Python str.isprintable(): no Unicode 'Other' (Cc Cf Cs Co Cn) or 'Separator' (Zl Zp Zs)
+    # code point except the ASCII space. Surrogate pairs are one code point.
+    param([string]$Value)
+    $index = 0
+    while ($index -lt $Value.Length) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($Value, $index)
+        if ($category -in @('Control','Format','Surrogate','PrivateUse','OtherNotAssigned','LineSeparator','ParagraphSeparator')) { return $false }
+        if ($category -ceq 'SpaceSeparator' -and $Value[$index] -ne ' ') { return $false }
+        if ([char]::IsSurrogatePair($Value, $index)) { $index += 2 } else { $index += 1 }
+    }
+    return $true
+}
+function Get-BridgeObservationScalarCount {
+    # Python len(): Unicode scalar count, so a surrogate PAIR counts once (a lone surrogate once too).
+    param([string]$Value)
+    $count = 0
+    $index = 0
+    while ($index -lt $Value.Length) {
+        if ([char]::IsSurrogatePair($Value, $index)) { $index += 2 } else { $index += 1 }
+        $count += 1
+    }
+    return $count
+}
+function Test-BridgeObservationId {
+    # The reader's _bounded_id: a string of at most 256 printable code points, non-empty unless
+    # allowed. An EMPTY string is accepted with AllowEmpty exactly as the reader does: Python's
+    # ''.isprintable() is True ("or the string is empty"), so _bounded_id('', allow_empty=True)
+    # accepts it. $null (absent) is decided by the caller, never here.
+    param($Value, [switch]$AllowEmpty)
+    return ($Value -is [string] -and ($AllowEmpty -or $Value -ne '') -and
+            (Get-BridgeObservationScalarCount $Value) -le 256 -and (Test-BridgeObservationPrintable $Value))
+}
+function Test-BridgeObservationTime {
+    # The reader's parse_utc: at most 40 characters, YYYY-MM-DDTHH:MM:SS[.1-9 digits] then Z or
+    # +HH:MM/-HH:MM, a real calendar time, representable in UTC. ASCII digits only.
+    param([string]$Value)
+    if ($Value.Length -gt 40) { return $false }
+    $match = [regex]::Match($Value, '^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})\z')
+    if (-not $match.Success) { return $false }
+    $local = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($match.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ss',
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$local)) { return $false }
+    $zone = $match.Groups[3].Value
+    if ($zone -ceq 'Z') { return $true }
+    $hours = [int]$zone.Substring(1, 2); $minutes = [int]$zone.Substring(4, 2)
+    if ($hours -gt 23 -or $minutes -gt 59) { return $false }
+    $offsetTicks = ([timespan]::new($hours, $minutes, 0)).Ticks
+    if ($zone[0] -eq '-') { $offsetTicks = -$offsetTicks }
+    $utcTicks = $local.Ticks - $offsetTicks
+    return ($utcTicks -ge [datetime]::MinValue.Ticks -and $utcTicks -le [datetime]::MaxValue.Ticks)
+}
+function Get-BridgeStageObservationProblem {
+    # The first reason tools/bridge_wake_telemetry.validate_stage would discard this record, or ''.
+    param([Parameter(Mandatory)] $Observation)
+    $target = $Observation['target']
+    if (-not ($target -is [string]) -or $target -cnotmatch '^[a-z][a-z0-9-]{0,63}\z') { return 'target must be a lowercase agent id' }
+    foreach ($name in @('delivery_id', 'queue_id', 'report_reference')) {
+        $value = $Observation[$name]
+        if (-not ($value -is [string]) -or (Get-BridgeObservationScalarCount $value) -gt 1024) { return ($name + ' must be a string of at most 1024 characters') }
+    }
+    if ($null -eq $Observation['request_id']) {
+        if ($null -ne $Observation['requester'] -or $null -ne $Observation['requester_session_id']) { return 'a requester needs a request_id' }
+    } else {
+        if (-not (Test-BridgeObservationId $Observation['request_id'])) { return 'request_id must be a non-empty printable string of at most 256 characters' }
+        foreach ($name in @('requester', 'requester_session_id')) {
+            $value = $Observation[$name]
+            if ($null -ne $value -and -not (Test-BridgeObservationId $value -AllowEmpty)) { return ($name + ' must be a printable string of at most 256 characters') }
+        }
+    }
+    $reply = $Observation['reply_ts_utc']
+    if (-not ($reply -is [string]) -or ($reply -and -not (Test-BridgeObservationTime $reply))) {
+        return 'reply_ts_utc must be empty or ISO-8601 with a zone (at most 40 characters)'
+    }
+    return ''
 }
 
 function Write-BridgeWakeObservation {
@@ -107,8 +185,21 @@ function Write-BridgeStageObservation {
     # turn_completed is the ONLY source of a no-op ratio: the agent states explicitly
     # whether its turn acted. Nothing else (a pending or missing stage, a queue
     # acceptance) may be read as a no-op.
+    $binding = if ($null -ne $Request) { Get-BridgeStageBinding $Request } else { $null }
     if ($Stage -ceq 'turn_completed') {
         if ($ActionOutcome -cnotin @('acted','noop')) { throw 'turn_completed needs ActionOutcome acted or noop' }
+        # One outcome per TURN, checked AFTER binding exactly as the reader keys it: a per-turn
+        # DeliveryId (the relay's per-wake id, or one minted once at model_turn_started), or a
+        # bound Request with its requester session AND the reply this turn wrote. A request
+        # alone names the request, not the turn (RCO1 SF1/SF2). Nothing is dropped silently:
+        # a Request that does not bind throws even when a DeliveryId is present.
+        if ($null -ne $Request -and $null -eq $binding) { throw 'turn_completed Request does not bind a request' }
+        if (-not $DeliveryId) {
+            $reply = if ($ReplyTimestamp) { $ReplyTimestamp } elseif ($null -ne $binding) { [string]$binding.reply_ts_utc } else { '' }
+            if ($null -eq $binding -or -not [string]$binding.session_id -or -not $reply) {
+                throw 'turn_completed needs a turn identity: DeliveryId, or a bound Request with its session and reply'
+            }
+        }
     } elseif ($ActionOutcome) {
         throw 'ActionOutcome is recorded only with stage turn_completed'
     }
@@ -124,14 +215,25 @@ function Write-BridgeStageObservation {
     if ($Stage -ceq 'turn_completed') { $observation['action_outcome'] = $ActionOutcome }
     if ($null -ne $metadata) { $observation['metadata'] = $metadata }
     if ($null -ne $Request) {
-        $Request=Get-BridgeStageBinding $Request
-        if($null -eq $Request){return}
+        # Flow stages stay best-effort: an unbindable request records nothing (turn_completed threw above).
+        if($null -eq $binding){return}
         foreach ($pair in @(@('request_id','request_id'),@('requester','agent'),@('requester_session_id','session_id'))) {
-            $property = $Request.PSObject.Properties[$pair[1]]
+            $property = $binding.PSObject.Properties[$pair[1]]
             if ($null -ne $property) { $observation[$pair[0]] = $property.Value }
         }
         if (-not $observation.request_id) { return }
-        if(-not $ReplyTimestamp -and $Request.PSObject.Properties['reply_ts_utc'] -and $Request.reply_ts_utc){$observation.reply_ts_utc=[string]$Request.reply_ts_utc}
+        if(-not $ReplyTimestamp -and $binding.PSObject.Properties['reply_ts_utc'] -and $binding.reply_ts_utc){$observation.reply_ts_utc=[string]$binding.reply_ts_utc}
+    }
+    # F1-WRITER-READER (Tools 381ee2ca, 2e4262ab): refuse the scalar/time values the reader's
+    # validate_stage would discard, BEFORE any directory or file exists. turn_completed throws
+    # visibly; for the live flow stages an invalid final scalar/time value records nothing (the
+    # reader would drop it anyway). That skip is ONLY for these values: an unknown stage, an
+    # invalid metadata/ActionOutcome argument (validated above) or an I/O failure still throws.
+    # Parity is by source reading, not a differential proof (Unicode-database versions differ).
+    $problem = Get-BridgeStageObservationProblem -Observation $observation
+    if ($problem) {
+        if ($Stage -ceq 'turn_completed') { throw ('turn_completed observation refused: ' + $problem) }
+        return
     }
     $directory = Join-Path $BridgeRoot 'shared\telemetry'
     [void][IO.Directory]::CreateDirectory($directory)

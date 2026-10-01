@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: BUSL-1.1
 """F28 dry plan: ops/windows/reboot/New-WdReleaseWorktree.ps1 under pwsh 7 and Windows PowerShell 5.1.
 
-A throwaway repository and a bare local remote live under tmp_path. The planned worktree
-path is a never-created C: path outside TEMP; every case asserts that nothing was created,
-branched or pushed.
+A throwaway repository and a bare local remote live in a persistent C: folder outside TEMP
+(the source repository must be on persistent C: too) that each test creates and removes; links
+point from there. The planned worktree path is a never-created C: path outside TEMP; every case
+asserts that nothing was created, branched or pushed.
 """
 from __future__ import annotations
 
@@ -28,12 +29,32 @@ def git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
+PERSISTENT_FIXTURES = Path("C:/Python/waggledance-agent-worktrees/fable-5-bridge-v2-bundle-lists-20260930/"
+                           ".codex-audit/wave-candidate/f28fix-fixtures")
+
+
+def junction(link: Path, target: Path) -> None:
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=True)
+
+
 @pytest.fixture
-def repo(tmp_path: Path) -> dict:
-    remote = tmp_path / "remote.git"
-    work = tmp_path / "repo"
-    git("init", "-q", "--bare", str(remote), cwd=tmp_path)
-    git("init", "-q", str(work), cwd=tmp_path)
+def cdir():
+    """A fresh persistent C: folder outside TEMP; junctions made in it are removed before the folder is."""
+    root = PERSISTENT_FIXTURES / uuid.uuid4().hex
+    root.mkdir(parents=True)
+    links: list[Path] = []
+    yield root, links
+    for link in links:
+        if link.exists() or os.path.lexists(link):
+            os.rmdir(link)  # the junction only, never its target
+    shutil.rmtree(root, onexc=lambda function, path, _: (os.chmod(path, 0o700), function(path)))
+
+
+def make_repo(base: Path) -> dict:
+    remote = base / "remote.git"
+    work = base / "repo"
+    git("init", "-q", "--bare", str(remote), cwd=base)
+    git("init", "-q", str(work), cwd=base)
     for key, value in (("user.name", "fixture"), ("user.email", "fixture@example.invalid"), ("core.autocrlf", "false")):
         git("config", key, value, cwd=work)
     (work / "a.txt").write_text("a\n", encoding="utf-8")
@@ -42,6 +63,11 @@ def repo(tmp_path: Path) -> dict:
     git("remote", "add", "origin", str(remote), cwd=work)
     git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
     return {"work": work, "remote": remote, "commit": git("rev-parse", "HEAD", cwd=work)}
+
+
+@pytest.fixture
+def repo(cdir) -> dict:
+    return make_repo(cdir[0])
 
 
 def planned_path() -> str:
@@ -113,3 +139,40 @@ def test_invalid_inputs_are_refused_with_their_reasons(repo, shell, tmp_path):
     for change, reason in cases:
         code, plan = run(shell, **{**good, **change})
         assert code == 2 and plan["verdict"] == "refuse" and reason in plan["reasons"], (change, plan)
+
+
+# --- fable-5 review 04:42:17Z (W-A, W-B): the source repository must be persistent C: as well, and neither the
+# repository nor the target may sit under a link (junction, symlink or mount point) that redirects it.
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_source_repository_under_temp_is_refused(tmp_path, shell):
+    volatile = make_repo(tmp_path)
+    path, branch = planned_path(), "claude-rco-2/release-fixture"
+    code, plan = run(shell, RepositoryPath=volatile["work"], Branch=branch, Commit=volatile["commit"], WorktreePath=path)
+    assert code == 2 and plan["reasons"] == ["repository_volatile"], plan
+    assert_untouched(volatile, branch, path)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_source_repository_reached_through_a_link_is_refused(cdir, tmp_path, shell):
+    root, links = cdir
+    volatile = make_repo(tmp_path)
+    link = root / "linked-repo"
+    junction(link, volatile["work"])
+    links.append(link)
+    code, plan = run(shell, RepositoryPath=link, Branch="claude-rco-2/release-fixture", Commit=volatile["commit"],
+                     WorktreePath=planned_path())
+    assert code == 2 and "repository_reparse" in plan["reasons"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_target_under_a_link_is_refused_even_when_the_string_looks_persistent(repo, cdir, tmp_path, shell):
+    root, links = cdir
+    link = root / "linked-target"
+    junction(link, tmp_path)
+    links.append(link)
+    path = link / "wt"
+    code, plan = run(shell, RepositoryPath=repo["work"], Branch="claude-rco-2/release-fixture", Commit=repo["commit"],
+                     WorktreePath=path)
+    assert code == 2 and plan["reasons"] == ["path_reparse"], plan
+    assert not (tmp_path / "wt").exists()

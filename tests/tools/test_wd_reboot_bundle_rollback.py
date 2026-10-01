@@ -65,6 +65,8 @@ class Fixture:
         params.update(overrides)
         argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT)]
         for name, value in params.items():
+            if value is None:  # leave the parameter out
+                continue
             argv += ["-" + name] if value is True else ["-" + name, str(value)]
         before = self.snapshot()
         result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
@@ -142,3 +144,72 @@ def test_other_holds(tmp_path, shell):
     assert "target_relay_contract_unknown" in reasons and "bundle_file_changed:start-wd-tools-consumer.ps1" in reasons
     code, plan = fixture.run(shell, TargetCommit="not-a-commit")
     assert code == 2 and plan["reasons"] == ["target_commit_invalid"]
+
+
+# --- fable-5 review 04:42:17Z (R-A, R-B, R-C): unknown rollback state is a HOLD, and the bundle and intents are
+# enumerated recursively without following links.
+
+def junction(link: Path, target: Path) -> None:
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=True)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_no_lane_journal_is_a_hold_even_for_a_known_relay_contract(tmp_path, shell):
+    code, plan = Fixture(tmp_path).run(shell, LaneJournals=None)
+    assert code == 2 and plan["reasons"] == ["lane_journals_not_given"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_an_unknown_relay_contract_is_a_hold_with_or_without_journals(tmp_path, shell):
+    fixture = Fixture(tmp_path, relay="# no relay contract here\n")
+    code, plan = fixture.run(shell, LaneJournals=None)
+    assert code == 2 and plan["reasons"] == ["target_relay_contract_unknown", "lane_journals_not_given"], plan
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["reasons"] == ["target_relay_contract_unknown"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_an_oversized_relay_source_is_an_unknown_contract(tmp_path, shell):
+    fixture = Fixture(tmp_path, relay=LEGACY_RELAY + "#" * (4 * 1024 * 1024) + "\n")
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["reasons"] == ["target_relay_contract_unknown"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_unlisted_files_anywhere_in_the_bundle_hold(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    (fixture.bundle / "Invoke-Planted.ps1").write_text("throw 'planted'\n", encoding="utf-8")
+    nested = fixture.bundle / "tools-bootstrap" / ".agent-bridge" / "bin"
+    nested.mkdir(parents=True)
+    (nested / "Extra.ps1").write_text("throw 'planted'\n", encoding="utf-8")
+    (fixture.bundle / "empty-folder").mkdir()
+    code, plan = fixture.run(shell)
+    assert code == 2 and sorted(plan["reasons"]) == ["bundle_file_unexpected:Invoke-Planted.ps1",
+                                                     "bundle_file_unexpected:tools-bootstrap/.agent-bridge/bin/Extra.ps1"]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_link_inside_the_bundle_holds_and_is_never_followed(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "unlisted.ps1").write_text("throw 'outside'\n", encoding="utf-8")
+    link = fixture.bundle / "tools-bootstrap" / "linked"
+    junction(link, outside)
+    try:
+        code, plan = fixture.run(shell)
+    finally:
+        os.rmdir(link)  # removes the junction only
+    assert code == 2 and plan["reasons"] == ["bundle_reparse:tools-bootstrap/linked"], plan
+    assert (outside / "unlisted.ps1").is_file()
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_an_intent_in_a_subfolder_holds_and_an_empty_folder_tree_does_not(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    (fixture.intents / "lane-a" / "deeper").mkdir(parents=True)
+    code, plan = fixture.run(shell)
+    assert code == 0 and plan["verdict"] == "plan", plan
+    (fixture.intents / "lane-a" / "deeper" / "intent.json").write_text("{}", encoding="utf-8")
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["reasons"] == ["outstanding_intents"], plan

@@ -121,6 +121,49 @@ def test_success_needs_the_signed_independent_quorum(evaluators, counted):
     assert (pair(out) is not None) is counted
 
 
+@pytest.mark.parametrize("evaluators", [("FABLE-5",), ("fable_5",), (" fable-5",), ("Fable_5 ",)])
+def test_a_spelling_of_the_worker_is_not_an_independent_evaluator(evaluators):
+    """RCO1 SF3: case, padding and the '_'/'-' separator do not make the worker someone else."""
+    out = derive([outcome("o-1", evaluators=evaluators)])
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
+
+
+@pytest.mark.parametrize("evaluators", [("operator",), ("claude-rco-9",), ("CLAUDE-RCO-1",)])
+def test_only_exact_member_ids_count_toward_the_quorum(evaluators):
+    out = derive([outcome("o-1", evaluators=evaluators)])
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
+
+
+@pytest.mark.parametrize("worker", ["FABLE-5", "fable_5", " fable-5 "])
+def test_a_spelled_worker_is_not_graded_by_its_own_member_id(worker):
+    out = derive([outcome("o-1", worker=worker, evaluators=("fable-5",))])
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
+
+
+def test_alias_spellings_of_one_evaluator_count_once():
+    out = derive([outcome("o-1", evaluators=("claude-rco-1", "CLAUDE-RCO-1", "claude_rco_1"))],
+                 sb=signed(bounds(min_independent_evaluators=2)))
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
+
+
+class _Liar(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+def test_a_str_subclass_evaluator_is_malformed_not_a_member():
+    out = derive([outcome("o-1", evaluators=[_Liar("anyone")])])
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["malformed"]
+
+
+def test_three_self_spellings_never_build_a_weight():
+    outcomes = [outcome("o-%d" % i, evaluators=("fable-5", "FABLE-5", "fable_5")) for i in range(3)]
+    out = derive(outcomes)
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"] * 3
+
+
 # --- stop signal and requalification ---------------------------------------------------------------
 
 STOP = "2026-09-30T15:00:00Z"

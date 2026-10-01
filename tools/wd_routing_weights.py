@@ -18,7 +18,10 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
 * A closed ``wd.routing-outcome.v1`` record with ``verified`` true, dated no later
   than ``now`` and no older than ``max_outcome_age_seconds``.
 * A success or a requalification needs at least ``min_independent_evaluators``
-  distinct evaluators other than the worker, so self-grading never counts. A failure
+  distinct evaluators other than the worker, so self-grading never counts. Only an
+  exact bridge member id counts as an independent evaluator, and identities are
+  compared folded (case, padding and the ``_``/``-`` separator), so a spelling of the
+  worker is never someone else and two spellings of one member count once. A failure
   needs one evaluator, who may be the worker: a failure can only restrict.
 * Dedupe: the same ``outcome_id`` with the same content counts once, and with other
   content it is a conflict. One task (``dispatch_key``) counts once per profile and
@@ -47,7 +50,7 @@ from typing import Any
 
 from tools.lane_profile_record import _utc
 from tools.wd_composer_select import digest
-from tools.wd_task_router import TASK_CLASSES
+from tools.wd_task_router import MEMBERS, TASK_CLASSES
 
 SCHEMA = "wd.routing-shadow-weights.v1"
 OUTCOME_SCHEMA = "wd.routing-outcome.v1"
@@ -66,15 +69,21 @@ _PLACES = 6
 
 
 def _text(value: Any) -> bool:
-    return isinstance(value, str) and bool(value)
+    # Exact str: a subclass can redefine equality and pass the member test below.
+    return type(value) is str and bool(value)
 
 
 def _hex64(value: Any) -> bool:
-    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
+    return type(value) is str and len(value) == 64 and set(value) <= _HEX
 
 
 def _finite(value: Any) -> bool:
     return type(value) in (int, float) and value == value and value not in (float("inf"), float("-inf"))
+
+
+def _identity(name: str) -> str:
+    """One identity per spelling family: case, padding and the '_'/'-' separator do not change who it is."""
+    return name.strip().casefold().replace("_", "-")
 
 
 def _positive_int(value: Any, minimum: int = 1) -> bool:
@@ -125,7 +134,8 @@ def _check(outcome: Any, bounds: dict, now: datetime) -> tuple[datetime | None, 
         return None, "future_dated"
     if (now - observed).total_seconds() > bounds["max_outcome_age_seconds"]:
         return None, "stale"
-    independent = [e for e in evaluators if e != outcome["worker"]]
+    # Exact member ids only, folded against the worker and deduplicated by identity (RCO1 SF3).
+    independent = {_identity(e) for e in evaluators if e in MEMBERS} - {_identity(outcome["worker"])}
     if not failure and len(independent) < bounds["min_independent_evaluators"]:
         return None, "quorum_not_met"
     return observed, ""

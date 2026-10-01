@@ -23,10 +23,16 @@ Checks, in order (the first that decides wins):
    way nothing new is dispatched, so one outcome cannot cause a second dispatch.
 3. Scope: a live lease of another key whose file or resource scope overlaps gives
    ``wait``. Scope entries are compared case-folded, with ``/`` separators and
-   directory prefixes, so the check errs toward a conflict.
+   directory prefixes, and a path with no kind prefix also overlaps its ``repo:``
+   form, so the check errs toward a conflict. Other kinds never alias a plain path.
 4. Workers: role, qualification, capacity and load evidence must be present, fresh,
-   verified and bound to the worker and its current profile. Missing or stale
-   evidence makes the worker unknown; it is never a fallback and never ready.
+   verified and bound to the worker and its current profile. ``role`` must name
+   exactly this worker. ``capacity`` must name this profile. A ``capacity``, ``load``
+   or Grok ``single_flight`` block that names a worker must name exactly this one
+   (another lane's idle block never stands in); a block that names none is the
+   existing caller shape (the capacity adapter attaches its block to the worker's own
+   record) and stays accepted. Missing, stale or unbound evidence makes the worker
+   unknown; it is never a fallback and never ready.
 5. With eligible workers the verdict is ``route``. The ranking is the signed
    per-class profile order, then capacity headroom, then the worker name. Without
    one: ``wait`` if a permitted non-Grok worker is only busy or over its budget,
@@ -48,8 +54,10 @@ Grok never makes the router wait or report unknown. There is no hourly, weekly o
 per-agent Grok quota here or in the policy schema.
 
 Shadow weights (F26, tools/wd_routing_weights.py) may be passed. They produce a
-separate ``shadow`` ranking only. ``ranking``, ``recommended`` and the verdict never
-depend on them.
+separate ``shadow`` ranking only. ``ranking``, ``recommended``, the verdict and
+``evidence_digest`` never depend on them: they are not advice inputs, so the digest
+leaves them out, and a malformed or conflicting shadow record is reported as
+``ignored`` (``shadow_weights_invalid``) instead of failing the advice.
 """
 from __future__ import annotations
 
@@ -125,11 +133,12 @@ def _require(condition: bool, verdict: str, *reasons: str) -> None:
 
 
 def _text(value: Any) -> bool:
-    return isinstance(value, str) and bool(value)
+    # Exact str: a subclass can redefine equality and pass a membership test it should fail.
+    return type(value) is str and bool(value)
 
 
 def _hex(value: Any, length: int) -> bool:
-    return isinstance(value, str) and len(value) == length and set(value) <= _HEX
+    return type(value) is str and len(value) == length and set(value) <= _HEX
 
 
 def _number(value: Any) -> float | None:
@@ -144,6 +153,13 @@ def _closed(record: Any, required: tuple, optional: tuple = ()) -> bool:
 
 def _texts(value: Any) -> bool:
     return isinstance(value, list) and all(_text(item) for item in value) and len(set(value)) == len(value)
+
+
+def _bound(block: dict, name: str) -> bool:
+    """A block that names a worker names exactly this one (exact str, exact spelling). A block with no
+    ``worker`` key is the existing caller shape (the capacity adapter and current fixtures) and stays
+    accepted; W3 load blocks always name their worker."""
+    return "worker" not in block or (type(block["worker"]) is str and block["worker"] == name)
 
 
 def _fresh(block: Any, now: datetime, max_age: int) -> bool:
@@ -170,9 +186,17 @@ def _as_dir(path: str) -> str:
     return path if path.endswith("/") else path + "/"
 
 
+def _repo_kind(path: str) -> str:
+    """A path with no kind prefix names the same file as its ``repo:`` form."""
+    return path if ":" in path else "repo:" + path
+
+
 def scopes_overlap(left: list[str], right: list[str]) -> bool:
-    """True when any entry equals, contains or is contained by an entry of the other scope."""
-    return any(a == b or a.startswith(_as_dir(b)) or b.startswith(_as_dir(a)) for a in left for b in right)
+    """True when any entry equals, contains or is contained by an entry of the other scope, compared as
+    written and again with plain paths read as ``repo:`` paths (only ever adds overlaps)."""
+    def overlap(a: str, b: str) -> bool:
+        return a == b or a.startswith(_as_dir(b)) or b.startswith(_as_dir(a))
+    return any(overlap(a, b) or overlap(_repo_kind(a), _repo_kind(b)) for a in left for b in right)
 
 
 def dispatch_key(task_id: str, revision: str, input_digest: str, scope: list[str]) -> str | None:
@@ -313,7 +337,7 @@ def _assess(worker: dict, task: dict, policy: dict, now: datetime, composer_prof
             and capacity.get("state") in CAPACITY_STATES and capacity.get("billing") in BILLING
             and projected is not None and projected >= 0):
         unknown.append("capacity_unknown_or_stale")
-    elif capacity.get("profile_id") != profile:
+    elif capacity.get("profile_id") != profile or not _bound(capacity, name):
         unknown.append("capacity_unbound")
     elif capacity["billing"] == "paid":
         ineligible.append("paid_capacity_not_requestable")
@@ -325,12 +349,16 @@ def _assess(worker: dict, task: dict, policy: dict, now: datetime, composer_prof
     load = worker.get("load")
     if not (_fresh(load, now, max_age) and load.get("state") in LOAD_STATES):
         unknown.append("load_unknown_or_stale")
+    elif not _bound(load, name):
+        # Another lane's idle block must never stand in for this lane (RCO1 SF2).
+        unknown.append("load_unbound")
     elif load["state"] == "busy":
         unavailable.append("busy")
 
     if worker["kind"] == GROK:
         flight = worker.get("single_flight")
-        if not (_fresh(flight, now, max_age) and flight.get("state") in SINGLE_FLIGHT_STATES):
+        if not (_fresh(flight, now, max_age) and flight.get("state") in SINGLE_FLIGHT_STATES
+                and _bound(flight, name)):
             unknown.append("grok_single_flight_unknown")
         elif flight["state"] == "reserved" or grok_leased:
             unavailable.append("grok_single_flight_busy")
@@ -361,13 +389,26 @@ def _shadow(weights: Any, task_class: str, ranked: list[dict]) -> dict:
     """A separate what-if order under F26 shadow weights. It never feeds back into the advice."""
     if weights is None:
         return {"state": "absent", "affects_advice": False}
-    rows = weights.get("weights") if isinstance(weights, dict) else None
-    if not (isinstance(weights, dict) and weights.get("schema") == SHADOW_WEIGHTS_SCHEMA
-            and weights.get("mode") == "shadow" and weights.get("state") == "derived"
-            and weights.get("authority") == "none" and _hex(weights.get("evidence_digest"), 64)
-            and isinstance(rows, list) and all(isinstance(r, dict) for r in rows)):
+    try:
+        return _shadow_order(weights, task_class, ranked)
+    except Exception:  # noqa: BLE001 - a malformed shadow record is ignored; it never decides the advice
         return {"state": "ignored", "reason": "shadow_weights_invalid", "affects_advice": False}
-    table = {(r.get("task_class"), r.get("profile_id")): r for r in rows}
+
+
+def _shadow_order(weights: Any, task_class: str, ranked: list[dict]) -> dict:
+    rows = weights.get("weights") if isinstance(weights, dict) else None
+    _require(isinstance(weights, dict) and weights.get("schema") == SHADOW_WEIGHTS_SCHEMA
+             and weights.get("mode") == "shadow" and weights.get("state") == "derived"
+             and weights.get("authority") == "none" and _hex(weights.get("evidence_digest"), 64)
+             and isinstance(rows, list) and all(type(r) is dict for r in rows)
+             and digest(weights) is not None, HOLD, "shadow_weights_invalid")
+    table: dict = {}
+    for row in rows:
+        key = (row.get("task_class"), row.get("profile_id"))
+        _require(all(_text(part) for part in key), HOLD, "shadow_weights_invalid")
+        # Two different rows for one pair are a conflict, not a last-wins choice.
+        _require(key not in table or digest(table[key]) == digest(row), HOLD, "shadow_weights_invalid")
+        table[key] = row
 
     def order(item: tuple[int, dict]) -> tuple:
         position, entry = item
@@ -477,9 +518,10 @@ def _decide(task: Any, observed_workers: Any, prepared_artifacts: Any, policy: A
 def decide(task: Any, observed_workers: Any, prepared_artifacts: Any, policy: Any, now: Any,
            shadow_weights: Any = None) -> dict:
     """Routing advice for one task. Never raises: anything unexpected is a hold."""
+    # The advice inputs only: shadow weights never decide the advice, so they are not in its evidence.
     context: dict = {"evidence_digest": digest({
         "task": task, "observed_workers": observed_workers, "prepared_artifacts": prepared_artifacts,
-        "policy": policy, "now": now, "shadow_weights": shadow_weights})}
+        "policy": policy, "now": now})}
     try:
         return _decide(task, observed_workers, prepared_artifacts, policy, now, shadow_weights, context)
     except _Stop as stop:

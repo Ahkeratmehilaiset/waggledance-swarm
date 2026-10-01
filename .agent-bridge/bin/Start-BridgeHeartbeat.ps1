@@ -136,8 +136,20 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     if ($null -ne $ownerIdentity) {
         [void](Write-BridgeSessionHeartbeat -Root $bridgeRoot -AgentName $Agent `
             -Identity $ownerIdentity -TtlSeconds $sessionTtlSeconds)
-        [void](Update-BridgeClaimLease -Root $bridgeRoot -AgentName $Agent `
-            -Identity $ownerIdentity)
+        # A permanent lease-bump failure (transient busy/abandoned already
+        # returns 0) is written to this job's error stream with its original
+        # record, non-terminating, so Receive-Job shows it while the session
+        # beat above keeps running. A cancellation is never swallowed.
+        try {
+            [void](Update-BridgeClaimLease -Root $bridgeRoot -AgentName $Agent `
+                -Identity $ownerIdentity)
+        } catch [System.Management.Automation.PipelineStoppedException] {
+            throw
+        } catch [System.OperationCanceledException] {
+            throw
+        } catch {
+            Write-Error -ErrorRecord $_ -ErrorAction Continue
+        }
     }
     try {
         & $sendLiveness `

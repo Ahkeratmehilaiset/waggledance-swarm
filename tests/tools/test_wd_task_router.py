@@ -40,9 +40,9 @@ def worker(name, profile, roles, kind="lane", projected=40.0, **over):
                               "observed_utc": EARLIER, "valid_until_utc": LATER} for c in tr.TASK_CLASSES],
            "capacity": {"profile_id": profile, "state": "available", "billing": "included",
                         "projected_used_percent": projected, "observed_utc": FRESH, "valid_until_utc": LATER},
-           "load": {"state": "idle", "observed_utc": FRESH}}
+           "load": {"worker": name, "state": "idle", "observed_utc": FRESH}}
     if kind == "grok":
-        row["single_flight"] = {"state": "idle", "observed_utc": FRESH}
+        row["single_flight"] = {"worker": name, "state": "idle", "observed_utc": FRESH}
     row.update(over)
     return row
 
@@ -109,8 +109,9 @@ def test_success_twin_ranks_the_signed_profile_order():
                                 "grok": ["profile_not_signed_for_class", "role_not_permitted"]}
     assert out["unknown"] == {} and out["unavailable"] == {}
     assert out["dispatch_key"] == key_of(task()) and out["policy_sha256"] == cs.digest(policy())
+    # Shadow weights are not advice inputs, so they are not in the evidence digest (RCO1 SF1).
     assert out["evidence_digest"] == cs.digest({"task": task(), "observed_workers": fleet(), "prepared_artifacts": [],
-                                                "policy": policy(), "now": NOW, "shadow_weights": None})
+                                                "policy": policy(), "now": NOW})
 
 
 def test_deterministic_and_input_order_independent():
@@ -278,7 +279,7 @@ def receipt(**over):
     ({"qualification": [receipt(task_class="review")]}, "qualification_missing"),
     ({"qualification": [receipt(), receipt(receipt_sha256="f" * 64)]}, "qualification_ambiguous"),
     ({"qualification": "all"}, "qualification_missing"),
-    ({"load": {"state": "idle", "observed_utc": STALE}}, "load_unknown_or_stale"),
+    ({"load": {"worker": ONLY, "state": "idle", "observed_utc": STALE}}, "load_unknown_or_stale"),
 ])
 def test_stale_unbound_or_ambiguous_evidence_is_unknown(over, reason):
     out = run(workers=solo(**over))
@@ -290,7 +291,7 @@ def test_negative_qualification_is_ineligible_not_unknown():
     assert out["verdict"] == tr.HOLD and out["ineligible"] == {ONLY: ["not_qualified"]}
 
 
-@pytest.mark.parametrize("over,reason", [({"load": {"state": "busy", "observed_utc": FRESH}}, "busy"),
+@pytest.mark.parametrize("over,reason", [({"load": {"worker": ONLY, "state": "busy", "observed_utc": FRESH}}, "busy"),
                                          ({"capacity": capacity(state="exhausted")}, "pool_exhausted"),
                                          ({"capacity": capacity(state="conserve")}, "pool_conserve"),
                                          ({"capacity": capacity(projected_used_percent=80.0)},
@@ -388,7 +389,8 @@ def test_advisory_routes_to_an_idle_grok():
 
 
 def test_reserved_grok_is_never_a_second_flight():
-    out = run(t=task("advisory"), workers=fleet_with("grok", single_flight={"state": "reserved", "observed_utc": FRESH}))
+    out = run(t=task("advisory"),
+              workers=fleet_with("grok", single_flight={"worker": "grok", "state": "reserved", "observed_utc": FRESH}))
     assert out["recommended"]["worker"] == "fable-5" and out["unavailable"] == {"grok": ["grok_single_flight_busy"]}
 
 
@@ -400,7 +402,7 @@ def test_live_grok_attempt_blocks_a_second_flight():
 
 def test_busy_grok_never_makes_advisory_work_wait():
     rows = [worker("grok", "grok-default", ["grok_consult"], kind="grok",
-                   single_flight={"state": "reserved", "observed_utc": FRESH}),
+                   single_flight={"worker": "grok", "state": "reserved", "observed_utc": FRESH}),
             worker("claude-rco-1", "claude-strong", ["rco"])]
     out = run(t=task("advisory"), workers=rows)
     assert out["verdict"] == tr.SKIPPED and out["reasons"] == ["no_eligible_advisory_worker"]
@@ -523,6 +525,125 @@ def test_invalid_shadow_weights_are_ignored(mutate):
     out = run(weights=weights)
     assert out["shadow"] == {"state": "ignored", "reason": "shadow_weights_invalid", "affects_advice": False}
     assert out["recommended"] == run()["recommended"]
+
+
+def _row_key_list(w):
+    w["weights"][0]["task_class"] = ["implementation"]
+
+
+def _nan_weight(w):
+    w["weights"][0]["weight"] = float("nan")
+
+
+def _tuple_in_weights(w):
+    w["weights"].append({"task_class": "implementation", "profile_id": ("x",)})
+
+
+def _conflicting_rows(w):
+    w["weights"].append(dict(w["weights"][0], weight=0.5))
+
+
+def _row_not_dict(w):
+    w["weights"].append("row")
+
+
+@pytest.mark.parametrize("mutate", [_row_key_list, _nan_weight, _tuple_in_weights, _conflicting_rows, _row_not_dict])
+def test_malformed_shadow_weights_never_change_the_advice(mutate):
+    """RCO1 SF1: a malformed shadow record is ignored; it never turns route into hold."""
+    weights = shadow_weights()
+    mutate(weights)
+    plain, shadowed = run(), run(weights=weights)
+    for field in ("verdict", "reasons", "recommended", "ranking", "ineligible", "unknown", "unavailable",
+                  "evidence_digest", "dispatch_key"):
+        assert shadowed[field] == plain[field], field
+    assert shadowed["verdict"] == tr.ROUTE
+    assert shadowed["shadow"] == {"state": "ignored", "reason": "shadow_weights_invalid", "affects_advice": False}
+
+
+def test_the_evidence_digest_does_not_depend_on_shadow_weights():
+    assert run(weights=shadow_weights())["evidence_digest"] == run()["evidence_digest"] is not None
+
+
+# --- evidence is bound to its worker (RCO1 SF2) ---------------------------------------------------------
+
+def test_another_lanes_idle_load_does_not_stand_in_for_this_lane():
+    out = run(workers=solo(load={"worker": "fable-5", "state": "idle", "observed_utc": FRESH}))
+    assert out["verdict"] == tr.UNKNOWN and out["unknown"] == {ONLY: ["load_unbound"]}
+
+
+@pytest.mark.parametrize("load", [{"worker": None, "state": "idle", "observed_utc": FRESH},
+                                  {"worker": "", "state": "idle", "observed_utc": FRESH},
+                                  {"worker": "CODEX-TOOLS-1", "state": "idle", "observed_utc": FRESH},
+                                  {"worker": "codex_tools_1", "state": "idle", "observed_utc": FRESH}])
+def test_a_load_block_that_names_a_worker_must_name_exactly_this_one(load):
+    out = run(workers=solo(load=load))
+    assert out["verdict"] == tr.UNKNOWN and out["unknown"] == {ONLY: ["load_unbound"]}
+
+
+def test_a_bound_busy_load_still_waits_and_a_bound_idle_one_routes():
+    assert run(workers=solo(load={"worker": ONLY, "state": "busy", "observed_utc": FRESH}))["verdict"] == tr.WAIT
+    assert run(workers=solo())["recommended"]["worker"] == ONLY
+
+
+def test_a_load_block_naming_no_worker_keeps_the_existing_caller_shape():
+    assert run(workers=solo(load={"state": "idle", "observed_utc": FRESH}))["recommended"]["worker"] == ONLY
+
+
+@pytest.mark.parametrize("who", ["fable-5", None, "CODEX-TOOLS-1"])
+def test_capacity_naming_another_worker_is_unbound(who):
+    out = run(workers=solo(capacity=capacity(worker=who)))
+    assert out["verdict"] == tr.UNKNOWN and out["unknown"] == {ONLY: ["capacity_unbound"]}
+
+
+def test_capacity_naming_this_worker_or_no_worker_is_bound():
+    # The capacity adapter attaches its block to the worker's own record and names no worker in it.
+    assert run(workers=solo(capacity=capacity(worker=ONLY)))["recommended"]["worker"] == ONLY
+    assert run(workers=solo(capacity=capacity()))["recommended"]["worker"] == ONLY
+
+
+@pytest.mark.parametrize("flight", [{"worker": "fable-5", "state": "idle", "observed_utc": FRESH},
+                                    {"worker": "GROK", "state": "idle", "observed_utc": FRESH}])
+def test_a_grok_single_flight_that_names_a_worker_must_name_grok(flight):
+    out = run(t=task("advisory"), workers=fleet_with("grok", single_flight=flight))
+    assert out["recommended"]["worker"] == "fable-5"
+    assert out["unknown"] == {"grok": ["grok_single_flight_unknown"]}
+
+
+@pytest.mark.parametrize("flight", [{"worker": "grok", "state": "idle", "observed_utc": FRESH},
+                                    {"state": "idle", "observed_utc": FRESH}])
+def test_grok_bound_or_unnamed_idle_single_flight_still_ranks(flight):
+    out = run(t=task("advisory"), workers=[worker("grok", "grok-default", ["grok_consult"], kind="grok",
+                                                  single_flight=flight)])
+    assert out["recommended"]["worker"] == "grok"
+
+
+# --- exact text and scope-kind aliasing --------------------------------------------------------------
+
+class _Liar(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+def test_a_str_subclass_worker_name_is_malformed():
+    rows = fleet()
+    rows[0]["worker"] = _Liar("intruder")
+    assert run(workers=rows)["reasons"] == ["worker_malformed"]
+
+
+@pytest.mark.parametrize("theirs", [["repo:tools/wd_task_router.py"], ["tools/wd_task_router.py"],
+                                    ["repo:tools"], ["tools"]])
+def test_a_plain_path_and_its_repo_kind_overlap(theirs):
+    mine = task(scope=["tools/wd_task_router.py"])
+    other = task(task_id="task-2", scope=theirs)
+    out = run(t=mine, attempts=[attempt("a-1", t=other)])
+    assert out["verdict"] == tr.WAIT and out["scope_conflicts"] == ["a-1"]
+
+
+def test_other_scope_kinds_do_not_alias_a_plain_path():
+    other = task(task_id="task-2", scope=["resource:tools/wd_task_router.py"])
+    assert run(t=task(scope=["tools/wd_task_router.py"]), attempts=[attempt("a-1", t=other)])["verdict"] == tr.ROUTE
 
 
 def test_shadow_schema_is_pinned_to_the_learning_module():

@@ -843,7 +843,8 @@ function Invoke-WdBridgePythonTool {
         foreach ($key in @($isolation.Keys)) {
             $value = [string]$isolation[$key]
             if ([string]::IsNullOrEmpty($value)) {
-                [Environment]::SetEnvironmentVariable([string]$key, $null, 'Process')
+                # [NullString]::Value, not $null: pwsh 7 binds $null as '' and would keep an EMPTY variable.
+                [Environment]::SetEnvironmentVariable([string]$key, [NullString]::Value, 'Process')
             }
             else {
                 [Environment]::SetEnvironmentVariable([string]$key, $value, 'Process')
@@ -858,7 +859,10 @@ function Invoke-WdBridgePythonTool {
     finally {
         $ErrorActionPreference = $previousPreference
         foreach ($key in $restoreKeys) {
-            [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process')
+            # A variable that was unset is removed again ([NullString]::Value; $null would leave '' under pwsh 7);
+            # a previously set value, including an intentionally empty one, is restored as it was.
+            $restore = if ($null -eq $previous[$key]) { [NullString]::Value } else { [string]$previous[$key] }
+            [Environment]::SetEnvironmentVariable($key, $restore, 'Process')
         }
         $script:WdBridgeCodeLastExitCode = $exitCode
     }

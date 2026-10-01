@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(PWSH is None, reason="pwsh is not installed")
 
 HARNESS = r"""
 param([string] $Region, [string] $Stubs, [string] $Log, [string] $Out, [string] $Supervisor,
-    [string] $Mode, [string] $Skip)
+    [string] $Mode, [string] $Skip, [string] $Later)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $env:PF_LOG = $Log
@@ -46,6 +46,8 @@ function Get-ScheduledTask {
         'enabled' { $tasks += & $make $true 'Ready' }
         'running' { $tasks += & $make $false 'Running' }
         'duplicate' { $tasks += & $make $false 'Disabled'; $tasks += & $make $false 'Disabled' }
+        'variant-enabled' { $variant = & $make $true 'Ready'; $variant.TaskName = 'wd-supervisor'; $tasks += $variant }
+        'variant-disabled' { $variant = & $make $false 'Disabled'; $variant.TaskName = 'wd-supervisor'; $tasks += $variant }
         'missing' { }
         default { throw "unknown supervisor case $Supervisor" }
     }
@@ -60,7 +62,11 @@ $machineFull = Join-Path $Stubs 'machine'
 $warnings = New-Object System.Collections.Generic.List[string]
 function Write-Warning { param([string] $Message) $warnings.Add($Message) }
 function Write-Host { param($Object) }
-try { . ([scriptblock]::Create([IO.File]::ReadAllText($Region))); $result = 'ready' }
+try {
+    . ([scriptblock]::Create([IO.File]::ReadAllText($Region))); $result = 'ready'
+    # The supervisor changes after the preflight; the install then runs the deployer's own recheck call.
+    if ($Later -cne 'none') { $Supervisor = $Later; Assert-WdSupervisorTaskOff -Recheck; $result = 'ready after recheck' }
+}
 catch { $result = $_.Exception.Message }
 $calls = if (Test-Path -LiteralPath $Log) { @(Get-Content -LiteralPath $Log) } else { @() }
 $record = [ordered]@{ result = $result; calls = @($calls); warnings = @($warnings) }
@@ -80,7 +86,7 @@ def _region(deployer: Path = DEPLOYER) -> str:
 
 
 def _preflight(tmp_path: Path, mode: str, supervisor: str = "disabled", skip: str = "", init_fails: bool = False,
-               deployer: Path = DEPLOYER) -> dict:
+               deployer: Path = DEPLOYER, later: str = "none", host: str | None = None) -> dict:
     stubs = tmp_path / "reboot"
     stubs.mkdir()
     for file, name in (("Resolve-WdGrokModel.ps1", "Resolve"), ("Register-WdScheduledTasks.ps1", "Register"),
@@ -92,9 +98,10 @@ def _preflight(tmp_path: Path, mode: str, supervisor: str = "disabled", skip: st
     harness = tmp_path / "harness.ps1"
     harness.write_text(HARNESS, encoding="utf-8")
     out = tmp_path / "out.json"
-    done = subprocess.run([PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(harness),
+    done = subprocess.run([host or PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(harness),
                            "-Region", str(region), "-Stubs", str(stubs), "-Log", str(tmp_path / "calls.log"),
-                           "-Out", str(out), "-Supervisor", supervisor, "-Mode", mode, "-Skip", skip or "none"],
+                           "-Out", str(out), "-Supervisor", supervisor, "-Mode", mode, "-Skip", skip or "none",
+                           "-Later", later],
                           capture_output=True, timeout=120)
     assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
     return json.loads(out.read_text(encoding="utf-8"))
@@ -201,3 +208,82 @@ def test_the_preflight_and_install_recovery_calls_are_read_only_and_ordered():
     assert text.index(START) < preflight < text.index("DRY RUN: no files") < gate < install
     assert text.count("Initialize-WdGrokRecovery.ps1") == 2
     assert "& $grokRecoveryReadiness | Out-Host" in text
+
+
+# --- S1 (fable-5 review of 3b44d2f1): the install rechecks Supervisor OFF right before the first machine write and
+# right before Register-WdScheduledTasks -Apply. A recheck narrows the window after the preflight; it is not an
+# atomic lock against a task enabled from outside in between.
+
+WINDOWS_POWERSHELL = shutil.which("powershell")
+HOSTS = [pytest.param(None, id="pwsh"), pytest.param(WINDOWS_POWERSHELL, id="powershell51", marks=pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None, reason="Windows PowerShell 5.1 is not installed"))]
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("later, state", [("enabled", "enabled=True, state=Ready"),
+                                          ("running", "enabled=False, state=Running")])
+def test_a_supervisor_enabled_or_started_after_the_preflight_is_refused_by_the_recheck(tmp_path, host, later, state):
+    record = _preflight(tmp_path, "install", later=later, host=host)
+    assert record["result"] == ("refusing to deploy: WD-Supervisor must be Disabled and not Running ("
+                                + state + "); this installer never disables it itself")
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_a_supervisor_still_off_passes_the_recheck_without_a_second_warning(tmp_path, host):
+    assert _preflight(tmp_path, "install", later="disabled", host=host)["result"] == "ready after recheck"
+    (tmp_path / "missing").mkdir()
+    missing = _preflight(tmp_path / "missing", "install", supervisor="missing", skip="task", later="missing", host=host)
+    assert missing["result"] == "ready after recheck"
+    assert len(missing["warnings"]) == 1  # the preflight warned once; the recheck stays quiet
+
+
+@pytest.mark.parametrize("later, result", [
+    ("missing", "refusing to deploy: the WD-Supervisor scheduled task is missing; pass -SkipTaskRegistration to "
+                "deploy without it"),
+    ("duplicate", "refusing to deploy: more than one WD-Supervisor scheduled task exists")])
+def test_a_supervisor_task_removed_or_duplicated_after_the_preflight_is_refused(tmp_path, later, result):
+    assert _preflight(tmp_path, "install", later=later)["result"] == result
+
+
+def test_the_recheck_runs_right_before_the_first_machine_write_and_right_before_register_apply():
+    text = DEPLOYER.read_text(encoding="utf-8")
+    assert text.count("Assert-WdSupervisorTaskOff") == 4  # the definition, the preflight and two rechecks
+    assert text.count("Assert-WdSupervisorTaskOff -Recheck") == 2
+    preflight = text.index("if (-not $StageOnly) {\n    Assert-WdSupervisorTaskOff\n".replace("\n", _eol(text)))
+    gate = text.index("$ExpectedFinalCommit -cnotmatch '^[0-9a-f]{40}$'")
+    migration = text.index("& (Join-Path $targetRoot 'Initialize-WdGrokRecovery.ps1') | Out-Host")
+    first_write = text.index(_eol(text).join([
+        "Assert-WdSupervisorTaskOff -Recheck",
+        "if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {",
+        "    [void](New-Item -ItemType Directory -Path $machineFull -Force)"]))
+    mutation = text.index("$machineMutationStarted = $true")
+    register = text.index(_eol(text).join([
+        "    Assert-WdSupervisorTaskOff -Recheck",
+        "    & (Join-Path $targetRoot 'Register-WdScheduledTasks.ps1') `",
+        "        -Apply `"]))
+    machine_writes = [text.index(marker) for marker in ("New-Item -ItemType Directory -Path $machineFull",
+                                                        "New-Item -ItemType Directory -Path $backupRoot",
+                                                        "Write-Utf8NoBomAtomic -Path $machinePath")]
+    assert preflight < text.index("DRY RUN: no files") < gate < migration < first_write < min(machine_writes)
+    assert mutation < register  # inside the rolled-back transaction: a refusal there restores the machine files
+    assert text.count("'Register-WdScheduledTasks.ps1') `" + _eol(text) + "        -Apply") == 1
+
+
+# --- S3: the scheduler and Register-WdScheduledTasks -TaskName match task names case-insensitively
+
+@pytest.mark.parametrize("skip", ["none", "task"])
+def test_a_case_variant_enabled_supervisor_task_is_refused_not_reported_missing(tmp_path, skip):
+    record = _preflight(tmp_path, "install", supervisor="variant-enabled", skip=skip)
+    assert record["result"] == ("refusing to deploy: WD-Supervisor must be Disabled and not Running (enabled=True, "
+                                "state=Ready); this installer never disables it itself")
+    assert record["warnings"] == []
+
+
+def test_a_case_variant_disabled_supervisor_task_is_ready_without_a_missing_warning(tmp_path):
+    record = _preflight(tmp_path, "install", supervisor="variant-disabled", skip="task")
+    assert record["result"] == "ready"
+    assert record["warnings"] == []
+
+
+def _eol(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"

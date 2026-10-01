@@ -5,7 +5,8 @@
 
 .DESCRIPTION
   Preflights the entire pinned fleet before the first mutation. An Apply run
-  runs codex update, claude update and grok update once without version pins,
+  runs codex update, claude update and grok update once without version pins
+  (a Grok-only update failure is recorded and does not stop the lanes),
   resolves the current Grok model, ensures
   the supervisor-managed Tools consumer, and launches missing interactive lanes.
   DryRun performs validation and prints the update/launch plan without updating,
@@ -1715,15 +1716,128 @@ function Invoke-WdGrokCliUpdate {
   $global:LASTEXITCODE = 1
   $output = @(& $Wrapper -Tool 'tools/wd_grok_helper.py' -VerifyPackage --update-cli)
   $updateExitCode = $global:LASTEXITCODE
+  $outputText = $output -join [Environment]::NewLine
+  # The failure stays an exception here; error_kind and exit_code ride along
+  # so the cold-start caller can record why without parsing the message.
   if ($updateExitCode -ne 0) {
-    throw ("grok update failed or blocked (exit {0}); fleet launch aborted: {1}" -f
-      $updateExitCode, ($output -join [Environment]::NewLine))
+    $failure = [InvalidOperationException]::new(
+      ("grok update failed or blocked (exit {0}): {1}" -f $updateExitCode, $outputText))
+    $failure.Data['error_kind'] = 'update_failed_or_blocked'
+    $failure.Data['exit_code'] = [int]$updateExitCode
+    throw $failure
   }
-  $report = ($output -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
-  if ($report.schema -cne 'wd.grok-cli-update.v1' -or $report.update_status -cne 'updated') {
-    throw 'grok update returned no successful update receipt; fleet launch aborted'
+  $report = $null
+  if (-not [string]::IsNullOrWhiteSpace($outputText)) {
+    try {
+      $report = $outputText | ConvertFrom-Json -ErrorAction Stop
+    } catch [ArgumentException] {
+      $report = $null
+    }
+  }
+  if (
+    $report -isnot [System.Management.Automation.PSCustomObject] -or
+    -not $report.PSObject.Properties['schema'] -or
+    -not $report.PSObject.Properties['update_status'] -or
+    [string]$report.schema -cne 'wd.grok-cli-update.v1' -or
+    [string]$report.update_status -cne 'updated'
+  ) {
+    $failure = [InvalidOperationException]::new('grok update returned no successful update receipt')
+    $failure.Data['error_kind'] = 'invalid_receipt'
+    $failure.Data['exit_code'] = 0
+    throw $failure
   }
   return $report
+}
+
+function Invoke-WdGrokCliUpdateOptional {
+  param([Parameter(Mandatory)] [string] $Wrapper, [switch] $Skip)
+  # Grok is an optional advisory helper, so an ordinary Grok update failure is
+  # recorded and shown and the native lanes still launch. Codex and Claude
+  # update failures still abort the cold start. Cancellation is never turned
+  # into a continued launch, and the helper's single-flight and unresolved
+  # attempt refusals are reported, never bypassed.
+  try {
+    return Invoke-WdGrokCliUpdate -Wrapper $Wrapper -Skip:$Skip
+  } catch [System.Management.Automation.PipelineStoppedException] {
+    throw
+  } catch [OperationCanceledException] {
+    throw
+  } catch {
+    $exception = $_.Exception
+    $errorKind = 'unexpected_error'
+    $exitCode = $null
+    if ($exception.Data.Contains('error_kind')) {
+      $errorKind = [string]$exception.Data['error_kind']
+      $exitCode = $exception.Data['exit_code']
+    }
+    $errorText = ([string]$exception.Message -replace '\s+', ' ').Trim()
+    if ($errorText.Length -gt 480) {
+      $errorText = $errorText.Substring(0, 480)
+    }
+    Write-Warning ("grok update: failed ({0}); Grok stays optional and the native lanes still launch: {1}" -f
+      $errorKind, $errorText)
+    return [pscustomobject]@{
+      schema = 'wd.grok-cli-update.v1'; update_status = 'failed'
+      update_command = 'grok update'; before = $null; after = $null
+      error_kind = $errorKind; exit_code = $exitCode; error = $errorText
+    }
+  }
+}
+
+function Invoke-WdGrokModelResolutionOptional {
+  param(
+    [Parameter(Mandatory)] [string] $Resolver,
+    [Parameter(Mandatory)] [string] $OutputDirectory,
+    [string] $GuidePath,
+    [switch] $DryRun
+  )
+  # A missing or failing Grok CLI, or no verified live or cached model, leaves
+  # Grok unavailable and visible; the native lanes still launch. The resolver
+  # itself refuses to guess a model, and so does this wrapper: status is
+  # verified only for the resolver's own verified record. Cancellation stops
+  # the caller.
+  $reason = $null
+  $record = $null
+  try {
+    $records = @(
+      @(& $Resolver -DryRun:$DryRun -OutputDirectory $OutputDirectory) | Where-Object {
+        $_ -is [psobject] -and $_.PSObject.Properties['Model']
+      }
+    )
+    if ($records.Count -eq 0) {
+      $reason = 'the Grok model resolver returned no verified model record'
+    } else {
+      $record = $records[-1]
+    }
+  } catch [System.Management.Automation.PipelineStoppedException] {
+    throw
+  } catch [OperationCanceledException] {
+    throw
+  } catch {
+    $reason = ([string]$_.Exception.Message -replace '\s+', ' ').Trim()
+  }
+  if ($null -ne $record -and $GuidePath -and -not (
+      (Test-Path -LiteralPath $GuidePath -PathType Leaf) -and
+      (Get-Item -LiteralPath $GuidePath).Length -gt 0)) {
+    $record = $null
+    $reason = 'the generated Grok model guide is missing or empty: ' + $GuidePath
+  }
+  if ($null -eq $record) {
+    if ($reason.Length -gt 480) {
+      $reason = $reason.Substring(0, 480)
+    }
+    Write-Warning ("Grok model: unavailable; Grok stays optional and the native lanes still launch: {0}" -f $reason)
+    return [pscustomobject]@{
+      schema = 'wd.grok-model-resolution.v1'; status = 'unavailable'
+      model = $null; resolver_status = $null; error = $reason
+    }
+  }
+  return [pscustomobject]@{
+    schema = 'wd.grok-model-resolution.v1'; status = 'verified'
+    model = [string]$record.Model
+    resolver_status = $(if ($record.PSObject.Properties['Status']) { [string]$record.Status } else { $null })
+    error = $null
+  }
 }
 
 function Test-WdProcessIdentitySetExact {
@@ -3369,18 +3483,13 @@ if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'deployment-manifest.json'))
   Write-Host '  Passive Grok role, history and hourly-budget recovery:'
   & (Join-Path $PSScriptRoot 'Initialize-WdGrokRecovery.ps1') | Format-List | Out-Host
 }
-$grokPreflight = @(
-  & $resolver -DryRun -OutputDirectory ([string]$manifest.grok_output_directory)
-)
-$grokPreflightObjects = @(
-  $grokPreflight | Where-Object {
-    $_ -is [psobject] -and $_.PSObject.Properties['Model']
-  }
-)
-if ($grokPreflightObjects.Count -eq 0) {
-  throw 'Grok preflight returned no verified model record'
+$grokPreflightRecord = Invoke-WdGrokModelResolutionOptional `
+  -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) -DryRun
+if ($grokPreflightRecord.status -ceq 'verified') {
+  Write-Host ("    model: {0}" -f $grokPreflightRecord.model)
+} else {
+  Write-Host '    model: unavailable (Grok is optional; the native lanes still launch)'
 }
-Write-Host ("    model: {0}" -f [string]$grokPreflightObjects[-1].Model)
 
 Write-Host '  Scheduled-task console/HOLD preflight:'
 $taskConsolePreflight = @(& $taskConsoleContainment)
@@ -3440,7 +3549,7 @@ Write-Host ''
 Write-Host 'Update and launch plan:' -ForegroundColor Cyan
 Write-Host ("  Codex: codex update (once); {0}" -f $codexUpdateStatus)
 Write-Host ("  Claude Code: claude update (once); {0}" -f $claudeUpdateStatus)
-Write-Host ("  Grok Build: grok update (once); {0}; then resolve provider default" -f $grokUpdateStatus)
+Write-Host ("  Grok Build: grok update (once); {0}; optional, a failure is recorded and lanes still launch; then resolve provider default" -f $grokUpdateStatus)
 foreach ($state in $laneStates) {
   Write-Host (
     "  {0}: {1}/{2}; {3}" -f
@@ -3724,7 +3833,7 @@ try {
     -Arguments @('--version') `
     -Label 'claude post-update version probe'
   Write-Host 'Updating Grok Build once...' -ForegroundColor Cyan
-  $grokUpdateRecord = Invoke-WdGrokCliUpdate `
+  $grokUpdateRecord = Invoke-WdGrokCliUpdateOptional `
     -Wrapper (Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1') -Skip:$SkipCliUpdate
   $grokUpdateStatus = [string]$grokUpdateRecord.update_status
   Write-Host ("  grok update: {0}" -f $grokUpdateStatus)
@@ -3805,13 +3914,13 @@ try {
   }
 
   Write-Host 'Resolving the current Grok model...' -ForegroundColor Cyan
-  $grokResult = & $resolver -OutputDirectory ([string]$manifest.grok_output_directory)
-  [void](Read-NonEmptyFile -Path ([string]$manifest.grok_markdown) -Label 'generated Grok model guide')
-  if ($grokResult) {
-    $grokObjects = @($grokResult | Where-Object { $_ -is [psobject] })
-    if ($grokObjects.Count -gt 0 -and $grokObjects[-1].PSObject.Properties['Model']) {
-      Write-Host ("  Grok model: {0}" -f [string]$grokObjects[-1].Model)
-    }
+  $grokModelRecord = Invoke-WdGrokModelResolutionOptional `
+    -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) `
+    -GuidePath ([string]$manifest.grok_markdown)
+  if ($grokModelRecord.status -ceq 'verified') {
+    Write-Host ("  Grok model: {0}" -f $grokModelRecord.model)
+  } else {
+    Write-Host '  Grok model: unavailable (Grok is optional; the native lanes still launch)'
   }
 
   [void](New-Item -ItemType Directory -Path $handshakeDirectory -Force)

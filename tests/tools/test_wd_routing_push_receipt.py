@@ -142,6 +142,76 @@ def test_malformed_identity_or_time_never_reaches_git(over, reason):
     assert git.calls == []
 
 
+class HookStr(str):
+    """A str whose own hooks must never run inside the validator."""
+
+    calls: list = []
+
+    def __eq__(self, other):
+        HookStr.calls.append("eq")
+        raise RuntimeError("caller hook ran")
+
+    def __ne__(self, other):
+        HookStr.calls.append("ne")
+        raise RuntimeError("caller hook ran")
+
+    def __hash__(self):
+        HookStr.calls.append("hash")
+        raise RuntimeError("caller hook ran")
+
+
+@pytest.mark.parametrize("field", sorted(pr.RECEIPT_KEYS))
+def test_t1_a_hooked_str_value_in_any_field_is_refused_before_its_hooks_run(field):
+    HookStr.calls.clear()
+    receipt = build()
+    receipt[field] = HookStr(receipt[field])
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.validate_receipt(receipt)
+    expected = "observed_remote_utc_invalid" if field == "observed_remote_utc" else "receipt_malformed"
+    assert caught.value.reason == expected and HookStr.calls == []
+
+
+class ArmedKey(str):
+    """A str key whose hash/equality hooks are armed only after it sits in the dict."""
+
+    armed = False
+    calls: list = []
+
+    def __hash__(self):
+        if ArmedKey.armed:
+            ArmedKey.calls.append("hash")
+            raise RuntimeError("caller hook ran")
+        return str.__hash__(self)
+
+    def __eq__(self, other):
+        if ArmedKey.armed:
+            ArmedKey.calls.append("eq")
+            raise RuntimeError("caller hook ran")
+        return str.__eq__(self, other)
+
+
+@pytest.mark.parametrize("name", ["schema", "not-a-field"])
+def test_t1_a_hooked_str_key_is_refused_before_its_hash_or_equality_runs(name):
+    receipt = build()
+    value = receipt.pop("schema")
+    ArmedKey.armed, ArmedKey.calls = False, []
+    receipt[ArmedKey(name)] = value
+    ArmedKey.armed = True
+    try:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.validate_receipt(receipt)
+    finally:
+        ArmedKey.armed = False
+    assert caught.value.reason == "receipt_malformed" and ArmedKey.calls == []
+
+
+def test_t1_valid_controls_still_validate_and_persist_unchanged(approved):
+    root, folder = approved
+    receipt = build()
+    assert pr.validate_receipt(dict(receipt)) == receipt
+    assert pr.persist_receipt(receipt, folder, approved_root=root)["status"] == "created"
+
+
 # --- persistence ------------------------------------------------------------------------------------------
 
 @pytest.fixture

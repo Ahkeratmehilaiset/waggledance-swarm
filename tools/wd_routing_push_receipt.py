@@ -189,11 +189,12 @@ def build_receipt(*, attempt_id: Any, task_id: Any, worker: Any, branch: Any, ob
 
 def validate_receipt(receipt: Any) -> dict:
     """The receipt if every field is exact and the digest recomputes; else PushReceiptRefused."""
-    if type(receipt) is not dict or set(receipt) != RECEIPT_KEYS:
+    # Exact built-in types BEFORE any hash or equality, so a caller's str subclass never runs its hooks.
+    if type(receipt) is not dict or not all(type(key) is str for key in receipt) or set(receipt) != RECEIPT_KEYS:
         _refuse("receipt_malformed")
-    if not (receipt["schema"] == SCHEMA and type(receipt["schema"]) is str and receipt["evidence"] == EVIDENCE
-            and type(receipt["evidence"]) is str and receipt["authority"] == AUTHORITY
-            and type(receipt["authority"]) is str):
+    if not (type(receipt["schema"]) is str and receipt["schema"] == SCHEMA
+            and type(receipt["evidence"]) is str and receipt["evidence"] == EVIDENCE
+            and type(receipt["authority"]) is str and receipt["authority"] == AUTHORITY):
         _refuse("receipt_malformed")
     if not (_exact(receipt["attempt_id"], _HEX64) and _exact(receipt["task_id"], _TASK)
             and _exact(receipt["worker"], _WORKER) and _branch_ok(receipt["branch"])

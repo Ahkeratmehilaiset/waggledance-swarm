@@ -1,0 +1,14 @@
+{
+ "sha256": "8e798c778e01eb7e46520dadd2345f9ca128f9954d78ecd05d309453d5d0619a",
+ "thresholds": {
+  "max_run_age_seconds": 2592000,
+  "max_uncertainty": 0.25,
+  "min_holdout_cases": 1,
+  "min_holdout_pass_rate": 1.0,
+  "min_repeats": 3,
+  "min_samples": 9,
+  "min_success_rate": 0.7,
+  "receipt_ttl_seconds": 604800,
+  "schema": "wd.qualification-thresholds.v1"
+ }
+}

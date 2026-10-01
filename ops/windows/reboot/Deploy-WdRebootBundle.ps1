@@ -24,7 +24,11 @@ param(
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
-    [switch] $DryRun
+    [switch] $DryRun,
+    # The ONE final operator signature stays out of band. An actual install (neither -StageOnly nor -DryRun)
+    # must be given the exact pair that -StageOnly printed; otherwise it refuses before any machine file changes.
+    [string] $ExpectedFinalCommit = '',
+    [string] $ExpectedFinalManifestHash = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -201,7 +205,9 @@ function New-ForwardingWrapper {
         [Parameter(Mandatory)]
         [ValidateSet('fleet', 'agent', 'tools', 'supervisor', 'grok', 'library')]
         [string] $WrapperKind,
-        [string] $FixedAgent = ''
+        [string] $FixedAgent = '',
+        [string] $ExpectedFinalCommit = '',
+        [string] $ExpectedFinalManifestHash = ''
     )
 
     $parameterBlock = switch ($WrapperKind) {
@@ -209,7 +215,9 @@ function New-ForwardingWrapper {
         'grok' {
 @'
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
-    [string] $ExceptionPath = '', [string] $ExceptionSha256 = '')
+    [string] $ExceptionPath = '', [string] $ExceptionSha256 = '',
+    [switch] $ReadOnly, [switch] $Inventory, [string] $RepositoryPath = '', [string] $Commit = '',
+    [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '', [string] $RequestedBy = '')
 '@
         }
         'fleet' {
@@ -223,6 +231,7 @@ param(
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
     [switch] $NoBridgeConversation,
+    [switch] $SupervisorOff,
     [switch] $Auto,
     [switch] $Apply,
     [switch] $DryRun
@@ -275,6 +284,7 @@ param(
 @'
 param(
     [switch] $Apply,
+    [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
     [string] $LogPath = ''
 )
@@ -310,6 +320,21 @@ function ConvertTo-WdSingleQuotedLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 if ($Auto -and -not (Test-WdWrapperAdministrator)) {
+    # Supervisor OFF is standing: WD-Supervisor stays exactly Disabled, so after the one elevated
+    # restore below, this non-elevated process starts the five bridge watchers and Tools through
+    # one run of the installed wd_supervisor.ps1 (WdBridgeLimitedBootstrap.ps1). Verify and load
+    # that helper first, so a bad bundle refuses before any elevation.
+    $wdBridgeBundleRoot = Split-Path -Parent $manifestPath
+    $wdBridgeHelper = Join-Path $wdBridgeBundleRoot 'WdBridgeLimitedBootstrap.ps1'
+    $wdBridgeManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+        -not (Test-Path -LiteralPath $wdBridgeHelper -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $wdBridgeHelper -Algorithm SHA256).Hash -cne
+            [string]$wdBridgeManifest.files.'WdBridgeLimitedBootstrap.ps1'
+    ) {
+        throw "WD reboot bundle integrity mismatch for $wdBridgeHelper"
+    }
+    . $wdBridgeHelper
     $elevationHost = [IO.Path]::Combine(
         [Environment]::SystemDirectory,
         'WindowsPowerShell',
@@ -322,7 +347,6 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    [void]$commandParts.Add('-Auto')
     foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
@@ -340,6 +364,9 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     }
     if ([bool]$targetParameters['NoBridgeConversation']) {
         [void]$commandParts.Add('-NoBridgeConversation')
+    }
+    if ([bool]$targetParameters['SupervisorOff']) {
+        [void]$commandParts.Add('-SupervisorOff')
     }
     $elevationLogRoot = Join-Path (
         Split-Path -Parent $PSCommandPath
@@ -369,7 +396,10 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         ("  Start-Transcript -LiteralPath {0} -Force | Out-Null" -f
             (ConvertTo-WdSingleQuotedLiteral -Value $elevationLogPath)),
         '  $transcriptStarted = $true',
-        ("  {0}" -f $restoreCommand),
+        "  Write-Host 'Running byte-inert fleet preflight before automatic restore...'",
+        ("  {0} -DryRun" -f $restoreCommand),
+        "  Write-Host 'Preflight passed; applying the verified fleet restore...'",
+        ("  {0} -Apply" -f $restoreCommand),
         '}',
         'catch {',
         '  $restoreExitCode = 1',
@@ -431,17 +461,31 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         )
     }
     Write-Host "Elevated restore log: $elevationLogPath"
+    $wdBridgeFleetManifest = if ([string]$targetParameters['ManifestPath']) {
+        [string]$targetParameters['ManifestPath']
+    } else {
+        Join-Path $wdBridgeBundleRoot 'wd-fleet.json'
+    }
+    Write-Host 'Starting the five bridge watchers and Tools from this non-elevated wrapper (Supervisor OFF)...'
+    $wdBridgeResult = Invoke-WdBridgeWrapperBootstrap `
+        -BundleRoot $wdBridgeBundleRoot `
+        -FleetManifestPath $wdBridgeFleetManifest `
+        -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
+        -HostPath $elevationHost
+    Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
+    if (-not [bool]$wdBridgeResult.ok) {
+        throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f
+            [string]$wdBridgeResult.stage, (@($wdBridgeResult.reasons) -join '; '))
+    }
+    Write-Host 'Fleet restore complete: five bridge watchers and Tools are process-current (responsiveness unknown); WD-Supervisor untouched (Disabled).' -ForegroundColor Green
     return
 }
 if ($Auto) {
-    Write-Host 'Running byte-inert fleet preflight before automatic restore...'
-    $dryRunParameters = @{} + $targetParameters
-    $dryRunParameters['DryRun'] = $true
-    & $target @dryRunParameters
-    Write-Host 'Preflight passed; applying the verified fleet restore...'
-    $applyParameters = @{} + $targetParameters
-    $applyParameters['Apply'] = $true
-    & $target @applyParameters
+    # Supervisor OFF is standing: an elevated -Auto has no Limited context in which to start the
+    # five bridge watchers and Tools, and it never starts WD-Supervisor for them.
+    throw ('Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools. Run -Auto ' +
+        'from a non-elevated PowerShell: it elevates once for the fleet restore, then starts them from ' +
+        'that Limited wrapper. Nothing was changed.')
 }
 else {
     if ($Apply) { $targetParameters['Apply'] = $true }
@@ -504,6 +548,23 @@ if (`$actualHash -cne '$ExpectedHash') {
     throw "WD reboot bundle integrity mismatch for `$target"
 }
 if ('$WrapperKind' -cne 'library') { `$env:WD_REBOOT_EXPECTED_MANIFEST_HASH = '$ExpectedManifestHash' }
+if ('$WrapperKind' -cne 'library') {
+    # The pinned final pair must match the installer's state pointer next to this launcher, or it refuses
+    # loudly; no older bundle is ever tried. The pointer is a recorded operator input, not authentication.
+    `$statePath = Join-Path (Split-Path -Parent `$PSCommandPath) 'WD_REBOOT_STATE_CURRENT.json'
+    `$state = `$null
+    try { `$state = Get-Content -LiteralPath `$statePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { `$state = `$null }
+    if (
+        `$null -eq `$state -or
+        [string]`$state.source_commit -cne '$ExpectedFinalCommit' -or
+        [string]`$state.final_commit -cne '$ExpectedFinalCommit' -or
+        [string]`$state.manifest_sha256 -cne '$ExpectedManifestHash' -or
+        [string]`$state.final_manifest_sha256 -cne '$ExpectedFinalManifestHash' -or
+        -not ([string]`$state.active_bundle).Equals((Split-Path -Parent `$target), [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw "WD reboot state pointer `$statePath does not match this launcher's pinned final package (commit $ExpectedFinalCommit); refusing to start, and no older bundle is tried"
+    }
+}
 $targetInvocation
 "@
 }
@@ -755,11 +816,16 @@ foreach ($required in @(
         'Write-WdLaneCurrentState.ps1',
         'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
+        'Get-WdNativeWakePrompt.ps1',
+        'Resolve-WdNativeWakeRejection.ps1',
+        'WAKE_PROCEDURE_LEAD.md',
+        'WAKE_PROCEDURE_TOOLS.md',
         'Invoke-WdToolsCodex.ps1',
         'wd-fleet.json',
         'wd-claude-event-driven-settings.json',
         'wd_supervisor.ps1',
         'wd_supervisor_loop.json',
+        'WdBridgeLimitedBootstrap.ps1',
         'Resolve-WdGrokModel.ps1',
         'Register-WdScheduledTasks.ps1',
         'Set-WdTaskConsoleContainment.ps1',
@@ -774,6 +840,7 @@ foreach ($required in @(
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
             'tools-bootstrap/.agent-bridge/bin/ClaimLeaseHeartbeat.ps1',
             'tools-bootstrap/.agent-bridge/bin/BridgeNamedMutex.ps1',
+            'tools-bootstrap/.agent-bridge/bin/BridgeV2QueueMutex.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1',
@@ -969,11 +1036,26 @@ if ($StageOnly) {
     Write-Host 'STAGE ONLY: commit-addressed bundle verified and left staged.' -ForegroundColor Green
     Write-Host ('  staged bundle:              {0}' -f $targetRoot)
     Write-Host ('  deployment manifest sha256: {0}' -f $installedManifestHash)
+    Write-Host ('  final pair to pin (an operator input, not a signature): -ExpectedFinalCommit {0} -ExpectedFinalManifestHash {1}' -f $head, $installedManifestHash)
     Write-Host '  untouched: machine wrappers, data copies, reboot state pointers, integrity files, Grok resolution, scheduled tasks, live supervisor, watchers and sessions.'
     Write-Host '  activation is a separate cold switch: run this installer without -StageOnly only after the supervisor task is disabled and its invocation has exited.'
     return
 }
 
+# The actual install binds to the exact operator-pinned pair BEFORE the migration or any machine wrapper,
+# data file or pointer changes. A mismatch leaves the verified bundle staged and changes nothing else. The
+# pair is recorded operator input only: it is not a signature and is not cryptographic authentication.
+if (
+    $ExpectedFinalCommit -cnotmatch '^[0-9a-f]{40}$' -or
+    $ExpectedFinalManifestHash -cnotmatch '^[0-9A-F]{64}$' -or
+    $ExpectedFinalCommit -cne $head -or
+    $ExpectedFinalManifestHash -cne $installedManifestHash
+) {
+    throw ((
+        'refusing to activate: the operator-pinned final pair (commit {0}, manifest sha256 {1}) does not ' +
+        'match this install (commit {2}, manifest sha256 {3}); nothing on the machine was changed'
+    ) -f $ExpectedFinalCommit, $ExpectedFinalManifestHash, $head, $installedManifestHash)
+}
 # Migration is explicit and must finish before changing the fleet's pointers.
 & (Join-Path $targetRoot 'Initialize-WdGrokRecovery.ps1') | Out-Host
 $wrapperSpecs = @(
@@ -1057,7 +1139,9 @@ foreach ($spec in $wrapperSpecs) {
         -ExpectedHash $hash `
         -ExpectedManifestHash $installedManifestHash `
         -WrapperKind $spec.Kind `
-        -FixedAgent $spec.Agent
+        -FixedAgent $spec.Agent `
+        -ExpectedFinalCommit $ExpectedFinalCommit `
+        -ExpectedFinalManifestHash $ExpectedFinalManifestHash
     Write-Utf8NoBomAtomic -Path $machinePath -Content $wrapper
 }
 
@@ -1073,6 +1157,10 @@ $state = [ordered]@{
     source_branch = $branch
     active_bundle = $targetRoot
     fleet_manifest = (Join-Path $targetRoot 'wd-fleet.json')
+    manifest_sha256 = $installedManifestHash
+    final_commit = $ExpectedFinalCommit
+    final_manifest_sha256 = $ExpectedFinalManifestHash
+    final_pair_note = 'operator-pinned pair recorded by the installer; not a signature or cryptographic authentication'
     installed_at_utc = [DateTime]::UtcNow.ToString('o')
     precedence = @(
         'live bridge state',

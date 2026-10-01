@@ -81,7 +81,9 @@ def test_checkpoint_reloads_in_new_process_despite_orphan_partial_temp(recovery)
     assert orphan.read_bytes().endswith(b'"task_id":')
 
 
-@pytest.mark.parametrize("invalid", ["-NextWakeupUtc not-a-timestamp", "-WriteScope ('x' * 501)"])
+@pytest.mark.parametrize("invalid", ["-NextWakeupUtc not-a-timestamp", "-WriteScope ('x' * 501)",
+                                     "-WorkHeld $true", "-ReleaseHeld $true", "-WorkHeld 1 -ReleaseHeld $false",
+                                     "-WorkHeld 'false' -ReleaseHeld $true", "-WorkHeld $null -ReleaseHeld $true"])
 def test_rejected_next_checkpoint_preserves_last_durable_record(recovery, invalid):
     result = write_checkpoint(recovery)
     assert result.returncode == 0, result.stderr
@@ -115,3 +117,50 @@ def test_current_legacy_tail_zero_reads_normal_isolated_jsonl(recovery):
         assert f"ordinary fixture row {index}" in result.stdout
     assert events.read_bytes() == before
     assert not list(runtime.rglob("*.wal"))
+
+
+def state_file(recovery):
+    return json.loads((recovery["worktree"] / ".codex-audit/wd-current-state.json").read_text(encoding="utf-8"))
+
+
+def test_structured_holds_are_paired_booleans_never_defaulted_and_never_lost_by_omission(recovery):
+    assert write_checkpoint(recovery).returncode == 0
+    assert not {"work_held", "release_held"} & set(state_file(recovery))
+    declared = write_checkpoint(recovery, task="prepare", extra="-WorkHeld $false -ReleaseHeld $true")
+    assert declared.returncode == 0, declared.stderr
+    assert (state_file(recovery)["work_held"], state_file(recovery)["release_held"]) == (False, True)
+    # An omitted declaration keeps the HOLD, also across a task change.
+    carried = write_checkpoint(recovery, task="next-step")
+    assert carried.returncode == 0, carried.stderr
+    state = state_file(recovery)
+    assert (state["task_id"], state["work_held"], state["release_held"]) == ("next-step", False, True)
+    # Only an explicit declaration changes or clears it.
+    assert write_checkpoint(recovery, task="paused-work", extra="-WorkHeld $true -ReleaseHeld $true").returncode == 0
+    assert write_checkpoint(recovery, task="cleared", extra="-WorkHeld $false -ReleaseHeld $false").returncode == 0
+    state = state_file(recovery)
+    assert (state["task_id"], state["work_held"], state["release_held"]) == ("cleared", False, False)
+
+
+@pytest.mark.parametrize("fields,refused", [
+    (dict(work_held=True), True), (dict(release_held=True), True),
+    (dict(work_held="true", release_held=True), True), (dict(work_held=None, release_held=False), True),
+    (dict(agent="codex-lead-1", work_held=False, release_held=True), True),
+    (None, True), (dict(Work_Held=True, Release_Held=True), False),
+])
+def test_undeterminable_previous_hold_declaration_refuses_an_omitted_write(recovery, fields, refused):
+    assert write_checkpoint(recovery).returncode == 0
+    path = recovery["worktree"] / ".codex-audit/wd-current-state.json"
+    if fields is None:
+        path.write_text('{"schema": "wd.lane-current.v1", "work_held":', encoding="utf-8")
+    else:
+        path.write_text(json.dumps(dict(json.loads(path.read_text(encoding="utf-8")), **fields)), encoding="utf-8")
+    before = path.read_bytes()
+    omitted = write_checkpoint(recovery, task="omitted")
+    assert (omitted.returncode != 0) is refused, omitted.stderr
+    if refused:
+        assert path.read_bytes() == before
+        explicit = write_checkpoint(recovery, task="explicit", extra="-WorkHeld $true -ReleaseHeld $true")
+        assert explicit.returncode == 0, explicit.stderr
+        assert (state_file(recovery)["work_held"], state_file(recovery)["release_held"]) == (True, True)
+    else:
+        assert not {"work_held", "release_held"} & set(state_file(recovery))

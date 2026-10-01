@@ -1,0 +1,56 @@
+{
+ "cases": [
+  {
+   "case_id": "impl-syn-1",
+   "grader_sha256": "293f2f98bff0d9b96c88eeb89d39d0629d07303f727fd003a68b8718bdbd6af5",
+   "input_sha256": "9a124b97b79f74248639cf2b6911aa570bebbbbac9a166e4fcd0dd3a6f0d8bf3",
+   "kind": "synthetic",
+   "task_class": "implementation"
+  },
+  {
+   "case_id": "impl-syn-2",
+   "grader_sha256": "45132c384f76b00e92cbb70f2f50404af86dae0addbe24126d543ff4dea8f79c",
+   "input_sha256": "8654a2e988c4a098ab82df52152680969541de88e783523a91bc0c5f9d2019de",
+   "kind": "synthetic",
+   "task_class": "implementation"
+  },
+  {
+   "case_id": "impl-rep-1",
+   "grader_sha256": "04e8aad0c18cd4bd94d3249598d3aeddc36a638f913037f93b7406cab86625e8",
+   "input_sha256": "9e0bbdad1c9aaf2856e50f2206b9d53bdd6bd1b62c9be01886f5fc1c13e0feb4",
+   "kind": "replayed",
+   "task_class": "implementation"
+  },
+  {
+   "case_id": "impl-hold-1",
+   "grader_sha256": "c456668f969b9b1cff6b738c8c776694697f27e548f44169498649d5154a88f4",
+   "input_sha256": "6f199b119bcfb64b45daa31ecbf3bb87a77d0a7d3694679816bd7114ec9f7533",
+   "kind": "adversarial_holdout",
+   "task_class": "implementation"
+  },
+  {
+   "case_id": "rev-syn-1",
+   "grader_sha256": "91c11822a0e4430b10c698d9996109e12e8cd0f371097b044b30e085b31ff5ff",
+   "input_sha256": "916a7d0af4998181bc0bccbe16909271a4bee6c587926580fc88e3dbee7a3a8b",
+   "kind": "synthetic",
+   "task_class": "review"
+  },
+  {
+   "case_id": "rev-rep-1",
+   "grader_sha256": "34254ccfb1260bbf94f44f8685011bf7789a504e66c76eb34d8f1ff3eea8ba7a",
+   "input_sha256": "20f2c51984803225c012358b32d4036723c6b914da0544bba9a60d8f31dfb320",
+   "kind": "replayed",
+   "task_class": "review"
+  },
+  {
+   "case_id": "rev-hold-1",
+   "grader_sha256": "63f2c2242f19d704425d33b568d8f3d795273ed9bae040778ca168a5b276ea9b",
+   "input_sha256": "8227b130c704703b1cf0e108b2f4c4518ed88b02a5c692917a96e1188e6173c3",
+   "kind": "adversarial_holdout",
+   "task_class": "review"
+  }
+ ],
+ "schema": "wd.qualification-suite.v1",
+ "suite_id": "synthetic-qualification",
+ "version": "1"
+}

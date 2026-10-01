@@ -1,0 +1,62 @@
+{
+ "authority": "none",
+ "claims": {
+  "availability": "not_measured",
+  "scope": "this suite, code and profile only",
+  "universal": false
+ },
+ "classes": [
+  {
+   "cases": 4,
+   "holdout_cases": 1,
+   "holdout_pass_rate": 1.0,
+   "min_repeats_seen": 3,
+   "reasons": [],
+   "samples": 12,
+   "state": "qualified",
+   "success_rate": 1.0,
+   "successes": 12,
+   "task_class": "implementation",
+   "uncertainty": 0.121247,
+   "wilson_high": 1.0,
+   "wilson_low": 0.757506
+  },
+  {
+   "cases": 3,
+   "holdout_cases": 1,
+   "holdout_pass_rate": 1.0,
+   "min_repeats_seen": 3,
+   "reasons": [
+    "success_lower_bound_below_rate"
+   ],
+   "samples": 9,
+   "state": "not_qualified",
+   "success_rate": 0.888889,
+   "successes": 8,
+   "task_class": "review",
+   "uncertainty": 0.207554,
+   "wilson_high": 0.980109,
+   "wilson_low": 0.565
+  }
+ ],
+ "code_sha": "c0dec0dec0dec0dec0dec0dec0dec0dec0dec0de",
+ "execution_allowed": false,
+ "feature": "F21",
+ "measured_at_utc": "2026-09-30T12:20:00.000000Z",
+ "profile": {
+  "effort": "xhigh",
+  "model": "model-a",
+  "profile_id": "claude-strong",
+  "provider": "claude",
+  "provider_version": "cli-2.1.0"
+ },
+ "reasons": [],
+ "receipt_sha256": "e570585a7b95a4ca8e7617eff903be148dfeba95dfd93a5c932ec6e0d4c7c916",
+ "rejected": [],
+ "runs_sha256": "26bb75bf589ca25603671384584efdfc19d1c779c8d69588ce814012fd27f270",
+ "schema": "wd.profile-receipt.v1",
+ "state": "built",
+ "suite_sha256": "296090fa64d733168b42fbe91ad19a308ef60568846af7b8e4aa79878bc994d2",
+ "thresholds_sha256": "8e798c778e01eb7e46520dadd2345f9ca128f9954d78ecd05d309453d5d0619a",
+ "valid_until_utc": "2026-10-07T12:20:00.000000Z"
+}

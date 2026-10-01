@@ -1,0 +1,350 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""F26 S1: wd.routing-dispatch.v1 from Lead's wake_requests (pure ``dispatches(requests, now)``).
+
+The request fixture has the live writer's shape (Write-AgentEvent wake_request: top-level request_id,
+request_digest, to, expected_responders, write_scope, payload.task_revision and payload.result_contract).
+"""
+from __future__ import annotations
+
+import copy
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import sys
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools import wd_routing_dispatch as module  # noqa: E402
+from tools.wd_composer_select import digest  # noqa: E402
+from tools.wd_routing_dispatch import DISPATCH_FIELDS, SCHEMA, dispatches  # noqa: E402
+from tools.wd_task_router import dispatch_key, normalize_scope  # noqa: E402
+
+NOW = datetime(2026, 10, 1, 16, 30, tzinfo=timezone.utc)
+DIGEST_A = "a" * 64
+DIGEST_B = "b" * 64
+
+
+def request(request_id="2eacadad-133c-471a-85f1-f35dd0d27e10", *, task="codex-lead-1/f26-s1",
+            revision="r1", ts="2026-10-01T16:25:52.0184267Z", worker="claude-rco-1",
+            scope=("tools/wd_routing_dispatch.py", "tests/tools/test_wd_routing_dispatch.py"),
+            request_digest=DIGEST_A, message="Implement S1.") -> dict:
+    return {
+        "ts_utc": ts, "agent": "codex-lead-1", "type": "wake_request", "task_id": task, "status": "assigned",
+        "to": worker, "message": message, "write_scope": list(scope),
+        "payload": {"task_revision": revision,
+                    "result_contract": {"required": ["summary", "head"], "schema": "wd.task-result-contract.v1"},
+                    "result_fields": ["summary", "head"]},
+        "request_id": request_id, "request_digest": request_digest,
+        "expected_responders": {worker: {"agent_uuid": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+                                         "session_id": "wd-reboot-20261001T101817Z",
+                                         "run_id": "wd-reboot-20261001T101817Z"}},
+        "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101", "session_id": "lead", "run_id": "lead",
+    }
+
+
+def reasons(result) -> list:
+    return [(item["request_id"], item["reason"]) for item in result["rejected"]]
+
+
+# --- the record ----------------------------------------------------------------------------------------
+
+def test_a_live_shaped_request_gives_one_closed_dispatch_record():
+    event = request()
+    result = dispatches([event], NOW)
+    assert result["rejected"] == [] and result["duplicates_ignored"] == []
+    (record,) = result["dispatches"]
+    assert tuple(record) == DISPATCH_FIELDS and record["schema"] == SCHEMA
+    scope = normalize_scope(event["write_scope"])
+    expected_input = digest({"task_id": "codex-lead-1/f26-s1", "revision": "r1", "message": "Implement S1.",
+                             "result_contract": event["payload"]["result_contract"], "scope": scope})
+    assert record == {
+        "schema": SCHEMA, "dispatch_id": event["request_id"], "task_id": "codex-lead-1/f26-s1", "revision": "r1",
+        "input_digest": expected_input, "scope": scope,
+        "dispatch_key": dispatch_key("codex-lead-1/f26-s1", "r1", expected_input, scope),
+        "worker": "claude-rco-1", "requester": "codex-lead-1", "request_digest": DIGEST_A,
+        "dispatched_utc": "2026-10-01T16:25:52.018426+00:00",
+        "expected_responders": event["expected_responders"],
+    }
+
+
+@pytest.mark.parametrize("value", ["0" * 64, "f" * 64, DIGEST_B])
+def test_the_request_digest_is_copied_never_recomputed(value):
+    # The PowerShell digest cannot be re-derived in Python; any well-formed value is carried as written.
+    (record,) = dispatches([request(request_digest=value)], NOW)["dispatches"]
+    assert record["request_digest"] == value
+
+
+def test_an_offset_timestamp_is_reported_as_canonical_utc():
+    (record,) = dispatches([request(ts="2026-10-01T19:25:52+03:00")], NOW)["dispatches"]
+    assert record["dispatched_utc"] == "2026-10-01T16:25:52+00:00"
+
+
+# --- required inputs: no defaults ----------------------------------------------------------------------
+
+def test_a_request_without_task_revision_is_rejected_never_defaulted():
+    event = request()
+    del event["payload"]["task_revision"]
+    result = dispatches([event], NOW)
+    assert result["dispatches"] == [] and reasons(result) == [(event["request_id"], "revision_missing")]
+
+
+@pytest.mark.parametrize("revision", ["", 1, None, ["r1"]])
+def test_a_revision_must_be_a_nonempty_exact_string(revision):
+    assert reasons(dispatches([request(revision=revision)], NOW))[0][1] == "revision_missing"
+
+
+@pytest.mark.parametrize("to, reason", [
+    ("claude-rco-1,claude-rco-2", "dispatch_target_ambiguous"),
+    (["claude-rco-1", "fable-5"], "dispatch_target_ambiguous"),
+    ("", "worker_invalid"), ("Claude RCO", "worker_invalid"), (None, "worker_invalid"), (["claude-rco-1", 2], "worker_invalid"),
+])
+def test_exactly_one_canonical_worker(to, reason):
+    event = request()
+    event["to"] = to
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], reason)]
+
+
+def test_a_one_item_worker_list_is_the_same_dispatch():
+    event = request()
+    event["to"] = ["claude-rco-1"]
+    assert dispatches([event], NOW)["dispatches"][0]["worker"] == "claude-rco-1"
+
+
+@pytest.mark.parametrize("requester", ["fable-5", "operator", "Codex-Lead-1", ""])
+def test_only_lead_dispatches(requester):
+    event = request()
+    event["agent"] = requester
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], "not_dispatch_authority")]
+
+
+@pytest.mark.parametrize("value", ["A" * 64, "a" * 63, "g" * 64, None, 7])
+def test_the_request_digest_must_be_64_lowercase_hex(value):
+    assert reasons(dispatches([request(request_digest=value)], NOW))[0][1] == "request_digest_invalid"
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda e: e.__setitem__("expected_responders", {}),
+    lambda e: e["expected_responders"].__setitem__("claude-rco-2", dict(e["expected_responders"]["claude-rco-1"])),
+    lambda e: e["expected_responders"]["claude-rco-1"].pop("run_id"),
+    lambda e: e["expected_responders"]["claude-rco-1"].__setitem__("extra", "x"),
+    lambda e: e["expected_responders"]["claude-rco-1"].__setitem__("session_id", ""),
+    lambda e: e.__setitem__("expected_responders", {"fable-5": e["expected_responders"]["claude-rco-1"]}),
+])
+def test_expected_responders_are_one_closed_worker_binding(mutate):
+    event = request()
+    mutate(event)
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], "expected_responders_invalid")]
+
+
+@pytest.mark.parametrize("scope, reason", [([], "scope_missing"), (["tools/*.py"], "scope_invalid"),
+                                           (["../x"], "scope_invalid"), ([3], "scope_invalid")])
+def test_scope_goes_through_the_router_normalizer(scope, reason):
+    assert reasons(dispatches([request(scope=scope)], NOW))[0][1] == reason
+
+
+def test_a_payload_scope_is_used_only_when_it_agrees():
+    event = request()
+    event["payload"]["write_scope"] = list(reversed(event["write_scope"]))   # same list, other order
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], "scope_conflict")]
+    event["payload"]["write_scope"] = list(event["write_scope"])
+    assert dispatches([event], NOW)["dispatches"]
+    del event["write_scope"]
+    assert dispatches([event], NOW)["dispatches"][0]["scope"] == normalize_scope(event["payload"]["write_scope"])
+
+
+@pytest.mark.parametrize("field, value, reason", [
+    ("type", "message", "not_a_wake_request"), ("task_id", "", "task_id_missing"),
+    ("message", None, "message_invalid"), ("ts_utc", "2026-10-01T16:25:52", "timestamp_invalid"),
+    ("ts_utc", 1700000000, "timestamp_invalid"), ("ts_utc", "2026-10-01T16:30:00.000001Z", "future_dated"),
+])
+def test_field_level_refusals(field, value, reason):
+    event = request()
+    event[field] = value
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], reason)]
+
+
+def test_a_request_exactly_at_now_is_not_future_dated():
+    assert dispatches([request(ts="2026-10-01T16:30:00Z")], NOW)["dispatches"]
+
+
+# --- strict JSON before anything else ------------------------------------------------------------------
+
+class Liar(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+class Boom(dict):
+    def __iter__(self):
+        raise KeyboardInterrupt("a hostile hook must never run")
+
+    def items(self):
+        raise KeyboardInterrupt("a hostile hook must never run")
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda e: e.__setitem__("agent", Liar("someone-else")),
+    lambda e: e.__setitem__("to", Liar("claude-rco-1")),
+    lambda e: e["payload"].__setitem__("task_revision", Liar("r1")),
+    lambda e: e.__setitem__("payload", Boom(e["payload"])),
+    lambda e: e.__setitem__(Liar("extra"), 1),
+    lambda e: e.__setitem__("write_scope", tuple(e["write_scope"])),
+    lambda e: e["payload"].__setitem__("result_contract", {"bound": float("nan")}),
+    lambda e: e["payload"].__setitem__("result_contract", {"bound": float("inf")}),
+    lambda e: e.__setitem__("blob", b"bytes"),
+    lambda e: e.__setitem__("big", 10 ** 5000),
+])
+def test_hostile_or_non_json_values_are_malformed_and_never_run_hooks(mutate):
+    event = request()
+    mutate(event)
+    result = dispatches([event], NOW)
+    assert result["dispatches"] == [] and [(r["reason"], r["index"]) for r in result["rejected"]] == [
+        ("request_malformed", 0)]
+
+
+@pytest.mark.parametrize("value, strict", [
+    ({"x": 1.5, "y": [True, None, "s", 3]}, True),
+    ({"x": float("nan")}, False), ({"x": [float("inf")]}, False), ({"x": float("-inf")}, False),
+    ({Liar("k"): 1}, False), ([Liar("v")], False), ({"x": (1,)}, False), (Boom(), False),
+])
+def test_the_strict_json_gate_itself(value, strict):
+    # Pinned on its own: the later canonical digest also refuses NaN, so this gate is checked directly.
+    assert module._strict_json(value) is strict
+
+
+def test_a_hostile_request_object_is_malformed_without_running_its_hooks():
+    result = dispatches([Boom(request())], NOW)
+    assert [(r["reason"], r["index"]) for r in result["rejected"]] == [("request_malformed", 0)]
+
+
+def test_deep_nesting_is_refused_not_a_recursion_error():
+    deep: object = "x"
+    for _ in range(200):
+        deep = [deep]
+    event = request()
+    event["payload"]["result_contract"] = deep
+    assert reasons(dispatches([event], NOW))[0][1] == "request_malformed"
+
+
+@pytest.mark.parametrize("request_id", ["", "x" * 129, "has space", "ünicode", None, 5])
+def test_request_id_shape(request_id):
+    result = dispatches([request(request_id=request_id)], NOW)
+    assert [(r["request_id"], r["reason"], r["index"]) for r in result["rejected"]] == [(None, "request_id_invalid", 0)]
+
+
+# --- duplicates and conflicts --------------------------------------------------------------------------
+
+def test_an_exact_repeat_dedupes_to_one_record():
+    event = request()
+    result = dispatches([event, copy.deepcopy(event), copy.deepcopy(event)], NOW)
+    assert len(result["dispatches"]) == 1
+    assert result["duplicates_ignored"] == [{"request_id": event["request_id"], "copies_ignored": 2}]
+
+
+@pytest.mark.parametrize("change", [
+    lambda e: e.__setitem__("request_digest", DIGEST_B),
+    lambda e: e.__setitem__("message", "Implement S1 differently."),
+    lambda e: e["payload"].__setitem__("task_revision", "r2"),
+])
+def test_same_id_other_content_poisons_every_copy_including_the_valid_one(change):
+    good = request()
+    other = copy.deepcopy(good)
+    change(other)
+    for order in ([good, other], [other, good], [good, good, other]):
+        result = dispatches(order, NOW)
+        assert result["dispatches"] == []
+        assert reasons(result) == [(good["request_id"], "request_binding_conflict")]
+
+
+def test_a_poisoned_id_does_not_touch_another_valid_id():
+    bad, bad2, fine = request("id-1"), request("id-1", request_digest=DIGEST_B), request("id-2", task="other/task")
+    result = dispatches([bad, fine, bad2], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-2"]
+
+
+# --- revisions -----------------------------------------------------------------------------------------
+
+def test_the_newest_revision_wins_whatever_the_arrival_order():
+    old = request("id-old", revision="r1", ts="2026-10-01T16:00:00Z")
+    new = request("id-new", revision="r2", ts="2026-10-01T16:10:00Z")
+    for order in ([old, new], [new, old]):
+        result = dispatches(order, NOW)
+        assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-new"]
+        assert result["rejected"] == [{"request_id": "id-old", "reason": "superseded_revision", "index": None,
+                                       "superseded_by": "id-new"}]
+
+
+def test_a_revision_change_changes_the_dispatch_key():
+    one = dispatches([request("id-1", revision="r1")], NOW)["dispatches"][0]
+    two = dispatches([request("id-2", revision="r2")], NOW)["dispatches"][0]
+    assert one["dispatch_key"] != two["dispatch_key"] and one["input_digest"] != two["input_digest"]
+
+
+def test_equal_instants_break_ties_by_dispatch_id_and_compare_as_instants_not_text():
+    a = request("id-a", ts="2026-10-01T19:00:00+03:00")
+    b = request("id-b", ts="2026-10-01T16:00:00Z")          # the same instant written differently
+    c = request("id-c", ts="2026-10-01T16:00:00.5+00:00")   # half a second later
+    assert [r["dispatch_id"] for r in dispatches([a, b], NOW)["dispatches"]] == ["id-b"]
+    assert [r["dispatch_id"] for r in dispatches([c, a, b], NOW)["dispatches"]] == ["id-c"]
+
+
+def test_distinct_tasks_never_supersede_each_other():
+    result = dispatches([request("id-1", task="t/one"), request("id-2", task="t/two")], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-1", "id-2"] and result["rejected"] == []
+
+
+def test_the_output_does_not_depend_on_input_order():
+    events = [request("id-1", task="t/one", ts="2026-10-01T16:00:00Z"),
+              request("id-2", task="t/one", ts="2026-10-01T16:05:00Z"),
+              request("id-3", task="t/two"), request("id-4", request_digest=DIGEST_B, task="t/three"),
+              request("id-4", task="t/three")]
+    first = dispatches(events, NOW)
+    assert dispatches(list(reversed(events)), NOW) == first
+
+
+# --- caller contract, cancellation, purity -------------------------------------------------------------
+
+@pytest.mark.parametrize("now", [datetime(2026, 10, 1, 16, 30), "2026-10-01T16:30:00Z", None])
+def test_now_must_be_an_explicit_offset_aware_datetime(now):
+    with pytest.raises(ValueError):
+        dispatches([request()], now)
+
+
+@pytest.mark.parametrize("requests", [None, (request(),), {"a": request()}])
+def test_requests_must_be_a_list(requests):
+    with pytest.raises(ValueError):
+        dispatches(requests, NOW)
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_cancellation_inside_a_helper_propagates(monkeypatch, interrupt):
+    def cancelled(raw):
+        raise interrupt()
+    monkeypatch.setattr(module, "normalize_scope", cancelled)
+    with pytest.raises(interrupt):
+        dispatches([request()], NOW)
+
+
+def test_an_unexpected_helper_error_propagates_instead_of_becoming_a_rejection(monkeypatch):
+    def broken(raw):
+        raise RuntimeError("bug")
+    monkeypatch.setattr(module, "normalize_scope", broken)
+    with pytest.raises(RuntimeError):
+        dispatches([request()], NOW)
+
+
+def test_the_input_is_not_mutated():
+    events = [request("id-1"), request("id-1"), request("id-2", task="t/two")]
+    snapshot = json.dumps(events, sort_keys=True)
+    dispatches(events, NOW)
+    assert json.dumps(events, sort_keys=True) == snapshot
+
+
+def test_the_module_reads_no_clock_file_environment_or_process():
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    for forbidden in ("datetime.now", "utcnow", "time.time", "open(", "os.environ", "subprocess", "Path(",
+                      "import os", "getenv"):
+        assert forbidden not in source, forbidden

@@ -26,6 +26,11 @@ BIN = ROOT / ".agent-bridge/bin"
 PROCEDURE = ROOT / "ops/windows/reboot/WAKE_PROCEDURE_TOOLS.md"
 SHELLS = list(dict.fromkeys(filter(None, (shutil.which("pwsh"), shutil.which("powershell.exe")))))
 pytestmark = pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+# The legacy recent-view path parses Read-AgentBridge -Raw stdout as JSON. Off Windows that read is never clean:
+# its accepted-v1 drain refuses non-Windows hosts (Windows write-through publication) and Write-Warning lands on
+# the child's stdout, as does the -ForegroundColor header's ANSI colour. Windows hosts run these cases.
+WINDOWS_RECENT_VIEW = pytest.mark.skipif(
+    os.name != "nt", reason="the recent view's accepted-v1 drain needs Windows; off Windows it warns on stdout")
 NOW = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
 TS = "2026-09-29T09:50:00.1234567Z"
 _SCRUB = ("AGENT_BRIDGE_", "CLAUDE_CODE_", "WD_", "GIT_")
@@ -96,8 +101,6 @@ if (-not $requestId) {
         # Zero inventory matches do not prove the ID absent: the row itself must lack one.
         $text = Invoke-HelperText 'Read-AgentBridge.ps1' @('-Agent', 'codex-tools-1', '-Raw', '-NoAckReceived', '-NoContinuity')
         if ($null -eq $text) { Blocked 'recent_read_failed' }
-        # Off Windows a redirected pwsh writes the -ForegroundColor header with ANSI SGR escapes.
-        $text = $text -replace (([string][char]27) + '[[][0-9;]*m'), ''
         $recent = ($text -split "`r?`n" | Where-Object { $_ -notmatch '^RECENT EVENTS' }) -join "`n"
         $rows = @(From-Json $recent | Where-Object { [string]$_.agent -ceq [string]$incoming.agent -and
             [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })
@@ -262,6 +265,7 @@ def test_routing_without_request_id_uses_exact_inventory_match_or_blocks(tmp_pat
     assert result == {"status": "blocked", "reason": "ambiguous_inventory_match"}
 
 
+@WINDOWS_RECENT_VIEW
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_legacy_request_without_id_hidden_by_noise_is_blocked_not_invented(tmp_path: Path, shell: str) -> None:
     legacy = _request(None, status="request")
@@ -279,6 +283,7 @@ def _legacy_routing() -> tuple[dict, dict]:
     return legacy, _route([*_noise(60), legacy])
 
 
+@WINDOWS_RECENT_VIEW
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_legacy_recent_row_to_another_target_is_blocked(tmp_path: Path, shell: str) -> None:
     legacy, routing = _legacy_routing()
@@ -286,6 +291,7 @@ def test_legacy_recent_row_to_another_target_is_blocked(tmp_path: Path, shell: s
     assert _retrieve(tmp_path, shell, [*_noise(60), impostor], routing) == {"status": "blocked", "reason": "wrong_target"}
 
 
+@WINDOWS_RECENT_VIEW
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 @pytest.mark.parametrize("where", ("top_level", "payload"))
 def test_recent_row_that_carries_a_request_id_is_not_treated_as_legacy(tmp_path: Path, shell: str, where: str) -> None:
@@ -300,6 +306,7 @@ def test_recent_row_that_carries_a_request_id_is_not_treated_as_legacy(tmp_path:
     assert result == {"status": "blocked", "reason": "recent_row_has_request_id"}
 
 
+@WINDOWS_RECENT_VIEW
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
 def test_duplicate_legacy_rows_in_recent_view_are_ambiguous(tmp_path: Path, shell: str) -> None:
     legacy, routing = _legacy_routing()

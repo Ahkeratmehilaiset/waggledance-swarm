@@ -212,6 +212,12 @@ def _windows(row: dict, provider: str, paced: Any, now: datetime) -> tuple[str, 
             reasons.append("window_reset_invalid:" + key)
         elif not (_number(entry.get("resets_at")) and entry["resets_at"] == reset):
             reasons.append("window_instance_mismatch:" + key)
+        elif not (_number(entry.get("used_percent")) and _number(window.get("used_percent"))
+                  and entry["used_percent"] == window["used_percent"]):
+            # The pacer keys by provider/limit/window only, so another account's series with the same reset can sit
+            # under this key. Its newest used_percent must be this row's own (RCO1 F19C-1): necessary, not
+            # sufficient; binding the pacer's samples to this subject and pool is the pacer caller's job.
+            reasons.append("window_account_mismatch:" + key)
         elif sampled is None or sampled > now:
             reasons.append("window_time_invalid:" + key)
         else:
@@ -297,12 +303,14 @@ def _row_for(rows: Any, subject: Any) -> tuple[Any, list[str]]:
 def _with_capacity(workers: Any, subjects: Any, rows: Any, paced: Any, signed_policy: Any,
                    now: Any) -> tuple[Any, dict]:
     """Copies of the worker records with only adapter-proven capacity, and the evidence per worker."""
+    # Only exact lists and dicts are copied; a container subclass is never iterated or passed on (its methods may
+    # lie, RCO1 F19C-2), so it reaches the router as None and the router holds on malformed input.
     if type(workers) is not list:
-        return workers, {}
+        return (None if isinstance(workers, (list, tuple, dict, set, frozenset)) else workers), {}
     routed, evidence = [], {}
     for worker in workers:
         if type(worker) is not dict:
-            routed.append(worker)
+            routed.append(None if isinstance(worker, dict) else worker)
             continue
         record = {key: value for key, value in worker.items() if key != "capacity"}
         name, profile = worker.get("worker"), worker.get("profile_id")

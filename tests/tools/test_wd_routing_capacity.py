@@ -416,6 +416,43 @@ def test_compose_turns_an_unexpected_error_into_a_hold_with_nothing_unproven(mon
     assert (out["reasons"], out["capacity"], out["advice"]["verdict"]) == (["compose_error:RuntimeError"], [], tr.HOLD)
 
 
+# --- RCO1 F19C-1/F19C-2 (afa7d14c review 04:40:23Z) ---------------------------------------------------------
+
+def test_another_accounts_paced_series_with_the_same_reset_is_not_this_rows_rate():
+    record = evidence(row=codex_row(primary=95.0, secondary=90.0))  # PACED is the 30->31 / 20->20.1 series
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert len(record["reasons"]) == 2 and all(reason.startswith("window_account_mismatch:codex/")
+                                               for reason in record["reasons"])
+    assert evidence()["verdict"] == rc.KNOWN  # the row whose own used_percent the pacer saw stays known
+
+
+class _HostileList(list):
+    def __iter__(self):
+        raise AssertionError("a hostile container method ran")
+
+
+class _PlainListSubclass(list):
+    pass
+
+
+class _DictSubclass(dict):
+    pass
+
+
+@pytest.mark.parametrize("wrap", [_PlainListSubclass, _HostileList], ids=["list_subclass", "hostile_list"])
+def test_a_worker_list_subclass_never_carries_its_own_capacity_to_the_router(wrap):
+    workers = wrap(_router_inputs(evidence()["capacity"])[1])  # a block the caller brought itself
+    out = _compose(workers=workers)
+    assert (out["reasons"], out["capacity"], out["advice"]["verdict"]) == ([], [], tr.HOLD)
+
+
+def test_a_dict_subclass_worker_record_never_carries_its_own_capacity_to_the_router():
+    workers = [_DictSubclass(worker) for worker in _router_inputs(evidence()["capacity"])[1]]
+    out = _compose(workers=workers, rows=[])
+    assert out["advice"]["verdict"] == tr.HOLD and out["advice"]["verdict"] != tr.ROUTE
+    assert out["capacity"] == []
+
+
 # --- purity ------------------------------------------------------------------------------------------
 
 FORBIDDEN_IMPORTS = {"os", "sys", "subprocess", "socket", "pathlib", "time", "random", "urllib", "http",

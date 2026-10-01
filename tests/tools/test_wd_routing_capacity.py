@@ -517,6 +517,16 @@ def test_an_entry_without_identity_fields_or_with_non_text_identity_is_unbound()
     assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"]
 
 
+def test_two_index_series_naming_this_rows_pair_are_ambiguous_and_never_read():
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    for entry in mixed.values():
+        own = next(series for series in entry["identities"] if series["subject"] == SUBJECT)
+        entry["identities"].append(dict(own, forecast_percent_at_reset=1.0))
+    record = evidence(paced=mixed)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert all(reason.startswith("window_subject_mismatch:") for reason in record["reasons"]), record["reasons"]
+
+
 def test_an_index_series_with_non_text_identity_is_never_this_rows():
     mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
     for entry in mixed.values():

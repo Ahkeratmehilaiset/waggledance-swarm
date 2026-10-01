@@ -446,8 +446,10 @@ def test_an_older_account_keeps_its_own_series_beside_the_newest_one():
 
 def test_the_identity_series_do_not_depend_on_input_order():
     a, b = two_accounts()
-    forward, backward = pace_windows(a + b, now=NOW), pace_windows(list(reversed(b + a)), now=NOW)
+    # b + a sees account b first, a + b sees account a first: the index order must not follow either.
+    forward, backward = pace_windows(a + b, now=NOW), pace_windows(b + a, now=NOW)
     assert forward == backward
+    assert [s["subject"] for s in forward["codex/codex/primary"]["identities"]] == ["a" * 64, "b" * 64]
 
 
 def test_the_top_entry_is_exactly_the_newest_identitys_series():

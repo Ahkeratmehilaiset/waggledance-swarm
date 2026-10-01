@@ -391,12 +391,20 @@ function Update-BridgeClaimLease {
     # S2: a lease bump changes claims, so it runs inside the runtime-root
     # mutex (root first, then each claim lock). A busy or abandoned root
     # skips this round with a warning, as a busy claim lock skips a claim;
-    # the next beat retries.
+    # the next beat retries. Anything else (a root with no canonical form, a
+    # missing mutex helper, a cancellation) is not transient and propagates
+    # with its original error, so the lease expiry never silently stops
+    # advancing (RCO2 5416a7ab F2).
     try {
         $rootMutex = Enter-BridgeQueueRootMutex -Root $Root
     } catch {
-        Write-Warning ("claim lease bump skipped this round: {0}" -f $_.Exception.Message)
-        return 0
+        $enterMessage = [string]$_.Exception.Message
+        if ($enterMessage.StartsWith('runtime-root queue mutex busy: ', [StringComparison]::Ordinal) -or
+            $enterMessage.StartsWith('runtime-root queue mutex was abandoned by a holder', [StringComparison]::Ordinal)) {
+            Write-Warning ("claim lease bump skipped this round: {0}" -f $enterMessage)
+            return 0
+        }
+        throw
     }
     $rootWorkDone = $false
     $updated = 0

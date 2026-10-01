@@ -41,6 +41,12 @@ Rules that keep it honest:
   (None, None): it paces exactly as before for ``recommend``, but it is never
   another subject's or pool's evidence, and the routing capacity adapter treats
   an unbound entry as unknown (fail closed).
+* Every identity keeps its own series (RCO1 P55-1): the entry under a key is the
+  newest identity's series, exactly as above, and its ``identities`` list holds
+  one series per (subject, account_pool) pair seen under that key (the unbound
+  pair included), each paced from that pair's own newest sample, reset and
+  samples only. So an account whose lane did not sample last is still paced on
+  its own evidence; nothing is borrowed across pairs.
 
 Nothing here launches, stops, writes or signals anything. Every result carries
 ``execution_allowed: false``. The planner (D5) and the executor (D4) remain the
@@ -146,68 +152,89 @@ def read_samples(store: str | Path, *, limit: int = MAX_HISTORY_ROWS) -> list[di
     return samples
 
 
+def _identity(sample: dict) -> tuple:
+    return (sample.get("subject"), sample.get("account_pool"))
+
+
+def _identity_order(identity: tuple) -> tuple:
+    """A total order over (subject, account_pool) pairs where either part may be None."""
+    return tuple((part is None, "" if part is None else str(part)) for part in identity)
+
+
 def pace_windows(samples: list[dict], *, now: datetime) -> dict:
     """Pace every (provider, limit_id, window) from its current window instance only.
 
     The current instance is the newest sample's reset time AND its exact (subject, account_pool)
-    pair; another subject's or pool's samples under the same key are never part of the rate."""
+    pair; another subject's or pool's samples under the same key are never part of the rate. The
+    entry is the newest pair's series; ``identities`` lists every pair's own series (RCO1 P55-1)."""
     groups: dict[tuple, list[dict]] = {}
     for sample in samples:
         key = (sample["provider"], sample["limit_id"], sample["window"])
         groups.setdefault(key, []).append(sample)
     paced = {}
     for key, rows in groups.items():
+        by_identity: dict[tuple, list[dict]] = {}
+        for row in rows:
+            by_identity.setdefault(_identity(row), []).append(row)
+        series = {identity: _pace_series(key, own, now) for identity, own in by_identity.items()}
         newest = max(rows, key=lambda r: r["observed_at"])
-        # The current instance is the newest sample's reset time; older instances are other windows. Only the
-        # newest sample's own subject and pool form the series (F19C-1): never another account's samples.
-        identity = (newest.get("subject"), newest.get("account_pool"))
-        current = sorted((r for r in rows if r["resets_at"] == newest["resets_at"]
-                          and (r.get("subject"), r.get("account_pool")) == identity), key=lambda r: r["observed_at"])
-        entry = {"provider": key[0], "limit_id": key[1], "window": key[2],
-                 "subject": identity[0], "account_pool": identity[1],
-                 "used_percent": newest["used_percent"], "resets_at": newest["resets_at"],
-                 "duration_minutes": newest["duration_minutes"],
-                 "observed_at": newest["observed_at"].isoformat(), "samples": len(current),
-                 "rate_percent_per_hour": None, "hours_to_reset": None, "forecast_percent_at_reset": None,
-                 "short": None, "verdict": "unknown", "reason": None}
+        # The top entry is the newest sample's own pair, exactly as before; the index adds every other pair.
+        entry = dict(series[_identity(newest)])
+        entry["identities"] = [series[identity] for identity in sorted(series, key=_identity_order)]
         paced["/".join(str(k) for k in key)] = entry
-        age = (now - newest["observed_at"]).total_seconds()
-        hours_left = (newest["resets_at"] - now.timestamp()) / 3600
-        duration = newest["duration_minutes"]
-        entry["short"] = None if duration is None else duration < SHORT_WINDOW_MINUTES
-        if not 0 <= age <= MAX_SAMPLE_AGE_SECONDS:
-            entry["reason"] = "measurement_stale"
-            continue
-        if hours_left <= 0:
-            entry["reason"] = "window_already_reset"
-            continue
-        if duration is None:
-            entry["reason"] = "window_duration_unknown"
-            continue
-        entry["hours_to_reset"] = round(hours_left, 3)
-        if newest["used_percent"] >= 100:
-            entry.update(verdict="exhausted", forecast_percent_at_reset=newest["used_percent"])
-            continue
-        first, last = current[0], current[-1]
-        span = (last["observed_at"] - first["observed_at"]).total_seconds()
-        # Lead review of #1741: EVERY consecutive pair must be non-decreasing inside one
-        # window instance. A dip anywhere (20 -> 80 -> 21) means the counter is not a
-        # usage counter we can trust, so there is no rate - never a first/last average.
-        falls = any(later["used_percent"] < earlier["used_percent"]
-                    for earlier, later in zip(current, current[1:]))
-        if span < MIN_RATE_SPAN_SECONDS or falls:
-            entry["reason"] = "rate_unknown"
-            continue
-        rate = (last["used_percent"] - first["used_percent"]) / (span / 3600)
-        forecast = newest["used_percent"] + rate * hours_left
-        entry.update(rate_percent_per_hour=round(rate, 4), forecast_percent_at_reset=round(forecast, 2))
-        if forecast >= OVERRUN_FORECAST_PERCENT:
-            entry["verdict"] = "overrun"
-        elif forecast <= UNDERUSED_FORECAST_PERCENT:
-            entry["verdict"] = "underused"
-        else:
-            entry["verdict"] = "on_pace"
     return paced
+
+
+def _pace_series(key: tuple, rows: list[dict], now: datetime) -> dict:
+    """One pair's series: its newest sample's window instance, paced from that pair's samples only."""
+    newest = max(rows, key=lambda r: r["observed_at"])
+    identity = _identity(newest)
+    # The current instance is the newest sample's reset time; older instances are other windows.
+    current = sorted((r for r in rows if r["resets_at"] == newest["resets_at"]), key=lambda r: r["observed_at"])
+    entry = {"provider": key[0], "limit_id": key[1], "window": key[2],
+             "subject": identity[0], "account_pool": identity[1],
+             "used_percent": newest["used_percent"], "resets_at": newest["resets_at"],
+             "duration_minutes": newest["duration_minutes"],
+             "observed_at": newest["observed_at"].isoformat(), "samples": len(current),
+             "rate_percent_per_hour": None, "hours_to_reset": None, "forecast_percent_at_reset": None,
+             "short": None, "verdict": "unknown", "reason": None}
+    age = (now - newest["observed_at"]).total_seconds()
+    hours_left = (newest["resets_at"] - now.timestamp()) / 3600
+    duration = newest["duration_minutes"]
+    entry["short"] = None if duration is None else duration < SHORT_WINDOW_MINUTES
+    if not 0 <= age <= MAX_SAMPLE_AGE_SECONDS:
+        entry["reason"] = "measurement_stale"
+        return entry
+    if hours_left <= 0:
+        entry["reason"] = "window_already_reset"
+        return entry
+    if duration is None:
+        entry["reason"] = "window_duration_unknown"
+        return entry
+    entry["hours_to_reset"] = round(hours_left, 3)
+    if newest["used_percent"] >= 100:
+        entry.update(verdict="exhausted", forecast_percent_at_reset=newest["used_percent"])
+        return entry
+    first, last = current[0], current[-1]
+    span = (last["observed_at"] - first["observed_at"]).total_seconds()
+    # Lead review of #1741: EVERY consecutive pair must be non-decreasing inside one
+    # window instance. A dip anywhere (20 -> 80 -> 21) means the counter is not a
+    # usage counter we can trust, so there is no rate - never a first/last average.
+    falls = any(later["used_percent"] < earlier["used_percent"]
+                for earlier, later in zip(current, current[1:]))
+    if span < MIN_RATE_SPAN_SECONDS or falls:
+        entry["reason"] = "rate_unknown"
+        return entry
+    rate = (last["used_percent"] - first["used_percent"]) / (span / 3600)
+    forecast = newest["used_percent"] + rate * hours_left
+    entry.update(rate_percent_per_hour=round(rate, 4), forecast_percent_at_reset=round(forecast, 2))
+    if forecast >= OVERRUN_FORECAST_PERCENT:
+        entry["verdict"] = "overrun"
+    elif forecast <= UNDERUSED_FORECAST_PERCENT:
+        entry["verdict"] = "underused"
+    else:
+        entry["verdict"] = "on_pace"
+    return entry
 
 
 def _role(catalog: dict, lane: str) -> str:

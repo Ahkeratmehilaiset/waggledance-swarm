@@ -415,3 +415,51 @@ def test_samples_carry_the_rows_own_subject_and_only_a_verified_pool(tmp_path):
                  if s["window"] in ("primary", "seven_day"))
     assert got == [(5.0, "a" * 64, "codex-pro-a"), (6.0, "b" * 64, None), (7.0, None, None),
                    (20.0, "sess-1", "claude-max-a")]
+
+
+# ---------------------------------------------------------------- every identity keeps its own series (RCO1 P55-1)
+
+def two_accounts(a_age=(0.75, 0.2), b_age=(1.5, 0)):
+    a = [bound(sample("codex", "primary", used, hours_ago=age, reset_in_hours=100), "a" * 64, "codex-pro-a")
+         for used, age in zip((30, 31), a_age)]
+    b = [bound(sample("codex", "primary", used, hours_ago=age, reset_in_hours=100), "b" * 64, "codex-pro-b")
+         for used, age in zip((60, 70), b_age)]
+    return a, b
+
+
+def series_of(window, subject, pool):
+    found = [s for s in window["identities"] if (s["subject"], s["account_pool"]) == (subject, pool)]
+    assert len(found) == 1, window["identities"]
+    return found[0]
+
+
+def test_an_older_account_keeps_its_own_series_beside_the_newest_one():
+    a, b = two_accounts()
+    window = pace_windows(a + b, now=NOW)["codex/codex/primary"]
+    assert (window["subject"], window["samples"]) == ("b" * 64, 2)          # the top entry is the newest, as before
+    own = series_of(window, "a" * 64, "codex-pro-a")
+    assert (own["samples"], own["rate_percent_per_hour"], own["used_percent"]) == (2, round(1 / 0.55, 4), 31.0)
+    other = series_of(window, "b" * 64, "codex-pro-b")
+    assert (other["samples"], other["rate_percent_per_hour"]) == (2, round(10 / 1.5, 4))
+    assert "identities" not in own and "identities" not in other
+
+
+def test_the_identity_series_do_not_depend_on_input_order():
+    a, b = two_accounts()
+    forward, backward = pace_windows(a + b, now=NOW), pace_windows(list(reversed(b + a)), now=NOW)
+    assert forward == backward
+
+
+def test_the_top_entry_is_exactly_the_newest_identitys_series():
+    a, b = two_accounts()
+    window = pace_windows(a + b, now=NOW)["codex/codex/primary"]
+    assert {k: v for k, v in window.items() if k != "identities"} == series_of(window, "b" * 64, "codex-pro-b")
+
+
+def test_unbound_samples_are_their_own_series_and_never_join_a_bound_one():
+    a, _ = two_accounts()
+    unbound = [sample("codex", "primary", 90, hours_ago=0.5, reset_in_hours=100)]
+    window = pace_windows(a + unbound, now=NOW)["codex/codex/primary"]
+    assert (window["subject"], window["account_pool"]) == ("a" * 64, "codex-pro-a")
+    assert series_of(window, None, None)["samples"] == 1
+    assert series_of(window, "a" * 64, "codex-pro-a")["samples"] == 2

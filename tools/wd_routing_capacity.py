@@ -39,7 +39,11 @@ did not pace in the same window instance with a measured rate. A paced window co
 the pacer measured it from this row's own subject and verified pool (the entry's ``subject`` and
 ``account_pool``, F19C-1): an entry without them (an older pacer or an unbound sample) is
 ``window_unbound``, and another subject's or pool's series is ``window_subject_mismatch`` or
-``window_pool_mismatch``, even when its reset and used_percent agree with this row. Claude rows carry
+``window_pool_mismatch``, even when its reset and used_percent agree with this row. When the
+entry is another pair's series, the row's own series is taken from the entry's ``identities``
+index (an exact list of exact dicts, matched on exact str subject and pool; RCO1 P55-1), so a lane
+whose account did not sample last is still paced on its own samples; every check above then
+applies to that series. A malformed index is never read. Claude rows carry
 ``provider_timestamp_unknown`` (the statusline does not say when the provider measured the
 quota), so they stay unknown unless the signed policy accepts that label for Claude.
 
@@ -193,6 +197,21 @@ def _row(row: Any, worker: dict, policy: dict, now: datetime) -> tuple[str, str,
     return provider, subject_id, pool, observed, expires
 
 
+def _own_series(entry: Any, subject: str, pool: str) -> Any:
+    """This row's own (subject, pool) series under one paced key: the entry itself when it is that pair's, else the
+    one exact match in its ``identities`` index (RCO1 P55-1). Otherwise the entry as given, so its own refusal
+    (unbound, subject or pool mismatch) is reported."""
+    def mine(candidate: Any) -> bool:
+        return (type(candidate) is dict and type(candidate.get("subject")) is str
+                and type(candidate.get("account_pool")) is str
+                and candidate["subject"] == subject and candidate["account_pool"] == pool)
+    if type(entry) is not dict or mine(entry):
+        return entry
+    index = entry.get("identities")
+    matches = [candidate for candidate in index if mine(candidate)] if type(index) is list else []
+    return matches[0] if len(matches) == 1 else entry
+
+
 def _windows(row: dict, provider: str, paced: Any, now: datetime, subject: str,
              pool: str) -> tuple[str, list[dict]]:
     """The quota state and one measured entry per observed window, or every reason it is not."""
@@ -206,7 +225,7 @@ def _windows(row: dict, provider: str, paced: Any, now: datetime, subject: str,
     reasons, measured = [], []
     for window in windows:
         key = "/".join((provider, str(window.get("limit_id")), str(window.get("name"))))
-        entry, reset = paced.get(key), window.get("resets_at")
+        entry, reset = _own_series(paced.get(key), subject, pool), window.get("resets_at")
         if type(entry) is not dict:
             reasons.append("window_not_paced:" + key)
             continue

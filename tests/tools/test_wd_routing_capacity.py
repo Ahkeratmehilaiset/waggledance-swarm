@@ -505,13 +505,27 @@ def test_an_unbound_paced_series_is_unknown_never_guessed(identity):
 
 
 def test_an_entry_without_identity_fields_or_with_non_text_identity_is_unbound():
+    # Without an identity index (an older pacer), the entry itself must name this row's pair.
     for change in ({"subject": None}, {"account_pool": ["codex-pro-a"]}, {"subject": 7}):
         paced = copy.deepcopy(PACED)
+        paced["codex/codex/primary"].pop("identities")
         paced["codex/codex/primary"].update(change)
         assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"], change
     paced = copy.deepcopy(PACED)
+    paced["codex/codex/primary"].pop("identities")
     paced["codex/codex/primary"].pop("subject")
     assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"]
+
+
+def test_an_index_series_with_non_text_identity_is_never_this_rows():
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    for entry in mixed.values():
+        for series in entry["identities"]:
+            if series["subject"] == SUBJECT:
+                series["subject"] = [SUBJECT]
+    record = evidence(paced=mixed)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert all(reason.startswith("window_subject_mismatch:") for reason in record["reasons"]), record["reasons"]
 
 
 def test_the_own_series_stays_known_when_another_subject_shares_the_key():
@@ -533,3 +547,76 @@ def test_a_claude_row_needs_its_own_session_series():
     assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
     assert len(record["reasons"]) == 2 and all(reason.startswith("window_subject_mismatch:claude/")
                                                for reason in record["reasons"])
+
+
+# --- every account keeps its own series when another account sampled last (RCO1 P55-1) ----------------------
+
+OTHER_ID = ("d" * 64, "codex-pro-b")
+OTHER_WINDOWS = (("primary", 80.0, 81.0, RESET_PRIMARY, 300), ("secondary", 70.0, 70.1, RESET_SECONDARY, 10080))
+
+
+def test_an_own_series_stays_known_when_another_account_sampled_last():
+    mixed = samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0))
+    record = evidence(paced=pace_windows(mixed, now=NOW))
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"] == evidence()["capacity"]
+
+
+def test_both_accounts_are_known_from_one_paced_map_each_on_its_own_series():
+    paced = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    other_worker = dict(WORKER, worker="claude-rco-2", subject={"kind": "auth_context", "id": "d" * 64})
+    other_row = codex_row(primary=81.0, secondary=70.1, auth_context_id="d" * 64, account_pool="codex-pro-b")
+    pools = dict(policy_body()["pools"], **{"codex-pro-b": {"billing": "included", "mode": "normal"}})
+    own = evidence(paced=paced, policy=signed(pools=pools))
+    other = evidence(worker=other_worker, row=other_row, paced=paced, policy=signed(pools=pools))
+    assert own["verdict"] == rc.KNOWN and own["capacity"]["projected_used_percent"] == 35.5
+    assert other["verdict"] == rc.KNOWN, other["reasons"]
+    assert other["capacity"]["projected_used_percent"] != own["capacity"]["projected_used_percent"]
+
+
+def test_an_unbound_newest_series_never_hides_the_own_series():
+    unbound = samples(windows=OTHER_WINDOWS, identity=(None, None), ages=(30, 0))
+    record = evidence(paced=pace_windows(samples() + unbound, now=NOW))
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+
+
+def test_an_old_pool_series_of_the_same_subject_is_not_the_new_pools_series():
+    old_pool = samples(identity=(SUBJECT, "codex-pro-b"), ages=(30, 0))
+    record = evidence(paced=pace_windows(samples(identity=(SUBJECT, "codex-pro-b")) + old_pool, now=NOW))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert all(reason.startswith("window_pool_mismatch:") for reason in record["reasons"]), record["reasons"]
+
+
+def test_an_own_series_of_another_reset_is_never_this_window_even_beside_a_foreign_series_of_this_reset():
+    own_old_reset = [dict(s, resets_at=s["resets_at"] - 7200.0) for s in samples()]
+    foreign_same_reset = samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0))
+    record = evidence(paced=pace_windows(own_old_reset + foreign_same_reset, now=NOW))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert any(reason.startswith("window_instance_mismatch:") for reason in record["reasons"]), record["reasons"]
+
+
+class _HostileList(list):
+    pass
+
+
+class _HostileDict(dict):
+    pass
+
+
+def _with_series(paced, wrap):
+    paced = copy.deepcopy(paced)
+    for entry in paced.values():
+        entry["identities"] = wrap(entry["identities"])
+    return paced
+
+
+@pytest.mark.parametrize("wrap,prefix", [(lambda s: _HostileList(s), "window_subject_mismatch:"),
+                                         (lambda s: tuple(s), "input_not_plain_data"),
+                                         (lambda s: [_HostileDict(e) for e in s], "window_subject_mismatch:"),
+                                         (lambda s: {"x": s}, "window_subject_mismatch:")],
+                         ids=["list-subclass", "tuple", "dict-subclass-entries", "not-a-list"])
+def test_a_hostile_identity_index_is_never_read(wrap, prefix):
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    record = evidence(paced=_with_series(mixed, wrap))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] and all(reason.startswith(prefix) for reason in record["reasons"]), record["reasons"]

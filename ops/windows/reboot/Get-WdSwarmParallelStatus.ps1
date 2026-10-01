@@ -41,23 +41,44 @@ function Resolve-WdStatusManifest {
     return [IO.Path]::GetFullPath([string]$pointer.fleet_manifest)
 }
 
-function Get-WdStatusGitText {
+function Get-WdStatusGitObservation {
+    # A failed query (for example exit 128 on an unsafe-ownership refusal) is an
+    # unknown observation with its exit code and first error line, never an empty
+    # checkout that would read as a mismatch. No Git configuration is changed.
     param(
         [Parameter(Mandatory)] [string] $Git,
         [Parameter(Mandatory)] [string] $Worktree,
         [Parameter(Mandatory)] [string[]] $Arguments
     )
     $previous = $ErrorActionPreference
+    $output = @()
+    $exitCode = $null
+    $failure = $null
     try {
         $ErrorActionPreference = 'Continue'
         $output = @(& $Git --no-replace-objects -C $Worktree @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
     }
+    catch [Management.Automation.PipelineStoppedException] { throw }
+    catch { $failure = $_.Exception.Message }
     finally {
         $ErrorActionPreference = $previous
     }
-    if ($exitCode -ne 0) { return '' }
-    return (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+    $lines = @($output | ForEach-Object { [string]$_ })
+    if ($null -eq $failure -and $exitCode -eq 0) {
+        return [pscustomobject]@{
+            status = 'observed'; exit_code = 0; error = $null
+            text = ($lines -join "`n").Trim()
+        }
+    }
+    $firstError = if ($null -ne $failure) { $failure } else {
+        @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1) -join ''
+    }
+    $firstError = ([string]$firstError).Trim()
+    if ($firstError.Length -gt 240) { $firstError = $firstError.Substring(0, 240) }
+    return [pscustomobject]@{
+        status = 'query_failed'; exit_code = $exitCode; error = $firstError; text = ''
+    }
 }
 
 function Get-WdStatusProperty {
@@ -786,12 +807,14 @@ foreach ($definition in @($definitions)) {
         }
     }
 
-    $branch = Get-WdStatusGitText -Git $git -Worktree $worktree -Arguments @(
+    $branchObservation = Get-WdStatusGitObservation -Git $git -Worktree $worktree -Arguments @(
         'branch', '--show-current'
     )
-    $head = Get-WdStatusGitText -Git $git -Worktree $worktree -Arguments @(
+    $headObservation = Get-WdStatusGitObservation -Git $git -Worktree $worktree -Arguments @(
         'rev-parse', 'HEAD'
     )
+    $branch = $branchObservation.text
+    $head = $headObservation.text
     $scope = if ($null -eq $state) { @() } else {
         @($state.write_scope | ForEach-Object { ([string]$_).Trim() } |
             Where-Object { $_ })
@@ -802,8 +825,11 @@ foreach ($definition in @($definitions)) {
     }
     $runtime = Get-WdStatusRuntime -Definition $definition `
         -InstalledBundle $installedBundle -Now $now
-    $headMatches = ($null -ne $state -and $head -and
-        [string](Get-WdStatusProperty $state 'head') -ceq $head)
+    # TRUE or FALSE only from an observed HEAD compared with a readable checkpoint;
+    # a failed query or a missing checkpoint leaves the comparison unknown (null).
+    $headMatches = if ($null -ne $state -and $headObservation.status -ceq 'observed' -and $head) {
+        [string](Get-WdStatusProperty $state 'head') -ceq $head
+    } else { $null }
     $blockers = @(Get-WdStatusProperty $state 'blockers' | Where-Object {
         -not [string]::IsNullOrWhiteSpace([string]$_)
     })
@@ -862,10 +888,11 @@ foreach ($definition in @($definitions)) {
         checkpoint_head = if ($null -eq $state) { '' } else {
             [string]$state.head
         }
-        head_matches = (
-            $null -ne $state -and $head -and
-            [string]$state.head -ceq $head
-        )
+        head_matches = $headMatches
+        git_observation = [pscustomobject]@{
+            branch = [pscustomobject]@{ status = $branchObservation.status; exit_code = $branchObservation.exit_code; error = $branchObservation.error }
+            head = [pscustomobject]@{ status = $headObservation.status; exit_code = $headObservation.exit_code; error = $headObservation.error }
+        }
         write_scope = @($scope)
         next_action = $nextAction
         recorded_next_action = $nextAction

@@ -696,3 +696,35 @@ $exclusive.Dispose()
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"snapshot": "before", "current": "after"}
     assert not replacement.exists()
+
+
+def failing_git(fleet, code=128):
+    # A controlled Git that refuses every query, as an unsafe-ownership refusal does (exit 128).
+    fake = fleet["root"] / "git-refuses.cmd"
+    fake.write_text("@echo fatal: detected dubious ownership in repository at 'fixture' 1>&2\r\n@exit /b " + str(code) + "\r\n", encoding="ascii")
+    update(fleet["manifest"], git_executable=str(fake))
+
+
+@pytest.mark.parametrize("code", [128, 1])
+def test_a_failed_git_query_is_unknown_never_a_head_mismatch(fleet, code):
+    failing_git(fleet, code)
+    report = run_status(fleet)
+    for lane in report["lanes"]:
+        assert lane["head"] == "" and lane["branch"] == ""
+        assert lane["head_matches"] is None, lane["head_matches"]
+        for field in ("head", "branch"):
+            observation = lane["git_observation"][field]
+            assert observation["status"] == "query_failed"
+            assert observation["exit_code"] == code
+            assert "dubious ownership" in observation["error"] and len(observation["error"]) <= 240
+        assert lane["runnable_evidence"] != "observed"
+    assert report["summary"]["fresh_runnable_evidence_lanes"] == 0
+
+
+def test_an_observed_head_is_true_only_on_match_and_false_only_on_an_observed_mismatch(fleet):
+    update(checkpoint(fleet, 0), head="b" * 40)
+    report = run_status(fleet)
+    mismatch, match = report["lanes"][0], report["lanes"][-1]
+    assert mismatch["git_observation"]["head"] == {"status": "observed", "exit_code": 0, "error": None}
+    assert mismatch["head"] == fleet["head"] and mismatch["head_matches"] is False
+    assert match["head_matches"] is True and match["runnable_evidence"] == "observed"

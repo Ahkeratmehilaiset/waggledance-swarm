@@ -203,8 +203,17 @@ function Get-BridgeExactStringField {
     # Top-level, case-exact, string-only read: no payload fallback and no case-insensitive PSObject match.
     if ($null -eq $Record -or $Record.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $null }
     $property = $Record.PSObject.Properties[$Name]
-    if ($null -eq $property -or $property.Name -cne $Name -or $property.Value -isnot [string]) { return $null }
+    if ($null -eq $property -or -not (Test-BridgeOrdinalEqual $property.Name $Name) -or $property.Value -isnot [string]) {
+        return $null
+    }
     return [string]$property.Value
+}
+
+function Test-BridgeOrdinalEqual {
+    param([AllowNull()] [object] $Left, [AllowNull()] [object] $Right)
+    # -ceq/-cne compare by culture: U+00AD/U+200D (and U+200B under pwsh 7) are ignored. Protocol fields are
+    # compared ordinally, both values exact strings (RCO2 64140a03 F1).
+    return ($Left -is [string] -and $Right -is [string] -and [string]::Equals($Left, $Right, [StringComparison]::Ordinal))
 }
 
 function Test-BridgeRequestCancelledWithheld {
@@ -220,30 +229,32 @@ function Test-BridgeRequestCancelledWithheld {
     $requester = Get-BridgeExactStringField $Request 'agent'
     $uuid = Get-BridgeExactStringField $Request 'agent_uuid'
     $task = Get-BridgeExactStringField $Request 'task_id'
-    if (-not $rid -or -not $requester -or -not $task -or -not $uuid -or $uuid -cnotmatch '^[A-Za-z0-9._:-]{1,128}$' -or
-        $digest -cnotmatch '^[0-9a-f]{64}$' -or -not $requestIndex.positions.ContainsKey($Request) -or
+    # \A..\z, never ^..$: .NET '$' also matches before a final LF (Fable 93d7813e). An invalid shape never withholds.
+    if (-not $rid -or -not $requester -or -not $task -or -not $uuid -or
+        $rid -cnotmatch '\A[A-Za-z0-9._:-]{1,128}\z' -or $uuid -cnotmatch '\A[A-Za-z0-9._:-]{1,128}\z' -or
+        $digest -cnotmatch '\A[0-9a-f]{64}\z' -or -not $requestIndex.positions.ContainsKey($Request) -or
         -not $requestIndex.by_task.ContainsKey($task)) {
         return $false
     }
     $requestPosition = $requestIndex.positions[$Request]
     foreach ($event in $requestIndex.by_task[$task]) {
         if ($requestIndex.positions[$event] -le $requestPosition) { continue }
-        if ((Get-BridgeExactStringField $event 'agent') -cne $requester -or
-            (Get-BridgeExactStringField $event 'agent_uuid') -cne $uuid -or
-            (Get-BridgeExactStringField $event 'task_id') -cne $task -or
-            (Get-BridgeExactStringField $event 'status') -cne 'cancelled') {
+        if (-not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'agent') $requester) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'agent_uuid') $uuid) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'task_id') $task) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'status') 'cancelled')) {
             continue
         }
         $payloadProperty = $event.PSObject.Properties['payload']
-        if ($null -eq $payloadProperty -or $payloadProperty.Name -cne 'payload') { continue }
+        if ($null -eq $payloadProperty -or -not (Test-BridgeOrdinalEqual $payloadProperty.Name 'payload')) { continue }
         $payload = $payloadProperty.Value
         if ($null -eq $payload -or $payload.GetType() -ne [System.Management.Automation.PSCustomObject]) { continue }
         $names = @($payload.PSObject.Properties | ForEach-Object { $_.Name })
         if ($names.Count -ne 4 -or
-            (Get-BridgeExactStringField $payload 'schema') -cne 'wd.request-cancellation.v1' -or
-            (Get-BridgeExactStringField $payload 'scope') -cne 'whole_request' -or
-            (Get-BridgeExactStringField $payload 'cancelled_request_id') -cne $rid -or
-            (Get-BridgeExactStringField $payload 'cancelled_request_digest') -cne $digest) {
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'schema') 'wd.request-cancellation.v1') -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'scope') 'whole_request') -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'cancelled_request_id') $rid) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'cancelled_request_digest') $digest)) {
             continue
         }
         return $true

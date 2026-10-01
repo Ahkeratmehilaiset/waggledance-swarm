@@ -306,3 +306,52 @@ def test_a_stale_cancelled_request_is_withheld_from_the_stale_count_too(shell, t
     rows = [_request(ts_utc='2026-09-30T01:00:00Z'), _cancel(ts_utc='2026-09-30T01:05:00Z')]
     out, _ = _select(shell, tmp_path, rows)
     assert out['stale_incoming_count'] == 0 and out['cancelled_withheld_count'] == 1, out
+
+
+# --- ordinal exactness (RCO2 64140a03 F1; Fable 93d7813e .NET $ before a final LF) -------------------------------
+# Culture comparison ignores U+00AD/U+200D (both shells) and U+200B (pwsh 7), and .NET '$' also matches before a
+# final LF: none of these near-misses may withhold. An invalid shape never conclusively withholds (stays open).
+_INVISIBLE = [chr(0x00AD), chr(0x200D), chr(0x200B)]
+_NEAR_MISS_PAYLOAD = [(f'{key} + U+{ord(ch):04X}', key, value + ch) for ch in _INVISIBLE
+                      for key, value in (('cancelled_request_id', _RID), ('cancelled_request_digest', _DIGEST),
+                                         ('schema', 'wd.request-cancellation.v1'), ('scope', 'whole_request'))]
+_NEAR_MISS_ENVELOPE = [(f'{key} + U+{ord(ch):04X}', key, value + ch) for ch in _INVISIBLE
+                       for key, value in (('agent', _LEAD['agent']), ('agent_uuid', _LEAD['agent_uuid']),
+                                          ('task_id', _TASK), ('status', 'cancelled'))]
+_TRAILING_NEWLINE = [(f'{key} + {name}', key, end) for key in ('request_digest', 'agent_uuid', 'request_id')
+                     for name, end in (('LF', '\n'), ('CRLF', '\r\n'))]
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, value', _NEAR_MISS_PAYLOAD, ids=[case[0] for case in _NEAR_MISS_PAYLOAD])
+def test_an_invisible_character_in_the_cancel_payload_never_withholds(shell, tmp_path, name, key, value):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel({key: value})])
+    assert selected == _RID and out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, value', _NEAR_MISS_ENVELOPE, ids=[case[0] for case in _NEAR_MISS_ENVELOPE])
+def test_an_invisible_character_in_the_cancel_envelope_never_withholds(shell, tmp_path, name, key, value):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel(**{key: value})])
+    assert selected == _RID and out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, end', _TRAILING_NEWLINE, ids=[case[0] for case in _TRAILING_NEWLINE])
+def test_a_stored_field_with_a_trailing_newline_is_an_invalid_shape_and_never_withholds(shell, tmp_path, name, key, end):
+    # The same malformed value on both sides: .NET '$' would accept it, an exact \z anchor must not.
+    request = _request(**{key: _request()[key] + end})
+    if key == 'request_digest':
+        cancel = _cancel({'cancelled_request_digest': _DIGEST + end})
+    elif key == 'request_id':
+        cancel = _cancel({'cancelled_request_id': _RID + end})
+    else:
+        cancel = _cancel(agent_uuid=_LEAD['agent_uuid'] + end)
+    out, _ = _select(shell, tmp_path, [request, cancel])
+    assert out.get('cancelled_withheld_count', 0) == 0 and out['open_incoming_count'] == 1, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+def test_the_exact_cancel_still_withholds_after_the_ordinal_repair(shell, tmp_path):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel()])
+    assert selected != _RID and out['cancelled_withheld_count'] == 1, out

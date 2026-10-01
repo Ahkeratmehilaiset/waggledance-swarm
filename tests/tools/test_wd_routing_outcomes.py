@@ -956,3 +956,17 @@ def test_g3_a_malformed_advice_or_attempt_record_alone_never_suppresses_a_valid_
     out = produce([writer_pass()], advices=advices, attempts=attempts)
     assert [o["result"] for o in out["outcomes"]] == ["success"]
     assert reasons(out, extra) == ["malformed"] and reasons(out, "event") == []
+
+
+# --- RCO2 065eb40e J5/J6: changes_requested is an exact status on the decision types only ----------------
+
+def test_j5_a_wrong_case_changes_requested_status_gains_no_veto():
+    out = produce([writer_pass(), _changes_requested(status="Changes_Requested")])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["not_an_evaluation"]
+    assert ro._kind({"type": "decision", "status": "Changes_Requested"}) is None
+
+
+def test_j6_changes_requested_on_a_non_decision_type_gains_no_veto():
+    out = produce([writer_pass(), _changes_requested(typ="message")])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["not_an_evaluation"]
+    assert ro._kind({"type": "message", "status": "changes_requested"}) is None

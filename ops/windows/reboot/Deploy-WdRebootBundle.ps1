@@ -840,6 +840,7 @@ foreach ($required in @(
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
             'tools-bootstrap/.agent-bridge/bin/ClaimLeaseHeartbeat.ps1',
             'tools-bootstrap/.agent-bridge/bin/BridgeNamedMutex.ps1',
+            'tools-bootstrap/.agent-bridge/bin/BridgeV2QueueMutex.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1',

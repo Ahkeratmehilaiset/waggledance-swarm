@@ -1743,6 +1743,7 @@ function Assert-ToolsBootstrapIntegrity {
             'AgentBridgeSessionIdentity.ps1',
         'ClaimLeaseHeartbeat.ps1',
         'BridgeNamedMutex.ps1',
+        'BridgeV2QueueMutex.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
             'Drain-AcceptedBridgeQueue.ps1',

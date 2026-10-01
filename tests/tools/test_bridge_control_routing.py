@@ -181,3 +181,128 @@ def test_sanitized_september25_canonical_reply_is_not_a_new_assignment():
                                               events=[rco, reply, terminal])
     assert result == [rco]
     assert routing._is_answer_like(reply)  # Still available to reply/gate readers.
+
+
+# --- v1 whole_request cancellation in the PowerShell selector (RCO1 4223 reproduction, Lead 22:26Z) --------------
+# A closed wd.request-cancellation.v1 whole_request row by the exact requester agent AND agent_uuid, later on the same
+# task, naming the exact request_id and the stored request_digest WITHHOLDS the request from routing. It is not an
+# answer and grants nothing; anything else (wrong id/digest/position/identity, legacy or malformed shapes) leaves it open.
+_SHELLS = [shell for shell in dict.fromkeys(filter(None, (shutil.which('powershell.exe'), shutil.which('pwsh'))))]
+_LEAD = {'agent': 'codex-lead-1', 'agent_uuid': 'uuid-lead-1', 'session_id': 'sess-a', 'run_id': 'run-a'}
+_RID, _DIGEST, _TASK = 'req-6ba-fixture', 'a' * 64, 'codex-lead-1/fixture-review'
+
+
+def _request(**over):
+    row = dict(_LEAD, ts_utc='2026-10-01T21:54:05Z', type='wake_request', status='assigned', task_id=_TASK,
+               to='codex-tools-1', request_id=_RID, request_digest=_DIGEST, message='synthetic review',
+               payload={'task_revision': 'rev-1'})
+    row.update(over)
+    return row
+
+
+def _cancel(payload_over=None, drop=(), **over):
+    payload = {'schema': 'wd.request-cancellation.v1', 'cancelled_request_id': _RID,
+               'cancelled_request_digest': _DIGEST, 'scope': 'whole_request'}
+    for key in drop:
+        payload.pop(key)
+    payload.update(payload_over or {})
+    row = dict(_LEAD, ts_utc='2026-10-01T21:55:04Z', type='message', status='cancelled', task_id=_TASK,
+               to='codex-tools-1', message='withdraws only', payload=payload)
+    row.update(over)
+    return row
+
+
+def _answer(rid=_RID, digest=_DIGEST, task=_TASK, stamp='2026-10-01T22:02:41Z'):
+    return {'agent': 'codex-tools-1', 'agent_uuid': 'uuid-tools', 'session_id': 's-t', 'run_id': 'r-t',
+            'ts_utc': stamp, 'type': 'message', 'status': 'answered', 'task_id': task, 'to': 'codex-lead-1',
+            'message': 'result', 'in_reply_to_request_id': rid, 'in_reply_to_request_digest': digest,
+            'in_reply_to_requester': {key: _LEAD[key] for key in ('agent', 'agent_uuid', 'session_id', 'run_id')},
+            'payload': {'result': {}}}
+
+
+def _select(shell, tmp_path, rows):
+    (tmp_path / 'shared').mkdir(parents=True)
+    (tmp_path / 'shared/events.jsonl').write_text(
+        ''.join(json.dumps(row, separators=(',', ':')) + '\n' for row in rows), encoding='utf-8')
+    script = Path(__file__).resolve().parents[2] / '.agent-bridge/bin/Get-BridgeNextAction.ps1'
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('AGENT_BRIDGE_', 'WD_', 'PSMODULEPATH'))}
+    env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(tmp_path)
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script),
+                             '-Agent', 'codex-tools-1', '-Now', '2026-10-01T22:20:00Z', '-Json'],
+                            env=env, text=True, capture_output=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    selected = (out.get('incoming') or {}).get('request_id') if out['action'] == 'answer_incoming' else None
+    return out, selected
+
+
+_OTHER_SESSION = {'session_id': 'sess-b', 'run_id': 'run-b'}
+_WITHHELD = [
+    ('C1 exact v1 cancel', [_request(), _cancel()]),
+    ('C2 v1 cancel + corrected r2 answered', [_request(), _cancel(),
+        _request(request_id='req-8c8', request_digest='b' * 64, task_id=_TASK + '-r2', ts_utc='2026-10-01T21:55:05Z'),
+        _answer('req-8c8', 'b' * 64, _TASK + '-r2')]),
+    ('C9 v1 cancel from a later Lead session, same agent_uuid', [_request(), _cancel(**_OTHER_SESSION)]),
+    ('duplicate identical cancels', [_request(), _cancel(), _cancel(ts_utc='2026-10-01T21:55:30Z')]),
+]
+_OPEN = [
+    ('C3 another digest', [_request(), _cancel({'cancelled_request_digest': 'c' * 64})]),
+    ('C4 another request id', [_request(), _cancel({'cancelled_request_id': 'other-id'})]),
+    ('C5 cancel before the request', [_cancel(ts_utc='2026-10-01T21:54:00Z'), _request()]),
+    ('C10 legacy free-form cancel', [_request(), _cancel(drop=('schema', 'scope', 'cancelled_request_digest'),
+                                                         type='decision')]),
+    ('foreign agent_uuid', [_request(), _cancel(agent_uuid='uuid-someone-else')]),
+    ('rekey same label new uuid', [_request(), _cancel(agent_uuid='uuid-lead-2', **_OTHER_SESSION)]),
+    ('blank agent_uuid on the cancel', [_request(), _cancel(agent_uuid='')]),
+    ('agent_uuid missing on the cancel', [_request(), {k: v for k, v in _cancel().items() if k != 'agent_uuid'}]),
+    ('blank agent_uuid on the request', [_request(agent_uuid=''), _cancel(agent_uuid='')]),
+    ('non-string agent_uuid', [_request(), _cancel(agent_uuid=['uuid-lead-1'])]),
+    ('another label with the lead uuid', [_request(), _cancel(agent='operator')]),
+    ('extra payload key', [_request(), _cancel({'production_hold': True})]),
+    ('scope not whole_request', [_request(), _cancel({'scope': 'source_implementation_only'})]),
+    ('status Cancelled case', [_request(), _cancel(status='Cancelled')]),
+    ('status canceled', [_request(), _cancel(status='canceled')]),
+    ('schema v0', [_request(), _cancel({'schema': 'wd.request-cancellation.v0'})]),
+    ('payload key case Schema', [_request(), _cancel({'Schema': 'wd.request-cancellation.v1'}, drop=('schema',))]),
+    ('list id', [_request(), _cancel({'cancelled_request_id': [_RID]})]),
+    ('request without stored digest', [{k: v for k, v in _request().items() if k != 'request_digest'},
+                                       _cancel({'cancelled_request_digest': ''})]),
+    ('cancel on another task', [_request(), _cancel(task_id=_TASK + '-other')]),
+    ('malformed stored digest copied verbatim', [_request(request_digest='A' * 64), _cancel({'cancelled_request_digest': 'A' * 64})]),
+    ('short stored digest copied verbatim', [_request(request_digest='abc'), _cancel({'cancelled_request_digest': 'abc'})]),
+]
+_CLOSED_AS_BEFORE = [
+    ('C6 late answer after the cancel', [_request(), _cancel(), _answer(stamp='2026-10-01T21:59:00Z')]),
+    ('C11 answered no cancel', [_request(), _answer()]),
+]
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _WITHHELD, ids=[case[0] for case in _WITHHELD])
+def test_a_v1_whole_request_cancellation_withholds_the_request_from_routing(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected != _RID and out['open_incoming_count'] == 0, out
+    assert out['cancelled_withheld_count'] == 1 and out['cancelled_withheld_request_ids'] == [_RID], out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _OPEN, ids=[case[0] for case in _OPEN])
+def test_anything_but_the_exact_v1_cancellation_leaves_the_request_open(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected == _RID and out['open_incoming_count'] == 1, out
+    assert out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _CLOSED_AS_BEFORE, ids=[case[0] for case in _CLOSED_AS_BEFORE])
+def test_bound_answers_still_close_and_are_not_counted_as_cancellations(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected is None and out['open_incoming_count'] == 0, out
+    assert out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+def test_a_stale_cancelled_request_is_withheld_from_the_stale_count_too(shell, tmp_path):
+    rows = [_request(ts_utc='2026-09-30T01:00:00Z'), _cancel(ts_utc='2026-09-30T01:05:00Z')]
+    out, _ = _select(shell, tmp_path, rows)
+    assert out['stale_incoming_count'] == 0 and out['cancelled_withheld_count'] == 1, out

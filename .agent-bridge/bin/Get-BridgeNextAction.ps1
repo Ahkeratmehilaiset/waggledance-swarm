@@ -198,6 +198,60 @@ function Test-BridgeRequestStillOpen {
     return $true
 }
 
+function Get-BridgeExactStringField {
+    param([AllowNull()] [object] $Record, [Parameter(Mandatory)] [string] $Name)
+    # Top-level, case-exact, string-only read: no payload fallback and no case-insensitive PSObject match.
+    if ($null -eq $Record -or $Record.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $null }
+    $property = $Record.PSObject.Properties[$Name]
+    if ($null -eq $property -or $property.Name -cne $Name -or $property.Value -isnot [string]) { return $null }
+    return [string]$property.Value
+}
+
+function Test-BridgeRequestCancelledWithheld {
+    <# ROUTING WITHHOLD only, never an answer, completion or permission: a LATER event on the same task by the
+       exact requester agent AND agent_uuid (any session of that identity), status exactly 'cancelled', whose
+       payload is exactly the closed wd.request-cancellation.v1 {schema, cancelled_request_id, cancelled_request_digest,
+       scope: whole_request} naming this request_id and its stored request_digest. Anything else (another id,
+       digest, task, position, label, uuid, blank or non-string identity, legacy or extra keys) leaves the request
+       open; the shared Test-BridgeReplyBinding contract is unchanged. #>
+    param([Parameter(Mandatory)] [object] $Request)
+    $rid = Get-BridgeExactStringField $Request 'request_id'
+    $digest = Get-BridgeExactStringField $Request 'request_digest'
+    $requester = Get-BridgeExactStringField $Request 'agent'
+    $uuid = Get-BridgeExactStringField $Request 'agent_uuid'
+    $task = Get-BridgeExactStringField $Request 'task_id'
+    if (-not $rid -or -not $requester -or -not $task -or -not $uuid -or $uuid -cnotmatch '^[A-Za-z0-9._:-]{1,128}$' -or
+        $digest -cnotmatch '^[0-9a-f]{64}$' -or -not $requestIndex.positions.ContainsKey($Request) -or
+        -not $requestIndex.by_task.ContainsKey($task)) {
+        return $false
+    }
+    $requestPosition = $requestIndex.positions[$Request]
+    foreach ($event in $requestIndex.by_task[$task]) {
+        if ($requestIndex.positions[$event] -le $requestPosition) { continue }
+        if ((Get-BridgeExactStringField $event 'agent') -cne $requester -or
+            (Get-BridgeExactStringField $event 'agent_uuid') -cne $uuid -or
+            (Get-BridgeExactStringField $event 'task_id') -cne $task -or
+            (Get-BridgeExactStringField $event 'status') -cne 'cancelled') {
+            continue
+        }
+        $payloadProperty = $event.PSObject.Properties['payload']
+        if ($null -eq $payloadProperty -or $payloadProperty.Name -cne 'payload') { continue }
+        $payload = $payloadProperty.Value
+        if ($null -eq $payload -or $payload.GetType() -ne [System.Management.Automation.PSCustomObject]) { continue }
+        $names = @($payload.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($names.Count -ne 4 -or
+            (Get-BridgeExactStringField $payload 'schema') -cne 'wd.request-cancellation.v1' -or
+            (Get-BridgeExactStringField $payload 'scope') -cne 'whole_request' -or
+            (Get-BridgeExactStringField $payload 'cancelled_request_id') -cne $rid -or
+            (Get-BridgeExactStringField $payload 'cancelled_request_digest') -cne $digest) {
+            continue
+        }
+        return $true
+    }
+    return $false
+}
+
+$cancelledWithheld = New-Object System.Collections.Generic.List[object]
 $candidateOpenRequests = New-Object System.Collections.Generic.List[object]
 $freshByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $freshRequestsForAgent) {
@@ -217,7 +271,9 @@ foreach ($req in $freshRequestsForAgent) {
 }
 $openEventCount = 0
 foreach ($req in @($freshByKey.Values | Sort-Object ts_utc)) {
-    if (Test-BridgeRequestStillOpen -Request $req) {
+    if ((Test-BridgeRequestStillOpen -Request $req) -and (Test-BridgeRequestCancelledWithheld -Request $req)) {
+        [void]$cancelledWithheld.Add($req)
+    } elseif (Test-BridgeRequestStillOpen -Request $req) {
         [void]$candidateOpenRequests.Add($req)
         $rid = Get-BridgeContractField $req 'request_id'
         $openEventCount += @($freshRequestsForAgent | Where-Object {
@@ -240,7 +296,9 @@ foreach ($req in $staleRequests) {
     Set-BridgeRequestViewEntry $staleByKey $key $req
 }
 foreach ($req in @($staleByKey.Values)) {
-    if (Test-BridgeRequestStillOpen -Request $req) {
+    if ((Test-BridgeRequestStillOpen -Request $req) -and (Test-BridgeRequestCancelledWithheld -Request $req)) {
+        [void]$cancelledWithheld.Add($req)
+    } elseif (Test-BridgeRequestStillOpen -Request $req) {
         [void]$staleOpenRequests.Add($req)
     }
 }
@@ -301,6 +359,9 @@ $result = [pscustomobject]@{
     stale_incoming_count = @($staleOpenRequests | Select-Object -ExpandProperty task_id -Unique).Count
     stale_incoming_request_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
+    # Withheld from routing by an exact v1 whole_request cancellation: NOT answered, completed or accepted.
+    cancelled_withheld_count = $cancelledWithheld.Count
+    cancelled_withheld_request_ids = @($cancelledWithheld | ForEach-Object { [string]$_.request_id } | Sort-Object -Unique)
 }
 if ($kind -eq 'answer_incoming') {
     $result | Add-Member -NotePropertyName incoming -NotePropertyValue $req

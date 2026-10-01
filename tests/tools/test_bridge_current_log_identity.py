@@ -218,6 +218,12 @@ if ($env:S_C_SEAM_ACTION) {
                 [IO.File]::Move($log, (Join-Path $shared 'events.rotated.jsonl'))
                 [IO.File]::WriteAllBytes($log, $bytes)
             }
+            'rotate_other' {
+                $bytes = [IO.File]::ReadAllBytes($log)
+                $new = [Text.Encoding]::UTF8.GetBytes([Text.Encoding]::UTF8.GetString($bytes).Replace('reply', 'REPLY'))
+                [IO.File]::Move($log, (Join-Path $shared 'events.rotated.jsonl'))
+                [IO.File]::WriteAllBytes($log, $new)
+            }
             'generation' {
                 [IO.File]::WriteAllBytes((Join-Path $shared 'events.generation.json'),
                     [Text.Encoding]::ASCII.GetBytes('{"generation":"gen-b"}'))
@@ -276,6 +282,20 @@ def test_a_change_after_the_first_hash_is_unknown(shell, root, seam_script, acti
 @pytest.mark.parametrize("action", ["append", "truncate"])
 def test_a_length_change_after_the_second_hash_is_still_unknown(shell, root, seam_script, action):
     assert seamed(shell, root, seam_script, action, call=2) == UNKNOWN
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("action", ["rotate", "rotate_other", "generation"])
+def test_a_rotation_or_generation_change_after_the_second_hash_is_unknown(shell, root, seam_script, action):
+    # fable-5 A792-F1: the fresh handle stays on the rotated-away file, so only a NEW open of the path after the
+    # second hash sees a rotation (same bytes: identity only; other bytes: identity and hash).
+    before = measure(shell, root)[0]
+    assert seamed(shell, root, seam_script, action, call=2) == UNKNOWN
+    after = measure(shell, root)[0]      # the safe twin: a later normal measurement describes the current log
+    generation = "gen-b" if action == "generation" else "gen-a"
+    assert_complete(after, log(root).read_bytes(), generation)
+    if action != "generation":
+        assert after["file_identity"] != before["file_identity"]
 
 
 @pytest.mark.parametrize("shell", SHELLS)

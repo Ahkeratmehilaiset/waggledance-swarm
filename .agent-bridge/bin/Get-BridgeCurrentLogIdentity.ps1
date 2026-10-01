@@ -20,13 +20,15 @@
      (Get-BridgeReplyStreamPrefixHash, which refuses a short read).
    * observed_utc: UTC after every post-read check passed.
    After hashing, the same handle and a FRESH open must both show the same identity and exactly log_bytes;
-   the fresh handle then hashes the same log_bytes again and must give the same sha256, and its identity and
-   length are checked once more; finally the generation sidecar path and token must be unchanged. An append,
-   truncation, same-length rewrite, rotation or generation change between the first hash and these checks is
-   unknown (measure again). LIMITS: a change after the last check returns is seen only by a later measurement
-   (inherent: this is metadata of what was read, not a lock), and a rewrite that is undone before the second
-   hash (A-B-A) is not seen; the two hashes prove the same bytes were read twice, not a snapshot and not any
-   row authority (bounded cost: two reads of at most -MaxBytes). A log or shared directory that is a
+   the fresh handle then hashes the same log_bytes again and must give the same sha256; a NEW open of the
+   path then checks identity and exactly log_bytes once more (so a rotation after the second hash is seen);
+   finally the generation sidecar path and token must be unchanged. An append, truncation, rotation or
+   generation change between the first hash and these checks, and a same-length rewrite before the second
+   hash completes, are unknown (measure again). LIMITS: a same-length rewrite after the second hash, and any
+   change after the last check returns, are seen only by a later measurement (inherent: this is metadata of
+   what was read, not a lock); a rewrite that is undone before the second hash (A-B-A) is not seen; the two
+   hashes prove the same bytes were read twice, not a snapshot and not any row authority (bounded cost: two
+   reads of at most -MaxBytes and three opens). A log or shared directory that is a
    reparse point, a missing or unreadable log, and a log larger than -MaxBytes are unknown. The log is opened
    read-only with ReadWrite|Delete sharing; nothing is written, cached or emitted, and no exception text (which
    could quote content or paths) is returned. #>
@@ -99,13 +101,18 @@ function Measure-BridgeCurrentLogIdentity {
                 return $null                                   # rotated, appended or truncated
             }
             # A same-length in-place rewrite keeps identity and length: hash the same frozen prefix again on
-            # the fresh handle and require the same bytes (RCO1/fable-5 SC-F1), then recheck the fresh handle.
+            # the fresh handle and require the same bytes (RCO1/fable-5 SC-F1).
             $again = (Get-BridgeReplyStreamPrefixHash -Stream $fresh -Length $length).ToLowerInvariant()
             if ($again -cne $prefix) { return $null }
-            if ((Get-BridgeLogFileIdentity -Stream $fresh) -cne $identity -or [int64]$fresh.Length -ne $length) {
-                return $null
-            }
         } finally { $fresh.Dispose() }
+        # The fresh handle stays on a file that was rotated away after the second hash: recheck identity and
+        # length on a NEW open of the path (fable-5 A792-F1). No third read of the prefix.
+        $final = Open-BridgeLogReadStream -Path $path
+        try {
+            if ((Get-BridgeLogFileIdentity -Stream $final) -cne $identity -or [int64]$final.Length -ne $length) {
+                return $null                                   # rotated, appended or truncated after hash 2
+            }
+        } finally { $final.Dispose() }
     } finally { $stream.Dispose() }
     if ((Get-BridgeEventGenerationPath -Path $path) -cne $generationPath) { return $null }
     $after = Read-BridgeGenerationToken -Path $generationPath

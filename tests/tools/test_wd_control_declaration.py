@@ -339,3 +339,95 @@ def test_shared_cycle_between_rows_is_unknown():
 def test_history_without_declaration_stays_v1_even_with_control_words():
     r = old(request_id="h1", message="HOLD everything, cancel the release", status="cancelled")
     assert classify_all([old(), r], LEAD)[1] == ("v1", None)
+
+
+# ---- GAP D (RCO2 5b799 F4) and the non-authority identity twin (RCO2 5b799 F5, kills M8) ----
+def test_a_non_authority_identity_cannot_declare_even_for_its_own_rows():
+    lane = {"agent": "fable-5", "agent_uuid": "u-lane", "session_id": "s-l", "run_id": "r-l"}
+    own = decl(**lane)
+    assert classify_all([old(**lane), own], lane)[1] == ("unknown", None)
+
+
+def nan_copy(row, value=float("nan")):
+    bad = copy.deepcopy(row)
+    bad["payload"]["score"] = value
+    return bad
+
+
+def test_GAP_D_malformed_duplicate_after_makes_the_declaration_unknown():
+    assert classify_all([old(), decl(), nan_copy(decl())], LEAD) == [("v1", None), ("unknown", None), ("unknown", None)]
+
+
+def test_GAP_D_malformed_duplicate_before_makes_the_declaration_unknown():
+    assert classify_all([old(), nan_copy(decl()), decl()], LEAD)[2] == ("unknown", None)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_GAP_D_any_unrelated_malformed_row_makes_every_declaration_unknown(value):
+    unrelated = nan_copy(old(request_id="z", task_id="t/9"), value)
+    out = classify_all([old(), decl("cancel", dict(TGT)), unrelated], LEAD)
+    assert out == [("v1", None), ("unknown", None), ("unknown", None)]
+
+
+def test_malformed_row_keeps_history_v1():
+    hist = old(request_id="h1", message="HOLD", status="cancelled")
+    assert classify_all([old(), hist, nan_copy(old(request_id="z"))], LEAD) == [
+        ("v1", None), ("v1", None), ("unknown", None)]
+
+
+HOOK_CALLS = []
+
+
+class HookDict(dict):
+    def __getitem__(self, key):
+        HOOK_CALLS.append("getitem"); return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        HOOK_CALLS.append("get"); return dict.get(self, key, default)
+
+    def __contains__(self, key):
+        HOOK_CALLS.append("contains"); return dict.__contains__(self, key)
+
+    def items(self):
+        HOOK_CALLS.append("items"); return dict.items(self)
+
+    def keys(self):
+        HOOK_CALLS.append("keys"); return dict.keys(self)
+
+    def __iter__(self):
+        HOOK_CALLS.append("iter"); return dict.__iter__(self)
+
+    def __eq__(self, other):
+        HOOK_CALLS.append("eq"); return dict.__eq__(self, other)
+
+    __hash__ = None
+
+
+class HookList(list):
+    def __iter__(self):
+        HOOK_CALLS.append("list-iter"); return list.__iter__(self)
+
+    def __getitem__(self, index):
+        HOOK_CALLS.append("list-getitem"); return list.__getitem__(self, index)
+
+    def __len__(self):
+        HOOK_CALLS.append("list-len"); return list.__len__(self)
+
+
+@pytest.mark.parametrize("shape", ["row", "payload", "nested_list"])
+def test_GAP_D_hook_rows_are_unknown_with_zero_hooks_and_declarations_unknown(shape):
+    if shape == "row":
+        hostile = HookDict(decl(request_id="other"))
+    elif shape == "payload":
+        hostile = old(request_id="other"); hostile["payload"] = HookDict(hostile["payload"])
+    else:
+        hostile = old(request_id="other"); hostile["payload"]["steps"] = HookList(["a", "b"])
+    HOOK_CALLS.clear()
+    out = classify_all([old(), decl(), hostile], LEAD)
+    calls = list(HOOK_CALLS)
+    assert calls == []
+    assert out == [("v1", None), ("unknown", None), ("unknown", None)]
+
+
+def test_no_malformed_row_keeps_the_valid_declaration():
+    assert classify_all([old(), decl(), old(request_id="z")], LEAD)[1] == ("none", None)

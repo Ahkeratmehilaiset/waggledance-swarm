@@ -15,7 +15,8 @@ classify_declarations(rows, identity) -> list of (kind, target_request_id), one 
 
 Row decision, first match: a row that S-A _strict refuses (subclass, cycle, depth, node count, non-finite float)
 is unknown; a row with neither payload.control nor an envelope control key is v1 (every historical row keeps the
-S-A v1 rules); identity mismatch or an envelope control key is unknown; the declaration must be the closed
+S-A v1 rules); if ANY row is refused, every declaring row is unknown (its request id cannot be read hook-free, so
+uniqueness and targets are unprovable); identity mismatch or an envelope control key is unknown; the declaration must be the closed
 {schema, task_id, request_id, state, target} with schema wd.task-control-declaration.v1, task_id and request_id
 equal to the envelope (S-A id charset for the request id), state in STATES, envelope request_digest lowercase
 hex64, else unknown; the envelope (type, status) must be (wake_request, assigned|request) and the S-A _signals
@@ -81,6 +82,7 @@ def classify_declarations(rows: Any, identity: Any) -> list:
         raise ValueError("row count over policy")                 # before any row is read
     authority = identity if _identity_valid(identity) else None
     strict = [type(row) is dict and _sa._strict(row) for row in rows]
+    damaged = not all(strict)
     positions: dict = {}
     for index, row in enumerate(rows):
         request_id = _sa._get(row, "request_id") if strict[index] else None
@@ -94,6 +96,9 @@ def classify_declarations(rows: Any, identity: Any) -> list:
         payload = dict.get(row, "payload")
         if not (dict.__contains__(row, "control") or (type(payload) is dict and dict.__contains__(payload, "control"))):
             out.append((V1, None))
+            continue
+        if damaged:
+            out.append((UNKNOWN, None))       # a non-strict row's request id is unreadable hook-free (RCO2 5b799 D)
             continue
         out.append(_classify(rows, strict, positions, index, row, authority))
     return out

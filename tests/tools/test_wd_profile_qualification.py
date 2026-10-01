@@ -378,6 +378,32 @@ def test_a_resealed_receipt_with_inconsistent_class_rows_is_invalid():
     assert pq.router_qualification(forged, BINDING, NOW, evidence()) == []
 
 
+@pytest.mark.parametrize("field,value", [
+    ("wilson_low", 0.9),
+    ("wilson_high", 0.99),
+    ("uncertainty", 0.01),
+])
+def test_resealed_wilson_interval_must_match_unchanged_counts(field, value):
+    # RCO1 B8-3/Q6: resealing proves integrity, not that the Wilson interval
+    # agrees with the row's counts. Keep all other row fields consistent so
+    # another refusal cannot hide removal of the interval equality check.
+    honest = build()
+    assert pq.validate_receipt(honest, BINDING, NOW) == {"valid": True, "reasons": []}
+    row_before = copy.deepcopy(cls(honest, "implementation"))
+    assert row_before["state"] == "qualified" and row_before["reasons"] == []
+    assert (row_before["samples"], row_before["successes"]) == (12, 12)
+    assert row_before[field] != value
+    forged = copy.deepcopy(honest)
+    cls(forged, "implementation")[field] = value
+    assert cls(forged, "implementation") == dict(row_before, **{field: value})
+    reseal(forged)
+    assert forged["receipt_sha256"] != honest["receipt_sha256"]
+    assert forged["receipt_sha256"] == cs.digest({k: v for k, v in forged.items() if k != "receipt_sha256"})
+    assert pq.validate_receipt(forged, BINDING, NOW) == {"valid": False, "reasons": ["class_rows_malformed"]}
+    assert pq.router_qualification(forged, BINDING, NOW, evidence()) == []
+    assert pq.validate_receipt(honest, BINDING, NOW) == {"valid": True, "reasons": []}
+
+
 def test_a_receipt_written_from_nothing_never_reaches_the_router():
     honest = build()
     fabricated = reseal({key: copy.deepcopy(value) for key, value in honest.items() if key != "receipt_sha256"})

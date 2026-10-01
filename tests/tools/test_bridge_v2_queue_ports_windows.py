@@ -164,6 +164,21 @@ def test_a_creation_policy_valueerror_is_refused_naming_it_before_any_wait(tmp_p
     assert kernel32.calls == []
 
 
+def test_a_programming_error_from_creation_stays_visible_and_is_not_a_refusal(tmp_path):
+    # The twin of the conversions here (fable-5 B2): only an OSError and the policy's ValueError become refusals.
+    # A bug in the creation path (a TypeError here) propagates as itself instead of reading as a busy root.
+    kernel32 = FakeKernel32()
+
+    def create(name, k32):
+        raise TypeError("a bug in the creation path")
+
+    mutex = NamedMutexPort(kernel32=kernel32, create=create, last_error=lambda: 0)
+    with pytest.raises(TypeError, match="a bug in the creation path"):
+        with mutex.hold(mutex_name(tmp_path), 1):
+            pytest.fail("the body must not run")
+    assert kernel32.calls == []
+
+
 def test_an_oserror_creation_failure_names_its_type_errno_and_winerror(tmp_path):
     kernel32 = FakeKernel32()
 

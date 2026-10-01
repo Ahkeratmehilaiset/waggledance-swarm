@@ -29,8 +29,12 @@ def git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
-PERSISTENT_FIXTURES = Path("C:/Python/waggledance-agent-worktrees/fable-5-bridge-v2-bundle-lists-20260930/"
-                           ".codex-audit/wave-candidate/f28fix-fixtures")
+# A persistent C: folder outside TEMP in this checkout's own gitignored .codex-audit (the source repository must be
+# on persistent C: too); a checkout anywhere else cannot host those cases and skips them.
+PERSISTENT_FIXTURES = ROOT / ".codex-audit" / "f28-release-fixtures"
+PERSISTENT_C = str(ROOT).upper().startswith("C:\\") and not any(
+    (str(ROOT).upper() + "\\").startswith(str(Path(value).resolve()).upper().rstrip("\\") + "\\")
+    for value in (os.environ.get("TEMP"), os.environ.get("TMP")) if value)
 
 
 def junction(link: Path, target: Path) -> None:
@@ -40,6 +44,8 @@ def junction(link: Path, target: Path) -> None:
 @pytest.fixture
 def cdir():
     """A fresh persistent C: folder outside TEMP; junctions made in it are removed before the folder is."""
+    if not PERSISTENT_C:
+        pytest.skip("needs a checkout on persistent C: outside TEMP")
     root = PERSISTENT_FIXTURES / uuid.uuid4().hex
     root.mkdir(parents=True)
     links: list[Path] = []

@@ -191,9 +191,17 @@ def dispatches(requests: Any, now: Any) -> dict:
     now = now.astimezone(timezone.utc)
     rejected: list[dict] = []
     groups: dict[str, list[dict]] = {}
+    poisoned: set[str] = set()
     for index, request in enumerate(requests):
         if type(request) is not dict or not _strict_json(request) or digest(request) is None:
             rejected.append(_rejection(None, R_MALFORMED, index))
+            # A malformed copy that names a valid id still differs from every other copy of that id, so the
+            # whole id is poisoned. Read without a lookup: only exact-str keys and value are compared.
+            if type(request) is dict:
+                for key, value in dict.items(request):
+                    if (type(key) is str and key == "request_id" and type(value) is str
+                            and REQUEST_ID.fullmatch(value)):
+                        poisoned.add(value)
             continue
         request_id = request.get("request_id")
         if type(request_id) is not str or not REQUEST_ID.fullmatch(request_id):
@@ -205,7 +213,7 @@ def dispatches(requests: Any, now: Any) -> dict:
     candidates: list[dict] = []
     for request_id, copies in groups.items():
         # Same id, other content or another request_digest: nothing under that id is trusted.
-        if len({digest(copy) for copy in copies}) != 1:
+        if request_id in poisoned or len({digest(copy) for copy in copies}) != 1:
             rejected.append(_rejection(request_id, R_CONFLICT))
             continue
         if len(copies) > 1:

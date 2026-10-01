@@ -259,6 +259,36 @@ def test_same_id_other_content_poisons_every_copy_including_the_valid_one(change
         assert reasons(result) == [(good["request_id"], "request_binding_conflict")]
 
 
+@pytest.mark.parametrize("spoil", [
+    lambda e: e["payload"].__setitem__("result_contract", {"x": float("nan")}),
+    lambda e: e.__setitem__("write_scope", tuple(e["write_scope"])),
+    lambda e: e.__setitem__(Liar("extra"), 1),
+])
+def test_a_malformed_copy_of_a_valid_id_poisons_the_id(spoil):
+    good = request()
+    bad = copy.deepcopy(good)
+    spoil(bad)
+    for order in ([good, bad], [bad, good]):
+        result = dispatches(order, NOW)
+        assert result["dispatches"] == []
+        assert ("2eacadad-133c-471a-85f1-f35dd0d27e10", "request_binding_conflict") in reasons(result)
+        assert (None, "request_malformed") in reasons(result)
+
+
+def test_a_malformed_dict_with_a_hostile_key_runs_no_hook_while_its_id_is_read():
+    class Tripwire(str):
+        def __eq__(self, other):
+            raise KeyboardInterrupt("hook ran")
+
+        __hash__ = str.__hash__
+
+    bad = request()
+    del bad["request_id"]
+    bad[Tripwire("request_id")] = "other"   # the only id-like key: a lookup of "request_id" would call __eq__
+    result = dispatches([bad], NOW)
+    assert [(r["reason"], r["index"]) for r in result["rejected"]] == [("request_malformed", 0)]
+
+
 def test_a_poisoned_id_does_not_touch_another_valid_id():
     bad, bad2, fine = request("id-1"), request("id-1", request_digest=DIGEST_B), request("id-2", task="other/task")
     result = dispatches([bad, fine, bad2], NOW)

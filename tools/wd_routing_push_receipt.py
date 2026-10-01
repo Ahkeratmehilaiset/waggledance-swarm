@@ -47,6 +47,10 @@ Persistence (opt-in; only with a caller-explicit approved directory):
   unlink. Its final path is checked against the directory before any byte is written.
 * Cleanup never masks the outcome: a close failure is reported as ``cleanup`` on success, as
   ``.cleanup`` on a refusal, and as an exception note on a cancellation, which always propagates.
+  Every close is checked (RCO1, Lead 18:27Z): a directory or collision handle whose CloseHandle
+  returns FALSE is ``close_failed:CloseHandle`` and a descriptor close that raises is
+  ``close_failed:<Type>``, so ``cleanup`` is never "ok" when a closure is unknown. The first failure is
+  reported; all of them are in the note. A published receipt is never undone and nothing is retried.
 * Limitations (named, not closed): the directory itself stays shareable for writing (the hard link needs
   it), so a writer inside ``approved_root`` CAN turn a still-empty directory into a junction in place
   between the lock and the temporary create. Measured (elevated and Basic-User tokens, real twin): the
@@ -322,9 +326,22 @@ def _final_path(handle: Any) -> str:
     return text[4:] if text.startswith("\\\\?\\") and not text.startswith("\\\\?\\UNC\\") else ""
 
 
-def _close_handles(handles: list) -> None:
+def _close_handles(handles: list) -> list:
+    """Close every handle (each one is attempted) and return the failures: never a silent FALSE."""
+    failures = []
     for handle in reversed(handles):
-        _kernel32.CloseHandle(handle)
+        if not _kernel32.CloseHandle(handle):
+            failures.append("close_failed:CloseHandle")
+    return failures
+
+
+def _note_cleanup(primary: BaseException, failures: list) -> None:
+    """Attach close failures to an exception that is already propagating; never replace or suppress it."""
+    if not failures:
+        return
+    primary.add_note("push receipt cleanup: " + ", ".join(failures))
+    if isinstance(primary, PushReceiptRefused) and primary.cleanup == "ok":
+        primary.cleanup = failures[0]
 
 
 def _lock_directory(folder: Path) -> list:
@@ -352,8 +369,8 @@ def _lock_directory(folder: Path) -> list:
         if _volatile(Path(_final_path(handles[-1]))):
             _refuse("directory_volatile")
         return handles
-    except BaseException:
-        _close_handles(handles)
+    except BaseException as primary:
+        _note_cleanup(primary, _close_handles(handles))
         raise
 
 
@@ -368,9 +385,10 @@ def _create_relative(directory: Any, name: str) -> Any:
     return handle.value
 
 
-def _read_relative(directory: Any, name: str) -> bytes | None:
-    """The bytes of the existing ``name`` in the held directory, opened relative to its handle without
-    following a reparse point (RCO1 E2); None (so a conflict) for a link, a non-file or an oversized file."""
+def _read_relative(directory: Any, name: str) -> tuple:
+    """(bytes or None, close failures) for the existing ``name`` in the held directory, opened relative to
+    its handle without following a reparse point (RCO1 E2); None (so a conflict) for a link, a non-file or
+    an oversized file. A close failure is returned, never swallowed (RCO1, Lead 18:27Z)."""
     text = _UnicodeString(len(name) * 2, len(name) * 2, name)
     attributes = _ObjectAttributes(ctypes.sizeof(_ObjectAttributes), directory, ctypes.pointer(text), 0x40, None, None)
     handle = _HANDLE()
@@ -381,25 +399,30 @@ def _read_relative(directory: Any, name: str) -> bytes | None:
                                  0) & 0xFFFFFFFF
     if status != 0:
         _refuse("receipt_collision_unreadable:%08x" % status)
+    failures: list = []
     try:
-        info = _AttributeTagInfo()
-        if (not _kernel32.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info),
-                                                       ctypes.sizeof(info))
-                or info.FileAttributes & (_REPARSE | _DIRECTORY)):
-            return None
-        descriptor = msvcrt.open_osfhandle(handle.value, os.O_RDONLY)
-        handle = None   # the descriptor owns it now
         try:
-            data = os.read(descriptor, MAX_RECEIPT_BYTES + 1)
-        finally:
+            info = _AttributeTagInfo()
+            if (not _kernel32.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info),
+                                                           ctypes.sizeof(info))
+                    or info.FileAttributes & (_REPARSE | _DIRECTORY)):
+                return None, failures
+            descriptor = msvcrt.open_osfhandle(handle.value, os.O_RDONLY)
+            handle = None   # the descriptor owns it now
             try:
-                os.close(descriptor)
-            except OSError:   # a read-only close failure never replaces the conflict outcome (F4)
-                pass
-        return data if len(data) <= MAX_RECEIPT_BYTES else None
-    finally:
-        if handle is not None:
-            _kernel32.CloseHandle(handle)
+                data = os.read(descriptor, MAX_RECEIPT_BYTES + 1)
+            finally:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:   # recorded; it never replaces the conflict outcome (F4)
+                    failures.append("close_failed:" + type(exc).__name__)
+            return (data if len(data) <= MAX_RECEIPT_BYTES else None), failures
+        finally:
+            if handle is not None and not _kernel32.CloseHandle(handle):
+                failures.append("close_failed:CloseHandle")
+    except BaseException as primary:
+        _note_cleanup(primary, failures)
+        raise
 
 
 def _link_relative(handle: Any, directory: Any, name: str) -> int:
@@ -436,15 +459,17 @@ def persist_receipt(receipt: Any, directory: Any, *, approved_root: Any) -> dict
     name = receipt["receipt_digest"] + ".json"
     temporary = ".%s.%s.tmp" % (receipt["receipt_digest"], uuid.uuid4().hex)
     handles = _lock_directory(folder)
+    failures: list = []   # every close failure, in order; cleanup is "ok" only when this stays empty
     try:
         directory_handle = handles[-1]
         handle = _create_relative(directory_handle, temporary)
         try:
             descriptor = msvcrt.open_osfhandle(handle, os.O_WRONLY)
         except BaseException:
-            _kernel32.CloseHandle(handle)   # delete-on-close removes the temporary file
+            if not _kernel32.CloseHandle(handle):   # delete-on-close removes the temporary file
+                failures.append("close_failed:CloseHandle")
             raise
-        status, cleanup = None, "ok"
+        status = None
         try:
             if _norm(Path(_final_path(handle) or "?")) != _norm(Path(_final_path(directory_handle)) / temporary):
                 _refuse("directory_drifted")
@@ -459,27 +484,29 @@ def persist_receipt(receipt: Any, directory: Any, *, approved_root: Any) -> dict
             if linked == 0:
                 status = "created"
             elif linked == _STATUS_OBJECT_NAME_COLLISION:
-                if _read_relative(directory_handle, name) != data:
+                existing, read_failures = _read_relative(directory_handle, name)
+                failures.extend(read_failures)
+                if existing != data:
                     _refuse("receipt_conflict")
                 status = "unchanged"
             else:
                 _refuse("receipt_link_failed:%08x" % linked)
-        except BaseException as primary:
+        except BaseException:
             try:
                 os.close(descriptor)
-            except OSError as exc:   # never replaces the refusal or the cancellation
-                cleanup = "close_failed:" + type(exc).__name__
-                primary.add_note("push receipt cleanup: " + cleanup)
-                if isinstance(primary, PushReceiptRefused):
-                    primary.cleanup = cleanup
+            except OSError as exc:   # recorded below; never replaces the refusal or the cancellation
+                failures.append("close_failed:" + type(exc).__name__)
             raise
         try:
             os.close(descriptor)
         except OSError as exc:   # the receipt is published; report the cleanup, do not hide the status
-            cleanup = "close_failed:" + type(exc).__name__
-    finally:
-        _close_handles(handles)
-    return {"path": str(folder / name), "status": status, "cleanup": cleanup}
+            failures.append("close_failed:" + type(exc).__name__)
+    except BaseException as primary:
+        failures.extend(_close_handles(handles))
+        _note_cleanup(primary, failures)
+        raise
+    failures.extend(_close_handles(handles))
+    return {"path": str(folder / name), "status": status, "cleanup": failures[0] if failures else "ok"}
 
 
 def _unique_pairs(pairs: list) -> dict:

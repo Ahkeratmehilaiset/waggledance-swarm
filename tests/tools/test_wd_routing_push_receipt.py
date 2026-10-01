@@ -677,3 +677,130 @@ def test_the_module_reads_no_clock_environment_network_or_process():
     for forbidden in ("datetime.now", "utcnow", "time.time", "os.environ", "subprocess", "socket", "urllib",
                       "time.sleep"):
         assert forbidden not in source, forbidden
+
+
+# --- every close is checked: cleanup is never "ok" when a closure is unknown (RCO1, Lead 18:27Z) ----------
+
+def _close_handle_false(monkeypatch):
+    """Every CloseHandle really closes, then reports FALSE (no handle leaks)."""
+    real = pr._kernel32.CloseHandle
+
+    def close_then_false(handle):
+        real(handle)
+        return False
+
+    monkeypatch.setattr(pr._kernel32, "CloseHandle", close_then_false)
+
+
+def _read_close_fails(monkeypatch):
+    """Only the descriptor close inside _read_relative raises (after a real close)."""
+    real_close, real_read, inside = os.close, pr._read_relative, []
+
+    def close(descriptor):
+        real_close(descriptor)
+        if inside:
+            raise OSError(5, "read close failed")
+
+    def read(directory, name):
+        inside.append(True)
+        try:
+            return real_read(directory, name)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(pr.os, "close", close)
+    monkeypatch.setattr(pr, "_read_relative", read)
+
+
+@windows_only
+def test_close_a_clean_publish_reports_ok(approved):
+    root, folder = approved
+    assert pr.persist_receipt(build(), folder, approved_root=root)["cleanup"] == "ok"
+
+
+@windows_only
+def test_close_a_false_directory_close_after_publishing_is_reported_and_keeps_the_receipt(approved, monkeypatch):
+    root, folder = approved
+    _close_handle_false(monkeypatch)
+    result = pr.persist_receipt(build(), folder, approved_root=root)
+    assert (result["status"], result["cleanup"]) == ("created", "close_failed:CloseHandle")
+    assert [p.name for p in folder.iterdir()] == [Path(result["path"]).name]   # published fact not undone
+
+
+@windows_only
+def test_close_a_failed_read_close_on_an_identical_retry_is_reported(approved, monkeypatch):
+    root, folder = approved
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+    _read_close_fails(monkeypatch)
+    result = pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (result["status"], result["cleanup"]) == ("unchanged", "close_failed:OSError")
+
+
+@windows_only
+@pytest.mark.parametrize("fault, expected", [(_read_close_fails, "close_failed:OSError"),
+                                             (_close_handle_false, "close_failed:CloseHandle")])
+def test_close_a_close_failure_on_a_conflict_is_recorded_and_never_replaces_it(approved, monkeypatch, fault, expected):
+    root, folder = approved
+    receipt = build()
+    (folder / (receipt["receipt_digest"] + ".json")).write_bytes(b"{}\n")
+    fault(monkeypatch)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", expected)
+    assert caught.value.__notes__[0].startswith("push receipt cleanup: " + expected)
+
+
+@windows_only
+def test_close_a_false_close_during_cancellation_is_noted_and_the_cancellation_propagates(approved, monkeypatch):
+    root, folder = approved
+
+    def cancel(descriptor):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pr.os, "fsync", cancel)
+    _close_handle_false(monkeypatch)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    assert caught.value.__notes__[0].startswith("push receipt cleanup: close_failed:CloseHandle")
+    assert list(folder.iterdir()) == []
+
+
+@windows_only
+def test_close_a_false_close_while_refusing_the_lock_is_reported_on_the_refusal(approved, monkeypatch):
+    root, folder = approved
+    _close_handle_false(monkeypatch)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), folder / "missing", approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("directory_missing", "close_failed:CloseHandle")
+
+
+@windows_only
+def test_close_a_false_close_of_the_collision_link_handle_is_reported(approved, tmp_path, monkeypatch):
+    # The existing name is a link, so _read_relative closes its own handle (not a descriptor).
+    root, folder = approved
+    receipt = build()
+    decoy = tmp_path / "decoy.json"
+    decoy.write_bytes(pr.canonical_bytes(receipt) + b"\n")
+    try:
+        os.symlink(decoy, folder / (receipt["receipt_digest"] + ".json"))
+    except OSError:
+        pytest.skip("symlink creation not permitted for this token")
+    real_close, real_read, inside = pr._kernel32.CloseHandle, pr._read_relative, []
+
+    def close(handle):
+        result = real_close(handle)
+        return False if inside else result
+
+    def read(directory, name):
+        inside.append(True)
+        try:
+            return real_read(directory, name)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(pr._kernel32, "CloseHandle", close)
+    monkeypatch.setattr(pr, "_read_relative", read)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", "close_failed:CloseHandle")

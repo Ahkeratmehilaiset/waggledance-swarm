@@ -828,7 +828,29 @@ function Invoke-WdNativeToolsWakeStep {
             $age = ([DateTimeOffset]::UtcNow - $queuedAt).TotalSeconds
             # Clock skew is unknown evidence, not a normal debounce/backoff.
             # Keep the pending wake held; never infer consumption or resubmit.
-            if ($age -lt 0) { return 'unknown_future_timestamp' }
+            if ($age -lt 0) {
+                # One durable observation per delivery (O2), created once and never rewritten: visibility
+                # only. It completes, retries and authorizes nothing; its failure is only a warning.
+                $futureId = if ($previous.PSObject.Properties['delivery_id']) { [string]$previous.delivery_id } else { '' }
+                if ($futureId -cmatch '^[0-9a-f]{32}$') {
+                    $futureObservation = $StatePath + '.unknown-future-' + $futureId
+                    if (-not [IO.File]::Exists($futureObservation)) {
+                        try {
+                            [void](Assert-WdTurnPath $futureObservation)
+                            $futureRecord = [ordered]@{schema='wd.native-wake-unknown-clock.v1';agent=$Agent;thread_id=[string]$previous.thread_id;
+                                delivery_id=$futureId;status='unknown_future_timestamp';record_updated_at_utc=[string]$stamp;
+                                observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');ahead_seconds=[long][Math]::Floor(-$age);
+                                meaning='the relay record is stamped ahead of this host clock; the pending wake stays held and is never resubmitted';
+                                resolution='operator_clock_reconciliation';retry='never'}
+                            $futureBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($futureRecord | ConvertTo-Json -Depth 3) + "`n")
+                            $futureStream = [IO.File]::Open($futureObservation, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                            try { $futureStream.Write($futureBytes, 0, $futureBytes.Length); $futureStream.Flush($true) } finally { $futureStream.Dispose() }
+                        } catch [Management.Automation.PipelineStoppedException] { throw }
+                        catch { Write-Warning -WarningAction Continue ('Native wake future-clock observation could not be written: ' + $_.Exception.Message) }
+                    }
+                }
+                return 'unknown_future_timestamp'
+            }
             if ($retry) {
                 $rejections = if ($previous.PSObject.Properties['rejections']) { [int]$previous.rejections } else { 1 }
                 $backoff = [Math]::Min(600, 30 * [Math]::Pow(2, [Math]::Min(5, [Math]::Max(0, $rejections - 1))))
@@ -943,15 +965,18 @@ function Invoke-WdNativeToolsWakeStep {
         }
         if (-not $script:WdNativePromptAlerts.ContainsKey($alertKey)) {
             $script:WdNativePromptAlerts[$alertKey] = $true
-            Write-Warning 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required'
+            # After a successful queue call every warning here is visible but never terminating (O1), even under
+            # WarningPreference Stop: the delivery is complete and must not unwind before its snapshot is removed.
+            Write-Warning -WarningAction Continue 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required'
             if ($SessionId -cnotmatch '^[A-Za-z0-9._:-]{1,160}$') {
                 # A deployment generation is not a lane session. Publishing
                 # under it poisons last_<lane> and future responder bindings.
-                Write-Warning 'Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state'
+                Write-Warning -WarningAction Continue 'Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state'
             } else { try {
                 [void](Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId -Worktree $Worktree `
                     -RuntimeRoot (Split-Path -Parent $WakePath) -SessionId $SessionId -ErrorText 'native_wake_prompt_integrity')
-            } catch { Write-Warning 'Native wake prompt alert unavailable; degradation retained in relay state' } }
+            } catch [Management.Automation.PipelineStoppedException] { throw }
+            catch { Write-Warning -WarningAction Continue 'Native wake prompt alert unavailable; degradation retained in relay state' } }
         }
     }
     if ($env:WD_BRIDGE_BIN) {
@@ -973,7 +998,8 @@ function Invoke-WdNativeToolsWakeStep {
                     }
                 }
             }
-        } catch { Write-Warning ('Native relay latency observation unavailable: ' + $_.Exception.Message) }
+        } catch [Management.Automation.PipelineStoppedException] { throw }
+        catch { Write-Warning -WarningAction Continue ('Native relay latency observation unavailable: ' + $_.Exception.Message) }
     }
     [IO.File]::Delete($snapshot)
     return 'queued'

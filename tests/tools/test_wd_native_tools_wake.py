@@ -1310,7 +1310,102 @@ $results=@(1..2 | ForEach-Object {{
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     expected = 'unknown_future_timestamp' if future else ('debounced' if status == 'queued' else 'rejected_backoff')
     assert result == dict(results=[expected, expected], calls=0)
+    after = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    assert {name: after.get(name) for name in before} == before          # nothing existing is touched
+    added = sorted(set(after) - set(before))
+    if not future:
+        assert added == []
+        return
+    # O2: one durable UNKNOWN observation, created once over both polls; it grants and completes nothing.
+    assert added == ['native-bridge-wake.json.unknown-future-' + '1' * 32]
+    observation = json.loads(after[added[0]].decode('utf-8'))
+    assert {key: observation[key] for key in ('schema', 'agent', 'thread_id', 'delivery_id', 'status', 'retry',
+                                              'resolution', 'record_updated_at_utc')} == dict(
+        schema='wd.native-wake-unknown-clock.v1', agent='codex-tools-1', thread_id=THREAD, delivery_id='1' * 32,
+        status='unknown_future_timestamp', retry='never', resolution='operator_clock_reconciliation',
+        record_updated_at_utc=record['updated_at_utc'])
+    assert observation['ahead_seconds'] >= 3500
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('warning_preference', ['Continue', 'Stop'])
+def test_a_refused_future_clock_observation_is_a_warning_never_a_stop_or_a_send(tmp_path, ps, warning_preference):
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('pending wake')
+    state_path.write_text(json.dumps(dict(schema='wd.native-tools-wake.v1', status='queued', delivery_id='1' * 32,
+        thread_id=THREAD, updated_at_utc=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        receipt='model_turn_started')))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    script = f"$ErrorActionPreference='Stop'\n$WarningPreference='{warning_preference}'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += f"""
+$realAssert=${{function:Assert-WdTurnPath}}
+function Assert-WdTurnPath {{
+ param($Path)
+ if ($Path -like '*.unknown-future-*') {{throw 'fixture observation refused'}}
+ & $realAssert $Path
+}}
+$script:calls=0
+function Send-WdNativeToolsQueueMessage {{$script:calls++;throw 'must not submit'}}
+$out=@(Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation fixture -NativePid 123 3>&1)
+$warnings=@($out | Where-Object {{ $_ -is [Management.Automation.WarningRecord] }} | ForEach-Object {{ [string]$_.Message }})
+$results=@($out | Where-Object {{ $_ -isnot [Management.Automation.WarningRecord] }})
+@{{results=$results;calls=$script:calls;warnings=$warnings}}|ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['results'] == ['unknown_future_timestamp'] and result['calls'] == 0
+    assert [w for w in result['warnings'] if w.startswith('Native wake future-clock observation could not be written: ')]
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('warning_preference', ['Stop', 'Continue'])
+@pytest.mark.parametrize('session', ['', 'sess-fixture-1'], ids=['alert_skipped', 'alert_refused'])
+def test_post_send_warnings_stay_visible_and_never_unwind_a_queued_delivery(tmp_path, ps, warning_preference, session):
+    """O1: after the queue call succeeded, the degraded-prompt, alert and latency warnings are visible warnings,
+    never a terminating error, under WarningPreference Stop too: the delivery completes once (queued, snapshot
+    removed) and nothing is resubmitted."""
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('wake before delivery')
+    telemetry = tmp_path / 'telemetry-bin'
+    telemetry.mkdir()
+    (telemetry / 'BridgeTelemetry.ps1').write_text("throw 'fixture telemetry unavailable'\n")
+    script = f"$ErrorActionPreference='Stop'\n$WarningPreference='{warning_preference}'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += load(TOOLS, 'Get-WdInlineNativeWakeMessage')
+    from test_wd_native_wake_prompt import relay_bundle_setup
+    script += relay_bundle_setup(tmp_path)
+    script += f"""
+$env:WD_BRIDGE_BIN={q(telemetry)}
+$script:calls=0
+function Get-WdVerifiedNativeWakeMessage {{ param($Agent,$DeliveryId) throw 'fixture compact procedure unavailable' }}
+function Invoke-WdContinuityOperatorNotice {{ throw 'fixture notice refused' }}
+function Send-WdNativeToolsQueueMessage {{ param($CliPath,$ThreadId,$Message,$Worktree) $script:calls++; 'queue-fixture' }}
+$out=@(Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation pinned -NativePid 123 -SessionId '{session}' 3>&1)
+$warnings=@($out | Where-Object {{ $_ -is [Management.Automation.WarningRecord] }} | ForEach-Object {{ [string]$_.Message }})
+$results=@($out | Where-Object {{ $_ -isnot [Management.Automation.WarningRecord] }})
+@{{results=$results;calls=$script:calls;warnings=$warnings}}|ConvertTo-Json -Compress
+"""
+    run = _run_powershell(script, executable=ps)
+    result = json.loads(run.stdout)
+    state = json.loads(state_path.read_text(encoding='utf-8-sig'))
+    assert result['results'] == ['queued'] and result['calls'] == 1, run.stdout + run.stderr
+    assert state['status'] == 'queued' and state['prompt_mode'] == 'inline_degraded'
+    assert not wake.exists() and not list(tmp_path.glob('native-bridge-wake.json.wake*'))
+    warnings = result['warnings']
+    assert 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required' in warnings
+    alert = ('Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state' if not session
+             else 'Native wake prompt alert unavailable; degradation retained in relay state')
+    assert alert in warnings
+    assert 'Native relay latency observation unavailable: fixture telemetry unavailable' in warnings
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

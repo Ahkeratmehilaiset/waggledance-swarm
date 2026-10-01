@@ -7,7 +7,8 @@ passes: the parsed events of one read of the canonical log, that read's own snap
 log identity the caller observed, its explicit offset-aware ``now`` and an explicit freshness bound. It opens
 no file and reads no clock, environment, shared reader, queue, provider or process, and nothing calls it
 yet. It is MECHANICAL correlation: an actor label is a label, not provenance, and nothing here says
-identity_verified. Design: claude-rco-2 870a7df3 (.codex-audit/rco2-cancellation-port-design-20261001).
+identity_verified. Design: claude-rco-2 870a7df3 (.codex-audit/rco2-cancellation-port-design-20261001);
+repair of claude-rco-2 80813c0d H-1, E-1 and A-1.
 
 Output ``wd.routing-cancellation-derivation.v1`` (closed)::
 
@@ -21,26 +22,39 @@ Rules (fail closed):
 
 * Every input is checked FIRST to be an acyclic, bounded tree of exact built-ins (dict with exact str keys,
   list, str, int, bool, finite float, None); a foreign or subclass object anywhere runs no hook and makes the
-  whole result incomplete (``input_malformed``).
-* Coverage is complete only when ``snapshot`` = {log_generation, file_identity, snapshot_bytes, prefix_sha256,
-  observed_utc, truncated} has ``truncated`` exactly False, names the SAME generation, file identity, byte
-  length and full-prefix sha256 as ``current_log`` = {log_generation, file_identity, log_bytes, prefix_sha256},
-  and was observed at or before ``now`` and no more than ``max_age_seconds`` (caller policy, no default)
-  earlier. A frozen historical inventory therefore never counts as current cancellation coverage.
+  whole result incomplete (``input_malformed``). Each event is bounded separately (MAX_DEPTH levels and
+  MAX_EVENT_NODES nodes) and the list holds at most MAX_EVENTS events (``event_count_over_policy``), so a
+  whole-log read stays derivable at real-log scale while no single input is unbounded.
+* Coverage is complete only when ``snapshot`` = {schema: wd.routing-cancellation-snapshot.v1, log_generation,
+  file_identity, snapshot_bytes, prefix_sha256, observed_utc, truncated, event_count, events_sha256} (closed)
+  has ``truncated`` exactly False, names the SAME generation, file identity, byte length and full-prefix
+  sha256 as ``current_log`` = {log_generation, file_identity, log_bytes, prefix_sha256}, and was observed at
+  or before ``now`` and no more than ``max_age_seconds`` (caller policy, no default) earlier. A frozen
+  historical inventory therefore never counts as current cancellation coverage.
+* The events must be EXACTLY the parsed list that snapshot describes: ``event_count`` equals their number and
+  ``events_sha256`` equals the sha256 of their canonical JSON (``json.dumps(events, sort_keys=True,
+  separators=(",", ":"), ensure_ascii=True, allow_nan=False)`` as ASCII bytes, lowercase hex), recomputed here
+  after the strict check. An omitted, added, reordered or changed event is ``event_coverage_mismatch``. This
+  is still caller-side CORRELATION, not provenance: the snapshot labels are only as true as their reader.
 * Only an event with agent exactly ``codex-lead-1``, status exactly ``cancelled``, a non-empty task_id and the
   closed payload ``wd.request-cancellation.v1`` = {schema, cancelled_request_id, cancelled_request_digest,
   scope: "whole_request"} is a cancellation FACT; the digest is copied verbatim, never recomputed.
-* Any other authority cancellation (the legacy free-form shapes, a partial or list form, a missing or malformed
-  digest, extra keys) makes its TASK unknown: never a fact, never ignored, and no legacy event is reinterpreted
-  as live authority. One whose task cannot be read makes the whole result incomplete
-  (``cancellation_unattributable``). Contradictory facts (one request with two digests, or one request id under
-  two tasks) make every task involved unknown. A cancellation by any other label is not read: a label cannot
-  cancel the authority's dispatch.
-* Operator HOLDs and free-text controls outside this contract are NOT handled here and stay unknown to callers.
+* Every other CONTROL-SHAPED authority event makes its TASK unknown: never a fact, never ignored, and no legacy
+  event is reinterpreted as live authority. Control-shaped means a status or type containing a CONTROL_STEMS
+  stem after casefold (Cancelled, canceled, HOLD, on_hold, paused, withdrawn, superseded, ...), or a payload
+  with such a stem in any key at any depth (cancelled_request_id, production_hold, ...) or in the str value of
+  a DIRECTIVE_KEYS key (action: pause). A casefolded ``Cancelled`` is never promoted to a fact. Task ids such
+  a payload names under a task key (cancelled_task_id, held_task_ids, ...) are unknown too. One whose own task
+  or a named task cannot be read makes the whole result incomplete (``cancellation_unattributable``).
+  Contradictory facts (one request with two digests, or one request id under two tasks) make every task
+  involved unknown. An event by any other label is not read: a label cannot control the authority's dispatch.
+* Free text (message) is not parsed, and an over-broad stem only makes a task unknown, never clear.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import math
 import re
 from typing import Any
@@ -52,25 +66,35 @@ FACT_FIELDS = ("schema", "cancelled_request_id", "cancelled_request_digest", "sc
 WHOLE_REQUEST = "whole_request"
 AUTHORITY = "codex-lead-1"
 CANCELLED_STATUS = "cancelled"
-SNAPSHOT_FIELDS = ("log_generation", "file_identity", "snapshot_bytes", "prefix_sha256", "observed_utc", "truncated")
+SNAPSHOT_SCHEMA = "wd.routing-cancellation-snapshot.v1"
+SNAPSHOT_FIELDS = ("schema", "log_generation", "file_identity", "snapshot_bytes", "prefix_sha256", "observed_utc",
+                   "truncated", "event_count", "events_sha256")
 CURRENT_LOG_FIELDS = ("log_generation", "file_identity", "log_bytes", "prefix_sha256")
+CONTROL_STEMS = ("cancel", "hold", "held", "paus", "withdr", "supersed", "revok", "abort", "suspend", "freez", "frozen",
+                 "halt", "stop", "rescind", "retract")
+DIRECTIVE_KEYS = frozenset({"action", "control", "command", "directive", "decision", "state", "status", "mode",
+                            "kind", "type"})
 MAX_DEPTH = 32
-MAX_NODES = 200_000
+MAX_EVENT_NODES = 50_000
+MAX_EVENTS = 1_000_000
 _ID = re.compile(r"[A-Za-z0-9._:-]{1,128}", re.ASCII)
 _HEX64 = re.compile(r"[0-9a-f]{64}", re.ASCII)
+_TASK_KEY = re.compile(r".*tasks?[_-]?(?:ids?)?", re.ASCII)
 
 R_INPUT = "input_malformed"
+R_EVENT_POLICY = "event_count_over_policy"
 R_SNAPSHOT = "snapshot_incomplete"
 R_NOT_CURRENT = "snapshot_not_current_log"
 R_FUTURE = "snapshot_future"
 R_STALE = "snapshot_stale"
+R_EVENTS = "event_coverage_mismatch"
 R_UNATTRIBUTABLE = "cancellation_unattributable"
 
 
 def _strict(value: Any) -> bool:
-    """Exact built-ins only, acyclic, at most MAX_DEPTH levels and MAX_NODES nodes; reads only through type(),
-    dict.items and exact-list iteration, so no foreign hook runs."""
-    budget = [MAX_NODES]
+    """Exact built-ins only, acyclic, at most MAX_DEPTH levels and MAX_EVENT_NODES nodes; reads only through
+    type(), dict.items and exact-list iteration, so no foreign hook runs."""
+    budget = [MAX_EVENT_NODES]
     active: set = set()
 
     def walk(item: Any, depth: int) -> bool:
@@ -97,6 +121,22 @@ def _strict(value: Any) -> bool:
     return walk(value, 0)
 
 
+def _events_sha256(events: list) -> str | None:
+    """sha256 of the canonical JSON of the exact strict list (incremental, same bytes as one json.dumps of the
+    whole list); None when a value cannot be encoded (an int beyond the str conversion limit)."""
+    digest = hashlib.sha256(b"[")
+    try:
+        for index, event in enumerate(events):
+            if index:
+                digest.update(b",")
+            digest.update(json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                                     allow_nan=False).encode("ascii"))
+    except ValueError:
+        return None
+    digest.update(b"]")
+    return digest.hexdigest()
+
+
 def _get(record: Any, name: str) -> Any:
     """``name`` of an exact dict already accepted by _strict (None when absent or not a dict)."""
     return dict.get(record, name) if type(record) is dict else None
@@ -108,6 +148,46 @@ def _closed(record: Any, fields: tuple) -> bool:
 
 def _text(value: Any) -> bool:
     return type(value) is str and value != ""
+
+
+def _stem(value: Any) -> bool:
+    """A str naming a control after casefold (an exact str: _strict ran first)."""
+    if type(value) is not str:
+        return False
+    folded = value.casefold()
+    return any(stem in folded for stem in CONTROL_STEMS)
+
+
+def _directive(value: Any) -> bool:
+    return _stem(value) or (type(value) is list and any(_stem(item) for item in value))
+
+
+def _scan(payload: Any) -> tuple[bool, list, bool]:
+    """(control_shaped, named task ids, every task reference readable) for a strict payload."""
+    control = _stem(payload)
+    tasks: list = []
+    readable = True
+    stack = [payload]
+    while stack:
+        item = stack.pop()
+        if type(item) is list:
+            stack.extend(item)
+            continue
+        if type(item) is not dict:
+            continue
+        for key, value in dict.items(item):
+            folded = key.casefold()
+            if _stem(folded) or (folded in DIRECTIVE_KEYS and _directive(value)):
+                control = True
+            if _TASK_KEY.fullmatch(folded):
+                if _text(value):
+                    tasks.append(value)
+                elif type(value) is list and all(_text(entry) for entry in value):
+                    tasks.extend(value)
+                else:
+                    readable = False
+            stack.append(value)
+    return control, tasks, readable
 
 
 def _instant(value: Any) -> datetime | None:
@@ -134,10 +214,13 @@ def _incomplete(reason: str) -> dict:
 
 def _coverage_reason(snapshot: Any, current_log: Any, now: datetime, max_age: timedelta) -> str | None:
     """None when the read is untruncated, of the CURRENT log identity and fresh; else the stable reason."""
-    if not (_closed(snapshot, SNAPSHOT_FIELDS) and _text(_get(snapshot, "log_generation"))
+    if not (_closed(snapshot, SNAPSHOT_FIELDS) and _get(snapshot, "schema") == SNAPSHOT_SCHEMA
+            and _text(_get(snapshot, "log_generation"))
             and _text(_get(snapshot, "file_identity")) and _count(_get(snapshot, "snapshot_bytes"))
             and type(_get(snapshot, "prefix_sha256")) is str and _HEX64.fullmatch(_get(snapshot, "prefix_sha256"))
-            and _get(snapshot, "truncated") is False and _instant(_get(snapshot, "observed_utc")) is not None):
+            and _get(snapshot, "truncated") is False and _instant(_get(snapshot, "observed_utc")) is not None
+            and _count(_get(snapshot, "event_count"))
+            and type(_get(snapshot, "events_sha256")) is str and _HEX64.fullmatch(_get(snapshot, "events_sha256"))):
         return R_SNAPSHOT
     if not (_closed(current_log, CURRENT_LOG_FIELDS) and _text(_get(current_log, "log_generation"))
             and _text(_get(current_log, "file_identity")) and _count(_get(current_log, "log_bytes"))
@@ -179,26 +262,41 @@ def derive_cancellations(events: Any, snapshot: Any, current_log: Any, now: Any,
         now = now.astimezone(timezone.utc)
     except OverflowError:
         raise ValueError("now is outside the representable UTC range") from None
-    # Every input as a whole before anything is read: a foreign object anywhere is unknown coverage.
-    if not (type(events) is list and _strict(events) and _strict(snapshot) and _strict(current_log)):
+    # Every input before anything is read: a foreign object anywhere is unknown coverage.
+    if not (type(events) is list and _strict(snapshot) and _strict(current_log)):
+        return _incomplete(R_INPUT)
+    if len(events) > MAX_EVENTS:
+        return _incomplete(R_EVENT_POLICY)
+    if not all(_strict(event) for event in events):
         return _incomplete(R_INPUT)
     reason = _coverage_reason(snapshot, current_log, now, timedelta(seconds=max_age_seconds))
     if reason is not None:
         return _incomplete(reason)
+    if len(events) != _get(snapshot, "event_count"):
+        return _incomplete(R_EVENTS)
+    digest = _events_sha256(events)
+    if digest is None:
+        return _incomplete(R_INPUT)
+    if digest != _get(snapshot, "events_sha256"):
+        return _incomplete(R_EVENTS)
 
     facts: dict[tuple, set] = {}     # (task, request_id) -> digests
     unknown: set[str] = set()
     for event in events:
         if type(event) is not dict:
             return _incomplete(R_INPUT)            # an event that is not an object cannot be ruled out
-        if _get(event, "agent") != AUTHORITY or _get(event, "status") != CANCELLED_STATUS:
-            continue                               # not an authority cancellation: not read
+        if _get(event, "agent") != AUTHORITY:
+            continue                               # another label: not read
+        control, named, readable = _scan(_get(event, "payload"))
+        if not (control or _stem(_get(event, "status")) or _stem(_get(event, "type"))):
+            continue                               # not control-shaped: not read
         task = _get(event, "task_id")
-        if not _text(task):
-            return _incomplete(R_UNATTRIBUTABLE)   # might be any task's cancellation
-        fact = _fact(event)
+        if not _text(task) or not readable:
+            return _incomplete(R_UNATTRIBUTABLE)   # might be any task's control
+        fact = _fact(event) if _get(event, "status") == CANCELLED_STATUS else None
         if fact is None:
-            unknown.add(task)                      # legacy, partial, list, missing digest: task unknown
+            unknown.add(task)                      # every other control shape: task unknown
+            unknown.update(named)
             continue
         facts.setdefault((task, fact[0]), set()).add(fact[1])
 

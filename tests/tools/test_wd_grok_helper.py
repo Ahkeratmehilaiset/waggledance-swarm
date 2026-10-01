@@ -683,6 +683,38 @@ def test_status_of_an_unfinished_attempt_has_no_next_eligible_time(tmp_path, age
     assert report["status"] == ("reserved" if age < 300 else "interrupted_or_unknown")
 
 
+def test_a_one_shot_consultation_gets_900_seconds_by_default(tmp_path):
+    # 2026-10-01: answered grok-4.7 medium runs took 197 s and 249 s; five in a row hit the old 300 s
+    # limit with zero bytes on both streams. The default must leave room above the slowest answer.
+    seed(tmp_path)
+    seen = []
+
+    def runner(command, **kwargs):
+        seen.append(kwargs["timeout"])
+        assert wd_grok_helper.read_state(tmp_path)["timeout_seconds"] == 900   # the reservation records it
+        return SimpleNamespace(returncode=0, stdout=_json_reply())
+
+    report = consult(tmp_path, "slow/review", "ask", ["fake"], runner=runner, now=NOW)
+    assert report["status"] == "answered" and seen == [900]
+    assert wd_grok_helper.CONSULT_TIMEOUT_SECONDS == 900
+
+
+def test_an_explicit_timeout_still_wins_over_the_default(tmp_path):
+    seed(tmp_path)
+    seen = []
+    consult(tmp_path, "readonly/session", "ask", ["fake"], now=NOW, timeout_seconds=1800,
+            runner=lambda command, **kwargs: seen.append(kwargs["timeout"]) or SimpleNamespace(
+                returncode=0, stdout=_json_reply()))
+    assert seen == [1800]
+
+
+@pytest.mark.parametrize("age, expected", [(400, "reserved"), (899, "reserved"), (900, "interrupted_or_unknown")])
+def test_a_900_second_reservation_is_not_called_interrupted_early(tmp_path, age, expected):
+    _reserved(tmp_path, age, timeout_seconds=900)
+    report = status(tmp_path, NOW)
+    assert report["status"] == expected and report["eligible"] is False
+
+
 def test_unreconciled_deferral_has_no_next_eligible_time_and_mints_no_request_id(tmp_path):
     import re
     _reserved(tmp_path, 5000)
@@ -1381,7 +1413,7 @@ def test_f4_every_attempt_is_in_the_ledger_before_launch_and_after_it(tmp_path):
         ("started", "f4/two", second["request_id"], "calibration", None),
         ("finished", "f4/two", second["request_id"], "calibration", None)]
     started, finished = ledger["entries"][:2]
-    assert started["reserved_utc"] == NOW.isoformat() and started["timeout_seconds"] == 300
+    assert started["reserved_utc"] == NOW.isoformat() and started["timeout_seconds"] == 900
     assert started["request_sha256"] == hashlib.sha256(
         (tmp_path / (first["request_id"] + "-request.md")).read_bytes()).hexdigest()
     assert set(finished) == {"schema", "recorded_utc", "event", *wd_grok_helper.FINISHED_FIELDS}
@@ -1759,7 +1791,7 @@ def test_f4_the_cli_launch_reads_the_null_device_and_keeps_text_mode(tmp_path):
     (launch,) = launches
     assert launch["stdin"] is subprocess.DEVNULL
     assert {key: launch[key] for key in ("capture_output", "text", "encoding", "errors", "timeout")} == {
-        "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "timeout": 300}
+        "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "timeout": 900}
 
 
 def test_f4_a_cli_that_reads_stdin_gets_eof_although_the_caller_holds_an_open_pipe(tmp_path):

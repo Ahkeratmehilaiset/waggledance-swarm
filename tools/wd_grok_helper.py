@@ -41,6 +41,12 @@ MAX_LEDGER_EXAMPLES = 20                 # malformed lines listed by line number
 OUTPUT_FORMAT = ("--output-format", "json")
 PURPOSES = ("advisory", "calibration")
 ERROR_CLASSES = ("timeout", "nonzero_exit", "launch_error", "io_error", "ledger_unavailable", "unclassified")
+# One-shot consultation limit. The CLI writes its single JSON result only at the end, so a run cut off
+# at the limit leaves nothing. On 2026-10-01 grok-4.7 at medium effort produced about 60-65 output
+# tokens/s, nearly all of them reasoning: the answered runs took 197 s (11.7K tokens) and 249 s (16.3K),
+# and five runs in a row hit the old 300 s limit with zero bytes on both streams. 900 s leaves about
+# 3.6 times the slowest answer; the 2400 s ceiling below is unchanged.
+CONSULT_TIMEOUT_SECONDS = 900
 MAX_JSON_REPLY_BYTES = 256 * 1024
 MAX_USAGE_KEYS = 16
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
@@ -664,7 +670,8 @@ def exclusive(root: Path):
 def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             runner=subprocess.run, now: datetime | None = None, emitter=None,
             exception_path: Path | None = None, exception_sha256: str | None = None,
-            timeout_seconds: int = 300, requested_by: str | None = None, purpose: str = "advisory") -> dict:
+            timeout_seconds: int = CONSULT_TIMEOUT_SECONDS, requested_by: str | None = None,
+            purpose: str = "advisory") -> dict:
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
         raise ValueError("Consultation timeout must be an integer in 1..2400 seconds")
     if type(purpose) is not str or purpose not in PURPOSES:

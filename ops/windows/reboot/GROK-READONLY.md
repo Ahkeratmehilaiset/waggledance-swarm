@@ -26,10 +26,12 @@ consultation that presents one is refused before the lock, and grants already
 recorded in the state file are carried forward as history only. The global
 consultation lock remains held for the complete session.
 
-The helper's keyword-only `consult(..., timeout_seconds=300)` accepts only a
+The helper's keyword-only `consult(..., timeout_seconds=900)` accepts only a
 built-in integer from 1 through 2400 seconds, rejecting booleans and coercible
 values before acquiring the lock or reserving an attempt. It forwards that value to
-the runner. Text-only advisory mode keeps the 300-second default.
+the runner. Text-only advisory mode uses the 900-second default
+(`CONSULT_TIMEOUT_SECONDS`): on 2026-10-01 answered runs took 197 and 249 seconds
+and five in a row failed at the earlier 300-second limit with no output.
 
 The controller integration must pass `max_rounds * 300` as the session timeout:
 600..2400 seconds for 2..8 rounds, or 1800 seconds at the default six rounds.

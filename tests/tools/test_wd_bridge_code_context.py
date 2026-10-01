@@ -656,9 +656,11 @@ _KEYS = ["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONDONTWRITEBYTECODE",
          "PYTHONIOENCODING", "WD_REBOOT_EXPECTED_MANIFEST_HASH", "WD_BRIDGE_PYTHON", "WD_BRIDGE_PYTHON_SHA256"]
 _TOOL = ("from pathlib import Path\nimport sys,os,json\n"
          "with Path(sys.argv[1]).open('a',encoding='utf-8') as f: f.write('child\\n')\n"
+         "sys.exit(3) if sys.argv[1].endswith('exit3.txt') else None\n"
          "print(json.dumps(dict(no_site=bool(sys.flags.no_site),no_user_site=bool(sys.flags.no_user_site),"
          "dont_write=bool(sys.dont_write_bytecode),safe_path=bool(sys.flags.safe_path),"
-         "pythonpath=os.environ.get('PYTHONPATH'))))\n").encode()
+         "pythonpath=os.environ.get('PYTHONPATH'),"
+         "present=sorted(k for k in ('PYTHONHOME','PYTHONSTARTUP') if k in os.environ))))\n").encode()
 
 
 def _sha(blob: bytes) -> str:
@@ -720,10 +722,11 @@ def _interpreter() -> Path:
     pytest.skip("no Python under the trusted per-user root on this host (disclosed skip, not a pass)")
 
 
-def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited: bool) -> tuple[dict, int, Path]:
+def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited: bool,
+                    marker_name: str = "child-marker.txt", extra_env: dict | None = None) -> tuple[dict, int, Path]:
     python = _interpreter()
     bundle, package, anchor = _wrapper_bundle(case, damage)
-    marker = case / "child-marker.txt"
+    marker = case / marker_name
     before = {str(p.relative_to(bundle)): _sha(p.read_bytes()) for p in bundle.rglob("*") if p.is_file()}
     # A pwsh 7 parent's PSModulePath would make a PS 5.1 child load 7.x modules (Get-FileHash missing), so each host
     # builds its own default module path; Windows environment names are case-insensitive.
@@ -736,6 +739,7 @@ def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited:
     if inherited:
         env.update(PYTHONPATH=str(case / "task-path"), PYTHONDONTWRITEBYTECODE="0", PYTHONNOUSERSITE="0",
                    PYTHONSAFEPATH="0", PYTHONIOENCODING="cp1252")
+    env.update(extra_env or {})
     keys = ",".join("'" + key + "'" for key in _KEYS)
     wrapper = str(bundle / "Invoke-WdBridgePython.ps1").replace("'", "''")
     script = (
@@ -746,8 +750,11 @@ def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited:
         f"try {{ $output=& '{wrapper}' -Tool tools/probe.py {'-VerifyPackage' if verify else ''} "
         f"'{str(marker).replace(chr(39), chr(39) * 2)}'; $code=$LASTEXITCODE; $toolResult=$output|ConvertFrom-Json }}\n"
         "catch { $errorText=$_.Exception.Message }\n"
-        "$changed=@(); foreach($k in $keys){if([Environment]::GetEnvironmentVariable($k,'Process') -cne $before[$k]){$changed+=$k}}\n"
+        "$changed=@(); foreach($k in $keys){$now=[Environment]::GetEnvironmentVariable($k,'Process');"
+        " if(($null -eq $now) -ne ($null -eq $before[$k]) -or $now -cne $before[$k]){$changed+=$k}}\n"
+        "$startup=[Environment]::GetEnvironmentVariable('PYTHONSTARTUP','Process')\n"
         "[pscustomobject]@{error=$errorText; tool=$toolResult; code=$code; env_changed=$changed;"
+        " startup_is_null=($null -eq $startup); startup_value=$startup;"
         " cwd_same=((Get-Location).Path -ceq $cwd)}|ConvertTo-Json -Depth 8 -Compress\n")
     result = subprocess.run([host, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], env=env,
                             capture_output=True, text=True, timeout=60)
@@ -760,9 +767,6 @@ def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited:
     return report, count, package
 
 
-_PS7_ENV_DEFECT = ("BridgeCodeContext.ps1:846/861 pass $null to [Environment]::SetEnvironmentVariable; pwsh 7 binds it "
-                   "as '' and keeps an EMPTY variable, so previously unset PYTHON* names stay set after the call "
-                   "(PS 5.1 deletes them). Source fix: [NullString]::Value. Remove this xfail once fixed.")
 
 
 def _host(name: str) -> str:
@@ -780,13 +784,30 @@ def test_verify_package_clean_bundle_runs_the_tool_once_isolated(tmp_path, host_
     for flag in ("no_site", "no_user_site", "dont_write", "safe_path"):
         assert report["tool"][flag] is True, report
     assert report["tool"]["pythonpath"] == str(package) + ";" + str(package / "python-site"), report
+    # Cleared isolation names are ABSENT for the tool (not empty), in both shells (RCO2 815c, line 846).
+    assert report["tool"]["present"] == [], report
 
 
-@pytest.mark.parametrize("host_name", ["PS5", pytest.param("PS7", marks=pytest.mark.xfail(strict=True, reason=_PS7_ENV_DEFECT))])
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
 @pytest.mark.parametrize("inherited", [False, True], ids=["ordinary", "inherited-env"])
 def test_a_launched_tool_leaves_the_caller_environment_exactly_as_it_was(tmp_path, host_name, inherited):
+    # Regression (RCO2 815c): pwsh 7 used to leave previously UNSET PYTHON* names as '' after a launch
+    # (BridgeCodeContext.ps1 passed $null; fixed with [NullString]::Value).
     report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, "clean", True, inherited)
+    assert count == 1 and report["env_changed"] == [] and report["startup_is_null"] is True, report
+
+
+def test_pwsh7_an_intentionally_empty_variable_stays_empty_not_removed(tmp_path):
+    # pwsh 7 can hold an EMPTY environment variable; the restore must give it back as '', not delete it.
+    report, count, _ = _invoke_wrapper(_host("PS7"), tmp_path, "clean", True, False, extra_env={"PYTHONSTARTUP": ""})
     assert count == 1 and report["env_changed"] == [], report
+    assert report["startup_is_null"] is False and report["startup_value"] == "", report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+def test_a_tool_that_exits_nonzero_still_restores_the_environment(tmp_path, host_name):
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, "clean", True, True, marker_name="exit3.txt")
+    assert count == 1 and report["code"] == 3 and report["env_changed"] == [] and report["cwd_same"] is True, report
 
 
 @pytest.mark.parametrize("host_name", ["PS5", "PS7"])

@@ -26,9 +26,12 @@ Inputs (all injected; nothing here produces them):
 
 What counts (everything else is listed in ``rejected`` with a stable reason):
 * An event counts only from a recognized RCO identity (exact spelling), with the
-  attempt's task id or its accepted branch as ``task_id``, a structured
-  ``payload.exact_head`` equal to the accepted commit (``payload.head`` must agree
-  when present), and a time between the push and ``now``. Prose never binds a head.
+  attempt's task id or its accepted branch as ``task_id``, a structured head equal to
+  the accepted commit, and a time between the push and ``now``. The structured head is
+  ``payload.exact_head`` (``payload.head`` must agree when present) or, only when the
+  ``exact_head`` key is absent, the live writer's ``payload.head`` that the message
+  also contains. Prose alone never binds a head, so a free-text-only finding is
+  ``unbound``; the merge gate's own veto reading is separate and unchanged.
 * A pass is ``type`` decision or rco_review with ``status`` rco_pass, from an
   evaluator other than the worker (identities folded as in wd_routing_weights). A
   worker's own pass is ``self_evaluation`` and never counts. Type and status must be exact str,
@@ -121,13 +124,26 @@ def _advice_ok(record: dict) -> bool:
 
 
 def _head_claim(event: dict) -> str | None:
-    """The structured exact head, or None. payload.head, when present, must agree; prose never binds."""
+    """The structured head, or None. Prose alone never binds.
+
+    ``payload.exact_head`` is primary: when the key is present it must be an exact lowercase 40-hex str,
+    and a present ``payload.head`` must be the same exact str. With no ``exact_head`` key, the live
+    writer's shape binds (BIN Write-AgentEvent.ps1:439-445): ``payload.head`` is an exact lowercase
+    40-hex str and the exact-str message contains it (ordinal). A null, malformed or conflicting
+    ``exact_head`` never falls back to ``head``."""
     payload = event.get("payload")
-    if not isinstance(payload, dict) or not _hex(payload.get("exact_head"), 40):
+    if not isinstance(payload, dict):
         return None
-    if "head" in payload and payload["head"] != payload["exact_head"]:
-        return None
-    return payload["exact_head"]
+    head = payload.get("head")
+    if "exact_head" in payload:
+        exact = payload["exact_head"]
+        if not _hex(exact, 40) or ("head" in payload and not (_hex(head, 40) and head == exact)):
+            return None
+        return exact
+    message = event.get("message")
+    if _hex(head, 40) and type(message) is str and head in message:
+        return head
+    return None
 
 
 def _kind(event: dict) -> str | None:

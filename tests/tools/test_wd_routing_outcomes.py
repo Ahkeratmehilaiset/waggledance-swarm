@@ -128,14 +128,98 @@ def test_twin1_pass_at_another_head_counts_nothing_and_the_exact_head_counts():
 
 @pytest.mark.parametrize("payload", [
     {},                                              # prose only: the message names the head
-    {"head": HEAD},                                  # payload.head alone never binds
     {"exact_head": HEAD, "head": OTHER_HEAD},        # disagreeing structured claims bind nothing
     {"exact_head": HEAD.upper()},                    # exact lowercase spelling only
     {"exact_head": HEAD[:12]},
+    {"exact_head": None, "head": HEAD},              # a present exact_head never falls back to head
+    {"exact_head": HEAD.upper(), "head": HEAD},
+    {"exact_head": OTHER_HEAD, "head": HEAD},
+    {"head": HEAD.upper()},                          # the fallback head is exact lowercase 40-hex too
+    {"head": HEAD[:12]},
+    {"head": None},
 ])
-def test_only_a_structured_exact_head_binds(payload):
+def test_only_a_structured_head_binds(payload):
     out = produce([event(payload=payload, message="rco_pass at " + HEAD)])
     assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+
+
+# --- S0: the live writer's rco_pass shape (BIN Write-AgentEvent.ps1:439-445) ---------------------------
+
+def writer_pass(agent="claude-rco-1", head=HEAD, **over):
+    """What the pinned writer emits: payload.head (40 lowercase hex), the head in the message, no exact_head."""
+    row = event(agent=agent, payload={"head": head}, message="rco_pass at exact head " + head)
+    row.update(over)
+    return row
+
+
+def test_s0_a_live_writer_shaped_pass_binds_and_counts():
+    out = produce([writer_pass()])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and out["rejected"] == []
+    assert only_pair(weights(out["outcomes"]))["state"] == "known"
+
+
+@pytest.mark.parametrize("over", [
+    {"message": "rco_pass, head in the payload only"},       # the message must name the head
+    {"message": None},
+    {"message": ["rco_pass at " + HEAD]},
+    {"message": "rco_pass at " + HEAD.upper()},              # ordinal, not case-insensitive
+])
+def test_s0_the_head_fallback_needs_the_exact_head_in_the_message(over):
+    out = produce([writer_pass(**over)])
+    assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+
+
+def test_s0_the_message_key_absent_is_unbound():
+    row = writer_pass()
+    row.pop("message")
+    out = produce([row])
+    assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+
+
+class Containing(str):
+    """A str that claims to contain anything."""
+
+    def __contains__(self, item):
+        return True
+
+
+def test_s0_a_lying_message_cannot_fake_containment():
+    out = produce([writer_pass(message=Containing("rco_pass with no head"))])
+    assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+
+
+def test_s0_a_lying_head_cannot_agree_or_bind():
+    liar = Liar("c" * 40, {HEAD})
+    fallback = produce([writer_pass(payload={"head": liar}, message="rco_pass at " + HEAD)])
+    assert fallback["outcomes"] == [] and "unbound" in reasons(fallback, "event")
+    agree = produce([event(payload={"exact_head": HEAD, "head": liar})])
+    assert agree["outcomes"] == [] and "unbound" in reasons(agree, "event")
+    # Its text is in the message and it claims to equal the accepted head: only the exact-type check stops it.
+    contained = produce([writer_pass(payload={"head": Liar("rco_pass", {HEAD})}, message="rco_pass at " + HEAD)])
+    assert contained["outcomes"] == [] and "unbound" in reasons(contained, "event")
+
+
+def test_s0_a_structured_finding_restricts_and_a_free_text_finding_does_not():
+    structured = produce([writer_pass(agent="claude-rco-2"), event(kind="finding", payload={"head": HEAD},
+                                                                    message="finding at " + HEAD)])
+    assert [o["result"] for o in structured["outcomes"]] == ["failure"]
+    assert only_pair(weights(structured["outcomes"]))["state"] == "quarantined"
+    free_text = produce([writer_pass(agent="claude-rco-2"), event(kind="finding", payload={},
+                                                                   message="finding at " + HEAD)])
+    assert [o["result"] for o in free_text["outcomes"]] == ["success"]
+    assert reasons(free_text) == ["unbound"]
+
+
+def test_s0_writer_shaped_passes_keep_f1_and_f2():
+    lying = produce([writer_pass(type=Liar("message", {"decision"}))])
+    assert lying["outcomes"] == [] and "malformed" in reasons(lying, "event")
+    twice = produce([writer_pass()], **two_targets())
+    assert twice["outcomes"] == [] and "event_target_ambiguous" in reasons(twice, "event")
+
+
+def test_s0_an_exact_head_with_an_agreeing_head_still_binds():
+    out = produce([event(payload={"exact_head": HEAD, "head": HEAD})])
+    assert [o["result"] for o in out["outcomes"]] == ["success"]
 
 
 def test_an_event_for_another_task_is_unbound():

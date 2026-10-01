@@ -32,8 +32,11 @@ Persistence (opt-in; only with a caller-explicit approved directory):
   same directory, fsynced, then hard-linked to the final name, which fails if the name exists. So a
   reader sees the whole file or nothing under the final name.
 * An identical retry is a no-op (``unchanged``); other bytes under the same name are ``receipt_conflict``.
-* The directory must exist, be absolute on drive C:, equal or lie inside ``approved_root`` and contain
-  no ``..`` segment. Temporary roots (``tempfile.gettempdir()``, resolved) are refused (CLAUDE.md rule 1).
+  The existing name is read relative to the held directory handle without following a reparse point, so
+  a link under that name is a conflict, never read through.
+* ``directory``, ``approved_root`` and the ``load_receipt`` path must be exactly the concrete ``Path``
+  class (no subclass, whose ``str`` and ``parts`` could disagree). The directory must exist, be absolute
+  on drive C:, equal or lie inside ``approved_root`` and contain no ``..`` segment. Temporary roots (``tempfile.gettempdir()``, resolved) are refused (CLAUDE.md rule 1).
 * Containment is enforced, not only checked (Windows only; elsewhere ``platform_unsupported``): every
   component from the drive root to the directory is opened as a handle without the reparse point being
   followed and without delete sharing, so for the whole operation no component can be renamed, removed
@@ -50,7 +53,10 @@ Persistence (opt-in; only with a caller-explicit approved directory):
   create relative to the held handle is then refused by NTFS (``receipt_create_failed:c0000280``,
   STATUS_REPARSE_POINT_NOT_RESOLVED) and no name or byte lands anywhere; the final-path check
   (``directory_drifted``) stays as a second line. The enforcement relies on that NTFS behaviour, on NTFS
-  refusing a reparse point on a non-empty directory and on share-mode semantics. A process already holding delete access on a component makes this refuse
+  refusing a reparse point on a non-empty directory and on share-mode semantics. The volatile-root
+  check on the held final path overlaps the lexical check (the component final-path check already refuses
+  any path whose final form differs) and is kept as a second line. A process already holding delete
+  access on a component makes this refuse
   (``directory_lock_failed``). An OS crash or power loss can leave an orphan ``.tmp`` file. The hash
   proves content, not who wrote it. ``load_receipt`` is a content check only: bytes, canonical form and
   name, never location or containment.
@@ -233,8 +239,11 @@ def _volatile(path: Path) -> bool:
     return False
 
 
+_PATH = type(Path())   # the exact concrete Path class; a subclass can make str() and parts disagree (RCO1 E1)
+
+
 def _safe_directory(directory: Any, approved_root: Any) -> Path:
-    if not isinstance(directory, Path) or not isinstance(approved_root, Path):
+    if type(directory) is not _PATH or type(approved_root) is not _PATH:
         _refuse("directory_invalid")
     for candidate in (directory, approved_root):
         if not candidate.is_absolute() or ".." in candidate.parts or candidate.drive.upper() != "C:":
@@ -359,6 +368,40 @@ def _create_relative(directory: Any, name: str) -> Any:
     return handle.value
 
 
+def _read_relative(directory: Any, name: str) -> bytes | None:
+    """The bytes of the existing ``name`` in the held directory, opened relative to its handle without
+    following a reparse point (RCO1 E2); None (so a conflict) for a link, a non-file or an oversized file."""
+    text = _UnicodeString(len(name) * 2, len(name) * 2, name)
+    attributes = _ObjectAttributes(ctypes.sizeof(_ObjectAttributes), directory, ctypes.pointer(text), 0x40, None, None)
+    handle = _HANDLE()
+    # read data + read attributes + synchronize; share read; FILE_OPEN; non-directory + synchronous I/O +
+    # FILE_OPEN_REPARSE_POINT.
+    status = _ntdll.NtCreateFile(ctypes.byref(handle), 0x1 | 0x80 | 0x100000, ctypes.byref(attributes),
+                                 ctypes.byref(_IoStatusBlock()), None, 0, 0x1, 1, 0x40 | 0x20 | 0x200000, None,
+                                 0) & 0xFFFFFFFF
+    if status != 0:
+        _refuse("receipt_collision_unreadable:%08x" % status)
+    try:
+        info = _AttributeTagInfo()
+        if (not _kernel32.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info),
+                                                       ctypes.sizeof(info))
+                or info.FileAttributes & (_REPARSE | _DIRECTORY)):
+            return None
+        descriptor = msvcrt.open_osfhandle(handle.value, os.O_RDONLY)
+        handle = None   # the descriptor owns it now
+        try:
+            data = os.read(descriptor, MAX_RECEIPT_BYTES + 1)
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:   # a read-only close failure never replaces the conflict outcome (F4)
+                pass
+        return data if len(data) <= MAX_RECEIPT_BYTES else None
+    finally:
+        if handle is not None:
+            _kernel32.CloseHandle(handle)
+
+
 def _link_relative(handle: Any, directory: Any, name: str) -> int:
     class _LinkInformation(ctypes.Structure):
         _fields_ = [("Flags", wintypes.ULONG), ("RootDirectory", _HANDLE), ("FileNameLength", wintypes.ULONG),
@@ -416,7 +459,7 @@ def persist_receipt(receipt: Any, directory: Any, *, approved_root: Any) -> dict
             if linked == 0:
                 status = "created"
             elif linked == _STATUS_OBJECT_NAME_COLLISION:
-                if _read_bounded(folder / name) != data:
+                if _read_relative(directory_handle, name) != data:
                     _refuse("receipt_conflict")
                 status = "unchanged"
             else:
@@ -450,7 +493,7 @@ def _unique_pairs(pairs: list) -> dict:
 
 def load_receipt(path: Any) -> dict:
     """Read and verify one persisted receipt: bounded, regular file, strict JSON, name equals its digest."""
-    if not isinstance(path, Path):
+    if type(path) is not _PATH:
         _refuse("receipt_path_invalid")
     data = _read_bounded(path)
     try:

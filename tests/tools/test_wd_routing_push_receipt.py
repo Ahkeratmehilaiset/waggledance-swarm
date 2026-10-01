@@ -362,6 +362,74 @@ def test_f2_no_component_can_be_renamed_or_swapped_while_publishing(approved, tm
 
 
 @windows_only
+def test_e1_a_disguised_path_subclass_is_refused_and_writes_nothing(approved, tmp_path):
+    # RCO1 E1: str()/fspath() name the approved directory while parts/anchor name a directory outside it.
+    from pathlib import WindowsPath
+    root, folder = approved
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    class Disguised(WindowsPath):
+        def __str__(self):
+            return str(WindowsPath(folder))
+
+        def __fspath__(self):
+            return str(WindowsPath(folder))
+
+    for directory, approved_root in ((Disguised(outside), root), (folder, Disguised(root))):
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(build(), directory, approved_root=approved_root)
+        assert caught.value.reason == "directory_invalid"
+    assert list(outside.iterdir()) == [] and list(folder.iterdir()) == []
+    path = Path(pr.persist_receipt(build(), folder, approved_root=root)["path"])   # plain Path control
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.load_receipt(Disguised(path))
+    assert caught.value.reason == "receipt_path_invalid" and pr.load_receipt(path)["schema"] == pr.SCHEMA
+
+
+@windows_only
+def test_e2_an_existing_name_that_is_a_link_is_a_conflict_never_read_through(approved, tmp_path):
+    # RCO1 E2: the collision read goes through the held directory handle without following a reparse
+    # point, so a link (even to identical bytes) under the receipt's name is never reported unchanged.
+    root, folder = approved
+    receipt = build()
+    target = tmp_path / "identical.json"
+    target.write_bytes(pr.canonical_bytes(receipt) + b"\n")
+    try:
+        os.symlink(target, folder / (receipt["receipt_digest"] + ".json"))
+    except OSError:
+        pytest.skip("symlink creation not permitted for this token")
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert caught.value.reason == "receipt_conflict"
+
+
+@windows_only
+def test_e2_the_collision_read_never_reopens_the_name_by_path(approved, monkeypatch):
+    root, folder = approved
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+    monkeypatch.setattr(pr, "_read_bounded", lambda path: (_ for _ in ()).throw(AssertionError("path read")))
+    assert pr.persist_receipt(receipt, folder, approved_root=root)["status"] == "unchanged"
+
+
+@windows_only
+def test_c1_a_self_referencing_junction_component_is_opened_as_itself(approved):
+    # Only FILE_FLAG_OPEN_REPARSE_POINT opens a looping junction as itself (refused as a reparse point);
+    # following it fails with ERROR_CANT_RESOLVE_FILENAME instead.
+    root, folder = approved
+    loop = root / "loop"
+    loop.mkdir()
+    assert _set_junction_in_place(loop, loop)
+    try:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(build(), loop, approved_root=root)
+        assert caught.value.reason == "path_has_link_or_reparse"
+    finally:
+        os.rmdir(loop)
+
+
+@windows_only
 def test_m1_only_the_target_directory_is_opened_for_adding_files(approved, monkeypatch):
     # A non-elevated token cannot open C:\ with FILE_ADD_FILE; ancestors take traverse + attributes only.
     root, folder = approved

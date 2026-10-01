@@ -410,6 +410,9 @@ def _twin_documents():
                   "payload": {"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": reset["five_hour"]},
                                               "seven_day": {"used_percentage": 30, "resets_at": reset["seven_day"]}}}}
     samples = []
+    # Each sample names its own row's subject and verified pool, as the pacer's read_samples does (F19C-1).
+    own = {"codex": (codex_row["auth_context_id"], codex_row["account_pool"]),
+           "claude": (claude_row["native_thread_id"], claude_row["account_pool"])}
     for provider, window, first, last, duration in (("codex", "primary", 30.0, 31.0, 300),
                                                      ("codex", "secondary", 20.0, 20.1, 10080),
                                                      ("claude", "five_hour", 11.0, 12.0, 300),
@@ -417,8 +420,9 @@ def _twin_documents():
         for used, age in ((first, 41), (last, 1)):
             samples.append({"provider": provider, "limit_id": provider, "window": window, "used_percent": used,
                             "resets_at": float(reset[window]), "duration_minutes": duration,
-                            "observed_at": NOW - timedelta(minutes=age)})
-    body = {"schema": rc.POLICY_SCHEMA, "max_observation_age_seconds": 300,
+                            "observed_at": NOW - timedelta(minutes=age), "subject": own[provider][0],
+                            "account_pool": own[provider][1]})
+    body ={"schema": rc.POLICY_SCHEMA, "max_observation_age_seconds": 300,
             "accepted_freshness": {"codex": ["fresh"], "claude": ["fresh", "provider_timestamp_unknown"]},
             "pools": {"codex-pro-a": {"billing": "included", "mode": "normal"},
                       "claude-max-a": {"billing": "included", "mode": "normal"}},

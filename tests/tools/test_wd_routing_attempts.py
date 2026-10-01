@@ -458,6 +458,16 @@ def test_provenance_a_claim_without_a_hex_owner_token_is_malformed():
     assert out["attempts"] == [] and reasons(out, "claim") == ["malformed"]
 
 
+def test_provenance_the_claim_token_itself_selects_the_association():
+    # Causal twin for the owner token in the association key: a claim of another session token binds only
+    # through an association carrying that same token, never through the default-token one.
+    other = claim(owner_token_sha256="d" * 64)
+    bound = run(claims=[other], links=[association(token="d" * 64)])
+    assert [a["attempt_id"] for a in bound["attempts"]] == [attempt_id()] and bound["rejected"] == []
+    crossed = run(claims=[other], links=[association()])
+    assert crossed["attempts"] == [] and reasons(crossed) == ["dispatch_association_missing"]
+
+
 class _Liar(str):
     def __eq__(self, other):
         return True

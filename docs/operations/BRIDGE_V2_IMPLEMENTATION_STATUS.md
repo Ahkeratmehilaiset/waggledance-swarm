@@ -1,5 +1,62 @@
 # Bridge v2 implementation status and ready queue (F0-F30)
 
+## Current production and resumed preparation (2026-10-01 14:20Z)
+
+The observed installed pointer is
+`d5864fdd55129a5cf36f19c8347892f4d2f9ef00`, deployment-manifest SHA256
+`DF810F31D51E40C010CF7A4EA57FBFB98765C16E5495918E7C07E73853D9BB01`.
+Lead's restored native session has matching inherited package pins. This is
+not a measurement of every peer's next-turn readiness or provider quota.
+The older installed-package statements below are dated historical snapshots,
+not the current pointer.
+
+**The entire plan is not production-complete.** The installed
+`tools-bootstrap/configs/bridge_v2_activation.json` has a null signature,
+29 feature entries with none enabled, and all four policy bits false.
+This describes the F0-gated v2 paths, not a claim that the existing bridge
+communication, wake relay or controlled optional Grok helper is disabled.
+Source presence, packaged bytes, production callers, signed activation and
+observed execution must be recorded separately for each feature.
+
+The completed helper-pin repair is PR #1757 at
+`0ed968575cc7007f6b63230ba6234a69b888edac`: four added lines in
+`tools/bridge_v2_grok_route.py`, preserving earlier pins and adding the
+actual d586 helper blob. It is prepared source, not installed d586 bytes.
+Its earlier non-author targeted test evidence is retained; formal approval,
+CI and a new composed package are separate states. No earlier package
+signature carries forward to a changed package.
+
+The operator has resumed unfinished standalone Bridge source work after the
+earlier stop and requested concurrent native fleet work, queued successors,
+per-lane advisory Grok verification and immediate correction of confirmed
+Bridge defects. The active preparation queue is:
+
+| Owner | Primary slice | Already queued successor |
+|---|---|---|
+| Fable | Reproduce and repair ordinary Grok-only CLI update failure aborting all native lanes; preserve mandatory Codex/Claude failures and cancellation | F19/F24/F26 concrete caller/evidence closure design, then disjoint peer review |
+| RCO1 | Exact-head PR1757 landing review and Bridge queue/claim/heartbeat consumer closure | Independent optional-updater review and lock/publication recovery contract |
+| RCO2 | F0/F15/F16/F17/F18/F27/F28 autonomy dependency and crash/recovery slices | Optional-updater adversarial review and deterministic recovery test matrix |
+| Tools | Exact d586 F0-F30 source/package/caller/activation/runtime inventory and targeted test coordination | Optional-updater causal twins and next package import/entrypoint closure |
+| Lead | Isolated candidate composition, canonical reply reconciliation and current status correction | Integrate independently reviewed completed slices and prepare an exact commit/manifest package |
+
+All four peer write reservations were observed in the canonical reader at
+14:18Z; delivery or a reservation is not task completion. Detailed requests,
+exact request IDs and successor instructions are retained in the canonical
+bridge and the Lead audit tracker. Work is file-disjoint; local tests cover
+only affected Bridge components, never the whole WD suite. WD core changes,
+live session restarts and new package activation are not part of these
+preparation slices. Supervisor OFF and StandingOneShot HOLD are preserved.
+
+Grok review uses `C:\Python\Invoke-WdGrok.ps1` with explicit caller evidence.
+No artificial local hour/week/per-agent quota is introduced. Real provider
+limits, the shared single-flight lock, unresolved-attempt guard and inherited
+read-only surface checks remain enforced. Its status reported locally
+available at 14:17Z, with provider quota unknown; this is not a successful
+consultation or readiness proof. Findings require exact-source validation
+and causal Bridge regression tests before they become accepted repairs.
+
+## Historical source compositions (retained below)
+
 ## Provider-bound capacity source composition (2026-09-30 21:12Z)
 
 The prepared source composes Fable's frozen

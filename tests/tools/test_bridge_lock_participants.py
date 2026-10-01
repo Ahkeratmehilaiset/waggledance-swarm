@@ -151,6 +151,59 @@ class ParticipantTests(unittest.TestCase):
         with self.assertRaises(ParticipantInputError):
             participant_snapshot(value, NOW)
 
+    def test_value_refusal_twins_pin_root_sid_integrity_closed_keys_and_pid_bound(self):
+        # P1-P5 survivors: types alone cannot make syntactically invalid values observed.
+        cases = (
+            ('root', 'relative/bridge', 'C:/synthetic/bridge'),
+            ('root', '//remote/share', '/synthetic/bridge'),
+            ('token', {'user_sid': 'not-a-sid'}, {'user_sid': 'S-1-5-18'}),
+            ('acl', {'owner_sid': 'not-a-sid'}, {'owner_sid': 'S-1-5-18'}),
+            ('token', {'integrity_level': 'admin'}, {'integrity_level': 'high'}),
+            ('token', {'access_token': True}, {'elevated': True}),
+            ('acl', {'complete': True}, {'readable': True}),
+            ('pid', 4294967296, 4294967295),
+        )
+        for name, rejected, accepted in cases:
+            for item, state in ((rejected, 'unknown'), (accepted, 'observed')):
+                with self.subTest(name=name, item=item):
+                    value = fixture()
+                    value['participants']['tools-fixture'][name]['value'] = item
+                    fact = participant_snapshot(value, NOW)['participants']['tools-fixture'][name]
+                    self.assertEqual(fact['state'], state)
+                    if state == 'unknown':
+                        self.assertEqual(fact['reason'], 'invalid_value')
+                        self.assertIsNone(fact['value'])
+                    else:
+                        self.assertEqual(fact['value'], item)
+
+    def test_unknown_fact_entry_keys_withhold_values_success_twin_stays_observed(self):
+        value = fixture()
+        entry = value['participants']['tools-fixture']['pid']
+        entry['verified'] = True
+        fact = participant_snapshot(value, NOW)['participants']['tools-fixture']['pid']
+        self.assertEqual((fact['state'], fact['reason'], fact['value']), ('unknown', 'invalid_entry', None))
+        del entry['verified']
+        self.assertEqual(participant_snapshot(value, NOW)['participants']['tools-fixture']['pid']['state'], 'observed')
+
+    def test_participant_label_refusal_twins(self):
+        for label in ('Uppercase', 'bad label', 'x' * 65):
+            value = fixture()
+            value['participants'] = {label: value['participants']['tools-fixture']}
+            with self.subTest(label=label), self.assertRaises(ParticipantInputError):
+                participant_snapshot(value, NOW)
+        value = fixture()
+        value['participants'] = {'x' * 64: value['participants']['tools-fixture']}
+        self.assertIn('x' * 64, participant_snapshot(value, NOW)['participants'])
+
+    def test_max_age_upper_bound_refusal_twin(self):
+        value = fixture()
+        entry = value['participants']['tools-fixture']['pid']
+        entry['max_age_seconds'] = 604801
+        fact = participant_snapshot(value, NOW)['participants']['tools-fixture']['pid']
+        self.assertEqual((fact['state'], fact['reason'], fact['value']), ('unknown', 'invalid_max_age', None))
+        entry['max_age_seconds'] = 604800
+        self.assertEqual(participant_snapshot(value, NOW)['participants']['tools-fixture']['pid']['state'], 'observed')
+
 
 if __name__ == "__main__":
     unittest.main()

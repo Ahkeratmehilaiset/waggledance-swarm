@@ -1241,6 +1241,79 @@ $second=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Workt
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('warning_preference', ['Continue', 'Stop'])
+@pytest.mark.parametrize('observation_fails', [True, False], ids=['write_refused', 'success_twin'])
+def test_outstanding_observation_failure_never_terminates_or_resubmits(tmp_path, ps, warning_preference,
+                                                                    observation_fails):
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('pending wake')
+    delivery = '0123456789abcdef' * 2
+    state_path.write_text(json.dumps(dict(schema='wd.native-tools-wake.v1', status='queued', delivery_id=delivery,
+        thread_id=THREAD, agent='codex-tools-1', receipt='model_turn_started',
+        updated_at_utc=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())))
+    before = state_path.read_bytes()
+    script = f"$ErrorActionPreference='Stop'\n$WarningPreference='{warning_preference}'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += f"""
+$realAssert=${{function:Assert-WdTurnPath}}
+function Assert-WdTurnPath {{
+ param($Path)
+ if ({'$true' if observation_fails else '$false'} -and $Path -like '*.outstanding-*') {{throw 'fixture observation refused'}}
+ & $realAssert $Path
+}}
+$script:calls=0
+function Send-WdNativeToolsQueueMessage {{$script:calls++; throw 'must not submit'}}
+$results=@(1..2 | ForEach-Object {{
+ Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation fixture -NativePid 123 3>$null
+}})
+@{{results=$results;calls=$script:calls}}|ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result == dict(results=['outstanding_stale', 'outstanding_stale'], calls=0)
+    assert state_path.read_bytes() == before and wake.read_text() == 'pending wake'
+    observations = list(tmp_path.glob('native-bridge-wake.json.outstanding-*'))
+    assert len(observations) == (0 if observation_fails else 1)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('status', ['queued', 'rejected'])
+@pytest.mark.parametrize('future', [True, False], ids=['future_refusal', 'ordinary_twin'])
+def test_future_relay_timestamp_is_unknown_not_debounce_or_retry(tmp_path, ps, status, future):
+    state_path = tmp_path / 'native-bridge-wake.json'
+    wake = tmp_path / 'wake_codex-tools-1'
+    wake.write_text('pending wake')
+    stamp = datetime.now(timezone.utc) + timedelta(hours=1) if future else datetime.now(timezone.utc) - timedelta(seconds=1)
+    record = dict(schema='wd.native-tools-wake.v1', status=status, delivery_id='1' * 32,
+                  thread_id=THREAD, updated_at_utc=stamp.isoformat(), receipt='model_turn_started', rejections=1)
+    if status == 'rejected':
+        record['snapshot_id'] = '2' * 32
+        Path(str(state_path) + '.wake.' + '2' * 32).write_text('refused wake')
+    state_path.write_text(json.dumps(record))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += f"""
+$script:calls=0
+function Send-WdNativeToolsQueueMessage {{$script:calls++;throw 'must not submit'}}
+$results=@(1..2 | ForEach-Object {{
+ Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -WakePath {q(wake)} -StatePath {q(state_path)} -Generation fixture -NativePid 123
+}})
+@{{results=$results;calls=$script:calls}}|ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    expected = 'unknown_future_timestamp' if future else ('debounced' if status == 'queued' else 'rejected_backoff')
+    assert result == dict(results=[expected, expected], calls=0)
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('classifier_fails', [True, False], ids=['classifier_throws', 'success_twin'])
 @pytest.mark.parametrize('warning_preference', ['Continue', 'Stop'])
 def test_a_failing_ambiguity_classifier_never_replaces_the_original_queue_error(tmp_path, ps, classifier_fails,

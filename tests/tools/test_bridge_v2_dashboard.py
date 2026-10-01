@@ -132,5 +132,31 @@ class DashboardTests(unittest.TestCase):
                 dashboard(value, NOW)
 
 
+    def test_lane_charset_and_length_refusal_twins(self):
+        for lane in ('Uppercase', 'bad lane', 'x' * 65):
+            value = fixture()
+            value['lanes'] = {lane: value['lanes']['codex-tools-1']}
+            with self.subTest(lane=lane), self.assertRaises(DashboardInputError):
+                dashboard(value, NOW)
+        value = fixture()
+        value['lanes'] = {'x' * 64: value['lanes']['codex-tools-1']}
+        self.assertEqual(dashboard(value, NOW)['lanes']['x' * 64]['auth']['state'], 'valid')
+
+    def test_source_and_dimension_max_age_upper_bound_refusal_twins(self):
+        for source in (True, False):
+            value = fixture()
+            entry = value['sources']['package'] if source else value['lanes']['codex-tools-1']['auth']
+            entry['max_age_seconds'] = 604801
+            result = dashboard(value, NOW)
+            fact = result['sources']['package'] if source else result['lanes']['codex-tools-1']['auth']
+            self.assertEqual((fact['state'], fact['reason']), ('unknown', 'invalid_max_age'))
+            if source:
+                self.assertIsNone(fact['data'])
+            entry['max_age_seconds'] = 604800
+            result = dashboard(value, NOW)
+            fact = result['sources']['package'] if source else result['lanes']['codex-tools-1']['auth']
+            self.assertEqual(fact['state'], 'fresh' if source else 'valid')
+
+
 if __name__ == "__main__":
     unittest.main()

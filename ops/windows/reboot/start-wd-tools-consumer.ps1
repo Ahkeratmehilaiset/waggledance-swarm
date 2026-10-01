@@ -826,6 +826,9 @@ function Invoke-WdNativeToolsWakeStep {
                 [DateTimeOffset]::Parse([string]$stamp,[Globalization.CultureInfo]::InvariantCulture)
             }
             $age = ([DateTimeOffset]::UtcNow - $queuedAt).TotalSeconds
+            # Clock skew is unknown evidence, not a normal debounce/backoff.
+            # Keep the pending wake held; never infer consumption or resubmit.
+            if ($age -lt 0) { return 'unknown_future_timestamp' }
             if ($retry) {
                 $rejections = if ($previous.PSObject.Properties['rejections']) { [int]$previous.rejections } else { 1 }
                 $backoff = [Math]::Min(600, 30 * [Math]::Pow(2, [Math]::Min(5, [Math]::Max(0, $rejections - 1))))
@@ -847,7 +850,7 @@ function Invoke-WdNativeToolsWakeStep {
                                     [void](Assert-WdTurnPath $observation)
                                     Write-WdNativeWakeOutstandingObservation -Path $observation -Previous $previous -Agent $Agent `
                                         -QueuedAt $queuedAt -Age $age
-                                } catch { Write-Warning ('Native wake outstanding observation could not be written: ' + $_.Exception.Message) }
+                                } catch { Write-Warning -WarningAction Continue ('Native wake outstanding observation could not be written: ' + $_.Exception.Message) }
                             }
                             return 'outstanding_stale'
                         }

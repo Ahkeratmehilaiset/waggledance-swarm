@@ -103,9 +103,100 @@ def test_no_cancellation_at_all_is_complete_and_empty():
     assert (out["complete"], out["cancelled"], out["unknown_tasks"]) == (True, [], [])
 
 
-@pytest.mark.parametrize("status", ["assigned", "answered", "done", "progress", "scope_update", None])
-def test_a_benign_lead_event_is_not_a_control_and_leaves_the_task_clear(status):
-    assert view(derive([lead(status)])) == CLEAR
+@pytest.mark.parametrize("kind, status", sorted(module.BENIGN_AUTHORITY_PAIRS))
+def test_an_allowlisted_benign_lead_pair_without_a_control_signal_leaves_the_task_clear(kind, status):
+    assert view(derive([lead(status, kind=kind)])) == CLEAR
+
+
+@pytest.mark.parametrize("kind, status", [("wake_request", "answered"), ("done", "progress"), ("message", "done"),
+                                          ("wake_request", "scope_update"), ("message", "Answered"),
+                                          ("Message", "answered"), ("message", "answered "), ("decision", "assigned")])
+def test_a_pair_outside_the_allowlist_makes_its_task_unknown(kind, status):
+    assert derive([lead(status, kind=kind)])["unknown_tasks"] == [TASK]
+
+
+def test_the_allowlist_is_the_measured_benign_set():
+    assert module.BENIGN_AUTHORITY_PAIRS == {
+        ("wake_request", "assigned"), ("wake_request", "request"), ("claim", "active"), ("heartbeat", "active"),
+        ("done", "done"), ("message", "answered"), ("message", "informational"), ("message", "progress"),
+        ("handoff", "handoff")}
+
+
+# --- RCO1 F1: real Lead control vocabulary without a stem (20:21:24Z, synthetic copies of the measured shapes) ---
+
+@pytest.mark.parametrize("kind, status, message", [
+    ("release", "abandoned", "Operator explicitly stopped task before any source patch"),   # 10-01T09:15:04Z
+    ("message", "deferred", "do not start before controlled cold reboot"),                   # 09-29T18:17Z
+    ("message", "operator_override", "m"), ("message", "containment", "m"),
+    ("message", "blocked", "m"), ("message", "postponed", "m"), ("message", "parked", "m"),
+    ("message", "standby", "m"), ("message", "veto", "m"), ("message", "rejected", "m"),
+    ("message", "terminated", "m"), ("message", "do_not_start", "m"), ("message", "wait", "m"),
+    ("decision", "cаncelled", "m"),                                                     # Cyrillic a
+    ("brand_new_type", "brand_new_status", "m"),
+])
+def test_real_and_novel_authority_controls_without_a_stem_make_the_task_unknown(kind, status, message):
+    event = lead(status, {}, kind=kind)
+    event["message"] = message
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert out["complete"] is True and out["unknown_tasks"] == [TASK]
+    assert [row["task_id"] for row in out["cancelled"]] == [OTHER]
+
+
+@pytest.mark.parametrize("kind, status, message", [("release", "abandoned", "stopped"),
+                                                   ("message", "deferred", "m")])
+def test_a_novel_authority_control_with_no_task_makes_everything_incomplete(kind, status, message):
+    event = lead(status, {}, kind=kind)
+    event["message"] = message
+    del event["task_id"]
+    assert derive([event, fact(task=OTHER, rid="r-other")])["reason"] == "cancellation_unattributable"
+
+
+# --- RCO1 F2: exact-str type/status and top-level fields ------------------------------------------------
+
+@pytest.mark.parametrize("field", ["status", "type"])
+@pytest.mark.parametrize("value", [["cancelled"], ["hold"], {"state": "hold"}, None, 1, True, ["assigned"]])
+def test_a_non_str_type_or_status_makes_the_task_unknown(field, value):
+    event = lead()
+    event[field] = value
+    assert derive([event])["unknown_tasks"] == [TASK]
+    event["task_id"] = None
+    assert derive([event])["reason"] == "cancellation_unattributable"
+
+
+@pytest.mark.parametrize("field, value", [("status", ["cancelled"]), ("type", None), ("type", ["decision"]),
+                                          ("type", 1)])
+def test_a_non_str_type_or_status_with_a_v1_payload_is_never_a_fact(field, value):
+    event = fact()
+    event[field] = value
+    out = derive([event])
+    assert out["cancelled"] == [] and out["unknown_tasks"] == [TASK]
+
+
+@pytest.mark.parametrize("extra", [{"severity": "hold"}, {"production_hold": True}, {"control": "cancel"},
+                                   {"hold": False}, {"notes": ["fine", "paused until reboot"]},
+                                   {"expected_responders": ["fable-5"], "release_held": True}])
+def test_a_top_level_control_field_under_a_benign_pair_makes_the_task_unknown(extra):
+    event = lead()
+    event.update(extra)
+    assert derive([event])["unknown_tasks"] == [TASK]
+
+
+# --- RCO1 F4: free text and other labels are unknown-only --------------------------------------------
+
+@pytest.mark.parametrize("message", ["HOLD: do not start", "please stop", "superseded by r-2", "paused"])
+def test_control_free_text_under_a_benign_pair_makes_the_task_unknown(message):
+    event = lead()
+    event["message"] = message
+    assert derive([event])["unknown_tasks"] == [TASK]
+
+
+def test_ids_task_ids_timestamps_and_write_scope_values_are_not_free_text():
+    event = lead()
+    event.update({"task_id": "codex-lead-1/cancellation-hold-repair", "request_id": "stop-1",
+                  "in_reply_to_task_id": "codex-lead-1/hold-x", "ts_utc": "cancel",
+                  "write_scope": ["tools/wd_routing_cancellations.py"]})
+    out = derive([event])
+    assert out["complete"] is True and out["unknown_tasks"] == [] and out["cancelled"] == []
 
 
 # --- the six measured legacy shapes and other non-facts: the TASK is unknown, never a fact, never ignored ----
@@ -222,12 +313,16 @@ def test_a_control_type_makes_its_task_unknown(kind):
     assert derive([lead("assigned", kind=kind)])["unknown_tasks"] == [TASK]
 
 
-@pytest.mark.parametrize("payload", [
-    {"action": "resume"}, {"state": "live"}, {"note": "hold this thought"}, {"message": "cancel"},
-    {"findings": ["HOLD stays", "paused lanes"]},
-])
-def test_benign_keys_and_free_text_values_are_not_controls(payload):
-    assert view(derive([lead("answered", payload)])) == CLEAR
+@pytest.mark.parametrize("payload", [{"action": "resume"}, {"state": "live"}, {"note": "all good"},
+                                     {"findings": ["green", "pushed"]}])
+def test_benign_keys_and_values_under_a_benign_pair_stay_clear(payload):
+    assert view(derive([lead("assigned", payload)])) == CLEAR
+
+
+@pytest.mark.parametrize("payload", [{"note": "hold this thought"}, {"message": "cancel"},
+                                     {"findings": ["HOLD stays", "paused lanes"]}])
+def test_control_free_text_in_payload_values_makes_the_task_unknown(payload):
+    assert derive([lead("assigned", payload)])["unknown_tasks"] == [TASK]
 
 
 @pytest.mark.parametrize("status, payload", [("hold", {}), ("answered", {"production_hold": True}),
@@ -258,14 +353,27 @@ def test_an_unreadable_task_named_by_a_control_makes_everything_incomplete(value
 
 
 def test_a_task_key_in_a_benign_payload_is_not_read():
-    assert view(derive([lead("answered", {"task_ids": 7, "task_revision": "r"})])) == CLEAR
+    assert view(derive([lead("assigned", {"task_ids": 7, "task_revision": "r"})])) == CLEAR
 
 
-def test_a_control_by_any_other_label_is_not_read():
-    for agent in ["fable-5", "Codex-Lead-1", "operator"]:
-        event = lead("hold", {"production_hold": True})
-        event["agent"] = agent
-        assert view(derive([event])) == CLEAR
+@pytest.mark.parametrize("agent", ["fable-5", "Codex-Lead-1", "operator", None])
+def test_a_control_by_any_other_label_is_unknown_only(agent):
+    event = lead("hold", {"production_hold": True, "held_task_ids": [OTHER]})
+    event["agent"] = agent
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert out["complete"] is True and out["cancelled"] == [] and out["unknown_tasks"] == sorted([TASK, OTHER])
+
+
+@pytest.mark.parametrize("agent", ["fable-5", "operator"])
+def test_an_other_label_never_clears_or_cancels_and_its_benign_rows_are_ignored(agent):
+    benign = lead("answered", {"note": "done"}, kind="message")
+    benign["agent"] = agent
+    assert view(derive([benign])) == CLEAR
+    unnamed = lead("hold", {})
+    unnamed["agent"] = agent
+    del unnamed["task_id"]
+    # an other-label control naming no task is left to the mandatory global HOLD inputs (module BOUNDARY)
+    assert view(derive([unnamed])) == CLEAR
 
 
 # --- contradictions -------------------------------------------------------------------------------------
@@ -283,10 +391,11 @@ def test_one_request_id_under_two_tasks_makes_both_tasks_unknown():
 # --- only the authority label is read (a label is not provenance) ----------------------------------------
 
 @pytest.mark.parametrize("agent", ["fable-5", "Codex-Lead-1", "codex-lead-1 ", "operator", None])
-def test_a_cancellation_by_any_other_label_is_not_read(agent):
+def test_a_cancellation_by_any_other_label_is_never_a_fact_and_withholds_its_task(agent):
     event = fact()
     event["agent"] = agent
-    assert view(derive([event])) == view(derive([]))
+    out = derive([event])
+    assert out["complete"] is True and out["cancelled"] == [] and out["unknown_tasks"] == [TASK]
 
 
 # --- E-1: the events are exactly the list the snapshot describes ---------------------------------------------
@@ -649,8 +758,9 @@ def test_the_module_reads_no_clock_file_environment_reader_or_process():
                for alias in node.names} | {node.module for node in ast.walk(tree)
                                              if isinstance(node, ast.ImportFrom) and node.module}
     assert not ({"open", "input", "exec", "eval"} & names)
-    assert not ({"now", "utcnow", "today", "time", "environ", "getenv", "read_text", "run", "Popen", "load",
-                 "loads"} & attrs)
+    # json.loads parses only the caller-supplied prefix bytes; json.load (a file) stays banned
+    assert not ({"now", "utcnow", "today", "time", "environ", "getenv", "read_text", "read_bytes", "run", "Popen",
+                 "load"} & attrs)
     assert not ({"os", "subprocess", "time", "pathlib", "socket", "tools"} & imports)
 
 
@@ -660,3 +770,161 @@ def test_the_input_is_not_mutated():
     before = copy.deepcopy((events, snap))
     derive(events, snap)
     assert (events, snap) == before
+
+
+# --- RCO1 F4: the boundary is explicit ------------------------------------------------------------------
+
+def test_the_module_states_that_its_output_alone_does_not_authorize():
+    doc = " ".join(module.__doc__.split())
+    assert "this pure output alone does NOT authorize anything" in doc
+    assert "Independent global HOLD, flags, work_held and release_held inputs remain MANDATORY" in doc
+    assert "this API is CORRELATION ONLY: never provenance, and never a basis for a global known-clear" in doc
+    assert set(derive([fact()])) == set(module.OUTPUT_FIELDS)        # no authorization field of any kind
+
+
+# --- RCO1 F3: raw prefix bytes bound to the closed S-C identity ----------------------------------------------
+
+def line(event) -> bytes:
+    return (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def identity(prefix: bytes, **over):
+    row = {"log_generation": "gen-1", "file_identity": "windows-v1:0000abcd:0000000000000077",
+           "log_bytes": len(prefix), "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+           "observed_utc": "2026-10-01T19:29:30Z", "complete": True}
+    row.update(over)
+    return row
+
+
+def from_prefix(prefix: bytes, ident=None, now=NOW, max_age=MAX_AGE):
+    ident = identity(prefix) if ident is None else ident
+    RECORD.clear()
+    out = module.derive_cancellations_from_prefix(prefix, ident, now, max_age_seconds=max_age)
+    assert list(out) == list(module.OUTPUT_FIELDS) and out["schema"] == module.SCHEMA
+    if not out["complete"]:
+        assert out["cancelled"] == [] and out["unknown_tasks"] == [] and out["reason"]
+    return out
+
+
+PREFIX_EVENTS = [lead(), fact(), lead("hold", {}, task=OTHER)]
+GOOD = b"".join(line(event) for event in PREFIX_EVENTS)
+
+
+def test_the_measured_prefix_derives_like_the_parsed_list():
+    out = from_prefix(GOOD)
+    assert out == derive(PREFIX_EVENTS)
+    assert out["cancelled"] == [{"task_id": TASK, "request_id": RID, "request_digest": DIGEST}]
+    assert out["unknown_tasks"] == [OTHER]
+
+
+def test_an_empty_prefix_is_complete_and_empty():
+    assert view(from_prefix(b"")) == CLEAR
+
+
+@pytest.mark.parametrize("prefix", [GOOD.replace(line(fact()), b""),                       # the cancel filtered out
+                                    line(PREFIX_EVENTS[2]) + line(PREFIX_EVENTS[1]) + line(PREFIX_EVENTS[0]),
+                                    GOOD + line(lead()), GOOD.replace(b"cancel", b"CANCEL")])
+def test_a_filtered_reordered_appended_or_changed_prefix_is_not_the_measured_identity(prefix):
+    assert prefix != GOOD
+    assert from_prefix(prefix, identity(GOOD))["reason"] == "prefix_not_identity"
+
+
+@pytest.mark.parametrize("over", [{"log_bytes": len(GOOD) - 1}, {"log_bytes": len(GOOD) + 1},
+                                  {"prefix_sha256": "b" * 64}])
+def test_length_or_hash_mismatch_is_prefix_not_identity(over):
+    assert from_prefix(GOOD, identity(GOOD, **over))["reason"] == "prefix_not_identity"
+
+
+@pytest.mark.parametrize("over", [{"complete": False}, {"complete": 1}, {"log_generation": None},
+                                  {"log_generation": ""}, {"file_identity": None}, {"log_bytes": True},
+                                  {"log_bytes": -1}, {"log_bytes": module.MAX_PREFIX_BYTES + 1},
+                                  {"prefix_sha256": None}, {"observed_utc": None},
+                                  {"observed_utc": "2026-10-01T19:29:30"}, {"extra": 1}])
+def test_an_unknown_or_malformed_s_c_identity_is_incomplete(over):
+    ident = identity(GOOD, **over)
+    if "prefix_sha256" not in over:
+        ident["prefix_sha256"] = hashlib.sha256(GOOD).hexdigest()
+    assert from_prefix(GOOD, ident)["reason"] == "identity_incomplete"
+
+
+def test_the_all_null_s_c_unknown_shape_is_incomplete():
+    unknown = {"log_generation": None, "file_identity": None, "log_bytes": None, "prefix_sha256": None,
+               "observed_utc": None, "complete": False}
+    assert from_prefix(GOOD, unknown)["reason"] == "identity_incomplete"
+
+
+def test_an_uppercase_s_c_hash_is_incomplete_not_reinterpreted():
+    ident = identity(GOOD, prefix_sha256=hashlib.sha256(GOOD).hexdigest().upper())
+    assert from_prefix(GOOD, ident)["reason"] == "identity_incomplete"
+
+
+def test_identity_freshness_is_the_callers_policy():
+    assert from_prefix(GOOD, identity(GOOD, observed_utc="2026-10-01T19:30:01Z"))["reason"] == "snapshot_future"
+    assert from_prefix(GOOD, identity(GOOD, observed_utc="2026-10-01T19:27:59Z"))["reason"] == "snapshot_stale"
+    assert from_prefix(GOOD, identity(GOOD, observed_utc="2026-10-01T19:28:00Z"))["complete"] is True
+
+
+@pytest.mark.parametrize("prefix, reason", [
+    (GOOD + b'{"agent":"codex-lead-1","status":"cancel', "prefix_unfinished_row"),
+    (GOOD + b'{"agent":"fable-5"}', "prefix_unfinished_row"),
+    (GOOD + b"\n", "input_malformed"),                                               # an empty line
+    (GOOD + b'{"agent":"fable-5","agent":"codex-lead-1"}\n', "input_malformed"),    # duplicate key
+    (GOOD + b'{"payload":{"a":1,"a":2}}\n', "input_malformed"),                     # nested duplicate key
+    (GOOD + b'["not","an","object"]\n', "input_malformed"),
+    (GOOD + b'"text"\n', "input_malformed"),
+    (GOOD + b'{"n":NaN}\n', "input_malformed"),
+    (GOOD + b'{"n":Infinity}\n', "input_malformed"),
+    (GOOD + b'{"n":1e400}\n', "input_malformed"),
+    (GOOD + b'{"n":' + b"9" * 5000 + b"}\n", "input_malformed"),
+    (GOOD + b'{"m":"\xff"}\n', "input_malformed"),                                  # invalid UTF-8
+    (b"\xef\xbb\xbf" + GOOD, "input_malformed"),                                     # BOM
+    (GOOD + b'{"a":' + b"[" * 40 + b"1" + b"]" * 40 + b"}\n", "input_malformed"),    # deeper than MAX_DEPTH
+    (GOOD + b"{not json}\n", "input_malformed"),
+])
+def test_every_line_is_parsed_strictly(prefix, reason):
+    assert from_prefix(prefix)["reason"] == reason
+
+
+def test_crlf_rows_are_json_whitespace_and_still_derive():
+    prefix = GOOD.replace(b"\n", b"\r\n")
+    assert from_prefix(prefix)["cancelled"] == [{"task_id": TASK, "request_id": RID, "request_digest": DIGEST}]
+
+
+def test_the_prefix_must_be_exact_bytes(monkeypatch):
+    for value in (bytearray(GOOD), GOOD.decode("utf-8"), memoryview(GOOD), None):
+        out = module.derive_cancellations_from_prefix(value, identity(GOOD), NOW, max_age_seconds=MAX_AGE)
+        assert out["reason"] == "input_malformed"
+
+
+def test_the_prefix_event_count_policy(monkeypatch):
+    monkeypatch.setattr(module, "MAX_EVENTS", 2)
+    assert from_prefix(GOOD)["reason"] == "event_count_over_policy"
+    assert from_prefix(line(lead()) + line(fact()))["complete"] is True
+
+
+def test_a_real_scale_prefix_derives_within_the_fixture_cap():
+    body = b"".join(line(realistic(index)) for index in range(6000)) + line(fact())
+    assert len(body) < 4 * 1024 * 1024
+    out = from_prefix(body)
+    assert out["complete"] is True and out["cancelled"] == [{"task_id": TASK, "request_id": RID,
+                                                             "request_digest": DIGEST}]
+
+
+@pytest.mark.parametrize("which", ["dict", "key", "value"])
+def test_a_foreign_identity_runs_no_hook_on_the_prefix_api(which):
+    ident = identity(GOOD)
+    if which == "dict":
+        ident = _RecDict(ident)
+    elif which == "key":
+        ident[_RecStr("extra")] = 1
+    else:
+        ident["log_generation"] = _RecStr("gen-1")
+    assert from_prefix(GOOD, ident)["reason"] == "input_malformed" and RECORD == []
+
+
+@pytest.mark.parametrize("now", [datetime(2026, 10, 1, 19, 30), None])
+def test_the_prefix_api_keeps_the_caller_contract(now):
+    with pytest.raises(ValueError):
+        module.derive_cancellations_from_prefix(GOOD, identity(GOOD), now, max_age_seconds=MAX_AGE)
+    with pytest.raises(ValueError):
+        module.derive_cancellations_from_prefix(GOOD, identity(GOOD), NOW, max_age_seconds=0)

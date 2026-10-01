@@ -31,9 +31,12 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
   when present), and a time between the push and ``now``. Prose never binds a head.
 * A pass is ``type`` decision or rco_review with ``status`` rco_pass, from an
   evaluator other than the worker (identities folded as in wd_routing_weights). A
-  worker's own pass is ``self_evaluation`` and never counts.
+  worker's own pass is ``self_evaluation`` and never counts. Type and status must be exact str,
+  or the event is ``malformed``. A pass that binds more than one accepted attempt (two dispatch
+  keys of one task at one head) credits none of them: ``event_target_ambiguous``.
 * A finding is ``type`` finding at the exact head, any status: it can only restrict,
-  so the worker's own finding counts too. A finding outranks every pass: the outcome
+  so the worker's own finding counts too, and it restricts every accepted attempt it binds. A
+  finding outranks every pass: the outcome
   is a ``failure`` with stop signal ``quality_regression``. A finding that binds no
   accepted head is ``unbound`` and does not count.
 * An accepted attempt with no counted event is listed as ``no_independent_evaluation``
@@ -128,10 +131,17 @@ def _head_claim(event: dict) -> str | None:
 
 
 def _kind(event: dict) -> str | None:
-    if event.get("type") == FINDING_TYPE:
+    """"finding", "pass", None (not an evaluation) or "malformed". Type and status are compared only as
+    exact str: a subclass can redefine equality and forge a pass (RCO2 F1)."""
+    typ, status = event.get("type"), event.get("status")
+    if type(typ) is not str:
+        return "malformed"
+    if typ == FINDING_TYPE:
         return "finding"
-    if event.get("type") in PASS_TYPES and event.get("status") == PASS_STATUS:
-        return "pass"
+    if typ in PASS_TYPES:
+        if type(status) is not str:
+            return "malformed"
+        return "pass" if status == PASS_STATUS else None
     return None
 
 
@@ -224,7 +234,7 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
         if kind is None:
             _reject(rejected, "event", event_digest, "not_an_evaluation")
             continue
-        if observed is None or not _text(event.get("agent")) or not _text(event.get("task_id")):
+        if kind == "malformed" or observed is None or not _text(event.get("agent")) or not _text(event.get("task_id")):
             _reject(rejected, "event", event_digest, "malformed")
             continue
         if event["agent"] not in EVALUATORS:
@@ -237,6 +247,11 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
         targets = [b for b in bound if head == b["head"] and event["task_id"] in b["task_ids"]]
         if head is None or not targets:
             _reject(rejected, "event", event_digest, "unbound")
+            continue
+        if kind == "pass" and len(targets) > 1:
+            # One pass never credits two accepted attempts (RCO2 F2): without evidence that names exactly
+            # one target it credits none. A finding still restricts every target it binds.
+            _reject(rejected, "event", event_digest, "event_target_ambiguous")
             continue
         for target in targets:
             if observed < target["pushed"]:

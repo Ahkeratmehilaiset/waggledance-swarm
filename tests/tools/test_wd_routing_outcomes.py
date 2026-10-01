@@ -334,6 +334,67 @@ def test_hostile_events_are_rejected_visibly(hostile):
     assert out["outcomes"] == [] and "malformed" in reasons(out, "event")
 
 
+class Liar(str):
+    """A str that also claims to equal every name in ``lies`` (RCO2 F1, 0e599be0)."""
+
+    def __new__(cls, text, lies):
+        value = super().__new__(cls, text)
+        value.lies = frozenset(lies)
+        return value
+
+    def __eq__(self, other):
+        return other in self.lies or str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
+def test_f1_a_lying_type_cannot_forge_a_pass():
+    out = produce([event(type=Liar("message", {"decision", "rco_review"}))])
+    assert out["outcomes"] == []
+    assert reasons(out) == ["malformed", "no_independent_evaluation"]
+
+
+def test_f1_a_lying_status_cannot_forge_a_pass():
+    out = produce([event(status=Liar("advisory", {"rco_pass"}))])
+    assert out["outcomes"] == []
+    assert reasons(out) == ["malformed", "no_independent_evaluation"]
+
+
+def test_f1_a_lying_finding_type_is_malformed_and_a_genuine_finding_still_restricts():
+    lying = produce([event(kind="finding", type=Liar("message", {"finding"})), event(agent="claude-rco-2")])
+    assert [o["result"] for o in lying["outcomes"]] == ["success"] and reasons(lying) == ["malformed"]
+    genuine = produce([event(kind="finding"), event(agent="claude-rco-2")])
+    assert [o["result"] for o in genuine["outcomes"]] == ["failure"]
+
+
+KEY2 = hashlib.sha256(b"dispatch-2").hexdigest()
+
+
+def two_targets(second_branch=BRANCH):
+    """Two accepted attempts on different dispatch keys of one task at the same head (RCO2 F2)."""
+    return dict(advices=[advice(), advice(dispatch_key=KEY2)],
+                attempts=[attempt(), attempt("att-2", dispatch_key=KEY2,
+                                             artifacts=[artifact(branch=second_branch)])])
+
+
+def test_f2_one_pass_that_binds_two_accepted_targets_credits_neither():
+    out = produce([event()], **two_targets())
+    assert out["outcomes"] == []
+    assert reasons(out) == ["event_target_ambiguous", "no_independent_evaluation", "no_independent_evaluation"]
+
+
+def test_f2_a_finding_that_binds_two_targets_still_restricts_both():
+    out = produce([event(kind="finding")], **two_targets())
+    assert sorted(o["dispatch_key"] for o in out["outcomes"]) == sorted([KEY, KEY2])
+    assert {o["result"] for o in out["outcomes"]} == {"failure"} and out["rejected"] == []
+
+
+def test_f2_a_pass_on_the_branch_that_names_exactly_one_target_counts_once():
+    out = produce([event(task_id=BRANCH)], **two_targets(second_branch="fable-5/f26-other-branch"))
+    assert [(o["dispatch_key"], o["result"]) for o in out["outcomes"]] == [(KEY, "success")]
+    assert reasons(out) == ["no_independent_evaluation"]
+
+
 @pytest.mark.parametrize("args", [
     ("advice", [attempt()]), ([advice()], {"attempt": 1}), (None, None)])
 def test_non_list_inputs_refuse(args):

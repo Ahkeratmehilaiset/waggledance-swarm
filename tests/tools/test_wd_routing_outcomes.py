@@ -198,19 +198,22 @@ class Containing(str):
 
 
 def test_s0_a_lying_message_cannot_fake_containment():
-    out = produce([writer_pass(message=Containing("rco_pass with no head"))])
-    assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+    lying = writer_pass(message=Containing("rco_pass with no head"))
+    out = produce([lying])
+    assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]   # A1: refused before it is read
+    assert ro._head_claim(lying, "pass") is None                            # the exact-str message check itself
 
 
 def test_s0_a_lying_head_cannot_agree_or_bind():
     liar = Liar("c" * 40, {HEAD})
-    fallback = produce([writer_pass(payload={"head": liar}, message="rco_pass at " + HEAD)])
-    assert fallback["outcomes"] == [] and "unbound" in reasons(fallback, "event")
-    agree = produce([event(payload={"exact_head": HEAD, "head": liar})])
-    assert agree["outcomes"] == [] and "unbound" in reasons(agree, "event")
-    # Its text is in the message and it claims to equal the accepted head: only the exact-type check stops it.
-    contained = produce([writer_pass(payload={"head": Liar("rco_pass", {HEAD})}, message="rco_pass at " + HEAD)])
-    assert contained["outcomes"] == [] and "unbound" in reasons(contained, "event")
+    rows = [writer_pass(payload={"head": liar}, message="rco_pass at " + HEAD),
+            event(payload={"exact_head": HEAD, "head": liar}),
+            # Its text is in the message and it claims to equal the accepted head.
+            writer_pass(payload={"head": Liar("rco_pass", {HEAD})}, message="rco_pass at " + HEAD)]
+    for row in rows:
+        out = produce([row])
+        assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]   # A1 gate first
+        assert ro._head_claim(row, "pass") is None   # and the exact-type head checks still refuse it alone
 
 
 def test_s0_a_structured_finding_restricts_and_a_free_text_finding_does_not():
@@ -291,12 +294,19 @@ def test_t1_a_full_length_hex_liar_head_never_binds():
     """Liar is 40 lowercase hex and claims to equal the accepted head; its own text is in the message.
     Only the exact-type check in _hex stops it (mutant: _hex accepts any str subclass)."""
     liar = Liar("c" * 40, {HEAD})
-    fallback = produce([writer_pass(payload={"head": liar}, message="rco_pass at exact head " + "c" * 40)])
-    assert fallback["outcomes"] == [] and "unbound" in reasons(fallback, "event")
-    exact = produce([event(payload={"exact_head": liar}, message="rco_pass at exact head " + "c" * 40)])
-    assert exact["outcomes"] == [] and "unbound" in reasons(exact, "event")
-    finding = produce([writer_pass(), structured_finding(payload={"head": liar})])
-    assert [o["result"] for o in finding["outcomes"]] == ["success"] and reasons(finding) == ["unbound"]
+    fallback = writer_pass(payload={"head": liar}, message="rco_pass at exact head " + "c" * 40)
+    exact = event(payload={"exact_head": liar}, message="rco_pass at exact head " + "c" * 40)
+    finding = structured_finding(payload={"head": liar})
+    # End to end the A1 gate refuses each before it is read; a genuine pass beside the finding still counts.
+    for row in (fallback, exact):
+        out = produce([row])
+        assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
+    out = produce([writer_pass(), finding])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["malformed"]
+    # T1 proper: _head_claim alone (the gate bypassed) must still refuse the full-hex Liar, so the
+    # _hex exact-type mutant dies here, not only behind the A1 gate.
+    assert ro._head_claim(fallback, "pass") is None and ro._head_claim(exact, "pass") is None
+    assert ro._head_claim(finding, "finding") is None
 
 
 def test_s0_an_exact_head_with_an_agreeing_head_still_binds():
@@ -555,23 +565,32 @@ def test_non_list_inputs_refuse(args):
 
 
 @pytest.mark.parametrize("signal", [KeyboardInterrupt, SystemExit])
-def test_cancellation_propagates_instead_of_refusing(signal):
-    class Cancelling(list):
-        def __iter__(self):
-            raise signal()
+def test_cancellation_propagates_instead_of_refusing(signal, monkeypatch):
+    # A1: a list subclass is refused unread, so cancellation is injected inside a real helper instead.
+    def cancelled(value):
+        raise signal()
 
-    raw = {"schema": ro.EVENTS_SCHEMA, "identity_verified": True, "events": Cancelling([event()])}
+    monkeypatch.setattr(ro, "_kind", cancelled)
     with pytest.raises(signal):
-        ro.outcomes([advice()], [attempt()], raw, NOW)
+        ro.outcomes([advice()], [attempt()], envelope(event()), NOW)
 
 
-def test_an_unexpected_error_refuses_instead_of_raising():
+def test_an_unexpected_error_refuses_instead_of_raising(monkeypatch):
     class Broken(list):
         def __iter__(self):
             raise RuntimeError("boom")
 
+    # A1: the hostile list is refused unread (its __iter__ never runs) ...
     raw = {"schema": ro.EVENTS_SCHEMA, "identity_verified": True, "events": Broken([event()])}
     out = ro.outcomes([advice()], [attempt()], raw, NOW)
+    assert out["state"] == "refused" and out["reasons"] == ["evaluator_events_unverified"]
+
+    # ... and a genuine unexpected error inside a helper still refuses instead of raising.
+    def broken(value):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ro, "_kind", broken)
+    out = ro.outcomes([advice()], [attempt()], envelope(event()), NOW)
     assert out["state"] == "refused" and out["reasons"] == ["input_malformed"]
 
 
@@ -595,3 +614,162 @@ def test_the_module_reads_no_clock_environment_file_or_network():
     names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} | {
         n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert not names & {"now", "utcnow", "today", "time", "environ", "getenv", "open", "urlopen", "subprocess"}
+
+
+# --- A1 (RCO1 16:47Z, aba4db01): every input container is exact built-in JSON before it is read -----------
+
+class _HookRan(Exception):
+    """Raised by a hostile hook. An ordinary Exception on purpose: outcomes() turns it into a visible
+    refused/input_malformed record, so a hook that runs fails the assertion (exit 1), never an interrupt."""
+
+
+class _Tripwire(dict):
+    """A dict subclass whose every read hook raises _HookRan if it is ever called."""
+
+    def _trip(self, *args, **kwargs):
+        raise _HookRan("A1: a hostile container hook ran")
+
+    get = __getitem__ = __contains__ = __iter__ = keys = items = values = __eq__ = __ne__ = __len__ = _trip
+    __hash__ = None
+
+
+class _ForgedPayload(dict):
+    """Real content {}; claims an exact_head equal to the accepted head."""
+
+    def get(self, key, default=None):
+        return HEAD if key == "exact_head" else default
+
+    def __contains__(self, key):
+        return key == "exact_head"
+
+    def __getitem__(self, key):
+        return HEAD if key == "exact_head" else dict.__getitem__(self, key)
+
+
+class _ForgedEvent(dict):
+    """Real content: an advisory message; .get claims a decision rco_pass with a forged payload."""
+
+    def get(self, key, default=None):
+        forged = {"type": "decision", "status": "rco_pass", "payload": _ForgedPayload()}
+        return forged[key] if key in forged else dict.get(self, key, default)
+
+
+def _advisory():
+    return {"ts_utc": PASSED, "agent": "claude-rco-1", "type": "message", "status": "advisory",
+            "task_id": TASK, "message": "just a note", "payload": {}}
+
+
+def test_a1_the_plain_advisory_control_is_not_an_evaluation():
+    out = produce([_advisory()])
+    assert out["outcomes"] == [] and "not_an_evaluation" in reasons(out, "event")
+
+
+def test_a1_a_dict_subclass_event_cannot_forge_a_counted_pass():
+    out = produce([_ForgedEvent(_advisory())])
+    assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
+
+
+def test_a1_a_dict_subclass_payload_cannot_forge_a_counted_pass():
+    out = produce([dict(_advisory(), type="decision", status="rco_pass", payload=_ForgedPayload())])
+    assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
+
+
+def test_a1_a_forged_event_does_not_hide_a_genuine_pass_beside_it():
+    out = produce([_ForgedEvent(_advisory()), event()])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out, "event") == ["malformed"]
+
+
+@pytest.mark.parametrize("hostile", [
+    lambda: _Tripwire(event()),
+    lambda: dict(event(), payload=_Tripwire({"exact_head": HEAD})),
+    lambda: dict(event(), payload={"exact_head": HEAD, "nested": [_Tripwire()]}),
+])
+def test_a1_a_hostile_event_container_is_refused_without_running_its_hooks(hostile):
+    out = produce([hostile(), event()])            # a hook that ran would give a refused record
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out, "event") == ["malformed"]
+
+
+@pytest.mark.parametrize("spoil", [
+    lambda e: e["payload"].__setitem__("note", float("nan")),
+    lambda e: e["payload"].__setitem__("note", [float("inf")]),
+    lambda e: e["payload"].__setitem__("note", (1, 2)),
+    lambda e: e.__setitem__(Liar("extra", {"type"}), "decision"),
+    lambda e: e["payload"].__setitem__("note", Liar("x", {"y"})),
+    lambda e: e["payload"].__setitem__("note", b"bytes"),
+])
+def test_a1_non_json_or_subclass_values_anywhere_in_an_event_are_malformed(spoil):
+    row = event()
+    spoil(row)
+    out = produce([row])
+    assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
+
+
+@pytest.mark.parametrize("value, plain", [
+    ({"x": 1.5, "y": [True, None, "s", 3]}, True),
+    ({"x": float("nan")}, False), ({"x": [float("inf")]}, False), ({"x": float("-inf")}, False),
+    ({Liar("k", set()): 1}, False), ([Liar("v", set())], False), ({"x": (1,)}, False), (_Tripwire(), False),
+])
+def test_a1_the_plain_gate_itself(value, plain):
+    # Pinned on its own: the later canonical digest also refuses NaN, so this gate is checked directly.
+    assert ro._plain(value) is plain
+
+
+def test_a1_deep_nesting_and_cycles_are_malformed_not_a_crash_or_refusal():
+    deep = event()
+    nested: object = "x"
+    for _ in range(200):
+        nested = [nested]
+    deep["payload"]["note"] = nested
+    cyclic = event()
+    loop: list = []
+    loop.append(loop)
+    cyclic["payload"]["note"] = loop
+    out = produce([deep, cyclic, event(agent="claude-rco-2")])
+    assert out["state"] == "produced" and reasons(out, "event") == ["malformed", "malformed"]
+    assert [o["result"] for o in out["outcomes"]] == ["success"]
+
+
+def test_a1_a_subclass_advice_record_is_rejected_unread():
+    out = produce([event()], advices=[_Tripwire(advice())])
+    assert out["outcomes"] == [] and "malformed" in reasons(out, "advice")
+    assert "advice_missing" in reasons(out, "attempt")
+
+
+def test_a1_a_subclass_attempt_record_is_rejected_unread():
+    out = produce([event()], attempts=[_Tripwire(attempt())])
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["malformed"]
+
+
+def test_a1_a_subclass_value_inside_an_attempt_is_rejected():
+    out = produce([event()], attempts=[attempt(artifacts=[_Tripwire(artifact())])])
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["malformed"]
+
+
+@pytest.mark.parametrize("raw", [
+    lambda: _Tripwire(envelope(event())),
+    lambda: {"schema": ro.EVENTS_SCHEMA, "identity_verified": True, "events": type("L", (list,), {})([event()])},
+    lambda: {Liar("schema", {"schema"}): ro.EVENTS_SCHEMA, "identity_verified": True, "events": [event()]},
+    lambda: {"schema": Liar(ro.EVENTS_SCHEMA, set()), "identity_verified": True, "events": [event()]},
+])
+def test_a1_a_subclass_envelope_or_event_list_refuses_the_batch_unread(raw):
+    out = produce([], raw_events=raw())
+    assert out["state"] == "refused" and out["reasons"] == ["evaluator_events_unverified"]
+
+
+@pytest.mark.parametrize("which", ["advice", "attempts"])
+def test_a1_a_subclass_input_list_refuses_the_batch(which):
+    listish = type("L", (list,), {})
+    args = {"advices": listish([advice()]) if which == "advice" else None,
+            "attempts": listish([attempt()]) if which == "attempts" else None}
+    out = produce([event()], **args)
+    assert out["state"] == "refused" and out["reasons"] == ["inputs_malformed"]
+
+
+def test_a1_a_str_subclass_now_is_refused_and_not_echoed():
+    out = ro.outcomes([advice()], [attempt()], envelope(event()), Liar(NOW, set()))
+    assert out["state"] == "refused" and out["reasons"] == ["now_invalid"] and out["now_utc"] is None
+
+
+def test_a1_writer_shaped_and_finding_controls_still_count():
+    out = produce([writer_pass(), structured_finding()])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"]

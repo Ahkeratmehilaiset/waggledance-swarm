@@ -78,6 +78,36 @@ FINDING_TYPE = "finding"
 STOP_SIGNAL = "quality_regression"
 _HEX = frozenset("0123456789abcdef")
 _STAMP = "%Y-%m-%dT%H:%M:%S.%fZ"
+MAX_DEPTH = 64
+
+
+def _plain(value: Any, depth: int = 0) -> bool:
+    """Exact built-in JSON only (RCO1 A1): dict/list/str/int/float/bool/None by exact type, exact str keys,
+    finite floats, at most MAX_DEPTH levels (a cycle exceeds it). Checked before any .get, membership,
+    equality or digest, so a subclass never runs its own hooks here."""
+    kind = type(value)
+    if value is None or kind is bool or kind is int or kind is str:
+        return True
+    if kind is float:
+        return value == value and value not in (float("inf"), float("-inf"))
+    if depth >= MAX_DEPTH:
+        return False
+    if kind is list:
+        return all(_plain(item, depth + 1) for item in value)
+    if kind is dict:
+        return all(type(key) is str and _plain(item, depth + 1) for key, item in dict.items(value))
+    return False
+
+
+def _plain_records(items: list, source: str, rejected: list) -> list:
+    """The exact-JSON records of one input list; every other item is rejected unread (ref None)."""
+    kept = []
+    for item in items:
+        if _plain(item):
+            kept.append(item)
+        else:
+            _reject(rejected, source, None, "malformed")
+    return kept
 
 
 def _text(value: Any) -> bool:
@@ -166,25 +196,31 @@ def _kind(event: dict) -> str | None:
 
 def _refused(reason: str, now: Any) -> dict:
     record = {"schema": SCHEMA, "feature": FEATURE, "mode": "shadow", "state": "refused", "reasons": [reason],
-              "now_utc": now if isinstance(now, str) else None, "outcomes": [], "rejected": [],
+              "now_utc": now if type(now) is str else None, "outcomes": [], "rejected": [],
               "duplicates_ignored": 0, "execution_allowed": False, "authority": "none", "activation": "none"}
     record["evidence_digest"] = digest({"state": "refused", "reason": reason, "now_utc": record["now_utc"]})
     return record
 
 
 def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dict:
-    moment = _utc(now) if isinstance(now, str) else None
+    moment = _utc(now) if type(now) is str else None
     if moment is None:
         return _refused("now_invalid", now)
-    if not (isinstance(evaluator_events, dict) and set(evaluator_events) == {"schema", "identity_verified", "events"}
-            and evaluator_events["schema"] == EVENTS_SCHEMA and evaluator_events["identity_verified"] is True
-            and isinstance(evaluator_events["events"], list)):
+    # A1: the envelope, its event list and both input lists are exact built-in types before anything reads
+    # them; each record or event inside is then checked whole by _plain_records before it is read.
+    if not (type(evaluator_events) is dict and all(type(key) is str for key in dict.keys(evaluator_events))
+            and set(dict.keys(evaluator_events)) == {"schema", "identity_verified", "events"}
+            and type(evaluator_events["schema"]) is str and evaluator_events["schema"] == EVENTS_SCHEMA
+            and evaluator_events["identity_verified"] is True and type(evaluator_events["events"]) is list):
         return _refused("evaluator_events_unverified", now)
-    if not (isinstance(advice, list) and isinstance(attempts, list)):
+    if not (type(advice) is list and type(attempts) is list):
         return _refused("inputs_malformed", now)
 
     rejected: list[dict] = []
     duplicates = 0
+    advice = _plain_records(advice, "advice", rejected)
+    attempts = _plain_records(attempts, "attempt", rejected)
+    events = _plain_records(evaluator_events["events"], "event", rejected)
 
     advised, extra = _unique(advice, lambda r: r.get("dispatch_key") if isinstance(r, dict) else None,
                              "advice", rejected)
@@ -237,7 +273,7 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
                           "pushed": _utc(artifact["pushed_utc"]), "passes": [], "findings": []})
 
     seen: dict = {}
-    for event in evaluator_events["events"]:
+    for event in events:
         event_digest = digest(event) if isinstance(event, dict) else None
         if event_digest is None:
             _reject(rejected, "event", None, "malformed")

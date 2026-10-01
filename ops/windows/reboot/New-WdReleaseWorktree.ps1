@@ -10,6 +10,9 @@
     the branch name (absent locally AND on the remote), and a persistent C: target path
     (not a RAM disk, not TEMP/TMP, absent or an empty directory), then prints ONE JSON plan
     with the exact argv of every command a later, separately signed activation would run.
+    The source repository's actual top level must be persistent C: outside TEMP/TMP too, and
+    neither it, the target nor any existing ancestor of either may be a reparse point
+    (junction, symlink or mount point), which could redirect a C: path to a RAM disk or TEMP.
 
     Nothing is created, fetched, pushed or changed. -Apply refuses (exit 3): this wave
     prepares source only, and executing the plan needs a separately signed activation.
@@ -57,6 +60,27 @@ if ($Apply) {
 }
 
 $reasons = New-Object System.Collections.Generic.List[string]
+$volatile = @($env:TEMP, $env:TMP) | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
+function Test-WdVolatilePath {
+    param([string] $FullPath)
+    foreach ($root in $volatile) {
+        if (($FullPath.TrimEnd('\') + '\').StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+function Test-WdReparseOnPath {
+    # True when the path or any EXISTING ancestor is a reparse point; a missing leaf is not one.
+    param([string] $FullPath)
+    $current = $FullPath
+    while ($current) {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+    return $false
+}
 function Invoke-Git {
     # Windows PowerShell 5.1 turns redirected native stderr into a terminating error under
     # ErrorActionPreference Stop, so this read-only call relaxes it locally. A Git that
@@ -91,10 +115,8 @@ try {
 if ($null -eq $fullPath -or -not $fullPath.StartsWith('C:\', [StringComparison]::OrdinalIgnoreCase)) {
     $reasons.Add('path_not_persistent_c_drive')
 } else {
-    $volatile = @($env:TEMP, $env:TMP) | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
-    foreach ($root in $volatile) {
-        if (($fullPath.TrimEnd('\') + '\').StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('path_volatile') ; break }
-    }
+    if (Test-WdVolatilePath $fullPath) { $reasons.Add('path_volatile') }
+    if (Test-WdReparseOnPath $fullPath) { $reasons.Add('path_reparse') }
     if (Test-Path -LiteralPath $fullPath -PathType Leaf) { $reasons.Add('path_is_a_file') }
     elseif (Test-Path -LiteralPath $fullPath -PathType Container) {
         if (@(Get-ChildItem -LiteralPath $fullPath -Force).Count -gt 0) { $reasons.Add('path_not_empty') }
@@ -106,6 +128,22 @@ $inside = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', '--is-inside-work-tre
 if ($inside.Code -ne 0 -or $inside.Text -cne 'true') {
     $reasons.Add('repository_invalid')
 } else {
+    # The source of truth is the repository's ACTUAL top level, and the path it was reached by.
+    $top = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', '--show-toplevel')
+    $sources = @()
+    try {
+        if ($top.Code -eq 0 -and $top.Text) { $sources += [IO.Path]::GetFullPath($top.Text) }
+        $sources += [IO.Path]::GetFullPath($RepositoryPath)
+    } catch { $sources = @() }
+    if ($sources.Count -lt 2) {
+        $reasons.Add('repository_invalid')
+    } else {
+        if (@($sources | Where-Object { -not $_.StartsWith('C:\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            $reasons.Add('repository_not_persistent_c_drive')
+        }
+        if (@($sources | Where-Object { Test-WdVolatilePath $_ }).Count) { $reasons.Add('repository_volatile') }
+        if (@($sources | Where-Object { Test-WdReparseOnPath $_ }).Count) { $reasons.Add('repository_reparse') }
+    }
     if (-not $reasons.Contains('commit_invalid')) {
         $kind = Invoke-Git @('-C', $RepositoryPath, 'cat-file', '-t', $Commit)
         if ($kind.Code -ne 0 -or $kind.Text -cne 'commit') { $reasons.Add('commit_absent') }

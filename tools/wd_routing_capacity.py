@@ -35,7 +35,15 @@ a subject without a provider kind, a row of another provider or subject, a profi
 provider the policy does not sign, a failed, stale or future observation, a freshness label the
 policy does not accept, a pool that is not a verified binding or whose binding expired, a
 pool the policy does not price, unknown quota windows, and any observed window the pacer
-did not pace in the same window instance with a measured rate. Claude rows carry
+did not pace in the same window instance with a measured rate. A paced window counts only when
+the pacer measured it from this row's own subject and verified pool (the entry's ``subject`` and
+``account_pool``, F19C-1): an entry without them (an older pacer or an unbound sample) is
+``window_unbound``, and another subject's or pool's series is ``window_subject_mismatch`` or
+``window_pool_mismatch``, even when its reset and used_percent agree with this row. When the
+entry is another pair's series, the row's own series is taken from the entry's ``identities``
+index (an exact list of exact dicts, matched on exact str subject and pool; RCO1 P55-1), so a lane
+whose account did not sample last is still paced on its own samples; every check above then
+applies to that series. A malformed index is never read. Claude rows carry
 ``provider_timestamp_unknown`` (the statusline does not say when the provider measured the
 quota), so they stay unknown unless the signed policy accepts that label for Claude.
 
@@ -160,8 +168,8 @@ def _worker(worker: Any) -> dict:
     return worker
 
 
-def _row(row: Any, worker: dict, policy: dict, now: datetime) -> tuple[str, str, datetime, datetime]:
-    """provider, pool, observed time and binding expiry of a row this worker may use."""
+def _row(row: Any, worker: dict, policy: dict, now: datetime) -> tuple[str, str, str, datetime, datetime]:
+    """provider, subject id, pool, observed time and binding expiry of a row this worker may use."""
     _need(type(row) is dict and row.get("schema") == OBSERVATION_SCHEMA, "observation_invalid")
     provider = row.get("provider")
     _need(type(provider) is str and provider in PROVIDERS, "observation_invalid")
@@ -186,10 +194,26 @@ def _row(row: Any, worker: dict, policy: dict, now: datetime) -> tuple[str, str,
     expires = _utc(binding.get("expires_at_utc")) if type(binding) is dict else None
     _need(expires is not None and now < expires, "pool_binding_expired")
     _need(pool in policy["pools"], "pool_not_in_policy")
-    return provider, pool, observed, expires
+    return provider, subject_id, pool, observed, expires
 
 
-def _windows(row: dict, provider: str, paced: Any, now: datetime) -> tuple[str, list[dict]]:
+def _own_series(entry: Any, subject: str, pool: str) -> Any:
+    """This row's own (subject, pool) series under one paced key: the entry itself when it is that pair's, else the
+    one exact match in its ``identities`` index (RCO1 P55-1). Otherwise the entry as given, so its own refusal
+    (unbound, subject or pool mismatch) is reported."""
+    def mine(candidate: Any) -> bool:
+        return (type(candidate) is dict and type(candidate.get("subject")) is str
+                and type(candidate.get("account_pool")) is str
+                and candidate["subject"] == subject and candidate["account_pool"] == pool)
+    if type(entry) is not dict or mine(entry):
+        return entry
+    index = entry.get("identities")
+    matches = [candidate for candidate in index if mine(candidate)] if type(index) is list else []
+    return matches[0] if len(matches) == 1 else entry
+
+
+def _windows(row: dict, provider: str, paced: Any, now: datetime, subject: str,
+             pool: str) -> tuple[str, list[dict]]:
     """The quota state and one measured entry per observed window, or every reason it is not."""
     try:
         # The freshness label was already accepted by policy; the quota is read as the pacer does.
@@ -201,7 +225,7 @@ def _windows(row: dict, provider: str, paced: Any, now: datetime) -> tuple[str, 
     reasons, measured = [], []
     for window in windows:
         key = "/".join((provider, str(window.get("limit_id")), str(window.get("name"))))
-        entry, reset = paced.get(key), window.get("resets_at")
+        entry, reset = _own_series(paced.get(key), subject, pool), window.get("resets_at")
         if type(entry) is not dict:
             reasons.append("window_not_paced:" + key)
             continue
@@ -212,6 +236,19 @@ def _windows(row: dict, provider: str, paced: Any, now: datetime) -> tuple[str, 
             reasons.append("window_reset_invalid:" + key)
         elif not (_number(entry.get("resets_at")) and entry["resets_at"] == reset):
             reasons.append("window_instance_mismatch:" + key)
+        elif type(entry.get("subject")) is not str or type(entry.get("account_pool")) is not str:
+            # The pacer names the one subject and verified pool its series was measured from (F19C-1); an entry
+            # that names none is not this row's evidence, whatever its numbers.
+            reasons.append("window_unbound:" + key)
+        elif entry["subject"] != subject:
+            reasons.append("window_subject_mismatch:" + key)
+        elif entry["account_pool"] != pool:
+            reasons.append("window_pool_mismatch:" + key)
+        elif not (_number(entry.get("used_percent")) and _number(window.get("used_percent"))
+                  and entry["used_percent"] == window["used_percent"]):
+            # The same subject and pool must also report this row's own newest used_percent (RCO1 F19C-1): a
+            # series that disagrees with the row it is applied to is not current evidence for it.
+            reasons.append("window_account_mismatch:" + key)
         elif sampled is None or sampled > now:
             reasons.append("window_time_invalid:" + key)
         else:
@@ -239,8 +276,8 @@ def capacity_evidence(worker: Any, row: Any, paced: Any, signed_policy: Any, now
         _need(_subject(own["subject"]) is not None, "subject_unbound")
         policy, pin = _policy(signed_policy)
         record["policy_sha256"] = pin
-        provider, pool, observed, expires = _row(row, own, policy, current)
-        quota_state, measured = _windows(row, provider, paced, current)
+        provider, subject_id, pool, observed, expires = _row(row, own, policy, current)
+        quota_state, measured = _windows(row, provider, paced, current, subject_id, pool)
         oldest_sample = min(item["sampled"] for item in measured)
         valid_until = min([expires, oldest_sample + timedelta(seconds=MAX_SAMPLE_AGE_SECONDS),
                            observed + timedelta(seconds=policy["max_observation_age_seconds"])]
@@ -297,12 +334,14 @@ def _row_for(rows: Any, subject: Any) -> tuple[Any, list[str]]:
 def _with_capacity(workers: Any, subjects: Any, rows: Any, paced: Any, signed_policy: Any,
                    now: Any) -> tuple[Any, dict]:
     """Copies of the worker records with only adapter-proven capacity, and the evidence per worker."""
+    # Only exact lists and dicts are copied; a container subclass is never iterated or passed on (its methods may
+    # lie, RCO1 F19C-2), so it reaches the router as None and the router holds on malformed input.
     if type(workers) is not list:
-        return workers, {}
+        return (None if isinstance(workers, (list, tuple, dict, set, frozenset)) else workers), {}
     routed, evidence = [], {}
     for worker in workers:
         if type(worker) is not dict:
-            routed.append(worker)
+            routed.append(None if isinstance(worker, dict) else worker)
             continue
         record = {key: value for key, value in worker.items() if key != "capacity"}
         name, profile = worker.get("worker"), worker.get("profile_id")

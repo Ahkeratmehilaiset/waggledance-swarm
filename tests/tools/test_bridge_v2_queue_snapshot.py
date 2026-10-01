@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Read-only v2 queue claims snapshot producer (RCO1 2026-09-30, Lead f8d485a1). Fixture roots only.
 
-The schema is W3's, read from frozen Git (tools/wd_routing_load.py at 15485884, blob 41b53433): SNAPSHOT_KEYS
-and ENTRY_KEYS below are copied from it. Negatives first; every refusal has a success twin.
+The schema is W3's: SNAPSHOT_KEYS and ENTRY_KEYS are imported from tools/wd_routing_load.py, which is in the same
+tree since the #1756 composition (before, they were copied from frozen 15485884, blob 41b53433; claude-rco-2
+integration review 2026-10-01). tests/tools/test_bridge_v2_queue_snapshot_to_w3.py runs the two modules together.
+Negatives first; every refusal has a success twin.
 """
 from __future__ import annotations
 
@@ -21,10 +23,9 @@ from tools import bridge_v2_queue_transactions as qt
 from tools import bridge_v2_work_queue as wq
 from tools.bridge_v2_queue_transactions import QueueTransactionError, QueueTransactions, claim_bytes
 from tools.bridge_v2_work_queue import OwnerIdentity
+from tools.wd_routing_load import ENTRY_KEYS as W3_ENTRY_KEYS, SNAPSHOT_KEYS as W3_SNAPSHOT_KEYS
 
-W3_SNAPSHOT_KEYS = {"schema", "observed_utc", "complete", "unreadable", "claims", "pending"}
-W3_ENTRY_KEYS = {"source", "agent", "task_id", "owner_session_id"}
-NOW = datetime(2026, 9, 30, 21, 20, tzinfo=timezone.utc)
+NOW =datetime(2026, 9, 30, 21, 20, tzinfo=timezone.utc)
 OWNER, OTHER = OwnerIdentity("session-a", "token-a"), OwnerIdentity("session-b", "token-b")
 
 

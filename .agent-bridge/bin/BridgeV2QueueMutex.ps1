@@ -4,14 +4,17 @@
 # tools/bridge_v2_queue_transactions.mutex_name(root) is
 #   'Global\WaggleDanceBridgeV2Queue-' + sha256(ascii(canonical_root(root)))[:32]
 # with canonical_root = tools/bridge_v2_resource_scope._normalize_absolute on Windows. This file
-# derives the same name in PowerShell, so the PowerShell claim scripts can later take the SAME
-# root mutex before the claim lock. A different name would silently exclude nothing, so the
+# derives the same name in PowerShell, so the PowerShell claim scripts take the SAME root mutex
+# before the claim lock. A different name would silently exclude nothing, so the
 # derivation is pinned against Python by tests/tools/test_bridge_v2_queue_mutex_ps.py.
 #
 # Get-BridgeV2QueueMutexName is pure. Enter-BridgeV2QueueMutex takes that SAME kernel object
 # through New-BridgeNamedMutex (BridgeNamedMutex.ps1: the bridge's creation policy) and
-# Exit-BridgeV2QueueMutex releases it; nothing calls them yet: wiring the claim scripts (this
-# mutex FIRST, then the claim lock, as the Python queue) is a later, reviewed slice.
+# Exit-BridgeV2QueueMutex releases it. The legacy claim writers (Claim-AgentTask, Release-AgentTask,
+# Invoke-StaleClaimSweep and the lease refresh) take it through Enter-BridgeQueueRootMutex in
+# ClaimLeaseHeartbeat.ps1, this mutex FIRST, then the claim lock, as the Python queue (S2), and
+# release it in Exit-BridgeQueueRootMutex. Off Windows that function takes nothing and returns
+# $null, as tools/work_queue.py _root_mutex takes nothing there.
 
 $script:BridgeV2QueueMutexPrefix = 'Global\WaggleDanceBridgeV2Queue-'
 

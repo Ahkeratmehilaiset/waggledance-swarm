@@ -19,12 +19,20 @@ them. A path check that fails with an OSError counts as unreadable for a WAL rec
 
 Advisory: the timestamp says what the queue held while the mutex was held. It does not prove continuous
 readiness and does not make a worker exclusive (the worker's own keyed claim is the only atomic step).
-``complete`` is complete for the v2 writers that take this mutex ONLY. The legacy claim writers
-(Claim-AgentTask, Release-AgentTask, ClaimLeaseHeartbeat, Invoke-StaleClaimSweep, and the legacy Python
-work-queue writers) do not take it yet, so a claim they write after this snapshot listed the claims
-directory is not in it while ``complete`` stays True (RCO2 S2, reproduced 21:24:58Z). Until every claims
-writer takes this mutex first, a complete snapshot cannot prove a lane idle and must not drive W3 idle
-dispatch; this module neither proves that condition nor decides it.
+``complete`` is complete for the writers that take this mutex first. In the #1756 composition every
+in-repo claims, done and WAL writer does: the v2 writers by design, the legacy PowerShell writers
+(Claim-AgentTask, Release-AgentTask, Invoke-StaleClaimSweep and ClaimLeaseHeartbeat's lease refresh, through
+Enter-BridgeQueueRootMutex) and the legacy Python ones (tools/work_queue.py claim, release and heartbeat, and
+tools/work_queue_sweep_stale.py --apply). That holds on Windows only: the mutex is a Windows named mutex, and
+off Windows the legacy writers take none (tools/work_queue.py _root_mutex, Enter-BridgeQueueRootMutex), so
+there a snapshot excludes no legacy writer. Before that participation (S2), a claim written after this snapshot
+listed the claims directory could be missing while ``complete`` stayed True (RCO2 S2, reproduced 21:24:58Z).
+Not covered (claude-rco-2 integration review, 2026-10-01): a process that writes a claim file directly
+instead of through those helpers (the Codex lane's writable directories include work_queue), a writer
+reached by a runtime-built name, and a writer that is neither PowerShell nor Python. Session heartbeat
+files are written without the mutex; this module does not read them. So a complete snapshot still does not
+by itself prove a lane idle for W3 idle dispatch: that stays a separate, gated decision, which this module
+neither proves nor makes.
 """
 from __future__ import annotations
 

@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Bridge v2 F8 queue ports on Windows: the runtime-root named mutex, and one factory for both ports.
 
-Dormant and tools-owned: nothing on the running path imports this module, and it is not in the
-bridge package list. ``NamedMutexPort`` is the ``MutexPort`` of
+Tools-owned: the work-queue CLI writers and the stale sweep --apply take the root mutex through it
+(tools/work_queue.py ``_root_mutex``), no bridge or ops script runs either tool, and this module is not in
+the bridge package list.
+``NamedMutexPort`` is the ``MutexPort`` of
 ``tools.bridge_v2_queue_transactions``. Its ``hold(name, timeout_seconds)`` accepts only a
 ``mutex_name(root)`` value (``Global\\WaggleDanceBridgeV2Queue-<32 hex>``, derived from the
 normalized runtime root, so a test root and the production root never share one), creates or
@@ -35,8 +37,9 @@ subclass), never as ``errno`` itself. A creation failure, whether an ``OSError``
 
 ``windows_queue_transactions(root)`` wires ``NamedMutexPort`` and the PowerShell-compatible
 ``FileClaimLock`` (claim and fence sibling locks) into ``QueueTransactions`` for one explicit
-runtime root. It is a constructor only: activation, the consumer cutover and a PowerShell twin of
-the mutex are separate slices.
+runtime root. It is a constructor only: activation and the consumer cutover are separate slices. The
+PowerShell twin of the mutex is .agent-bridge/bin/BridgeV2QueueMutex.ps1 (Enter-BridgeV2QueueMutex and
+Exit-BridgeV2QueueMutex); the legacy PowerShell claim writers take it through Enter-BridgeQueueRootMutex.
 """
 from __future__ import annotations
 

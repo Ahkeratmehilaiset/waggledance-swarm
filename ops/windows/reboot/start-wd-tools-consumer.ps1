@@ -828,7 +828,29 @@ function Invoke-WdNativeToolsWakeStep {
             $age = ([DateTimeOffset]::UtcNow - $queuedAt).TotalSeconds
             # Clock skew is unknown evidence, not a normal debounce/backoff.
             # Keep the pending wake held; never infer consumption or resubmit.
-            if ($age -lt 0) { return 'unknown_future_timestamp' }
+            if ($age -lt 0) {
+                # One durable observation per delivery (O2), created once and never rewritten: visibility
+                # only. It completes, retries and authorizes nothing; its failure is only a warning.
+                $futureId = if ($previous.PSObject.Properties['delivery_id']) { [string]$previous.delivery_id } else { '' }
+                if ($futureId -cmatch '^[0-9a-f]{32}$') {
+                    $futureObservation = $StatePath + '.unknown-future-' + $futureId
+                    if (-not [IO.File]::Exists($futureObservation)) {
+                        try {
+                            [void](Assert-WdTurnPath $futureObservation)
+                            $futureRecord = [ordered]@{schema='wd.native-wake-unknown-clock.v1';agent=$Agent;thread_id=[string]$previous.thread_id;
+                                delivery_id=$futureId;status='unknown_future_timestamp';record_updated_at_utc=[string]$stamp;
+                                observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');ahead_seconds=[long][Math]::Floor(-$age);
+                                meaning='the relay record is stamped ahead of this host clock; the pending wake stays held and is never resubmitted';
+                                resolution='operator_clock_reconciliation';retry='never'}
+                            $futureBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($futureRecord | ConvertTo-Json -Depth 3) + "`n")
+                            $futureStream = [IO.File]::Open($futureObservation, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                            try { $futureStream.Write($futureBytes, 0, $futureBytes.Length); $futureStream.Flush($true) } finally { $futureStream.Dispose() }
+                        } catch [Management.Automation.PipelineStoppedException] { throw }
+                        catch { Write-Warning -WarningAction Continue ('Native wake future-clock observation could not be written: ' + $_.Exception.Message) }
+                    }
+                }
+                return 'unknown_future_timestamp'
+            }
             if ($retry) {
                 $rejections = if ($previous.PSObject.Properties['rejections']) { [int]$previous.rejections } else { 1 }
                 $backoff = [Math]::Min(600, 30 * [Math]::Pow(2, [Math]::Min(5, [Math]::Max(0, $rejections - 1))))
@@ -943,15 +965,18 @@ function Invoke-WdNativeToolsWakeStep {
         }
         if (-not $script:WdNativePromptAlerts.ContainsKey($alertKey)) {
             $script:WdNativePromptAlerts[$alertKey] = $true
-            Write-Warning 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required'
+            # After a successful queue call every warning here is visible but never terminating (O1), even under
+            # WarningPreference Stop: the delivery is complete and must not unwind before its snapshot is removed.
+            Write-Warning -WarningAction Continue 'Native wake compact procedure unavailable: delivered verified inline fallback; package repair required'
             if ($SessionId -cnotmatch '^[A-Za-z0-9._:-]{1,160}$') {
                 # A deployment generation is not a lane session. Publishing
                 # under it poisons last_<lane> and future responder bindings.
-                Write-Warning 'Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state'
+                Write-Warning -WarningAction Continue 'Native wake prompt alert skipped: launcher session unavailable; degradation retained in relay state'
             } else { try {
                 [void](Invoke-WdContinuityOperatorNotice -Agent $Agent -ThreadId $ThreadId -Worktree $Worktree `
                     -RuntimeRoot (Split-Path -Parent $WakePath) -SessionId $SessionId -ErrorText 'native_wake_prompt_integrity')
-            } catch { Write-Warning 'Native wake prompt alert unavailable; degradation retained in relay state' } }
+            } catch [Management.Automation.PipelineStoppedException] { throw }
+            catch { Write-Warning -WarningAction Continue 'Native wake prompt alert unavailable; degradation retained in relay state' } }
         }
     }
     if ($env:WD_BRIDGE_BIN) {
@@ -973,7 +998,8 @@ function Invoke-WdNativeToolsWakeStep {
                     }
                 }
             }
-        } catch { Write-Warning ('Native relay latency observation unavailable: ' + $_.Exception.Message) }
+        } catch [Management.Automation.PipelineStoppedException] { throw }
+        catch { Write-Warning -WarningAction Continue ('Native relay latency observation unavailable: ' + $_.Exception.Message) }
     }
     [IO.File]::Delete($snapshot)
     return 'queued'
@@ -1206,6 +1232,7 @@ function Invoke-WdContinuityOperatorNotice {
         $task = [string]$record.task_id
         $reason = switch -Regex ($ErrorText) {
             '^native_wake_prompt_integrity$' { 'native_wake_prompt_degraded'; break }
+            '^native_wake_relay_blocked: ' { 'native_wake_relay_blocked'; break }
             'delivery uncertain' { 'delivery_uncertain'; break }
             'stalled after' { 'continuity_stalled_after_recovery'; break }
             'predates this native session' { 'checkpoint_stale_session'; break }
@@ -1254,6 +1281,11 @@ function Invoke-WdNativeContinuityStep {
         [string] $Generation, [string] $Agent, [string] $ExpectedCliHash, [string] $RuntimeRoot,
         [DateTimeOffset] $SessionStartedAt = [DateTimeOffset]::MinValue,
         [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow)
+    # A loader without -DateKind (pwsh before 7.5) yields a Local DateTime; [string] of it is the invariant
+    # MM/dd/yyyy form, which a host-culture Parse reads day/month swapped. Typed values convert exactly, and
+    # text parses invariant, as the wake age does (RCO2 78aaf7b0 C2).
+    $toOffset = { param($Value) if ($Value -is [datetime] -or $Value -is [datetimeoffset]) { [DateTimeOffset]$Value } else {
+        [DateTimeOffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture) } }
     $sessionAge = ($Now - $SessionStartedAt).TotalSeconds
     if ($sessionAge -lt 0) { throw 'Continuity session timestamp in future' }
     if ($sessionAge -lt 120) { return 'startup_grace' }
@@ -1272,7 +1304,7 @@ function Invoke-WdNativeContinuityStep {
         -not ([string]$checkpoint.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase)) {
         throw 'Continuity checkpoint identity mismatch'
     }
-    if ([DateTimeOffset]::Parse([string]$checkpoint.updated_at_utc) -lt $SessionStartedAt) {
+    if ((& $toOffset $checkpoint.updated_at_utc) -lt $SessionStartedAt) {
         throw 'Continuity checkpoint predates this native session; reconcile authoritative launch-worktree state first'
     }
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -1375,7 +1407,7 @@ function Invoke-WdNativeContinuityStep {
     foreach ($entry in @($ledger.entries)) {
         if ($entry.status -cne 'queued') { throw 'Continuity delivery uncertain; no automatic retry' }
         if ($entry.key -ceq $key) { $attempts++ }
-        $elapsed = ($Now - [DateTimeOffset]::Parse([string]$entry.at_utc)).TotalSeconds
+        $elapsed = ($Now - (& $toOffset $entry.at_utc)).TotalSeconds
         if ($elapsed -lt 0) { throw 'Continuity ledger timestamp in future' }
         if ($elapsed -lt 3600) { $recent = $true }
     }
@@ -1385,7 +1417,7 @@ function Invoke-WdNativeContinuityStep {
     if ($attempts -ge 1) { throw 'Continuity stalled after delivered recovery check; operator reconciliation required' }
     if (@($ledger.entries).Count -ge 256) { throw 'Continuity ledger full; reconciliation required' }
     if (Test-WdContinuityControlEvents -RuntimeRoot $RuntimeRoot -TaskId ([string]$checkpoint.task_id) `
-        -Agent $Agent -CheckpointAt ([DateTimeOffset]::Parse([string]$checkpoint.updated_at_utc))) {
+        -Agent $Agent -CheckpointAt (& $toOffset $checkpoint.updated_at_utc)) {
         throw 'Continuity task may be held by a canonical control event; operator reconciliation required'
     }
     if ((Get-FileHash -LiteralPath $CliPath -Algorithm SHA256).Hash -cne $ExpectedCliHash) {
@@ -1523,12 +1555,24 @@ function Invoke-WdNativeToolsTerminal {
                 -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation ([string]$BaseRecord.generation) `
                 -ExpectedCliHash ([string]$BaseRecord.codex_command_sha256) -SessionId ([string]$BaseRecord.session_id)
         } catch {
+            # Delivery stays stopped (unknown is never retried), but the operator must be able to see it: one
+            # durable continuity notice beside the readiness record (RCO2 78aaf7b0 C1). The notice is secondary:
+            # its failure is only a warning and the ORIGINAL error is rethrown unchanged; a stop still stops.
+            $primary = $_
             $record.status='bridge_wake_blocked'
-            $record.bridge_wake_error=$_.Exception.Message
+            $record.bridge_wake_error=$primary.Exception.Message
             $record.bridge_wake_transport='blocked'
             Write-WdTurnJson $ReadinessPath $record
-            Write-Warning ('Tools automatic bridge delivery stopped: ' + $_.Exception.Message)
-            throw
+            Write-Warning -WarningAction Continue ('Tools automatic bridge delivery stopped: ' + $primary.Exception.Message)
+            try {
+                $notice = Invoke-WdContinuityOperatorNotice -Agent 'codex-tools-1' -ThreadId ([string]$Saved.thread_id) `
+                    -Worktree $Worktree -RuntimeRoot $RuntimeRoot -SessionId ([string]$BaseRecord.session_id) `
+                    -ErrorText ('native_wake_relay_blocked: ' + $primary.Exception.Message)
+                $record.bridge_wake_notice=[string]$notice.status
+                Write-WdTurnJson $ReadinessPath $record
+            } catch [Management.Automation.PipelineStoppedException] { throw }
+            catch { Write-Warning -WarningAction Continue ('Tools relay-blocked operator notice unavailable: ' + $_.Exception.Message) }
+            throw $primary
         }
         if ($native.ExitCode -ne 0) { throw "Native Tools Codex exited with code $($native.ExitCode)" }
     } finally {

@@ -59,7 +59,10 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # 18:42:36Z: the CLI launch reads the null device as stdin, and the state and the ledger add the
                 # request and stream sizes). The report and every field admit/bind read are unchanged.
                 "de1e612ee8255cb4bea4d0580f8abe1d615918ad": "Fable F4 JSON output + strict bounded measurement "
-                                                            "ledger (same local eligibility)"}
+                                                            "ledger (same local eligibility)",
+                # RCO2 G1/G2 (76dc): comment and docstring text only; no code, field or behaviour change.
+                "bebc72886259b1c7b3722d983f7f90a1a52ad93e": "de1e612e plus G1/G2 truth comments "
+                                                            "(same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

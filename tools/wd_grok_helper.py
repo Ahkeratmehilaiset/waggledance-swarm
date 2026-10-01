@@ -270,7 +270,8 @@ def read_ledger(root: Path, max_bytes: int = MAX_LEDGER_READ_BYTES) -> dict:
     are read; ``complete`` says whether that was the whole file and ``skipped_bytes`` how much
     older history was left unread (it stays on disk, untouched). A line that is not one valid
     event (see _ledger_shape_error; torn, oversized or not JSON) is counted in ``malformed_lines``
-    and the first ones are listed by line number (from the first byte read) and reason: never
+    and the first ones are listed by line number (counted from the first complete line read: a partial
+    line at the start of a bounded window is skipped, not counted) and reason: never
     dropped silently. ``open_request_ids`` are started attempts without a finished event (still
     running, or interrupted: the state file says which). ``unmatched_finished_request_ids`` are
     finished events whose start was never recorded; they close nothing. After an incomplete read
@@ -778,7 +779,9 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             stage = "report"
             reply = parse_json_reply(result.stdout)
             if reply is not None:
-                # The report is the answer text; the raw CLI result stays beside it as the evidence.
+                # The report is the answer text; the CLI's JSON result stays beside it as evidence. That file is
+                # the text-mode capture (UTF-8 decoded with replacement, newlines translated) re-encoded as
+                # UTF-8, not the CLI's original bytes, and output_sha256 is of that text.
                 output_path.write_bytes(result.stdout.encode("utf-8"))
                 state.update(output_path=str(output_path),
                              output_sha256=hashlib.sha256(output_path.read_bytes()).hexdigest())

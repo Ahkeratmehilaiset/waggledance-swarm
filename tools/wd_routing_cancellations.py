@@ -51,8 +51,11 @@ Rules (fail closed):
   its TASK unknown, together with tasks it names under a task key; one whose own or named task cannot be read
   makes the whole result incomplete (``cancellation_unattributable``). No vocabulary ever becomes a fact.
 * A control signal is a CONTROL_STEMS stem (after casefold) in the type or status, in any key at any depth, in
-  the str value of a DIRECTIVE_KEYS key, or in ANY other str value, the message included (only ids, task ids,
-  timestamps, agent and write_scope values are not scanned). Over-match only withholds a task (availability).
+  the str value of a DIRECTIVE_KEYS key, or in ANY other str value, the message included. Only a TOKEN-shaped
+  value (no whitespace) under an exact or separator-delimited id key (id, request_id, event-id; not valid or
+  paid), a task key, a timestamp key (ts, *_utc), agent or write_scope is not scanned, so legitimate ids and
+  scoped paths containing hold or cancel stay clear while free text under those keys is scanned; a one-word
+  token such as HOLD under an id key is read as an id (boundary). Over-match only withholds a task.
 * Events by any other label are never facts and never clear anything: a control signal there makes the task
   it names unknown (UNKNOWN-ONLY); an other-label control naming no readable task is not attributable to a
   task and is left to the mandatory global HOLD inputs above.
@@ -96,7 +99,12 @@ MAX_PREFIX_BYTES = 268_435_456
 _ID = re.compile(r"[A-Za-z0-9._:-]{1,128}", re.ASCII)
 _HEX64 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _TASK_KEY = re.compile(r".*tasks?[_-]?(?:ids?)?", re.ASCII)
-_QUIET_KEY = re.compile(r".*tasks?[_-]?(?:ids?)?|.*ids?|.*_utc|ts|agent|write_scope", re.ASCII)
+# Keys whose TOKEN-shaped values are not free text: exact or separator-delimited id names (id, request_id,
+# event-id; never an English word that merely ends in "id" such as valid or paid), task names, timestamps, the
+# agent label and write_scope paths (RCO1 R2 on 76a60086). A value is exempt only when it is a token (no
+# whitespace: an id, a time or a path); free text under these keys is still scanned.
+_QUIET_KEY = re.compile(r"(?:.*[_-])?(?:ids?|tasks?(?:[_-]?ids?)?|utc|ts)|agent|write_scope", re.ASCII)
+_TOKEN = re.compile(r"[A-Za-z0-9._:/\\@+-]{1,512}", re.ASCII)
 
 R_INPUT = "input_malformed"
 R_EVENT_POLICY = "event_count_over_policy"
@@ -191,7 +199,7 @@ def _signals(event: dict) -> tuple[bool, list, bool]:
     while stack:
         key, item = stack.pop()
         if type(item) is str:
-            if not _QUIET_KEY.fullmatch(key) and _stem(item):
+            if not (_QUIET_KEY.fullmatch(key) and _TOKEN.fullmatch(item)) and _stem(item):
                 control = True                     # free text, the message included: unknown-only
             continue
         if type(item) is list:

@@ -199,6 +199,40 @@ def test_ids_task_ids_timestamps_and_write_scope_values_are_not_free_text():
     assert out["complete"] is True and out["unknown_tasks"] == [] and out["cancelled"] == []
 
 
+@pytest.mark.parametrize("key", ["valid", "avoid", "paid", "hybrid", "druid", "grid", "VALID", "invalids"])
+@pytest.mark.parametrize("value", ["HOLD everything", "hold"])
+def test_an_english_word_ending_in_id_is_not_an_id_key(key, value):
+    # RCO1 R2 on 76a60086: ".*ids?" exempted any key ending in id from the stem scan (false clear).
+    assert derive([lead(payload={key: value})])["unknown_tasks"] == [TASK]
+
+
+@pytest.mark.parametrize("key, value", [
+    ("request_id", "HOLD everything"), ("correlation_id", "stop: wait for the cold reboot"), ("id", "do not start, hold"),
+    ("ts_utc", "cancel this"), ("agent", "hold all lanes"), ("write_scope", ["HOLD all writes"]),
+    ("write_scope", "cancel the release"), ("task_id", "please hold this task"), ("held_ids", ["x"]),
+])
+def test_free_text_under_an_id_timestamp_agent_or_scope_key_is_still_scanned(key, value):
+    # A quiet key exempts only a TOKEN-shaped value (an id, a time, a path: no whitespace); free text is scanned.
+    event = lead()
+    event["payload"] = {key: value}
+    out = derive([event])
+    assert out["complete"] is True and TASK in out["unknown_tasks"] and out["cancelled"] == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"write_scope": ["tools/hold_cancel_fix.py", ".codex-audit/rco1-cancellation-hold-20261001"]},
+    {"paths": [], "write_scope": "tests/tools/test_stop_hold.py"},
+    {"request_id": "stop-1", "in_reply_to_request_id": "cancel-2", "correlation_id": "hold:3", "message_id": "x.hold",
+     "event-id": "cancel_4", "id": "hold-5", "ids": ["stop-6"], "run_ids": ["paused-7"], "taskid": "a/hold"},
+    {"in_reply_to_task_id": "codex-lead-1/hold-x", "target_task": "codex-lead-1/cancellation-repair"},
+    {"observed_utc": "2026-10-01T21:00:00Z", "ts": "2026-10-01T21:00:00Z", "agent": "claude-rco-1"},
+])
+def test_token_shaped_ids_paths_and_times_containing_control_words_stay_clear(payload):
+    # Safe twins: legitimate ids, task names and scoped paths that happen to contain hold/cancel/stop.
+    out = derive([lead(payload=payload)])
+    assert out["complete"] is True and out["unknown_tasks"] == [] and out["cancelled"] == []
+
+
 # --- the six measured legacy shapes and other non-facts: the TASK is unknown, never a fact, never ignored ----
 
 LEGACY_PAYLOADS = [

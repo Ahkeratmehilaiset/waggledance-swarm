@@ -10,6 +10,13 @@ skipped, and each loop must occur exactly once, so a commented-out entry never r
 its helpers in the one dot-source form the derivation reads, so a load written another way fails instead of passing.
 That check scans code only (comments blanked, strings masked) and sees a dot-source with or without a blank after the
 dot, a call operator and Import-Module (RCO2 N2, 2026-10-01).
+
+That check lexes with regexes, not the PowerShell parser, and misses some loads (RCO2 N3, 2026-10-01; none of these
+forms is in the chain today): one after a keyword ("return .$h", "return & $x"), one through Invoke-Expression (a
+string), one after && (pwsh 7 only), and one masked by a double-quoted string whose $(...) holds a double quote, as
+in "$('"')": the string mask ends at that inner quote, so the code after it, up to a later quote, can be masked as a
+string. The CHAIN constant and the derived list checks still pin the real chain. If the chain ever loads helpers
+dynamically, read its loads from the PowerShell AST instead.
 """
 from __future__ import annotations
 
@@ -96,7 +103,8 @@ def _code(source: str) -> str:
 
 def _unrecognised_loads(source: str) -> list[str]:
     """Each load the derivation cannot read, as the rest of its line: a dot-source not in the Join-Path form, and
-    every call operator or Import-Module. Only code counts, so a comment or a string never trips it."""
+    every call operator or Import-Module. Only code counts, so a comment or a string never trips it. The module
+    docstring lists the forms it misses."""
     code = _code(source)
     starts = [match.start(1) for match in DOT_OPERATOR.finditer(code)
               if not DOT_SOURCED.match(source, match.start(1))]

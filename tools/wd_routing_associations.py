@@ -37,6 +37,14 @@ request_superseded (the control names another request) and linkage_conflict: one
 carries the identical binding and links; a missing, malformed or different binding of the same identity
 poisons it, because S2 joins all of that identity's claims and releases through one association.
 
+Unknown coverage stays unknown (RCO1, Lead 18:05Z): a refused control whose task_id, or a refused
+acquisition whose S2 identity, cannot be read hook-free might be any task's cancellation or any identity's
+other binding, so it proves nothing safe. Then NO association is emitted: every acquisition that would link
+is unlinked as control_coverage_incomplete (checked first) or acquisition_coverage_incomplete, and
+``coverage.complete`` is false. ``complete`` is true only when every refused control and acquisition is
+attributable. Readable malformed or future controls still poison only their own task. Unknown is not a
+failure and not authentication.
+
 Every item is checked to be strict built-in JSON before any lookup, equality or digest; ids of refused
 items are read only from exact dicts through ``dict.items`` (no foreign hook runs). Cancellation
 (KeyboardInterrupt, SystemExit, GeneratorExit) and unexpected errors propagate.
@@ -73,6 +81,8 @@ U_CONTROL_CONFLICT = "control_conflict"
 U_CANCELLED = "request_cancelled"
 U_SUPERSEDED = "request_superseded"
 U_LINKAGE_CONFLICT = "linkage_conflict"
+U_CONTROL_INCOMPLETE = "control_coverage_incomplete"
+U_ACQUISITION_INCOMPLETE = "acquisition_coverage_incomplete"
 _NO_BINDING, _BAD_BINDING = "no_binding", "bad_binding"
 
 
@@ -179,7 +189,9 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
     # Controls: per task one agreed (request, state); a refused or differing copy poisons the task.
     kept = _strict_items(controls, "control", rejected)
     strict = {index for index, _ in kept}
-    control_bad = {_exact_text(item, "task_id") for index, item in enumerate(controls) if index not in strict} - {None}
+    refused_tasks = [_exact_text(item, "task_id") for index, item in enumerate(controls) if index not in strict]
+    control_bad = set(refused_tasks) - {None}
+    control_unattributed = None in refused_tasks   # a refused control that names no readable task
     control_groups: dict[str, list[dict]] = {}
     for index, record in kept:
         if not _control_ok(record):
@@ -190,7 +202,10 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
             control_groups.setdefault(record["task_id"], []).append(record)
             continue
         rejected.append(_rejection("control", index, record.get("task_id"), reason))
-        control_bad.add(_exact_text(record, "task_id"))
+        task = _exact_text(record, "task_id")
+        control_bad.add(task)
+        if task is None:
+            control_unattributed = True
     control_of: dict[str, dict] = {}
     for task in sorted(control_groups):
         copies = control_groups[task]
@@ -206,9 +221,14 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
     strict = {index for index, _ in kept}
     rejected_count = len(acquisitions) - len(kept)
     markers: dict[tuple, set] = {}
+    acquisition_unattributed = False
     for index, item in enumerate(acquisitions):
-        identity = _identity(item) if index not in strict else None
-        if identity is not None:
+        if index in strict:
+            continue
+        identity = _identity(item)
+        if identity is None:
+            acquisition_unattributed = True   # a refused acquisition of no readable identity
+        else:
             markers.setdefault(identity, set()).add(_BAD_BINDING)
     seen: set = set()
     views = []
@@ -236,6 +256,8 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
                 rejected.append(_rejection("acquisition", index, record.get("task_id"), R_MALFORMED))
                 rejected_count += 1
                 failed.add(identity)
+                if identity is None:
+                    acquisition_unattributed = True
                 continue
             if len(markers[identity]) != 1:
                 raise _Unlinked(U_LINKAGE_CONFLICT)
@@ -244,6 +266,8 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
             unlinked.append(_rejection("acquisition", index, record.get("task_id"), unlink.reason))
             failed.add(identity)
 
+    incomplete = (U_CONTROL_INCOMPLETE if control_unattributed
+                  else U_ACQUISITION_INCOMPLETE if acquisition_unattributed else None)
     produced: list[dict] = []
     associated = 0
     for identity in sorted(linked):
@@ -251,12 +275,17 @@ def associations(dispatches: Any, acquisitions: Any, controls: Any, now: Any) ->
         if identity in failed or len({digest(association) for _, association in rows}) != 1:
             unlinked.extend(_rejection("acquisition", index, identity[0], U_LINKAGE_CONFLICT) for index, _ in rows)
             continue
+        if incomplete is not None:
+            # Unattributable refused evidence may be this identity's cancellation or other binding.
+            unlinked.extend(_rejection("acquisition", index, identity[0], incomplete) for index, _ in rows)
+            continue
         produced.append(rows[0][1])
         associated += len(rows)
     duplicates += acquisition_duplicates
 
     coverage = {"schema": COVERAGE_SCHEMA, "acquisitions": len(acquisitions), "associated": associated,
-                "unlinked": len(unlinked), "rejected": rejected_count, "duplicates": acquisition_duplicates}
+                "unlinked": len(unlinked), "rejected": rejected_count, "duplicates": acquisition_duplicates,
+                "complete": incomplete is None}
     order = (lambda r: (r["source"], r["index"] is None, r["index"] or 0, r["ref"] or "", r["reason"]))
     return {"associations": produced, "unlinked": sorted(unlinked, key=order), "rejected": sorted(rejected, key=order),
             "coverage": coverage, "duplicates_ignored": duplicates}

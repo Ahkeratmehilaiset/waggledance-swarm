@@ -173,8 +173,10 @@ def test_a_future_dated_control_poisons_the_task():
 
 def test_a_hostile_control_copy_poisons_by_its_exact_task_id_without_hooks():
     out = run(acquisitions=[claim()], controls=[control(), _Tripwire(control())])
-    # A dict subclass cannot be attributed hook-free, so it poisons nothing (named limit) but is refused.
-    assert len(out["associations"]) == 1 and reasons(out, "control") == ["malformed"]
+    # A dict subclass cannot be attributed hook-free; it may be any task's cancellation, so coverage is
+    # unknown and nothing is associated (RCO1, Lead 18:05Z; previously a named limit that linked).
+    assert out["associations"] == [] and unlinked(out) == ["control_coverage_incomplete"]
+    assert reasons(out, "control") == ["malformed"] and out["coverage"]["complete"] is False
 
 
 # --- the binding must match the supplied request exactly -------------------------------------------------
@@ -233,9 +235,11 @@ def test_any_other_or_missing_binding_of_the_same_identity_poisons_it(other):
 
 
 def test_a_hostile_record_of_the_same_identity_is_refused_and_runs_no_hook():
-    # A dict subclass cannot be attributed hook-free, so it poisons nothing (named limit); it is refused.
+    # A dict subclass cannot be attributed hook-free; it may be another binding of this identity, so
+    # nothing is associated (RCO1, Lead 18:05Z; previously a named limit that linked).
     out = run(acquisitions=[claim(), _Tripwire(release())])
-    assert len(out["associations"]) == 1 and reasons(out, "acquisition") == ["malformed"]
+    assert out["associations"] == [] and unlinked(out) == ["acquisition_coverage_incomplete"]
+    assert reasons(out, "acquisition") == ["malformed"] and out["coverage"]["complete"] is False
 
 
 def test_r1_released_then_r2_reclaimed_by_one_session_token_is_a_linkage_conflict_not_r2():
@@ -355,3 +359,70 @@ def test_the_module_reads_no_clock_environment_file_or_network():
     called = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call)
               and isinstance(node.func, ast.Attribute)}
     assert not called & {"now", "utcnow", "today", "open", "getenv", "read_text", "write_text"}
+
+
+# --- unknown coverage stays unknown (RCO1, Lead 18:05Z) ---------------------------------------------------
+
+COVERAGE_KEYS = {"schema", "acquisitions", "associated", "unlinked", "rejected", "duplicates", "complete"}
+
+
+def test_coverage_a_fully_attributable_batch_is_complete_and_links():
+    out = run(acquisitions=[claim(), release()])
+    assert len(out["associations"]) == 1 and out["unlinked"] == []
+    assert set(out["coverage"]) == COVERAGE_KEYS and out["coverage"]["complete"] is True
+
+
+class _Hidden(dict):
+    """A dict subclass that is never read (no hook is overridden): unattributable by exact type alone."""
+
+
+@pytest.mark.parametrize("hidden", [
+    lambda: _Hidden(control(state="cancelled", observed="2026-10-01T16:55:00Z")),   # maybe this task's cancel
+    lambda: ["not", "a", "control"],
+    lambda: {k: v for k, v in control(state="cancelled").items() if k != "task_id"},  # strict, no task_id
+    lambda: dict(control(), task_id=""),
+])
+def test_coverage_an_unattributable_refused_control_leaves_every_task_unknown(hidden):
+    out = run(acquisitions=[claim()], controls=[control(), hidden()])
+    assert out["associations"] == [] and unlinked(out) == ["control_coverage_incomplete"]
+    assert reasons(out, "control") == ["malformed"] and out["coverage"]["complete"] is False
+    assert (out["coverage"]["associated"], out["coverage"]["unlinked"]) == (0, 1)
+
+
+def test_coverage_a_readable_malformed_control_still_poisons_only_its_own_task():
+    out = run(acquisitions=[claim()], controls=[control(), dict(control(), task_id="codex-lead-1/other", state="x")])
+    assert len(out["associations"]) == 1 and reasons(out, "control") == ["malformed"]
+    assert out["coverage"]["complete"] is True
+
+
+@pytest.mark.parametrize("hidden", [
+    lambda: 42,
+    lambda: _Hidden(release(binding(R2))),                     # maybe another binding of this identity
+    lambda: {k: v for k, v in claim().items() if k != "owner_token_sha256"},   # strict, identity unreadable
+])
+def test_coverage_an_unattributable_refused_acquisition_links_nothing(hidden):
+    out = run((R1, R2), acquisitions=[claim(), hidden()])
+    assert out["associations"] == [] and unlinked(out) == ["acquisition_coverage_incomplete"]
+    assert reasons(out, "acquisition") == ["malformed"] and out["coverage"]["complete"] is False
+
+
+def test_coverage_an_attributable_malformed_acquisition_of_another_identity_does_not_block():
+    other = dict(claim(owner_token_sha256="d" * 64), extra=float("nan"))   # readable identity, other token
+    out = run(acquisitions=[claim(), other])
+    assert len(out["associations"]) == 1 and out["coverage"]["complete"] is True
+
+
+def test_coverage_control_incompleteness_is_reported_before_acquisition_incompleteness():
+    out = run(acquisitions=[claim(), 42], controls=[control(), ["x"]])
+    assert out["associations"] == [] and unlinked(out) == ["control_coverage_incomplete"]
+
+
+def test_coverage_a_non_json_control_with_a_readable_task_poisons_only_that_task():
+    # Refused by the strict gate (NaN) but its task_id is readable hook-free: it is attributable.
+    elsewhere = dict(control(), task_id="codex-lead-1/other", observed_utc=float("nan"))
+    out = run(acquisitions=[claim()], controls=[control(), elsewhere])
+    assert len(out["associations"]) == 1 and out["coverage"]["complete"] is True
+    here = dict(control(state="cancelled"), observed_utc=float("nan"))
+    same = run(acquisitions=[claim()], controls=[control(), here])
+    assert same["associations"] == [] and unlinked(same) == ["control_conflict"]
+    assert same["coverage"]["complete"] is True

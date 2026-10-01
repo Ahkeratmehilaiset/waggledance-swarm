@@ -194,3 +194,28 @@ def test_str_subclasses_and_bad_inputs_never_pass():
     assert derive_outcome(True, _history(*GOOD), runner_returned=True)["reason"] == "input_malformed"
     assert derive_outcome(1, _history(*GOOD), runner_returned=1)["reason"] == "input_malformed"
     assert derive_outcome(1, "rows", runner_returned=True)["reason"] == "no_history"
+
+
+# --- strict JSON (Lead 3c19efd3): a duplicate key anywhere in a marker or the epoch is refused ---------------
+
+DUP_STOP = '{"stop_intent_at": "t", "stop_intent_at": "u"}'
+DUP_STOPPED = '{"source_stopped_at": "t", "source_stopped_at": "u"}'
+DUP_EPOCH_SAME = BOUND[:-1] + ', "pid": 4243}'                 # the same value repeated
+DUP_EPOCH_OTHER = BOUND[:-1] + ', "profile": "primary"}'       # a later duplicate that would win silently
+
+
+@pytest.mark.parametrize("index, row, reason", [
+    (3, ("checkpointed", DUP_STOP), "self_move_marker_unknown:3"),
+    (4, ("apply_pending", DUP_STOPPED), "self_move_marker_unknown:4"),
+    (5, ("verified", DUP_EPOCH_SAME), "verified_without_bound_epoch:5"),
+    (5, ("verified", DUP_EPOCH_OTHER), "verified_without_bound_epoch:5"),
+    (5, ("verified", BOUND[:-1] + ', "x": {"a": 1, "a": 2}}'), "verified_without_bound_epoch:5"),
+])
+def test_duplicate_json_keys_are_refused_never_last_wins(index, row, reason):
+    result = derive_outcome(1, _history(*_replace(index, row)), runner_returned=True)
+    assert (result["outcome"], result["reason"], result["success"]) == ("UNKNOWN", reason, False)
+
+
+def test_the_same_markers_and_epoch_without_duplicates_still_continue():
+    rows = _replace(5, ("verified", json.dumps(EPOCH)))          # key order differs from sort_keys: still valid
+    assert derive_outcome(1, _history(*rows), runner_returned=True)["outcome"] == "CONTINUED"

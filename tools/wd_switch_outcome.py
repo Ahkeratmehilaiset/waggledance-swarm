@@ -86,11 +86,23 @@ def _unknown(transition_id: Any, reason: str, rows: int, index: int | None = Non
     return _result(transition_id, "UNKNOWN", reason if index is None else "%s:%d" % (reason, index), rows)
 
 
+def _unique_pairs(pairs: list) -> dict:
+    """A JSON object whose keys are all distinct; json.loads calls this for every object at every depth."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
 def _json_object(text: Any) -> dict | None:
     if type(text) is not str:
         return None
     try:
-        value = json.loads(text, parse_constant=lambda name: (_ for _ in ()).throw(ValueError(name)))
+        # Strict JSON: a duplicate key at any depth is refused (never last-wins), as is NaN or Infinity.
+        value = json.loads(text, object_pairs_hook=_unique_pairs,
+                           parse_constant=lambda name: (_ for _ in ()).throw(ValueError(name)))
     except (ValueError, RecursionError):
         return None
     return value if type(value) is dict else None

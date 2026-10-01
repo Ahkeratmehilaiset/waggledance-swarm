@@ -380,7 +380,7 @@ def test_the_compatibility_receipt_pins_the_contract_and_the_committed_module_bl
     committed = (ROOT / "tools" / "wd_task_journal.py").read_bytes().replace(b"\r\n", b"\n")
     receipt = journal_module.compatibility_receipt(committed)
     header = b"blob " + str(len(committed)).encode() + b"\0"
-    assert receipt["module_git_blob"] == hashlib.sha1(header + committed).hexdigest()
+    assert receipt["module_git_blob"] == hashlib.sha1(header + committed, usedforsecurity=False).hexdigest()
     assert {key: receipt[key] for key in ("schema", "journal_schema", "root_relative", "owner_identity",
                                           "fence_evidence_keys", "max_journal_bytes")} == {
         "schema": "wd.task-journal-compat.v1", "journal_schema": "wd.task-journal.v1",

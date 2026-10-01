@@ -827,7 +827,7 @@ class RealDeferringHelper(RealStatusHelper):
 
 def test_the_helper_is_a_reviewed_blob_with_the_fields_admission_reads(tmp_path):
     data = HELPER_PATH.read_bytes().replace(b"\r\n", b"\n")  # the committed LF bytes under core.autocrlf
-    assert hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() in route.HELPER_BLOBS
+    assert hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest() in route.HELPER_BLOBS
     assert real_helper.SCHEMA == route.HELPER_STATE_SCHEMA
     helper = RealStatusHelper(tmp_path, status="answered", last_attempt_utc=(NOW - timedelta(hours=2)).isoformat())
     assert set(route.HELPER_STATUS_FIELDS) <= set(helper.status())

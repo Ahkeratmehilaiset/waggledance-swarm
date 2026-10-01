@@ -184,7 +184,8 @@ def compatibility_receipt(module_bytes: bytes) -> dict:
     rules, the owner identity, the fence evidence keys and principal, and the git blob id of the module
     bytes AS COMMITTED (LF line endings, as ``git hash-object`` reads the repository copy)."""
     _refuse(type(module_bytes) is bytes, "module_bytes_invalid")
-    blob = hashlib.sha1(b"blob " + str(len(module_bytes)).encode("ascii") + b"\0" + module_bytes).hexdigest()
+    blob = hashlib.sha1(b"blob " + str(len(module_bytes)).encode("ascii") + b"\0" + module_bytes,
+                        usedforsecurity=False).hexdigest()   # a git object id, not a security hash
     return {"schema": COMPAT_SCHEMA, "journal_schema": SCHEMA, "root_relative": JOURNAL_ROOT_RELATIVE.as_posix(),
             "file_rule": "<task_key(task_id)>-r<revision>.jsonl with a sibling .lock",
             "key_rule": "task_id with characters outside [A-Za-z0-9._-] as '_', first 80, '-', sha256(task_id)[:16]",

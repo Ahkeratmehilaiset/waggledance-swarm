@@ -223,8 +223,8 @@ def test_s0_a_structured_finding_restricts_and_a_free_text_finding_does_not():
     assert only_pair(weights(structured["outcomes"]))["state"] == "quarantined"
     free_text = produce([writer_pass(agent="claude-rco-2"), event(kind="finding", payload={},
                                                                    message="finding at " + HEAD)])
-    assert [o["result"] for o in free_text["outcomes"]] == ["success"]
-    assert reasons(free_text) == ["unbound"]
+    # A free-text finding never fails the task, but it withholds the success (RCO1 Lead 17:35Z).
+    assert free_text["outcomes"] == [] and reasons(free_text) == ["restriction_unresolved", "unbound"]
 
 
 def test_s0_writer_shaped_passes_keep_f1_and_f2():
@@ -253,23 +253,26 @@ def test_r1_a_pass_of_the_same_shape_still_needs_the_head_in_its_message():
     assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
 
 
-@pytest.mark.parametrize("over, reason", [
-    ({"payload": {"head": None}}, "unbound"),
-    ({"payload": {"head": OTHER_HEAD}}, "unbound"),
-    ({"payload": {"head": HEAD.upper()}}, "unbound"),
-    ({"payload": {"head": HEAD[:12]}}, "unbound"),
-    ({"payload": {}}, "unbound"),
-    ({"payload": {"exact_head": None, "head": HEAD}}, "unbound"),          # no fallback from a present exact_head
-    ({"payload": {"exact_head": HEAD[:12], "head": HEAD}}, "unbound"),
-    ({"payload": {"exact_head": OTHER_HEAD, "head": HEAD}}, "unbound"),
-    ({"task_id": "codex-lead-1/other"}, "unbound"),
-    ({"agent": "codex-tools-1"}, "unrecognized_evaluator"),
-    ({"type": Liar("message", {"finding"})}, "malformed"),
+@pytest.mark.parametrize("over, reason, withheld", [
+    ({"payload": {"head": None}}, "unbound", "restriction_unresolved"),
+    ({"payload": {"head": OTHER_HEAD}}, "unbound", None),                  # another readable head: unrelated
+    ({"payload": {"head": HEAD.upper()}}, "unbound", "restriction_unresolved"),
+    ({"payload": {"head": HEAD[:12]}}, "unbound", "restriction_unresolved"),
+    ({"payload": {}}, "unbound", "restriction_unresolved"),
+    ({"payload": {"exact_head": None, "head": HEAD}}, "unbound", "restriction_unresolved"),   # no fallback
+    ({"payload": {"exact_head": HEAD[:12], "head": HEAD}}, "unbound", "restriction_unresolved"),
+    ({"payload": {"exact_head": OTHER_HEAD, "head": HEAD}}, "unbound", "restriction_unresolved"),
+    ({"task_id": "codex-lead-1/other"}, "unbound", None),                   # another task: unrelated
+    ({"agent": "codex-tools-1"}, "unrecognized_evaluator", None),
+    ({"type": Liar("message", {"finding"})}, "malformed", "restriction_coverage_incomplete"),
 ])
-def test_r1_a_structured_finding_restricts_only_when_it_binds(over, reason):
+def test_r1_a_structured_finding_restricts_only_when_it_binds(over, reason, withheld):
     out = produce([writer_pass(), structured_finding(**over)])
-    assert [o["result"] for o in out["outcomes"]] == ["success"]
-    assert reasons(out, "event") == [reason]
+    assert reasons(out, "event") == [reason]   # it never becomes a failure
+    if withheld is None:
+        assert [o["result"] for o in out["outcomes"]] == ["success"]
+    else:   # but an unresolved or unreadable finding withholds the success (RCO1 Lead 17:35Z)
+        assert out["outcomes"] == [] and reasons(out, "attempt") == [withheld]
 
 
 def test_r1_the_workers_own_structured_finding_still_restricts():
@@ -287,7 +290,7 @@ def test_r1_a_structured_finding_that_binds_two_targets_restricts_both():
 
 def test_r1_a_free_text_only_finding_stays_unbound():
     out = produce([writer_pass(), structured_finding(payload={}, message="finding at " + HEAD)])
-    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["unbound"]
+    assert out["outcomes"] == [] and reasons(out) == ["restriction_unresolved", "unbound"]
 
 
 def test_t1_a_full_length_hex_liar_head_never_binds():
@@ -302,7 +305,7 @@ def test_t1_a_full_length_hex_liar_head_never_binds():
         out = produce([row])
         assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
     out = produce([writer_pass(), finding])
-    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["malformed"]
+    assert out["outcomes"] == [] and reasons(out) == ["malformed", "restriction_coverage_incomplete"]
     # T1 proper: _head_claim alone (the gate bypassed) must still refuse the full-hex Liar, so the
     # _hex exact-type mutant dies here, not only behind the A1 gate.
     assert ro._head_claim(fallback, "pass") is None and ro._head_claim(exact, "pass") is None
@@ -338,12 +341,16 @@ def test_a_finding_outranks_every_pass_at_the_same_head():
     assert out["outcomes"][0]["evaluators"] == ["claude-rco-2"]
 
 
-@pytest.mark.parametrize("over", [
-    {"head": OTHER_HEAD}, {"head": None}, {"task_id": "codex-lead-1/other"}, {"agent": "codex-tools-1"}])
-def test_an_unbound_or_unrecognized_finding_does_not_count(over):
+@pytest.mark.parametrize("over, withheld", [
+    ({"head": OTHER_HEAD}, None), ({"head": None}, "restriction_unresolved"),
+    ({"task_id": "codex-lead-1/other"}, None), ({"agent": "codex-tools-1"}, None)])
+def test_an_unbound_or_unrecognized_finding_does_not_count(over, withheld):
     out = produce([event(kind="finding", **over), event(agent="claude-rco-2")])
-    assert [o["result"] for o in out["outcomes"]] == ["success"]
-    assert reasons(out, "event") in (["unbound"], ["unrecognized_evaluator"])
+    assert reasons(out, "event") in (["unbound"], ["unrecognized_evaluator"])   # never a failure
+    if withheld is None:
+        assert [o["result"] for o in out["outcomes"]] == ["success"]
+    else:
+        assert out["outcomes"] == [] and reasons(out, "attempt") == [withheld]
 
 
 def test_the_workers_own_finding_still_restricts():
@@ -524,7 +531,7 @@ def test_f1_a_lying_status_cannot_forge_a_pass():
 
 def test_f1_a_lying_finding_type_is_malformed_and_a_genuine_finding_still_restricts():
     lying = produce([event(kind="finding", type=Liar("message", {"finding"})), event(agent="claude-rco-2")])
-    assert [o["result"] for o in lying["outcomes"]] == ["success"] and reasons(lying) == ["malformed"]
+    assert lying["outcomes"] == [] and reasons(lying) == ["malformed", "restriction_coverage_incomplete"]
     genuine = produce([event(kind="finding"), event(agent="claude-rco-2")])
     assert [o["result"] for o in genuine["outcomes"]] == ["failure"]
 
@@ -674,9 +681,10 @@ def test_a1_a_dict_subclass_payload_cannot_forge_a_counted_pass():
     assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
 
 
-def test_a1_a_forged_event_does_not_hide_a_genuine_pass_beside_it():
+def test_a1_a_forged_event_is_refused_and_withholds_the_genuine_pass_beside_it():
     out = produce([_ForgedEvent(_advisory()), event()])
-    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out, "event") == ["malformed"]
+    assert out["outcomes"] == [] and reasons(out, "event") == ["malformed"]
+    assert reasons(out, "attempt") == ["restriction_coverage_incomplete"]
 
 
 @pytest.mark.parametrize("hostile", [
@@ -686,7 +694,8 @@ def test_a1_a_forged_event_does_not_hide_a_genuine_pass_beside_it():
 ])
 def test_a1_a_hostile_event_container_is_refused_without_running_its_hooks(hostile):
     out = produce([hostile(), event()])            # a hook that ran would give a refused record
-    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out, "event") == ["malformed"]
+    assert out["state"] == "produced" and reasons(out, "event") == ["malformed"]
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["restriction_coverage_incomplete"]
 
 
 @pytest.mark.parametrize("spoil", [
@@ -726,7 +735,7 @@ def test_a1_deep_nesting_and_cycles_are_malformed_not_a_crash_or_refusal():
     cyclic["payload"]["note"] = loop
     out = produce([deep, cyclic, event(agent="claude-rco-2")])
     assert out["state"] == "produced" and reasons(out, "event") == ["malformed", "malformed"]
-    assert [o["result"] for o in out["outcomes"]] == ["success"]
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["restriction_coverage_incomplete"]
 
 
 def test_a1_a_subclass_advice_record_is_rejected_unread():
@@ -773,3 +782,103 @@ def test_a1_a_str_subclass_now_is_refused_and_not_echoed():
 def test_a1_writer_shaped_and_finding_controls_still_count():
     out = produce([writer_pass(), structured_finding()])
     assert [o["result"] for o in out["outcomes"]] == ["failure"]
+
+
+# --- RCO2 fb9e A1-T1 / A1b: the F1 guards and the nested-list gate pinned directly ---------------------------
+
+def test_k1_k2_k3_the_f1_exact_type_guards_hold_without_the_a1_gate():
+    # Called directly, bypassing _plain: a later gate change must not silently reopen F1 (RCO2 fb9e K1/K2/K3).
+    assert ro._kind({"type": Liar("message", {"decision"}), "status": "rco_pass"}) == "malformed"
+    assert ro._kind({"type": "decision", "status": Liar("advisory", {"rco_pass"})}) == "malformed"
+    assert ro._text(Liar("claude-rco-1", {"claude-rco-1"})) is False
+
+
+class _HostileList(list):
+    def __iter__(self):
+        raise _HookRan("A1b: a nested list-subclass hook ran")
+
+
+def test_a1b_a_nested_list_subclass_is_malformed_and_its_hook_never_runs():
+    row = event(agent="claude-rco-2")
+    row["payload"]["note"] = _HostileList([1, 2])
+    out = produce([row, event()])
+    assert out["state"] == "produced" and reasons(out, "event") == ["malformed"]   # a hook run would refuse
+    assert ro._plain({"note": _HostileList()}) is False
+
+
+# --- incomplete restriction evidence never yields a success (RCO1, Lead 17:35Z) ---------------------------
+
+def _nan_finding():
+    row = structured_finding()
+    row["payload"]["note"] = float("nan")
+    return row
+
+
+def _deep_finding():
+    row = structured_finding()
+    nested: object = "x"
+    for _ in range(80):
+        nested = [nested]
+    row["payload"]["note"] = nested
+    return row
+
+
+def test_incomplete_control_a_complete_batch_still_succeeds():
+    out = produce([writer_pass(), structured_finding(payload={"head": OTHER_HEAD}), event(kind="message")])
+    assert [o["result"] for o in out["outcomes"]] == ["success"]
+    assert reasons(out) == ["not_an_evaluation", "unbound"]
+
+
+@pytest.mark.parametrize("bad", [_nan_finding, _deep_finding,
+                                 lambda: structured_finding(ts_utc=FUTURE),
+                                 lambda: event(ts_utc=FUTURE),                       # a future PASS too
+                                 lambda: dict(event(kind="message"), payload={"x": float("inf")}),
+                                 lambda: event(agent=None)],
+                         ids=["nan_finding", "deep_finding", "future_finding", "future_pass", "malformed_message",
+                              "agentless"])
+def test_incomplete_an_unread_or_future_event_withholds_every_success_in_the_batch(bad):
+    out = produce([writer_pass(), bad()])
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["restriction_coverage_incomplete"]
+    assert set(reasons(out, "event")) <= {"malformed", "future_dated"}
+
+
+def test_incomplete_a_known_failure_is_still_produced_beside_an_unread_event():
+    out = produce([writer_pass(), structured_finding(), _nan_finding()])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"]
+
+
+OTHER_TASK = "codex-lead-1/f26-other-task"
+
+
+def _two_tasks():
+    """Two accepted attempts on two tasks at two heads, each with its own genuine pass."""
+    other = advice(dispatch_key=KEY2, task_id=OTHER_TASK)
+    second = attempt(attempt_id="att-2", dispatch_key=KEY2, task_id=OTHER_TASK,
+                     artifacts=[artifact(commit=OTHER_HEAD, branch="fable-5/other-branch")])
+    passes = [writer_pass(), writer_pass(head=OTHER_HEAD, task_id=OTHER_TASK)]
+    return dict(advices=[advice(), other], attempts=[attempt(), second]), passes
+
+
+def test_incomplete_control_two_clean_tasks_both_succeed():
+    inputs, passes = _two_tasks()
+    out = produce(passes, **inputs)
+    assert sorted(o["result"] for o in out["outcomes"]) == ["success", "success"]
+
+
+def test_incomplete_withholding_covers_every_target_in_the_batch():
+    inputs, passes = _two_tasks()
+    out = produce([*passes, _nan_finding()], **inputs)
+    assert out["outcomes"] == []
+    assert reasons(out, "attempt") == ["restriction_coverage_incomplete"] * 2
+
+
+def test_unresolved_a_free_text_finding_withholds_only_its_own_task():
+    inputs, passes = _two_tasks()
+    out = produce([*passes, structured_finding(payload={}, message="this is broken")], **inputs)   # at TASK only
+    assert [(o["dispatch_key"], o["result"]) for o in out["outcomes"]] == [(KEY2, "success")]
+    assert reasons(out, "attempt") == ["restriction_unresolved"]
+
+
+def test_unresolved_a_free_text_finding_on_the_branch_name_also_withholds():
+    out = produce([writer_pass(), structured_finding(payload={}, task_id=BRANCH, message="broken")])
+    assert out["outcomes"] == [] and reasons(out, "attempt") == ["restriction_unresolved"]

@@ -45,6 +45,14 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
   accepted head is ``unbound`` and does not count.
 * An accepted attempt with no counted event is listed as ``no_independent_evaluation``
   and yields no outcome.
+* Success needs complete restriction evidence (RCO1, Lead 17:35Z). If ANY evaluator event in the batch
+  is rejected as ``malformed`` (unreadable, nonfinite, too deep, bad type/status/agent/task/time) or
+  ``future_dated``, it cannot be proven unrelated, so no success is produced in that batch: each would-be
+  success is rejected as ``restriction_coverage_incomplete``. A recognized evaluator's finding that names a
+  bound task (task id or branch) but binds no structured head withholds that task's success as
+  ``restriction_unresolved``; a finding at another readable structured head is unrelated and blocks
+  nothing. Failures from bound findings are still produced. The cost is availability: one bad event
+  suppresses every success in its batch until a clean batch is supplied.
 
 Never produced: ``limit_hit`` (a capacity limit says nothing about quality),
 ``failure`` without a finding, and ``requalification`` (no signed source exists).
@@ -76,6 +84,9 @@ PASS_TYPES = ("decision", "rco_review")
 PASS_STATUS = "rco_pass"
 FINDING_TYPE = "finding"
 STOP_SIGNAL = "quality_regression"
+R_INCOMPLETE = "restriction_coverage_incomplete"
+R_UNRESOLVED = "restriction_unresolved"
+_DROPPED = ("malformed", "future_dated")   # event rejections that leave restriction coverage unknown
 _HEX = frozenset("0123456789abcdef")
 _STAMP = "%Y-%m-%dT%H:%M:%S.%fZ"
 MAX_DEPTH = 64
@@ -270,7 +281,8 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
             profile = next(r["profile_id"] for r in task_advice["ranking"] if r["worker"] == record["worker"])
             bound.append({"attempt": record, "advice": task_advice, "head": head, "profile_id": profile,
                           "task_ids": {record["task_id"], artifact["branch"]},
-                          "pushed": _utc(artifact["pushed_utc"]), "passes": [], "findings": []})
+                          "pushed": _utc(artifact["pushed_utc"]), "passes": [], "findings": [],
+                          "unresolved": False})
 
     seen: dict = {}
     for event in events:
@@ -301,6 +313,12 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
         head = _head_claim(event, kind)
         targets = [b for b in bound if head == b["head"] and event["task_id"] in b["task_ids"]]
         if head is None or not targets:
+            if kind == "finding" and head is None:
+                # A finding at a bound task with no structured head: which commit it restricts is unknown,
+                # so that task cannot be credited a success (it is still not a failure).
+                for target in bound:
+                    if event["task_id"] in target["task_ids"]:
+                        target["unresolved"] = True
             _reject(rejected, "event", event_digest, "unbound")
             continue
         if kind == "pass" and len(targets) > 1:
@@ -316,6 +334,8 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
             else:
                 target["passes" if kind == "pass" else "findings"].append((observed, event_digest, event["agent"]))
 
+    # Any evaluator event dropped unread or as future-dated leaves restriction coverage unknown.
+    incomplete = any(r["source"] == "event" and r["reason"] in _DROPPED for r in rejected)
     produced = []
     for target in bound:
         attempt = target["attempt"]
@@ -324,6 +344,9 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
             _reject(rejected, "attempt", attempt["attempt_id"], "no_independent_evaluation")
             continue
         failure = bool(target["findings"])
+        if not failure and (incomplete or target["unresolved"]):
+            _reject(rejected, "attempt", attempt["attempt_id"], R_INCOMPLETE if incomplete else R_UNRESOLVED)
+            continue
         outcome = {
             "schema": OUTCOME_SCHEMA, "kind": "outcome", "dispatch_key": attempt["dispatch_key"],
             "task_class": target["advice"]["task_class"], "profile_id": target["profile_id"],

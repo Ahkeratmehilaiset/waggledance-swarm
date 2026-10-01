@@ -23,7 +23,8 @@ Producer (pure over an injected Git port; this module never runs git, reads a cl
 
 Persistence (opt-in; only with a caller-explicit approved directory):
 
-    persist_receipt(receipt, directory, approved_root=) -> {"path", "status": "created" | "unchanged"}
+    persist_receipt(receipt, directory, approved_root=) -> {"path", "status": "created" | "unchanged",
+                                                             "cleanup": "ok" | "close_failed:<Type>"}
     load_receipt(path) -> dict
 
 * The file is ``<receipt_digest>.json``: the canonical UTF-8 JSON (sorted keys, no whitespace) plus a
@@ -31,12 +32,27 @@ Persistence (opt-in; only with a caller-explicit approved directory):
   same directory, fsynced, then hard-linked to the final name, which fails if the name exists. So a
   reader sees the whole file or nothing under the final name.
 * An identical retry is a no-op (``unchanged``); other bytes under the same name are ``receipt_conflict``.
-* The directory must exist, be absolute on drive C:, equal or lie inside ``approved_root``, contain no
-  ``..`` segment, resolve to itself (no symlink or junction) and have no reparse point on any existing
-  component. Temporary roots (``tempfile.gettempdir()``) are refused (CLAUDE.md rule 1).
-* Limitations (named, not closed): a crash after the temporary write and before the link leaves an
-  orphan ``.tmp`` file and no receipt; the hash proves content, not who wrote it; a writer with raw file
-  access can delete or add files; filesystem atomicity is NTFS hard-link creation, not a transaction.
+* The directory must exist, be absolute on drive C:, equal or lie inside ``approved_root`` and contain
+  no ``..`` segment. Temporary roots (``tempfile.gettempdir()``, resolved) are refused (CLAUDE.md rule 1).
+* Containment is enforced, not only checked (Windows only; elsewhere ``platform_unsupported``): every
+  component from the drive root to the directory is opened as a handle without the reparse point being
+  followed and without delete sharing, so for the whole operation no component can be renamed, removed
+  or replaced by a junction. Each handle must be a directory with no reparse point whose final path is
+  exactly the given component (so no link, junction or 8.3 alias). The temporary file is created and
+  hard-linked RELATIVE to the directory handle (NtCreateFile / FileLinkInformation), never by path, and
+  is opened delete-on-close, so closing it, or the process ending, removes it without a path-based
+  unlink. Its final path is checked against the directory before any byte is written.
+* Cleanup never masks the outcome: a close failure is reported as ``cleanup`` on success, as
+  ``.cleanup`` on a refusal, and as an exception note on a cancellation, which always propagates.
+* Limitations (named, not closed): the directory itself stays shareable for writing (the hard link needs
+  it), so a writer inside ``approved_root`` could turn a still-empty directory into a junction in place
+  between the lock and the temporary create; the final-path check then refuses ``directory_drifted`` and
+  delete-on-close removes the temporary file, but a byte-free temporary name may have been created
+  there. The enforcement relies on NTFS refusing a reparse point on a non-empty directory and on
+  share-mode semantics. A process already holding delete access on a component makes this refuse
+  (``directory_lock_failed``). An OS crash or power loss can leave an orphan ``.tmp`` file. The hash
+  proves content, not who wrote it. ``load_receipt`` is a content check only: bytes, canonical form and
+  name, never location or containment.
 """
 from __future__ import annotations
 
@@ -68,11 +84,12 @@ _REPARSE = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 class PushReceiptRefused(Exception):
-    """No receipt: ``reason`` is a stable code."""
+    """No receipt: ``reason`` is a stable code; ``cleanup`` reports a temporary-file close failure."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+        self.cleanup = "ok"
 
 
 class GitPort(Protocol):
@@ -97,11 +114,11 @@ def _utc_text(value: Any) -> str:
         _refuse("observed_remote_utc_invalid")
     try:
         moment = datetime.fromisoformat(value)
-    except ValueError:
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            _refuse("observed_remote_utc_invalid")
+        return moment.astimezone(timezone.utc).strftime(_STAMP)
+    except (ValueError, OverflowError):   # an offset can carry 0001-01-01 or 9999-12-31 out of range
         _refuse("observed_remote_utc_invalid")
-    if moment.tzinfo is None or moment.utcoffset() is None:
-        _refuse("observed_remote_utc_invalid")
-    return moment.astimezone(timezone.utc).strftime(_STAMP)
 
 
 def canonical_bytes(value: dict) -> bytes:
@@ -207,16 +224,11 @@ def _inside(child: Path, parent: Path) -> bool:
         return False
 
 
-def _no_reparse(path: Path) -> None:
-    probe = Path(path.anchor)
-    for part in path.parts[1:]:
-        probe = probe / part
-        try:
-            info = os.lstat(probe)
-        except FileNotFoundError:
-            _refuse("directory_missing")
-        if stat.S_ISLNK(info.st_mode) or (getattr(info, "st_file_attributes", 0) & _REPARSE):
-            _refuse("path_has_link_or_reparse")
+def _volatile(path: Path) -> bool:
+    for root in _forbidden_roots():
+        if _inside(path, root) or _inside(path, Path(os.path.realpath(root))):   # realpath expands 8.3 aliases
+            return True
+    return False
 
 
 def _safe_directory(directory: Any, approved_root: Any) -> Path:
@@ -227,14 +239,126 @@ def _safe_directory(directory: Any, approved_root: Any) -> Path:
             _refuse("directory_invalid")
     if not _inside(directory, approved_root):
         _refuse("directory_outside_approved_root")
-    if any(_inside(directory, root) for root in _forbidden_roots()):
+    if _volatile(directory):
         _refuse("directory_volatile")
-    _no_reparse(directory)
-    if not directory.is_dir():
-        _refuse("directory_missing")
-    if _norm(directory.resolve(strict=True)) != _norm(directory):
-        _refuse("path_has_link_or_reparse")
     return directory
+
+
+_WINDOWS = os.name == "nt"
+if _WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _ntdll = ctypes.WinDLL("ntdll")
+    _HANDLE = wintypes.HANDLE
+    _INVALID_HANDLE = _HANDLE(-1).value
+
+    class _UnicodeString(ctypes.Structure):
+        _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT), ("Buffer", wintypes.LPWSTR)]
+
+    class _ObjectAttributes(ctypes.Structure):
+        _fields_ = [("Length", wintypes.ULONG), ("RootDirectory", _HANDLE),
+                    ("ObjectName", ctypes.POINTER(_UnicodeString)), ("Attributes", wintypes.ULONG),
+                    ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Pointer", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    class _AttributeTagInfo(ctypes.Structure):
+        _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+    _kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                      wintypes.DWORD, wintypes.DWORD, _HANDLE]
+    _kernel32.CreateFileW.restype = _HANDLE
+    _kernel32.CloseHandle.argtypes = [_HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.GetFinalPathNameByHandleW.argtypes = [_HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    _kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    _kernel32.GetFileInformationByHandleEx.argtypes = [_HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    _ntdll.NtCreateFile.argtypes = [ctypes.POINTER(_HANDLE), wintypes.ULONG, ctypes.POINTER(_ObjectAttributes),
+                                    ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG,
+                                    wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+    _ntdll.NtCreateFile.restype = ctypes.c_long
+    _ntdll.NtSetInformationFile.argtypes = [_HANDLE, ctypes.POINTER(_IoStatusBlock), ctypes.c_void_p,
+                                            wintypes.ULONG, ctypes.c_int]
+    _ntdll.NtSetInformationFile.restype = ctypes.c_long
+
+# Directory handle: list + add file + traverse + read attributes + synchronize; share read and write but
+# NOT delete, so no component can be renamed or removed while held; open the reparse point itself.
+_DIR_ACCESS = 0x1 | 0x2 | 0x20 | 0x80 | 0x100000
+_DIR_SHARE = 0x1 | 0x2
+_DIR_FLAGS = 0x02000000 | 0x00200000          # FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_TAG_INFO = 9
+# Temporary file: generic write + delete + synchronize + read attributes, exclusive, FILE_CREATE,
+# non-directory + synchronous I/O + delete-on-close.
+_TMP_ACCESS = 0x40000000 | 0x10000 | 0x100000 | 0x80
+_TMP_OPTIONS = 0x40 | 0x20 | 0x1000
+_FILE_LINK_INFORMATION = 11
+_STATUS_OBJECT_NAME_COLLISION = 0xC0000035
+
+
+def _final_path(handle: Any) -> str:
+    buffer = ctypes.create_unicode_buffer(1024)
+    length = _kernel32.GetFinalPathNameByHandleW(handle, buffer, 1024, 0)
+    text = buffer.value if 0 < length < 1024 else ""
+    return text[4:] if text.startswith("\\\\?\\") and not text.startswith("\\\\?\\UNC\\") else ""
+
+
+def _close_handles(handles: list) -> None:
+    for handle in reversed(handles):
+        _kernel32.CloseHandle(handle)
+
+
+def _lock_directory(folder: Path) -> list:
+    """Handles from the drive root to ``folder``, each verified; the caller closes them."""
+    handles: list = []
+    try:
+        probe = Path(folder.anchor)
+        for part in ("",) + folder.parts[1:]:
+            probe = probe / part if part else probe
+            handle = _kernel32.CreateFileW(str(probe), _DIR_ACCESS, _DIR_SHARE, None, 3, _DIR_FLAGS, None)
+            if handle in (None, _INVALID_HANDLE):
+                code = ctypes.get_last_error()
+                _refuse("directory_missing" if code in (2, 3, 267) else "directory_lock_failed:%d" % code)
+            handles.append(handle)
+            info = _AttributeTagInfo()
+            if not _kernel32.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info),
+                                                          ctypes.sizeof(info)):
+                _refuse("directory_lock_failed:%d" % ctypes.get_last_error())
+            if not info.FileAttributes & _DIRECTORY:
+                _refuse("directory_missing")
+            if info.FileAttributes & _REPARSE or _norm(Path(_final_path(handle) or "?")) != _norm(probe):
+                _refuse("path_has_link_or_reparse")
+        if _volatile(Path(_final_path(handles[-1]))):
+            _refuse("directory_volatile")
+        return handles
+    except BaseException:
+        _close_handles(handles)
+        raise
+
+
+def _create_relative(directory: Any, name: str) -> Any:
+    text = _UnicodeString(len(name) * 2, len(name) * 2, name)
+    attributes = _ObjectAttributes(ctypes.sizeof(_ObjectAttributes), directory, ctypes.pointer(text), 0x40, None, None)
+    status_block, handle = _IoStatusBlock(), _HANDLE()
+    status = _ntdll.NtCreateFile(ctypes.byref(handle), _TMP_ACCESS, ctypes.byref(attributes), ctypes.byref(status_block),
+                                 None, 0x80, 0, 2, _TMP_OPTIONS, None, 0) & 0xFFFFFFFF
+    if status != 0:
+        _refuse("receipt_create_failed:%08x" % status)
+    return handle.value
+
+
+def _link_relative(handle: Any, directory: Any, name: str) -> int:
+    class _LinkInformation(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.ULONG), ("RootDirectory", _HANDLE), ("FileNameLength", wintypes.ULONG),
+                    ("FileName", wintypes.WCHAR * len(name))]
+    information = _LinkInformation(0, directory, len(name) * 2, name)   # Flags 0: never replace an existing name
+    return _ntdll.NtSetInformationFile(handle, ctypes.byref(_IoStatusBlock()), ctypes.byref(information),
+                                       ctypes.sizeof(information), _FILE_LINK_INFORMATION) & 0xFFFFFFFF
 
 
 def _read_bounded(path: Path) -> bytes:
@@ -257,31 +381,55 @@ def persist_receipt(receipt: Any, directory: Any, *, approved_root: Any) -> dict
     data = canonical_bytes(receipt) + b"\n"
     if len(data) > MAX_RECEIPT_BYTES:
         _refuse("receipt_oversized")
-    final = folder / (receipt["receipt_digest"] + ".json")
-    temporary = folder / (".%s.%s.tmp" % (receipt["receipt_digest"], uuid.uuid4().hex))
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    descriptor = os.open(temporary, flags, 0o644)
+    if not _WINDOWS:
+        _refuse("platform_unsupported")   # the containment below needs Windows handles; no unsafe fallback
+    name = receipt["receipt_digest"] + ".json"
+    temporary = ".%s.%s.tmp" % (receipt["receipt_digest"], uuid.uuid4().hex)
+    handles = _lock_directory(folder)
     try:
+        directory_handle = handles[-1]
+        handle = _create_relative(directory_handle, temporary)
         try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_WRONLY)
+        except BaseException:
+            _kernel32.CloseHandle(handle)   # delete-on-close removes the temporary file
+            raise
+        status, cleanup = None, "ok"
+        try:
+            if _norm(Path(_final_path(handle) or "?")) != _norm(Path(_final_path(directory_handle)) / temporary):
+                _refuse("directory_drifted")
             view = memoryview(data)
             while view:
-                view = view[os.write(descriptor, view):]
+                written = os.write(descriptor, view)
+                if type(written) is not int or not 0 < written <= len(view):
+                    _refuse("receipt_write_stalled")
+                view = view[written:]
             os.fsync(descriptor)
-        finally:
+            linked = _link_relative(handle, directory_handle, name)
+            if linked == 0:
+                status = "created"
+            elif linked == _STATUS_OBJECT_NAME_COLLISION:
+                if _read_bounded(folder / name) != data:
+                    _refuse("receipt_conflict")
+                status = "unchanged"
+            else:
+                _refuse("receipt_link_failed:%08x" % linked)
+        except BaseException as primary:
+            try:
+                os.close(descriptor)
+            except OSError as exc:   # never replaces the refusal or the cancellation
+                cleanup = "close_failed:" + type(exc).__name__
+                primary.add_note("push receipt cleanup: " + cleanup)
+                if isinstance(primary, PushReceiptRefused):
+                    primary.cleanup = cleanup
+            raise
+        try:
             os.close(descriptor)
-        try:
-            os.link(temporary, final)
-            status = "created"
-        except FileExistsError:
-            if _read_bounded(final) != data:
-                _refuse("receipt_conflict")
-            status = "unchanged"
+        except OSError as exc:   # the receipt is published; report the cleanup, do not hide the status
+            cleanup = "close_failed:" + type(exc).__name__
     finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-    return {"path": str(final), "status": status}
+        _close_handles(handles)
+    return {"path": str(folder / name), "status": status, "cleanup": cleanup}
 
 
 def _unique_pairs(pairs: list) -> dict:

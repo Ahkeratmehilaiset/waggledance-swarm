@@ -252,6 +252,189 @@ def test_load_receipt_refuses_a_valid_receipt_under_another_name(approved):
     assert caught.value.reason == "receipt_name_mismatch"
 
 
+# --- F1-F7 (fable-5 review of 2b500a51) ------------------------------------------------------------------
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"])
+def test_f1_an_out_of_range_offset_time_is_a_stable_refusal(stamp):
+    refused("observed_remote_utc_invalid", observed_remote_utc=stamp)
+    receipt = build()
+    receipt["observed_remote_utc"] = stamp
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.validate_receipt(receipt)
+    assert caught.value.reason == "observed_remote_utc_invalid"
+
+
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows handle containment")
+
+
+@windows_only
+def test_f2_no_component_can_be_renamed_or_swapped_while_publishing(approved, tmp_path, monkeypatch):
+    root, folder = approved
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_write, attempts = os.write, []
+
+    def swap_then_write(descriptor, data):
+        for victim in (folder, root):   # the leaf and an ancestor, while the handles are held
+            try:
+                os.rename(victim, victim.with_name(victim.name + "-moved"))
+                attempts.append("renamed " + victim.name)
+            except OSError as exc:
+                attempts.append(exc.winerror)
+        return real_write(descriptor, data)
+
+    monkeypatch.setattr(pr.os, "write", swap_then_write)
+    result = pr.persist_receipt(build(), folder, approved_root=root)
+    assert attempts == [32, 32]                          # ERROR_SHARING_VIOLATION: the lock held
+    assert Path(result["path"]).parent == folder and (folder / Path(result["path"]).name).is_file()
+    assert list(outside.iterdir()) == []
+    os.rename(folder, folder.with_name("after"))         # released afterwards
+
+
+@windows_only
+def test_f2_a_temporary_file_outside_the_held_directory_is_refused_and_removed(approved, monkeypatch):
+    root, folder = approved
+    real = pr._final_path
+    monkeypatch.setattr(pr, "_final_path", lambda h: "C:\\elsewhere\\x.tmp" if real(h).endswith(".tmp") else real(h))
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    assert caught.value.reason == "directory_drifted" and list(folder.iterdir()) == []   # delete-on-close
+
+
+@windows_only
+def test_f2_a_component_held_for_deletion_by_another_process_refuses(approved):
+    root, folder = approved
+    other = pr._kernel32.CreateFileW(str(folder), 0x10000 | 0x80, 0x7, None, 3, 0x02000000, None)   # DELETE access
+    assert other not in (None, pr._INVALID_HANDLE)
+    try:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(build(), folder, approved_root=root)
+        assert caught.value.reason == "directory_lock_failed:32" and list(folder.iterdir()) == []
+    finally:
+        pr._kernel32.CloseHandle(other)
+
+
+def test_f2_without_windows_handles_persistence_fails_closed(approved, monkeypatch):
+    root, folder = approved
+    monkeypatch.setattr(pr, "_WINDOWS", False)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    assert caught.value.reason == "platform_unsupported" and list(folder.iterdir()) == []
+
+
+@windows_only
+def test_f3_a_close_failure_after_publishing_keeps_the_status_and_reports_it(approved, monkeypatch):
+    root, folder = approved
+    real_close = os.close
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise OSError(5, "close failed")
+
+    monkeypatch.setattr(pr.os, "close", close_then_fail)
+    result = pr.persist_receipt(build(), folder, approved_root=root)
+    assert (result["status"], result["cleanup"]) == ("created", "close_failed:OSError")
+    assert [p.name for p in folder.iterdir()] == [Path(result["path"]).name]
+
+
+@windows_only
+def test_f4_a_close_failure_never_replaces_a_conflict(approved, monkeypatch):
+    root, folder = approved
+    receipt = build()
+    (folder / (receipt["receipt_digest"] + ".json")).write_bytes(b"{}\n")
+    real_close = os.close
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        raise OSError(5, "close failed")
+
+    monkeypatch.setattr(pr.os, "close", close_then_fail)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", "close_failed:OSError")
+    assert [p.name for p in folder.iterdir()] == [receipt["receipt_digest"] + ".json"]
+
+
+@windows_only
+def test_f5_an_8dot3_alias_of_a_volatile_root_is_still_refused(tmp_path, monkeypatch):
+    import ctypes
+    volatile = tmp_path / "LongVolatileRootName"
+    folder = volatile / "receipts"
+    folder.mkdir(parents=True)
+    buffer = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(volatile), buffer, 1024) or buffer.value.lower() == str(volatile).lower():
+        pytest.skip("no 8.3 names on this volume")
+    monkeypatch.setattr(pr, "_forbidden_roots", lambda: [Path(buffer.value)])
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), folder, approved_root=tmp_path)
+    assert caught.value.reason == "directory_volatile" and list(folder.iterdir()) == []
+
+
+@windows_only
+def test_f5_a_directory_given_through_an_8dot3_alias_is_refused(approved):
+    import ctypes
+    root, _folder = approved
+    folder = root / "LongReceiptDirectoryName"
+    folder.mkdir()
+    buffer = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(folder), buffer, 1024) or buffer.value.lower() == str(folder).lower():
+        pytest.skip("no 8.3 names on this volume")
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), Path(buffer.value), approved_root=Path(buffer.value).parent)
+    assert caught.value.reason == "path_has_link_or_reparse" and list(folder.iterdir()) == []
+
+
+@windows_only
+def test_a_file_in_place_of_the_directory_is_refused(approved):
+    root, folder = approved
+    plain = folder / "plain-file"
+    plain.write_bytes(b"")
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), plain, approved_root=root)
+    assert caught.value.reason == "directory_missing" and [p.name for p in folder.iterdir()] == ["plain-file"]
+
+
+@windows_only
+@pytest.mark.parametrize("answer", [0, None, 10 ** 6, True])
+def test_f6_a_write_without_progress_is_refused_not_spun(approved, monkeypatch, answer):
+    root, folder = approved
+    calls = []
+
+    def stuck(descriptor, data):
+        calls.append(1)
+        if len(calls) > 5:
+            raise AssertionError("spun")
+        return answer
+
+    monkeypatch.setattr(pr.os, "write", stuck)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    assert caught.value.reason == "receipt_write_stalled" and len(calls) == 1 and list(folder.iterdir()) == []
+
+
+@windows_only
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_f7_cancellation_propagates_even_when_cleanup_fails(approved, monkeypatch, close_fails):
+    root, folder = approved
+    real_close = os.close
+
+    def cancel(descriptor):
+        raise KeyboardInterrupt
+
+    def close(descriptor):
+        real_close(descriptor)
+        if close_fails:
+            raise OSError(5, "close failed")
+
+    monkeypatch.setattr(pr.os, "fsync", cancel)
+    monkeypatch.setattr(pr.os, "close", close)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    notes = getattr(caught.value, "__notes__", [])
+    assert notes == (["push receipt cleanup: close_failed:OSError"] if close_fails else [])
+    assert list(folder.iterdir()) == []                  # no temporary file, no receipt
+
+
 def test_the_module_reads_no_clock_environment_network_or_process():
     source = Path(pr.__file__).read_text(encoding="utf-8")
     for forbidden in ("datetime.now", "utcnow", "time.time", "os.environ", "subprocess", "socket", "urllib",

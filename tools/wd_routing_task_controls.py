@@ -35,6 +35,14 @@ Fail-closed rules:
   every task is withheld ``cancellation_coverage_unknown`` and ``coverage.cancellation`` is ``unknown``:
   absence of a cancel record is never read as live authority, and no ``cancelled`` control is invented.
   A cancellation for the task that names another request is ``cancellation_mismatch``.
+* A versioned v2 statement ``{schema: wd.routing-cancellation-coverage.v2, complete: true, cancelled: [...],
+  unknown_tasks: [task_id, ...]}`` (unique non-empty exact str ids) adds task-level unknown coverage: a task in
+  unknown_tasks is withheld ``cancellation_unknown`` before any cancel or live control, even if a known
+  cancellation names it. An unknown task with no dispatch here has no effect and proves nothing live. Whole-log
+  completeness stays the ``complete`` flag (false withholds every task); an unattributable unknown control
+  must be reported upstream as complete false, never dropped. v1 behaviour is unchanged; a mixed or other
+  version is unknown coverage. The S-A deriver output (wd.routing-cancellation-derivation.v1) is a distinct
+  evidence wrapper: a future adapter must convert it explicitly, nothing here reads it.
 
 Cancellation of the caller (KeyboardInterrupt, SystemExit, GeneratorExit) and unexpected errors propagate;
 a ``now`` that is not an offset-aware datetime (or cannot be converted to UTC) is a ValueError.
@@ -55,6 +63,8 @@ CONTROL_SCHEMA = "wd.routing-task-control.v1"
 CONTROL_FIELDS = ("schema", "task_id", "request_id", "request_digest", "state", "observed_utc")
 CANCELLATION_SCHEMA = "wd.routing-cancellation-coverage.v1"
 CANCELLATION_KEYS = ("schema", "complete", "cancelled")
+CANCELLATION_SCHEMA_V2 = "wd.routing-cancellation-coverage.v2"
+CANCELLATION_KEYS_V2 = ("schema", "complete", "cancelled", "unknown_tasks")
 CANCELLED_KEYS = ("task_id", "request_id", "request_digest")
 COVERAGE_SCHEMA = "wd.routing-task-control-coverage.v1"
 HELD_REASON = "dispatch_held_newer_rejection"
@@ -72,6 +82,7 @@ W_HELD_UNATTRIBUTED = "held_unattributed"
 W_SUPERSESSION = "supersession_inconsistent"
 W_CANCEL_UNKNOWN = "cancellation_coverage_unknown"
 W_CANCEL_MISMATCH = "cancellation_mismatch"
+W_CANCEL_TASK_UNKNOWN = "cancellation_unknown"
 R_INPUT = "input_malformed"
 
 
@@ -159,13 +170,23 @@ def _validated(dispatch_result: Any) -> dict:
     return dispatch_result
 
 
-def _cancellations(statement: Any) -> dict | None:
-    """{(task, request_id, digest), ...} grouped by task when the statement is explicit and complete; else None."""
-    if statement is None or not _strict(statement) or not _closed(statement, CANCELLATION_KEYS):
+def _cancellations(statement: Any) -> tuple[dict, frozenset] | None:
+    """({task: {(request_id, digest)}}, unknown task ids) for an explicit complete v1 or v2 statement; else None.
+
+    v1 = exactly {schema v1, complete, cancelled} (no task-level unknown). v2 = exactly {schema v2, complete,
+    cancelled, unknown_tasks} with unknown_tasks a list of unique non-empty exact str task ids. A mixed version,
+    a foreign or missing key, a duplicate unknown task or complete other than exact True is None (all unknown)."""
+    if statement is None or not _strict(statement) or type(statement) is not dict:
         return None
-    if statement["schema"] != CANCELLATION_SCHEMA or statement["complete"] is not True:
+    if _closed(statement, CANCELLATION_KEYS) and statement["schema"] == CANCELLATION_SCHEMA:
+        unknown: list = []
+    elif _closed(statement, CANCELLATION_KEYS_V2) and statement["schema"] == CANCELLATION_SCHEMA_V2:
+        unknown = statement["unknown_tasks"]
+        if type(unknown) is not list or not all(_text(task) for task in unknown) or len(set(unknown)) != len(unknown):
+            return None
+    else:
         return None
-    if type(statement["cancelled"]) is not list:
+    if statement["complete"] is not True or type(statement["cancelled"]) is not list:
         return None
     by_task: dict[str, set] = {}
     for entry in statement["cancelled"]:
@@ -173,7 +194,7 @@ def _cancellations(statement: Any) -> dict | None:
                 and _match(_HEX64, entry["request_digest"])):
             return None
         by_task.setdefault(entry["task_id"], set()).add((entry["request_id"], entry["request_digest"]))
-    return by_task
+    return by_task, frozenset(unknown)
 
 
 def _coverage(complete: bool, cancellation: str, reason: str | None) -> dict:
@@ -214,7 +235,8 @@ def task_controls(dispatch_result: Any, now: Any, *, cancellations: Any = None) 
     held = {r["task_id"] for r in held_rows if r["task_id"] is not None}
     # RCO1 P2-2: a hold whose task cannot be read might be any task's hold, so no task is provably current.
     held_unattributed = any(r["task_id"] is None for r in held_rows)
-    cancelled_by_task = _cancellations(cancellations)
+    statement = _cancellations(cancellations)
+    cancelled_by_task, unknown_tasks = statement if statement is not None else (None, frozenset())
     controls = []
     for task, record in sorted(by_task.items()):
         if task in withheld:
@@ -236,6 +258,10 @@ def task_controls(dispatch_result: Any, now: Any, *, cancellations: Any = None) 
             reason = W_SUPERSESSION
         elif cancelled_by_task is None:
             reason = W_CANCEL_UNKNOWN
+        elif task in unknown_tasks:
+            # v2: this task's cancellation state is unknown (legacy, partial or HOLD control); it is withheld
+            # before any cancel or live control, even if a known cancellation also names it.
+            reason = W_CANCEL_TASK_UNKNOWN
         else:
             named = cancelled_by_task.get(task, set())
             mine = (record["dispatch_id"], record["request_digest"])

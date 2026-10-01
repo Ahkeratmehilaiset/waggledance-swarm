@@ -99,6 +99,80 @@ def test_a_cancellation_with_another_digest_for_the_same_id_withholds_it():
     assert why(run(result([dispatch()]), cancellations=statement)) == [(TASK, "cancellation_mismatch")]
 
 
+# --- S-B: versioned v2 statement with task-level unknown coverage ---------------------------------------------
+
+V2 = {"schema": "wd.routing-cancellation-coverage.v2", "complete": True, "cancelled": [], "unknown_tasks": []}
+
+
+def v2(**over):
+    statement = copy.deepcopy(V2)
+    statement.update(over)
+    return statement
+
+
+def test_v2_complete_with_no_unknown_task_gives_the_same_live_control_as_v1():
+    assert run(result([dispatch()]), cancellations=v2()) == run(result([dispatch()]), cancellations=COMPLETE)
+
+
+def test_v2_a_task_in_unknown_tasks_is_withheld_cancellation_unknown_and_others_stay_live():
+    out = run(result([dispatch(), dispatch("req-2", task=OTHER)]), cancellations=v2(unknown_tasks=[TASK]))
+    assert [(c["task_id"], c["state"]) for c in out["controls"]] == [(OTHER, "live")]
+    assert why(out) == [(TASK, "cancellation_unknown")]
+    assert out["coverage"]["complete"] is False and out["coverage"]["cancellation"] == "complete"
+
+
+def test_v2_unknown_wins_over_a_known_cancellation_of_the_same_task():
+    statement = v2(unknown_tasks=[TASK],
+                   cancelled=[{"task_id": TASK, "request_id": "req-1", "request_digest": "d" * 64}])
+    out = run(result([dispatch()]), cancellations=statement)
+    assert out["controls"] == [] and why(out) == [(TASK, "cancellation_unknown")]
+
+
+def test_v2_a_known_cancellation_still_gives_a_cancelled_control():
+    statement = v2(cancelled=[{"task_id": TASK, "request_id": "req-1", "request_digest": "d" * 64}])
+    assert [c["state"] for c in run(result([dispatch()]), cancellations=statement)["controls"]] == ["cancelled"]
+
+
+def test_v2_an_unknown_task_without_a_dispatch_has_no_effect_and_proves_nothing_live():
+    out = run(result([dispatch()]), cancellations=v2(unknown_tasks=["codex-lead-1/not-dispatched"]))
+    assert [c["task_id"] for c in out["controls"]] == [TASK] and out["withheld"] == []
+
+
+def test_v2_incomplete_still_withholds_every_task():
+    out = run(result([dispatch(), dispatch("req-2", task=OTHER)]), cancellations=v2(complete=False))
+    assert out["controls"] == [] and {r for _, r in why(out)} == {"cancellation_coverage_unknown"}
+
+
+@pytest.mark.parametrize("statement", [
+    v2(unknown_tasks=[TASK, TASK]),                      # duplicate task id
+    v2(unknown_tasks=[""]), v2(unknown_tasks=[7]), v2(unknown_tasks=[None]), v2(unknown_tasks=TASK),
+    v2(unknown_tasks=None), v2(complete=1), v2(extra=True),
+    {k: v for k, v in V2.items() if k != "unknown_tasks"},                       # v2 without unknown_tasks
+    dict(COMPLETE, unknown_tasks=[]),                                             # v1 schema with a v2 key
+    v2(schema="wd.routing-cancellation-coverage.v3"),
+])
+def test_v2_a_malformed_or_mixed_version_statement_is_unknown_coverage(statement):
+    out = run(result([dispatch()]), cancellations=statement)
+    assert out["controls"] == [] and why(out) == [(TASK, "cancellation_coverage_unknown")]
+    assert out["coverage"]["cancellation"] == "unknown"
+
+
+class RecordingList(list):
+    calls: list = []
+
+    def __iter__(self):
+        RecordingList.calls.append("iter")
+        return list.__iter__(self)
+
+
+@pytest.mark.parametrize("unknown", [lambda: RecordingList([TASK]), lambda: [Recording(TASK)]])
+def test_v2_subclass_unknown_tasks_are_refused_without_running_hooks(unknown):
+    Recording.calls, RecordingList.calls = [], []
+    out = run(result([dispatch()]), cancellations=v2(unknown_tasks=unknown()))
+    assert why(out) == [(TASK, "cancellation_coverage_unknown")]
+    assert Recording.calls == [] and RecordingList.calls == []
+
+
 # --- D-F1: an old revision never becomes a live control --------------------------------------------------------
 
 def test_a_task_s1_held_gets_no_control_even_if_a_dispatch_is_present():

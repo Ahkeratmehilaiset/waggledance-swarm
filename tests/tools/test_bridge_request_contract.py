@@ -306,3 +306,87 @@ def test_reply_binding_compares_ids_labels_and_digests_ordinally(tmp_path, engin
     accepted = sorted(name for name, bound in verdicts.items() if bound)
     assert accepted == [], accepted
     assert len(verdicts) == len(cases) - 1
+
+
+# --- Exact types at the binding boundary (RCO2 51de3d6b): an array, number or object never stands in for a string -----
+# PowerShell unrolls a one-element array returned by Get-BridgeContractField and -cne FILTERS arrays, so [rid],
+# [rid, rid] or [rid, null] used to bind. Every non-string shape below must be refused in both shells; a documented
+# absence (nonce missing on an id-bound reply) and the exact twin still bind.
+def _shape_pair():
+    _, request, reply = events()
+    request.update(request_id='request-v2', request_digest='d' * 64)
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='d' * 64,
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    return request, reply
+
+
+def _shape_cases():
+    cases = {'exact_twin': (_shape_pair(), True)}
+    request, reply = _shape_pair()
+    del reply['payload']['nonce']
+    cases['nonce_absent_documented'] = ((request, reply), True)
+
+    def shapes(value):
+        return {'one': [value], 'two': [value, value], 'with_null': [value, None], 'number': 7,
+                'object': {'v': value}, 'empty_list': [], 'bool': True}
+
+    def setter(path):
+        def apply(reply, value):
+            target = reply
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+        return apply
+
+    fields = {'in_reply_to_request_id': ('in_reply_to_request_id',), 'in_reply_to_request_digest': ('in_reply_to_request_digest',),
+              'agent': ('agent',), 'task_id': ('task_id',), 'to': ('to',), 'nonce': ('payload', 'nonce')}
+    fields.update({f'requester.{k}': ('in_reply_to_requester', k) for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    fields.update({f'responder.{k}': (k,) for k in ('agent_uuid', 'session_id', 'run_id')})
+    for field, path in fields.items():
+        request, reply = _shape_pair()
+        current = reply
+        for key in path:
+            current = current[key]
+        for shape, value in shapes(current).items():
+            request, reply = _shape_pair()
+            setter(path)(reply, deepcopy(value))
+            cases[f'{field}:{shape}'] = ((request, reply), False)
+    for field in ('request_id', 'request_digest'):            # request side wrapped too
+        request, reply = _shape_pair()
+        request[field] = [request[field]]
+        cases[f'request.{field}:one'] = ((request, reply), False)
+    for shape, value in {'list': None, 'string': 'codex-lead-1', 'number': 7}.items():   # requester context shape
+        request, reply = _shape_pair()
+        reply['in_reply_to_requester'] = [reply['in_reply_to_requester']] if shape == 'list' else value
+        cases[f'requester_context:{shape}'] = ((request, reply), False)
+    request, reply = _shape_pair()
+    request['agent'] = [request['agent']]
+    cases['request.agent:one'] = ((request, reply), False)
+    request, reply = _shape_pair()                             # correct arithmetic, wrong nonce never binds
+    reply['payload']['nonce'] = 'v1'
+    cases['nonce_wrong'] = ((request, reply), False)
+    return cases
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+def test_reply_binding_requires_exact_strings_not_arrays_numbers_or_objects(tmp_path, engine):
+    cases = _shape_cases()
+    fixture = tmp_path / 'shapes.json'
+    fixture.write_text(json.dumps([{'name': n, 'request': q, 'reply': r} for n, ((q, r), _) in cases.items()]),
+                       encoding='utf-8')
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    wrong = sorted(name for name, ((_q, _r), expected) in cases.items() if verdicts[name] is not expected)
+    assert wrong == [], wrong
+
+
+def test_python_binding_agrees_on_the_shape_matrix():
+    wrong = sorted(name for name, ((q, r), expected) in _shape_cases().items()
+                   if bool(reply_matches_request(q, r, 'codex-tools-1')) is not expected)
+    assert wrong == [], wrong

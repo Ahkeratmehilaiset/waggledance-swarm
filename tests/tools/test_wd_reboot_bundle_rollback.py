@@ -301,8 +301,24 @@ def test_a_linked_relay_record_is_unreadable_state_and_no_record_at_all_still_pl
 # no-change check (never READ_CONTROL, so the ACE can always be removed). They are not an observation of any
 # production ACL. A dangling directory junction needs no symlink privilege.
 
+WHOAMI = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+
+
 def _me() -> str:
-    return subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    # The System32 whoami (DOMAIN\user): a Git for Windows "whoami" on PATH prints only the bare name.
+    return subprocess.run([str(WHOAMI)], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _deny_blocks_listing(folder: Path) -> bool:
+    """Measured, not assumed: True when an injected list-deny ACE on ``folder`` actually stops this host's process
+    from enumerating it. An elevated token with SeBackupPrivilege ENABLED lists through a deny ACE (directory
+    enumeration opens with backup intent), so on such a host the real-ACL twin below cannot run (RCO1 E1)."""
+    with injected_deny((folder, "RD")):
+        try:
+            os.listdir(folder)
+        except PermissionError:
+            return True
+    return False
 
 
 @contextlib.contextmanager
@@ -350,9 +366,109 @@ def test_an_injected_inspection_denial_at_the_record_path_is_unknown_never_a_mis
     # then crashed the plan (exit 1, no JSON).
     fixture = Fixture(tmp_path)
     record = fixture.journal / "native-bridge-wake.json"
+    if not _deny_blocks_listing(fixture.journal):
+        pytest.skip("measured: this host lists through an injected deny ACE (SeBackupPrivilege enabled in the "
+                    "token); the deterministic cmdlet-shim twins below cover the same guards on every host")
     code, plan = fixture.run(shell, around=lambda: injected_deny((record, "RA,REA,RD"), (fixture.journal, "RD")))
     assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal),
                                              "lane_journal_unreadable:" + str(fixture.journal)], plan
     record.unlink()  # honest control: the same journal with no record at all, no denial, still plans
     code, plan = fixture.run(shell)
     assert code == 0 and plan["verdict"] == "plan", plan
+
+
+# --- RCO1 E1 (Lead d00b48b1): deterministic inability-to-inspect twins, independent of the host token ----------
+# The ACL twin above depends on the token: with SeBackupPrivilege enabled (measured on this fleet host) a deny ACE
+# does not stop directory enumeration. These twins inject the failure at the cmdlet the plan calls instead: a
+# test-only global Get-Item / Get-ChildItem shim fails for exactly ONE named path and passes every other call to
+# the real cmdlet, so the plan's own error handling is exercised byte-for-byte on every host. No ACL, file or
+# production path is touched; the no-change snapshot still holds.
+
+_SHIM = r"""
+function global:Get-Item {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline = $true)] [string[]] $Path, [string[]] $LiteralPath, [switch] $Force)
+    if ($LiteralPath -and $LiteralPath[0] -eq $env:WD_TEST_INSPECT_DENIED) {
+        $PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new(
+            [UnauthorizedAccessException]::new('injected: inspection denied'), 'ItemExistsUnauthorizedAccessError',
+            [Management.Automation.ErrorCategory]::PermissionDenied, $LiteralPath[0]))
+        return
+    }
+    Microsoft.PowerShell.Management\Get-Item @PSBoundParameters
+}
+function global:Get-ChildItem {
+    [CmdletBinding()]
+    param([string[]] $Path, [string[]] $LiteralPath, [switch] $Force, [switch] $File, [switch] $Directory,
+          [switch] $Recurse)
+    if ($LiteralPath -and $LiteralPath[0] -eq $env:WD_TEST_LIST_DENIED) {
+        throw [UnauthorizedAccessException]::new('injected: list denied')
+    }
+    Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters
+}
+"""
+
+
+def _quote(value) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=None, **overrides):
+    params = {"TargetCommit": TARGET, "ExpectedTargetManifestSha256": fixture.manifest_sha,
+              "BundlesRoot": fixture.bundles, "StatePointerPath": fixture.pointer, "LaneJournals": fixture.journal,
+              "IntentDirectory": fixture.intents}
+    params.update(overrides)
+    call = " ".join(("-" + name) if value is True else ("-" + name + " " + _quote(value))
+                    for name, value in params.items() if value is not None)
+    command = _SHIM + "\n& " + _quote(SCRIPT) + " " + call + "\nexit $LASTEXITCODE\n"
+    env = dict(os.environ, WD_TEST_LIST_DENIED=str(list_denied or ""), WD_TEST_INSPECT_DENIED=str(inspect_denied or ""))
+    argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
+    before = fixture.snapshot()
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120, env=env)
+    assert fixture.snapshot() == before, "the dry plan must not change any file"
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stdout + result.stderr   # one JSON line, never a crash without a plan
+    return result.returncode, json.loads(lines[0])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_e1_a_journal_the_plan_cannot_list_holds_on_every_host(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, list_denied=fixture.journal)
+    assert code == 2 and plan["verdict"] == "hold" and plan["applied"] is False, plan
+    assert plan["reasons"] == ["lane_journal_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_e1_an_uninspectable_record_and_an_unlistable_journal_both_hold_on_every_host(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    code, plan = run_shimmed(fixture, shell, list_denied=fixture.journal, inspect_denied=record)
+    assert code == 2 and plan["applied"] is False, plan
+    assert plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal),
+                               "lane_journal_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_e1_an_uninspectable_record_alone_is_unknown_never_a_missing_record(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    record.unlink()  # even when nothing is there, a lookup that fails for another reason proves nothing
+    code, plan = run_shimmed(fixture, shell, inspect_denied=record)
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_e1_controls_through_the_same_shim_readable_and_truly_missing_records_plan(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell)          # shim present, nothing denied: the readable record plans
+    assert code == 0 and plan["verdict"] == "plan", plan
+    (fixture.journal / "native-bridge-wake.json").unlink()
+    code, plan = run_shimmed(fixture, shell)          # a provably absent record (ItemNotFound) still plans
+    assert code == 0 and plan["verdict"] == "plan", plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_e1_apply_is_refused_before_any_injected_failure_is_reached(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, list_denied=fixture.journal, Apply=True)
+    assert code == 3 and plan["reasons"] == ["apply_requires_signed_activation"] and plan["applied"] is False, plan

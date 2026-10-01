@@ -7063,9 +7063,13 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert text.index("if ($Auto -and -not (Test-WdWrapperAdministrator))") < text.index(
         "Write-Host 'Running byte-inert fleet preflight"
     )
-    assert text.index("$dryRunParameters['DryRun'] = $true") < text.index(
-        "$applyParameters['Apply'] = $true"
+    # Since 7779e9a2 (Supervisor OFF) the non-elevated wrapper writes ONE elevated script that
+    # runs the byte-inert DryRun before the Apply, and an elevated -Auto refuses instead of
+    # restoring (it has no Limited context for the bridge workers).
+    assert text.index('("  {0} -DryRun" -f $restoreCommand)') < text.index(
+        '("  {0} -Apply" -f $restoreCommand)'
     )
+    assert "Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools." in text
     assert "'Set-WdTaskConsoleContainment.ps1'," in text
     assert "Name = 'Set-WdTaskConsoleContainment.ps1'" in text
     assert "unexpected recursive file set" in text

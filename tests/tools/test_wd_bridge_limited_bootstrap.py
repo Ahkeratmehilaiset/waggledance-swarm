@@ -174,3 +174,68 @@ def test_timestamps_count_only_with_an_explicit_utc_designator(ps, value, expect
     body = (f"$u=ConvertTo-WdBridgeUtc ({value})\n"
             f"@{{utc=if($null -eq $u){{$null}}else{{$u.ToString('o',{INV})}}}} | ConvertTo-Json -Compress\n")
     assert run(ps, body)['utc'] == expected
+
+
+# --- bounded supervisor wait (RCO2, Lead request b83d58ec) -------------------------------------------------
+import subprocess  # noqa: E402
+import time  # noqa: E402
+
+SUPERVISOR_FUNCTIONS = ['Get-WdBridgeSupervisorArguments', 'Invoke-WdBridgeSupervisorOnce', 'Get-WdBridgeReconcileVerdict']
+FAKE_PARAMS = "param([switch]$Apply, [switch]$BridgeWorkersOnly, [string]$ConfigPath = '')\n"
+
+
+def run_supervisor(ps, body):
+    script = PRELUDE + '\n'.join(load(HELPER, name) for name in SUPERVISOR_FUNCTIONS) + '\n' + body
+    return json.loads(_run_powershell(script, executable=ps).stdout)
+
+
+def supervise(ps, tmp_path, fake_body, timeout):
+    fake = tmp_path / 'fake_supervisor.ps1'
+    fake.write_text(FAKE_PARAMS + fake_body, encoding='utf-8')
+    config = tmp_path / 'config.json'
+    config.write_text('{}', encoding='utf-8')
+    # The call is timed INSIDE PowerShell: a timed-out child inherits the harness's capture pipe
+    # (.NET starts children with handle inheritance), so wall time outside would include its life.
+    # The test stops its OWN timed-out fake right after measuring, so the pipe closes promptly.
+    return run_supervisor(ps, (
+        "$watch = [Diagnostics.Stopwatch]::StartNew()\n"
+        f"$r = Invoke-WdBridgeSupervisorOnce -HostPath '{ps}' -SupervisorScript '{fake}' -ConfigPath '{config}' "
+        f"-Apply $true -TimeoutSeconds {timeout}\n"
+        "$elapsed = $watch.Elapsed.TotalSeconds\n"
+        "if ($r.timed_out) { Stop-Process -Id $r.process_id -Force -ErrorAction SilentlyContinue }\n"
+        "$v = Get-WdBridgeReconcileVerdict -Run $r -Mode 'APPLY'\n"
+        "[pscustomobject]@{run=$r; verdict=$v; elapsed=$elapsed} | ConvertTo-Json -Depth 5 -Compress\n"))
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_hung_reconcile_is_bounded_and_unknown_never_success(tmp_path, ps):
+    result = supervise(ps, tmp_path, "Start-Sleep -Seconds 45\n", 2)
+    try:
+        assert result['elapsed'] < 20   # at 7779 this call did not return while the child ran (reproduced first)
+        run, verdict = result['run'], result['verdict']
+        assert run['timed_out'] is True and run['exit_code'] is None and isinstance(run['process_id'], int)
+        assert verdict['ok'] is False
+        assert any('UNKNOWN' in reason and 'not stopped' in reason for reason in verdict['reasons'])
+    finally:
+        # The helper leaves a timed-out run alive by design; this test stops its OWN fake process tree.
+        subprocess.run(['taskkill', '/PID', str(result['run']['process_id']), '/T', '/F'], capture_output=True)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_reconcile_inside_its_bound_still_reports_its_exit_code_and_lines(tmp_path, ps):
+    result = supervise(ps, tmp_path, f"Write-Output '{APPLY}'\nexit 0\n", 60)
+    run, verdict = result['run'], result['verdict']
+    assert run['timed_out'] is False and run['exit_code'] == 0 and run['lines'] == [APPLY]
+    assert verdict['ok'] is True and verdict['summary'] == APPLY
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_bootstrap_stops_at_apply_on_a_timed_out_reconcile(ps):
+    body = (f"$o={observation()}\n"
+            "Invoke-WdBridgeLimitedBootstrap -Observe { $o }.GetNewClosure() "
+            "-RunSupervisorOnce { param([bool] $ApplyRun) [pscustomobject]@{exit_code=$null; lines=@(); error_text=''; "
+            "timed_out=$true; process_id=4242} } -ReadToolsReadiness { $null } -GetProcess { param([int] $Id) $null } "
+            "-Sleep { param([int] $Seconds) } | ConvertTo-Json -Depth 5 -Compress\n")
+    result = run(ps, body)
+    assert (result['ok'], result['stage'], result['reconcile_ran']) == (False, 'apply', True)
+    assert any('UNKNOWN' in reason and 'pid 4242' in reason for reason in result['reasons'])

@@ -518,7 +518,13 @@ function Send-WdNativeToolsQueueMessage {
             $refusal.Data['wd_stderr'] = [string]$errorText
             throw $refusal
         }
-        throw ('Codex queue did not confirm exact-thread delivery: ' + $errorText + $output)
+        # A COMPLETED call that is neither queued nor the exact refusal (for example a reworded refusal)
+        # stays UNKNOWN; its own evidence travels with the exception so the Step can keep it durably.
+        $ambiguous = [InvalidOperationException]::new('Codex queue did not confirm exact-thread delivery: ' + $errorText + $output)
+        $ambiguous.Data['wd_exit_code'] = [int]$queueProcess.ExitCode
+        $ambiguous.Data['wd_stdout'] = [string]$output
+        $ambiguous.Data['wd_stderr'] = [string]$errorText
+        throw $ambiguous
     } finally { $queueProcess.Dispose() }
 }
 
@@ -599,7 +605,24 @@ function Invoke-WdNativeToolsWakeStep {
     param([string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $WakePath, [string] $StatePath, [string] $Generation, [int] $NativePid,
         [ValidateSet('codex-tools-1','codex-lead-1')] [string] $Agent = 'codex-tools-1',
-        [string] $SessionId)
+        [string] $SessionId,
+        # Past this age an outstanding wake is reported as outstanding_stale with one durable observation;
+        # it is still never resubmitted (Fable candidate: the hold had no timeout or visibility).
+        [ValidateRange(60, 86400)] [int] $OutstandingAlertSeconds = 1800)
+    # One durable observation per outstanding delivery (wd.native-wake-outstanding.v1), created once and never
+    # rewritten: visibility only. It resolves nothing and grants nothing; only the woken conversation's own
+    # receipt, or an operator reconciliation, releases the hold.
+    function Write-WdNativeWakeOutstandingObservation {
+        param([string] $Path, $Previous, [string] $Agent, [DateTimeOffset] $QueuedAt, [double] $Age)
+        $record = [ordered]@{schema='wd.native-wake-outstanding.v1';agent=$Agent;thread_id=[string]$Previous.thread_id;
+            delivery_id=[string]$Previous.delivery_id;queued_at_utc=$QueuedAt.ToUniversalTime().ToString('o');
+            observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');age_seconds=[int][Math]::Floor($Age);status='outstanding';
+            meaning='the woken conversation has not recorded model_turn_started for this delivery; no further wake is submitted';
+            resolution='owner_receipt_or_operator_reconciliation';retry='never'}
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($record | ConvertTo-Json -Depth 3) + "`n")
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    }
     # Exact receipt only: a pinned-telemetry record that the woken conversation wrote from its
     # notification for this delivery_id. Relay-observed, foreign, malformed or oversized records
     # never count. The delivery_id is fresh per submission, so the time floor only skips older
@@ -738,6 +761,40 @@ function Invoke-WdNativeToolsWakeStep {
         $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     }
+    # An AMBIGUOUS completed call (Fable candidate: the refusal classifier is pinned to one wording): the
+    # completed call's own evidence, re-classified by the live Send classifier as neither queued nor rejected.
+    function Get-WdCompletedAmbiguousEvidence {
+        param($Data, [string] $ThreadId)
+        if ($null -eq $Data -or $Data['wd_exit_code'] -isnot [int] -or $Data['wd_stdout'] -isnot [string] -or
+            $Data['wd_stderr'] -isnot [string]) { return $null }
+        $send = Get-Command Send-WdNativeToolsQueueMessage -CommandType Function -ErrorAction SilentlyContinue
+        if ($null -eq $send) { return $null }
+        $definition = @($send.ScriptBlock.Ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Get-WdNativeQueueOutcome' }, $true))
+        if ($definition.Count -ne 1) { return $null }
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+        $outcome = Get-WdNativeQueueOutcome -ExitCode $Data['wd_exit_code'] -Stdout $Data['wd_stdout'] -Stderr $Data['wd_stderr'] -ThreadId $ThreadId
+        if ($outcome.outcome -cne 'ambiguous') { return $null }
+        return [pscustomobject]@{ ExitCode = [int]$Data['wd_exit_code']; Stdout = [string]$Data['wd_stdout']; Stderr = [string]$Data['wd_stderr'] }
+    }
+    # Durable evidence of ONE ambiguous completed call (wd.native-queue-ambiguous.v1), for the operator's
+    # reconciliation only: it resolves nothing, and the attempt stays submitting and is never retried. Output
+    # is kept up to 4096 characters per stream, with the SHA-256 of the full text.
+    function Write-WdNativeQueueAmbiguousReceipt {
+        param([string] $Path, $State, $Evidence)
+        $sha = { param([string] $Text) $hash = [Security.Cryptography.SHA256]::Create()
+            try { [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))).Replace('-', '') } finally { $hash.Dispose() } }
+        $receipt = [ordered]@{schema='wd.native-queue-ambiguous.v1';agent=$State.agent;thread_id=$State.thread_id;
+            generation=$State.generation;relay_pid=$State.relay_pid;native_pid=$State.native_pid;delivery_id=$State.delivery_id;
+            snapshot_id=$State.snapshot_id;outcome='ambiguous';exit_code=$Evidence.ExitCode;
+            stdout=$Evidence.Stdout.Substring(0, [Math]::Min(4096, $Evidence.Stdout.Length));stdout_truncated=($Evidence.Stdout.Length -gt 4096);
+            stderr=$Evidence.Stderr.Substring(0, [Math]::Min(4096, $Evidence.Stderr.Length));stderr_truncated=($Evidence.Stderr.Length -gt 4096);
+            stdout_sha256=(& $sha $Evidence.Stdout);stderr_sha256=(& $sha $Evidence.Stderr);
+            completed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');resolution='operator_reconciliation_required';retry='never'}
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($receipt | ConvertTo-Json -Depth 4) + "`n")
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    }
     [void](Assert-WdTurnPath $WakePath)
     [void](Assert-WdTurnPath $StatePath)
     $previous = $null
@@ -783,6 +840,17 @@ function Invoke-WdNativeToolsWakeStep {
                     $outstanding = $previous.PSObject.Properties['delivery_id']
                     $outstandingId = if ($outstanding) { [string]$outstanding.Value } else { '' }
                     if (-not (Test-WdNativeWakeConsumed -BridgeRoot (Split-Path -Parent $WakePath) -Agent $Agent -DeliveryId $outstandingId -Since $queuedAt)) {
+                        if ($age -ge $OutstandingAlertSeconds -and $outstandingId -cmatch '^[0-9a-f]{32}$') {
+                            $observation = $StatePath + '.outstanding-' + $outstandingId
+                            if (-not [IO.File]::Exists($observation)) {
+                                try {
+                                    [void](Assert-WdTurnPath $observation)
+                                    Write-WdNativeWakeOutstandingObservation -Path $observation -Previous $previous -Agent $Agent `
+                                        -QueuedAt $queuedAt -Age $age
+                                } catch { Write-Warning ('Native wake outstanding observation could not be written: ' + $_.Exception.Message) }
+                            }
+                            return 'outstanding_stale'
+                        }
                         return 'outstanding'
                     }
                 }
@@ -825,7 +893,24 @@ function Invoke-WdNativeToolsWakeStep {
         # Only a completed, re-classified explicit refusal is resolved: its named snapshot stays owned and
         # is delivered again after a backoff. A timeout, any other failure, or a refusal message without the
         # completed call's own evidence stays submitting (UNKNOWN) and is never retried.
-        if (-not $_.Exception.Message.StartsWith('Codex queue rejected the submission; nothing was queued: ', [StringComparison]::Ordinal)) { throw }
+        if (-not $_.Exception.Message.StartsWith('Codex queue rejected the submission; nothing was queued: ', [StringComparison]::Ordinal)) {
+            # Any other COMPLETED call stays submitting (UNKNOWN) and is never retried, but its exact evidence
+            # is kept durably beside the state for the operator's reconciliation (a timeout has none to keep).
+            # Extraction and receipt are secondary (RCO1 b814): their failure is only a warning and never replaces
+            # the ORIGINAL error object, which is rethrown unchanged; a stopping pipeline still stops. The warning
+            # is never terminating, even under $WarningPreference='Stop' (Lead 9373acdc).
+            $primary = $_
+            try {
+                $ambiguous = Get-WdCompletedAmbiguousEvidence -Data $primary.Exception.Data -ThreadId $ThreadId
+                if ($null -ne $ambiguous) {
+                    $ambiguousPath = $StatePath + '.ambiguous-' + $deliveryId
+                    [void](Assert-WdTurnPath $ambiguousPath)
+                    Write-WdNativeQueueAmbiguousReceipt -Path $ambiguousPath -State $state -Evidence $ambiguous
+                }
+            } catch [Management.Automation.PipelineStoppedException] { throw }
+            catch { Write-Warning -WarningAction Continue ('Native queue ambiguous-outcome receipt could not be written: ' + $_.Exception.Message) }
+            throw $primary
+        }
         $evidence = Get-WdCompletedRefusalEvidence -Data $_.Exception.Data -ThreadId $ThreadId
         if ($null -eq $evidence) { throw ('Codex queue refusal without completed evidence stays unresolved: ' + $_.Exception.Message) }
         $reason = $_.Exception.Message
@@ -840,7 +925,8 @@ function Invoke-WdNativeToolsWakeStep {
         Write-WdTurnJson $StatePath $state
         # The receipt covers only the window before the rejected state, which now holds the refusal.
         if ([IO.File]::Exists($receiptPath)) {
-            try { [IO.File]::Delete($receiptPath) } catch { Write-Warning ('Native queue refusal receipt cleanup failed: ' + $_.Exception.Message) }
+            try { [IO.File]::Delete($receiptPath) } catch {
+                Write-Warning -WarningAction Continue ('Native queue refusal receipt cleanup failed: ' + $_.Exception.Message) }
         }
         return 'rejected'
     }

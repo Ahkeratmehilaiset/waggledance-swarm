@@ -46,7 +46,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Mapping
+from typing import Any, Callable, Mapping
 
 POLICY_SCHEMA = "wd.bridge-v2-activation.v1"
 SIGNATURE_SCHEMA = "wd.bridge-v2-activation-signature.v1"
@@ -100,14 +100,21 @@ def _reject_constant(value):
     raise ActivationError("non-finite JSON constant: " + value)
 
 
-def _read_json(path: Path, what: str):
+def _read_raw(path: Path, what: str) -> bytes:
+    """ONE bounded read of a file's exact bytes (never an oversized file whole)."""
     try:
         with path.open("rb") as stream:
-            raw = stream.read(MAX_FILE_BYTES + 1)  # bounded: never reads an oversized file whole
+            return stream.read(MAX_FILE_BYTES + 1)
     except FileNotFoundError as exc:
         raise ActivationError(what + " is missing") from exc
     except OSError as exc:
         raise ActivationError(what + " is unreadable: " + type(exc).__name__) from exc
+
+
+def _parse_raw(raw: Any, what: str):
+    """Strict JSON from exact bytes: bounded, strict UTF-8, no duplicate keys, no NaN/Infinity."""
+    if type(raw) is not bytes:
+        raise ActivationError(what + " must be exact bytes")
     if len(raw) > MAX_FILE_BYTES:
         raise ActivationError(what + " exceeds " + str(MAX_FILE_BYTES) + " bytes")
     try:
@@ -115,6 +122,10 @@ def _read_json(path: Path, what: str):
                           parse_constant=_reject_constant)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ActivationError(what + " is not strict UTF-8 JSON") from exc
+
+
+def _read_json(path: Path, what: str):
+    return _parse_raw(_read_raw(path, what), what)
 
 
 def _exact_keys(value, keys: set[str], what: str) -> dict:
@@ -279,7 +290,14 @@ def validate_signature(signature, policy_sha256: str, *, expected_head: str | No
 def load_policy(config_path: Path, trusted_policy_sha256: str | None, *,
                 expected_head: str | None = None, expected_tree: str | None = None) -> tuple[dict, str, dict]:
     """Load and validate the signed policy from ONE read. Raises ActivationError unless fully bound."""
-    document = _exact_keys(_read_json(Path(config_path), "activation config"),
+    return load_policy_bytes(_read_raw(Path(config_path), "activation config"), trusted_policy_sha256,
+                             expected_head=expected_head, expected_tree=expected_tree)
+
+
+def load_policy_bytes(config_bytes: Any, trusted_policy_sha256: str | None, *,
+                      expected_head: str | None = None, expected_tree: str | None = None) -> tuple[dict, str, dict]:
+    """``load_policy`` over the exact bytes a caller already captured (no file read)."""
+    document = _exact_keys(_parse_raw(config_bytes, "activation config"),
                            {"policy", "signature"}, "activation config")
     policy = validate_policy(document["policy"])
     digest = canonical_sha256(policy)
@@ -304,8 +322,14 @@ def load_policy(config_path: Path, trusted_policy_sha256: str | None, *,
 
 def load_revocation(runtime_root: Path, policy: dict, policy_sha256: str, now: datetime, *,
                     min_version: int | None = None) -> dict:
-    path = Path(runtime_root) / REVOCATION_RELATIVE
-    state = _exact_keys(_read_json(path, "revocation state"), REVOCATION_KEYS, "revocation state")
+    return load_revocation_bytes(_read_raw(Path(runtime_root) / REVOCATION_RELATIVE, "revocation state"), policy,
+                                 policy_sha256, now, min_version=min_version)
+
+
+def load_revocation_bytes(revocation_bytes: Any, policy: dict, policy_sha256: str, now: datetime, *,
+                          min_version: int | None = None) -> dict:
+    """``load_revocation`` over the exact bytes a caller already captured (no file read)."""
+    state = _exact_keys(_parse_raw(revocation_bytes, "revocation state"), REVOCATION_KEYS, "revocation state")
     if state["schema"] != REVOCATION_SCHEMA:
         raise ActivationError("revocation schema must be " + REVOCATION_SCHEMA)
     if not _is_int(state["version"]) or state["version"] < 1:
@@ -370,7 +394,31 @@ def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_pol
     operator-signed packet and is the canonical digest of the PARSED policy, not of the
     file bytes; a caller must never take it from this config file (for example from
     ``signature.policy_sha256``), because that would let the file authorize itself.
-    Callers persist ``Decision.revocation_version`` as their new high-water mark."""
+    Callers persist ``Decision.revocation_version`` as their new high-water mark.
+    Each file is read at most once, at the point the decision needs it (``_evaluate``)."""
+    return _evaluate(feature, lambda: _read_raw(Path(config_path), "activation config"),
+                     lambda: _read_raw(Path(runtime_root) / REVOCATION_RELATIVE, "revocation state"),
+                     trusted_policy_sha256, now, environ, min_revocation_version, expected_head, expected_tree)
+
+
+def evaluate_bytes(feature: str, *, config_bytes: bytes, revocation_bytes: bytes, trusted_policy_sha256: str | None,
+                   now: datetime | None = None, environ: Mapping[str, str] | None = None,
+                   min_revocation_version: int | None = None, expected_head: str | None = None,
+                   expected_tree: str | None = None) -> Decision:
+    """The same decision as ``evaluate`` over the EXACT bytes a caller already captured; no file is read.
+
+    A caller that authenticates and returns what it read (the F0 trusted-caller adapter) must
+    decide on those same bytes: a decision taken by a second
+    read of the same paths can see other bytes swapped in and back (an A-B-A), which no before/after
+    byte comparison detects. Anything but exact ``bytes`` for either input is a disabled Decision."""
+    return _evaluate(feature, lambda: config_bytes, lambda: revocation_bytes, trusted_policy_sha256, now, environ,
+                     min_revocation_version, expected_head, expected_tree)
+
+
+def _evaluate(feature: str, config_raw: Callable[[], Any], revocation_raw: Callable[[], Any],
+              trusted_policy_sha256: str | None, now: datetime | None, environ: Mapping[str, str] | None,
+              min_revocation_version: int | None, expected_head: str | None, expected_tree: str | None) -> Decision:
+    """The one decision logic for both entry points; each input is produced once, when it is needed."""
     if not isinstance(feature, str) or not FEATURE_NAME.fullmatch(feature):
         return Decision(str(feature)[:32], False, "unknown feature name")
     if kill_switch_denies(environ):
@@ -380,8 +428,8 @@ def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_pol
         return Decision(feature, False, "decision time must be timezone-aware")
     current = current.astimezone(timezone.utc)
     try:
-        policy, digest, signature = load_policy(config_path, trusted_policy_sha256,
-                                     expected_head=expected_head, expected_tree=expected_tree)
+        policy, digest, signature = load_policy_bytes(config_raw(), trusted_policy_sha256,
+                                                      expected_head=expected_head, expected_tree=expected_tree)
     except (ActivationError, ValueError, TypeError, AttributeError, KeyError) as exc:
         return Decision(feature, False, "policy: " + str(exc)[:200])
     try:
@@ -393,7 +441,7 @@ def evaluate(feature: str, *, config_path: Path, runtime_root: Path, trusted_pol
             return Decision(feature, False, "signature expired", digest)
         if _parse_utc(signature["signed_utc"], "signature.signed_utc") - current > MAX_FUTURE_SKEW:
             return Decision(feature, False, "signature is dated in the future", digest)
-        state = load_revocation(runtime_root, policy, digest, current, min_version=min_revocation_version)
+        state = load_revocation_bytes(revocation_raw(), policy, digest, current, min_version=min_revocation_version)
     except (ActivationError, ValueError, TypeError, AttributeError, KeyError) as exc:
         return Decision(feature, False, "revocation/expiry: " + str(exc)[:200], digest)
     if state["frozen"]:

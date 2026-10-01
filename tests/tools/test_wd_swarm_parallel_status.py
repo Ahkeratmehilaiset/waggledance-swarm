@@ -728,3 +728,15 @@ def test_an_observed_head_is_true_only_on_match_and_false_only_on_an_observed_mi
     assert mismatch["git_observation"]["head"] == {"status": "observed", "exit_code": 0, "error": None}
     assert mismatch["head"] == fleet["head"] and mismatch["head_matches"] is False
     assert match["head_matches"] is True and match["runnable_evidence"] == "observed"
+
+
+def test_a_failed_branch_query_with_an_observed_head_is_never_runnable_evidence(fleet):
+    # Only the branch query is refused; HEAD is still observed and matches (Tools 38bf).
+    fake = fleet["root"] / "git-refuses-branch.cmd"
+    fake.write_text('@if "%~4"=="branch" (echo fatal: detected dubious ownership in repository at \'fixture\' 1>&2 & exit /b 128)\r\n'
+                    '@"' + shutil.which("git") + '" %*\r\n@exit /b %ERRORLEVEL%\r\n', encoding="ascii")
+    update(fleet["manifest"], git_executable=str(fake))
+    lane = run_status(fleet)["lanes"][-1]
+    assert lane["git_observation"]["branch"]["status"] == "query_failed"
+    assert lane["git_observation"]["head"]["status"] == "observed" and lane["head_matches"] is True
+    assert lane["runnable_evidence"] != "observed"

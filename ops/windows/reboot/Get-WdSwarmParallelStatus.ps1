@@ -846,7 +846,8 @@ foreach ($definition in @($definitions)) {
         $runtime.readiness_status -ceq 'degraded') {
         $runnableEvidence = 'not_observed'
     }
-    elseif ($stateHealth -ceq 'current' -and $headMatches -and
+    elseif ($stateHealth -ceq 'current' -and $headMatches -eq $true -and
+        $branchObservation.status -ceq 'observed' -and
         $status -cin @('ready', 'working', 'running', 'active', 'in_progress', 'in-progress') -and
         -not [string]::IsNullOrWhiteSpace($nextAction) -and
         $runtime.identity -ceq 'matched' -and

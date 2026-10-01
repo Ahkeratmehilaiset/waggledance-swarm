@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Routing attempt records from dispatches, claims and releases (F26 S2, ``wd.routing-attempt.v1``).
 
-Pure and passive. ``attempts(dispatches, claims, releases, push_receipts, acceptances, now)`` reads only
+Pure and passive. ``attempts(dispatches, claims, releases, push_receipts, acceptances, now, *, associations)``
+reads only
 the records the caller passes (as parsed JSON) and the caller's explicit, offset-aware ``now``. It opens
 no file and reads no clock, environment, queue, provider or process. An attempt is scheduling evidence
 only: it never proves completion, a remote push, authorship, acceptance or any release permission.
@@ -25,6 +26,11 @@ Inputs:
 * ``claims``: claim-file objects (Claim-AgentTask.ps1) that are present now; ``releases``: done-file
   objects (Release-AgentTask.ps1, Invoke-StaleClaimSweep.ps1). Extra claim fields are allowed; the ones
   read are checked exactly.
+* ``associations`` (keyword, default absent): ``wd.routing-claim-association.v1`` records, closed fields
+  ``{schema, dispatch_id, request_digest, task_id, worker, owner_session_id, owner_token_sha256, basis}``.
+  Each one is the CALLER's assertion that the claim of that (task_id, worker, owner_session_id,
+  owner_token_sha256) answers that exact dispatch. It is a mechanical correlation the caller supplies,
+  never authentication or acceptance; ``basis`` names its source and is informational only.
 * ``push_receipts`` and ``acceptances``: accepted as lists and strictly checked, then every item is
   rejected. No accepted push-receipt source (S3) and no acceptance source (S4) exists yet, so no
   attempt is ever ``accepted``, no artifact is ever remote-verified and nothing here earns quality credit.
@@ -36,6 +42,13 @@ Rules that keep it honest (Fable design c96124d0 sections 3b and 5; S1 67a6d16a)
 * A claim joins a dispatch only on exact str equality of task_id, agent == worker and owner_session_id,
   run_id and agent_uuid == the dispatch's expected_responders[worker] labels. These are labels written by
   the lanes themselves, never proof of identity.
+* Provenance (RCO1, Lead 17:13Z): claims and done files carry no request_id, owner_token_sha256 is per
+  session, and a ``-Force`` refresh resets claimed_at_utc, so task/worker/session/time similarity cannot
+  tell which revision a claim answers. A claim or release therefore also needs exactly one association
+  naming that dispatch's dispatch_id and request_digest. None is dispatch_association_missing (the
+  default, fail closed); two different ones are association_conflict; one naming a dispatch that is not
+  supplied (for example a superseded revision) is association_dispatch_absent and is never moved to the
+  newer dispatch; one naming the dispatch with another digest, task or worker is association_mismatch.
 * More than one valid dispatch for one task makes every claim and release of that task
   ``claim_dispatch_ambiguous``: this module never picks a newest revision, so a superseded or revised
   dispatch cannot be revived through it (S1 already keeps only the newest).
@@ -58,6 +71,9 @@ from tools.wd_routing_dispatch import SCHEMA as DISPATCH_SCHEMA
 from tools.wd_task_router import ATTEMPT_SCHEMA, DISPATCH_AUTHORITY, _Stop, normalize_scope
 
 RELEASE_STATUSES = ("done", "handoff", "blocked", "abandoned", "stale_lease")
+ASSOCIATION_SCHEMA = "wd.routing-claim-association.v1"
+ASSOCIATION_FIELDS = ("schema", "dispatch_id", "request_digest", "task_id", "worker", "owner_session_id",
+                      "owner_token_sha256", "basis")
 CLAIM_LABELS = ("owner_session_id", "run_id", "agent_uuid")
 _LABEL_OF = {"owner_session_id": "session_id", "run_id": "run_id", "agent_uuid": "agent_uuid"}
 _HEX = frozenset("0123456789abcdef")
@@ -75,6 +91,11 @@ R_CONFLICT = "attempt_conflict"
 R_INCONSISTENT = "claim_release_inconsistent"
 R_RECEIPT = "push_receipt_source_unaccepted"
 R_ACCEPTANCE = "acceptance_source_absent"
+R_NO_ASSOCIATION = "dispatch_association_missing"
+R_ASSOCIATION_CONFLICT = "association_conflict"
+R_ASSOCIATION_ABSENT = "association_dispatch_absent"
+R_ASSOCIATION_MISMATCH = "association_mismatch"
+_CONFLICT = object()
 
 
 class _Reject(Exception):
@@ -114,6 +135,17 @@ def _dispatch_ok(record: dict) -> bool:
             and all(_text(responders[worker][f]) for f in RESPONDER_FIELDS))
 
 
+def _association_ok(record: dict) -> bool:
+    return (set(record) == set(ASSOCIATION_FIELDS) and record["schema"] == ASSOCIATION_SCHEMA
+            and all(_text(record[f]) for f in ("dispatch_id", "task_id", "worker", "owner_session_id", "basis"))
+            and _hex(record["request_digest"], 64) and _hex(record["owner_token_sha256"], 64))
+
+
+def _claim_key(record: dict) -> tuple:
+    return (record.get("task_id"), record.get("agent"), record.get("owner_session_id"),
+            record.get("owner_token_sha256"))
+
+
 def _inside(entry: str, scope: list[str]) -> bool:
     def kind(path: str) -> str:
         return path if ":" in path else "repo:" + path
@@ -124,7 +156,7 @@ def _labels(record: dict) -> tuple:
     return tuple(record.get(name) for name in ("task_id", "agent", *CLAIM_LABELS))
 
 
-def _match(record: dict, by_task: dict) -> dict:
+def _match(record: dict, by_task: dict, links: dict) -> dict:
     """The one dispatch a claim or release record binds to, or _Reject."""
     if not all(_text(value) for value in _labels(record)):
         raise _Reject(R_MALFORMED)
@@ -137,6 +169,19 @@ def _match(record: dict, by_task: dict) -> dict:
     binding = dispatch["expected_responders"][dispatch["worker"]]
     if record["agent"] != dispatch["worker"] or any(record[name] != binding[_LABEL_OF[name]] for name in CLAIM_LABELS):
         raise _Reject(R_UNBOUND)
+    # Provenance: label similarity is not enough; the caller's explicit association must name this dispatch.
+    if not _hex(record.get("owner_token_sha256"), 64):
+        raise _Reject(R_MALFORMED)
+    link = links.get(_claim_key(record))
+    if link is None:
+        raise _Reject(R_NO_ASSOCIATION)
+    if link is _CONFLICT:
+        raise _Reject(R_ASSOCIATION_CONFLICT)
+    if link["dispatch_id"] != dispatch["dispatch_id"]:
+        raise _Reject(R_ASSOCIATION_ABSENT)
+    if (link["request_digest"], link["task_id"], link["worker"]) != (
+            dispatch["request_digest"], dispatch["task_id"], dispatch["worker"]):
+        raise _Reject(R_ASSOCIATION_MISMATCH)
     return dispatch
 
 
@@ -174,11 +219,14 @@ def _strict_items(items: list, source: str, rejected: list) -> list[tuple[int, d
 
 
 def attempts(dispatches: Any, claims: Any, releases: Any, push_receipts: Any, acceptances: Any,
-             now: Any) -> dict:
-    """Attempt records for the caller's evidence at the caller's explicit, offset-aware ``now``."""
+             now: Any, *, associations: Any = None) -> dict:
+    """Attempt records for the caller's evidence at the caller's explicit, offset-aware ``now``.
+    ``associations`` absent (None) means none: every claim and release is dispatch_association_missing."""
     if type(now) is not datetime or now.utcoffset() is None:
         raise ValueError("now must be an offset-aware datetime")
-    inputs = (dispatches, claims, releases, push_receipts, acceptances)
+    if associations is None:
+        associations = []
+    inputs = (dispatches, claims, releases, push_receipts, acceptances, associations)
     if any(type(value) is not list for value in inputs):
         raise ValueError("every input must be a list")
     now = now.astimezone(timezone.utc)
@@ -201,6 +249,26 @@ def attempts(dispatches: Any, claims: Any, releases: Any, push_receipts: Any, ac
         duplicates += len(copies) - 1
         by_task.setdefault(copies[0][1]["task_id"], []).append(copies[0][1])
 
+    # Associations: strict, closed; per claim identity exactly one distinct record, else a conflict.
+    link_groups: dict[tuple, dict[str, dict]] = {}
+    for index, record in _strict_items(associations, "association", rejected):
+        if not _association_ok(record):
+            rejected.append(_rejection("association", index, record.get("dispatch_id"), R_MALFORMED))
+            continue
+        key = (record["task_id"], record["worker"], record["owner_session_id"], record["owner_token_sha256"])
+        copies = link_groups.setdefault(key, {})
+        if digest(record) in copies:
+            duplicates += 1
+        copies[digest(record)] = record
+    links: dict[tuple, Any] = {}
+    for key in sorted(link_groups):
+        copies = link_groups[key]
+        if len(copies) == 1:
+            links[key] = next(iter(copies.values()))
+        else:
+            links[key] = _CONFLICT
+            rejected.append(_rejection("association", None, key[0], R_ASSOCIATION_CONFLICT))
+
     # Present claims and release records, each bound to exactly one dispatch.
     present: dict[str, list[tuple[dict, dict]]] = {}
     released: dict[str, list[tuple[dict, datetime]]] = {}
@@ -213,7 +281,7 @@ def attempts(dispatches: Any, claims: Any, releases: Any, push_receipts: Any, ac
                 continue
             seen.add(key)
             try:
-                view = _claim_view(record, _match(record, by_task), now)
+                view = _claim_view(record, _match(record, by_task, links), now)
                 if source == "release":
                     status, at = record.get("release_status"), _stamp(record.get("released_at_utc"))
                     if type(status) is not str or status not in RELEASE_STATUSES or at is None:

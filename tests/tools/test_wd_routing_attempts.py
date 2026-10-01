@@ -62,9 +62,26 @@ def release(status="done", at="2026-10-01T16:55:00Z", **over) -> dict:
     return row
 
 
-def run(dispatch_list=None, claims=(), releases=(), receipts=(), acceptances=(), now=NOW) -> dict:
-    out = attempts([dispatch()] if dispatch_list is None else list(dispatch_list), list(claims), list(releases),
-                   list(receipts), list(acceptances), now)
+def association(dispatch_id="req-s2-1", *, request_digest="a" * 64, task=TASK, worker=WORKER, session=SESSION,
+                token="e" * 64, basis="fixture: caller-recorded dispatch for this claim") -> dict:
+    """An explicit caller association (wd.routing-claim-association.v1): the claim of this identity answers
+    this dispatch. Without one a claim never binds (RCO1 provenance repair)."""
+    return {"schema": module.ASSOCIATION_SCHEMA, "dispatch_id": dispatch_id, "request_digest": request_digest,
+            "task_id": task, "worker": worker, "owner_session_id": session, "owner_token_sha256": token,
+            "basis": basis}
+
+
+EACH = object()   # run(): one explicit association per supplied dispatch for the standard fixture claim
+
+
+def run(dispatch_list=None, claims=(), releases=(), receipts=(), acceptances=(), now=NOW, links=EACH) -> dict:
+    dispatch_list = [dispatch()] if dispatch_list is None else list(dispatch_list)
+    if links is EACH:
+        links = [association(d["dispatch_id"], request_digest=d["request_digest"], task=d["task_id"])
+                 for d in dispatch_list if type(d) is dict and type(d.get("dispatch_id")) is str
+                 and type(d.get("request_digest")) is str and type(d.get("task_id")) is str]
+    out = attempts(dispatch_list, list(claims), list(releases), list(receipts), list(acceptances), now,
+                   associations=list(links))
     assert set(out) == {"attempts", "expired_unreleased", "rejected", "duplicates_ignored"}
     for record in out["attempts"]:
         assert list(record) == list(ATTEMPT_KEYS) and record["schema"] == ATTEMPT_SCHEMA
@@ -169,7 +186,7 @@ def test_a_claim_without_a_label_is_malformed(missing):
 def test_two_valid_dispatches_for_one_task_make_the_claim_ambiguous_never_newest_wins():
     old, new = dispatch(request_id="req-s2-1", revision="r1"), dispatch(request_id="req-s2-2", revision="r2",
                                                                         ts="2026-10-01T16:47:00Z")
-    out = run([old, new], claims=[claim()], releases=[release()])
+    out = run([old, new], claims=[claim()], releases=[release()], links=[association("req-s2-2")])
     assert out["attempts"] == [] and reasons(out) == ["claim_dispatch_ambiguous", "claim_dispatch_ambiguous"]
 
 
@@ -177,7 +194,11 @@ def test_a_superseded_dispatch_removed_by_s1_cannot_be_revived():
     s1 = dispatches([request("req-s2-1", revision="r1"),
                      request("req-s2-2", revision="r2", ts="2026-10-01T16:47:00Z")], NOW)
     assert [d["dispatch_id"] for d in s1["dispatches"]] == ["req-s2-2"]
-    out = run(s1["dispatches"], claims=[claim()])
+    # Provenance (RCO1): the claim answers req-s2-1; that dispatch is superseded, so it is never moved to r2.
+    stale = run(s1["dispatches"], claims=[claim()], links=[association("req-s2-1")])
+    assert stale["attempts"] == [] and reasons(stale) == ["association_dispatch_absent"]
+    # Only an explicit association with req-s2-2 binds a claim to the revision S1 kept.
+    out = run(s1["dispatches"], claims=[claim()], links=[association("req-s2-2")])
     assert [r["attempt_id"] for r in out["attempts"]] == [attempt_id("req-s2-2")]
 
 
@@ -225,7 +246,7 @@ def test_claim_time_rules(over, reason):
 
 def test_exact_repeats_count_once():
     d = dispatch()
-    out = run([d, copy.deepcopy(d)], claims=[claim(), claim()], releases=[])
+    out = run([d, copy.deepcopy(d)], claims=[claim(), claim()], releases=[], links=[association()])
     assert len(out["attempts"]) == 1 and out["duplicates_ignored"] == 2 and out["rejected"] == []
 
 
@@ -373,3 +394,118 @@ def test_the_module_reads_no_clock_environment_file_or_network():
     called = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call)
               and isinstance(node.func, ast.Attribute)}
     assert not called & {"now", "utcnow", "today", "open", "getenv", "read_text", "write_text"}
+
+
+# --- provenance (RCO1, Lead 17:13Z): no association from task/worker/session/time similarity alone ---------
+
+def _r2_with_forced_r1_claim():
+    """r2 dispatched 16:40; the r1 claim of the same task/worker/session is -Force-refreshed at 16:45, so its
+    claimed_at no longer predates r2. S1 keeps only the newest dispatch."""
+    r2 = dispatch(request_id="req-r2", revision="r2", ts="2026-10-01T16:40:00Z")
+    forced = claim(claimed_at_utc="2026-10-01T16:45:00Z", last_heartbeat_utc="2026-10-01T16:45:00Z")
+    return r2, forced
+
+
+def test_provenance_default_absent_associations_fail_closed():
+    r2, forced = _r2_with_forced_r1_claim()
+    out = attempts([r2], [forced], [release(at="2026-10-01T16:50:00Z", claimed_at_utc="2026-10-01T16:45:00Z")],
+                   [], [], NOW)
+    assert out["attempts"] == [] and reasons(out) == ["dispatch_association_missing"] * 2
+
+
+def test_provenance_a_forced_old_revision_claim_never_moves_to_the_newer_dispatch():
+    r2, forced = _r2_with_forced_r1_claim()
+    # The caller knows it answered r1 (req-r1): that dispatch is superseded and not supplied.
+    out = run([r2], claims=[forced], links=[association("req-r1")])
+    assert out["attempts"] == [] and reasons(out, "claim") == ["association_dispatch_absent"]
+    # Only an explicit association naming r2 binds it to r2.
+    bound = run([r2], claims=[forced], links=[association("req-r2")])
+    assert [a["dispatch_key"] for a in bound["attempts"]] == [r2["dispatch_key"]]
+
+
+def test_provenance_unknown_and_wrong_identity_associations_do_not_bind():
+    d = dispatch()
+    for link, reason in [
+        (association(request_digest="b" * 64), "association_mismatch"),         # another request
+        (association(token="f" * 64), "dispatch_association_missing"),          # another owner token
+        (association(session="wd-other-session"), "dispatch_association_missing"),
+        (association(task="codex-lead-1/other-task"), "dispatch_association_missing"),
+    ]:
+        out = run([d], claims=[claim()], links=[link])
+        assert out["attempts"] == [] and reasons(out, "claim") == [reason], (link, out["rejected"])
+
+
+def test_provenance_two_different_associations_for_one_claim_poison_it():
+    d = dispatch()
+    out = run([d], claims=[claim()], links=[association(), association(basis="another source")])
+    assert out["attempts"] == []
+    assert sorted(reasons(out)) == ["association_conflict", "association_conflict"]
+
+
+def test_provenance_an_exact_repeat_association_counts_once():
+    out = run(claims=[claim()], links=[association(), association()])
+    assert len(out["attempts"]) == 1 and out["duplicates_ignored"] == 1 and out["rejected"] == []
+
+
+def test_provenance_a_release_needs_its_association_too():
+    out = run(releases=[release()], links=[])
+    assert out["attempts"] == [] and reasons(out, "release") == ["dispatch_association_missing"]
+    assert [a["state"] for a in run(releases=[release()])["attempts"]] == ["released"]
+
+
+def test_provenance_a_claim_without_a_hex_owner_token_is_malformed():
+    out = run(claims=[claim(owner_token_sha256="not-hex")])
+    assert out["attempts"] == [] and reasons(out, "claim") == ["malformed"]
+
+
+class _Liar(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+class _HookRan(Exception):
+    pass
+
+
+class _Tripwire(dict):
+    def _trip(self, *args, **kwargs):
+        raise _HookRan("a hostile association hook ran")
+
+    get = __getitem__ = __contains__ = __iter__ = keys = items = values = __eq__ = __len__ = _trip
+    __hash__ = None
+
+
+@pytest.mark.parametrize("spoil", [
+    lambda a: a.pop("basis"),
+    lambda a: a.__setitem__("extra", "x"),
+    lambda a: a.__setitem__("schema", "wd.routing-claim-association.v0"),
+    lambda a: a.__setitem__("request_digest", "A" * 64),
+    lambda a: a.__setitem__("owner_token_sha256", "e" * 63),
+    lambda a: a.__setitem__("dispatch_id", _Liar("anything")),
+    lambda a: a.__setitem__("basis", float("nan")),
+    lambda a: a.__setitem__("basis", ""),
+])
+def test_provenance_a_malformed_association_binds_nothing(spoil):
+    link = association()
+    spoil(link)
+    out = run(claims=[claim()], links=[link])
+    assert out["attempts"] == []
+    assert reasons(out, "association") == ["malformed"] and reasons(out, "claim") == ["dispatch_association_missing"]
+
+
+def test_provenance_a_hostile_association_is_refused_without_running_hooks():
+    out = run(claims=[claim()], links=[_Tripwire(association()), association()])   # _HookRan would propagate
+    assert len(out["attempts"]) == 1 and reasons(out, "association") == ["malformed"]
+
+
+@pytest.mark.parametrize("links", [(association(),), {"a": association()}, "x"])
+def test_provenance_associations_must_be_a_list(links):
+    with pytest.raises(ValueError):
+        attempts([dispatch()], [claim()], [], [], [], NOW, associations=links)
+
+
+def test_provenance_an_association_never_makes_an_accepted_or_verified_attempt():
+    out = run(claims=[claim()], links=[association()])
+    assert [(a["state"], a["artifacts"]) for a in out["attempts"]] == [("active", [])]

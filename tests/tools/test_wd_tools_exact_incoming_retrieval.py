@@ -96,6 +96,8 @@ if (-not $requestId) {
         # Zero inventory matches do not prove the ID absent: the row itself must lack one.
         $text = Invoke-HelperText 'Read-AgentBridge.ps1' @('-Agent', 'codex-tools-1', '-Raw', '-NoAckReceived', '-NoContinuity')
         if ($null -eq $text) { Blocked 'recent_read_failed' }
+        # Off Windows a redirected pwsh writes the -ForegroundColor header with ANSI SGR escapes.
+        $text = $text -replace (([string][char]27) + '[[][0-9;]*m'), ''
         $recent = ($text -split "`r?`n" | Where-Object { $_ -notmatch '^RECENT EVENTS' }) -join "`n"
         $rows = @(From-Json $recent | Where-Object { [string]$_.agent -ceq [string]$incoming.agent -and
             [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })

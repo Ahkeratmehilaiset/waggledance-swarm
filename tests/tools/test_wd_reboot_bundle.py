@@ -6740,6 +6740,8 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
         REBOOT / "start-wd-tools-consumer.ps1"
     ).read_text(encoding="utf-8")
     assert launcher.count("-Arguments @('update')") == 2
+    assert launcher.count("$grokUpdateRecord = Invoke-WdGrokCliUpdate") == 1
+    assert "grok update (once)" in launcher
     assert "[switch] $Apply" in launcher
     assert "function Enter-WdFleetRebootMutex" in launcher
     assert "catch [Threading.AbandonedMutexException]" in launcher

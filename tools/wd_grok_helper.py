@@ -838,6 +838,43 @@ def consultation_exit_code(report: dict) -> int:
     return {"answered": 0, "failed": 1}.get(report.get("status"), 2)
 
 
+def update_cli(root: Path, executable: Path, *, runner=subprocess.run) -> dict:
+    """Update Grok Build, not its model, under the consultation single-flight guard.
+
+    No version/channel is pinned and no consultation or quota entry is created.
+    An unresolved consultation is never cleared to make an update possible.
+    """
+    if not executable.is_absolute() or not executable.is_file():
+        raise ValueError("Grok update requires the installed user executable")
+    for path in (executable, *executable.parents):
+        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+            raise ValueError("Grok update refuses a reparse-point installation")
+    with exclusive(root):
+        availability = status(root)
+        if not availability["eligible"]:
+            raise ValueError("Grok update blocked: " + availability["local_availability"])
+
+        def run(argument: str, timeout: int) -> str:
+            result = runner([str(executable), argument], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=timeout, check=False)
+            if result.returncode != 0:
+                raise ValueError(f"grok {argument} failed with exit code {result.returncode}: "
+                                 + (result.stderr or result.stdout)[-2000:])
+            output = result.stdout.strip()
+            if argument == "--version" and not output:
+                raise ValueError("Grok version probe returned no version")
+            return output
+
+        before = run("--version", 30)
+        run("update", 300)
+        after = run("--version", 30)
+        return {"schema": "wd.grok-cli-update.v1", "update_status": "updated",
+                "before": before, "after": after, "executable": str(executable),
+                "update_command": "grok update",
+                "verified_at_utc": datetime.now(timezone.utc).isoformat()}
+
+
 def cli_prompt(prompt_file: Path) -> str:
     """The caller's own evidence, verbatim. Nothing is appended: no reboot or lane state and no
     earlier consultation, whose task may be another lane's. A caller that needs context puts
@@ -851,6 +888,7 @@ def cli_prompt(prompt_file: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--update-cli", action="store_true")
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--task-id")
     parser.add_argument("--exception-path", type=Path)
@@ -859,7 +897,13 @@ def main() -> int:
     parser.add_argument("--purpose")
     args = parser.parse_args()
     try:
-        if args.status or args.prompt_file is None:
+        if args.update_cli:
+            if args.status or any(value is not None for value in (
+                    args.prompt_file, args.task_id, args.exception_path, args.exception_sha256,
+                    args.requested_by, args.purpose)):
+                raise ValueError("CLI update cannot be combined with status or consultation arguments")
+            report = update_cli(STATE_ROOT, Path(os.environ["USERPROFILE"]) / ".grok/bin/grok.exe")
+        elif args.status or args.prompt_file is None:
             if args.exception_path is not None or args.exception_sha256 is not None:
                 raise ValueError("Task exceptions require a consultation, not status")
             if args.requested_by is not None:
@@ -885,7 +929,7 @@ def main() -> int:
         if args.status or args.prompt_file is None:
             return 0 if report.get("status") != "failed" else 1
         return consultation_exit_code(report)
-    except (ValueError, OSError, KeyError) as exc:
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}))
         return 2
 

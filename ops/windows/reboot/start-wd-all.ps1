@@ -5,7 +5,8 @@
 
 .DESCRIPTION
   Preflights the entire pinned fleet before the first mutation. An Apply run
-  updates Codex and Claude Code once, resolves the current Grok model, ensures
+  runs codex update, claude update and grok update once without version pins,
+  resolves the current Grok model, ensures
   the supervisor-managed Tools consumer, and launches missing interactive lanes.
   DryRun performs validation and prints the update/launch plan without updating,
   writing handshake files, or starting fleet processes. With neither mode
@@ -1681,22 +1682,48 @@ function Get-LaneProcesses {
 }
 
 function Test-WdCliUpdateDeferred {
-  param([ValidateSet('all', 'codex', 'claude')] [string] $Provider = 'all')
+  param([ValidateSet('all', 'codex', 'claude', 'grok')] [string] $Provider = 'all')
   # Shared CLI installation paths must not change beneath either fleet lanes
   # or unrelated operator sessions. Update once on a genuinely cold start.
   # Get-AllProcessSnapshots is deliberately limited to PowerShell wrappers;
   # query native processes independently, including those with no command line.
   return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-    [string]$_.Name -imatch '^(codex|claude)\.exe$' -and
+    [string]$_.Name -imatch '^(codex|claude|grok)\.exe$' -and
       ($Provider -ceq 'all' -or [string]$_.Name -ieq ($Provider + '.exe'))
   }).Count -gt 0
 }
 
 function Get-WdCliUpdateStatus {
-  param([ValidateSet('codex', 'claude')] [string] $Provider, [switch] $Skip)
+  param([ValidateSet('codex', 'claude', 'grok')] [string] $Provider, [switch] $Skip)
   if ($Skip) { return 'operator_skipped' }
   if (Test-WdCliUpdateDeferred -Provider $Provider) { return 'deferred_live_sessions' }
   return 'pending'
+}
+
+function Invoke-WdGrokCliUpdate {
+  param([Parameter(Mandatory)] [string] $Wrapper, [switch] $Skip)
+  $updateStatus = Get-WdCliUpdateStatus -Provider grok -Skip:$Skip
+  if ($updateStatus -cne 'pending') {
+    return [pscustomobject]@{
+      schema = 'wd.grok-cli-update.v1'; update_status = $updateStatus
+      update_command = 'grok update'; before = $null; after = $null
+    }
+  }
+  # Use this launcher's verified package, never the inherited session's older
+  # pins. The helper holds Grok's existing OS lock across the update and probes
+  # and refuses an unresolved attempt. This is not a model consultation.
+  $global:LASTEXITCODE = 1
+  $output = @(& $Wrapper -Tool 'tools/wd_grok_helper.py' -VerifyPackage --update-cli)
+  $updateExitCode = $global:LASTEXITCODE
+  if ($updateExitCode -ne 0) {
+    throw ("grok update failed or blocked (exit {0}); fleet launch aborted: {1}" -f
+      $updateExitCode, ($output -join [Environment]::NewLine))
+  }
+  $report = ($output -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+  if ($report.schema -cne 'wd.grok-cli-update.v1' -or $report.update_status -cne 'updated') {
+    throw 'grok update returned no successful update receipt; fleet launch aborted'
+  }
+  return $report
 }
 
 function Test-WdProcessIdentitySetExact {
@@ -2781,6 +2808,7 @@ $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common
 $processes = Get-AllProcessSnapshots
 $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
 $claudeUpdateStatus = Get-WdCliUpdateStatus -Provider claude -Skip:$SkipCliUpdate
+$grokUpdateStatus = Get-WdCliUpdateStatus -Provider grok -Skip:$SkipCliUpdate
 $laneStates = @()
 $expectedLaneRuntimes = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
@@ -3412,7 +3440,7 @@ Write-Host ''
 Write-Host 'Update and launch plan:' -ForegroundColor Cyan
 Write-Host ("  Codex: codex update (once); {0}" -f $codexUpdateStatus)
 Write-Host ("  Claude Code: claude update (once); {0}" -f $claudeUpdateStatus)
-Write-Host '  Grok: resolve authenticated CLI provider default and write exact high-effort usage'
+Write-Host ("  Grok Build: grok update (once); {0}; then resolve provider default" -f $grokUpdateStatus)
 foreach ($state in $laneStates) {
   Write-Host (
     "  {0}: {1}/{2}; {3}" -f
@@ -3617,9 +3645,8 @@ try {
       throw 'Codex npm update shim changed after preflight'
     }
     Write-Host 'Updating Codex CLI once...' -ForegroundColor Cyan
-    # Do not ask the native codex.exe to replace its own locked image on
-    # Windows. The trusted npm shim runs the same updater through Node without
-    # holding codex.exe open, avoiding deterministic EBUSY/exit-code 1.
+    # Invoke the trusted installed npm entry point. Native inventory is checked
+    # again below; the shim can itself dispatch to codex.exe.
     $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
     if ($codexUpdateStatus -ceq 'pending') {
       try {
@@ -3696,12 +3723,17 @@ try {
     -Path $claudeAfterPath `
     -Arguments @('--version') `
     -Label 'claude post-update version probe'
+  Write-Host 'Updating Grok Build once...' -ForegroundColor Cyan
+  $grokUpdateRecord = Invoke-WdGrokCliUpdate `
+    -Wrapper (Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1') -Skip:$SkipCliUpdate
+  $grokUpdateStatus = [string]$grokUpdateRecord.update_status
+  Write-Host ("  grok update: {0}" -f $grokUpdateStatus)
   $cliVersionPath = 'C:\Python\WD_CLI_VERSIONS_CURRENT.json'
   $cliVersionTemporary = "$cliVersionPath.$PID.tmp"
   $cliVersionRecord = [ordered]@{
     schema_version = 1
     verified_at_utc = [DateTime]::UtcNow.ToString('o')
-    update_status = $(if ($codexUpdateStatus -ceq $claudeUpdateStatus) { $codexUpdateStatus } else { 'mixed' })
+    update_status = $(if ($codexUpdateStatus -ceq $claudeUpdateStatus -and $codexUpdateStatus -ceq $grokUpdateStatus) { $codexUpdateStatus } else { 'mixed' })
     codex = [ordered]@{
       update_status = $codexUpdateStatus
       before = $codexVersion
@@ -3722,6 +3754,7 @@ try {
       after_sha256 = $claudeAfterHash
       update_command = 'claude update'
     }
+    grok_build = $grokUpdateRecord
   }
   try {
     $cliVersionRecord |

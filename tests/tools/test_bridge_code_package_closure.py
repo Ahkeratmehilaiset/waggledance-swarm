@@ -290,6 +290,23 @@ def test_advisory_input_assembler_and_reader_ship_without_new_entrypoints():
     assert not paths & set(definition["python_entrypoints"].values())
 
 
+def test_queue_snapshot_w3_load_and_python_root_mutex_ship_without_new_entrypoints():
+    """Passive shipping only: it is not global-idle or exclusive-dispatch proof."""
+    modules = {
+        "tools.bridge_v2_queue_snapshot",
+        "tools.wd_routing_load",
+        "tools.bridge_v2_queue_ports_windows",
+        "tools.bridge_named_mutex",
+        "tools.work_queue",
+        "tools.work_queue_sweep_stale",
+    }
+    definition = _definition()
+    paths = {module.replace(".", "/") + ".py" for module in modules}
+    assert paths <= set(definition["python_files"])
+    assert modules <= set(definition["import_smoke"]["package_modules"])
+    assert not paths & set(definition["python_entrypoints"].values())
+
+
 # --- the parser's own fail-open modes, reproduced -------------------------------
 
 

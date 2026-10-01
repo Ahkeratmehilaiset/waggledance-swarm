@@ -54,6 +54,16 @@ def build(s=_FIXTURE, r=_FIXTURE, t=_FIXTURE, profile=_FIXTURE, code_sha=CODE_SH
     return out
 
 
+def evidence(**over):
+    """The trusted inputs a caller supplies itself so router_qualification can replay the receipt (RCO1 F21-1)."""
+    return dict({"suite": suite(), "runs": runs(), "signed_thresholds": signed(), "built_at_utc": NOW}, **over)
+
+
+def reseal(receipt):
+    receipt["receipt_sha256"] = cs.digest({k: v for k, v in receipt.items() if k != "receipt_sha256"})
+    return receipt
+
+
 def cls(receipt, name):
     rows = [row for row in receipt["classes"] if row["task_class"] == name]
     assert len(rows) == 1
@@ -247,7 +257,7 @@ def test_inputs_are_not_mutated():
 # --- validation and the router adapter ---------------------------------------------------------------------
 
 def test_valid_receipt_adapts_to_router_entries():
-    entries = pq.router_qualification(build(), BINDING, NOW)
+    entries = pq.router_qualification(build(), BINDING, NOW, evidence())
     receipt = build()
     assert entries == [
         {"task_class": "implementation", "profile_id": "claude-strong", "qualified": True,
@@ -268,7 +278,7 @@ def test_valid_receipt_adapts_to_router_entries():
 def test_binding_mismatch_invalidates(binding, reason):
     verdict = pq.validate_receipt(build(), binding, NOW)
     assert verdict == {"valid": False, "reasons": [reason]}
-    assert pq.router_qualification(build(), binding, NOW) == []
+    assert pq.router_qualification(build(), binding, NOW, evidence()) == []
 
 
 def test_binding_must_name_every_field():
@@ -302,7 +312,7 @@ def test_edited_or_overreaching_receipt_invalidates():
 
 def test_router_uses_the_adapted_receipt():
     """End to end with the F19 router: the receipt decides eligibility; without it the worker is unknown."""
-    entries = pq.router_qualification(build(), BINDING, NOW)
+    entries = pq.router_qualification(build(), BINDING, NOW, evidence())
     worker = {"schema": tr.WORKER_SCHEMA, "worker": "fable-5", "kind": "lane", "profile_id": "claude-strong",
               "role": {"worker": "fable-5", "roles": ["producer"], "verified": True,
                        "observed_utc": "2026-09-30T16:59:00Z"},
@@ -343,3 +353,70 @@ def test_module_is_pure_by_construction():
         elif isinstance(node, ast.Call):
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             assert name not in FORBIDDEN_CALLS, name
+
+
+# --- RCO1 F21-1/F21-2/N3/N4 (afa7d14c review 04:40:23Z): the receipt's own digest is integrity, never provenance ---
+
+def test_a_resealed_consistent_forgery_validates_but_never_reaches_the_router():
+    forged = build()
+    row = next(row for row in forged["classes"] if row["state"] == "not_qualified")
+    row.update(state="qualified", reasons=[])
+    reseal(forged)
+    assert pq.validate_receipt(forged, BINDING, NOW)["valid"] is True  # integrity only, as documented
+    assert pq.router_qualification(forged, BINDING, NOW) == []  # no trusted evidence: nothing
+    assert pq.router_qualification(forged, BINDING, NOW, evidence()) == []  # does not replay from the real runs
+    assert pq.router_qualification(build(), BINDING, NOW, evidence()) != []  # the honest twin still adapts
+
+
+def test_a_resealed_receipt_with_inconsistent_class_rows_is_invalid():
+    forged = build()
+    for row in forged["classes"]:
+        row.update(state="qualified", reasons=[], samples=0)
+    forged["valid_until_utc"] = "2099-01-01T00:00:00.000000Z"
+    verdict = pq.validate_receipt(reseal(forged), BINDING, NOW)
+    assert verdict["valid"] is False and "class_rows_malformed" in verdict["reasons"]
+    assert pq.router_qualification(forged, BINDING, NOW, evidence()) == []
+
+
+def test_a_receipt_written_from_nothing_never_reaches_the_router():
+    honest = build()
+    fabricated = reseal({key: copy.deepcopy(value) for key, value in honest.items() if key != "receipt_sha256"})
+    fabricated["runs_sha256"] = "0" * 64
+    reseal(fabricated)
+    assert pq.router_qualification(fabricated, BINDING, NOW, evidence()) == []
+
+
+@pytest.mark.parametrize("classes", [[{"state": "qualified"}], "qualified", [None]])
+def test_malformed_class_rows_invalidate_and_never_raise(classes):
+    forged = build()
+    forged["classes"] = classes
+    reseal(forged)
+    assert "class_rows_malformed" in pq.validate_receipt(forged, BINDING, NOW)["reasons"]
+    assert pq.router_qualification(forged, BINDING, NOW, evidence()) == []
+
+
+def test_a_none_or_missing_receipt_digest_never_validates():
+    nan = build()
+    cls(nan, next(row["task_class"] for row in nan["classes"] if row["samples"]))["wilson_low"] = float("nan")
+    nan["receipt_sha256"] = None
+    assert pq.validate_receipt(nan, BINDING, NOW) == {"valid": False, "reasons": ["receipt_digest_mismatch"]}
+    missing = build()
+    del missing["receipt_sha256"]
+    assert pq.validate_receipt(missing, BINDING, NOW) == {"valid": False, "reasons": ["receipt_digest_mismatch"]}
+    assert pq.router_qualification(missing, BINDING, NOW, evidence()) == []
+
+
+@pytest.mark.parametrize("bad", [{"built_at_utc": "2030-01-01T00:00:00Z"}, {"runs": "not-a-list"}])
+def test_evidence_that_does_not_rebuild_the_receipt_gives_no_entry(bad):
+    assert pq.router_qualification(build(), BINDING, NOW, evidence(**bad)) == []
+    assert pq.router_qualification(build(), BINDING, NOW, {"suite": suite()}) == []
+
+
+@pytest.mark.parametrize("over", [{"observed_utc": "2026-01-01T00:00:00Z"}, {"profile_id": "someone-else"},
+                                  {"case_id": "no-such-case"}])
+@pytest.mark.parametrize("unsafe", [{"isolated": False}, {"production_writes": 2}])
+def test_an_unsafe_run_refuses_the_receipt_even_when_it_would_not_count(over, unsafe):
+    rows = runs()
+    rows.append(dict(rows[0], repeat=99, **over, **unsafe))
+    receipt = build(r=rows)
+    assert receipt["state"] == "refused" and receipt["reasons"][0] == "isolation_violation"

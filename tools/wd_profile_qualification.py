@@ -66,6 +66,9 @@ RUN_KEYS = ("schema", "case_id", "repeat", "profile_id", "provider", "model", "e
 THRESHOLD_KEYS = ("schema", "min_samples", "min_repeats", "min_holdout_cases", "min_holdout_pass_rate",
                   "min_success_rate", "max_uncertainty", "receipt_ttl_seconds", "max_run_age_seconds")
 BINDING_KEYS = ("code_sha", "suite_sha256", "thresholds_sha256") + PROFILE_KEYS
+CLASS_ROW_KEYS = ("task_class", "state", "reasons", "cases", "samples", "successes", "success_rate", "wilson_low",
+                  "wilson_high", "uncertainty", "min_repeats_seen", "holdout_cases", "holdout_pass_rate")
+EVIDENCE_KEYS = ("suite", "runs", "signed_thresholds", "built_at_utc")
 CLAIMS = {"universal": False, "availability": "not_measured", "scope": "this suite, code and profile only"}
 Z95 = 1.959963984540054
 _PLACES = 6
@@ -158,6 +161,9 @@ def _run_reason(run: Any, cases: dict, profile: dict, code_sha: str, thresholds:
     observed = _utc(run["observed_utc"])
     if observed is None:
         return None, "malformed"
+    # An unsafe harness taints everything it produced, not only this run: checked before any other reason, so a
+    # stale, other-profile or unknown-case unsafe run refuses the receipt too (RCO1 F21-N4).
+    _require(run["isolated"] is True and run["production_writes"] == 0, "isolation_violation", digest(run))
     case = cases.get(run["case_id"])
     if case is None:
         return None, "unknown_case"
@@ -246,8 +252,6 @@ def _build(suite: Any, runs: Any, signed_thresholds: Any, profile: Any, code_sha
         if observed is None:
             rejected.append({"run_sha256": run_digest, "reason": why})
             continue
-        # An unsafe harness taints everything it produced, not only this run.
-        _require(run["isolated"] is True and run["production_writes"] == 0, "isolation_violation", run_digest)
         by_slot.setdefault((run["case_id"], run["repeat"]), {})[run_digest] = (run, observed)
     counted: dict = {}
     newest = None
@@ -283,13 +287,46 @@ def build_receipt(suite: Any, runs: Any, signed_thresholds: Any, profile: Any, c
         return _refused(["input_malformed"], context)
 
 
+def _class_rows_valid(rows: Any) -> bool:
+    """Every class row has the built shape, a unique class, a state that agrees with its reasons and samples, and
+    the rates and Wilson interval its own counts give (RCO1 F21-1, F21-N3)."""
+    if type(rows) is not list:
+        return False
+    seen: set = set()
+    for row in rows:
+        if type(row) is not dict or set(row) != set(CLASS_ROW_KEYS) or type(row["task_class"]) is not str \
+                or row["task_class"] not in TASK_CLASSES or row["task_class"] in seen:
+            return False
+        seen.add(row["task_class"])
+        if not all(_count(row[k], 0) for k in ("cases", "samples", "successes", "min_repeats_seen", "holdout_cases")):
+            return False
+        samples, successes, reasons = row["samples"], row["successes"], row["reasons"]
+        if successes > samples or type(reasons) is not list or not all(_text(reason) for reason in reasons):
+            return False
+        if row["state"] == "unmeasured":
+            if samples != 0 or reasons != ["no_counted_runs"]:
+                return False
+            continue
+        if samples == 0 or row["state"] not in ("qualified", "not_qualified") \
+                or (row["state"] == "qualified") == bool(reasons):
+            return False
+        if row["success_rate"] != round(successes / samples, _PLACES) \
+                or (row["wilson_low"], row["wilson_high"], row["uncertainty"]) != wilson(successes, samples):
+            return False
+    return True
+
+
 def validate_receipt(receipt: Any, binding: Any, now: Any) -> dict:
     """{"valid": bool, "reasons": [...]} for one receipt against the caller's expected binding.
 
     ``binding`` names what the caller will use: the exact ``code_sha``, the profile
     fields (``profile_id``, ``provider``, ``model``, ``effort``, ``provider_version``),
     and the signed ``suite_sha256`` and ``thresholds_sha256``. So a receipt from
-    another suite or from laxer thresholds never validates."""
+    another suite or from laxer thresholds never validates.
+
+    ``receipt_sha256`` is the receipt's digest of itself: integrity, NOT origin. A resealed or fabricated receipt
+    with consistent rows validates here; only ``replay`` from trusted inputs proves where it came from, and
+    ``router_qualification`` requires that replay (RCO1 F21-1)."""
     reasons = []
     try:
         moment = _utc(now) if isinstance(now, str) else None
@@ -298,8 +335,13 @@ def validate_receipt(receipt: Any, binding: Any, now: Any) -> dict:
         if not (isinstance(receipt, dict) and receipt.get("schema") == RECEIPT_SCHEMA
                 and receipt.get("state") == "built"):
             return {"valid": False, "reasons": ["receipt_not_built"]}
-        if receipt.get("receipt_sha256") != digest({k: v for k, v in receipt.items() if k != "receipt_sha256"}):
+        # A None digest (non-canonical JSON such as NaN) or a missing one never compares equal (RCO1 F21-2).
+        recomputed = digest({k: v for k, v in receipt.items() if k != "receipt_sha256"})
+        if not _hex(receipt.get("receipt_sha256"), 64) or recomputed is None \
+                or receipt["receipt_sha256"] != recomputed:
             return {"valid": False, "reasons": ["receipt_digest_mismatch"]}
+        if not _class_rows_valid(receipt.get("classes")):
+            reasons.append("class_rows_malformed")
         if not (isinstance(binding, dict) and set(binding) == set(BINDING_KEYS)):
             return {"valid": False, "reasons": ["binding_malformed"]}
         for key in ("code_sha", "suite_sha256", "thresholds_sha256"):
@@ -318,16 +360,29 @@ def validate_receipt(receipt: Any, binding: Any, now: Any) -> dict:
     return {"valid": not reasons, "reasons": reasons}
 
 
-def router_qualification(receipt: Any, binding: Any, now: Any) -> list[dict]:
-    """The F19 router's ``qualification`` entries for one receipt, or [] if the receipt is not valid.
+def router_qualification(receipt: Any, binding: Any, now: Any, evidence: Any = None) -> list[dict]:
+    """The F19 router's ``qualification`` entries for one receipt, or [] unless it is valid AND proven.
 
-    An ``unmeasured`` class yields no entry, so the router keeps it unknown."""
-    if not validate_receipt(receipt, binding, now)["valid"]:
+    Proof is deterministic replay from trusted evidence the caller supplies itself, never the receipt's own
+    digest: ``evidence`` is {"suite", "runs", "signed_thresholds", "built_at_utc"} (the ``now`` the receipt was
+    built at), and the receipt must rebuild byte-identically from it with the binding's profile and code SHA.
+    No evidence, any mismatch or anything unexpected gives [], so the router keeps every class unknown
+    (RCO1 F21-1). An ``unmeasured`` class yields no entry, so the router keeps it unknown."""
+    try:
+        if not validate_receipt(receipt, binding, now)["valid"]:
+            return []
+        if type(evidence) is not dict or set(evidence) != set(EVIDENCE_KEYS):
+            return []
+        profile = {key: binding[key] for key in PROFILE_KEYS}
+        if not replay(receipt, evidence["suite"], evidence["runs"], evidence["signed_thresholds"], profile,
+                      binding["code_sha"], evidence["built_at_utc"]):
+            return []
+        return [{"task_class": row["task_class"], "profile_id": receipt["profile"]["profile_id"],
+                 "qualified": row["state"] == "qualified", "receipt_sha256": receipt["receipt_sha256"],
+                 "observed_utc": receipt["measured_at_utc"], "valid_until_utc": receipt["valid_until_utc"]}
+                for row in receipt["classes"] if row["state"] in ("qualified", "not_qualified")]
+    except Exception:  # noqa: BLE001 - a malformed receipt or evidence yields no entry, never a crash
         return []
-    return [{"task_class": row["task_class"], "profile_id": receipt["profile"]["profile_id"],
-             "qualified": row["state"] == "qualified", "receipt_sha256": receipt["receipt_sha256"],
-             "observed_utc": receipt["measured_at_utc"], "valid_until_utc": receipt["valid_until_utc"]}
-            for row in receipt["classes"] if row["state"] in ("qualified", "not_qualified")]
 
 
 def replay(receipt: Any, suite: Any, runs: Any, signed_thresholds: Any, profile: Any, code_sha: Any,

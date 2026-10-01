@@ -134,6 +134,12 @@ def test_only_exact_member_ids_count_toward_the_quorum(evaluators):
     assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
 
 
+@pytest.mark.parametrize("worker", ["FABLE-5", "fable_5", " fable-5 "])
+def test_a_spelled_worker_is_not_graded_by_its_own_member_id(worker):
+    out = derive([outcome("o-1", worker=worker, evaluators=("fable-5",))])
+    assert out["weights"] == [] and [r["reason"] for r in out["rejected"]] == ["quorum_not_met"]
+
+
 def test_alias_spellings_of_one_evaluator_count_once():
     out = derive([outcome("o-1", evaluators=("claude-rco-1", "CLAUDE-RCO-1", "claude_rco_1"))],
                  sb=signed(bounds(min_independent_evaluators=2)))

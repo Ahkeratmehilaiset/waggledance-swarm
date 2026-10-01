@@ -124,6 +124,25 @@ def test_a_superseded_record_with_unknown_time_withholds_the_task():
     assert why(run(res)) == [(TASK, "supersession_inconsistent")]
 
 
+@pytest.mark.parametrize("superseded_by", ["req-ghost", None])
+def test_p2_1_a_superseded_record_that_names_another_or_no_winner_withholds_the_task(superseded_by):
+    # RCO1 P2-1: S1 always names the live winner; a record naming a ghost or no winner contradicts it.
+    res = result([dispatch("req-2", revision="r2")],
+                 [rejection("req-1", tc.SUPERSEDED_REASON, observed="2026-10-01T17:00:00+00:00",
+                            superseded_by=superseded_by)])
+    out = run(res)
+    assert out["controls"] == [] and why(out) == [(TASK, "supersession_inconsistent")]
+    assert out["coverage"]["complete"] is False
+
+
+def test_p2_2_an_unattributable_hold_withholds_every_task_and_coverage_is_incomplete():
+    # RCO1 P2-2: a hold whose task cannot be read might be any task's hold, so nothing is current.
+    res = result([dispatch(), dispatch("req-2", task=OTHER)], [rejection(None, tc.HELD_REASON, task=None)])
+    out = run(res)
+    assert out["controls"] == [] and why(out) == [(TASK, "held_unattributed"), (OTHER, "held_unattributed")]
+    assert out["coverage"]["complete"] is False
+
+
 def test_ordinary_rejections_naming_the_task_do_not_withhold():
     res = result([dispatch()], [rejection("evt-1", "not_a_wake_request", observed="2026-10-01T18:30:00+00:00"),
                                 rejection(None, "request_malformed", task=None)])

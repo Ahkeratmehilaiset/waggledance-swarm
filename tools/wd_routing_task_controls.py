@@ -26,9 +26,10 @@ Fail-closed rules:
   6-key rejections, duplicate entries); otherwise NOTHING is emitted (``input_malformed``).
 * Copies of one dispatch_id must be identical (else every task they name is ``dispatch_conflict``); a task
   with two different live dispatches is ``dispatch_ambiguous``; a dispatch after ``now`` is ``future_dated``.
-* A task that S1 both dispatched and held (``dispatch_held_newer_rejection``) is ``held_conflict``, and a
-  superseded record of the task observed after its live dispatch is ``supersession_inconsistent``: an old
-  revision never becomes a live control (D-F1).
+* A task that S1 both dispatched and held (``dispatch_held_newer_rejection``) is ``held_conflict``; a hold
+  whose task cannot be read withholds EVERY task (``held_unattributed``, coverage incomplete); a superseded
+  record of the task observed after its live dispatch, at an unknown time, or naming any winner other than
+  that live dispatch is ``supersession_inconsistent``: an old revision never becomes a live control (D-F1).
 * No cancellation input exists in the Bridge yet. Without an explicit statement ``{schema:
   wd.routing-cancellation-coverage.v1, complete: true, cancelled: [{task_id, request_id, request_digest}]}``
   every task is withheld ``cancellation_coverage_unknown`` and ``coverage.cancellation`` is ``unknown``:
@@ -67,6 +68,7 @@ W_CONFLICT = "dispatch_conflict"
 W_AMBIGUOUS = "dispatch_ambiguous"
 W_FUTURE = "future_dated"
 W_HELD = "held_conflict"
+W_HELD_UNATTRIBUTED = "held_unattributed"
 W_SUPERSESSION = "supersession_inconsistent"
 W_CANCEL_UNKNOWN = "cancellation_coverage_unknown"
 W_CANCEL_MISMATCH = "cancellation_mismatch"
@@ -208,18 +210,26 @@ def task_controls(dispatch_result: Any, now: Any, *, cancellations: Any = None) 
             continue
         by_task[first["task_id"]] = first
 
-    held = {r["task_id"] for r in result["rejected"] if r["reason"] == HELD_REASON and r["task_id"] is not None}
+    held_rows = [r for r in result["rejected"] if r["reason"] == HELD_REASON]
+    held = {r["task_id"] for r in held_rows if r["task_id"] is not None}
+    # RCO1 P2-2: a hold whose task cannot be read might be any task's hold, so no task is provably current.
+    held_unattributed = any(r["task_id"] is None for r in held_rows)
     cancelled_by_task = _cancellations(cancellations)
     controls = []
     for task, record in sorted(by_task.items()):
         if task in withheld:
             continue
         at = _instant(record["dispatched_utc"])
+        # A superseded record of the task observed at/after the live dispatch (or at an unknown time), or one
+        # that names any winner other than this live dispatch (RCO1 P2-1: a ghost or None), contradicts S1.
         superseded_after = any(
             r["reason"] == SUPERSEDED_REASON and r["task_id"] == task
-            and (r["observed_utc"] is None or _instant(r["observed_utc"]) >= at) for r in result["rejected"])
+            and (r["observed_utc"] is None or _instant(r["observed_utc"]) >= at
+                 or r["superseded_by"] != record["dispatch_id"]) for r in result["rejected"])
         if at > now:
             reason = W_FUTURE
+        elif held_unattributed:
+            reason = W_HELD_UNATTRIBUTED
         elif task in held:
             reason = W_HELD
         elif superseded_after:

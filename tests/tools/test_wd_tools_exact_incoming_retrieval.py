@@ -98,6 +98,7 @@ if (-not $requestId) {
         if ($null -eq $text) { Blocked 'recent_read_failed' }
         # Off Windows a redirected pwsh writes the -ForegroundColor header with ANSI SGR escapes.
         $text = $text -replace (([string][char]27) + '[[][0-9;]*m'), ''
+        [Console]::Error.WriteLine('PROBE-RECENT-HEAD: ' + $text.Substring(0, [Math]::Min(900, $text.Length)))
         $recent = ($text -split "`r?`n" | Where-Object { $_ -notmatch '^RECENT EVENTS' }) -join "`n"
         $rows = @(From-Json $recent | Where-Object { [string]$_.agent -ceq [string]$incoming.agent -and
             [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })

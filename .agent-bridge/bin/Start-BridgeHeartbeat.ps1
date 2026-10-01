@@ -148,6 +148,15 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
         } catch [System.OperationCanceledException] {
             throw
         } catch {
+            # Preserve cancellation even when PowerShell wraps its exception.
+            $heartbeatException = $_.Exception
+            while ($null -ne $heartbeatException) {
+                if ($heartbeatException -is [System.Management.Automation.PipelineStoppedException] -or
+                    $heartbeatException -is [System.OperationCanceledException]) {
+                    throw
+                }
+                $heartbeatException = $heartbeatException.InnerException
+            }
             Write-Error -ErrorRecord $_ -ErrorAction Continue
         }
     }
@@ -161,6 +170,15 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
             -AgentUuid $AgentUuid `
             -Capabilities $Capabilities | Out-Null
     } catch {
+        # A canceled Send-Liveness must not become a warning and another beat.
+        $heartbeatException = $_.Exception
+        while ($null -ne $heartbeatException) {
+            if ($heartbeatException -is [System.Management.Automation.PipelineStoppedException] -or
+                $heartbeatException -is [System.OperationCanceledException]) {
+                throw
+            }
+            $heartbeatException = $heartbeatException.InnerException
+        }
         Write-Warning "Start-BridgeHeartbeat: heartbeat failed: $($_.Exception.Message)"
     }
 }

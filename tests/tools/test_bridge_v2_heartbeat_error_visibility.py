@@ -9,6 +9,7 @@ Runs on the participation fixture (private bin copy, Local legacy mutex names, t
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -135,10 +136,16 @@ def test_the_heartbeat_job_records_a_permanent_bump_failure_and_keeps_beating(br
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
 def test_the_heartbeat_job_is_clean_when_the_bump_succeeds(bridge, shell):
     assert _claim(shell, bridge).returncode == 0
+    [claim] = (bridge[2] / "work_queue" / "claims").glob("*.json")
+    before = json.loads(claim.read_text(encoding="utf-8-sig"))
     result = _job(shell, bridge)
     lines = result.stdout.strip().splitlines()
     assert "STATE:Completed" in lines and "ERRORS:0" in lines, result.stdout + result.stderr
     assert _beats(bridge)
+    after = json.loads(claim.read_text(encoding="utf-8-sig"))
+    assert after["claim_lease_expires_utc"] > before["claim_lease_expires_utc"]
+    assert after["owner_session_id"] == before["owner_session_id"]
+    assert after["owner_token_sha256"] == before["owner_token_sha256"]
 
 
 def test_cancellation_is_rethrown_before_the_visible_catch():
@@ -148,3 +155,112 @@ def test_cancellation_is_rethrown_before_the_visible_catch():
     canceled = text.index("} catch [System.OperationCanceledException] {")
     visible = text.index("Write-Error -ErrorRecord $_ -ErrorAction Continue")
     assert stopped < canceled < visible
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+def test_failed_heartbeat_preserves_claim_bytes_and_expiry(bridge, shell):
+    assert _claim(shell, bridge).returncode == 0
+    [claim] = (bridge[2] / "work_queue" / "claims").glob("*.json")
+    before = claim.read_bytes()
+    expiry = json.loads(before.decode("utf-8-sig"))["claim_lease_expires_utc"]
+    _no_helper(bridge)
+    result = _job(shell, bridge)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STATE:Completed" in result.stdout and "ERRORS:3" in result.stdout
+    assert _beats(bridge)
+    assert claim.read_bytes() == before
+    assert json.loads(claim.read_text(encoding="utf-8-sig"))["claim_lease_expires_utc"] == expiry
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+@pytest.mark.parametrize("kind", ["permanent", "cancel", "wrapped_cancel", "wrapped_pipeline"])
+def test_send_liveness_retains_permanent_warning_but_rethrows_cancellation(bridge, shell, kind):
+    # A controlled fault in the PRIVATE helper copy, not a real Ctrl-C or fleet call.
+    helper = bridge[0] / "ClaimLeaseHeartbeat.ps1"
+    helper.write_text(helper.read_text(encoding="utf-8-sig") + r'''
+function Update-BridgeClaimLease {
+    param($Root, $AgentName)
+    throw $global:fixtureError
+}
+''', encoding="utf-8-sig")
+    expressions = {
+        "permanent": "[InvalidOperationException]::new('fixture permanent')",
+        "cancel": "[OperationCanceledException]::new('fixture canceled')",
+        "wrapped_cancel": "[System.Management.Automation.MethodInvocationException]::new('fixture wrapper', [OperationCanceledException]::new('fixture canceled'))",
+        "wrapped_pipeline": "[System.Management.Automation.MethodInvocationException]::new('fixture wrapper', [System.Management.Automation.PipelineStoppedException]::new())",
+    }
+    command = (f"$exception = {expressions[kind]}; "
+               "$global:fixtureError = [System.Management.Automation.ErrorRecord]::new($exception, 'fixture-id', "
+               "[System.Management.Automation.ErrorCategory]::OperationStopped, 'fixture-target'); "
+               f"try {{ & '{bridge[0] / 'Send-Liveness.ps1'}' -Agent '{AGENT}' -Heartbeat; 'CONTINUED' }} "
+               "catch { 'THREW:' + $_.FullyQualifiedErrorId; "
+               "'SAME_EXCEPTION:' + [object]::ReferenceEquals($_.Exception, $exception); "
+               "'TARGET:' + $_.TargetObject }")
+    result = _ps(shell, bridge, command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    if kind == "permanent":
+        assert "claim lease keepalive failed: fixture permanent" in result.stdout
+        assert "fixture: no event written" in result.stdout and "CONTINUED" in result.stdout
+        assert "THREW:" not in result.stdout
+    else:
+        assert "THREW:fixture-id" in result.stdout, result.stdout + result.stderr
+        assert "SAME_EXCEPTION:True" in result.stdout and "TARGET:fixture-target" in result.stdout
+        assert "fixture: no event written" not in result.stdout and "CONTINUED" not in result.stdout
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+@pytest.mark.parametrize("position", [1, 2], ids=["first-bump", "send-bump"])
+@pytest.mark.parametrize("kind", ["permanent", "cancel", "wrapped_cancel", "pipeline", "wrapped_pipeline"])
+def test_layered_heartbeat_cancellation_stops_before_emit_or_next_iteration(bridge, shell, position, kind):
+    assert _claim(shell, bridge).returncode == 0
+    [claim] = (bridge[2] / "work_queue" / "claims").glob("*.json")
+    before = claim.read_bytes()
+    calls = bridge[2] / "calls.txt"
+    emits = bridge[2] / "emits.txt"
+    helper = bridge[0] / "ClaimLeaseHeartbeat.ps1"
+    helper.write_text(helper.read_text(encoding="utf-8-sig") + r'''
+function Update-BridgeClaimLease {
+    param($Root, $AgentName, $Identity)
+    $global:fixtureCalls++
+    [IO.File]::AppendAllText($global:fixtureCallPath, "bump`n")
+    if ($global:fixtureCalls -eq $global:fixturePosition) { throw $global:fixtureError }
+    return 0
+}
+''', encoding="utf-8-sig")
+    (bridge[0] / "Write-AgentEvent.ps1").write_text(
+        '$null = $args\n[IO.File]::AppendAllText($global:fixtureEmitPath, "emit`n")\n', encoding="utf-8-sig")
+    expressions = {
+        "permanent": "[InvalidOperationException]::new('fixture permanent')",
+        "cancel": "[OperationCanceledException]::new('fixture canceled')",
+        "wrapped_cancel": "[System.Management.Automation.MethodInvocationException]::new('fixture wrapper', [OperationCanceledException]::new('fixture canceled'))",
+        "pipeline": "[System.Management.Automation.PipelineStoppedException]::new()",
+        "wrapped_pipeline": "[System.Management.Automation.MethodInvocationException]::new('fixture wrapper', [System.Management.Automation.PipelineStoppedException]::new())",
+    }
+    command = (f"$exception = {expressions[kind]}; "
+               "$global:fixtureError = [System.Management.Automation.ErrorRecord]::new($exception, 'layered-id', "
+               "[System.Management.Automation.ErrorCategory]::OperationStopped, 'layered-target'); "
+               f"$global:fixtureCalls=0; $global:fixturePosition={position}; "
+               f"$global:fixtureCallPath='{calls}'; $global:fixtureEmitPath='{emits}'; "
+               f"try {{ & '{bridge[0] / 'Start-BridgeHeartbeat.ps1'}' -Agent '{AGENT}' "
+               f"-IntervalMs 20 -MaxIterations 3 -RuntimeRoot '{bridge[2]}'; 'CONTINUED' }} "
+               "catch { 'THREW:' + $_.FullyQualifiedErrorId; "
+               "'SAME_EXCEPTION:' + [object]::ReferenceEquals($_.Exception, $exception); "
+               "'TARGET:' + $_.TargetObject }")
+    result = _ps(shell, bridge, command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _beats(bridge), "the first session heartbeat precedes the injected failure"
+    assert claim.read_bytes() == before
+    if kind == "permanent":
+        assert len(calls.read_text().splitlines()) == 6
+        assert len(emits.read_text().splitlines()) == 3
+        # Windows PowerShell wraps the error message after a long script path.
+        # Keep the visibility assertion, without depending on renderer width.
+        visible = " ".join((result.stdout + result.stderr).split())
+        assert "CONTINUED" in result.stdout and "fixture permanent" in visible, result.stdout + result.stderr
+        assert "THREW:" not in result.stdout
+    else:
+        assert "THREW:layered-id" in result.stdout, result.stdout + result.stderr
+        assert "SAME_EXCEPTION:True" in result.stdout and "TARGET:layered-target" in result.stdout
+        assert "CONTINUED" not in result.stdout
+        assert len(calls.read_text().splitlines()) == position
+        assert not emits.exists(), "no event after the cancellation"

@@ -206,7 +206,7 @@ def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypat
     # A behaviour change, pinned (fable-5 23:19:55Z): the mutex name needs the canonical absolute root, so a writer
     # given a relative --bridge-root is refused before it writes (fail-closed); reads take no mutex and still work.
     monkeypatch.chdir(bridge.parent)
-    assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) != 0 and _claims(bridge) == []
+    assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) == 2 and _claims(bridge) == []  # input error
     assert "runtime-root mutex: runtime root" in capsys.readouterr().out
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin

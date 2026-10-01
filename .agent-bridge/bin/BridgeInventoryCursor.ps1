@@ -7,6 +7,9 @@
    file, a changed generation and a changed query or page size are refused. Discovery only: a row
    appended after the freeze (a newer request, revision or cancellation) is NOT in these pages, so a
    caller must still read the current request, revision, cancellation and control before acting.
+   A token is an unauthenticated discovery handle: a caller-edited in-range position only moves that
+   caller's own page within the frozen prefix and never grants authority. The frozen prefix is read in
+   bounded chunks (at most 64 MiB per reader call), so logs larger than one reader call continue too.
    Dot-source after BridgeIncrementalReader.ps1 and BridgeReplyIndex.ps1. #>
 
 $script:BridgeInventoryTokenPattern = '^v3\.[0-9A-F]{16}\.[0-9A-F]{16}\.[0-9]{1,12}\.[0-9A-F]{64}\.[0-9]{1,9}\.[0-9A-F]{16}\.[0-9]{1,9}$'
@@ -52,22 +55,41 @@ function Read-BridgeInventoryFrozenPrefix {
     if ($parts[6] -cne $QueryHash) { throw 'Inventory continuation token does not match this query' }
     # Truncation below the frozen offset throws here; a rewritten prefix fails the hash.
     if ((Get-BridgeReplyPrefixHash $Path $offset) -cne $prefix) { throw 'Inventory continuation prefix changed' }
-    $delta=Read-BridgeEventDelta -Path $Path -Cursor $null -MaxBytes $offset -MaxRows 100000
-    if ($delta.status -cin @('BLOCKED','RETRY') -or $null -eq $delta.candidate_cursor -or
-        [int64]$delta.candidate_cursor.offset -ne $offset) {
-        throw ('Inventory continuation prefix is not a complete frozen snapshot: '+$delta.reason)
-    }
-    $boundary=Get-BridgeInventoryBoundary $delta.candidate_cursor
+    # RCO2 c868 R-1: one reader call is bounded to 64 MiB (Read-BridgeLogSnapshotDelta max_bytes_invalid), so the
+    # frozen prefix is read in chunks, each at most 64 MiB and never past the frozen offset; every chunk continues
+    # from the previous candidate cursor (the reader re-validates its identity and generation) and must strictly
+    # advance, and the existing 100000-row bound applies to the whole prefix. Appends are never read.
+    $chunkBytes=[int64]67108864
+    $maxRows=100000
+    $allRows=[Collections.Generic.List[object]]::new()
+    $cursor=$null
+    $done=[int64]0
+    do {
+        if ($allRows.Count -ge $maxRows) { throw 'Inventory continuation frozen prefix exceeds the row bound' }
+        $delta=Read-BridgeEventDelta -Path $Path -Cursor $cursor -MaxBytes ([Math]::Min($chunkBytes, $offset - $done)) `
+            -MaxRows ($maxRows - $allRows.Count)
+        if ($delta.status -cin @('BLOCKED','RETRY') -or $null -eq $delta.candidate_cursor) {
+            throw ('Inventory continuation prefix is not a complete frozen snapshot: '+$delta.reason)
+        }
+        $next=[int64]$delta.candidate_cursor.offset
+        if ($next -le $done -or $next -gt $offset) {
+            throw 'Inventory continuation frozen prefix did not advance within its boundary'
+        }
+        foreach ($row in @($delta.rows)) { $allRows.Add($row) }
+        $cursor=$delta.candidate_cursor
+        $done=$next
+    } while ($done -lt $offset)
+    $boundary=Get-BridgeInventoryBoundary $cursor
     if ($boundary.generation -cne $parts[1] -or $boundary.identity -cne $parts[2]) {
         throw 'Inventory continuation file identity or generation changed'
     }
     $rows=[Collections.Generic.List[object]]::new()
-    foreach ($row in @($delta.rows)) {
+    foreach ($row in $allRows) {
         if ((Get-BridgeContractField $row 'request_id') -or (Get-BridgeContractField $row 'in_reply_to_request_id')) { $rows.Add($row) }
     }
     if ($rows.Count -ne $rowCount) { throw 'Inventory continuation frozen rows changed' }
     # Same handle checks as the reply index: identity, generation and the frozen prefix after the read.
-    Assert-BridgeReplySnapshotStable -Path $Path -Cursor $delta.candidate_cursor -PrefixHash $prefix
-    return [pscustomobject]@{rows=@($rows);candidate_cursor=$delta.candidate_cursor;snapshot_length=$offset;
-        cache_status='frozen_prefix';cache_path=$null;parsed_rows=@($delta.rows).Count;prefix_sha256=$prefix;position=$position}
+    Assert-BridgeReplySnapshotStable -Path $Path -Cursor $cursor -PrefixHash $prefix
+    return [pscustomobject]@{rows=@($rows);candidate_cursor=$cursor;snapshot_length=$offset;
+        cache_status='frozen_prefix';cache_path=$null;parsed_rows=$allRows.Count;prefix_sha256=$prefix;position=$position}
 }

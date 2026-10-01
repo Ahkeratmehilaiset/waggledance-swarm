@@ -509,3 +509,119 @@ def test_provenance_associations_must_be_a_list(links):
 def test_provenance_an_association_never_makes_an_accepted_or_verified_attempt():
     out = run(claims=[claim()], links=[association()])
     assert [(a["state"], a["artifacts"]) for a in out["attempts"]] == [("active", [])]
+
+
+# --- A2/A3/A4 (Tools 121f audit, Lead 17:26Z): poison by exact id, closed dispatch scope, chronology ------
+# Every case passes an explicit valid association, so the default refusal cannot hide the defect.
+
+class _IdTripwire(dict):
+    """A dict subclass that fails the test if any of its hooks runs while its id is read."""
+    def _trip(self, *args, **kwargs):
+        raise _HookRan("dict hook ran")
+    get = __getitem__ = keys = items = values = __iter__ = __contains__ = __len__ = __eq__ = _trip
+    __hash__ = None
+
+
+@pytest.mark.parametrize("spoil", [
+    lambda d: d.update(extra=1),
+    lambda d: d.update(schema="wd.routing-dispatch.v0"),
+    lambda d: d.update(scope=[float("nan")]),
+    lambda d: d.update(revision=float("inf")),
+    lambda d: d.update(scope=["tools/*.py"]),
+    lambda d: d.update(worker=Liar(d["worker"])),
+    lambda d: d.pop("dispatch_key"),
+])
+def test_a2_a_malformed_copy_poisons_every_valid_copy_of_its_dispatch_id(spoil):
+    d = dispatch()
+    bad = copy.deepcopy(d)
+    spoil(bad)
+    for order in ([d, bad], [bad, d], [d, bad, copy.deepcopy(d)]):
+        out = run(order, claims=[claim()], releases=[release(at="2026-10-01T16:48:00Z")], links=[association()])
+        assert out["attempts"] == [] and out["expired_unreleased"] == []
+        assert sorted(reasons(out, "dispatch")) == ["dispatch_conflict", "malformed"]
+        assert reasons(out, "claim") == reasons(out, "release") == ["no_matching_dispatch"]
+
+
+def test_a2_valid_twin_identical_copies_still_bind():
+    d = dispatch()
+    out = run([d, copy.deepcopy(d)], claims=[claim()], links=[association()])
+    assert [a["attempt_id"] for a in out["attempts"]] == [attempt_id()] and out["rejected"] == []
+
+
+def test_a2_a_malformed_record_of_another_id_poisons_nothing_here():
+    d = dispatch()
+    other = dict(copy.deepcopy(d), dispatch_id="req-s2-other", extra=1)
+    out = run([d, other], claims=[claim()], links=[association()])
+    assert [a["attempt_id"] for a in out["attempts"]] == [attempt_id()] and reasons(out) == ["malformed"]
+
+
+@pytest.mark.parametrize("make", [
+    lambda d: _IdTripwire(d),                                   # a dict subclass: its id is never read
+    lambda d: dict(d, dispatch_id=_Liar(d["dispatch_id"])),     # a str-subclass id is not an exact id
+    lambda d: "req-s2-1",                                        # not a record at all
+])
+def test_a2_ids_are_read_only_from_exact_dicts_with_exact_str_values_and_no_hook_runs(make):
+    d = dispatch()
+    out = run([d, make(copy.deepcopy(d))], claims=[claim()], links=[association()])
+    # Limit (named): such an item cannot be attributed to an id, so it poisons nothing; it is still refused.
+    assert [a["attempt_id"] for a in out["attempts"]] == [attempt_id()] and reasons(out) == ["malformed"]
+
+
+def test_a2_a_str_subclass_key_is_not_the_id_key():
+    d = dispatch()
+    bad = {_Liar("dispatch_id") if k == "dispatch_id" else k: v for k, v in d.items()}
+    out = run([d, bad], claims=[claim()], links=[association()])
+    assert len(out["attempts"]) == 1 and reasons(out) == ["malformed"]
+
+
+@pytest.mark.parametrize("entries", [
+    [1], [None], [True], [{"path": "tools"}], [["tools"]], [""], ["tools/*.py"], ["tools/../x.py"],
+    ["TOOLS/wd_routing_attempts.py"], ["tools/wd_routing_attempts.py", "tests/tools/test_wd_routing_attempts.py"],
+    ["tests/tools/test_wd_routing_attempts.py", "tests/tools/test_wd_routing_attempts.py",
+     "tools/wd_routing_attempts.py"],
+])
+def test_a3_an_invalid_or_unnormalized_dispatch_scope_is_malformed_not_an_exception(entries):
+    d = dict(dispatch(), scope=entries)
+    out = run([d], claims=[claim()], links=[association()])
+    assert out["attempts"] == [] and reasons(out) == ["no_matching_dispatch", "malformed"]
+
+
+def test_a3_valid_twins_the_s1_scopes_still_bind():
+    for scope in (tuple(SCOPE), ("tools/",), ("repo:tools/wd_routing_attempts.py", "tests/tools/")):
+        out = run([dispatch(scope=scope)], claims=[claim(write_scope=["tools/wd_routing_attempts.py"])],
+                  links=[association()])
+        assert len(out["attempts"]) == 1 and out["rejected"] == [], scope
+
+
+@pytest.mark.parametrize("signal", [KeyboardInterrupt, SystemExit, GeneratorExit, RuntimeError])
+def test_a3_the_scope_check_lets_cancellation_and_unexpected_errors_through(monkeypatch, signal):
+    def boom(*a, **k):
+        raise signal()
+    monkeypatch.setattr(module, "normalize_scope", boom)
+    with pytest.raises(signal):
+        run(claims=[], links=[association()])
+
+
+def test_a4_a_lease_ending_before_its_claim_is_refused_not_active():
+    out = run(claims=[claim(claim_lease_expires_utc="2026-10-01T16:47:51.98Z")], links=[association()])
+    assert out["attempts"] == [] and out["expired_unreleased"] == [] and reasons(out) == ["chronology_invalid"]
+
+
+def test_a4_a_release_before_its_own_claim_does_not_invent_a_released_attempt():
+    out = run(releases=[release(at="2026-10-01T16:47:51.98Z")], links=[association()])
+    assert out["attempts"] == [] and reasons(out) == ["chronology_invalid"]
+
+
+def test_a4_a_release_whose_lease_ends_before_its_claim_is_refused():
+    out = run(releases=[release(claim_lease_expires_utc="2026-10-01T16:47:00Z")], links=[association()])
+    assert out["attempts"] == [] and reasons(out) == ["chronology_invalid"]
+
+
+def test_a4_valid_twins_equal_instants_and_an_honestly_expired_claim():
+    stamp = "2026-10-01T16:47:51.9878448Z"
+    zero = run(claims=[claim(claim_lease_expires_utc=stamp)], links=[association()])
+    assert [a["state"] for a in zero["attempts"]] == ["active"] and zero["expired_unreleased"] == [attempt_id()]
+    same = run(releases=[release(at=stamp)], links=[association()])
+    assert [a["state"] for a in same["attempts"]] == ["released"] and same["rejected"] == []
+    late = run(claims=[claim()], links=[association()], now=datetime(2026, 10, 1, 17, 30, tzinfo=timezone.utc))
+    assert [a["state"] for a in late["attempts"]] == ["active"] and late["expired_unreleased"] == [attempt_id()]

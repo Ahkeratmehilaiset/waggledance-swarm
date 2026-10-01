@@ -52,10 +52,17 @@ Rules that keep it honest (Fable design c96124d0 sections 3b and 5; S1 67a6d16a)
 * More than one valid dispatch for one task makes every claim and release of that task
   ``claim_dispatch_ambiguous``: this module never picks a newest revision, so a superseded or revised
   dispatch cannot be revived through it (S1 already keeps only the newest).
-* Copies of one dispatch_id with different content poison that id. Two different present claims, or a
-  present claim older than a matching release, for one attempt_id give no attempt.
-* An active claim past its lease with no release stays ``active`` and is listed in ``expired_unreleased``;
-  no release or failure is invented for it.
+* Copies of one dispatch_id with different content poison that id, and so does any malformed copy: its
+  id is read before validation, only from an exact built-in dict through ``dict.items`` with an exact str
+  key and value (no lookup, equality or hook on a foreign object), and that tombstone rejects every valid
+  copy as dispatch_conflict. An item whose id cannot be read that way is refused and poisons nothing.
+  Two different present claims, or a present claim older than a matching release, for one attempt_id give
+  no attempt.
+* A dispatch scope must be exactly ``normalize_scope`` output (valid, normalized, sorted, unique str
+  entries, as S1 writes it) before any string operation; anything else makes the dispatch malformed.
+* A lease that ends before its claimed_at_utc, or a release before its own claimed_at_utc, is
+  chronology_invalid. An active claim past its lease with no release stays ``active`` and is listed in
+  ``expired_unreleased``; no release or failure is invented for it.
 * Done, status, ACK and reply events are not inputs and never change a state.
 * Cancellation (KeyboardInterrupt, SystemExit, GeneratorExit) and unexpected errors propagate.
 """
@@ -95,6 +102,7 @@ R_NO_ASSOCIATION = "dispatch_association_missing"
 R_ASSOCIATION_CONFLICT = "association_conflict"
 R_ASSOCIATION_ABSENT = "association_dispatch_absent"
 R_ASSOCIATION_MISMATCH = "association_mismatch"
+R_CHRONOLOGY = "chronology_invalid"
 _CONFLICT = object()
 
 
@@ -129,10 +137,30 @@ def _dispatch_ok(record: dict) -> bool:
             and all(_text(record[f]) for f in ("dispatch_id", "task_id", "revision", "worker"))
             and _hex(record["dispatch_key"], 64) and _hex(record["input_digest"], 64)
             and _hex(record["request_digest"], 64) and _stamp(record["dispatched_utc"]) is not None
-            and type(record["scope"]) is list and bool(record["scope"])
+            and type(record["scope"]) is list and _closed_scope(record["scope"])
             and type(responders) is dict and list(responders) == [worker]
             and type(responders[worker]) is dict and set(responders[worker]) == set(RESPONDER_FIELDS)
             and all(_text(responders[worker][f]) for f in RESPONDER_FIELDS))
+
+
+def _closed_scope(scope: list) -> bool:
+    """True for exactly the normalize_scope output S1 writes; a _Stop is a stable refusal, anything else
+    (cancellation, unexpected errors) propagates."""
+    try:
+        return normalize_scope(scope) == scope
+    except _Stop:
+        return False
+
+
+def _exact_id(item: Any) -> str | None:
+    """The dispatch_id of an exact built-in dict whose key and value are exact non-empty str, read only
+    through dict.items (no lookup, equality or hook on a foreign object); None otherwise."""
+    if type(item) is not dict:
+        return None
+    for key, value in dict.items(item):
+        if type(key) is str and key == "dispatch_id":
+            return value if _text(value) else None
+    return None
 
 
 def _association_ok(record: dict) -> bool:
@@ -198,6 +226,8 @@ def _claim_view(record: dict, dispatch: dict, now: datetime) -> dict:
     claimed, lease = _stamp(record.get("claimed_at_utc")), _stamp(record.get("claim_lease_expires_utc"))
     if claimed is None or lease is None:
         raise _Reject(R_MALFORMED)
+    if lease < claimed:
+        raise _Reject(R_CHRONOLOGY)
     if claimed > now:
         raise _Reject(R_FUTURE)
     if claimed < _utc(dispatch["dispatched_utc"]):
@@ -233,17 +263,21 @@ def attempts(dispatches: Any, claims: Any, releases: Any, push_receipts: Any, ac
     rejected: list[dict] = []
     duplicates = 0
 
-    # Dispatches: strict, closed, then per id: all copies identical or the whole id is poisoned.
+    # Dispatches: strict, closed, then per id: all copies identical and none refused, or the id is poisoned.
     groups: dict[str, list[tuple[int, dict]]] = {}
-    for index, record in _strict_items(dispatches, "dispatch", rejected):
+    kept = _strict_items(dispatches, "dispatch", rejected)
+    strict = {index for index, _ in kept}
+    poisoned = {_exact_id(item) for index, item in enumerate(dispatches) if index not in strict} - {None}
+    for index, record in kept:
         if not _dispatch_ok(record):
             rejected.append(_rejection("dispatch", index, record.get("dispatch_id"), R_MALFORMED))
+            poisoned.add(_exact_id(record))
             continue
         groups.setdefault(record["dispatch_id"], []).append((index, record))
     by_task: dict[str, list[dict]] = {}
     for dispatch_id in sorted(groups):
         copies = groups[dispatch_id]
-        if len({digest(record) for _, record in copies}) != 1:
+        if dispatch_id in poisoned or len({digest(record) for _, record in copies}) != 1:
             rejected.append(_rejection("dispatch", None, dispatch_id, R_DISPATCH_CONFLICT))
             continue
         duplicates += len(copies) - 1
@@ -288,6 +322,8 @@ def attempts(dispatches: Any, claims: Any, releases: Any, push_receipts: Any, ac
                         raise _Reject(R_MALFORMED)
                     if at > now:
                         raise _Reject(R_FUTURE)
+                    if at < view["claimed"]:
+                        raise _Reject(R_CHRONOLOGY)
                     released.setdefault(view["attempt_id"], []).append((view, at))
                 else:
                     present.setdefault(view["attempt_id"], []).append((view, record))

@@ -267,6 +267,12 @@ function Exit-BridgeClaimLock {
     }
 }
 
+function Test-BridgeQueueRootMutexHost {
+    # True where the v2 runtime-root mutex exists: Windows only, as in
+    # tools/work_queue.py _root_mutex.
+    return ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+}
+
 function Enter-BridgeQueueRootMutex {
     <#
         S2 (Lead 2026-09-30): every legacy claim/done mutation runs inside the
@@ -278,12 +284,17 @@ function Enter-BridgeQueueRootMutex {
         read or changed: busy within the timeout, an abandoned holder
         (released and refused, never adopted), or a root with no canonical
         form. Enter and exit on the same thread.
+
+        Off Windows (pwsh on Linux) there is no such mutex: this returns $null
+        and excludes nothing, as tools/work_queue.py _root_mutex does there,
+        and Exit-BridgeQueueRootMutex accepts $null.
     #>
     param(
         [Parameter(Mandatory)] [string] $Root,
         [int] $TimeoutMs = 0
     )
 
+    if (-not (Test-BridgeQueueRootMutexHost)) { return $null }
     if ($TimeoutMs -le 0) { $TimeoutMs = $script:BridgeClaimLockTimeoutMs }
     # Loaded here, not when this file is dot-sourced: only a claim/done
     # mutation needs it, so a missing helper refuses that mutation instead of

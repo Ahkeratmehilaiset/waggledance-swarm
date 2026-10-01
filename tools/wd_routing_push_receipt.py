@@ -45,11 +45,12 @@ Persistence (opt-in; only with a caller-explicit approved directory):
 * Cleanup never masks the outcome: a close failure is reported as ``cleanup`` on success, as
   ``.cleanup`` on a refusal, and as an exception note on a cancellation, which always propagates.
 * Limitations (named, not closed): the directory itself stays shareable for writing (the hard link needs
-  it), so a writer inside ``approved_root`` could turn a still-empty directory into a junction in place
-  between the lock and the temporary create; the final-path check then refuses ``directory_drifted`` and
-  delete-on-close removes the temporary file, but a byte-free temporary name may have been created
-  there. The enforcement relies on NTFS refusing a reparse point on a non-empty directory and on
-  share-mode semantics. A process already holding delete access on a component makes this refuse
+  it), so a writer inside ``approved_root`` CAN turn a still-empty directory into a junction in place
+  between the lock and the temporary create. Measured (elevated and Basic-User tokens, real twin): the
+  create relative to the held handle is then refused by NTFS (``receipt_create_failed:c0000280``,
+  STATUS_REPARSE_POINT_NOT_RESOLVED) and no name or byte lands anywhere; the final-path check
+  (``directory_drifted``) stays as a second line. The enforcement relies on that NTFS behaviour, on NTFS
+  refusing a reparse point on a non-empty directory and on share-mode semantics. A process already holding delete access on a component makes this refuse
   (``directory_lock_failed``). An OS crash or power loss can leave an orphan ``.tmp`` file. The hash
   proves content, not who wrote it. ``load_receipt`` is a content check only: bytes, canonical form and
   name, never location or containment.

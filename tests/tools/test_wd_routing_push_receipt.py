@@ -307,6 +307,50 @@ def test_m1_only_the_target_directory_is_opened_for_adding_files(approved, monke
     assert all(access == 0x20 | 0x80 | 0x100000 for _path, access in opened[:-1])
 
 
+def _set_junction_in_place(directory: Path, target: Path) -> bool:
+    """FSCTL_SET_REPARSE_POINT (mount point) on an existing EMPTY directory, as another writer would."""
+    import ctypes
+    import struct
+    from ctypes import wintypes
+    k = pr._kernel32
+    k.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    handle = k.CreateFileW(str(directory), 0x40000000, 0x7, None, 3, 0x02000000 | 0x00200000, None)
+    assert handle not in (None, pr._INVALID_HANDLE)
+    try:
+        name = ("\\??\\" + str(target)).encode("utf-16-le")
+        body = struct.pack("<HHHH", 0, len(name), len(name) + 2, 0) + name + b"\0\0\0\0"
+        data = struct.pack("<IHH", 0xA0000003, len(body), 0) + body
+        return bool(k.DeviceIoControl(handle, 0x900A4, data, len(data), None, 0, ctypes.byref(wintypes.DWORD()), None))
+    finally:
+        k.CloseHandle(handle)
+
+
+@windows_only
+def test_f2_residual_a_junction_set_in_place_on_the_held_empty_directory_writes_nothing(approved, tmp_path,
+                                                                                      monkeypatch):
+    # The named residual, measured: the held empty leaf CAN be turned into a junction in place (the leaf
+    # stays write-shared for the link), but the create relative to the held handle is then refused by NTFS
+    # (STATUS_REPARSE_POINT_NOT_RESOLVED), so no name and no byte lands anywhere.
+    root, folder = approved
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_create, junction = pr._create_relative, []
+
+    def race(directory, name):
+        junction.append(_set_junction_in_place(folder, outside))
+        return real_create(directory, name)
+
+    monkeypatch.setattr(pr, "_create_relative", race)
+    try:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(build(), folder, approved_root=root)
+        assert junction == [True] and caught.value.reason == "receipt_create_failed:c0000280"
+        assert list(outside.iterdir()) == []
+    finally:
+        os.rmdir(folder)   # removes the junction only
+
+
 @windows_only
 def test_f2_a_temporary_file_outside_the_held_directory_is_refused_and_removed(approved, monkeypatch):
     root, folder = approved

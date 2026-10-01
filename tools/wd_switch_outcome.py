@@ -18,8 +18,10 @@ Outcomes (``wd.switch-outcome.v1``)::
     AWAITING_CONTINUITY  resume_pending while the runner may still deliver continuity
     CONTINUED            resumed after a bound target: the ONLY success
     ROLLED_BACK          verified with rolled_back_to_previous, and every later row: never a success
-    CANCELLED            cancelled_before_apply (terminal)
-    HELD                 an operator must reconcile: rollback_failed:*, or resume_pending after the runner returned
+    CANCELLED            cancelled_before_apply (terminal), also the executor's exception cancel before the stop
+    HELD                 an operator must reconcile: rollback_failed:*, an exact executor_exception self-move
+                         (the executor's exception path with the lane down), or resume_pending after the runner
+                         returned
     UNKNOWN              anything this reader cannot prove; never a success
 
 Rules that keep it honest:
@@ -30,8 +32,9 @@ Rules that keep it honest:
   ``continuity_delivered``. A final ``resumed`` never erases an earlier ``rolled_back_to_previous``.
 * ``resume_pending`` is never CONTINUED.
 * Self-moves carry markers: ``checkpointed`` -> ``checkpointed`` must be exactly ``{"stop_intent_at": str}``;
-  ``apply_pending`` -> ``apply_pending`` must start with ``rollback_failed:``. An unknown marker is UNKNOWN; it
-  can never manufacture a phase or a success.
+  ``apply_pending`` -> ``apply_pending`` must start with ``rollback_failed:``; at any of ``checkpointed``,
+  ``apply_pending``, ``verified`` and ``resume_pending`` the exact reason ``executor_exception`` is the executor's
+  down-lane hold (HELD, terminal). An unknown marker is UNKNOWN; it can never manufacture a phase or a success.
 * Ordering and identity are explicit: every row names the requested transition, ``sequence`` strictly
   increases, the first row is ``planned``, every move is one the executor makes, ``apply_pending`` requires an
   earlier stop intent, and nothing follows a terminal or HELD row.
@@ -49,18 +52,21 @@ EPOCH_TYPES = {"pid": int, "process_started_at": str, "native_thread_id": str, "
                "launched_at": str, "profile": str}
 ROLLBACK = "rolled_back_to_previous"
 CONTINUITY = "continuity_delivered"
-# Every phase move wd_lane_relaunch_executor makes (a self-move carries only a marker).
+# Every phase move wd_lane_relaunch_executor makes (a self-move carries only a marker), including its
+# _on_exception path (cancel before the stop; an exact "executor_exception" self-move hold once the lane is
+# down) and RecoveryStore.advance's early cancels (RCO1 15:03Z).
 MOVES = {
     None: {"planned"},
-    "planned": {"quiesced"},
-    "quiesced": {"checkpointed"},
+    "planned": {"quiesced", "cancelled_before_apply"},
+    "quiesced": {"checkpointed", "cancelled_before_apply"},
     "checkpointed": {"checkpointed", "apply_pending", "cancelled_before_apply"},
     "apply_pending": {"apply_pending", "verified"},
-    "verified": {"resume_pending"},
-    "resume_pending": {"resumed"},
+    "verified": {"verified", "resume_pending"},
+    "resume_pending": {"resume_pending", "resumed"},
     "resumed": set(),
     "cancelled_before_apply": set(),
 }
+EXCEPTION_HOLD = "executor_exception"   # the exact self-move reason of _on_exception with the lane down
 # Stable refusal reasons (UNKNOWN).
 R_INPUT = "input_malformed"
 R_EMPTY = "no_history"
@@ -153,7 +159,9 @@ def derive_outcome(transition_id: Any, rows: Any, *, runner_returned: Any) -> di
             return _unknown(transition_id, R_PHASE, count, index)
         if phase not in MOVES[previous_phase]:
             return _unknown(transition_id, R_MOVE, count, index)
-        if phase == previous_phase == "checkpointed":
+        if phase == previous_phase and reason == EXCEPTION_HOLD and type(reason) is str:
+            held = True   # _on_exception with the lane down: an operator must reconcile (terminal for this reader)
+        elif phase == previous_phase == "checkpointed":
             if not _marker(reason, "stop_intent_at"):
                 return _unknown(transition_id, R_MARKER, count, index)
             stop_intent = True
@@ -161,6 +169,8 @@ def derive_outcome(transition_id: Any, rows: Any, *, runner_returned: Any) -> di
             if not (type(reason) is str and reason.startswith("rollback_failed:") and len(reason) > 16):
                 return _unknown(transition_id, R_MARKER, count, index)
             held = True
+        elif phase == previous_phase:   # verified / resume_pending self-moves carry only the exception hold
+            return _unknown(transition_id, R_MARKER, count, index)
         elif phase == "apply_pending":
             if not stop_intent:
                 return _unknown(transition_id, R_NO_STOP_INTENT, count, index)

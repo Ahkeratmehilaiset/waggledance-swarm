@@ -219,3 +219,48 @@ def test_duplicate_json_keys_are_refused_never_last_wins(index, row, reason):
 def test_the_same_markers_and_epoch_without_duplicates_still_continue():
     rows = _replace(5, ("verified", json.dumps(EPOCH)))          # key order differs from sort_keys: still valid
     assert derive_outcome(1, _history(*rows), runner_returned=True)["outcome"] == "CONTINUED"
+
+
+# --- executor exception paths (RCO1 15:03Z MEDIUM): _on_exception and advance write these moves too ---------
+
+@pytest.mark.parametrize("steps", [0, 1])
+def test_an_executor_exception_before_the_stop_is_cancelled(tmp_path, steps):
+    store, tid = _store(tmp_path)
+    for expected, phase in [("planned", "quiesced")][:steps]:
+        store.move(tid, expected, phase)
+    phase = ("planned", "quiesced")[steps]
+    store.move(tid, phase, "cancelled_before_apply", reason="executor_exception")   # _on_exception, not down
+    result = _outcome(tmp_path, tid)
+    assert (result["outcome"], result["reason"], result["success"]) == ("CANCELLED", "executor_exception", False)
+
+
+def test_an_advance_cancel_at_planned_is_cancelled(tmp_path):
+    store, tid = _store(tmp_path)
+    store.move(tid, "planned", "cancelled_before_apply", reason="safe_boundary_or_binding_changed")
+    assert _outcome(tmp_path, tid)["outcome"] == "CANCELLED"
+
+
+@pytest.mark.parametrize("stage", ["checkpointed", "apply_pending", "verified", "resume_pending"])
+def test_an_executor_exception_with_the_lane_down_is_held(tmp_path, stage):
+    store, tid = _store(tmp_path)
+    _to_stop(store, tid)
+    if stage != "checkpointed":
+        store.move(tid, "checkpointed", "apply_pending", reason=json.dumps({"source_stopped_at": "t"}))
+    if stage in ("verified", "resume_pending"):
+        store.move(tid, "apply_pending", "verified", reason=BOUND)
+    if stage == "resume_pending":
+        store.move(tid, "verified", "resume_pending")
+    store.move(tid, stage, stage, reason="executor_exception")   # _on_exception, down: hold for the operator
+    result = _outcome(tmp_path, tid, runner_returned=False)
+    assert (result["outcome"], result["reason"], result["success"]) == ("HELD", "executor_exception", False)
+
+
+@pytest.mark.parametrize("rows, reason", [
+    (GOOD[:1] + [("planned", "executor_exception")], "move_impossible:1"),          # no hold before the stop
+    (GOOD[:6] + [("verified", "executor_exception"), ("resume_pending", None)], "row_after_held:7"),
+    (GOOD[:6] + [("verified", "executor_exception "), ], "self_move_marker_unknown:6"),
+    (GOOD[:6] + [("verified", "other")], "self_move_marker_unknown:6"),
+])
+def test_an_exception_marker_is_exact_terminal_and_cannot_forge_progress(rows, reason):
+    result = derive_outcome(1, _history(*rows), runner_returned=True)
+    assert (result["outcome"], result["reason"], result["success"]) == ("UNKNOWN", reason, False)

@@ -235,8 +235,10 @@ if ($env:S_C_SEAM_ACTION) {
                 try { $w.Write($new, 0, $new.Length) } finally { $w.Dispose() }
             }
             'truncate' {
-                $w = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Write, $share)
+                # Read BEFORE opening for write: ReadAllBytes under an open write handle is a sharing violation
+                # that made this seam throw instead of truncating (fable-5 A792-F1 mutants).
                 $first = [Array]::IndexOf([IO.File]::ReadAllBytes($log), [byte]10)
+                $w = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Write, $share)
                 try { $w.SetLength($first + 1) } finally { $w.Dispose() }
             }
         }
@@ -272,7 +274,10 @@ def test_the_seam_copy_with_no_side_effect_is_complete_and_current(shell, root, 
 @pytest.mark.parametrize("action", ["append", "rotate", "generation", "rewrite", "truncate"])
 def test_a_change_after_the_first_hash_is_unknown(shell, root, seam_script, action):
     # rewrite is RCO1/fable-5 SC-F1: same length, same file, same generation; only the bytes differ.
+    data = log(root).read_bytes()
     assert seamed(shell, root, seam_script, action, call=1) == UNKNOWN
+    if action in ("append", "rewrite", "truncate"):
+        assert log(root).read_bytes() != data          # the side effect really happened (a throwing seam is vacuous)
     # the safe twin: the same file measured again afterwards is complete and describes the changed log
     after = measure(shell, root)[0]
     assert after["complete"] is True and after["prefix_sha256"] == hashlib.sha256(log(root).read_bytes()).hexdigest()
@@ -281,7 +286,9 @@ def test_a_change_after_the_first_hash_is_unknown(shell, root, seam_script, acti
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("action", ["append", "truncate"])
 def test_a_length_change_after_the_second_hash_is_still_unknown(shell, root, seam_script, action):
+    size = len(log(root).read_bytes())
     assert seamed(shell, root, seam_script, action, call=2) == UNKNOWN
+    assert len(log(root).read_bytes()) != size         # the length really changed (a throwing seam is vacuous)
 
 
 @pytest.mark.parametrize("shell", SHELLS)

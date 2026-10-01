@@ -273,6 +273,12 @@ def test_a_change_after_the_first_hash_is_unknown(shell, root, seam_script, acti
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("action", ["append", "truncate"])
+def test_a_length_change_after_the_second_hash_is_still_unknown(shell, root, seam_script, action):
+    assert seamed(shell, root, seam_script, action, call=2) == UNKNOWN
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_a_rewrite_after_the_last_hash_returns_is_the_documented_after_return_limit(shell, root, seam_script):
     # Not a guarantee: a change after the final hash returned is seen only by a later measurement. The result
     # still describes the bytes that WERE measured twice, never a mixed identity.

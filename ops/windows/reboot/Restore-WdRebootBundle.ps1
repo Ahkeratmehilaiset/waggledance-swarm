@@ -17,8 +17,10 @@
       target bundle's start-wd-tools-consumer.ps1 (a regular file of at most 4 MiB); every lane
       journal given with -LaneJournals must hold a relay record the target accepts, and no
       named wake snapshot or refusal receipt that a legacy relay cannot own. Unknown means
-      HOLD: an unrecognized relay contract, no -LaneJournals at all, or anything at a journal's
-      record path that is not a regular non-link file (relay_state_unreadable) is a HOLD.
+      HOLD: an unrecognized relay contract, no -LaneJournals at all, anything at a journal's
+      record path that is not a regular non-link file or that cannot be inspected (only a provably
+      absent record means no record; relay_state_unreadable), or a journal that cannot be listed
+      (lane_journal_unreadable) is a HOLD.
     * outstanding intents: any file at any depth in -IntentDirectory, or any link in it, is a
       HOLD; empty folders are not intents. No -IntentDirectory (intent_directory_not_given), a
       path that is not there (intent_directory_missing), or one that is not a real folder
@@ -201,17 +203,27 @@ foreach ($journal in $LaneJournals) {
     if (-not (Test-Path -LiteralPath $journal -PathType Container)) { Add-Reason ('lane_journal_missing:' + $journal); continue }
     $record = Join-Path $journal 'native-bridge-wake.json'
     # Anything at the record path is read as a regular non-link file or is unreadable state: a folder or a
-    # link there is unknown, never 'no record' (claude-rco-1 F28-2).
-    if ($null -ne (Get-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue)) {
+    # link there is unknown, never 'no record' (claude-rco-1 F28-2). Only a provably absent record (every
+    # lookup error is ItemNotFound) means 'no record'; an access failure is unknown, never a missing record.
+    $recordErrors = $null
+    $recordItem = Get-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue -ErrorVariable recordErrors
+    $recordAbsent = $null -eq $recordItem -and @($recordErrors).Count -gt 0 -and
+        @($recordErrors | Where-Object { $_.Exception -isnot [Management.Automation.ItemNotFoundException] }).Count -eq 0
+    if ($null -ne $recordItem) {
         try {
             $status = [string](Get-ExactField (Read-JsonFile -Path $record -Limit 32768) 'status')
             if ($accepted.Count -gt 0 -and $accepted -cnotcontains $status) { Add-Reason ('relay_state_incompatible:' + $journal + ':' + $status) }
         } catch {
             Add-Reason ('relay_state_unreadable:' + $journal)
         }
+    } elseif (-not $recordAbsent) {
+        Add-Reason ('relay_state_unreadable:' + $journal)
     }
     $legacyOnly = $accepted -cnotcontains 'claiming'
-    foreach ($item in @(Get-ChildItem -LiteralPath $journal -Force -File)) {
+    # A journal the plan cannot list is unknown state: a HOLD with its reason, never a crash without a plan.
+    try { $journalFiles = @(Get-ChildItem -LiteralPath $journal -Force -File -ErrorAction Stop) }
+    catch { Add-Reason ('lane_journal_unreadable:' + $journal); continue }
+    foreach ($item in $journalFiles) {
         $name = $item.Name
         if ($name.StartsWith('native-bridge-wake.json.wake.legacy-', [StringComparison]::Ordinal)) { continue }  # operator-owned, never sent
         if ($name.StartsWith('native-bridge-wake.json.wake.', [StringComparison]::Ordinal) -and $legacyOnly) {

@@ -6,6 +6,7 @@ tmp_path; each run asserts that no file under tmp_path changed.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -58,7 +59,7 @@ class Fixture:
         return {str(path.relative_to(self.root)): path.read_bytes()
                 for path in sorted(self.root.rglob("*")) if path.is_file()}
 
-    def run(self, shell: str, **overrides) -> tuple[int, dict]:
+    def run(self, shell: str, around=None, **overrides) -> tuple[int, dict]:
         params = {"TargetCommit": TARGET, "ExpectedTargetManifestSha256": self.manifest_sha,
                   "BundlesRoot": self.bundles, "StatePointerPath": self.pointer, "LaneJournals": self.journal,
                   "IntentDirectory": self.intents}
@@ -69,7 +70,8 @@ class Fixture:
                 continue
             argv += ["-" + name] if value is True else ["-" + name, str(value)]
         before = self.snapshot()
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+        with (around() if around else contextlib.nullcontext()):  # e.g. an injected deny ACE, undone before the check
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
         assert self.snapshot() == before, "the dry plan must not change any file"
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         assert lines, result.stderr
@@ -291,3 +293,66 @@ def test_a_linked_relay_record_is_unreadable_state_and_no_record_at_all_still_pl
     finally:
         os.rmdir(record)  # removes the junction only
     assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan
+
+
+# --- fable-5 residual of cf3102e1 (Lead 05:41:18Z): a record path the plan cannot inspect is unknown state and
+# HOLDs; only a record that is provably absent (ItemNotFound) may plan. The access failures below are INJECTED by
+# the test itself: deny ACEs for the current user on private files and folders under tmp_path, removed before the
+# no-change check (never READ_CONTROL, so the ACE can always be removed). They are not an observation of any
+# production ACL. A dangling directory junction needs no symlink privilege.
+
+def _me() -> str:
+    return subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+@contextlib.contextmanager
+def injected_deny(*grants: tuple[Path, str]):
+    user = _me()
+    applied = []
+    try:
+        for path, rights in grants:
+            subprocess.run(["icacls", str(path), "/deny", f"{user}:({rights})"], capture_output=True, check=True)
+            applied.append(path)
+        yield
+    finally:
+        for path in reversed(applied):
+            subprocess.run(["icacls", str(path), "/remove:d", user], capture_output=True, check=True)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_dangling_junction_at_the_relay_record_path_is_unreadable_state(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    record.unlink()
+    gone = tmp_path / "record-target-removed"
+    gone.mkdir()
+    junction(record, gone)
+    gone.rmdir()  # the junction now points nowhere
+    try:
+        code, plan = fixture.run(shell)
+    finally:
+        os.rmdir(record)  # removes the junction only
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_an_injected_read_denial_on_the_relay_record_is_unreadable_state(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    code, plan = fixture.run(shell, around=lambda: injected_deny((record, "RD")))
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_an_injected_inspection_denial_at_the_record_path_is_unknown_never_a_missing_record(tmp_path, shell):
+    # Read-attributes denied on the record and list denied on its journal: Get-Item cannot tell whether a record
+    # exists (UnauthorizedAccess, not ItemNotFound). Before this fix it read as 'no record' and the journal walk
+    # then crashed the plan (exit 1, no JSON).
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    code, plan = fixture.run(shell, around=lambda: injected_deny((record, "RA,REA,RD"), (fixture.journal, "RD")))
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal),
+                                             "lane_journal_unreadable:" + str(fixture.journal)], plan
+    record.unlink()  # honest control: the same journal with no record at all, no denial, still plans
+    code, plan = fixture.run(shell)
+    assert code == 0 and plan["verdict"] == "plan", plan

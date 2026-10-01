@@ -39,6 +39,10 @@ from waggledance.core.magma.chat_served_accounting import (
     PENDING_APPEND_FAILURE_SCHEMA,
     valid_pending_append_failure,
 )
+from waggledance.core.magma.chat_query_route_evidence import (
+    NORMALIZATION_VERSION,
+    canonical_query_digest,
+)
 from waggledance.core.magma.chat_served_metadata import (
     WORLD_SNAPSHOT_NA_MARKER,
     is_conforming_token,
@@ -250,7 +254,8 @@ class ChatServedEmitter:
             return False
 
     def _metadata(
-        self, *, source: str, route_type: str, language: str, profile: str, agent_id: str | None
+        self, *, query: str, source: str, route_type: str, language: str,
+        profile: str, agent_id: str | None,
     ) -> dict[str, str]:
         """Normalize request/route metadata to conforming HONEST tokens (T1) -- raw
         request-controlled values never reach the ledger as-is."""
@@ -260,6 +265,8 @@ class ChatServedEmitter:
             "language": normalize_language(language),
             "profile": normalize_profile(profile, self._known_profiles),
             "world_snapshot_ref": WORLD_SNAPSHOT_NA_MARKER,
+            "query_digest": canonical_query_digest(query),
+            "normalization_version": NORMALIZATION_VERSION,
         }
         normalized_agent = normalize_agent_id(agent_id)
         if normalized_agent is not None:
@@ -267,8 +274,8 @@ class ChatServedEmitter:
         return metadata
 
     def record_pending(
-        self, served_id: str, *, source: str, route_type: str, language: str,
-        profile: str, agent_id: str | None,
+        self, served_id: str, *, query: str, source: str, route_type: str,
+        language: str, profile: str, agent_id: str | None,
     ) -> bool:
         """SYNC crash-safe denominator. FAIL-OPEN: returns True on success, False when
         disabled OR on any error (the error is surfaced via pending_append_failures,
@@ -297,22 +304,31 @@ class ChatServedEmitter:
             return False
         try:
             metadata = self._metadata(
-                source=source, route_type=route_type, language=language,
+                query=query, source=source, route_type=route_type, language=language,
                 profile=profile, agent_id=agent_id,
             )
+        except Exception:  # noqa: BLE001 -- invalid identity must not break serving
+            self._pending_append_failures += 1  # bc4: surface, do not swallow
+            self._write_pending_append_failure(
+                served_id,
+                self._now_fn().strftime(_TS_FORMAT),
+                "metadata_rejected",
+                {
+                    "source": normalize_token(source),
+                    "route_type": normalize_token(route_type),
+                    "language": normalize_language(language),
+                    "profile": normalize_profile(profile, self._known_profiles),
+                },
+            )
+            log.debug("chat-served query identity rejected (serving continues)", exc_info=True)
+            return False
+        try:
             ts = self._now_fn().strftime(_TS_FORMAT)
             self.record_served_point_observation(metadata["route_type"], wired=True)
             self._sink.record_pending(served_id, ts, metadata, fsync=False)  # windowed (bc5)
             return True
         except Exception:  # noqa: BLE001 -- fail-OPEN: serving must never break on this
             self._pending_append_failures += 1  # bc4: surface, do not swallow
-            try:
-                metadata = self._metadata(
-                    source=source, route_type=route_type, language=language,
-                    profile=profile, agent_id=agent_id,
-                )
-            except Exception:  # noqa: BLE001 -- sanitize best-effort without blocking serve
-                metadata = {"source": "unknown", "route_type": "unknown"}
             self._write_pending_append_failure(
                 served_id,
                 self._now_fn().strftime(_TS_FORMAT),

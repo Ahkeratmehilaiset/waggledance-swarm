@@ -29,6 +29,18 @@ Rules that keep it honest:
   ``conserve`` (producers lower first; nothing raises).
 * A pool the observer does not measure (Grok today) is reported as
   ``capacity_unobserved``; nothing is inferred for it.
+* One series per quota subject and pool (F19C-1): a window key names only
+  provider/limit/window, so two accounts can report the same key and even the
+  same reset. Each sample carries the stored row's own quota ``subject`` (the
+  collector's ``auth_context_id`` or ``native_thread_id``) and its
+  ``account_pool`` (only when the row was stored as a verified binding, else
+  None), and a rate is measured only from samples of the newest sample's exact
+  (subject, account_pool) pair. The entry names that pair, so a consumer can
+  refuse a series that is not its own. A sample without these fields (an older
+  producer, or the switch policy's injected samples) is the unbound pair
+  (None, None): it paces exactly as before for ``recommend``, but it is never
+  another subject's or pool's evidence, and the routing capacity adapter treats
+  an unbound entry as unknown (fail closed).
 
 Nothing here launches, stops, writes or signals anything. Every result carries
 ``execution_allowed: false``. The planner (D5) and the executor (D4) remain the
@@ -82,10 +94,12 @@ def read_samples(store: str | Path, *, limit: int = MAX_HISTORY_ROWS) -> list[di
     """Quota-window samples from the observer store, read-only and without touching a WAL.
 
     Each sample is ``{provider, limit_id, window, used_percent, resets_at,
-    duration_minutes, observed_at}``. Rows that do not parse are skipped; a store
+    duration_minutes, observed_at, subject, account_pool}``: ``subject`` is the row's own
+    quota subject field (exactly a str, else None) and ``account_pool`` its pool only when the
+    row was stored as a verified binding (else None); nothing is guessed. Rows that do not parse are skipped; a store
     that cannot be read safely raises ``ValueError``.
     """
-    from tools.bridge_capacity_collector import quota_details
+    from tools.bridge_capacity_collector import POOL_SUBJECT_FIELDS, quota_details
     path = Path(store)
     with path.open("rb") as source:
         header = source.read(20)
@@ -113,6 +127,11 @@ def read_samples(store: str | Path, *, limit: int = MAX_HISTORY_ROWS) -> list[di
             if observed is None or row.get("provider") not in ("codex", "claude"):
                 continue
             _, windows = quota_details(dict(row, freshness="fresh"), observed)
+            subject = row.get(POOL_SUBJECT_FIELDS[row["provider"]])
+            subject = subject if type(subject) is str and subject else None
+            pool = row.get("account_pool")
+            pool = (pool if row.get("pool_identity_state") == "verified_binding" and type(pool) is str and pool
+                    else None)
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
         for window in windows:
@@ -123,12 +142,15 @@ def read_samples(store: str | Path, *, limit: int = MAX_HISTORY_ROWS) -> list[di
             samples.append({"provider": row["provider"], "limit_id": window.get("limit_id"),
                             "window": window.get("name"), "used_percent": float(used),
                             "resets_at": float(reset), "duration_minutes": duration,
-                            "observed_at": observed})
+                            "observed_at": observed, "subject": subject, "account_pool": pool})
     return samples
 
 
 def pace_windows(samples: list[dict], *, now: datetime) -> dict:
-    """Pace every (provider, limit_id, window) from its current window instance only."""
+    """Pace every (provider, limit_id, window) from its current window instance only.
+
+    The current instance is the newest sample's reset time AND its exact (subject, account_pool)
+    pair; another subject's or pool's samples under the same key are never part of the rate."""
     groups: dict[tuple, list[dict]] = {}
     for sample in samples:
         key = (sample["provider"], sample["limit_id"], sample["window"])
@@ -136,9 +158,13 @@ def pace_windows(samples: list[dict], *, now: datetime) -> dict:
     paced = {}
     for key, rows in groups.items():
         newest = max(rows, key=lambda r: r["observed_at"])
-        # The current instance is the newest sample's reset time; older instances are other windows.
-        current = sorted((r for r in rows if r["resets_at"] == newest["resets_at"]), key=lambda r: r["observed_at"])
+        # The current instance is the newest sample's reset time; older instances are other windows. Only the
+        # newest sample's own subject and pool form the series (F19C-1): never another account's samples.
+        identity = (newest.get("subject"), newest.get("account_pool"))
+        current = sorted((r for r in rows if r["resets_at"] == newest["resets_at"]
+                          and (r.get("subject"), r.get("account_pool")) == identity), key=lambda r: r["observed_at"])
         entry = {"provider": key[0], "limit_id": key[1], "window": key[2],
+                 "subject": identity[0], "account_pool": identity[1],
                  "used_percent": newest["used_percent"], "resets_at": newest["resets_at"],
                  "duration_minutes": newest["duration_minutes"],
                  "observed_at": newest["observed_at"].isoformat(), "samples": len(current),

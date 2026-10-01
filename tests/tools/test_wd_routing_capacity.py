@@ -75,13 +75,18 @@ def claude_row(**over):
     return row
 
 
-def samples(provider="codex", limit="codex", windows=CODEX_WINDOWS, ages=(41, 1)):
+OWN = {"codex": (SUBJECT, "codex-pro-a"), "claude": (SESSION, "claude-max-a")}
+
+
+def samples(provider="codex", limit="codex", windows=CODEX_WINDOWS, ages=(41, 1), identity=None):
+    """The pacer's samples as read_samples gives them: each names its row's own subject and verified pool."""
+    subject, pool = OWN[provider] if identity is None else identity
     rows = []
     for name, first, last, reset, duration in windows:
         for used, age in zip((first, last), ages):
             rows.append({"provider": provider, "limit_id": limit, "window": name, "used_percent": used,
                          "resets_at": float(reset), "duration_minutes": duration,
-                         "observed_at": NOW - timedelta(minutes=age)})
+                         "observed_at": NOW - timedelta(minutes=age), "subject": subject, "account_pool": pool})
     return rows
 
 
@@ -471,3 +476,60 @@ def test_module_is_pure_by_construction():
         elif isinstance(node, ast.Call):
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             assert name not in FORBIDDEN_CALLS, name
+
+
+# --- the paced series must be this row's own subject and pool (F19C-1 binding) -------------------------------
+
+def test_another_subjects_series_with_the_same_reset_and_used_percent_is_never_borrowed():
+    # Another account reports exactly this row's reset and used_percent: the numbers agree, the identity does not.
+    borrowed = pace_windows(samples(identity=("d" * 64, "codex-pro-a")), now=NOW)
+    record = evidence(paced=borrowed)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] == ["window_subject_mismatch:codex/codex/primary",
+                                 "window_subject_mismatch:codex/codex/secondary"]
+
+
+def test_another_pools_series_of_the_same_subject_is_never_borrowed():
+    record = evidence(paced=pace_windows(samples(identity=(SUBJECT, "codex-pro-b")), now=NOW))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] == ["window_pool_mismatch:codex/codex/primary",
+                                 "window_pool_mismatch:codex/codex/secondary"]
+
+
+@pytest.mark.parametrize("identity", [(None, None), (SUBJECT, None), (None, "codex-pro-a")],
+                         ids=["unbound", "no-pool", "no-subject"])
+def test_an_unbound_paced_series_is_unknown_never_guessed(identity):
+    record = evidence(paced=pace_windows(samples(identity=identity), now=NOW))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] == ["window_unbound:codex/codex/primary", "window_unbound:codex/codex/secondary"]
+
+
+def test_an_entry_without_identity_fields_or_with_non_text_identity_is_unbound():
+    for change in ({"subject": None}, {"account_pool": ["codex-pro-a"]}, {"subject": 7}):
+        paced = copy.deepcopy(PACED)
+        paced["codex/codex/primary"].update(change)
+        assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"], change
+    paced = copy.deepcopy(PACED)
+    paced["codex/codex/primary"].pop("subject")
+    assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"]
+
+
+def test_the_own_series_stays_known_when_another_subject_shares_the_key():
+    # Interleaved samples of another subject under the same key and reset change neither the rate nor the verdict.
+    other = (("primary", 80.0, 81.0, RESET_PRIMARY, 300), ("secondary", 70.0, 70.1, RESET_SECONDARY, 10080))
+    mixed = samples() + samples(windows=other, identity=("d" * 64, "codex-pro-b"), ages=(30, 20))
+    record = evidence(paced=pace_windows(mixed, now=NOW))
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"] == evidence()["capacity"]
+
+
+def test_a_claude_row_needs_its_own_session_series():
+    policy = signed(accepted_freshness=BOTH_FRESHNESS)
+    own = evidence(worker=CLAUDE_WORKER, row=claude_row(), paced=CLAUDE_PACED, policy=policy)
+    assert own["verdict"] == rc.KNOWN
+    other = pace_windows(samples("claude", "claude", CLAUDE_WINDOWS, identity=("sess-claude-2", "claude-max-a")),
+                         now=NOW)
+    record = evidence(worker=CLAUDE_WORKER, row=claude_row(), paced=other, policy=policy)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert len(record["reasons"]) == 2 and all(reason.startswith("window_subject_mismatch:claude/")
+                                               for reason in record["reasons"])

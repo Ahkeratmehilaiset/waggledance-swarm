@@ -357,3 +357,61 @@ def test_a_counter_that_falls_anywhere_has_no_rate(values):
 def test_a_flat_then_rising_counter_still_has_a_rate():
     rows = [sample("codex", "primary", v, hours_ago=3 - i, reset_in_hours=100) for i, v in enumerate((20, 20, 21, 23))]
     assert pace_windows(rows, now=NOW)["codex/codex/primary"]["rate_percent_per_hour"] == 1.0
+
+
+# ---------------------------------------------------------------- one series per subject and pool (F19C-1)
+
+def bound(row, subject, pool):
+    return dict(row, subject=subject, account_pool=pool)
+
+
+def test_another_subjects_samples_under_the_same_key_and_reset_are_never_this_series():
+    # Subject A: 30 -> 31 over 40 minutes. Subject B (another account, same key, same reset) reports 80 between them.
+    own = [bound(sample("codex", "primary", used, hours_ago=age, reset_in_hours=100), "a" * 64, "codex-pro-a")
+           for used, age in ((30, 41 / 60), (31, 1 / 60))]
+    other = bound(sample("codex", "primary", 80, hours_ago=20 / 60, reset_in_hours=100), "b" * 64, "codex-pro-b")
+    window = pace_windows(own + [other], now=NOW)["codex/codex/primary"]
+    assert (window["subject"], window["account_pool"], window["samples"]) == ("a" * 64, "codex-pro-a", 2)
+    assert (window["reason"], window["rate_percent_per_hour"]) == (None, 1.5)   # 30 -> 31 in 40 min, no dip to 80
+
+
+def test_the_same_subject_in_another_pool_is_another_series():
+    own = [bound(sample("codex", "primary", used, hours_ago=age, reset_in_hours=100), "a" * 64, "codex-pro-a")
+           for used, age in ((30, 41 / 60), (31, 1 / 60))]
+    other = bound(sample("codex", "primary", 80, hours_ago=20 / 60, reset_in_hours=100), "a" * 64, None)
+    window = pace_windows(own + [other], now=NOW)["codex/codex/primary"]
+    assert (window["account_pool"], window["samples"], window["rate_percent_per_hour"]) == ("codex-pro-a", 2, 1.5)
+
+
+def test_the_newest_subject_names_the_entry_and_its_own_samples_only():
+    older = [bound(sample("codex", "primary", used, hours_ago=age, reset_in_hours=100), "a" * 64, "codex-pro-a")
+             for used, age in ((30, 2), (31, 1))]
+    newest = bound(sample("codex", "primary", 50, hours_ago=0, reset_in_hours=100), "b" * 64, "codex-pro-b")
+    window = pace_windows(older + [newest], now=NOW)["codex/codex/primary"]
+    assert (window["subject"], window["account_pool"], window["samples"]) == ("b" * 64, "codex-pro-b", 1)
+    assert (window["verdict"], window["reason"]) == ("unknown", "rate_unknown")   # one sample: never a guessed rate
+
+
+def test_unbound_samples_pace_as_before_and_say_so():
+    # An older producer or the switch policy gives no subject or pool: the pair is (None, None), the math is unchanged.
+    window = pace_windows(series("codex", "primary", 10, 20, span_hours=10, reset_in_hours=50), now=NOW)[
+        "codex/codex/primary"]
+    assert (window["subject"], window["account_pool"], window["rate_percent_per_hour"]) == (None, None, 1.0)
+
+
+def test_samples_carry_the_rows_own_subject_and_only_a_verified_pool(tmp_path):
+    now = datetime.now(timezone.utc)
+    reset = int((now + timedelta(days=5)).timestamp())
+    hour = int((now + timedelta(hours=2)).timestamp())
+    store = make_store(tmp_path / "obs.sqlite", [
+        dict(codex_row(5, now - timedelta(minutes=3), reset), auth_context_id="a" * 64, account_pool="codex-pro-a",
+             pool_identity_state="verified_binding"),
+        dict(codex_row(6, now - timedelta(minutes=2), reset), auth_context_id="b" * 64, account_pool="codex-pro-b",
+             pool_identity_state="binding_expired"),
+        dict(claude_row(20, 3, now - timedelta(minutes=1), reset, hour), native_thread_id="sess-1",
+             account_pool="claude-max-a", pool_identity_state="verified_binding"),
+        codex_row(7, now, reset)])
+    got = sorted((s["used_percent"], s["subject"], s["account_pool"]) for s in read_samples(store)
+                 if s["window"] in ("primary", "seven_day"))
+    assert got == [(5.0, "a" * 64, "codex-pro-a"), (6.0, "b" * 64, None), (7.0, None, None),
+                   (20.0, "sess-1", "claude-max-a")]

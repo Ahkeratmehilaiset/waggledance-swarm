@@ -8,16 +8,19 @@ waits a bounded time and refuses without writing. tools/work_queue_sweep_stale.p
 environment is scrubbed.
 
 Scope stated, not claimed: these two tools are the only production callers of the waggledance.core.work_queue
-writers (a static inventory, 2026-10-01). The legacy PowerShell writers are Fable's slice, so until that lands a
-complete queue snapshot still cannot prove a lane idle. The mutex exists only on Windows; elsewhere nothing is
-excluded and nothing is claimed. A writer is refused before it writes for any --bridge-root the v2 canonical-root
-rule refuses (not a local drive-letter path, such as a relative, drive- or root-relative, UNC or device form; a ..
-or alias segment; an alternate stream; a link or reparse point on the path), since the mutex is named from that
-canonical root; the relative case is pinned below for both tools. run_idle_protocol_once.py mutates no claim or
-done file (pinned below).
+writers (a static inventory, 2026-10-01). The legacy PowerShell writers take the same kernel object through
+Enter-BridgeQueueRootMutex (.agent-bridge/bin/ClaimLeaseHeartbeat.ps1, which loads the twin BridgeV2QueueMutex.ps1)
+in the S2 PowerShell half (fable-5 1764254b), composed with this one; session-heartbeat files, an agent writing a
+claim file directly, and the limits of a static inventory remain outside. The mutex exists only on Windows;
+elsewhere nothing is excluded and nothing is claimed. A writer is refused before it writes for any --bridge-root
+the v2 canonical-root rule refuses (not a local drive-letter path, such as a relative, drive- or root-relative, UNC
+or device form; a .. or alias segment; an alternate stream; a link or reparse point on the path), since the mutex
+is named from that canonical root; the relative and alias cases are pinned below, and such a refusal exits 2 while
+every other refusal exits 1 (fable-5 B1). run_idle_protocol_once.py mutates no claim or done file (pinned below).
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -31,7 +34,7 @@ import pytest
 
 from tools import work_queue as wq_cli
 from tools import work_queue_sweep_stale as sweep_cli
-from tools.bridge_v2_queue_transactions import mutex_name
+from tools.bridge_v2_queue_transactions import QueueTransactionError, mutex_name
 from waggledance.core.work_queue import claim_task
 
 REPO = Path(__file__).resolve().parents[2]
@@ -207,6 +210,30 @@ def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypat
     assert "runtime-root mutex: runtime root" in capsys.readouterr().out
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin
+
+
+@pytest.mark.parametrize("text", [
+    ("the runtime-root mutex could not be created or opened (ValueError: exactly one enabled token logon SID is "
+     "required)"),
+    "the runtime-root mutex could not be created or opened (ValueError: invalid token user SID)",
+    "runtime-root mutex busy"], ids=["required_literal", "invalid_literal", "busy"])
+def test_a_mutex_refusal_exits_1_whatever_its_text_says(bridge, monkeypatch, text):
+    # fable-5 B1 (01:06:10Z): a refusal is classified by its source, never by its words; a creation failure quoting
+    # a policy literal ("... is required", "invalid ...") is not an input error.
+    @contextlib.contextmanager
+    def refusing(root):
+        raise QueueTransactionError(text)
+        yield
+
+    monkeypatch.setattr(wq_cli, "_root_mutex", refusing)
+    assert _cli(bridge, *CLAIM) == 1 and _claims(bridge) == []
+
+
+@pytest.mark.parametrize("name", ["bridge~1", "bridge.", "bridge "],
+                         ids=["short_name", "trailing_dot", "trailing_space"])
+def test_an_unusable_root_is_an_input_error_and_exits_2(bridge, name):
+    # The canonical-root rule refuses an alias segment lexically, as it refuses a relative root: both exit 2.
+    assert wq_cli.main(["--bridge-root", str(bridge.parent / name), "--json", *CLAIM]) == 2
 
 
 def test_reads_do_not_take_the_mutex(bridge):

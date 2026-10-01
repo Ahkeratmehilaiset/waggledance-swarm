@@ -35,12 +35,15 @@ from tools.bridge_v2_queue_transactions import (  # noqa: E402
 # RCO2 S2 (Lead 0b33855f): the writer commands take the v2 runtime-root mutex first, the same Windows named
 # mutex (mutex_name(root), NamedMutexPort) every v2 writer takes first, so a v2 participant holding it excludes
 # them: the command waits LOCK_TIMEOUT_SECONDS and then refuses before any claim or done file is touched.
-# tools/work_queue_sweep_stale.py --apply takes the same _root_mutex. A static inventory (2026-10-01) found no other
-# production caller of the core writers; the legacy PowerShell writers are a separate slice, so until it lands a
-# complete queue snapshot cannot prove a lane idle. Reads (list, stale, check-overlap) take no lock. The mutex
-# exists only on Windows; elsewhere nothing is excluded.
+# tools/work_queue_sweep_stale.py --apply takes the same _root_mutex. The legacy PowerShell writers take the same
+# kernel object through Enter-BridgeQueueRootMutex (.agent-bridge/bin/ClaimLeaseHeartbeat.ps1, which loads the twin
+# BridgeV2QueueMutex.ps1) in the S2 PowerShell half (fable-5 1764254b), composed with this one. A static inventory
+# (2026-10-01) found no other production caller of the core writers. Reads (list, stale, check-overlap) take no
+# lock. The mutex exists only on Windows; elsewhere nothing is excluded. A refusal exits by its source (fable-5 B1):
+# 2 when the --bridge-root is unusable (the v2 canonical-root rule), 1 for every other refusal.
 WRITER_COMMANDS = ("claim", "release", "heartbeat")
 LOCK_TIMEOUT_SECONDS = DEFAULT_LOCK_TIMEOUT_SECONDS
+MUTEX_REFUSAL = "runtime-root mutex: "   # the prefix of every refusal: _exit_code_for_error reads it, not the words
 
 
 def _root_mutex(bridge_root: Path) -> Any:
@@ -131,7 +134,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         with _root_mutex(bridge_root):
             return _run(args, bridge_root)
     except QueueTransactionError as exc:     # the mutex refused (busy, abandoned, unusable root): nothing was written
-        raise WorkQueueError("runtime-root mutex: " + str(exc)) from exc
+        raise WorkQueueError(MUTEX_REFUSAL + str(exc)) from exc
 
 
 def _run(args: argparse.Namespace, bridge_root: Path) -> dict[str, Any]:
@@ -224,6 +227,13 @@ def _to_jsonable(value: object) -> Any:
 
 def _exit_code_for_error(message: str) -> int:
     lowered = message.lower()
+    # A runtime-root mutex refusal exits by its source, never by its words (fable-5 B1): an unusable --bridge-root
+    # (the v2 canonical-root rule, "runtime root: ...") is an input error, 2; every other refusal (busy, abandoned, a
+    # creation failure that may quote a policy literal such as "... is required") is 1.
+    if lowered.startswith(MUTEX_REFUSAL + "runtime root:"):
+        return 2
+    if lowered.startswith(MUTEX_REFUSAL):
+        return 1
     invalid_markers = (
         "invalid",
         "require",

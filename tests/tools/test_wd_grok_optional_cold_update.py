@@ -235,7 +235,7 @@ POST_UPDATE = ("Write-Host 'Resolving the current Grok model...'",
                "Write-Host '  Grok model: unavailable (Grok is optional; the native lanes still launch)'\n  }")
 
 
-def resolution_script(tmp_path, resolver_case, update_case, blocks, guide=True):
+def resolution_script(tmp_path, resolver_case, update_case, blocks, guide=True, preamble=""):
     guide_path = tmp_path / "WD_GROK_MODEL_CURRENT.md"
     if guide:
         guide_path.write_text("# guide\n", encoding="utf-8")
@@ -247,7 +247,7 @@ def resolution_script(tmp_path, resolver_case, update_case, blocks, guide=True):
             + "$resolver='Fake-Resolver'\n"
             + f"$manifest=[pscustomobject]@{{grok_output_directory='{tmp_path}';grok_markdown='{guide_path}'}}\n"
             + FAKE_WRAPPER + FAKE_RESOLVER
-            + "function Join-Path { param($Path,$ChildPath) 'Fake-Wrapper' }\n" + r'''
+            + "function Join-Path { param($Path,$ChildPath) 'Fake-Wrapper' }\n" + preamble + r'''
 $out=[ordered]@{reached_lane_launch=$false;exception=$null;update=$null;preflight=$null;model=$null;resolver_calls=0}
 try {
 ''' + body + r'''
@@ -264,8 +264,8 @@ finally {
 ''')
 
 
-def run_resolution(ps, tmp_path, resolver_case, update_case, blocks, guide=True):
-    completed = _run_powershell(resolution_script(tmp_path, resolver_case, update_case, blocks, guide),
+def run_resolution(ps, tmp_path, resolver_case, update_case, blocks, guide=True, preamble=""):
+    completed = _run_powershell(resolution_script(tmp_path, resolver_case, update_case, blocks, guide, preamble),
                                 executable=ps, check=False)
     lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
     assert lines, completed.stdout + completed.stderr
@@ -323,6 +323,69 @@ def test_a_machine_without_grok_still_reaches_the_native_lane_launch(ps, tmp_pat
     assert result["update"]["error_kind"] == "update_failed_or_blocked"
     assert "requires the installed user executable" in result["update"]["error"]
     assert result["resolver_calls"] == 2
+
+
+# W1 (RCO2 8fc3, Lead 15:15Z): a caller or profile may set WarningPreference to Stop. The optional
+# notices pass -WarningAction Continue, so the notice is still shown and never becomes an abort.
+STOP_PREFERENCE = "$WarningPreference='Stop'\n"
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+@pytest.mark.parametrize("case", ["network", "malformed", "wrapper_throw"])
+def test_a_stop_warning_preference_keeps_an_update_failure_optional(ps, case):
+    result, completed = run_case(ps, case, STOP_PREFERENCE + OPTIONAL_BODY)
+    assert result["aborted"] is False and result["exception"] is None and result["calls"] == 1
+    assert result["record"]["update_status"] == "failed"
+    assert result["record"]["error_kind"] == ORDINARY_FAILURES[case][0]
+    assert "Grok stays optional" in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+def test_a_stop_warning_preference_keeps_a_successful_update(ps):
+    result, completed = run_case(ps, "updated", STOP_PREFERENCE + OPTIONAL_BODY)
+    assert result["aborted"] is False and result["record"]["update_status"] == "updated"
+    assert "Grok stays optional" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+@pytest.mark.parametrize("case", sorted(CANCELLATIONS))
+def test_a_stop_warning_preference_still_lets_cancellation_stop(ps, case):
+    result, _ = run_case(ps, case, STOP_PREFERENCE + OPTIONAL_BODY)
+    assert result["aborted"] is True and result["record"] is None
+    assert result["exception"] == CANCELLATIONS[case]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+@pytest.mark.parametrize("phase", ["preflight", "model"])
+@pytest.mark.parametrize("resolver_case", ["missing_cli", "no_record", "live", "canceled"])
+def test_a_stop_warning_preference_keeps_model_resolution_optional(ps, tmp_path, phase, resolver_case):
+    block = PREFLIGHT if phase == "preflight" else POST_UPDATE
+    result, text = run_resolution(ps, tmp_path, resolver_case, "updated", [block], preamble=STOP_PREFERENCE)
+    if resolver_case == "canceled":
+        assert result["reached_lane_launch"] is False and result["exception"] == "OperationCanceledException"
+        return
+    assert result["reached_lane_launch"] is True and result["exception"] is None
+    expected = "verified" if resolver_case == "live" else "unavailable"
+    assert result[phase]["status"] == expected
+    assert ("Grok stays optional" in text) is (expected == "unavailable")
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+def test_a_stop_warning_preference_machine_without_grok_still_reaches_the_lane_launch(ps, tmp_path):
+    result, _ = run_resolution(ps, tmp_path, "missing_cli", "missing", [PREFLIGHT, GROK_CALLER, POST_UPDATE],
+                               preamble=STOP_PREFERENCE)
+    assert result["reached_lane_launch"] is True and result["exception"] is None
+    assert result["preflight"]["status"] == "unavailable" and result["model"]["status"] == "unavailable"
+    assert result["update"]["update_status"] == "failed"
+
+
+def test_every_optional_grok_notice_passes_warning_action_continue():
+    source = START_ALL.read_text(encoding="utf-8-sig")
+    notices = [m.start() for m in re.finditer(r"Grok stays optional and the native lanes still launch", source)]
+    assert len(notices) == 2
+    for position in notices:
+        line_start = source.rindex("Write-Warning", 0, position)
+        assert source[line_start:position].startswith("Write-Warning -WarningAction Continue (")
 
 
 def test_the_apply_path_uses_the_optional_update_before_the_record_and_the_lanes():

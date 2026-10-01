@@ -1774,7 +1774,10 @@ function Invoke-WdGrokCliUpdateOptional {
     if ($errorText.Length -gt 480) {
       $errorText = $errorText.Substring(0, 480)
     }
-    Write-Warning ("grok update: failed ({0}); Grok stays optional and the native lanes still launch: {1}" -f
+    # Explicit Continue: an inherited WarningPreference of Stop must not turn
+    # this optional-failure notice into an abort (RCO2 W1).
+    Write-Warning -WarningAction Continue (
+      "grok update: failed ({0}); Grok stays optional and the native lanes still launch: {1}" -f
       $errorKind, $errorText)
     return [pscustomobject]@{
       schema = 'wd.grok-cli-update.v1'; update_status = 'failed'
@@ -1826,7 +1829,9 @@ function Invoke-WdGrokModelResolutionOptional {
     if ($reason.Length -gt 480) {
       $reason = $reason.Substring(0, 480)
     }
-    Write-Warning ("Grok model: unavailable; Grok stays optional and the native lanes still launch: {0}" -f $reason)
+    # Explicit Continue, as above: a Stop preference must not abort on this notice.
+    Write-Warning -WarningAction Continue (
+      "Grok model: unavailable; Grok stays optional and the native lanes still launch: {0}" -f $reason)
     return [pscustomobject]@{
       schema = 'wd.grok-model-resolution.v1'; status = 'unavailable'
       model = $null; resolver_status = $null; error = $reason

@@ -18,9 +18,10 @@ def load_metric():
 
 def trust_windows_powershell(module, monkeypatch):
     # The command is recorded, never run, so the host need not have Windows PowerShell at its
-    # absolute path (Linux CI has none): only that one path stands in as a file.
+    # absolute path (Linux CI has none): only that constant path stands in as a file, so a test
+    # that points module.POWERSHELL elsewhere still meets the real check (RCO2 T1).
     real_isfile = module.os.path.isfile
-    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == module.POWERSHELL or real_isfile(path))
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
 
 
 def invoke_post(module, monkeypatch, fail=False):

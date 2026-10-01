@@ -349,6 +349,31 @@ def test_a_non_regular_descriptor_is_refused_and_closed_before_any_fdopen(tmp_pa
     assert len(closed) == 1
 
 
+@pytest.mark.parametrize("regular", [False, True], ids=["error_in_flight", "no_error_in_flight"])
+def test_a_failed_close_never_replaces_the_error_in_flight(tmp_path, monkeypatch, regular):
+    # RCO2 D1 (2026-10-01): the one close may itself fail. With a refusal in flight that refusal
+    # still surfaces; with none in flight it is unreadable input, never a raw OSError. One close.
+    path = tmp_path / "manifest.json"
+    path.write_text("{}", encoding="utf-8")
+    real_fstat, real_close = doctor.os.fstat, doctor.os.close
+    closed = []
+
+    def fstat(fd):
+        return doctor.os.stat_result((doctor.stat_module.S_IFDIR | 0o755,) + tuple(real_fstat(fd))[1:])
+
+    def close(fd):
+        closed.append(fd)
+        real_close(fd)
+        raise OSError(5, "Input/output error")
+
+    if not regular:
+        monkeypatch.setattr(doctor.os, "fstat", fstat)
+    monkeypatch.setattr(doctor.os, "close", close)
+    with pytest.raises(doctor.DoctorInputError, match="unreadable: OSError" if regular else "not a regular file"):
+        doctor.load_json(path, "manifest")
+    assert len(closed) == 1
+
+
 def test_unknown_lane_is_invalid_input(tmp_path):
     code, report = _run(tmp_path, "not-a-lane", _paths(tmp_path), _fresh())
     assert (code, report["verdict"]) == (3, "invalid_input")

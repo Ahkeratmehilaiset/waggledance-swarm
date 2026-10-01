@@ -152,16 +152,23 @@ def load_json(path: Path, what: str) -> Any:
         raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
     # fstat BEFORE fdopen, and this function is the descriptor's only owner (closefd=False, one
     # close below): on POSIX a directory opens, and fdopen would raise IsADirectoryError without
-    # closing the descriptor it was given.
+    # closing the descriptor it was given. A failed close never replaces the error in flight;
+    # with none in flight it is unreadable input like any other OSError here.
     try:
-        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
-            raise DoctorInputError(what + " is not a regular file")
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            raw = stream.read(MAX_INPUT_BYTES + 1)
+        try:
+            if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+                raise DoctorInputError(what + " is not a regular file")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(MAX_INPUT_BYTES + 1)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # the error in flight wins
+            raise
+        os.close(fd)
     except OSError as exc:
         raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
-    finally:
-        os.close(fd)
     if len(raw) > MAX_INPUT_BYTES:
         raise DoctorInputError(what + " exceeds " + str(MAX_INPUT_BYTES) + " bytes")
     try:

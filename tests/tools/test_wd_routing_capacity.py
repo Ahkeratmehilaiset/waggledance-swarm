@@ -670,6 +670,40 @@ def test_t2_an_exact_dict_index_series_with_a_lying_str_subclass_identity_is_nev
                                      for reason in record["reasons"]), record["reasons"]
 
 
+def _only_a_lying_own_series(subject, pool):
+    """A paced map whose top entry is the foreign newest series and whose index holds, instead of this row's own
+    series, one copy of it with the given identity that would forecast 1.0 if it were ever read."""
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    for entry in mixed.values():
+        own = next(series for series in entry["identities"] if series["subject"] == SUBJECT)
+        entry["identities"] = [series for series in entry["identities"] if series is not own] + [
+            dict(own, subject=subject, account_pool=pool, forecast_percent_at_reset=1.0)]
+    return mixed
+
+
+def test_t2a_a_lying_str_subclass_subject_beside_the_exact_pool_is_never_borrowed():
+    # Only the subject lies; the pool is this row's exact pool. Relaxing ONLY the subject type check (M3a) borrows.
+    record = evidence(paced=_only_a_lying_own_series(_AnyText("x"), "codex-pro-a"))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] and all(reason.startswith("window_subject_mismatch:") for reason in record["reasons"]), \
+        record["reasons"]
+
+
+def test_t2b_the_exact_subject_beside_a_lying_str_subclass_pool_is_never_borrowed():
+    # Only the pool lies; the subject is this row's exact subject. Relaxing ONLY the pool type check (M3b) borrows.
+    record = evidence(paced=_only_a_lying_own_series(SUBJECT, _AnyText("y")))
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] and all(reason.startswith("window_subject_mismatch:") for reason in record["reasons"]), \
+        record["reasons"]
+
+
+def test_t2_control_the_exact_subject_and_exact_pool_copy_is_read_as_the_own_series():
+    # The same construction with an exact identity IS this row's series: it is read (forecast 1.0 shows it was).
+    record = evidence(paced=_only_a_lying_own_series(SUBJECT, "codex-pro-a"))
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"]["projected_used_percent"] == 1.0
+
+
 def test_t2_control_the_same_series_with_its_exact_identity_is_read():
     mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
     record = evidence(paced=mixed)

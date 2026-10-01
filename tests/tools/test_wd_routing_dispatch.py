@@ -499,6 +499,112 @@ def test_df1_a_conflict_between_two_strict_copies_alone_holds_the_task():
     assert held(result) == [("id-new", "request_binding_conflict"), ("id-old", "dispatch_held_newer_rejection")]
 
 
+# --- L: only dispatch-authority wake_requests can hold a task (RCO2 1134 L; Lead decision a, 18:05Z) ------
+# Ordinary claim/message/reply/done events and wake_requests from any other author are not task revisions:
+# they stay visible as rejections but never freeze a legitimate dispatch. A label is never authority.
+
+TASK = "codex-lead-1/f26-s1"
+LATER = "2026-10-01T16:25:00Z"
+
+
+def event(kind, agent="claude-rco-1", ts=LATER, **extra) -> dict:
+    row = {"ts_utc": ts, "agent": agent, "type": kind, "task_id": TASK, "status": "active", "to": "codex-lead-1",
+           "message": "ordinary event"}
+    row.update(extra)
+    return row
+
+
+def test_l_a_mixed_canonical_event_stream_does_not_freeze_the_dispatch():
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    stream = [lead,
+              event("claim", status="active", write_scope=["tools/wd_routing_dispatch.py"]),
+              event("message", status="progress"),
+              event("message", status="answered", in_reply_to_request_id="id-lead",
+                    in_reply_to_request_digest=DIGEST_A, payload={"result": {"summary": "x"}}),
+              event("done", status="done"),
+              event("handoff", status="handoff", request_id="ffff-1")]
+    result = dispatches(stream, NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-lead"]
+    # The ordinary events stay visible as rejections; none of them is a hold.
+    assert ("ffff-1", "not_a_wake_request") in reasons(result)
+    assert all(r["reason"] != "dispatch_held_newer_rejection" for r in result["rejected"])
+
+
+@pytest.mark.parametrize("kind", ["message", "status", "claim", "done", "review_request", "Wake_Request"])
+def test_l_the_authority_labels_own_ordinary_events_do_not_hold(kind):
+    # Lead posts progress/status/claim events on its own tasks: same author label, not a revision.
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    own = event(kind, agent="codex-lead-1", request_id="dddd-1")
+    result = dispatches([lead, own], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-lead"]
+    assert held(result) == [("dddd-1", "not_a_wake_request")]
+
+
+def test_l_rco2_l1_a_later_claim_event_with_a_request_id_does_not_hold():
+    lead = request("aaaa-1", revision="r1", ts=OLD_TS)
+    claim = event("claim", agent="claude-rco-1", request_id="eeee-9")
+    result = dispatches([lead, claim], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["aaaa-1"]
+    assert held(result) == [("eeee-9", "not_a_wake_request")]
+
+
+@pytest.mark.parametrize("author", ["fable-5", "claude-rco-2", "operator", "system", "Codex-Lead-1", "codex-lead-2"])
+def test_l_rco2_l2_a_wake_request_from_any_other_author_does_not_freeze_the_task(author):
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    forged = request("id-forged", revision="r2", ts=NEW_TS)
+    forged["agent"] = author
+    result = dispatches([lead, forged], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-lead"]
+    assert held(result) == [("id-forged", "not_dispatch_authority")]
+
+
+@pytest.mark.parametrize("spoil", [
+    lambda e: e.update(bound=float("nan")),          # malformed
+    lambda e: e.update(request_id="not a valid id!"),  # invalid id
+    lambda e: e.pop("request_id", None),             # no id at all (every real claim event)
+])
+def test_l_a_malformed_or_idless_ordinary_event_does_not_hold(spoil):
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    ordinary = event("claim", request_id="eeee-9")
+    spoil(ordinary)
+    result = dispatches([lead, ordinary], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-lead"]
+
+
+def test_l_conflicting_copies_of_an_ordinary_event_id_do_not_hold():
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    one, two = event("message", request_id="eeee-9"), event("message", request_id="eeee-9", message="other")
+    result = dispatches([lead, one, two], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-lead"]
+    assert held(result) == [("eeee-9", "request_binding_conflict")]
+
+
+def test_l_a_malformed_authority_request_still_holds_and_so_does_one_whose_author_or_type_is_unreadable():
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    for spoil in (lambda e: e.pop("agent"), lambda e: e.update(agent=7), lambda e: e.pop("type"),
+                  lambda e: e.update(type=["wake_request"]), lambda e: e.update(agent=Liar("codex-lead-1"))):
+        newer = request("id-new", revision="r2", ts=NEW_TS)
+        spoil(newer)
+        newer["payload"]["bound"] = float("nan")
+        result = dispatches([lead, newer], NOW)
+        assert result["dispatches"] == [], newer
+
+
+def test_h6_rco2_killer_a_newer_authority_request_with_an_invalid_id_holds_the_task():
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    bad = request("not a valid id!", revision="r2", ts=NEW_TS)
+    result = dispatches([old, bad], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [(None, "request_id_invalid"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_l_an_older_ordinary_event_and_a_newer_one_never_change_the_twelve_fields():
+    lead = request("id-lead", revision="r1", ts=OLD_TS)
+    (alone,) = dispatches([lead], NOW)["dispatches"]
+    (mixed,) = dispatches([event("claim", ts="2026-10-01T15:00:00Z"), lead, event("message")], NOW)["dispatches"]
+    assert mixed == alone and tuple(mixed) == DISPATCH_FIELDS
+
+
 # --- D-F2: one explicit worker, no empty pieces ------------------------------------------------------------
 
 @pytest.mark.parametrize("to", ["claude-rco-1,", ",claude-rco-1", " claude-rco-1", "claude-rco-1 ",

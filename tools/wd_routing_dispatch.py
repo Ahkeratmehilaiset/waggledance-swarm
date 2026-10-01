@@ -40,6 +40,12 @@ Rules that keep it honest (Tools schema checkpoint a8837832, Fable design c96124
   at an unknown instant, the task is HELD: it has no dispatch, and each of its valid records is rejected
   as dispatch_held_newer_rejection (historical, visible, never live). A rejection whose task is not
   readable cannot be attributed and holds nothing.
+* Only a would-be revision can hold (RCO2 1134 L; Lead decision a, 18:05Z): an input whose ``type`` is
+  an exact str other than ``wake_request``, or whose ``agent`` is an exact str other than the dispatch
+  authority, is not a task revision. Ordinary claim/message/reply/done events and other authors'
+  wake_requests are still rejected and listed, but never hold a task, whatever else is wrong with them.
+  An input whose type or agent cannot be read hook-free still holds (unknown is never cleared). This
+  restricts freezing only; it grants no authority, and a forged authority label still holds (fail closed).
 * ``to`` names exactly one worker: every comma piece (or list item) must be a canonical lane name as
   written, so an empty or padded piece is worker_invalid and two valid names are dispatch_target_ambiguous.
 * There is no cancellation input. A dispatch is scheduling evidence only; the absence of a cancel record is
@@ -133,6 +139,19 @@ def _readable(request: Any) -> tuple[str | None, datetime | None]:
             elif key == "ts_utc":
                 moment = _utc(value)
     return task, moment
+
+
+def _may_revise(request: Any) -> bool:
+    """False only when an exact str type or agent, read without any hook, shows the input is not a wake_request
+    of the dispatch authority; such an input is never a task revision and cannot hold a task."""
+    if type(request) is not dict:
+        return True
+    for key, value in dict.items(request):
+        if type(key) is not str or type(value) is not str:
+            continue
+        if (key == "type" and value != REQUEST_TYPE) or (key == "agent" and value != DISPATCH_AUTHORITY):
+            return False
+    return True
 
 
 def _worker(to: Any) -> str:
@@ -229,7 +248,8 @@ def dispatches(requests: Any, now: Any) -> dict:
     for index, request in enumerate(requests):
         if type(request) is not dict or not _strict_json(request) or digest(request) is None:
             task, moment = _readable(request)
-            blockers.append((task, moment))
+            if _may_revise(request):
+                blockers.append((task, moment))
             rejected.append(_rejection(None, R_MALFORMED, index, task_id=task, observed=moment))
             # A malformed copy that names a valid id still differs from every other copy of that id, so the
             # whole id is poisoned. Read without a lookup: only exact-str keys and value are compared.
@@ -242,7 +262,8 @@ def dispatches(requests: Any, now: Any) -> dict:
         request_id = request.get("request_id")
         if type(request_id) is not str or not REQUEST_ID.fullmatch(request_id):
             task, moment = _readable(request)
-            blockers.append((task, moment))
+            if _may_revise(request):
+                blockers.append((task, moment))
             rejected.append(_rejection(None, R_REQUEST_ID, index, task_id=task, observed=moment))
             continue
         groups.setdefault(request_id, []).append(request)
@@ -253,7 +274,7 @@ def dispatches(requests: Any, now: Any) -> dict:
         # Same id, other content or another request_digest: nothing under that id is trusted.
         if request_id in poisoned or len({digest(copy) for copy in copies}) != 1:
             seen = [_readable(copy) for copy in copies]
-            blockers.extend(seen)
+            blockers.extend(pair for pair, copy in zip(seen, copies) if _may_revise(copy))
             tasks = {task for task, _ in seen}
             task = next(iter(tasks)) if len(tasks) == 1 else None
             moments = [moment for _, moment in seen]
@@ -266,7 +287,8 @@ def dispatches(requests: Any, now: Any) -> dict:
             candidates.append(_dispatch(copies[0], now))
         except _Reject as reject:
             task, moment = _readable(copies[0])
-            blockers.append((task, moment))
+            if _may_revise(copies[0]):
+                blockers.append((task, moment))
             rejected.append(_rejection(request_id, reject.reason, task_id=task, observed=moment))
 
     def order(record: dict) -> tuple:

@@ -46,6 +46,18 @@ PY_HOLDER = (
     "    print('held', flush=True)\n"
     "    sys.stdin.read()\n"
 )
+# Another process tries the root mutex for 0.3 s: "busy" while someone holds it, "free" otherwise.
+PY_PROBE = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from tools.bridge_v2_queue_ports_windows import NamedMutexPort\n"
+    "from tools.bridge_v2_queue_transactions import LockTimeout, mutex_name\n"
+    "try:\n"
+    "    with NamedMutexPort().hold(mutex_name(sys.argv[1]), 0.3):\n"
+    "        print('free')\n"
+    "except LockTimeout:\n"
+    "    print('busy')\n"
+)
 PS_HOLDER = ("$m = [System.Threading.Mutex]::new($false, '{name}'); if (-not $m.WaitOne(10000)) {{ exit 3 }}; "
              "[Console]::Out.WriteLine('held'); [Console]::Out.Flush(); [void][Console]::In.ReadToEnd(); "
              "$m.ReleaseMutex(); $m.Dispose()")
@@ -89,6 +101,11 @@ def _python_holder(root: Path) -> Holder:
     return Holder([sys.executable, "-c", PY_HOLDER, str(root), str(REPO)])
 
 
+def _probe(root: Path) -> str:
+    return subprocess.run([sys.executable, "-c", PY_PROBE, str(root), str(REPO)], env=_env(), capture_output=True,
+                          text=True, timeout=60).stdout.strip()
+
+
 def _cli(root: Path, *args: str) -> int:
     return wq_cli.main(["--bridge-root", str(root), "--json", *args])
 
@@ -113,6 +130,21 @@ def test_a_legacy_claim_waits_for_the_v2_root_mutex_and_refuses_without_writing(
     assert code != 0 and _claims(bridge) == []                      # nothing landed while v2 held the root
     assert 0.4 <= waited < 5 and "runtime-root mutex busy" in out
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # positive twin after the release
+
+
+def test_a_legacy_claim_writes_while_another_process_finds_the_root_mutex_busy(bridge, monkeypatch):
+    # fable-5 A1 (00:32:44Z on 58c8dd64): a refusal at acquisition does not prove the write runs while the mutex is
+    # HELD; a writer that acquires, releases and then writes would pass every other test. Probe inside the write.
+    seen = []
+    real = wq_cli.claim_task
+
+    def probing_claim(**kwargs):
+        seen.append(_probe(bridge))
+        return real(**kwargs)
+
+    monkeypatch.setattr(wq_cli, "claim_task", probing_claim)
+    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1
+    assert seen == ["busy"] and _probe(bridge) == "free"            # held during the write, released after it
 
 
 def test_a_legacy_release_and_heartbeat_wait_and_change_nothing_while_held(bridge, monkeypatch, capsys):
@@ -249,6 +281,21 @@ def test_a_sweep_apply_waits_for_the_root_mutex_and_refuses_without_archiving(br
     assert code == 1 and _tree(bridge) == before                    # the stale claim stays; nothing archived
     assert 0.4 <= waited < 5 and "sweep refused: runtime-root mutex: runtime-root mutex busy" in err
     assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == [] and len(_done(bridge)) == 1  # positive twin
+
+
+def test_the_sweep_archives_while_another_process_finds_the_root_mutex_busy(bridge, monkeypatch):
+    # fable-5 A1: the archive itself runs inside the mutex, not after a released acquisition.
+    _stale_claim(bridge)
+    seen = []
+    real = sweep_cli.archive_stale_claims
+
+    def probing_archive(**kwargs):
+        seen.append(_probe(bridge))
+        return real(**kwargs)
+
+    monkeypatch.setattr(sweep_cli, "archive_stale_claims", probing_archive)
+    assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == [] and len(_done(bridge)) == 1
+    assert seen == ["busy"] and _probe(bridge) == "free"
 
 
 def test_the_sweep_dry_run_takes_no_mutex_and_writes_nothing(bridge, capsys):

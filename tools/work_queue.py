@@ -34,10 +34,11 @@ from tools.bridge_v2_queue_transactions import (  # noqa: E402
 
 # RCO2 S2 (Lead 0b33855f): the writer commands take the v2 runtime-root mutex first, the same Windows named
 # mutex (mutex_name(root), NamedMutexPort) every v2 writer takes first, so a v2 participant holding it excludes
-# them: the command waits LOCK_TIMEOUT_SECONDS and then refuses before any claim or done file is touched. Only
-# this CLI's writer commands participate: other direct callers of waggledance.core.work_queue and the legacy
-# PowerShell writers are outside this change, so a complete queue snapshot still cannot prove a lane idle. Reads
-# (list, stale, check-overlap) take no lock. The mutex exists only on Windows; elsewhere nothing is excluded.
+# them: the command waits LOCK_TIMEOUT_SECONDS and then refuses before any claim or done file is touched.
+# tools/work_queue_sweep_stale.py --apply takes the same _root_mutex. A static inventory (2026-10-01) found no other
+# production caller of the core writers; the legacy PowerShell writers are a separate slice, so until it lands a
+# complete queue snapshot cannot prove a lane idle. Reads (list, stale, check-overlap) take no lock. The mutex
+# exists only on Windows; elsewhere nothing is excluded.
 WRITER_COMMANDS = ("claim", "release", "heartbeat")
 LOCK_TIMEOUT_SECONDS = DEFAULT_LOCK_TIMEOUT_SECONDS
 

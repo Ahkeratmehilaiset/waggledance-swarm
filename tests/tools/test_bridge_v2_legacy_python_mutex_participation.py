@@ -1,21 +1,24 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""S2 (RCO2 21:24:58Z; Lead 0b33855f): the legacy Python claims writer takes the v2 runtime-root mutex first.
+"""S2 (RCO2 21:24:58Z; Lead 0b33855f): the legacy Python claims writers take the v2 runtime-root mutex first.
 
 tools/work_queue.py claim, release and heartbeat now run inside NamedMutexPort().hold(mutex_name(root)), the same
 Windows named mutex every v2 writer takes first, so a v2 participant holding it excludes the legacy write: the CLI
-waits a bounded time and refuses without writing. Fixture roots only; the lane environment is scrubbed.
+waits a bounded time and refuses without writing. tools/work_queue_sweep_stale.py --apply takes the same mutex
+(fable-5 foreman call 2026-10-01, inventory option a); its dry run takes none. Fixture roots only; the lane
+environment is scrubbed.
 
-Scope stated, not claimed: only this CLI's writer commands participate. Other direct callers of
-waggledance.core.work_queue (tools/work_queue_sweep_stale.py --apply archives and unlinks claims without the mutex)
-and the legacy PowerShell writers (Fable's slice) are not covered here, so a complete queue snapshot still cannot
-prove a lane idle. The mutex exists only on Windows; elsewhere nothing is excluded and nothing is claimed. A writer
-is refused before it writes for any --bridge-root the v2 canonical-root rule refuses (not a local drive-letter path,
-such as a relative, drive- or root-relative, UNC or device form; a .. or alias segment; an alternate stream; a link
-or reparse point on the path), since the mutex is named from that canonical root; the relative case is pinned
-below. run_idle_protocol_once.py mutates no claim or done file (pinned below).
+Scope stated, not claimed: these two tools are the only production callers of the waggledance.core.work_queue
+writers (a static inventory, 2026-10-01). The legacy PowerShell writers are Fable's slice, so until that lands a
+complete queue snapshot still cannot prove a lane idle. The mutex exists only on Windows; elsewhere nothing is
+excluded and nothing is claimed. A writer is refused before it writes for any --bridge-root the v2 canonical-root
+rule refuses (not a local drive-letter path, such as a relative, drive- or root-relative, UNC or device form; a ..
+or alias segment; an alternate stream; a link or reparse point on the path), since the mutex is named from that
+canonical root; the relative case is pinned below for both tools. run_idle_protocol_once.py mutates no claim or
+done file (pinned below).
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -27,7 +30,9 @@ import time
 import pytest
 
 from tools import work_queue as wq_cli
+from tools import work_queue_sweep_stale as sweep_cli
 from tools.bridge_v2_queue_transactions import mutex_name
+from waggledance.core.work_queue import claim_task
 
 REPO = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="the v2 runtime-root mutex is a Windows named mutex")
@@ -131,18 +136,23 @@ def test_a_legacy_release_and_heartbeat_wait_and_change_nothing_while_held(bridg
     assert _claims(bridge) == [] and list((bridge / "work_queue" / "done").glob("*"))
 
 
-def test_an_abandoned_root_mutex_refuses_once_and_is_never_silently_recovered(bridge, capsys):
+def _open_witness(root: Path) -> tuple:
+    """A second, SYNCHRONIZE-only handle to mutex_name(root): it keeps the named object alive, so a holder's death
+    abandons it (without one the object would be destroyed with its last handle and simply created anew)."""
     import ctypes
     from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.OpenMutexW.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    holder = _python_holder(bridge)
-    # A second open handle keeps the named object alive, so the holder's death abandons it (without one the
-    # object would be destroyed with its last handle and simply created anew).
-    witness = kernel32.OpenMutexW(0x00100000, False, mutex_name(bridge))      # SYNCHRONIZE only
+    witness = kernel32.OpenMutexW(0x00100000, False, mutex_name(root))      # SYNCHRONIZE only
     assert witness, "could not open the holder's mutex"
+    return kernel32, witness
+
+
+def test_an_abandoned_root_mutex_refuses_once_and_is_never_silently_recovered(bridge, capsys):
+    holder = _python_holder(bridge)
+    kernel32, witness = _open_witness(bridge)
     try:
         holder.process.kill()                                        # ends while holding: the mutex is abandoned
         holder.process.wait(timeout=20)
@@ -208,3 +218,75 @@ def test_run_idle_protocol_once_writes_no_claim_or_done_file(bridge, tmp_path):
                     "--scratch-dir", str(tmp_path / "scratch")], cwd=str(REPO), env=_env(), capture_output=True,
                    text=True, timeout=120)
     assert _tree(bridge) == before                                   # a reader only: no participation needed
+
+
+# -- fable-5 foreman call 2026-10-01 00:03:10Z (inventory option a): the sweep's --apply takes the same mutex ------
+
+def _stale_claim(root: Path) -> None:
+    claim_task(agent="fable-5", task_id="team/stale", summary="stale", bridge_root=root,
+               now_utc=datetime.now(timezone.utc) - timedelta(hours=1))
+
+
+def _sweep(root: Path, *args: str) -> int:
+    return sweep_cli.main(["--bridge-root", str(root), "--max-age-seconds", "60", *args])
+
+
+def _done(root: Path) -> list:
+    return sorted((root / "work_queue" / "done").glob("*.json"))
+
+
+def test_a_sweep_apply_waits_for_the_root_mutex_and_refuses_without_archiving(bridge, capsys):
+    _stale_claim(bridge)
+    before = _tree(bridge)
+    holder = _python_holder(bridge)
+    try:
+        started = time.monotonic()
+        code = _sweep(bridge, "--apply")
+        waited = time.monotonic() - started
+        err = capsys.readouterr().err
+    finally:
+        holder.release()
+    assert code == 1 and _tree(bridge) == before                    # the stale claim stays; nothing archived
+    assert 0.4 <= waited < 5 and "sweep refused: runtime-root mutex: runtime-root mutex busy" in err
+    assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == [] and len(_done(bridge)) == 1  # positive twin
+
+
+def test_the_sweep_dry_run_takes_no_mutex_and_writes_nothing(bridge, capsys):
+    _stale_claim(bridge)
+    before = _tree(bridge)
+    holder = _python_holder(bridge)
+    try:
+        started = time.monotonic()
+        assert _sweep(bridge, "--json") == 0 and time.monotonic() - started < 0.4
+    finally:
+        holder.release()
+    report = json.loads(capsys.readouterr().out)
+    assert report["applied"] is False and [row["task_id"] for row in report["archived"]] == ["team/stale"]
+    assert _tree(bridge) == before
+
+
+def test_an_abandoned_root_mutex_refuses_the_sweep_once_and_is_released(bridge, capsys):
+    _stale_claim(bridge)
+    before = _tree(bridge)
+    holder = _python_holder(bridge)
+    kernel32, witness = _open_witness(bridge)
+    try:
+        holder.process.kill()                                        # ends while holding: the mutex is abandoned
+        holder.process.wait(timeout=20)
+        assert _sweep(bridge, "--apply") == 1 and _tree(bridge) == before
+        assert "abandoned" in capsys.readouterr().err
+        _python_holder(bridge).release()     # another process takes the SAME object at once: the refusal released it
+    finally:
+        kernel32.CloseHandle(witness)
+    assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == []   # the positive twin once nothing holds the root
+
+
+def test_a_relative_root_is_refused_for_sweep_apply_and_the_dry_run_still_reads(bridge, monkeypatch, capsys):
+    _stale_claim(bridge)
+    before = _tree(bridge)
+    monkeypatch.chdir(bridge.parent)
+    relative = ["--bridge-root", bridge.name, "--max-age-seconds", "60"]
+    assert sweep_cli.main([*relative, "--apply"]) == 1 and _tree(bridge) == before
+    assert "sweep refused: runtime-root mutex: runtime root" in capsys.readouterr().err
+    assert sweep_cli.main(relative) == 0 and _tree(bridge) == before     # the dry run reads the same relative root
+    assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == []       # the absolute twin

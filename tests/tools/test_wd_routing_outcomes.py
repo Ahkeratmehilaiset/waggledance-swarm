@@ -882,3 +882,77 @@ def test_unresolved_a_free_text_finding_withholds_only_its_own_task():
 def test_unresolved_a_free_text_finding_on_the_branch_name_also_withholds():
     out = produce([writer_pass(), structured_finding(payload={}, task_id=BRANCH, message="broken")])
     assert out["outcomes"] == [] and reasons(out, "attempt") == ["restriction_unresolved"]
+
+
+# --- RCO2 92dbb4c4 G1/G2/G3 (Lead 17:58Z) -----------------------------------------------------------------
+
+EARLY = "2026-10-01T12:00:00Z"   # before PUSHED (13:00): the lane-observed push time is later than the finding
+
+
+def test_g1_a_finding_at_the_exact_head_before_the_reported_push_still_fails():
+    out = produce([writer_pass(), structured_finding(ts_utc=EARLY)])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"] and out["rejected"] == []
+    alone = produce([structured_finding(ts_utc=EARLY)])
+    assert [o["result"] for o in alone["outcomes"]] == ["failure"]
+
+
+def test_g1_a_pass_before_the_push_is_still_refused():
+    out = produce([writer_pass(ts_utc=EARLY)])
+    assert out["outcomes"] == [] and reasons(out) == ["before_push", "no_independent_evaluation"]
+
+
+def test_g1_an_early_finding_elsewhere_or_headless_keeps_its_old_meaning():
+    other = produce([writer_pass(), structured_finding(ts_utc=EARLY, payload={"head": OTHER_HEAD})])
+    assert [o["result"] for o in other["outcomes"]] == ["success"] and reasons(other) == ["unbound"]
+    headless = produce([writer_pass(), structured_finding(ts_utc=EARLY, payload={}, message="broken")])
+    assert headless["outcomes"] == [] and reasons(headless) == ["restriction_unresolved", "unbound"]
+
+
+def _changes_requested(agent="claude-rco-2", typ="decision", **over):
+    row = event(agent=agent, type=typ, status="changes_requested", payload={"head": HEAD},
+                message="changes requested, see the review")
+    row.update(over)
+    return row
+
+
+@pytest.mark.parametrize("typ", ["decision", "rco_review"])
+def test_g2_a_recognized_changes_requested_at_the_head_is_a_failure(typ):
+    out = produce([writer_pass(), _changes_requested(typ=typ)])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"] and out["rejected"] == []
+    assert out["outcomes"][0]["evaluators"] == ["claude-rco-2"]
+
+
+def test_g2_a_headless_changes_requested_at_the_task_withholds():
+    out = produce([writer_pass(), _changes_requested(payload={})])
+    assert out["outcomes"] == [] and reasons(out) == ["restriction_unresolved", "unbound"]
+
+
+@pytest.mark.parametrize("over, reason", [
+    ({"agent": "codex-tools-1"}, "unrecognized_evaluator"),     # an unrecognized author gains no veto
+    ({"task_id": "codex-lead-1/other"}, "unbound"),              # nor does a changes_requested on another task
+    ({"payload": {"head": OTHER_HEAD}}, "unbound"),              # nor one at another readable head
+    ({"status": "advisory"}, "not_an_evaluation"),               # other decision statuses stay non-evaluations
+])
+def test_g2_changes_requested_restricts_only_when_recognized_and_bound(over, reason):
+    out = produce([writer_pass(), _changes_requested(**over)])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == [reason]
+
+
+def test_g2_the_kind_mapping_itself():
+    assert ro._kind({"type": "decision", "status": "changes_requested"}) == "finding"
+    assert ro._kind({"type": "rco_review", "status": "changes_requested"}) == "finding"
+    assert ro._kind({"type": "decision", "status": "rco_pass"}) == "pass"
+    assert ro._kind({"type": "decision", "status": "answered"}) is None
+
+
+@pytest.mark.parametrize("extra", ["attempt", "advice"])
+def test_g3_a_malformed_advice_or_attempt_record_alone_never_suppresses_a_valid_pass(extra):
+    # Only evaluator events leave restriction coverage unknown (RCO2 N9 killer).
+    advices, attempts = [advice()], [attempt()]
+    if extra == "attempt":
+        attempts.append({"attempt_id": "att-bad", "note": float("nan")})
+    else:
+        advices.append({"dispatch_key": KEY2, "note": float("nan")})
+    out = produce([writer_pass()], advices=advices, attempts=attempts)
+    assert [o["result"] for o in out["outcomes"]] == ["success"]
+    assert reasons(out, extra) == ["malformed"] and reasons(out, "event") == []

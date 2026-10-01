@@ -38,13 +38,17 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
   worker's own pass is ``self_evaluation`` and never counts. Type and status must be exact str,
   or the event is ``malformed``. A pass that binds more than one accepted attempt (two dispatch
   keys of one task at one head) credits none of them: ``event_target_ambiguous``.
-* A finding is ``type`` finding at the exact head, any status: it can only restrict,
+* A finding is ``type`` finding at the exact head, any status, or a ``type`` decision / rco_review with
+  ``status`` changes_requested (the Bridge veto shape, CLAUDE.md 9a; RCO2 G2): it can only restrict,
   so the worker's own finding counts too, and it restricts every accepted attempt it binds. A
   finding outranks every pass: the outcome
   is a ``failure`` with stop signal ``quality_regression``. A finding that binds no
   accepted head is ``unbound`` and does not count.
 * An accepted attempt with no counted event is listed as ``no_independent_evaluation``
   and yields no outcome.
+* A finding at the exact head restricts whatever its time (RCO2 G1): ``before_push`` refuses only a PASS
+  stamped before the push, because the push time is lane-observed and a later reported push must not
+  erase an earlier finding on the same commit.
 * Success needs complete restriction evidence (RCO1, Lead 17:35Z). If ANY evaluator event in the batch
   is rejected as ``malformed`` (unreadable, nonfinite, too deep, bad type/status/agent/task/time) or
   ``future_dated``, it cannot be proven unrelated, so no success is produced in that batch: each would-be
@@ -82,6 +86,7 @@ FEATURE = "F26"
 EVALUATORS = ("claude-rco-1", "claude-rco-2")
 PASS_TYPES = ("decision", "rco_review")
 PASS_STATUS = "rco_pass"
+CHANGES_STATUS = "changes_requested"
 FINDING_TYPE = "finding"
 STOP_SIGNAL = "quality_regression"
 R_INCOMPLETE = "restriction_coverage_incomplete"
@@ -201,7 +206,10 @@ def _kind(event: dict) -> str | None:
     if typ in PASS_TYPES:
         if type(status) is not str:
             return "malformed"
-        return "pass" if status == PASS_STATUS else None
+        if status == PASS_STATUS:
+            return "pass"
+        # A recognized decision that requests changes is the Bridge veto: it restricts like a finding.
+        return "finding" if status == CHANGES_STATUS else None
     return None
 
 
@@ -327,7 +335,8 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
             _reject(rejected, "event", event_digest, "event_target_ambiguous")
             continue
         for target in targets:
-            if observed < target["pushed"]:
+            if kind == "pass" and observed < target["pushed"]:
+                # Only a pass needs to follow the (lane-observed) push; a finding restricts at any time.
                 _reject(rejected, "event", event_digest, "before_push")
             elif kind == "pass" and _identity(event["agent"]) == _identity(target["attempt"]["worker"]):
                 _reject(rejected, "event", event_digest, "self_evaluation")

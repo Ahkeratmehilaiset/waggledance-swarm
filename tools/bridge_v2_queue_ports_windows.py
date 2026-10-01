@@ -29,6 +29,9 @@ Cleanup is never silent (the transactions module's descriptor policy): with an e
 block, a release or close failure is recorded on that error, which keeps propagating
 (``descriptor_close_unknown`` entries with the steps ``mutex_release`` and ``mutex_close``); with
 no error in flight it propagates visibly as ``OSError``. A failed release still closes the handle.
+Such an ``OSError`` carries the Windows error code as ``winerror`` (Python maps it to ``errno`` and the
+subclass), never as ``errno`` itself. A creation failure, whether an ``OSError`` or the creation policy's
+``ValueError`` (its token checks), is refused as ``QueueTransactionError`` naming its type, before any wait.
 
 ``windows_queue_transactions(root)`` wires ``NamedMutexPort`` and the PowerShell-compatible
 ``FileClaimLock`` (claim and fence sibling locks) into ``QueueTransactions`` for one explicit
@@ -88,10 +91,26 @@ def _last_error() -> int:
     return int(getter()) if getter is not None else 0
 
 
+def _windows_error(code: int, text: str) -> OSError:
+    """An OSError carrying a Windows error code as ``winerror``, never as ``errno``: ``OSError(code, text)`` would
+    read the code as an errno and name a wrong subclass (5, access denied, reads as EIO). The four-argument form
+    also builds off Windows, where Python ignores ``winerror`` and ``errno`` stays None (the fakes run anywhere)."""
+    return OSError(None, text, None, code)
+
+
+def _creation_failure(exc: Exception) -> str:
+    """Names a creation failure by its type: an OSError's errno and winerror (read with getattr), or a
+    ValueError's text (the creation policy's token checks raise fixed literal messages)."""
+    if isinstance(exc, OSError):
+        return "%s errno=%s winerror=%s" % (type(exc).__name__, getattr(exc, "errno", None),
+                                            getattr(exc, "winerror", None))
+    return "%s: %s" % (type(exc).__name__, exc)
+
+
 def _close_during(kernel32: Any, handle: int, primary: BaseException, last_error: Callable[[], int]) -> None:
     """Close the handle while ``primary`` propagates; a failure is recorded on it, never dropped."""
     if not kernel32.CloseHandle(handle):
-        _record_cleanup_unknown(primary, int(handle), "mutex_close", OSError(last_error(), "CloseHandle failed"))
+        _record_cleanup_unknown(primary, int(handle), "mutex_close", _windows_error(last_error(), "CloseHandle failed"))
 
 
 def _release_and_close_during(kernel32: Any, handle: int, primary: BaseException,
@@ -99,7 +118,8 @@ def _release_and_close_during(kernel32: Any, handle: int, primary: BaseException
     """Release, then close, while ``primary`` propagates; each failure is recorded on it, and a failed
     release still closes the handle."""
     if not kernel32.ReleaseMutex(handle):
-        _record_cleanup_unknown(primary, int(handle), "mutex_release", OSError(last_error(), "ReleaseMutex failed"))
+        _record_cleanup_unknown(primary, int(handle), "mutex_release",
+                                _windows_error(last_error(), "ReleaseMutex failed"))
     _close_during(kernel32, handle, primary, last_error)
 
 
@@ -107,11 +127,11 @@ def _release_and_close(kernel32: Any, handle: int, last_error: Callable[[], int]
     """No error in flight: a failure propagates visibly. A failed release still closes the handle first, and
     a close failure then is recorded on the release error."""
     if not kernel32.ReleaseMutex(handle):
-        error = OSError(last_error(), "the runtime-root mutex release failed")
+        error = _windows_error(last_error(), "the runtime-root mutex release failed")
         _close_during(kernel32, handle, error, last_error)
         raise error
     if not kernel32.CloseHandle(handle):
-        raise OSError(last_error(), "the runtime-root mutex handle close failed")
+        raise _windows_error(last_error(), "the runtime-root mutex handle close failed")
 
 
 class NamedMutexPort:
@@ -134,9 +154,9 @@ class NamedMutexPort:
         kernel32 = _kernel32() if self._kernel32 is None else self._kernel32
         try:
             handle = self._create(name, kernel32)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:   # ValueError: the creation policy's token checks
             raise QueueTransactionError("the runtime-root mutex could not be created or opened ("
-                                        + type(exc).__name__ + " " + str(exc.errno) + ")") from None
+                                        + _creation_failure(exc) + ")") from None
         if not handle:
             raise QueueTransactionError("the runtime-root mutex could not be created or opened (no handle)")
         code = 0

@@ -145,6 +145,74 @@ def test_a_creation_failure_is_refused_before_any_wait(tmp_path, failure):
     assert kernel32.calls == []
 
 
+# -- fable-5 foreman call 2026-10-01 00:44:46Z (A2, with the RCO2 23:36:51Z sibling): creation and cleanup errors ---
+
+@pytest.mark.parametrize("message", ["exactly one enabled token logon SID is required", "empty security descriptor"])
+def test_a_creation_policy_valueerror_is_refused_naming_it_before_any_wait(tmp_path, message):
+    # The creation policy (tools/bridge_named_mutex.py) raises ValueError, with fixed literal texts, on its token
+    # checks; it escaped hold() uncaught. That was fail-closed, but it was not the refusal every caller handles.
+    kernel32 = FakeKernel32()
+
+    def create(name, k32):
+        raise ValueError(message)
+
+    mutex = NamedMutexPort(kernel32=kernel32, create=create, last_error=lambda: 0)
+    with pytest.raises(QueueTransactionError) as refused:
+        with mutex.hold(mutex_name(tmp_path), 1):
+            pytest.fail("the body must not run")
+    assert str(refused.value) == "the runtime-root mutex could not be created or opened (ValueError: " + message + ")"
+    assert kernel32.calls == []
+
+
+def test_an_oserror_creation_failure_names_its_type_errno_and_winerror(tmp_path):
+    kernel32 = FakeKernel32()
+
+    def create(name, k32):
+        raise PermissionError(13, "denied")
+
+    mutex = NamedMutexPort(kernel32=kernel32, create=create, last_error=lambda: 0)
+    with pytest.raises(QueueTransactionError) as refused:
+        with mutex.hold(mutex_name(tmp_path), 1):
+            pytest.fail("the body must not run")
+    assert str(refused.value).endswith("(PermissionError errno=13 winerror=None)")
+    assert kernel32.calls == []
+
+
+@pytest.mark.parametrize("release,close", [(False, True), (True, False)], ids=["release", "close"])
+def test_a_cleanup_failure_carries_the_windows_code_as_winerror_never_as_errno(tmp_path, release, close):
+    # 288 is ERROR_NOT_OWNER, a Windows code: as an errno it would name a wrong error (and 5, access denied, would
+    # read as EIO). The four-argument OSError builds on every platform; only Windows keeps winerror.
+    kernel32 = FakeKernel32(release=release, close=close)
+    mutex = NamedMutexPort(kernel32=kernel32, create=lambda name, k32: HANDLE, last_error=lambda: 288)
+    with pytest.raises(OSError) as raised:
+        with mutex.hold(mutex_name(tmp_path), 1):
+            pass
+    assert raised.value.errno != 288
+    assert getattr(raised.value, "winerror", None) == (288 if WINDOWS else None)
+
+
+def test_recorded_cleanup_errors_carry_the_windows_code_as_winerror_never_as_errno(tmp_path):
+    kernel32 = FakeKernel32(release=False, close=False)
+    mutex = NamedMutexPort(kernel32=kernel32, create=lambda name, k32: HANDLE, last_error=lambda: 6)
+    boom = RuntimeError("body")
+    with pytest.raises(RuntimeError):
+        with mutex.hold(mutex_name(tmp_path), 1):
+            raise boom
+    errors = [error for _, _, error in boom.descriptor_close_unknown]
+    assert len(errors) == 2 and all(error.errno != 6 for error in errors)        # 6 is ERROR_INVALID_HANDLE
+    assert [getattr(error, "winerror", None) for error in errors] == ([6, 6] if WINDOWS else [None, None])
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Python maps winerror to errno and the subclass on Windows only")
+def test_on_windows_an_access_denied_cleanup_failure_is_a_permission_error(tmp_path):
+    kernel32 = FakeKernel32(release=False)
+    mutex = NamedMutexPort(kernel32=kernel32, create=lambda name, k32: HANDLE, last_error=lambda: 5)
+    with pytest.raises(PermissionError) as raised:
+        with mutex.hold(mutex_name(tmp_path), 1):
+            pass
+    assert raised.value.winerror == 5
+
+
 def test_a_body_error_propagates_unchanged_after_release_and_close(tmp_path):
     kernel32 = FakeKernel32()
     mutex, _ = fake_port(kernel32)

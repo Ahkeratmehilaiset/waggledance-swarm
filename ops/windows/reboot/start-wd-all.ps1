@@ -3549,7 +3549,7 @@ Write-Host ''
 Write-Host 'Update and launch plan:' -ForegroundColor Cyan
 Write-Host ("  Codex: codex update (once); {0}" -f $codexUpdateStatus)
 Write-Host ("  Claude Code: claude update (once); {0}" -f $claudeUpdateStatus)
-Write-Host ("  Grok Build: grok update (once); {0}; optional, a failure is recorded and lanes still launch; then resolve provider default" -f $grokUpdateStatus)
+Write-Host ("  Grok Build: grok update (once); {0}; optional, a failure is recorded and lanes still launch; then resolve the authenticated CLI provider default" -f $grokUpdateStatus)
 foreach ($state in $laneStates) {
   Write-Host (
     "  {0}: {1}/{2}; {3}" -f

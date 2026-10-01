@@ -213,3 +213,81 @@ def test_an_intent_in_a_subfolder_holds_and_an_empty_folder_tree_does_not(tmp_pa
     (fixture.intents / "lane-a" / "deeper" / "intent.json").write_text("{}", encoding="utf-8")
     code, plan = fixture.run(shell)
     assert code == 2 and plan["reasons"] == ["outstanding_intents"], plan
+
+
+# --- claude-rco-1 review 05:22:19Z of 0df900fe (F28-1, F28-2, F28-3): an intent directory that is not given or
+# not there, and a relay record path that is not a regular file, are unknown state and HOLD; a link inside the
+# intent directory is an outstanding intent (a directory junction needs no symlink privilege).
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_no_intent_directory_is_a_hold(tmp_path, shell):
+    code, plan = Fixture(tmp_path).run(shell, IntentDirectory=None)
+    assert code == 2 and plan["reasons"] == ["intent_directory_not_given"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_missing_intent_directory_is_a_hold(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = fixture.run(shell, IntentDirectory=str(fixture.intents) + "-typo")
+    assert code == 2 and plan["reasons"] == ["intent_directory_missing"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_file_or_a_linked_folder_as_the_intent_directory_is_invalid(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    as_file = tmp_path / "intents-file"
+    as_file.write_text("{}", encoding="utf-8")
+    code, plan = fixture.run(shell, IntentDirectory=as_file)
+    assert code == 2 and plan["reasons"] == ["intent_directory_invalid"], plan
+    linked = tmp_path / "intents-linked"
+    junction(linked, fixture.intents)  # the target is the empty, valid intent directory itself
+    try:
+        code, plan = fixture.run(shell, IntentDirectory=linked)
+    finally:
+        os.rmdir(linked)  # removes the junction only
+    assert code == 2 and plan["reasons"] == ["intent_directory_invalid"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_link_inside_the_intent_directory_is_an_outstanding_intent_and_a_real_empty_folder_is_not(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    empty = tmp_path / "empty-elsewhere"
+    empty.mkdir()
+    (fixture.intents / "real-empty").mkdir()
+    code, plan = fixture.run(shell)
+    assert code == 0 and plan["verdict"] == "plan", plan
+    link = fixture.intents / "linked-empty"
+    junction(link, empty)  # an empty target: only the link itself can count
+    try:
+        code, plan = fixture.run(shell)
+    finally:
+        os.rmdir(link)  # removes the junction only
+    assert code == 2 and plan["reasons"] == ["outstanding_intents"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_directory_at_the_relay_record_path_is_unreadable_state(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    record.unlink()
+    record.mkdir()
+    (record / "x.json").write_text('{"status": "queued"}', encoding="utf-8")
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_linked_relay_record_is_unreadable_state_and_no_record_at_all_still_plans(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    record.unlink()
+    code, plan = fixture.run(shell)
+    assert code == 0 and plan["verdict"] == "plan", plan  # no record: nothing for the target relay to own
+    elsewhere = tmp_path / "record-elsewhere"
+    elsewhere.mkdir()
+    junction(record, elsewhere)
+    try:
+        code, plan = fixture.run(shell)
+    finally:
+        os.rmdir(record)  # removes the junction only
+    assert code == 2 and plan["reasons"] == ["relay_state_unreadable:" + str(fixture.journal)], plan

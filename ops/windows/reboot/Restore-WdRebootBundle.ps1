@@ -17,9 +17,12 @@
       target bundle's start-wd-tools-consumer.ps1 (a regular file of at most 4 MiB); every lane
       journal given with -LaneJournals must hold a relay record the target accepts, and no
       named wake snapshot or refusal receipt that a legacy relay cannot own. Unknown means
-      HOLD: an unrecognized relay contract, or no -LaneJournals at all, is a HOLD.
+      HOLD: an unrecognized relay contract, no -LaneJournals at all, or anything at a journal's
+      record path that is not a regular non-link file (relay_state_unreadable) is a HOLD.
     * outstanding intents: any file at any depth in -IntentDirectory, or any link in it, is a
-      HOLD; empty folders are not intents.
+      HOLD; empty folders are not intents. No -IntentDirectory (intent_directory_not_given), a
+      path that is not there (intent_directory_missing), or one that is not a real folder
+      (intent_directory_invalid) is a HOLD too.
 
     The plan never restores old runtime data, never touches a lane worktree (WIP), never
     removes a bundle, and keeps Supervisor OFF and the merge-driver HOLD. A rollback is a new
@@ -197,7 +200,9 @@ if ($LaneJournals.Count -eq 0) { Add-Reason 'lane_journals_not_given' }
 foreach ($journal in $LaneJournals) {
     if (-not (Test-Path -LiteralPath $journal -PathType Container)) { Add-Reason ('lane_journal_missing:' + $journal); continue }
     $record = Join-Path $journal 'native-bridge-wake.json'
-    if (Test-Path -LiteralPath $record -PathType Leaf) {
+    # Anything at the record path is read as a regular non-link file or is unreadable state: a folder or a
+    # link there is unknown, never 'no record' (claude-rco-1 F28-2).
+    if ($null -ne (Get-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue)) {
         try {
             $status = [string](Get-ExactField (Read-JsonFile -Path $record -Limit 32768) 'status')
             if ($accepted.Count -gt 0 -and $accepted -cnotcontains $status) { Add-Reason ('relay_state_incompatible:' + $journal + ':' + $status) }
@@ -217,17 +222,21 @@ foreach ($journal in $LaneJournals) {
     }
 }
 
-# 5. Outstanding intents.
-if ($IntentDirectory) {
+# 5. Outstanding intents. Not given or not there is unknown, so a HOLD, as for lane journals (claude-rco-1 F28-1).
+if (-not $IntentDirectory) {
+    Add-Reason 'intent_directory_not_given'
+} else {
     $intentItem = Get-Item -LiteralPath $IntentDirectory -Force -ErrorAction SilentlyContinue
-    if ($null -ne $intentItem -and $intentItem.PSIsContainer -and ($intentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    if ($null -eq $intentItem) {
+        Add-Reason 'intent_directory_missing'
+    } elseif ($intentItem.PSIsContainer -and ($intentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
         try {
             $intentEntries = @(Get-WdTreeEntry -Root $IntentDirectory)
             if (@($intentEntries | Where-Object { $_.IsLink -or -not $_.IsDirectory }).Count -gt 0) { Add-Reason 'outstanding_intents' }
         } catch {
             Add-Reason 'intent_directory_invalid'
         }
-    } elseif (Test-Path -LiteralPath $IntentDirectory) {
+    } else {
         Add-Reason 'intent_directory_invalid'
     }
 }

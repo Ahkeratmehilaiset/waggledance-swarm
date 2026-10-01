@@ -261,3 +261,114 @@ def test_the_snapshot_changes_nothing_on_disk_and_is_never_aliased(root, monkeyp
     second = _take(root)
     assert second["claims"][0]["agent"] == "claude-rco-2" and len(second["pending"]) == 1
     assert hashlib.sha256(repr(second).encode()).hexdigest() == hashlib.sha256(repr(_take(root)).encode()).hexdigest()
+
+
+# -- RCO2 S1/S3 (Lead 1c6e2e04): strict JSON, never last-wins; a WAL guard error is unreadable, not raised -------
+
+_TOKEN = b'"owner_token_sha256": "' + b"a" * 64 + b'"'
+STRICT_BAD_CLAIMS = {
+    "duplicate_agent": b'{"agent": "fable-5", "agent": "codex-tools-1", "task_id": "t/x", "owner_session_id": "s", '
+                       + _TOKEN + b"}",
+    "duplicate_nested": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                        + b', "resources": {"kind": "repo", "kind": "resource"}}',
+    "nan": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": NaN}',
+    "minus_infinity": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": -Infinity}',
+    "overflow": b'{"agent": "fable-5", "task_id": "t/x", "owner_identity": "none", "lease_seconds": 1e400}',
+    # RCO1 F642-N1: keys that differ only by case are duplicates too; PowerShell 5.1 and 7 refuse them.
+    "case_agent": b'{"agent": "fable-5", "Agent": "codex-tools-1", "task_id": "t/x", "owner_session_id": "s", '
+                  + _TOKEN + b"}",
+    "case_nested": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                   + b', "resources": {"kind": "repo", "KIND": "resource"}}',
+    "case_in_array": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                     + b', "write_scope": [{"path": "a", "Path": "b"}]}',
+    # fable-5 23:24:53Z: one non-ASCII pin. MICRO SIGN (U+00B5) and GREEK CAPITAL MU (U+039C), raw UTF-8, fold to one
+    # key; pwsh 7 refuses the pair, while key.lower() or an ASCII-only fold would read it.
+    "case_non_ascii": b'{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+                      + b', "x\xc2\xb5": 1, "x\xce\x9c": 2}',
+}
+
+
+@pytest.mark.parametrize("name", sorted(STRICT_BAD_CLAIMS))
+def test_a_claim_that_is_not_strict_json_is_unreadable_never_last_wins(root, name):
+    # RCO2 S1 (21:24:58Z): {"agent": "fable-5", "agent": "codex-tools-1"} read codex-tools-1 busy and fable-5 idle.
+    (root / "work_queue" / "claims" / "zz-strict.json").write_bytes(STRICT_BAD_CLAIMS[name])
+    taken = _take(root)
+    assert (taken["complete"], taken["unreadable"], taken["claims"]) == (True, 1, [])
+
+
+def test_the_strict_twin_is_read_and_the_legacy_bom_still_reads(root):
+    raw = (b'\xef\xbb\xbf{"agent": "fable-5", "task_id": "t/x", "owner_session_id": "s", ' + _TOKEN
+           + b', "resources": {"kind": "repo"}, "lease_seconds": 1800.5}')
+    (root / "work_queue" / "claims" / "zz-strict.json").write_bytes(raw)
+    taken = _take(root)
+    assert (taken["unreadable"], taken["claims"]) == (0, [
+        {"source": "claim", "agent": "fable-5", "task_id": "t/x", "owner_session_id": "s"}])
+
+
+def test_a_wal_record_with_a_duplicate_key_is_unreadable_never_last_wins(root, monkeypatch):
+    _prepared(root, monkeypatch, "team/p")
+    [record] = QueueTransactions(root).wal_dir.glob("*.json")
+    assert len(_take(root)["pending"]) == 1                                      # twin: the strict record is pending
+    text = record.read_text(encoding="utf-8").lstrip()
+    record.write_text('{"state": "outboxed", ' + text[1:], encoding="utf-8")    # an earlier duplicate "state"
+    taken = _take(root)
+    assert (taken["unreadable"], taken["pending"]) == (1, [])
+
+
+def test_a_wal_record_with_a_case_variant_duplicate_key_is_unreadable(root, monkeypatch):
+    _prepared(root, monkeypatch, "team/p")
+    [record] = QueueTransactions(root).wal_dir.glob("*.json")
+    text = record.read_text(encoding="utf-8").lstrip()
+    record.write_text('{"State": "outboxed", ' + text[1:], encoding="utf-8")    # "State" beside "state"
+    taken = _take(root)
+    assert (taken["unreadable"], taken["pending"]) == (1, [])
+
+
+def test_distinct_keys_that_only_look_alike_stay_readable(root):
+    # The non-ASCII twin: MICRO SIGN (U+00B5) beside a plain "m" folds to two keys, so non-ASCII keys stay readable.
+    raw = (b'{"agent": "fable-5", "agent_note": "x", "task_id": "t/x", "taskid": "y", "owner_session_id": "s", '
+           + _TOKEN + b', "x\xc2\xb5": 1, "xm": 2}')
+    (root / "work_queue" / "claims" / "zz-distinct.json").write_bytes(raw)
+    assert _take(root)["claims"] == [{"source": "claim", "agent": "fable-5", "task_id": "t/x", "owner_session_id": "s"}]
+
+
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_powershell_itself_refuses_case_variant_duplicate_keys(shell):
+    # The parity this repair mirrors, measured on the host: ConvertFrom-Json refuses {"agent": .., "Agent": ..}.
+    exe = shutil.which(shell)
+    if exe is None:
+        pytest.skip(shell + " is not available on this host")
+    result = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command",
+                             "'{\"agent\": \"a\", \"Agent\": \"b\"}' | ConvertFrom-Json | Out-Null"],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0 or result.stderr.strip()
+
+
+@pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(5, "io")], ids=["permission", "io"])
+def test_a_wal_guard_os_error_is_unreadable_and_the_mutex_is_released(root, monkeypatch, error):
+    # RCO2 S3: the claims path counted an OSError unreadable while the WAL path raised it out of the snapshot.
+    _prepared(root, monkeypatch, "team/p")
+    real, mutex = snap._guard, RecordingMutex()
+
+    def guard(path, kind, leaf="file"):
+        if kind == "WAL record":
+            raise error
+        return real(path, kind, leaf=leaf)
+    monkeypatch.setattr(snap, "_guard", guard)
+    taken = _take(root, mutex)
+    assert (taken["unreadable"], taken["pending"], mutex.held) == (1, [], False)
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+def test_cancellation_in_the_wal_guard_still_propagates(root, monkeypatch, error):
+    _prepared(root, monkeypatch, "team/p")
+    real, mutex = snap._guard, RecordingMutex()
+
+    def cancelled(path, kind, leaf="file"):
+        if kind == "WAL record":
+            raise error()
+        return real(path, kind, leaf=leaf)
+    monkeypatch.setattr(snap, "_guard", cancelled)
+    with pytest.raises(error):
+        _take(root, mutex)
+    assert not mutex.held

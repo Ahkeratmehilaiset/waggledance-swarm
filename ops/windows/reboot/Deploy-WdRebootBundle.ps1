@@ -885,7 +885,46 @@ Write-Host 'Running mutation-free deployment preflight...'
 if ($StageOnly) {
     Write-Host '  stage-only: Grok resolution and task registration preflight skipped by the installer itself'
 }
-if (-not $SkipGrokResolve -and -not $StageOnly) {
+# Supervisor OFF is a standing install precondition, independent of -SkipTaskRegistration: the
+# installer never disables WD-Supervisor itself, and Register-WdScheduledTasks -Apply only
+# preserves whatever enabled state it finds. A missing task is admitted only together with
+# -SkipTaskRegistration (nothing to re-point, nothing that can start); it is reported, never silent.
+# Read-only. The actual install repeats it right before the first machine write and right before
+# Register-WdScheduledTasks -Apply (-Recheck): each recheck narrows the window after the preflight, it is
+# not an atomic lock against a task enabled from outside in between. Task names match case-insensitively,
+# as the scheduler and Register-WdScheduledTasks -TaskName look them up.
+function Assert-WdSupervisorTaskOff {
+    param([switch] $Recheck)
+    $supervisorTasks = @(Get-ScheduledTask | Where-Object { [string]$_.TaskName -eq 'WD-Supervisor' })
+    if ($supervisorTasks.Count -gt 1) {
+        throw 'refusing to deploy: more than one WD-Supervisor scheduled task exists'
+    }
+    if ($supervisorTasks.Count -eq 0) {
+        if (-not $SkipTaskRegistration) {
+            throw 'refusing to deploy: the WD-Supervisor scheduled task is missing; pass -SkipTaskRegistration to deploy without it'
+        }
+        if (-not $Recheck) {
+            Write-Warning 'WD-Supervisor scheduled task is missing; -SkipTaskRegistration given, so no task is registered or changed.'
+        }
+        return
+    }
+    if ([bool]$supervisorTasks[0].Settings.Enabled -or [string]$supervisorTasks[0].State -ceq 'Running') {
+        throw (
+            'refusing to deploy: WD-Supervisor must be Disabled and not Running (enabled={0}, state={1}); ' +
+            'this installer never disables it itself'
+        ) -f [bool]$supervisorTasks[0].Settings.Enabled, [string]$supervisorTasks[0].State
+    }
+}
+if (-not $StageOnly) {
+    Assert-WdSupervisorTaskOff
+    # The same read-only (no -Apply) Grok recovery readiness the actual install asserts before any write.
+    $grokRecoveryReadiness = Join-Path $materializedRebootRoot 'Initialize-WdGrokRecovery.ps1'
+    & $grokRecoveryReadiness | Out-Host
+}
+if ($DryRun -and -not $SkipGrokResolve) {
+    Write-Host '  dry-run: the live Grok model probe is skipped; a dry run never contacts the provider'
+}
+if (-not $SkipGrokResolve -and -not $StageOnly -and -not $DryRun) {
     & (Join-Path $materializedRebootRoot 'Resolve-WdGrokModel.ps1') `
         -DryRun `
         -OutputDirectory $machineFull |
@@ -1084,6 +1123,8 @@ $dataSpecs = @(
     [pscustomobject]@{ Name = 'Get-WdSwarmParallelStatus.ps1'; Target = 'Get-WdSwarmParallelStatus.ps1' }
 )
 
+# Supervisor OFF again right before the first machine write: it may have been enabled since the preflight.
+Assert-WdSupervisorTaskOff -Recheck
 if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $machineFull -Force)
 }
@@ -1231,6 +1272,8 @@ if (-not $SkipGrokResolve) {
     & (Join-Path $targetRoot 'Resolve-WdGrokModel.ps1') -OutputDirectory $machineFull | Out-Host
 }
 if (-not $SkipTaskRegistration) {
+    # And right before re-pointing the task; a refusal here rolls the machine files back.
+    Assert-WdSupervisorTaskOff -Recheck
     & (Join-Path $targetRoot 'Register-WdScheduledTasks.ps1') `
         -Apply `
         -SupervisorScript (Join-Path $machineFull 'wd_supervisor.ps1')

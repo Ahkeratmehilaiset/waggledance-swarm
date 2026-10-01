@@ -8054,7 +8054,10 @@ if ($at -ge 0) {
             assert passed["BundleRoot"] == str(bundle)
             assert passed["FleetManifestPath"] == str(bundle / "wd-fleet.json")
             assert passed["SupervisorScript"] == str(tmp_path / "wd_supervisor.ps1")
-            assert passed["HostPath"].lower().endswith("\\windowspowershell\\v1.0\\powershell.exe")
+            # [Environment]::SystemDirectory is empty off Windows, so there the host is only the relative join
+            # (pwsh on Linux CI, 2026-10-01); the elevated restore it names exists only on Windows.
+            if os.name == "nt":
+                assert passed["HostPath"].lower().endswith("\\windowspowershell\\v1.0\\powershell.exe")
             if case == "limited_auto":
                 assert observed["error"] is None
             else:

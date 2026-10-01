@@ -944,10 +944,14 @@ C97 = {'crash_after_claim': (True, 'queued', 1), 'crash_after_move': (True, 'que
        'orphan_named': (False, 'Unowned native bridge wake snapshot', 0),
        'claiming_without_id': (False, 'claim has no snapshot id', 0), 'rejected_owned_retry': (True, 'queued', 1),
        'move_blocked': (True, 'retry_snapshot', 0), 'watching_owned': (False, 'unexpected status', 0)}
+# Only Windows refuses the move while another handle holds the wake file without delete sharing; POSIX renames an
+# open file (pwsh on Linux CI, 2026-10-01), so off Windows move_blocked has no blocked move to observe.
+WINDOWS_SHARING = pytest.mark.skipif(os.name != 'nt', reason='a move blocked by an open handle is Windows file sharing')
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', sorted(C97))
+@pytest.mark.parametrize('case', [pytest.param(case, marks=WINDOWS_SHARING) if case == 'move_blocked' else case
+                                  for case in sorted(C97)])
 def test_named_snapshot_crash_twins(tmp_path, ps, case):
     # RCO1 c97 twins: each writes the on-disk state a crash leaves, then runs ONE step.
     state_path = tmp_path / 'native-bridge-wake.json'

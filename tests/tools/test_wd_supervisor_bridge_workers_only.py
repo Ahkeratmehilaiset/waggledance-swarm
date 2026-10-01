@@ -7,6 +7,7 @@ calls and BEFORE the watcher and Tools reconcile; the ordinary mode is unchanged
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,9 @@ catch {{ $outcome = 'refused: ' + $_.Exception.Message }}
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+# The containment joins $env:SystemRoot, which is unset off Windows, so there every case refuses with a
+# binding error (pwsh on Linux CI, 2026-10-01): contained fails and the refusals pass for that reason only.
+@pytest.mark.skipif(os.name != "nt", reason="the containment joins $env:SystemRoot, unset off Windows")
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_bridge_workers_only_never_mutates_a_task_and_refuses_before_any_reconcile(ps, case):

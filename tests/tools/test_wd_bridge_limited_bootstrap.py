@@ -1,5 +1,6 @@
 """Bridge-owned Limited bootstrap of the five watchers and Tools while WD-Supervisor is OFF (pure fakes)."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,10 @@ import time  # noqa: E402
 
 SUPERVISOR_FUNCTIONS = ['Get-WdBridgeSupervisorArguments', 'Invoke-WdBridgeSupervisorOnce', 'Get-WdBridgeReconcileVerdict']
 FAKE_PARAMS = "param([switch]$Apply, [switch]$BridgeWorkersOnly, [string]$ConfigPath = '')\n"
+# The supervisor run builds the child's Windows PowerShell module path from $env:ProgramFiles and $env:SystemRoot,
+# which are unset off Windows, so there it throws before any child starts (pwsh on Linux CI, 2026-10-01); the hung
+# case also stops its child with taskkill.
+WINDOWS_HOST = pytest.mark.skipif(os.name != 'nt', reason='the supervisor run builds a Windows PowerShell module path')
 
 
 def run_supervisor(ps, body):
@@ -207,6 +212,7 @@ def supervise(ps, tmp_path, fake_body, timeout):
         "[pscustomobject]@{run=$r; verdict=$v; elapsed=$elapsed} | ConvertTo-Json -Depth 5 -Compress\n"))
 
 
+@WINDOWS_HOST
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_a_hung_reconcile_is_bounded_and_unknown_never_success(tmp_path, ps):
     result = supervise(ps, tmp_path, "Start-Sleep -Seconds 45\n", 2)
@@ -221,6 +227,7 @@ def test_a_hung_reconcile_is_bounded_and_unknown_never_success(tmp_path, ps):
         subprocess.run(['taskkill', '/PID', str(result['run']['process_id']), '/T', '/F'], capture_output=True)
 
 
+@WINDOWS_HOST
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_a_reconcile_inside_its_bound_still_reports_its_exit_code_and_lines(tmp_path, ps):
     result = supervise(ps, tmp_path, f"Write-Output '{APPLY}'\nexit 0\n", 60)

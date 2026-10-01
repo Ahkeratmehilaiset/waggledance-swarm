@@ -16,8 +16,16 @@ def load_metric():
     return module
 
 
+def trust_windows_powershell(module, monkeypatch):
+    # The command is recorded, never run, so the host need not have Windows PowerShell at its
+    # absolute path (Linux CI has none): only that one path stands in as a file.
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == module.POWERSHELL or real_isfile(path))
+
+
 def invoke_post(module, monkeypatch, fail=False):
     calls = []
+    trust_windows_powershell(module, monkeypatch)
     def run(command, **kwargs):
         calls.append((command, kwargs))
         if fail and kwargs.get('check'):
@@ -78,6 +86,7 @@ def test_pinned_bundle_and_tampering(tmp_path):
 
 def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *args: Path('pinned/Read-AgentBridge.ps1'))
     def run(command, **kwargs):
         assert '-NoAckReceived' in command[-1]
@@ -95,6 +104,7 @@ def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
      '{"agent":"b","type":"message","ts_utc":"2026-09-24T00:00:01Z"}]', 2)])
 def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, count):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
     monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
     assert len(module.load_events('runtime', 'bundle', 'a'*64)) == count
@@ -105,6 +115,7 @@ def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, cou
     '[{"agent":"a","type":"message","ts_utc":"2026-09-24T00:00:00Z"},{}]'])
 def test_reader_rejects_non_event_payload(monkeypatch, output):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
     monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
     with pytest.raises(ValueError):

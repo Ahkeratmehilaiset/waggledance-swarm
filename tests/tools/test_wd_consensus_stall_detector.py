@@ -230,6 +230,10 @@ def emitting(module, monkeypatch, payload: bytes, returncode: int = 0) -> list:
     script = ('import sys; sys.stdout.buffer.write(bytes(' + repr(list(payload)) + ')); '
               'sys.stderr.buffer.write(bytes(' + repr(list(payload)) + ')); sys.exit(' + str(returncode) + ')')
     results = []
+    # The writer command is replaced by the child above, so the host need not have Windows
+    # PowerShell at its absolute path (Linux CI has none), as in record_runs.
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
 
     def run(command, **kwargs):
         results.append(real_run([sys.executable, '-c', script], **kwargs))

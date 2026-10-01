@@ -6,6 +6,7 @@ path, and source-mode start-wd-all -DryRun stopped with "The given path's format
 is not supported" instead of a clear refusal.
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
 
 SUPERVISOR = REBOOT / "wd_supervisor.ps1"
+# The unconfigured lookup is the Windows one: git.exe found through $env:Path with ';' separators. Off Windows
+# that sets a separate, case-sensitive variable beside PATH, so the fakes are never found (pwsh on Linux CI,
+# 2026-10-01).
+WINDOWS_PATH = pytest.mark.skipif(os.name != "nt", reason="the unconfigured lookup uses the Windows PATH and git.exe")
 
 
 def fake_git(root: Path) -> Path:
@@ -39,6 +44,7 @@ try {{
     return json.loads(_run_powershell(script, executable=ps).stdout)
 
 
+@WINDOWS_PATH
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_two_unconfigured_path_hits_are_refused_as_ambiguous(ps, tmp_path):
     first = fake_git(tmp_path / "mingw64" / "bin")
@@ -48,6 +54,7 @@ def test_two_unconfigured_path_hits_are_refused_as_ambiguous(ps, tmp_path):
                       "value": "supervisor Git lookup is ambiguous; configure watchers.git_executable"}
 
 
+@WINDOWS_PATH
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_one_unconfigured_path_hit_resolves_to_that_application(ps, tmp_path):
     only = fake_git(tmp_path / "cmd")

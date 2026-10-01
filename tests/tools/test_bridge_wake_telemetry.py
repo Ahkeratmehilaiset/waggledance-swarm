@@ -663,7 +663,11 @@ def test_a_receipt_the_relay_would_never_count_fails_loudly_and_its_twin_records
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
-@pytest.mark.parametrize("root", ["", "relative-root", "drive-relative", "current-drive-rooted"],
+@pytest.mark.parametrize("root", ["", "relative-root", "drive-relative",
+                                  # With no drive letter to strip this form is an absolute POSIX path, which is
+                                  # rooted (pwsh on Linux CI, 2026-10-01): a Windows form, as in the sibling below.
+                                  pytest.param("current-drive-rooted", marks=pytest.mark.skipif(
+                                      os.name != "nt", reason="current-drive-rooted roots are a Windows form"))],
                          ids=["empty", "relative", "drive_relative", "current_drive_rooted"])
 def test_an_agent_receipt_needs_a_rooted_bridge_root(tmp_path, shell, root):
     work = tmp_path / "cwd"

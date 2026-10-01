@@ -25,7 +25,7 @@ from tools.bridge_v2_queue_transactions import QueueTransactionError, QueueTrans
 from tools.bridge_v2_work_queue import OwnerIdentity
 from tools.wd_routing_load import ENTRY_KEYS as W3_ENTRY_KEYS, SNAPSHOT_KEYS as W3_SNAPSHOT_KEYS
 
-NOW =datetime(2026, 9, 30, 21, 20, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 30, 21, 20, tzinfo=timezone.utc)
 OWNER, OTHER = OwnerIdentity("session-a", "token-a"), OwnerIdentity("session-b", "token-b")
 
 

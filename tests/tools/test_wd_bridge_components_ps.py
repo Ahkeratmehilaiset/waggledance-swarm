@@ -23,6 +23,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".agent-bridge" / "bin" / "Test-WdBridgeComponents.ps1"
 SHELLS = list(dict.fromkeys(filter(None, (shutil.which("pwsh"), shutil.which("powershell.exe")))))
 pytestmark = pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+# The front end accepts only drive-letter or UNC roots (Test-FullyQualifiedPath), so off Windows it
+# refuses every path at the -ManifestPath check with invalid_input before the wrapper (pwsh on Linux
+# CI, 2026-10-01): there these cases fail or pass for that reason only. Windows runs them under both
+# shells; accepting POSIX roots would be a change to the front end itself.
+WINDOWS_ROOTS = pytest.mark.skipif(os.name != "nt", reason="the front end accepts only drive-letter or UNC roots")
 _SCRUB = ("AGENT_BRIDGE_", "WD_", "CLAUDE_CODE_", "GIT_", "STUB_")
 
 STUB = r"""
@@ -87,6 +92,7 @@ def _json(process: subprocess.CompletedProcess) -> dict:
     return json.loads(lines[0])
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("verdict,code", [("ready", 0), ("degraded", 1), ("refuse", 2), ("invalid_input", 3)])
 def test_relays_report_and_exit_status_unchanged(tmp_path, shell, verdict, code):
@@ -98,6 +104,7 @@ def test_relays_report_and_exit_status_unchanged(tmp_path, shell, verdict, code)
     assert record["tool"] == "tools/wd_bridge_doctor.py" and record["verify_package"] is True
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 def test_argv_is_passed_as_array_without_shell_building(tmp_path, shell):
     wrapper, anchor = _bundle(tmp_path)
@@ -111,6 +118,7 @@ def test_argv_is_passed_as_array_without_shell_building(tmp_path, shell):
                               "--now", "2026-09-29T21:00:00Z"]
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("case", ["no_wrapper", "relative_wrapper", "wrong_name", "no_anchor",
                                   "anchor_mismatch", "wrapper_tampered", "wrapper_unpinned"])
@@ -136,6 +144,7 @@ def test_unverified_or_missing_pin_refuses_without_calling_anything(tmp_path, sh
     assert record is None  # the stub (stand-in for the doctor) never ran
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("args_patch", [
     # Values that start with "-" are omitted on purpose: PowerShell's own binder would
@@ -155,6 +164,7 @@ def test_invalid_arguments_refuse_before_the_wrapper(tmp_path, shell, args_patch
     assert _json(process)["verdict"] == "invalid_input" and record is None
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("lines,code", [
     (_report("ready"), 2),            # verdict/exit mismatch
@@ -171,6 +181,7 @@ def test_inconsistent_or_missing_report_refuses(tmp_path, shell, lines, code):
     assert _json(process)["verdict"] == "doctor_unavailable"
 
 
+@WINDOWS_ROOTS
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
 def test_wrapper_refusal_is_doctor_unavailable(tmp_path, shell):
     wrapper, anchor = _bundle(tmp_path)

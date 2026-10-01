@@ -598,6 +598,52 @@ def test_h6_rco2_killer_a_newer_authority_request_with_an_invalid_id_holds_the_t
     assert held(result) == [(None, "request_id_invalid"), ("id-old", "dispatch_held_newer_rejection")]
 
 
+class _RecordingStr(str):
+    """A str subclass whose comparison and hash hooks only RECORD that they ran (no raise), so a reader that
+    trusts it fails by assertion: it clears the hold and leaves a call in ``calls``."""
+
+    calls: list = []
+
+    def __eq__(self, other):
+        _RecordingStr.calls.append("eq")
+        return str.__eq__(self, other)
+
+    def __ne__(self, other):
+        _RecordingStr.calls.append("ne")
+        return str.__ne__(self, other)
+
+    def __hash__(self):
+        _RecordingStr.calls.append("hash")
+        return str.__hash__(self)
+
+
+@pytest.mark.parametrize("field, value", [("agent", "fable-5"), ("type", "message")])
+def test_l9_rco2_a_str_subclass_type_or_agent_is_unreadable_so_the_newer_request_still_holds(field, value):
+    # RCO2 49017d5a L9: only an EXACT str type/agent may clear a hold; a subclass spelling a foreign author or
+    # an ordinary type is unknown, so the newer revision-less request still holds and its hooks never run.
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    newer = request("id-new", revision="r2", ts=NEW_TS)
+    newer["payload"].pop("task_revision")
+    _RecordingStr.calls = []
+    newer[field] = _RecordingStr(value)
+    result = dispatches([old, newer], NOW)
+    assert result["dispatches"] == [] and ("id-old", "dispatch_held_newer_rejection") in held(result)
+    assert _RecordingStr.calls == []
+
+
+@pytest.mark.parametrize("field, value", [("agent", "fable-5"), ("type", "message")])
+def test_l9_rco2_the_same_type_or_agent_as_an_exact_str_never_holds(field, value):
+    # The safe twin: the identical spelling as an exact str is read and shows the input is not an authority
+    # wake_request, so it is rejected but the older live dispatch stays.
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    newer = request("id-new", revision="r2", ts=NEW_TS)
+    newer["payload"].pop("task_revision")
+    newer[field] = value
+    result = dispatches([old, newer], NOW)
+    assert [d["dispatch_id"] for d in result["dispatches"]] == ["id-old"]
+    assert ("id-old", "dispatch_held_newer_rejection") not in held(result)
+
+
 def test_l_an_older_ordinary_event_and_a_newer_one_never_change_the_twelve_fields():
     lead = request("id-lead", revision="r1", ts=OLD_TS)
     (alone,) = dispatches([lead], NOW)["dispatches"]

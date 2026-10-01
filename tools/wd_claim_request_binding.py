@@ -10,7 +10,9 @@ may store for a claim acquired for one authority ``wake_request``, or raises ``B
   valid cross-shell requests. Old requests are never re-hashed.
 * exact request id, task, recipient (``to`` is exactly the claiming agent), revision and the claiming agent's
   own ``expected_responders`` labels; a field present both top-level and in ``payload`` must agree (the
-  Bridge contract treats a disagreement as an invalid binding).
+  Bridge contract treats a disagreement as an invalid binding). type, agent, to, request_id and task_id are
+  read from the top level only, as S1 does; contract fields (task_revision, request_digest, ...) keep the
+  payload fallback. A control's observed_utc must parse as an offset-aware time representable in UTC (S6).
 * the injected ``canonical_lookup(request_id)`` port must return every canonical copy of the request; zero is
   ``binding_request_absent`` and a copy whose canonical content or stored digest differs is
   ``binding_request_conflict``. Transport fields (ts_utc, pid, cwd, ...) are not canonical and not compared.
@@ -31,6 +33,7 @@ process, network or shared-reader call is made here; the ports are the only inpu
 """
 from __future__ import annotations
 
+from datetime import datetime as _Instant, timezone   # parsing only: no clock is ever read
 import math
 import re
 from typing import Any, Callable
@@ -43,6 +46,8 @@ CONTROL_STATES = ("live", "cancelled")
 REQUEST_TYPE = "wake_request"
 DISPATCH_AUTHORITY = "codex-lead-1"
 LABEL_FIELDS = ("agent_uuid", "session_id", "run_id")
+# Read from the top level only, exactly as S1 dispatches() does; never from the payload (RCO1 P1a-2).
+IDENTITY_FIELDS = ("type", "agent", "to", "request_id", "task_id")
 # The Bridge request content identity (BridgeRequestContract Get-BridgeRequestContent): absent == null.
 CONTENT_FIELDS = ("request_id", "agent", "agent_uuid", "session_id", "run_id", "task_id", "to", "type", "status",
                   "message", "payload", "expected_responders")
@@ -154,11 +159,30 @@ def _get(record: Any, name: str) -> Any:
 
 
 def _field(request: dict, name: str) -> Any:
-    """Top-level value, else the ``payload`` value; both present and different is a refusal (Bridge contract)."""
+    """Top-level value, else the ``payload`` value; both present and different is a refusal (Bridge contract).
+    Identity fields (IDENTITY_FIELDS) are read from the top level ONLY, as S1 does (RCO1 P1a-2): a payload copy
+    can never stand in for them, but a payload copy that contradicts them is still a field conflict."""
     direct, nested = _get(request, name), _get(_get(request, "payload"), name)
     if direct is not None and nested is not None and not _same(direct, nested):
         _refuse(R_FIELD_CONFLICT)
+    if name in IDENTITY_FIELDS:
+        return direct
     return direct if direct is not None else nested
+
+
+def _stamp_ok(value: Any) -> bool:
+    """The S6 control time rule (082bcbc4 _control_ok -> lane_profile_record._utc): an offset-aware ISO time
+    representable in UTC; shape alone is not enough (RCO1 P1a-1: month 13, Feb 30, +99:99, range overflow)."""
+    if type(value) is not str or not _STAMP.fullmatch(value):
+        return False
+    try:
+        parsed = _Instant.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.utcoffset() is None:
+            return False
+        parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return False
+    return True
 
 
 def _text(value: Any) -> bool:
@@ -191,7 +215,7 @@ def _control_of(record: Any, task_id: str) -> dict | None:
             or not (_text(_get(record, "request_id")) and _REQUEST_ID.fullmatch(_get(record, "request_id")))
             or not (type(_get(record, "request_digest")) is str and _DIGEST.fullmatch(_get(record, "request_digest")))
             or _get(record, "state") not in CONTROL_STATES
-            or not (type(_get(record, "observed_utc")) is str and _STAMP.fullmatch(_get(record, "observed_utc")))):
+            or not _stamp_ok(_get(record, "observed_utc"))):
         return None
     return record
 

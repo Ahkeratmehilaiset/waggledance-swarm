@@ -140,6 +140,35 @@ def test_payload_fields_are_read_like_the_bridge_contract_and_must_agree_with_to
     refused(rb.R_FIELD_CONFLICT, event, Ports(copies=[event]))
 
 
+@pytest.mark.parametrize("name, value, reason", [
+    ("agent", "codex-lead-1", rb.R_NOT_AUTHORITY), ("type", "wake_request", rb.R_MALFORMED),
+    ("to", AGENT, rb.R_RECIPIENT), ("request_id", RID, rb.R_REQUEST_ID), ("task_id", TASK, rb.R_TASK),
+])
+def test_p1a_2_an_identity_field_only_in_the_payload_never_binds(name, value, reason):
+    # RCO1 P1a-2: S1 reads type/agent/to/request_id/task_id from the top level only; a payload copy cannot stand in.
+    event = request()
+    event.pop(name)
+    event["payload"] = dict(event["payload"], **{name: value})
+    ports = Ports(copies=[event])
+    refused(reason, event, ports)
+    assert ports.calls == []
+
+
+@pytest.mark.parametrize("name, other", [("agent", "codex-tools-1"), ("to", "codex-tools-1"),
+                                         ("task_id", "codex-lead-1/other"), ("request_id", "other-id")])
+def test_p1a_2_an_identity_field_contradicted_by_the_payload_is_still_a_field_conflict(name, other):
+    event = request()
+    event["payload"] = dict(event["payload"], **{name: other})
+    refused(rb.R_FIELD_CONFLICT, event, Ports(copies=[event]))
+
+
+def test_p1a_2_contract_fields_keep_the_payload_fallback():
+    # task_revision and request_digest are contract fields (Get-BridgeContractField): payload-only still binds.
+    event = request(request_digest=None)
+    event["payload"] = dict(event["payload"], request_digest=DIGEST)
+    assert bind(event, Ports(copies=[event]))["request_digest"] == DIGEST
+
+
 def test_the_revision_may_come_from_top_level_only():
     event = request(task_revision=REVISION, payload={"result_fields": ["summary"]})
     assert bind(event, Ports(copies=[event]))["task_revision"] == REVISION
@@ -338,6 +367,19 @@ def test_an_unknown_or_unreadable_control_stays_unknown_without_hooks(name):
     assert RECORD == []
 
 
+@pytest.mark.parametrize("stamp", ["2026-13-45T25:61:61Z", "2026-02-30T00:00:00Z", "2026-10-01T18:00:00+99:99",
+                                   "2026-10-01T24:00:00Z", "9999-12-31T23:59:59-05:00", "0001-01-01T00:00:00+05:00"])
+def test_p1a_1_a_shaped_but_impossible_or_unrepresentable_control_time_is_unknown(stamp):
+    # RCO1 P1a-1: S6 _control_ok parses observed_utc (offset required, representable as UTC); so must P1a.
+    refused(rb.R_CONTROL_UNKNOWN, ports=Ports(controls=[control(observed_utc=stamp)]))
+
+
+@pytest.mark.parametrize("stamp", ["2026-10-01T21:00:00+03:00", "2026-10-01T18:00:00.1234567Z",
+                                   "2026-10-01T13:30:00-04:30", "2024-02-29T00:00:00Z"])
+def test_p1a_1_valid_offset_and_fraction_stamps_still_bind(stamp):
+    assert bind(ports=Ports(controls=[control(observed_utc=stamp)]))["request_id"] == RID
+
+
 def test_the_exact_built_in_control_twin_binds_and_identical_duplicates_are_one_control():
     assert bind(ports=Ports(controls=[control(), control()]))["request_digest"] == DIGEST
 
@@ -461,7 +503,10 @@ def test_a_produced_binding_round_trips_through_json_and_refreshes_identically()
 
 def test_the_module_reads_no_file_clock_environment_process_or_shared_reader():
     source = Path(rb.__file__).read_text(encoding="utf-8")
-    for forbidden in ("open(", "import os", "os.", "datetime", "time.", "os.environ", "getenv", "subprocess", "socket",
+    # P1a-1 parses observed_utc with datetime.fromisoformat (imported as _Instant, no ``time.`` in the source):
+    # parsing a string is not a clock read, so the clock guard names the clock calls themselves.
+    for forbidden in ("open(", "import os", "os.", ".now(", "utcnow", ".today(", "monotonic", "perf_counter",
+                      "time.", "os.environ", "getenv", "subprocess", "socket",
                       "urllib", "Read-AgentBridge", "wd_routing_reader", "pathlib", "hashlib", "sha256(",
                       "identity_verified =", "\"identity_verified\":"):
         assert forbidden not in source, forbidden

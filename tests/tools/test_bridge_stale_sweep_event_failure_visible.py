@@ -286,6 +286,59 @@ def test_cancellation_during_a_receipt_write_stops_later_publication(tmp_path, s
         (TASK + "-second", "cancelled", "failed")]
 
 
+def _second_claim(runtime: Path) -> str:
+    past = datetime.now(timezone.utc) - timedelta(minutes=20)
+    task = TASK + "-second"
+    (runtime / "work_queue/claims/zz-second.json").write_text(json.dumps({
+        "task_id": task, "agent": "codex-tools-1",
+        "claimed_at_utc": past.isoformat(), "last_heartbeat_utc": past.isoformat(),
+        "lease_seconds": 60, "claim_lease_expires_utc": (past + timedelta(minutes=1)).isoformat(),
+        "owner_identity": "none", "write_scope": ["tests/tools/y.py"],
+    }), encoding="utf-8")
+    return task
+
+
+def _sweep_with_warning_stop(shell: str, code: Path, runtime: Path) -> subprocess.CompletedProcess:
+    """The sweep run by a caller whose $WarningPreference is Stop (RCO2 d1bb3944 S1)."""
+    sweep = str(code / "Invoke-StaleClaimSweep.ps1").replace("'", "''")
+    command = "$WarningPreference = 'Stop'; & '" + sweep + "' -StaleSeconds 1 -Quiet"
+    return _run_command(shell, command, runtime)
+
+
+def _run_command(shell: str, command: str, runtime: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [_shell(shell), "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=ROOT, env=_env(runtime), capture_output=True, text=True, timeout=120, check=False,
+    )
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+def test_warning_stop_caller_still_gets_a_receipt_for_every_failed_release(tmp_path, shell):
+    code, runtime = _fixture(tmp_path, THROWING_WRITER)
+    second = _second_claim(runtime)
+    completed = _sweep_with_warning_stop(shell, code, runtime)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert len(_archives(runtime)) == 2
+    assert sorted((r["task_id"], r["phase"], r["publication"]) for r in _receipts(runtime)) == [
+        (TASK, "writer_failed", "publication_unknown"), (second, "writer_failed", "publication_unknown")]
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+def test_warning_stop_caller_still_handles_every_archive_when_receipts_cannot_persist(tmp_path, shell):
+    # Writer absent: the only warning reached is the receipt-persistence one.
+    code, runtime = _fixture(tmp_path, None)
+    second = _second_claim(runtime)
+    (runtime / "work_queue/sweep_emit_failures").write_text("not a directory", encoding="utf-8")
+    completed = _sweep_with_warning_stop(shell, code, runtime)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0, output
+    assert len(_archives(runtime)) == 2                         # archived, never restored
+    # Both persistence failures are collected and reported together: the loop was not cut short.
+    assert "release events were not published and whose sweep_emit_failures receipts" in output.replace("\n", "")
+    assert TASK + " " in output.replace("\n", "") or TASK + " (" in output.replace("\n", "")
+    assert second in output.replace("\n", "")
+
+
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 def test_status_shows_receipts_and_malformed_ones_without_mutating(tmp_path, shell):
     code, runtime = _fixture(tmp_path, THROWING_WRITER)

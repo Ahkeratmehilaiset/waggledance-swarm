@@ -455,6 +455,10 @@ $rootWorkDone = $true
 # cancellation is recorded, the remaining archives get receipts unpublished, then it propagates.
 $receiptFailures = New-Object System.Collections.Generic.List[string]
 $cancellation = $null
+# A caller's $WarningPreference of Stop or Inquire must not end this loop before a receipt is written
+# (RCO2 d1bb3944 S1); any other preference, such as Get-AgentBridgeStatus -Json passing
+# SilentlyContinue, is kept for the loop warnings.
+$loopWarningAction = if ([string]$WarningPreference -in @('Stop', 'Inquire')) { 'Continue' } else { $WarningPreference }
 foreach ($archived in $archivedReleases) {
     $claim = $archived.Claim
     $agent = $archived.Agent
@@ -548,8 +552,8 @@ foreach ($archived in $archivedReleases) {
         $phase = if ($cancelled) { 'cancelled' } elseif ($phase -ceq 'writer') { 'writer_failed' } else { 'prepare_failed' }
         $errorText = $_.Exception.Message
         if ($cancelled) { $cancellation = $_ }
-        # The warning callers already read for a writer that throws, unchanged.
-        Write-Warning ("stale-lease release event emit failed: {0}" -f $errorText)
+        # The warning callers already read for a writer that throws, unchanged ($loopWarningAction above).
+        Write-Warning ("stale-lease release event emit failed: {0}" -f $errorText) -WarningAction $loopWarningAction
     }
     # The receipt is the durable signal (shown by Get-AgentBridgeStatus); an absent, queued or
     # unconfirmed writer adds no console line, so callers' output stays as it was.
@@ -563,7 +567,8 @@ foreach ($archived in $archivedReleases) {
                 $cancellation = $_
             }
             $receiptFailures.Add($_.Exception.Message)
-            Write-Warning $_.Exception.Message
+            # Every archive is handled before the collected failures throw ($loopWarningAction above).
+            Write-Warning $_.Exception.Message -WarningAction $loopWarningAction
         }
     }
 

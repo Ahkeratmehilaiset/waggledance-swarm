@@ -292,6 +292,22 @@ def test_f2_no_component_can_be_renamed_or_swapped_while_publishing(approved, tm
 
 
 @windows_only
+def test_m1_only_the_target_directory_is_opened_for_adding_files(approved, monkeypatch):
+    # A non-elevated token cannot open C:\ with FILE_ADD_FILE; ancestors take traverse + attributes only.
+    root, folder = approved
+    real, opened = pr._kernel32.CreateFileW, []
+
+    def record(path, access, *rest):
+        opened.append((path, access))
+        return real(path, access, *rest)
+
+    monkeypatch.setattr(pr._kernel32, "CreateFileW", record)
+    assert pr.persist_receipt(build(), folder, approved_root=root)["status"] == "created"
+    assert opened[0][0] == "C:\\" and opened[-1] == (str(folder), pr._DIR_ACCESS)
+    assert all(access == 0x20 | 0x80 | 0x100000 for _path, access in opened[:-1])
+
+
+@windows_only
 def test_f2_a_temporary_file_outside_the_held_directory_is_refused_and_removed(approved, monkeypatch):
     root, folder = approved
     real = pr._final_path

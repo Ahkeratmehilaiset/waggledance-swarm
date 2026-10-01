@@ -286,8 +286,11 @@ if _WINDOWS:
                                             wintypes.ULONG, ctypes.c_int]
     _ntdll.NtSetInformationFile.restype = ctypes.c_long
 
-# Directory handle: list + add file + traverse + read attributes + synchronize; share read and write but
-# NOT delete, so no component can be renamed or removed while held; open the reparse point itself.
+# Directory handles share read and write but NOT delete, so no component can be renamed or removed while
+# held, and open the reparse point itself. Ancestors take only traverse + read attributes + synchronize
+# (a non-elevated token cannot open C:\ for adding files; traverse still takes part in sharing). Only
+# the target directory takes list + add file, which the relative create and link need.
+_ANCESTOR_ACCESS = 0x20 | 0x80 | 0x100000
 _DIR_ACCESS = 0x1 | 0x2 | 0x20 | 0x80 | 0x100000
 _DIR_SHARE = 0x1 | 0x2
 _DIR_FLAGS = 0x02000000 | 0x00200000          # FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
@@ -302,9 +305,9 @@ _STATUS_OBJECT_NAME_COLLISION = 0xC0000035
 
 
 def _final_path(handle: Any) -> str:
-    buffer = ctypes.create_unicode_buffer(1024)
-    length = _kernel32.GetFinalPathNameByHandleW(handle, buffer, 1024, 0)
-    text = buffer.value if 0 < length < 1024 else ""
+    buffer = ctypes.create_unicode_buffer(32768)   # the longest \\?\ path
+    length = _kernel32.GetFinalPathNameByHandleW(handle, buffer, 32768, 0)
+    text = buffer.value if 0 < length < 32768 else ""
     return text[4:] if text.startswith("\\\\?\\") and not text.startswith("\\\\?\\UNC\\") else ""
 
 
@@ -318,9 +321,11 @@ def _lock_directory(folder: Path) -> list:
     handles: list = []
     try:
         probe = Path(folder.anchor)
-        for part in ("",) + folder.parts[1:]:
+        parts = ("",) + folder.parts[1:]
+        for index, part in enumerate(parts):
             probe = probe / part if part else probe
-            handle = _kernel32.CreateFileW(str(probe), _DIR_ACCESS, _DIR_SHARE, None, 3, _DIR_FLAGS, None)
+            access = _DIR_ACCESS if index == len(parts) - 1 else _ANCESTOR_ACCESS
+            handle = _kernel32.CreateFileW(str(probe), access, _DIR_SHARE, None, 3, _DIR_FLAGS, None)
             if handle in (None, _INVALID_HANDLE):
                 code = ctypes.get_last_error()
                 _refuse("directory_missing" if code in (2, 3, 267) else "directory_lock_failed:%d" % code)

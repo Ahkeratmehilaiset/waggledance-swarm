@@ -885,7 +885,35 @@ Write-Host 'Running mutation-free deployment preflight...'
 if ($StageOnly) {
     Write-Host '  stage-only: Grok resolution and task registration preflight skipped by the installer itself'
 }
-if (-not $SkipGrokResolve -and -not $StageOnly) {
+if (-not $StageOnly) {
+    # Supervisor OFF is a standing install precondition, independent of -SkipTaskRegistration: the
+    # installer never disables WD-Supervisor itself, and Register-WdScheduledTasks -Apply only
+    # preserves whatever enabled state it finds. A missing task is admitted only together with
+    # -SkipTaskRegistration (nothing to re-point, nothing that can start); it is reported, never silent.
+    $supervisorTasks = @(Get-ScheduledTask | Where-Object { [string]$_.TaskName -ceq 'WD-Supervisor' })
+    if ($supervisorTasks.Count -gt 1) {
+        throw 'refusing to deploy: more than one WD-Supervisor scheduled task exists'
+    }
+    if ($supervisorTasks.Count -eq 0) {
+        if (-not $SkipTaskRegistration) {
+            throw 'refusing to deploy: the WD-Supervisor scheduled task is missing; pass -SkipTaskRegistration to deploy without it'
+        }
+        Write-Warning 'WD-Supervisor scheduled task is missing; -SkipTaskRegistration given, so no task is registered or changed.'
+    }
+    elseif ([bool]$supervisorTasks[0].Settings.Enabled -or [string]$supervisorTasks[0].State -ceq 'Running') {
+        throw (
+            'refusing to deploy: WD-Supervisor must be Disabled and not Running (enabled={0}, state={1}); ' +
+            'this installer never disables it itself'
+        ) -f [bool]$supervisorTasks[0].Settings.Enabled, [string]$supervisorTasks[0].State
+    }
+    # The same read-only (no -Apply) Grok recovery readiness the actual install asserts before any write.
+    $grokRecoveryReadiness = Join-Path $materializedRebootRoot 'Initialize-WdGrokRecovery.ps1'
+    & $grokRecoveryReadiness | Out-Host
+}
+if ($DryRun -and -not $SkipGrokResolve) {
+    Write-Host '  dry-run: the live Grok model probe is skipped; a dry run never contacts the provider'
+}
+if (-not $SkipGrokResolve -and -not $StageOnly -and -not $DryRun) {
     & (Join-Path $materializedRebootRoot 'Resolve-WdGrokModel.ps1') `
         -DryRun `
         -OutputDirectory $machineFull |

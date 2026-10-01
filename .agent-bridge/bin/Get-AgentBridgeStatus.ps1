@@ -21,12 +21,22 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
 }
 
-# R15: opportunistic stale-claim sweep before showing status.
+# R15: opportunistic stale-claim sweep before showing status. It stays best-effort for the rest
+# of the status, but a sweep that fails is reported (F23a), never swallowed.
 $staleSweep = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
+$sweepError = $null
 if (Test-Path -LiteralPath $staleSweep -PathType Leaf) {
     try {
-        & $staleSweep -Quiet | Out-Null
-    } catch {}  # best-effort
+        # -Json keeps stdout a single JSON document: the sweep's warnings are not written there;
+        # what they describe is in sweep_emit_failures (receipts and sweep_error).
+        if ($Json) {
+            & $staleSweep -Quiet -WarningAction SilentlyContinue | Out-Null
+        } else {
+            & $staleSweep -Quiet | Out-Null
+        }
+    } catch {
+        $sweepError = [string]$_.Exception.Message
+    }
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
@@ -51,6 +61,81 @@ function Read-EventObjects {
         try { [void]$items.Add(($line | ConvertFrom-Json)) } catch {}
     }
     return $items
+}
+
+function Read-SweepEmitFailures {
+    <#
+        F23a (RCO1 2026-10-01): stale releases the sweep archived but could not publish, read
+        from work_queue/sweep_emit_failures without changing anything. A receipt that does not
+        parse or lacks a field is listed as malformed, never dropped and never read as published.
+        At most $Limit receipts (newest first by name) are listed; count is the full total.
+    #>
+    param([Parameter(Mandatory)] [string] $Root, [int] $Limit = 50)
+
+    $folder = Join-Path (Join-Path $Root 'work_queue') 'sweep_emit_failures'
+    $view = [ordered]@{
+        readable = $true; count = 0; truncated = $false
+        receipts = @(); malformed = @(); read_error = $null; sweep_error = $null
+    }
+    if (-not (Test-Path -LiteralPath $folder)) { return $view }
+    if (-not [System.IO.Directory]::Exists($folder)) {
+        $view.readable = $false
+        $view.read_error = 'work_queue/sweep_emit_failures exists but is not a directory'
+        return $view
+    }
+    $files = @()
+    try {
+        $files = @(Get-ChildItem -LiteralPath $folder -Filter '*.json' -File -ErrorAction Stop |
+            Sort-Object Name -Descending)
+    } catch {
+        $view.readable = $false
+        $view.read_error = [string]$_.Exception.Message
+        return $view
+    }
+    $receipts = New-Object System.Collections.Generic.List[object]
+    $malformed = New-Object System.Collections.Generic.List[object]
+    foreach ($file in $files) {
+        $reason = $null
+        $item = $null
+        try {
+            $item = [System.IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -ErrorAction Stop
+        } catch { $reason = 'unreadable_json' }
+        $fields = @{}
+        if ($null -eq $reason) {
+            foreach ($name in @('schema', 'task_id', 'claim_agent', 'archived_name', 'archived_path',
+                    'observed_at_utc', 'phase', 'publication', 'error')) {
+                $value = $null
+                if ($item -is [psobject] -and $item.PSObject.Properties[$name]) { $value = $item.$name }
+                # pwsh 7 turns an ISO timestamp string into a DateTime; give the writer's text back.
+                if ($value -is [DateTime]) {
+                    $value = $value.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+                }
+                if ($value -isnot [string] -or -not $value) { $reason = 'missing_' + $name; break }
+                $fields[$name] = $value
+            }
+        }
+        if ($null -eq $reason -and $fields['schema'] -cne 'wd.bridge-sweep-emit-failure.v1') { $reason = 'unknown_schema' }
+        if ($null -eq $reason -and $fields['publication'] -cnotin @('failed', 'publication_unknown')) {
+            $reason = 'invalid_publication'
+        }
+        if ($null -ne $reason) {
+            $malformed.Add([pscustomobject][ordered]@{ name = $file.Name; reason = $reason })
+            continue
+        }
+        $receipts.Add([pscustomobject][ordered]@{
+            task_id = $fields['task_id']; claim_agent = $fields['claim_agent']
+            archived_name = $fields['archived_name']; archived_path = $fields['archived_path']
+            observed_at_utc = $fields['observed_at_utc']; phase = $fields['phase']
+            publication = $fields['publication']; error = $fields['error']; receipt = $file.Name
+        })
+    }
+    # Indexer, not .count: an ordered dictionary's own Count property hides that key.
+    $view['count'] = $receipts.Count
+    $view.truncated = $receipts.Count -gt $Limit
+    # ToArray(): @() over an empty generic List throws 'Argument types do not match' here.
+    $view.receipts = [object[]]@($receipts.ToArray() | Select-Object -First $Limit)
+    $view.malformed = [object[]]$malformed.ToArray()
+    return $view
 }
 
 function Read-ClaimObjects {
@@ -230,6 +315,8 @@ foreach ($agent in $agents) {
     }
 }
 
+$sweepEmitFailures = Read-SweepEmitFailures -Root $bridgeRoot
+$sweepEmitFailures.sweep_error = $sweepError
 $result = [ordered]@{
     generated_utc      = (Get-Date).ToUniversalTime().ToString('o')
     active_claims      = @($claims)
@@ -238,11 +325,31 @@ $result = [ordered]@{
     recent_events      = @($recentSubstantive)
     suggested_next_reviewer = $nextSuggested
     idle_signals       = @($idleSignals)
+    sweep_emit_failures = $sweepEmitFailures
 }
 
 if ($Json) {
     $result | ConvertTo-Json -Depth 12
     exit 0
+}
+
+$sweepView = $sweepEmitFailures
+if ($sweepView['count'] -gt 0 -or @($sweepView.malformed).Count -gt 0 -or
+    -not $sweepView.readable -or $sweepView.sweep_error) {
+    Write-Host 'STALE-SWEEP RELEASE EVENTS NOT PUBLISHED' -ForegroundColor Yellow
+    if ($sweepView.sweep_error) { Write-Host ("  sweep failed: {0}" -f $sweepView.sweep_error) }
+    if (-not $sweepView.readable) { Write-Host ("  receipts unreadable: {0}" -f $sweepView.read_error) }
+    foreach ($receipt in @($sweepView.receipts)) {
+        Write-Host ("  {0} {1} by {2} [{3}/{4}] archived {5}: {6}" -f `
+            $receipt.observed_at_utc, $receipt.task_id, $receipt.claim_agent, $receipt.publication,
+            $receipt.phase, $receipt.archived_name, (Format-BridgeText $receipt.error))
+    }
+    if ($sweepView.truncated) {
+        Write-Host ("  ... {0} receipt(s) in total; use -Json for the listed ones." -f $sweepView['count'])
+    }
+    foreach ($bad in @($sweepView.malformed)) {
+        Write-Host ("  malformed receipt {0}: {1}" -f $bad.name, $bad.reason)
+    }
 }
 
 Write-Host 'ACTIVE CLAIMS' -ForegroundColor Cyan

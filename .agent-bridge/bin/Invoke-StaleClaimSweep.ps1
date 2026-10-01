@@ -111,6 +111,74 @@ function ConvertTo-BridgeUtc {
     }
 }
 
+# F23a (RCO1 2026-10-01): a stale release that did not publish must stay visible.
+$script:SweepEmitFailureSchema = 'wd.bridge-sweep-emit-failure.v1'
+
+function Test-StaleSweepCancellation {
+    # True when the exception, or any exception it wraps, is a cancellation or a stopped pipeline.
+    param([System.Exception] $Exception)
+
+    for ($current = $Exception; $null -ne $current; $current = $current.InnerException) {
+        if ($current -is [System.OperationCanceledException] -or
+            $current -is [System.Management.Automation.PipelineStoppedException]) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Write-StaleSweepEmitFailure {
+    # F23a (RCO1 2026-10-01): an archived claim whose release event was not published leaves one
+    # bounded receipt in work_queue/sweep_emit_failures. It is written under a temporary name and
+    # renamed, so a reader sees the whole receipt or none. Nothing replays the event or restores the
+    # claim. No lock is held here. Throws, naming the task and archive, when it cannot be persisted.
+    # Crash window (explicit, not closed): a process that ends after the archive and before this
+    # rename leaves only the done file, as before.
+    param(
+        [Parameter(Mandatory)] [string] $BridgeRoot,
+        [Parameter(Mandatory)] [object] $Archived,
+        [Parameter(Mandatory)] [string] $Phase,
+        [Parameter(Mandatory)] [ValidateSet('failed', 'publication_unknown')] [string] $Publication,
+        [string] $ErrorText
+    )
+
+    $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+    $folder = Join-Path (Join-Path $BridgeRoot 'work_queue') 'sweep_emit_failures'
+    $observed = (Get-Date).ToUniversalTime()
+    $text = if ($ErrorText) { [string]$ErrorText } else { $Phase }
+    if ($text.Length -gt 1000) { $text = $text.Substring(0, 1000) }
+    $taskId = [string]$Archived.Claim.task_id
+    $receipt = [ordered]@{
+        schema          = $script:SweepEmitFailureSchema
+        task_id         = $taskId
+        claim_agent     = [string]$Archived.Agent
+        archived_name   = [System.IO.Path]::GetFileName([string]$Archived.DonePath)
+        archived_path   = [string]$Archived.DonePath
+        observed_at_utc = $observed.ToString('o', $invariant)
+        phase           = $Phase
+        publication     = $Publication
+        error           = $text
+        swept_by        = [string]$env:AGENT_BRIDGE_RUN_ID
+    }
+    $name = $observed.ToString('yyyyMMddTHHmmssfffZ', $invariant) + '-' + $PID + '-' +
+        [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json'
+    $path = Join-Path $folder $name
+    $tmp = $path + '.tmp'
+    try {
+        if (-not [System.IO.Directory]::Exists($folder)) {
+            [void](New-Item -ItemType Directory -Path $folder -ErrorAction Stop)
+        }
+        [System.IO.File]::WriteAllText($tmp, ($receipt | ConvertTo-Json -Depth 4),
+            (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::Move($tmp, $path)
+    } catch {
+        try { [System.IO.File]::Delete($tmp) } catch {}
+        throw ('could not persist the sweep_emit_failures receipt for stale claim {0} (archived as {1}; release event {2}): {3}' -f
+            $taskId, [string]$Archived.DonePath, $Publication, $_.Exception.Message)
+    }
+    return $path
+}
+
 function Get-StaleClaimDispatcher {
     # A task-id prefix is not evidence of who assigned the claim. Only an
     # addressed assignment whose responder identity matches the archived
@@ -379,6 +447,11 @@ $rootWorkDone = $true
 } finally {
 # Every archive above gets its event and record, in archive order, even when
 # the loop or the root release failed afterwards; no lock is held here.
+# F23a: a release that is not published leaves a receipt (Write-StaleSweepEmitFailure);
+# a receipt that cannot be persisted fails the sweep after every archive is handled, and a
+# cancellation is recorded, the remaining archives get receipts unpublished, then it propagates.
+$receiptFailures = New-Object System.Collections.Generic.List[string]
+$cancellation = $null
 foreach ($archived in $archivedReleases) {
     $claim = $archived.Claim
     $agent = $archived.Agent
@@ -389,11 +462,23 @@ foreach ($archived in $archivedReleases) {
     $effectiveExpiresUtc = $archived.ExpiresUtc
     $donePath = $archived.DonePath
 
-    # Emit release event (best-effort; lease sweep must not fail
-    # because the bridge writer is momentarily contended).
+    # Emit the release event. A writer that throws, is absent or is cancelled never counts as
+    # published: the archive stays and a receipt records the outcome (F23a).
+    $publication = 'published'
+    $phase = 'prepare'
+    $errorText = ''
+    $cancelled = $false
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
-        if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
+        if ($null -ne $cancellation) {
+            $publication = 'failed'
+            $phase = 'cancelled'
+            $errorText = 'the sweep was cancelled before this release event was published'
+        } elseif (-not (Test-Path -LiteralPath $writeEvent -PathType Leaf)) {
+            $publication = 'failed'
+            $phase = 'writer_absent'
+            $errorText = 'Write-AgentEvent.ps1 is not present next to the sweep'
+        } else {
             $recipients = @()
             if ($agent -cmatch '^[a-z][a-z0-9_-]{1,32}$') { $recipients += $agent }
             $dispatcher = Get-StaleClaimDispatcher -Claim $claim -BridgeRoot $bridgeRoot
@@ -419,7 +504,8 @@ foreach ($archived in $archivedReleases) {
                 swept_by           = $env:AGENT_BRIDGE_RUN_ID
             }
             $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
-            & $writeEvent `
+            $phase = 'writer'
+            $written = @(& $writeEvent `
                 -Agent system `
                 -Type release `
                 -Status stale_lease `
@@ -427,11 +513,51 @@ foreach ($archived in $archivedReleases) {
                 -TaskId ([string]$claim.task_id) `
                 -To ($recipients -join ',') `
                 -Message ("auto-released stale claim by $agent (heartbeat $([int]$ageSeconds)s old)") `
-                -PayloadJson $payloadJson | Out-Null
+                -PayloadJson $payloadJson)
+            # Published means the writer's own delivery receipt says the line is canonical and
+            # durable (a real boolean true). Queued, suppressed or unconfirmed is not published.
+            $deliveries = @($written | Where-Object {
+                $null -ne $_ -and $_.PSObject.Properties['_bridge_delivery'] -and
+                $null -ne $_._bridge_delivery })
+            if ($deliveries.Count -ne 1) {
+                $publication = 'publication_unknown'
+                $phase = 'writer_unconfirmed'
+                $errorText = 'the writer returned {0} delivery receipts; exactly one is required' -f $deliveries.Count
+            } else {
+                $delivery = $deliveries[0]._bridge_delivery
+                $durable = $null
+                $deliveryStatus = ''
+                if ($delivery.PSObject.Properties['canonical_durable']) { $durable = $delivery.canonical_durable }
+                if ($delivery.PSObject.Properties['delivery_status']) { $deliveryStatus = [string]$delivery.delivery_status }
+                if (-not ($durable -is [bool] -and $durable)) {
+                    $publication = if ($deliveryStatus -ceq 'suppressed') { 'failed' } else { 'publication_unknown' }
+                    $phase = if ($deliveryStatus -cmatch '^[a-z_]{1,32}$') { 'writer_' + $deliveryStatus } else { 'writer_unconfirmed' }
+                    $errorText = 'the writer did not report a canonical durable append (delivery_status ' +
+                        $deliveryStatus + ')'
+                }
+            }
         }
     } catch {
-        Write-Warning ("stale-lease release event emit failed: {0}" -f `
-            $_.Exception.Message)
+        # Before the writer ran nothing was appended (failed); once it ran, a throw cannot prove
+        # the line was not appended (publication_unknown).
+        $publication = if ($phase -ceq 'writer') { 'publication_unknown' } else { 'failed' }
+        $cancelled = Test-StaleSweepCancellation -Exception $_.Exception
+        $phase = if ($cancelled) { 'cancelled' } elseif ($phase -ceq 'writer') { 'writer_failed' } else { 'prepare_failed' }
+        $errorText = $_.Exception.Message
+        if ($cancelled) { $cancellation = $_ }
+        # The warning callers already read for a writer that throws, unchanged.
+        Write-Warning ("stale-lease release event emit failed: {0}" -f $errorText)
+    }
+    # The receipt is the durable signal (shown by Get-AgentBridgeStatus); an absent, queued or
+    # unconfirmed writer adds no console line, so callers' output stays as it was.
+    if ($publication -cne 'published') {
+        try {
+            [void](Write-StaleSweepEmitFailure -BridgeRoot $bridgeRoot -Archived $archived `
+                -Phase $phase -Publication $publication -ErrorText $errorText)
+        } catch {
+            $receiptFailures.Add($_.Exception.Message)
+            Write-Warning $_.Exception.Message
+        }
     }
 
     if (-not $Quiet) {
@@ -448,4 +574,11 @@ foreach ($archived in $archivedReleases) {
         archived_path  = $donePath
     }
 }
+if ($receiptFailures.Count -gt 0) {
+    $summary = 'stale sweep archived claims whose release events were not published and whose ' +
+        'sweep_emit_failures receipts could not be persisted: ' + ($receiptFailures -join ' | ')
+    if ($null -ne $cancellation) { throw (New-Object System.OperationCanceledException($summary)) }
+    throw $summary
+}
+if ($null -ne $cancellation) { throw $cancellation }
 }

@@ -322,6 +322,33 @@ def test_directory_or_fifo_input_is_refused_without_blocking(tmp_path):
             doctor.load_json(fifo, "manifest")
 
 
+def test_a_non_regular_descriptor_is_refused_and_closed_before_any_fdopen(tmp_path, monkeypatch):
+    # The POSIX directory case on any host (Linux CI, 2026-10-01): the open succeeds, and fdopen
+    # would raise IsADirectoryError without closing the descriptor. fstat refuses it first, and the
+    # descriptor is closed exactly once.
+    path = tmp_path / "manifest.json"
+    path.write_text("{}", encoding="utf-8")
+    real_fstat, real_close = doctor.os.fstat, doctor.os.close
+    closed = []
+
+    def fstat(fd):
+        return doctor.os.stat_result((doctor.stat_module.S_IFDIR | 0o755,) + tuple(real_fstat(fd))[1:])
+
+    def fdopen(*args, **kwargs):
+        raise IsADirectoryError(21, "Is a directory")
+
+    def close(fd):
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(doctor.os, "fstat", fstat)
+    monkeypatch.setattr(doctor.os, "fdopen", fdopen)
+    monkeypatch.setattr(doctor.os, "close", close)
+    with pytest.raises(doctor.DoctorInputError, match="not a regular file"):
+        doctor.load_json(path, "manifest")
+    assert len(closed) == 1
+
+
 def test_unknown_lane_is_invalid_input(tmp_path):
     code, report = _run(tmp_path, "not-a-lane", _paths(tmp_path), _fresh())
     assert (code, report["verdict"]) == (3, "invalid_input")

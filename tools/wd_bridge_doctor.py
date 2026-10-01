@@ -150,13 +150,18 @@ def load_json(path: Path, what: str) -> Any:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except (OSError, ValueError) as exc:
         raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
-    with os.fdopen(fd, "rb") as stream:
-        try:
-            if not stat_module.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise DoctorInputError(what + " is not a regular file")
+    # fstat BEFORE fdopen, and this function is the descriptor's only owner (closefd=False, one
+    # close below): on POSIX a directory opens, and fdopen would raise IsADirectoryError without
+    # closing the descriptor it was given.
+    try:
+        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+            raise DoctorInputError(what + " is not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read(MAX_INPUT_BYTES + 1)
-        except OSError as exc:
-            raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
+    except OSError as exc:
+        raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
+    finally:
+        os.close(fd)
     if len(raw) > MAX_INPUT_BYTES:
         raise DoctorInputError(what + " exceeds " + str(MAX_INPUT_BYTES) + " bytes")
     try:

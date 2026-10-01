@@ -172,9 +172,12 @@ function Write-StaleSweepEmitFailure {
             (New-Object System.Text.UTF8Encoding($false)))
         [System.IO.File]::Move($tmp, $path)
     } catch {
+        $failure = $_
         try { [System.IO.File]::Delete($tmp) } catch {}
+        # A cancellation stays a cancellation (Grok 29cc0621 F2): never re-wrapped as a text error.
+        if (Test-StaleSweepCancellation -Exception $failure.Exception) { throw $failure }
         throw ('could not persist the sweep_emit_failures receipt for stale claim {0} (archived as {1}; release event {2}): {3}' -f
-            $taskId, [string]$Archived.DonePath, $Publication, $_.Exception.Message)
+            $taskId, [string]$Archived.DonePath, $Publication, $failure.Exception.Message)
     }
     return $path
 }
@@ -555,6 +558,10 @@ foreach ($archived in $archivedReleases) {
             [void](Write-StaleSweepEmitFailure -BridgeRoot $bridgeRoot -Archived $archived `
                 -Phase $phase -Publication $publication -ErrorText $errorText)
         } catch {
+            # Cancelled while writing the receipt: later archives are not published either.
+            if ($null -eq $cancellation -and (Test-StaleSweepCancellation -Exception $_.Exception)) {
+                $cancellation = $_
+            }
             $receiptFailures.Add($_.Exception.Message)
             Write-Warning $_.Exception.Message
         }

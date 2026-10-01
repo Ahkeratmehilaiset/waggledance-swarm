@@ -234,6 +234,58 @@ def test_cancellation_is_recorded_and_propagates(tmp_path, shell):
     assert [(r["phase"], r["publication"]) for r in receipts] == [("cancelled", "publication_unknown")]
 
 
+FIRST_CALL_THROWS_WRITER = r"""
+[CmdletBinding()]
+param([string]$Agent, [string]$Type, [string]$Status, [string]$Severity,
+      [string]$TaskId, [string]$To, [string]$Message, [string]$PayloadJson)
+$ErrorActionPreference = 'Stop'
+$marker = Join-Path $env:AGENT_BRIDGE_RUNTIME_ROOT 'writer-called'
+if (-not (Test-Path -LiteralPath $marker)) {
+    [IO.File]::WriteAllText($marker, 'x')
+    throw 'fixture writer refused the first append'
+}
+$record = [ordered]@{ type=$Type; status=$Status; task_id=$TaskId }
+$path = Join-Path (Join-Path $env:AGENT_BRIDGE_RUNTIME_ROOT 'shared') 'events.jsonl'
+[IO.File]::AppendAllText($path, (($record | ConvertTo-Json -Compress) + "`n"))
+[pscustomobject]@{ type = $Type; _bridge_delivery = [pscustomobject]@{
+    delivery_status = 'canonical'; canonical_durable = $true } }
+"""
+
+# Fault injection into the COPIED sweep only: the first receipt write is cancelled once.
+RECEIPT_WRITE = "[System.IO.File]::WriteAllText($tmp, ($receipt"
+CANCEL_ONCE = (
+    "$fired = Join-Path $BridgeRoot 'receipt-cancel-fired'\n"
+    "        if (-not (Test-Path -LiteralPath $fired)) {\n"
+    "            [IO.File]::WriteAllText($fired, 'x')\n"
+    "            throw (New-Object System.OperationCanceledException('fixture cancel during receipt write'))\n"
+    "        }\n"
+    "        " + RECEIPT_WRITE
+)
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+def test_cancellation_during_a_receipt_write_stops_later_publication(tmp_path, shell):
+    code, runtime = _fixture(tmp_path, FIRST_CALL_THROWS_WRITER)
+    sweep = code / "Invoke-StaleClaimSweep.ps1"
+    source = sweep.read_text(encoding="utf-8-sig")
+    assert source.count(RECEIPT_WRITE) == 1
+    sweep.write_text(source.replace(RECEIPT_WRITE, CANCEL_ONCE), encoding="utf-8-sig")
+    past = datetime.now(timezone.utc) - timedelta(minutes=20)
+    (runtime / "work_queue/claims/zz-second.json").write_text(json.dumps({
+        "task_id": TASK + "-second", "agent": "codex-tools-1",
+        "claimed_at_utc": past.isoformat(), "last_heartbeat_utc": past.isoformat(),
+        "lease_seconds": 60, "claim_lease_expires_utc": (past + timedelta(minutes=1)).isoformat(),
+        "owner_identity": "none", "write_scope": ["tests/tools/y.py"],
+    }), encoding="utf-8")
+    completed = _sweep(shell, code, runtime)
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+    assert len(_archives(runtime)) == 2                         # both archived, neither restored
+    # The cancellation stops publication: the second release is never sent to the writer.
+    assert (runtime / "shared/events.jsonl").read_text(encoding="utf-8") == ""
+    assert [(r["task_id"], r["phase"], r["publication"]) for r in _receipts(runtime)] == [
+        (TASK + "-second", "cancelled", "failed")]
+
+
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 def test_status_shows_receipts_and_malformed_ones_without_mutating(tmp_path, shell):
     code, runtime = _fixture(tmp_path, THROWING_WRITER)

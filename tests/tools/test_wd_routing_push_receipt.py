@@ -804,3 +804,224 @@ def test_close_a_false_close_of_the_collision_link_handle_is_reported(approved, 
     with pytest.raises(pr.PushReceiptRefused) as caught:
         pr.persist_receipt(receipt, folder, approved_root=root)
     assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", "close_failed:CloseHandle")
+
+
+# --- Fable F1 (f2c0f815) adopted: every close path counted on a real C: NTFS fixture -----------------------
+# Real directories under the claimed audit dir (never TEMP, no _forbidden_roots bypass). Every fake does the
+# REAL close first and only then reports FALSE, so nothing leaks; a surviving directory handle (no delete
+# sharing) would make the held folder refuse a rename, which ``_f1_released`` reports as False.
+
+_F1_REPO = Path(__file__).resolve().parents[2]
+_F1_FIXTURES = _F1_REPO / ".codex-audit" / "rco1-receipt-f1-adoption-20261001" / "fx"
+
+
+@pytest.fixture
+def ntfs_c():
+    import shutil
+    import uuid
+    if os.name != "nt" or _F1_REPO.drive.upper() != "C:":
+        pytest.skip("needs a real NTFS checkout on drive C:")
+    base = _F1_FIXTURES / uuid.uuid4().hex[:8]
+    folder = base / "a" / "r"
+    folder.mkdir(parents=True)
+    yield base / "a", folder
+    shutil.rmtree(base, ignore_errors=True)
+
+
+class _F1Closes:
+    """CloseHandle wrapper: the real close always runs; FALSE is reported where ``fail(handle)``; every call is
+    counted, so a skipped, leaked or retried close is visible."""
+
+    def __init__(self, monkeypatch, fail=lambda handle: False):
+        self.real, self.calls, self.fail = pr._kernel32.CloseHandle, [], fail
+        monkeypatch.setattr(pr._kernel32, "CloseHandle", self)
+
+    def __call__(self, handle):
+        ok = self.real(handle)
+        self.calls.append(handle)
+        return False if self.fail(handle) else ok
+
+
+def _f1_capture_locks(monkeypatch):
+    real, locked = pr._lock_directory, []
+
+    def lock(folder):
+        handles = real(folder)
+        locked.extend(handles)
+        return handles
+
+    monkeypatch.setattr(pr, "_lock_directory", lock)
+    return locked
+
+
+def _f1_released(folder):
+    """True when no handle on the folder survives: a held directory refuses rename (no delete sharing)."""
+    moved = folder.with_name("moved")
+    try:
+        os.rename(folder, moved)
+    except OSError:
+        return False
+    os.rename(moved, folder)
+    return True
+
+
+def _f1_osfhandle_refuses(monkeypatch, mode):
+    real, raised = pr.msvcrt.open_osfhandle, []
+
+    def open_osfhandle(handle, flags):
+        if flags == mode:
+            raised.append(OSError(24, "too many open files"))
+            raise raised[-1]
+        return real(handle, flags)
+
+    monkeypatch.setattr(pr.msvcrt, "open_osfhandle", open_osfhandle)
+    return raised
+
+
+@windows_only
+def test_f1_clean_publish_and_retry_report_ok_and_release_every_handle(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    closes, locked = _F1Closes(monkeypatch), _f1_capture_locks(monkeypatch)
+    first = pr.persist_receipt(receipt, folder, approved_root=root)
+    again = pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (first["status"], first["cleanup"], again["status"], again["cleanup"]) == ("created", "ok", "unchanged", "ok")
+    # two calls: a closed handle value can be reused, so compare as multisets (each lock closed as often as opened)
+    assert sorted(h for h in closes.calls if h in set(locked)) == sorted(locked) and _f1_released(folder)
+
+
+@windows_only
+def test_f1_every_false_close_is_still_attempted_exactly_once_and_reported(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    closes, locked = _F1Closes(monkeypatch, fail=lambda h: True), _f1_capture_locks(monkeypatch)
+    result = pr.persist_receipt(build(), folder, approved_root=root)
+    assert (result["status"], result["cleanup"]) == ("created", "close_failed:CloseHandle")
+    # every lock handle closed once, although the first close already "failed" (no stop, no skip, no retry)
+    assert len(locked) >= 3 and all(closes.calls.count(h) == 1 for h in locked)
+    assert [p.name for p in folder.iterdir()] == [Path(result["path"]).name] and _f1_released(folder)
+
+
+@windows_only
+def test_f1_false_closes_on_a_conflict_list_one_failure_per_handle_and_close_all(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    (folder / (receipt["receipt_digest"] + ".json")).write_bytes(b"{}\n")
+    closes, locked = _F1Closes(monkeypatch, fail=lambda h: True), _f1_capture_locks(monkeypatch)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", "close_failed:CloseHandle")
+    notes = caught.value.__notes__
+    assert len(notes) == 1 and notes[0].count("close_failed:CloseHandle") == len(locked)
+    assert all(closes.calls.count(h) == 1 for h in locked) and _f1_released(folder)
+
+
+@windows_only
+def test_f1_write_open_osfhandle_refusal_closes_the_temp_once_reports_it_and_keeps_the_primary(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    raised = _f1_osfhandle_refuses(monkeypatch, os.O_WRONLY)
+    closes, locked = _F1Closes(monkeypatch, fail=lambda h: True), _f1_capture_locks(monkeypatch)
+    with pytest.raises(OSError) as caught:
+        pr.persist_receipt(build(), folder, approved_root=root)
+    assert caught.value is raised[0]                                       # the primary object, unchanged
+    extra = [h for h in closes.calls if h not in locked]
+    assert len(extra) == 1                                                # the temporary handle, closed once
+    assert caught.value.__notes__ == [
+        "push receipt cleanup: " + ", ".join(["close_failed:CloseHandle"] * (1 + len(locked)))]
+    assert list(folder.iterdir()) == [] and _f1_released(folder)          # delete-on-close removed the temp
+
+
+@windows_only
+def test_f1_read_open_osfhandle_refusal_closes_the_read_handle_once_and_records_it(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    raised = _f1_osfhandle_refuses(monkeypatch, os.O_RDONLY)
+    closes, locked = _F1Closes(monkeypatch, fail=lambda h: True), _f1_capture_locks(monkeypatch)
+    with pytest.raises(OSError) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert caught.value is raised[0]
+    extra = [h for h in closes.calls if h not in locked]
+    assert len(extra) == 1                                                # the read handle (the temp is a descriptor)
+    # N1, pinned as it works: _read_relative notes its own failure, then persist_receipt notes the directory closes
+    assert caught.value.__notes__ == [
+        "push receipt cleanup: close_failed:CloseHandle",
+        "push receipt cleanup: " + ", ".join(["close_failed:CloseHandle"] * len(locked))]
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before and _f1_released(folder)
+
+
+@windows_only
+def test_f1_read_open_osfhandle_refusal_with_true_closes_adds_no_cleanup_note(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+    raised = _f1_osfhandle_refuses(monkeypatch, os.O_RDONLY)
+    with pytest.raises(OSError) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert caught.value is raised[0] and getattr(caught.value, "__notes__", []) == [] and _f1_released(folder)
+
+
+@windows_only
+def test_f1_a_cancellation_inside_the_read_closes_everything_once_and_propagates(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+
+    def cancel(descriptor, size):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pr.os, "read", cancel)
+    closes, locked = _F1Closes(monkeypatch, fail=lambda h: True), _f1_capture_locks(monkeypatch)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert all(closes.calls.count(h) == 1 for h in locked)
+    assert caught.value.__notes__ == ["push receipt cleanup: " + ", ".join(["close_failed:CloseHandle"] * len(locked))]
+    assert len(list(folder.iterdir())) == 1 and _f1_released(folder)       # published receipt not undone
+
+
+def _f1_read_close_raises(monkeypatch):
+    """Only the descriptor close inside _read_relative raises, after a real close."""
+    real_close, real_read, inside = os.close, pr._read_relative, []
+
+    def close(descriptor):
+        real_close(descriptor)
+        if inside:
+            raise OSError(5, "read close failed")
+
+    def read(directory, name):
+        inside.append(True)
+        try:
+            return real_read(directory, name)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(pr.os, "close", close)
+    monkeypatch.setattr(pr, "_read_relative", read)
+
+
+@windows_only
+def test_f1_a_known_read_failure_still_closes_every_lock_on_an_identical_retry(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    pr.persist_receipt(receipt, folder, approved_root=root)
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    _f1_read_close_raises(monkeypatch)
+    closes, locked = _F1Closes(monkeypatch), _f1_capture_locks(monkeypatch)
+    result = pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (result["status"], result["cleanup"]) == ("unchanged", "close_failed:OSError")
+    assert all(closes.calls.count(h) == 1 for h in locked) and _f1_released(folder)
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
+@windows_only
+def test_f1_a_known_read_failure_on_a_conflict_still_closes_every_lock(ntfs_c, monkeypatch):
+    root, folder = ntfs_c
+    receipt = build()
+    (folder / (receipt["receipt_digest"] + ".json")).write_bytes(b"{}\n")
+    _f1_read_close_raises(monkeypatch)
+    closes, locked = _F1Closes(monkeypatch), _f1_capture_locks(monkeypatch)
+    with pytest.raises(pr.PushReceiptRefused) as caught:
+        pr.persist_receipt(receipt, folder, approved_root=root)
+    assert (caught.value.reason, caught.value.cleanup) == ("receipt_conflict", "close_failed:OSError")
+    assert caught.value.__notes__ == ["push receipt cleanup: close_failed:OSError"]
+    assert all(closes.calls.count(h) == 1 for h in locked) and _f1_released(folder)

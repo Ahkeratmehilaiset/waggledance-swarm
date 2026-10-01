@@ -189,6 +189,13 @@ $now = (Get-Date).ToUniversalTime()
 # queue's runtime-root mutex, taken before any claim or beat lock as in the
 # Python queue. A busy or abandoned root throws with nothing read or changed;
 # the opportunistic callers catch it and sweep on a later round.
+# Liveness (RCO2 5416a7ab F1): only the decision and the archive run under
+# the root and claim locks. The dispatcher lookup (an event-log tail read)
+# and the release event are slow and unbounded, so they run after every lock
+# is released, as Claim-AgentTask and Release-AgentTask write their events,
+# in archive order; a concurrent claim never waits on them.
+$archivedReleases = New-Object System.Collections.Generic.List[object]
+try {
 $rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
 $rootWorkDone = $false
 try {
@@ -353,6 +360,35 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     Exit-BridgeClaimLock -Lock $beatLock
     $beatLock = $null
 
+    # Archived: the release event and the pipeline record follow once every
+    # lock is released (below), with the values decided here.
+    $archivedReleases.Add([pscustomobject]@{
+        Claim = $claim; Agent = $agent; AgeSeconds = $ageSeconds; LastHeartbeat = $tsString
+        ThresholdSeconds = $effectiveLeaseSeconds; LeaseSeconds = $claimLeaseSeconds
+        ExpiresUtc = $effectiveExpiresUtc; DonePath = $donePath
+    })
+    } finally {
+        Exit-BridgeClaimLock -Lock $beatLock
+        Exit-BridgeClaimLock -Lock $claimLock
+    }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
+}
+} finally {
+# Every archive above gets its event and record, in archive order, even when
+# the loop or the root release failed afterwards; no lock is held here.
+foreach ($archived in $archivedReleases) {
+    $claim = $archived.Claim
+    $agent = $archived.Agent
+    $ageSeconds = $archived.AgeSeconds
+    $tsString = $archived.LastHeartbeat
+    $effectiveLeaseSeconds = $archived.ThresholdSeconds
+    $claimLeaseSeconds = $archived.LeaseSeconds
+    $effectiveExpiresUtc = $archived.ExpiresUtc
+    $donePath = $archived.DonePath
+
     # Emit release event (best-effort; lease sweep must not fail
     # because the bridge writer is momentarily contended).
     try {
@@ -411,12 +447,5 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         age_seconds    = [int]$ageSeconds
         archived_path  = $donePath
     }
-    } finally {
-        Exit-BridgeClaimLock -Lock $beatLock
-        Exit-BridgeClaimLock -Lock $claimLock
-    }
 }
-$rootWorkDone = $true
-} finally {
-    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }

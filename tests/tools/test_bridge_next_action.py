@@ -3922,3 +3922,198 @@ def test_private_marker_in_role_metadata_is_refused() -> None:
         assert "private marker" in exc.report["errors"][0]
     else:
         raise AssertionError("private marker in metadata should refuse output")
+
+
+# --- v1 whole_request cancellation: Python parity with the PS selector 93efae83 (RCO1 86f4dd5c, Lead 22:55Z) -------
+# A later closed wd.request-cancellation.v1 whole_request row by the exact requester agent AND agent_uuid on the same
+# task, naming the request_id and its stored lowercase hex64 request_digest, WITHHOLDS the request from routing. It is
+# a routing withhold only: never an answer, completion, permission, claim or turn-gate clearance.
+_C_LEAD = {"agent": "codex-lead-1", "agent_uuid": "uuid-lead-1", "session_id": "sess-a", "run_id": "run-a"}
+_C_RID, _C_DIGEST, _C_TASK = "req-6ba-fixture", "a" * 64, "codex-lead-1/fixture-review"
+_C_NOW = datetime(2026, 10, 1, 22, 20, tzinfo=timezone.utc)
+_C_OTHER_SESSION = {"session_id": "sess-b", "run_id": "run-b"}
+
+
+def _c_request(**over: object) -> dict[str, object]:
+    row: dict[str, object] = dict(
+        _C_LEAD, ts_utc="2026-10-01T21:54:05Z", type="wake_request", status="assigned", task_id=_C_TASK,
+        to="codex-tools-1", request_id=_C_RID, request_digest=_C_DIGEST, message="synthetic review",
+        payload={"task_revision": "rev-1"})
+    row.update(over)
+    return row
+
+
+def _c_cancel(payload_over: dict[str, object] | None = None, drop: tuple[str, ...] = (),
+              **over: object) -> dict[str, object]:
+    payload: dict[str, object] = {"schema": "wd.request-cancellation.v1", "cancelled_request_id": _C_RID,
+                                  "cancelled_request_digest": _C_DIGEST, "scope": "whole_request"}
+    for key in drop:
+        payload.pop(key)
+    payload.update(payload_over or {})
+    row: dict[str, object] = dict(
+        _C_LEAD, ts_utc="2026-10-01T21:55:04Z", type="message", status="cancelled", task_id=_C_TASK,
+        to="codex-tools-1", message="withdraws only", payload=payload)
+    row.update(over)
+    return row
+
+
+def _c_answer(rid: str = _C_RID, digest: str = _C_DIGEST, task: str = _C_TASK,
+              stamp: str = "2026-10-01T22:02:41Z") -> dict[str, object]:
+    return {"agent": "codex-tools-1", "agent_uuid": "uuid-tools", "session_id": "s-t", "run_id": "r-t",
+            "ts_utc": stamp, "type": "message", "status": "answered", "task_id": task, "to": "codex-lead-1",
+            "message": "result", "in_reply_to_request_id": rid, "in_reply_to_request_digest": digest,
+            "in_reply_to_requester": {key: _C_LEAD[key] for key in ("agent", "agent_uuid", "session_id", "run_id")},
+            "payload": {"result": {}}}
+
+
+def _c_select(rows: list[dict[str, object]], now: datetime = _C_NOW) -> tuple[dict[str, object], object]:
+    out = recommend_next_action(agent="codex-tools-1", events=rows, claims=[], now_utc=now)
+    selected = (out.get("incoming") or {}).get("request_id") if out["action"] == "answer_incoming" else None
+    return out, selected
+
+
+_C_WITHHELD = [
+    ("C1 exact v1 cancel", [_c_request(), _c_cancel()]),
+    ("C2 v1 cancel + corrected r2 answered", [
+        _c_request(), _c_cancel(),
+        _c_request(request_id="req-8c8", request_digest="b" * 64, task_id=_C_TASK + "-r2",
+                   ts_utc="2026-10-01T21:55:05Z"),
+        _c_answer("req-8c8", "b" * 64, _C_TASK + "-r2")]),
+    ("C9 v1 cancel from a later Lead session, same agent_uuid", [_c_request(), _c_cancel(**_C_OTHER_SESSION)]),
+    ("duplicate identical cancels", [_c_request(), _c_cancel(), _c_cancel(ts_utc="2026-10-01T21:55:30Z")]),
+    ("cancel with type decision", [_c_request(), _c_cancel(type="decision")]),
+]
+_C_OPEN = [
+    ("C3 another digest", [_c_request(), _c_cancel({"cancelled_request_digest": "c" * 64})]),
+    ("C4 another request id", [_c_request(), _c_cancel({"cancelled_request_id": "other-id"})]),
+    ("C5 cancel before the request", [_c_cancel(ts_utc="2026-10-01T21:54:00Z"), _c_request()]),
+    ("C5b cancel stamped later but logged before", [_c_cancel(ts_utc="2026-10-01T21:59:00Z"), _c_request()]),
+    ("C10 legacy free-form cancel", [_c_request(), _c_cancel(drop=("schema", "scope", "cancelled_request_digest"),
+                                                             type="decision")]),
+    ("foreign agent_uuid", [_c_request(), _c_cancel(agent_uuid="uuid-someone-else")]),
+    ("rekey same label new uuid", [_c_request(), _c_cancel(agent_uuid="uuid-lead-2", **_C_OTHER_SESSION)]),
+    ("blank agent_uuid on the cancel", [_c_request(), _c_cancel(agent_uuid="")]),
+    ("agent_uuid missing on the cancel", [_c_request(), {k: v for k, v in _c_cancel().items() if k != "agent_uuid"}]),
+    ("blank agent_uuid on the request", [_c_request(agent_uuid=""), _c_cancel(agent_uuid="")]),
+    ("non-token agent_uuid on both", [_c_request(agent_uuid="uuid lead"), _c_cancel(agent_uuid="uuid lead")]),
+    ("non-string agent_uuid", [_c_request(), _c_cancel(agent_uuid=["uuid-lead-1"])]),
+    ("another label with the lead uuid", [_c_request(), _c_cancel(agent="operator")]),
+    ("agent label case", [_c_request(), _c_cancel(agent="Codex-Lead-1")]),
+    ("extra payload key", [_c_request(), _c_cancel({"production_hold": True})]),
+    ("missing payload key", [_c_request(), _c_cancel(drop=("scope",))]),
+    ("scope not whole_request", [_c_request(), _c_cancel({"scope": "source_implementation_only"})]),
+    ("status Cancelled case", [_c_request(), _c_cancel(status="Cancelled")]),
+    ("status canceled", [_c_request(), _c_cancel(status="canceled")]),
+    ("status cancelled_by_lead", [_c_request(), _c_cancel(status="cancelled_by_lead")]),
+    ("schema v0", [_c_request(), _c_cancel({"schema": "wd.request-cancellation.v0"})]),
+    ("payload key case Schema", [_c_request(), _c_cancel({"Schema": "wd.request-cancellation.v1"}, drop=("schema",))]),
+    ("list id", [_c_request(), _c_cancel({"cancelled_request_id": [_C_RID]})]),
+    ("digest uppercase copy", [_c_request(), _c_cancel({"cancelled_request_digest": _C_DIGEST.upper()})]),
+    ("payload not a dict", [_c_request(), _c_cancel(payload=[["schema", "wd.request-cancellation.v1"]])]),
+    ("fields only at top level", [_c_request(), dict(_c_cancel(payload={}), schema="wd.request-cancellation.v1",
+                                                     scope="whole_request", cancelled_request_id=_C_RID,
+                                                     cancelled_request_digest=_C_DIGEST)]),
+    ("request without stored digest", [{k: v for k, v in _c_request().items() if k != "request_digest"},
+                                       _c_cancel({"cancelled_request_digest": ""})]),
+    ("request digest only in payload", [
+        dict({k: v for k, v in _c_request().items() if k != "request_digest"},
+             payload={"task_revision": "rev-1", "request_digest": _C_DIGEST}), _c_cancel()]),
+    ("cancel on another task", [_c_request(), _c_cancel(task_id=_C_TASK + "-other")]),
+    ("malformed stored digest copied verbatim", [_c_request(request_digest="A" * 64),
+                                                 _c_cancel({"cancelled_request_digest": "A" * 64})]),
+    ("short stored digest copied verbatim", [_c_request(request_digest="abc"),
+                                             _c_cancel({"cancelled_request_digest": "abc"})]),
+    ("digest with trailing newline copied verbatim", [_c_request(request_digest=_C_DIGEST + "\n"),
+                                                      _c_cancel({"cancelled_request_digest": _C_DIGEST + "\n"})]),
+]
+_C_CLOSED_AS_BEFORE = [
+    ("C6 late answer after the cancel", [_c_request(), _c_cancel(), _c_answer(stamp="2026-10-01T21:59:00Z")]),
+    ("C11 answered no cancel", [_c_request(), _c_answer()]),
+]
+
+
+@pytest.mark.parametrize("name, rows", _C_WITHHELD, ids=[case[0] for case in _C_WITHHELD])
+def test_v1_whole_request_cancellation_withholds_the_request_from_routing(name: str, rows: list) -> None:
+    out, selected = _c_select(rows)
+    assert selected != _C_RID and out["open_incoming_count"] == 0, out
+    assert out["cancelled_withheld_count"] == 1 and out["cancelled_withheld_request_ids"] == [_C_RID], out
+    assert out["action"] != "answer_incoming" or selected != _C_RID
+
+
+@pytest.mark.parametrize("name, rows", _C_OPEN, ids=[case[0] for case in _C_OPEN])
+def test_anything_but_the_exact_v1_cancellation_leaves_the_request_open(name: str, rows: list) -> None:
+    out, selected = _c_select(rows)
+    assert selected == _C_RID and out["open_incoming_count"] == 1, out
+    assert out["cancelled_withheld_count"] == 0 and out["cancelled_withheld_request_ids"] == [], out
+
+
+@pytest.mark.parametrize("name, rows", _C_CLOSED_AS_BEFORE, ids=[case[0] for case in _C_CLOSED_AS_BEFORE])
+def test_bound_answers_still_close_and_are_not_counted_as_cancellations(name: str, rows: list) -> None:
+    out, selected = _c_select(rows)
+    assert selected is None and out["open_incoming_count"] == 0, out
+    assert out["cancelled_withheld_count"] == 0, out
+
+
+def test_a_stale_cancelled_request_is_withheld_from_the_stale_count_too() -> None:
+    rows = [_c_request(ts_utc="2026-09-30T01:00:00Z"), _c_cancel(ts_utc="2026-09-30T01:05:00Z")]
+    out, _ = _c_select(rows)
+    assert out["stale_incoming_count"] == 0 and out["cancelled_withheld_count"] == 1, out
+    assert "stale_incoming_task_ids" not in out
+
+
+def test_a_stale_uncancelled_request_keeps_its_stale_count() -> None:
+    rows = [_c_request(ts_utc="2026-09-30T01:00:00Z"), _c_cancel({"cancelled_request_id": "other-id"},
+                                                                ts_utc="2026-09-30T01:05:00Z")]
+    out, _ = _c_select(rows)
+    assert out["stale_incoming_count"] == 1 and out["cancelled_withheld_count"] == 0, out
+
+
+def test_an_older_revision_of_a_cancelled_repeated_wake_does_not_resurface() -> None:
+    older = _c_request(request_digest="b" * 64, message="first wording")
+    rows = [older, _c_request(ts_utc="2026-10-01T21:54:30Z"), _c_cancel()]
+    out, selected = _c_select(rows)
+    assert selected is None and out["open_incoming_count"] == 0, out
+    assert out["cancelled_withheld_count"] == 1 and out["cancelled_withheld_request_ids"] == [_C_RID], out
+
+
+def test_cancelling_only_an_older_revision_keeps_the_latest_open() -> None:
+    rows = [_c_request(request_digest="b" * 64, message="first wording"), _c_request(ts_utc="2026-10-01T21:54:30Z"),
+            _c_cancel({"cancelled_request_digest": "b" * 64})]
+    out, selected = _c_select(rows)
+    assert selected == _C_RID and out["cancelled_withheld_count"] == 0, out
+
+
+def test_withhold_is_not_an_answer_and_other_open_work_still_routes() -> None:
+    other = _c_request(request_id="req-other", request_digest="d" * 64, task_id=_C_TASK + "-other",
+                       ts_utc="2026-10-01T21:50:00Z")
+    out, selected = _c_select([other, _c_request(), _c_cancel()])
+    assert selected == "req-other" and out["open_incoming_count"] == 1, out
+    assert out["cancelled_withheld_count"] == 1
+    assert "cancelled" not in json.dumps(out.get("incoming"))
+
+
+def test_the_report_always_carries_the_withhold_fields() -> None:
+    out, _ = _c_select([])
+    assert out["cancelled_withheld_count"] == 0 and out["cancelled_withheld_request_ids"] == []
+
+
+class _CHookStr(str):
+    calls: list[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        _CHookStr.calls.append("__eq__")
+        return str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
+@pytest.mark.parametrize("where", ["status", "agent", "agent_uuid", "payload_schema", "payload_id"])
+def test_a_str_subclass_on_the_cancel_cannot_prove_cancellation(where: str) -> None:
+    if where.startswith("payload_"):
+        key = {"payload_schema": "schema", "payload_id": "cancelled_request_id"}[where]
+        cancel = _c_cancel({key: _CHookStr(_c_cancel()["payload"][key])})
+    else:
+        cancel = _c_cancel(**{where: _CHookStr(_c_cancel()[where])})
+    _CHookStr.calls.clear()
+    out, selected = _c_select([_c_request(), cancel])
+    assert selected == _C_RID and out["cancelled_withheld_count"] == 0, out

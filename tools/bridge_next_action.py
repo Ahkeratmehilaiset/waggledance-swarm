@@ -52,6 +52,11 @@ from waggledance.core.work_queue import (  # noqa: E402
 
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
 DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
+REQUEST_CANCELLATION_SCHEMA = "wd.request-cancellation.v1"
+REQUEST_CANCELLATION_FIELDS = frozenset(
+    {"schema", "cancelled_request_id", "cancelled_request_digest", "scope"})
+REQUEST_CANCELLATION_UUID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+REQUEST_CANCELLATION_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 # The append-only bridge's LF row 44000 contains one historical bare-CR
 # separator. Its full physical-row SHA-256 is
@@ -704,6 +709,13 @@ def recommend_next_action(
         if claim.agent != agent and claim.mode == "write"
     ]
     all_open_requests = _open_requests_for_agent(agent=agent, events=events)
+    cancelled_keys = _cancelled_withheld_request_keys(
+        agent=agent, events=events, requests=all_open_requests)
+    cancelled_withheld = sorted(set(cancelled_keys.values()))
+    all_open_requests = [
+        request for request in all_open_requests
+        if request_key(request, agent) not in cancelled_keys
+    ]
     open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
@@ -764,6 +776,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
             request=request,
@@ -784,6 +798,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
         )
@@ -802,6 +818,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
         )
@@ -834,6 +852,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
             request=request,
@@ -864,6 +884,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
         )
@@ -884,6 +906,8 @@ def recommend_next_action(
             stale_open_requests=reported_stale_open_requests,
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
+            cancelled_withheld_count=len(cancelled_keys),
+            cancelled_withheld_request_ids=cancelled_withheld,
             production_liveness=production_liveness,
             now_utc=effective_now,
         )
@@ -901,6 +925,8 @@ def recommend_next_action(
         stale_open_requests=reported_stale_open_requests,
         archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
+        cancelled_withheld_count=len(cancelled_keys),
+        cancelled_withheld_request_ids=cancelled_withheld,
         production_liveness=production_liveness,
             now_utc=effective_now,
     )
@@ -949,6 +975,82 @@ def _open_requests_for_agent(
     return [request for request in request_events if id(request) in open_ids or (
         (_event_type(request) == "wake_request" or correlation_field(request, "request_id"))
         and request_key(request, agent) in open_wakes)]
+
+
+def _exact_str_field(record: object, name: str) -> str | None:
+    """Top-level, case-exact, str-only read: no payload fallback (PS Get-BridgeExactStringField, 93efae83)."""
+    if type(record) is not dict:
+        return None
+    value = record.get(name)
+    return value if type(value) is str else None
+
+
+def _cancelled_withheld_request_keys(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    requests: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, ...], str]:
+    """{request key: request_id} for keys whose LATEST still-open revision is withheld by an exact v1
+    whole_request cancellation.
+
+    Parity with the PS selector Test-BridgeRequestCancelledWithheld (93efae83). ROUTING WITHHOLD only: never an
+    answer, completion, permission, claim or turn-gate clearance. Every open revision of a withheld key is
+    withheld so an older revision cannot resurface after deduplication."""
+    positions = {id(event): position for position, event in enumerate(events)}
+    cancels_by_task: dict[str, list[Mapping[str, Any]]] = {}
+    for event in events:
+        task = _exact_str_field(event, "task_id")
+        if task and _exact_str_field(event, "status") == "cancelled":
+            cancels_by_task.setdefault(task, []).append(event)
+    if not cancels_by_task:
+        return {}
+    latest: dict[tuple[str, ...], Mapping[str, Any]] = {}
+    for request in requests:
+        key = request_key(request, agent)
+        if key not in latest or positions.get(id(request), -1) > positions.get(id(latest[key]), -1):
+            latest[key] = request
+    return {
+        key: str(_exact_str_field(request, "request_id")) for key, request in latest.items()
+        if _request_cancelled_withheld(request, cancels_by_task, positions)
+    }
+
+
+def _request_cancelled_withheld(
+    request: Mapping[str, Any],
+    cancels_by_task: Mapping[str, Sequence[Mapping[str, Any]]],
+    positions: Mapping[int, int],
+) -> bool:
+    """A LATER event (log position) on the same task by the exact requester agent AND agent_uuid (any session),
+    status exactly 'cancelled', payload exactly the closed wd.request-cancellation.v1 {schema,
+    cancelled_request_id, cancelled_request_digest, scope: whole_request} naming this request_id and its stored
+    lowercase hex64 request_digest. Anything else leaves the request open."""
+    rid = _exact_str_field(request, "request_id")
+    digest = _exact_str_field(request, "request_digest")
+    requester = _exact_str_field(request, "agent")
+    uuid = _exact_str_field(request, "agent_uuid")
+    task = _exact_str_field(request, "task_id")
+    position = positions.get(id(request))
+    if (not rid or not requester or not task or not uuid or position is None
+            or REQUEST_CANCELLATION_UUID_PATTERN.fullmatch(uuid) is None
+            or digest is None or REQUEST_CANCELLATION_DIGEST_PATTERN.fullmatch(digest) is None):
+        return False
+    for event in cancels_by_task.get(task, ()):
+        if positions[id(event)] <= position:
+            continue
+        if _exact_str_field(event, "agent") != requester or _exact_str_field(event, "agent_uuid") != uuid:
+            continue
+        payload = event.get("payload")
+        if (type(payload) is not dict or len(payload) != len(REQUEST_CANCELLATION_FIELDS)
+                or not all(type(name) is str for name in payload)
+                or set(payload) != REQUEST_CANCELLATION_FIELDS):
+            continue
+        if (_exact_str_field(payload, "schema") == REQUEST_CANCELLATION_SCHEMA
+                and _exact_str_field(payload, "scope") == "whole_request"
+                and _exact_str_field(payload, "cancelled_request_id") == rid
+                and _exact_str_field(payload, "cancelled_request_digest") == digest):
+            return True
+    return False
 
 
 def _build_request_closure_index(
@@ -2518,6 +2620,8 @@ def _report(
     production_liveness: Mapping[str, Any],
     now_utc: datetime,
     request: Mapping[str, Any] | None = None,
+    cancelled_withheld_count: int = 0,
+    cancelled_withheld_request_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     stale_task_ids = _unique_task_ids(stale_open_requests)
     archived_stale_task_ids = _unique_task_ids(archived_stale_open_requests)
@@ -2535,6 +2639,9 @@ def _report(
         "open_incoming_task_count": len({_task_id(r) for r in open_requests}),
         "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),
+        # Withheld from routing by an exact v1 whole_request cancellation: NOT answered, completed or accepted.
+        "cancelled_withheld_count": cancelled_withheld_count,
+        "cancelled_withheld_request_ids": list(cancelled_withheld_request_ids),
         "worker_class": worker_class(agent),
         "oldest_open_request_age_seconds": max((
             max(0.0, (now_utc - sent).total_seconds())

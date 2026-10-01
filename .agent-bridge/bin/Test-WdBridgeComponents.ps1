@@ -18,10 +18,13 @@
     "invalid_input". There is never a bare-Python, PATH or repository-relative
     fallback. Arguments are passed as an argv array; no command line is built.
 
-    CURRENT PIN: the doctor is NOT packaged in bundle 8a7576af (it is not a
-    python_entrypoint in bridge-code-files.json there), so under that pin this
-    script refuses with doctor_unavailable. It never reports readiness by
-    itself, and nothing calls it from a production start or preflight path.
+    PACKAGE HISTORY: the doctor was not packaged in bundle 8a7576af, so that pin
+    refuses with doctor_unavailable. Bundle 7779e9a2145c82389dd97c333bbe3112e3c29ff0
+    includes tools/wd_bridge_doctor.py and the bridge_doctor entrypoint in
+    bridge-code-files.json. Packaging is not evidence of provider readiness
+    or launcher wiring: this front end still verifies the inherited pin and
+    report on every invocation. No direct doctor invocation was found in
+    start-wd-agent.ps1 or start-wd-tools-consumer.ps1 at that exact source head.
 
     It performs no credential access, provider or model call, installation
     or file write. The pinned wrapper keeps its own documented behaviour.
@@ -46,7 +49,8 @@
 
 .NOTES
     Run it as its own process (-File) so its exit status is the process exit
-    code. Unexecuted tests: tests/tools/test_wd_bridge_components_ps.py.
+    code. Isolated relay fixtures: tests/tools/test_wd_bridge_components_ps.py.
+    Fixture success is not a live provider, launch or continuity observation.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(

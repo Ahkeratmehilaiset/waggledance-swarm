@@ -49,7 +49,7 @@ def _consult_argv(state):
     prompt.write_text("Review the gate. COMPLETE, no tools.", encoding="utf-8")
     return ["grok", "--model", "grok-4", "--effort", "high", "--prompt-file", str(prompt), "--verbatim",
             "--no-alt-screen", "--no-subagents", "--max-turns", "1", "--tools", "", "--deny", "*",
-            "--permission-mode", "plan", "--disable-web-search", "--no-memory"]
+            "--permission-mode", "plan", "--disable-web-search", "--no-memory", "--output-format", "json"]
 
 
 def _replace(argv, option, value):
@@ -162,7 +162,11 @@ def test_only_the_exact_no_tools_argv_is_accepted_and_every_round_denies_native_
     for bad, message in ((_replace(argv, "--tools", "read_file"), "mandatory no-native-tools"),
                          (_replace(argv, "--deny", "none"), "mandatory no-native-tools"),
                          (argv + ["--allow-tools"], "Unexpected Grok argument"),
-                         ([a for a in argv if a != "--no-memory"], "mandatory no-native-tools")):
+                         ([a for a in argv if a != "--no-memory"], "mandatory no-native-tools"),
+                         # F4: consult asks for JSON output; another format or none is not its argv
+                         (_replace(argv, "--output-format", "text"), "mandatory no-native-tools"),
+                         (argv[:-2], "mandatory no-native-tools"),
+                         (argv + ["--output-format", "json"], "Unexpected Grok argument")):
         with pytest.raises(ValueError, match=message):
             session.validate_consult_argv(bad)
     model = Model([(LIST, "sess-1"), (FINAL, "sess-1")])

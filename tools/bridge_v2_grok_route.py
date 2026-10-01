@@ -51,7 +51,15 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 "9c2cb61c18197606ce64f3562246b8b2d797b29a": "55026fad (strict lifecycle receipts)",
                 "0085e3e2255d4de7cc1a349e8e3c2a2106225d77": "Fable 0621 no-hour helper (eligible = local availability)",
                 "1b0299f436d6ed7fd1d625661764e6a4274f0767": "Fable 0700 fleet context isolation (same local eligibility)",
-                "e985c1d7d56176044904041db3d65b709c69ceb7": "RCO1 G1 requester-bound results (same local eligibility)"}
+                "e985c1d7d56176044904041db3d65b709c69ceb7": "RCO1 G1 requester-bound results (same local eligibility)",
+                # F4 re-review: status() and the answered report keep every field admit/bind read; the
+                # report is still the hashed answer text, and a deferral keeps its request_id None shape.
+                # Replaces the unreleased 3b02d0cc, dbdd62d4 and 626d4373 (read_ledger raised on a malformed
+                # request_id, Lead 18:19:52Z; the Grok-review items G1-G4, Lead 18:25:23Z; then T2/T3, Lead
+                # 18:42:36Z: the CLI launch reads the null device as stdin, and the state and the ledger add the
+                # request and stream sizes). The report and every field admit/bind read are unchanged.
+                "de1e612ee8255cb4bea4d0580f8abe1d615918ad": "Fable F4 JSON output + strict bounded measurement "
+                                                            "ledger (same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

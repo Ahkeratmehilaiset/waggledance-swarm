@@ -52,7 +52,7 @@ load. v2 adds four tables:
 ``model_table`` renders one row per model and effort with explicit unknown
 cells (the plan's ``wd-model models`` table). It is advisory and grants nothing.
 
-See docs/BRIDGE_MODEL_REGISTRY.md (it still describes v1).
+See docs/BRIDGE_MODEL_REGISTRY.md (schema v2; v1 files still load).
 """
 from __future__ import annotations
 

@@ -102,8 +102,9 @@ _TASK_KEY = re.compile(r".*tasks?[_-]?(?:ids?)?", re.ASCII)
 # Keys whose TOKEN-shaped values are not free text: exact or separator-delimited id names (id, request_id,
 # event-id; never an English word that merely ends in "id" such as valid or paid), task names, timestamps, the
 # agent label and write_scope paths (RCO1 R2 on 76a60086). A value is exempt only when it is a token (no
-# whitespace: an id, a time or a path); free text under these keys is still scanned.
-_QUIET_KEY = re.compile(r"(?:.*[_-])?(?:ids?|tasks?(?:[_-]?ids?)?|utc|ts)|agent|write_scope", re.ASCII)
+# whitespace: an id, a time or a path); free text under these keys is still scanned. Time keys stay exactly
+# *_utc and ts as at 76a60086: <x>_ts, <x>-ts, utc and <x>-utc are ordinary keys (RCO2 2d4b F1).
+_QUIET_KEY = re.compile(r"(?:.*[_-])?(?:ids?|tasks?(?:[_-]?ids?)?)|.*_utc|ts|agent|write_scope", re.ASCII)
 _TOKEN = re.compile(r"[A-Za-z0-9._:/\\@+-]{1,512}", re.ASCII)
 
 R_INPUT = "input_malformed"

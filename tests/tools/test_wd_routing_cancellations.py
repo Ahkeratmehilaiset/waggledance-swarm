@@ -233,6 +233,30 @@ def test_token_shaped_ids_paths_and_times_containing_control_words_stay_clear(pa
     assert out["complete"] is True and out["unknown_tasks"] == [] and out["cancelled"] == []
 
 
+@pytest.mark.parametrize("key", ["review_ts", "close-ts", "x_ts", "utc", "deadline-utc", "a-utc"])
+@pytest.mark.parametrize("value", ["halt", "cancel", "freeze", "STOP"])
+def test_a_one_word_control_under_a_time_suffixed_key_is_scanned(key, value):
+    # RCO2 2d4b F1 on bec1ccdd: only *_utc and exact ts are time keys (as at 76a60086); <x>_ts, <x>-ts, utc and
+    # <x>-utc are ordinary keys whose one-word control value is scanned, never a quiet time.
+    out = derive([lead(payload={key: value})])
+    assert out["complete"] is True and out["unknown_tasks"] == [TASK] and out["cancelled"] == []
+
+
+def test_the_quiet_token_is_at_most_512_characters():
+    # A token longer than 512 characters is not an id, a time or a path: it is scanned like free text.
+    def unknown(value):
+        return derive([lead(payload={"request_id": value})])["unknown_tasks"]
+    assert unknown("hold" + "x" * 508) == [] and unknown("hold" + "x" * 509) == [TASK]
+
+
+@pytest.mark.parametrize("key, value", [("observed_utc", "halt"), ("dispatched_utc", "2026-10-01T21:00:00Z"),
+                                        ("ts", "STOP"), ("ts", "2026-10-01T21:00:00+03:00")])
+def test_real_time_keys_keep_token_values_quiet(key, value):
+    # Safe twins: *_utc and exact ts still exempt a token (a time, or a one-word token read as one: boundary).
+    out = derive([lead(payload={key: value})])
+    assert out["complete"] is True and out["unknown_tasks"] == [] and out["cancelled"] == []
+
+
 # --- the six measured legacy shapes and other non-facts: the TASK is unknown, never a fact, never ignored ----
 
 LEGACY_PAYLOADS = [

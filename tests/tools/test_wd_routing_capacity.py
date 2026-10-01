@@ -630,3 +630,47 @@ def test_a_hostile_identity_index_is_never_read(wrap, prefix):
     record = evidence(paced=_with_series(mixed, wrap))
     assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
     assert record["reasons"] and all(reason.startswith(prefix) for reason in record["reasons"]), record["reasons"]
+
+
+# --- RCO2 2d846 T1/T2: the own-pair match needs the exact pool AND an exact str identity ----------------------
+
+def test_t1_the_same_subject_in_another_pool_sampled_last_never_hides_this_pools_series():
+    # Same subject, another verified pool, newest: the top entry names this subject but not this pool.
+    other_pool = samples(windows=OTHER_WINDOWS, identity=(SUBJECT, "codex-pro-b"), ages=(30, 0))
+    paced = pace_windows(samples() + other_pool, now=NOW)
+    assert (paced["codex/codex/primary"]["subject"], paced["codex/codex/primary"]["account_pool"]) == (
+        SUBJECT, "codex-pro-b")
+    record = evidence(paced=paced)
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"] == evidence()["capacity"]
+
+
+class _AnyText(str):
+    """A str subclass that claims to equal anything: never an exact identity."""
+
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    __hash__ = str.__hash__
+
+
+def test_t2_an_exact_dict_index_series_with_a_lying_str_subclass_identity_is_never_borrowed():
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    for entry in mixed.values():
+        own = next(series for series in entry["identities"] if series["subject"] == SUBJECT)
+        # Only a lying series is left that numerically equals the row (same used_percent) but would forecast 1.0.
+        entry["identities"] = [series for series in entry["identities"] if series is not own] + [
+            dict(own, subject=_AnyText("x"), account_pool=_AnyText("y"), forecast_percent_at_reset=1.0)]
+    record = evidence(paced=mixed)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] and all(reason.startswith("window_subject_mismatch:")
+                                     for reason in record["reasons"]), record["reasons"]
+
+
+def test_t2_control_the_same_series_with_its_exact_identity_is_read():
+    mixed = pace_windows(samples() + samples(windows=OTHER_WINDOWS, identity=OTHER_ID, ages=(30, 0)), now=NOW)
+    record = evidence(paced=mixed)
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])

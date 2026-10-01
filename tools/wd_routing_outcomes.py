@@ -29,8 +29,9 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
   attempt's task id or its accepted branch as ``task_id``, a structured head equal to
   the accepted commit, and a time between the push and ``now``. The structured head is
   ``payload.exact_head`` (``payload.head`` must agree when present) or, only when the
-  ``exact_head`` key is absent, the live writer's ``payload.head`` that the message
-  also contains. Prose alone never binds a head, so a free-text-only finding is
+  ``exact_head`` key is absent, the live writer's ``payload.head``. A pass's message must
+  also contain that ``payload.head``; a finding's need not, because a finding can only
+  restrict (RCO2 ad022 R1). Prose alone never binds a head, so a free-text-only finding is
   ``unbound``; the merge gate's own veto reading is separate and unchanged.
 * A pass is ``type`` decision or rco_review with ``status`` rco_pass, from an
   evaluator other than the worker (identities folded as in wd_routing_weights). A
@@ -123,14 +124,16 @@ def _advice_ok(record: dict) -> bool:
             and len({r["worker"] for r in ranking}) == len(ranking))
 
 
-def _head_claim(event: dict) -> str | None:
+def _head_claim(event: dict, kind: str) -> str | None:
     """The structured head, or None. Prose alone never binds.
 
     ``payload.exact_head`` is primary: when the key is present it must be an exact lowercase 40-hex str,
     and a present ``payload.head`` must be the same exact str. With no ``exact_head`` key, the live
     writer's shape binds (BIN Write-AgentEvent.ps1:439-445): ``payload.head`` is an exact lowercase
-    40-hex str and the exact-str message contains it (ordinal). A null, malformed or conflicting
-    ``exact_head`` never falls back to ``head``."""
+    40-hex str and, for a pass, the exact-str message contains it (ordinal). A finding binds by
+    ``payload.head`` alone: it can only restrict, so the stricter pass rule would only let a real
+    finding go uncounted (RCO2 ad022 R1). A null, malformed or conflicting ``exact_head`` never falls
+    back to ``head``."""
     payload = event.get("payload")
     if not isinstance(payload, dict):
         return None
@@ -141,7 +144,7 @@ def _head_claim(event: dict) -> str | None:
             return None
         return exact
     message = event.get("message")
-    if _hex(head, 40) and type(message) is str and head in message:
+    if _hex(head, 40) and (kind == "finding" or (type(message) is str and head in message)):
         return head
     return None
 
@@ -259,7 +262,7 @@ def _produce(advice: Any, attempts: Any, evaluator_events: Any, now: Any) -> dic
         if observed > moment:
             _reject(rejected, "event", event_digest, "future_dated")
             continue
-        head = _head_claim(event)
+        head = _head_claim(event, kind)
         targets = [b for b in bound if head == b["head"] and event["task_id"] in b["task_ids"]]
         if head is None or not targets:
             _reject(rejected, "event", event_digest, "unbound")

@@ -176,6 +176,20 @@ def test_s0_the_message_key_absent_is_unbound():
     assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
 
 
+class Liar(str):
+    """A str that also claims to equal every name in ``lies`` (RCO2 F1, 0e599be0)."""
+
+    def __new__(cls, text, lies):
+        value = super().__new__(cls, text)
+        value.lies = frozenset(lies)
+        return value
+
+    def __eq__(self, other):
+        return other in self.lies or str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
 class Containing(str):
     """A str that claims to contain anything."""
 
@@ -215,6 +229,74 @@ def test_s0_writer_shaped_passes_keep_f1_and_f2():
     assert lying["outcomes"] == [] and "malformed" in reasons(lying, "event")
     twice = produce([writer_pass()], **two_targets())
     assert twice["outcomes"] == [] and "event_target_ambiguous" in reasons(twice, "event")
+
+
+def structured_finding(agent="claude-rco-2", head=HEAD, **over):
+    """A writer-shaped finding whose prose does not repeat the head: payload.head only (RCO2 ad022 R1)."""
+    row = event(agent=agent, kind="finding", payload={"head": head}, message="changes requested, see the review")
+    row.update(over)
+    return row
+
+
+def test_r1_a_structured_finding_restricts_without_the_head_in_its_message():
+    out = produce([writer_pass(), structured_finding()])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"] and out["rejected"] == []
+    assert out["outcomes"][0]["evaluators"] == ["claude-rco-2"]
+    assert only_pair(weights(out["outcomes"]))["state"] == "quarantined"
+
+
+def test_r1_a_pass_of_the_same_shape_still_needs_the_head_in_its_message():
+    out = produce([writer_pass(message="rco_pass, see the review")])
+    assert out["outcomes"] == [] and "unbound" in reasons(out, "event")
+
+
+@pytest.mark.parametrize("over, reason", [
+    ({"payload": {"head": None}}, "unbound"),
+    ({"payload": {"head": OTHER_HEAD}}, "unbound"),
+    ({"payload": {"head": HEAD.upper()}}, "unbound"),
+    ({"payload": {"head": HEAD[:12]}}, "unbound"),
+    ({"payload": {}}, "unbound"),
+    ({"payload": {"exact_head": None, "head": HEAD}}, "unbound"),          # no fallback from a present exact_head
+    ({"payload": {"exact_head": HEAD[:12], "head": HEAD}}, "unbound"),
+    ({"payload": {"exact_head": OTHER_HEAD, "head": HEAD}}, "unbound"),
+    ({"task_id": "codex-lead-1/other"}, "unbound"),
+    ({"agent": "codex-tools-1"}, "unrecognized_evaluator"),
+    ({"type": Liar("message", {"finding"})}, "malformed"),
+])
+def test_r1_a_structured_finding_restricts_only_when_it_binds(over, reason):
+    out = produce([writer_pass(), structured_finding(**over)])
+    assert [o["result"] for o in out["outcomes"]] == ["success"]
+    assert reasons(out, "event") == [reason]
+
+
+def test_r1_the_workers_own_structured_finding_still_restricts():
+    out = produce([structured_finding(agent="claude-rco-1")], advices=[advice(ranking=[
+        {"worker": "claude-rco-1", "profile_id": "rco-strong", "route": "direct"}])],
+        attempts=[attempt(worker="claude-rco-1")])
+    assert [o["result"] for o in out["outcomes"]] == ["failure"]
+
+
+def test_r1_a_structured_finding_that_binds_two_targets_restricts_both():
+    out = produce([structured_finding()], **two_targets())
+    assert sorted(o["dispatch_key"] for o in out["outcomes"]) == sorted([KEY, KEY2])
+    assert {o["result"] for o in out["outcomes"]} == {"failure"} and out["rejected"] == []
+
+
+def test_r1_a_free_text_only_finding_stays_unbound():
+    out = produce([writer_pass(), structured_finding(payload={}, message="finding at " + HEAD)])
+    assert [o["result"] for o in out["outcomes"]] == ["success"] and reasons(out) == ["unbound"]
+
+
+def test_t1_a_full_length_hex_liar_head_never_binds():
+    """Liar is 40 lowercase hex and claims to equal the accepted head; its own text is in the message.
+    Only the exact-type check in _hex stops it (mutant: _hex accepts any str subclass)."""
+    liar = Liar("c" * 40, {HEAD})
+    fallback = produce([writer_pass(payload={"head": liar}, message="rco_pass at exact head " + "c" * 40)])
+    assert fallback["outcomes"] == [] and "unbound" in reasons(fallback, "event")
+    exact = produce([event(payload={"exact_head": liar}, message="rco_pass at exact head " + "c" * 40)])
+    assert exact["outcomes"] == [] and "unbound" in reasons(exact, "event")
+    finding = produce([writer_pass(), structured_finding(payload={"head": liar})])
+    assert [o["result"] for o in finding["outcomes"]] == ["success"] and reasons(finding) == ["unbound"]
 
 
 def test_s0_an_exact_head_with_an_agreeing_head_still_binds():
@@ -416,20 +498,6 @@ class Sneaky(str):
 def test_hostile_events_are_rejected_visibly(hostile):
     out = produce([hostile])
     assert out["outcomes"] == [] and "malformed" in reasons(out, "event")
-
-
-class Liar(str):
-    """A str that also claims to equal every name in ``lies`` (RCO2 F1, 0e599be0)."""
-
-    def __new__(cls, text, lies):
-        value = super().__new__(cls, text)
-        value.lies = frozenset(lies)
-        return value
-
-    def __eq__(self, other):
-        return other in self.lies or str.__eq__(self, other)
-
-    __hash__ = str.__hash__
 
 
 def test_f1_a_lying_type_cannot_forge_a_pass():

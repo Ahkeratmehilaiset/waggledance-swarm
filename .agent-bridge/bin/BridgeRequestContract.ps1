@@ -108,6 +108,26 @@ function Test-BridgeBoundRequest {
     return $false
 }
 
+function Test-BridgeContractValuesDiffer {
+    # RCO2 64140a03 F2: PowerShell -cne compares strings culture-sensitively, so a soft hyphen, zero-width
+    # character or a decomposed accent can make two different ids, labels or digests equal. Two strings are
+    # compared ORDINALLY; any other value keeps the previous -cne truthiness (no broader or narrower binding).
+    param($Left, $Right)
+    if ($Left -is [string] -and $Right -is [string]) {
+        return -not [string]::Equals([string]$Left, [string]$Right, [System.StringComparison]::Ordinal)
+    }
+    return [bool]($Left -cne $Right)
+}
+
+function Test-BridgeContractListContains {
+    # Ordinal membership for the recipient list (replaces the culture-sensitive -cnotcontains).
+    param([AllowEmptyCollection()] [string[]] $List, [string] $Value)
+    foreach ($item in $List) {
+        if ([string]::Equals($item, $Value, [System.StringComparison]::Ordinal)) { return $true }
+    }
+    return $false
+}
+
 function Test-BridgeReplyBinding {
     param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false,
         [bool]$RequireExplicitCorrelation=$false, [int]$RequestPosition=-1, [int]$ReplyPosition=-1)
@@ -129,25 +149,25 @@ function Test-BridgeReplyBinding {
     if (Get-BridgeContractField $Request 'request_binding_conflict') { return $false }
     $requester = [string](Get-BridgeContractField $Request 'agent')
     $author = if ($RequesterClosure) { $requester } else { $Target }
-    if ([string](Get-BridgeContractField $Reply 'agent') -cne $author) { return $false }
-    if ([string](Get-BridgeContractField $Reply 'task_id') -cne [string](Get-BridgeContractField $Request 'task_id')) { return $false }
+    if (Test-BridgeContractValuesDiffer ([string](Get-BridgeContractField $Reply 'agent')) $author) { return $false }
+    if (Test-BridgeContractValuesDiffer ([string](Get-BridgeContractField $Reply 'task_id')) ([string](Get-BridgeContractField $Request 'task_id'))) { return $false }
     $sent = ConvertTo-BridgeContractTime (Get-BridgeContractField $Request 'ts_utc')
     $answered = ConvertTo-BridgeContractTime (Get-BridgeContractField $Reply 'ts_utc')
     if ($null -eq $sent -or $null -eq $answered -or $answered -le $sent) { return $false }
     $recipients = @(([string](Get-BridgeContractField $Reply 'to') -split ',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
     $recipient = if ($RequesterClosure) {$Target} else {$requester}
-    if ($recipients.Count -and $recipients -cnotcontains $recipient) { return $false }
+    if ($recipients.Count -and -not (Test-BridgeContractListContains $recipients $recipient)) { return $false }
     $rid = Get-BridgeContractField $Request 'request_id'
     if ($null -ne $rid) {
-        if ($rid -isnot [string] -or -not $rid -or (Get-BridgeContractField $Reply 'in_reply_to_request_id') -cne $rid) { return $false }
-        if ($recipients -cnotcontains $recipient) { return $false }
+        if ($rid -isnot [string] -or -not $rid -or (Test-BridgeContractValuesDiffer (Get-BridgeContractField $Reply 'in_reply_to_request_id') $rid)) { return $false }
+        if (-not (Test-BridgeContractListContains $recipients $recipient)) { return $false }
         $digest = Get-BridgeContractField $Request 'request_digest'
-        if ($null -ne $digest -and (Get-BridgeContractField $Reply 'in_reply_to_request_digest') -cne $digest) { return $false }
+        if ($null -ne $digest -and (Test-BridgeContractValuesDiffer (Get-BridgeContractField $Reply 'in_reply_to_request_digest') $digest)) { return $false }
         $context = Get-BridgeContractField $Reply 'in_reply_to_requester'
         if ($null -eq $context) { return $false }
         foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
             $expected = Get-BridgeContractField $Request $key
-            if ($expected -and (Get-BridgeContractField $context $key) -cne $expected) { return $false }
+            if ($expected -and (Test-BridgeContractValuesDiffer (Get-BridgeContractField $context $key) $expected)) { return $false }
         }
     } elseif ($null -ne (Get-BridgeContractField $Reply 'in_reply_to_request_id')) { return $false }
     $reference = Get-BridgeContractField $Reply 'request_ts_utc'
@@ -157,7 +177,7 @@ function Test-BridgeReplyBinding {
         $expected = Get-BridgeContractField $Request $key
         $actual = Get-BridgeContractField $Reply $key
         if ($null -ne $expected) {
-            if (($null -eq $rid -or $null -ne $actual) -and $actual -cne $expected) { return $false }
+            if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractValuesDiffer $actual $expected)) { return $false }
             $correlated = $true
         }
     }
@@ -178,7 +198,7 @@ function Test-BridgeReplyBinding {
         foreach ($key in @('agent_uuid','session_id','run_id')) {
             $value = Get-BridgeContractField $identity $key
             if (-not $RequesterClosure -and ($value -isnot [string] -or -not $value)) { return $false }
-            if ($value -and (Get-BridgeContractField $Reply $key) -cne $value) { return $false }
+            if ($value -and (Test-BridgeContractValuesDiffer (Get-BridgeContractField $Reply $key) $value)) { return $false }
         }
     }
     return $true

@@ -236,3 +236,73 @@ def test_malformed_responder_identity_fails_closed(tmp_path, engine, identity):
         proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True, timeout=30)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout) is False
+
+
+# --- Ordinal binding (RCO2 64140a03 F2): culture-ignorable characters never make two ids/labels/digests equal ------
+# PowerShell -ceq/-cne/-ccontains compare culture-sensitively, so a soft hyphen, zero-width joiner/space or a
+# decomposed accent could make an answer bind a request it does not name. Every case below must be refused in
+# both shells; the exact twin must still bind.
+_ORD_NOISE = {'soft_hyphen': '­', 'zwj': '‍', 'zwsp': '​', 'zwnj': '‌', 'bom': '﻿',
+              'word_joiner': '⁠'}
+
+
+def _ordinal_pair():
+    _, request, reply = events()
+    request.update(request_id='request-v2', request_digest='d' * 64)
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='d' * 64,
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    return request, reply
+
+
+def _ordinal_cases():
+    cases = {'exact_twin': _ordinal_pair()}
+    for noise_name, noise in _ORD_NOISE.items():
+        for field in ('in_reply_to_request_id', 'in_reply_to_request_digest', 'agent', 'task_id', 'to'):
+            request, reply = _ordinal_pair()
+            reply[field] = reply[field] + noise
+            cases[f'{field}+{noise_name}'] = (request, reply)
+        for key in ('agent', 'agent_uuid', 'session_id', 'run_id'):
+            request, reply = _ordinal_pair()
+            reply['in_reply_to_requester'][key] = reply['in_reply_to_requester'][key] + noise
+            cases[f'requester.{key}+{noise_name}'] = (request, reply)
+        for key in ('agent_uuid', 'session_id', 'run_id'):
+            request, reply = _ordinal_pair()
+            reply[key] = reply[key] + noise
+            cases[f'responder.{key}+{noise_name}'] = (request, reply)
+        request, reply = _ordinal_pair()
+        reply['payload']['nonce'] = reply['payload']['nonce'] + noise
+        cases[f'nonce+{noise_name}'] = (request, reply)
+    for name, edit in {'id_case': ('in_reply_to_request_id', 'Request-v2'), 'digest_case': ('in_reply_to_request_digest', 'D' * 64),
+                       'task_case': ('task_id', 'Fixture/request'), 'agent_case': ('agent', 'Codex-Tools-1'),
+                       'nonce_mismatch': (None, None)}.items():
+        request, reply = _ordinal_pair()
+        if edit[0]:
+            reply[edit[0]] = edit[1]
+        else:
+            reply['payload']['nonce'] = 'v1'
+        cases[name] = (request, reply)
+    request, reply = _ordinal_pair()                         # precomposed vs decomposed accent in an id
+    request['request_id'] = 'réquest-v2'
+    reply['in_reply_to_request_id'] = 'réquest-v2'
+    cases['id_decomposed_accent'] = (request, reply)
+    return cases
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+def test_reply_binding_compares_ids_labels_and_digests_ordinally(tmp_path, engine):
+    cases = _ordinal_cases()
+    fixture = tmp_path / 'ordinal.json'
+    fixture.write_text(json.dumps([{'name': n, 'request': q, 'reply': r} for n, (q, r) in cases.items()], ensure_ascii=True),
+                       encoding='utf-8')
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    assert verdicts.pop('exact_twin') is True
+    accepted = sorted(name for name, bound in verdicts.items() if bound)
+    assert accepted == [], accepted
+    assert len(verdicts) == len(cases) - 1

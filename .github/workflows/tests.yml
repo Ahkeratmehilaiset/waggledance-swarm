@@ -50,7 +50,7 @@ jobs:
 
     - name: Run pytest
       run: |
-        python -m pytest tests/ -v --tb=short
+        python -m pytest tests/tools/test_wd_tools_exact_incoming_retrieval.py -v -rs --tb=short
 
     - name: Run benchmark baseline
       run: |

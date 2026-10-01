@@ -296,3 +296,210 @@ def test_include_request_rejects_ambiguous_task_timestamp_even_page_one(tmp_path
     assert result.returncode != 0
     assert "requires exactly one matched request" in result.stderr
     assert not result.stdout.strip()
+
+# --- append-resumable continuation token v3 (opt-in; frozen complete prefix) ------------------------------
+
+def _append(runtime: Path, text: str) -> None:
+    with (runtime / "shared/events.jsonl").open("ab") as stream:
+        stream.write(text.encode("utf-8"))
+
+
+def _row(index: int, **over: object) -> str:
+    row = dict(ts_utc="2026-09-30T00:00:00Z", agent="codex-lead-1", agent_uuid="lead-uuid", session_id="lead-session",
+               run_id="lead-run", to="codex-tools-1", type="wake_request", status="assigned",
+               task_id=f"fixture/task-{index:03d}", request_id=f"request-{index:03d}", request_digest=f"digest-{index:03d}",
+               message="bounded inventory regression", payload={})
+    row.update(over)
+    return json.dumps(row) + "\n"
+
+
+def _ids(result: subprocess.CompletedProcess[str]) -> list[str]:
+    assert result.returncode == 0, result.stderr
+    return [row["request_id"] for row in json.loads(result.stdout)["requests"]]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_default_output_has_no_continuation_fields(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    data = json.loads(_run(shell, runtime, script, "-PageSize", "2").stdout)
+    assert "continuation_token" not in data and "continuation" not in data
+    assert data["next_cursor"].count(":") == 2                        # the v2 cursor is unchanged
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_resumable_token_survives_complete_and_unfinished_appends(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    first = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)
+    token = first["continuation_token"]
+    assert first["continuation"] == "frozen_prefix_v3" and token.startswith("v3.")
+    _append(runtime, _row(600) + _row(601, type="message", status="cancelled", request_id=None) + '{"agent":"codex-lead-1"')
+    second = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", token)
+    assert _ids(second) == ["request-597", "request-596"]
+    data = json.loads(second.stdout)
+    assert data["snapshot_bytes"] == first["snapshot_bytes"] and data["request_count"] == 600
+    assert data["authority_effect"] == "none" and data["next_cursor"] is None
+    third = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", data["continuation_token"])
+    assert _ids(third) == ["request-595", "request-594"]
+    stale = _run(shell, runtime, script, "-PageSize", "2", "-Cursor", first["next_cursor"])
+    assert stale.returncode != 0 and not stale.stdout.strip()   # legacy cursor still refused (here by the unfinished tail)
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_resumable_pages_cover_the_frozen_snapshot_once_despite_appends(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    page = json.loads(_run(shell, runtime, script, "-Resumable").stdout)
+    seen = [row["request_id"] for row in page["requests"]]
+    count = 600
+    while page["truncated"]:
+        _append(runtime, _row(count))                                  # a new request after every page
+        count += 1
+        result = _run(shell, runtime, script, "-ContinuationToken", page["continuation_token"])
+        assert result.returncode == 0, result.stderr
+        page = json.loads(result.stdout)
+        seen.extend(row["request_id"] for row in page["requests"])
+    assert seen == [f"request-{index:03d}" for index in range(599, -1, -1)]   # all frozen ids, once, newest first
+    assert page["continuation_token"] is None
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("change", ("rewrite", "truncate", "truncate_into_prefix", "rotate"))
+def test_resumable_token_refuses_prefix_rewrite_truncation_and_rotation(tmp_path: Path, shell: str, change: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    log = runtime / "shared/events.jsonl"
+    token = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)["continuation_token"]
+    data = log.read_bytes()
+    if change == "rewrite":                                            # same length, one byte of an old row
+        index = data.index(b"bounded inventory regression")
+        log.write_bytes(data[:index] + b"B" + data[index + 1:])
+    elif change == "truncate":
+        log.write_bytes(data[: data.rindex(b"\n", 0, len(data) - 1) + 1])
+    elif change == "truncate_into_prefix":
+        log.write_bytes(data[: len(data) // 2])
+    else:                                                              # same bytes, a new file identity
+        replacement = log.with_name("events.new")
+        replacement.write_bytes(data)
+        os.replace(replacement, log)
+    refused = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", token)
+    assert refused.returncode != 0, refused.stdout
+    assert not refused.stdout.strip()
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("changed", (
+    ("-PageSize", "3"), ("-SessionId", "lead-session"), ("-TaskId", "fixture/task-000"), ("-DiagnosticPartial",),
+))
+def test_resumable_token_refuses_a_changed_query_or_page_size(tmp_path: Path, shell: str, changed: tuple[str, ...]) -> None:
+    runtime, script = _fixture(tmp_path)
+    token = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)["continuation_token"]
+    args = ["-ContinuationToken", token, *changed] + ([] if changed[0] == "-PageSize" else ["-PageSize", "2"])
+    refused = _run(shell, runtime, script, *args)
+    assert refused.returncode != 0 and "does not match this query" in refused.stderr
+    assert not refused.stdout.strip()
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_resumable_token_is_validated_and_never_mixed_with_a_legacy_cursor(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    first = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)
+    both = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", first["continuation_token"],
+                "-Cursor", first["next_cursor"])
+    assert both.returncode != 0 and not both.stdout.strip()
+    parts = first["continuation_token"].split(".")
+    for index, value in ((3, "1"), (4, "0" * 64), (5, "1"), (7, "999999")):
+        forged = ".".join(parts[:index] + [value] + parts[index + 1:])
+        result = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", forged)
+        assert result.returncode != 0 and not result.stdout.strip(), (index, result.stdout)
+
+
+# --- RCO2 c868 R-1: a frozen prefix above one 64 MiB reader call is read in bounded chunks ---------------
+
+_CHUNK = 67108864
+
+
+def _large_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """Over 64 MiB of non-request filler (30 KB rows, so one row straddles the 64 MiB chunk boundary), then 60
+    requests at the end: every request page needs the frozen prefix beyond the first reader chunk."""
+    runtime, script = _fixture(tmp_path)
+    pad = "x" * 30000
+    with (runtime / "shared/events.jsonl").open("w", encoding="utf-8") as out:
+        for _ in range(2300):
+            out.write(json.dumps({"ts_utc": "2026-09-28T00:00:00Z", "agent": "fable-5", "type": "message",
+                                  "status": "progress", "task_id": "fill", "message": pad}) + "\n")
+        for index in range(60):
+            out.write(_row(index))
+    assert (runtime / "shared/events.jsonl").stat().st_size > _CHUNK + 1_000_000
+    return runtime, script
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_r1_a_frozen_prefix_over_64_mib_continues_and_ignores_appends(tmp_path: Path, shell: str) -> None:
+    runtime, script = _large_fixture(tmp_path)
+    first = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)
+    assert [row["request_id"] for row in first["requests"]] == ["request-059", "request-058"]
+    _append(runtime, _row(900))                                       # a complete row after the freeze
+    _append(runtime, '{"ts_utc": "2026-09-30T00:00:00Z", "agent": "codex-lead-1", "request_id": "unfin')
+    second = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", first["continuation_token"])
+    assert _ids(second) == ["request-057", "request-056"]
+    data = json.loads(second.stdout)
+    assert data["continuation"] == "frozen_prefix_v3" and data["continuation_token"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_r1_a_rewrite_beyond_the_first_chunk_is_refused(tmp_path: Path, shell: str) -> None:
+    runtime, script = _large_fixture(tmp_path)
+    token = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)["continuation_token"]
+    log = runtime / "shared/events.jsonl"
+    data = bytearray(log.read_bytes())
+    at = data.index(b"xxxxx", _CHUNK + 1000)                          # inside the second reader chunk
+    data[at] = ord("y")
+    log.write_bytes(bytes(data))
+    refused = _run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", token)
+    assert refused.returncode != 0 and not refused.stdout.strip()
+
+
+_STUB = r"""
+$ErrorActionPreference = 'Stop'
+function Get-BridgeReplyTextHash { param([string]$Text) return ('A' * 64) }
+function Get-BridgeCursorValidation { param($Cursor) [pscustomobject]@{valid=$true; generation=$null; file_identity='f'; offset=$Cursor.offset} }
+function Get-BridgeReplyPrefixHash { param($Path, $Length) return ('B' * 64) }
+function Get-BridgeContractField { param($Object, $Name) return $Object.$Name }
+function Assert-BridgeReplySnapshotStable { param($Path, $Cursor, $PrefixHash) }
+$script:calls = 0
+function Read-BridgeEventDelta {
+    param($Path, $Cursor, $MaxBytes, $MaxRows)
+    $script:calls++
+    if ($script:calls -gt 5) { throw 'LOOPED' }
+    $from = if ($null -eq $Cursor) { 0 } else { $Cursor.offset }
+    $to = if ($env:STUB_MODE -eq 'stall') { $from } else { $from + 10 }
+    $rows = if ($env:STUB_MODE -eq 'rows') { @(1..$MaxRows | ForEach-Object { [pscustomobject]@{request_id='r'} }) } else { @() }
+    [pscustomobject]@{status='OK'; reason=''; candidate_cursor=[pscustomobject]@{offset=$to}; rows=$rows}
+}
+. $env:STUB_CURSOR
+$token = 'v3.' + ('A' * 16) + '.' + ('A' * 16) + '.40.' + ('B' * 64) + '.0.' + ('C' * 16) + '.0'
+try { [void](Read-BridgeInventoryFrozenPrefix -Path 'x' -Token $token -QueryHash ('C' * 16)); 'RESULT ok' }
+catch { 'RESULT ' + $_.Exception.Message }
+"""
+
+
+@pytest.mark.parametrize("mode, expected", [("stall", "did not advance"), ("rows", "row bound")])
+def test_r1_a_chunk_without_progress_or_over_the_row_bound_refuses_and_never_loops(tmp_path: Path, mode: str,
+                                                                                    expected: str) -> None:
+    shell = SHELLS[0]
+    stub = tmp_path / "stub.ps1"
+    stub.write_text(_STUB, encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_", "GIT_"))}
+    env.update(STUB_MODE=mode, STUB_CURSOR=str(BASE_BIN / "BridgeInventoryCursor.ps1"))
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(stub)], capture_output=True,
+                            text=True, encoding="utf-8", env=env, timeout=45)
+    line = [l for l in result.stdout.splitlines() if l.startswith("RESULT ")]
+    assert line and expected in line[0] and "LOOPED" not in line[0], (result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_a_conflict_appended_after_the_freeze_is_outside_the_frozen_pages_but_refused_fresh(tmp_path: Path, shell: str) -> None:
+    runtime, script = _fixture(tmp_path)
+    token = json.loads(_run(shell, runtime, script, "-PageSize", "2", "-Resumable").stdout)["continuation_token"]
+    _append(runtime, _row(0, message="conflicting immutable request"))
+    assert _ids(_run(shell, runtime, script, "-PageSize", "2", "-ContinuationToken", token)) == ["request-597", "request-596"]
+    fresh = _run(shell, runtime, script, "-PageSize", "2", "-Resumable")
+    assert fresh.returncode != 0 and "Conflicting content for immutable request ID" in fresh.stderr

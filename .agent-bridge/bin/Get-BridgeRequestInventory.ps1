@@ -12,6 +12,12 @@ param(
     [string] $TsUtc = '',
     [ValidateRange(1,50)] [int] $PageSize = 50,
     [ValidatePattern('^[0-9]+:[0-9]+:[A-F0-9]{16}$')] [string] $Cursor = '',
+    # Opt-in append-resumable paging (BridgeInventoryCursor.ps1): -Resumable adds a v3 continuation_token
+    # bound to the frozen complete prefix; -ContinuationToken continues on exactly that frozen prefix.
+    # Without either, the v2 output and its cursor are unchanged.
+    [ValidatePattern('^v3\.[0-9A-F]{16}\.[0-9A-F]{16}\.[0-9]{1,12}\.[0-9A-F]{64}\.[0-9]{1,9}\.[0-9A-F]{16}\.[0-9]{1,9}$')]
+    [string] $ContinuationToken = '',
+    [switch] $Resumable,
     [switch] $IncludeRequest,
     [switch] $NoCache,
     # Explicit opt-in: instead of failing, return a typed DIAGNOSTIC partial/unknown receipt that
@@ -44,10 +50,27 @@ if (-not $fullyQualified) {
 if ($IncludeRequest -and -not ($RequestId -or ($TaskId -and $TsUtc))) {
     throw '-IncludeRequest requires -RequestId or both -TaskId and -TsUtc'
 }
+. (Join-Path $PSScriptRoot 'BridgeInventoryCursor.ps1')
+if ($Cursor -and $ContinuationToken) { throw '-Cursor and -ContinuationToken cannot be combined' }
 $started=[DateTimeOffset]::UtcNow.ToString('o')
-# Read failures, partial rows, rotation and prefix changes throw in the index.
-$snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
-    -CachePath (Join-Path $root 'shared/cache/reply-index.json') -NoCache:$NoCache
+# The continuation query hash binds the exact query, order, page size and mode, never the snapshot.
+$queryFields=[ordered]@{
+    continuation='frozen_prefix_v3'
+    agent=$Agent; session_id=$SessionId; request_id=$RequestId
+    task_id=$TaskId; ts_utc=$TsUtc
+    order='first_indexed_position_desc'; page_size=$PageSize
+    include_request=[bool]$IncludeRequest; diagnostic_mode=[bool]$DiagnosticPartial
+}
+$queryHash=Get-BridgeInventoryHash16 ($queryFields | ConvertTo-Json -Depth 8 -Compress)
+$eventsPath=Join-Path $root 'shared/events.jsonl'
+if ($ContinuationToken) {
+    # Only the frozen prefix; appends after it are never read. Changes inside it throw.
+    $snapshot=Read-BridgeInventoryFrozenPrefix -Path $eventsPath -Token $ContinuationToken -QueryHash $queryHash
+} else {
+    # Read failures, partial rows, rotation and prefix changes throw in the index.
+    $snapshot=Read-BridgeReplyIndex -Path $eventsPath `
+        -CachePath (Join-Path $root 'shared/cache/reply-index.json') -NoCache:$NoCache
+}
 # A cursor is valid only for the same snapshot AND the same exact query. A
 # changed filter could otherwise silently skip older matching requests.
 $cursorFields=[ordered]@{
@@ -194,6 +217,7 @@ if ($Cursor) {
     }
     $cursorPosition=$position
 }
+if ($ContinuationToken) { $cursorPosition=$snapshot.position }
 $matched=[Collections.Generic.List[object]]::new()
 for ($i=$order.Count-1; $i -ge 0; $i--) {
     $id=$order[$i]; $entry=$byId[$id]; $event=$entry.event
@@ -225,7 +249,15 @@ $requests=@(foreach ($item in $selected) {
 })
 $truncated=$eligible.Count -gt $requests.Count
 $nextCursor=$null
-if ($truncated) { $nextCursor='{0}:{1}:{2}' -f $snapshot.snapshot_length,$requests[-1].first_indexed_position,$cursorHash }
+$nextToken=$null
+if ($truncated) {
+    # A continuation never emits a legacy cursor: that cursor would bind the frozen length, not the live log.
+    if (-not $ContinuationToken) { $nextCursor='{0}:{1}:{2}' -f $snapshot.snapshot_length,$requests[-1].first_indexed_position,$cursorHash }
+    if ($Resumable -or $ContinuationToken) {
+        $nextToken=New-BridgeInventoryContinuationToken -Cursor $snapshot.candidate_cursor -PrefixHash $snapshot.prefix_sha256 `
+            -RowCount $rows.Count -QueryHash $queryHash -Position $requests[-1].first_indexed_position
+    }
+}
 $output=[pscustomobject]@{
     schema='wd.request-inventory.v2'; requester=$Agent
     runtime_root_source='environment'
@@ -242,6 +274,12 @@ $output=[pscustomobject]@{
     answer_authority='Get-BridgeReplySnapshot.ps1 -RequestId <id> -Requester <requester>'
     note='Discovery only; answer_state never evaluated. HOLD/cancel/finding controls are separate. Re-read after append.'
     authority_effect='none'
+}
+if ($Resumable -or $ContinuationToken) {
+    # Opt-in fields only; rows appended after the frozen prefix are discovered by a FRESH query, and a
+    # caller must still read the current request, revision, cancellation and control before acting.
+    $output | Add-Member -NotePropertyName continuation -NotePropertyValue 'frozen_prefix_v3'
+    $output | Add-Member -NotePropertyName continuation_token -NotePropertyValue $nextToken
 }
 if ($DiagnosticPartial) {
     # A DIFFERENT typed schema, so no v2 consumer can mistake it for a complete inventory.

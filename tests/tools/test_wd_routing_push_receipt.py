@@ -405,6 +405,45 @@ def test_e2_an_existing_name_that_is_a_link_is_a_conflict_never_read_through(app
 
 
 @windows_only
+def test_e2_a_link_swapped_in_just_before_the_collision_read_is_a_conflict(approved, tmp_path, monkeypatch):
+    # RCO1 E2 race: the receipt name holds the identical regular file; right before it is read (after the
+    # e755 lstat, or before the handle-relative open now) it is swapped for a link to identical bytes.
+    root, folder = approved
+    receipt = build()
+    data = pr.canonical_bytes(receipt) + b"\n"
+    final = folder / (receipt["receipt_digest"] + ".json")
+    final.write_bytes(data)
+    decoy = tmp_path / "decoy.json"
+    decoy.write_bytes(data)
+    swapped = []
+
+    def swap():
+        if not swapped:
+            swapped.append(True)
+            final.unlink()
+            os.symlink(decoy, final)
+
+    real_lstat = os.lstat
+
+    def lstat_then_swap(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if Path(path) == final:
+            swap()
+        return info
+
+    monkeypatch.setattr(pr.os, "lstat", lstat_then_swap)
+    if hasattr(pr, "_read_relative"):
+        real_read = pr._read_relative
+        monkeypatch.setattr(pr, "_read_relative", lambda directory, name: (swap(), real_read(directory, name))[1])
+    try:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(receipt, folder, approved_root=root)
+    except OSError:
+        pytest.skip("symlink creation not permitted for this token")
+    assert swapped == [True] and caught.value.reason == "receipt_conflict"
+
+
+@windows_only
 def test_e2_the_collision_read_never_reopens_the_name_by_path(approved, monkeypatch):
     root, folder = approved
     receipt = build()

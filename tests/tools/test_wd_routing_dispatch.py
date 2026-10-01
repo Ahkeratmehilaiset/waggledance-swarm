@@ -304,7 +304,8 @@ def test_the_newest_revision_wins_whatever_the_arrival_order():
         result = dispatches(order, NOW)
         assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-new"]
         assert result["rejected"] == [{"request_id": "id-old", "reason": "superseded_revision", "index": None,
-                                       "superseded_by": "id-new"}]
+                                       "superseded_by": "id-new", "task_id": "codex-lead-1/f26-s1",
+                                       "observed_utc": "2026-10-01T16:00:00+00:00"}]
 
 
 def test_a_revision_change_changes_the_dispatch_key():
@@ -378,3 +379,140 @@ def test_the_module_reads_no_clock_file_environment_or_process():
     for forbidden in ("datetime.now", "utcnow", "time.time", "open(", "os.environ", "subprocess", "Path(",
                       "import os", "getenv"):
         assert forbidden not in source, forbidden
+
+
+# --- D-F1: a rejected newer request never revives an older revision (RCO2 f0e55; Lead 17:11Z) ----------
+
+OLD_TS, NEW_TS = "2026-10-01T16:00:00Z", "2026-10-01T16:20:00Z"
+
+
+def held(result, task="codex-lead-1/f26-s1") -> list:
+    pairs = [(r["request_id"], r["reason"]) for r in result["rejected"] if r["task_id"] == task]
+    return sorted(pairs, key=lambda pair: (pair[0] is not None, pair[0] or "", pair[1]))
+
+
+def test_df1_r1_a_poisoned_newer_revision_holds_the_task_instead_of_reviving_the_older_one():
+    old, new = request("id-old", revision="r1", ts=OLD_TS), request("id-new", revision="r2", ts=NEW_TS)
+    nan_copy = copy.deepcopy(new)
+    nan_copy["payload"]["bound"] = float("nan")
+    result = dispatches([old, new, nan_copy], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [(None, "request_malformed"), ("id-new", "request_binding_conflict"),
+                            ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_df1_r2_a_newer_request_without_revision_holds_the_task():
+    old, new = request("id-old", revision="r1", ts=OLD_TS), request("id-new", ts=NEW_TS)
+    del new["payload"]["task_revision"]
+    result = dispatches([old, new], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [("id-new", "revision_missing"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_df1_r3_a_future_dated_newer_request_holds_the_task():
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    new = request("id-new", revision="r2", ts="2026-10-01T16:30:01Z")
+    result = dispatches([old, new], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [("id-new", "future_dated"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_df1_r4_rejections_carry_the_readable_task_id_and_time():
+    new = request("id-new", ts=NEW_TS)
+    del new["payload"]["task_revision"]
+    (rejection,) = dispatches([new], NOW)["rejected"]
+    assert rejection == {"request_id": "id-new", "reason": "revision_missing", "index": None, "superseded_by": None,
+                         "task_id": "codex-lead-1/f26-s1", "observed_utc": "2026-10-01T16:20:00+00:00"}
+
+
+def test_df1_a_newer_rejection_at_an_unknown_time_holds_the_task():
+    old, new = request("id-old", revision="r1", ts=OLD_TS), request("id-new", revision="r2", ts="yesterday")
+    result = dispatches([old, new], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [("id-new", "timestamp_invalid"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_df1_a_rejection_at_the_same_instant_holds_the_task():
+    old, new = request("id-old", revision="r1", ts=OLD_TS), request("id-new", ts="2026-10-01T19:00:00+03:00")
+    del new["payload"]["task_revision"]
+    assert dispatches([old, new], NOW)["dispatches"] == []
+
+
+def test_df1_an_older_rejection_does_not_hold_the_newer_valid_revision():
+    old, new = request("id-old", ts=OLD_TS), request("id-new", revision="r2", ts=NEW_TS)
+    del old["payload"]["task_revision"]
+    result = dispatches([old, new], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-new"]
+    assert held(result) == [("id-old", "revision_missing")]
+
+
+def test_df1_another_tasks_rejection_does_not_hold_this_task():
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    other = request("id-other", task="codex-lead-1/other-task", ts=NEW_TS)
+    del other["payload"]["task_revision"]
+    assert [r["dispatch_id"] for r in dispatches([old, other], NOW)["dispatches"]] == ["id-old"]
+
+
+def test_df1_a_plain_newer_revision_still_supersedes_without_a_hold():
+    old, new = request("id-old", revision="r1", ts=OLD_TS), request("id-new", revision="r2", ts=NEW_TS)
+    result = dispatches([old, new], NOW)
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-new"]
+    assert held(result) == [("id-old", "superseded_revision")]
+
+
+def test_df1_a_malformed_copy_task_and_time_are_read_without_running_hooks():
+    hostile = request("id-new", ts=NEW_TS)
+    hostile["task_id"] = Liar("codex-lead-1/f26-s1")       # not an exact str: never read as the task
+    hostile["payload"]["bound"] = float("nan")
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    result = dispatches([old, hostile], NOW)
+    # The id is poisoned, but the malformed copy names no exact task, so it cannot hold the task.
+    assert [r["dispatch_id"] for r in result["dispatches"]] == ["id-old"]
+    assert [(r["reason"], r["task_id"]) for r in result["rejected"]] == [("request_malformed", None)]
+
+
+def test_df1_a_held_task_lists_every_older_valid_record_as_held_never_live():
+    one, two = request("id-1", revision="r1", ts=OLD_TS), request("id-2", revision="r2", ts="2026-10-01T16:10:00Z")
+    bad = request("id-3", ts=NEW_TS)
+    del bad["payload"]["task_revision"]
+    result = dispatches([one, two, bad], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [("id-1", "dispatch_held_newer_rejection"), ("id-2", "dispatch_held_newer_rejection"),
+                            ("id-3", "revision_missing")]
+
+
+def test_df1_a_lone_malformed_newer_request_holds_the_task():
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    bad = request("id-bad", revision="r2", ts=NEW_TS)
+    bad["payload"]["bound"] = float("inf")                 # its only copy: malformed, nothing else names the task
+    result = dispatches([old, bad], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [(None, "request_malformed"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+def test_df1_a_conflict_between_two_strict_copies_alone_holds_the_task():
+    old = request("id-old", revision="r1", ts=OLD_TS)
+    one, two = request("id-new", revision="r2", ts=NEW_TS), request("id-new", revision="r2", ts=NEW_TS,
+                                                                       message="Other text.")
+    result = dispatches([old, one, two], NOW)
+    assert result["dispatches"] == []
+    assert held(result) == [("id-new", "request_binding_conflict"), ("id-old", "dispatch_held_newer_rejection")]
+
+
+# --- D-F2: one explicit worker, no empty pieces ------------------------------------------------------------
+
+@pytest.mark.parametrize("to", ["claude-rco-1,", ",claude-rco-1", " claude-rco-1", "claude-rco-1 ",
+                                ["claude-rco-1", ""], ["claude-rco-1 "], []])
+def test_df2_empty_or_padded_worker_pieces_are_refused(to):
+    event = request()
+    event["to"] = to
+    assert reasons(dispatches([event], NOW)) == [(event["request_id"], "worker_invalid")]
+
+
+# --- D-F3: now at the datetime range end is the documented ValueError ---------------------------------------
+
+@pytest.mark.parametrize("now", [datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=5))),
+                                 datetime(9999, 12, 31, 23, 59, tzinfo=timezone(timedelta(hours=-5)))])
+def test_df3_an_unrepresentable_now_is_a_value_error(now):
+    with pytest.raises(ValueError):
+        dispatches([], now)

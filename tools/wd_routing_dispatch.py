@@ -33,8 +33,20 @@ Rules that keep it honest (Tools schema checkpoint a8837832, Fable design c96124
   record; the extra copies are listed in ``duplicates_ignored``.
 * Per task, the newest valid dispatch wins by (dispatched_utc, dispatch_id); every other valid dispatch
   for that task is rejected as superseded_revision, whatever order the requests arrived in.
-* Only this module's own validation outcomes become rejections. Cancellation (KeyboardInterrupt,
-  SystemExit, GeneratorExit) and unexpected errors propagate.
+* A rejected request never lets an older revision become live (RCO2 f0e55 D-F1; Lead 17:11Z). Every
+  rejection carries ``task_id`` and ``observed_utc`` when they are readable without running any hook (an
+  exact non-empty str ``task_id``; a ``ts_utc`` exact str that parses as an offset time). When any
+  rejection other than superseded_revision names a task at or after the would-be winner's instant, or
+  at an unknown instant, the task is HELD: it has no dispatch, and each of its valid records is rejected
+  as dispatch_held_newer_rejection (historical, visible, never live). A rejection whose task is not
+  readable cannot be attributed and holds nothing.
+* ``to`` names exactly one worker: every comma piece (or list item) must be a canonical lane name as
+  written, so an empty or padded piece is worker_invalid and two valid names are dispatch_target_ambiguous.
+* There is no cancellation input. A dispatch is scheduling evidence only; the absence of a cancel record is
+  never permission to act, and nothing here is wired to a caller.
+* Only this module's own validation outcomes become rejections. Caller cancellation (KeyboardInterrupt,
+  SystemExit, GeneratorExit) and unexpected errors propagate; a ``now`` that cannot be converted to UTC is
+  a ValueError.
 """
 from __future__ import annotations
 
@@ -73,6 +85,7 @@ R_MESSAGE = "message_invalid"
 R_TIME = "timestamp_invalid"
 R_FUTURE = "future_dated"
 R_SUPERSEDED = "superseded_revision"
+R_HELD = "dispatch_held_newer_rejection"
 
 
 class _Reject(Exception):
@@ -102,22 +115,38 @@ def _text(value: Any) -> bool:
 
 
 def _rejection(request_id: str | None, reason: str, index: int | None = None,
-               superseded_by: str | None = None) -> dict:
-    return {"request_id": request_id, "reason": reason, "index": index, "superseded_by": superseded_by}
+               superseded_by: str | None = None, task_id: str | None = None,
+               observed: datetime | None = None) -> dict:
+    return {"request_id": request_id, "reason": reason, "index": index, "superseded_by": superseded_by,
+            "task_id": task_id, "observed_utc": observed.isoformat() if observed is not None else None}
+
+
+def _readable(request: Any) -> tuple[str | None, datetime | None]:
+    """(task_id, ts) read without any lookup or hook: only an exact dict, exact str keys and exact str values."""
+    task, moment = None, None
+    if type(request) is dict:
+        for key, value in dict.items(request):
+            if type(key) is not str or type(value) is not str:
+                continue
+            if key == "task_id" and value:
+                task = value
+            elif key == "ts_utc":
+                moment = _utc(value)
+    return task, moment
 
 
 def _worker(to: Any) -> str:
     if type(to) is str:
-        names = [part.strip() for part in to.split(",")]
+        names = to.split(",")
     elif type(to) is list and all(type(item) is str for item in to):
-        names = [item.strip() for item in to]
+        names = list(to)
     else:
         raise _Reject(R_WORKER)
-    names = [name for name in names if name]
+    # Exactly as written: an empty or padded piece is not a worker (RCO2 D-F2).
+    if not names or not all(LANE.fullmatch(name) for name in names):
+        raise _Reject(R_WORKER)
     if len(names) > 1:
         raise _Reject(R_AMBIGUOUS)
-    if len(names) != 1 or not LANE.fullmatch(names[0]):
-        raise _Reject(R_WORKER)
     return names[0]
 
 
@@ -188,13 +217,20 @@ def dispatches(requests: Any, now: Any) -> dict:
         raise ValueError("now must be an offset-aware datetime")
     if type(requests) is not list:
         raise ValueError("requests must be a list")
-    now = now.astimezone(timezone.utc)
+    try:
+        now = now.astimezone(timezone.utc)
+    except OverflowError:
+        raise ValueError("now is outside the representable UTC range") from None
     rejected: list[dict] = []
+    # (task_id, instant or None) of every input behind a non-superseded rejection; they can hold a task.
+    blockers: list[tuple[str | None, datetime | None]] = []
     groups: dict[str, list[dict]] = {}
     poisoned: set[str] = set()
     for index, request in enumerate(requests):
         if type(request) is not dict or not _strict_json(request) or digest(request) is None:
-            rejected.append(_rejection(None, R_MALFORMED, index))
+            task, moment = _readable(request)
+            blockers.append((task, moment))
+            rejected.append(_rejection(None, R_MALFORMED, index, task_id=task, observed=moment))
             # A malformed copy that names a valid id still differs from every other copy of that id, so the
             # whole id is poisoned. Read without a lookup: only exact-str keys and value are compared.
             if type(request) is dict:
@@ -205,7 +241,9 @@ def dispatches(requests: Any, now: Any) -> dict:
             continue
         request_id = request.get("request_id")
         if type(request_id) is not str or not REQUEST_ID.fullmatch(request_id):
-            rejected.append(_rejection(None, R_REQUEST_ID, index))
+            task, moment = _readable(request)
+            blockers.append((task, moment))
+            rejected.append(_rejection(None, R_REQUEST_ID, index, task_id=task, observed=moment))
             continue
         groups.setdefault(request_id, []).append(request)
 
@@ -214,14 +252,22 @@ def dispatches(requests: Any, now: Any) -> dict:
     for request_id, copies in groups.items():
         # Same id, other content or another request_digest: nothing under that id is trusted.
         if request_id in poisoned or len({digest(copy) for copy in copies}) != 1:
-            rejected.append(_rejection(request_id, R_CONFLICT))
+            seen = [_readable(copy) for copy in copies]
+            blockers.extend(seen)
+            tasks = {task for task, _ in seen}
+            task = next(iter(tasks)) if len(tasks) == 1 else None
+            moments = [moment for _, moment in seen]
+            moment = max(moments) if task is not None and None not in moments else None
+            rejected.append(_rejection(request_id, R_CONFLICT, task_id=task, observed=moment))
             continue
         if len(copies) > 1:
             duplicates.append({"request_id": request_id, "copies_ignored": len(copies) - 1})
         try:
             candidates.append(_dispatch(copies[0], now))
         except _Reject as reject:
-            rejected.append(_rejection(request_id, reject.reason))
+            task, moment = _readable(copies[0])
+            blockers.append((task, moment))
+            rejected.append(_rejection(request_id, reject.reason, task_id=task, observed=moment))
 
     def order(record: dict) -> tuple:
         # Compared as instants, never as text; the id breaks a tie.
@@ -232,13 +278,22 @@ def dispatches(requests: Any, now: Any) -> dict:
         current = newest.get(record["task_id"])
         if current is None or order(record) > order(current):
             newest[record["task_id"]] = record
+    def held(task: str) -> bool:
+        # A rejection for the task at or after the winner's instant, or at an unknown instant, holds it.
+        at = order(newest[task])[0]
+        return any(name == task and (moment is None or moment >= at) for name, moment in blockers)
+
     kept = []
     for record in candidates:
         winner = newest[record["task_id"]]
-        if record is winner:
+        moment = _utc(record["dispatched_utc"])
+        if held(record["task_id"]):
+            rejected.append(_rejection(record["dispatch_id"], R_HELD, task_id=record["task_id"], observed=moment))
+        elif record is winner:
             kept.append(record)
         else:
-            rejected.append(_rejection(record["dispatch_id"], R_SUPERSEDED, superseded_by=winner["dispatch_id"]))
+            rejected.append(_rejection(record["dispatch_id"], R_SUPERSEDED, superseded_by=winner["dispatch_id"],
+                                       task_id=record["task_id"], observed=moment))
 
     return {"dispatches": sorted(kept, key=lambda record: record["dispatch_id"]),
             "rejected": sorted(rejected, key=lambda item: (item["request_id"] is None, item["request_id"] or "",

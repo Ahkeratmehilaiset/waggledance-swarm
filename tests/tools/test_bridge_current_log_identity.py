@@ -38,12 +38,14 @@ def root(tmp_path: Path) -> Path:
     return tmp_path / "runtime"
 
 
-def measure(shell: str, root: Path | None, *extra: str) -> tuple[dict, str]:
+def measure(shell: str, root: Path | None, *extra: str, script: Path = SCRIPT,
+            seam: dict | None = None) -> tuple[dict, str]:
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("AGENT_BRIDGE_", "WD_", "CLAUDE_CODE_", "GIT_"))}
+           if not key.startswith(("AGENT_BRIDGE_", "WD_", "CLAUDE_CODE_", "GIT_", "S_C_SEAM_"))}
     if root is not None:
         env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
-    run = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT),
+    env.update(seam or {})
+    run = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
                           "-Json", *extra], capture_output=True, text=True, encoding="utf-8", env=env, timeout=120)
     assert run.returncode == 0, run.stderr
     out = run.stdout.strip()
@@ -193,30 +195,91 @@ def test_a_reparse_point_shared_directory_is_refused_but_the_real_directory_is_n
     assert measure(shell, root)[0]["complete"] is True
 
 
+# --- deterministic seams (after fable-5 59f): a COPY of the bin whose BridgeReplyIndex.ps1 wraps the shared prefix
+# hash and performs exactly ONE side effect after hash call number S_C_SEAM_CALL returns. No loop, no race; the
+# real helper bytes are copied unchanged and every fixture is two rows.
+SEAM = r"""
+if ($env:S_C_SEAM_ACTION) {
+    $script:SeamOriginalHash = ${function:Get-BridgeReplyStreamPrefixHash}
+    $script:SeamCalls = 0
+    function Get-BridgeReplyStreamPrefixHash {
+        param([IO.Stream]$Stream,[int64]$Length)
+        $value = & $script:SeamOriginalHash -Stream $Stream -Length $Length
+        $script:SeamCalls++
+        if ($script:SeamCalls -ne [int]$env:S_C_SEAM_CALL) { return $value }
+        $shared = Join-Path $env:AGENT_BRIDGE_RUNTIME_ROOT 'shared'
+        $log = Join-Path $shared 'events.jsonl'
+        $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        switch ($env:S_C_SEAM_ACTION) {
+            'none' { }
+            'append' { [IO.File]::AppendAllText($log, "{`"agent`":`"codex-lead-1`",`"status`":`"cancelled`"}`n") }
+            'rotate' {
+                $bytes = [IO.File]::ReadAllBytes($log)
+                [IO.File]::Move($log, (Join-Path $shared 'events.rotated.jsonl'))
+                [IO.File]::WriteAllBytes($log, $bytes)
+            }
+            'generation' {
+                [IO.File]::WriteAllBytes((Join-Path $shared 'events.generation.json'),
+                    [Text.Encoding]::ASCII.GetBytes('{"generation":"gen-b"}'))
+            }
+            'rewrite' {
+                $bytes = [IO.File]::ReadAllBytes($log)
+                $new = [Text.Encoding]::UTF8.GetBytes([Text.Encoding]::UTF8.GetString($bytes).Replace('reply', 'REPLY'))
+                $w = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Write, $share)
+                try { $w.Write($new, 0, $new.Length) } finally { $w.Dispose() }
+            }
+            'truncate' {
+                $w = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Write, $share)
+                $first = [Array]::IndexOf([IO.File]::ReadAllBytes($log), [byte]10)
+                try { $w.SetLength($first + 1) } finally { $w.Dispose() }
+            }
+        }
+        return $value
+    }
+}
+"""
+SEAM_FILES = ("Get-BridgeCurrentLogIdentity.ps1", "BridgeIncrementalReader.ps1", "BridgeLogReader.ps1",
+              "BridgeReplyIndex.ps1", "BridgeRequestContract.ps1", "BridgeResourceScope.ps1")
+
+
+@pytest.fixture(scope="module")
+def seam_script(tmp_path_factory) -> Path:
+    copy = tmp_path_factory.mktemp("seam-bin")
+    for name in SEAM_FILES:
+        shutil.copyfile(SCRIPT.parent / name, copy / name)
+    with open(copy / "BridgeReplyIndex.ps1", "ab") as handle:
+        handle.write(SEAM.encode("ascii"))
+    assert (copy / SCRIPT.name).read_bytes() == SCRIPT.read_bytes()
+    return copy / SCRIPT.name
+
+
+def seamed(shell: str, root: Path, script: Path, action: str, call: int = 1) -> dict:
+    return measure(shell, root, script=script, seam={"S_C_SEAM_ACTION": action, "S_C_SEAM_CALL": str(call)})[0]
+
+
 @pytest.mark.parametrize("shell", SHELLS)
-def test_appends_during_the_measurement_never_give_a_false_complete(shell, root):
-    import threading
-    filler = _line({"agent": "fable-5", "type": "message", "message": "x" * 900})
-    with open(log(root), "ab") as handle:
-        handle.write(filler * 20000)               # ~18 MB, so hashing outlasts several appends
-    done = threading.Event()
+def test_the_seam_copy_with_no_side_effect_is_complete_and_current(shell, root, seam_script):
+    assert_complete(seamed(shell, root, seam_script, "none"), log(root).read_bytes())
 
-    def append() -> None:
-        # Paced and BOUNDED (at most 20000 rows, ~18 MB): an unpaced loop filled the host disk once.
-        with open(log(root), "ab", buffering=0) as handle:
-            for _ in range(20000):
-                if done.wait(0.001):
-                    return
-                handle.write(filler)
 
-    worker = threading.Thread(target=append)
-    worker.start()
-    try:
-        result, _ = measure(shell, root)
-    finally:
-        done.set()
-        worker.join()
-    assert result == UNKNOWN
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("action", ["append", "rotate", "generation", "rewrite", "truncate"])
+def test_a_change_after_the_first_hash_is_unknown(shell, root, seam_script, action):
+    # rewrite is RCO1/fable-5 SC-F1: same length, same file, same generation; only the bytes differ.
+    assert seamed(shell, root, seam_script, action, call=1) == UNKNOWN
+    # the safe twin: the same file measured again afterwards is complete and describes the changed log
+    after = measure(shell, root)[0]
+    assert after["complete"] is True and after["prefix_sha256"] == hashlib.sha256(log(root).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_rewrite_after_the_last_hash_returns_is_the_documented_after_return_limit(shell, root, seam_script):
+    # Not a guarantee: a change after the final hash returned is seen only by a later measurement. The result
+    # still describes the bytes that WERE measured twice, never a mixed identity.
+    data = log(root).read_bytes()
+    out = seamed(shell, root, seam_script, "rewrite", call=2)
+    assert_complete(out, data)
+    assert out["prefix_sha256"] != hashlib.sha256(log(root).read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("shell", SHELLS)

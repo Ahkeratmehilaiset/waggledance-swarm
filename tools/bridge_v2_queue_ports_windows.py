@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Bridge v2 F8 queue ports on Windows: the runtime-root named mutex, and one factory for both ports.
 
-Tools-owned: the work-queue CLI writers and the stale sweep --apply take the root mutex through it
-(tools/work_queue.py ``_root_mutex``), no bridge or ops script runs either tool, and this module is not in
-the bridge package list.
+The work-queue CLI writers and the stale sweep --apply take the root mutex through this port
+(tools/work_queue.py ``_root_mutex``). The bridge package includes this library and the CLI modules for
+import-smoke checking only; it adds no automatic CLI entrypoint or queue activation.
 ``NamedMutexPort`` is the ``MutexPort`` of
 ``tools.bridge_v2_queue_transactions``. Its ``hold(name, timeout_seconds)`` accepts only a
 ``mutex_name(root)`` value (``Global\\WaggleDanceBridgeV2Queue-<32 hex>``, derived from the

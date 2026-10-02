@@ -7,9 +7,62 @@ from pathlib import Path
 
 import pytest
 
-from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
+from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS as _BUNDLE_LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
 from test_wd_native_wake_prompt import relay_bundle_setup
+
+
+def _same_executable(left, right):
+    if os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right)):
+        return True
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _distinct_engines(shells):
+    """One entry per executable: case or spelling aliases of one file (system32\\powershell.EXE and
+    System32\\powershell.exe) are the same engine, so they must not count as two engines (PS5-P2-alias)."""
+    distinct = []
+    for shell in shells:
+        if not any(_same_executable(shell, kept) for kept in distinct):
+            distinct.append(shell)
+    return distinct
+
+
+LANE_TEST_SHELLS = _distinct_engines(_BUNDLE_LANE_TEST_SHELLS)
+
+
+def _engine_major(ps):
+    return int(_run_powershell('$PSVersionTable.PSVersion.Major', executable=ps).stdout.strip())
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows paths are case-insensitive aliases only on Windows')
+def test_case_aliases_of_one_executable_are_one_engine(tmp_path):
+    engine = tmp_path / 'System32' / 'powershell.exe'
+    engine.parent.mkdir()
+    engine.write_bytes(b'')
+    alias = str(tmp_path / 'system32' / 'powershell.EXE')
+    assert _distinct_engines([str(engine), alias]) == [str(engine)]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows paths are case-insensitive aliases only on Windows')
+def test_alias_spellings_skip_the_cross_engine_cache_test(tmp_path, monkeypatch):
+    engine = tmp_path / 'System32' / 'powershell.exe'
+    engine.parent.mkdir()
+    engine.write_bytes(b'')
+    aliases = [str(engine), str(tmp_path / 'system32' / 'powershell.EXE')]
+    monkeypatch.setitem(globals(), 'LANE_TEST_SHELLS', _distinct_engines(aliases))
+    with pytest.raises(pytest.skip.Exception, match='two distinct engines'):
+        test_reply_cache_shell_partitions_survive_alternation_and_parallel_readers(tmp_path)
+
+
+def test_distinct_executables_stay_distinct_engines(tmp_path):
+    first, second = tmp_path / 'powershell.exe', tmp_path / 'pwsh.exe'
+    first.write_bytes(b'')
+    second.write_bytes(b'')
+    assert _distinct_engines([str(first), str(second), str(first)]) == [str(first), str(second)]
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
@@ -288,7 +341,10 @@ $result=Read-BridgeReplyIndex -Path {q(log)} -NoCache
 
 def test_reply_cache_shell_partitions_survive_alternation_and_parallel_readers(tmp_path):
     if len(LANE_TEST_SHELLS) < 2:
-        pytest.skip('Requires Windows PowerShell and PowerShell 7')
+        pytest.skip('Requires two distinct engines: Windows PowerShell 5.1 and PowerShell 7')
+    majors = sorted(_engine_major(ps) for ps in LANE_TEST_SHELLS)
+    if majors != [5, 7]:
+        pytest.skip(f'Requires Windows PowerShell 5.1 and PowerShell 7; engine majors found: {majors}')
     from concurrent.futures import ThreadPoolExecutor
     from test_bridge_request_contract import events
     _, request, _ = events()

@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import textwrap
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -323,20 +324,90 @@ def test_warning_stop_caller_still_gets_a_receipt_for_every_failed_release(tmp_p
         (TASK, "writer_failed", "publication_unknown"), (second, "writer_failed", "publication_unknown")]
 
 
+def _receipt_storage_exception(shell, code, runtime):
+    """Capture the actual exception before ANSI, gutters or wrapping can change it.
+
+    WarningPreference remains Stop inside the sweep. Capture the real message,
+    not ErrorRecord display text: PS7 ConciseView need not honor Out-String Width.
+    """
+    sweep = str(code / "Invoke-StaleClaimSweep.ps1").replace("'", "''")
+    command = f"""
+$WarningPreference = 'Stop'
+try {{
+    $null = & '{sweep}' -StaleSeconds 1 -Quiet
+    exit 0
+}} catch {{
+    $record = [ordered]@{{
+        message = $_.Exception.Message
+    }}
+    [Console]::Out.WriteLine('WD_SWEEP_EXCEPTION:' + ($record | ConvertTo-Json -Compress))
+    exit 1
+}}
+"""
+    completed = _run_command(shell, command, runtime)
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 1, output
+    records = [line.removeprefix("WD_SWEEP_EXCEPTION:")
+               for line in completed.stdout.splitlines()
+               if line.startswith("WD_SWEEP_EXCEPTION:")]
+    assert len(records) == 1, output
+    return completed, json.loads(records[0])
+
+
+def _assert_collected_receipt_failures(runtime, second, record):
+    assert len(_archives(runtime)) == 2                         # archived, never restored
+    assert not list((runtime / "work_queue/claims").glob("*.json"))
+    assert _receipts(runtime) == []
+    assert (runtime / "shared/events.jsonl").read_text(encoding="utf-8") == ""
+    # Warnings alone and two archives do NOT prove that both failures were handled.
+    message = record["message"]
+    assert "release events were not published and whose sweep_emit_failures receipts" in message, "missing combined persistence failure"
+    assert TASK + " " in message or TASK + " (" in message, "missing first task"
+    assert second in message, "missing second task"
+
+
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 def test_warning_stop_caller_still_handles_every_archive_when_receipts_cannot_persist(tmp_path, shell):
     # Writer absent: the only warning reached is the receipt-persistence one.
     code, runtime = _fixture(tmp_path, None)
     second = _second_claim(runtime)
     (runtime / "work_queue/sweep_emit_failures").write_text("not a directory", encoding="utf-8")
-    completed = _sweep_with_warning_stop(shell, code, runtime)
-    output = completed.stdout + completed.stderr
-    assert completed.returncode != 0, output
-    assert len(_archives(runtime)) == 2                         # archived, never restored
-    # Both persistence failures are collected and reported together: the loop was not cut short.
-    assert "release events were not published and whose sweep_emit_failures receipts" in output.replace("\n", "")
-    assert TASK + " " in output.replace("\n", "") or TASK + " (" in output.replace("\n", "")
-    assert second in output.replace("\n", "")
+    _, record = _receipt_storage_exception(shell, code, runtime)
+    _assert_collected_receipt_failures(runtime, second, record)
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize("cut_short", [False, True], ids=["narrow-render", "causal-early-throw"])
+def test_receipt_failure_oracle_at_narrow_width(tmp_path, shell, cut_short):
+    code, runtime = _fixture(tmp_path, None)
+    second = _second_claim(runtime)
+    (runtime / "work_queue/sweep_emit_failures").write_text("not a directory", encoding="utf-8")
+    if cut_short:
+        # Mutate ONLY the copied fixture: throw after the first receipt failure,
+        # before processing the second. Both archives still exist, so the old
+        # archive-count-only oracle would falsely pass this causal control.
+        sweep = code / "Invoke-StaleClaimSweep.ps1"
+        source = sweep.read_text(encoding="utf-8-sig")
+        needle = "$receiptFailures.Add($_.Exception.Message)"
+        assert source.count(needle) == 1
+        sweep.write_text(source.replace(needle, needle + "\n            throw"), encoding="utf-8-sig")
+    _, record = _receipt_storage_exception(shell, code, runtime)
+    assert len(_archives(runtime)) == 2
+    if cut_short:
+        with pytest.raises(AssertionError, match="missing combined persistence failure"):
+            _assert_collected_receipt_failures(runtime, second, record)
+    else:
+        _assert_collected_receipt_failures(runtime, second, record)
+        # A deterministic narrow display model of the ACTUAL captured message,
+        # not proof of the current host's PS7 console width or CI rendering.
+        # Gutters remain after flattening, unlike the raw exception message.
+        rendered = textwrap.fill(record["message"], width=40,
+                                 initial_indent="| ", subsequent_indent="| ")
+        assert len(rendered.splitlines()) > 1
+        assert all(len(line) <= 40 and line.startswith("| ") for line in rendered.splitlines())
+        old_phrase = "release events were not published and whose sweep_emit_failures receipts"
+        assert old_phrase in record["message"]
+        assert old_phrase not in rendered.replace("\n", "")
 
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])

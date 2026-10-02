@@ -767,3 +767,104 @@ def test_request_side_correlation_conflict_never_binds_powershell(tmp_path, engi
     verdicts = json.loads(result.stdout)
     wrong = sorted(n for n, (_, _, want) in cases.items() if verdicts[n] is not want)
     assert wrong == [], wrong
+
+
+# --- fable-5 60b30839: request-side conflict detection is ORDINAL and the conflict marker is not forgeable ---------
+# PowerShell compared the top-level and payload copies as JSON text with culture-sensitive -cne, so copies that differ
+# only by U+00AD (both shells) or U+200B (pwsh 7) read as equal and the request still bound. The conflict marker was
+# recognised by SHAPE, so a genuine request value {"invalid_binding": ...} was refused as if it were a conflict.
+def _ordinal_conflict_cases():
+    cases = {}
+    for key in ("nonce", "token", "task_revision"):
+        for invisible, label in (("­", "soft_hyphen"), ("​", "zero_width")):
+            for rid, shapes in ((True, ("omit", "echo_top", "echo_both")), (False, ("echo_top", "echo_both"))):
+                for shape in shapes:
+                    request, reply = _conflict_pair(rid)
+                    request[key] = "value-1"
+                    request["payload"][key] = "value-" + invisible + "1"
+                    if shape in ("echo_top", "echo_both"):
+                        reply[key] = "value-1"
+                    if shape == "echo_both":
+                        reply["payload"][key] = "value-" + invisible + "1"
+                    cases[f"{key}-{label}-{'id' if rid else 'legacy'}-{shape}"] = (request, reply, False)
+        # over-restriction controls: objects shaped like the marker are ordinary request values
+        for marker_value in (True, False, None):
+            request, reply = _conflict_pair(True)
+            request[key] = {"invalid_binding": marker_value}
+            request["payload"][key] = {"invalid_binding": marker_value}
+            cases[f"{key}-raw_marker_shape_{json.dumps(marker_value)}-equal_copies_omitted_with_id"] = (request, reply, True)
+        request, reply = _conflict_pair(True)
+        request["payload"][key] = {"invalid_binding": True}
+        cases[f"{key}-raw_marker_shape-payload_only_omitted_with_id"] = (request, reply, True)
+        request, reply = _conflict_pair(True)
+        request[key] = {"PSTypeName": "WaggleDance.BridgeBindingConflict", "invalid_binding": True}
+        request["payload"][key] = {"PSTypeName": "WaggleDance.BridgeBindingConflict", "invalid_binding": True}
+        cases[f"{key}-forged_type_name_key-equal_copies_omitted_with_id"] = (request, reply, True)
+        request, reply = _conflict_pair(True)
+        request[key] = request["payload"][key] = reply[key] = "value-1"
+        cases[f"{key}-equal_plain_copies_echoed"] = (request, reply, True)
+    # Get-BridgeContractField consumers inside the binding: a reply request_ts_utc whose copies differ invisibly
+    request, reply = _conflict_pair(False)
+    reply["request_ts_utc"] = request["ts_utc"]
+    reply["payload"]["request_ts_utc"] = request["ts_utc"][:-1] + "­Z"
+    cases["request_ts_utc-soft_hyphen-reply_copies_conflict"] = (request, reply, False)
+    request, reply = _conflict_pair(False)
+    reply["request_ts_utc"] = reply["payload"]["request_ts_utc"] = request["ts_utc"]
+    cases["request_ts_utc-equal_copies"] = (request, reply, True)
+    return cases
+
+
+def test_ordinal_conflict_cases_python():
+    cases = _ordinal_conflict_cases()
+    for engine, module in _conflict_engines():
+        wrong = sorted(n for n, (q, r, want) in cases.items()
+                       if bool(module.reply_matches_request(q, r, "codex-tools-1")) is not want)
+        assert wrong == [], (engine, wrong)
+
+
+@pytest.mark.parametrize("engine", SHELLS)
+def test_ordinal_conflict_cases_powershell(tmp_path, engine):
+    cases = _ordinal_conflict_cases()
+    fixture = tmp_path / "ordinal_conflict.json"
+    fixture.write_text(json.dumps([{"name": n, "request": q, "reply": r} for n, (q, r, _) in cases.items()]),
+                       encoding="utf-8")
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    wrong = sorted(n for n, (_, _, want) in cases.items() if verdicts[n] is not want)
+    assert wrong == [], wrong
+
+
+@pytest.mark.parametrize("engine", SHELLS)
+def test_conflict_marker_is_typed_and_keeps_its_consumer_surface(tmp_path, engine):
+    """Both getters return the typed marker for invisible-only differences; production consumers read it through
+    truthiness, [string], interpolation, ConvertTo-Json and -cne/-ceq, which must stay as before; parsed JSON (even
+    with a PSTypeName key) is never the marker."""
+    event = {"request_id": "req-1", "payload": {"request_id": "req-­1",
+                                                "nonce": {"PSTypeName": "WaggleDance.BridgeBindingConflict",
+                                                          "invalid_binding": True}},
+             "request_digest": "d-1", "nonce": {"PSTypeName": "WaggleDance.BridgeBindingConflict",
+                                                 "invalid_binding": True}}
+    event["payload"]["request_digest"] = "d-​1"
+    fixture = tmp_path / "marker.json"
+    fixture.write_text(json.dumps(event), encoding="utf-8")
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$e=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; "
+               "$m=Get-BridgeContractField $e 'request_id'; $r=Get-BridgeBindingRawField $e 'request_id'; "
+               "$d=Get-BridgeContractField $e 'request_digest'; $n=Get-BridgeContractField $e 'nonce'; "
+               "[ordered]@{ field=[bool](Test-BridgeBindingConflict $m); raw=[bool](Test-BridgeBindingConflict $r); "
+               "digest=[bool](Test-BridgeBindingConflict $d); truthy=[bool]$m; text=[string]$m; interpolated=\"$m\"; "
+               "json=(ConvertTo-Json -InputObject $m -Compress); distinct=[bool]($m -cne $d); "
+               "parsed_is_marker=[bool](Test-BridgeBindingConflict $n); parsed_text=[string]$n } | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "field": True, "raw": True, "digest": True, "truthy": True, "text": "@{invalid_binding=True}",
+        "interpolated": "@{invalid_binding=True}", "json": '{"invalid_binding":true}', "distinct": True,
+        "parsed_is_marker": False, "parsed_text": "@{PSTypeName=WaggleDance.BridgeBindingConflict; invalid_binding=True}"}

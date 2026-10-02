@@ -1,13 +1,29 @@
 #requires -Version 5.1
 # Correlation-only contract. Callers also require a substantive terminal event.
+function New-BridgeBindingConflict {
+    # fable-5 60b30839: the top-level and payload copies of a field disagree. The marker keeps its old surface
+    # (@{invalid_binding=True}) for consumers, but is recognised by a type name ConvertFrom-Json never produces,
+    # so a genuine request value shaped {"invalid_binding": ...} is ordinary data, not a conflict.
+    $marker = [pscustomobject]@{ invalid_binding = $true }
+    $marker.PSObject.TypeNames.Insert(0, 'WaggleDance.BridgeBindingConflict')
+    return $marker
+}
+
+function Test-BridgeBindingConflict {
+    param($Value)
+    return ($Value -is [System.Management.Automation.PSCustomObject] -and
+        $Value.PSObject.TypeNames[0] -ceq 'WaggleDance.BridgeBindingConflict')
+}
+
 function Get-BridgeContractField {
     param($Event, [string]$Name)
     $direct = $Event.PSObject.Properties[$Name]
     $payload = $Event.PSObject.Properties['payload']
     $nested = if ($null -ne $payload -and $null -ne $payload.Value) { $payload.Value.PSObject.Properties[$Name] } else { $null }
+    # Ordinal: culture-sensitive -cne ignores U+00AD (and U+200B in pwsh 7), so such copies used to read as equal.
     if ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
-        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
-        return [pscustomobject]@{ invalid_binding = $true }
+        -not [string]::Equals((ConvertTo-BridgeContractJson $direct.Value), (ConvertTo-BridgeContractJson $nested.Value), [System.StringComparison]::Ordinal)) {
+        return (New-BridgeBindingConflict)
     }
     if ($null -ne $direct -and $null -ne $direct.Value) { return $direct.Value }
     if ($null -ne $nested) { return $nested.Value }
@@ -159,8 +175,8 @@ function Get-BridgeBindingRawField {
     $payload = $Event.PSObject.Properties['payload']
     $nested = if ($null -ne $payload -and $null -ne $payload.Value) { $payload.Value.PSObject.Properties[$Name] } else { $null }
     if ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
-        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
-        return [pscustomobject]@{ invalid_binding = $true }
+        -not [string]::Equals((ConvertTo-BridgeContractJson $direct.Value), (ConvertTo-BridgeContractJson $nested.Value), [System.StringComparison]::Ordinal)) {
+        return (New-BridgeBindingConflict)
     }
     if ($null -ne $direct -and $null -ne $direct.Value) { return ,$direct.Value }
     if ($null -ne $nested) { return ,$nested.Value }
@@ -231,7 +247,7 @@ function Test-BridgeReplyBinding {
         $expected = Get-BridgeBindingRawField $Request $key
         $actual = Get-BridgeBindingRawField $Reply $key
         # RCO2 a41e1a25: the request's own value disagrees between top level and payload: no single correlation.
-        if ($expected -is [System.Management.Automation.PSCustomObject] -and $null -ne $expected.PSObject.Properties['invalid_binding']) { return $false }
+        if (Test-BridgeBindingConflict $expected) { return $false }
         if ($null -ne $expected) {
             if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractCorrelationDiffers $actual $expected)) { return $false }
             $correlated = $true

@@ -121,6 +121,28 @@ function Test-BridgeContractValuesDiffer {
     return -not ($null -eq $Left -and $null -eq $Right)
 }
 
+function Test-BridgeContractBlankLabel {
+    # An exact empty-string label: Write-AgentEvent copies a requester label into in_reply_to_requester only
+    # if ($value), so a blank request label is OMITTED from the reply and must stay a skipped (optional) check.
+    param($Value)
+    return ($Value -is [string] -and $Value.Length -eq 0)
+}
+
+function Test-BridgeContractCorrelationDiffers {
+    # nonce/token/task_revision only (never ids, digests or identity labels): Write-BridgeTaskReply echoes these
+    # with their original JSON type, so an equal value of the SAME exact built-in scalar type matches (bool, the
+    # integer types, a finite double or decimal). Strings compare ordinally; both $null is not different; any
+    # other pair (arrays, objects, a type change such as true vs "true" or true vs 1) is DIFFERENT.
+    param($Left, $Right)
+    if ($Left -is [string] -or $Right -is [string]) { return Test-BridgeContractValuesDiffer $Left $Right }
+    if ($null -eq $Left -or $null -eq $Right) { return -not ($null -eq $Left -and $null -eq $Right) }
+    $type = $Left.GetType()
+    if ($type -ne $Right.GetType()) { return $true }
+    if ($type -notin @([bool], [int], [long], [decimal], [double])) { return $true }
+    if ($type -eq [double] -and ([double]::IsNaN($Left) -or [double]::IsInfinity($Left))) { return $true }
+    return -not ($Left -eq $Right)
+}
+
 function Get-BridgeBindingRawField {
     # Get-BridgeContractField for the binding boundary WITHOUT pipeline unrolling: a one-element array stays an
     # array (return ,$value), so the exact-type checks can refuse it. Same top-level/payload rules and conflict object.
@@ -193,7 +215,8 @@ function Test-BridgeReplyBinding {
         if ($context -isnot [System.Management.Automation.PSCustomObject] -and $context -isnot [System.Collections.IDictionary]) { return $false }
         foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
             $expected = Get-BridgeBindingRawField $Request $key
-            if ($null -ne $expected -and (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $context $key) $expected)) { return $false }
+            if ($null -ne $expected -and -not (Test-BridgeContractBlankLabel $expected) -and
+                (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $context $key) $expected)) { return $false }
         }
     } elseif ($null -ne (Get-BridgeContractField $Reply 'in_reply_to_request_id')) { return $false }
     $reference = Get-BridgeContractField $Reply 'request_ts_utc'
@@ -203,7 +226,7 @@ function Test-BridgeReplyBinding {
         $expected = Get-BridgeBindingRawField $Request $key
         $actual = Get-BridgeBindingRawField $Reply $key
         if ($null -ne $expected) {
-            if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractValuesDiffer $actual $expected)) { return $false }
+            if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractCorrelationDiffers $actual $expected)) { return $false }
             $correlated = $true
         }
     }
@@ -224,7 +247,8 @@ function Test-BridgeReplyBinding {
         foreach ($key in @('agent_uuid','session_id','run_id')) {
             $value = Get-BridgeBindingRawField $identity $key
             if (-not $RequesterClosure -and ($value -isnot [string] -or -not $value)) { return $false }
-            if ($null -ne $value -and (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply $key) $value)) { return $false }
+            if ($null -ne $value -and -not (Test-BridgeContractBlankLabel $value) -and
+                (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply $key) $value)) { return $false }
         }
     }
     return $true

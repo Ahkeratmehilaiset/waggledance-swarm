@@ -390,3 +390,113 @@ def test_python_binding_agrees_on_the_shape_matrix():
     wrong = sorted(name for name, ((q, r), expected) in _shape_cases().items()
                    if bool(reply_matches_request(q, r, 'codex-tools-1')) is not expected)
     assert wrong == [], wrong
+
+
+# --- Canonical-writer compatibility (fable-5 69151715 on cfa59a02): blank requester labels are omitted by
+# Write-AgentEvent (if ($value) context copy) and typed nonce/token/task_revision are echoed by Write-BridgeTaskReply.
+# Such replies must bind; arrays, wrong values and type changes must still be refused. Identifier fields stay exact strings.
+def _compat_pair(request_over=None, nonce=None, revision=None):
+    _, request, reply = events()
+    request.update(request_id='request-v2', request_digest='d' * 64)
+    request.update(request_over or {})
+    if nonce is not None:
+        request['payload']['nonce'] = nonce
+    if revision is not None:
+        request['payload']['task_revision'] = revision
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='d' * 64,
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id') if request[k]})
+    reply['payload'] = {'request_ts_utc': request['ts_utc']}
+    for key in ('nonce', 'task_revision'):                    # Write-BridgeTaskReply echo (same JSON type)
+        if key in request['payload']:
+            reply['payload'][key] = deepcopy(request['payload'][key])
+    return request, reply
+
+
+def _compat_cases():
+    cases = {}
+    for label in ('agent_uuid', 'session_id', 'run_id'):
+        cases[f'blank_requester_{label}_omitted'] = (_compat_pair({label: ''}), True)
+    cases['all_blank_requester_labels_omitted'] = (_compat_pair({'agent_uuid': '', 'session_id': '', 'run_id': ''}), True)
+    request, reply = _compat_pair({'agent_uuid': ''})
+    reply['in_reply_to_requester']['session_id'] = 'wrong-session'
+    cases['blank_label_does_not_excuse_a_wrong_nonempty_label'] = ((request, reply), False)
+    request, reply = _compat_pair()
+    reply['in_reply_to_requester']['agent_uuid'] = ''
+    cases['reply_blank_for_a_nonempty_request_label'] = ((request, reply), False)
+    for name, value in {'bool_true': True, 'bool_false': False, 'int_3': 3, 'float_1_5': 1.5}.items():
+        cases[f'nonce_{name}_echoed'] = (_compat_pair(nonce=value), True)
+        cases[f'revision_{name}_echoed'] = (_compat_pair(revision=value), True)
+    for name, (sent, echoed) in {'true_vs_false': (True, False), 'int_3_vs_4': (3, 4), 'true_vs_string': (True, 'true'),
+                                 'int_vs_string': (3, '3'), 'array_vs_scalar': ([True], True),
+                                 'scalar_vs_array': (3, [3])}.items():
+        request, reply = _compat_pair(nonce=sent)
+        reply['payload']['nonce'] = deepcopy(echoed)
+        cases[f'nonce_{name}'] = ((request, reply), False)
+    return cases
+
+
+_PS_ONLY = {'nonce_bool_vs_int': ((True, 1), False)}           # Python treats True == 1; PowerShell must not
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+def test_canonical_writer_blank_labels_and_typed_correlation_values_bind_exactly(tmp_path, engine):
+    cases = dict(_compat_cases())
+    request, reply = _compat_pair(nonce=True)
+    reply['payload']['nonce'] = 1
+    cases['nonce_bool_vs_int'] = ((request, reply), False)
+    request, reply = _compat_pair(nonce={'v': 1})                # Python compares dicts equal; PowerShell refuses
+    cases['nonce_object_vs_object'] = ((request, reply), False)
+    fixture = tmp_path / 'compat.json'
+    fixture.write_text(json.dumps([{'name': n, 'request': q, 'reply': r} for n, ((q, r), _) in cases.items()]),
+                       encoding='utf-8')
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    wrong = sorted(name for name, ((_q, _r), expected) in cases.items() if verdicts[name] is not expected)
+    assert wrong == [], wrong
+
+
+def test_python_binding_agrees_on_the_compat_cases():
+    wrong = sorted(name for name, ((q, r), expected) in _compat_cases().items()
+                   if bool(reply_matches_request(q, r, 'codex-tools-1')) is not expected)
+    assert wrong == [], wrong
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+@pytest.mark.parametrize('label_value, expected', [('', True), (0, False), (False, False)])
+def test_only_an_exact_empty_string_requester_label_is_skipped(tmp_path, engine, label_value, expected):
+    # Write-AgentEvent omits any falsy label; only the exact empty string is a documented blank. 0 / false are malformed.
+    request, reply = _compat_pair({'agent_uuid': label_value})
+    reply['in_reply_to_requester'].pop('agent_uuid', None)
+    fixture = tmp_path / 'blank.json'
+    fixture.write_text(json.dumps({'request': request, 'reply': reply}), encoding='utf-8')
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; $f=Get-Content -LiteralPath '{fixture}' -Raw | ConvertFrom-Json; "
+               "[bool](Test-BridgeReplyBinding $f.request $f.reply 'codex-tools-1')")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(expected)
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+@pytest.mark.parametrize('blank', [True, False])
+def test_requester_closure_skips_only_a_blank_request_label(tmp_path, engine, blank):
+    request, _ = _compat_pair({'agent_uuid': ''} if blank else None)
+    closure = dict(ts_utc='2026-09-18T07:30:05Z', agent='codex-lead-1', agent_uuid='lead-uuid-other',
+                   session_id=request['session_id'], run_id=request['run_id'], to='codex-tools-1', type='message',
+                   status='cancelled', task_id=request['task_id'], in_reply_to_request_id='request-v2',
+                   in_reply_to_request_digest='d' * 64,
+                   in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id') if request[k]},
+                   payload={'nonce': request['payload']['nonce']})
+    fixture = tmp_path / 'closure.json'
+    fixture.write_text(json.dumps({'request': request, 'reply': closure}), encoding='utf-8')
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; $f=Get-Content -LiteralPath '{fixture}' -Raw | ConvertFrom-Json; "
+               "[bool](Test-BridgeReplyBinding $f.request $f.reply 'codex-tools-1' -RequesterClosure $true)")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    # a blank request label is optional; a non-empty request label must match the closing event exactly
+    assert result.stdout.strip() == str(blank)

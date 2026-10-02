@@ -35,6 +35,9 @@ Object access: only validated 40-hex ids are written to the stdin of one
 ``git --no-replace-objects -C <repo> cat-file --batch`` process (no revision
 syntax, no pathspec, no caller text in argv, inherited GIT_* variables dropped).
 Trees and commits are parsed from raw object bytes; nothing is written.
+Transport is bounded: per-read deadline, header and object size limits, unknown
+object types refused, any failure kills the process and breaks the reader, and
+close() is bounded and reports cleanup problems (they force DELTA_REVIEW_REQUIRED).
 
     python tools/bridge_leaf_reuse.py --repo <path> --input-json <plan.json>
 
@@ -48,9 +51,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
+import time
 from collections import deque
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -59,6 +65,15 @@ ABSENT = "absent"
 REUSE_ALL = "REUSE_ALL"
 NO_CHANGE = "NO_CHANGE"
 DELTA_REVIEW_REQUIRED = "DELTA_REVIEW_REQUIRED"
+
+# Reader transport bounds (disclosed defaults; callers may change them within the ceilings).
+DEFAULT_READ_TIMEOUT_S = 30.0  # per object read, header and body together
+DEFAULT_CLOSE_TIMEOUT_S = 5.0  # per cleanup step (wait, wait after kill, pump join)
+DEFAULT_MAX_OBJECT_BYTES = 32 * 1024 * 1024
+MAX_OBJECT_BYTES_CEILING = 1024 * 1024 * 1024
+MAX_HEADER_BYTES = 128  # "<40-hex> <type> <size>" is at most 68 bytes
+CHUNK_BYTES = 64 * 1024
+OBJECT_TYPES = frozenset({"blob", "tree", "commit", "tag"})
 
 _OID = re.compile(r"\A[0-9a-f]{40}\Z")
 _BLOB_MODES = frozenset({"100644", "100755", "120000"})
@@ -113,11 +128,37 @@ def _validate_path(value: Any) -> str:
 
 
 class GitObjectReader:
-    """Read-only object store backed by one ``git cat-file --batch`` process."""
+    """Read-only object store backed by one ``git cat-file --batch`` process, with bounded transport.
 
-    def __init__(self, repo: Union[str, os.PathLike], git: str = "git") -> None:
+    Every read has a deadline (``read_timeout`` seconds); headers are bounded (MAX_HEADER_BYTES) and object
+    bodies by ``max_object_bytes``. Stdout is read by one pump thread that only reads when the caller asks
+    (one outstanding chunk at a time), so buffered data stays bounded and the thread is idle-blocked, never
+    busy. Any protocol, I/O or timeout failure kills the process and leaves the reader broken: later reads
+    raise ReaderError; nothing from a failed exchange is cached. ``close()`` is bounded by ``close_timeout``
+    per step and records every cleanup problem in ``cleanup_errors`` instead of swallowing it."""
+
+    def __init__(self, repo: Union[str, os.PathLike], git: str = "git", *,
+                 read_timeout: float = DEFAULT_READ_TIMEOUT_S, close_timeout: float = DEFAULT_CLOSE_TIMEOUT_S,
+                 max_object_bytes: int = DEFAULT_MAX_OBJECT_BYTES) -> None:
+        for name, value in (("read_timeout", read_timeout), ("close_timeout", close_timeout)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 3600:
+                raise LeafReuseError("%s must be a number of seconds in (0, 3600]" % name)
+        if isinstance(max_object_bytes, bool) or not isinstance(max_object_bytes, int) \
+                or not 0 < max_object_bytes <= MAX_OBJECT_BYTES_CEILING:
+            raise LeafReuseError("max_object_bytes must be an int in (0, %d]" % MAX_OBJECT_BYTES_CEILING)
         self.argv = [git, "--no-replace-objects", "-C", os.fspath(repo), "cat-file", "--batch"]
+        self.read_timeout = float(read_timeout)
+        self.close_timeout = float(close_timeout)
+        self.max_object_bytes = max_object_bytes
+        self.cleanup_errors: List[str] = []
         self._proc: Optional[subprocess.Popen] = None
+        self._pump: Optional[threading.Thread] = None
+        self._asks: "queue.Queue[Optional[int]]" = queue.Queue()
+        self._chunks: "queue.Queue[Union[bytes, BaseException]]" = queue.Queue()
+        self._pending = False
+        self._eof = False
+        self._buf = bytearray()
+        self._broken: Optional[str] = None
         self._cache: Dict[str, Optional[Tuple[str, bytes]]] = {}
 
     def __enter__(self) -> "GitObjectReader":
@@ -126,21 +167,9 @@ class GitObjectReader:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def close(self) -> None:
-        proc, self._proc = self._proc, None
-        if proc is not None:
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            proc.stdout.close()
-
     def _start(self) -> subprocess.Popen:
+        if self._broken is not None:
+            raise ReaderError("reader is broken: %s" % self._broken)
         if self._proc is None:
             env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
             try:
@@ -149,8 +178,100 @@ class GitObjectReader:
                     stderr=subprocess.DEVNULL, env=env,
                 )
             except OSError as exc:
+                self._broken = "cannot start git cat-file"
                 raise ReaderError("cannot start git cat-file: %s" % exc) from exc
+            self._pump = threading.Thread(target=self._pump_loop, args=(self._proc.stdout,),
+                                          name="bridge-leaf-reuse-cat-file", daemon=True)
+            self._pump.start()
         return self._proc
+
+    def _pump_loop(self, stream: Any) -> None:
+        while True:
+            ask = self._asks.get()
+            if ask is None:
+                return
+            try:
+                data = stream.read1(ask)
+            except BaseException as exc:  # handed to the caller, which fails closed
+                self._chunks.put(exc)
+                return
+            self._chunks.put(data)
+            if not data:
+                return
+
+    def _fail(self, message: str) -> "ReaderError":
+        """Mark the reader broken and kill the process (the pump then sees EOF and exits)."""
+        if self._broken is None:
+            self._broken = message
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError as exc:
+                self.cleanup_errors.append("kill after failure raised %s" % exc)
+        return ReaderError(message)
+
+    def close(self) -> None:
+        proc, pump, self._proc, self._pump = self._proc, self._pump, None, None
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()
+        except OSError as exc:
+            self.cleanup_errors.append("closing cat-file stdin raised %s" % exc)
+        try:
+            proc.wait(timeout=self.close_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError as exc:
+                self.cleanup_errors.append("kill raised %s" % exc)
+            try:
+                proc.wait(timeout=self.close_timeout)
+            except subprocess.TimeoutExpired:
+                self.cleanup_errors.append("cat-file did not exit within %.1f s after kill" % self.close_timeout)
+        if pump is not None:
+            self._asks.put(None)
+            pump.join(self.close_timeout)
+            if pump.is_alive():
+                self.cleanup_errors.append("cat-file pump thread still blocked after %.1f s" % self.close_timeout)
+                return  # never close a stream a live thread is still reading
+        try:
+            proc.stdout.close()
+        except OSError as exc:
+            self.cleanup_errors.append("closing cat-file stdout raised %s" % exc)
+
+    def _fill(self, need: int, deadline: float, what: str) -> None:
+        """Grow the buffer to at least ``need`` bytes before ``deadline`` (or fail closed)."""
+        while len(self._buf) < need:
+            if self._eof:
+                raise self._fail("cat-file output ended early while reading %s" % what)
+            if not self._pending:
+                self._asks.put(min(CHUNK_BYTES, need - len(self._buf)))
+                self._pending = True
+            remaining = deadline - time.monotonic()
+            try:
+                item = self._chunks.get(timeout=max(remaining, 0.0))
+            except queue.Empty:
+                raise self._fail("cat-file read timed out after %.1f s while reading %s"
+                                 % (self.read_timeout, what)) from None
+            self._pending = False
+            if isinstance(item, BaseException):
+                raise self._fail("cat-file stdout read raised %s" % item)
+            if not item:
+                self._eof = True
+            self._buf += item
+
+    def _header(self, deadline: float) -> bytes:
+        while True:
+            end = self._buf.find(b"\n", 0, MAX_HEADER_BYTES)
+            if end >= 0:
+                header = bytes(self._buf[:end])
+                self._buf = self._buf[end + 1:]
+                return header
+            if len(self._buf) >= MAX_HEADER_BYTES:
+                raise self._fail("cat-file header longer than %d bytes" % MAX_HEADER_BYTES)
+            self._fill(len(self._buf) + 1, deadline, "a header")
 
     def read(self, oid: str) -> Optional[Tuple[str, bytes]]:
         """(type, raw bytes) for an existing object, None for a missing one."""
@@ -158,26 +279,33 @@ class GitObjectReader:
         if oid in self._cache:
             return self._cache[oid]
         proc = self._start()
+        deadline = time.monotonic() + self.read_timeout
         try:
             proc.stdin.write(oid.encode("ascii") + b"\n")
             proc.stdin.flush()
-            header = proc.stdout.readline()
-        except OSError as exc:
-            raise ReaderError("git cat-file I/O failed: %s" % exc) from exc
-        if not header.endswith(b"\n"):
-            raise ReaderError("git cat-file ended without a response for %s" % oid)
-        parts = header[:-1].split(b" ")
-        if parts == [oid.encode("ascii"), b"missing"]:
+        except (OSError, ValueError) as exc:
+            raise self._fail("writing to cat-file failed: %s" % exc) from exc
+        parts = self._header(deadline).split(b" ")
+        expected = oid.encode("ascii")
+        if parts == [expected, b"missing"]:
             self._cache[oid] = None
             return None
-        if len(parts) != 3 or parts[0] != oid.encode("ascii") or not parts[2].isdigit():
-            raise ReaderError("unexpected git cat-file header for %s" % oid)
-        size = int(parts[2])
-        data = proc.stdout.read(size)
-        trailer = proc.stdout.read(1)
-        if len(data) != size or trailer != b"\n":
-            raise ReaderError("short git cat-file read for %s" % oid)
-        result = (parts[1].decode("ascii"), data)
+        if len(parts) != 3 or parts[0] != expected:
+            raise self._fail("unexpected cat-file header for %s" % oid)
+        kind, size_text = parts[1].decode("ascii", "replace"), parts[2]
+        if kind not in OBJECT_TYPES:
+            raise self._fail("unknown object type %r for %s" % (kind, oid))
+        if not size_text.isdigit() or len(size_text) > 20:
+            raise self._fail("malformed object size for %s" % oid)
+        size = int(size_text)
+        if size > self.max_object_bytes:
+            raise self._fail("object %s has %d bytes, above the %d-byte limit" % (oid, size, self.max_object_bytes))
+        self._fill(size + 1, deadline, "object %s" % oid)
+        data, trailer = bytes(self._buf[:size]), bytes(self._buf[size:size + 1])
+        if trailer != b"\n":
+            raise self._fail("missing object trailer for %s" % oid)
+        self._buf = self._buf[size + 1:]
+        result = (kind, data)
         self._cache[oid] = result
         return result
 
@@ -470,8 +598,13 @@ def assess(store: Any, base: str, leaves: Mapping[str, Any], reviewed_heads: Seq
 
 def assess_repo(repo: Union[str, os.PathLike], base: str, leaves: Mapping[str, Any],
                 reviewed_heads: Sequence[str], extra_paths: Sequence[str] = ()) -> Dict[str, Any]:
-    with GitObjectReader(repo) as reader:
-        return assess(reader, base, leaves, reviewed_heads, extra_paths)
+    reader = GitObjectReader(repo)
+    with reader:
+        report = assess(reader, base, leaves, reviewed_heads, extra_paths)
+    if reader.cleanup_errors:  # disclosed, never swallowed: an unclean reader cannot back a reuse report
+        report["reader_cleanup_errors"] = list(reader.cleanup_errors)
+        report["overall"] = DELTA_REVIEW_REQUIRED
+    return report
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

@@ -10,6 +10,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -368,3 +369,223 @@ def test_no_gate_or_runtime_consumer_imports_the_tool():
                 if "bridge_leaf_reuse" in path.read_text(encoding="utf-8", errors="replace"):
                     hits.append(str(path.relative_to(ROOT)))
     assert hits == []
+
+
+# ---------------------------------------------------------------- reader transport (deterministic fake cat-file)
+FAKE = r'''
+import sys, time
+scenario = sys.argv[1]
+OBJ = {"a" * 40: (b"blob", b"hello"), "b" * 40: (b"blob", b""), "c" * 40: (b"tree", b"")}
+out = sys.stdout.buffer
+def send(data):
+    out.write(data)
+    out.flush()
+if scenario == "exit_early":
+    sys.exit(3)
+for line in sys.stdin.buffer:
+    oid = line.strip()
+    if scenario in ("ok", "ignore_close"):
+        kind, data = OBJ.get(oid.decode(), (None, None))
+        if kind is None:
+            send(oid + b" missing\n")
+        else:
+            send(oid + b" " + kind + b" " + str(len(data)).encode() + b"\n" + data + b"\n")
+        continue
+    if scenario == "truncated_header":
+        send(b"aaaa")
+        sys.exit(0)
+    if scenario == "wrong_oid":
+        send(b"d" * 40 + b" blob 5\nhello\n")
+    elif scenario == "wrong_type":
+        send(oid + b" weird 5\nhello\n")
+    elif scenario == "bad_size":
+        send(oid + b" blob 5x\nhello\n")
+    elif scenario == "negative_size":
+        send(oid + b" blob -5\nhello\n")
+    elif scenario == "huge_size":
+        send(oid + b" blob 99999999999999999999\n")
+    elif scenario == "over_limit":
+        send(oid + b" blob 2048\n" + b"x" * 2048 + b"\n")
+    elif scenario == "long_header":
+        send(b"x" * 100000)
+    elif scenario == "no_newline":
+        send(oid + b" blob 5")
+        sys.exit(0)
+    elif scenario == "short_body":
+        send(oid + b" blob 10\nabc")
+        sys.exit(0)
+    elif scenario == "bad_trailer":
+        send(oid + b" blob 5\nhelloX")
+    elif scenario == "missing_trailer_exit":
+        send(oid + b" blob 5\nhello")
+        sys.exit(0)
+    elif scenario == "stall_mid_body":
+        send(oid + b" blob 5\nhe")
+    elif scenario != "stall":
+        raise SystemExit("unknown scenario")
+    time.sleep(120)
+if scenario == "ignore_close":
+    time.sleep(120)
+'''
+
+
+@pytest.fixture
+def fake_git(tmp_path, monkeypatch):
+    """Route the reader's Popen to a fake cat-file process; returns factory(scenario, **reader_kwargs)."""
+    script = tmp_path / "fake_cat_file.py"
+    script.write_text(FAKE, encoding="utf-8")
+    real_popen = subprocess.Popen
+    spawned, readers = [], []
+
+    def factory(scenario, **kwargs):
+        def popen(argv, **kw):
+            assert argv[1:] == ["--no-replace-objects", "-C", "repo", "cat-file", "--batch"]
+            proc = real_popen([sys.executable, str(script), scenario], **kw)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(L.subprocess, "Popen", popen)
+        reader = L.GitObjectReader("repo", **kwargs)
+        readers.append(reader)
+        return reader
+
+    factory.spawned = spawned
+    yield factory
+    for reader in readers:
+        reader.close()
+    for proc in spawned:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(10)
+
+
+def test_transport_valid_objects_empty_blob_missing_and_cache(fake_git):
+    r = fake_git("ok", read_timeout=10)
+    assert r.read("a" * 40) == ("blob", b"hello")
+    assert r.read("b" * 40) == ("blob", b"")
+    assert r.read("c" * 40) == ("tree", b"")
+    assert r.read("e" * 40) is None and r.read("e" * 40) is None
+    assert len(fake_git.spawned) == 1
+    r.close()
+    assert fake_git.spawned[0].poll() is not None and r.cleanup_errors == []
+
+
+@pytest.mark.parametrize("scenario", [
+    "truncated_header", "wrong_oid", "wrong_type", "bad_size", "negative_size", "huge_size", "over_limit",
+    "long_header", "no_newline", "short_body", "bad_trailer", "missing_trailer_exit", "exit_early",
+])
+def test_transport_protocol_failures_raise_reader_error_and_never_cache(fake_git, scenario):
+    r = fake_git(scenario, read_timeout=5, max_object_bytes=1024)
+    started = time.monotonic()
+    with pytest.raises(L.ReaderError):
+        r.read("a" * 40)
+    assert time.monotonic() - started < 5
+    assert "a" * 40 not in r._cache
+    assert fake_git.spawned[0].wait(5) is not None  # the failure itself ended the process, not close()
+    with pytest.raises(L.ReaderError, match="broken"):  # a desynchronised stream is never reused
+        r.read("a" * 40)
+    assert len(fake_git.spawned) == 1
+    r.close()
+    assert fake_git.spawned[0].poll() is not None
+
+
+@pytest.mark.parametrize("scenario", ["stall", "stall_mid_body"])
+def test_transport_stall_times_out_and_kills_the_process(fake_git, scenario):
+    r = fake_git(scenario, read_timeout=1.5)
+    started = time.monotonic()
+    with pytest.raises(L.ReaderError, match="timed out"):
+        r.read("a" * 40)
+    assert time.monotonic() - started < 5
+    assert fake_git.spawned[0].wait(5) is not None  # the timeout itself killed the stalled process
+    with pytest.raises(L.ReaderError, match="broken"):
+        r.read("b" * 40)
+    r.close()
+    assert fake_git.spawned[0].poll() is not None and r.cleanup_errors == []
+
+
+def test_transport_write_failure_after_process_exit(fake_git):
+    r = fake_git("exit_early", read_timeout=5)
+    r._start()
+    fake_git.spawned[0].wait(10)
+    with pytest.raises(L.ReaderError):
+        r.read("a" * 40)
+
+
+def test_transport_close_is_bounded_when_the_child_ignores_stdin_eof(fake_git):
+    r = fake_git("ignore_close", read_timeout=5, close_timeout=1)
+    assert r.read("a" * 40) == ("blob", b"hello")
+    started = time.monotonic()
+    r.close()
+    assert time.monotonic() - started < 6
+    assert fake_git.spawned[0].poll() is not None
+    assert r.cleanup_errors == []  # a kill after the grace period is normal, bounded cleanup
+
+
+def test_transport_close_failure_is_disclosed_not_swallowed(fake_git, monkeypatch):
+    r = fake_git("ignore_close", read_timeout=5, close_timeout=0.5)
+    assert r.read("a" * 40) == ("blob", b"hello")
+    proc = fake_git.spawned[0]
+    real_kill = proc.kill
+
+    def broken_kill():
+        raise OSError("injected kill failure")
+
+    proc.kill = broken_kill
+    try:
+        r.close()
+    finally:
+        proc.kill = real_kill
+    text = " | ".join(r.cleanup_errors)
+    assert "injected kill failure" in text and "did not exit" in text
+
+
+def test_assess_repo_reports_cleanup_failures_as_delta(monkeypatch):
+    class Reader:
+        def __init__(self, repo):
+            self.cleanup_errors = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.cleanup_errors.append("injected cleanup failure")
+
+        def read(self, oid):
+            return None
+
+    monkeypatch.setattr(L, "GitObjectReader", Reader)
+    r = L.assess_repo("repo", "1" * 40, {"f.py": "2" * 40}, [])
+    assert r["overall"] == L.DELTA_REVIEW_REQUIRED
+    assert r["reader_cleanup_errors"] == ["injected cleanup failure"]
+
+
+def test_invalid_inputs_spawn_nothing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(L.subprocess, "Popen", lambda *a, **k: calls.append(a))
+    reader = L.GitObjectReader("repo")
+    for bad in ("HEAD", "c0ffee", "--all", "A" * 40):
+        with pytest.raises(L.LeafReuseError):
+            reader.read(bad)
+    r = L.assess(reader, "HEAD", {"f.py": "1" * 40}, ["2" * 40])
+    assert r["overall"] == L.DELTA_REVIEW_REQUIRED and calls == []
+
+
+def test_reader_rejects_unbounded_configuration():
+    for kwargs in ({"read_timeout": 0}, {"read_timeout": float("inf")}, {"close_timeout": -1},
+                   {"max_object_bytes": 0}, {"read_timeout": "5"}, {"max_object_bytes": True}):
+        with pytest.raises(L.LeafReuseError):
+            L.GitObjectReader("repo", **kwargs)
+
+
+def test_real_reader_reads_commit_tree_empty_blob_and_missing():
+    with L.GitObjectReader(ROOT) as reader:
+        if reader.read(R1276) is None:
+            pytest.skip("reviewed objects absent from this clone")
+        kind, data = reader.read(R1276)
+        assert kind == "commit" and data.startswith(b"tree ")
+        assert reader.read(data[5:45].decode())[0] == "tree"
+        empty = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        if reader.read(empty) is not None:
+            assert reader.read(empty) == ("blob", b"")
+        assert reader.read("0" * 40) is None
+    assert reader.cleanup_errors == []

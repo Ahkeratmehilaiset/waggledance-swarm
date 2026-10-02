@@ -232,3 +232,109 @@ def test_next_action_reports_suppressed_agent_instead_of_follow_nudge(
     assert report["task_id"] == "agent-suppressed-unavailable"
     assert report["open_incoming_count"] == 0
     assert report["suppression_reason"] == "operator reported lane unavailable"
+
+
+# --- missing / non-string status (Fable 48631d99 confirmed: StrictMode throws on a row without top-level status) ----
+# One malformed row must not deny all routing, and a missing or non-string status must never fabricate a request,
+# an answer status, an ACK or a requester closure: it reads exactly as an empty status in both shells.
+_SHELLS = list(dict.fromkeys(filter(None, [shutil.which("pwsh"), shutil.which("powershell.exe")])))
+_LEAD = {"agent": "codex-lead-1", "agent_uuid": "uuid-lead-1", "session_id": "sess-a", "run_id": "run-a"}
+
+
+def _classify_in(shell: str, events: list[dict[str, object]]) -> list[dict[str, object]]:
+    script = (
+        f". '{CLASSIFIER}'\n"
+        "$rows = @($input | ConvertFrom-Json | ForEach-Object { $_ })\n"
+        "@(foreach ($e in $rows) { try { [pscustomobject]@{ request_like = [bool](Test-BridgeRequestLikeEvent -Event $e);"
+        " answer = [bool](Test-BridgeAnswerEvent -Event $e); ack = [bool](Test-BridgeAckEvent -Event $e);"
+        " closure = [bool](Test-BridgeRequesterClosureEvent -Event $e); error = $null } }"
+        " catch { [pscustomobject]@{ request_like = $null; answer = $null; ack = $null; closure = $null;"
+        " error = $_.Exception.Message } } }) | ConvertTo-Json -Compress -AsArray\n"
+    ) if "pwsh" in shell.lower() else (
+        f". '{CLASSIFIER}'\n"
+        "$rows = @($input | ConvertFrom-Json | ForEach-Object { $_ })\n"
+        "$out = @(foreach ($e in $rows) { try { [pscustomobject]@{ request_like = [bool](Test-BridgeRequestLikeEvent -Event $e);"
+        " answer = [bool](Test-BridgeAnswerEvent -Event $e); ack = [bool](Test-BridgeAckEvent -Event $e);"
+        " closure = [bool](Test-BridgeRequesterClosureEvent -Event $e); error = $null } }"
+        " catch { [pscustomobject]@{ request_like = $null; answer = $null; ack = $null; closure = $null;"
+        " error = $_.Exception.Message } } })\n"
+        "ConvertTo-Json -InputObject $out -Compress\n"
+    )
+    done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script], input=json.dumps(events),
+                          capture_output=True, text=True, check=False, timeout=120)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip())
+
+
+def _row(kind: str, **over: object) -> dict[str, object]:
+    row: dict[str, object] = dict(_LEAD, ts_utc="2026-10-01T23:50:00Z", type=kind, task_id="codex-lead-1/t",
+                                  to="codex-tools-1", message="m")
+    row.update(over)
+    return row
+
+
+_KINDS = ["wake_request", "message", "done", "decision", "ownership_proposal"]
+_BAD_STATUS = {"null": None, "list_request": ["request"], "list_answered": ["answered"], "list_cancelled": ["cancelled"],
+               "bool": True, "object": {"status": "request"}, "number": 7}
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_missing_or_non_string_status_classifies_exactly_like_an_empty_status(shell: str) -> None:
+    rows, twins = [], []
+    for kind in _KINDS:
+        for extra in ({}, {"request_id": "req-1"}):
+            rows.append({k: v for k, v in _row(kind, **extra).items()})                    # no status key at all
+            twins.append(_row(kind, status="", **extra))
+            for value in _BAD_STATUS.values():
+                rows.append(_row(kind, status=value, **extra))
+                twins.append(_row(kind, status="", **extra))
+    got, want = _classify_in(shell, rows), _classify_in(shell, twins)
+    assert [g["error"] for g in got] == [None] * len(got), got
+    assert got == want
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_known_exact_statuses_keep_their_meaning(shell: str) -> None:
+    rows = [_row("wake_request", status="assigned", request_id="r"), _row("wake_request", status="request"),
+            _row("message", status="answered"), _row("message", status="Answered"), _row("message", status="received"),
+            _row("message", status="cancelled"), _row("done", status="done"), _row("message", status="queued")]
+    got = _classify_in(shell, rows)
+    assert [(g["request_like"], g["answer"], g["ack"], g["closure"]) for g in got] == [
+        (True, False, False, False), (True, False, False, False), (False, True, False, False), (False, True, False, False),
+        (False, False, True, False), (False, True, False, True), (False, True, False, True), (False, False, False, False)]
+
+
+def _select(shell: str, tmp_path: Path, rows: list[dict[str, object]]) -> dict[str, object]:
+    (tmp_path / "shared").mkdir(parents=True)
+    (tmp_path / "shared/events.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows),
+                                                 encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("AGENT_BRIDGE_", "WD_", "PSMODULEPATH"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(tmp_path)
+    done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(NEXT_ACTION),
+                           "-Agent", "codex-tools-1", "-Now", "2026-10-01T23:59:00Z", "-Json"],
+                          env=env, capture_output=True, text=True, check=False, timeout=120)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def _pending(rid: str, ts: str) -> dict[str, object]:
+    return _row("wake_request", status="assigned", request_id=rid, request_digest="a" * 64, ts_utc=ts,
+                payload={"task_revision": "r1"}, task_id="codex-lead-1/" + rid)
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_status_less_junk_before_and_between_pending_requests_does_not_deny_routing(shell: str, tmp_path: Path) -> None:
+    junk = {k: v for k, v in _row("message", task_id="codex-lead-1/r1").items()}
+    rows = [junk, _pending("r1", "2026-10-01T23:50:00Z"), dict(junk, ts_utc="2026-10-01T23:51:00Z"),
+            _pending("r2", "2026-10-01T23:52:00Z")]
+    out = _select(shell, tmp_path, rows)
+    assert out["action"] == "answer_incoming" and out["open_incoming_count"] == 2, out
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_a_status_less_row_never_closes_or_cancels_a_pending_request(shell: str, tmp_path: Path) -> None:
+    later = _row("message", task_id="codex-lead-1/r1", ts_utc="2026-10-01T23:55:00Z", to="codex-lead-1",
+                 agent="codex-tools-1", in_reply_to_request_id="r1")
+    out = _select(shell, tmp_path, [_pending("r1", "2026-10-01T23:50:00Z"), later])
+    assert out["action"] == "answer_incoming" and out["open_incoming_count"] == 1, out
+    assert out.get("cancelled_withheld_count", 0) == 0, out

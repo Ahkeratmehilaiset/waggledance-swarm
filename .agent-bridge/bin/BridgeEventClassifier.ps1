@@ -39,11 +39,23 @@ function Test-BridgeAddressedTo {
     return @(Get-BridgeEventTargets -Event $Event) -contains $TargetAgent
 }
 
+function Get-BridgeEventStatusText {
+    param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
+
+    # A row without a top-level status (StrictMode would throw on $Event.status and deny ALL routing) or with a
+    # non-string status (list, bool, object, number) reads as an empty status: it never becomes a request,
+    # answer, ACK or closure status by [string] coercion (Fable 48631d99). Exact strings are unchanged.
+    $property = $Event.PSObject.Properties['status']
+    if ($null -eq $property -or $property.Value -isnot [string]) { return '' }
+    return [string]$property.Value
+}
+
 function Test-BridgeAckEvent {
     param([Parameter(Mandatory)] [object] $Event)
     Set-StrictMode -Version Latest
 
-    return @('received','seen','acknowledged') -contains [string]$Event.status
+    return @('received','seen','acknowledged') -contains (Get-BridgeEventStatusText -Event $Event)
 }
 
 function Test-BridgeInfrastructureEvent {
@@ -110,7 +122,7 @@ function Test-BridgeRequesterClosureEvent {
     param([Parameter(Mandatory)] [object] $Event)
     Set-StrictMode -Version Latest
 
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
     $type = [string]$Event.type
     if ($type -in @('message','wake_request')) {
         return @('closed','superseded','cancelled','canceled','withdrawn') -contains $status -or
@@ -134,7 +146,7 @@ function Test-BridgeRequestLikeEvent {
     if (Test-BridgeInfrastructureEvent -Event $Event) { return $false }
 
     $type = [string]$Event.type
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
 
     if ($type -eq 'message' -and (Test-BridgeMessageAnswerStatus -Status $status)) {
         return $false
@@ -187,7 +199,7 @@ function Test-BridgeAnswerEvent {
     if (Test-BridgeInfrastructureEvent -Event $Event) { return $false }
 
     $type = [string]$Event.type
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
 
     if ($type -eq 'done' -and $status -match '(^|[^a-z0-9])(not|no|undone|incomplete|unfinished|unresolved|unverified|unmerged|failed|pending|queued|running|processing)([^a-z0-9]|$)') { return $false }
     if ($type -eq 'message') {

@@ -80,15 +80,18 @@ _BLOB_MODES = frozenset({"100644", "100755", "120000"})
 _TREE_MODE = "40000"
 _PS_SUFFIXES = (".ps1", ".psm1")
 _DEP_SCOPE = ".agent-bridge/bin/"
+# A complete hyphenated name (any number of segments); never a prefix or suffix of a longer one.
+_FUNC_NAME = r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+"
 _FUNC_DEF = re.compile(
     r"(?im)^[ \t]*(?:function|filter)[ \t]+(?:(?:global|script|local|private):)?"
-    r"([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+)\b"
+    r"(" + _FUNC_NAME + r")(?![\w-])"
 )
-_FUNC_REF = re.compile(r"(?i)(?<![\w-])([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+)(?![\w-])")
+_FUNC_REF = re.compile(r"(?i)(?<![\w-])(" + _FUNC_NAME + r")(?![\w-])")
 LIMITS = (
     "reviewed heads are caller-supplied evidence, not authenticated reviews",
-    "dependency check covers PowerShell function names only (regex approximation); "
-    "Python imports, dot-sourcing, modules and dynamic calls are not checked",
+    "dependency check covers hyphenated PowerShell function names under .agent-bridge/bin/ only "
+    "(regex approximation; comments and strings count as references); Python imports, dot-sourcing, "
+    "modules, aliases, unhyphenated names and dynamic calls are not checked",
     "merge commits are refused as reviewed heads",
     "SHA-1 object ids only",
 )
@@ -477,7 +480,7 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
         "method": "regex_approximation_powershell_function_names",
         "closure": "not_proven", "status": "not_applicable", "missing": [], "unknown": [],
     }
-    leaves = {p: e for p, e in composed.items() if _is_ps(p) and e != ABSENT}
+    leaves = {p: e for p, e in composed.items() if _is_ps(p)}  # deletions included: they can lose definitions
     if not leaves:
         return result
 
@@ -497,20 +500,29 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
     for head in heads:
         for key, name in defs_of(_ps_files(objs, head), head).items():
             reviewed.setdefault(key, name)
-    tree_files = dict(_ps_files(objs, base))
+    base_files = _ps_files(objs, base)
+    tree_files = dict(base_files)
     for path, entry in composed.items():
         if entry == ABSENT:
             tree_files.pop(path, None)
         elif _is_ps(path):
             tree_files[path] = entry  # type: ignore[assignment]
+    # Base definitions can only be lost from base files the composition replaces or deletes.
+    replaced = {p: e for p, e in base_files.items() if p in composed and composed[p] != e}
+    known = dict(reviewed)
+    for key, name in defs_of(replaced, "base").items():
+        known.setdefault(key, name)
     present = defs_of(tree_files, "composed")
-    for path, entry in sorted(leaves.items()):
+    lost = set(known) - set(present)
+    # Every composed-tree file is scanned, so an unchanged caller of a lost definition is caught too.
+    for path, entry in sorted(tree_files.items()):
         text = _ps_text(objs.get(entry[1], "blob"))
         if text is None:
             continue  # already listed as unknown via the composed tree
         refs = {r.casefold() for r in _FUNC_REF.findall(text)}
-        for key in sorted(refs & set(reviewed) - set(present)):
-            result["missing"].append({"leaf": path.decode("utf-8"), "function": reviewed[key]})
+        role = "leaf" if path in leaves else "caller"
+        for key in sorted(refs & lost):
+            result["missing"].append({role: path.decode("utf-8"), "function": known[key]})
     result["status"] = "unknown" if result["unknown"] else ("missing" if result["missing"] else "no_missing_found")
     return result
 

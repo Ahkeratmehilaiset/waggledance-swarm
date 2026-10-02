@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 import time
@@ -369,6 +371,236 @@ def test_no_gate_or_runtime_consumer_imports_the_tool():
                 if "bridge_leaf_reuse" in path.read_text(encoding="utf-8", errors="replace"):
                     hits.append(str(path.relative_to(ROOT)))
     assert hits == []
+
+
+# ---------------------------------------------------------------- lost definitions and complete names (RCO1 9132172d)
+LIB, USE, OTHER = ".agent-bridge/bin/lib.ps1", ".agent-bridge/bin/use.ps1", ".agent-bridge/bin/other.ps1"
+PS_BASE = {LIB: b"function Get-Foo { 1 }\n", USE: b"function Invoke-Use { Get-Foo }\n"}
+
+
+def ps_commit(store, files, *parents):
+    return store.commit({path: store.blob(data) for path, data in files.items()}, parents)
+
+
+def dep_report(store, base, leaves, heads):
+    r = L.assess(store, base, leaves, heads)
+    assert (r["authority_effect"], r["approval"], r["review_evidence"]) == ("none", "unknown", "caller_supplied_unauthenticated")
+    assert "error" not in r, r.get("error")
+    assert r["dependency_check"]["closure"] == "not_proven"
+    return r
+
+
+def test_lost_definition_removal_leaf_with_unchanged_caller_is_missing_never_reuse_all():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, {LIB: b"function Get-Other { 2 }\n", USE: b"function Invoke-Use { Get-Other }\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["paths"][LIB]["verdict"] == "REUSE"
+    assert r["dependency_check"]["status"] == "missing" and r["overall"] == L.DELTA_REVIEW_REQUIRED
+    assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]
+
+
+def test_lost_definition_deletion_leaf_with_unchanged_caller_is_missing():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, {USE: b"function Invoke-Use { 3 }\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["paths"][LIB]["target_entry"] == L.ABSENT
+    assert r["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Foo"}]
+    assert r["overall"] == L.DELTA_REVIEW_REQUIRED
+
+
+def test_lost_definition_rename_leaf_alone_is_missing_the_old_name():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, {LIB: b"function Get-Bar { 1 }\n", USE: b"function Invoke-Use { Get-Bar }\n"}, base)
+    assert dep_report(s, base, {LIB: head}, [head])["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Foo"}]
+
+
+def test_lost_definition_called_from_a_case_variant_is_missing():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Foo { 1 }\n", USE: b"GET-FOO\n"})
+    head = ps_commit(s, {LIB: b"function Get-Other { 1 }\n", USE: b"Get-Other\n"}, base)
+    assert dep_report(s, base, {LIB: head}, [head])["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Foo"}]
+
+
+def test_leaf_missing_a_reviewed_helper_keeps_the_leaf_key():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Old {}\n", USE: b"Get-Old\n"})
+    helper = ps_commit(s, {LIB: b"function Get-Old {}\nfunction Get-New {}\n", USE: b"Get-Old\n"}, base)
+    caller = ps_commit(s, {LIB: b"function Get-Old {}\nfunction Get-New {}\n", USE: b"Get-New\n"}, helper)
+    r = dep_report(s, base, {USE: caller}, [helper, caller])
+    assert r["dependency_check"]["missing"] == [{"leaf": USE, "function": "Get-New"}]
+
+
+def test_complete_reviewed_pair_reuses():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, {LIB: b"function Get-Other { 2 }\n", USE: b"function Invoke-Use { Get-Other }\n"}, base)
+    r = dep_report(s, base, {LIB: head, USE: head}, [head])
+    assert r["overall"] == L.REUSE_ALL
+    assert r["dependency_check"]["status"] == "no_missing_found" and r["dependency_check"]["missing"] == []
+
+
+def test_no_change_stays_no_change_with_a_clean_dependency_check():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    r = dep_report(s, base, {LIB: base, USE: base}, [])
+    assert r["overall"] == L.NO_CHANGE and r["dependency_check"]["status"] == "no_missing_found"
+
+
+def test_deletion_of_an_uncalled_definition_reuses():
+    s = Store()
+    base = ps_commit(s, dict(PS_BASE, **{OTHER: b"function Get-Unused { 0 }\n"}))
+    head = ps_commit(s, PS_BASE, base)
+    r = dep_report(s, base, {OTHER: head}, [head])
+    assert r["overall"] == L.REUSE_ALL and r["dependency_check"]["status"] == "no_missing_found"
+
+
+def test_moving_a_definition_between_composed_files_reuses_but_moving_it_out_alone_is_missing():
+    s = Store()
+    base = ps_commit(s, dict(PS_BASE, **{OTHER: b"# empty\n"}))
+    head = ps_commit(s, {LIB: b"# moved\n", USE: PS_BASE[USE], OTHER: b"function Get-Foo { 1 }\n"}, base)
+    both = dep_report(s, base, {LIB: head, OTHER: head}, [head])
+    assert both["overall"] == L.REUSE_ALL and both["dependency_check"]["missing"] == []
+    alone = dep_report(s, base, {LIB: head}, [head])
+    assert alone["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Foo"}]
+
+
+def test_three_part_helper_missing_is_detected():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Old {}\n", USE: b"Get-Old\n"})
+    helper = ps_commit(s, {LIB: b"function Get-Old {}\nfunction Get-Bridge-New {}\n", USE: b"Get-Old\n"}, base)
+    caller = ps_commit(s, {LIB: b"function Get-Old {}\nfunction Get-Bridge-New {}\n", USE: b"Get-Bridge-New\n"}, helper)
+    r = dep_report(s, base, {USE: caller}, [helper, caller])
+    assert r["dependency_check"]["missing"] == [{"leaf": USE, "function": "Get-Bridge-New"}]
+
+
+@pytest.mark.parametrize("define, lost_call", [
+    (b"function script:Get-Helper { }\n", b"Get-Helper\n"),
+    (b"function GLOBAL:Get-Helper{ }\n", b"get-helper\n"),
+    (b"  filter Get-Helper { $_ }\n", b"x | Get-Helper\n"),
+    (b"FUNCTION private:Get-Helper-Two-Three { }\n", b"& Get-Helper-Two-Three\n"),
+    (b"function Get-Foo_Bar { }\n", b"Get-Foo_Bar\n"),
+])
+def test_scope_prefix_filter_case_and_underscore_definitions_are_tracked(define, lost_call):
+    s = Store()
+    base = ps_commit(s, {LIB: define, USE: lost_call})
+    head = ps_commit(s, {LIB: b"# gone\n", USE: b"# updated\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert len(r["dependency_check"]["missing"]) == 1 and r["overall"] == L.DELTA_REVIEW_REQUIRED, r["dependency_check"]
+
+
+@pytest.mark.parametrize("survivor_ref", [b"Get-Bridge-New\n", b"Get-BridgeX\n", b"My-Get-Bridge\n", b"Get-Bridge-\n",
+                                          b"xGet-Bridge\n", b"_Get-Bridge\n", b"9Get-Bridge\n", b"$a_Get-Bridge\n"])
+def test_a_lost_short_name_never_matches_inside_a_longer_name(survivor_ref):
+    s = Store()
+    keep = b"function Get-Bridge-New {}\nfunction Get-BridgeX {}\nfunction My-Get-Bridge {}\n"
+    base = ps_commit(s, {LIB: b"function Get-Bridge {}\n" + keep, USE: survivor_ref})
+    head = ps_commit(s, {LIB: keep, USE: survivor_ref}, base)              # only Get-Bridge is lost
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["dependency_check"]["missing"] == [] and r["overall"] == L.REUSE_ALL, r["dependency_check"]
+
+
+def test_a_lost_long_name_is_not_satisfied_by_its_two_part_prefix():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Bridge {}\nfunction Get-Bridge-New {}\n", USE: b"Get-Bridge-New\n"})
+    head = ps_commit(s, {LIB: b"function Get-Bridge {}\n", USE: b"Get-Bridge\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Bridge-New"}]
+
+
+def test_a_commented_definition_is_not_a_definition():
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, {LIB: b"# function Get-Foo { 1 }\n", USE: b"function Invoke-Use { 1 }\n"}, base)
+    assert {"caller": USE, "function": "Get-Foo"} in dep_report(s, base, {LIB: head}, [head])["dependency_check"]["missing"]
+
+
+def test_malformed_replaced_base_file_is_unknown():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Foo { 1 }\n\xff\n", USE: b"Get-Foo\n"})
+    head = ps_commit(s, {LIB: b"function Get-Foo { 2 }\n", USE: b"Get-Foo\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["dependency_check"]["status"] == "unknown" and r["overall"] == L.DELTA_REVIEW_REQUIRED
+
+
+# ---------------------------------------------------------------- committed-tree no-consumer tripwire
+# A TRIPWIRE, not an isolation proof: a name assembled at runtime (string concatenation, a computed importlib name)
+# is invisible; a test below pins that limit so it stays disclosed.
+TRIPWIRE_ALLOWED = {"tools/bridge_leaf_reuse.py", "tests/tools/test_bridge_leaf_reuse.py"}
+TRIPWIRE_PATTERN = r"bridge_leaf_reuse|leaf_reuse"
+TRIPWIRE_ENV = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+TRIPWIRE_ENV.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+
+def committed_consumers(repo, rev):
+    grep = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "grep", "-I", "-l", "-i", "-E", TRIPWIRE_PATTERN,
+                           rev, "--"], capture_output=True, text=True, env=TRIPWIRE_ENV)
+    if grep.returncode not in (0, 1):
+        raise RuntimeError("git grep failed: %s" % grep.stderr.strip())     # fail closed, never "no consumer"
+    names = subprocess.run(["git", "--no-replace-objects", "-C", str(repo), "ls-tree", "-r", "--name-only", rev],
+                           capture_output=True, text=True, env=TRIPWIRE_ENV)
+    if names.returncode != 0:
+        raise RuntimeError("git ls-tree failed: %s" % names.stderr.strip())
+    paths = [line.split(":", 1)[1] for line in grep.stdout.splitlines() if line]
+    paths += [p for p in names.stdout.splitlines() if re.search(TRIPWIRE_PATTERN, p, re.I)]   # same-named copies
+    # Markdown mentions are documentation, not consumers.
+    return sorted(p for p in dict.fromkeys(paths) if p not in TRIPWIRE_ALLOWED and not p.lower().endswith(".md"))
+
+
+def tripwire_repo(root, files):
+    root.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=TRIPWIRE_ENV)
+    for rel, body in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(body, encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=TRIPWIRE_ENV)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "c"], check=True, env=TRIPWIRE_ENV)
+    return root
+
+
+TRIPWIRE_BASE = {"tools/bridge_leaf_reuse.py": "x = 1\n", "tests/tools/test_bridge_leaf_reuse.py": "from tools import bridge_leaf_reuse\n",
+                 "docs/NOTE.md": "see tools/bridge_leaf_reuse.py\n"}
+
+
+@pytest.mark.skipif(not (ROOT / ".git").exists(), reason="needs the repository's own Git metadata")
+def test_this_commit_has_no_committed_consumer_of_the_tool():
+    assert committed_consumers(ROOT, "HEAD") == []
+
+
+def test_tripwire_clean_synthetic_commit_has_no_consumer(tmp_path):
+    assert committed_consumers(tripwire_repo(tmp_path / "r", TRIPWIRE_BASE), "HEAD") == []
+
+
+@pytest.mark.parametrize("rel, body", [
+    (".github/workflows/x.yml", "run: python tools/bridge_leaf_reuse.py --repo .\n"),
+    ("start.py", "from tools import bridge_leaf_reuse\n"),
+    ("core/gate.py", "import tools.Bridge_Leaf_Reuse\n"),
+    (".agent-bridge/bin/bridge_leaf_reuse.py", "# same-named copy\n"),
+    ("scripts/run.ps1", "python -m tools.bridge_leaf_reuse\n"),
+    ("configs/x.yaml", "advisor: tools/bridge_leaf_reuse.py\n"),
+])
+def test_tripwire_sees_planted_committed_consumers(tmp_path, rel, body):
+    assert committed_consumers(tripwire_repo(tmp_path / "r", dict(TRIPWIRE_BASE, **{rel: body})), "HEAD") == [rel]
+
+
+def test_tripwire_audits_the_commit_not_uncommitted_files(tmp_path):
+    repo = tripwire_repo(tmp_path / "r", TRIPWIRE_BASE)
+    (repo / "start.py").write_text("from tools import bridge_leaf_reuse\n", encoding="utf-8")
+    assert committed_consumers(repo, "HEAD") == []
+
+
+@pytest.mark.parametrize("body", ["import importlib; importlib.import_module('tools.bridge_' + 'leaf' + '_re' + 'use')\n",
+                                  "Set-Alias Get-Advice tools\\bridge_leaf_reuse_copy.py\n"])
+def test_tripwire_disclosed_limit_runtime_assembled_names_are_invisible(tmp_path, body):
+    hits = committed_consumers(tripwire_repo(tmp_path / "r", dict(TRIPWIRE_BASE, **{"core/dyn.py": body})), "HEAD")
+    assert hits == ([] if "import_module" in body else ["core/dyn.py"])
+
+
+def test_tripwire_unknown_revision_fails_closed(tmp_path):
+    with pytest.raises(RuntimeError):
+        committed_consumers(tripwire_repo(tmp_path / "r", TRIPWIRE_BASE), "0" * 40)
 
 
 # ---------------------------------------------------------------- reader transport (deterministic fake cat-file)

@@ -355,3 +355,54 @@ def test_a_stored_field_with_a_trailing_newline_is_an_invalid_shape_and_never_wi
 def test_the_exact_cancel_still_withholds_after_the_ordinal_repair(shell, tmp_path):
     out, selected = _select(shell, tmp_path, [_request(), _cancel()])
     assert selected != _RID and out['cancelled_withheld_count'] == 1, out
+
+# --- status-less / non-string status rows in the selector (Fable 8716 residual at 95a83b4d) ---------------------------
+# A row without a top-level status (or with a non-string status) must not crash the selector (StrictMode $req.status in
+# dedupe, counts and summary) and must route exactly like the same row with status "" (no fabricated assignment).
+def _nostatus(row: dict[str, object]) -> dict[str, object]:
+    return {k: v for k, v in row.items() if k != 'status'}
+
+
+_PENDING_A = _request(request_id='req-a', task_id=_TASK + '-a', ts_utc='2026-10-01T21:50:00Z')
+_PENDING_B = _request(request_id='req-b', task_id=_TASK + '-b', ts_utc='2026-10-01T21:52:00Z')
+_STATUSLESS_CASES = {
+    'request_with_id': [_nostatus(_request())],
+    'wake_without_id': [_nostatus({k: v for k, v in _request().items() if k != 'request_id'})],
+    'message_between_pending': [_PENDING_A, _nostatus(_cancel(type='message', payload={})), _PENDING_B],
+    'wake_before_and_between': [_nostatus({k: v for k, v in _request(task_id=_TASK + '-w').items() if k != 'request_id'}),
+                                _PENDING_A, _nostatus({k: v for k, v in _request(task_id=_TASK + '-w').items()
+                                                       if k != 'request_id'}), _PENDING_B],
+    'duplicate_wake_copies': [_nostatus({k: v for k, v in _request(ts_utc='2026-10-01T21:54:05Z').items() if k != 'request_id'}),
+                              _nostatus({k: v for k, v in _request(ts_utc='2026-10-01T21:55:05Z').items() if k != 'request_id'})],
+    'stale_request_with_id': [_nostatus(_request(ts_utc='2026-09-29T01:00:00Z'))],
+    # an id-less wake (status request) whose open-event count scans a status-less id row of the same task/agent
+    'id_row_beside_idless_wake': [_nostatus(_request(type='wake_request')),
+                                  dict({k: v for k, v in _request(ts_utc='2026-10-01T21:56:00Z').items() if k != 'request_id'}, status='request')],
+}
+
+
+def _with_status(rows: list[dict[str, object]], value: object) -> list[dict[str, object]]:
+    return [dict(r, status=value) if 'status' not in r else r for r in rows]
+
+
+_ROUTING_KEYS = ('action', 'open_incoming_count', 'open_incoming_event_count', 'stale_incoming_count',
+                 'stale_incoming_request_count', 'cancelled_withheld_count')
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name', list(_STATUSLESS_CASES))
+def test_status_less_rows_route_like_an_empty_status_and_never_crash(shell, tmp_path, name):
+    rows = _STATUSLESS_CASES[name]
+    out, selected = _select(shell, tmp_path / 'missing', rows)
+    twin, twin_selected = _select(shell, tmp_path / 'empty', _with_status(rows, ''))
+    assert selected == twin_selected, (out, twin)
+    assert {k: out.get(k) for k in _ROUTING_KEYS} == {k: twin.get(k) for k in _ROUTING_KEYS}, (out, twin)
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('value', [['assigned'], True, {'status': 'assigned'}, 7, None], ids=['list', 'bool', 'object', 'number', 'null'])
+def test_non_string_request_status_routes_like_an_empty_status(shell, tmp_path, value):
+    rows = [_request(status=value), _PENDING_B]
+    out, selected = _select(shell, tmp_path / 'bad', rows)
+    twin, twin_selected = _select(shell, tmp_path / 'empty', [_request(status=''), _PENDING_B])
+    assert selected == twin_selected and {k: out.get(k) for k in _ROUTING_KEYS} == {k: twin.get(k) for k in _ROUTING_KEYS}, (out, twin)

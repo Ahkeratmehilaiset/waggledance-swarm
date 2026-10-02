@@ -267,7 +267,7 @@ $candidateOpenRequests = New-Object System.Collections.Generic.List[object]
 $freshByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $freshRequestsForAgent) {
     $rid = Get-BridgeContractField $req 'request_id'
-    $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$($req.status)" } else { "event|$($freshByKey.Count)" }
+    $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$(Get-BridgeEventStatusText -Event $req)" } else { "event|$($freshByKey.Count)" }
     if ($rid -and $freshByKey.ContainsKey($key)) {
         if ((Get-BridgeRequestContent $freshByKey[$key]) -cne (Get-BridgeRequestContent $req) -or
             (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
@@ -289,7 +289,7 @@ foreach ($req in @($freshByKey.Values | Sort-Object ts_utc)) {
         $rid = Get-BridgeContractField $req 'request_id'
         $openEventCount += @($freshRequestsForAgent | Where-Object {
             if ($rid) { (Get-BridgeContractField $_ 'request_id') -ceq $rid -and $_.agent -ceq $req.agent }
-            elseif ($req.type -ceq 'wake_request') { $_.type -ceq $req.type -and $_.agent -ceq $req.agent -and $_.task_id -ceq $req.task_id -and $_.status -ceq $req.status }
+            elseif ($req.type -ceq 'wake_request') { $_.type -ceq $req.type -and $_.agent -ceq $req.agent -and $_.task_id -ceq $req.task_id -and (Get-BridgeEventStatusText -Event $_) -ceq (Get-BridgeEventStatusText -Event $req) }
             else { $_ -eq $req }
         }).Count
     }
@@ -303,7 +303,7 @@ $staleOpenRequests = New-Object System.Collections.Generic.List[object]
 $staleByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $staleRequests) {
     $key = Get-BridgeRequestViewKey $req
-    if (-not (Get-BridgeContractField $req 'request_id') -and $req.type -ceq 'wake_request') { $key += '|' + [string]$req.status }
+    if (-not (Get-BridgeContractField $req 'request_id') -and $req.type -ceq 'wake_request') { $key += '|' + (Get-BridgeEventStatusText -Event $req) }
     Set-BridgeRequestViewEntry $staleByKey $key $req
 }
 foreach ($req in @($staleByKey.Values)) {
@@ -335,7 +335,7 @@ if ($ownClaims.Count -gt 0) {
     $req = @($openRequests | Select-Object -Last 1)[0]
     $kind = 'answer_incoming'
     $taskId = [string]$req.task_id
-    $summary = "answer incoming $([string]$req.type)/$([string]$req.status) from $([string]$req.agent)"
+    $summary = "answer incoming $([string]$req.type)/$(Get-BridgeEventStatusText -Event $req) from $([string]$req.agent)"
     $safeMode = 'read-only'
 } elseif ($foreignWriteClaims.Count -gt 0) {
     $kind = 'parallel_read_only'

@@ -233,6 +233,12 @@ if ($IncludeRequest -and $matched.Count -ne 1) {
 $eligible=@($matched | Where-Object {
     $null -eq $cursorPosition -or $_.entry.first_position -lt $cursorPosition
 })
+if ($ContinuationToken -and ($eligible.Count -eq 0 -or
+        @($matched | Where-Object { $_.entry.first_position -eq $cursorPosition }).Count -ne 1)) {
+    # An emitted token always names the last returned row of a TRUNCATED page of this exact query, so it has one
+    # matched anchor and at least one older match. Anything else is edited and would only look like a final page.
+    throw 'Inventory continuation position is not a page boundary of this frozen query'
+}
 $selected=@($eligible | Select-Object -First $PageSize)
 $requests=@(foreach ($item in $selected) {
     $id=$item.request_id; $entry=$item.entry; $event=$entry.event
@@ -280,6 +286,10 @@ if ($Resumable -or $ContinuationToken) {
     # caller must still read the current request, revision, cancellation and control before acting.
     $output | Add-Member -NotePropertyName continuation -NotePropertyValue 'frozen_prefix_v3'
     $output | Add-Member -NotePropertyName continuation_token -NotePropertyValue $nextToken
+    # Observed after the stable prefix check: true means a NEXT fresh walk has later rows to discover. False is only
+    # "none seen yet", never a completeness claim about the live log.
+    $output | Add-Member -NotePropertyName appended_after_freeze_observed `
+        -NotePropertyValue ([IO.FileInfo]::new($eventsPath).Length -gt [int64]$snapshot.snapshot_length)
 }
 if ($DiagnosticPartial) {
     # A DIFFERENT typed schema, so no v2 consumer can mistake it for a complete inventory.

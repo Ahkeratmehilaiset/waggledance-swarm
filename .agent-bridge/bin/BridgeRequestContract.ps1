@@ -61,8 +61,14 @@ function Get-BridgeRequestContent {
 
 function Get-BridgeRequestViewKey {
     param($Request, [string]$Target='')
-    $rid = Get-BridgeContractField $Request 'request_id'
-    if ($rid) { return "$Target|id|$($Request.agent)|$rid" }
+    # Raw read (no one-element array unrolling) so ["req-1"] can never alias the valid id "req-1".
+    $rid = Get-BridgeBindingRawField $Request 'request_id'
+    if ($rid -is [string] -and $rid.Length -gt 0) { return "$Target|id|$($Request.agent)|$rid" }
+    if ($null -ne $rid -and -not ($rid -is [string])) {
+        # Conflicting (typed conflict marker) or non-string request_id: never a valid id and never an alias of
+        # another request; identity is its own canonical content (exact repeats still coalesce).
+        return "$Target|invalid-id|$($Request.agent)|" + (Get-BridgeRequestContent $Request)
+    }
     return "$Target|legacy|$($Request.agent)|$($Request.task_id)"
 }
 

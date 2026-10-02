@@ -188,8 +188,13 @@ def reply_matches_request(
 
 def request_key(request: Mapping[str, Any], target: str) -> tuple[str, ...]:
     rid = field(request, "request_id")
-    if rid:
-        return ("id", str(request.get("agent", "")), str(rid), target)
+    if type(rid) is str and rid:
+        return ("id", str(request.get("agent", "")), rid, target)
+    if rid is not None and not (type(rid) is str and rid == ""):
+        # A conflicting (top vs payload) or non-string request_id is never a valid id: it must not alias another
+        # request's key (str(_CONFLICT) is one process-address string; 7 vs "7"). Identity is its own typed,
+        # deterministic canonical content, so exact repeats still coalesce and distinct invalid requests stay apart.
+        return ("invalid-id", str(request.get("agent", "")), request_content(request), target)
     return ("legacy", str(request.get("agent", "")), str(request.get("task_id", "")),
             str(request.get("status", "")), target)
 

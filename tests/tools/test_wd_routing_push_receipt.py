@@ -205,7 +205,13 @@ def test_t1_a_hooked_str_key_is_refused_before_its_hash_or_equality_runs(name):
     assert caught.value.reason == "receipt_malformed" and ArmedKey.calls == []
 
 
-def test_t1_valid_controls_still_validate_and_persist_unchanged(approved):
+def test_t1_valid_controls_still_validate_unchanged():
+    receipt = build()
+    assert pr.validate_receipt(dict(receipt)) == receipt
+
+
+@pytest.mark.skipif(os.name != "nt", reason="persistence needs drive C: and Windows handles; refusal twin runs off Windows")
+def test_t1_valid_controls_still_persist_unchanged(approved):
     root, folder = approved
     receipt = build()
     assert pr.validate_receipt(dict(receipt)) == receipt
@@ -213,6 +219,12 @@ def test_t1_valid_controls_still_validate_and_persist_unchanged(approved):
 
 
 # --- persistence ------------------------------------------------------------------------------------------
+
+# persist_receipt is Windows-only by design (drive C: plus handle containment); off Windows every call is
+# refused, which test_off_windows_persistence_is_refused_before_any_byte_is_written asserts.
+persists_on_windows = pytest.mark.skipif(os.name != "nt", reason="persistence needs drive C: and Windows handles; "
+                                         "refusal twin runs off Windows")
+
 
 @pytest.fixture
 def approved(tmp_path, monkeypatch):
@@ -222,6 +234,7 @@ def approved(tmp_path, monkeypatch):
     return tmp_path / "approved", folder
 
 
+@persists_on_windows
 def test_a_receipt_is_created_once_and_an_identical_retry_is_a_no_op(approved):
     root, folder = approved
     receipt = build()
@@ -234,6 +247,7 @@ def test_a_receipt_is_created_once_and_an_identical_retry_is_a_no_op(approved):
     assert sorted(p.name for p in folder.iterdir()) == [path.name]   # no temporary file left behind
 
 
+@persists_on_windows
 def test_other_bytes_under_the_same_name_conflict(approved):
     root, folder = approved
     receipt = build()
@@ -260,6 +274,7 @@ def test_a_tampered_or_malformed_receipt_is_never_persisted(approved, change, re
     assert caught.value.reason == reason and list(folder.iterdir()) == []
 
 
+@persists_on_windows
 def test_directory_boundaries_are_enforced(approved, tmp_path):
     root, folder = approved
     receipt = build()
@@ -289,12 +304,34 @@ def test_a_junction_anywhere_in_the_directory_path_is_refused(approved, tmp_path
     assert caught.value.reason == "path_has_link_or_reparse" and list(real.iterdir()) == []
 
 
+@persists_on_windows
 def test_a_volatile_temporary_directory_is_refused_by_default(tmp_path):
     folder = tmp_path / "receipts"            # tmp_path is under tempfile.gettempdir(): CLAUDE.md rule 1
     folder.mkdir()
     with pytest.raises(pr.PushReceiptRefused) as caught:
         pr.persist_receipt(build(), folder, approved_root=tmp_path)
     assert caught.value.reason == "directory_volatile" and list(folder.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="off-Windows refusal twin; Windows persists (tests above)")
+def test_off_windows_persistence_is_refused_before_any_byte_is_written(approved, tmp_path):
+    root, folder = approved
+    receipt = build()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    volatile = tmp_path / "receipts"
+    volatile.mkdir()
+    cases = [(folder, root),                    # the approved directory itself: no drive C: off Windows
+             (outside, root),
+             (folder / "missing", root),
+             (Path("relative/dir"), root),
+             (str(folder), root),
+             (volatile, tmp_path)]
+    for directory, approved_root in cases:
+        with pytest.raises(pr.PushReceiptRefused) as caught:
+            pr.persist_receipt(receipt, directory, approved_root=approved_root)
+        assert caught.value.reason == "directory_invalid", (directory, caught.value.reason)
+    assert list(folder.iterdir()) == [] and list(outside.iterdir()) == [] and list(volatile.iterdir()) == []
 
 
 @pytest.mark.parametrize("content, reason", [
@@ -312,10 +349,12 @@ def test_load_receipt_refuses_non_canonical_duplicate_or_oversized_files(tmp_pat
     assert caught.value.reason == reason
 
 
-def test_load_receipt_refuses_a_valid_receipt_under_another_name(approved):
-    root, folder = approved
-    path = Path(pr.persist_receipt(build(), folder, approved_root=root)["path"])
-    renamed = folder / ("b" * 64 + ".json")
+def test_load_receipt_refuses_a_valid_receipt_under_another_name(tmp_path):
+    receipt = build()
+    path = tmp_path / (receipt["receipt_digest"] + ".json")
+    path.write_bytes(pr.canonical_bytes(receipt) + b"\n")   # the exact bytes persist_receipt publishes
+    assert pr.load_receipt(path) == receipt                   # control: the right name loads
+    renamed = tmp_path / ("b" * 64 + ".json")
     path.rename(renamed)
     with pytest.raises(pr.PushReceiptRefused) as caught:
         pr.load_receipt(renamed)
@@ -553,6 +592,13 @@ def test_f2_a_component_held_for_deletion_by_another_process_refuses(approved):
 
 def test_f2_without_windows_handles_persistence_fails_closed(approved, monkeypatch):
     root, folder = approved
+    if os.name != "nt":
+        assert pr._WINDOWS is False
+        with pytest.raises(pr.PushReceiptRefused) as caught:   # the real off-Windows refusal, guards unchanged
+            pr.persist_receipt(build(), folder, approved_root=root)
+        assert caught.value.reason == "directory_invalid" and list(folder.iterdir()) == []
+        # reach the platform guard itself: only the directory guard is stepped over, nothing else
+        monkeypatch.setattr(pr, "_safe_directory", lambda directory, approved_root: directory)
     monkeypatch.setattr(pr, "_WINDOWS", False)
     with pytest.raises(pr.PushReceiptRefused) as caught:
         pr.persist_receipt(build(), folder, approved_root=root)

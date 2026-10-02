@@ -4117,3 +4117,77 @@ def test_a_str_subclass_on_the_cancel_cannot_prove_cancellation(where: str) -> N
     _CHookStr.calls.clear()
     out, selected = _c_select([_c_request(), cancel])
     assert selected == _C_RID and out["cancelled_withheld_count"] == 0, out
+
+
+# --- exact-built-in status normalization (Tools d992/cf112c81: inherited _event_status coerced with str(...).lower()) --
+# A non-exact status (str subclass, mapping, list, number) is never coerced, never lower()-ed and never truth-tested;
+# it reads as "" and so gains no closure, cancellation or permission. Exact strings keep the ordinary lower-case path.
+class _SpyStatus(str):
+    calls: list[str] = []
+
+    def __str__(self) -> str:
+        _SpyStatus.calls.append("str")
+        return str.__str__(self)
+
+    def lower(self) -> str:
+        _SpyStatus.calls.append("lower")
+        return str.lower(self)
+
+    def __bool__(self) -> bool:
+        _SpyStatus.calls.append("bool")
+        return True
+
+    def __eq__(self, other: object) -> bool:
+        _SpyStatus.calls.append("eq")
+        return str.__eq__(self, other)
+
+    def __hash__(self) -> int:
+        _SpyStatus.calls.append("hash")
+        return str.__hash__(self)
+
+
+def _spy_select(rows: list[dict[str, object]]) -> tuple[dict[str, object], object, list[str]]:
+    _SpyStatus.calls.clear()
+    out, selected = _c_select(rows)
+    return out, selected, list(_SpyStatus.calls)
+
+
+def test_a_str_subclass_cancellation_status_runs_no_hook_and_does_not_withhold() -> None:
+    out, selected, calls = _spy_select([_c_request(), _c_cancel(status=_SpyStatus("cancelled"))])
+    assert calls == [] and selected == _C_RID, (calls, out)
+
+
+def test_a_str_subclass_answer_status_runs_no_hook_and_reads_as_an_empty_status() -> None:
+    # Closure comes from the reply binding, not the status; a non-exact status must contribute exactly what "" does.
+    out, selected, calls = _spy_select([_c_request(), {**_c_answer(), "status": _SpyStatus("answered")}])
+    twin_out, twin_selected = _c_select([_c_request(), {**_c_answer(), "status": ""}])
+    assert calls == [] and selected == twin_selected and out["action"] == twin_out["action"], (calls, out)
+
+
+def test_a_str_subclass_request_status_runs_no_hook() -> None:
+    _, _, calls = _spy_select([_c_request(status=_SpyStatus("assigned"))])
+    assert calls == []
+
+
+@pytest.mark.parametrize("status", [{"answered": True}, ["answered"], 1, True, b"answered"])
+def test_a_non_string_status_reads_as_an_empty_status(status: object) -> None:
+    # e.g. ["cancelled"] / {"x": 1} were str()-coerced to "['cancelled']" / "{'x': 1}" and token-scanned.
+    for row in ({**_c_answer(), "status": status}, _c_cancel(status=status)):
+        out, selected = _c_select([_c_request(), row])
+        twin_out, twin_selected = _c_select([_c_request(), {**row, "status": ""}])
+        assert (selected, out["action"]) == (twin_selected, twin_out["action"]), (status, out)
+
+
+def test_exact_string_statuses_keep_the_ordinary_case_insensitive_path() -> None:
+    out, selected = _c_select([_c_request(), {**_c_answer(), "status": "Answered"}])
+    assert selected is None, out                                     # exact str: lowered as before, still closes
+    out, selected = _c_select([_c_request(), _c_cancel()])
+    assert selected != _C_RID, out                                   # exact v1 cancel still withholds
+
+def test_event_status_reads_only_an_exact_string_and_lowers_it() -> None:
+    _SpyStatus.calls.clear()
+    assert bridge_next_action._event_status({"status": _SpyStatus("Answered")}) == ""      # non-exact: empty, no hook
+    assert _SpyStatus.calls == []
+    assert bridge_next_action._event_status({"status": "Answered"}) == "answered"           # exact: ordinary lower case
+    assert bridge_next_action._event_status({"status": ["answered"]}) == ""
+    assert bridge_next_action._event_status({}) == ""

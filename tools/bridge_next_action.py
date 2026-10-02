@@ -1772,7 +1772,11 @@ def _session_id_owner_agent(
 
 
 def _event_status(event: Mapping[str, Any]) -> str:
-    return str(event.get("status") or "").lower()
+    # Exact built-ins only: a non-exact status (str subclass, mapping, list, number) is never coerced, truth-tested
+    # or lower()-ed, so it runs no hook and reads as "" (no closure, cancellation or permission). Exact dict events
+    # are read with dict.get; other Mapping events keep their own get (not hook-zero; type/ts/message unchanged).
+    status = dict.get(event, "status") if type(event) is dict else event.get("status")
+    return str.lower(status) if type(status) is str else ""
 
 
 def _event_type(event: Mapping[str, Any]) -> str:

@@ -499,7 +499,8 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
                 result["unknown"].append({"path": path.decode("utf-8", "replace"), "where": where,
                                           "reason": "not strict UTF-8"})
                 continue
-            for name in _FUNC_DEF.findall(_NON_CODE.sub("", text)):
+            # Keep a separator: deleting a span can fabricate a function name across its two edges.
+            for name in _FUNC_DEF.findall(_NON_CODE.sub(" ", text)):
                 if name.isascii():  # Python folds U+212A/U+017F into ASCII; PowerShell does not, so skip them
                     names.setdefault(name.casefold(), name)
         return names

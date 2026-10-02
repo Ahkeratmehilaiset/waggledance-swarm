@@ -591,6 +591,18 @@ def test_a_line_comment_opener_overstrips_only_toward_missing():
     assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]
 
 
+@pytest.mark.parametrize("new_lib", [
+    b"function Get<# comment #>-Foo { 1 }\n",
+    b"function Get@'\nnot a name\n'@-Foo { 1 }\n",
+])
+def test_stripped_spans_do_not_join_tokens_into_a_fake_definition(new_lib):
+    # RCO1 independently found that replacing either span with "" fabricated Get-Foo.
+    # PowerShell instead rejects the comment form or defines a different here-string name.
+    r = lost_foo_report(new_lib)
+    assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]
+    assert r["overall"] == L.DELTA_REVIEW_REQUIRED
+
+
 def test_limits_disclose_the_definition_stripping_approximation():
     text = " ".join(L.LIMITS)
     for phrase in ("over-strip", "not a parser", "ASCII", "fail-closed", "never proves completeness"):

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -602,6 +603,49 @@ def test_stripped_spans_do_not_join_tokens_into_a_fake_definition(new_lib):
     assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]
     assert r["overall"] == L.DELTA_REVIEW_REQUIRED
 
+
+
+# (id, leaf text, real PowerShell defines Get-Foo [5.1 and 7, parse only], the checker reports Get-Foo lost)
+# Spans GLUED to a token are where the separator matters: a span after "function" or after the name must never leave
+# a definition the parser rejects. keyword_space_comment_name is the disclosed fail-closed cost (reported lost).
+GLUE_CASES = [
+    ("keyword_glued", b"function<# c #>Get-Foo { 1 }\n", False, True),
+    ("name_glued", b"function Get-Foo<# c #>{ 1 }\n", False, True),
+    ("name_glued_herestring", b"function Get-Foo@'\nx\n'@{ 1 }\n", False, True),
+    ("comment_then_def", b"<# c #>function Get-Foo { 1 }\n", True, False),
+    ("def_space_comment_body", b"function Get-Foo <# c #>{ 1 }\n", True, False),
+    ("keyword_space_comment_name", b"function <# c #>Get-Foo { 1 }\n", True, True),
+    ("multiline_comment_then_def", b"<#\nnote\n#>\nfunction Get-Foo { 1 }\n", True, False),
+    ("herestring_then_def", b"$x = @'\nabc\n'@\nfunction Get-Foo { 1 }\n", True, False),
+    ("twin_split_name", b"function Get<# comment #>-Foo { 1 }\n", False, True),
+    ("twin_herestring_name", b"function Get@'\nnot a name\n'@-Foo { 1 }\n", False, True),
+]
+
+
+@pytest.mark.parametrize("name, new_lib, ps_defines, lost", GLUE_CASES, ids=[c[0] for c in GLUE_CASES])
+def test_spans_glued_to_a_token_never_leave_a_definition_powershell_rejects(name, new_lib, ps_defines, lost):
+    assert ps_defines or lost, "a text PowerShell does not define must always be reported lost"
+    r = lost_foo_report(new_lib)
+    assert ({"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]) is lost, r["dependency_check"]
+
+
+_PS_SHELLS = list(dict.fromkeys(filter(None, (shutil.which("pwsh"), shutil.which("powershell.exe")))))
+
+
+@pytest.mark.skipif(not _PS_SHELLS, reason="the parser control needs a PowerShell host")
+@pytest.mark.parametrize("shell", _PS_SHELLS, ids=lambda value: Path(value).stem)
+def test_glue_case_table_matches_the_real_powershell_parser(shell, tmp_path):
+    fixture = tmp_path / "glue_cases.json"
+    fixture.write_text(json.dumps([c[1].decode("ascii") for c in GLUE_CASES]), encoding="utf-8")
+    script = ("$texts = Get-Content -LiteralPath '%s' -Raw -Encoding UTF8 | ConvertFrom-Json; "
+              "$out = foreach ($t in $texts) { $tok = $null; $err = $null; "
+              "$ast = [System.Management.Automation.Language.Parser]::ParseInput([string]$t, [ref]$tok, [ref]$err); "
+              "[bool](@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)"
+              " | ForEach-Object { $_.Name }) -ccontains 'Get-Foo') }; ConvertTo-Json -Compress -InputObject @($out)") % fixture
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True,
+                            timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [c[2] for c in GLUE_CASES]
 
 def test_limits_disclose_the_definition_stripping_approximation():
     text = " ".join(L.LIMITS)

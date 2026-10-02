@@ -113,6 +113,18 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
         tests/tools/test_wd_reboot_bundle.py
         tests/tools/test_wd_swarm_parallel_status.py
     """.split()),
+    # RCO2 (Lead 01:11Z, exact 1276dc9c): the tests that execute the selector script itself (git grep under tests/),
+    # plus the reboot bundle, which packs every .agent-bridge/bin script. Its only code invokers are two smoke scripts
+    # that no pytest test runs. BridgeRequestContract.ps1 is deliberately NOT mapped: it is dot-sourced by
+    # Write-AgentEvent/Read-AgentBridge/Monitor and others, with 70+ consumer tests incl. tests/unit and merge-gate
+    # tests, so it stays fail-closed (full suite) until that graph is reviewed.
+    ".agent-bridge/bin/Get-BridgeNextAction.ps1": frozenset({
+        "tests/tools/test_bridge_closure_order.py",
+        "tests/tools/test_bridge_control_routing.py",
+        "tests/tools/test_bridge_event_classifier_wake_request.py",
+        "tests/tools/test_bridge_request_contract.py",
+        "tests/tools/test_wd_reboot_bundle.py",
+    }),
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1": frozenset({
         "tests/tools/test_bridge_stale_routing.py",
     }),

@@ -374,3 +374,70 @@ def test_boundary_document_selects_selector_contract_test(tmp_path):
         "tests": ["tests/tools/test_select_affected_tests.py"],
         "reason": "affected-only",
     }
+
+
+# --- Get-BridgeNextAction.ps1 (RCO2, Lead 01:11Z): source-derived consumers, BridgeRequestContract.ps1 stays closed -----
+NEXT_ACTION = ".agent-bridge/bin/Get-BridgeNextAction.ps1"
+NEXT_ACTION_DIRECT = {
+    # tests that execute the selector script itself (git grep Get-BridgeNextAction under tests/)
+    "tests/tools/test_bridge_closure_order.py",
+    "tests/tools/test_bridge_control_routing.py",
+    "tests/tools/test_bridge_event_classifier_wake_request.py",
+    "tests/tools/test_bridge_request_contract.py",
+    # the reboot bundle packs every .agent-bridge/bin script and checks the packed set
+    "tests/tools/test_wd_reboot_bundle.py",
+}
+
+
+def _next_action_fixture(tmp_path):
+    root = _bridge_candidate_fixture(tmp_path)
+    for test in sorted(bridge_test_closure(set(NEXT_ACTION_DIRECT))):
+        candidate = root / test
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text("def test_decoy(): assert True\n", encoding="utf-8")
+    return root
+
+
+def test_next_action_selector_is_mapped_to_its_direct_runtime_tests_and_bundle(tmp_path):
+    root = _next_action_fixture(tmp_path)
+    result = select_affected_tests([NEXT_ACTION], root)
+    assert result["full_suite"] is False, result
+    assert set(result["tests"]) == bridge_test_closure(set(NEXT_ACTION_DIRECT))
+    assert NEXT_ACTION_DIRECT <= set(result["tests"])
+    assert all(test.startswith("tests/tools/") for test in result["tests"])
+
+
+def test_classifier_and_selector_pair_with_their_tests_narrows_to_the_union(tmp_path):
+    root = _next_action_fixture(tmp_path)
+    changed = [".agent-bridge/bin/BridgeEventClassifier.ps1", NEXT_ACTION,
+               "tests/tools/test_bridge_control_routing.py", "tests/tools/test_bridge_event_classifier_wake_request.py"]
+    result = select_affected_tests(changed, root)
+    assert result["full_suite"] is False, result
+    expected = bridge_test_closure(set(BRIDGE_EXPLICIT_TESTS[".agent-bridge/bin/BridgeEventClassifier.ps1"]) | NEXT_ACTION_DIRECT)
+    assert set(result["tests"]) == expected
+
+
+@pytest.mark.parametrize("extra", [
+    ".agent-bridge/bin/BridgeRequestContract.ps1",          # dot-sourced by Write-AgentEvent and 70+ tests: stays closed
+    "waggledance/core/bridge_request_contract.py",          # product package module
+    "configs/eig2_self_modification_denylist.yaml",
+    ".agent-bridge/bin/Write-AgentEvent.ps1",
+])
+def test_selector_with_an_unmapped_or_product_file_stays_full_suite(tmp_path, extra):
+    root = _next_action_fixture(tmp_path)
+    result = select_affected_tests([NEXT_ACTION, extra], root)
+    assert result["full_suite"] is True, result
+
+
+def test_request_contract_alone_stays_fail_closed(tmp_path):
+    root = _next_action_fixture(tmp_path)
+    result = select_affected_tests([".agent-bridge/bin/BridgeRequestContract.ps1"], root)
+    assert result["full_suite"] is True and "unmapped" in result["reason"], result
+
+
+@pytest.mark.parametrize("missing", sorted(NEXT_ACTION_DIRECT))
+def test_selector_missing_a_mapped_test_fails_closed(tmp_path, missing):
+    root = _next_action_fixture(tmp_path)
+    (root / missing).unlink()
+    result = select_affected_tests([NEXT_ACTION], root)
+    assert result["full_suite"] is True and "missing" in result["reason"], result

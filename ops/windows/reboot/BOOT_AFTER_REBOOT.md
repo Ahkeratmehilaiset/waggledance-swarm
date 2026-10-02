@@ -525,34 +525,38 @@ verified.
 
 ## Source and integrity
 
-### Grok: passive recovery, lead-requested consultations only
+### Grok: passive recovery and optional fleet consultations
 
 On the first upgrade, stage the committed bundle, then explicitly run its
 `Initialize-WdGrokRecovery.ps1 -Apply` before activation. This refuses active
 Grok invocations, backs up legacy task definitions and scripts, disables their
-schedules, retires bypass/reset entry points, and initializes a conservative
-one-hour hold only if no hourly state exists. Existing reports and budget state
-are preserved. Normal installation checks this migration before switching
+schedules, retires bypass/reset entry points, and initializes durable attempt
+history only if no state exists. Existing reports and attempt history are
+preserved. There is no artificial local hour, week or per-agent quota.
+Normal installation checks this migration before switching
 machine pointers; subsequent startup performs only passive validation.
 
-The same fleet startup validates Grok's persistent role and hourly state without
-calling a model. Lead invokes `C:\Python\Invoke-WdGrok.ps1 -Status` to inspect the
-previous task/report and next eligible time, or supplies `-PromptPath` and
-`-TaskId` for one evidence-based advisory consultation. This is not a persistent
-CLI conversation: the previous bounded report and current saved lead work state
-are included as context. No tool execution, subagents, automatic research,
-merge/deploy authority, worktree reset or retry is granted.
+The same fleet startup validates persistent attempt state without calling a
+model. Authorized fleet work uses `C:\Python\Invoke-WdGrok.ps1 -Status` to inspect
+previous task/report evidence and local single-flight availability, or supplies
+`-PromptPath` and `-TaskId` for one optional advisory consultation. Only explicit
+caller evidence is sent: no automatic Lead checkpoint or another lane's report
+is appended. Grok is not a mandatory reviewer or a continuously running lane.
+Read-only tooling requires the separate inherited-surface checks documented in
+`GROK-READONLY.md`; it is not a sandbox guarantee. No merge/deploy authority,
+worktree reset, automatic research or retry is granted.
 
-All attempted consultations share one OS lock and one durable hourly reservation
-under `C:\Python\grok-scout-reports`. Failures/timeouts consume the hour too.
-Initial migration conservatively holds one hour because old scripts did not
-reliably record failed attempts. Legacy autonomous Grok scheduled tasks must
-remain disabled. Direct CLI/API calls outside this controlled entry point are
-not governed by its budget and must not be used by the fleet.
+All attempted consultations share one OS lock and durable attempt history under
+`C:\Python\grok-scout-reports`. An unfinished or unreconciled attempt still
+refuses another call; completed attempts impose no local waiting period.
+The legacy `hourly-state.json` name is retained for state compatibility, not a
+rate limit. Legacy autonomous schedules remain disabled; the fleet must not
+bypass the controlled entry point with bare CLI/API or retired scripts.
 
 Model metadata is refreshed by the existing startup resolver; an expired or
 unavailable model/authentication can still block a consultation. No wrapper can
-guarantee provider availability or override the hourly limit.
+guarantee provider availability or override real provider limits. Unknown
+authentication or quota remains unknown; local availability is not readiness.
 
 The Git repository is the only source of truth. A pushed commit is installed
 into `C:\Python\wd-reboot-bundles\<full-commit-sha>`. Machine-local

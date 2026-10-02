@@ -16,17 +16,35 @@ BIN = REBOOT.parents[2] / '.agent-bridge/bin'
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_classifier_keeps_caller_strict_mode_while_validating_its_own_inputs(ps):
+@pytest.mark.parametrize('caller_mode', ['Off', 'Latest'])
+def test_classifier_keeps_caller_strict_mode_while_validating_its_own_inputs(ps, caller_mode):
+    # Missing/malformed status is now deliberately an empty, non-ACK status,
+    # not an exception that can deny routing. Null Event is still invalid.
+    rows = [{}, {'status': None}, {'status': ['received']}, {'status': True},
+            {'status': {'status': 'received'}}, {'status': 7},
+            {'status': ''}, {'status': 'received'}, {'status': 'seen'},
+                {'status': 'acknowledged'}, {'status': 'custom_result'}]
+    strict_mode = '-Off' if caller_mode == 'Off' else '-Version Latest'
     result = _run_powershell(f"""
-Set-StrictMode -Off
+Set-StrictMode {strict_mode}
 . {q(BIN / 'BridgeEventClassifier.ps1')}
 $empty=[pscustomobject]@{{}}
-$caller=$empty.missing
+$before=$false
+try {{$null=$empty.missing}} catch {{$before=$true}}
+$rows=ConvertFrom-Json -InputObject {q(json.dumps(rows))}
+$acks=@(foreach($row in $rows) {{[bool](Test-BridgeAckEvent -Event $row)}})
+$after=$false
+try {{$null=$empty.missing}} catch {{$after=$true}}
 $rejected=$false
-try {{ Test-BridgeAckEvent $empty|Out-Null }} catch {{$rejected=$true}}
-@{{caller_unchanged=($null -eq $caller);invalid_input_rejected=$rejected}}|ConvertTo-Json
+try {{Test-BridgeAckEvent -Event $null|Out-Null}} catch {{$rejected=$true}}
+@{{strict_before=$before;strict_after=$after;acks=$acks;null_input_rejected=$rejected}}|ConvertTo-Json
 """, executable=ps)
-    assert json.loads(result.stdout) == {'caller_unchanged': True, 'invalid_input_rejected': True}
+    assert json.loads(result.stdout) == {
+        'strict_before': caller_mode == 'Latest',
+        'strict_after': caller_mode == 'Latest',
+        'acks': [False] * 7 + [True] * 3 + [False],
+        'null_input_rejected': True,
+    }
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

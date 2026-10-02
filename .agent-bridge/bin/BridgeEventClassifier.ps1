@@ -39,11 +39,23 @@ function Test-BridgeAddressedTo {
     return @(Get-BridgeEventTargets -Event $Event) -contains $TargetAgent
 }
 
+function Get-BridgeEventStatusText {
+    param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
+
+    # A row without a top-level status (StrictMode would throw on $Event.status and deny ALL routing) or with a
+    # non-string status (list, bool, object, number) reads as an empty status: it never becomes a request,
+    # answer, ACK or closure status by [string] coercion (Fable 48631d99). Exact strings are unchanged.
+    $property = $Event.PSObject.Properties['status']
+    if ($null -eq $property -or $property.Value -isnot [string]) { return '' }
+    return [string]$property.Value
+}
+
 function Test-BridgeAckEvent {
     param([Parameter(Mandatory)] [object] $Event)
     Set-StrictMode -Version Latest
 
-    return @('received','seen','acknowledged') -contains [string]$Event.status
+    return @('received','seen','acknowledged') -contains (Get-BridgeEventStatusText -Event $Event)
 }
 
 function Test-BridgeInfrastructureEvent {
@@ -110,7 +122,7 @@ function Test-BridgeRequesterClosureEvent {
     param([Parameter(Mandatory)] [object] $Event)
     Set-StrictMode -Version Latest
 
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
     $type = [string]$Event.type
     if ($type -in @('message','wake_request')) {
         return @('closed','superseded','cancelled','canceled','withdrawn') -contains $status -or
@@ -134,13 +146,18 @@ function Test-BridgeRequestLikeEvent {
     if (Test-BridgeInfrastructureEvent -Event $Event) { return $false }
 
     $type = [string]$Event.type
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
 
     if ($type -eq 'message' -and (Test-BridgeMessageAnswerStatus -Status $status)) {
         return $false
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
-    if ($Event.PSObject.Properties['request_id'] -and $Event.request_id) {
+    # Exact presence, not truthiness: a present non-null request_id other than "" is an explicit (possibly invalid)
+    # id, so false/0/0.0/[] stay visible like {} or [7]. Visibility is not binding: reply binding still refuses any
+    # non-string id. null, "" and an absent id keep the legacy status rule below.
+    $ridProperty = $Event.PSObject.Properties['request_id']
+    if ($null -ne $ridProperty -and $null -ne $ridProperty.Value -and
+        -not ($ridProperty.Value -is [string] -and $ridProperty.Value.Length -eq 0)) {
         if (Test-BridgeRequesterClosureStatus $status) { return $false }
         return $true
     }
@@ -187,7 +204,7 @@ function Test-BridgeAnswerEvent {
     if (Test-BridgeInfrastructureEvent -Event $Event) { return $false }
 
     $type = [string]$Event.type
-    $status = [string]$Event.status
+    $status = Get-BridgeEventStatusText -Event $Event
 
     if ($type -eq 'done' -and $status -match '(^|[^a-z0-9])(not|no|undone|incomplete|unfinished|unresolved|unverified|unmerged|failed|pending|queued|running|processing)([^a-z0-9]|$)') { return $false }
     if ($type -eq 'message') {
@@ -210,7 +227,7 @@ function Test-BridgeWakeEligible {
     # or a request was closed. Unknown addressed traffic remains actionable.
     $status=$Event.PSObject.Properties['status']
     $type=$Event.PSObject.Properties['type']
-    if (($null -ne $status -and $status.Value -cin @('received','seen','acknowledged')) -or
+    if (($null -ne $status -and $status.Value -is [string] -and $status.Value -cin @('received','seen','acknowledged')) -or
         ($null -ne $type -and $type.Value -cin @('heartbeat','liveness'))) { return $false }
     foreach ($key in @('in_reply_to_request_id','request_id')) {
         $p=$Event.PSObject.Properties[$key]
@@ -221,7 +238,13 @@ function Test-BridgeWakeEligible {
     $payload=$Event.PSObject.Properties['payload']
     if ($null -ne $payload -and $null -ne $payload.Value) {
         $notification=$payload.Value.PSObject.Properties['notification']
-        if ($null -ne $notification -and $notification.Value -ceq 'informational') { return $false }
+        # A hint cannot silence outcomes or unfamiliar control traffic. In the
+        # 2026-09-28 incident full_suite_result was accidentally marked FYI and
+        # left waiting lanes asleep. Only this closed benign envelope is quiet.
+        # Wake eligibility is NOT reply binding, acceptance or task completion.
+        if ($null -ne $notification -and $notification.Value -ceq 'informational' -and
+            $null -ne $type -and $type.Value -ceq 'message' -and
+            $null -ne $status -and $status.Value -is [string] -and $status.Value -cin @('notice','informational')) { return $false }
     }
     return $true
 }

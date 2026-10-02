@@ -8,12 +8,19 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+$root=[string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+$pathRoot=if ([string]::IsNullOrWhiteSpace($root)) { '' } else { [IO.Path]::GetPathRoot($root) }
+$fullyQualified=if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+    $pathRoot -match '^[A-Za-z]:[\\/]$' -or $pathRoot -match '^\\\\[^\\]+\\[^\\]+[\\/]?$'
+} else { $pathRoot -ceq '/' }
+if (-not $fullyQualified) {
+    throw 'AGENT_BRIDGE_RUNTIME_ROOT must be an explicit nonblank absolute path'
+}
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 . (Join-Path $PSScriptRoot 'BridgeReplyIndex.ps1')
 . (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
-$root=if ($env:AGENT_BRIDGE_RUNTIME_ROOT) { $env:AGENT_BRIDGE_RUNTIME_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $started=[DateTimeOffset]::UtcNow.ToString('o')
 $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
     -CachePath (Join-Path $root 'shared/cache/reply-index.json') -NoCache:$NoCache
@@ -51,6 +58,7 @@ $results=@(foreach ($target in $targets) {
         })}
 })
 [pscustomobject]@{schema='wd.reply-snapshot.v1';request_id=$RequestId;request=$request;
+    runtime_root_source='environment';
     read_started_utc=$started;observed_at_utc=$started;read_completed_utc=[DateTimeOffset]::UtcNow.ToString('o');
     snapshot_cursor=$snapshot.candidate_cursor;snapshot_bytes=$snapshot.snapshot_length;results=$results;
     cache_status=$snapshot.cache_status;cache_path=$snapshot.cache_path;parsed_rows=$snapshot.parsed_rows;

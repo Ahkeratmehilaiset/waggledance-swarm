@@ -19,7 +19,20 @@ from tools.agent_next_task import (
     evaluate_agent_next_task,
     main,
 )
-from waggledance.core.work_queue import claim_task, release_task
+from waggledance.core.work_queue import WorkQueueError, claim_task, release_task
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_owner_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic queue fixtures must not inherit the live fleet session owner."""
+    for name in (
+        "AGENT_BRIDGE_AGENT", "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN", "AGENT_BRIDGE_RUN_ID",
+        "AGENT_BRIDGE_OWNER_PID", "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "test-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "test-token")
 
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
 BRIDGE_AGENT_UUIDS = {
@@ -147,6 +160,16 @@ def _empty_bridge(tmp_path: Path) -> tuple[Path, Path, Path]:
 # ---------------------------------------------------------------------------
 # input validation
 # ---------------------------------------------------------------------------
+
+
+def test_explicit_session_binding_still_rejects_a_foreign_agent(tmp_path, monkeypatch):
+    bridge, _, _ = _empty_bridge(tmp_path)
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-lead-1")
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(agent="claude", task_id="foreign-session-claim",
+                   summary="must not claim as another lane", mode="read-only",
+                   bridge_root=bridge)
+    assert not list((bridge / "work_queue" / "claims").glob("*.json"))
 
 
 def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:

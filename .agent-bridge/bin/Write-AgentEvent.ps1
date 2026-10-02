@@ -825,7 +825,9 @@ function Write-BridgeEventResult {
                     Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage request_durable -Request ([pscustomobject]$event) -Target $target
                 }
             } elseif ($ReplyToEventJson -and (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
-                Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage answer_durable -Request $replyTo -Target $Agent
+                # The reply token is this written reply's OWN final ts_utc (Tools e7 F1-ANSWER-DURABLE-REPLY-TOKEN-
+                # WIRING), as Record-BridgeReplyObservation passes it: never the request's time, now or a rebuilt one.
+                Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage answer_durable -Request $replyTo -Target $Agent -ReplyTimestamp ([string]$event.ts_utc)
             }
         } catch { Write-BridgeWarning ('Latency observation unavailable: ' + $_.Exception.Message) }
     }

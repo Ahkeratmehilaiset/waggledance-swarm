@@ -7,8 +7,62 @@ from pathlib import Path
 
 import pytest
 
-from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
+from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS as _BUNDLE_LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
+from test_wd_native_wake_prompt import relay_bundle_setup
+
+
+def _same_executable(left, right):
+    if os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right)):
+        return True
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _distinct_engines(shells):
+    """One entry per executable: case or spelling aliases of one file (system32\\powershell.EXE and
+    System32\\powershell.exe) are the same engine, so they must not count as two engines (PS5-P2-alias)."""
+    distinct = []
+    for shell in shells:
+        if not any(_same_executable(shell, kept) for kept in distinct):
+            distinct.append(shell)
+    return distinct
+
+
+LANE_TEST_SHELLS = _distinct_engines(_BUNDLE_LANE_TEST_SHELLS)
+
+
+def _engine_major(ps):
+    return int(_run_powershell('$PSVersionTable.PSVersion.Major', executable=ps).stdout.strip())
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows paths are case-insensitive aliases only on Windows')
+def test_case_aliases_of_one_executable_are_one_engine(tmp_path):
+    engine = tmp_path / 'System32' / 'powershell.exe'
+    engine.parent.mkdir()
+    engine.write_bytes(b'')
+    alias = str(tmp_path / 'system32' / 'powershell.EXE')
+    assert _distinct_engines([str(engine), alias]) == [str(engine)]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows paths are case-insensitive aliases only on Windows')
+def test_alias_spellings_skip_the_cross_engine_cache_test(tmp_path, monkeypatch):
+    engine = tmp_path / 'System32' / 'powershell.exe'
+    engine.parent.mkdir()
+    engine.write_bytes(b'')
+    aliases = [str(engine), str(tmp_path / 'system32' / 'powershell.EXE')]
+    monkeypatch.setitem(globals(), 'LANE_TEST_SHELLS', _distinct_engines(aliases))
+    with pytest.raises(pytest.skip.Exception, match='two distinct engines'):
+        test_reply_cache_shell_partitions_survive_alternation_and_parallel_readers(tmp_path)
+
+
+def test_distinct_executables_stay_distinct_engines(tmp_path):
+    first, second = tmp_path / 'powershell.exe', tmp_path / 'pwsh.exe'
+    first.write_bytes(b'')
+    second.write_bytes(b'')
+    assert _distinct_engines([str(first), str(second), str(first)]) == [str(first), str(second)]
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
@@ -20,6 +74,9 @@ def test_lead_reply_wakes_existing_thread_and_preserves_concurrent_reply(tmp_pat
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
     script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Invoke-WdNativeToolsWakeStep')
+    script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Get-WdVerifiedNativeWakeMessage')
+    script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Get-WdInlineNativeWakeMessage')
+    script += relay_bundle_setup(tmp_path)
     script += f"""
 $script:messages=@()
 function Send-WdNativeToolsQueueMessage {{
@@ -36,8 +93,10 @@ $result=Invoke-WdNativeToolsWakeStep -Agent codex-lead-1 -CliPath unused -Thread
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     message = result['messages'][0]
     assert 'Automatic bridge wake for codex-lead-1' in message
-    assert 'Get-BridgeReplySnapshot.ps1' in message
-    assert 'late' in message.lower() and 'pending' in message.lower()
+    assert 'WAKE_PROCEDURE_LEAD.md' in message
+    procedure = (tmp_path / 'bundle/WAKE_PROCEDURE_LEAD.md').read_text()
+    assert 'Get-BridgeReplySnapshot.ps1' in procedure
+    assert 'late' in procedure.lower() and 'pending' in procedure.lower()
     assert 'Automatic bridge wake for codex-tools-1' not in message
     assert wake.read_text() == 'second reply during queue submission'
     saved = json.loads(state.read_text(encoding='utf-8-sig'))
@@ -93,7 +152,12 @@ def test_native_lead_adapter_imports_only_verified_functions_and_relays_in_same_
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         runner += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
     code = ''
-    for name in ['ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep', 'Invoke-WdNativeToolsWakeRelay']:
+    # Keep the verified fixture complete: the Lead imports real continuity
+    # functions too, even when this short-lived native child stays in grace.
+    for name in ['Get-WdInlineNativeWakeMessage', 'Get-WdVerifiedNativeWakeMessage', 'ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep',
+                 'Invoke-WdNativeToolsWakeRelay', 'Invoke-WdContinuityDecision',
+                 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents',
+                 'Invoke-WdContinuityOperatorNotice', 'Get-WdContinuityRetryDelay']:
         code += load(REBOOT / 'start-wd-tools-consumer.ps1', name)
     code += """
 function Send-WdNativeToolsQueueMessage {
@@ -117,14 +181,16 @@ function Start-WdToolsNativeProcess {
     # The test owns no real terminal. Substitute only the console-presence probe.
     function = load(REBOOT / 'start-wd-agent.ps1', 'Invoke-WdNativeLeadTerminal').replace(
         '$fn.Extent.Text)', "$fn.Extent.Text.Replace('[Console]::IsInputRedirected','$false'))")
-    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + function + f"""
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + function + relay_bundle_setup(tmp_path) + f"""
 $global:starts=0; $env:WD_BRIDGE_BIN=''
 . ([scriptblock]::Create([IO.File]::ReadAllText({q(runner_path)})))
 . ([scriptblock]::Create([IO.File]::ReadAllText({q(code_path)})))
 $verified=@{{}}
 $groups=@{{'Invoke-WdLaneTurnLoop.ps1'=@('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot');
  'start-wd-tools-consumer.ps1'=@('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
- 'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')}}
+ 'Get-WdInlineNativeWakeMessage','Get-WdVerifiedNativeWakeMessage','Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
+ 'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents',
+ 'Invoke-WdContinuityOperatorNotice','Get-WdContinuityRetryDelay')}}
 foreach($file in $groups.Keys){{
  $definitions=@($groups[$file]|ForEach-Object {{'function '+$_+' {{'+(Get-Command $_).ScriptBlock.ToString()+'}}'}})
  $verified[$file]='throw "top-level must not execute"'+"`n"+($definitions -join "`n")
@@ -152,6 +218,9 @@ def test_native_relay_reloads_its_own_receipt_in_non_us_locale(tmp_path, ps):
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
     script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Invoke-WdNativeToolsWakeStep')
+    script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Get-WdVerifiedNativeWakeMessage')
+    script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Get-WdInlineNativeWakeMessage')
+    script += relay_bundle_setup(tmp_path)
     script += f"""
 [Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI')
 function Send-WdNativeToolsQueueMessage {{ return '01a0adff-4558-7e80-8936-6aad0d6df821' }}
@@ -272,7 +341,10 @@ $result=Read-BridgeReplyIndex -Path {q(log)} -NoCache
 
 def test_reply_cache_shell_partitions_survive_alternation_and_parallel_readers(tmp_path):
     if len(LANE_TEST_SHELLS) < 2:
-        pytest.skip('Requires Windows PowerShell and PowerShell 7')
+        pytest.skip('Requires two distinct engines: Windows PowerShell 5.1 and PowerShell 7')
+    majors = sorted(_engine_major(ps) for ps in LANE_TEST_SHELLS)
+    if majors != [5, 7]:
+        pytest.skip(f'Requires Windows PowerShell 5.1 and PowerShell 7; engine majors found: {majors}')
     from concurrent.futures import ThreadPoolExecutor
     from test_bridge_request_contract import events
     _, request, _ = events()

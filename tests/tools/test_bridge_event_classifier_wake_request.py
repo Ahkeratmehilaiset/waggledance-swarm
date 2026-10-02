@@ -338,3 +338,39 @@ def test_a_status_less_row_never_closes_or_cancels_a_pending_request(shell: str,
     out = _select(shell, tmp_path, [_pending("r1", "2026-10-01T23:50:00Z"), later])
     assert out["action"] == "answer_incoming" and out["open_incoming_count"] == 1, out
     assert out.get("cancelled_withheld_count", 0) == 0, out
+
+# --- Test-BridgeWakeEligible: only an EXACT string ACK status suppresses a wake (Fable 8716) --------------------------
+def _wake_eligible_in(shell: str, events: list[dict[str, object]]) -> list[object]:
+    script = (
+        f". '{CLASSIFIER}'\n"
+        "$rows = @($input | ConvertFrom-Json | ForEach-Object { $_ })\n"
+        "$out = @(foreach ($e in $rows) { try { [bool](Test-BridgeWakeEligible -Event $e) } catch { 'ERROR: ' + $_.Exception.Message } })\n"
+        "ConvertTo-Json -InputObject $out -Compress\n"
+    )
+    done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script], input=json.dumps(events),
+                          capture_output=True, text=True, check=False, timeout=120)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip())
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_wake_eligibility_suppresses_only_exact_string_acks(shell: str) -> None:
+    base = _row("message", to="codex-tools-1")
+    rows, want = [], []
+    for value in (["received"], ["seen"], ["acknowledged"], True, {"status": "received"}, 7, None, "Received", "custom_x",
+                  "hold", "cancelled", "answered"):
+        rows.append(dict(base, status=value))
+        want.append(True)                                        # not an exact lower ACK string: stays eligible
+    rows.append({k: v for k, v in base.items()})                 # no status key at all
+    want.append(True)
+    for value in ("received", "seen", "acknowledged"):
+        rows.append(dict(base, status=value))
+        want.append(False)                                       # exact ACKs stay suppressed
+    rows.append(dict(base, type="liveness", status="active"))
+    want.append(False)
+    note = dict(base, status="informational", payload={"notification": "informational"})
+    rows.append(note)
+    want.append(False)                                           # the closed benign envelope stays quiet
+    rows.append(dict(note, status=["informational"]))
+    want.append(True)                                            # a list status is not that envelope
+    assert _wake_eligible_in(shell, rows) == want

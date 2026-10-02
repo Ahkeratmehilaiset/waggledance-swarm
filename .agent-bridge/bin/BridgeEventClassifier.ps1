@@ -222,7 +222,7 @@ function Test-BridgeWakeEligible {
     # or a request was closed. Unknown addressed traffic remains actionable.
     $status=$Event.PSObject.Properties['status']
     $type=$Event.PSObject.Properties['type']
-    if (($null -ne $status -and $status.Value -cin @('received','seen','acknowledged')) -or
+    if (($null -ne $status -and $status.Value -is [string] -and $status.Value -cin @('received','seen','acknowledged')) -or
         ($null -ne $type -and $type.Value -cin @('heartbeat','liveness'))) { return $false }
     foreach ($key in @('in_reply_to_request_id','request_id')) {
         $p=$Event.PSObject.Properties[$key]
@@ -239,7 +239,7 @@ function Test-BridgeWakeEligible {
         # Wake eligibility is NOT reply binding, acceptance or task completion.
         if ($null -ne $notification -and $notification.Value -ceq 'informational' -and
             $null -ne $type -and $type.Value -ceq 'message' -and
-            $null -ne $status -and $status.Value -cin @('notice','informational')) { return $false }
+            $null -ne $status -and $status.Value -is [string] -and $status.Value -cin @('notice','informational')) { return $false }
     }
     return $true
 }

@@ -27,6 +27,12 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
 
+def warning_text(path: Path) -> str:
+    """Keep the warning stream as evidence, separate from success-stream JSON."""
+    raw = path.read_bytes()
+    return raw.decode("utf-16" if raw.startswith(b"\xff\xfe") else "utf-8-sig")
+
+
 def bundle_fixture(tmp_path: Path) -> tuple[Path, str]:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -239,8 +245,9 @@ def test_relay_uses_pinned_prompt_or_alerted_verified_fallback(tmp_path, ps, cas
     wake = tmp_path / "wake"
     wake.write_text("pending")
     state = tmp_path / "state.json"
+    warnings = tmp_path / "warnings.log"
     consumer = REBOOT / "start-wd-tools-consumer.ps1"
-    script = "$ErrorActionPreference='Stop'\n$WarningPreference='SilentlyContinue'\nSet-StrictMode -Version Latest\n"
+    script = "$ErrorActionPreference='Stop'\n$WarningPreference='Stop'\nSet-StrictMode -Version Latest\n"
     for name in ("Assert-WdTurnPath", "Write-WdTurnJson", "Move-WdWakeSnapshot"):
         script += load(REBOOT / "Invoke-WdLaneTurnLoop.ps1", name)
     script += load(consumer, "Get-WdVerifiedNativeWakeMessage")
@@ -261,7 +268,7 @@ function Send-WdNativeToolsQueueMessage {{
  return 'test-queue-id'
 }}
 try {{
- $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session 3>>{q(warnings)}
  if ('{case}' -ne 'valid') {{
   foreach ($attempt in 1..2) {{
    $saved=Get-Content -LiteralPath {q(state)} -Raw | ConvertFrom-Json
@@ -272,7 +279,7 @@ try {{
    [void][IO.Directory]::CreateDirectory($receipts)
    [IO.File]::WriteAllText((Join-Path $receipts ('stage-' + $attempt + '.json')),(@{{schema='wd.bridge-stage.v1';stage='model_turn_started';target='codex-lead-1';delivery_id=[string]$saved.delivery_id;observation_source='agent_reported'}}|ConvertTo-Json -Compress))
    [IO.File]::WriteAllText({q(wake)},'next event')
-   $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session
+   $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1 -SessionId fixture-session 3>>{q(warnings)}
   }}
  }}
  @{{ok=$true;sent=$script:sent;result=$result;alerts=$script:alerts;sends=$script:sends}} | ConvertTo-Json -Compress
@@ -291,11 +298,15 @@ try {{
         assert "Get-BridgeReplySnapshot" not in result["sent"]
         assert saved["prompt_mode"] == "pinned_procedure"
         assert result["alerts"] == 0
+        assert not warning_text(warnings).strip()
     else:
         assert "Get-BridgeReplySnapshot.ps1" in result["sent"]
         assert "WAKE_PROCEDURE_LEAD.md" not in result["sent"]
         assert saved["prompt_mode"] == "inline_degraded"
         assert result["alerts"] == 1
+        assert warning_text(warnings).count(
+            "Native wake compact procedure unavailable: delivered verified inline fallback; package repair required"
+        ) == 1
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="real canonical writer is Windows-only")
@@ -338,8 +349,9 @@ def test_degraded_notice_preserves_real_reply_identity(tmp_path, ps, agent, sess
     wake = runtime / ("wake_" + agent)
     wake.write_text("pending")
     state = tmp_path / "state.json"
+    warnings = tmp_path / "warnings.log"
     consumer = REBOOT / "start-wd-tools-consumer.ps1"
-    script = "$ErrorActionPreference='Stop'\n$WarningPreference='SilentlyContinue'\n"
+    script = "$ErrorActionPreference='Stop'\n$WarningPreference='Stop'\n"
     script += "Get-ChildItem Env: | Where-Object Name -Match '^(AGENT_BRIDGE_|WD_|CLAUDE_CODE_|GIT_)' | ForEach-Object { Remove-Item -LiteralPath ('Env:'+$_.Name) }\n"
     for name in ("Assert-WdTurnPath", "Write-WdTurnJson", "Move-WdWakeSnapshot"):
         script += load(REBOOT / "Invoke-WdLaneTurnLoop.ps1", name)
@@ -350,13 +362,21 @@ $env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{digest(manifest)}'
 function Get-WdVerifiedNativeWakeMessage {{ throw 'forced compact fault' }}
 function Send-WdNativeToolsQueueMessage {{ return 'decoy-queue' }}
-$step=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId 01a0a07b-ca98-71e1-90cb-d588435a2d8d -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation ('a'*40) -NativePid 1 -Agent {agent} -SessionId '{session}'
+$step=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId 01a0a07b-ca98-71e1-90cb-d588435a2d8d -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation ('a'*40) -NativePid 1 -Agent {agent} -SessionId '{session}' 3>{q(warnings)}
 $env:AGENT_BRIDGE_RUNTIME_ROOT={q(runtime)}
 $request=& {q(bin_dir / 'Write-AgentEvent.ps1')} -Agent operator -Type wake_request -Status assigned -To {agent} -TaskId fixture/after-alert -SessionId operator-session -RunId operator-session -ReceiptJson
 @{{step=$step;request=($request|ConvertFrom-Json)}} | ConvertTo-Json -Depth 16 -Compress
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     assert result["step"] == "queued"
+    warning = warning_text(warnings)
+    assert warning.count(
+        "Native wake compact procedure unavailable: delivered verified inline fallback; package repair required"
+    ) == 1
+    assert warning.count("Native wake prompt alert skipped: launcher session unavailable") == (
+        0 if session == "real-lane-session" else 1
+    )
+    assert "Native wake prompt alert unavailable" not in warning
     identity = json.loads(last.read_text(encoding="utf-8-sig"))
     assert identity["session_id"] == "real-lane-session"
     assert identity["run_id"] == "real-lane-session"

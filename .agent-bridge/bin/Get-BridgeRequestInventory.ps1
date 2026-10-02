@@ -129,7 +129,8 @@ function Get-InventoryBindingKind {
         $payloadProperty.Value.PSObject.Properties[$Name]
     } else { $null }
     if ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
-        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
+        -not [string]::Equals((ConvertTo-BridgeContractJson $direct.Value), (ConvertTo-BridgeContractJson $nested.Value),
+            [StringComparison]::Ordinal)) {   # -cne is culture-aware: pwsh 7 ignores U+200B and similar
         return $Conflict
     }
     return $Malformed

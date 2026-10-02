@@ -108,6 +108,76 @@ function Test-BridgeBoundRequest {
     return $false
 }
 
+function Test-BridgeContractValuesDiffer {
+    # RCO2 64140a03 F2: PowerShell -cne compares strings culture-sensitively, so a soft hyphen, zero-width
+    # character or a decomposed accent can make two different ids, labels or digests equal. Two strings are
+    # compared ORDINALLY. RCO2 51de3d6b: any non-string side (array, number, bool, object) is DIFFERENT; -cne on an
+    # array filters instead of comparing, so [rid] or [rid, null] used to read as equal. Two $null values (a
+    # documented absence on both sides) are the only non-string pair that is not different.
+    param($Left, $Right)
+    if ($Left -is [string] -and $Right -is [string]) {
+        return -not [string]::Equals([string]$Left, [string]$Right, [System.StringComparison]::Ordinal)
+    }
+    return -not ($null -eq $Left -and $null -eq $Right)
+}
+
+function Test-BridgeContractBlankLabel {
+    # An exact empty-string label: Write-AgentEvent copies a requester label into in_reply_to_requester only
+    # if ($value), so a blank request label is OMITTED from the reply and must stay a skipped (optional) check.
+    param($Value)
+    return ($Value -is [string] -and $Value.Length -eq 0)
+}
+
+function Test-BridgeContractCorrelationDiffers {
+    # nonce/token/task_revision only (never ids, digests or identity labels): Write-BridgeTaskReply echoes these
+    # with their original JSON type, so an equal value of the SAME exact built-in scalar type matches (bool, the
+    # integer types, a finite double or decimal). Strings compare ordinally; both $null is not different; any
+    # other pair (arrays, objects, a type change such as true vs "true" or true vs 1) is DIFFERENT.
+    param($Left, $Right)
+    if ($Left -is [string] -or $Right -is [string]) { return Test-BridgeContractValuesDiffer $Left $Right }
+    if ($null -eq $Left -or $null -eq $Right) { return -not ($null -eq $Left -and $null -eq $Right) }
+    $type = $Left.GetType()
+    if ($type -ne $Right.GetType()) { return $true }
+    if ($type -notin @([bool], [int], [long], [decimal], [double])) { return $true }
+    # fable-5 ec85: PowerShell 5.1 ConvertFrom-Json reads integers beyond Int64/Decimal (31 digits, 2**96) as [double],
+    # so distinct texts can be the same double. A double that is non-finite or has magnitude >= 2**53 (either side)
+    # is not an exact value and never matches; identical modest finite doubles (1.5, -0.0 vs 0.0) still do.
+    if ($type -eq [double] -and (
+        [double]::IsNaN($Left) -or [double]::IsInfinity($Left) -or [double]::IsNaN($Right) -or [double]::IsInfinity($Right) -or
+        [math]::Abs($Left) -ge 9007199254740992.0 -or [math]::Abs($Right) -ge 9007199254740992.0)) { return $true }
+    return -not ($Left -eq $Right)
+}
+
+function Get-BridgeBindingRawField {
+    # Get-BridgeContractField for the binding boundary WITHOUT pipeline unrolling: a one-element array stays an
+    # array (return ,$value), so the exact-type checks can refuse it. Same top-level/payload rules and conflict object.
+    param($Event, [string]$Name)
+    if ($null -eq $Event -or ($Event -isnot [System.Management.Automation.PSCustomObject] -and $Event -isnot [System.Collections.IDictionary])) {
+        return $null
+    }
+    $direct = $Event.PSObject.Properties[$Name]
+    $payload = $Event.PSObject.Properties['payload']
+    $nested = if ($null -ne $payload -and $null -ne $payload.Value) { $payload.Value.PSObject.Properties[$Name] } else { $null }
+    if ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
+        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
+        return [pscustomobject]@{ invalid_binding = $true }
+    }
+    if ($null -ne $direct -and $null -ne $direct.Value) { return ,$direct.Value }
+    if ($null -ne $nested) { return ,$nested.Value }
+    return $null
+}
+
+function Test-BridgeContractListContains {
+    # Ordinal membership for the recipient list (replaces the culture-sensitive -cnotcontains).
+    param([AllowEmptyCollection()] [object[]] $List, $Value)
+    if ($Value -isnot [string]) { return $false }
+    foreach ($item in $List) {
+        if ($item -isnot [string]) { return $false }
+        if ([string]::Equals($item, $Value, [System.StringComparison]::Ordinal)) { return $true }
+    }
+    return $false
+}
+
 function Test-BridgeReplyBinding {
     param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false,
         [bool]$RequireExplicitCorrelation=$false, [int]$RequestPosition=-1, [int]$ReplyPosition=-1)
@@ -127,37 +197,41 @@ function Test-BridgeReplyBinding {
         }
     }
     if (Get-BridgeContractField $Request 'request_binding_conflict') { return $false }
-    $requester = [string](Get-BridgeContractField $Request 'agent')
+    $requester = Get-BridgeBindingRawField $Request 'agent'
+    if ($requester -isnot [string]) { return $false }
     $author = if ($RequesterClosure) { $requester } else { $Target }
-    if ([string](Get-BridgeContractField $Reply 'agent') -cne $author) { return $false }
-    if ([string](Get-BridgeContractField $Reply 'task_id') -cne [string](Get-BridgeContractField $Request 'task_id')) { return $false }
+    if (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply 'agent') $author) { return $false }
+    if (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply 'task_id') (Get-BridgeBindingRawField $Request 'task_id')) { return $false }
     $sent = ConvertTo-BridgeContractTime (Get-BridgeContractField $Request 'ts_utc')
     $answered = ConvertTo-BridgeContractTime (Get-BridgeContractField $Reply 'ts_utc')
     if ($null -eq $sent -or $null -eq $answered -or $answered -le $sent) { return $false }
-    $recipients = @(([string](Get-BridgeContractField $Reply 'to') -split ',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
+    $to = Get-BridgeBindingRawField $Reply 'to'
+    if ($null -ne $to -and $to -isnot [string]) { return $false }
+    $recipients = @(([string]$to -split ',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
     $recipient = if ($RequesterClosure) {$Target} else {$requester}
-    if ($recipients.Count -and $recipients -cnotcontains $recipient) { return $false }
-    $rid = Get-BridgeContractField $Request 'request_id'
+    if ($recipients.Count -and -not (Test-BridgeContractListContains $recipients $recipient)) { return $false }
+    $rid = Get-BridgeBindingRawField $Request 'request_id'
     if ($null -ne $rid) {
-        if ($rid -isnot [string] -or -not $rid -or (Get-BridgeContractField $Reply 'in_reply_to_request_id') -cne $rid) { return $false }
-        if ($recipients -cnotcontains $recipient) { return $false }
-        $digest = Get-BridgeContractField $Request 'request_digest'
-        if ($null -ne $digest -and (Get-BridgeContractField $Reply 'in_reply_to_request_digest') -cne $digest) { return $false }
-        $context = Get-BridgeContractField $Reply 'in_reply_to_requester'
-        if ($null -eq $context) { return $false }
+        if ($rid -isnot [string] -or -not $rid -or (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply 'in_reply_to_request_id') $rid)) { return $false }
+        if (-not (Test-BridgeContractListContains $recipients $recipient)) { return $false }
+        $digest = Get-BridgeBindingRawField $Request 'request_digest'
+        if ($null -ne $digest -and (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply 'in_reply_to_request_digest') $digest)) { return $false }
+        $context = Get-BridgeBindingRawField $Reply 'in_reply_to_requester'
+        if ($context -isnot [System.Management.Automation.PSCustomObject] -and $context -isnot [System.Collections.IDictionary]) { return $false }
         foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
-            $expected = Get-BridgeContractField $Request $key
-            if ($expected -and (Get-BridgeContractField $context $key) -cne $expected) { return $false }
+            $expected = Get-BridgeBindingRawField $Request $key
+            if ($null -ne $expected -and -not (Test-BridgeContractBlankLabel $expected) -and
+                (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $context $key) $expected)) { return $false }
         }
     } elseif ($null -ne (Get-BridgeContractField $Reply 'in_reply_to_request_id')) { return $false }
     $reference = Get-BridgeContractField $Reply 'request_ts_utc'
     if ($null -ne $reference -and (ConvertTo-BridgeContractTime $reference) -ne $sent) { return $false }
     $correlated = $null -ne $reference
     foreach ($key in @('nonce','token','task_revision')) {
-        $expected = Get-BridgeContractField $Request $key
-        $actual = Get-BridgeContractField $Reply $key
+        $expected = Get-BridgeBindingRawField $Request $key
+        $actual = Get-BridgeBindingRawField $Reply $key
         if ($null -ne $expected) {
-            if (($null -eq $rid -or $null -ne $actual) -and $actual -cne $expected) { return $false }
+            if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractCorrelationDiffers $actual $expected)) { return $false }
             $correlated = $true
         }
     }
@@ -176,9 +250,10 @@ function Test-BridgeReplyBinding {
     if ($null -ne $identity) {
         if ($identity -isnot [System.Collections.IDictionary] -and $identity.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $false }
         foreach ($key in @('agent_uuid','session_id','run_id')) {
-            $value = Get-BridgeContractField $identity $key
+            $value = Get-BridgeBindingRawField $identity $key
             if (-not $RequesterClosure -and ($value -isnot [string] -or -not $value)) { return $false }
-            if ($value -and (Get-BridgeContractField $Reply $key) -cne $value) { return $false }
+            if ($null -ne $value -and -not (Test-BridgeContractBlankLabel $value) -and
+                (Test-BridgeContractValuesDiffer (Get-BridgeBindingRawField $Reply $key) $value)) { return $false }
         }
     }
     return $true

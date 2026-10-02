@@ -1250,7 +1250,10 @@ def _deduplicate_repeated_wake_requests(
         if _event_type(request) != "wake_request" and not rid:
             deduped.append(request)
             continue
-        key = request_key(request, target) if rid else (
+        # Only null, "" and an absent id are legacy. Any other value (false, 0, [], {}, a top/payload conflict) is an
+        # invalid id that keeps the shared typed request_key, so different malformed requests never collapse.
+        has_rid = rid is not None and not (type(rid) is str and rid == "")
+        key = request_key(request, target) if has_rid else (
             _event_agent(request),
             _task_id(request),
             _event_status(request),
@@ -1261,7 +1264,7 @@ def _deduplicate_repeated_wake_requests(
             wake_request_indexes[key] = len(deduped)
             deduped.append(request)
         else:
-            if rid:
+            if has_rid:
                 # Identical-ID retries retain their first durable occurrence.
                 # Reusing an ID for different content is a visible open conflict.
                 previous = deduped[index]

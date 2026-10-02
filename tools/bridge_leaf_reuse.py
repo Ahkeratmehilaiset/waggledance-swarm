@@ -87,11 +87,18 @@ _FUNC_DEF = re.compile(
     r"(" + _FUNC_NAME + r")(?![\w-])"
 )
 _FUNC_REF = re.compile(r"(?i)(?<![\w-])(" + _FUNC_NAME + r")(?![\w-])")
+# A definition only counts outside block comments and here-strings (a masked loss would read as present). An
+# unclosed one runs to the end of the file: PowerShell does not parse such a file, so it defines nothing.
+_NON_CODE = re.compile(r"(?s)<#.*?(?:#>|\Z)|@'[ \t]*\r?\n.*?(?:(?m:^)'@|\Z)|@\"[ \t]*\r?\n.*?(?:(?m:^)\"@|\Z)")
 LIMITS = (
     "reviewed heads are caller-supplied evidence, not authenticated reviews",
     "dependency check covers hyphenated PowerShell function names under .agent-bridge/bin/ only "
     "(regex approximation; comments and strings count as references); Python imports, dot-sourcing, "
     "modules, aliases, unhyphenated names and dynamic calls are not checked",
+    "definitions count only as ASCII names under .agent-bridge/bin/, outside block comments and here-strings; "
+    "the stripping is not a parser and can over-strip (e.g. <# inside a line comment or string), which only "
+    "adds missing entries (fail-closed); unclosed comment/here-string syntax is treated as defining nothing; "
+    "no_missing_found never proves completeness",
     "merge commits are refused as reviewed heads",
     "SHA-1 object ids only",
 )
@@ -492,8 +499,9 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
                 result["unknown"].append({"path": path.decode("utf-8", "replace"), "where": where,
                                           "reason": "not strict UTF-8"})
                 continue
-            for name in _FUNC_DEF.findall(text):
-                names.setdefault(name.casefold(), name)
+            for name in _FUNC_DEF.findall(_NON_CODE.sub("", text)):
+                if name.isascii():  # Python folds U+212A/U+017F into ASCII; PowerShell does not, so skip them
+                    names.setdefault(name.casefold(), name)
         return names
 
     reviewed: Dict[str, str] = {}
@@ -512,7 +520,7 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
     known = dict(reviewed)
     for key, name in defs_of(replaced, "base").items():
         known.setdefault(key, name)
-    present = defs_of(tree_files, "composed")
+    present = defs_of({p: e for p, e in tree_files.items() if p.startswith(_DEP_SCOPE.encode())}, "composed")
     lost = set(known) - set(present)
     # Every composed-tree file is scanned, so an unchanged caller of a lost definition is caught too.
     for path, entry in sorted(tree_files.items()):

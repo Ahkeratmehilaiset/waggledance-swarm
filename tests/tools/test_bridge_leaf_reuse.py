@@ -525,6 +525,78 @@ def test_malformed_replaced_base_file_is_unknown():
     assert r["dependency_check"]["status"] == "unknown" and r["overall"] == L.DELTA_REVIEW_REQUIRED
 
 
+# ---------------------------------------------------------------- definition-side guards (RCO2 c99b residuals)
+def lost_foo_report(new_lib, extra=None):
+    """Get-Foo is defined in LIB at the base and still called by the unchanged USE; the leaf replaces LIB."""
+    s = Store()
+    base = ps_commit(s, PS_BASE)
+    head = ps_commit(s, dict({LIB: new_lib, USE: PS_BASE[USE]}, **(extra or {})), base)
+    return dep_report(s, base, dict({LIB: head}, **{p: head for p in (extra or {})}), [head])
+
+
+@pytest.mark.parametrize("new_lib", [
+    b"<#\nfunction Get-Foo { 1 }\n#>\nfunction Get-Other { }\n",               # block comment
+    b"<# a\n  function Get-Foo { 1 } #>\n",                                     # block comment, indented line
+    b"$x = @'\nfunction Get-Foo { 1 }\n'@\n",                                  # single-quoted here-string, opener mid-line
+    b"$x = @\"\r\nfunction Get-Foo { 1 }\r\n\"@\r\n",                           # double-quoted here-string, CRLF
+    b"<#\nfunction Get-Foo { 1 }\n",                                            # unclosed block comment: the file does not parse
+    b"$x = @'\nfunction Get-Foo { 1 }\n",                                       # unclosed here-string: the file does not parse
+])
+def test_a_definition_inside_a_block_comment_or_here_string_does_not_mask_a_loss(new_lib):
+    r = lost_foo_report(new_lib)
+    # the leaf's own commented/string mention also stays a reference (conservative), so check membership
+    assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"], r["dependency_check"]
+    assert r["overall"] == L.DELTA_REVIEW_REQUIRED
+
+
+def test_a_kelvin_sign_definition_does_not_mask_the_ascii_name():
+    # Python (?i) + casefold read U+212A as k; PowerShell does not resolve Get-Key to Get-<U+212A>ey.
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Key { 1 }\n", USE: b"Get-Key\n"})
+    head = ps_commit(s, {LIB: "function Get-\u212aey { 1 }\n".encode("utf-8"), USE: b"Get-Key\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert {"caller": USE, "function": "Get-Key"} in r["dependency_check"]["missing"], r["dependency_check"]
+
+
+def test_a_definition_moved_out_of_the_dependency_scope_is_missing_but_a_move_within_it_is_not():
+    out = lost_foo_report(b"# moved\n", {"tools/moved.ps1": b"function Get-Foo { 1 }\n"})
+    assert {"caller": USE, "function": "Get-Foo"} in out["dependency_check"]["missing"] and out["overall"] == L.DELTA_REVIEW_REQUIRED
+    within = lost_foo_report(b"# moved\n", {OTHER: b"function Get-Foo { 1 }\n"})
+    assert within["dependency_check"]["missing"] == [] and within["overall"] == L.REUSE_ALL
+
+
+@pytest.mark.parametrize("new_lib", [
+    b"<#\nhelp\n#>\nfunction Get-Foo { 1 }\n",                                 # real definition after a closed block comment
+    b"$x = @'\ntext\n'@\nfunction Get-Foo { 1 }\n",                            # ... after a closed here-string
+    b"function global:GET-FOO { 1 }\n",                                         # scope prefix and case
+    b"function Get-Foo { 1 }\nfunction Get-Foo-Bar-Baz { 2 }\n",                # multi-hyphen neighbour
+])
+def test_legitimate_ascii_definitions_stay_present(new_lib):
+    r = lost_foo_report(new_lib)
+    assert r["dependency_check"]["missing"] == [] and r["overall"] == L.REUSE_ALL, r["dependency_check"]
+
+
+def test_references_inside_comments_and_strings_stay_conservative():
+    s = Store()
+    base = ps_commit(s, {LIB: b"function Get-Foo { 1 }\n", USE: b"<#\nGet-Foo\n#>\n$t = @'\nGet-Foo\n'@\n"})
+    head = ps_commit(s, {LIB: b"# gone\n", USE: b"<#\nGet-Foo\n#>\n$t = @'\nGet-Foo\n'@\n"}, base)
+    r = dep_report(s, base, {LIB: head}, [head])
+    assert r["dependency_check"]["missing"] == [{"caller": USE, "function": "Get-Foo"}]
+
+
+def test_a_line_comment_opener_overstrips_only_toward_missing():
+    # Disclosed approximation: "# <#" is a line comment in PowerShell, but the stripper treats it as a block opener,
+    # so the real definition below reads as absent -> an extra missing entry (fail-closed), never a clean result.
+    r = lost_foo_report(b"# <# not a block\nfunction Get-Foo { 1 }\n# #>\n")
+    assert {"caller": USE, "function": "Get-Foo"} in r["dependency_check"]["missing"]
+
+
+def test_limits_disclose_the_definition_stripping_approximation():
+    text = " ".join(L.LIMITS)
+    for phrase in ("over-strip", "not a parser", "ASCII", "fail-closed", "never proves completeness"):
+        assert phrase in text, phrase
+
+
 # ---------------------------------------------------------------- committed-tree no-consumer tripwire
 # A TRIPWIRE, not an isolation proof: a name assembled at runtime (string concatenation, a computed importlib name)
 # is invisible; a test below pins that limit so it stays disclosed.

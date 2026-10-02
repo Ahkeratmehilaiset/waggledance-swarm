@@ -230,6 +230,8 @@ function Test-BridgeReplyBinding {
     foreach ($key in @('nonce','token','task_revision')) {
         $expected = Get-BridgeBindingRawField $Request $key
         $actual = Get-BridgeBindingRawField $Reply $key
+        # RCO2 a41e1a25: the request's own value disagrees between top level and payload: no single correlation.
+        if ($expected -is [System.Management.Automation.PSCustomObject] -and $null -ne $expected.PSObject.Properties['invalid_binding']) { return $false }
         if ($null -ne $expected) {
             if (($null -eq $rid -or $null -ne $actual) -and (Test-BridgeContractCorrelationDiffers $actual $expected)) { return $false }
             $correlated = $true

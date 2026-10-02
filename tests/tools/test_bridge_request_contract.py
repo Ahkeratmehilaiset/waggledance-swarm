@@ -669,3 +669,101 @@ def test_large_or_aliasing_double_correlation_values_never_match(tmp_path, engin
         expected['double_2pow53'] = True
     wrong = sorted(name for name in expected if verdicts[name] is not expected[name])
     assert wrong == [], wrong
+
+
+# --- request-side correlation conflict (RCO2 a41e1a25: nonce_top_vs_payload_conflict_request_reply_absent) -----------
+# A request whose own nonce/token/task_revision disagrees between top level and payload (true vs 1) has no single
+# correlation value: it must never bind, whether the reply omits the key, echoes one side, or conflicts itself, with
+# an explicit request_id or as a legacy request. Valid omission with an id, payload fallback, equal top/payload copies
+# and null/null stay as before.
+import importlib.util as _ilu  # noqa: E402
+
+
+def _conflict_engines():
+    engines = []
+    for rel in ("waggledance/core/bridge_request_contract.py", "tools/bridge_v2_request_contract.py"):
+        spec = _ilu.spec_from_file_location("conflict_" + rel.replace("/", "_"), ROOT / rel)
+        module = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        engines.append(("py:" + rel, module))
+    return engines
+
+
+def _conflict_pair(rid=True):
+    request = {"ts_utc": "2026-09-18T07:30:01Z", "agent": "codex-lead-1", "agent_uuid": "lead-uuid",
+               "session_id": "lead-session", "run_id": "lead-run", "to": "codex-tools-1", "type": "wake_request",
+               "status": "request", "task_id": "fixture/request", "message": "v",
+               "payload": {"expected_responders": {"codex-tools-1": {
+                   "agent_uuid": "tools-uuid", "session_id": "tools-session", "run_id": "tools-run"}}}}
+    reply = {"ts_utc": "2026-09-18T07:30:02Z", "agent": "codex-tools-1", "agent_uuid": "tools-uuid",
+             "session_id": "tools-session", "run_id": "tools-run", "to": "codex-lead-1", "type": "message",
+             "status": "answered", "task_id": "fixture/request", "payload": {}}
+    if rid:
+        request.update(request_id="request-v2", request_digest="d" * 64)
+        reply.update(in_reply_to_request_id="request-v2", in_reply_to_request_digest="d" * 64,
+                     in_reply_to_requester={"agent": "codex-lead-1", "agent_uuid": "lead-uuid",
+                                            "session_id": "lead-session", "run_id": "lead-run"})
+    return request, reply
+
+
+def _conflict_cases():
+    cases = {}
+    for key in ("nonce", "token", "task_revision"):
+        for rid in (True, False):
+            tag = f"{key}-{'id' if rid else 'legacy'}"
+            for name, reply_top, reply_payload, want in (
+                ("reply_omits", None, None, False), ("reply_top_side", True, None, False),
+                ("reply_payload_side", None, 1, False), ("reply_conflicts_too", True, 1, False)):
+                request, reply = _conflict_pair(rid)
+                request[key] = True
+                request["payload"][key] = 1
+                if reply_top is not None:
+                    reply[key] = reply_top
+                if reply_payload is not None:
+                    reply["payload"][key] = reply_payload
+                cases[f"{tag}-{name}"] = (request, reply, want)
+            # positive twins: same value at both places, payload-only, omission with an id, null/null
+            request, reply = _conflict_pair(rid)
+            request[key] = True
+            request["payload"][key] = True
+            reply["payload"][key] = True
+            cases[f"{tag}-equal_copies_echoed"] = (request, reply, True)
+            request, reply = _conflict_pair(rid)
+            request["payload"][key] = "v-1"
+            reply["payload"][key] = "v-1"
+            cases[f"{tag}-payload_only_echoed"] = (request, reply, True)
+            if rid:
+                request, reply = _conflict_pair(rid)
+                request["payload"][key] = "v-1"
+                cases[f"{tag}-valid_omission_with_id"] = (request, reply, True)
+                request, reply = _conflict_pair(rid)
+                request[key] = True
+                request["payload"][key] = True
+                cases[f"{tag}-equal_copies_omitted_with_id"] = (request, reply, True)
+    return cases
+
+
+def test_request_side_correlation_conflict_never_binds_python():
+    cases = _conflict_cases()
+    for engine, module in _conflict_engines():
+        wrong = sorted(n for n, (q, r, want) in cases.items()
+                       if bool(module.reply_matches_request(q, r, "codex-tools-1")) is not want)
+        assert wrong == [], (engine, wrong)
+
+
+@pytest.mark.parametrize("engine", SHELLS)
+def test_request_side_correlation_conflict_never_binds_powershell(tmp_path, engine):
+    cases = _conflict_cases()
+    fixture = tmp_path / "conflict.json"
+    fixture.write_text(json.dumps([{"name": n, "request": q, "reply": r} for n, (q, r, _) in cases.items()]),
+                       encoding="utf-8")
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    wrong = sorted(n for n, (_, _, want) in cases.items() if verdicts[n] is not want)
+    assert wrong == [], wrong

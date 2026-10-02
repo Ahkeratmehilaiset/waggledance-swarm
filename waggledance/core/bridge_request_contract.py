@@ -154,6 +154,8 @@ def reply_matches_request(
     for key in ("nonce", "token", "task_revision"):
         expected = field(request, key)
         actual = field(reply, key)
+        if expected is _CONFLICT:
+            return False                     # the request's own value disagrees (top vs payload): no single correlation
         if expected is not None:
             # IDs bind a reply without copying arbitrary payload fields, but an
             # explicitly supplied wrong revision/nonce must never be accepted.

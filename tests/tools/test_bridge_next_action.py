@@ -4097,6 +4097,41 @@ def test_the_report_always_carries_the_withhold_fields() -> None:
     assert out["cancelled_withheld_count"] == 0 and out["cancelled_withheld_request_ids"] == []
 
 
+@pytest.mark.parametrize("rid", [
+    _C_RID + "\n", _C_RID + "\r\n", _C_RID + "\r", _C_RID + " ",
+    " " + _C_RID, "req/other", "req\u00adother", "req\u200bother",
+    "req\u200dother", "r\u00e9q", "r" * 129,
+])
+@pytest.mark.parametrize("stale", [False, True], ids=["fresh", "stale"])
+def test_cancellation_request_id_shape_rejects_copied_malformed_ids(
+    rid: str, stale: bool,
+) -> None:
+    request = _c_request(request_id=rid)
+    cancel = _c_cancel({"cancelled_request_id": rid})
+    if stale:
+        request["ts_utc"] = "2026-09-30T01:00:00Z"
+        cancel["ts_utc"] = "2026-09-30T01:05:00Z"
+    out, selected = _c_select([request, cancel])
+    assert out["cancelled_withheld_count"] == 0, out
+    assert out["cancelled_withheld_request_ids"] == [], out
+    assert out["stale_incoming_count"] == int(stale), out
+    assert out["open_incoming_count"] == int(not stale), out
+    if not stale:
+        assert selected == rid, out
+    # Remaining in the routing inventory does NOT validate the malformed ID
+    # or grant authority: only the cancellation proof is being rejected.
+
+
+@pytest.mark.parametrize("rid", ["r", "r" * 128, "A.a-Z_9:rev-1"])
+def test_cancellation_request_id_shape_keeps_exact_valid_tokens(rid: str) -> None:
+    out, selected = _c_select([
+        _c_request(request_id=rid), _c_cancel({"cancelled_request_id": rid}),
+    ])
+    assert selected is None and out["open_incoming_count"] == 0, out
+    assert out["cancelled_withheld_count"] == 1, out
+    assert out["cancelled_withheld_request_ids"] == [rid], out
+
+
 class _CHookStr(str):
     calls: list[str] = []
 

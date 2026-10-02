@@ -1032,6 +1032,9 @@ def _request_cancelled_withheld(
     task = _exact_str_field(request, "task_id")
     position = positions.get(id(request))
     if (not rid or not requester or not task or not uuid or position is None
+            # Request IDs use the same bounded ASCII token grammar as UUIDs.
+            # A copied malformed ID cannot prove cancellation (PS parity).
+            or REQUEST_CANCELLATION_UUID_PATTERN.fullmatch(rid) is None
             or REQUEST_CANCELLATION_UUID_PATTERN.fullmatch(uuid) is None
             or digest is None or REQUEST_CANCELLATION_DIGEST_PATTERN.fullmatch(digest) is None):
         return False

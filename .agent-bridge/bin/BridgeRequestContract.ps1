@@ -72,11 +72,19 @@ function Get-BridgeRequestViewKey {
     return "$Target|legacy|$($Request.agent)|$($Request.task_id)"
 }
 
+function Test-BridgeRequestEntryDiffers {
+    # Same-key duplicates: ORDINAL content and digest comparison (culture-sensitive -cne ignored U+00AD, and U+200B in
+    # pwsh 7, so a different request reusing an id read as an exact retry and its conflict was never shown).
+    param($Left, $Right)
+    return (-not [string]::Equals((Get-BridgeRequestContent $Left), (Get-BridgeRequestContent $Right), [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals((ConvertTo-BridgeContractJson (Get-BridgeContractField $Left 'request_digest')),
+            (ConvertTo-BridgeContractJson (Get-BridgeContractField $Right 'request_digest')), [System.StringComparison]::Ordinal))
+}
+
 function Set-BridgeRequestViewEntry {
     param($Map, [string]$Key, $Request)
     if ((Get-BridgeContractField $Request 'request_id') -and $Map.ContainsKey($Key)) {
-        if ((Get-BridgeRequestContent $Map[$Key]) -cne (Get-BridgeRequestContent $Request) -or
-            (Get-BridgeContractField $Map[$Key] 'request_digest') -cne (Get-BridgeContractField $Request 'request_digest')) {
+        if (Test-BridgeRequestEntryDiffers $Map[$Key] $Request) {
             $Map[$Key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
     } else { $Map[$Key] = $Request }

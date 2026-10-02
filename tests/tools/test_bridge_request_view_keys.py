@@ -3,7 +3,7 @@
 A valid request_id is an exact non-empty string and keeps its key; null and "" keep the legacy key. Any other non-null
 request_id (a top/payload conflict, a number, a bool, a list, an object) is never a valid id: its key is its own typed
 canonical request content, so it can neither alias a valid id ("7" vs 7, "req-7" vs ["req-7"]) nor collapse with another
-invalid request, while exact repeats still coalesce.
+invalid request, while exact repeats still coalesce. Same-id duplicates compare their content ORDINALLY.
 """
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ def test_py_valid_exact_retry_and_legacy_unchanged():
     assert len(dedup([req("", ts="2026-10-02T02:50:00Z"), req("", ts="2026-10-02T02:51:00Z")])) == 1
 
 
-# --- PowerShell: Get-BridgeRequestViewKey ----------------------------------------------------------------------------
+# --- PowerShell: Get-BridgeRequestViewKey / Set-BridgeRequestViewEntry ------------------------------------------------
 
 def _ps(shell, tmp_path, body, rows):
     fixture = tmp_path / "rows.json"
@@ -174,6 +174,21 @@ def test_ps_view_keys_are_typed_and_never_alias(shell, tmp_path):
     assert len({keys[n] for n in distinct}) == len(distinct), keys
     rerun = dict(zip(names, json.loads(_ps(shell, tmp_path, KEYS_BODY, list(KEY_ROWS.values())))))
     assert rerun == keys
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps_same_id_entry_compares_content_ordinally(shell, tmp_path):
+    body = ("$map = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal); "
+            "foreach ($r in $rows) { Set-BridgeRequestViewEntry $map (Get-BridgeRequestViewKey $r 't') $r }; "
+            "ConvertTo-Json -Compress -InputObject @($map.Values | ForEach-Object { "
+            "[bool]($null -ne $_.PSObject.Properties['request_binding_conflict']) })")
+    for other, conflict in (("one", False), ("two", True), ("one" + SOFT, True), ("one" + ZW, True)):
+        flags = json.loads(_ps(shell, tmp_path, body, [req("r-1", message="one"), req("r-1", message=other)]))
+        assert flags == [conflict], (other, flags)
+    # same content, request_digest differing only invisibly / by type is a different binding as well
+    for digest, conflict in (("a" * 64, False), ("a" * 64 + SOFT, True), ("a" * 64 + ZW, True), (7, True)):
+        flags = json.loads(_ps(shell, tmp_path, body, [req("r-1"), req("r-1", request_digest=digest)]))
+        assert flags == [conflict], (repr(digest), flags)
 
 
 # --- PowerShell: the real selector (fresh and stale paths) -----------------------------------------------------------
@@ -222,6 +237,13 @@ def test_ps_exact_duplicates_coalesce_and_valid_retries_are_unchanged(shell, tmp
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("other", ["two", "one" + SOFT, "one" + ZW], ids=["plain", "soft_hyphen", "zero_width"])
+def test_ps_fresh_same_id_different_content_is_a_visible_conflict(shell, tmp_path, other):
+    out = select(shell, tmp_path, [req("r-1", message="one"), req("r-1", message=other, ts="2026-10-02T02:51:00Z")])
+    assert out["open_incoming_count"] == 1 and out["incoming"].get("request_binding_conflict") is True, out
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_ps_stale_path_keeps_distinct_invalid_requests_apart(shell, tmp_path):
     old = "2026-10-01T10:00:00Z"
     rows = [conflicting("codex-lead-1/a", "a1", "a2", ts=old), conflicting("codex-lead-1/b", "b1", "b2", ts=old),
@@ -230,3 +252,15 @@ def test_ps_stale_path_keeps_distinct_invalid_requests_apart(shell, tmp_path):
     assert out["open_incoming_count"] == 0 and out["stale_incoming_request_count"] == 4, out
     dup = select(shell, tmp_path, [rows[0], copy.deepcopy(rows[0])])
     assert dup["stale_incoming_request_count"] == 1, dup
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps_legacy_replay_check_is_ordinal(shell, tmp_path):
+    """Same legacy wake key and ts: only an ORDINALLY identical replay keeps the first row; a row differing by an
+    invisible character is a different request and replaces it, as Python _deduplicate_repeated_wake_requests does.
+    (An unbound wake_request is request-like for the PS classifier only with a request status.)"""
+    rows = [req(None, message="one", status="request"), req(None, message="one" + SOFT, status="request")]
+    out = select(shell, tmp_path, rows)
+    assert out["open_incoming_count"] == 1 and out["incoming"]["message"] == "one" + SOFT, out
+    py = dedup([req(None, message="one"), req(None, message="one" + SOFT)])
+    assert [r["message"] for r in py] == ["one" + SOFT]

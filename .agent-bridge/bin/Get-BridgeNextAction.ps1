@@ -272,13 +272,12 @@ foreach ($req in $freshRequestsForAgent) {
     # invalid request); valid string ids and legacy rows keep their existing fresh key unchanged.
     $key = if ($viewKey.StartsWith('|invalid-id|', [StringComparison]::Ordinal)) { $viewKey } elseif ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$(Get-BridgeEventStatusText -Event $req)" } else { "event|$($freshByKey.Count)" }
     if ($rid -and $freshByKey.ContainsKey($key)) {
-        if ((Get-BridgeRequestContent $freshByKey[$key]) -cne (Get-BridgeRequestContent $req) -or
-            (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
+        if (Test-BridgeRequestEntryDiffers $freshByKey[$key] $req) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
     } elseif ($freshByKey.ContainsKey($key) -and
-        [string]$freshByKey[$key].ts_utc -ceq [string]$req.ts_utc -and
-        (Get-BridgeRequestContent $freshByKey[$key]) -ceq (Get-BridgeRequestContent $req)) {
+        [string]::Equals([string]$freshByKey[$key].ts_utc, [string]$req.ts_utc, [System.StringComparison]::Ordinal) -and
+        [string]::Equals((Get-BridgeRequestContent $freshByKey[$key]), (Get-BridgeRequestContent $req), [System.StringComparison]::Ordinal)) {
         # An identical replay does not reset the request's append position.
         continue
     } else { $freshByKey[$key] = $req }

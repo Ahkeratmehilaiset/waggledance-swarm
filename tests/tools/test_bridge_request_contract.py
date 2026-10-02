@@ -236,3 +236,126 @@ def test_malformed_responder_identity_fails_closed(tmp_path, engine, identity):
         proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True, timeout=30)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout) is False
+
+
+# --- Python reply binding exact types (fable-5 ec85): mirror the PowerShell exact-type contract. Identity, digest and
+# context values are exact strings (ordinal); nonce/token/task_revision match only the SAME exact bool/int/float
+# (finite, |float| < 2**53); only an exact empty-string label is a documented blank; field() conflicts are type-strict.
+def _py_pair(**request_over):
+    _, request, reply = events()
+    request.update(request_id='request-v2', request_digest='d' * 64)
+    request.update(request_over)
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='d' * 64,
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')
+                                        if request.get(k)})
+    return request, reply
+
+
+def _py_text(request, reply):
+    """Round-trip through JSON TEXT, as every real reader does."""
+    return json.loads(json.dumps(request)), json.loads(json.dumps(reply))
+
+
+def _py_cases():
+    cases = {'exact_twin': (_py_pair(), True)}
+    for name, (sent, echoed, expected) in {
+            'nonce_true_true': (True, True, True), 'nonce_3_3': (3, 3, True), 'nonce_1_5': (1.5, 1.5, True),
+            'nonce_neg_zero': (-0.0, 0.0, True), 'nonce_big_int_exact': (10 ** 30 + 1, 10 ** 30 + 1, True),
+            'nonce_true_vs_1': (True, 1, False), 'nonce_false_vs_0': (False, 0, False), 'nonce_1_vs_true': (1, True, False),
+            'nonce_3_vs_3_0': (3, 3.0, False), 'nonce_list_equal': ([1], [1], False), 'nonce_dict_equal': ({'k': 1}, {'k': 1}, False),
+            'nonce_2pow53_float': (9007199254740992.0, 9007199254740992.0, False), 'nonce_1e16': (1e16, 1e16, False),
+            'nonce_string_vs_int': ('3', 3, False), 'nonce_wrong': ('v2', 'v1', False),
+            'nonce_case': ('v2', 'V2', False), 'nonce_zwsp': ('v2', 'v2​', False)}.items():
+        request, reply = _py_pair()
+        request['payload']['nonce'] = sent
+        reply['payload'] = dict(reply['payload'], nonce=echoed)
+        cases[name] = ((request, reply), expected)
+    request, reply = _py_pair()
+    request['payload']['nonce'] = float('nan')
+    reply['payload'] = dict(reply['payload'], nonce=float('nan'))
+    cases['nonce_nan'] = ((request, reply), False)
+    request, reply = _py_pair()
+    del reply['payload']['nonce']
+    cases['nonce_absent_on_id_bound_reply'] = ((request, reply), True)
+    for name, edit in {'digest_equal_int': ('request_digest', 7, 'in_reply_to_request_digest', 7),
+                       'digest_equal_list': ('request_digest', ['d'], 'in_reply_to_request_digest', ['d'])}.items():
+        request, reply = _py_pair(**{edit[0]: edit[1]})
+        reply[edit[2]] = deepcopy(edit[3])
+        cases[name] = ((request, reply), False)
+    for label, value in {'false': False, 'zero': 0, 'list': ['x']}.items():   # falsy/non-str request labels: malformed
+        request, reply = _py_pair(agent_uuid=value)
+        reply['in_reply_to_requester'].pop('agent_uuid', None)
+        cases[f'request_label_{label}'] = ((request, reply), False)
+    request, reply = _py_pair(agent_uuid='')                               # documented blank: writer omits it
+    cases['request_label_blank_omitted'] = ((request, reply), True)
+    request, reply = _py_pair(session_id=True)
+    reply['in_reply_to_requester']['session_id'] = True
+    cases['request_label_equal_bool'] = ((request, reply), False)
+    request, reply = _py_pair()
+    reply['agent_uuid'] = ['tools-uuid']
+    cases['responder_label_list'] = ((request, reply), False)
+    request, reply = _py_pair()
+    reply['task_id'] = ['fixture/request']
+    cases['task_id_list'] = ((request, reply), False)
+    request, reply = _py_pair()
+    reply['to'] = ['codex-lead-1']
+    cases['to_list'] = ((request, reply), False)
+    request, reply = _py_pair()
+    request['nonce'] = True                                                # top-level vs payload: true vs 1 conflict
+    request['payload']['nonce'] = 1
+    reply['payload'] = dict(reply['payload'], nonce=1)
+    cases['field_conflict_true_vs_1'] = ((request, reply), False)
+    request, reply = _py_pair()
+    reply['in_reply_to_request_id'] = 'Request-v2'
+    cases['id_case'] = ((request, reply), False)
+    return cases
+
+
+@pytest.mark.parametrize('name', sorted(_py_cases()))
+def test_python_reply_binding_uses_exact_types(name):
+    (request, reply), expected = _py_cases()[name]
+    request, reply = _py_text(request, reply) if name != 'nonce_nan' else (request, reply)
+    assert bool(reply_matches_request(request, reply, 'codex-tools-1')) is expected
+
+
+def test_python_requester_closure_blank_and_set_labels():
+    for blank, expected in ((True, True), (False, False)):
+        request, _ = _py_pair(**({'agent_uuid': ''} if blank else {}))
+        closure = dict(ts_utc='2026-09-18T07:30:05Z', agent='codex-lead-1', agent_uuid='lead-uuid-other',
+                       session_id=request['session_id'], run_id=request['run_id'], to='codex-tools-1', type='message',
+                       status='cancelled', task_id=request['task_id'], in_reply_to_request_id='request-v2',
+                       in_reply_to_request_digest='d' * 64,
+                       in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id') if request[k]},
+                       payload={'nonce': request['payload']['nonce']})
+        assert bool(reply_matches_request(request, closure, 'codex-tools-1', requester_closure=True)) is expected
+
+
+def test_python_routing_consumer_keeps_a_type_mismatched_reply_open():
+    from tools.bridge_next_action import _open_requests_for_agent
+    request, reply = _py_pair()
+    request['payload']['nonce'] = True
+    reply['payload'] = dict(reply['payload'], nonce=1)
+    request, reply = _py_text(request, reply)
+    assert _open_requests_for_agent(agent='codex-tools-1', events=[request, reply]) == [request]
+    reply['payload']['nonce'] = True
+    assert _open_requests_for_agent(agent='codex-tools-1', events=[request, reply]) == []
+
+
+def test_python_field_conflict_true_vs_1_is_not_collapsed_even_when_the_reply_echoes_true():
+    request, reply = _py_pair()
+    request['nonce'] = True                      # top-level true, payload 1: a conflict, never a value
+    request['payload']['nonce'] = 1
+    reply['payload'] = dict(reply['payload'], nonce=True)
+    request, reply = _py_text(request, reply)
+    assert not reply_matches_request(request, reply, 'codex-tools-1')
+
+
+@pytest.mark.parametrize('label, expected', [('', True), (False, False), (0, False)])
+def test_python_legacy_requester_closure_identity_skips_only_an_exact_blank(label, expected):
+    _, request, _ = events()                     # legacy: no request_id, so only the identity loop checks labels
+    request['agent_uuid'] = label
+    closure = dict(ts_utc='2026-09-18T07:30:05Z', agent='codex-lead-1', agent_uuid='lead-uuid-other',
+                   session_id=request['session_id'], run_id=request['run_id'], to='codex-tools-1', type='message',
+                   status='cancelled', task_id=request['task_id'], payload={'nonce': request['payload']['nonce']})
+    request, closure = _py_text(request, closure)
+    assert bool(reply_matches_request(request, closure, 'codex-tools-1', requester_closure=True)) is expected

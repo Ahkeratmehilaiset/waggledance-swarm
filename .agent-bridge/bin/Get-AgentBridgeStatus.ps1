@@ -190,8 +190,10 @@ foreach ($event in @($events | Where-Object { Test-BridgeRequestLikeEvent -Event
     foreach ($target in @(Get-BridgeEventTargets -Event $event)) {
         $key = Get-BridgeRequestViewKey $event $target
         if ((Get-BridgeContractField $event 'request_id') -and $latestRequests.ContainsKey($key)) {
-            if ((Get-BridgeRequestContent $latestRequests[$key].event) -cne (Get-BridgeRequestContent $event) -or
-                (Get-BridgeContractField $latestRequests[$key].event 'request_digest') -cne (Get-BridgeContractField $event 'request_digest')) {
+            # Ordinal, as Test-BridgeRequestEntryDiffers: culture-aware -cne ignored U+00AD (and U+200B in pwsh 7).
+            if (-not [string]::Equals((Get-BridgeRequestContent $latestRequests[$key].event), (Get-BridgeRequestContent $event), [StringComparison]::Ordinal) -or
+                -not [string]::Equals((ConvertTo-BridgeContractJson (Get-BridgeContractField $latestRequests[$key].event 'request_digest')),
+                    (ConvertTo-BridgeContractJson (Get-BridgeContractField $event 'request_digest')), [StringComparison]::Ordinal)) {
                 $latestRequests[$key].event | Add-Member -Force NoteProperty request_binding_conflict $true
             }
             continue

@@ -191,8 +191,11 @@ for ($position=0; $position -lt $rows.Count; $position++) {
         continue
     }
     $first=$byId[$id]
-    if ((Get-BridgeRequestContent $event) -cne (Get-BridgeRequestContent $first.event) -or
-        (Get-BridgeContractField $event 'request_digest') -cne (Get-BridgeContractField $first.event 'request_digest')) {
+    # Ordinal, the same comparison as Test-BridgeRequestEntryDiffers (b77a contract): culture-aware -cne ignored U+00AD
+    # (and U+200B in pwsh 7), so a different request reusing this id read as an exact retry.
+    if (-not [string]::Equals((Get-BridgeRequestContent $event), (Get-BridgeRequestContent $first.event), [StringComparison]::Ordinal) -or
+        -not [string]::Equals((ConvertTo-BridgeContractJson (Get-BridgeContractField $event 'request_digest')),
+            (ConvertTo-BridgeContractJson (Get-BridgeContractField $first.event 'request_digest')), [StringComparison]::Ordinal)) {
         if (-not $DiagnosticPartial) { throw "Conflicting content for immutable request ID $id" }
         Add-InventoryConflict -Position $position -Event $event -Kind 'immutable_id_content_conflict' `
             -FirstPosition $first.first_position

@@ -276,6 +276,8 @@ class GitObjectReader:
     def read(self, oid: str) -> Optional[Tuple[str, bytes]]:
         """(type, raw bytes) for an existing object, None for a missing one."""
         _validate_oid(oid, "object id")
+        if self._broken is not None:  # a broken reader serves nothing, not even its cache (RCO2 78d9dfb7)
+            raise ReaderError("reader is broken: %s" % self._broken)
         if oid in self._cache:
             return self._cache[oid]
         proc = self._start()

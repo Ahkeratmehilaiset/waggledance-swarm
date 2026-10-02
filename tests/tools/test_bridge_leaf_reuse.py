@@ -384,7 +384,10 @@ if scenario == "exit_early":
     sys.exit(3)
 for line in sys.stdin.buffer:
     oid = line.strip()
-    if scenario in ("ok", "ignore_close"):
+    if scenario == "ok_then_fail" and oid == b"f" * 40:
+        send(oid + b" blob 5\nhelloX")  # a real failed exchange after earlier successful (cached) reads
+        continue
+    if scenario in ("ok", "ignore_close", "ok_then_fail"):
         kind, data = OBJ.get(oid.decode(), (None, None))
         if kind is None:
             send(oid + b" missing\n")
@@ -589,3 +592,27 @@ def test_real_reader_reads_commit_tree_empty_blob_and_missing():
             assert reader.read(empty) == ("blob", b"")
         assert reader.read("0" * 40) is None
     assert reader.cleanup_errors == []
+
+
+# ---------------------------------------------------------------- broken reader never serves its cache (RCO2 78d9dfb7)
+def test_cached_objects_are_served_only_before_a_failed_exchange(fake_git):
+    r = fake_git("ok_then_fail", read_timeout=5)
+    assert r.read("a" * 40) == ("blob", b"hello")       # positive twins before the failure: cached existing...
+    assert r.read("e" * 40) is None                     # ...and cached missing
+    assert r.read("a" * 40) == ("blob", b"hello") and r.read("e" * 40) is None
+    with pytest.raises(L.ReaderError, match="trailer"):
+        r.read("f" * 40)                                # the real failed exchange (bad trailer) breaks the reader
+    for oid in ("a" * 40, "e" * 40, "c" * 40):          # cached existing, cached missing, uncached: all refused
+        with pytest.raises(L.ReaderError, match="broken"):
+            r.read(oid)
+    assert len(fake_git.spawned) == 1
+
+
+def test_invalid_ids_are_still_rejected_first_on_a_broken_reader(fake_git):
+    r = fake_git("ok_then_fail", read_timeout=5)
+    with pytest.raises(L.ReaderError):
+        r.read("f" * 40)
+    for bad in ("HEAD", "A" * 40, "c0ffee"):
+        with pytest.raises(L.LeafReuseError) as caught:
+            r.read(bad)
+        assert not isinstance(caught.value, L.ReaderError) or "broken" not in str(caught.value)

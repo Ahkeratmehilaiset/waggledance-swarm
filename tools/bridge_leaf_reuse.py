@@ -98,6 +98,8 @@ LIMITS = (
     "definitions count only as ASCII names under .agent-bridge/bin/, outside block comments and here-strings; "
     "the stripping is not a parser and can over-strip (e.g. <# inside a line comment or string), which only "
     "adds missing entries (fail-closed); unclosed comment/here-string syntax is treated as defining nothing; "
+    "a span glued to the function keyword or to the name never counts as a definition, and a span between the "
+    "keyword and the name reads as a lost definition (fail-closed); "
     "no_missing_found never proves completeness",
     "merge commits are refused as reviewed heads",
     "SHA-1 object ids only",
@@ -499,8 +501,10 @@ def _dependency_check(objs: _Objects, base: str, heads: Sequence[str],
                 result["unknown"].append({"path": path.decode("utf-8", "replace"), "where": where,
                                           "reason": "not strict UTF-8"})
                 continue
-            # Keep a separator: deleting a span can fabricate a function name across its two edges.
-            for name in _FUNC_DEF.findall(_NON_CODE.sub(" ", text)):
+            # Replace each span by "-" + newline: "" joined its edges into a fake name and " " joined a span glued to
+            # "function" or to the name into a definition PowerShell rejects. "-" ends any name before it (the name
+            # must not be followed by "-") and cannot start one; the newline lets code after a span start a line.
+            for name in _FUNC_DEF.findall(_NON_CODE.sub("-\n", text)):
                 if name.isascii():  # Python folds U+212A/U+017F into ASCII; PowerShell does not, so skip them
                     names.setdefault(name.casefold(), name)
         return names

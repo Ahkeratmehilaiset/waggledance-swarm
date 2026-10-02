@@ -7,17 +7,58 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import re
 from typing import Any, Mapping
 
 _CONFLICT = object()
+_EXACT_FLOAT_LIMIT = 2.0 ** 53
+
+
+def _same(left: Any, right: Any) -> bool:
+    """Type-strict structural equality: true is not 1, 1 is not 1.0, NaN is never the same."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        return left.keys() == right.keys() and all(_same(left[key], right[key]) for key in left)
+    if type(left) is list:
+        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right))
+    if type(left) is float and (math.isnan(left) or math.isnan(right)):
+        return False
+    return left == right
+
+
+def _differs(left: Any, right: Any) -> bool:
+    """Identity, digest and context values (PowerShell Test-BridgeContractValuesDiffer): two exact strings compare
+    ordinally; two absent values are not different; ANY other pair (bool, number, list, object) is different."""
+    if type(left) is str and type(right) is str:
+        return left != right
+    return not (left is None and right is None)
+
+
+def _correlation_differs(left: Any, right: Any) -> bool:
+    """nonce/token/task_revision (PowerShell Test-BridgeContractCorrelationDiffers): strings as _differs; otherwise
+    only the SAME exact bool, int or float with an equal value matches, a float only when finite and below 2**53.
+    Exact Python ints are compared exactly (no clamp); lists, objects and type changes (true vs 1, 3 vs 3.0) differ."""
+    if type(left) is str or type(right) is str or left is None or right is None:
+        return _differs(left, right)
+    if type(left) is not type(right) or type(left) not in (bool, int, float):
+        return True
+    if type(left) is float and not all(math.isfinite(v) and abs(v) < _EXACT_FLOAT_LIMIT for v in (left, right)):
+        return True
+    return left != right
+
+
+def _blank(value: Any) -> bool:
+    """Only an exact empty string is a documented blank label (Write-AgentEvent omits it from the reply context)."""
+    return type(value) is str and value == ""
 
 
 def field(event: Mapping[str, Any], key: str) -> Any:
     payload = event.get("payload")
     nested = payload.get(key) if isinstance(payload, Mapping) else None
     direct = event.get(key)
-    if direct is not None and nested is not None and direct != nested:
+    if direct is not None and nested is not None and not _same(direct, nested):
         return _CONFLICT
     return direct if direct is not None else nested
 
@@ -70,33 +111,39 @@ def reply_matches_request(
     """Check correlation only; callers must also require a substantive closure."""
     if request.get("request_binding_conflict"):
         return False
-    requester = str(request.get("agent", ""))
-    if reply.get("agent") != (requester if requester_closure else target):
+    requester = request.get("agent")
+    if type(requester) is not str:
         return False
-    if reply.get("task_id", "") != request.get("task_id", ""):
+    if _differs(reply.get("agent"), requester if requester_closure else target):
+        return False
+    if _differs(reply.get("task_id"), request.get("task_id")):
         return False
     sent = timestamp(request.get("ts_utc"))
     if not reply_follows_request(request, reply, request_position=request_position,
                                  reply_position=reply_position):
         return False
-    recipients = {s.strip() for s in str(reply.get("to", "")).split(",") if s.strip()}
+    to = reply.get("to")
+    if to is not None and type(to) is not str:
+        return False
+    recipients = {s.strip() for s in (to or "").split(",") if s.strip()}
     recipient = target if requester_closure else requester
     if recipients and recipient not in recipients:
         return False
     rid = field(request, "request_id")
     if rid is not None:
-        if not isinstance(rid, str) or not rid or field(reply, "in_reply_to_request_id") != rid:
+        if type(rid) is not str or not rid or _differs(field(reply, "in_reply_to_request_id"), rid):
             return False
         if recipient not in recipients:
             return False
         digest = field(request, "request_digest")
-        if digest is not None and field(reply, "in_reply_to_request_digest") != digest:
+        if digest is not None and _differs(field(reply, "in_reply_to_request_digest"), digest):
             return False
         context = field(reply, "in_reply_to_requester")
         if not isinstance(context, Mapping):
             return False
         for key in ("agent", "agent_uuid", "session_id", "run_id"):
-            if request.get(key) and context.get(key) != request[key]:
+            expected_label = request.get(key)
+            if expected_label is not None and not _blank(expected_label) and _differs(context.get(key), expected_label):
                 return False
     elif field(reply, "in_reply_to_request_id") is not None:
         return False
@@ -107,10 +154,12 @@ def reply_matches_request(
     for key in ("nonce", "token", "task_revision"):
         expected = field(request, key)
         actual = field(reply, key)
+        if expected is _CONFLICT:
+            return False                     # the request's own value disagrees (top vs payload): no single correlation
         if expected is not None:
             # IDs bind a reply without copying arbitrary payload fields, but an
             # explicitly supplied wrong revision/nonce must never be accepted.
-            if (rid is None or actual is not None) and actual != expected:
+            if (rid is None or actual is not None) and _correlation_differs(actual, expected):
                 return False
             correlated = True
     if rid is None and (ambiguous_legacy or require_explicit_correlation) and not correlated:
@@ -131,15 +180,21 @@ def reply_matches_request(
             not isinstance(expected_identity.get(key), str) or not expected_identity[key]
         ):
             return False
-        if expected_identity.get(key) and reply.get(key) != expected_identity[key]:
+        value = expected_identity.get(key)
+        if value is not None and not _blank(value) and _differs(reply.get(key), value):
             return False
     return True
 
 
 def request_key(request: Mapping[str, Any], target: str) -> tuple[str, ...]:
     rid = field(request, "request_id")
-    if rid:
-        return ("id", str(request.get("agent", "")), str(rid), target)
+    if type(rid) is str and rid:
+        return ("id", str(request.get("agent", "")), rid, target)
+    if rid is not None and not (type(rid) is str and rid == ""):
+        # A conflicting (top vs payload) or non-string request_id is never a valid id: it must not alias another
+        # request's key (str(_CONFLICT) is one process-address string; 7 vs "7"). Identity is its own typed,
+        # deterministic canonical content, so exact repeats still coalesce and distinct invalid requests stay apart.
+        return ("invalid-id", str(request.get("agent", "")), request_content(request), target)
     return ("legacy", str(request.get("agent", "")), str(request.get("task_id", "")),
             str(request.get("status", "")), target)
 

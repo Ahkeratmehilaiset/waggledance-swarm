@@ -267,15 +267,17 @@ $candidateOpenRequests = New-Object System.Collections.Generic.List[object]
 $freshByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $freshRequestsForAgent) {
     $rid = Get-BridgeContractField $req 'request_id'
-    $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$(Get-BridgeEventStatusText -Event $req)" } else { "event|$($freshByKey.Count)" }
+    $viewKey = Get-BridgeRequestViewKey $req
+    # Conflicting / non-string request_id: the shared typed view key (never an alias of a valid id or of another
+    # invalid request); valid string ids and legacy rows keep their existing fresh key unchanged.
+    $key = if ($viewKey.StartsWith('|invalid-id|', [StringComparison]::Ordinal)) { $viewKey } elseif ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$(Get-BridgeEventStatusText -Event $req)" } else { "event|$($freshByKey.Count)" }
     if ($rid -and $freshByKey.ContainsKey($key)) {
-        if ((Get-BridgeRequestContent $freshByKey[$key]) -cne (Get-BridgeRequestContent $req) -or
-            (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
+        if (Test-BridgeRequestEntryDiffers $freshByKey[$key] $req) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
     } elseif ($freshByKey.ContainsKey($key) -and
-        [string]$freshByKey[$key].ts_utc -ceq [string]$req.ts_utc -and
-        (Get-BridgeRequestContent $freshByKey[$key]) -ceq (Get-BridgeRequestContent $req)) {
+        [string]::Equals([string]$freshByKey[$key].ts_utc, [string]$req.ts_utc, [System.StringComparison]::Ordinal) -and
+        [string]::Equals((Get-BridgeRequestContent $freshByKey[$key]), (Get-BridgeRequestContent $req), [System.StringComparison]::Ordinal)) {
         # An identical replay does not reset the request's append position.
         continue
     } else { $freshByKey[$key] = $req }
@@ -287,8 +289,13 @@ foreach ($req in @($freshByKey.Values | Sort-Object ts_utc)) {
     } elseif (Test-BridgeRequestStillOpen -Request $req) {
         [void]$candidateOpenRequests.Add($req)
         $rid = Get-BridgeContractField $req 'request_id'
+        $reqViewKey = Get-BridgeRequestViewKey $req
         $openEventCount += @($freshRequestsForAgent | Where-Object {
-            if ($rid) { (Get-BridgeContractField $_ 'request_id') -ceq $rid -and $_.agent -ceq $req.agent }
+            # Valid and invalid ids count the events with the same typed view key (a fresh conflict marker is never
+            # -ceq another, and 7 -ceq "7" is true), so neither undercounts retries nor counts a different request.
+            if ($reqViewKey.StartsWith('|id|', [StringComparison]::Ordinal) -or $reqViewKey.StartsWith('|invalid-id|', [StringComparison]::Ordinal)) {
+                [string]::Equals((Get-BridgeRequestViewKey $_), $reqViewKey, [System.StringComparison]::Ordinal)
+            }
             elseif ($req.type -ceq 'wake_request') { $_.type -ceq $req.type -and $_.agent -ceq $req.agent -and $_.task_id -ceq $req.task_id -and (Get-BridgeEventStatusText -Event $_) -ceq (Get-BridgeEventStatusText -Event $req) }
             else { $_ -eq $req }
         }).Count

@@ -152,7 +152,12 @@ function Test-BridgeRequestLikeEvent {
         return $false
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
-    if ($Event.PSObject.Properties['request_id'] -and $Event.request_id) {
+    # Exact presence, not truthiness: a present non-null request_id other than "" is an explicit (possibly invalid)
+    # id, so false/0/0.0/[] stay visible like {} or [7]. Visibility is not binding: reply binding still refuses any
+    # non-string id. null, "" and an absent id keep the legacy status rule below.
+    $ridProperty = $Event.PSObject.Properties['request_id']
+    if ($null -ne $ridProperty -and $null -ne $ridProperty.Value -and
+        -not ($ridProperty.Value -is [string] -and $ridProperty.Value.Length -eq 0)) {
         if (Test-BridgeRequesterClosureStatus $status) { return $false }
         return $true
     }

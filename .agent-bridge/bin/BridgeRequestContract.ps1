@@ -139,7 +139,12 @@ function Test-BridgeContractCorrelationDiffers {
     $type = $Left.GetType()
     if ($type -ne $Right.GetType()) { return $true }
     if ($type -notin @([bool], [int], [long], [decimal], [double])) { return $true }
-    if ($type -eq [double] -and ([double]::IsNaN($Left) -or [double]::IsInfinity($Left))) { return $true }
+    # fable-5 ec85: PowerShell 5.1 ConvertFrom-Json reads integers beyond Int64/Decimal (31 digits, 2**96) as [double],
+    # so distinct texts can be the same double. A double that is non-finite or has magnitude >= 2**53 (either side)
+    # is not an exact value and never matches; identical modest finite doubles (1.5, -0.0 vs 0.0) still do.
+    if ($type -eq [double] -and (
+        [double]::IsNaN($Left) -or [double]::IsInfinity($Left) -or [double]::IsNaN($Right) -or [double]::IsInfinity($Right) -or
+        [math]::Abs($Left) -ge 9007199254740992.0 -or [math]::Abs($Right) -ge 9007199254740992.0)) { return $true }
     return -not ($Left -eq $Right)
 }
 

@@ -500,3 +500,49 @@ def test_requester_closure_skips_only_a_blank_request_label(tmp_path, engine, bl
     assert result.returncode == 0, result.stderr
     # a blank request label is optional; a non-empty request label must match the closing event exactly
     assert result.stdout.strip() == str(blank)
+
+
+# --- PS 5.1 double aliasing (fable-5 ec85): ConvertFrom-Json in PowerShell 5.1 reads integers beyond Int64/Decimal
+# range (e.g. 31 digits, 2**96) as [double], so two DIFFERENT texts can be the same double. A correlation value that
+# is a double with magnitude >= 2**53 (or non-finite) never matches; identical modest finite doubles still do.
+_ALIAS_CASES = {
+    'int31_distinct': (10 ** 30 + 1, 10 ** 30 + 2, False),
+    'int31_identical': (10 ** 30 + 1, 10 ** 30 + 1, False),         # unrepresentable exactly in 5.1: never a match
+    'pow96_distinct': (2 ** 96, 2 ** 96 + 1, False),
+    'pow96_identical': (2 ** 96, 2 ** 96, False),
+    'double_2pow53': (9007199254740992.0, 9007199254740992.0, False),   # pwsh 7 Double; PS 5.1 parses exact Decimal
+    'exp_1e16_identical': (1e16, 1e16, False),                         # '1e+16': a Double in both shells
+    'exp_1e16_vs_1e16_plus': (1e16, 1.0000000000000002e16, False),
+    'double_2pow53_minus_1': (9007199254740991.0, 9007199254740991.0, True),
+    'double_1_5': (1.5, 1.5, True),
+    'negative_zero_vs_zero': (-0.0, 0.0, True),
+    'double_1_5_vs_2_5': (1.5, 2.5, False),
+    'int_3': (3, 3, True),
+    'bool_true': (True, True, True),
+}
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+@pytest.mark.parametrize('key', ['nonce', 'token', 'task_revision'])
+def test_large_or_aliasing_double_correlation_values_never_match(tmp_path, engine, key):
+    rows = []
+    for name, (sent, echoed, _) in _ALIAS_CASES.items():
+        request, reply = _compat_pair()
+        request['payload'][key] = sent
+        reply['payload'][key] = echoed
+        rows.append({'name': name, 'request': request, 'reply': reply})
+    fixture = tmp_path / 'alias.json'
+    fixture.write_text(json.dumps(rows), encoding='utf-8')          # JSON TEXT: each shell parses it itself
+    command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+               f"$rows=Get-Content -LiteralPath '{fixture}' -Raw -Encoding UTF8 | ConvertFrom-Json; $out=[ordered]@{{}}; "
+               "foreach($c in $rows){ $out[$c.name] = [bool](Test-BridgeReplyBinding $c.request $c.reply 'codex-tools-1') }; "
+               "$out | ConvertTo-Json -Compress")
+    result = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
+    verdicts = json.loads(result.stdout)
+    expected = {name: case[2] for name, case in _ALIAS_CASES.items()}
+    if 'WindowsPowerShell' in engine:                                 # PS 5.1 reads 9007199254740992.0 as an exact Decimal
+        expected['double_2pow53'] = True
+    wrong = sorted(name for name in expected if verdicts[name] is not expected[name])
+    assert wrong == [], wrong

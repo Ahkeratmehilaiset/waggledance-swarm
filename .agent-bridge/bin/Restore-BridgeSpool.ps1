@@ -1730,6 +1730,9 @@ function Open-BridgeCanonicalSnapshot {
 }
 
 function Invoke-BridgeCanonicalScanTestHook {
+    # DryRun must not publish a test marker or wait for its release.
+    # Keep the existing non-DryRun concurrency rendezvous unchanged.
+    if ($DryRun) { return }
     $readyPath = [Environment]::GetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
         'Process'

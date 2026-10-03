@@ -56,9 +56,10 @@ Rules (fail closed):
   paid), a task key, a timestamp key (ts, *_utc), agent or write_scope is not scanned, so legitimate ids and
   scoped paths containing hold or cancel stay clear while free text under those keys is scanned; a one-word
   token such as HOLD under an id key is read as an id (boundary). Over-match only withholds a task.
-* Events by any other label are never facts and never clear anything: a control signal there makes the task
-  it names unknown (UNKNOWN-ONLY); an other-label control naming no readable task is not attributable to a
-  task and is left to the mandatory global HOLD inputs above.
+* Events by any other label are never facts and never clear anything: a control signal there makes every
+  readable task it names unknown (UNKNOWN-ONLY), each on its own; an unreadable task reference there, like an
+  other-label control naming no readable task, is not attributable to a task, is not visible in this output
+  and is left to the mandatory global HOLD inputs above.
 * Contradictory facts (one request with two digests, or one request id under two tasks) make every task
   involved unknown.
 """
@@ -215,8 +216,10 @@ def _signals(event: dict) -> tuple[bool, list, bool]:
             if _TASK_KEY.fullmatch(folded):
                 if _text(value):
                     tasks.append(value)
-                elif type(value) is list and all(_text(entry) for entry in value):
-                    tasks.extend(value)
+                elif type(value) is list:
+                    tasks.extend(entry for entry in value if _text(entry))   # C-S1: each readable entry counts
+                    if not all(_text(entry) for entry in value):
+                        readable = False
                 else:
                     readable = False
             stack.append((folded, value))
@@ -314,9 +317,8 @@ def _derive(events: list) -> dict:
         control, named, readable = _signals(event)
         task = _get(event, "task_id")
         if _get(event, "agent") != AUTHORITY:
-            if control and _text(task) and readable:
-                unknown.add(task)                  # another label: unknown-only, never a fact or a clear
-                unknown.update(named)
+            if control:                            # another label: unknown-only, never a fact or a clear;
+                unknown.update(named)              # every readable name (task_id included) counts on its own
             continue
         kind, status = _get(event, "type"), _get(event, "status")
         if not control and type(kind) is str and type(status) is str and (kind, status) in BENIGN_AUTHORITY_PAIRS:

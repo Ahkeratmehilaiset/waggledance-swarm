@@ -434,6 +434,120 @@ def test_an_other_label_never_clears_or_cancels_and_its_benign_rows_are_ignored(
     assert view(derive([unnamed])) == CLEAR
 
 
+# --- C-S1 (codex-tools-1 3358C77A; Grok design selection 847FEFD2: D1 ii, C1 land, D2 keep) ------------------
+# An other-label control records EVERY readable task it names, on its own: one missing, empty or unreadable
+# reference never drops the readable ones. The unreadable fragment itself is left to the global HOLD inputs.
+
+def other(event, agent):
+    event["agent"] = agent
+    return event
+
+
+OTHER_LABELS = ["fable-5", "operator", None]
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+def test_cs1_t1_an_other_label_control_without_a_task_id_still_withholds_the_task_it_names(agent):
+    event = other(lead("hold", {"production_hold": True, "held_task_ids": [OTHER]}), agent)
+    del event["task_id"]
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert view(out) == {"complete": True, "cancelled": [], "unknown_tasks": [OTHER], "reason": None}
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+@pytest.mark.parametrize("held", [[OTHER, None], [None, OTHER], [OTHER, ""]])
+def test_cs1_t2_a_mixed_task_list_keeps_its_readable_entry_and_the_top_task(agent, held):
+    event = other(lead("hold", {"production_hold": True, "held_task_ids": held}), agent)
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert view(out) == {"complete": True, "cancelled": [], "unknown_tasks": sorted([TASK, OTHER]), "reason": None}
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+@pytest.mark.parametrize("task", ["", None, 7, ["t"]])
+def test_cs1_t3_an_unreadable_top_task_does_not_drop_a_readable_named_task(agent, task):
+    event = other(lead("hold", {"production_hold": True, "held_task_ids": [OTHER]}), agent)
+    event["task_id"] = task
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    named = sorted({OTHER, *(task if type(task) is list else [])})     # a task-key list of names is readable
+    assert view(out) == {"complete": True, "cancelled": [], "unknown_tasks": named, "reason": None}
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+def test_cs1_t4_an_unreadable_nested_sibling_does_not_drop_the_readable_names(agent):
+    event = other(lead("hold", {"hold": {"target_task": OTHER, "tasks": [None]}}), agent)
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert view(out) == {"complete": True, "cancelled": [], "unknown_tasks": sorted([TASK, OTHER]), "reason": None}
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+def test_cs1_t5_invalid_list_entries_never_become_task_ids(agent):
+    event = other(lead("hold", {"production_hold": True, "held_task_ids": [OTHER, "", 7, {"id": "x"}, None, [OTHER]]}),
+                  agent)
+    out = derive([event, fact(task=OTHER, rid="r-other")])
+    assert view(out) == {"complete": True, "cancelled": [], "unknown_tasks": sorted([TASK, OTHER]), "reason": None}
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+def test_cs1_t8_a_task_list_without_a_control_signal_records_nothing(agent):
+    event = other(lead("answered", {"note": "done", "task_ids": [OTHER, None]}, kind="message"), agent)
+    assert view(derive([event])) == CLEAR
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+@pytest.mark.parametrize("task", [None, 7, "", [None], {"id": OTHER}])
+def test_cs1_t10_an_other_label_control_whose_only_reference_is_unreadable_is_left_to_the_global_inputs(agent, task):
+    # D1 ii: the unreadable fragment is NOT visible in this output (no unknown task, not incomplete). With D2 keep
+    # the CLEAR predicate is "no READABLE name" (RCO1 C-1), so this row is treated like an unnamed other-label
+    # control: left to the mandatory global HOLD inputs (module BOUNDARY).
+    event = other(lead("hold", {}), agent)
+    event["task_id"] = task
+    assert view(derive([event])) == CLEAR
+
+
+@pytest.mark.parametrize("agent", OTHER_LABELS)
+def test_cs1_t13_a_token_under_an_id_key_is_still_not_an_other_label_control(agent):
+    event = other(lead("answered", {"request_id": "hold-1", "task_ids": [OTHER, None]}, kind="message"), agent)
+    assert view(derive([event])) == CLEAR
+
+
+def test_cs1_t12_coverage_is_checked_before_any_attribution():
+    event = other(lead("hold", {"production_hold": True, "held_task_ids": [OTHER, None]}), "fable-5")
+    del event["task_id"]
+    events = [event, fact(task=OTHER, rid="r-other")]
+    out = derive(events, snapshot(events, prefix_sha256="b" * 64))
+    assert out["reason"] == "snapshot_not_current_log"
+
+
+def test_cs1_t14_both_entrypoints_agree_and_neither_mutates_its_input():
+    rows = []
+    for held, task in (([OTHER], None), ([OTHER, None], TASK), ([OTHER], ""), ([OTHER, "", 7, {"id": "x"}], TASK)):
+        event = other(lead("hold", {"production_hold": True, "held_task_ids": held}), "operator")
+        if task is None:
+            del event["task_id"]
+        else:
+            event["task_id"] = task
+        rows.append(event)
+    rows.append(other(lead("hold", {"hold": {"target_task": OTHER, "tasks": [None]}}), "fable-5"))
+    events = rows + [fact(task=OTHER, rid="r-other")]
+    before = copy.deepcopy(events)
+    listed = derive(events)
+    prefixed = from_prefix(b"".join(line(event) for event in events))
+    assert events == before
+    assert listed == prefixed
+    assert view(listed) == {"complete": True, "cancelled": [], "unknown_tasks": sorted([TASK, OTHER]), "reason": None}
+
+
+def test_cs1_the_authority_branch_still_fails_closed_on_the_same_shapes():
+    # T6 parity: C1 keeps readable names, but an unreadable authority reference still returns incomplete first.
+    # Each incomplete row has a same-fixture sibling without the unreadable entry that is complete (RCO1 C-3).
+    for held, readable in (([OTHER, None], [OTHER]), ([OTHER, ""], [OTHER]), ([None], [])):
+        assert derive([lead("hold", {"production_hold": True, "held_task_ids": held})])["reason"] == \
+            "cancellation_unattributable"
+        sibling = derive([lead("hold", {"production_hold": True, "held_task_ids": readable})])
+        assert view(sibling) == {"complete": True, "cancelled": [], "unknown_tasks": sorted({TASK, *readable}),
+                                 "reason": None}
+
+
 # --- contradictions -------------------------------------------------------------------------------------
 
 def test_one_request_with_two_digests_makes_the_task_unknown():

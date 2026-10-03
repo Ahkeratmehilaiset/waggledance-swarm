@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -147,6 +147,19 @@ def test_coverage_cancellation_and_supersession_fail_closed(controls, reason):
     assert out["associations"] == [] and unlinked(out) == [reason]
 
 
+@pytest.mark.parametrize("dispatch_list", [(R1,), (R1, R2)])
+def test_a_control_naming_this_request_id_with_another_digest_is_superseded(dispatch_list):
+    # Grok E70EA4DA R2 T1: control(R2) above differs in request_id AND digest, so an id-only comparison
+    # passes it; this twin keeps the id and changes only the digest (well-formed lowerhex, R2's digest).
+    other = control(request_digest="b" * 64)
+    assert other["request_id"] == R1["dispatch_id"] and other["request_digest"] != R1["request_digest"]
+    out = run(dispatch_list, acquisitions=[claim()], controls=[other])
+    assert out["associations"] == [] and unlinked(out) == ["request_superseded"]
+    assert out["rejected"] == [] and out["coverage"]["complete"] is True
+    same = run(dispatch_list, acquisitions=[claim()], controls=[control(request_digest=R1["request_digest"])])
+    assert len(same["associations"]) == 1 and same["unlinked"] == [] and same["rejected"] == []
+
+
 def test_the_same_control_observed_twice_counts_once():
     out = run(acquisitions=[claim()], controls=[control(), control(observed="2026-10-01T16:55:00Z")])
     assert len(out["associations"]) == 1 and out["duplicates_ignored"] == 1
@@ -169,6 +182,19 @@ def test_a_future_dated_control_poisons_the_task():
     out = run(acquisitions=[claim()], controls=[control(), control(observed="2026-10-01T17:00:01Z")])
     assert out["associations"] == [] and unlinked(out) == ["control_conflict"]
     assert reasons(out, "control") == ["future_dated"]
+
+
+@pytest.mark.parametrize("now", [NOW, NOW.astimezone(timezone(timedelta(hours=3)))])
+@pytest.mark.parametrize("observed, links", [("2026-10-01T17:00:00Z", True), ("2026-10-01T17:00:01Z", False)])
+def test_a_control_observed_exactly_at_now_is_accepted_and_one_second_later_is_not(now, observed, links):
+    # Grok E70EA4DA R2 I1: only a strictly later observed_utc is future-dated; equality with now is accepted,
+    # also when now carries another offset for the same instant.
+    out = run(acquisitions=[claim()], controls=[control(observed=observed)], now=now)
+    if links:
+        assert len(out["associations"]) == 1 and out["unlinked"] == [] and out["rejected"] == []
+    else:
+        assert out["associations"] == [] and unlinked(out) == ["control_conflict"]
+        assert reasons(out, "control") == ["future_dated"]
 
 
 def test_a_hostile_control_copy_poisons_by_its_exact_task_id_without_hooks():

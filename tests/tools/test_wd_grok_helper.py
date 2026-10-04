@@ -410,9 +410,17 @@ def test_cli_prompt_carries_only_the_callers_evidence(tmp_path, monkeypatch):
         wd_grok_helper.cli_prompt(ask)
 
 
-def test_default_advisory_command_uses_medium_effort():
+def test_default_advisory_command_uses_high_effort():
     assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model") == [
+        "grok.exe", "--model", "grok-model", "--effort", "high"]
+
+
+def test_advisory_command_takes_an_allowed_effort_and_refuses_others():
+    assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model", effort="medium") == [
         "grok.exe", "--model", "grok-model", "--effort", "medium"]
+    for effort in ("low", "max", "HIGH", "high ", ""):
+        with pytest.raises(ValueError, match="Unsupported Grok effort"):
+            wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model", effort=effort)
 
 
 def test_failed_consult_records_bounded_stderr_as_uninterpreted_evidence(tmp_path):

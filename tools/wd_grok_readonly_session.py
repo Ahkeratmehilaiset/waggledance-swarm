@@ -57,6 +57,10 @@ MAX_ACTION_TEXT_BYTES = MAX_ACTIONS_PER_ROUND * 4096 + 64
 MIN_ROUND_SECONDS = 5.0
 ROUND_TIMEOUT_SECONDS = 300
 MAX_SESSION_SECONDS = MAX_ROUNDS * ROUND_TIMEOUT_SECONDS
+# Rounds stay at medium while one-shot consultations default to high: medium answers already took up
+# to 249 s against this 300 s round limit (wd_grok_helper CONSULT_TIMEOUT_SECONDS note), and a cut-off
+# round leaves nothing. Raise it only after high is measured to fit a round.
+ROUND_EFFORT = "medium"
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUEST_FILE = re.compile(r"([0-9a-f]{32})-request\.md")
 
@@ -715,7 +719,7 @@ def main() -> int:
             raise ValueError("wd_grok_helper.consult lacks the requested_by keyword (G1 interface)")
         # Single source for the session total: max_rounds * 300 s, validated 2..8 rounds above.
         report = helper.consult(helper.STATE_ROOT, args.task_id, prompt,
-                                helper.advisory_command(executable, model["model"]),
+                                helper.advisory_command(executable, model["model"], effort=ROUND_EFFORT),
                                 runner=runner, emitter=helper.emit_bridge_event,
                                 exception_path=args.exception_path, exception_sha256=args.exception_sha256,
                                 timeout_seconds=args.max_rounds * ROUND_TIMEOUT_SECONDS, **requester)

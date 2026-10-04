@@ -71,6 +71,11 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # (CONSULT_TIMEOUT_SECONDS); status() and the answered report keep every field admit/bind
                 # read. Awaiting a non-author review like the entries above.
                 "b277544cf23b057f1be5da65d77e92443b4b0264": "b9220e21 plus the 900 s consult default "
+                                                            "(same local eligibility)",
+                # Fable 2026-10-04 (operator directive): only advisory_command changes, to a high default
+                # effort chosen from medium/high/xhigh; status() and the answered report keep every field
+                # admit/bind read. Awaiting a non-author review like the entries above.
+                "8546386637c93d85e1c660a6e21ab2ec25dcdca8": "b277544c plus the high advisory effort "
                                                             "(same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")

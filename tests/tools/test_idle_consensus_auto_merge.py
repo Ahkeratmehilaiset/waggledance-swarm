@@ -3906,3 +3906,58 @@ def test_cli_pr_status_uses_strict_json_and_utf8(
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "invalid_pr_status"
     assert report["external_effect"] is False
+
+
+def _cause_b_consensus_events(*rco_events: dict) -> list[dict]:
+    return [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD, "pr": 477}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD, "pr": 477}},
+        _rco_pass(),
+        *rco_events,
+    ]
+
+
+def test_rco_withholding_decision_after_pass_blocks_bridge_consensus() -> None:
+    # Cause-B C1/C2 (operator directive 2026-10-04): a recognized RCO's later
+    # withholding decision is that RCO's block in the consensus verifier too.
+    baseline = verify_bridge_consensus(
+        events=_cause_b_consensus_events(),
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        author_agent="fable-5",
+    )
+    assert baseline["ok"] is True
+
+    for status in ["rco_pass_withheld", "not_approved", "hold", "do_not_merge"]:
+        report = verify_bridge_consensus(
+            events=_cause_b_consensus_events(
+                _bridge_event(
+                    agent="claude-rco-1",
+                    type_="decision",
+                    status=status,
+                    ts="2026-05-18T01:05:00Z",
+                )
+                | {"payload": {"head": HEAD, "pr": 477}}
+            ),
+            task_id="idle-consensus-001",
+            head_sha=HEAD,
+            pr_number=477,
+            author_agent="fable-5",
+        )
+
+        assert report["ok"] is False, status
+        assert any(
+            "recognized RCO veto blocks consensus: claude-rco-1" in reason
+            for reason in report["reasons"]
+        ), (status, report["reasons"])

@@ -2147,6 +2147,11 @@ CAUSE_B_WITHHOLDING_DECISION_STATUSES = [
     "do_not_merge",
     "rejected",
     "content_pass_formal_withheld",
+    # Word-bag traps from the Grok advisory review: a resolution word under a
+    # negation must not read as resolved.
+    "hold_not_released",
+    "veto_not_retracted",
+    "veto_never_lifted",
 ]
 
 
@@ -2205,15 +2210,15 @@ def test_rco_withholding_decision_outranks_other_rco_pass() -> None:
     assert result["latest_blocking_event"]["agent"] == "claude-rco-1"
 
 
-def test_rco_resolved_verdicts_and_exact_pass_still_clear() -> None:
-    # Resolved verdict words stay the no-ops they were, and an exact rco_pass
-    # still retracts the same RCO's withholding decision.
+def test_rco_decision_exact_allowlist_after_pass() -> None:
+    # Exact clears keep the RCO's pass. Every other decision status, including
+    # resolved-sounding or positive-sounding free text, is that RCO's block
+    # until the same RCO posts an exact rco_pass again.
     for status in [
-        "veto_retracted_nonce_witness_dual_complete",
-        "hold_released",
         "changes_requested_retracted",
-        "nonce_witness_complete_verified",
-        "source_review_clean_d910049e",
+        "changes_requested_resolved",
+        "changes_requested_cleared",
+        "rco_pass_pending_ci",
     ]:
         result = check_bridge_clear_to_merge(
             events=[
@@ -2226,17 +2231,71 @@ def test_rco_resolved_verdicts_and_exact_pass_still_clear() -> None:
 
         assert result["clear_to_merge"] is True, status
 
-    result = check_bridge_clear_to_merge(
-        events=[
-            _event("2026-10-04T12:00:00Z", "claude-rco-1", "decision", "hold"),
-            _event("2026-10-04T12:01:00Z", "claude-rco-1", "decision", "rco_pass"),
-        ],
-        task_id="T",
-        merging_agent="codex-lead-1",
-    )
+    for status in [
+        "veto_retracted_nonce_witness_dual_complete",
+        "hold_released",
+        "nonce_witness_complete_verified",
+        "source_review_clean_d910049e",
+        "answered",
+        "rco_pass_not_withheld",
+        "rco_pass_hold_released",
+        "",
+    ]:
+        events = [
+            _event("2026-10-04T12:00:00Z", "claude-rco-1", "decision", "rco_pass"),
+            _event("2026-10-04T12:01:00Z", "claude-rco-1", "decision", status),
+        ]
+        result = check_bridge_clear_to_merge(
+            events=events, task_id="T", merging_agent="codex-lead-1"
+        )
 
-    assert result["clear_to_merge"] is True
-    assert result["latest_approval_event"]["status"] == "rco_pass"
+        assert result["clear_to_merge"] is False, status
+        assert result["latest_blocking_event"]["status"] == status
+
+        result = check_bridge_clear_to_merge(
+            events=[
+                *events,
+                _event("2026-10-04T12:02:00Z", "claude-rco-1", "decision", "rco_pass"),
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is True, status
+        assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_rco_neutral_record_status_neither_blocks_nor_clears() -> None:
+    # Merge receipts and post-merge closes are tooling records, not verdicts:
+    # a pass stays a pass and a veto stays a veto.
+    for status in [
+        "autonomous_merge_receipt",
+        "merged_operator_authorized",
+        "operator_authorized",
+        "rco_closed_postmerge",
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event("2026-10-04T12:00:00Z", "claude-rco-1", "decision", "rco_pass"),
+                _event("2026-10-04T12:01:00Z", "claude-rco-1", "decision", status),
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is True, status
+
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event("2026-10-04T12:00:00Z", "claude-rco-1", "finding", "hold"),
+                _event("2026-10-04T12:01:00Z", "claude-rco-1", "decision", status),
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is False, status
+        assert result["latest_blocking_event"]["status"] == "hold"
 
 
 def test_negated_approval_cannot_clear_build_peer_block() -> None:

@@ -30,7 +30,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     RCO_RETRACTION_EVENT_TYPES as _BRIDGE_RCO_DECISION_EVENT_TYPES,
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
-    _is_rco_withholding_status as _bridge_is_rco_withholding_status,
+    _is_rco_decision_block_status as _bridge_is_rco_decision_block_status,
     check_bridge_clear_to_merge,
 )
 from tools.check_rco_pass_present import (  # noqa: E402
@@ -1591,13 +1591,13 @@ def verify_bridge_consensus(
             else:
                 latest_build_block.pop(agent, None)
             continue
-        # Cause-B C1/C2: a recognized RCO's withholding decision/review
-        # (``rco_pass_withheld``, ``hold``, ``do_not_merge``) is that RCO's
-        # block here too, so a later withhold invalidates its earlier pass.
+        # Cause-B C1/C2: a recognized RCO's decision/review that is not an
+        # exact approval or clear (``rco_pass_withheld``, ``hold``) is that
+        # RCO's block here too, so it invalidates the RCO's earlier pass.
         if _is_consensus_block(status, event_type=event_type) or (
             agent in recognized_rco_agents
             and event_type in _BRIDGE_RCO_DECISION_EVENT_TYPES
-            and _bridge_is_rco_withholding_status(status)
+            and _bridge_is_rco_decision_block_status(status)
         ):
             if not _consensus_block_scope_match(
                 event,

@@ -3939,7 +3939,13 @@ def test_rco_withholding_decision_after_pass_blocks_bridge_consensus() -> None:
     )
     assert baseline["ok"] is True
 
-    for status in ["rco_pass_withheld", "not_approved", "hold", "do_not_merge"]:
+    for status in [
+        "rco_pass_withheld",
+        "not_approved",
+        "hold",
+        "do_not_merge",
+        "veto_not_retracted",
+    ]:
         report = verify_bridge_consensus(
             events=_cause_b_consensus_events(
                 _bridge_event(

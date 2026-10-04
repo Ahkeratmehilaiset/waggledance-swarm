@@ -857,8 +857,15 @@ def _is_rco_decision_block_status(status: str) -> bool:
     Only an exact approval status and an exact clear/retraction status keep
     their meaning, and the exact record statuses that tooling posts after a
     merge stay no-ops. Every other status (a negated or withheld pass, a hold,
-    a veto, free text, an empty status) is that RCO's block until the same RCO
-    posts an exact ``rco_pass`` or an exact clear.
+    a veto, free text, an empty status) is that RCO's block.
+
+    This only classifies; each caller keeps its own reset rule. In this peer
+    gate a later verified exact clear or exact approval from the same RCO
+    lifts the block, and a clear records no approval.
+    ``verify_bridge_consensus`` also drops the block on that clear. The
+    exact-head RCO slot (``check_rco_pass_present``) is stricter: a clear
+    never re-issues approval there, so after the block the same RCO needs a
+    fresh exact-head ``rco_pass``.
     """
     normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
     if normalized in APPROVAL_STATUSES:

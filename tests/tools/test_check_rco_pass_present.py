@@ -1785,3 +1785,108 @@ def test_exact_clear_after_pass_keeps_pass() -> None:
 
     assert result["ok"] is True
     assert result["decision"] == "rco_pass_present"
+
+
+# Cause-B sequence and neutral-record controls (operator T2, 2026-10-04). In
+# the exact-head RCO slot a clear does not re-issue approval: after the same
+# RCO's block, only a fresh exact-head rco_pass from that RCO counts again.
+CAUSE_B_RCO_PAIRS = [
+    ("claude-rco-1", "claude-rco-2"),
+    ("claude-rco-2", "claude-rco-1"),
+]
+CAUSE_B_NEUTRAL_RECORD_STATUSES = [
+    "autonomous_merge_receipt",
+    "merged_operator_authorized",
+    "operator_authorized",
+    "rco_closed_postmerge",
+]
+
+
+def _cause_b_pass(agent: str, ts: str, head: str = HEAD) -> dict:
+    return _rco_event(
+        ts=ts, agent=agent, status="rco_pass", message=f"RCO_PASS at exact head {head}."
+    )
+
+
+@pytest.mark.parametrize("agent,other", CAUSE_B_RCO_PAIRS)
+@pytest.mark.parametrize(
+    "block_type,block_status",
+    [("finding", "hold"), ("decision", "hold"), ("rco_review", "rco_pass_withheld")],
+)
+def test_rco_slot_clear_after_block_needs_fresh_exact_pass(
+    agent: str, other: str, block_type: str, block_status: str
+) -> None:
+    passed = _cause_b_pass(agent, "2026-10-04T12:00:00Z")
+    blocked = _rco_event(
+        ts="2026-10-04T12:01:00Z", agent=agent, type_=block_type, status=block_status
+    )
+    for clear_type in ["decision", "rco_review"]:
+        cleared = _rco_event(
+            ts="2026-10-04T12:02:00Z",
+            agent=agent,
+            type_=clear_type,
+            status="changes_requested_retracted",
+        )
+        result = check_rco_pass_present(
+            events=[passed, blocked, cleared], task_id=TASK, head=HEAD
+        )
+
+        assert result["ok"] is False, clear_type
+        assert result["decision"] == "vetoed_after_pass", clear_type
+        assert result["blocking_rco_agents"] == [agent], clear_type
+
+    # A fresh pass that is not the same verified RCO at the exact head does not
+    # count again either.
+    wrong_uuid = _cause_b_pass(agent, "2026-10-04T12:03:00Z") | {
+        "agent_uuid": AGENT_UUIDS[other]
+    }
+    for name, attempt in {
+        "wrong_head": _cause_b_pass(agent, "2026-10-04T12:03:00Z", head=OTHER_HEAD),
+        "other_rco": _cause_b_pass(other, "2026-10-04T12:03:00Z"),
+        "wrong_uuid": wrong_uuid,
+    }.items():
+        result = check_rco_pass_present(
+            events=[passed, blocked, cleared, attempt], task_id=TASK, head=HEAD
+        )
+
+        assert result["ok"] is False, name
+        assert agent in result["blocking_rco_agents"], name
+
+    fresh = _cause_b_pass(agent, "2026-10-04T12:03:00Z")
+    result = check_rco_pass_present(
+        events=[passed, blocked, cleared, fresh], task_id=TASK, head=HEAD
+    )
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"
+    assert result["satisfying_rco_agent"] == agent
+
+
+@pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2"])
+@pytest.mark.parametrize("event_type", ["decision", "rco_review"])
+@pytest.mark.parametrize("status", CAUSE_B_NEUTRAL_RECORD_STATUSES)
+def test_rco_slot_neutral_record_neither_blocks_nor_clears(
+    agent: str, event_type: str, status: str
+) -> None:
+    passed = _cause_b_pass(agent, "2026-10-04T12:01:00Z")
+    blocked = _rco_event(
+        ts="2026-10-04T12:02:00Z", agent=agent, type_="decision", status="hold"
+    )
+
+    def neutral(ts: str) -> dict:
+        return _rco_event(ts=ts, agent=agent, type_=event_type, status=status)
+
+    for position, events, expect_ok in [
+        ("before_pass", [neutral("2026-10-04T12:00:00Z"), passed], True),
+        ("after_pass", [passed, neutral("2026-10-04T12:03:00Z")], True),
+        ("before_block", [passed, neutral("2026-10-04T12:01:30Z"), blocked], False),
+        ("after_block", [passed, blocked, neutral("2026-10-04T12:03:00Z")], False),
+    ]:
+        result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+        assert result["ok"] is expect_ok, position
+        if expect_ok:
+            assert result["satisfying_rco_agent"] == agent, position
+        else:
+            assert result["decision"] == "vetoed_after_pass", position
+            assert result["blocking_rco_agents"] == [agent], position

@@ -199,11 +199,13 @@ APPROVAL_STATUSES = frozenset(
         # pass/block ONLY; the merge PATH is set by charter (allowlist =
         # autonomous-ok; denylist/off-allowlist = operator-sign), never by an RCO
         # status variant. RCOs post plain rco_pass and convey operator-merge in
-        # the message. Dropping it here is the retirement signal; behaviour stays
-        # safe either way -- _is_approval_status's generic {rco,pass} token
-        # fallback still treats a stray variant as a block-clearing approval, and
-        # check_rco_pass_present intentionally does NOT recognize it as a
-        # qualifying pass, so a stray variant fails toward STUCK, never open.
+        # the message. Dropping it here is the retirement signal. A stray variant
+        # never opens a merge: as a recognized RCO's decision/rco_review it is
+        # that RCO's block (_is_rco_decision_block_status, Cause-B); from any
+        # other peer, _is_approval_status's generic {rco,pass} token fallback
+        # still reads it as a block-clearing approval; and check_rco_pass_present
+        # intentionally does NOT recognize it as a qualifying pass, so the RCO
+        # slot fails toward STUCK, never open.
         "build_consensus_pass",
         "approved",
         "approved_ci_green",

@@ -53,10 +53,12 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
+    APPROVAL_DISQUALIFYING_TOKENS as _BRIDGE_APPROVAL_DISQUALIFYING_TOKENS,
     INFORMATIONAL_FINDING_STATUSES,
     _author_task_id_aliases,
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
+    _is_rco_withholding_status as _bridge_is_rco_withholding_status,
 )
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -839,6 +841,12 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
             return False
         return True
 
+    # Cause-B C1/C2: the same RCO's later decision/review that negates,
+    # withholds or vetoes (``rco_pass_withheld``, ``hold``, ``do_not_merge``)
+    # supersedes its earlier pass, as in the peer gate.
+    if typ in DECISION_TYPES_FOR_PASS and _bridge_is_rco_withholding_status(status):
+        return True
+
     return False
 
 
@@ -868,6 +876,8 @@ def _is_approval_status(status: str) -> bool:
     if status in RCO_PASS_STATUSES:
         return True
     tokens = _status_tokens(status)
+    if tokens & _BRIDGE_APPROVAL_DISQUALIFYING_TOKENS:
+        return False
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens

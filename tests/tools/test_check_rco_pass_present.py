@@ -1697,3 +1697,88 @@ CLAIM_GATES = (
     "external_writes_applied",
     "required_runtime_evidence_present",
 )
+
+
+# Cause-B C1/C2 (operator directive 2026-10-04): the same RCO's later
+# decision/review that negates, withholds or vetoes supersedes its pass here
+# too, and a negated pass never counts as approval-shaped.
+@pytest.mark.parametrize(
+    "status",
+    [
+        "rco_pass_withheld",
+        "not_approved",
+        "rco_pass_retracted_ci_failure_confirmed",
+        "hold",
+        "veto_maintained_current_disposition",
+        "do_not_merge",
+    ],
+)
+def test_rco_withholding_decision_after_own_pass_refuses(status: str) -> None:
+    events = [
+        _rco_event(
+            ts="2026-10-04T12:00:00Z",
+            status="rco_pass",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(ts="2026-10-04T12:01:00Z", status=status),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["blocking_rco_agents"] == ["claude-rco-1"]
+
+
+def test_vetoing_rco_negated_pass_cannot_ride_other_rco_pass() -> None:
+    events = [
+        _rco_event(ts="2026-10-04T12:00:00Z", type_="finding", status="hold"),
+        _rco_event(
+            ts="2026-10-04T12:01:00Z",
+            agent="claude-rco-2",
+            status="rco_pass",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(ts="2026-10-04T12:02:00Z", status="rco_pass_withheld"),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["blocking_rco_agents"] == ["claude-rco-1"]
+
+
+def test_negated_pass_finding_after_pass_is_a_veto() -> None:
+    events = [
+        _rco_event(
+            ts="2026-10-04T12:00:00Z",
+            status="rco_pass",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(ts="2026-10-04T12:01:00Z", type_="finding", status="rco_pass_withheld"),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+
+
+def test_resolved_veto_vocabulary_after_pass_keeps_pass() -> None:
+    events = [
+        _rco_event(
+            ts="2026-10-04T12:00:00Z",
+            status="rco_pass",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-10-04T12:01:00Z",
+            status="veto_retracted_nonce_witness_dual_complete",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["decision"] == "rco_pass_present"

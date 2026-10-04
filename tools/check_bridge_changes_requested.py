@@ -211,6 +211,100 @@ APPROVAL_STATUSES = frozenset(
     }
 )
 DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})
+# Cause-B C1/C2 (operator directive 2026-10-04). Approval detection falls back
+# to tokens ({rco, pass} / approved / acknowledged), so a negated or withheld
+# pass such as ``rco_pass_withheld``, ``not_approved`` or
+# ``rco_pass_retracted_ci_failure_confirmed`` read as an APPROVAL and replaced a
+# recognized RCO's own standing veto (C1). A recognized RCO's later decision
+# that holds or vetoes (``hold``, ``veto_maintained_*``, ``do_not_merge``) has
+# no block word and was ignored, so its earlier pass stood (C2). A non-exact
+# approval that carries any of these tokens is therefore not an approval, and a
+# recognized RCO's decision/review that withholds latches as that RCO's block.
+# Fail closed: an ambiguous RCO status costs a spurious hold that an exact
+# ``rco_pass`` clears; it never opens a merge.
+APPROVAL_NEGATION_TOKENS = frozenset(
+    {
+        "arent",
+        "cannot",
+        "cant",
+        "declined",
+        "denied",
+        "dont",
+        "fail",
+        "failed",
+        "failing",
+        "fails",
+        "invalid",
+        "invalidated",
+        "isnt",
+        "never",
+        "no",
+        "non",
+        "not",
+        "refused",
+        "rejected",
+        "rescinded",
+        "retracted",
+        "revoked",
+        "superseded",
+        "withdrawn",
+        "without",
+        "wont",
+    }
+)
+RCO_WITHHOLDING_VERDICT_TOKENS = frozenset(
+    {
+        "declined",
+        "denied",
+        "disapproved",
+        "held",
+        "hold",
+        "holding",
+        "holds",
+        "refused",
+        "rejected",
+        "unapproved",
+        "veto",
+        "vetoed",
+        "vetoes",
+        "vetoing",
+        "withheld",
+        "withhold",
+        "withholding",
+        "withholds",
+    }
+)
+# A verdict word that is itself resolved (``veto_retracted_*``,
+# ``hold_released``) is not a new withholding; it stays a no-op as before.
+RCO_WITHHOLDING_RESOLUTION_TOKENS = frozenset(
+    {
+        "clear",
+        "cleared",
+        "lifted",
+        "released",
+        "rescinded",
+        "resolved",
+        "retracted",
+        "revoked",
+        "superseded",
+        "withdrawn",
+    }
+)
+RCO_NO_MERGE_PHRASES = frozenset(
+    {
+        "cannot_merge",
+        "cant_merge",
+        "do_not_merge",
+        "dont_merge",
+        "no_merge",
+        "not_mergeable",
+        "unmergeable",
+    }
+)
+APPROVAL_SHAPE_TOKENS = frozenset({"approval", "approved", "pass", "passed"})
+APPROVAL_DISQUALIFYING_TOKENS = (
+    APPROVAL_NEGATION_TOKENS | RCO_WITHHOLDING_VERDICT_TOKENS
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -469,7 +563,10 @@ def check_bridge_clear_to_merge(
                         and not _is_informational_finding_status(status)
                     )
                 )
-            ) or _is_blocking_status(status, event_type=event_type)
+            ) or _is_blocking_status(status, event_type=event_type) or (
+                event_type in RCO_RETRACTION_EVENT_TYPES
+                and _is_rco_withholding_status(status)
+            )
             if agent in recognized_rco_agent_set and block_shaped:
                 summary = _summarize_event(event)
                 if summary is not None:
@@ -526,6 +623,16 @@ def check_bridge_clear_to_merge(
                     peer_signals[agent] = (index, "clear", event)
             continue
         if _is_blocking_status(status, event_type=event_type):
+            peer_signals[agent] = (index, "block", event)
+            continue
+        # Cause-B C1/C2: a recognized RCO's decision/review that negates,
+        # withholds or vetoes is that RCO's block. It must neither read as an
+        # approval that replaces its own veto nor be ignored after its pass.
+        if (
+            agent in recognized_rco_agent_set
+            and event_type in RCO_RETRACTION_EVENT_TYPES
+            and _is_rco_withholding_status(status)
+        ):
             peer_signals[agent] = (index, "block", event)
             continue
         # A recognized RCO's standing veto can be retracted only by a later
@@ -756,11 +863,40 @@ def _is_approval_status(status: str) -> bool:
     if status in APPROVAL_STATUSES:
         return True
     tokens = _status_tokens(status)
+    if tokens & APPROVAL_DISQUALIFYING_TOKENS:
+        return False
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens
         or "acknowledged" in tokens
     )
+
+
+def _is_rco_withholding_status(status: str) -> bool:
+    """True when a recognized RCO's decision/review status withholds or vetoes.
+
+    Exact approval and clear statuses never withhold. Otherwise this fails
+    closed on (a) an approval-shaped status that also negates or withholds
+    (``rco_pass_withheld``, ``not_approved``, ``rco_pass_retracted_*``),
+    (b) a withholding verdict (``hold``, ``veto_maintained_*``, ``rejected``)
+    unless the verdict itself is resolved (``veto_retracted_*``,
+    ``hold_released``), and (c) an explicit no-merge phrase
+    (``do_not_merge``).
+    """
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if not normalized or normalized in APPROVAL_STATUSES:
+        return False
+    if _is_clear_status(normalized):
+        return False
+    tokens = _status_tokens(normalized)
+    if tokens & APPROVAL_SHAPE_TOKENS and tokens & APPROVAL_DISQUALIFYING_TOKENS:
+        return True
+    if tokens & RCO_WITHHOLDING_VERDICT_TOKENS and not (
+        tokens & RCO_WITHHOLDING_RESOLUTION_TOKENS
+    ):
+        return True
+    bounded = f"_{normalized}_"
+    return any(f"_{phrase}_" in bounded for phrase in RCO_NO_MERGE_PHRASES)
 
 
 def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:

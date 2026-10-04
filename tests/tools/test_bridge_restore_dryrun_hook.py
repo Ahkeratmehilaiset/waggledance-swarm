@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Isolated hook-unit tests, not full Restore/Drain or DryRun purity proof."""
 from __future__ import annotations
 

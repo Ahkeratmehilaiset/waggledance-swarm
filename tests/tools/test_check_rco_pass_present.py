@@ -1711,6 +1711,9 @@ CLAIM_GATES = (
         "hold",
         "veto_maintained_current_disposition",
         "do_not_merge",
+        "veto_not_retracted",
+        "veto_retracted_nonce_witness_dual_complete",
+        "rco_pass_not_withheld",
     ],
 )
 def test_rco_withholding_decision_after_own_pass_refuses(status: str) -> None:
@@ -1765,7 +1768,7 @@ def test_negated_pass_finding_after_pass_is_a_veto() -> None:
     assert result["decision"] == "vetoed_after_pass"
 
 
-def test_resolved_veto_vocabulary_after_pass_keeps_pass() -> None:
+def test_exact_clear_after_pass_keeps_pass() -> None:
     events = [
         _rco_event(
             ts="2026-10-04T12:00:00Z",
@@ -1774,7 +1777,7 @@ def test_resolved_veto_vocabulary_after_pass_keeps_pass() -> None:
         ),
         _rco_event(
             ts="2026-10-04T12:01:00Z",
-            status="veto_retracted_nonce_witness_dual_complete",
+            status="changes_requested_retracted",
         ),
     ]
 

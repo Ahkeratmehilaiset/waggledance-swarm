@@ -2339,3 +2339,120 @@ def test_unverified_rco_withholding_decision_latches_fail_closed() -> None:
     assert result["unverified_rco_block_events"][0][
         "unverified_veto_fail_closed"
     ] is True
+
+
+# Cause-B sequence and neutral-record controls (operator T2, 2026-10-04). The
+# exact allowlist changes only which RCO statuses are blocks; these pin the
+# unchanged peer-gate reset rule: a later verified exact clear or exact pass
+# from the SAME RCO lifts its block, and a clear records no approval. The
+# exact-head RCO slot is stricter (see test_check_rco_pass_present.py).
+CAUSE_B_RCO_PAIRS = [
+    ("claude-rco-1", "claude-rco-2"),
+    ("claude-rco-2", "claude-rco-1"),
+]
+CAUSE_B_RCO_BLOCKS = [
+    ("finding", "hold"),
+    ("decision", "hold"),
+    ("decision", "rco_pass_withheld"),
+    ("rco_review", "veto"),
+]
+CAUSE_B_EXACT_CLEARS = ["changes_requested_retracted", "changes_requested_resolved"]
+CAUSE_B_NEUTRAL_RECORD_STATUSES = [
+    "autonomous_merge_receipt",
+    "merged_operator_authorized",
+    "operator_authorized",
+    "rco_closed_postmerge",
+]
+
+
+def test_rco_pass_block_then_same_rco_exact_clear_lifts_peer_block() -> None:
+    for agent, _other in CAUSE_B_RCO_PAIRS:
+        for block_type, block_status in CAUSE_B_RCO_BLOCKS:
+            for clear_type in ["decision", "rco_review"]:
+                for clear_status in CAUSE_B_EXACT_CLEARS:
+                    case = (agent, block_type, block_status, clear_type, clear_status)
+                    result = check_bridge_clear_to_merge(
+                        events=[
+                            _event("2026-10-04T12:00:00Z", agent, "decision", "rco_pass"),
+                            _event("2026-10-04T12:01:00Z", agent, block_type, block_status),
+                            _event("2026-10-04T12:02:00Z", agent, clear_type, clear_status),
+                        ],
+                        task_id="T",
+                        merging_agent="codex-lead-1",
+                    )
+
+                    assert result["clear_to_merge"] is True, case
+                    assert result["latest_blocking_event"] is None, case
+                    # The clear lifts the block but is not an approval.
+                    assert result["latest_approval_event"] is None, case
+
+
+def test_rco_block_survives_clear_or_pass_that_is_not_same_verified_rco() -> None:
+    for agent, other in CAUSE_B_RCO_PAIRS:
+        same_rco_clear = _event(
+            "2026-10-04T12:02:00Z", agent, "decision", "changes_requested_retracted"
+        )
+        missing_uuid_clear = dict(same_rco_clear)
+        del missing_uuid_clear["agent_uuid"]
+        attempts = {
+            "other_rco_clear": _event(
+                "2026-10-04T12:02:00Z", other, "decision", "changes_requested_retracted"
+            ),
+            "other_rco_pass": _event(
+                "2026-10-04T12:02:00Z", other, "decision", "rco_pass"
+            ),
+            "wrong_uuid_clear": same_rco_clear | {"agent_uuid": AGENT_UUIDS[other]},
+            "missing_uuid_clear": missing_uuid_clear,
+            "other_task_clear": _event(
+                "2026-10-04T12:02:00Z",
+                agent,
+                "decision",
+                "changes_requested_retracted",
+                task_id="OTHER",
+            ),
+            "operational_done_clear": _event(
+                "2026-10-04T12:02:00Z", agent, "done", "changes_requested_retracted"
+            ),
+        }
+        for name, attempt in attempts.items():
+            result = check_bridge_clear_to_merge(
+                events=[
+                    _event("2026-10-04T12:00:00Z", agent, "decision", "rco_pass"),
+                    _event("2026-10-04T12:01:00Z", agent, "decision", "hold"),
+                    attempt,
+                ],
+                task_id="T",
+                merging_agent="codex-lead-1",
+            )
+
+            assert result["clear_to_merge"] is False, (agent, name)
+            assert result["latest_blocking_event"]["agent"] == agent, (agent, name)
+            assert result["latest_blocking_event"]["status"] == "hold", (agent, name)
+
+
+def test_rco_neutral_record_matrix_in_peer_gate() -> None:
+    # Each exact tooling record status, from either RCO as decision or
+    # rco_review, before or after that RCO's pass or block, changes nothing.
+    for agent, _other in CAUSE_B_RCO_PAIRS:
+        for event_type in ["decision", "rco_review"]:
+            for status in CAUSE_B_NEUTRAL_RECORD_STATUSES:
+                passed = _event("2026-10-04T12:01:00Z", agent, "decision", "rco_pass")
+                blocked = _event("2026-10-04T12:01:00Z", agent, "decision", "hold")
+                before = _event("2026-10-04T12:00:00Z", agent, event_type, status)
+                after = _event("2026-10-04T12:02:00Z", agent, event_type, status)
+                for position, events, expect_clear in [
+                    ("before_pass", [before, passed], True),
+                    ("after_pass", [passed, after], True),
+                    ("before_block", [before, blocked], False),
+                    ("after_block", [blocked, after], False),
+                ]:
+                    case = (agent, event_type, status, position)
+                    result = check_bridge_clear_to_merge(
+                        events=events, task_id="T", merging_agent="codex-lead-1"
+                    )
+
+                    assert result["clear_to_merge"] is expect_clear, case
+                    if expect_clear:
+                        assert result["latest_approval_event"]["status"] == "rco_pass", case
+                    else:
+                        assert result["latest_blocking_event"]["status"] == "hold", case

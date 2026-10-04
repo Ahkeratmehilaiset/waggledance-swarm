@@ -205,3 +205,9 @@ def test_requester_refusal_precedes_inventory_surface_and_broker(iso, monkeypatc
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "blocked" and "requester" in out["error"]
     assert list(cwd.iterdir()) == []
+
+def test_rounds_keep_medium_effort_inside_the_round_limit():
+    # One-shot consultations default to high; a 300 s round keeps medium until high is measured to fit.
+    assert session.ROUND_EFFORT == "medium"
+    argv = session.helper.advisory_command("grok.exe", "grok-model", effort=session.ROUND_EFFORT)
+    assert argv[argv.index("--effort") + 1] == "medium"

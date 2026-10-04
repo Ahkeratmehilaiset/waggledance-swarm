@@ -206,8 +206,18 @@ def write_state(root: Path, state: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def advisory_command(executable: Path, model: str) -> list[str]:
-    return [str(executable), "--model", model, "--effort", "medium"]
+# Reasoning effort of a one-shot consultation. Operator directive 2026-10-04: high by default (it was
+# medium). CONSULT_TIMEOUT_SECONDS was sized from medium runs (slowest answer 249 s); high spends more
+# reasoning tokens, so answers are slower, and each attempt's duration_seconds and effort in the ledger
+# show the measured effect.
+ADVISORY_EFFORT = "high"
+ADVISORY_EFFORTS = ("medium", "high", "xhigh")
+
+
+def advisory_command(executable: Path, model: str, effort: str = ADVISORY_EFFORT) -> list[str]:
+    if effort not in ADVISORY_EFFORTS:
+        raise ValueError("Unsupported Grok effort")
+    return [str(executable), "--model", model, "--effort", effort]
 
 
 class LedgerUnavailable(Exception):

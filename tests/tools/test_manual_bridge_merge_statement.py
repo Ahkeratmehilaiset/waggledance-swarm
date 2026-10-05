@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import ast
 import base64
+import dataclasses
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -877,11 +879,420 @@ def test_parallel_reserve_has_exactly_one_winner(tmp_path):
     assert all(o == "WON" or o in {"LOST nonce_reused", "LOST ledger_in_flight"} for o in outputs), outputs
 
 
+# --- T07 ledger hardening (Tools SR1-SR4, reproduced before the fix) -------------
+
+
+def _junction(link: Path, target: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows junction case; POSIX symlink cases cover links there")
+    done = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                          capture_output=True, timeout=30, check=False)
+    if done.returncode != 0:
+        pytest.skip(f"UNKNOWN: junction could not be created on this host (exit {done.returncode})")
+
+
+def _symlink(link: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+    except OSError as exc:
+        pytest.skip(f"UNKNOWN: symlink creation not permitted on this host ({type(exc).__name__})")
+
+
+def _listing(path: Path) -> list[tuple[str, int]]:
+    return sorted((p.name, p.stat().st_size) for p in path.iterdir())
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, -1, -0.5, 600.5, 10**400, True, "30", None])
+def test_ledger_timeout_must_be_finite_nonnegative_and_bounded(tmp_path, value):
+    with pytest.raises(LedgerError) as err:
+        _ledger(tmp_path, lock_timeout_seconds=value)
+    assert err.value.reason == "ledger_timeout_invalid"
+    assert list((tmp_path / "nonces").iterdir()) == []
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 0.3, 30, 600])
+def test_ledger_timeout_valid_twins_are_accepted(tmp_path, value):
+    assert _reserve(_ledger(tmp_path, lock_timeout_seconds=value)).to_state == "reserved"
+
+
+def test_ledger_zero_timeout_still_refuses_when_busy(tmp_path):
+    holder = _ledger(tmp_path)
+    held = holder._acquire()
+    try:
+        with pytest.raises(LedgerError) as err:
+            _ledger(tmp_path, lock_timeout_seconds=0).in_flight()
+        assert err.value.reason == "ledger_lock_timeout"
+    finally:
+        holder._release(held)
+
+
+def test_ledger_junction_root_is_refused_and_target_untouched(tmp_path):
+    target = tmp_path / "real"
+    target.mkdir()
+    _junction(tmp_path / "jroot", target)
+    with pytest.raises(LedgerError) as err:
+        NonceLedger(tmp_path / "jroot", clock=lambda: NOW)
+    assert err.value.reason == "ledger_root_alias"
+    assert list(target.iterdir()) == []
+
+
+def test_ledger_junction_ancestor_is_refused_and_target_untouched(tmp_path):
+    target = tmp_path / "real"
+    (target / "ledger").mkdir(parents=True)
+    _junction(tmp_path / "janc", target)
+    with pytest.raises(LedgerError) as err:
+        NonceLedger(tmp_path / "janc" / "ledger", clock=lambda: NOW)
+    assert err.value.reason == "ledger_root_alias"
+    assert list((target / "ledger").iterdir()) == []
+
+
+def test_ledger_symlink_root_is_refused(tmp_path):
+    target = tmp_path / "real"
+    target.mkdir()
+    _symlink(tmp_path / "sroot", target, directory=True)
+    with pytest.raises(LedgerError) as err:
+        NonceLedger(tmp_path / "sroot", clock=lambda: NOW)
+    assert err.value.reason == "ledger_root_alias"
+
+
+def test_ledger_root_replaced_after_construction_is_refused(tmp_path):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+    (tmp_path / "nonces").rename(tmp_path / "moved")
+    (tmp_path / "nonces").mkdir()
+    for call in (lambda: _reserve(ledger, nonce="f" * 32), ledger.in_flight, lambda: ledger.state(NONCE),
+                 lambda: ledger.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA)):
+        with pytest.raises(LedgerError) as err:
+            call()
+        assert err.value.reason == "ledger_root_changed"
+    assert list((tmp_path / "nonces").iterdir()) == []
+
+
+def test_ledger_hardlinked_nonce_transition_is_refused_without_outside_write(tmp_path):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.replace(ledger._root / f"{NONCE}.jsonl", outside / "victim.jsonl")
+    os.link(outside / "victim.jsonl", ledger._root / f"{NONCE}.jsonl")
+    before = (outside / "victim.jsonl").read_bytes()
+    for call in (lambda: ledger.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA),
+                 lambda: ledger.history(NONCE), ledger.in_flight):
+        with pytest.raises(LedgerError) as err:
+            call()
+        assert err.value.reason == "ledger_entry_alias"
+    assert (outside / "victim.jsonl").read_bytes() == before
+
+
+def test_ledger_hardlinked_terminal_nonce_blocks_new_reserve(tmp_path):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+    ledger.transition(nonce=NONCE, to_state="refused_before_effect", statement_sha256=SHA)
+    os.link(ledger._root / f"{NONCE}.jsonl", tmp_path / "alias.jsonl")
+    before = _listing(ledger._root)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger, nonce="f" * 32)
+    assert err.value.reason == "ledger_entry_alias"
+    assert _listing(ledger._root) == before
+
+
+def test_ledger_hardlinked_lock_is_refused(tmp_path):
+    root = tmp_path / "nonces"
+    root.mkdir()
+    (tmp_path / "outside.lock").write_bytes(b"")
+    os.link(tmp_path / "outside.lock", root / mms.LEDGER_LOCK_NAME)
+    ledger = NonceLedger(root, clock=lambda: NOW)
+    for call in (lambda: _reserve(ledger), ledger.in_flight, lambda: ledger.state(NONCE)):
+        with pytest.raises(LedgerError) as err:
+            call()
+        assert err.value.reason == "ledger_entry_alias"
+    assert sorted(p.name for p in root.iterdir()) == [mms.LEDGER_LOCK_NAME]
+
+
+@pytest.mark.parametrize("leaf", ["nonce", "lock"])
+def test_ledger_symlinked_leaf_is_refused(tmp_path, leaf):
+    ledger = _ledger(tmp_path)
+    if leaf == "nonce":
+        _reserve(ledger)
+        ledger.transition(nonce=NONCE, to_state="refused_before_effect", statement_sha256=SHA)
+        real = tmp_path / "real.jsonl"
+        os.replace(ledger._root / f"{NONCE}.jsonl", real)
+        name = f"{NONCE}.jsonl"
+    else:
+        real = tmp_path / "real.lock"
+        real.write_bytes(b"")
+        name = mms.LEDGER_LOCK_NAME
+    before = real.read_bytes()
+    _symlink(ledger._root / name, real)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger, nonce="f" * 32)
+    assert err.value.reason in {"ledger_entry_alias", "ledger_entry_unusable", "ledger_unexpected_entry"}
+    assert real.read_bytes() == before
+    assert not (ledger._root / ("f" * 32 + ".jsonl")).exists()
+
+
+class _BarrierLedger(NonceLedger):
+    """Runs one foreign operation right after the real lock release (fixture hook only)."""
+
+    hook = None
+
+    def _release(self, fd):
+        super()._release(fd)
+        hook, _BarrierLedger.hook = _BarrierLedger.hook, None
+        if hook is not None:
+            hook()
+
+
+def test_reserve_returns_its_own_record_despite_a_later_writer(tmp_path):
+    other = _ledger(tmp_path)
+    _BarrierLedger.hook = lambda: other.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA)
+    record = _reserve(_BarrierLedger(tmp_path / "nonces", clock=lambda: NOW))
+    assert (record.seq, record.from_state, record.to_state) == (0, None, "reserved")
+    assert [r.to_state for r in other.history(NONCE)] == ["reserved", "merge_started"]
+
+
+def test_transition_returns_its_own_record_despite_a_later_writer(tmp_path):
+    other = _ledger(tmp_path)
+    _reserve(other)
+    _BarrierLedger.hook = lambda: other.transition(nonce=NONCE, to_state="executed", statement_sha256=SHA)
+    record = _BarrierLedger(tmp_path / "nonces", clock=lambda: NOW).transition(
+        nonce=NONCE, to_state="merge_started", statement_sha256=SHA)
+    assert (record.seq, record.from_state, record.to_state) == (1, "reserved", "merge_started")
+    assert [r.to_state for r in other.history(NONCE)] == ["reserved", "merge_started", "executed"]
+
+
+def test_history_and_state_read_under_the_lock(tmp_path):
+    holder = _ledger(tmp_path)
+    _reserve(holder)
+    held = holder._acquire()
+    try:
+        reader = _ledger(tmp_path, lock_timeout_seconds=0.2)
+        for call in (lambda: reader.history(NONCE), lambda: reader.state(NONCE)):
+            with pytest.raises(LedgerError) as err:
+                call()
+            assert err.value.reason == "ledger_lock_timeout"
+    finally:
+        holder._release(held)
+    assert holder.state(NONCE) == "reserved"
+
+
+def test_reading_an_empty_ledger_creates_no_file(tmp_path):
+    ledger = _ledger(tmp_path)
+    assert ledger.state(NONCE) is None and ledger.history(NONCE) == ()
+    assert list(ledger._root.iterdir()) == []
+
+
+def _write_file(tmp_path: Path) -> tuple[int, Path]:
+    path = tmp_path / "out.bin"
+    return os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600), path
+
+
+def test_write_all_continues_after_short_writes(tmp_path):
+    fd, path = _write_file(tmp_path)
+    try:
+        mms._write_all(fd, b"0123456789", write=lambda f, view: os.write(f, bytes(view[:3])))
+    finally:
+        os.close(fd)
+    assert path.read_bytes() == b"0123456789"
+
+
+@pytest.mark.parametrize("fake", [
+    lambda f, view: 0,
+    lambda f, view: len(view) + 1,
+    lambda f, view: True,
+    lambda f, view: None,
+    lambda f, view: (_ for _ in ()).throw(OSError(28, "No space left on device")),
+])
+def test_write_all_refuses_zero_bogus_or_failed_writes(tmp_path, fake):
+    fd, _ = _write_file(tmp_path)
+    try:
+        with pytest.raises(LedgerError) as err:
+            mms._write_all(fd, b"0123456789", write=fake)
+    finally:
+        os.close(fd)
+    assert err.value.reason == "ledger_write_failed"
+
+
+def _short_then_stuck(monkeypatch):
+    real = mms._write_all
+
+    def patched(fd, data, write=os.write):
+        calls = []
+
+        def fake(f, view):
+            calls.append(len(view))
+            return os.write(f, bytes(view[: len(view) // 2])) if len(calls) == 1 else 0
+        real(fd, data, write=fake)
+
+    monkeypatch.setattr(mms, "_write_all", patched)
+
+
+def test_reserve_short_write_refuses_and_partial_ledger_stays_refused(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    _short_then_stuck(monkeypatch)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    assert err.value.reason == "ledger_write_failed"
+    monkeypatch.undo()
+    data = (ledger._root / f"{NONCE}.jsonl").read_bytes()
+    assert data and not data.endswith(b"\n")
+    for call in (lambda: ledger.state(NONCE), lambda: _reserve(ledger), lambda: _reserve(ledger, nonce="f" * 32)):
+        with pytest.raises(LedgerError) as err:
+            call()
+        assert err.value.reason in {"ledger_unreadable", "nonce_reused"}
+    assert (ledger._root / f"{NONCE}.jsonl").read_bytes() == data
+
+
+def test_transition_short_write_refuses_and_is_not_retried(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+    _short_then_stuck(monkeypatch)
+    with pytest.raises(LedgerError) as err:
+        ledger.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA)
+    assert err.value.reason == "ledger_write_failed"
+    monkeypatch.undo()
+    with pytest.raises(LedgerError) as err:
+        ledger.state(NONCE)
+    assert err.value.reason == "ledger_unreadable"
+
+
+def test_reserve_with_chunked_writes_commits_the_canonical_record(tmp_path, monkeypatch):
+    real = mms._write_all
+    monkeypatch.setattr(mms, "_write_all", lambda fd, data, write=os.write: real(
+        fd, data, write=lambda f, view: os.write(f, bytes(view[:7]))))
+    record = _reserve(_ledger(tmp_path))
+    monkeypatch.undo()
+    raw = (tmp_path / "nonces" / f"{NONCE}.jsonl").read_bytes()
+    assert record.to_state == "reserved" and raw == mms._canonical_record(json.loads(raw))
+
+
+# --- T08 provenance and cleanup (Tools SR5, SR7) ---------------------------------
+
+
+def _verified(anchor: mms.TrustAnchor, tmp_path: Path, **verification_changes) -> mms.VerifiedStatement:
+    data = mms.canonical_statement_bytes(make_statement(anchor))
+    verification = mms.verify_statement_signature(statement_bytes=data, signature_bytes=SIGNATURE, anchor=anchor,
+                                                  ssh_keygen=fake_keygen(tmp_path), runner=FakeSsh(good_line(anchor)))
+    verification = dataclasses.replace(verification, **verification_changes)
+    return mms.VerifiedStatement(statement=mms.parse_statement(data), statement_sha256=mms.statement_sha256(data),
+                                 anchor=anchor, verification=verification)
+
+
+def test_anchor_and_verifier_provenance_are_recorded_separately(tmp_path):
+    anchor = load_anchor()
+    assert anchor.provenance == mms.EVIDENCE_UNIT_MOCK
+    verified = _verified(anchor, tmp_path)
+    assert verified.verification.evidence_class == mms.EVIDENCE_UNIT_MOCK
+    assert verified.verification.anchor_provenance == mms.EVIDENCE_UNIT_MOCK
+
+
+def test_hand_built_anchor_defaults_to_unverified(tmp_path):
+    loaded = load_anchor()
+    hand_built = mms.TrustAnchor(**{f.name: getattr(loaded, f.name) for f in dataclasses.fields(loaded)
+                                    if f.name != "provenance"})
+    assert hand_built.provenance == mms.ANCHOR_UNVERIFIED
+    assert _verified(hand_built, tmp_path).verification.anchor_provenance == mms.ANCHOR_UNVERIFIED
+
+
+@pytest.mark.parametrize("anchor_label,ssh_label,anchor_copy_label", [
+    (mms.EVIDENCE_UNIT_MOCK, mms.EVIDENCE_UNIT_MOCK, mms.EVIDENCE_UNIT_MOCK),
+    (mms.EVIDENCE_UNIT_MOCK, mms.EVIDENCE_SUBPROCESS_SSH, mms.EVIDENCE_UNIT_MOCK),  # mocked git, "real" ssh
+    (mms.ANCHOR_SUBPROCESS_GIT, mms.EVIDENCE_UNIT_MOCK, mms.ANCHOR_SUBPROCESS_GIT),
+    (mms.ANCHOR_UNVERIFIED, mms.EVIDENCE_SUBPROCESS_SSH, mms.ANCHOR_UNVERIFIED),
+    (mms.ANCHOR_SUBPROCESS_GIT, mms.EVIDENCE_SUBPROCESS_SSH, mms.EVIDENCE_UNIT_MOCK),
+])
+def test_any_mocked_or_unverified_provenance_refuses(tmp_path, anchor_label, ssh_label, anchor_copy_label):
+    anchor = dataclasses.replace(load_anchor(), provenance=anchor_label)
+    verified = _verified(anchor, tmp_path, evidence_class=ssh_label, anchor_provenance=anchor_copy_label)
+    with pytest.raises(StatementError) as err:
+        mms.require_genuine_provenance(verified)
+    assert err.value.reason == "provenance_not_genuine"
+
+
+def test_genuine_labels_still_need_binding_and_a_verified_statement(tmp_path):
+    anchor = dataclasses.replace(load_anchor(), provenance=mms.ANCHOR_SUBPROCESS_GIT)
+    # Labels only (synthetic fixture): the check is necessary, never sufficient.
+    good = _verified(anchor, tmp_path, evidence_class=mms.EVIDENCE_SUBPROCESS_SSH,
+                     anchor_provenance=mms.ANCHOR_SUBPROCESS_GIT)
+    mms.require_genuine_provenance(good)
+    for bad in (dataclasses.replace(good, statement_sha256="0" * 64),
+                dataclasses.replace(good, anchor=dataclasses.replace(anchor, blob_sha="0" * 40)),
+                dataclasses.replace(good, verification=dataclasses.replace(good.verification, key_fingerprint="x")),
+                good.verification, None):
+        with pytest.raises(StatementError) as err:
+            mms.require_genuine_provenance(bad)
+        assert err.value.reason == "provenance_not_genuine"
+
+
+class _FailingRmtree:
+    def __init__(self):
+        self.real = shutil.rmtree
+        self.paths: list[Path] = []
+
+    def __call__(self, path, *args, **kwargs):
+        self.paths.append(Path(path))
+        raise PermissionError(13, "injected cleanup failure", str(path))
+
+    def cleanup(self):
+        for path in self.paths:
+            self.real(path)
+
+
+def test_cleanup_failure_refuses_an_otherwise_good_verification(tmp_path, monkeypatch):
+    anchor = load_anchor()
+    data = mms.canonical_statement_bytes(make_statement(anchor))
+    failing = _FailingRmtree()
+    monkeypatch.setattr(mms.shutil, "rmtree", failing)
+    try:
+        with pytest.raises(StatementError) as err:
+            mms.verify_statement_signature(statement_bytes=data, signature_bytes=SIGNATURE, anchor=anchor,
+                                           ssh_keygen=fake_keygen(tmp_path), runner=FakeSsh(good_line(anchor)))
+    finally:
+        monkeypatch.undo()
+        failing.cleanup()
+    assert err.value.reason == "verifier_cleanup_failed"
+    assert "PermissionError" in err.value.detail and len(failing.paths) == 1
+
+
+@pytest.mark.parametrize("fake,reason", [
+    (FakeSsh(b"", returncode=1), "signature_invalid"),
+    (FakeSsh(b"Bad line\n"), "signature_output_unexpected"),
+    (FakeSsh(b"", exc=subprocess.TimeoutExpired("ssh-keygen", 30)), "verifier_timeout"),
+    (FakeSsh(b"", exc=FileNotFoundError("missing")), "verifier_unavailable"),
+])
+def test_cleanup_failure_is_recorded_without_masking_the_verify_error(tmp_path, monkeypatch, fake, reason):
+    anchor = load_anchor()
+    data = mms.canonical_statement_bytes(make_statement(anchor))
+    failing = _FailingRmtree()
+    monkeypatch.setattr(mms.shutil, "rmtree", failing)
+    try:
+        with pytest.raises(StatementError) as err:
+            mms.verify_statement_signature(statement_bytes=data, signature_bytes=SIGNATURE, anchor=anchor,
+                                           ssh_keygen=fake_keygen(tmp_path), runner=fake)
+    finally:
+        monkeypatch.undo()
+        failing.cleanup()
+    assert err.value.reason == reason
+    assert err.value.cleanup_failure is not None and "PermissionError" in err.value.cleanup_failure
+    assert any("not removed" in note for note in getattr(err.value, "__notes__", []))
+
+
+def test_successful_cleanup_leaves_no_failure_record(tmp_path):
+    anchor = load_anchor()
+    data = mms.canonical_statement_bytes(make_statement(anchor))
+    fake = FakeSsh(b"", returncode=1)
+    with pytest.raises(StatementError) as err:
+        mms.verify_statement_signature(statement_bytes=data, signature_bytes=SIGNATURE, anchor=anchor,
+                                       ssh_keygen=fake_keygen(tmp_path), runner=fake)
+    assert err.value.cleanup_failure is None and not hasattr(err.value, "__notes__")
+    assert not fake.calls[0]["anchor_copy"].parent.exists()
+
+
 # --- T06 module hygiene ---------------------------------------------------------
 
 _ALLOWED_IMPORTS = {
-    "__future__", "base64", "dataclasses", "datetime", "hashlib", "json", "os", "pathlib", "re",
-    "secrets", "shutil", "struct", "subprocess", "sys", "tempfile", "time", "typing", "msvcrt", "fcntl",
+    "__future__", "base64", "dataclasses", "datetime", "hashlib", "json", "math", "os", "pathlib", "re",
+    "secrets", "shutil", "stat", "struct", "subprocess", "sys", "tempfile", "time", "typing", "msvcrt", "fcntl",
 }
 
 

@@ -29,7 +29,21 @@ Honest limits (also in the route documentation):
   barrier against a modified verifier.  The operator runs the route only from a
   clean checkout of the trusted main tip.
 * The nonce ledger is local state: deleting it is not cryptographically
-  prevented.
+  prevented.  It refuses link, junction/reparse and hardlink aliases on its
+  root, the root's ancestors, the lock file and every nonce file; Windows has
+  no ``openat``, so an ancestor swap racing between those checks, host ACLs,
+  crash durability of the directory entry and POSIX behaviour stay UNKNOWN.
+* Provenance is explicit: ``VerificationResult.evidence_class`` describes the
+  SSH verifier process and ``TrustAnchor.provenance`` /
+  ``VerificationResult.anchor_provenance`` describe how the anchor was loaded.
+  A field value is not proof; an effectful caller must produce the
+  ``VerifiedStatement`` itself without injected runners and then call
+  ``require_genuine_provenance``.
+* ``VerifiedStatement`` is not permission for an effect.  The later merge
+  module must still compare the exact live PR, repository, base, head, diff,
+  path set and merge method, re-check expiry with a fresh clock immediately
+  before the effect, refuse path aliases (case, DOS device, short names) and
+  establish consensus and control state itself.
 """
 from __future__ import annotations
 
@@ -38,11 +52,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -111,13 +127,25 @@ WINDOWS_RESERVED_PATH_CHARS = frozenset('<>:"|?*\\')
 SIGNATURE_BEGIN = b"-----BEGIN SSH SIGNATURE-----"
 SIGNATURE_END = b"-----END SSH SIGNATURE-----"
 
+# Provenance labels.  Only the two subprocess labels describe real processes;
+# every injected runner is unit_mock and a hand-built anchor is unverified.
+EVIDENCE_SUBPROCESS_SSH = "subprocess_ssh_keygen"
+EVIDENCE_UNIT_MOCK = "unit_mock"
+ANCHOR_SUBPROCESS_GIT = "subprocess_git"
+ANCHOR_UNVERIFIED = "unverified_caller_constructed"
+
 
 class StatementError(ValueError):
-    """Fail-closed refusal with a stable reason code."""
+    """Fail-closed refusal with a stable reason code.
+
+    ``cleanup_failure`` records a temporary-directory removal failure that
+    happened while this error was already being raised (never masking it).
+    """
 
     def __init__(self, reason: str, detail: str = "") -> None:
         self.reason = reason
         self.detail = detail
+        self.cleanup_failure: str | None = None
         super().__init__(f"{reason}: {detail}" if detail else reason)
 
 
@@ -193,6 +221,10 @@ class TrustAnchor:
     key_type: str
     key_label: str
     fingerprint: str
+    # ANCHOR_SUBPROCESS_GIT only when load_trust_anchor ran the real git
+    # subprocess; unit_mock for an injected runner; the default marks an
+    # anchor built by hand as unverified.
+    provenance: str = ANCHOR_UNVERIFIED
 
 
 @dataclass(frozen=True)
@@ -212,8 +244,11 @@ class VerificationResult:
     ssh_keygen_path: str
     ssh_keygen_sha256: str | None
     # "subprocess_ssh_keygen" only when the default subprocess runner ran the
-    # given binary; "unit_mock" whenever a runner was injected.
+    # given binary; "unit_mock" whenever a runner was injected.  It describes
+    # the SSH process only, never the trust anchor (see anchor_provenance).
     evidence_class: str
+    # Copied from the anchor that was verified against.
+    anchor_provenance: str = ANCHOR_UNVERIFIED
 
 
 @dataclass(frozen=True)
@@ -222,6 +257,35 @@ class VerifiedStatement:
     statement_sha256: str
     anchor: TrustAnchor
     verification: VerificationResult
+
+
+def require_genuine_provenance(verified: Any) -> None:
+    """Refuse unless the SSH verifier AND the trust-anchor load were real subprocesses.
+
+    Necessary, never sufficient: the caller must have produced ``verified``
+    itself through :func:`verify_statement` without injected runners (a field
+    value is not proof), and live admission remains the later merge module's
+    obligation.  Any injected, mocked or hand-built evidence refuses.
+    """
+    if not isinstance(verified, VerifiedStatement):
+        raise StatementError("provenance_not_genuine", "a VerifiedStatement is required")
+    anchor, verification = verified.anchor, verified.verification
+    if not isinstance(anchor, TrustAnchor) or not isinstance(verification, VerificationResult):
+        raise StatementError("provenance_not_genuine", "anchor or verification missing")
+    if verification.evidence_class != EVIDENCE_SUBPROCESS_SSH:
+        raise StatementError("provenance_not_genuine", f"verifier {verification.evidence_class}")
+    if anchor.provenance != ANCHOR_SUBPROCESS_GIT or verification.anchor_provenance != ANCHOR_SUBPROCESS_GIT:
+        raise StatementError(
+            "provenance_not_genuine", f"anchor {anchor.provenance}/{verification.anchor_provenance}"
+        )
+    if (
+        verification.trusted_commit != anchor.trusted_commit
+        or verification.anchor_blob_sha != anchor.blob_sha
+        or verification.anchor_data_sha256 != anchor.data_sha256
+        or verification.key_fingerprint != anchor.fingerprint
+        or verification.statement_sha256 != verified.statement_sha256
+    ):
+        raise StatementError("provenance_not_genuine", "verification is not bound to this anchor and statement")
 
 
 # --- statement contract -------------------------------------------------------
@@ -652,6 +716,7 @@ def load_trust_anchor(
         key_type=key_type,
         key_label=KEY_TYPE_LABELS[key_type],
         fingerprint=fingerprint,
+        provenance=EVIDENCE_UNIT_MOCK if runner is not None else ANCHOR_SUBPROCESS_GIT,
     )
 
 
@@ -711,33 +776,94 @@ def verify_statement_signature(
     if runner is None and not ssh_keygen.is_file():
         raise StatementError("verifier_unavailable", "ssh-keygen binary not found")
     run = runner if runner is not None else _subprocess_runner
-    temp_dir = Path(tempfile.mkdtemp(prefix="wd-manual-merge-a-"))
     try:
-        anchor_copy = temp_dir / "allowed_signers"
-        signature_copy = temp_dir / "statement.sig"
-        anchor_copy.write_bytes(anchor.data)
-        signature_copy.write_bytes(signature)
-        argv = [
-            str(ssh_keygen),
-            "-Y",
-            "verify",
-            "-f",
-            str(anchor_copy),
-            "-I",
-            PRINCIPAL,
-            "-n",
-            NAMESPACE,
-            "-s",
-            str(signature_copy),
-        ]
+        temp_dir = Path(tempfile.mkdtemp(prefix="wd-manual-merge-a-"))
+    except OSError as exc:
+        raise StatementError("verifier_unavailable", f"no temporary directory: {type(exc).__name__}") from exc
+    anchor_copy = temp_dir / "allowed_signers"
+    signature_copy = temp_dir / "statement.sig"
+    argv = [
+        str(ssh_keygen),
+        "-Y",
+        "verify",
+        "-f",
+        str(anchor_copy),
+        "-I",
+        PRINCIPAL,
+        "-n",
+        NAMESPACE,
+        "-s",
+        str(signature_copy),
+    ]
+    try:
+        try:
+            anchor_copy.write_bytes(anchor.data)
+            signature_copy.write_bytes(signature)
+        except OSError as exc:
+            raise StatementError("verifier_unavailable", f"temporary copy failed: {type(exc).__name__}") from exc
         try:
             result = run(argv, input_bytes=statement_bytes, timeout=timeout_seconds, env=_ssh_env())
         except subprocess.TimeoutExpired as exc:
             raise StatementError("verifier_timeout", "ssh-keygen timed out") from exc
         except OSError as exc:
             raise StatementError("verifier_unavailable", type(exc).__name__) from exc
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    except BaseException as exc:
+        _note_cleanup_failure(exc, _remove_temp_dir(temp_dir))
+        raise
+    # Cleanup runs before the output checks; a cleanup failure never masks a
+    # verification refusal and refuses on its own when verification passed.
+    cleanup_failure = _remove_temp_dir(temp_dir)
+    try:
+        verification = _evaluate_verifier_result(
+            result,
+            argv=argv,
+            anchor_copy=anchor_copy,
+            signature_copy=signature_copy,
+            statement_bytes=statement_bytes,
+            signature=signature,
+            anchor=anchor,
+            ssh_keygen=ssh_keygen,
+            evidence_class=EVIDENCE_UNIT_MOCK if runner is not None else EVIDENCE_SUBPROCESS_SSH,
+        )
+    except BaseException as exc:
+        _note_cleanup_failure(exc, cleanup_failure)
+        raise
+    if cleanup_failure is not None:
+        raise StatementError("verifier_cleanup_failed", cleanup_failure)
+    return verification
+
+
+def _remove_temp_dir(path: Path) -> str | None:
+    """Remove the verifier's temporary directory; report a failure instead of ignoring it."""
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        return f"{path}: {type(exc).__name__}"
+    return None
+
+
+def _note_cleanup_failure(exc: BaseException, failure: str | None) -> None:
+    if failure is None:
+        return
+    if isinstance(exc, StatementError):
+        exc.cleanup_failure = failure
+    add_note = getattr(exc, "add_note", None)
+    if callable(add_note):
+        add_note(f"verifier temporary directory not removed: {failure}")
+
+
+def _evaluate_verifier_result(
+    result: Any,
+    *,
+    argv: Sequence[str],
+    anchor_copy: Path,
+    signature_copy: Path,
+    statement_bytes: bytes,
+    signature: bytes,
+    anchor: TrustAnchor,
+    ssh_keygen: Path,
+    evidence_class: str,
+) -> VerificationResult:
     if not isinstance(result, RunResult):
         raise StatementError("verifier_unavailable", "runner returned an unexpected result")
     if result.returncode != 0:
@@ -774,7 +900,8 @@ def verify_statement_signature(
         good_line=expected,
         ssh_keygen_path=str(ssh_keygen),
         ssh_keygen_sha256=_file_sha256(ssh_keygen),
-        evidence_class="unit_mock" if runner is not None else "subprocess_ssh_keygen",
+        evidence_class=evidence_class,
+        anchor_provenance=anchor.provenance,
     )
 
 
@@ -850,10 +977,114 @@ RECORD_KEYS = frozenset(
     {"schema", "seq", "nonce", "from", "to", "ts_utc", "statement_sha256", "pull_request",
      "head_sha", "base_sha", "batch_id", "evidence"}
 )
+MAX_LOCK_TIMEOUT_SECONDS = 600.0
+MAX_LEDGER_FILE_BYTES = 1024 * 1024
+_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_O_BINARY = getattr(os, "O_BINARY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 class LedgerError(StatementError):
     """Nonce ledger refusal (subclass so callers can treat both alike)."""
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE)
+
+
+def _plain_directory_identity(root: Path) -> tuple[int, int]:
+    """Identity of ``root`` after refusing links/junctions on it and on every ancestor."""
+    if ".." in root.parts:
+        raise LedgerError("ledger_root_invalid", "root must not contain '..'")
+    identity: tuple[int, int] | None = None
+    for candidate in (root, *root.parents):
+        try:
+            info = os.lstat(candidate)
+        except OSError as exc:
+            raise LedgerError("ledger_root_invalid", f"{candidate}: {type(exc).__name__}") from exc
+        if _is_link_or_reparse(info):
+            raise LedgerError("ledger_root_alias", str(candidate))
+        if not stat.S_ISDIR(info.st_mode):
+            raise LedgerError("ledger_root_invalid", f"{candidate} is not a directory")
+        if identity is None:
+            identity = (info.st_dev, info.st_ino)
+    if identity is None:
+        raise LedgerError("ledger_root_invalid", "empty root")
+    return identity
+
+
+def _open_plain_leaf(path: Path, flags: int) -> int:
+    """Open ``path`` bound to a plain regular file with exactly one link.
+
+    FileNotFoundError / FileExistsError propagate for the caller to map; every
+    alias (link, reparse point, hardlink, identity drift) refuses before any
+    byte is read or written through the descriptor.
+    """
+    try:
+        fd = os.open(str(path), flags | _O_BINARY | _O_NOFOLLOW, 0o600)
+    except (FileNotFoundError, FileExistsError):
+        raise
+    except OSError as exc:
+        raise LedgerError("ledger_entry_unusable", f"{path.name}: {type(exc).__name__}") from exc
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+    except OSError as exc:
+        os.close(fd)
+        raise LedgerError("ledger_entry_alias", f"{path.name}: {type(exc).__name__}") from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or _is_link_or_reparse(named)
+        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        os.close(fd)
+        raise LedgerError("ledger_entry_alias", path.name)
+    return fd
+
+
+def _read_all(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError as exc:
+            raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > MAX_LEDGER_FILE_BYTES:
+            raise LedgerError("ledger_unreadable", "ledger file too large")
+        chunks.append(chunk)
+
+
+def _read_from_start(fd: int) -> bytes:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError as exc:
+        raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
+    return _read_all(fd)
+
+
+def _write_all(fd: int, data: bytes, write: Callable[[int, Any], int] = os.write) -> None:
+    """Write every byte or refuse; a partial line stays behind and later reads refuse."""
+    view = memoryview(data)
+    while view:
+        try:
+            written = write(fd, view)
+        except OSError as exc:
+            raise LedgerError("ledger_write_failed", type(exc).__name__) from exc
+        if type(written) is not int or not 0 < written <= len(view):
+            raise LedgerError("ledger_write_failed", f"write returned {written!r}")
+        view = view[written:]
+
+
+def _fsync(fd: int) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        raise LedgerError("ledger_write_failed", f"fsync {type(exc).__name__}") from exc
 
 
 def _canonical_record(record: Mapping[str, Any]) -> bytes:
@@ -902,6 +1133,12 @@ class NonceLedger:
     ``reserve`` refuses a nonce that has ever been seen (any state) and refuses
     while any other nonce is still in flight (one unresolved effect at a time).
     Verification alone (``verify_statement``) never touches the ledger.
+
+    The root, its ancestors, the lock file and every nonce file must be plain
+    (no symlink, junction/reparse point or hardlink); each operation re-checks
+    the root identity and binds reads and writes to one verified descriptor.
+    ``reserve``/``transition`` return the record they committed, read back under
+    the lock; ``history``/``state`` read under the lock and never create files.
     """
 
     def __init__(
@@ -913,17 +1150,49 @@ class NonceLedger:
     ) -> None:
         if not isinstance(root, Path) or not root.is_absolute():
             raise LedgerError("ledger_root_invalid", "root must be an absolute Path")
-        if root.is_symlink() or not root.is_dir():
-            raise LedgerError("ledger_root_invalid", "root must be an existing real directory")
+        timeout = lock_timeout_seconds
+        if (
+            type(timeout) not in (int, float)
+            or (type(timeout) is float and not math.isfinite(timeout))
+            or not 0 <= timeout <= MAX_LOCK_TIMEOUT_SECONDS
+        ):
+            raise LedgerError(
+                "ledger_timeout_invalid", f"lock timeout must be finite seconds in [0, {MAX_LOCK_TIMEOUT_SECONDS:g}]"
+            )
         self._root = root
-        self._lock_timeout = float(lock_timeout_seconds)
+        self._root_identity = _plain_directory_identity(root)
+        self._lock_timeout = float(timeout)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     # -- locking --------------------------------------------------------------
 
-    def _acquire(self) -> int:
+    def _check_root(self) -> None:
+        if _plain_directory_identity(self._root) != self._root_identity:
+            raise LedgerError("ledger_root_changed", str(self._root))
+
+    def _open_lock(self, *, create: bool) -> int | None:
         path = self._root / LEDGER_LOCK_NAME
-        fd = os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            return _open_plain_leaf(path, os.O_RDWR)
+        except FileNotFoundError:
+            if not create:
+                return None
+        try:
+            return _open_plain_leaf(path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            pass
+        # Created concurrently by another ledger: open it once, still identity-bound.
+        try:
+            return _open_plain_leaf(path, os.O_RDWR)
+        except FileNotFoundError as exc:
+            raise LedgerError("ledger_lock_unavailable", "lock file vanished") from exc
+
+    def _acquire(self, *, create: bool = True) -> int | None:
+        """Lock the ledger; ``create=False`` (readers) returns None when no lock file exists yet."""
+        self._check_root()
+        fd = self._open_lock(create=create)
+        if fd is None:
+            return None
         deadline = time.monotonic() + self._lock_timeout
         while True:
             try:
@@ -936,12 +1205,18 @@ class NonceLedger:
                     import fcntl
 
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return fd
+                break
             except OSError:
                 if time.monotonic() >= deadline:
                     os.close(fd)
                     raise LedgerError("ledger_lock_timeout", "ledger lock busy") from None
                 time.sleep(0.05)
+        try:
+            self._check_root()
+        except BaseException:
+            self._release(fd)
+            raise
+        return fd
 
     @staticmethod
     def _release(fd: int) -> None:
@@ -966,13 +1241,21 @@ class NonceLedger:
         return self._root / f"{nonce}.jsonl"
 
     def _read(self, nonce: str) -> tuple[LedgerRecord, ...]:
+        """Read one nonce file through an identity-bound descriptor (caller holds the lock)."""
         path = self._path(nonce)
         try:
-            data = path.read_bytes()
+            fd = _open_plain_leaf(path, os.O_RDONLY)
         except FileNotFoundError:
             return ()
-        except OSError as exc:
+        except FileExistsError as exc:  # not raised without O_EXCL; kept fail-closed
             raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
+        try:
+            data = _read_all(fd)
+        finally:
+            os.close(fd)
+        return self._parse(nonce, data)
+
+    def _parse(self, nonce: str, data: bytes) -> tuple[LedgerRecord, ...]:
         if not data.endswith(b"\n"):
             raise LedgerError("ledger_unreadable", "truncated ledger")
         records: list[LedgerRecord] = []
@@ -1032,10 +1315,17 @@ class NonceLedger:
         return tuple(records)
 
     def history(self, nonce: str) -> tuple[LedgerRecord, ...]:
-        return self._read(nonce)
+        """Consistent snapshot under the ledger lock (creates no file)."""
+        self._path(nonce)
+        fd = self._acquire(create=False)
+        try:
+            return self._read(nonce)
+        finally:
+            if fd is not None:
+                self._release(fd)
 
     def state(self, nonce: str) -> str | None:
-        records = self._read(nonce)
+        records = self.history(nonce)
         return records[-1].to_state if records else None
 
     def _scan(self) -> dict[str, str]:
@@ -1044,7 +1334,11 @@ class NonceLedger:
             if entry.name == LEDGER_LOCK_NAME:
                 continue
             nonce = entry.name[: -len(".jsonl")] if entry.name.endswith(".jsonl") else ""
-            if not entry.is_file() or entry.is_symlink() or NONCE_RE.fullmatch(nonce) is None:
+            try:
+                info = os.lstat(entry)
+            except OSError as exc:
+                raise LedgerError("ledger_unexpected_entry", entry.name) from exc
+            if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode) or NONCE_RE.fullmatch(nonce) is None:
                 raise LedgerError("ledger_unexpected_entry", entry.name)
             records = self._read(nonce)
             if not records:
@@ -1065,19 +1359,18 @@ class NonceLedger:
         now = _require_utc_clock(self._clock())
         return now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    @staticmethod
-    def _append(path: Path, record: Mapping[str, Any], *, create: bool) -> None:
-        flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
-        flags |= (os.O_CREAT | os.O_EXCL) if create else os.O_APPEND
-        try:
-            fd = os.open(str(path), flags, 0o600)
-        except FileExistsError as exc:
-            raise LedgerError("nonce_reused", path.stem) from exc
-        try:
-            os.write(fd, _canonical_record(record))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    def _commit(self, nonce: str, fd: int, prior: bytes, record: Mapping[str, Any]) -> LedgerRecord:
+        """Append ``record`` through ``fd`` (lock held) and return exactly that committed record."""
+        line = _canonical_record(record)
+        _write_all(fd, line)
+        _fsync(fd)
+        persisted = _read_from_start(fd)
+        if persisted != prior + line:
+            raise LedgerError("ledger_write_unverified", nonce)
+        committed = self._parse(nonce, persisted)[-1]
+        if committed.seq != record["seq"] or committed.to_state != record["to"]:
+            raise LedgerError("ledger_write_unverified", nonce)
+        return committed
 
     def reserve(
         self,
@@ -1123,10 +1416,17 @@ class NonceLedger:
                 "batch_id": batch_id,
                 "evidence": clean,
             }
-            self._append(path, record, create=True)
+            try:
+                leaf = _open_plain_leaf(path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+            except FileExistsError as exc:
+                raise LedgerError("nonce_reused", nonce) from exc
+            try:
+                committed = self._commit(nonce, leaf, b"", record)
+            finally:
+                os.close(leaf)
         finally:
             self._release(fd)
-        return self._read(nonce)[-1]
+        return committed
 
     def transition(
         self,
@@ -1140,42 +1440,57 @@ class NonceLedger:
         clean = _validate_evidence(evidence)
         fd = self._acquire()
         try:
-            records = self._read(nonce)
-            if not records:
-                raise LedgerError("nonce_unknown", nonce)
-            last = records[-1]
-            if to_state not in ALLOWED_TRANSITIONS.get(last.to_state, ()):
-                raise LedgerError("ledger_transition_invalid", f"{last.to_state}->{to_state}")
-            if statement_sha256 != last.statement_sha256:
-                raise LedgerError("ledger_statement_mismatch", nonce)
-            record = {
-                "schema": LEDGER_SCHEMA,
-                "seq": last.seq + 1,
-                "nonce": nonce,
-                "from": last.to_state,
-                "to": to_state,
-                "ts_utc": self._now(),
-                "statement_sha256": last.statement_sha256,
-                "pull_request": last.pull_request,
-                "head_sha": last.head_sha,
-                "base_sha": last.base_sha,
-                "batch_id": last.batch_id,
-                "evidence": clean,
-            }
-            self._append(path, record, create=False)
+            try:
+                leaf = _open_plain_leaf(path, os.O_RDWR | os.O_APPEND)
+            except FileNotFoundError:
+                raise LedgerError("nonce_unknown", nonce) from None
+            except FileExistsError as exc:  # not raised without O_EXCL; kept fail-closed
+                raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
+            try:
+                prior = _read_all(leaf)
+                records = self._parse(nonce, prior)
+                if not records:
+                    raise LedgerError("nonce_unknown", nonce)
+                last = records[-1]
+                if to_state not in ALLOWED_TRANSITIONS.get(last.to_state, ()):
+                    raise LedgerError("ledger_transition_invalid", f"{last.to_state}->{to_state}")
+                if statement_sha256 != last.statement_sha256:
+                    raise LedgerError("ledger_statement_mismatch", nonce)
+                record = {
+                    "schema": LEDGER_SCHEMA,
+                    "seq": last.seq + 1,
+                    "nonce": nonce,
+                    "from": last.to_state,
+                    "to": to_state,
+                    "ts_utc": self._now(),
+                    "statement_sha256": last.statement_sha256,
+                    "pull_request": last.pull_request,
+                    "head_sha": last.head_sha,
+                    "base_sha": last.base_sha,
+                    "batch_id": last.batch_id,
+                    "evidence": clean,
+                }
+                committed = self._commit(nonce, leaf, prior, record)
+            finally:
+                os.close(leaf)
         finally:
             self._release(fd)
-        return self._read(nonce)[-1]
+        return committed
 
 
 __all__ = [
     "ALLOWED_KEY_TYPES",
     "ALLOWED_SIGNERS_PATH",
     "ALLOWED_TRANSITIONS",
+    "ANCHOR_SUBPROCESS_GIT",
+    "ANCHOR_UNVERIFIED",
+    "EVIDENCE_SUBPROCESS_SSH",
+    "EVIDENCE_UNIT_MOCK",
     "FIELD_ORDER",
     "IN_FLIGHT_STATES",
     "LedgerError",
     "LedgerRecord",
+    "MAX_LOCK_TIMEOUT_SECONDS",
     "NAMESPACE",
     "NONCE_STATES",
     "NonceLedger",
@@ -1199,6 +1514,7 @@ __all__ = [
     "parse_allowed_signers",
     "parse_expiry",
     "parse_statement",
+    "require_genuine_provenance",
     "statement_sha256",
     "validate_repo_path",
     "validate_statement",

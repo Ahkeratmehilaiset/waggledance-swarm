@@ -146,6 +146,7 @@ def tools_event(**overrides) -> dict:
 def gh_stdout(**overrides) -> bytes:
     data = {
         "baseRefName": "main",
+        "headRefName": TASK,
         "headRefOid": HEAD,
         "mergeCommit": {"oid": MERGE_COMMIT},
         "mergedAt": MERGED_AT,
@@ -604,6 +605,7 @@ def test_refusal_evidence_is_never_invented(tmp_path, refusal, reason):
         ({"stdout": gh_stdout(state="OPEN")}, "merge_result_not_merged"),
         ({"stdout": gh_stdout(state="CLOSED")}, "merge_result_not_merged"),
         ({"stdout": gh_stdout(headRefOid=OTHER)}, "merge_result_head_mismatch"),
+        ({"stdout": gh_stdout(headRefName="codex-lead-1/manual-a-20261005")}, "merge_result_task_mismatch"),
         ({"stdout": gh_stdout(number=PR + 1)}, "merge_result_pr_mismatch"),
         ({"stdout": gh_stdout(number=str(PR))}, "merge_result_pr_mismatch"),
         ({"stdout": gh_stdout(baseRefName="release")}, "merge_result_base_mismatch"),
@@ -621,6 +623,35 @@ def test_refusal_evidence_is_never_invented(tmp_path, refusal, reason):
 def test_merge_result_is_bound_strictly(tmp_path, overrides, reason):
     world = make_world(tmp_path)
     assert refusal_reason(world.assess, world.evidence(merge_result=merge_result(**overrides))) == reason
+
+
+@pytest.mark.parametrize(
+    ("key", "role", "ts"),
+    [
+        ("rco_pass_event", "rco", "2026-10-05T07:10:00.0000000Z"),
+        ("lead_build_event", "build_lead", "2026-10-05T07:12:00Z"),
+        ("tools_build_event", "build_tools", "2026-10-05T07:10:00.5Z"),
+    ],
+)
+def test_approval_at_or_after_the_merge_refuses(tmp_path, key, role, ts):
+    world = make_world(tmp_path)
+    maker = {"rco_pass_event": rco_event, "lead_build_event": lead_event, "tools_build_event": tools_event}[key]
+    evidence = world.evidence(**{key: maker(ts_utc=ts)})
+    assert refusal_reason(world.assess, evidence) == f"approval_after_merge:{role}"
+
+
+def test_approval_just_before_the_merge_is_accepted(tmp_path):
+    world = make_world(tmp_path)
+    evidence = world.evidence(rco_pass_event=rco_event(ts_utc="2026-10-05T07:09:59.9999999Z"))
+    assert world.assess(evidence).approvals["rco"]["ts_utc"] == "2026-10-05T07:09:59.9999999Z"
+
+
+def test_refusal_after_merge_or_with_bad_time_refuses(tmp_path):
+    world = make_world(tmp_path)
+    late = AutonomousRefusalEvidence(state="recorded", event=refusal_event(ts_utc="2026-10-05T07:11:00Z"))
+    assert refusal_reason(world.assess, world.evidence(autonomous_refusal=late)) == "refusal_after_merge"
+    bad = AutonomousRefusalEvidence(state="recorded", event=refusal_event(ts_utc="2026-10-05 07:00:00"))
+    assert refusal_reason(world.assess, world.evidence(autonomous_refusal=bad)) == "refusal_event_invalid"
 
 
 # --- R07 nonce ledger -------------------------------------------------------------
@@ -664,6 +695,16 @@ def test_second_write_collides_and_first_receipt_is_untouched(tmp_path):
     assert refusal_reason(world.write) == "receipt_collision"
     assert {p: p.read_bytes() for p in receipt_dir.rglob("*") if p.is_file()} == before
     assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
+
+
+def test_existing_receipt_for_the_same_pr_head_blocks_another_nonce(tmp_path):
+    world = make_world(tmp_path)
+    other = world.out_root / f"pr{PR}-{HEAD[:12]}-{'f' * 32}"
+    other.mkdir()
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_collision" and other.name in caught.value.detail
+    assert sorted(p.name for p in world.out_root.iterdir()) == [other.name]
 
 
 def test_failure_after_directory_creation_leaves_unaccepted_artifact(tmp_path, monkeypatch):

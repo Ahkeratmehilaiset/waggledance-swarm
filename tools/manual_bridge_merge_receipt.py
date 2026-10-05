@@ -115,6 +115,7 @@ REFUSAL_STATES: tuple[str, ...] = ("recorded", "absent_unknown")
 PR_PAYLOAD_KEYS: tuple[str, ...] = ("pr", "pr_number", "pull_request", "pull_request_number")
 GH_VIEW_FIELDS: tuple[str, ...] = (
     "baseRefName",
+    "headRefName",
     "headRefOid",
     "mergeCommit",
     "mergedAt",
@@ -159,7 +160,9 @@ LIMITS: tuple[str, ...] = (
 
 SHA1_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
-EVENT_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z")
+EVENT_TS_RE = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,9}))?Z"
+)
 GH_TS_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z")
 MAX_NOTE_CHARS = 500
 MAX_GH_BYTES = 256 * 1024
@@ -296,6 +299,21 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _parse_event_ts(value: Any, reason: str) -> datetime:
+    """Parse a bridge ``ts_utc`` (``Z``, up to 9 fractional digits; extra digits truncated)."""
+    if type(value) is not str:
+        raise ReceiptError(reason, "ts_utc must be a string")
+    match = EVENT_TS_RE.fullmatch(value)
+    if match is None:
+        raise ReceiptError(reason, "ts_utc is not an exact UTC timestamp")
+    parts = [int(part) for part in match.groups()[:6]]
+    micros = int((match.group(7) or "").ljust(6, "0")[:6])
+    try:
+        return datetime(*parts, micros, tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ReceiptError(reason, "ts_utc is not a real time") from exc
+
+
 # --- approvals ---------------------------------------------------------------
 
 
@@ -326,8 +344,7 @@ def _check_approval(
         raise ReceiptError(f"approval_status_invalid:{role}", event["status"])
     if event["task_id"] != task_id:
         raise ReceiptError(f"approval_task_mismatch:{role}", event["task_id"])
-    if EVENT_TS_RE.fullmatch(event["ts_utc"]) is None:
-        raise ReceiptError(f"approval_invalid:{role}", "ts_utc is not an exact UTC timestamp")
+    _parse_event_ts(event["ts_utc"], f"approval_invalid:{role}")
     if role == "rco" and agent in author_agents:
         raise ReceiptError("rco_is_author", agent)
     payload = event.get("payload")
@@ -441,6 +458,7 @@ def assess_refusal(
     for key in ("agent", "type", "status", "task_id", "ts_utc"):
         if type(event.get(key)) is not str:
             raise ReceiptError("refusal_event_invalid", f"{key} must be a string")
+    _parse_event_ts(event["ts_utc"], "refusal_event_invalid")
     if event["task_id"] != task_id and not _event_mentions_pr(event, pull_request):
         raise ReceiptError("refusal_event_scope_mismatch", event["task_id"])
     record = {
@@ -471,8 +489,10 @@ def _parse_gh_time(value: Any, label: str) -> datetime:
         raise ReceiptError("merge_result_invalid", f"{label} is not a real time") from exc
 
 
-def assess_merge_result(merge: Any, *, statement: Statement) -> tuple[dict[str, Any], bytes]:
-    """Strictly bind the raw ``gh pr view --json`` output to the signed PR and head."""
+def assess_merge_result(
+    merge: Any, *, statement: Statement, task_id: str
+) -> tuple[dict[str, Any], bytes]:
+    """Strictly bind the raw ``gh pr view --json`` output to the signed PR, head and branch."""
     if not isinstance(merge, MergeResultEvidence):
         raise ReceiptError("merge_result_missing")
     argv = merge.argv
@@ -497,6 +517,9 @@ def assess_merge_result(merge: Any, *, statement: Statement) -> tuple[dict[str, 
         raise ReceiptError("merge_result_not_merged", str(decoded["state"]))
     if decoded["headRefOid"] != statement.head_sha:
         raise ReceiptError("merge_result_head_mismatch", str(decoded["headRefOid"]))
+    # The canonical bridge task id is the PR branch name.
+    if decoded["headRefName"] != task_id:
+        raise ReceiptError("merge_result_task_mismatch", str(decoded["headRefName"]))
     if decoded["baseRefName"] != BASE_REF_NAME:
         raise ReceiptError("merge_result_base_mismatch", str(decoded["baseRefName"]))
     commit = decoded["mergeCommit"]
@@ -515,6 +538,7 @@ def assess_merge_result(merge: Any, *, statement: Statement) -> tuple[dict[str, 
         "number": number,
         "state": decoded["state"],
         "head_ref_oid": decoded["headRefOid"],
+        "head_ref_name": decoded["headRefName"],
         "base_ref_name": decoded["baseRefName"],
         "merge_commit_oid": oid,
         "merged_at": decoded["mergedAt"],
@@ -625,7 +649,17 @@ def assess_receipt_evidence(
         task_id=evidence.canonical_task_id,
         pull_request=statement.pull_request,
     )
-    merge, merge_command = assess_merge_result(evidence.merge_result, statement=statement)
+    merge, merge_command = assess_merge_result(
+        evidence.merge_result, statement=statement, task_id=evidence.canonical_task_id
+    )
+    # An approval or refusal recorded at or after the merged second cannot
+    # have preceded the effect (GitHub reports whole seconds; fail closed).
+    merged_at = _parse_gh_time(merge["merged_at"], "mergedAt")
+    for role in APPROVAL_ROLES:
+        if _parse_event_ts(approvals[role]["ts_utc"], f"approval_invalid:{role}") >= merged_at:
+            raise ReceiptError(f"approval_after_merge:{role}", approvals[role]["ts_utc"])
+    if refusal["state"] == "recorded" and _parse_event_ts(refusal["ts_utc"], "refusal_event_invalid") >= merged_at:
+        raise ReceiptError("refusal_after_merge", refusal["ts_utc"])
     ledger_records = assess_ledger(ledger, statement=statement, statement_digest=digest)
     return ReceiptAssessment(
         statement=statement,
@@ -952,6 +986,11 @@ def write_manual_merge_receipt(
     )
     evaluation, receipt, chain_id = build_magma_triple(payload, now_utc=now)
     receipt_dir = root / receipt_dir_name(assessment.statement)
+    # One receipt (or failure artifact) per PR head, whatever its nonce.
+    same_merge = f"pr{assessment.statement.pull_request}-{assessment.statement.head_sha[:12]}-"
+    existing = sorted(entry.name for entry in root.iterdir() if entry.name.startswith(same_merge))
+    if existing:
+        raise ReceiptError("receipt_collision", ",".join(existing))
     try:
         receipt_dir.mkdir(exist_ok=False)
     except FileExistsError as exc:
@@ -1022,7 +1061,13 @@ def _list_entries(directory: Path) -> list[str]:
 
 
 def verify_receipt_contents(receipt_dir: Path, *, expected_label: str | None = None) -> dict[str, Any]:
-    """Re-derive the receipt from its files (no completion marker needed)."""
+    """Re-derive the receipt from its files (no completion marker needed).
+
+    Structural and digest re-derivation only: it does not re-run
+    ``ssh-keygen`` (that needs the trusted anchor and the verifier binary; use
+    ``assess_receipt_evidence``) and it does not establish any integration
+    prerequisite.
+    """
     errors: list[str] = []
     result: dict[str, Any] = {"ok": False, "evidence_class": None, "genuine": False, "errors": errors}
     if not isinstance(receipt_dir, Path) or not receipt_dir.is_absolute():

@@ -997,27 +997,46 @@ def test_marker_stored_as_other_bytes_of_the_same_length_refuses(tmp_path, monke
     _retry_collides_and_changes_nothing(world)
 
 
-def test_marker_differing_in_a_field_the_verifier_does_not_bind_still_refuses(tmp_path, monkeypatch):
+def _other_receipt_digest(fd, view):
+    value = json.loads(bytes(view))
+    digest = value["magma"]["receipt_digest"]
+    value["magma"]["receipt_digest"] = digest[:-1] + ("1" if digest[-1] != "1" else "2")
+    changed = mmr._canonical_json_line(value)
+    assert len(changed) == len(view)
+    return _REAL_WRITE(fd, changed)
+
+
+def test_marker_stored_with_another_field_value_refuses_and_never_verifies(tmp_path, monkeypatch):
     world = make_world(tmp_path)
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(_other_receipt_digest, only_marker=True))
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed"
+    assert caught.value.__cause__.reason == "receipt_verification_failed"
+    assert caught.value.__cause__.detail == "completion: marker: receipt_digest mismatch"
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    # The verifier binds every marker field (Tools RCR1), so the kept directory
+    # does not verify either; it stays as stored for reconciliation.
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
+    _retry_collides_and_changes_nothing(world)
 
-    def other_receipt_digest(fd, view):
-        value = json.loads(bytes(view))
-        digest = value["magma"]["receipt_digest"]
-        value["magma"]["receipt_digest"] = digest[:-1] + ("1" if digest[-1] != "1" else "2")
-        changed = mmr._canonical_json_line(value)
-        assert len(changed) == len(view)
-        return _REAL_WRITE(fd, changed)
 
-    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(other_receipt_digest, only_marker=True))
+def test_marker_read_back_as_other_bytes_refuses_even_if_the_check_reports_complete(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    real = mmr.verify_manual_merge_receipt
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(_other_receipt_digest, only_marker=True))
+    monkeypatch.setattr(
+        mmr, "verify_manual_merge_receipt",
+        lambda receipt_dir: {**real(receipt_dir), "ok": True, "complete": True, "errors": []},
+    )
     with pytest.raises(ReceiptError) as caught:
         world.write()
     assert caught.value.reason == "receipt_write_failed"
     assert caught.value.__cause__.detail == "completion: marker differs from the bytes written"
     monkeypatch.undo()
     (receipt_dir,) = list(world.out_root.iterdir())
-    # The verifier does not bind this marker field, so the kept directory still
-    # verifies; only the writer knows which bytes it meant to store.
-    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
     _retry_collides_and_changes_nothing(world)
 
 
@@ -1141,6 +1160,251 @@ def test_close_failure_after_the_full_marker_refuses_although_the_marker_verifie
     (receipt_dir,) = list(world.out_root.iterdir())
     assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
     _retry_collides_and_changes_nothing(world)
+
+
+# --- R12 completion marker binding (Tools RCR1; marker contract 1CA1B470) -----------
+
+_BOUND_FIELDS = (
+    "chain_id",
+    "verified_at_utc",
+    "magma.evaluation_result_digest",
+    "magma.receipt_digest",
+    "magma.manifest_raw_sha256",
+)
+_FIELD_ERRORS = {
+    "chain_id": "marker: chain_id differs from the payload identity, manifest or receipt event_id",
+    "verified_at_utc": "marker: verified_at_utc differs from the receipt ts_utc",
+    "magma.payload_digest": "marker: payload digest mismatch",
+    "magma.evaluation_result_digest": "marker: evaluation_result_digest mismatch",
+    "magma.receipt_digest": "marker: receipt_digest mismatch",
+    "magma.manifest_raw_sha256": "marker: manifest_raw_sha256 mismatch",
+}
+_TS_SPELLING_ERROR = "marker: verified_at_utc is not a YYYY-MM-DDTHH:MM:SSZ UTC second"
+_KEYS_ERROR = "marker: keys differ from the v1 marker"
+_MAGMA_KEYS_ERROR = "marker: magma keys differ from the v1 marker"
+
+
+def _written(tmp_path: Path) -> tuple[World, Path]:
+    world = make_world(tmp_path)
+    return world, Path(world.write()["receipt_dir"])
+
+
+def _marker(receipt_dir: Path) -> dict:
+    return json.loads((receipt_dir / mmr.COMPLETION_MARKER).read_bytes())
+
+
+def _store_marker(receipt_dir: Path, marker: dict) -> None:
+    (receipt_dir / mmr.COMPLETION_MARKER).write_bytes(mmr._canonical_json_line(marker))
+
+
+def _store_magma(receipt_dir: Path, name: str, value: dict) -> None:
+    """Store a MAGMA file the way the bundle writer does (pretty JSON, text mode)."""
+    (receipt_dir / "magma" / name).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _flip(text: str) -> str:
+    return text[:-1] + ("1" if text[-1] != "1" else "2")
+
+
+def _other_chain(chain: str) -> str:
+    return chain.rsplit(":", 1)[0] + ":" + "f" * 32
+
+
+def _assert_refused(world: World, receipt_dir: Path, error: str) -> None:
+    before = _receipt_files(world.out_root)
+    report = mmr.verify_manual_merge_receipt(receipt_dir)
+    assert report["ok"] is False and report["complete"] is False
+    assert report["errors"] == [error]
+    assert _receipt_files(world.out_root) == before  # verification never repairs or rewrites
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_healthy_marker_binds_every_value_to_the_receipt_files(tmp_path):
+    _, receipt_dir = _written(tmp_path)
+    marker = _marker(receipt_dir)
+    receipt = magma_json(receipt_dir, "receipt")
+    manifest_bytes = (receipt_dir / "magma" / "manifest.json").read_bytes()
+    assert sorted(marker) == sorted(mmr.MARKER_KEYS)
+    assert marker["chain_id"] == f"synthetic:manual_merge_a:pr{PR}:{HEAD[:12]}:{NONCE}"
+    assert marker["chain_id"] == json.loads(manifest_bytes)["chain_id"] == receipt["event_id"]
+    # One clock reading, written by _iso: seconds only, Z suffix.
+    assert marker["verified_at_utc"] == receipt["ts_utc"] == "2026-10-05T07:15:00Z"
+    assert marker["magma"] == {
+        "payload_digest": sha256_digest(magma_json(receipt_dir, "payload")),
+        "evaluation_result_digest": sha256_digest(magma_json(receipt_dir, "evaluation")),
+        "receipt_digest": sha256_digest(receipt),
+        "manifest_raw_sha256": {
+            "domain": "raw_bytes", "algorithm": "sha256", "hex": hashlib.sha256(manifest_bytes).hexdigest()
+        },
+    }
+    report = mmr.verify_manual_merge_receipt(receipt_dir)
+    assert report["ok"] is True and report["complete"] is True and report["errors"] == []
+    assert report["genuine"] is False and report["evidence_class"] == "synthetic_unit_mock"
+
+
+@pytest.mark.parametrize("kind", ["missing", "null", "wrong_type", "unequal"])
+@pytest.mark.parametrize("field", _BOUND_FIELDS)
+def test_each_bound_marker_field_must_be_present_typed_and_equal(tmp_path, field, kind):
+    world, receipt_dir = _written(tmp_path)
+    marker = _marker(receipt_dir)
+    *parents, key = field.split(".")
+    target = marker[parents[0]] if parents else marker
+    value = target[key]
+    if kind == "missing":
+        del target[key]
+        error = _MAGMA_KEYS_ERROR if parents else _KEYS_ERROR
+    elif kind == "unequal":
+        if field == "chain_id":
+            target[key] = _other_chain(value)
+        elif field == "verified_at_utc":
+            target[key] = "2026-10-05T07:15:01Z"
+        elif field == "magma.manifest_raw_sha256":
+            target[key] = {**value, "hex": _flip(value["hex"])}
+        else:
+            target[key] = _flip(value)
+        error = _FIELD_ERRORS[field]
+    else:
+        wrong_type = ("sha256:" + value["hex"]) if key == "manifest_raw_sha256" else 0
+        target[key] = None if kind == "null" else wrong_type
+        error = "marker: wrong type or shape: " + field
+    _store_marker(receipt_dir, marker)
+    _assert_refused(world, receipt_dir, error)
+
+
+def test_payload_digest_control_still_refuses(tmp_path):
+    world, receipt_dir = _written(tmp_path)
+    marker = _marker(receipt_dir)
+    marker["magma"]["payload_digest"] = _flip(marker["magma"]["payload_digest"])
+    _store_marker(receipt_dir, marker)
+    _assert_refused(world, receipt_dir, _FIELD_ERRORS["magma.payload_digest"])
+
+
+def _set(path: str, value):
+    def edit(marker: dict, receipt_dir: Path) -> None:
+        *parents, key = path.split(".")
+        target = marker[parents[0]] if parents else marker
+        target[key] = value(target.get(key), receipt_dir) if callable(value) else value
+
+    return edit
+
+
+def _drop(path: str):
+    def edit(marker: dict, receipt_dir: Path) -> None:
+        *parents, key = path.split(".")
+        del (marker[parents[0]] if parents else marker)[key]
+
+    return edit
+
+
+def _raw_file_digest(kind: str):
+    return lambda value, receipt_dir: "sha256:" + hashlib.sha256(
+        (receipt_dir / "magma" / f"{kind}-001-manual-merge.json").read_bytes()
+    ).hexdigest()
+
+
+def _canonical_manifest_hex(receipt_dir: Path) -> str:
+    return sha256_digest(json.loads((receipt_dir / "magma" / "manifest.json").read_bytes())).split(":", 1)[1]
+
+
+@pytest.mark.parametrize(
+    ("edit", "error"),
+    [
+        pytest.param(_set("verified_at_utc", "2026-10-05T07:15:00+00:00"), _TS_SPELLING_ERROR, id="ts-offset-same-instant"),
+        pytest.param(_set("verified_at_utc", "2026-10-05T07:15:00.000Z"), _TS_SPELLING_ERROR, id="ts-fraction-same-instant"),
+        pytest.param(_set("verified_at_utc", "2026-02-30T07:15:00Z"), _TS_SPELLING_ERROR, id="ts-invalid-calendar-date"),
+        pytest.param(_set("magma.evaluation_result_digest", _raw_file_digest("evaluation")),
+                     _FIELD_ERRORS["magma.evaluation_result_digest"], id="evaluation-digest-over-raw-bytes"),
+        pytest.param(_set("magma.receipt_digest", _raw_file_digest("receipt")),
+                     _FIELD_ERRORS["magma.receipt_digest"], id="receipt-digest-over-raw-bytes"),
+        pytest.param(_set("magma.manifest_raw_sha256", lambda ref, d: {**ref, "hex": _canonical_manifest_hex(d)}),
+                     _FIELD_ERRORS["magma.manifest_raw_sha256"], id="manifest-ref-over-canonical-json"),
+        pytest.param(_set("magma.manifest_raw_sha256", lambda ref, d: {**ref, "domain": "canonical_json"}),
+                     _FIELD_ERRORS["magma.manifest_raw_sha256"], id="manifest-ref-domain"),
+        pytest.param(_set("magma.manifest_raw_sha256", lambda ref, d: {**ref, "algorithm": "sha512"}),
+                     _FIELD_ERRORS["magma.manifest_raw_sha256"], id="manifest-ref-algorithm"),
+        pytest.param(_set("magma.manifest_raw_sha256", lambda ref, d: {**ref, "hex": ref["hex"].upper()}),
+                     _FIELD_ERRORS["magma.manifest_raw_sha256"], id="manifest-ref-uppercase-hex"),
+        pytest.param(_set("magma.manifest_raw_sha256", lambda ref, d: {**ref, "note": "x"}),
+                     "marker: wrong type or shape: magma.manifest_raw_sha256", id="manifest-ref-extra-key"),
+        pytest.param(_set("note", "x"), _KEYS_ERROR, id="top-extra-key"),
+        pytest.param(_drop("artifacts"), _KEYS_ERROR, id="top-missing-artifacts"),
+        pytest.param(_set("magma.note", "x"), _MAGMA_KEYS_ERROR, id="magma-extra-key"),
+        pytest.param(_drop("magma.payload_digest"), _MAGMA_KEYS_ERROR, id="magma-missing-payload-digest"),
+        pytest.param(_set("genuine", 0), "marker: wrong type or shape: genuine", id="genuine-number"),
+        pytest.param(_set("artifacts", []), "marker: wrong type or shape: artifacts", id="artifacts-array"),
+    ],
+)
+def test_marker_spelling_domain_and_shape_twins_refuse(tmp_path, edit, error):
+    world, receipt_dir = _written(tmp_path)
+    marker = _marker(receipt_dir)
+    edit(marker, receipt_dir)
+    _store_marker(receipt_dir, marker)
+    _assert_refused(world, receipt_dir, error)
+
+
+def _rewrite(receipt_dir: Path, kind: str, change) -> None:
+    name = "manifest.json" if kind == "manifest" else f"{kind}-001-manual-merge.json"
+    value = json.loads((receipt_dir / "magma" / name).read_bytes())
+    change(value)
+    _store_magma(receipt_dir, name, value)
+
+
+def _rederive_marker(receipt_dir: Path) -> None:
+    """Make every marker value agree with the files as they now are (a coherent rewrite)."""
+    marker = _marker(receipt_dir)
+    receipt = magma_json(receipt_dir, "receipt")
+    manifest_bytes = (receipt_dir / "magma" / "manifest.json").read_bytes()
+    marker["chain_id"] = json.loads(manifest_bytes)["chain_id"]
+    marker["verified_at_utc"] = receipt["ts_utc"]
+    marker["magma"] = {
+        "payload_digest": sha256_digest(magma_json(receipt_dir, "payload")),
+        "evaluation_result_digest": sha256_digest(magma_json(receipt_dir, "evaluation")),
+        "receipt_digest": sha256_digest(receipt),
+        "manifest_raw_sha256": {
+            "domain": "raw_bytes", "algorithm": "sha256", "hex": hashlib.sha256(manifest_bytes).hexdigest()
+        },
+    }
+    _store_marker(receipt_dir, marker)
+
+
+def _chain_everywhere_but_the_payload(receipt_dir: Path) -> None:
+    other = _other_chain(json.loads((receipt_dir / "magma" / "manifest.json").read_bytes())["chain_id"])
+    _rewrite(receipt_dir, "manifest", lambda manifest: manifest.update(chain_id=other))
+    _rewrite(receipt_dir, "receipt", lambda receipt: receipt.update(event_id=other))
+
+
+def _payload_pull_request_as_float(receipt_dir: Path) -> None:
+    payload = magma_json(receipt_dir, "payload")
+    payload["pull_request"] = float(payload["pull_request"])  # equal to the statement's int, other type
+    evaluation, receipt, chain_id = mmr.build_magma_triple(payload, now_utc=NOW)
+    for kind, value in (("payload", payload), ("evaluation", evaluation), ("receipt", receipt)):
+        _store_magma(receipt_dir, f"{kind}-001-manual-merge.json", value)
+    _rewrite(receipt_dir, "manifest", lambda manifest: manifest.update(chain_id=chain_id))
+
+
+@pytest.mark.parametrize(
+    ("rewrite", "error"),
+    [
+        pytest.param(lambda d: _rewrite(d, "receipt", lambda r: r.update(ts_utc="2026-10-05T07:15:00+00:00")),
+                     _TS_SPELLING_ERROR, id="ts-offset-same-instant"),
+        pytest.param(lambda d: _rewrite(d, "receipt", lambda r: r.update(ts_utc="2026-10-05T07:15:00.000Z")),
+                     _TS_SPELLING_ERROR, id="ts-fraction-same-instant"),
+        pytest.param(lambda d: _rewrite(d, "receipt", lambda r: r.update(ts_utc="2026-10-05T08:15:00+01:00")),
+                     _TS_SPELLING_ERROR, id="ts-other-offset-same-instant"),
+        pytest.param(lambda d: _rewrite(d, "manifest", lambda m: m.update(chain_id=_other_chain(m["chain_id"]))),
+                     _FIELD_ERRORS["chain_id"], id="chain-in-marker-and-manifest"),
+        pytest.param(_chain_everywhere_but_the_payload, _FIELD_ERRORS["chain_id"], id="chain-everywhere-but-payload"),
+        pytest.param(_payload_pull_request_as_float, "marker: payload identity has the wrong type",
+                     id="payload-pull-request-float"),
+    ],
+)
+def test_coherent_rewrites_that_break_a_cross_file_binding_refuse(tmp_path, rewrite, error):
+    world, receipt_dir = _written(tmp_path)
+    rewrite(receipt_dir)
+    _rederive_marker(receipt_dir)
+    # The rewritten files themselves still pass; only the marker binding refuses.
+    assert mmr.verify_receipt_contents(receipt_dir)["ok"] is True
+    _assert_refused(world, receipt_dir, error)
 
 
 # --- R09 module hygiene ------------------------------------------------------------

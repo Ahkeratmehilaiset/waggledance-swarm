@@ -155,6 +155,23 @@ MAGMA_FILES: tuple[str, ...] = (
     f"receipt-001-{BUNDLE_LABEL}.json",
     "manifest.json",
 )
+# Exact key sets of the v1 completion marker and of its ``magma`` object.
+MARKER_KEYS: tuple[str, ...] = (
+    "schema",
+    "evidence_class",
+    "genuine",
+    "receipt_dir_name",
+    "chain_id",
+    "artifacts",
+    "magma",
+    "verified_at_utc",
+)
+MARKER_MAGMA_KEYS: tuple[str, ...] = (
+    "payload_digest",
+    "evaluation_result_digest",
+    "receipt_digest",
+    "manifest_raw_sha256",
+)
 
 LIMITS: tuple[str, ...] = (
     "The shared GitHub account can still merge outside this route; the receipt evidences, it does not prevent.",
@@ -1250,14 +1267,110 @@ def verify_receipt_contents(receipt_dir: Path, *, expected_label: str | None = N
     return result
 
 
+def _is_iso_second(value: Any) -> bool:
+    """True only for a real UTC second spelled exactly as ``_iso`` writes it."""
+    try:
+        return _iso(_parse_gh_time(value, "verified_at_utc")) == value
+    except ReceiptError:
+        return False
+
+
+def _marker_binding_errors(
+    receipt_dir: Path, marker: Mapping[str, Any], report: Mapping[str, Any]
+) -> list[str]:
+    """Compare every marker value with the files ``verify_receipt_contents`` accepted.
+
+    Reads the fixed MAGMA file names, never the manifest's entry paths.  Each
+    value needs its exact JSON type and must equal what the files give: the
+    payload's artifact references and label; the chain identity rebuilt from
+    the payload's own pull request, head and nonce, which the manifest
+    ``chain_id`` and the receipt ``event_id`` must also equal; the canonical
+    MAGMA digests of payload, evaluation and receipt (the first two also as
+    recorded in the receipt); the raw SHA-256 of the manifest bytes; and the
+    receipt ``ts_utc`` in the writer's seconds-only ``_iso`` spelling (the
+    writer stores both from one clock reading).  Equality is internal
+    consistency only: no clock, freshness or authenticity check, and unsigned
+    files rewritten coherently still verify.
+    """
+    magma_dir = receipt_dir / MAGMA_DIR
+    manifest_bytes = (magma_dir / MAGMA_FILES[3]).read_bytes()
+    try:
+        payload, evaluation, receipt = [
+            _strict_json((magma_dir / name).read_bytes(), "magma_invalid") for name in MAGMA_FILES[:3]
+        ]
+        manifest = _strict_json(manifest_bytes, "manifest_invalid")
+    except ReceiptError as exc:
+        return [f"marker: {exc.reason}"]
+    if not all(type(value) is dict for value in (payload, evaluation, receipt, manifest)):
+        return ["marker: a MAGMA file is not a JSON object"]
+    magma = marker["magma"]
+    ref = magma["manifest_raw_sha256"]
+    wrong = [
+        name
+        for name, value in (
+            ("evidence_class", marker["evidence_class"]),
+            ("chain_id", marker["chain_id"]),
+            ("verified_at_utc", marker["verified_at_utc"]),
+            ("magma.payload_digest", magma["payload_digest"]),
+            ("magma.evaluation_result_digest", magma["evaluation_result_digest"]),
+            ("magma.receipt_digest", magma["receipt_digest"]),
+        )
+        if type(value) is not str
+    ]
+    if type(marker["genuine"]) is not bool:
+        wrong.append("genuine")
+    if type(marker["artifacts"]) is not dict:
+        wrong.append("artifacts")
+    if type(ref) is not dict or sorted(ref) != ["algorithm", "domain", "hex"] or any(
+        type(value) is not str for value in ref.values()
+    ):
+        wrong.append("magma.manifest_raw_sha256")
+    if wrong:
+        return ["marker: wrong type or shape: " + ",".join(wrong)]
+    errors: list[str] = []
+    if marker["artifacts"] != payload.get("artifacts"):
+        errors.append("marker: artifact digests differ from the payload")
+    if marker["evidence_class"] != report["evidence_class"] or marker["genuine"] is not report["genuine"]:
+        errors.append("marker: evidence class differs from the payload")
+    pull_request, head, nonce = payload.get("pull_request"), payload.get("head_sha"), payload.get("nonce")
+    if type(pull_request) is not int or type(head) is not str or type(nonce) is not str:
+        errors.append("marker: payload identity has the wrong type")
+    else:
+        prefix = "magma:manual_merge_a" if report["genuine"] else "synthetic:manual_merge_a"
+        chain_id = f"{prefix}:pr{pull_request}:{head[:12]}:{nonce}"
+        if chain_id != marker["chain_id"] or chain_id != manifest.get("chain_id") or chain_id != receipt.get("event_id"):
+            errors.append("marker: chain_id differs from the payload identity, manifest or receipt event_id")
+    payload_digest = sha256_digest(payload)
+    if magma["payload_digest"] != payload_digest or receipt.get("canonical_payload_digest") != payload_digest:
+        errors.append("marker: payload digest mismatch")
+    evaluation_digest = sha256_digest(evaluation)
+    if (
+        magma["evaluation_result_digest"] != evaluation_digest
+        or receipt.get("evaluation_result_digest") != evaluation_digest
+    ):
+        errors.append("marker: evaluation_result_digest mismatch")
+    if magma["receipt_digest"] != sha256_digest(receipt):
+        errors.append("marker: receipt_digest mismatch")
+    if ref != _raw_ref(raw_sha256(manifest_bytes)):
+        errors.append("marker: manifest_raw_sha256 mismatch")
+    if not _is_iso_second(marker["verified_at_utc"]):
+        errors.append("marker: verified_at_utc is not a YYYY-MM-DDTHH:MM:SSZ UTC second")
+    elif marker["verified_at_utc"] != receipt.get("ts_utc"):
+        errors.append("marker: verified_at_utc differs from the receipt ts_utc")
+    return errors
+
+
 def verify_manual_merge_receipt(receipt_dir: Path) -> dict[str, Any]:
     """Full read-only verification of a completed receipt directory.
 
-    ``complete`` is true only for a complete, internally consistent receipt.
-    It is NOT acceptance as merge evidence: consumers must also require
-    ``genuine`` (true only when the digest-bound payload says so, which this
-    slice never writes).  A directory without the completion marker is an
-    unaccepted failure artifact.
+    ``complete`` is true only for a complete, internally consistent receipt:
+    the completion marker has exactly the v1 keys and types, and every value
+    equals what the accepted files give (``_marker_binding_errors``).  It is
+    NOT acceptance as merge evidence, NOT proof that the writer reported
+    success and NOT a freshness or authenticity check: consumers must also
+    require ``genuine`` (true only when the digest-bound payload says so, which
+    this slice never writes).  A directory without the completion marker is
+    an unaccepted failure artifact.
     """
     report = verify_receipt_contents(receipt_dir)
     report["complete"] = False
@@ -1278,17 +1391,14 @@ def verify_manual_merge_receipt(receipt_dir: Path) -> dict[str, Any]:
         return report
     if not isinstance(marker, dict) or _canonical_json_line(marker) != data:
         errors.append("marker: not canonical")
-    elif marker.get("schema") != COMPLETION_SCHEMA or marker.get("receipt_dir_name") != receipt_dir.name:
+    elif sorted(marker) != sorted(MARKER_KEYS):
+        errors.append("marker: keys differ from the v1 marker")
+    elif type(marker["magma"]) is not dict or sorted(marker["magma"]) != sorted(MARKER_MAGMA_KEYS):
+        errors.append("marker: magma keys differ from the v1 marker")
+    elif marker["schema"] != COMPLETION_SCHEMA or marker["receipt_dir_name"] != receipt_dir.name:
         errors.append("marker: schema or directory mismatch")
     else:
-        payload = json.loads((receipt_dir / MAGMA_DIR / MAGMA_FILES[0]).read_text(encoding="utf-8"))
-        if marker.get("artifacts") != payload.get("artifacts"):
-            errors.append("marker: artifact digests differ from the payload")
-        if marker.get("evidence_class") != report["evidence_class"] or marker.get("genuine") is not report["genuine"]:
-            errors.append("marker: evidence class differs from the payload")
-        magma = marker.get("magma")
-        if not isinstance(magma, dict) or magma.get("payload_digest") != sha256_digest(payload):
-            errors.append("marker: payload digest mismatch")
+        errors.extend(_marker_binding_errors(receipt_dir, marker, report))
     if errors:
         report["ok"] = False
         return report

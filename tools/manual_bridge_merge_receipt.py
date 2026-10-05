@@ -70,9 +70,11 @@ from tools.manual_bridge_merge_statement import (  # noqa: E402
     StatementError,
     TrustAnchor,
     VerificationResult,
+    VerifiedStatement,
     load_trust_anchor,
     parse_expiry,
     parse_statement,
+    require_genuine_provenance,
     statement_sha256,
     verify_statement_signature,
 )
@@ -633,6 +635,18 @@ def assess_receipt_evidence(
         and git_runner is None
         and verification.evidence_class == "subprocess_ssh_keygen"
     )
+    if genuine:
+        # Runner-free is not enough on its own: the statement module's single
+        # provenance predicate must also accept the anchor and verification
+        # derived above (never caller-supplied).  Necessary, never sufficient.
+        try:
+            require_genuine_provenance(
+                VerifiedStatement(
+                    statement=statement, statement_sha256=digest, anchor=anchor, verification=verification
+                )
+            )
+        except StatementError as exc:
+            raise ReceiptError(f"statement:{exc.reason}", exc.detail) from exc
     author_agents = evidence.author_agents
     if type(author_agents) is not tuple:
         raise ReceiptError("author_agents_missing", "author_agents must be a tuple")
@@ -907,16 +921,38 @@ def _require_out_root(out_root: Any) -> Path:
 
 
 def _write_new_file(path: Path, data: bytes) -> None:
+    """Create ``path`` exclusively and write all of ``data`` once; never retry.
+
+    Every ``os.write`` must report real progress: an ``int`` (not ``bool``) in
+    ``1..remaining``.  A zero, negative, oversized or non-integer count, or a
+    final size other than ``len(data)``, refuses with ``receipt_write_failed``
+    instead of looping or accepting a short file; the partial file stays as part
+    of the unaccepted failure artifact.  A close failure after an earlier error
+    is noted on that error and never replaces it.
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags, 0o600)
     try:
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
+            if type(written) is not int or not 0 < written <= len(view):
+                shown = written if type(written) is int else type(written).__name__
+                raise ReceiptError(
+                    "receipt_write_failed", f"{path.name}: write reported {shown} of {len(view)} bytes"
+                )
             view = view[written:]
         os.fsync(fd)
-    finally:
-        os.close(fd)
+        size = os.fstat(fd).st_size
+        if size != len(data):
+            raise ReceiptError("receipt_write_failed", f"{path.name}: size {size} != {len(data)}")
+    except BaseException as exc:
+        try:
+            os.close(fd)
+        except OSError as close_exc:
+            exc.add_note(f"close after failure also failed: {type(close_exc).__name__}")
+        raise
+    os.close(fd)
 
 
 def receipt_dir_name(statement: Statement) -> str:
@@ -957,8 +993,9 @@ def write_manual_merge_receipt(
     """Assess, then write one receipt directory exclusively; never overwrite or retry.
 
     Every refusal before the directory exists leaves no file behind.  Any
-    failure after it exists leaves an unaccepted failure artifact (no completion
-    marker) and raises ``receipt_write_failed``; the caller reconciles it.
+    failure after it exists leaves an unaccepted failure artifact (no valid
+    completion marker; a partly written marker can remain and never verifies)
+    and raises ``receipt_write_failed``; the caller reconciles it.
     """
     now = _require_utc_clock(now_utc)
     root = _require_out_root(out_root)

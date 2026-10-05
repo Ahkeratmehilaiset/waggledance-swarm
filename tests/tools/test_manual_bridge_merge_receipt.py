@@ -9,11 +9,12 @@ merge or a genuine receipt; that positive path is a named NOT_RUN skip.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -771,6 +772,175 @@ def test_clock_must_be_aware_utc_and_not_before_the_merge(tmp_path):
     assert refusal_reason(world.write, now_utc=datetime(2026, 10, 5, 7, 15)) == "invalid_clock"
     early = datetime(2026, 10, 5, 7, 5, tzinfo=timezone.utc)
     assert refusal_reason(world.write, now_utc=early) == "receipt_clock_before_merge"
+    assert list(world.out_root.iterdir()) == []
+
+
+# --- R10 write progress and genuine provenance ---------------------------------------
+
+_REAL_WRITE = os.write
+_REAL_CLOSE = os.close
+_MARKER_SCHEMA = mmr.COMPLETION_SCHEMA.encode("ascii")
+
+
+class ReceiptWrites:
+    """Replaces os.write for the receipt writer's own calls only (by caller frame)."""
+
+    def __init__(self, behaviour, *, only_marker: bool = False):
+        self.behaviour = behaviour
+        self.only_marker = only_marker
+        self.calls = 0
+
+    def __call__(self, fd, view):
+        if sys._getframe(1).f_code.co_name != "_write_new_file" or (
+            self.only_marker and _MARKER_SCHEMA not in bytes(view)
+        ):
+            return _REAL_WRITE(fd, view)
+        self.calls += 1
+        return self.behaviour(fd, view)
+
+
+class FailingClose:
+    """Closes the descriptor, then reports failure (receipt writer's calls only)."""
+
+    def __call__(self, fd):
+        _REAL_CLOSE(fd)
+        if sys._getframe(1).f_code.co_name == "_write_new_file":
+            raise OSError("injected close failure")
+
+
+_BAD_COUNTS = {
+    "zero": lambda fd, view: 0,
+    "negative": lambda fd, view: -1,
+    "oversized_short_write": lambda fd, view: (_REAL_WRITE(fd, view[: len(view) // 2]), len(view) + 7)[1],
+    "string": lambda fd, view: "1",
+    "float": lambda fd, view: 1.0,
+    "none": lambda fd, view: None,
+    "bool_full_write": lambda fd, view: (_REAL_WRITE(fd, view), True)[1],
+}
+
+
+@pytest.mark.parametrize("name", sorted(_BAD_COUNTS))
+def test_impossible_write_count_refuses_at_once_without_retry(tmp_path, monkeypatch, name):
+    writes = ReceiptWrites(_BAD_COUNTS[name])
+    monkeypatch.setattr(mmr.os, "write", writes)
+    target = tmp_path / "artifact.bin"
+    with pytest.raises(ReceiptError) as caught:
+        mmr._write_new_file(target, b"x" * 64)
+    assert caught.value.reason == "receipt_write_failed"
+    assert writes.calls == 1  # the first impossible count refuses: no loop, no retry
+    assert target.exists()  # the partial file stays for reconciliation
+
+
+def test_short_but_real_writes_complete_the_file(tmp_path, monkeypatch):
+    writes = ReceiptWrites(lambda fd, view: _REAL_WRITE(fd, view[:7]))
+    monkeypatch.setattr(mmr.os, "write", writes)
+    data = bytes(range(256)) * 2
+    target = tmp_path / "artifact.bin"
+    mmr._write_new_file(target, data)
+    assert target.read_bytes() == data
+    assert writes.calls == -(-len(data) // 7)
+
+
+def test_plain_write_is_exact_and_never_overwrites(tmp_path):
+    target = tmp_path / "artifact.bin"
+    mmr._write_new_file(target, b"exact bytes\n")
+    assert target.read_bytes() == b"exact bytes\n"
+    with pytest.raises(FileExistsError):
+        mmr._write_new_file(target, b"other")
+    assert target.read_bytes() == b"exact bytes\n"
+
+
+def test_in_range_count_hiding_extra_bytes_fails_the_size_check(tmp_path, monkeypatch):
+    writes = ReceiptWrites(lambda fd, view: (_REAL_WRITE(fd, view), 1)[1])
+    monkeypatch.setattr(mmr.os, "write", writes)
+    with pytest.raises(ReceiptError) as caught:
+        mmr._write_new_file(tmp_path / "artifact.bin", b"abcd")
+    assert caught.value.reason == "receipt_write_failed"
+    assert "size 10 != 4" in caught.value.detail
+
+
+def test_close_failure_after_an_error_is_noted_and_never_replaces_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(_BAD_COUNTS["zero"]))
+    monkeypatch.setattr(mmr.os, "close", FailingClose())
+    with pytest.raises(ReceiptError) as caught:
+        mmr._write_new_file(tmp_path / "artifact.bin", b"data")
+    assert caught.value.reason == "receipt_write_failed"
+    assert "close after failure also failed: OSError" in caught.value.__notes__
+
+
+def test_close_failure_after_a_full_write_is_not_swallowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(mmr.os, "close", FailingClose())
+    with pytest.raises(OSError, match="injected close failure"):
+        mmr._write_new_file(tmp_path / "artifact.bin", b"data")
+
+
+@pytest.mark.parametrize("name", ["zero", "oversized_short_write", "string"])
+def test_public_writer_refuses_an_impossible_marker_write(tmp_path, monkeypatch, name):
+    world = make_world(tmp_path)
+    writes = ReceiptWrites(_BAD_COUNTS[name], only_marker=True)
+    monkeypatch.setattr(mmr.os, "write", writes)
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed" and "do not retry" in caught.value.detail
+    assert writes.calls == 1
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    report = mmr.verify_manual_merge_receipt(receipt_dir)
+    assert report["complete"] is False and report["ok"] is False
+    assert refusal_reason(world.write) == "receipt_collision"
+
+
+def test_public_writer_refuses_an_impossible_artifact_write(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    writes = ReceiptWrites(_BAD_COUNTS["string"])
+    monkeypatch.setattr(mmr.os, "write", writes)
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed"
+    assert writes.calls == 1
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert not (receipt_dir / mmr.COMPLETION_MARKER).exists()
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
+
+
+def _runner_free_labels(world: World, monkeypatch, *, anchor_provenance: str | None) -> None:
+    """Make the runner-free branch run on unit_mock runners and genuine-looking LABELS.
+
+    Labels are not proof: this only shows which predicate the receipt applies.
+    """
+    real_load, real_verify = mmr.load_trust_anchor, mmr.verify_statement_signature
+
+    def load(**kwargs):
+        anchor = real_load(**{**kwargs, "runner": world.git})
+        return replace(anchor, provenance=anchor_provenance) if anchor_provenance else anchor
+
+    def verify(**kwargs):
+        result = real_verify(**{**kwargs, "runner": world.ssh})
+        return replace(result, evidence_class=mms.EVIDENCE_SUBPROCESS_SSH)
+
+    monkeypatch.setattr(mmr, "load_trust_anchor", load)
+    monkeypatch.setattr(mmr, "verify_statement_signature", verify)
+
+
+def test_runner_free_branch_refuses_a_mocked_anchor_via_statement_provenance(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    _runner_free_labels(world, monkeypatch, anchor_provenance=None)
+    assert refusal_reason(world.assess, runner=None, git_runner=None) == "statement:provenance_not_genuine"
+    assert refusal_reason(world.write, runner=None, git_runner=None, synthetic_fixture=False) == (
+        "statement:provenance_not_genuine"
+    )
+    assert list(world.out_root.iterdir()) == []
+
+
+def test_genuine_labelled_evidence_still_always_refuses_to_write(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    _runner_free_labels(world, monkeypatch, anchor_provenance=mms.ANCHOR_SUBPROCESS_GIT)
+    assert world.assess(runner=None, git_runner=None).evidence_class == mmr.EVIDENCE_GENUINE
+    for synthetic_fixture, reason in ((False, "integration_prerequisites_unverified"), (True, "receipt_mode_invalid")):
+        assert refusal_reason(
+            world.write, runner=None, git_runner=None, synthetic_fixture=synthetic_fixture
+        ) == reason
     assert list(world.out_root.iterdir()) == []
 
 

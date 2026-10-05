@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -113,7 +114,7 @@ class FakeSsh:
         return RunResult(255, b"", b"Could not verify signature.\n")
 
 
-def bridge_event(agent: str, uuid: str, status: str, payload: dict, **overrides) -> dict:
+def bridge_event(agent: str, uuid: str, status: str, payload: dict, overrides: dict) -> dict:
     event = {
         "ts_utc": "2026-10-05T07:00:00.1234567Z",
         "agent": agent,
@@ -131,15 +132,15 @@ def bridge_event(agent: str, uuid: str, status: str, payload: dict, **overrides)
 
 
 def rco_event(**overrides) -> dict:
-    return bridge_event("claude-rco-1", "rco1-uuid-synthetic", "rco_pass", {"exact_head": HEAD}, **overrides)
+    return bridge_event("claude-rco-1", "rco1-uuid-synthetic", "rco_pass", {"exact_head": HEAD}, overrides)
 
 
 def lead_event(**overrides) -> dict:
-    return bridge_event("codex-lead-1", "lead-uuid-synthetic", "build_consensus_pass", {"head": HEAD}, **overrides)
+    return bridge_event("codex-lead-1", "lead-uuid-synthetic", "build_consensus_pass", {"head": HEAD}, overrides)
 
 
 def tools_event(**overrides) -> dict:
-    return bridge_event("codex-tools-1", "tools-uuid-synthetic", "build_consensus_pass", {"exact_head": HEAD}, **overrides)
+    return bridge_event("codex-tools-1", "tools-uuid-synthetic", "build_consensus_pass", {"exact_head": HEAD}, overrides)
 
 
 def gh_stdout(**overrides) -> bytes:
@@ -555,9 +556,7 @@ def test_author_set_is_required(tmp_path):
 
 
 def refusal_event(**overrides) -> dict:
-    event = bridge_event("codex-lead-1", "lead-uuid-synthetic", "autonomous_refused", {"pr_number": PR})
-    event.update(overrides)
-    return event
+    return bridge_event("codex-lead-1", "lead-uuid-synthetic", "autonomous_refused", {"pr_number": PR}, overrides)
 
 
 def test_recorded_refusal_is_preserved_unchanged(tmp_path):
@@ -769,11 +768,13 @@ def test_module_imports_only_public_magma_and_statement_apis():
     assert project == _ALLOWED_PROJECT_IMPORTS, project ^ _ALLOWED_PROJECT_IMPORTS
     text = MODULE_PATH.read_text(encoding="utf-8")
     for forbidden in (
-        "gh pr merge", "events.jsonl", "check_bridge", "check_rco_pass", "idle_consensus",
+        "gh pr merge", "check_bridge", "check_rco_pass", "idle_consensus",
         "write_bridge_consensus_merge_receipt", "merge_with_bridge_receipt",
         "bridge_accepted_queue_preflight", "Write-AgentEvent", "--admin", "subprocess",
     ):
         assert forbidden not in text, forbidden
+    # The bridge log itself is never named (the local approval-events.jsonl artifact is fine).
+    assert re.search(r"(?<![A-Za-z0-9_-])events\.jsonl", text) is None
 
 
 def test_module_top_level_has_no_side_effect_statements():

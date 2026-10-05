@@ -39,11 +39,21 @@ Honest limits (also in the route documentation):
   it is UNKNOWN here and not changed.  Windows has no ``openat``, so an
   ancestor swap racing between those checks, crash durability of the
   directory entry and POSIX behaviour stay UNKNOWN.
-* Ledger cleanup (closing a nonce file, unlocking and closing the lock) never
-  replaces the original error: its failures are attached as notes and as
-  ``cleanup_failure``.  A cleanup failure after an otherwise successful
-  operation refuses with ``ledger_cleanup_failed``.  A refusal after bytes
-  were written leaves them for reconciliation, never a retry.
+* Ledger cleanup (closing a nonce file, unlocking and closing the lock)
+  converts only ``OSError``.  Such a failure never replaces the error being
+  raised.  Unless a later close or unlock call is interrupted, it is
+  attached to that error as a note (and as ``cleanup_failure`` on a
+  ``StatementError``), and after an otherwise successful operation it
+  refuses with ``ledger_cleanup_failed``.  Any other exception from a close
+  or unlock call, such as ``KeyboardInterrupt`` or ``SystemExit``, is not
+  converted: it propagates as the outward error in place of the original
+  error or of the success.  That call attaches nothing to the original
+  error, cleanup failures collected but not yet reported are lost, and at
+  most Python's implicit ``__context__`` chain still references the
+  original error.  This covers an exception raised by the close or unlock
+  call itself; a real signal can arrive at any other point.  A refusal or
+  interruption after bytes were written leaves them for reconciliation,
+  never a retry.
 * Provenance is explicit: ``VerificationResult.evidence_class`` describes the
   SSH verifier process and ``TrustAnchor.provenance`` /
   ``VerificationResult.anchor_provenance`` describe how the anchor was loaded.
@@ -149,9 +159,11 @@ ANCHOR_UNVERIFIED = "unverified_caller_constructed"
 class StatementError(ValueError):
     """Fail-closed refusal with a stable reason code.
 
-    ``cleanup_failure`` records a cleanup failure (verifier temporary
-    directory, or ledger file close / unlock) that happened while this error
-    was already being raised (never masking it).
+    ``cleanup_failure`` records an ``OSError`` cleanup failure (verifier
+    temporary directory, or ledger file close / unlock) from the same call,
+    before or while this error was raised; that failure did not replace this
+    error.  An interruption during either cleanup is not converted and can
+    replace this error.
     """
 
     def __init__(self, reason: str, detail: str = "") -> None:
@@ -1106,9 +1118,12 @@ def _open_plain_leaf(path: Path, flags: int) -> int:
 def _close_after(fd: int, label: str, operation: Callable[[], Any]) -> tuple[Any, str | None]:
     """Run ``operation`` then close ``fd``.
 
-    On failure the close failure is noted on the original error.  On success
-    the close failure is returned for the caller to refuse once the lock is
-    released.
+    On failure an ``OSError`` from the close is noted on the original error,
+    which stays the outward error.  On success the close failure is returned
+    for the caller to refuse.  Any other exception from the close
+    (``KeyboardInterrupt``, ``SystemExit``) propagates in place of the
+    original error or of the success and notes nothing (see the module
+    docstring).
     """
     try:
         value = operation()
@@ -1216,8 +1231,11 @@ class NonceLedger:
     the lock; ``history``/``state`` read under the lock and never create files.
     Before writing and again before returning a committed record, the root and
     the nonce file's identity and single link are re-checked (point in time;
-    see the module limits).  Cleanup failures never replace the original
-    error and refuse on their own with ``ledger_cleanup_failed``.
+    see the module limits).  A cleanup ``OSError`` never replaces the original
+    error, and after success it refuses on its own with
+    ``ledger_cleanup_failed`` unless a later cleanup call is interrupted; an
+    interruption during cleanup propagates in place of the original error or
+    of the success.
     """
 
     def __init__(
@@ -1304,7 +1322,8 @@ class NonceLedger:
     def _unlock_and_close(fd: int) -> list[str]:
         """Unlock then always close the lock descriptor; return failures instead of raising.
 
-        Only ``OSError`` is converted, so interruptions still propagate.
+        Only ``OSError`` is converted, so interruptions still propagate; an
+        unlock failure collected before an interrupted close is then lost.
         """
         failures: list[str] = []
         try:
@@ -1327,14 +1346,21 @@ class NonceLedger:
 
     @staticmethod
     def _release(fd: int) -> None:
-        """Unlock and close after a successful operation; refuse if either step failed."""
+        """Unlock and close after a successful operation.
+
+        Refuse if either step failed with ``OSError``; an interruption of
+        either step propagates instead, and any failure collected is then
+        lost.
+        """
         _refuse_cleanup(NonceLedger._unlock_and_close(fd))
 
     def _release_after(self, fd: int, operation: Callable[[], Any]) -> Any:
         """Run ``operation`` under the held lock ``fd``, then release it.
 
-        An error from ``operation`` stays the outward error and carries any
-        release failure as a note; a release failure after success refuses.
+        Unless the release is interrupted, an error from ``operation`` stays
+        the outward error and carries any ``OSError`` release failure as a
+        note, and such a failure after success refuses.  An interruption
+        during the release propagates in place of the error or the success.
         """
         try:
             value = operation()

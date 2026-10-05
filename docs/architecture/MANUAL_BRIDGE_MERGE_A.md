@@ -166,7 +166,15 @@ One-time use is enforced by the nonce ledger, and only the admission module
 
 - Ledger states: `reserved`, `refused_before_effect`, `merge_started`,
   `executed`, `indeterminate`, `reconciled_merged`, `reconciled_not_merged`.
-- The ledger refuses link, junction and hardlink aliases.
+- The ledger refuses link, junction and hardlink aliases of its root, the
+  root's ancestors, the lock file and the nonce files, but only at sampled
+  checks: at construction and at the start of each operation (root), when a
+  file is opened, and for writes just before the write and just before
+  success is returned. A symbolic link or junction elsewhere that points
+  into the ledger is not detected. An alias created after the last check is
+  not detected either: the operation can still succeed, and a later
+  operation refuses only if its own checks see the alias (measured for a
+  hardlink: a later read refuses). The checks are not atomic (section 11).
 
 **Provenance.** Results produced through injected runners are labelled
 `unit_mock`, and `require_genuine_provenance` refuses them with
@@ -196,7 +204,12 @@ Tests write only receipts labelled `synthetic_unit_mock`.
 - Every approval, and a recorded autonomous refusal, must be timestamped
   before GitHub's `mergedAt` second.
 - A receipt directory without its completion marker is an unaccepted failure
-  artifact. It must be reconciled, never retried.
+  artifact. A failed write can also leave a marker that verifies, for example
+  after a close failure, an interruption or a refused completion check once
+  the marker was written. Every directory left by a failed write must be
+  reconciled with the verifier. The caller never retries, deletes or
+  overwrites it; the writer refuses another directory for the same PR and
+  12-character head prefix, but nothing prevents deletion.
 
 No receipt exists for any real merge, and no retroactive receipt will be
 made for past merges.

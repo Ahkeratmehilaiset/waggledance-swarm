@@ -1556,6 +1556,59 @@ def test_an_interruption_during_cleanup_is_not_converted(tmp_path, monkeypatch):
     assert ledger.state(NONCE) == "reserved"
 
 
+def _interrupt_after_closing(interrupt, name):
+    """Really open and close; raise ``interrupt`` right after the file ``name`` is closed."""
+    names = {}
+
+    def open_(path, flags, mode=0o777):
+        fd = os.open(path, flags, mode)
+        names[fd] = Path(path).name
+        return fd
+
+    def close(fd):
+        closed = names.pop(fd, None)
+        os.close(fd)
+        if closed == name:
+            raise interrupt("INJECTED cleanup interrupt")
+
+    return {"open": open_, "close": close}
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("closing", [f"{NONCE}.jsonl", mms.LEDGER_LOCK_NAME])
+def test_interrupted_close_after_fsync_failure_replaces_it(tmp_path, monkeypatch, interrupt, closing):
+    ledger = _ledger(tmp_path)
+    monkeypatch.setattr(mms, "os", _OsProxy(fsync=_fsync_fails, **_interrupt_after_closing(interrupt, closing)))
+    with pytest.raises(interrupt) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.__cause__ is None and not hasattr(err.value, "__notes__")
+    primary = err.value.__context__  # implicit chaining only: the interrupted step noted nothing
+    assert type(primary) is LedgerError and primary.reason == "ledger_write_failed"
+    assert primary.__cause__.errno == 28
+    assert primary.cleanup_failure is None and not hasattr(primary, "__notes__")
+    assert ledger.state(NONCE) == "reserved"  # the written bytes stay for reconciliation
+    with pytest.raises(LedgerError) as again:
+        _reserve(ledger)
+    assert again.value.reason == "nonce_reused"
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("closing", [f"{NONCE}.jsonl", mms.LEDGER_LOCK_NAME])
+def test_interrupted_close_after_healthy_write_replaces_success(tmp_path, monkeypatch, interrupt, closing):
+    ledger = _ledger(tmp_path)
+    monkeypatch.setattr(mms, "os", _OsProxy(**_interrupt_after_closing(interrupt, closing)))
+    with pytest.raises(interrupt) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.__cause__ is None and err.value.__context__ is None
+    assert not hasattr(err.value, "__notes__")
+    assert ledger.state(NONCE) == "reserved"  # committed, yet the caller never received the record
+    with pytest.raises(LedgerError) as again:
+        _reserve(ledger)
+    assert again.value.reason == "nonce_reused"
+
+
 # --- T06 module hygiene ---------------------------------------------------------
 
 _ALLOWED_IMPORTS = {

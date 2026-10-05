@@ -30,9 +30,20 @@ Honest limits (also in the route documentation):
   clean checkout of the trusted main tip.
 * The nonce ledger is local state: deleting it is not cryptographically
   prevented.  It refuses link, junction/reparse and hardlink aliases on its
-  root, the root's ancestors, the lock file and every nonce file; Windows has
-  no ``openat``, so an ancestor swap racing between those checks, host ACLs,
-  crash durability of the directory entry and POSIX behaviour stay UNKNOWN.
+  root, the root's ancestors, the lock file and every nonce file, and it
+  re-checks the root binding and the nonce file's identity and single link
+  immediately before each write and again before reporting success.  These
+  are point-in-time checks: they detect an alias added after a descriptor was
+  opened but cannot atomically exclude a hostile filesystem actor.  The real
+  precondition for genuine use is a host ACL that admits only the operator;
+  it is UNKNOWN here and not changed.  Windows has no ``openat``, so an
+  ancestor swap racing between those checks, crash durability of the
+  directory entry and POSIX behaviour stay UNKNOWN.
+* Ledger cleanup (closing a nonce file, unlocking and closing the lock) never
+  replaces the original error: its failures are attached as notes and as
+  ``cleanup_failure``.  A cleanup failure after an otherwise successful
+  operation refuses with ``ledger_cleanup_failed``.  A refusal after bytes
+  were written leaves them for reconciliation, never a retry.
 * Provenance is explicit: ``VerificationResult.evidence_class`` describes the
   SSH verifier process and ``TrustAnchor.provenance`` /
   ``VerificationResult.anchor_provenance`` describe how the anchor was loaded.
@@ -138,8 +149,9 @@ ANCHOR_UNVERIFIED = "unverified_caller_constructed"
 class StatementError(ValueError):
     """Fail-closed refusal with a stable reason code.
 
-    ``cleanup_failure`` records a temporary-directory removal failure that
-    happened while this error was already being raised (never masking it).
+    ``cleanup_failure`` records a cleanup failure (verifier temporary
+    directory, or ledger file close / unlock) that happened while this error
+    was already being raised (never masking it).
     """
 
     def __init__(self, reason: str, detail: str = "") -> None:
@@ -262,10 +274,13 @@ class VerifiedStatement:
 def require_genuine_provenance(verified: Any) -> None:
     """Refuse unless the SSH verifier AND the trust-anchor load were real subprocesses.
 
-    Necessary, never sufficient: the caller must have produced ``verified``
-    itself through :func:`verify_statement` without injected runners (a field
-    value is not proof), and live admission remains the later merge module's
-    obligation.  Any injected, mocked or hand-built evidence refuses.
+    Necessary, never sufficient: a consistency predicate over labels.  The
+    caller must have produced ``verified`` itself without injected runners,
+    either through :func:`verify_statement` before a merge or through the
+    receipt module's own post-merge load/verify/bind checks.  Labels alone are
+    not proof: evidence labelled as injected, mocked or hand-built refuses,
+    but a hand-built value carrying genuine labels is not detected here.  Live
+    admission remains the later merge module's obligation.
     """
     if not isinstance(verified, VerifiedStatement):
         raise StatementError("provenance_not_genuine", "a VerifiedStatement is required")
@@ -1013,6 +1028,60 @@ def _plain_directory_identity(root: Path) -> tuple[int, int]:
     return identity
 
 
+def _close_reporting(fd: int, label: str) -> str | None:
+    """Close ``fd``; return a failure description instead of raising.
+
+    Only ``OSError`` is converted, so interruptions still propagate.
+    """
+    try:
+        os.close(fd)
+    except OSError as exc:
+        return f"{label} close {type(exc).__name__}"
+    return None
+
+
+def _note_ledger_cleanup(exc: BaseException, failures: Sequence[str | None]) -> None:
+    """Attach cleanup failures to the primary error without replacing it."""
+    found = [failure for failure in failures if failure]
+    if not found:
+        return
+    detail = "; ".join(found)
+    if isinstance(exc, StatementError):
+        prior = exc.cleanup_failure
+        exc.cleanup_failure = f"{prior}; {detail}" if prior else detail
+    add_note = getattr(exc, "add_note", None)
+    if callable(add_note):
+        add_note(f"ledger cleanup also failed: {detail}")
+
+
+def _refuse_cleanup(failures: Sequence[str | None]) -> None:
+    """Cleanup alone failed after the operation succeeded: refuse visibly with a stable code."""
+    found = [failure for failure in failures if failure]
+    if found:
+        raise LedgerError("ledger_cleanup_failed", "; ".join(found))
+
+
+def _require_same_plain_leaf(fd: int, path: Path) -> None:
+    """Refuse unless ``fd`` and the name ``path`` are still one plain single-link file.
+
+    A point-in-time check: it detects an alias (link, reparse point, hardlink,
+    identity drift) present when it runs, but cannot atomically exclude one
+    added a moment later by a hostile filesystem actor.
+    """
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+    except OSError as exc:
+        raise LedgerError("ledger_entry_alias", f"{path.name}: {type(exc).__name__}") from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or _is_link_or_reparse(named)
+        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        raise LedgerError("ledger_entry_alias", path.name)
+
+
 def _open_plain_leaf(path: Path, flags: int) -> int:
     """Open ``path`` bound to a plain regular file with exactly one link.
 
@@ -1027,20 +1096,26 @@ def _open_plain_leaf(path: Path, flags: int) -> int:
     except OSError as exc:
         raise LedgerError("ledger_entry_unusable", f"{path.name}: {type(exc).__name__}") from exc
     try:
-        opened = os.fstat(fd)
-        named = os.lstat(path)
-    except OSError as exc:
-        os.close(fd)
-        raise LedgerError("ledger_entry_alias", f"{path.name}: {type(exc).__name__}") from exc
-    if (
-        not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != 1
-        or _is_link_or_reparse(named)
-        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(fd)
-        raise LedgerError("ledger_entry_alias", path.name)
+        _require_same_plain_leaf(fd, path)
+    except BaseException as exc:
+        _note_ledger_cleanup(exc, [_close_reporting(fd, path.name)])
+        raise
     return fd
+
+
+def _close_after(fd: int, label: str, operation: Callable[[], Any]) -> tuple[Any, str | None]:
+    """Run ``operation`` then close ``fd``.
+
+    On failure the close failure is noted on the original error.  On success
+    the close failure is returned for the caller to refuse once the lock is
+    released.
+    """
+    try:
+        value = operation()
+    except BaseException as exc:
+        _note_ledger_cleanup(exc, [_close_reporting(fd, label)])
+        raise
+    return value, _close_reporting(fd, label)
 
 
 def _read_all(fd: int) -> bytes:
@@ -1139,6 +1214,10 @@ class NonceLedger:
     the root identity and binds reads and writes to one verified descriptor.
     ``reserve``/``transition`` return the record they committed, read back under
     the lock; ``history``/``state`` read under the lock and never create files.
+    Before writing and again before returning a committed record, the root and
+    the nonce file's identity and single link are re-checked (point in time;
+    see the module limits).  Cleanup failures never replace the original
+    error and refuse on their own with ``ledger_cleanup_failed``.
     """
 
     def __init__(
@@ -1194,32 +1273,40 @@ class NonceLedger:
         if fd is None:
             return None
         deadline = time.monotonic() + self._lock_timeout
-        while True:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
+        try:
+            while True:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
 
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
 
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    os.close(fd)
-                    raise LedgerError("ledger_lock_timeout", "ledger lock busy") from None
-                time.sleep(0.05)
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise LedgerError("ledger_lock_timeout", "ledger lock busy") from None
+                    time.sleep(0.05)
+        except BaseException as exc:
+            _note_ledger_cleanup(exc, [_close_reporting(fd, "lock")])
+            raise
         try:
             self._check_root()
-        except BaseException:
-            self._release(fd)
+        except BaseException as exc:
+            _note_ledger_cleanup(exc, self._unlock_and_close(fd))
             raise
         return fd
 
     @staticmethod
-    def _release(fd: int) -> None:
+    def _unlock_and_close(fd: int) -> list[str]:
+        """Unlock then always close the lock descriptor; return failures instead of raising.
+
+        Only ``OSError`` is converted, so interruptions still propagate.
+        """
+        failures: list[str] = []
         try:
             if sys.platform == "win32":
                 import msvcrt
@@ -1230,8 +1317,32 @@ class NonceLedger:
                 import fcntl
 
                 fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError as exc:
+            failures.append(f"lock unlock {type(exc).__name__}")
         finally:
-            os.close(fd)
+            closed = _close_reporting(fd, "lock")
+            if closed is not None:
+                failures.append(closed)
+        return failures
+
+    @staticmethod
+    def _release(fd: int) -> None:
+        """Unlock and close after a successful operation; refuse if either step failed."""
+        _refuse_cleanup(NonceLedger._unlock_and_close(fd))
+
+    def _release_after(self, fd: int, operation: Callable[[], Any]) -> Any:
+        """Run ``operation`` under the held lock ``fd``, then release it.
+
+        An error from ``operation`` stays the outward error and carries any
+        release failure as a note; a release failure after success refuses.
+        """
+        try:
+            value = operation()
+        except BaseException as exc:
+            _note_ledger_cleanup(exc, self._unlock_and_close(fd))
+            raise
+        self._release(fd)
+        return value
 
     # -- reading --------------------------------------------------------------
 
@@ -1249,10 +1360,8 @@ class NonceLedger:
             return ()
         except FileExistsError as exc:  # not raised without O_EXCL; kept fail-closed
             raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
-        try:
-            data = _read_all(fd)
-        finally:
-            os.close(fd)
+        data, close_failure = _close_after(fd, "nonce file", lambda: _read_all(fd))
+        _refuse_cleanup([close_failure])
         return self._parse(nonce, data)
 
     def _parse(self, nonce: str, data: bytes) -> tuple[LedgerRecord, ...]:
@@ -1318,11 +1427,9 @@ class NonceLedger:
         """Consistent snapshot under the ledger lock (creates no file)."""
         self._path(nonce)
         fd = self._acquire(create=False)
-        try:
+        if fd is None:
             return self._read(nonce)
-        finally:
-            if fd is not None:
-                self._release(fd)
+        return self._release_after(fd, lambda: self._read(nonce))
 
     def state(self, nonce: str) -> str | None:
         records = self.history(nonce)
@@ -1348,10 +1455,9 @@ class NonceLedger:
 
     def in_flight(self) -> tuple[str, ...]:
         fd = self._acquire()
-        try:
-            return tuple(n for n, s in self._scan().items() if s in IN_FLIGHT_STATES)
-        finally:
-            self._release(fd)
+        return self._release_after(
+            fd, lambda: tuple(n for n, s in self._scan().items() if s in IN_FLIGHT_STATES)
+        )
 
     # -- writing --------------------------------------------------------------
 
@@ -1360,7 +1466,16 @@ class NonceLedger:
         return now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     def _commit(self, nonce: str, fd: int, prior: bytes, record: Mapping[str, Any]) -> LedgerRecord:
-        """Append ``record`` through ``fd`` (lock held) and return exactly that committed record."""
+        """Append ``record`` through ``fd`` (lock held) and return exactly that committed record.
+
+        The root binding and the nonce file's identity and single link are
+        re-checked immediately before the write and again before success is
+        returned.  An alias detected after the write refuses; the written bytes
+        stay for reconciliation, never a retry.
+        """
+        path = self._path(nonce)
+        self._check_root()
+        _require_same_plain_leaf(fd, path)
         line = _canonical_record(record)
         _write_all(fd, line)
         _fsync(fd)
@@ -1370,6 +1485,8 @@ class NonceLedger:
         committed = self._parse(nonce, persisted)[-1]
         if committed.seq != record["seq"] or committed.to_state != record["to"]:
             raise LedgerError("ledger_write_unverified", nonce)
+        self._check_root()
+        _require_same_plain_leaf(fd, path)
         return committed
 
     def reserve(
@@ -1394,8 +1511,8 @@ class NonceLedger:
         if type(batch_id) is not str or BATCH_ID_RE.fullmatch(batch_id) is None:
             raise LedgerError("invalid_field:batch_id", "malformed batch id")
         clean = _validate_evidence(evidence)
-        fd = self._acquire()
-        try:
+
+        def locked() -> tuple[LedgerRecord, str | None]:
             states = self._scan()
             if nonce in states:
                 raise LedgerError("nonce_reused", nonce)
@@ -1420,12 +1537,23 @@ class NonceLedger:
                 leaf = _open_plain_leaf(path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             except FileExistsError as exc:
                 raise LedgerError("nonce_reused", nonce) from exc
-            try:
-                committed = self._commit(nonce, leaf, b"", record)
-            finally:
-                os.close(leaf)
-        finally:
-            self._release(fd)
+            return _close_after(leaf, "nonce file", lambda: self._commit(nonce, leaf, b"", record))
+
+        return self._finish(self._acquire(), locked)
+
+    def _finish(self, fd: int, locked: Callable[[], tuple[LedgerRecord, str | None]]) -> LedgerRecord:
+        """Run a locked write, release the lock, and refuse if any cleanup failed.
+
+        A refusal after the record was written leaves it for reconciliation.
+        """
+        try:
+            committed, leaf_failure = locked()
+        except BaseException as exc:
+            _note_ledger_cleanup(exc, self._unlock_and_close(fd))
+            raise
+        if leaf_failure is not None:
+            _refuse_cleanup([leaf_failure, *self._unlock_and_close(fd)])
+        self._release(fd)
         return committed
 
     def transition(
@@ -1438,44 +1566,43 @@ class NonceLedger:
     ) -> LedgerRecord:
         path = self._path(nonce)
         clean = _validate_evidence(evidence)
-        fd = self._acquire()
-        try:
+
+        def append(leaf: int) -> LedgerRecord:
+            prior = _read_all(leaf)
+            records = self._parse(nonce, prior)
+            if not records:
+                raise LedgerError("nonce_unknown", nonce)
+            last = records[-1]
+            if to_state not in ALLOWED_TRANSITIONS.get(last.to_state, ()):
+                raise LedgerError("ledger_transition_invalid", f"{last.to_state}->{to_state}")
+            if statement_sha256 != last.statement_sha256:
+                raise LedgerError("ledger_statement_mismatch", nonce)
+            record = {
+                "schema": LEDGER_SCHEMA,
+                "seq": last.seq + 1,
+                "nonce": nonce,
+                "from": last.to_state,
+                "to": to_state,
+                "ts_utc": self._now(),
+                "statement_sha256": last.statement_sha256,
+                "pull_request": last.pull_request,
+                "head_sha": last.head_sha,
+                "base_sha": last.base_sha,
+                "batch_id": last.batch_id,
+                "evidence": clean,
+            }
+            return self._commit(nonce, leaf, prior, record)
+
+        def locked() -> tuple[LedgerRecord, str | None]:
             try:
                 leaf = _open_plain_leaf(path, os.O_RDWR | os.O_APPEND)
             except FileNotFoundError:
                 raise LedgerError("nonce_unknown", nonce) from None
             except FileExistsError as exc:  # not raised without O_EXCL; kept fail-closed
                 raise LedgerError("ledger_unreadable", type(exc).__name__) from exc
-            try:
-                prior = _read_all(leaf)
-                records = self._parse(nonce, prior)
-                if not records:
-                    raise LedgerError("nonce_unknown", nonce)
-                last = records[-1]
-                if to_state not in ALLOWED_TRANSITIONS.get(last.to_state, ()):
-                    raise LedgerError("ledger_transition_invalid", f"{last.to_state}->{to_state}")
-                if statement_sha256 != last.statement_sha256:
-                    raise LedgerError("ledger_statement_mismatch", nonce)
-                record = {
-                    "schema": LEDGER_SCHEMA,
-                    "seq": last.seq + 1,
-                    "nonce": nonce,
-                    "from": last.to_state,
-                    "to": to_state,
-                    "ts_utc": self._now(),
-                    "statement_sha256": last.statement_sha256,
-                    "pull_request": last.pull_request,
-                    "head_sha": last.head_sha,
-                    "base_sha": last.base_sha,
-                    "batch_id": last.batch_id,
-                    "evidence": clean,
-                }
-                committed = self._commit(nonce, leaf, prior, record)
-            finally:
-                os.close(leaf)
-        finally:
-            self._release(fd)
-        return committed
+            return _close_after(leaf, "nonce file", lambda: append(leaf))
+
+        return self._finish(self._acquire(), locked)
 
 
 __all__ = [

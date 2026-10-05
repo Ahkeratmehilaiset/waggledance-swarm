@@ -1288,6 +1288,274 @@ def test_successful_cleanup_leaves_no_failure_record(tmp_path):
     assert not fake.calls[0]["anchor_copy"].parent.exists()
 
 
+# --- T09 post-open aliases and cleanup errors (Tools 383E7B04 SHA1, SHA2) ---------
+
+
+class _OsProxy:
+    """Module-local ``os`` stand-in: overrides a few calls and delegates the rest."""
+
+    def __init__(self, **overrides):
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def _close_then_fail(message):
+    def close(fd):
+        os.close(fd)
+        raise OSError(5, message)
+    return close
+
+
+def _fsync_fails(fd):
+    raise OSError(28, "ORIGINAL injected fsync")
+
+
+def _unlock_then_fail(monkeypatch):
+    """Really unlock, then report a secondary unlock failure (both platforms)."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        real = msvcrt.locking
+
+        def locking(fd, mode, nbytes):
+            real(fd, mode, nbytes)
+            if mode == msvcrt.LK_UNLCK:
+                raise OSError(13, "SECONDARY injected unlock")
+
+        monkeypatch.setattr(msvcrt, "locking", locking)
+    else:
+        import fcntl
+
+        real = fcntl.flock
+
+        def flock(fd, operation):
+            real(fd, operation)
+            if operation == fcntl.LOCK_UN:
+                raise OSError(13, "SECONDARY injected unlock")
+
+        monkeypatch.setattr(fcntl, "flock", flock)
+
+
+def _write(ledger: NonceLedger, operation: str):
+    if operation == "reserve":
+        return _reserve(ledger)
+    return ledger.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA)
+
+
+def _ready(tmp_path: Path, operation: str) -> NonceLedger:
+    ledger = _ledger(tmp_path)
+    if operation == "transition":
+        _reserve(ledger)
+    return ledger
+
+
+@pytest.mark.parametrize("operation", ["reserve", "transition"])
+def test_hardlink_added_after_open_refuses_before_any_write(tmp_path, monkeypatch, operation):
+    ledger = _ready(tmp_path, operation)
+    nonce_file, alias = ledger._root / f"{NONCE}.jsonl", tmp_path / "post-open-alias"
+    real = NonceLedger._commit
+    seen = {}
+
+    def link_then_commit(self, nonce, fd, prior, record):
+        os.link(nonce_file, alias)
+        seen["nlink"], seen["bytes"] = os.fstat(fd).st_nlink, alias.stat().st_size
+        return real(self, nonce, fd, prior, record)
+
+    monkeypatch.setattr(NonceLedger, "_commit", link_then_commit)
+    with pytest.raises(LedgerError) as err:
+        _write(ledger, operation)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_entry_alias"
+    assert seen["nlink"] == 2 and alias.stat().st_size == seen["bytes"]
+    with pytest.raises(LedgerError) as err:
+        ledger.history(NONCE)
+    assert err.value.reason == "ledger_entry_alias"
+
+
+@pytest.mark.parametrize("operation", ["reserve", "transition"])
+def test_hardlink_added_during_the_write_refuses_instead_of_reporting_success(tmp_path, monkeypatch, operation):
+    ledger = _ready(tmp_path, operation)
+    alias = tmp_path / "late-alias"
+    real = mms._fsync
+
+    def fsync_then_link(fd):
+        real(fd)
+        os.link(ledger._root / f"{NONCE}.jsonl", alias)
+
+    monkeypatch.setattr(mms, "_fsync", fsync_then_link)
+    with pytest.raises(LedgerError) as err:
+        _write(ledger, operation)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_entry_alias"
+    # The written line stays for reconciliation; nothing retries or reports success.
+    assert alias.read_bytes().count(b"\n") == (1 if operation == "reserve" else 2)
+
+
+def test_unaliased_writes_check_the_leaf_at_open_before_write_and_before_success(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    checked = []
+    real = mms._require_same_plain_leaf
+    monkeypatch.setattr(mms, "_require_same_plain_leaf", lambda fd, path: (checked.append(path.name), real(fd, path))[1])
+    assert _reserve(ledger).to_state == "reserved"
+    assert ledger.transition(nonce=NONCE, to_state="merge_started", statement_sha256=SHA).seq == 1
+    monkeypatch.undo()
+    assert checked.count(f"{NONCE}.jsonl") == 6
+
+
+def test_root_change_seen_just_before_the_write_leaves_the_nonce_file_empty(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    real_check, real_commit = NonceLedger._check_root, NonceLedger._commit
+    changed = []
+
+    def check(self):
+        if changed:
+            raise LedgerError("ledger_root_changed", "fixture")
+        real_check(self)
+
+    def commit(self, nonce, fd, prior, record):
+        changed.append(True)
+        return real_commit(self, nonce, fd, prior, record)
+
+    monkeypatch.setattr(NonceLedger, "_check_root", check)
+    monkeypatch.setattr(NonceLedger, "_commit", commit)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_root_changed"
+    assert (ledger._root / f"{NONCE}.jsonl").stat().st_size == 0
+
+
+def test_fsync_failure_alone_keeps_its_reason_without_cleanup_notes(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    monkeypatch.setattr(mms, "os", _OsProxy(fsync=_fsync_fails))
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_write_failed" and err.value.__cause__.errno == 28
+    assert err.value.cleanup_failure is None and not hasattr(err.value, "__notes__")
+
+
+@pytest.mark.parametrize("operation", ["reserve", "transition"])
+def test_close_failures_after_an_fsync_failure_never_replace_it(tmp_path, monkeypatch, operation):
+    ledger = _ready(tmp_path, operation)
+    monkeypatch.setattr(mms, "os", _OsProxy(fsync=_fsync_fails, close=_close_then_fail("SECONDARY injected close")))
+    with pytest.raises(LedgerError) as err:
+        _write(ledger, operation)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_write_failed" and err.value.__cause__.errno == 28
+    assert err.value.cleanup_failure == "nonce file close OSError; lock close OSError"
+    assert any("ledger cleanup also failed" in note for note in err.value.__notes__)
+
+
+def test_unlock_failure_after_an_fsync_failure_never_replaces_it(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    monkeypatch.setattr(mms, "os", _OsProxy(fsync=_fsync_fails))
+    _unlock_then_fail(monkeypatch)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_write_failed"
+    assert err.value.cleanup_failure == "lock unlock PermissionError"
+    with pytest.raises(LedgerError) as again:
+        _reserve(ledger)
+    assert again.value.reason == "nonce_reused"
+
+
+def test_close_failure_after_a_committed_reserve_refuses_visibly_and_is_not_retried(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    monkeypatch.setattr(mms, "os", _OsProxy(close=_close_then_fail("ONLY injected close")))
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_cleanup_failed"
+    assert err.value.detail == "nonce file close OSError; lock close OSError"
+    assert ledger.state(NONCE) == "reserved"
+    for nonce, reason in ((NONCE, "nonce_reused"), ("f" * 32, "ledger_in_flight")):
+        with pytest.raises(LedgerError) as again:
+            _reserve(ledger, nonce=nonce)
+        assert again.value.reason == reason
+
+
+def test_unlock_failure_after_a_good_history_read_refuses_visibly(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+    assert [r.to_state for r in ledger.history(NONCE)] == ["reserved"]
+    _unlock_then_fail(monkeypatch)
+    with pytest.raises(LedgerError) as err:
+        ledger.history(NONCE)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_cleanup_failed" and err.value.detail == "lock unlock PermissionError"
+    assert ledger.state(NONCE) == "reserved"
+
+
+def test_read_failure_keeps_its_reason_when_file_and_lock_closes_also_fail(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    _reserve(ledger)
+
+    def read_fails(fd, size):
+        raise OSError(5, "ORIGINAL injected read")
+
+    monkeypatch.setattr(mms, "os", _OsProxy(read=read_fails, close=_close_then_fail("SECONDARY injected close")))
+    with pytest.raises(LedgerError) as err:
+        ledger.history(NONCE)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_unreadable"
+    assert err.value.cleanup_failure == "nonce file close OSError; lock close OSError"
+
+
+def test_root_failure_after_locking_keeps_its_reason_when_unlock_also_fails(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+    real = NonceLedger._check_root
+    calls = []
+
+    def check(self):
+        calls.append(True)
+        if len(calls) == 2:  # the re-check made once the lock is held
+            raise LedgerError("ledger_root_changed", "fixture")
+        real(self)
+
+    monkeypatch.setattr(NonceLedger, "_check_root", check)
+    _unlock_then_fail(monkeypatch)
+    with pytest.raises(LedgerError) as err:
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert err.value.reason == "ledger_root_changed"
+    assert err.value.cleanup_failure == "lock unlock PermissionError"
+    assert not (ledger._root / f"{NONCE}.jsonl").exists()
+    assert _reserve(ledger).to_state == "reserved"
+
+
+def test_lock_timeout_keeps_its_reason_when_the_lock_close_also_fails(tmp_path, monkeypatch):
+    holder = _ledger(tmp_path)
+    held = holder._acquire()
+    try:
+        waiter = _ledger(tmp_path, lock_timeout_seconds=0)
+        monkeypatch.setattr(mms, "os", _OsProxy(close=_close_then_fail("SECONDARY injected close")))
+        with pytest.raises(LedgerError) as err:
+            _reserve(waiter)
+        monkeypatch.undo()
+    finally:
+        holder._release(held)
+    assert err.value.reason == "ledger_lock_timeout"
+    assert err.value.cleanup_failure == "lock close OSError"
+
+
+def test_an_interruption_during_cleanup_is_not_converted(tmp_path, monkeypatch):
+    ledger = _ledger(tmp_path)
+
+    def close(fd):
+        os.close(fd)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mms, "os", _OsProxy(close=close))
+    with pytest.raises(KeyboardInterrupt):
+        _reserve(ledger)
+    monkeypatch.undo()
+    assert ledger.state(NONCE) == "reserved"
+
+
 # --- T06 module hygiene ---------------------------------------------------------
 
 _ALLOWED_IMPORTS = {

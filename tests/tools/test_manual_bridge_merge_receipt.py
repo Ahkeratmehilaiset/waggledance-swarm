@@ -770,9 +770,12 @@ def test_module_imports_only_public_magma_and_statement_apis():
     for forbidden in (
         "gh pr merge", "check_bridge", "check_rco_pass", "idle_consensus",
         "write_bridge_consensus_merge_receipt", "merge_with_bridge_receipt",
-        "bridge_accepted_queue_preflight", "Write-AgentEvent", "--admin", "subprocess",
+        "bridge_accepted_queue_preflight", "Write-AgentEvent", "--admin",
     ):
         assert forbidden not in text, forbidden
+    # No process launching here: subprocess is absent from the import set above
+    # (the evidence-class literal "subprocess_ssh_keygen" is only a label).
+    assert "subprocess" not in top
     # The bridge log itself is never named (the local approval-events.jsonl artifact is fine).
     assert re.search(r"(?<![A-Za-z0-9_-])events\.jsonl", text) is None
 

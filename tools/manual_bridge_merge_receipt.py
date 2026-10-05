@@ -947,10 +947,11 @@ def _write_new_file(path: Path, data: bytes) -> None:
     ``1..remaining``.  A zero, negative, oversized or non-integer count, or a
     final size other than ``len(data)``, refuses with ``receipt_write_failed``
     instead of looping or accepting a short file; the partial file stays as part
-    of the unaccepted failure artifact.  A close failure after an earlier error
-    is noted on that error and never replaces it.  Counts and size are not
-    content: other bytes of the same length pass here, so callers verify what
-    was stored.
+    of the unaccepted failure artifact.  After an earlier error, an ``OSError``
+    from closing the file is noted on that error and does not replace it; any
+    other exception from that close, such as ``KeyboardInterrupt``, propagates
+    in place of the earlier error.  Counts and size are not content: other
+    bytes of the same length pass here, so callers verify what was stored.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags, 0o600)

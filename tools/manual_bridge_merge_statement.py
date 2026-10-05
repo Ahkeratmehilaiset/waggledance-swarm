@@ -837,8 +837,12 @@ def verify_statement_signature(
     except BaseException as exc:
         _note_cleanup_failure(exc, _remove_temp_dir(temp_dir))
         raise
-    # Cleanup runs before the output checks; a cleanup failure never masks a
-    # verification refusal and refuses on its own when verification passed.
+    # Cleanup runs before the output checks.  _remove_temp_dir converts only
+    # OSError: such a failure is noted on the error being raised (here and in
+    # the handler above) and never replaces it, and it refuses on its own
+    # with verifier_cleanup_failed when verification passed.  Any other
+    # exception from the cleanup, such as KeyboardInterrupt, is not converted
+    # and propagates in place of that error or of the verification result.
     cleanup_failure = _remove_temp_dir(temp_dir)
     try:
         verification = _evaluate_verifier_result(

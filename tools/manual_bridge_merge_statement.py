@@ -719,7 +719,7 @@ def load_trust_anchor(
         raise StatementError("anchor_missing", "cat-file failed")
     data = content.stdout
     header = b"blob " + str(len(data)).encode("ascii") + b"\x00"
-    if hashlib.sha1(header + data).hexdigest() != blob_sha:  # noqa: S324 - git object id
+    if hashlib.sha1(header + data, usedforsecurity=False).hexdigest() != blob_sha:  # noqa: S324 - git object id
         raise StatementError("anchor_integrity_mismatch", blob_sha)
     key_type, fingerprint = parse_allowed_signers(data)
     return TrustAnchor(

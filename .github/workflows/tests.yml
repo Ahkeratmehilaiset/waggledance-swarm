@@ -10,7 +10,10 @@ on:
 jobs:
   unified:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # In 39 runs (2026-09-29..10-05) passing runs took 24.7-29.9 min and 20 runs
+    # were cancelled at the old 30-minute limit (30.25-30.35 min), one measured
+    # at 84% about a minute from the end; 60 matches branches that used it.
+    timeout-minutes: 60
 
     steps:
     - uses: actions/checkout@v7

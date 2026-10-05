@@ -944,6 +944,205 @@ def test_genuine_labelled_evidence_still_always_refuses_to_write(tmp_path, monke
     assert list(world.out_root.iterdir()) == []
 
 
+# --- R11 completion re-verification and exception boundary (Tools 6558693C RHA1, RHA2)
+
+
+def _receipt_files(out_root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(out_root)): p.read_bytes() for p in sorted(out_root.rglob("*")) if p.is_file()}
+
+
+def _retry_collides_and_changes_nothing(world: World) -> None:
+    before = _receipt_files(world.out_root)
+    assert refusal_reason(world.write) == "receipt_collision"
+    assert _receipt_files(world.out_root) == before
+
+
+def _same_length_garbage(fd, view):
+    return _REAL_WRITE(fd, b"x" * len(view))
+
+
+def test_success_is_reported_only_after_the_finished_receipt_verifies(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    real = mmr.verify_manual_merge_receipt
+    seen = []
+
+    def watched(receipt_dir):
+        report = real(receipt_dir)
+        seen.append(((receipt_dir / mmr.COMPLETION_MARKER).is_file(), report["complete"]))
+        return report
+
+    monkeypatch.setattr(mmr, "verify_manual_merge_receipt", watched)
+    result = world.write()
+    assert seen == [(True, True)]
+    monkeypatch.undo()
+    assert mmr.verify_manual_merge_receipt(Path(result["receipt_dir"]))["complete"] is True
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_marker_stored_as_other_bytes_of_the_same_length_refuses(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    writes = ReceiptWrites(_same_length_garbage, only_marker=True)
+    monkeypatch.setattr(mmr.os, "write", writes)
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed" and "do not retry" in caught.value.detail
+    assert caught.value.__cause__.reason == "receipt_verification_failed"
+    assert "marker_invalid" in caught.value.__cause__.detail
+    assert writes.calls == 1
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert set((receipt_dir / mmr.COMPLETION_MARKER).read_bytes()) == {ord("x")}  # kept as stored
+    report = mmr.verify_manual_merge_receipt(receipt_dir)
+    assert report["ok"] is False and report["complete"] is False
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_marker_differing_in_a_field_the_verifier_does_not_bind_still_refuses(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+
+    def other_receipt_digest(fd, view):
+        value = json.loads(bytes(view))
+        digest = value["magma"]["receipt_digest"]
+        value["magma"]["receipt_digest"] = digest[:-1] + ("1" if digest[-1] != "1" else "2")
+        changed = mmr._canonical_json_line(value)
+        assert len(changed) == len(view)
+        return _REAL_WRITE(fd, changed)
+
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(other_receipt_digest, only_marker=True))
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed"
+    assert caught.value.__cause__.detail == "completion: marker differs from the bytes written"
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    # The verifier does not bind this marker field, so the kept directory still
+    # verifies; only the writer knows which bytes it meant to store.
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_artifact_stored_as_other_bytes_refuses_before_any_marker(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    seen = []
+
+    def first_artifact_garbage(fd, view):
+        seen.append(len(view))
+        return _same_length_garbage(fd, view) if len(seen) == 1 else _REAL_WRITE(fd, view)
+
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(first_artifact_garbage))
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed"
+    assert caught.value.__cause__.reason == "receipt_verification_failed"
+    assert "evidence/statement.json: raw digest mismatch" in caught.value.__cause__.detail
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert not (receipt_dir / mmr.COMPLETION_MARKER).exists()
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
+    _retry_collides_and_changes_nothing(world)
+
+
+@pytest.mark.parametrize(
+    ("override", "detail"),
+    [
+        ({"complete": False, "errors": ["injected incomplete"]}, "completion: injected incomplete"),
+        ({"ok": False, "errors": ["injected not ok"]}, "completion: injected not ok"),
+        ({"evidence_class": mmr.EVIDENCE_GENUINE, "genuine": True}, "completion: evidence label differs from the one written"),
+        ({"genuine": True}, "completion: evidence label differs from the one written"),
+    ],
+)
+def test_completion_report_that_is_not_a_complete_synthetic_receipt_refuses(tmp_path, monkeypatch, override, detail):
+    world = make_world(tmp_path)
+    real = mmr.verify_manual_merge_receipt
+    monkeypatch.setattr(mmr, "verify_manual_merge_receipt", lambda receipt_dir: {**real(receipt_dir), **override})
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed"
+    assert caught.value.__cause__.detail == detail
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    report = mmr.verify_manual_merge_receipt(receipt_dir)
+    assert report["complete"] is True and report["genuine"] is False  # nothing was relabelled
+    _retry_collides_and_changes_nothing(world)
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_documented_errors_after_the_directory_exists_become_receipt_write_failed(tmp_path, monkeypatch, error):
+    world = make_world(tmp_path)
+
+    def raising(fd, view):
+        raise error("injected")
+
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(raising))
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed" and error.__name__ in caught.value.detail
+    assert type(caught.value.__cause__) is error
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
+    _retry_collides_and_changes_nothing(world)
+
+
+@pytest.mark.parametrize("error", [TypeError, MemoryError, KeyboardInterrupt])
+def test_other_exceptions_propagate_unchanged_and_leave_the_artifact(tmp_path, monkeypatch, error):
+    world = make_world(tmp_path)
+
+    def raising(fd, view):
+        raise error("injected")
+
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(raising))
+    with pytest.raises(error) as caught:
+        world.write()
+    assert type(caught.value) is error
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert not (receipt_dir / mmr.COMPLETION_MARKER).exists()
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is False
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_interruption_after_the_marker_propagates_and_leaves_a_receipt_to_reconcile(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+
+    def interrupted(receipt_dir):
+        raise KeyboardInterrupt("injected during the completion check")
+
+    monkeypatch.setattr(mmr, "verify_manual_merge_receipt", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        world.write()
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    # No success was reported, yet the marker exists: reconciliation verifies the
+    # directory instead of assuming that a failed write left no receipt.
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
+    _retry_collides_and_changes_nothing(world)
+
+
+def test_close_failure_after_the_full_marker_refuses_although_the_marker_verifies(tmp_path, monkeypatch):
+    world = make_world(tmp_path)
+    marker_fds = set()
+
+    def remember_marker(fd, view):
+        marker_fds.add(fd)
+        return _REAL_WRITE(fd, view)
+
+    def close(fd):
+        _REAL_CLOSE(fd)
+        if fd in marker_fds and sys._getframe(1).f_code.co_name == "_write_new_file":
+            raise OSError("injected close failure")
+
+    monkeypatch.setattr(mmr.os, "write", ReceiptWrites(remember_marker, only_marker=True))
+    monkeypatch.setattr(mmr.os, "close", close)
+    with pytest.raises(ReceiptError) as caught:
+        world.write()
+    assert caught.value.reason == "receipt_write_failed" and type(caught.value.__cause__) is OSError
+    monkeypatch.undo()
+    (receipt_dir,) = list(world.out_root.iterdir())
+    assert mmr.verify_manual_merge_receipt(receipt_dir)["complete"] is True
+    _retry_collides_and_changes_nothing(world)
+
+
 # --- R09 module hygiene ------------------------------------------------------------
 
 _ALLOWED_TOP_LEVEL = {

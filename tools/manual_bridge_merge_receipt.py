@@ -39,7 +39,10 @@ are labelled ``synthetic_unit_mock`` inside the digest-bound payload.
 
 Writing is append-only: the receipt directory is created exclusively, nothing
 is overwritten, and a directory without the completion marker is an unaccepted
-failure artifact that must be reconciled, never retried.  Importing this module
+failure artifact that must be reconciled, never retried.  The writer reports
+success only after the finished directory re-verifies complete and the marker
+reads back exactly as written; a failed write can still leave a marker that
+verifies, so reconciliation always re-runs the verifier.  Importing this module
 has no side effects beyond the repository-root ``sys.path`` entry that every
 ``tools`` module uses.
 """
@@ -928,7 +931,9 @@ def _write_new_file(path: Path, data: bytes) -> None:
     final size other than ``len(data)``, refuses with ``receipt_write_failed``
     instead of looping or accepting a short file; the partial file stays as part
     of the unaccepted failure artifact.  A close failure after an earlier error
-    is noted on that error and never replaces it.
+    is noted on that error and never replaces it.  Counts and size are not
+    content: other bytes of the same length pass here, so callers verify what
+    was stored.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags, 0o600)
@@ -977,6 +982,21 @@ def _artifact_bytes(assessment: ReceiptAssessment, evidence: ReceiptEvidence) ->
     }
 
 
+def _require_complete_as_written(receipt_dir: Path, marker_bytes: bytes, label: str) -> None:
+    """Refuse unless the finished directory verifies complete exactly as written.
+
+    ``_write_new_file`` checks counts and size only, so a marker or artifact
+    stored as other bytes must be caught here before success is reported.
+    """
+    report = verify_manual_merge_receipt(receipt_dir)
+    if report["ok"] is not True or report["complete"] is not True:
+        raise ReceiptError("receipt_verification_failed", "completion: " + "; ".join(report["errors"]))
+    if report["evidence_class"] != label or report["genuine"] is not (label == EVIDENCE_GENUINE):
+        raise ReceiptError("receipt_verification_failed", "completion: evidence label differs from the one written")
+    if (receipt_dir / COMPLETION_MARKER).read_bytes() != marker_bytes:
+        raise ReceiptError("receipt_verification_failed", "completion: marker differs from the bytes written")
+
+
 def write_manual_merge_receipt(
     evidence: ReceiptEvidence,
     *,
@@ -992,10 +1012,21 @@ def write_manual_merge_receipt(
 ) -> dict[str, Any]:
     """Assess, then write one receipt directory exclusively; never overwrite or retry.
 
-    Every refusal before the directory exists leaves no file behind.  Any
-    failure after it exists leaves an unaccepted failure artifact (no valid
-    completion marker; a partly written marker can remain and never verifies)
-    and raises ``receipt_write_failed``; the caller reconciles it.
+    Every refusal before the directory exists leaves no file behind.  Success
+    is returned only after the finished directory passed
+    :func:`verify_manual_merge_receipt` (``ok`` and ``complete``) with the
+    expected evidence label and its marker read back as the exact bytes
+    written.  After the directory exists, a ``ReceiptError``, ``OSError`` or
+    ``ValueError`` (a failed completion check included) is raised as
+    ``receipt_write_failed`` with the original as ``__cause__``.  Any other
+    exception, for example ``TypeError``, ``MemoryError``,
+    ``KeyboardInterrupt`` or ``SystemExit``, propagates unchanged; under
+    ``MemoryError`` nothing further is promised.  Every failure leaves the
+    directory as it is: partial, without a marker, or with a marker that may
+    even verify (a close failure or an interruption after the marker write).
+    The caller reconciles it with the verifier and never retries, deletes or
+    overwrites it.  These are point-in-time checks: no crash atomicity and no
+    protection against another process changing the files.
     """
     now = _require_utc_clock(now_utc)
     root = _require_out_root(out_root)
@@ -1071,7 +1102,9 @@ def write_manual_merge_receipt(
             },
             "verified_at_utc": _iso(now),
         }
-        _write_new_file(receipt_dir / COMPLETION_MARKER, _canonical_json_line(marker))
+        marker_bytes = _canonical_json_line(marker)
+        _write_new_file(receipt_dir / COMPLETION_MARKER, marker_bytes)
+        _require_complete_as_written(receipt_dir, marker_bytes, label)
     except ReceiptError as exc:
         raise ReceiptError(
             "receipt_write_failed", f"{receipt_dir.name}: {exc.reason}; reconcile, do not retry"

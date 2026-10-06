@@ -182,3 +182,72 @@ def test_a_target_under_a_link_is_refused_even_when_the_string_looks_persistent(
                      WorktreePath=path)
     assert code == 2 and plan["reasons"] == ["path_reparse"], plan
     assert not (tmp_path / "wt").exists()
+
+# --- Grok #1771 c018 (fable-5 triage 73DC8665 MEDIUM 2+3): the Git COMMON directory must be persistent too, and a
+# relative -RepositoryPath is resolved where Git runs (the PowerShell location) and emitted only as an absolute path.
+
+def linked_worktree(source: dict, where: Path) -> Path:
+    git("worktree", "add", "-q", "--detach", str(where), source["commit"], cwd=source["work"])
+    return where
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_c_worktree_whose_git_common_dir_is_in_temp_is_refused(cdir, tmp_path, shell):
+    root, _ = cdir
+    volatile = make_repo(tmp_path)                       # objects and refs live under TEMP
+    worktree = linked_worktree(volatile, root / "linked-worktree")   # top level is persistent C:
+    path, branch = planned_path(), "claude-rco-2/release-fixture"
+    code, plan = run(shell, RepositoryPath=worktree, Branch=branch, Commit=volatile["commit"], WorktreePath=path)
+    assert code == 2 and plan["reasons"] == ["repository_volatile"], plan
+    assert_untouched(volatile, branch, path)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_success_twin_a_c_worktree_of_a_c_repository_still_plans(repo, cdir, shell):
+    root, _ = cdir
+    worktree = linked_worktree(repo, root / "linked-worktree")
+    path, branch = planned_path(), "claude-rco-2/release-fixture"
+    code, plan = run(shell, RepositoryPath=worktree, Branch=branch, Commit=repo["commit"], WorktreePath=path)
+    assert code == 0 and plan["verdict"] == "plan", plan
+    assert plan["commands"][0][:3] == ["git", "-C", str(worktree)]
+    assert_untouched(repo, branch, path)
+
+
+def run_in_location(shell: str, location: Path, process_cwd: Path, **params) -> tuple[int, dict]:
+    """Run the script in-process after Set-Location, with a DIFFERENT process current directory."""
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    arguments = " ".join(f"-{name} '{quote(value)}'" for name, value in params.items())
+    command = (f"Set-Location -LiteralPath '{quote(location)}'; "
+               f"[Environment]::CurrentDirectory = '{quote(process_cwd)}'; "
+               f"& '{quote(SCRIPT)}' {arguments}; exit $LASTEXITCODE")
+    result = subprocess.run([shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-Command", command], capture_output=True, text=True, timeout=120)
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines, result.stderr
+    return result.returncode, json.loads(lines[-1])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_relative_repository_path_resolves_where_git_runs_and_is_emitted_absolute(repo, cdir, tmp_path, shell):
+    root, _ = cdir
+    path, branch = planned_path(), "claude-rco-2/release-fixture"
+    # The process cwd names an unrelated TEMP repository; Git runs in the PowerShell location (the persistent one).
+    decoy = make_repo(tmp_path)
+    code, plan = run_in_location(shell, repo["work"], decoy["work"], RepositoryPath=".", Branch=branch,
+                                 Commit=repo["commit"], WorktreePath=path)
+    assert code == 0 and plan["verdict"] == "plan", plan
+    assert plan["commands"][0] == ["git", "-C", str(repo["work"]), "worktree", "add", "-b", branch, path, repo["commit"]]
+    nested = repo["work"] / "sub"
+    nested.mkdir()
+    code, plan = run_in_location(shell, nested, decoy["work"], RepositoryPath="..", Branch=branch,
+                                 Commit=repo["commit"], WorktreePath=path)
+    assert code == 0 and plan["commands"][0][2] == str(repo["work"]), plan
+    assert_untouched(repo, branch, path)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_drive_relative_and_root_relative_repository_paths_are_refused(repo, shell):
+    for ambiguous in ("C:repo", "\\Python\\repo"):
+        code, plan = run(shell, RepositoryPath=ambiguous, Branch="claude-rco-2/release-fixture",
+                         Commit=repo["commit"], WorktreePath=planned_path())
+        assert code == 2 and "repository_path_ambiguous" in plan["reasons"], (ambiguous, plan)

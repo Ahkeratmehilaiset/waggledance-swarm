@@ -62,6 +62,12 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                                                             "ledger (same local eligibility)",
                 # RCO2 G1/G2 (76dc): comment and docstring text only; no code, field or behaviour change.
                 "bebc72886259b1c7b3722d983f7f90a1a52ad93e": "de1e612e plus G1/G2 truth comments "
+                                                            "(same local eligibility)",
+                # Fable 2026-10-06 (operator directive, hotfix on the d5864fdd helper b9220e21): only
+                # advisory_command changes, to a high default effort chosen from medium/high/xhigh; the 300 s
+                # consult default is unchanged; status() and the answered report keep every field admit/bind
+                # read. Awaiting a non-author review like the entries above.
+                "311c4989b524422cb0335acd920f2d34b09312fc": "b9220e21 plus the high advisory effort "
                                                             "(same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")

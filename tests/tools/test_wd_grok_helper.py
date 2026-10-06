@@ -410,9 +410,47 @@ def test_cli_prompt_carries_only_the_callers_evidence(tmp_path, monkeypatch):
         wd_grok_helper.cli_prompt(ask)
 
 
-def test_default_advisory_command_uses_medium_effort():
+def test_default_advisory_command_uses_high_effort():
     assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model") == [
+        "grok.exe", "--model", "grok-model", "--effort", "high"]
+
+
+def test_advisory_command_takes_an_allowed_effort_and_refuses_others():
+    assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model", effort="medium") == [
         "grok.exe", "--model", "grok-model", "--effort", "medium"]
+    for effort in ("low", "max", "HIGH", "high ", ""):
+        with pytest.raises(ValueError, match="Unsupported Grok effort"):
+            wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model", effort=effort)
+
+
+SAFETY_FLAGS = ["--verbatim", "--no-alt-screen", "--no-subagents", "--max-turns", "1", "--tools", "",
+                "--deny", "*", "--permission-mode", "plan", "--disable-web-search", "--no-memory",
+                "--output-format", "json"]
+
+
+@pytest.mark.parametrize("requester", (None, "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"))
+def test_every_lane_consults_at_high_effort_with_the_safety_flags_and_the_300_s_limit(tmp_path, requester):
+    # Lead asks without a requester; the other four lanes name themselves. The one-shot path is the same.
+    seed(tmp_path)
+    launched = []
+
+    def runner(argv, **kwargs):
+        launched.append((list(argv), kwargs["timeout"]))
+        return SimpleNamespace(returncode=0, stdout="advice")
+
+    command = wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model")
+    result = consult(tmp_path, "high/task", "ask", command, runner=runner, now=NOW, requested_by=requester)
+    assert result["status"] == "answered" and len(launched) == 1
+    argv, timeout = launched[0]
+    assert argv[:5] == ["grok.exe", "--model", "grok-model", "--effort", "high"] and timeout == 300
+    prompt_at = argv.index("--prompt-file")
+    assert argv[prompt_at + 2:] == SAFETY_FLAGS
+    saved = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert (saved["effort"], saved["timeout_seconds"], saved.get("requested_by")) == ("high", 300, requester)
+    rows = [json.loads(line) for line in (tmp_path / wd_grok_helper.LEDGER_NAME).read_text(encoding="utf-8").splitlines()]
+    started = [row for row in rows if row.get("event") == "started"]
+    assert len(started) == 1
+    assert (started[0]["effort"], started[0]["timeout_seconds"], started[0]["requested_by"]) == ("high", 300, requester)
 
 
 def test_failed_consult_records_bounded_stderr_as_uninterpreted_evidence(tmp_path):

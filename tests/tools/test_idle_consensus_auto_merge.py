@@ -3906,3 +3906,240 @@ def test_cli_pr_status_uses_strict_json_and_utf8(
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "invalid_pr_status"
     assert report["external_effect"] is False
+
+
+def _cause_b_build_events() -> list[dict]:
+    return [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD, "pr": 477}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+        )
+        | {"payload": {"head": HEAD, "pr": 477}},
+    ]
+
+
+def _cause_b_consensus_events(*rco_events: dict) -> list[dict]:
+    return [*_cause_b_build_events(), _rco_pass(), *rco_events]
+
+
+def _cause_b_rco_signal(
+    agent: str,
+    status: str,
+    *,
+    ts: str,
+    type_: str = "decision",
+    head: str = HEAD,
+    task_id: str = "idle-consensus-001",
+    pr: int = 477,
+) -> dict:
+    return _bridge_event(
+        agent=agent, type_=type_, status=status, task_id=task_id, ts=ts
+    ) | {
+        "message": f"{status} at exact head {head}",
+        "payload": {"head": head, "pr": pr},
+    }
+
+
+def test_rco_withholding_decision_after_pass_blocks_bridge_consensus() -> None:
+    # Cause-B C1/C2 (operator directive 2026-10-04): a recognized RCO's later
+    # withholding decision is that RCO's block in the consensus verifier too.
+    baseline = verify_bridge_consensus(
+        events=_cause_b_consensus_events(),
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        author_agent="fable-5",
+    )
+    assert baseline["ok"] is True
+
+    for status in [
+        "rco_pass_withheld",
+        "not_approved",
+        "hold",
+        "do_not_merge",
+        "veto_not_retracted",
+    ]:
+        report = verify_bridge_consensus(
+            events=_cause_b_consensus_events(
+                _bridge_event(
+                    agent="claude-rco-1",
+                    type_="decision",
+                    status=status,
+                    ts="2026-05-18T01:05:00Z",
+                )
+                | {"payload": {"head": HEAD, "pr": 477}}
+            ),
+            task_id="idle-consensus-001",
+            head_sha=HEAD,
+            pr_number=477,
+            author_agent="fable-5",
+        )
+
+        assert report["ok"] is False, status
+        assert any(
+            "recognized RCO veto blocks consensus: claude-rco-1" in reason
+            for reason in report["reasons"]
+        ), (status, report["reasons"])
+
+
+# Cause-B sequence and neutral-record controls (operator T2, 2026-10-04).
+CAUSE_B_RCO_PAIRS = [
+    ("claude-rco-1", "claude-rco-2"),
+    ("claude-rco-2", "claude-rco-1"),
+]
+CAUSE_B_NEUTRAL_RECORD_STATUSES = [
+    "autonomous_merge_receipt",
+    "merged_operator_authorized",
+    "operator_authorized",
+    "rco_closed_postmerge",
+]
+CAUSE_B_OTHER_HEAD = "0" * 40
+
+
+def _cause_b_verify(events: list[dict]) -> dict:
+    return verify_bridge_consensus(
+        events=events,
+        task_id="idle-consensus-001",
+        head_sha=HEAD,
+        pr_number=477,
+        author_agent="fable-5",
+    )
+
+
+def _cause_b_rco_vetoed(report: dict, agent: str) -> bool:
+    return any(
+        f"recognized RCO veto blocks consensus: {agent}" in reason
+        for reason in report["reasons"]
+    )
+
+
+def test_rco_clear_after_block_lifts_consensus_block_but_merge_needs_fresh_pass(
+    tmp_path: Path,
+) -> None:
+    for agent, _other in CAUSE_B_RCO_PAIRS:
+        passed = _cause_b_rco_signal(agent, "rco_pass", ts="2026-10-04T12:00:00Z")
+        blocked = _cause_b_rco_signal(agent, "hold", ts="2026-10-04T12:01:00Z")
+        cleared = _cause_b_rco_signal(
+            agent, "changes_requested_retracted", ts="2026-10-04T12:02:00Z"
+        )
+        fresh = _cause_b_rco_signal(agent, "rco_pass", ts="2026-10-04T12:03:00Z")
+
+        report = _cause_b_verify([*_cause_b_build_events(), passed, blocked])
+        assert report["ok"] is False, agent
+        assert _cause_b_rco_vetoed(report, agent), agent
+
+        # Unchanged consensus rule: the same RCO's exact clear pops its block
+        # and its earlier head-bound pass counts again in this verifier.
+        report = _cause_b_verify([*_cause_b_build_events(), passed, blocked, cleared])
+        assert report["ok"] is True, agent
+
+        # The merge gate also requires the exact-head RCO slot, where a clear
+        # does not re-issue approval: only a fresh exact-head pass does.
+        for name, events, expect_slot_ok in [
+            ("cleared", [passed, blocked, cleared], False),
+            ("fresh_pass", [passed, blocked, cleared, fresh], True),
+        ]:
+            case_dir = tmp_path / f"{agent}-{name}"
+            case_dir.mkdir()
+            # The PR author is a non-RCO so both RCOs stay eligible for the slot.
+            gate = evaluate_auto_merge_gate(
+                pr_status=_status(author_agent="fable-5"),
+                expected_head=HEAD,
+                expected_base_sha=BASE,
+                consensus_proposal_id="idle-consensus-001",
+                receipt_bundle_path="docs/receipts/manifest.json",
+                events_path=_events_path(
+                    case_dir,
+                    [*_cause_b_build_events(), *events],
+                    claim_agent="fable-5",
+                ),
+                bridge_task_id="idle-consensus-001",
+            )
+            missing = (
+                "missing exact-head RCO_PASS from recognized non-author RCO"
+                in gate["reasons"]
+            )
+
+            assert gate["rco_pass_gate"]["ok"] is expect_slot_ok, (agent, name)
+            assert missing is not expect_slot_ok, (agent, name)
+            if expect_slot_ok:
+                assert gate["rco_pass_gate"]["satisfying_rco_agent"] == agent
+            else:
+                assert gate["rco_pass_gate"]["decision"] == "vetoed_after_pass", (
+                    agent,
+                    gate["rco_pass_gate"]["decision"],
+                )
+                assert gate["rco_pass_gate"]["blocking_rco_agents"] == [agent]
+
+
+def test_rco_consensus_block_survives_foreign_unverified_or_wrong_head_signal() -> None:
+    for agent, other in CAUSE_B_RCO_PAIRS:
+        passed = _cause_b_rco_signal(agent, "rco_pass", ts="2026-10-04T12:00:00Z")
+        blocked = _cause_b_rco_signal(agent, "hold", ts="2026-10-04T12:01:00Z")
+        clear_ts = "2026-10-04T12:02:00Z"
+        attempts = {
+            "other_rco_clear": _cause_b_rco_signal(
+                other, "changes_requested_retracted", ts=clear_ts
+            ),
+            "wrong_uuid_clear": _cause_b_rco_signal(
+                agent, "changes_requested_retracted", ts=clear_ts
+            )
+            | {"agent_uuid": AGENT_UUIDS[other]},
+            "other_task_wrong_head_clear": _cause_b_rco_signal(
+                agent,
+                "changes_requested_retracted",
+                ts=clear_ts,
+                head=CAUSE_B_OTHER_HEAD,
+                task_id="other-task",
+                pr=999,
+            ),
+            "wrong_head_fresh_pass": _cause_b_rco_signal(
+                agent, "rco_pass", ts=clear_ts, head=CAUSE_B_OTHER_HEAD
+            ),
+        }
+        for name, attempt in attempts.items():
+            report = _cause_b_verify(
+                [*_cause_b_build_events(), passed, blocked, attempt]
+            )
+
+            assert report["ok"] is False, (agent, name)
+            assert _cause_b_rco_vetoed(report, agent), (agent, name)
+
+
+def test_rco_neutral_record_matrix_in_bridge_consensus() -> None:
+    for agent, _other in CAUSE_B_RCO_PAIRS:
+        passed = _cause_b_rco_signal(agent, "rco_pass", ts="2026-10-04T12:01:00Z")
+        blocked = _cause_b_rco_signal(agent, "hold", ts="2026-10-04T12:02:00Z")
+        for event_type in ["decision", "rco_review"]:
+            for status in CAUSE_B_NEUTRAL_RECORD_STATUSES:
+
+                def neutral(ts: str) -> dict:
+                    return _cause_b_rco_signal(agent, status, ts=ts, type_=event_type)
+
+                for position, rco_events, expect_ok in [
+                    ("before_pass", [neutral("2026-10-04T12:00:00Z"), passed], True),
+                    ("after_pass", [passed, neutral("2026-10-04T12:03:00Z")], True),
+                    (
+                        "before_block",
+                        [passed, neutral("2026-10-04T12:01:30Z"), blocked],
+                        False,
+                    ),
+                    (
+                        "after_block",
+                        [passed, blocked, neutral("2026-10-04T12:03:00Z")],
+                        False,
+                    ),
+                ]:
+                    case = (agent, event_type, status, position)
+                    report = _cause_b_verify([*_cause_b_build_events(), *rco_events])
+
+                    assert report["ok"] is expect_ok, (case, report["reasons"])
+                    if not expect_ok:
+                        assert _cause_b_rco_vetoed(report, agent), case

@@ -139,6 +139,7 @@ def test_tool_output_is_not_combined_with_return_code():
 import ast
 import base64
 import hashlib
+import io
 import os
 import re
 import sys
@@ -909,3 +910,71 @@ def test_declared_data_files_are_verified_by_exact_path_and_extras_fail_closed(t
 
     again = _integrity(bundle)
     assert again.returncode == 0, again.stdout + again.stderr
+
+# --- Byte-reproducible python site (install of 83da16a7 refused python-site/bin/jsonschema.exe, 2026-10-06 18:46Z):
+# pip writes a launcher for every wheel console script whose zip entry carries the current time unless
+# SOURCE_DATE_EPOCH is set, so stage and install produced different launcher and RECORD hashes.
+
+
+def _write_console_script_wheel(path: Path, name: str, version: str, module: str) -> str:
+    dist_info = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"{module}/__init__.py", "def main():\n    return 0\n")
+        archive.writestr(f"{dist_info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{dist_info}/entry_points.txt", f"[console_scripts]\n{module}-cli = {module}:main\n")
+        archive.writestr(f"{dist_info}/RECORD", "")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.skipif(not ENV_SHELLS or not HAS_BRIDGE_PYTHON,
+                    reason="Windows PowerShell and the pinned bridge interpreter are required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+def test_python_site_is_byte_reproducible_including_console_script_launchers(tmp_path: Path, shell: str):
+    module = "wdscript"
+    source = tmp_path / "src-wheels"
+    source.mkdir()
+    wheel = "wdfake-0.1.0-py3-none-any.whl"   # _fake_definition pins the distribution name wdfake
+    sha256 = _write_console_script_wheel(source / wheel, "wdfake", "0.1.0", module)
+    definition_path = tmp_path / "bridge-code-files.json"
+    definition_path.write_text(json.dumps(_fake_definition(wheel, sha256, module)), encoding="utf-8")
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    runs = [tmp_path / "run1", tmp_path / "run2"]
+    install = (
+        "Install-WdBridgePythonSite -Definition $definition -PythonExecutable '{python}' "
+        "-WheelDirectory '{run}\\wheels' -SiteDirectory '{run}\\site' -WorkDirectory '{run}\\work' -WheelSource '{src}'"
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+. '{quote(REBOOT / "BridgeCodeContext.ps1")}'
+$definition = (Get-WdBridgeCodePackageDefinition -Path '{quote(definition_path)}').Definition
+$first = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[0]), src=quote(source))}
+Start-Sleep -Seconds 3
+$env:SOURCE_DATE_EPOCH = '1700000000'
+$second = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[1]), src=quote(source))}
+$out = [ordered]@{{ first = [ordered]@{{}}; second = [ordered]@{{}} }}
+foreach ($key in @($first.Site.Keys)) {{ $out.first[$key] = $first.Site[$key] }}
+foreach ($key in @($second.Site.Keys)) {{ $out.second[$key] = $second.Site[$key] }}
+'SITES:' + ($out | ConvertTo-Json -Depth 4 -Compress)
+"""
+    # Each shell builds its own default module path: a pwsh 7 PSModulePath inherited by Windows PowerShell 5.1
+    # hides Microsoft.PowerShell.Utility (Get-FileHash).
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() not in ("SOURCE_DATE_EPOCH", "PSMODULEPATH")}
+    result = subprocess.run([shutil.which(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-Command", script], capture_output=True, text=True, timeout=600, env=environment)
+    lines = [line for line in result.stdout.splitlines() if line.startswith("SITES:")]
+    assert result.returncode == 0 and len(lines) == 1, result.stdout + result.stderr
+    sites = json.loads(lines[0].removeprefix("SITES:"))
+    launcher = f"python-site/bin/{module}-cli.exe"
+    assert launcher in sites["first"], sorted(sites["first"])        # the fixture really generates a launcher
+    assert any(key.endswith(".dist-info/RECORD") for key in sites["first"])
+    # Every file, launcher and RECORD included, hashes the same across a clock tick and despite an inherited
+    # SOURCE_DATE_EPOCH: the site the installer re-materializes matches the staged manifest.
+    assert sites["first"] == sites["second"]
+    blob = (runs[0] / "site" / "bin" / f"{module}-cli.exe").read_bytes()
+    stamped = zipfile.ZipFile(io.BytesIO(blob[blob.find(b"PK\x03\x04"):]))
+    assert stamped.infolist()[0].date_time == (1980, 1, 1, 0, 0, 0)   # the fixed epoch, not the clock

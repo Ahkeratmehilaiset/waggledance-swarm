@@ -985,7 +985,16 @@ function Install-WdBridgePythonSite {
         (($requirementLines -join "`n") + "`n"),
         (New-Object Text.UTF8Encoding($false))
     )
-    $pipEnvironment = @{ PYTHONDONTWRITEBYTECODE = '1'; PIP_REQUIRE_VIRTUALENV = '' }
+    # SOURCE_DATE_EPOCH: pip writes a launcher (bin/<script>.exe) for each wheel console script, and that
+    # launcher carries a zip entry stamped with the CURRENT time unless SOURCE_DATE_EPOCH is set (pip's
+    # vendored distlib ScriptMaker), so the launcher and the dist-info RECORD that hashes it differed between
+    # stage and install. A fixed epoch (1980-01-01, the earliest zip date) makes the site byte-reproducible;
+    # an inherited value is replaced, never trusted.
+    $pipEnvironment = @{
+        PYTHONDONTWRITEBYTECODE = '1'
+        PIP_REQUIRE_VIRTUALENV = ''
+        SOURCE_DATE_EPOCH = '315532800'
+    }
     $downloadArguments = @(
         '-m', 'pip', 'download',
         '--disable-pip-version-check',

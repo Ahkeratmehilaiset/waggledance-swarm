@@ -45,6 +45,16 @@
   unknown file type, or empty input), so it never silently under-runs. Run the
   full suite locally only when the selector says `full_suite`. Still report the
   final test status of whatever you ran.
+- Grok self-challenge (operator directive 2026-10-06; full text in
+  `CLAUDE.md` Rule 13): before reporting a task as done, challenge it yourself
+  with ONE Grok `high` consultation through `C:\Python\Invoke-WdGrok.ps1`
+  (`-RequestedBy` your own agent ID; Lead omits it). Do not route it through
+  Lead and do not retry. The answer is advisory, never an `RCO_PASS` and never
+  a substitute for the opposite-model review; a negative answer does not block,
+  but the task result names the report path and SHA-256 and answers each
+  finding. No secrets or answer keys in the prompt. If your sandbox cannot
+  start Grok, ask another eligible agent to run your exact prompt bytes with
+  `-RequestedBy` set to you.
 
 ## Runtime audit rules
 - Prefer runtime evidence over static guesses.

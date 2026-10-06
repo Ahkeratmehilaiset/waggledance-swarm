@@ -251,6 +251,33 @@ Docs-only PRs still:
 If a session catches itself reasoning "this is trivial, I'll commit
 direct," that is the moment to stop and open a PR.
 
+### 13. Grok self-challenge of every task (added 2026-10-06)
+
+Rule number 12 is reserved by the open PR #1766.
+
+Operator directive 2026-10-06 09:59Z: every bridge agent challenges its own
+task with one Grok round itself, without loading Lead, so that work reaches
+production with more depth.
+
+* Before a bridge agent reports a task as done (a PR head, a design, a fix, an
+  audit result), it runs **one** Grok consultation at `high` effort through the
+  installed controlled entry `C:\Python\Invoke-WdGrok.ps1` (`-RequestedBy` is
+  the agent's own ID; `codex-lead-1` omits it). The prompt asks Grok to find
+  defects, missing cases and weak assumptions in that task.
+* The agent asks Grok itself. It does not route the call through Lead and does
+  not wait for a Lead slot. Concurrent calls queue on the helper lock.
+* One call per task, no retry. A failed call is recorded as failed in the task
+  result and is not repeated to get a better answer.
+* The answer is advisory. It never counts as `RCO_PASS` and never replaces the
+  opposite-model review or the RCO. A negative answer does not block, but the
+  task result names the report path and SHA-256 and says, finding by finding,
+  what was fixed and what was rejected and why.
+* Prompts carry no secrets, no credential contents and no answer keys.
+* An agent whose sandbox cannot start Grok (currently `codex-tools-1`) asks
+  another eligible agent to run the same prompt bytes on its behalf with
+  `-RequestedBy` set to the asking agent. The executor returns the report path
+  and hash unchanged.
+
 ## What this file does NOT override
 
 - `AGENTS.md` task rules still apply.

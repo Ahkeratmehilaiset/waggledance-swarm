@@ -171,6 +171,61 @@ foreach ($policy in @(
     WINDOWS_POWERSHELL is None or os.name != "nt",
     reason="Windows PowerShell is unavailable",
 )
+def test_grok_root_reaches_native_same_thread_resume_without_widening_policy() -> None:
+    """Offline argument proof, not evidence of a live sandbox/provider call.
+
+    Deployment must checkpoint and resume the saved thread, then observe one
+    unique harmless create/read/delete probe in this root and denial outside
+    allowed roots before a single native HIGH call. Never remove hourly.lock
+    or count queue acceptance as provider success.
+    """
+    config = REBOOT / "wd_supervisor_loop.json"
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  {_quote(TOOLS)}, [ref]$tokens, [ref]$errors
+)
+foreach ($name in @('Get-WdToolsConversationPermissions', 'Get-WdNativeToolsArguments')) {{
+  $fn = $ast.Find({{param($n)
+    $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+  }}, $true)
+  if (-not $fn) {{ throw "missing function $name" }}
+  . ([scriptblock]::Create($fn.Extent.Text))
+}}
+$tools = (Get-Content -LiteralPath {_quote(config)} -Raw | ConvertFrom-Json).tools_consumer
+$policy = Get-WdToolsConversationPermissions -Tools $tools
+$saved = [pscustomobject]@{{thread_id='fixture-saved-thread';initial_context_delivered=$true}}
+$args = Get-WdNativeToolsArguments -Saved $saved -Worktree 'C:\\fixture-worktree' `
+  -Model $tools.model -Effort $tools.reasoning_effort -Prompt 'fixture' `
+  -ImagePath 'unused.png' -WritableRoots $policy.AdditionalWritableRoots `
+  -NetworkAccess $policy.NetworkAccess
+[pscustomobject]@{{args=@($args);sandbox=$tools.sandbox;approval=$tools.approval_policy;
+  resume_policy=$tools.resume_policy;surface=$tools.conversation_surface}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual = json.loads(result.stdout)
+    args = actual.pop("args")
+    assert actual == {
+        "sandbox": "workspace-write", "approval": "never",
+        "resume_policy": "current_worktree", "surface": "native_terminal",
+    }
+    assert args[:8] == [
+        "resume", "fixture-saved-thread", "--cd", r"C:\fixture-worktree",
+        "--ask-for-approval", "never", "--sandbox", "workspace-write",
+    ]
+    assert "sandbox_workspace_write.network_access=true" in args
+    assert args.count("--add-dir") == 1
+    assert args[args.index("--add-dir") + 1] == r"C:\Python\grok-scout-reports"
+    assert "--model" not in args and "--image" not in args
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
 def test_v2_writer_separates_latest_terminal_from_verified_checkpoint(
     tmp_path: Path,
 ) -> None:

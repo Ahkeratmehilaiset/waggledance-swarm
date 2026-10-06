@@ -802,3 +802,110 @@ def test_only_the_exact_charter_path_is_admitted_beside_py_and_json(tmp_path: Pa
         assert lines[0] == f"ADMITTED:{len(definition['python_files'])}"
     else:
         assert lines[0].startswith("REFUSED:") and expected in lines[0], lines[0]
+
+# --- Declared data files (charter + schema JSON) are admitted by exact path into the manifest entries and the
+# integrity enumeration (Lead P0 2026-10-06: entries returned 90 of 96 for the ca6f664e definition).
+
+DATA_FILES = {
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md": b"# charter fixture\n",
+    "schemas/v3_13_0/fixture.v1.json": b'{"type": "object"}\n',
+}
+
+
+def _stage_bundle_with_data(tmp_path: Path) -> Path:
+    bundle = _stage_fake_bundle(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    definition = json.loads((bundle / "bridge-code-files.json").read_text(encoding="utf-8"))
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    for relative, blob in DATA_FILES.items():
+        (code_root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (code_root / relative).write_bytes(blob)
+        definition["python_files"].append(relative)
+        manifest["files"][f"tools-bootstrap/{relative}"] = hashlib.sha256(blob).hexdigest().upper()
+    (bundle / "bridge-code-files.json").write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
+    manifest["files"]["bridge-code-files.json"] = hashlib.sha256(
+        (bundle / "bridge-code-files.json").read_bytes()).hexdigest().upper()
+    (bundle / "deployment-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return bundle
+
+
+def _integrity(bundle: Path, extra: str = "") -> subprocess.CompletedProcess:
+    context = str(REBOOT / "BridgeCodeContext.ps1").replace("'", "''")
+    literal = str(bundle).replace("'", "''")
+    return _run_pwsh(
+        f"$ErrorActionPreference = 'Stop'; . '{context}'; "
+        f"$deployment = Get-Content -LiteralPath '{literal}\\deployment-manifest.json' -Raw | ConvertFrom-Json; "
+        f"$definition = (Get-WdBridgeCodePackageDefinition -Path '{literal}\\bridge-code-files.json').Definition; "
+        f"{extra}"
+        f"$r = Assert-WdBridgeCodePackageIntegrity -BundleRoot '{literal}' -Deployment $deployment "
+        "-Definition $definition; 'FILES:' + $r.FileCount"
+    )
+
+
+@pytest.mark.skipif(
+    PWSH is None or not HAS_BRIDGE_PYTHON,
+    reason="PowerShell or the pinned bridge interpreter is unavailable",
+)
+def test_declared_data_files_are_verified_by_exact_path_and_extras_fail_closed(tmp_path: Path):
+    bundle = _stage_bundle_with_data(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    package_entries = [name for name in manifest["files"] if name.startswith("tools-bootstrap/")]
+    ok = _integrity(bundle)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert f"FILES:{len(package_entries)}" in ok.stdout          # every declared data file is an entry
+
+    charter = code_root / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md"
+    original = charter.read_bytes()
+    charter.write_bytes(original + b"tampered\n")
+    tampered = _integrity(bundle)
+    assert tampered.returncode != 0 and "pinned bridge code hash mismatch: docs/architecture/IDLE_AUTONOMY_CHARTER.md" \
+        in tampered.stdout + tampered.stderr
+    charter.write_bytes(original)
+
+    for stray in (code_root / "docs" / "architecture" / "OTHER.md", code_root / "docs" / "README.md",
+                  code_root / "schemas" / "v3_13_0" / "extra.v1.json"):
+        stray.write_bytes(b"extra\n")
+        extra = _integrity(bundle)
+        assert extra.returncode != 0, stray
+        assert "unexpected file inside pinned bridge code package" in extra.stdout + extra.stderr, stray
+        stray.unlink()
+
+    # A manifest entry that the definition does not declare is never admitted by its folder.
+    undeclared = code_root / "docs" / "architecture" / "UNDECLARED.md"
+    undeclared.write_bytes(b"undeclared\n")
+    digest = hashlib.sha256(b"undeclared\n").hexdigest().upper()
+    listed = _integrity(bundle, "$deployment.files | Add-Member -NotePropertyName "
+                                "'tools-bootstrap/docs/architecture/UNDECLARED.md' -NotePropertyValue "
+                                f"'{digest}'; ")
+    assert listed.returncode != 0
+    assert "unexpected file inside pinned bridge code package: docs/architecture/UNDECLARED.md" \
+        in listed.stdout + listed.stderr
+    undeclared.unlink()
+
+    missing = _integrity(bundle, "$deployment.files.PSObject.Properties.Remove("
+                                 "'tools-bootstrap/schemas/v3_13_0/fixture.v1.json'); ")
+    assert missing.returncode != 0
+    assert "deployed bundle does not carry pinned bridge code file: schemas/v3_13_0/fixture.v1.json" \
+        in missing.stdout + missing.stderr
+
+    cache = code_root / "schemas" / "__pycache__"
+    cache.mkdir()
+    cached = _integrity(bundle)
+    assert cached.returncode != 0 and "bytecode cache inside pinned bridge code package" in cached.stdout + cached.stderr
+    cache.rmdir()
+
+    target = tmp_path / "outside"
+    target.mkdir()
+    junction = code_root / "docs" / "linked"
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)], capture_output=True, text=True)
+    assert made.returncode == 0, made.stdout + made.stderr
+    try:
+        reparse = _integrity(bundle)
+        assert reparse.returncode != 0
+        assert "reparse point inside pinned bridge code package" in reparse.stdout + reparse.stderr
+    finally:
+        os.rmdir(junction)
+
+    again = _integrity(bundle)
+    assert again.returncode == 0, again.stdout + again.stderr

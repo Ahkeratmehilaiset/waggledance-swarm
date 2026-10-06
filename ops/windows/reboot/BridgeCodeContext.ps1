@@ -452,6 +452,48 @@ function Get-WdBridgeCodePackagePrefixes {
     )
 }
 
+function Get-WdBridgeCodePackageDataFiles {
+    <#
+        Declared package files outside the code prefixes (the charter and the
+        schema JSON). They are admitted by EXACT declared path only, never by
+        folder: another manifest entry beside them stays outside the package.
+    #>
+    param([Parameter(Mandatory)] $Definition)
+
+    $prefixes = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)
+    $data = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($relative in @($Definition.python_files | ForEach-Object { [string]$_ })) {
+        $underPrefix = $false
+        foreach ($prefix in $prefixes) {
+            if ($relative.StartsWith($prefix, [StringComparison]::Ordinal)) {
+                $underPrefix = $true
+                break
+            }
+        }
+        if (-not $underPrefix) { [void]$data.Add($relative) }
+    }
+    return ,$data
+}
+
+function Get-WdBridgeCodePackageDataRoots {
+    <#
+        Top-level folders that hold declared data files. The integrity check
+        enumerates them like the code prefixes, so an extra file, bytecode or
+        reparse point beside a declared data file fails closed.
+    #>
+    param([Parameter(Mandatory)] $Definition)
+
+    $data = Get-WdBridgeCodePackageDataFiles -Definition $Definition
+    $roots = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($relative in $data) {
+        $slash = $relative.IndexOf('/')
+        if ($slash -lt 1) { continue }
+        $root = $relative.Substring(0, $slash + 1)
+        if (-not $roots.Contains($root)) { $roots.Add($root) }
+    }
+    return @($roots)
+}
+
 function Get-WdBridgeCodePackageManifestEntries {
     param(
         [Parameter(Mandatory)] $Deployment,
@@ -459,6 +501,7 @@ function Get-WdBridgeCodePackageManifestEntries {
     )
 
     $prefixes = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)
+    $dataFiles = Get-WdBridgeCodePackageDataFiles -Definition $Definition
     $rootPrefix = $script:WdBridgeCodePackageRoot + '/'
     $entries = [ordered]@{}
     foreach ($property in @($Deployment.files.PSObject.Properties)) {
@@ -472,7 +515,7 @@ function Get-WdBridgeCodePackageManifestEntries {
                 break
             }
         }
-        if (-not $matched) { continue }
+        if (-not $matched -and -not $dataFiles.Contains($inner)) { continue }
         if (-not (Test-WdBridgeCodeRelativePath -Relative $inner)) {
             throw "unsafe pinned bridge code manifest path: $name"
         }
@@ -569,7 +612,9 @@ function Assert-WdBridgeCodePackageIntegrity {
         }
     }
     $codePrefix = $codeRoot.TrimEnd('\') + '\'
-    foreach ($prefix in @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)) {
+    $enumerated = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition) +
+        @(Get-WdBridgeCodePackageDataRoots -Definition $Definition)
+    foreach ($prefix in $enumerated) {
         $directory = Join-Path $codeRoot $prefix.TrimEnd('/')
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
         foreach ($subdirectory in @(

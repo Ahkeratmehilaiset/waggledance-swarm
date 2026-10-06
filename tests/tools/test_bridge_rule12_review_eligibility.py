@@ -701,3 +701,50 @@ def test_slot_holders_are_always_distinct_identities():
     assert result["decision"] == "satisfied"
     assert not set(result["slots"]["rco"]["holders"]) & set(
         result["slots"]["opposite_family"]["holders"])
+
+# --- Tools T1 (17:22:21Z on 0aabaaab): positive evidence must be timed and not after the gate clock ---
+
+FUTURE = "2026-10-07T17:00:00Z"
+EQUAL = NOW
+
+
+@pytest.mark.parametrize("ts,counts", [("bad", False), ("", False), (FUTURE, False),
+                                       (EQUAL, True), ("2026-10-06T16:59:59Z", True)])
+def test_approval_counts_only_with_a_valid_timestamp_not_after_the_gate_clock(ts, counts):
+    events = [build_pass("codex-lead-1", ts=ts), rco_pass("claude-rco-1"), rco_pass("claude-rco-2")]
+    result = evaluate(events)
+    assert (result["decision"] == "satisfied") is counts
+    events = [build_pass("codex-lead-1"), rco_pass("claude-rco-1", ts=ts), rco_pass("claude-rco-2")]
+    result = evaluate(events)
+    assert (result["decision"] == "satisfied") is counts
+
+
+@pytest.mark.parametrize("pass_ts,cleared", [("bad", False), (FUTURE, False), ("2026-10-06T16:30:00Z", False),
+                                             (EQUAL, True), ("2026-10-06T16:45:00Z", True)])
+def test_future_invalid_or_not_later_pass_never_clears_an_active_rco_block(pass_ts, cleared):
+    block = ev("claude-rco-1", "finding", "changes_requested", ts="2026-10-06T16:30:00Z")
+    events = [build_pass("codex-lead-1"), rco_pass("claude-rco-2"), block,
+              rco_pass("claude-rco-1", ts=pass_ts)]
+    result = evaluate(events)
+    assert result["decision"] == ("satisfied" if cleared else "blocked")
+
+
+def test_future_dated_block_still_blocks():
+    events = [build_pass("codex-lead-1"), *BOTH_RCO,
+              ev("claude-rco-2", "finding", "changes_requested", ts=FUTURE)]
+    assert evaluate(events)["decision"] == "blocked"
+
+
+@pytest.mark.parametrize("ts,recused_ok", [("bad", False), (FUTURE, False), (EQUAL, True)])
+def test_recusal_needs_a_valid_timestamp_not_after_the_gate_clock(ts, recused_ok):
+    events = [recused("codex-lead-1", ts=ts), recused("codex-tools-1"), *BOTH_RCO]
+    result = evaluate(events, consultations=[grok()])
+    standing = result["slots"]["opposite_family"]["standing"]["codex-lead-1"]
+    assert standing == ("recused" if recused_ok else "eligible")
+    assert (result["decision"] == "satisfied") is recused_ok
+
+
+@pytest.mark.parametrize("started,ok", [(FUTURE, False), (EQUAL, True)])
+def test_grok_attempt_dated_after_the_gate_clock_never_qualifies(started, ok):
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(started_utc=started)])
+    assert (result["decision"] == "satisfied") is ok

@@ -35,8 +35,11 @@ the RCO slot is never also the opposite-family approver.
 A recognized-RCO veto is evaluated over ALL recognized RCOs, including
 implementers and recused ones, and outranks every pass including Grok. Order
 is read from ``ts_utc``, never from list position: a block is cleared only by a
-strictly later own ``rco_pass`` at the block's head or at this head; a block or
-pass without a parseable timestamp can never clear or be cleared. A Grok answer
+strictly later own ``rco_pass`` at the block's head or at this head that is not
+dated after the gate clock; a block or pass without a parseable timestamp can
+never clear or be cleared. Every piece of positive evidence (an approval, a
+recusal, a clearing pass, a Grok attempt) needs a parseable timestamp no later
+than ``now_utc``. A Grok answer
 that is missing, partial, unclear, negative, at another head, not the first
 attempt at that head for that slot, not bound to the gate nonce, prompt and
 diff, or whose ORIGINAL answer text does not begin with a line that is exactly
@@ -170,6 +173,12 @@ def _recipients(event: Mapping[str, Any]) -> set[str]:
     return set()
 
 
+def _evidence_time_ok(event: Mapping[str, Any], now: datetime, key: str = "ts_utc") -> bool:
+    """Positive evidence needs a parseable timestamp no later than the gate clock."""
+    stamped = _parse_utc(event.get(key))
+    return stamped is not None and stamped <= now
+
+
 def _on_task(event: Mapping[str, Any], agent: str, task_id: str) -> bool:
     return _text(event.get("agent")) == agent and _text(event.get("task_id")) == task_id
 
@@ -196,8 +205,14 @@ def _is_rco_block(event: Mapping[str, Any]) -> bool:
     return False
 
 
-def _rco_vetoes(events: Sequence[Mapping[str, Any]], rco: str, task_id: str, head: str) -> bool:
-    """True when ``rco`` has a block on the task that no later own pass clears."""
+def _rco_vetoes(
+    events: Sequence[Mapping[str, Any]], rco: str, task_id: str, head: str, now: datetime
+) -> bool:
+    """True when ``rco`` has a block on the task that no later own pass clears.
+
+    A clearing pass must be strictly later than the block and no later than the
+    gate clock; a future-dated pass never clears (Tools T1 on 0aabaaab).
+    """
     own = [event for event in events if _on_task(event, rco, task_id)]
     passes = [
         (_parse_utc(event.get("ts_utc")), _event_head(event))
@@ -213,7 +228,9 @@ def _rco_vetoes(events: Sequence[Mapping[str, Any]], rco: str, task_id: str, hea
         block_head = _event_head(event)
         clear_heads = {head} | ({block_head} if block_head else set())
         cleared = any(
-            passed_at is not None and passed_at > blocked_at and pass_head in clear_heads
+            passed_at is not None
+            and blocked_at < passed_at <= now
+            and pass_head in clear_heads
             for passed_at, pass_head in passes
         )
         if not cleared:
@@ -221,9 +238,12 @@ def _rco_vetoes(events: Sequence[Mapping[str, Any]], rco: str, task_id: str, hea
     return False
 
 
-def _self_recused(events: Sequence[Mapping[str, Any]], agent: str, task_id: str, head: str) -> bool:
+def _self_recused(
+    events: Sequence[Mapping[str, Any]], agent: str, task_id: str, head: str, now: datetime
+) -> bool:
     return any(
         _on_task(event, agent, task_id)
+        and _evidence_time_ok(event, now)
         and _text(event.get("type")) == RECUSAL_EVENT_TYPE
         and _text(event.get("status")) in RECUSAL_STATUSES
         and _event_head(event) == head
@@ -271,7 +291,11 @@ def _absent(
 
 
 def _first_grok_consultation(
-    consultations: Sequence[Mapping[str, Any]], task_id: str, head: str, slot: str
+    consultations: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head: str,
+    slot: str,
+    now: datetime,
 ) -> tuple[Mapping[str, Any] | None, list[str]]:
     """First attempt at (task, head) that counts for ``slot``.
 
@@ -295,6 +319,8 @@ def _first_grok_consultation(
     timed = [(_parse_utc(c.get("started_utc")), c) for c in attempts]
     if any(started is None for started, _ in timed):
         return None, ["a Grok attempt at this head has no parseable started_utc"]
+    if any(started > now for started, _ in timed):
+        return None, ["a Grok attempt at this head is dated after the gate clock"]
     timed.sort(key=lambda pair: pair[0])
     if len(timed) > 1 and timed[0][0] == timed[1][0]:
         return None, ["two Grok attempts at this head share the first started_utc"]
@@ -433,7 +459,7 @@ def evaluate_rule12_review_eligibility(
     result["implementer_families"] = sorted(implementer_families)
 
     # 1. Recognized-RCO veto over ALL recognized RCOs, ordered by ts_utc.
-    blocking = [rco for rco in RECOGNIZED_RCOS if _rco_vetoes(event_list, rco, task_id, head)]
+    blocking = [rco for rco in RECOGNIZED_RCOS if _rco_vetoes(event_list, rco, task_id, head, now)]
     result["blocking_rcos"] = blocking
 
     def approved(agent: str, statuses: frozenset[str]) -> bool:
@@ -441,13 +467,14 @@ def evaluate_rule12_review_eligibility(
             _on_task(event, agent, task_id)
             and _is_pass_status(event, statuses)
             and _event_head(event) == head
+            and _evidence_time_ok(event, now)
             for event in event_list
         )
 
     def standing(agent: str, statuses: frozenset[str]) -> str:
         if agent in implementers:
             return "implementer"
-        recused = _self_recused(event_list, agent, task_id, head)
+        recused = _self_recused(event_list, agent, task_id, head, now)
         if recused and approved(agent, statuses):
             return "conflicting"
         if recused:
@@ -511,7 +538,9 @@ def evaluate_rule12_review_eligibility(
     consultations = [c for c in grok_consultations if isinstance(c, Mapping)]
 
     def qualifying(tag: str) -> Mapping[str, Any] | None:
-        consultation, tag_reasons = _first_grok_consultation(consultations, task_id, head, tag)
+        consultation, tag_reasons = _first_grok_consultation(
+            consultations, task_id, head, tag, now
+        )
         if consultation is not None:
             tag_reasons = _grok_reasons(
                 consultation,

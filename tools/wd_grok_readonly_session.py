@@ -13,8 +13,8 @@ single-flight reservation, OS lock, unfinished-attempt refusal and lifecycle eve
 stay the helper's own; there is no local hourly or weekly quota and no alternate state. Grok's
 provider limits are real and not readable headless. Each model round is accounted in
 ``<request_id>-rounds.jsonl`` beside the helper's request file. The session total is
-``max_rounds * 300`` s (at most 2400 s), passed to consult as its one ``timeout_seconds``;
-each model process gets ``min(300, remaining)`` s. The inherited surface is re-inventoried
+``min(max_rounds * 600, 2400)`` s, passed to consult as its one ``timeout_seconds``;
+each model process gets ``min(600, remaining)`` s. The inherited surface is re-inventoried
 immediately before every model process.
 
 NOT a guaranteed read-only boundary. Grok 0.2.14 still loads inherited hooks, plugin MCP
@@ -55,10 +55,21 @@ MAX_ACTIONS_PER_ROUND = 4
 MAX_REPLY_BYTES = 256 * 1024
 MAX_ACTION_TEXT_BYTES = MAX_ACTIONS_PER_ROUND * 4096 + 64
 MIN_ROUND_SECONDS = 5.0
-ROUND_TIMEOUT_SECONDS = 300
-MAX_SESSION_SECONDS = MAX_ROUNDS * ROUND_TIMEOUT_SECONDS
+# Rounds run at high like one-shot consultations (operator directive 2026-10-06: adjust the limits with
+# high). One round may take 600 s: medium one-shot answers already took up to 288 s against 300 s, high is
+# slower, and a cut-off round leaves nothing. The session total stays capped at the helper's 2400 s
+# ceiling, so the single-flight reservation and its unreconciled-attempt window do not grow; with more
+# than four long rounds the session deadline, not the round limit, ends the session.
+ROUND_TIMEOUT_SECONDS = 600
+MAX_SESSION_SECONDS = 2400
+ROUND_EFFORT = "high"
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUEST_FILE = re.compile(r"([0-9a-f]{32})-request\.md")
+
+
+def session_seconds(max_rounds: int) -> int:
+    return min(max_rounds * ROUND_TIMEOUT_SECONDS, MAX_SESSION_SECONDS)
+
 
 # Exactly the argv wd_grok_helper.consult builds; anything else is refused. Since F4 consult asks
 # for JSON output itself; each round below sets its own output format regardless.
@@ -558,7 +569,7 @@ class ReadonlySessionRunner:
         root = base["prompt"].parent
         if type(timeout) not in (int, float) or not 0 < timeout <= MAX_SESSION_SECONDS:
             raise ValueError("Read-only session timeout must be a number in (0, 2400]")
-        deadline = monotonic() + min(float(timeout), float(self.max_rounds * ROUND_TIMEOUT_SECONDS))
+        deadline = monotonic() + min(float(timeout), float(session_seconds(self.max_rounds)))
         rounds_path = root / (base["request_id"] + "-rounds.jsonl")
         summary = {"schema": "wd.grok-readonly-session.v1", "commit": self.commit,
                    "surface_digest": self.surface["digest"], "isolation": self.surface["isolation"],
@@ -713,12 +724,12 @@ def main() -> int:
         requester = {} if args.requested_by is None else {"requested_by": args.requested_by}
         if requester and "requested_by" not in inspect.signature(helper.consult).parameters:
             raise ValueError("wd_grok_helper.consult lacks the requested_by keyword (G1 interface)")
-        # Single source for the session total: max_rounds * 300 s, validated 2..8 rounds above.
+        # Single source for the session total: min(max_rounds * 600, 2400) s, validated 2..8 rounds above.
         report = helper.consult(helper.STATE_ROOT, args.task_id, prompt,
-                                helper.advisory_command(executable, model["model"]),
+                                helper.advisory_command(executable, model["model"], effort=ROUND_EFFORT),
                                 runner=runner, emitter=helper.emit_bridge_event,
                                 exception_path=args.exception_path, exception_sha256=args.exception_sha256,
-                                timeout_seconds=args.max_rounds * ROUND_TIMEOUT_SECONDS, **requester)
+                                timeout_seconds=session_seconds(args.max_rounds), **requester)
         report["readonly_session"] = {"commit": broker.sha, "surface_digest": surface["digest"],
                                       "isolation": surface["isolation"], "read_only_guarantee": False,
                                       "runtime_tested": False}

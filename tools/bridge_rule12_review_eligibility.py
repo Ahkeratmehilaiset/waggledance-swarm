@@ -29,6 +29,9 @@ count and its slot is not vacant. A primary is absent only when a
 head, got no answer from it for ``ABSENCE_SECONDS``; any event of the primary
 on the task bound to the head, or later than the request, is an answer.
 
+The two slots are held by distinct identities: a recognized RCO that sits in
+the RCO slot is never also the opposite-family approver.
+
 A recognized-RCO veto is evaluated over ALL recognized RCOs, including
 implementers and recused ones, and outranks every pass including Grok. Order
 is read from ``ts_utc``, never from list position: a block is cleared only by a
@@ -183,6 +186,9 @@ def _is_rco_block(event: Mapping[str, Any]) -> bool:
     event_type = _text(event.get("type"))
     status = _text(event.get("status"))
     if event_type in RCO_BLOCK_TYPES:
+        # Stricter than the peer gate on purpose (as check_rco_pass_present):
+        # an informational finding or an exact retraction is still a block here
+        # until the same RCO posts a strictly later exact-head rco_pass.
         return True
     if event_type in PASS_EVENT_TYPES:
         # Exact allowlist: approvals and tooling records are not blocks.
@@ -464,11 +470,15 @@ def evaluate_rule12_review_eligibility(
     else:
         rco_slot["state"] = "vacant"
 
-    # 3. Opposite-family slot: one approval from a lane outside every implementer family.
+    # 3. Opposite-family slot: one approval from a lane outside every implementer
+    #    family that does not already sit in the RCO slot, so one identity never
+    #    holds both slots (Rule 9a distinct identities; RCO1 F1 on 0aabaaab).
     candidates = [
         agent
         for agent, family in FAMILIES.items()
-        if agent != GROK_AGENT and family not in implementer_families
+        if agent != GROK_AGENT
+        and family not in implementer_families
+        and agent not in rco_slot["present"]
     ]
     opposite_slot = fill(OPPOSITE_FAMILY_APPROVAL_STATUSES, candidates)
     if opposite_slot["present"]:

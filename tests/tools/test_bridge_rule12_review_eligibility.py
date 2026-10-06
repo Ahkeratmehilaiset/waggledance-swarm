@@ -136,10 +136,12 @@ def test_conflicting_structured_heads_bind_nothing():
 
 def test_author_cannot_approve_its_own_change():
     contributors = [{"agent": "codex-lead-1", "role": "author"}]
-    result = evaluate([build_pass("codex-lead-1"), build_pass("codex-tools-1"), *BOTH_RCO],
-                      contributors)
-    # GPT-authored: opposite family is Claude; the RCO passes count there, Lead's own does not.
+    result = evaluate([build_pass("codex-lead-1"), build_pass("codex-tools-1"), *BOTH_RCO,
+                       build_pass("fable-5")], contributors)
+    # GPT-authored: opposite family is Claude outside the RCO slot (fable-5); Lead's own pass
+    # and Tools' same-family pass never count there.
     assert result["decision"] == "satisfied"
+    assert result["slots"]["opposite_family"]["holders"] == ["fable-5"]
     assert "codex-lead-1" not in result["slots"]["opposite_family"]["standing"]
     gpt_only = evaluate([build_pass("codex-lead-1"), build_pass("codex-tools-1")], contributors)
     assert gpt_only["decision"] == "not_satisfied"
@@ -539,12 +541,12 @@ def test_rco_approval_or_tooling_record_status_is_not_a_veto(status):
     assert evaluate(events)["decision"] == "satisfied"
 
 
-def test_rco_build_consensus_pass_counts_as_opposite_family_for_gpt_authored_work():
+def test_rco_build_consensus_pass_never_doubles_as_opposite_family_approval():
     contributors = [{"agent": "codex-tools-1", "role": "author"}]
     events = [ev("claude-rco-1", "decision", "build_consensus_pass"), *BOTH_RCO]
     result = evaluate(events, contributors)
-    assert result["decision"] == "satisfied"
-    assert "claude-rco-1" in result["slots"]["opposite_family"]["holders"]
+    assert result["decision"] == "not_satisfied"  # RCO1 F1: needs a distinct identity
+    assert result["slots"]["opposite_family"]["holders"] == []
 
 # --- Lead request v2 (2026-10-06 17:01Z): Fable before Grok, Grok advice is not
 # implementation, whole-pool external review, pure relay, original answer ---
@@ -662,3 +664,40 @@ def test_ineligible_pure_relay_may_request_but_never_supplies_the_verdict(reques
 def test_exact_approve_first_line_in_the_original_answer_counts(answer):
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(answer=answer)])
     assert result["decision"] == "satisfied"
+
+# --- RCO1 review 548FE5A5 on 0aabaaab: F1 one identity must never hold both slots ---
+
+
+def test_rco_in_the_rco_slot_cannot_also_hold_the_opposite_family_slot():
+    contributors = [{"agent": "codex-tools-1", "role": "author"}]
+    events = [recused("claude-rco-2"), rco_pass("claude-rco-1")]
+    result = evaluate(events, contributors)
+    assert result["slots"]["rco"]["holders"] == ["claude-rco-1"]
+    assert "claude-rco-1" not in result["slots"]["opposite_family"]["standing"]
+    assert result["slots"]["opposite_family"]["state"] == "pending"  # fable-5 is still eligible
+    assert result["decision"] == "not_satisfied"
+    with_fable = evaluate([*events, build_pass("fable-5")], contributors)
+    assert with_fable["slots"]["opposite_family"]["holders"] == ["fable-5"]
+    assert with_fable["decision"] == "satisfied"
+
+
+def test_rco_build_consensus_pass_does_not_double_as_opposite_family_approval():
+    contributors = [{"agent": "codex-lead-1", "role": "author"}]
+    events = [recused("claude-rco-2"), rco_pass("claude-rco-1"),
+              ev("claude-rco-1", "decision", "build_consensus_pass"), recused("fable-5")]
+    result = evaluate(events, contributors, [grok(request_id="f" * 32)])
+    # With rco-1 in the RCO slot and fable-5 recused the opposite slot is vacant:
+    # only a distinct identity (here the bound Grok fallback) can hold it.
+    assert result["slots"]["opposite_family"]["state"] == "held_by_grok_fallback"
+    assert result["decision"] == "satisfied"
+    without_grok = evaluate(events, contributors)
+    assert without_grok["decision"] == "not_satisfied"
+
+
+def test_slot_holders_are_always_distinct_identities():
+    contributors = [{"agent": "codex-tools-1", "role": "author"}]
+    events = [rco_pass("claude-rco-1"), rco_pass("claude-rco-2"), build_pass("fable-5")]
+    result = evaluate(events, contributors)
+    assert result["decision"] == "satisfied"
+    assert not set(result["slots"]["rco"]["holders"]) & set(
+        result["slots"]["opposite_family"]["holders"])

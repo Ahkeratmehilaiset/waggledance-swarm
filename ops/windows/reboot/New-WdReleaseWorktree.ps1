@@ -10,9 +10,13 @@
     the branch name (absent locally AND on the remote), and a persistent C: target path
     (not a RAM disk, not TEMP/TMP, absent or an empty directory), then prints ONE JSON plan
     with the exact argv of every command a later, separately signed activation would run.
-    The source repository's actual top level must be persistent C: outside TEMP/TMP too, and
-    neither it, the target nor any existing ancestor of either may be a reparse point
+    The source repository's actual top level AND its Git common directory (where a linked
+    worktree keeps its objects and refs) must be persistent C: outside TEMP/TMP too, and
+    neither they, the target nor any existing ancestor of any of them may be a reparse point
     (junction, symlink or mount point), which could redirect a C: path to a RAM disk or TEMP.
+    A relative -RepositoryPath is resolved against the PowerShell location, exactly where Git
+    runs; drive-relative (C:dir) and root-relative (\dir) forms are refused, and every planned
+    command carries only the resolved absolute path.
 
     Nothing is created, fetched, pushed or changed. -Apply refuses (exit 3): this wave
     prepares source only, and executing the plan needs a separately signed activation.
@@ -124,18 +128,37 @@ if ($null -eq $fullPath -or -not $fullPath.StartsWith('C:\', [StringComparison]:
 }
 
 # 2. The repository, the commit and the branch, read-only.
-$inside = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', '--is-inside-work-tree')
-if ($inside.Code -ne 0 -or $inside.Text -cne 'true') {
+# Native commands start in this PowerShell location, so a relative path is resolved there, never against
+# the process current directory, which can differ in a host that called Set-Location.
+$repositoryFull = $null
+try {
+    $location = Get-Location
+    if ($RepositoryPath.IndexOf([char]0) -lt 0 -and [string]$location.Provider.Name -ceq 'FileSystem') {
+        if ($RepositoryPath -match '^[A-Za-z]:[\\/]' -or $RepositoryPath -match '^[\\/]{2}[^\\/]') {
+            $repositoryFull = [IO.Path]::GetFullPath($RepositoryPath)
+        } elseif (-not [IO.Path]::IsPathRooted($RepositoryPath)) {
+            $repositoryFull = [IO.Path]::GetFullPath([IO.Path]::Combine([string]$location.ProviderPath, $RepositoryPath))
+        }
+    }
+} catch { $repositoryFull = $null }
+$inside = if ($null -eq $repositoryFull) { $null } else { Invoke-Git @('-C', $repositoryFull, 'rev-parse', '--is-inside-work-tree') }
+if ($null -eq $repositoryFull) {
+    $reasons.Add('repository_path_ambiguous')
+} elseif ($inside.Code -ne 0 -or $inside.Text -cne 'true') {
     $reasons.Add('repository_invalid')
 } else {
-    # The source of truth is the repository's ACTUAL top level, and the path it was reached by.
-    $top = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', '--show-toplevel')
+    # The source of truth is the repository's ACTUAL top level, its Git common directory (a linked
+    # worktree keeps objects and refs there, so a C: worktree of a TEMP repository is still volatile),
+    # and the path it was reached by.
+    $top = Invoke-Git @('-C', $repositoryFull, 'rev-parse', '--show-toplevel')
+    $common = Invoke-Git @('-C', $repositoryFull, 'rev-parse', '--path-format=absolute', '--git-common-dir')
     $sources = @()
     try {
         if ($top.Code -eq 0 -and $top.Text) { $sources += [IO.Path]::GetFullPath($top.Text) }
-        $sources += [IO.Path]::GetFullPath($RepositoryPath)
+        if ($common.Code -eq 0 -and $common.Text) { $sources += [IO.Path]::GetFullPath($common.Text) }
+        $sources += $repositoryFull
     } catch { $sources = @() }
-    if ($sources.Count -lt 2) {
+    if ($sources.Count -lt 3) {
         $reasons.Add('repository_invalid')
     } else {
         if (@($sources | Where-Object { -not $_.StartsWith('C:\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
@@ -145,14 +168,14 @@ if ($inside.Code -ne 0 -or $inside.Text -cne 'true') {
         if (@($sources | Where-Object { Test-WdReparseOnPath $_ }).Count) { $reasons.Add('repository_reparse') }
     }
     if (-not $reasons.Contains('commit_invalid')) {
-        $kind = Invoke-Git @('-C', $RepositoryPath, 'cat-file', '-t', $Commit)
+        $kind = Invoke-Git @('-C', $repositoryFull, 'cat-file', '-t', $Commit)
         if ($kind.Code -ne 0 -or $kind.Text -cne 'commit') { $reasons.Add('commit_absent') }
     }
     if (-not $reasons.Contains('branch_invalid')) {
-        $local = Invoke-Git @('-C', $RepositoryPath, 'show-ref', '--verify', '--quiet', ('refs/heads/' + $Branch))
+        $local = Invoke-Git @('-C', $repositoryFull, 'show-ref', '--verify', '--quiet', ('refs/heads/' + $Branch))
         if ($local.Code -eq 0) { $reasons.Add('branch_exists_locally') }
         if (-not $reasons.Contains('remote_invalid')) {
-            $remoteHeads = Invoke-Git @('-C', $RepositoryPath, 'ls-remote', '--heads', $Remote, ('refs/heads/' + $Branch))
+            $remoteHeads = Invoke-Git @('-C', $repositoryFull, 'ls-remote', '--heads', $Remote, ('refs/heads/' + $Branch))
             if ($remoteHeads.Code -ne 0) { $reasons.Add('remote_unreachable') }
             elseif ($remoteHeads.Text) { $reasons.Add('branch_exists_on_remote') }
         }
@@ -165,7 +188,7 @@ if ($reasons.Count -gt 0) { Write-Plan $plan 2 }
 $plan['verdict'] = 'plan'
 $plan['worktree'] = $fullPath
 $plan['commands'] = @(
-    ,@($GitExecutable, '-C', $RepositoryPath, 'worktree', 'add', '-b', $Branch, $fullPath, $Commit)
+    ,@($GitExecutable, '-C', $repositoryFull, 'worktree', 'add', '-b', $Branch, $fullPath, $Commit)
     ,@($GitExecutable, '-C', $fullPath, 'push', '-u', $Remote, $Branch)
 )
 $plan['verification'] = @(

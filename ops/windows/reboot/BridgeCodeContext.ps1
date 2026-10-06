@@ -30,6 +30,9 @@ $script:WdBridgeCodeContextSchema = 'wd.bridge-code-context.v1'
 $script:WdBridgeCodePackageRoot = 'tools-bootstrap'
 $script:WdBridgeCodeWrapperName = 'Invoke-WdBridgePython.ps1'
 $script:WdBridgeCodeDefinitionName = 'bridge-code-files.json'
+# The one non-Python, non-JSON file the package may carry: the gate code reads the charter at runtime.
+# Exact, case-sensitive path only; no other .md (or any other type) is admitted.
+$script:WdBridgeCodeCharterRelative = 'docs/architecture/IDLE_AUTONOMY_CHARTER.md'
 $script:WdBridgeCodePythonFlags = @('-S', '-B')
 # Invoke-WdBridgePythonTool streams the packaged tool's own output to the
 # caller, so its exit code travels here instead of on the output stream.
@@ -152,6 +155,36 @@ function Read-WdBridgeCodeJsonSnapshot {
     }
 }
 
+function Get-WdBridgeCodeStartEnvironment {
+    <#
+        The child's environment dictionary, complete. On .NET Framework (Windows
+        PowerShell 5.1) ProcessStartInfo.EnvironmentVariables stores an empty
+        dictionary and then copies the parent block into it, throwing on a key
+        that differs only in case (Path and PATH, as an MSYS or Git Bash parent
+        passes them). The throw surfaces as a null dictionary ("Cannot index into
+        a null array"), and a second read returns the PARTIAL copy, so the child
+        would silently lose every variable after the duplicate. Finish the copy
+        from the process environment; the first spelling of a duplicate wins.
+        Only the child's dictionary changes, never this process's environment.
+    #>
+    param([Parameter(Mandatory)] [System.Diagnostics.ProcessStartInfo] $StartInfo)
+
+    try {
+        $variables = $StartInfo.EnvironmentVariables
+    }
+    catch {
+        $variables = $null
+    }
+    if ($null -ne $variables) { return ,$variables }
+    $variables = $StartInfo.get_EnvironmentVariables()
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        if (-not $variables.ContainsKey([string]$entry.Key)) {
+            $variables[[string]$entry.Key] = [string]$entry.Value
+        }
+    }
+    return ,$variables
+}
+
 function Invoke-WdBridgeCodePython {
     param(
         [Parameter(Mandatory)] [string] $PythonExecutable,
@@ -176,13 +209,14 @@ function Invoke-WdBridgeCodePython {
     } else {
         [IO.Path]::GetTempPath()
     }
+    $childEnvironment = Get-WdBridgeCodeStartEnvironment -StartInfo $startInfo
     foreach ($key in @($Environment.Keys)) {
         $value = [string]$Environment[$key]
         if ([string]::IsNullOrEmpty($value)) {
-            [void]$startInfo.EnvironmentVariables.Remove([string]$key)
+            [void]$childEnvironment.Remove([string]$key)
         }
         else {
-            $startInfo.EnvironmentVariables[[string]$key] = $value
+            $childEnvironment[[string]$key] = $value
         }
     }
     $process = New-Object System.Diagnostics.Process
@@ -233,7 +267,7 @@ function Get-WdBridgeCodePackageDefinition {
         if (-not (Test-WdBridgeCodeRelativePath -Relative $relative)) {
             throw "unsafe bridge code package path: $relative"
         }
-        if ($relative -cnotmatch '\.(py|json)$') {
+        if ($relative -cnotmatch '\.(py|json)$' -and $relative -cne $script:WdBridgeCodeCharterRelative) {
             throw "bridge code package file must be .py or .json: $relative"
         }
         if ($seen.ContainsKey($relative)) {

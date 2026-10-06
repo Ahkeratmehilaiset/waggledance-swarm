@@ -211,6 +211,17 @@ def test_every_packaged_python_file_exists():
     assert not missing, f"listed for packaging but absent from the repo: {missing}"
 
 
+def test_source_package_initializers_are_not_silently_replaced_by_namespaces():
+    packaged = set(_packaged_python())
+    initializers = {
+        (parent / "__init__.py").as_posix()
+        for relative in packaged
+        for parent in Path(relative).parents
+        if parent != Path(".") and (REPO_ROOT / parent / "__init__.py").is_file()
+    }
+    assert initializers <= packaged, sorted(initializers - packaged)
+
+
 def test_the_packaged_python_set_is_import_closed():
     """Nothing packaged may import an unpackaged internal module.
 

@@ -23,6 +23,25 @@ SHELLS = list(dict.fromkeys(filter(None, [
 ])))
 
 
+COMPACT_WARNING = "Native wake compact procedure unavailable: delivered verified inline fallback; package repair required"
+SKIPPED_ALERT_WARNING = ("Native wake prompt alert skipped: launcher session unavailable; "
+                         "degradation retained in relay state")
+ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _json_after_warnings(run: subprocess.CompletedProcess[str], expected_warnings: list[str]):
+    """Parse the final stdout JSON line; every earlier line must be exactly the expected visible warnings.
+
+    Degraded-delivery warnings use -WarningAction Continue so they stay visible on stdout even under
+    WarningPreference SilentlyContinue; pwsh 7 may wrap them in ANSI colour codes, 5.1 does not.
+    """
+    lines = [line for line in run.stdout.splitlines() if line.strip()]
+    assert lines, run.stdout + run.stderr
+    warnings = [ANSI_SGR.sub("", line) for line in lines[:-1]]
+    assert warnings == ["WARNING: " + w for w in expected_warnings], run.stdout + run.stderr
+    return json.loads(lines[-1])
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
@@ -278,7 +297,9 @@ try {{
  @{{ok=$true;sent=$script:sent;result=$result;alerts=$script:alerts;sends=$script:sends}} | ConvertTo-Json -Compress
 }} catch {{ @{{ok=$false;sent=$script:sent;error=$_.Exception.Message}} | ConvertTo-Json -Compress }}
 """
-    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    # One visible warning per agent:generation; the stubbed operator notice publishes, so no alert warning.
+    result = _json_after_warnings(_run_powershell(script, executable=ps),
+                                  [] if case == "valid" else [COMPACT_WARNING])
     assert result["ok"], result
     assert not marker.exists()
     assert result["sends"] == (1 if case == "valid" else 3)
@@ -355,7 +376,10 @@ $env:AGENT_BRIDGE_RUNTIME_ROOT={q(runtime)}
 $request=& {q(bin_dir / 'Write-AgentEvent.ps1')} -Agent operator -Type wake_request -Status assigned -To {agent} -TaskId fixture/after-alert -SessionId operator-session -RunId operator-session -ReceiptJson
 @{{step=$step;request=($request|ConvertFrom-Json)}} | ConvertTo-Json -Depth 16 -Compress
 """
-    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    # A valid session publishes the real notice silently; an absent/invalid one skips it with a second warning.
+    result = _json_after_warnings(_run_powershell(script, executable=ps),
+                                  [COMPACT_WARNING] if session == "real-lane-session"
+                                  else [COMPACT_WARNING, SKIPPED_ALERT_WARNING])
     assert result["step"] == "queued"
     identity = json.loads(last.read_text(encoding="utf-8-sig"))
     assert identity["session_id"] == "real-lane-session"

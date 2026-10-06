@@ -271,6 +271,21 @@ def test_f19_routing_and_shadow_learning_family_is_packaged_and_smoke_checked():
     assert modules <= set(definition["import_smoke"]["package_modules"])
 
 
+def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
+    """A new bundle must deliver its reviewed gate fixes, not just a new pointer."""
+    modules = {
+        "tools.check_bridge_changes_requested",
+        "tools.check_rco_pass_present",
+        "tools.idle_consensus_auto_merge",
+        "tools.bridge_v2_identity_registry",
+    }
+    definition = _definition()
+    paths = {module.replace(".", "/") + ".py" for module in modules}
+    assert paths <= set(definition["python_files"])
+    assert modules <= set(definition["import_smoke"]["package_modules"])
+    assert not paths & set(definition["python_entrypoints"].values())
+
+
 def test_passive_participants_and_dashboard_ship_without_new_entrypoints():
     """F5/F6 are optional caller-fed libraries, not newly enabled collectors."""
     modules = {"tools.bridge_lock_participants", "tools.bridge_v2_dashboard"}

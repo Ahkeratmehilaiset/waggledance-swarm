@@ -60,20 +60,40 @@ def load_bridge_identity_registry(
     return registry
 
 
+def _registered_owner_of_uuid(registry: Mapping[str, str], event_uuid: str) -> str | None:
+    """Return the registered agent that owns ``event_uuid`` (case-insensitive), if any."""
+    if not event_uuid:
+        return None
+    wanted = event_uuid.casefold()
+    for owner, registered_uuid in registry.items():
+        if str(registered_uuid).casefold() == wanted:
+            return str(owner)
+    return None
+
+
 def bridge_identity_binding_status(
     event: Mapping[str, Any],
     *,
     registry: Mapping[str, str],
     restricted_agents: set[str] | frozenset[str] | None = None,
 ) -> str:
-    """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``."""
+    """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``.
+
+    A UUID that is registered to a different agent is a reverse alias and returns
+    ``mismatch_uuid`` before either ``unregistered`` return, so an unregistered or
+    unwatched name can never borrow a registered identity. An unregistered name
+    with an unregistered or absent UUID stays ``unregistered``.
+    """
     agent = str(event.get("agent", ""))
+    event_uuid = str(event.get("agent_uuid", "") or "")
+    uuid_owner = _registered_owner_of_uuid(registry, event_uuid)
+    if uuid_owner is not None and uuid_owner != agent:
+        return "mismatch_uuid"
     if restricted_agents is not None and agent not in restricted_agents:
         return "unregistered"
     expected_uuid = registry.get(agent)
     if not expected_uuid:
         return "unregistered"
-    event_uuid = str(event.get("agent_uuid", "") or "")
     if not event_uuid:
         return "missing_uuid"
     if event_uuid != expected_uuid:

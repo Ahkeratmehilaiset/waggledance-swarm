@@ -62,6 +62,23 @@ REVIEWS = [
 ]
 
 
+class _HelperClock(datetime):
+    """The helper stamps finished_at_utc from its own clock, not from consult(now=...)."""
+    current = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.current if cls.current is not None else datetime.now(tz)
+
+
+@pytest.fixture(autouse=True)
+def helper_clock(monkeypatch):
+    monkeypatch.setattr(helper, "datetime", _HelperClock)
+    _HelperClock.current = None
+    yield _HelperClock
+    _HelperClock.current = None
+
+
 @pytest.fixture
 def grok_root(tmp_path):
     root = tmp_path / "grok-scout-reports"
@@ -72,7 +89,8 @@ def grok_root(tmp_path):
 
 
 def run_grok(root, answer, nonce=NONCE, slot="opposite_family", now=RUN_DT, command=COMMAND,
-             diff=DIFF, task=TASK, returncode=0):
+             diff=DIFF, task=TASK, returncode=0, finished=None):
+    _HelperClock.current = finished or now + timedelta(seconds=30)
     prompt = adapter.build_rule12_grok_prompt(task_id=TASK, head=H, slot=slot, nonce=nonce,
                                               diff_text=diff, changed_paths=PATHS)
     result = helper.consult(root, task, prompt, list(command), now=now, requested_by="claude-rco-1",
@@ -220,6 +238,54 @@ def test_run_after_the_gate_clock_does_not_count(grok_root):
     run_grok(grok_root, "APPROVE")
     collected = collect(grok_root, [request()], now=RUN_DT - timedelta(seconds=1))
     assert any("gate clock" in reason for reason in collected["reasons"])
+
+
+def _set_finished(root, value):
+    path = root / helper.LEDGER_NAME
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = json.loads(line)
+        if entry["event"] == "finished":
+            if value is None:
+                entry.pop("finished_at_utc")
+            else:
+                entry["finished_at_utc"] = value
+        lines.append(json.dumps(entry) + "\n")
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def test_answer_finished_after_the_gate_clock_does_not_count(grok_root):
+    # Tools 21:11:56Z on 0a146a2f: a run reserved before the gate clock but answered after it was accepted.
+    run_grok(grok_root, "APPROVE", finished=GATE_DT + timedelta(days=1))
+    collected = collect(grok_root, [request()])
+    assert any("not finished after its run started and before the gate clock" in reason
+               for reason in collected["reasons"])
+    assert collected["consultations"][0]["answer_text"] is None
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+def test_answer_finished_before_its_run_started_does_not_count(grok_root):
+    run_grok(grok_root, "APPROVE", finished=RUN_DT - timedelta(seconds=1))
+    collected = collect(grok_root, [request()])
+    assert any("not finished after its run started" in reason for reason in collected["reasons"])
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-time", "2026-10-06T16:55:00", 1760000000])
+def test_answer_without_a_parseable_finish_time_does_not_count(grok_root, value):
+    run_grok(grok_root, "APPROVE")
+    _set_finished(grok_root, value)
+    collected = collect(grok_root, [request()])
+    assert any("not finished after its run started" in reason for reason in collected["reasons"])
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize("finished", [RUN_DT, GATE_DT])
+def test_answer_finished_at_either_bound_counts(grok_root, finished):
+    run_grok(grok_root, "APPROVE", finished=finished)
+    collected = collect(grok_root, [request()])
+    assert collected["reasons"] == []
+    assert evaluate(collected)["decision"] == "satisfied"
 
 
 def test_effort_below_high_does_not_fill(grok_root):

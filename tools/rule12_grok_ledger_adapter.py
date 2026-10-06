@@ -371,6 +371,10 @@ def collect_rule12_grok_consultations(
         if len(ends) != 1 or ends[0].get("status") != "answered":
             reasons.append(f"{label}: helper run has no single answered outcome")
             continue
+        finished_utc = _parse_utc(ends[0].get("finished_at_utc"))
+        if finished_utc is None or finished_utc < reserved or finished_utc > now_utc:
+            reasons.append(f"{label}: helper answer is not finished after its run started and before the gate clock")
+            continue
         report_sha256 = ends[0].get("report_sha256")
         if type(report_sha256) is not str or not re.fullmatch(r"[0-9a-f]{64}", report_sha256):
             reasons.append(f"{label}: ledger report_sha256 missing or malformed")

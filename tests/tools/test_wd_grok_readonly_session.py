@@ -263,3 +263,101 @@ def test_a_round_gets_600_seconds_unless_the_session_deadline_is_nearer(iso, tmp
     summary = json.loads(result.stdout.split("READONLY SESSION SUMMARY\n", 1)[1])
     assert result.returncode == 1 and summary["outcome"] == "failed:round timeout"
     assert len(timeouts) == 1 and low < timeouts[0] <= high
+
+
+class ClockModel:
+    """A scripted model on a fake monotonic clock (no real sleep): each round takes its given seconds, and a
+    round longer than the timeout it was given is cut off there with TimeoutExpired."""
+
+    def __init__(self, clock, rounds):
+        self.clock, self.rounds, self.timeouts = clock, list(rounds), []
+
+    def __call__(self, command, **kwargs):
+        timeout = kwargs["timeout"]
+        self.timeouts.append(timeout)
+        seconds, text = self.rounds[len(self.timeouts) - 1]
+        if seconds > timeout:
+            self.clock[0] += timeout
+            raise subprocess.TimeoutExpired(command, timeout)
+        self.clock[0] += seconds
+        body = json.dumps({"text": text, "stopReason": "EndTurn", "sessionId": "sess-1"}).encode("utf-8")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=body, stderr=b"")
+
+
+def _clocked_session(monkeypatch, iso, tmp_path, rounds, *, timeout, max_rounds):
+    _, cwd = iso
+    clock = [1000.0]
+    monkeypatch.setattr(session, "monotonic", lambda: clock[0])
+    model = ClockModel(clock, rounds)
+    runner = session.ReadonlySessionRunner(Broker(), session.BusyClock(), "c" * 40, session.surface_gate(cwd, None),
+                                           max_rounds=max_rounds, model_runner=model)
+    result = runner(_consult_argv(_state(tmp_path, "clocked")), timeout=timeout, env=None, cwd=str(cwd))
+    summary = json.loads(result.stdout.split("READONLY SESSION SUMMARY\n", 1)[1])
+    return result.returncode, summary["outcome"], model.timeouts
+
+
+@pytest.mark.parametrize("seconds, code, outcome", [(301, 0, "final"), (450, 0, "final"), (599, 0, "final"),
+                                                    (601, 1, "failed:round timeout"), (900, 1, "failed:round timeout")])
+def test_a_high_round_between_300_and_600_seconds_is_accepted_and_a_longer_one_is_cut_off(
+        monkeypatch, iso, tmp_path, seconds, code, outcome):
+    # The old 300 s round limit cut off every case here; 600 s keeps the first three (negative control: the rest).
+    assert _clocked_session(monkeypatch, iso, tmp_path, [(seconds, FINAL)], timeout=2400, max_rounds=3) == (
+        code, outcome, [600.0])
+
+
+@pytest.mark.parametrize("second, code, outcome", [(350, 0, "final"), (450, 1, "failed:round timeout")])
+def test_a_later_round_gets_only_the_remaining_session_time(monkeypatch, iso, tmp_path, second, code, outcome):
+    # A 900 s session: round 1 takes 500 s, so round 2 gets the remaining 400 s, not 600 s.
+    assert _clocked_session(monkeypatch, iso, tmp_path, [(500, LIST), (second, FINAL)], timeout=900,
+                            max_rounds=3) == (code, outcome, [600.0, 400.0])
+
+
+def test_eight_rounds_stop_at_the_2400_second_session_total(monkeypatch, iso, tmp_path):
+    # Four 590 s rounds use 2360 s of the 2400 s total, so round 5 gets 40 s, not 600 s.
+    rounds = [(590, LIST)] * 4 + [(590, FINAL)]
+    assert _clocked_session(monkeypatch, iso, tmp_path, rounds, timeout=session.session_seconds(8), max_rounds=8) == (
+        1, "failed:round timeout", [600.0] * 4 + [40.0])
+
+
+@pytest.mark.parametrize("max_rounds, total", [(2, 1200), (4, 2400), (8, 2400)])
+def test_the_entry_point_consults_at_high_with_the_capped_session_total(iso, tmp_path, monkeypatch, capsys,
+                                                                         max_rounds, total):
+    # The real main() up to helper.consult; the model file read, surface gate, broker and consult are fakes.
+    from types import SimpleNamespace
+    _, cwd = iso
+    grok = tmp_path / "profile" / ".grok" / "bin" / "grok.exe"
+    grok.parent.mkdir(parents=True)
+    grok.write_bytes(b"")
+    model = json.dumps({"model": "grok-4.7", "grok_command": str(grok),
+                        "discovered_utc": datetime.now(timezone.utc).isoformat()})
+
+    class ModelFilePath(type(session.Path())):
+        def read_text(self, *args, **kwargs):
+            if str(self) == r"C:\Python\WD_GROK_MODEL_CURRENT.json":
+                return model
+            return super().read_text(*args, **kwargs)
+
+    calls = []
+
+    def consult(root, task_id, prompt, command, *, runner=None, emitter=None, exception_path=None,
+                exception_sha256=None, timeout_seconds=None, requested_by=None):
+        calls.append((command, timeout_seconds, requested_by, runner.max_rounds))
+        return {"status": "answered"}
+
+    ask = tmp_path / "ask.md"
+    ask.write_text("Review the gate.", encoding="utf-8")
+    monkeypatch.setattr(session, "Path", ModelFilePath)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setattr(session.helper, "STATE_ROOT", cwd)
+    monkeypatch.setattr(session, "surface_gate", lambda root, ack: {"digest": "d", "isolation": "fake"})
+    monkeypatch.setattr(session.helper, "GitBlobBroker", lambda repo, commit, git, clock: SimpleNamespace(sha=commit))
+    monkeypatch.setattr(session.helper, "consult", consult)
+    monkeypatch.setattr(sys, "argv", ["wd_grok_readonly_session.py", "--task-id", "readonly/task", "--prompt-file",
+                                      str(ask), "--repo", str(tmp_path), "--commit", "c" * 40, "--git-executable",
+                                      str(tmp_path / "git.exe"), "--max-rounds", str(max_rounds),
+                                      "--requested-by", "fable-5"])
+    assert session.main() == 0
+    (command, timeout, requester, rounds), = calls
+    assert command[command.index("--effort") + 1] == "high"
+    assert (timeout, requester, rounds) == (total, "fable-5", max_rounds)
+    assert json.loads(capsys.readouterr().out)["status"] == "answered"

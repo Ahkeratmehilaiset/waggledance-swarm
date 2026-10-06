@@ -1917,3 +1917,39 @@ def test_f4_stream_sizes_are_kept_when_the_report_write_fails_after_the_run(tmp_
                      runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="advice", stderr="warn"))
     assert (result["status"], result["error_class"], result["stdout_bytes"], result["stderr_bytes"]) == (
         "failed", "io_error", len(b"advice"), len(b"warn"))
+
+
+@pytest.mark.parametrize("requester", (None, "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"))
+def test_the_cli_consults_at_high_and_leaves_the_900_second_default_in_force(tmp_path, monkeypatch, capsys, requester):
+    # The real main() up to consult; the model file read and consult are fakes. The CLI passes no timeout,
+    # so the consult default applies, and that default is 900 s.
+    import inspect
+    import sys
+    grok = tmp_path / "profile" / ".grok" / "bin" / "grok.exe"
+    grok.parent.mkdir(parents=True)
+    grok.write_bytes(b"")
+    model = json.dumps({"model": "grok-4.7", "grok_command": str(grok),
+                        "discovered_utc": datetime.now(timezone.utc).isoformat()})
+
+    class ModelFilePath(type(wd_grok_helper.Path())):
+        def read_text(self, *args, **kwargs):
+            if str(self) == r"C:\Python\WD_GROK_MODEL_CURRENT.json":
+                return model
+            return super().read_text(*args, **kwargs)
+
+    calls = []
+    default = inspect.signature(wd_grok_helper.consult).parameters["timeout_seconds"].default
+    ask = tmp_path / "ask.md"
+    ask.write_text("Evidence for cli/task only.", encoding="utf-8")
+    monkeypatch.setattr(wd_grok_helper, "Path", ModelFilePath)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setattr(wd_grok_helper, "consult",
+                        lambda root, task_id, prompt, command, **kwargs: calls.append((command, kwargs)) or {
+                            "status": "answered"})
+    monkeypatch.setattr(sys, "argv", ["wd_grok_helper.py", "--prompt-file", str(ask), "--task-id", "cli/task"]
+                        + ([] if requester is None else ["--requested-by", requester]))
+    assert wd_grok_helper.main() == 0
+    (command, kwargs), = calls
+    assert command[command.index("--effort") + 1] == "high" and "timeout_seconds" not in kwargs
+    assert kwargs["requested_by"] == requester and default == wd_grok_helper.CONSULT_TIMEOUT_SECONDS == 900
+    assert json.loads(capsys.readouterr().out)["status"] == "answered"

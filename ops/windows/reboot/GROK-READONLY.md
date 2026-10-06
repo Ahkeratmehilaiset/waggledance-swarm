@@ -70,8 +70,33 @@ provider's quota): `available` after a completed attempt (`eligible=true`,
 `next_eligible_utc: null`: only an explicit reconciliation resolves it);
 `clock_regressed` when the clock reads earlier than the recorded attempt
 (`eligible=false`, `next_eligible_utc` = that recorded time), and a consultation
-then defers with `deferred_clock_regression`. The removed hourly fields
+then defers with `deferred_clock_regression`;
+`model_unavailable_cooldown` while the provider has rejected the same model
+twice in a row (see below; `eligible=false`, `next_eligible_utc` = the end of
+the cooldown), and a consultation of THAT model then defers with
+`deferred_model_unavailable`. The removed hourly fields
 (`hourly_budget_*`, `deferred_hourly_limit`) are no longer produced.
+
+Model rejection (`error_class: "model_unavailable"`). An attempt is classed
+`model_unavailable` only when the CLI exits nonzero AND its stderr carries the
+provider's rejection of the requested `--model`:
+`Couldn't set model '<model>': Invalid params: "unknown model id"` (recorded 27
+times on 2026-10-06, exit 1, 2-5 s each). A timeout, any other nonzero exit, a
+quota or busy message, or a rejection naming a different model keeps its own
+class. The state counts consecutive rejections of one model in
+`model_unavailable_streak`; an answer or any other outcome ends the count. From
+the second rejection in a row, consultations of that model are deferred with
+no provider attempt for 900 seconds after the last rejected attempt was
+reserved; after that, exactly one consultation (single-flight) probes the model
+again, and a new rejection restarts the 900 seconds. On 2026-10-06 the provider
+rejected `grok-4.7` from 21:25:56Z until at least 21:42Z (27 attempts, 25 of
+them automatic relay chunks about 38 s apart); replayed under this rule, 3 of
+those 27 attempts reach the provider. `-Status` shows the record as
+`model_breaker` (`closed`, `open` with `until_utc`, `expired`, or `invalid`
+with a reason). A malformed record never holds anything. Nothing guesses or
+switches the model: a consultation that names another model explicitly is not
+held, and the caller's one submission and the 900-second consultation limit are
+unchanged.
 
 Deferral observations (contract). A deferral reserves nothing, so it never mints
 a consultation `request_id`. The response and its `deferred` lifecycle event

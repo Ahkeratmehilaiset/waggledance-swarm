@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Mapping
+import uuid
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 AGENT_UUID_PATTERN = re.compile(
@@ -60,13 +61,24 @@ def load_bridge_identity_registry(
     return registry
 
 
+def _canonical_uuid_text(value: object) -> str:
+    """One spelling per UUID value: braces, ``urn:uuid:``, missing hyphens, case
+    and surrounding whitespace all map to the canonical lowercase form. Text that
+    is not a UUID is compared case-insensitively as written."""
+    text = str(value).strip()
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text.casefold()
+
+
 def _registered_owner_of_uuid(registry: Mapping[str, str], event_uuid: str) -> str | None:
-    """Return the registered agent that owns ``event_uuid`` (case-insensitive), if any."""
-    if not event_uuid:
+    """Return the registered agent that owns ``event_uuid`` in any spelling, if any."""
+    if not event_uuid.strip():
         return None
-    wanted = event_uuid.casefold()
+    wanted = _canonical_uuid_text(event_uuid)
     for owner, registered_uuid in registry.items():
-        if str(registered_uuid).casefold() == wanted:
+        if _canonical_uuid_text(registered_uuid) == wanted:
             return str(owner)
     return None
 

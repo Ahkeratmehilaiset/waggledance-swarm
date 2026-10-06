@@ -275,13 +275,21 @@ production with more depth.
   not wait for a Lead slot. Concurrent calls queue on the helper lock.
 * One call per task, no retry. A failed call is recorded as failed in the task
   result and is not repeated to get a better answer.
-* Never wait for Grok (operator addendum 2026-10-06 10:05Z: "sen tarkoitus on
-  vaan antaa syvyyttä ja lisäideoita"). Start the call detached and keep
-  working. If the answer is not there when the task is otherwise ready, report
-  the task done and name the call state (queued, running, failed or no
-  answer). If a later answer shows a real defect, fix it as a follow-up. A
-  missing, failed or late Grok answer never holds a merge, a review verdict or
-  a handoff.
+* Wait at most 60 seconds for Grok, then continue on your own judgment
+  (operator addenda 2026-10-06 10:05Z and 10:13Z: "grok vastaus ei saa jäädä
+  odottamaan max 1 min sen jälkeen mennään omilla avuilla sen ainoa tehtävä on
+  vaan antaa syvyyttä ja näkökulmaa silloin kun se on saatavissa"). Start the
+  call detached. The call itself keeps the helper's own timeout, because HIGH
+  answers often take longer than 60 seconds; a later answer that shows a real
+  defect is fixed as a follow-up. If no answer has arrived when the task is
+  otherwise ready, report the task done and name the call state (queued,
+  running, failed or no answer).
+* Grok is never a gate. It may act as review authority when the other
+  reviewers are ineligible (operator 10:13Z: "Grokkia voidaan myös käyttä
+  review autoriteettinä silloin kun muut ovat jäävejä, mutta se ei ole mikään
+  portti, koska siitä saattaa mennä käyttörajat lukkoon ja se ei vastaa sen
+  takia"). A missing, failed, late or rate-limited Grok answer never blocks a
+  task, a review verdict, a merge or a handoff.
 * The answer is advisory. It never counts as `RCO_PASS` and never replaces the
   opposite-model review or the RCO. A negative answer does not block, but the
   task result names the report path and SHA-256 and says, finding by finding,

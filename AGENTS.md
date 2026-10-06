@@ -51,10 +51,12 @@
   status messages, F0 closures and relays is exempt), challenge it yourself
   with ONE Grok `high` consultation through `C:\Python\Invoke-WdGrok.ps1`
   (`-RequestedBy` your own agent ID; Lead omits it). Do not route it through
-  Lead and do not retry. Never wait for it: start it detached, keep working,
-  and if no answer has arrived when the task is ready, report done with the
-  call state and handle a later answer as a follow-up; a missing or late
-  answer never holds a merge, verdict or handoff. The answer is advisory,
+  Lead and do not retry. Start it detached and wait at most 60 seconds, then
+  continue on your own judgment; if no answer has arrived when the task is
+  ready, report done with the call state and handle a later answer as a
+  follow-up. Grok is never a gate: it may act as review authority when the
+  other reviewers are ineligible, but a missing, late or rate-limited answer
+  never blocks a task, verdict, merge or handoff. The answer is advisory,
   never an `RCO_PASS` and never
   a substitute for the opposite-model review; a negative answer does not block,
   but the task result names the report path and SHA-256 and answers each

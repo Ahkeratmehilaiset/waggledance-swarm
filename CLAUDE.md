@@ -275,15 +275,25 @@ production with more depth.
   not wait for a Lead slot. Concurrent calls queue on the helper lock.
 * One call per task, no retry. A failed call is recorded as failed in the task
   result and is not repeated to get a better answer.
-* Wait at most 60 seconds for Grok, then continue on your own judgment
-  (operator addenda 2026-10-06 10:05Z and 10:13Z: "grok vastaus ei saa jäädä
-  odottamaan max 1 min sen jälkeen mennään omilla avuilla sen ainoa tehtävä on
-  vaan antaa syvyyttä ja näkökulmaa silloin kun se on saatavissa"). Start the
-  call detached. The call itself keeps the helper's own timeout, because HIGH
-  answers often take longer than 60 seconds; a later answer that shows a real
-  defect is fixed as a follow-up. If no answer has arrived when the task is
-  otherwise ready, report the task done and name the call state (queued,
-  running, failed or no answer).
+* Wait at most 60 seconds for Grok, counted from the first submission with
+  the local queue wait included, then continue on your own judgment (operator
+  addenda 2026-10-06 10:05Z and 10:13Z: "grok vastaus ei saa jäädä odottamaan
+  max 1 min sen jälkeen mennään omilla avuilla sen ainoa tehtävä on vaan antaa
+  syvyyttä ja näkökulmaa silloin kun se on saatavissa"; the codex-lead-1
+  session adds: "agentti itse tekee päätökset ja tarvittaessa ilman grokkia
+  normaali tehtävissä"). The agent keeps the decision.
+* Start the call detached. The installed controlled entry is synchronous
+  (`Invoke-WdGrok.ps1` runs the helper in the foreground and returns only
+  after the helper's lock wait, up to 2400 s, and its HIGH consultation, up to
+  900 s; `wd_grok_helper.py:51,56` in the installed `edc18943` package), so a
+  foreground call cannot honour the 60-second limit. The 900-second HIGH
+  timeout and the helper's single-flight lock stay as they are. A running
+  attempt is never restarted or duplicated after 60 seconds, and there is no
+  automatic retry. A late answer is checked against the current state of the
+  work and not silently discarded; a real defect it shows is fixed as a
+  follow-up. If no answer has arrived when the task is otherwise ready, report
+  the task done and name the call state (queued, running, failed or no
+  answer).
 * Grok is never a gate. It may act as review authority when the other
   reviewers are ineligible (operator 10:13Z: "Grokkia voidaan myös käyttä
   review autoriteettinä silloin kun muut ovat jäävejä, mutta se ei ole mikään
@@ -296,9 +306,12 @@ production with more depth.
   what was fixed and what was rejected and why.
 * Prompts carry no secrets, no credential contents and no answer keys.
 * An agent whose sandbox cannot start Grok (currently `codex-tools-1`) asks
-  another eligible agent to run the same prompt bytes on its behalf with
-  `-RequestedBy` set to the asking agent. The executor returns the report path
-  and hash unchanged.
+  `fable-5` or any other free bridge agent to run the same prompt bytes on its
+  behalf with `-RequestedBy` set to the asking agent; every other agent uses
+  the direct helper channel (operator 10:22Z, codex-lead-1 session). The
+  executor returns the report path and hash unchanged, and the question owner
+  and the actual executor are always recorded separately, so a relay is never
+  reported as the asking agent's own direct use.
 * Runtime truth: the queueing helper lock and the `-RequestedBy` relay are
   the installed `edc18943` runtime (PRs #1767 and #1769). That helper code is
   not yet on `main`.

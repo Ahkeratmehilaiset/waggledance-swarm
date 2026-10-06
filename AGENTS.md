@@ -51,8 +51,11 @@
   status messages, F0 closures and relays is exempt), challenge it yourself
   with ONE Grok `high` consultation through `C:\Python\Invoke-WdGrok.ps1`
   (`-RequestedBy` your own agent ID; Lead omits it). Do not route it through
-  Lead and do not retry. Start it detached and wait at most 60 seconds, then
-  continue on your own judgment; if no answer has arrived when the task is
+  Lead and do not retry. Start it detached (the controlled entry is
+  synchronous) and wait at most 60 seconds from the first submission, queue
+  included, then continue on your own judgment; the 900 s HIGH timeout and
+  the single-flight lock stay, and a running attempt is never restarted or
+  duplicated. If no answer has arrived when the task is
   ready, report done with the call state and handle a later answer as a
   follow-up. Grok is never a gate: it may act as review authority when the
   other reviewers are ineligible, but a missing, late or rate-limited answer

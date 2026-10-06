@@ -7,6 +7,7 @@ surface is NOT isolation: read_only_guarantee stays False everywhere.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import subprocess
 import sys
@@ -207,8 +208,33 @@ def test_requester_refusal_precedes_inventory_surface_and_broker(iso, monkeypatc
     assert list(cwd.iterdir()) == []
 
 
-def test_rounds_keep_medium_effort_inside_the_round_limit():
-    # One-shot consultations default to high; a 300 s round keeps medium until high is measured to fit.
-    assert session.ROUND_EFFORT == "medium"
-    argv = session.helper.advisory_command("grok.exe", "grok-model", effort=session.ROUND_EFFORT)
-    assert argv[argv.index("--effort") + 1] == "medium"
+@pytest.mark.parametrize("requester", (None, "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"))
+def test_every_lane_runs_read_only_rounds_at_high_effort_inside_the_unchanged_limits(tmp_path, requester):
+    # Mock, not live: the real helper.consult reserves, writes the ledger and calls this runner, which
+    # does what ReadonlySessionRunner does first (validate the consult argv, build round argv) and never
+    # launches Grok. main() itself is not run here; it passes ROUND_EFFORT to advisory_command.
+    assert (session.ROUND_EFFORT, session.ROUND_TIMEOUT_SECONDS, session.MAX_ROUNDS) == ("high", 300, 8)
+    helper = session.helper
+    helper.write_state(tmp_path, {"schema": helper.SCHEMA, "status": "answered",
+                                  "last_attempt_utc": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()})
+    rounds = []
+
+    def runner(argv, **kwargs):
+        base = session.validate_consult_argv(list(argv))
+        rounds.append((base["options"]["--effort"], session.round_argv(base, base["prompt"], None),
+                       session.round_argv(base, base["prompt"], "resume-1"), kwargs["timeout"]))
+        return subprocess.CompletedProcess(argv, 0, stdout="advice", stderr="")
+
+    command = helper.advisory_command("grok.exe", "grok-model", effort=session.ROUND_EFFORT)
+    total = session.DEFAULT_ROUNDS * session.ROUND_TIMEOUT_SECONDS
+    result = helper.consult(tmp_path, "readonly/task", "ask", command, runner=runner, timeout_seconds=total,
+                            requested_by=requester)
+    assert result["status"] == "answered" and len(rounds) == 1
+    consult_effort, first, resumed, timeout = rounds[0]
+    assert consult_effort == "high" and timeout == total
+    for argv in (first, resumed):
+        assert argv[argv.index("--effort") + 1] == "high"
+        assert [argv[argv.index(flag) + 1] for flag in ("--tools", "--deny", "--max-turns")] == ["", "*", "1"]
+    rows = [json.loads(line) for line in (tmp_path / helper.LEDGER_NAME).read_text(encoding="utf-8").splitlines()]
+    started = [row for row in rows if row.get("event") == "started"]
+    assert [(row["effort"], row["requested_by"]) for row in started] == [("high", requester)]

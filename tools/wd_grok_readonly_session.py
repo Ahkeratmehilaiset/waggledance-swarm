@@ -57,10 +57,11 @@ MAX_ACTION_TEXT_BYTES = MAX_ACTIONS_PER_ROUND * 4096 + 64
 MIN_ROUND_SECONDS = 5.0
 ROUND_TIMEOUT_SECONDS = 300
 MAX_SESSION_SECONDS = MAX_ROUNDS * ROUND_TIMEOUT_SECONDS
-# Rounds stay at medium while one-shot consultations default to high: medium answers already took up
-# to 249 s against this 300 s round limit (2026-10-01 measurements), and a cut-off round leaves nothing.
-# Raise it only after high is measured to fit a round.
-ROUND_EFFORT = "medium"
+# Rounds run at high like one-shot consultations (operator directive 2026-10-06). The 300 s round limit is
+# unchanged: medium answers already took up to 249 s against it (2026-10-01 measurements), high is slower,
+# and a cut-off round leaves nothing, so each attempt's effort, duration_seconds and error_class in the
+# helper ledger show whether high fits.
+ROUND_EFFORT = "high"
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUEST_FILE = re.compile(r"([0-9a-f]{32})-request\.md")
 

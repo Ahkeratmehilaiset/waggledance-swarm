@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -700,8 +702,14 @@ $exclusive.Dispose()
 
 def failing_git(fleet, code=128):
     # A controlled Git that refuses every query, as an unsafe-ownership refusal does (exit 128).
-    fake = fleet["root"] / "git-refuses.cmd"
-    fake.write_text("@echo fatal: detected dubious ownership in repository at 'fixture' 1>&2\r\n@exit /b " + str(code) + "\r\n", encoding="ascii")
+    fake = fleet["root"] / ("git-refuses.cmd" if os.name == "nt" else "git-refuses")
+    if os.name == "nt":
+        body = "@echo fatal: detected dubious ownership in repository at 'fixture' 1>&2\r\n@exit /b " + str(code) + "\r\n"
+    else:
+        body = "#!/bin/sh\nprintf '%s\\n' \"fatal: detected dubious ownership in repository at 'fixture'\" >&2\nexit " + str(code) + "\n"
+    fake.write_text(body, encoding="ascii", newline="")
+    if os.name != "nt":
+        fake.chmod(0o700)
     update(fleet["manifest"], git_executable=str(fake))
 
 
@@ -732,11 +740,21 @@ def test_an_observed_head_is_true_only_on_match_and_false_only_on_an_observed_mi
 
 def test_a_failed_branch_query_with_an_observed_head_is_never_runnable_evidence(fleet):
     # Only the branch query is refused; HEAD is still observed and matches (Tools 38bf).
-    fake = fleet["root"] / "git-refuses-branch.cmd"
-    fake.write_text('@if "%~4"=="branch" (echo fatal: detected dubious ownership in repository at \'fixture\' 1>&2 & exit /b 128)\r\n'
-                    '@"' + shutil.which("git") + '" %*\r\n@exit /b %ERRORLEVEL%\r\n', encoding="ascii")
+    fake = fleet["root"] / ("git-refuses-branch.cmd" if os.name == "nt" else "git-refuses-branch")
+    if os.name == "nt":
+        body = ('@if "%~4"=="branch" (echo fatal: detected dubious ownership in repository at \'fixture\' 1>&2 & exit /b 128)\r\n'
+                '@"' + shutil.which("git") + '" %*\r\n@exit /b %ERRORLEVEL%\r\n')
+    else:
+        body = ('#!/bin/sh\nif [ "$4" = "branch" ]; then\n'
+                '  printf \'%s\\n\' "fatal: detected dubious ownership in repository at \'fixture\'" >&2\n'
+                '  exit 128\nfi\nexec ' + shlex.quote(shutil.which("git")) + ' "$@"\n')
+    fake.write_text(body, encoding="ascii", newline="")
+    if os.name != "nt":
+        fake.chmod(0o700)
     update(fleet["manifest"], git_executable=str(fake))
     lane = run_status(fleet)["lanes"][-1]
     assert lane["git_observation"]["branch"]["status"] == "query_failed"
+    assert lane["git_observation"]["branch"]["exit_code"] == 128
+    assert "dubious ownership" in lane["git_observation"]["branch"]["error"]
     assert lane["git_observation"]["head"]["status"] == "observed" and lane["head_matches"] is True
     assert lane["runnable_evidence"] != "observed"

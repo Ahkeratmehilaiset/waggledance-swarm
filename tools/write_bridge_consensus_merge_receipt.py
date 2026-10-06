@@ -20,6 +20,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_consensus_auto_merge import (  # noqa: E402
+    REVIEW_POLICIES,
+    REVIEW_POLICY_LEGACY,
+    REVIEW_POLICY_RULE12,
     AutoMergeGateError,
     evaluate_auto_merge_gate,
 )
@@ -71,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-agent", default="")
     parser.add_argument("--bridge-task-id", default="")
     parser.add_argument("--now", default="")
+    parser.add_argument(
+        "--review-policy",
+        choices=sorted(REVIEW_POLICIES),
+        default=REVIEW_POLICY_LEGACY,
+        help="Opt-in rule12 review evaluator; the default is the Rule 9a verifier.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -107,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from_agent=args.from_agent,
             bridge_task_id=args.bridge_task_id,
             now_utc=now_utc,
+            review_policy=args.review_policy,
         )
     except BridgeConsensusMergeReceiptError as exc:
         report = exc.report
@@ -145,8 +155,21 @@ def write_bridge_consensus_merge_receipt(
     bridge_task_id: str = "",
     now_utc: datetime | None = None,
     operator_path_exception: Mapping[str, Any] | None = None,
+    review_policy: str = REVIEW_POLICY_LEGACY,
 ) -> dict[str, Any]:
     now = _validated_now_utc(now_utc)
+    if type(review_policy) is not str or review_policy not in REVIEW_POLICIES:
+        raise BridgeConsensusMergeReceiptError(
+            {
+                "decision": "invalid_input",
+                "ok": False,
+                "errors": [
+                    "review_policy must be one of: "
+                    + ", ".join(sorted(REVIEW_POLICIES))
+                ],
+                "exit_code": 2,
+            }
+        )
     manifest_path = out_dir / "manifest.json"
     gate_report = _merge_plan_report(
         pr_status=pr_status,
@@ -159,6 +182,7 @@ def write_bridge_consensus_merge_receipt(
         from_agent=from_agent,
         bridge_task_id=bridge_task_id,
         now_utc=now,
+        review_policy=review_policy,
     )
     gate_report = apply_operator_path_exception(
         gate_report, grant=operator_path_exception, pr_status=pr_status,
@@ -251,7 +275,13 @@ def _merge_plan_report(
     from_agent: str,
     bridge_task_id: str,
     now_utc: datetime,
+    review_policy: str = REVIEW_POLICY_LEGACY,
 ) -> dict[str, Any]:
+    rule12_kwargs: dict[str, Any] = (
+        {"review_policy": review_policy, "now_utc": now_utc}
+        if review_policy == REVIEW_POLICY_RULE12
+        else {}
+    )
     try:
         return evaluate_auto_merge_gate(
             pr_status=pr_status,
@@ -266,6 +296,7 @@ def _merge_plan_report(
             bridge_task_id=bridge_task_id,
             apply=False,
             require_bridge_consensus=True,
+            **rule12_kwargs,
         )
     except AutoMergeGateError as exc:
         return dict(exc.report)
@@ -283,7 +314,7 @@ def _receipt_payload(
     manifest_path: Path,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "artifact_version": "wd.bridge_consensus_merge_receipt.v0",
         "created_at_utc": _iso(now_utc),
         "repo": repo,
@@ -310,6 +341,21 @@ def _receipt_payload(
         "diff_digest": sha256_digest(str(pr_status.get("diff_text", ""))),
         "receipt_manifest_planned": str(manifest_path),
     }
+    if _is_rule12(bridge_consensus):
+        # Rule 12 receipts name the policy and keep the evaluator report so a
+        # consumer can re-derive the slot holders; legacy payloads are unchanged.
+        payload["review_policy"] = REVIEW_POLICY_RULE12
+        payload["rule12_review"] = {
+            "now_utc": bridge_consensus.get("now_utc"),
+            "contributors": list(bridge_consensus.get("contributors") or []),
+            "rco_pass_refs": list(bridge_consensus.get("rco_pass_refs") or []),
+            "evaluation": bridge_consensus.get("rule12"),
+        }
+    return payload
+
+
+def _is_rule12(bridge_consensus: Mapping[str, Any]) -> bool:
+    return bridge_consensus.get("review_policy") == REVIEW_POLICY_RULE12
 
 
 def _write_receipt_bundle(
@@ -321,6 +367,25 @@ def _write_receipt_bundle(
 ) -> dict[str, Any]:
     pr_number = str(payload.get("pr_number", "unknown"))
     head = str(payload["head_sha"])
+    rule12 = _is_rule12(bridge_consensus)
+    consensus_verifier = (
+        "bridge_rule12_review_eligibility" if rule12 else "verify_bridge_consensus"
+    )
+    consensus_reason = (
+        "rule12:best_available_consensus"
+        if rule12
+        else "bridge_consensus:three_identity_head_bound"
+    )
+    rco_reason_codes = (
+        ["rco:pass_present"]
+        if not rule12 or bridge_consensus.get("rco_pass_ref") is not None
+        else []
+    )
+    rco_decision_basis: Any = (
+        list(bridge_consensus.get("rco_pass_refs") or [])
+        if rule12
+        else bridge_consensus["rco_pass_ref"]
+    )
     evaluation = build_evaluation_result(
         case_id=f"case:bridge_consensus_merge:pr{pr_number}",
         subject_type="promotion",
@@ -330,22 +395,26 @@ def _write_receipt_bundle(
         actual_gate="allow",
         verifier_path=[
             "idle_consensus_auto_merge_gate",
-            "verify_bridge_consensus",
+            consensus_verifier,
             "check_rco_pass_present",
             "check_bridge_changes_requested",
             "magma_receipt_verifier_v1",
         ],
         solver_selection=_solver_selection(bridge_consensus),
-        policy_version="policy:bridge_consensus_approval_v1",
+        policy_version=(
+            "policy:rule12_best_available_consensus_v1"
+            if rule12
+            else "policy:bridge_consensus_approval_v1"
+        ),
         charter_version="charter:idle_autonomy_v1",
         domain_threshold_version="threshold:autonomous_merge:v1",
         verdict="pass",
         reason_codes=[
-            "bridge_consensus:three_identity_head_bound",
+            consensus_reason,
             "ci:green",
             ("path_gate:explicit_operator_exception" if payload.get("operator_path_exception")
              else "path_gate:allowlist_clean"),
-            "rco:pass_present",
+            *rco_reason_codes,
             "merge:match_head_commit",
         ],
         confidence_score=1.0,
@@ -371,7 +440,7 @@ def _write_receipt_bundle(
                 "base_sha": payload["base_sha"],
             }
         ),
-        rco_decision_digest=sha256_digest(bridge_consensus["rco_pass_ref"]),
+        rco_decision_digest=sha256_digest(rco_decision_basis),
         world_snapshot_digest=sha256_digest(
             {
                 "repo": payload["repo"],
@@ -406,6 +475,21 @@ def _write_receipt_bundle(
 
 
 def _solver_selection(bridge_consensus: Mapping[str, Any]) -> list[str]:
+    if _is_rule12(bridge_consensus):
+        identities = bridge_consensus.get("identities")
+        holders: list[str] = []
+        if isinstance(identities, Mapping):
+            opposite = identities.get("opposite_family")
+            if isinstance(opposite, Mapping):
+                holders.extend(str(agent) for agent in opposite.get("holders") or [])
+        holders.extend(
+            str(ref.get("agent", ""))
+            for ref in bridge_consensus.get("rco_pass_refs") or []
+            if isinstance(ref, Mapping)
+        )
+        return [agent for agent in holders if agent] or [
+            "bridge_rule12_review_eligibility"
+        ]
     identities = bridge_consensus.get("identities")
     if not isinstance(identities, Mapping):
         return ["verify_bridge_consensus"]

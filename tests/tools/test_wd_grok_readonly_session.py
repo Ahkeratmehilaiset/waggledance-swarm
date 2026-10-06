@@ -213,7 +213,7 @@ def test_every_lane_runs_read_only_rounds_at_high_effort_inside_the_unchanged_li
     # Mock, not live: the real helper.consult reserves, writes the ledger and calls this runner, which
     # does what ReadonlySessionRunner does first (validate the consult argv, build round argv) and never
     # launches Grok. main() itself is not run here; it passes ROUND_EFFORT to advisory_command.
-    assert (session.ROUND_EFFORT, session.ROUND_TIMEOUT_SECONDS, session.MAX_ROUNDS) == ("high", 300, 8)
+    assert (session.ROUND_EFFORT, session.ROUND_TIMEOUT_SECONDS, session.MAX_ROUNDS) == ("high", 600, 8)
     helper = session.helper
     helper.write_state(tmp_path, {"schema": helper.SCHEMA, "status": "answered",
                                   "last_attempt_utc": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()})
@@ -226,7 +226,8 @@ def test_every_lane_runs_read_only_rounds_at_high_effort_inside_the_unchanged_li
         return subprocess.CompletedProcess(argv, 0, stdout="advice", stderr="")
 
     command = helper.advisory_command("grok.exe", "grok-model", effort=session.ROUND_EFFORT)
-    total = session.DEFAULT_ROUNDS * session.ROUND_TIMEOUT_SECONDS
+    total = session.session_seconds(session.DEFAULT_ROUNDS)
+    assert total == 2400
     result = helper.consult(tmp_path, "readonly/task", "ask", command, runner=runner, timeout_seconds=total,
                             requested_by=requester)
     assert result["status"] == "answered" and len(rounds) == 1
@@ -238,3 +239,27 @@ def test_every_lane_runs_read_only_rounds_at_high_effort_inside_the_unchanged_li
     rows = [json.loads(line) for line in (tmp_path / helper.LEDGER_NAME).read_text(encoding="utf-8").splitlines()]
     started = [row for row in rows if row.get("event") == "started"]
     assert [(row["effort"], row["requested_by"]) for row in started] == [("high", requester)]
+
+
+@pytest.mark.parametrize("max_rounds, total", [(2, 1200), (3, 1800), (4, 2400), (6, 2400), (8, 2400)])
+def test_a_session_total_never_exceeds_the_helper_ceiling(max_rounds, total):
+    # 600 s rounds; the helper still refuses more than 2400 s, so the reservation window does not grow.
+    assert session.session_seconds(max_rounds) == total
+    assert session.MAX_SESSION_SECONDS == 2400
+
+
+@pytest.mark.parametrize("session_timeout, low, high", [(2400, 599, 600), (900, 599, 600), (300, 299, 300)])
+def test_a_round_gets_600_seconds_unless_the_session_deadline_is_nearer(iso, tmp_path, session_timeout, low, high):
+    _, cwd = iso
+    timeouts = []
+
+    def model(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])   # a cut-off round ends the session
+
+    runner = session.ReadonlySessionRunner(Broker(), session.BusyClock(), "c" * 40, session.surface_gate(cwd, None),
+                                           max_rounds=4, model_runner=model)
+    result = runner(_consult_argv(_state(tmp_path, "round")), timeout=session_timeout, env=None, cwd=str(cwd))
+    summary = json.loads(result.stdout.split("READONLY SESSION SUMMARY\n", 1)[1])
+    assert result.returncode == 1 and summary["outcome"] == "failed:round timeout"
+    assert len(timeouts) == 1 and low < timeouts[0] <= high

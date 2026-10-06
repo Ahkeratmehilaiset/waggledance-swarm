@@ -46,7 +46,7 @@
     "conversation_surface": "native_terminal",
     "conversation_permissions": {
       "network_access": true,
-      "additional_writable_roots": []
+      "additional_writable_roots": ["C:\\Python\\grok-scout-reports"]
     },
     "launcher_script": "C:\\Python\\start-wd-tools-consumer.ps1",
     "config_path": "C:\\Python\\wd_supervisor_loop.json",

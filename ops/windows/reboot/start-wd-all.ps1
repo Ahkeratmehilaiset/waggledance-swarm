@@ -1764,12 +1764,16 @@ function Invoke-WdGrokCliUpdateOptional {
     throw
   } catch {
     $exception = $_.Exception
-    $errorKind = 'unexpected_error'
-    $exitCode = $null
-    if ($exception.Data.Contains('error_kind')) {
-      $errorKind = [string]$exception.Data['error_kind']
-      $exitCode = $exception.Data['exit_code']
+    # Only the outcomes Invoke-WdGrokCliUpdate itself classified from the helper's reply (a refused or
+    # failed update, an invalid receipt) are optional. A throw from the pinned wrapper - deployment
+    # manifest, external anchor, package integrity or pin refusal from -VerifyPackage, the cold start's
+    # only full package check - or any other unclassified error stays fatal (RCO1 cold-start F1).
+    if (-not $exception.Data.Contains('error_kind') -or
+        [string]$exception.Data['error_kind'] -cnotin @('update_failed_or_blocked', 'invalid_receipt')) {
+      throw
     }
+    $errorKind = [string]$exception.Data['error_kind']
+    $exitCode = $exception.Data['exit_code']
     $errorText = ([string]$exception.Message -replace '\s+', ' ').Trim()
     if ($errorText.Length -gt 480) {
       $errorText = $errorText.Substring(0, 480)

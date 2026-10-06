@@ -41,6 +41,8 @@ function Fake-Wrapper {
   'wrong_schema' {$global:LASTEXITCODE=0; @{schema='other';update_status='updated'}|ConvertTo-Json -Compress}
   'array'        {$global:LASTEXITCODE=0; '[1,2]'}
   'wrapper_throw'{throw 'package verification failed'}
+  'anchor_refused'{throw 'pinned bridge invocation found a deployment manifest that differs from its external anchor'}
+  'integrity_refused'{throw 'pinned bridge code hash mismatch: tools/wd_grok_helper.py'}
   'stopped'      {throw [System.Management.Automation.PipelineStoppedException]::new()}
   'canceled'     {throw [System.OperationCanceledException]::new('operator cancelled')}
   default        {throw "unknown case $case"}
@@ -61,8 +63,10 @@ ORDINARY_FAILURES = {
     "not_updated": ("invalid_receipt", 0),
     "wrong_schema": ("invalid_receipt", 0),
     "array": ("invalid_receipt", 0),
-    "wrapper_throw": ("unexpected_error", None),
 }
+# RCO1 cold-start F1: a throw from the pinned wrapper (-VerifyPackage manifest, anchor, package integrity or pin
+# refusal) is the cold start's package check failing, never an optional Grok failure: it must stop the cold start.
+FATAL_REFUSALS = ("anchor_refused", "integrity_refused", "wrapper_throw")
 # A stopping pipeline cannot be caught by the test harness either (None); the
 # proof is that no record is returned and the caller never continues.
 CANCELLATIONS = {"stopped": None, "canceled": "OperationCanceledException"}
@@ -152,7 +156,7 @@ GROK_CALLER = ("Write-Host 'Updating Grok Build once...'", "Write-Host (\"  grok
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
-@pytest.mark.parametrize("case", ["updated", "network", "malformed", "stopped", "canceled"])
+@pytest.mark.parametrize("case", ["updated", "network", "malformed", "stopped", "canceled", *FATAL_REFUSALS])
 def test_the_cold_start_caller_reaches_the_lane_launch_only_on_success_or_ordinary_failure(ps, case):
     caller = apply_block(*GROK_CALLER)
     # Load whatever update function the real caller names (the throwing one at the
@@ -173,6 +177,8 @@ finally {[Console]::Out.WriteLine(($out|ConvertTo-Json -Compress))}
     result = json.loads([line for line in completed.stdout.splitlines() if line.startswith("{")][-1])
     if case in CANCELLATIONS:
         assert result == {"reached_lane_launch": False, "status": None, "exception": CANCELLATIONS[case]}
+    elif case in FATAL_REFUSALS:
+        assert result == {"reached_lane_launch": False, "status": None, "exception": "RuntimeException"}
     else:
         assert result == {"reached_lane_launch": True, "exception": None,
                           "status": "updated" if case == "updated" else "failed"}
@@ -331,7 +337,7 @@ STOP_PREFERENCE = "$WarningPreference='Stop'\n"
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
-@pytest.mark.parametrize("case", ["network", "malformed", "wrapper_throw"])
+@pytest.mark.parametrize("case", ["network", "malformed"])
 def test_a_stop_warning_preference_keeps_an_update_failure_optional(ps, case):
     result, completed = run_case(ps, case, STOP_PREFERENCE + OPTIONAL_BODY)
     assert result["aborted"] is False and result["exception"] is None and result["calls"] == 1
@@ -401,3 +407,21 @@ def test_the_apply_path_uses_the_optional_update_before_the_record_and_the_lanes
         "Start-Process -FilePath $wtPath")
     assert re.findall(r"& \$resolver\b", source) == []
     assert "throw 'Grok preflight returned no verified model record'" not in source
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+@pytest.mark.parametrize("preference", ["", "stop"], ids=["default", "stop_warning_preference"])
+@pytest.mark.parametrize("case", FATAL_REFUSALS)
+def test_a_wrapper_package_refusal_stops_the_cold_start_and_is_not_recorded_as_optional(ps, case, preference):
+    body = (STOP_PREFERENCE if preference else "") + OPTIONAL_BODY
+    result, completed = run_case(ps, case, body)
+    assert result["aborted"] is True and result["record"] is None and result["calls"] == 1
+    assert result["exception"] == "RuntimeException"
+    assert "Grok stays optional" not in completed.stdout + completed.stderr   # never shown as an optional failure
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: p.rsplit("\\", 1)[-1])
+@pytest.mark.parametrize("case", ["network", "busy", "nonzero_text", "malformed", "array"])
+def test_success_twin_helper_reported_failures_stay_optional_beside_the_fatal_refusals(ps, case):
+    result, _ = run_case(ps, case, OPTIONAL_BODY)
+    assert result["aborted"] is False and result["record"]["update_status"] == "failed"
+    assert result["record"]["error_kind"] in ("update_failed_or_blocked", "invalid_receipt")

@@ -275,6 +275,13 @@ production with more depth.
   not wait for a Lead slot. Concurrent calls queue on the helper lock.
 * One call per task, no retry. A failed call is recorded as failed in the task
   result and is not repeated to get a better answer.
+* Never wait for Grok (operator addendum 2026-10-06 10:05Z: "sen tarkoitus on
+  vaan antaa syvyyttä ja lisäideoita"). Start the call detached and keep
+  working. If the answer is not there when the task is otherwise ready, report
+  the task done and name the call state (queued, running, failed or no
+  answer). If a later answer shows a real defect, fix it as a follow-up. A
+  missing, failed or late Grok answer never holds a merge, a review verdict or
+  a handoff.
 * The answer is advisory. It never counts as `RCO_PASS` and never replaces the
   opposite-model review or the RCO. A negative answer does not block, but the
   task result names the report path and SHA-256 and says, finding by finding,

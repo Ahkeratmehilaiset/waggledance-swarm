@@ -48,7 +48,7 @@ def write(tmp_path, value, name="registry.json") -> Path:
 # ---------------------------------------------------------------- the shipped registry
 
 def test_the_shipped_registry_validates_and_is_sourced():
-    assert REGISTRY["schema"] == "wd.model-registry.v1" and len(REGISTRY_SHA) == 64
+    assert REGISTRY["schema"] == "wd.model-registry.v2" and len(REGISTRY_SHA) == 64
     assert all(url.startswith("https://") for url in REGISTRY["benchmark"]["sources"])
     assert {entry["provider"] for entry in REGISTRY["models"].values()} == {"codex", "claude"}
     assert REGISTRY["models"]["claude/claude-opus-5-5"]["efforts"]["medium"] == \
@@ -116,7 +116,7 @@ def test_a_registry_over_the_size_bound_is_refused(tmp_path, monkeypatch):
 def test_a_registry_exactly_at_the_size_bound_loads(tmp_path, monkeypatch):
     path = write(tmp_path, REGISTRY)
     monkeypatch.setattr(reg_module, "MAX_REGISTRY_BYTES", path.stat().st_size)
-    assert load_registry(path)[0]["schema"] == "wd.model-registry.v1"
+    assert load_registry(path)[0]["schema"] == "wd.model-registry.v2"
 
 
 def test_a_missing_registry_is_a_registry_error(tmp_path):
@@ -389,3 +389,477 @@ def test_only_the_benchmark_variant_is_optional():
     del missing["models"]["claude/claude-opus-5-5"]["coding_agent_index"]
     with pytest.raises(RegistryError, match="keys must be exactly"):
         validate_registry(missing)
+
+
+# ---------------------------------------------------------------- registry v2 (Bridge v2 F3 foundation)
+# Authored under the 2026-09-29 operator no-runs directive: NOT executed by the author.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from tools.wd_model_registry import model_table, observation_state  # noqa: E402
+
+T0 = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+EXACT_NOTE = "exact token count read from the provider documentation by the operator"
+
+
+def v1_projection(registry=None) -> dict:
+    """The same measured tables as a v1 document (what an old reader or writer holds)."""
+    source = copy.deepcopy(REGISTRY if registry is None else registry)
+    projected = {key: source[key] for key in reg_module.TOP_KEYS}
+    projected["schema"] = "wd.model-registry.v1"
+    return projected
+
+
+def observation(**changes) -> dict:
+    base = {"id": "obs-test", "subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": None},
+            "kind": "context", "class": None, "value": 400000, "unit": "tokens", "status": "measured",
+            "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01", "observer": "operator"},
+            "measured_at": "2026-10-01T11:00:00Z", "ttl_seconds": 7200,
+            "uncertainty": {"kind": "exact", "low": None, "high": None, "note": EXACT_NOTE}}
+    base.update(changes)
+    return base
+
+
+def with_v2(change) -> dict:
+    registry = copy.deepcopy(REGISTRY)
+    change(registry)
+    return registry
+
+
+VERIFIED_POOL = {"provider": "codex", "limit_id": "codex-weekly", "window": "weekly", "tier": "unknown",
+                 "verification": "verified", "measured_at": "2026-10-01T11:00:00Z", "ttl_seconds": 7200,
+                 "provenance": {"kind": "operator_reading", "reference": "operator reading 2026-10-01",
+                                "observer": "operator"}}
+
+
+def test_v1_files_still_load_and_analyse_identically():
+    v1 = validate_registry(v1_projection())
+    assert v1["schema"] == "wd.model-registry.v1"
+    assert rows(v1) == rows(REGISTRY)
+    assert frontier(rows(v1)) == frontier(rows(REGISTRY))
+    assert lane_value_table(v1, CATALOG, CURRENT) == lane_value_table(REGISTRY, CATALOG, CURRENT)
+    assert catalog_diff(v1, CATALOG) == catalog_diff(REGISTRY, CATALOG)
+
+
+def test_v1_with_v2_tables_and_v2_without_them_are_refused():
+    mixed = v1_projection()
+    mixed["pools"] = {}
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(mixed)
+    bare = v1_projection()
+    bare["schema"] = "wd.model-registry.v2"
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(bare)
+
+
+def test_shipped_v2_marks_measured_rows_historical_and_adds_no_admission():
+    assert REGISTRY["historical"]["applies_to"] == ["benchmark", "coding_benchmark", "models"]
+    assert REGISTRY["historical"]["cost_basis"] == "api_price_not_quota"
+    assert REGISTRY["historical"]["source_measured_at"] == REGISTRY["benchmark"]["fetched_at"]
+    assert {c["admission"] for c in REGISTRY["candidates"].values()} == {"none"}
+    assert {c["capability"] for c in REGISTRY["candidates"].values()} == {"unknown"}
+    assert set(REGISTRY["candidates"]) == {"claude/claude-haiku-4-5", "grok/grok-4.7"}
+    assert all(pool["verification"] == "unverified" for pool in REGISTRY["pools"].values())
+    assert all(obs["status"] in ("historical", "unverified") for obs in REGISTRY["observations"])
+    assert not any(obs["subject"]["model"] == "claude-haiku-4-5" for obs in REGISTRY["observations"])
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r["historical"].update(status="measured"),
+    lambda r: r["historical"].update(applies_to=["models"]),
+    lambda r: r["historical"].update(cost_basis="usd"),
+    lambda r: r["historical"].update(source_measured_at="yesterday"),
+    lambda r: r["historical"].update(extra=1),
+    lambda r: r.update(pools=[]),
+    lambda r: r["pools"].update({"Grok Weekly": dict(VERIFIED_POOL, provider="grok")}),
+    lambda r: r["pools"]["grok-weekly-shared"].update(provider="gemini"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(window="hourly"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(tier="gold"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(verification="verified"),        # plan text never verifies
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, limit_id=None)}),     # verified needs a limit_id
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, measured_at="unknown")}),  # ... a date
+    lambda r: r["pools"].update({"codex-x": dict(VERIFIED_POOL, ttl_seconds=None)}),       # ... and a TTL
+    lambda r: r["pools"]["grok-weekly-shared"].update(ttl_seconds=0),
+    lambda r: r["pools"]["grok-weekly-shared"].update(measured_at="yesterday"),
+    lambda r: r["pools"]["grok-weekly-shared"].pop("measured_at"),
+    lambda r: r["pools"]["grok-weekly-shared"].update(extra=1),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(admission="catalog"),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(capability="strong"),
+    lambda r: r["candidates"]["grok/grok-4.7"].update(model="grok-5"),                # key mismatch
+    lambda r: r["candidates"]["grok/grok-4.7"].update(pool=["grok-weekly-shared"]),   # unhashable: refused, no crash
+    lambda r: r["candidates"].update({"codex/gpt-6-sol": {"provider": "codex", "model": "gpt-6-sol",
+                                                          "admission": "none", "capability": "unknown",
+                                                          "pool": None, "note": None}}),  # a rated model
+    lambda r: r["candidates"]["claude/claude-haiku-4-5"].update(pool="grok-weekly-shared"),  # other provider
+    lambda r: r.update(observations={}),
+    lambda r: r["observations"].append(copy.deepcopy(r["observations"][0])),          # duplicate id
+])
+def test_every_malformed_v2_table_is_refused(change):
+    with pytest.raises(RegistryError):
+        validate_registry(with_v2(change))
+
+
+@pytest.mark.parametrize("changes", [
+    {"kind": "speed"},
+    {"kind": ["context"]},                                                          # unhashable kind
+    {"unit": "usd_per_task_api_price"},                                             # wrong unit for context
+    {"value": 400000.5},
+    {"value": True},
+    {"status": "unknown"},                                                          # unknown needs null
+    {"value": None},                                                                # null needs unknown
+    {"provenance": {"kind": "external_benchmark", "reference": "https://x.example", "observer": None}},
+    {"ttl_seconds": None},
+    {"ttl_seconds": 0},
+    {"measured_at": "unknown"},
+    {"measured_at": "2026-13-01"},
+    {"uncertainty": {"kind": "unknown", "low": None, "high": None, "note": None}},
+    {"uncertainty": {"kind": "interval", "low": 1, "high": 2, "note": None}},        # does not contain the value
+    {"uncertainty": {"kind": "none_stated", "low": 1, "high": None, "note": None}},
+    {"uncertainty": {"kind": "none_stated", "low": None, "high": None, "note": None}},   # measured needs a stated one
+    {"uncertainty": {"kind": "exact", "low": None, "high": None, "note": None}},         # exact needs a justification
+    {"uncertainty": {"kind": "exact", "low": None, "high": None, "note": "   "}},
+    {"class": "general"},                                                           # class only for quality
+    {"subject": {"provider": "codex", "model": "gpt-9", "effort": "high", "pool": None}},
+    {"subject": {"provider": "codex", "model": None, "effort": None, "pool": None}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "ultra", "pool": None}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": "grok-weekly-shared"}},
+    {"subject": {"provider": "codex", "model": "gpt-6-sol", "effort": "high", "pool": ["x"]}},
+    {"extra": 1},
+])
+def test_every_malformed_observation_is_refused(changes):
+    with pytest.raises(RegistryError):
+        validate_registry(with_v2(lambda r: r["observations"].append(observation(**changes))))
+
+
+def test_a_valid_measured_observation_is_accepted_and_is_fresh_then_stale():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    obs = registry["observations"][-1]
+    assert observation_state(obs, T0) == "fresh"
+    assert observation_state(obs, T0 + timedelta(hours=2)) == "stale"
+    assert observation_state(obs, T0 - timedelta(hours=2)) == "unknown"              # dated 1 h in the future
+    row = next(r for r in model_table(registry, T0)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "fresh" and row["context_tokens"]["value"] == 400000
+    stale = next(r for r in model_table(registry, T0 + timedelta(hours=3))["rows"]
+                 if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert stale["context_tokens"] == {"value": None, "state": "stale", "source": "operator reading 2026-10-01",
+                                       "measured_at": "2026-10-01T11:00:00Z", "note": EXACT_NOTE}
+
+
+def test_api_dollars_are_never_quota_units():
+    pooled_dollars = observation(kind="cost", unit="usd_per_task_api_price", value=1.0,
+                                 subject={"provider": "codex", "model": "gpt-6-sol", "effort": "high",
+                                          "pool": "codex-weekly"})
+    with pytest.raises(RegistryError, match="API-dollar"):
+        validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                             r["observations"].append(pooled_dollars))))
+    unpooled_quota = observation(kind="cost", unit="pool_points_per_mtok", value=3.5)
+    with pytest.raises(RegistryError, match="quota unit"):
+        validate_registry(with_v2(lambda r: r["observations"].append(unpooled_quota)))
+    pooled_quota = observation(kind="cost", unit="pool_points_per_mtok", value=3.5,
+                               subject={"provider": "codex", "model": "gpt-6-sol", "effort": "high",
+                                        "pool": "codex-weekly"})
+    registry = validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                    r["observations"].append(pooled_quota))))
+    row = next(r for r in model_table(registry, T0)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["cost_pool_points_per_mtok"]["value"] == 3.5
+    assert row["cost_api_usd_per_task"]["note"] == "api_price_not_quota"          # the two never merge
+
+
+def test_an_unverified_pool_is_never_verified_by_an_observation():
+    measured_membership = observation(id="grok-pool-measured", kind="pool", unit="pool_id",
+                                      value="grok-weekly-shared",
+                                      subject={"provider": "grok", "model": "grok-4.7", "effort": None, "pool": None})
+    with pytest.raises(RegistryError, match="never verifies"):
+        validate_registry(with_v2(lambda r: r["observations"].append(measured_membership)))
+    verified = with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}), r["observations"].append(
+        observation(id="codex-pool", kind="pool", unit="pool_id", value="codex-weekly",
+                    subject={"provider": "codex", "model": "gpt-6-sol", "effort": None, "pool": None}))))
+    assert validate_registry(verified)["pools"]["codex-weekly"]["verification"] == "verified"
+
+
+def test_a_limit_is_a_pool_level_observation():
+    limit = observation(id="codex-weekly-limit", kind="limit", unit="percent_of_pool", value=42.0,
+                        subject={"provider": "codex", "model": None, "effort": None, "pool": "codex-weekly"})
+    assert validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                r["observations"].append(limit))))
+    with pytest.raises(RegistryError, match="needs subject.pool"):
+        validate_registry(with_v2(lambda r: r["observations"].append(
+            dict(limit, subject={"provider": "codex", "model": None, "effort": None, "pool": None}))))
+
+
+def test_the_model_table_shows_unknown_cells_and_candidates_without_admission():
+    table = model_table(REGISTRY, T0)
+    assert table["execution_allowed"] is False and table["schema"] == "wd.model-table.v1"
+    by_key = {(r["provider"], r["model"], r["effort"]): r for r in table["rows"]}
+    haiku = by_key[("claude", "claude-haiku-4-5", None)]
+    assert haiku["admission"] == "none" and haiku["pool_verification"] == "unknown"
+    assert all(haiku[column] == {"value": None, "state": "unknown", "source": None, "measured_at": None,
+                                 "note": None} for column in reg_module.TABLE_COLUMNS)
+    grok_high, grok_xhigh = by_key[("grok", "grok-4.7", "high")], by_key[("grok", "grok-4.7", "xhigh")]
+    assert grok_high["quality_general"]["value"] == 46.33 and grok_high["quality_general"]["state"] == "historical"
+    assert grok_xhigh["quality_coding_agent"]["value"] == 56 and grok_high["quality_coding_agent"]["state"] == "unknown"
+    assert grok_high["pool"]["value"] == "grok-weekly-shared" and grok_high["pool"]["state"] == "unverified"
+    assert grok_high["pool_verification"] == "membership_unverified" and grok_high["admission"] == "none"
+    opus = by_key[("claude", "claude-opus-5-5", "medium")]
+    assert opus["quality_general"] == {"value": 51, "state": "historical",
+                                       "source": "Artificial Analysis Intelligence Index v4.3.2",
+                                       "measured_at": "2026-09-27", "note": "with_fallback"}
+    assert opus["cost_pool_points_per_mtok"]["state"] == "unknown" and opus["context_tokens"]["state"] == "unknown"
+    assert opus["admission"] == "see_signed_catalog"
+
+
+def test_the_model_table_needs_an_aware_time_and_works_for_v1():
+    with pytest.raises(RegistryError, match="timezone-aware"):
+        model_table(REGISTRY, datetime(2026, 10, 1))
+    rows_v1 = model_table(validate_registry(v1_projection()), T0)["rows"]
+    assert {r["pool_verification"] for r in rows_v1} == {"unknown"}
+    assert not any(r["admission"] == "none" for r in rows_v1)                     # v1 has no candidates
+
+
+def test_the_report_carries_the_model_table_and_stays_advisory():
+    result = report(REGISTRY, REGISTRY_SHA, CATALOG, CATALOG_SHA, CURRENT, now=T0)
+    assert result["execution_allowed"] is False and result["registry_schema"] == "wd.model-registry.v2"
+    assert result["model_table"]["execution_allowed"] is False
+    assert json.loads(json.dumps(result)) == result                                # plain JSON, no datetimes
+
+
+# ---------------------------------------------------------------- RCO2 review fixes (S1-S3, nits)
+
+def test_a_verified_pool_expires_like_an_observation():
+    from tools.wd_model_registry import pool_state
+    assert pool_state(VERIFIED_POOL, T0) == "verified"
+    assert pool_state(VERIFIED_POOL, T0 + timedelta(hours=2)) == "stale"
+    assert pool_state(VERIFIED_POOL, T0 - timedelta(hours=2)) == "unknown"        # dated in the future
+    assert pool_state(VERIFIED_POOL, None) == "unknown"
+    assert pool_state(REGISTRY["pools"]["grok-weekly-shared"], T0) == "unverified"
+
+
+def test_pool_verification_speaks_only_through_a_fresh_membership():
+    membership = observation(id="codex-pool", kind="pool", unit="pool_id", value="codex-weekly",
+                             subject={"provider": "codex", "model": "gpt-6-sol", "effort": None, "pool": None})
+    registry = validate_registry(with_v2(lambda r: (r["pools"].update({"codex-weekly": VERIFIED_POOL}),
+                                                    r["observations"].append(membership))))
+    def row_at(when):
+        return next(r for r in model_table(registry, when)["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row_at(T0)["pool_verification"] == "verified"
+    assert row_at(T0 + timedelta(hours=3))["pool_verification"] == "membership_stale"   # membership expired too
+
+
+@pytest.mark.parametrize("kind,unit,value", [("tier", "label", "strong"),
+                                             ("pool", "pool_id", "grok-weekly-shared")])
+def test_an_interval_on_a_categorical_kind_is_refused(kind, unit, value):
+    subject = {"provider": "grok", "model": "grok-4.7", "effort": None, "pool": None}
+    bad = observation(id="categorical", kind=kind, unit=unit, value=value, status="unverified", subject=subject,
+                      provenance={"kind": "plan_transcription", "reference": "plan", "observer": None},
+                      ttl_seconds=None, uncertainty={"kind": "interval", "low": 0, "high": 1, "note": None})
+    with pytest.raises(RegistryError, match="only for numeric kinds"):
+        validate_registry(with_v2(lambda r: r["observations"].append(bad)))
+
+
+def _two(first: dict, second: dict) -> dict:
+    return validate_registry(with_v2(lambda r: r["observations"].extend([first, second])))
+
+
+def _context_cell(registry, when=T0) -> dict:
+    return next(r for r in model_table(registry, when)["rows"]
+                if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))["context_tokens"]
+
+
+def test_equal_state_disagreement_at_the_same_time_is_a_conflict_not_a_first_win():
+    cell = _context_cell(_two(observation(id="a"), observation(id="b", value=200000)))
+    assert cell["state"] == "conflict" and cell["value"] is None
+
+
+def test_the_latest_equal_state_value_wins_explicitly_and_counts_the_superseded():
+    older = observation(id="a", value=200000, measured_at="2026-10-01T10:30:00Z")
+    cell = _context_cell(_two(older, observation(id="b")))
+    assert cell["value"] == 400000 and cell["superseded"] == 1 and cell["state"] == "fresh"
+    same = _context_cell(_two(observation(id="a"), observation(id="b")))
+    assert same["value"] == 400000 and "superseded" not in same
+
+
+def test_an_unrepresentable_now_makes_freshness_unknown_not_an_error():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    extreme = datetime.max.replace(tzinfo=timezone(-timedelta(hours=23)))
+    table = model_table(registry, extreme)
+    assert table["generated_for_utc"] is None
+    row = next(r for r in table["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "unknown" and row["context_tokens"]["value"] is None
+    assert row["quality_general"]["state"] == "historical"                        # time-independent evidence stays
+
+
+def test_a_directory_or_fifo_registry_is_refused_without_blocking(tmp_path):
+    import os
+    with pytest.raises(RegistryError):
+        load_registry(tmp_path)
+    if not hasattr(os, "mkfifo"):
+        return
+    fifo = tmp_path / "registry.fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(RegistryError, match="not a regular file"):
+        load_registry(fifo)
+
+
+def test_input_keys_in_error_messages_are_bounded():
+    key = "codex/" + "x" * 500
+    with pytest.raises(RegistryError) as caught:
+        validate_registry(with_v2(lambda r: r["models"].update({key: {"provider": "codex"}})))
+    assert "x" * 100 not in str(caught.value)
+
+
+# ---------------------------------------------------------------- RCO2 fa7da7b1 R1: the public clock
+
+from datetime import tzinfo  # noqa: E402
+
+from tools.wd_model_registry import pool_state  # noqa: E402
+
+
+class _NoOffset(tzinfo):
+    """A tzinfo that names no offset: the datetime is naive and must never be read as local time."""
+
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return None
+
+
+BAD_CLOCKS = {
+    "none": None,
+    "naive": datetime(2026, 10, 1, 12, 0, 0),
+    "offsetless_tzinfo": T0.replace(tzinfo=_NoOffset()),
+    "string": "2026-10-01T12:00:00Z",
+    "epoch_seconds": T0.timestamp(),
+    "date": T0.date(),
+    "bool": True,
+    "extreme_max": datetime.max.replace(tzinfo=timezone(-timedelta(hours=23))),
+    "extreme_min": datetime.min.replace(tzinfo=timezone(timedelta(hours=23))),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_CLOCKS))
+def test_a_missing_naive_wrong_type_or_extreme_clock_is_a_conservative_unknown(name):
+    now = BAD_CLOCKS[name]
+    assert observation_state(observation(), now) == "unknown"                     # never a TypeError/OverflowError
+    assert pool_state(VERIFIED_POOL, now) == "unknown"
+    for status in ("historical", "unverified", "unknown"):                         # these never read the clock
+        assert observation_state(observation(status=status), now) == status
+    assert pool_state(dict(VERIFIED_POOL, verification="unverified"), now) == "unverified"
+
+
+class _Stateful(tzinfo):
+    """Answers its offset once, then None: only a single read can use it consistently."""
+
+    def __init__(self, first):
+        self.answers, self.calls = [first, None], 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        return self.answers[min(self.calls, 2) - 1]
+
+    def dst(self, dt):
+        return None
+
+
+class _Fixed(tzinfo):
+    def __init__(self, offset):
+        self.offset = offset
+
+    def utcoffset(self, dt):
+        return self.offset
+
+    def dst(self, dt):
+        return None
+
+
+class _SubDatetime(datetime):
+    pass
+
+
+class _SubDelta(timedelta):
+    pass
+
+
+@pytest.mark.parametrize("now", [
+    _SubDatetime(2026, 10, 1, 12, tzinfo=timezone.utc),                           # not exactly a datetime
+    T0.replace(tzinfo=tzinfo()),                                                  # utcoffset NotImplementedError
+    T0.replace(tzinfo=_Fixed(timedelta(hours=25))),                               # out of range
+    T0.replace(tzinfo=_Fixed(3600)),                                              # not a timedelta
+    T0.replace(tzinfo=_Fixed(_SubDelta(hours=3))),                                # not EXACTLY a timedelta
+    T0.replace(tzinfo=_Stateful(None)),                                           # names no offset on its read
+    datetime.max.replace(tzinfo=_Fixed(-timedelta(hours=23, minutes=59))),        # unrepresentable in UTC
+    datetime.min.replace(tzinfo=_Fixed(timedelta(hours=23, minutes=59))),
+], ids=["subclass", "unimplemented", "25h", "int", "delta_subclass", "stateful_none", "extreme_max", "extreme_min"])
+def test_an_invalid_offset_or_foreign_clock_is_never_a_success(now):
+    assert reg_module._evaluation_time(now) is None                              # the conservative unknown
+    assert observation_state(observation(), now) == "unknown" and pool_state(VERIFIED_POOL, now) == "unknown"
+
+
+def test_the_offset_is_read_once_and_never_as_local_time():
+    stateful = _Stateful(timedelta(hours=3))                                     # 3 h once, then None
+    wall = datetime(2026, 10, 1, 15, 0, 0)
+    assert reg_module._evaluation_time(wall.replace(tzinfo=stateful)) == T0     # 15:00+03:00 == 12:00Z
+    assert stateful.calls == 1                                                   # no second read, no local fallback
+
+
+@pytest.mark.parametrize("offset", [timedelta(hours=3), -timedelta(hours=7, minutes=30), timedelta(0),
+                                    timedelta(hours=23, minutes=59)])
+def test_an_ordinary_non_utc_clock_normalizes_to_exact_utc(offset):
+    for zone in (timezone(offset), _Fixed(offset)):
+        normalized = reg_module._evaluation_time(T0.astimezone(timezone(offset)).replace(tzinfo=zone))
+        assert normalized == T0 and type(normalized) is datetime and normalized.tzinfo is timezone.utc
+
+
+def test_an_aware_clock_in_any_offset_is_normalized_to_utc():
+    helsinki = timezone(timedelta(hours=3))
+    obs = observation()                                     # measured 11:00Z with a 2 h TTL, like VERIFIED_POOL
+    for now, state, pool in ((T0, "fresh", "verified"),
+                             (T0 + timedelta(hours=2), "stale", "stale"),
+                             (T0 - timedelta(hours=2), "unknown", "unknown")):       # dated in the future
+        for clock in (now, now.astimezone(helsinki)):
+            assert observation_state(obs, clock) == state
+            assert pool_state(VERIFIED_POOL, clock) == pool
+
+
+def test_the_ttl_and_future_skew_boundaries_are_exact():
+    tick = timedelta(microseconds=1)
+    edge = datetime(2026, 10, 1, 13, 0, 0, tzinfo=timezone.utc)                  # 11:00Z + 7200 s: still fresh
+    assert observation_state(observation(), edge) == "fresh" and pool_state(VERIFIED_POOL, edge) == "verified"
+    assert observation_state(observation(), edge + tick) == "stale"
+    assert pool_state(VERIFIED_POOL, edge + tick) == "stale"
+    skew = datetime(2026, 10, 1, 10, 55, 0, tzinfo=timezone.utc)                 # measured_at 5 min ahead: tolerated
+    assert observation_state(observation(), skew) == "fresh" and pool_state(VERIFIED_POOL, skew) == "verified"
+    assert observation_state(observation(), skew - tick) == "unknown"
+    assert pool_state(VERIFIED_POOL, skew - tick) == "unknown"
+
+
+def test_the_model_table_never_reads_an_offsetless_tzinfo_as_local_time():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    table = model_table(registry, T0.replace(tzinfo=_NoOffset()))
+    assert table["generated_for_utc"] is None
+    row = next(r for r in table["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "unknown" and row["context_tokens"]["value"] is None
+    assert row["quality_general"]["state"] == "historical"                        # time-independent evidence stays
+    with pytest.raises(RegistryError, match="timezone-aware"):
+        model_table(registry, datetime(2026, 10, 1, 12))                          # a plain naive time is still refused
+
+
+def test_a_symlink_swapped_in_after_the_check_fails_the_open_on_posix(tmp_path, monkeypatch):
+    import os
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("no O_NOFOLLOW: the Windows reparse race is disclosed in BRIDGE_MODEL_REGISTRY.md, not closed")
+    target = write(tmp_path, REGISTRY, "target.json")
+    link = tmp_path / "registry.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    load_registry(target)                                                          # success twin: a regular file
+    # The race: the pre-open check saw a regular file, then the path became a symlink.
+    monkeypatch.setattr(type(link), "is_symlink", lambda self: False)
+    monkeypatch.setattr(type(link), "lstat", lambda self: target.stat())
+    with pytest.raises(RegistryError, match="unreadable"):
+        load_registry(link)

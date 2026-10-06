@@ -50,3 +50,36 @@ A cursor records delivery through the monitor, not that the model processed the
 message, completed its task or reported to the operator. Similarly a live launcher
 and handshake are weaker evidence than a verified native conversation. The status
 command preserves these distinctions and does not restart or wake agents.
+
+## Request inventory: discovery, not answer status
+
+`Get-BridgeRequestInventory.ps1` lists one requester's own request rows. It never
+decides answer state: each listed request carries `answer_state=not_evaluated`,
+so discovery is never answered, processed or completed status. Resolve an ID with
+`Get-BridgeReplySnapshot.ps1`.
+
+By default the getter fails closed, with no page, when an own request-like row
+that the reply index kept has a conflicting or malformed author binding or
+request_id (a non-string id, or one outside `^[A-Za-z0-9._:-]{1,128}$`), and
+when one immutable request ID has conflicting content or digest. The installed
+baseline `8a7576af` (getter `e1005fe2`) has this default, and the dormant source
+`985f7109` keeps it. Not every odd own id is refused: a falsy request_id (false,
+0, "", [] or a one-element falsy array) is never inventoried, refused or listed
+in either mode. The reply index drops that row unless its in_reply_to_request_id
+is truthy, and then the getter skips it as a null id or a reply. A one-element
+array id such as `["x"]` reads as `"x"`. Both modes also fail closed on index
+read errors and on a request-like row with no top-level agent and no string
+payload agent.
+
+The opt-in `-DiagnosticPartial` switch is unavailable in the installed baseline
+`8a7576af`. It is present only in source, from checkpoint `9cde2f8f` (getter
+`165453d7`) in the dormant integration `985f7109`. Instead of throwing on the
+conflicting or malformed rows above, it lists them with their metadata and
+excludes them, in a DIFFERENT schema, `wd.request-inventory-diagnostic.v1`, with
+`complete=false` always and status `partial_unknown` or `no_conflict_observed`:
+explicitly incomplete diagnostic evidence. The list is a prefix in indexed order
+of at most 50 entries and 30000 JSON characters; later rows are only counted.
+
+A count of 50, whether a full page or a full conflict list, is a bound, not full
+coverage: follow `next_cursor`, and read `truncated` or `conflicts_truncated` as
+incomplete. Neither mode gives a runtime, readiness or agent quota guarantee.

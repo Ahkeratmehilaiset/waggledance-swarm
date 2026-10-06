@@ -5,11 +5,17 @@
 
 .DESCRIPTION
   Preflights the entire pinned fleet before the first mutation. An Apply run
-  updates Codex and Claude Code once, resolves the current Grok model, ensures
+  runs codex update, claude update and grok update once without version pins,
+  resolves the current Grok model, ensures
   the supervisor-managed Tools consumer, and launches missing interactive lanes.
   DryRun performs validation and prints the update/launch plan without updating,
   writing handshake files, or starting fleet processes. With neither mode
   switch, the launcher defaults to DryRun; mutation always requires -Apply.
+  Supervisor OFF is the standing operator state: restore never registers,
+  enables, starts or one-shot bootstraps WD-Supervisor, and it refuses unless
+  that task is exactly Disabled. The five bridge watchers and Tools start
+  afterwards from the non-elevated -Auto fleet wrapper (WdBridgeLimitedBootstrap.ps1).
+  -SupervisorOff is still accepted and changes nothing.
 #>
 [CmdletBinding()]
 param(
@@ -21,6 +27,7 @@ param(
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
   [switch] $NoBridgeConversation,
+  [switch] $SupervisorOff,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -142,6 +149,13 @@ $DryRun = $launcherMode -ceq 'DryRun'
 if ($modeWasDefaulted) {
   Write-Warning 'No mode switch supplied; defaulting to byte-inert DryRun. Use -Apply to mutate.'
 }
+# Supervisor OFF is the standing operator state (2026-09-30): no switch and no record is
+# needed, and this release has no ON path. Restore therefore never registers, enables,
+# starts or one-shot bootstraps WD-Supervisor and refuses unless it is exactly Disabled.
+# Elevated workers would be opaque to a later Limited supervisor, so the five bridge
+# watchers and Tools start afterwards from the non-elevated -Auto fleet wrapper
+# (WdBridgeLimitedBootstrap.ps1) under the same Global reconcile mutexes.
+$restoreSupervisorOff = $true
 $bundleManifestAnchor = ''
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
@@ -1668,22 +1682,48 @@ function Get-LaneProcesses {
 }
 
 function Test-WdCliUpdateDeferred {
-  param([ValidateSet('all', 'codex', 'claude')] [string] $Provider = 'all')
+  param([ValidateSet('all', 'codex', 'claude', 'grok')] [string] $Provider = 'all')
   # Shared CLI installation paths must not change beneath either fleet lanes
   # or unrelated operator sessions. Update once on a genuinely cold start.
   # Get-AllProcessSnapshots is deliberately limited to PowerShell wrappers;
   # query native processes independently, including those with no command line.
   return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-    [string]$_.Name -imatch '^(codex|claude)\.exe$' -and
+    [string]$_.Name -imatch '^(codex|claude|grok)\.exe$' -and
       ($Provider -ceq 'all' -or [string]$_.Name -ieq ($Provider + '.exe'))
   }).Count -gt 0
 }
 
 function Get-WdCliUpdateStatus {
-  param([ValidateSet('codex', 'claude')] [string] $Provider, [switch] $Skip)
+  param([ValidateSet('codex', 'claude', 'grok')] [string] $Provider, [switch] $Skip)
   if ($Skip) { return 'operator_skipped' }
   if (Test-WdCliUpdateDeferred -Provider $Provider) { return 'deferred_live_sessions' }
   return 'pending'
+}
+
+function Invoke-WdGrokCliUpdate {
+  param([Parameter(Mandatory)] [string] $Wrapper, [switch] $Skip)
+  $updateStatus = Get-WdCliUpdateStatus -Provider grok -Skip:$Skip
+  if ($updateStatus -cne 'pending') {
+    return [pscustomobject]@{
+      schema = 'wd.grok-cli-update.v1'; update_status = $updateStatus
+      update_command = 'grok update'; before = $null; after = $null
+    }
+  }
+  # Use this launcher's verified package, never the inherited session's older
+  # pins. The helper holds Grok's existing OS lock across the update and probes
+  # and refuses an unresolved attempt. This is not a model consultation.
+  $global:LASTEXITCODE = 1
+  $output = @(& $Wrapper -Tool 'tools/wd_grok_helper.py' -VerifyPackage --update-cli)
+  $updateExitCode = $global:LASTEXITCODE
+  if ($updateExitCode -ne 0) {
+    throw ("grok update failed or blocked (exit {0}); fleet launch aborted: {1}" -f
+      $updateExitCode, ($output -join [Environment]::NewLine))
+  }
+  $report = ($output -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+  if ($report.schema -cne 'wd.grok-cli-update.v1' -or $report.update_status -cne 'updated') {
+    throw 'grok update returned no successful update receipt; fleet launch aborted'
+  }
+  return $report
 }
 
 function Test-WdProcessIdentitySetExact {
@@ -2768,6 +2808,7 @@ $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common
 $processes = Get-AllProcessSnapshots
 $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
 $claudeUpdateStatus = Get-WdCliUpdateStatus -Provider claude -Skip:$SkipCliUpdate
+$grokUpdateStatus = Get-WdCliUpdateStatus -Provider grok -Skip:$SkipCliUpdate
 $laneStates = @()
 $expectedLaneRuntimes = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
@@ -3022,7 +3063,14 @@ $preflightSupervisorArguments = if ($supervisorEnvelopeIsHidden) {
   $legacySupervisorArguments
 }
 $supervisorTaskActivation = Get-WdSupervisorTaskActivationPlan -Task $supervisorTask
-Write-Host ("  WD-Supervisor activation: {0}" -f [string]$supervisorTaskActivation.summary)
+if ($restoreSupervisorOff -and [bool]$supervisorTaskActivation.initially_enabled) {
+  throw ('Supervisor OFF: WD-Supervisor is not exactly Disabled (state={0}); restore refused before any mutation and never disables it. Nothing was changed.' -f [string]$supervisorTask.State)
+}
+Write-Host ("  WD-Supervisor activation: {0}" -f $(if ($restoreSupervisorOff) {
+  'Supervisor OFF: exactly Disabled; restore never registers, enables or starts it'
+} else {
+  [string]$supervisorTaskActivation.summary
+}))
 
 $leadPromptWatcherLane = @(
   $laneStates | Where-Object {
@@ -3392,7 +3440,7 @@ Write-Host ''
 Write-Host 'Update and launch plan:' -ForegroundColor Cyan
 Write-Host ("  Codex: codex update (once); {0}" -f $codexUpdateStatus)
 Write-Host ("  Claude Code: claude update (once); {0}" -f $claudeUpdateStatus)
-Write-Host '  Grok: resolve authenticated CLI provider default and write exact high-effort usage'
+Write-Host ("  Grok Build: grok update (once); {0}; then resolve provider default" -f $grokUpdateStatus)
 foreach ($state in $laneStates) {
   Write-Host (
     "  {0}: {1}/{2}; {3}" -f
@@ -3404,7 +3452,9 @@ foreach ($state in $laneStates) {
 }
 Write-Host (
   "  codex-tools-1: {0}" -f $(
-    if ($toolsLive.Count -eq 1) {
+    if ($restoreSupervisorOff) {
+      'Supervisor OFF: the non-elevated -Auto wrapper starts or verifies it after this restore'
+    } elseif ($toolsLive.Count -eq 1) {
       'supervisor-managed current generation is live'
     } elseif ($toolsStarting.Count -eq 1) {
       'supervisor-managed current generation is starting'
@@ -3417,7 +3467,9 @@ Write-Host (
 )
 Write-Host (
   "  WD-Supervisor: {0}" -f $(
-    if ([bool]$supervisorTaskActivation.enable_after_restore) {
+    if ($restoreSupervisorOff) {
+      'Supervisor OFF: stays exactly Disabled; never registered, enabled or started by restore'
+    } elseif ([bool]$supervisorTaskActivation.enable_after_restore) {
       'enable exact task only after verified fleet restore'
     } else {
       'leave exact enabled task enabled'
@@ -3537,34 +3589,44 @@ try {
       Write-Warning ("Conversation window could not open; restore is not yet verified: {0}" -f $_.Exception.Message)
     }
   }
-  Write-Host 'Applying scheduled-task console containment and merge-driver HOLD...' -ForegroundColor Cyan
-  $taskConsoleApply = @(& $taskConsoleContainment -Apply)
-  if ($taskConsoleApply.Count -ne 1 -or
-      [string]$taskConsoleApply[0].schema -cne
-        'wd.task-console-containment.v1' -or
-      -not [bool]$taskConsoleApply[0].applied) {
-    throw 'scheduled-task console containment did not return an applied record'
+  # Console containment -Apply disables and stops the legacy merge-driver loop and rewrites two task
+  # actions, so under the standing Supervisor OFF it never runs: no scheduled task is mutated. The
+  # read-only containment plan and the read-only merge-driver HOLD verification above ran in preflight.
+  if (-not $restoreSupervisorOff) {
+    Write-Host 'Applying scheduled-task console containment and merge-driver HOLD...' -ForegroundColor Cyan
+    $taskConsoleApply = @(& $taskConsoleContainment -Apply)
+    if ($taskConsoleApply.Count -ne 1 -or
+        [string]$taskConsoleApply[0].schema -cne
+          'wd.task-console-containment.v1' -or
+        -not [bool]$taskConsoleApply[0].applied) {
+      throw 'scheduled-task console containment did not return an applied record'
+    }
+    $taskConsoleApply[0] | Format-List | Out-Host
   }
-  $taskConsoleApply[0] | Format-List | Out-Host
+  else {
+    Write-Host 'Supervisor OFF: scheduled-task console containment not applied; no task is disabled, stopped or rewritten.' -ForegroundColor Yellow
+  }
 
-  Write-Host 'Registering the exact hidden WD-Supervisor action...' -ForegroundColor Cyan
-  & $scheduledTaskRegistration `
-    -Apply `
-    -SupervisorScript ([string]$toolsConfig.supervisor_script)
-  $registeredSupervisorTask = Get-WdSingleScheduledTask `
-    -TaskName ([string]$toolsConfig.task_name)
-  if (
-    -not (Test-WdSupervisorTaskEnvelopeExact `
-      -Task $registeredSupervisorTask `
-      -ExpectedExecutable $expectedSupervisorExecutable `
-      -ExpectedArguments $expectedSupervisorArguments `
-      -ExpectedWorkingDirectory 'C:\Python' `
-      -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
-      -ExpectedStartBoundary $expectedSupervisorStartBoundary) -or
-    [bool]$registeredSupervisorTask.Settings.Enabled -ne
-      [bool]$supervisorTask.Settings.Enabled
-  ) {
-    throw 'WD-Supervisor hidden action registration postcondition failed'
+  if (-not $restoreSupervisorOff) {
+    Write-Host 'Registering the exact hidden WD-Supervisor action...' -ForegroundColor Cyan
+    & $scheduledTaskRegistration `
+      -Apply `
+      -SupervisorScript ([string]$toolsConfig.supervisor_script)
+    $registeredSupervisorTask = Get-WdSingleScheduledTask `
+      -TaskName ([string]$toolsConfig.task_name)
+    if (
+      -not (Test-WdSupervisorTaskEnvelopeExact `
+        -Task $registeredSupervisorTask `
+        -ExpectedExecutable $expectedSupervisorExecutable `
+        -ExpectedArguments $expectedSupervisorArguments `
+        -ExpectedWorkingDirectory 'C:\Python' `
+        -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+        -ExpectedStartBoundary $expectedSupervisorStartBoundary) -or
+      [bool]$registeredSupervisorTask.Settings.Enabled -ne
+        [bool]$supervisorTask.Settings.Enabled
+    ) {
+      throw 'WD-Supervisor hidden action registration postcondition failed'
+    }
   }
 
   # Preflight can take minutes. A native session may have started since then.
@@ -3583,9 +3645,8 @@ try {
       throw 'Codex npm update shim changed after preflight'
     }
     Write-Host 'Updating Codex CLI once...' -ForegroundColor Cyan
-    # Do not ask the native codex.exe to replace its own locked image on
-    # Windows. The trusted npm shim runs the same updater through Node without
-    # holding codex.exe open, avoiding deterministic EBUSY/exit-code 1.
+    # Invoke the trusted installed npm entry point. Native inventory is checked
+    # again below; the shim can itself dispatch to codex.exe.
     $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
     if ($codexUpdateStatus -ceq 'pending') {
       try {
@@ -3662,12 +3723,17 @@ try {
     -Path $claudeAfterPath `
     -Arguments @('--version') `
     -Label 'claude post-update version probe'
+  Write-Host 'Updating Grok Build once...' -ForegroundColor Cyan
+  $grokUpdateRecord = Invoke-WdGrokCliUpdate `
+    -Wrapper (Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1') -Skip:$SkipCliUpdate
+  $grokUpdateStatus = [string]$grokUpdateRecord.update_status
+  Write-Host ("  grok update: {0}" -f $grokUpdateStatus)
   $cliVersionPath = 'C:\Python\WD_CLI_VERSIONS_CURRENT.json'
   $cliVersionTemporary = "$cliVersionPath.$PID.tmp"
   $cliVersionRecord = [ordered]@{
     schema_version = 1
     verified_at_utc = [DateTime]::UtcNow.ToString('o')
-    update_status = $(if ($codexUpdateStatus -ceq $claudeUpdateStatus) { $codexUpdateStatus } else { 'mixed' })
+    update_status = $(if ($codexUpdateStatus -ceq $claudeUpdateStatus -and $codexUpdateStatus -ceq $grokUpdateStatus) { $codexUpdateStatus } else { 'mixed' })
     codex = [ordered]@{
       update_status = $codexUpdateStatus
       before = $codexVersion
@@ -3688,6 +3754,7 @@ try {
       after_sha256 = $claudeAfterHash
       update_command = 'claude update'
     }
+    grok_build = $grokUpdateRecord
   }
   try {
     $cliVersionRecord |
@@ -3700,40 +3767,42 @@ try {
     }
   }
 
-  Write-Host ''
-  Write-Host 'Bootstrapping five bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
-  $supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld `
-    -TaskName ([string]$toolsConfig.task_name) `
-    -ExpectedExecutable $expectedSupervisorExecutable `
-    -ExpectedArguments $expectedSupervisorArguments `
-    -ExpectedWorkingDirectory 'C:\Python' `
-    -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
-    -ExpectedStartBoundary $expectedSupervisorStartBoundary
-  Write-Host (
-    '  Limited bootstrap: last_result={0}; WD-Supervisor returned to Disabled/HOLD' -f
-      [int64]$supervisorBootstrapResult.last_task_result
-  )
-  Start-Sleep -Milliseconds 500
-  $supervisorVerifyParameters = [hashtable]$supervisorPlan.verify_parameters
-  $supervisorVerifyOutput = @(
-    & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
-  )
-  if (@($supervisorVerifyOutput | Where-Object {
-        [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
-      }).Count -gt 0) {
-    throw 'supervisor post-bootstrap report returned a conflict'
-  }
-  if ($supervisorVerifyOutput) {
-    $supervisorVerifyOutput | Out-Host
-  }
+  if (-not $restoreSupervisorOff) {
+    Write-Host ''
+    Write-Host 'Bootstrapping five bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
+    $supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld `
+      -TaskName ([string]$toolsConfig.task_name) `
+      -ExpectedExecutable $expectedSupervisorExecutable `
+      -ExpectedArguments $expectedSupervisorArguments `
+      -ExpectedWorkingDirectory 'C:\Python' `
+      -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+      -ExpectedStartBoundary $expectedSupervisorStartBoundary
+    Write-Host (
+      '  Limited bootstrap: last_result={0}; WD-Supervisor returned to Disabled/HOLD' -f
+        [int64]$supervisorBootstrapResult.last_task_result
+    )
+    Start-Sleep -Milliseconds 500
+    $supervisorVerifyParameters = [hashtable]$supervisorPlan.verify_parameters
+    $supervisorVerifyOutput = @(
+      & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
+    )
+    if (@($supervisorVerifyOutput | Where-Object {
+          [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
+        }).Count -gt 0) {
+      throw 'supervisor post-bootstrap report returned a conflict'
+    }
+    if ($supervisorVerifyOutput) {
+      $supervisorVerifyOutput | Out-Host
+    }
 
-  Write-Host 'Waiting for the supervisor-managed Tools consumer...' -ForegroundColor Cyan
-  $toolsNowState = Wait-WdToolsCurrentProcess `
-    -ToolsConfig $toolsConfig `
-    -Generation $bundleGeneration `
-    -TimeoutSeconds ([int]$toolsConfig.wait_seconds) `
-    -BundleLauncherScript $bundleToolsLauncher
-  Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
+    Write-Host 'Waiting for the supervisor-managed Tools consumer...' -ForegroundColor Cyan
+    $toolsNowState = Wait-WdToolsCurrentProcess `
+      -ToolsConfig $toolsConfig `
+      -Generation $bundleGeneration `
+      -TimeoutSeconds ([int]$toolsConfig.wait_seconds) `
+      -BundleLauncherScript $bundleToolsLauncher
+    Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
+  }
 
   Write-Host 'Resolving the current Grok model...' -ForegroundColor Cyan
   $grokResult = & $resolver -OutputDirectory ([string]$manifest.grok_output_directory)
@@ -4007,87 +4076,95 @@ try {
       throw "final lane generation verification failed for $($state.lane.agent)"
     }
   }
-  $finalToolsState = Get-ToolsProcessState `
-    -ToolsConfig $toolsConfig `
-    -Generation $bundleGeneration `
-    -Processes $finalProcesses `
-    -BundleLauncherScript $bundleToolsLauncher
-  if (
-    @($finalToolsState.current).Count -ne 1 -or
-    @($finalToolsState.starting).Count -ne 0 -or
-    @($finalToolsState.stale).Count -ne 0 -or
-    @($finalToolsState.legacy).Count -ne 0
-  ) {
-    throw 'final Tools generation verification failed before task activation'
-  }
+  if (-not $restoreSupervisorOff) {
+    $finalToolsState = Get-ToolsProcessState `
+      -ToolsConfig $toolsConfig `
+      -Generation $bundleGeneration `
+      -Processes $finalProcesses `
+      -BundleLauncherScript $bundleToolsLauncher
+    if (
+      @($finalToolsState.current).Count -ne 1 -or
+      @($finalToolsState.starting).Count -ne 0 -or
+      @($finalToolsState.stale).Count -ne 0 -or
+      @($finalToolsState.legacy).Count -ne 0
+    ) {
+      throw 'final Tools generation verification failed before task activation'
+    }
 
-  $finalSupervisorOutput = @(
-    & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
-  )
-  if (@($finalSupervisorOutput | Where-Object {
-        [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
-      }).Count -gt 0) {
-    throw 'final supervisor report returned a conflict before task activation'
-  }
-  if ($finalSupervisorOutput) {
-    $finalSupervisorOutput | Out-Host
+    $finalSupervisorOutput = @(
+      & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
+    )
+    if (@($finalSupervisorOutput | Where-Object {
+          [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
+        }).Count -gt 0) {
+      throw 'final supervisor report returned a conflict before task activation'
+    }
+    if ($finalSupervisorOutput) {
+      $finalSupervisorOutput | Out-Host
+    }
   }
   Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
 
-  $supervisorActivationResult = Enable-WdSupervisorTaskAfterRestore `
-    -TaskName ([string]$toolsConfig.task_name) `
-    -ExpectedExecutable $expectedSupervisorExecutable `
-    -ExpectedArguments $expectedSupervisorArguments `
-    -ExpectedWorkingDirectory 'C:\Python' `
-    -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
-    -ExpectedStartBoundary $expectedSupervisorStartBoundary
-  try {
-    $postActivationSupervisorOutput = @(
-      & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
-    )
-    if (@($postActivationSupervisorOutput | Where-Object {
-          [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
-        }).Count -gt 0) {
-      throw 'supervisor report returned a conflict after scheduled-path proof'
-    }
-    Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
-  } catch {
-    $postActivationFailure = $_
+  if (-not $restoreSupervisorOff) {
+    $supervisorActivationResult = Enable-WdSupervisorTaskAfterRestore `
+      -TaskName ([string]$toolsConfig.task_name) `
+      -ExpectedExecutable $expectedSupervisorExecutable `
+      -ExpectedArguments $expectedSupervisorArguments `
+      -ExpectedWorkingDirectory 'C:\Python' `
+      -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+      -ExpectedStartBoundary $expectedSupervisorStartBoundary
     try {
-      Set-WdSupervisorTaskHeld `
-        -TaskName ([string]$toolsConfig.task_name) `
-        -ExpectedExecutable $expectedSupervisorExecutable `
-        -ExpectedArguments $expectedSupervisorArguments `
-        -ExpectedWorkingDirectory 'C:\Python' `
-        -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
-        -ExpectedStartBoundary $expectedSupervisorStartBoundary
-    } catch {
-      throw (
-        "{0}; post-activation containment also failed: {1}" -f
-          $postActivationFailure.Exception.Message,
-          $_.Exception.Message
+      $postActivationSupervisorOutput = @(
+        & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
       )
+      if (@($postActivationSupervisorOutput | Where-Object {
+            [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
+          }).Count -gt 0) {
+        throw 'supervisor report returned a conflict after scheduled-path proof'
+      }
+      Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
+    } catch {
+      $postActivationFailure = $_
+      try {
+        Set-WdSupervisorTaskHeld `
+          -TaskName ([string]$toolsConfig.task_name) `
+          -ExpectedExecutable $expectedSupervisorExecutable `
+          -ExpectedArguments $expectedSupervisorArguments `
+          -ExpectedWorkingDirectory 'C:\Python' `
+          -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+          -ExpectedStartBoundary $expectedSupervisorStartBoundary
+      } catch {
+        throw (
+          "{0}; post-activation containment also failed: {1}" -f
+            $postActivationFailure.Exception.Message,
+            $_.Exception.Message
+        )
+      }
+      throw $postActivationFailure
     }
-    throw $postActivationFailure
+    Write-Host (
+      '  WD-Supervisor activation: changed={0}; state={1}; last_result={2}' -f
+        [bool]$supervisorActivationResult.changed,
+        [string]$supervisorActivationResult.state,
+        [int64]$supervisorActivationResult.last_task_result
+    )
   }
-  Write-Host (
-    '  WD-Supervisor activation: changed={0}; state={1}; last_result={2}' -f
-      [bool]$supervisorActivationResult.changed,
-      [string]$supervisorActivationResult.state,
-      [int64]$supervisorActivationResult.last_task_result
-  )
 
-  Write-Host ''
-  Write-Host 'Verifying that the four bridge workers actually answer new requests...'
-  & (Join-Path $PSScriptRoot 'Test-WdBridgeResponsiveness.ps1') `
-    -RuntimeRoot ([string]$manifest.runtime_root) `
-    -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
-  Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
+  if (-not $restoreSupervisorOff) {
+    Write-Host ''
+    Write-Host 'Verifying that the four bridge workers actually answer new requests...'
+    & (Join-Path $PSScriptRoot 'Test-WdBridgeResponsiveness.ps1') `
+      -RuntimeRoot ([string]$manifest.runtime_root) `
+      -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
+    Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
+  } else {
+    Write-Host ("Elevated fleet restore complete; run_id={0}; Supervisor OFF: WD-Supervisor untouched (Disabled). The five bridge watchers and Tools are NOT verified here; the non-elevated -Auto wrapper starts and verifies them next." -f $RunId) -ForegroundColor Yellow
+  }
   if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
     Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'
   }
   Write-Host ("  windowed lanes launched: {0}" -f $(if ($launched.Count) { $launched -join ', ' } else { 'none (all already live)' }))
-  Write-Host '  Tools: supervisor-managed'
+  Write-Host $(if ($restoreSupervisorOff) { '  Tools: Bridge Limited bootstrap from the non-elevated -Auto wrapper' } else { '  Tools: supervisor-managed' })
   if ($promptWatcherAvailable) {
     Write-Host (
       '  Codex Lead prompt watcher: PID {0}; DANGEROUS AllowAll' -f

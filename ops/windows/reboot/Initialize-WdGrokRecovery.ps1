@@ -85,7 +85,10 @@ $last = if ($stamp -is [DateTime] -or $stamp -is [DateTimeOffset]) {
     state_path = $state
     state_status = [string]$saved.status
     previous_task = [string]$saved.task_id
-    next_eligible_utc = $last.ToUniversalTime().AddHours(1).ToString('o')
+    last_attempt_utc = $last.ToUniversalTime().ToString('o')
+    provider_auth = 'unknown'
+    provider_quota = 'unknown'
+    unfinished_attempt = 'unknown (not evaluated here); C:\Python\Invoke-WdGrok.ps1 -Status reports it'
     model_started = $false
     invocation = 'C:\Python\Invoke-WdGrok.ps1 -PromptPath <evidence-request.md> -TaskId <task-id>'
 }

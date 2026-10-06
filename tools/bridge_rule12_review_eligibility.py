@@ -239,11 +239,22 @@ def _rco_vetoes(
 
 
 def _self_recused(
-    events: Sequence[Mapping[str, Any]], agent: str, task_id: str, head: str, now: datetime
+    events: Sequence[Mapping[str, Any]],
+    agent: str,
+    task_id: str,
+    head: str,
+    now: datetime,
+    *,
+    timed: bool,
 ) -> bool:
+    """A head-bound self-recusal; ``timed`` also requires ts_utc <= now.
+
+    Only a timed recusal may vacate a slot; any head-bound recusal, timed or
+    not, still makes the same lane's approval conflicting (RCO1 F2 on e2948bf7).
+    """
     return any(
         _on_task(event, agent, task_id)
-        and _evidence_time_ok(event, now)
+        and (not timed or _evidence_time_ok(event, now))
         and _text(event.get("type")) == RECUSAL_EVENT_TYPE
         and _text(event.get("status")) in RECUSAL_STATUSES
         and _event_head(event) == head
@@ -474,10 +485,11 @@ def evaluate_rule12_review_eligibility(
     def standing(agent: str, statuses: frozenset[str]) -> str:
         if agent in implementers:
             return "implementer"
-        recused = _self_recused(event_list, agent, task_id, head, now)
-        if recused and approved(agent, statuses):
+        if _self_recused(event_list, agent, task_id, head, now, timed=False) and approved(
+            agent, statuses
+        ):
             return "conflicting"
-        if recused:
+        if _self_recused(event_list, agent, task_id, head, now, timed=True):
             return "recused"
         if _absent(event_list, agent, task_id, head, now, implementers):
             return "absent"

@@ -748,3 +748,23 @@ def test_recusal_needs_a_valid_timestamp_not_after_the_gate_clock(ts, recused_ok
 def test_grok_attempt_dated_after_the_gate_clock_never_qualifies(started, ok):
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(started_utc=started)])
     assert (result["decision"] == "satisfied") is ok
+
+# --- RCO1 F2 (e2948bf7): an untimed or future recusal still voids the same lane's approval ---
+
+
+@pytest.mark.parametrize("ts", ["bad", FUTURE, "", EQUAL])
+def test_any_head_bound_recusal_plus_approval_is_conflicting(ts):
+    events = [build_pass("codex-lead-1"), recused("codex-lead-1", ts=ts), *BOTH_RCO]
+    result = evaluate(events)
+    assert result["slots"]["opposite_family"]["standing"]["codex-lead-1"] == "conflicting"
+    assert result["slots"]["opposite_family"]["holders"] == []
+    assert result["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize("ts", ["bad", FUTURE])
+def test_untimed_or_future_recusal_without_approval_neither_vacates_nor_conflicts(ts):
+    events = [recused("codex-lead-1", ts=ts), recused("codex-tools-1"), *BOTH_RCO]
+    result = evaluate(events, consultations=[grok()])
+    assert result["slots"]["opposite_family"]["standing"]["codex-lead-1"] == "eligible"
+    assert result["slots"]["opposite_family"]["state"] == "pending"
+    assert result["grok_fallback"]["filled"] == []

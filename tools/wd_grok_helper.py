@@ -60,7 +60,10 @@ MODEL_UNAVAILABLE_THRESHOLD = 2
 MODEL_UNAVAILABLE_COOLDOWN_SECONDS = 900
 MAX_MODEL_UNAVAILABLE_STREAK = 1_000_000
 # A consultation of another model replaces the one state record, so a still-open hold is carried into
-# that attempt's record (model_unavailable_holds) until its own until_utc; at most this many are kept.
+# that attempt's record (model_unavailable_holds) until its own until_utc. At most this many models are
+# held at once: while that many holds are open, a rejection of a further model opens no hold (it is
+# reported in model_holds_saturated and that model is simply not held), so no live hold is ever evicted
+# and the stored list stays bounded (Tools 05E45621, reproduced 2026-10-06).
 MAX_MODEL_UNAVAILABLE_HOLDS = 8
 HOLD_KEYS = frozenset({"model", "streak", "until_utc"})
 # One-shot consultation limit. The CLI writes its single JSON result only at the end, so a run cut off
@@ -245,17 +248,25 @@ def carried_holds(state: dict, now: datetime) -> tuple[list[dict], bool]:
     return found, malformed
 
 
-def open_holds(state: dict, now: datetime) -> tuple[list[dict], bool]:
-    """Every model held now: this record's own open breaker and the open carried holds, one per model
-    (the latest until_utc wins)."""
+def open_holds(state: dict, now: datetime) -> tuple[list[dict], bool, list[str]]:
+    """Every model held now, one per model (the latest until_utc wins): the open carried holds first,
+    then this record's own open breaker unless MAX_MODEL_UNAVAILABLE_HOLDS other models are already
+    held. Such a breaker is returned in the third item (saturated) and holds nothing; the carried holds
+    it would have displaced stay held until their own until_utc."""
     carried, malformed = carried_holds(state, now)
     by_model: dict[str, dict] = {}
-    for hold in [model_breaker(state, now), *carried]:
-        if hold["state"] == "open" and (
-                hold["model"] not in by_model or datetime.fromisoformat(hold["until_utc"])
-                > datetime.fromisoformat(by_model[hold["model"]]["until_utc"])):
+    for hold in carried:
+        if hold["model"] not in by_model or (datetime.fromisoformat(hold["until_utc"])
+                                             > datetime.fromisoformat(by_model[hold["model"]]["until_utc"])):
             by_model[hold["model"]] = hold
-    return sorted(by_model.values(), key=lambda hold: hold["model"]), malformed
+    saturated = []
+    current = model_breaker(state, now)
+    if current["state"] == "open":
+        if current["model"] in by_model or len(by_model) < MAX_MODEL_UNAVAILABLE_HOLDS:
+            by_model[current["model"]] = current   # newer than any carried hold of the same model
+        else:
+            saturated.append(current["model"])
+    return sorted(by_model.values(), key=lambda hold: hold["model"]), malformed, saturated
 
 
 def status(root: Path, now: datetime | None = None) -> dict:
@@ -290,10 +301,12 @@ def status(root: Path, now: datetime | None = None) -> dict:
                       next_eligible_utc=reserved_at.isoformat())
     else:
         report["model_breaker"] = model_breaker(state, now)
-        holds, malformed = open_holds(state, now)
+        holds, malformed, saturated = open_holds(state, now)
         report["model_holds"] = holds
         if malformed:
             report["model_holds_malformed"] = True   # reported, never held
+        if saturated:
+            report["model_holds_saturated"] = saturated   # rejected models NOT held: the hold limit is full
         if holds:
             # Only consultations of a held model (or of no explicit model) are deferred; consult() lets
             # another explicit model run. eligible turns True again when the last hold ends.
@@ -884,7 +897,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         prior_streak = breaker.get("streak", 0) if model is not None and breaker.get("model") == model else 0
         if held:
             # Every hold still open belongs to another model (this one would have been deferred): carry
-            # it into this attempt's record so replacing the record cannot end it early.
+            # it into this attempt's record so replacing the record cannot end it early. open_holds never
+            # returns more than MAX_MODEL_UNAVAILABLE_HOLDS, so the slice below never drops a live hold.
             state["model_unavailable_holds"] = [
                 {"model": hold["model"], "streak": hold["streak"], "until_utc": hold["until_utc"]}
                 for hold in sorted(held.values(), key=lambda hold: datetime.fromisoformat(hold["until_utc"]),
@@ -1026,7 +1040,9 @@ def update_cli(root: Path, executable: Path, *, runner=subprocess.run) -> dict:
             raise ValueError("Grok update refuses a reparse-point installation")
     with exclusive(root):
         availability = status(root)
-        if not availability["eligible"]:
+        # A model hold makes no consultation and a CLI update may be its remedy (RCO1 F1, 2026-10-06):
+        # only an unreconciled attempt or a clock regression blocks the update, as before the hold.
+        if not availability["eligible"] and availability["local_availability"] != "model_unavailable_cooldown":
             raise ValueError("Grok update blocked: " + availability["local_availability"])
 
         def run(argument: str, timeout: int) -> str:

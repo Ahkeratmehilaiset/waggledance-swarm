@@ -776,7 +776,8 @@ def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None
         "additional_writable_roots": [],
     }
     assert tools["conversation_permissions"] == {
-        "network_access": True, "additional_writable_roots": [],
+        "network_access": True,
+        "additional_writable_roots": [r"C:\Python\grok-scout-reports"],
     }
 
 

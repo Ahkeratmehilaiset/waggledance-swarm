@@ -776,7 +776,8 @@ def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None
         "additional_writable_roots": [],
     }
     assert tools["conversation_permissions"] == {
-        "network_access": True, "additional_writable_roots": [],
+        "network_access": True,
+        "additional_writable_roots": [r"C:\Python\grok-scout-reports"],
     }
 
 
@@ -7658,10 +7659,35 @@ def test_grok_contract_uses_provider_default_without_strength_guessing() -> None
 
     assert "Authenticated CLI provider default" in resolver
     assert "no local version-name ranking" in resolver
-    assert "authenticated CLI provider default" in launcher
+    # Check actual resolver wiring, not a removed launcher status sentence.
+    assert "$resolver = Join-Path $PSScriptRoot 'Resolve-WdGrokModel.ps1'" in launcher
+    assert "& $resolver -DryRun -OutputDirectory" in launcher
+    assert "$grokResult = & $resolver -OutputDirectory" in launcher
+    assert "$defaultModel = $defaultMatches[0]" in resolver
+    assert "Model = $defaultModel" in resolver
     assert "does not guess a “strongest” model" in runbook
     assert "strongest current general model" not in launcher
     assert "default/strongest" not in runbook
+
+    # Where PowerShell is available, exercise only the offline parser: a newer
+    # available name must not outrank the provider default. No CLI/provider call.
+    if POWERSHELL is not None:
+        resolver_path = str(REBOOT / "Resolve-WdGrokModel.ps1").replace("'", "''")
+        result = _run_powershell(f"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{resolver_path}',[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'resolver parse failure' }}
+$fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertFrom-GrokModelsOutput'}},$true)
+if ($null -eq $fn) {{ throw 'missing provider-default parser' }}
+. ([scriptblock]::Create($fn.Extent.Text))
+$model=ConvertFrom-GrokModelsOutput -Lines @('Default model: grok-1.0','Available models:','- grok-99.9','* grok-1.0')
+$missing=$false
+try {{ [void](ConvertFrom-GrokModelsOutput -Lines @('Default model: grok-1.0','Available models:','- grok-99.9')) }} catch {{ $missing=$true }}
+@{{model=$model.Model;missing_default_rejected=$missing}} | ConvertTo-Json -Compress
+""")
+        assert json.loads(result.stdout) == {
+            "model": "grok-1.0", "missing_default_rejected": True,
+        }
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")

@@ -6,6 +6,7 @@ import base64
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import errno
 import json
 import hashlib
 import math
@@ -14,7 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import threading
-from time import monotonic
+from time import monotonic, sleep
 import unicodedata
 import uuid
 
@@ -48,6 +49,13 @@ ERROR_CLASSES = ("timeout", "nonzero_exit", "launch_error", "io_error", "ledger_
 # answer took 288 s. High effort spends more reasoning tokens (operator directive 2026-10-06: adjust the
 # limits with high). 900 s leaves about 3 times the slowest medium answer; the 2400 s ceiling is unchanged.
 CONSULT_TIMEOUT_SECONDS = 900
+# A CLI consultation that finds the lock held waits in line for it (operator 2026-10-06: every lane may
+# ask at once) instead of failing at once. 2400 s covers one full read-only session ahead of it; several
+# waiters can each wait that long, so callers stay detached. A waiter that gives up raises HelperBusy and
+# writes nothing. msvcrt and flock are not FIFO: waiters are served in no set order.
+LOCK_WAIT_SECONDS = 2400
+LOCK_RETRY_SECONDS = 1.0
+LOCK_BUSY_ERRNOS = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK})
 MAX_JSON_REPLY_BYTES = 256 * 1024
 MAX_USAGE_KEYS = 16
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
@@ -651,22 +659,42 @@ class GitBlobBroker:
         return result
 
 
+class HelperBusy(OSError):
+    """Another consultation still held hourly.lock when the wait ended; nothing was reserved."""
+
+
 @contextmanager
-def exclusive(root: Path):
+def exclusive(root: Path, wait_seconds: float = 0, *, clock=monotonic, pause=sleep):
     # Hold an OS lock for the entire consultation. Crash releases the lock, but the
     # reservation was already persisted and stays unreconciled until explicitly reconciled.
+    # A held lock is retried every LOCK_RETRY_SECONDS until wait_seconds pass (0 = one try). The last
+    # pause is cut to the time left and the deadline is checked before every retry, so a waiter never
+    # takes the lock after its limit.
     with (root / "hourly.lock").open("a+b") as stream:
         stream.seek(0, 2)
         if stream.tell() == 0:
             stream.write(b"0")
             stream.flush()
-        stream.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = clock() + max(0.0, wait_seconds)
+        while True:
+            stream.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in LOCK_BUSY_ERRNOS:
+                    raise
+                remaining = deadline - clock()
+                if remaining > 0:
+                    pause(min(LOCK_RETRY_SECONDS, remaining))
+                if remaining <= 0 or clock() > deadline:
+                    raise HelperBusy("Grok helper busy: another consultation holds hourly.lock "
+                                     f"(waited up to {max(0.0, wait_seconds):g} s)") from None
         try:
             yield
         finally:
@@ -681,9 +709,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             runner=subprocess.run, now: datetime | None = None, emitter=None,
             exception_path: Path | None = None, exception_sha256: str | None = None,
             timeout_seconds: int = CONSULT_TIMEOUT_SECONDS, requested_by: str | None = None,
-            purpose: str = "advisory") -> dict:
+            purpose: str = "advisory", lock_wait_seconds: int = 0) -> dict:
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 2400:
         raise ValueError("Consultation timeout must be an integer in 1..2400 seconds")
+    if type(lock_wait_seconds) is not int or not 0 <= lock_wait_seconds <= LOCK_WAIT_SECONDS:
+        raise ValueError("Lock wait must be an integer in 0..2400 seconds")
     if type(purpose) is not str or purpose not in PURPOSES:
         raise ValueError("A consultation purpose must be advisory or calibration")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", task_id):
@@ -695,7 +725,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
     if exception_path is not None or exception_sha256 is not None:
         # Grants waived the removed hourly budget; recorded ones stay in the state as history only.
         raise ValueError("Task exceptions are retired with the local hourly budget")
-    with exclusive(root):
+    # Availability is read only after the lock is held, so a waiter sees the finished attempt.
+    with exclusive(root, lock_wait_seconds):
         now = now or datetime.now(timezone.utc)
         previous = status(root, now)
         history = previous.get("task_exceptions")
@@ -943,7 +974,8 @@ def main() -> int:
                              advisory_command(executable, model["model"]),
                              emitter=emit_bridge_event, exception_path=args.exception_path,
                              exception_sha256=args.exception_sha256, requested_by=args.requested_by,
-                             purpose="advisory" if args.purpose is None else args.purpose)
+                             purpose="advisory" if args.purpose is None else args.purpose,
+                             lock_wait_seconds=LOCK_WAIT_SECONDS)
         print(json.dumps(report, ensure_ascii=False))
         if args.status or args.prompt_file is None:
             return 0 if report.get("status") != "failed" else 1

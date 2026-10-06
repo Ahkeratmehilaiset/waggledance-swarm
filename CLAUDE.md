@@ -264,6 +264,13 @@ production with more depth.
   installed controlled entry `C:\Python\Invoke-WdGrok.ps1` (`-RequestedBy` is
   the agent's own ID; `codex-lead-1` omits it). The prompt asks Grok to find
   defects, missing cases and weak assumptions in that task.
+* A task here is one deliverable: a PR head, a design, a fix, an audit result
+  or a review verdict. Bookkeeping is exempt: claims, releases, heartbeats,
+  progress and status messages, F0 closures, relays, and Grok calls themselves.
+  This keeps the single helper lock from filling with low-value calls.
+* For a reviewer (including `claude-rco-1` and `claude-rco-2`), the challenge
+  targets the reviewer's own verdict. The Grok answer is not passed to the
+  author as design input, so the reviewer stays independent.
 * The agent asks Grok itself. It does not route the call through Lead and does
   not wait for a Lead slot. Concurrent calls queue on the helper lock.
 * One call per task, no retry. A failed call is recorded as failed in the task
@@ -277,6 +284,9 @@ production with more depth.
   another eligible agent to run the same prompt bytes on its behalf with
   `-RequestedBy` set to the asking agent. The executor returns the report path
   and hash unchanged.
+* Runtime truth: the queueing helper lock and the `-RequestedBy` relay are
+  the installed `edc18943` runtime (PRs #1767 and #1769). That helper code is
+  not yet on `main`.
 
 ## What this file does NOT override
 

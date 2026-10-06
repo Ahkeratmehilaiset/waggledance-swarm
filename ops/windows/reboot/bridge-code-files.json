@@ -10,6 +10,12 @@
     "configs/bridge_v2_grok_admission.json",
     "configs/lane_profile_catalog.json",
     "configs/model_registry.json",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+    "schemas/v3_13_0/evaluation_result.v0.json",
+    "schemas/v3_13_0/evaluation_result.v1.json",
+    "schemas/v3_13_0/idle_protocol.v1.json",
+    "schemas/v3_13_0/magma_receipt.v1.json",
+    "schemas/v3_13_0/policy_surface.v0.json",
     "tools/__init__.py",
     "tools/agent_next_task.py",
     "tools/bridge_accepted_queue_preflight.py",
@@ -112,6 +118,41 @@
     "platform": "win_amd64"
   },
   "python_requirements": [
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "wheel": "attrs-26.1.0-py3-none-any.whl",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "import_path": "attrs/__init__.py"
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "wheel": "jsonschema-4.26.0-py3-none-any.whl",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "import_path": "jsonschema/__init__.py"
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "wheel": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "import_path": "jsonschema_specifications/__init__.py"
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "wheel": "referencing-0.37.0-py3-none-any.whl",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "import_path": "referencing/__init__.py"
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.6.3",
+      "wheel": "rpds_py-2026.6.3-cp313-cp313-win_amd64.whl",
+      "sha256": "9250a9a0a6fd4648b3f868da8d91a4c52b5811a62df58e753d50ae4454a36f80",
+      "import_path": "rpds/__init__.py"
+    },
     {
       "name": "annotated-types",
       "version": "0.8.0",

@@ -286,6 +286,37 @@ def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     assert not paths & set(definition["python_entrypoints"].values())
 
 
+def test_consensus_gate_data_and_existing_jsonschema_dependency_are_shipped():
+    definition = _definition()
+    required_data = {
+        "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+        "schemas/v3_13_0/idle_protocol.v1.json",
+        "schemas/v3_13_0/magma_receipt.v1.json",
+        "schemas/v3_13_0/evaluation_result.v0.json",
+        "schemas/v3_13_0/evaluation_result.v1.json",
+        "schemas/v3_13_0/policy_surface.v0.json",
+    }
+    assert required_data <= set(definition["python_files"])
+    assert all((REPO_ROOT / relative).is_file() for relative in required_data)
+    assert {"jsonschema", "attrs", "jsonschema-specifications", "referencing", "rpds-py"} <= {
+        requirement["name"] for requirement in definition["python_requirements"]
+    }
+    for relative in required_data:
+        if relative.endswith(".json"):
+            schema = json.loads((REPO_ROOT / relative).read_text(encoding="utf-8"))
+            # These schemas use local references only; no undeclared remote data dependency.
+            def refs(value):
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        if key == "$ref":
+                            yield item
+                        yield from refs(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        yield from refs(item)
+            assert all(ref.startswith("#") for ref in refs(schema)), relative
+
+
 def test_passive_participants_and_dashboard_ship_without_new_entrypoints():
     """F5/F6 are optional caller-fed libraries, not newly enabled collectors."""
     modules = {"tools.bridge_lock_participants", "tools.bridge_v2_dashboard"}

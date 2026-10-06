@@ -211,6 +211,17 @@ def test_every_packaged_python_file_exists():
     assert not missing, f"listed for packaging but absent from the repo: {missing}"
 
 
+def test_source_package_initializers_are_not_silently_replaced_by_namespaces():
+    packaged = set(_packaged_python())
+    initializers = {
+        (parent / "__init__.py").as_posix()
+        for relative in packaged
+        for parent in Path(relative).parents
+        if parent != Path(".") and (REPO_ROOT / parent / "__init__.py").is_file()
+    }
+    assert initializers <= packaged, sorted(initializers - packaged)
+
+
 def test_the_packaged_python_set_is_import_closed():
     """Nothing packaged may import an unpackaged internal module.
 
@@ -269,6 +280,52 @@ def test_f19_routing_and_shadow_learning_family_is_packaged_and_smoke_checked():
     paths = {module.replace(".", "/") + ".py" for module in modules}
     assert paths <= set(definition["python_files"])
     assert modules <= set(definition["import_smoke"]["package_modules"])
+
+
+def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
+    """A new bundle must deliver its reviewed gate fixes, not just a new pointer."""
+    modules = {
+        "tools.check_bridge_changes_requested",
+        "tools.check_rco_pass_present",
+        "tools.idle_consensus_auto_merge",
+        "tools.bridge_v2_identity_registry",
+    }
+    definition = _definition()
+    paths = {module.replace(".", "/") + ".py" for module in modules}
+    assert paths <= set(definition["python_files"])
+    assert modules <= set(definition["import_smoke"]["package_modules"])
+    assert not paths & set(definition["python_entrypoints"].values())
+
+
+def test_consensus_gate_data_and_existing_jsonschema_dependency_are_shipped():
+    definition = _definition()
+    required_data = {
+        "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
+        "schemas/v3_13_0/idle_protocol.v1.json",
+        "schemas/v3_13_0/magma_receipt.v1.json",
+        "schemas/v3_13_0/evaluation_result.v0.json",
+        "schemas/v3_13_0/evaluation_result.v1.json",
+        "schemas/v3_13_0/policy_surface.v0.json",
+    }
+    assert required_data <= set(definition["python_files"])
+    assert all((REPO_ROOT / relative).is_file() for relative in required_data)
+    assert {"jsonschema", "attrs", "jsonschema-specifications", "referencing", "rpds-py"} <= {
+        requirement["name"] for requirement in definition["python_requirements"]
+    }
+    for relative in required_data:
+        if relative.endswith(".json"):
+            schema = json.loads((REPO_ROOT / relative).read_text(encoding="utf-8"))
+            # These schemas use local references only; no undeclared remote data dependency.
+            def refs(value):
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        if key == "$ref":
+                            yield item
+                        yield from refs(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        yield from refs(item)
+            assert all(ref.startswith("#") for ref in refs(schema)), relative
 
 
 def test_passive_participants_and_dashboard_ship_without_new_entrypoints():

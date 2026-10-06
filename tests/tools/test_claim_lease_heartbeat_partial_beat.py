@@ -46,8 +46,9 @@ def _liveness(shell: str, root: Path, beat: dict | None) -> str:
         "if ($env:WD_FIXTURE_BEAT) { "
         "$null = New-Item -ItemType Directory -Force -Path (Split-Path $path); "
         "[IO.File]::WriteAllText($path, $env:WD_FIXTURE_BEAT, (New-Object Text.UTF8Encoding($false))) }; "
+        # The clock is the NOW the beats were built from, so a slow run can never age the fresh beat.
         f"'LIVENESS:' + (Get-BridgeSessionHeartbeatLiveness -Root '{root}' -Claim $claim "
-        "-NowUtc ([DateTime]::UtcNow))"
+        f"-NowUtc ([DateTimeOffset]::Parse('{NOW.isoformat()}', [Globalization.CultureInfo]::InvariantCulture)).UtcDateTime)"
     )
     env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_"))}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)

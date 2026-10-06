@@ -149,3 +149,67 @@ def test_update_cli_main_returns_evidence_not_status(monkeypatch, capsys, tmp_pa
 def test_update_cli_rejects_consultation_arguments(monkeypatch, args):
     monkeypatch.setattr("sys.argv", ["helper", "--update-cli", *args])
     assert helper.main() == 2
+
+# --- S2 (12 h wave W3): the resolver records where each label came from and when. The --version label, the CLI
+# catalog cache and session traces disagreed on 2026-10-06 (1.0.46 vs 1.0.45); none is the executing build.
+
+FAKE_GROK = """
+if ($args.Count -eq 1 -and $args[0] -eq '--version') { Write-Output 'grok 9.9.9 (fake)'; exit 0 }
+if ($args.Count -eq 1 -and $args[0] -eq 'models') {
+  Start-Sleep -Milliseconds 1100
+  Write-Output 'Default model: grok-9.9'; Write-Output ''; Write-Output 'Available models:'
+  Write-Output '  * grok-9.9 (default)'; Write-Output '  - grok-9.8'; exit 0
+}
+exit 7
+"""
+
+
+def _resolve(ps: str, fake: Path, out: Path, *extra: str, check: bool = True):
+    resolver = str(REBOOT / "Resolve-WdGrokModel.ps1").replace("'", "''")
+    return _run_powershell(
+        f"& '{resolver}' -GrokCommand '{str(fake).replace(chr(39), chr(39) * 2)}' "
+        f"-OutputDirectory '{str(out).replace(chr(39), chr(39) * 2)}' {' '.join(extra)} "
+        "| ConvertTo-Json -Depth 8 -Compress", executable=ps, check=check)
+
+
+def _last_json(text: str) -> dict:
+    return json.loads(next(line for line in reversed(text.splitlines()) if line.startswith("{")))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_resolver_timestamps_each_probe_and_keeps_the_executing_build_unknown(ps, tmp_path):
+    fake = tmp_path / "fake-grok.ps1"
+    fake.write_text(FAKE_GROK.strip() + "\n", encoding="utf-8")
+    record = _last_json(_resolve(ps, fake, tmp_path).stdout)          # real clock: no -NowUtc
+    assert record["Status"] == "verified_persisted" and record["Model"] == "grok-9.9"   # consumers unchanged
+    assert record["CliVersion"] == "grok 9.9.9 (fake)"                # the label exactly as reported
+    assert record["ExecutingBuild"] == "unknown"
+    version_at, models_at = record["CliVersionProbedUtc"], record["ModelsProbedUtc"]
+    assert version_at < models_at                                     # separate readings (1.1 s models probe)
+    persisted = json.loads((tmp_path / "WD_GROK_MODEL_CURRENT.json").read_text(encoding="utf-8"))
+    assert persisted["cli_version"] == "grok 9.9.9 (fake)"            # compatibility field kept
+    assert persisted["cli_version_probed_utc"] == version_at and persisted["models_probed_utc"] == models_at
+    assert persisted["version_provenance"]["executing_build"] == "unknown"
+    assert "--version" in persisted["version_provenance"]["cli_version"]
+    markdown = (tmp_path / "WD_GROK_MODEL_CURRENT.md").read_text(encoding="utf-8")
+    assert "- Grok CLI: `grok 9.9.9 (fake)` (`--version` label, probed " + version_at + ")" in markdown
+    assert "- Model catalog: `grok models`, probed " + models_at in markdown
+    assert "- Executing build: unknown" in markdown
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_older_cache_without_probe_times_stays_unknown_and_never_becomes_readiness(ps, tmp_path):
+    usage = {"single_turn": "x", "interactive": "y"}
+    (tmp_path / "WD_GROK_MODEL_CURRENT.json").write_text(json.dumps({
+        "schema_version": 1, "model": "grok-9.9", "available_models": ["grok-9.9"], "cli_version": "grok 9.9.0",
+        "grok_command": str(tmp_path / "grok.exe"), "discovered_utc": "2026-07-30T10:00:00.0000000+00:00",
+        "source": "Authenticated Grok CLI: grok models", "selection_method": "provider default",
+        "cache_max_age_days": 7, "usage": usage}), encoding="utf-8")
+    offline = tmp_path / "offline-grok.ps1"
+    offline.write_text("Write-Error 'offline'; exit 7\n", encoding="utf-8")
+    record = _last_json(_resolve(ps, offline, tmp_path, "-NowUtc ([DateTimeOffset]'2026-07-31T10:00:00Z')",
+                                 "-DryRun").stdout)
+    assert record["Status"] == "verified_cache_fallback"              # still the fallback, with its warning
+    assert record["Warning"] and record["CliVersion"] == "grok 9.9.0"
+    assert record["CliVersionProbedUtc"] is None and record["ModelsProbedUtc"] is None
+    assert record["ExecutingBuild"] == "unknown"

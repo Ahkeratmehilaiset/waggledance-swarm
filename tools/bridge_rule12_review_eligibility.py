@@ -13,17 +13,29 @@ held by eligible approvers:
   recused or absent, bound to one helper-ledger consultation.
 
 Implementers are every author / concept / design / measurement source of the
-change. A recusal is a self-posted ``type=message`` event with a status in
+change; Grok counts as one only when it authored code (advice and read-only
+review never do). A recusal is a self-posted ``type=message`` event with a status in
 ``RECUSAL_STATUSES`` bound to the task and the exact head; anything else (for
-example an effort setting such as ``medium``) is not a recusal. A primary is
-absent only when a bound review request at the head got no answer from it for
-``ABSENCE_SECONDS``, computed here from bridge timestamps.
+example an effort setting such as ``medium``) is not a recusal. A lane that
+both recuses and approves at the head is ``conflicting``: its approval does not
+count and its slot is not vacant. A primary is absent only when a
+``requested`` event from another known, non-implementer lane, bound to the
+head, got no answer from it for ``ABSENCE_SECONDS``; any event of the primary
+on the task bound to the head, or later than the request, is an answer.
 
 A recognized-RCO veto is evaluated over ALL recognized RCOs, including
-implementers and recused ones, and outranks every pass including Grok. A Grok
-answer that is missing, partial, unclear, negative, at another head or not the
-first at that head leaves its slot empty; it never blocks by itself and it is
-never recorded as an ``rco_pass``.
+implementers and recused ones, and outranks every pass including Grok. Order
+is read from ``ts_utc``, never from list position: a block is cleared only by a
+strictly later own ``rco_pass`` at the block's head or at this head; a block or
+pass without a parseable timestamp can never clear or be cleared. A Grok answer
+that is missing, partial, unclear, negative, at another head, not the first
+attempt at that head for that slot, or not bound to the gate-built prompt and
+diff leaves its slot empty; it never blocks by itself and it is never recorded
+as an ``rco_pass``.
+
+Trust boundary: callers must pass identity-verified events (agent + agent_uuid
+checked against the bridge identity registry), the full event log for the task
+and the gate's own clock; this function cannot see forged or missing events.
 
 This module is NOT read by any merge gate yet. It decides nothing on its own;
 wiring it into ``tools/idle_consensus_auto_merge.py`` and the receipt writer is
@@ -54,11 +66,24 @@ RCO_PASS_STATUSES = frozenset({"rco_pass"})
 PASS_EVENT_TYPES = frozenset({"decision", "rco_review"})
 # Exact approval statuses for the opposite-family slot; nothing looser.
 OPPOSITE_FAMILY_APPROVAL_STATUSES = frozenset({"rco_pass", "build_consensus_pass"})
-# Any recognized-RCO event of these types blocks unless its status is a pass.
+# Exact tooling record statuses (as in #1762): neither a block nor a clear.
+RCO_NEUTRAL_RECORD_STATUSES = frozenset(
+    {
+        "autonomous_merge_receipt",
+        "merged_operator_authorized",
+        "operator_authorized",
+        "rco_closed_postmerge",
+    }
+)
+# Any recognized-RCO event of these types blocks, whatever its status.
 RCO_BLOCK_TYPES = frozenset({"finding", "blocked"})
 RECUSAL_EVENT_TYPE = "message"
 RECUSAL_STATUSES = frozenset({"rco_recused", "review_recused"})
+REVIEW_REQUEST_STATUS = "requested"
 IMPLEMENTER_ROLES = frozenset({"author", "concept", "design", "measurement"})
+# Operator 2026-10-06 16:57Z: read-only reviews or advice do not make Grok
+# ineligible because it is not an implementer; only authoring code does.
+GROK_DISQUALIFYING_ROLES = frozenset({"author"})
 ABSENCE_SECONDS = 60 * 60
 GROK_MAX_SLOTS = 1
 GROK_REQUIRED_EFFORT = "high"
@@ -121,34 +146,57 @@ def _recipients(event: Mapping[str, Any]) -> set[str]:
     return set()
 
 
-def _is_rco_pass(event: Mapping[str, Any], head: str) -> bool:
+def _on_task(event: Mapping[str, Any], agent: str, task_id: str) -> bool:
+    return _text(event.get("agent")) == agent and _text(event.get("task_id")) == task_id
+
+
+def _is_pass_status(event: Mapping[str, Any], statuses: frozenset[str]) -> bool:
     return (
         _text(event.get("type")) in PASS_EVENT_TYPES
-        and _text(event.get("status")) in RCO_PASS_STATUSES
-        and _event_head(event) == head
+        and _text(event.get("status")) in statuses
     )
 
 
-def _is_rco_block(event: Mapping[str, Any], head: str) -> bool:
-    """A recognized-RCO event that blocks at ``head`` (or carries no valid head)."""
+def _is_rco_block(event: Mapping[str, Any]) -> bool:
+    """A recognized-RCO event that is a block at whatever head it names."""
     event_type = _text(event.get("type"))
     status = _text(event.get("status"))
-    event_head = _event_head(event)
-    if event_head not in ("", None) and event_head != head:
-        return False  # bound to another head: superseded by review at this head
     if event_type in RCO_BLOCK_TYPES:
         return True
     if event_type in PASS_EVENT_TYPES:
-        if status in RCO_PASS_STATUSES:
-            return False  # a pass never blocks; without the exact head it binds nothing
-        return True  # exact allowlist: every non-pass decision blocks
+        # Exact allowlist: approvals and tooling records are not blocks.
+        return status not in OPPOSITE_FAMILY_APPROVAL_STATUSES | RCO_NEUTRAL_RECORD_STATUSES
+    return False
+
+
+def _rco_vetoes(events: Sequence[Mapping[str, Any]], rco: str, task_id: str, head: str) -> bool:
+    """True when ``rco`` has a block on the task that no later own pass clears."""
+    own = [event for event in events if _on_task(event, rco, task_id)]
+    passes = [
+        (_parse_utc(event.get("ts_utc")), _event_head(event))
+        for event in own
+        if _is_pass_status(event, RCO_PASS_STATUSES)
+    ]
+    for event in own:
+        if not _is_rco_block(event):
+            continue
+        blocked_at = _parse_utc(event.get("ts_utc"))
+        if blocked_at is None:
+            return True
+        block_head = _event_head(event)
+        clear_heads = {head} | ({block_head} if block_head else set())
+        cleared = any(
+            passed_at is not None and passed_at > blocked_at and pass_head in clear_heads
+            for passed_at, pass_head in passes
+        )
+        if not cleared:
+            return True
     return False
 
 
 def _self_recused(events: Sequence[Mapping[str, Any]], agent: str, task_id: str, head: str) -> bool:
     return any(
-        _text(event.get("agent")) == agent
-        and _text(event.get("task_id")) == task_id
+        _on_task(event, agent, task_id)
         and _text(event.get("type")) == RECUSAL_EVENT_TYPE
         and _text(event.get("status")) in RECUSAL_STATUSES
         and _event_head(event) == head
@@ -162,24 +210,34 @@ def _absent(
     task_id: str,
     head: str,
     now: datetime,
+    implementers: set[str],
 ) -> bool:
-    """No answer from ``agent`` for ABSENCE_SECONDS after a bound request at ``head``."""
-    for index, event in enumerate(events):
+    """No answer from ``agent`` for ABSENCE_SECONDS after a bound review request."""
+    own = [event for event in events if _on_task(event, agent, task_id)]
+    if any(_event_head(event) == head for event in own):
+        return False  # it already spoke at this head
+    for event in events:
+        requester = _text(event.get("agent"))
         if (
             _text(event.get("task_id")) != task_id
+            or _text(event.get("status")) != REVIEW_REQUEST_STATUS
             or not _text(event.get("request_id"))
+            or requester not in FAMILIES
+            or requester in (GROK_AGENT, agent)
+            or requester in implementers
             or agent not in _recipients(event)
-            or _text(event.get("agent")) == agent
             or _event_head(event) != head
         ):
             continue
         requested = _parse_utc(event.get("ts_utc"))
         if requested is None or (now - requested).total_seconds() < ABSENCE_SECONDS:
             continue
-        answered = any(
-            _text(later.get("agent")) == agent and _text(later.get("task_id")) == task_id
-            for later in events[index + 1 :]
-        )
+        answered = False
+        for later in own:
+            said_at = _parse_utc(later.get("ts_utc"))
+            if said_at is None or said_at >= requested:
+                answered = True
+                break
         if not answered:
             return True
     return False
@@ -187,29 +245,40 @@ def _absent(
 
 def _first_grok_consultation(
     consultations: Sequence[Mapping[str, Any]], task_id: str, head: str, slot: str
-) -> Mapping[str, Any] | None:
-    """First consultation at (task, head) for ``slot``; slotless ones count for every slot."""
-    for consultation in consultations:
-        if _text(consultation.get("task_id")) != task_id:
-            continue
-        if _text(consultation.get("head")) != head:
-            continue
-        consultation_slot = _text(consultation.get("slot"))
-        if consultation_slot in ("", slot) or consultation_slot not in SLOTS:
-            return consultation
-    return None
+) -> tuple[Mapping[str, Any] | None, list[str]]:
+    """First attempt at (task, head) for ``slot``; mistagged attempts count for every slot."""
+    attempts = [
+        consultation
+        for consultation in consultations
+        if _text(consultation.get("task_id")) == task_id
+        and _text(consultation.get("head")) == head
+        and (
+            _text(consultation.get("slot")) == slot
+            or _text(consultation.get("slot")) not in SLOTS
+        )
+    ]
+    if not attempts:
+        return None, ["no Grok consultation bound to this task and exact head"]
+    timed = [(_parse_utc(c.get("started_utc")), c) for c in attempts]
+    if any(started is None for started, _ in timed):
+        return None, ["a Grok attempt at this head has no parseable started_utc"]
+    timed.sort(key=lambda pair: pair[0])
+    if len(timed) > 1 and timed[0][0] == timed[1][0]:
+        return None, ["two Grok attempts at this head share the first started_utc"]
+    first = timed[0][1]
+    if _text(first.get("slot")) != slot:
+        return None, ["the first Grok attempt at this head is not tagged for this slot"]
+    return first, []
 
 
 def _grok_reasons(
-    consultation: Mapping[str, Any] | None,
+    consultation: Mapping[str, Any],
     *,
-    task_id: str,
-    head: str,
     expected_diff_sha256: str,
+    expected_prompt_sha256: str,
+    expected_files_total: int,
     forbidden_requesters: set[str],
 ) -> list[str]:
-    if consultation is None:
-        return ["no Grok consultation bound to this task and exact head"]
     reasons: list[str] = []
     if not REQUEST_ID_RE.match(_text(consultation.get("request_id"))):
         reasons.append("Grok request_id missing or not a ledger id")
@@ -223,22 +292,28 @@ def _grok_reasons(
     for key in ("prompt_sha256", "input_sha256", "answer_sha256"):
         if not SHA256_RE.match(_text(consultation.get(key))):
             reasons.append(f"Grok {key} missing or malformed")
-    if not SHA256_RE.match(expected_diff_sha256):
-        reasons.append("expected diff sha256 of the exact head is missing")
-    elif _text(consultation.get("input_sha256")) != expected_diff_sha256:
-        reasons.append("Grok input is not the exact-head diff")
+    for key, expected, label in (
+        ("input_sha256", expected_diff_sha256, "exact-head diff"),
+        ("prompt_sha256", expected_prompt_sha256, "gate-built prompt"),
+    ):
+        if not SHA256_RE.match(expected):
+            reasons.append(f"expected {label} sha256 is missing")
+        elif _text(consultation.get(key)) != expected:
+            reasons.append(f"Grok {key} is not the {label}")
     coverage = consultation.get("coverage")
     coverage = coverage if isinstance(coverage, Mapping) else {}
     total = coverage.get("files_total")
     reviewed = coverage.get("files_reviewed")
     if not (
         coverage.get("complete") is True
+        and type(expected_files_total) is int
+        and expected_files_total > 0
         and type(total) is int
         and type(reviewed) is int
-        and total > 0
+        and total == expected_files_total
         and reviewed == total
     ):
-        reasons.append("Grok coverage is not complete")
+        reasons.append("Grok coverage is not the complete exact-head diff")
     if _text(consultation.get("verdict")) != GROK_APPROVE_VERDICT:
         reasons.append("Grok verdict is not an explicit approve")
     return reasons
@@ -253,13 +328,16 @@ def evaluate_rule12_review_eligibility(
     now_utc: str,
     grok_consultations: Iterable[Mapping[str, Any]] = (),
     expected_diff_sha256: str = "",
+    expected_prompt_sha256: str = "",
+    expected_files_total: int = 0,
 ) -> dict[str, Any]:
     """Evaluate the Rule 12 review slots for ``task_id`` at ``head``.
 
     ``decision`` is one of ``refused`` (invalid input), ``blocked`` (a
     recognized-RCO veto), ``not_satisfied`` or ``satisfied``. Only
     ``satisfied`` means every review slot is held; CI, charter and receipt
-    checks stay with the gate.
+    checks stay with the gate. The ``expected_*`` values must be computed by
+    the gate from the exact head, never taken from the requester.
     """
     result: dict[str, Any] = {
         "schema": SCHEMA,
@@ -288,6 +366,8 @@ def evaluate_rule12_review_eligibility(
             reasons.append(f"unknown contributor agent {agent!r}")
         if role not in IMPLEMENTER_ROLES:
             reasons.append(f"unknown contributor role {role!r} for {agent!r}")
+        if agent == GROK_AGENT and role not in GROK_DISQUALIFYING_ROLES:
+            continue  # Grok advice/review is not implementation
         implementers.add(agent)
     event_list = [event for event in events if isinstance(event, Mapping)]
     if reasons:
@@ -298,68 +378,53 @@ def evaluate_rule12_review_eligibility(
     result["implementers"] = sorted(implementers)
     result["implementer_families"] = sorted(implementer_families)
 
-    # 1. Recognized-RCO veto over ALL recognized RCOs; a later own pass at the
-    #    head clears that RCO's earlier block, a recusal never does.
-    blocking: list[str] = []
-    for rco in RECOGNIZED_RCOS:
-        state = None
-        for event in event_list:
-            if _text(event.get("agent")) != rco or _text(event.get("task_id")) != task_id:
-                continue
-            if _is_rco_pass(event, head):
-                state = "pass"
-            elif _is_rco_block(event, head):
-                state = "block"
-        if state == "block":
-            blocking.append(rco)
+    # 1. Recognized-RCO veto over ALL recognized RCOs, ordered by ts_utc.
+    blocking = [rco for rco in RECOGNIZED_RCOS if _rco_vetoes(event_list, rco, task_id, head)]
     result["blocking_rcos"] = blocking
-
-    def standing(agent: str) -> str:
-        if agent in implementers:
-            return "implementer"
-        if _self_recused(event_list, agent, task_id, head):
-            return "recused"
-        if _absent(event_list, agent, task_id, head, now):
-            return "absent"
-        return "eligible"
 
     def approved(agent: str, statuses: frozenset[str]) -> bool:
         return any(
-            _text(event.get("agent")) == agent
-            and _text(event.get("task_id")) == task_id
-            and _text(event.get("type")) in PASS_EVENT_TYPES
-            and _text(event.get("status")) in statuses
+            _on_task(event, agent, task_id)
+            and _is_pass_status(event, statuses)
             and _event_head(event) == head
             for event in event_list
         )
 
-    # 2. RCO slot: every eligible recognized RCO must pass at the head.
-    rco_standing = {rco: standing(rco) for rco in RECOGNIZED_RCOS}
-    rco_required = [rco for rco, s in rco_standing.items() if s == "eligible"]
-    rco_missing = [rco for rco in rco_required if not approved(rco, RCO_PASS_STATUSES)]
-    rco_slot: dict[str, Any] = {"standing": rco_standing, "required": rco_required}
-    if rco_required:
-        rco_slot["state"] = "held" if not rco_missing else "pending"
-        rco_slot["missing_rco_pass"] = rco_missing
-        rco_slot["holders"] = [rco for rco in rco_required if rco not in rco_missing]
+    def standing(agent: str, statuses: frozenset[str]) -> str:
+        if agent in implementers:
+            return "implementer"
+        recused = _self_recused(event_list, agent, task_id, head)
+        if recused and approved(agent, statuses):
+            return "conflicting"
+        if recused:
+            return "recused"
+        if _absent(event_list, agent, task_id, head, now, implementers):
+            return "absent"
+        return "eligible"
+
+    def fill(statuses: frozenset[str], agents: Sequence[str]) -> dict[str, Any]:
+        slot_standing = {agent: standing(agent, statuses) for agent in agents}
+        present = [a for a, s in slot_standing.items() if s in ("eligible", "conflicting")]
+        holders = [a for a in present if slot_standing[a] == "eligible" and approved(a, statuses)]
+        return {"standing": slot_standing, "present": present, "holders": holders}
+
+    # 2. RCO slot: every present recognized RCO must pass at the head.
+    rco_slot = fill(RCO_PASS_STATUSES, RECOGNIZED_RCOS)
+    rco_slot["missing_rco_pass"] = [a for a in rco_slot["present"] if a not in rco_slot["holders"]]
+    if rco_slot["present"]:
+        rco_slot["state"] = "pending" if rco_slot["missing_rco_pass"] else "held"
     else:
         rco_slot["state"] = "vacant"
 
-    # 3. Opposite-family slot: a lane outside every implementer family.
+    # 3. Opposite-family slot: one approval from a lane outside every implementer family.
     candidates = [
         agent
         for agent, family in FAMILIES.items()
         if agent != GROK_AGENT and family not in implementer_families
     ]
-    opposite_standing = {agent: standing(agent) for agent in candidates}
-    opposite_eligible = [a for a, s in opposite_standing.items() if s == "eligible"]
-    opposite_holders = [
-        a for a in opposite_eligible if approved(a, OPPOSITE_FAMILY_APPROVAL_STATUSES)
-    ]
-    opposite_slot: dict[str, Any] = {"standing": opposite_standing}
-    if opposite_eligible:
-        opposite_slot["state"] = "held" if opposite_holders else "pending"
-        opposite_slot["holders"] = opposite_holders
+    opposite_slot = fill(OPPOSITE_FAMILY_APPROVAL_STATUSES, candidates)
+    if opposite_slot["present"]:
+        opposite_slot["state"] = "held" if opposite_slot["holders"] else "pending"
     else:
         opposite_slot["state"] = "vacant"
 
@@ -368,27 +433,29 @@ def evaluate_rule12_review_eligibility(
 
     # 4. Grok fallback for vacant slots only, at most GROK_MAX_SLOTS.
     vacant = [name for name in SLOTS if slots[name]["state"] == "vacant"]
-    grok: dict[str, Any] = {"vacant_slots": vacant, "filled": []}
+    grok: dict[str, Any] = {"vacant_slots": vacant, "filled": [], "reasons": []}
     result["grok_fallback"] = grok
     consultations = [c for c in grok_consultations if isinstance(c, Mapping)]
     if GROK_AGENT in implementers:
-        grok["reasons"] = ["Grok is an implementer of this change"]
+        grok["reasons"].append("Grok is an implementer of this change")
     elif len(vacant) > GROK_MAX_SLOTS:
-        grok["reasons"] = [
+        grok["reasons"].append(
             f"{len(vacant)} slots vacant; Rule 12 lets Grok fill at most {GROK_MAX_SLOTS}"
-        ]
+        )
     else:
-        grok["reasons"] = []
         for name in vacant:
             primaries = set(RECOGNIZED_RCOS) if name == SLOT_RCO else set(candidates)
-            consultation = _first_grok_consultation(consultations, task_id, head, name)
-            slot_reasons = _grok_reasons(
-                consultation,
-                task_id=task_id,
-                head=head,
-                expected_diff_sha256=expected_diff_sha256,
-                forbidden_requesters=implementers | primaries,
+            consultation, slot_reasons = _first_grok_consultation(
+                consultations, task_id, head, name
             )
+            if consultation is not None:
+                slot_reasons = _grok_reasons(
+                    consultation,
+                    expected_diff_sha256=expected_diff_sha256,
+                    expected_prompt_sha256=expected_prompt_sha256,
+                    expected_files_total=expected_files_total,
+                    forbidden_requesters=implementers | primaries,
+                )
             if slot_reasons:
                 grok["reasons"].extend(f"{name}: {reason}" for reason in slot_reasons)
                 continue
@@ -406,7 +473,7 @@ def evaluate_rule12_review_eligibility(
     # 5. Verdict: a veto outranks everything, then every slot must be held.
     if blocking:
         result["decision"] = "blocked"
-        reasons.append(f"recognized RCO veto at this head: {', '.join(blocking)}")
+        reasons.append(f"recognized RCO veto: {', '.join(blocking)}")
         return result
     unheld = [name for name in SLOTS if not slots[name]["state"].startswith("held")]
     if unheld:

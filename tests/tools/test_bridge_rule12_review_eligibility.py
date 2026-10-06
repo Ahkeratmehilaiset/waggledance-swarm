@@ -55,6 +55,7 @@ def grok(**overrides):
         "answer_sha256": "2" * 64,
         "coverage": {"complete": True, "files_total": 3, "files_reviewed": 3},
         "verdict": "approve",
+        "started_utc": "2026-10-06T16:40:00Z",
     }
     consultation.update(overrides)
     return consultation
@@ -63,6 +64,8 @@ def grok(**overrides):
 def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), **kw):
     kw.setdefault("now_utc", NOW)
     kw.setdefault("expected_diff_sha256", DIFF)
+    kw.setdefault("expected_prompt_sha256", "1" * 64)
+    kw.setdefault("expected_files_total", 3)
     return r12.evaluate_rule12_review_eligibility(
         task_id=kw.pop("task_id", TASK),
         head=kw.pop("head", H),
@@ -186,7 +189,7 @@ def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
                       [consultation])
     assert result["decision"] == "satisfied"
     assert result["slots"]["rco"]["state"] == "held_by_grok_fallback"
-    assert "holders" not in result["slots"]["rco"]  # never recorded as an rco_pass
+    assert result["slots"]["rco"]["holders"] == []  # never recorded as an rco_pass
 
 
 def test_two_vacant_slots_exceed_grok_max_one_slot():
@@ -215,6 +218,10 @@ def test_two_vacant_slots_exceed_grok_max_one_slot():
         {"input_sha256": "e" * 64},
         {"answer_sha256": ""},
         {"prompt_sha256": "XYZ"},
+        {"prompt_sha256": "9" * 64},
+        {"coverage": {"complete": True, "files_total": 1, "files_reviewed": 1}},
+        {"started_utc": ""},
+        {"started_utc": "later"},
         {"request_id": ""},
         {"request_id": "not-a-ledger-id"},
         {"requester": "fable-5"},
@@ -230,28 +237,44 @@ def test_grok_answer_that_is_not_fully_bound_and_positive_leaves_slot_empty(over
     assert result["grok_fallback"]["filled"] == []
 
 
-def test_grok_requires_the_expected_exact_head_diff_hash():
-    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok()], expected_diff_sha256="")
+@pytest.mark.parametrize(
+    "missing",
+    [{"expected_diff_sha256": ""}, {"expected_prompt_sha256": ""}, {"expected_files_total": 0},
+     {"expected_files_total": True}],
+)
+def test_grok_requires_gate_computed_diff_prompt_and_file_count(missing):
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok()], **missing)
     assert result["decision"] == "not_satisfied"
 
 
 def test_only_the_first_grok_answer_at_the_head_counts_no_answer_shopping():
-    first = grok(verdict="reject", request_id="1" * 32)
-    second = grok(request_id="2" * 32)
+    first = grok(verdict="reject", request_id="1" * 32, started_utc="2026-10-06T16:41:00Z")
+    second = grok(request_id="2" * 32, started_utc="2026-10-06T16:42:00Z")
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[first, second])
     assert result["decision"] == "not_satisfied"
-    slotless = grok(slot="", verdict="unclear", request_id="3" * 32)
+    slotless = grok(slot="", verdict="unclear", request_id="3" * 32,
+                    started_utc="2026-10-06T16:41:00Z")
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[slotless, second])
     assert result["decision"] == "not_satisfied"
-    other_head_first = grok(head=OLD, verdict="reject", request_id="4" * 32)
+    other_head_first = grok(head=OLD, verdict="reject", request_id="4" * 32,
+                            started_utc="2026-10-06T16:41:00Z")
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[other_head_first, second])
     assert result["decision"] == "satisfied"
 
 
-def test_grok_that_implemented_the_change_cannot_fill_a_slot():
-    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": "concept"}]
+def test_grok_that_authored_the_change_cannot_fill_a_slot():
+    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": "author"}]
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], contributors, [grok()])
     assert result["decision"] == "not_satisfied"
+    assert result["grok_fallback"]["reasons"] == ["Grok is an implementer of this change"]
+
+
+@pytest.mark.parametrize("role", ["concept", "design", "measurement"])
+def test_grok_advice_or_read_only_review_does_not_make_it_ineligible(role):
+    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": role}]
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], contributors, [grok()])
+    assert result["decision"] == "satisfied"
+    assert result["implementers"] == ["fable-5"]
 
 
 @pytest.mark.parametrize("agent", ["grok-scout-1", "fable-5", "codex-lead-1"])
@@ -274,7 +297,7 @@ def test_fabricated_rco_pass_from_unrecognized_agent_never_counts(agent):
 )
 def test_late_rco_block_after_pass_outranks_every_approval_including_grok(late_block):
     type_, status = late_block
-    events = [*GPT_RECUSED, *BOTH_RCO, ev("claude-rco-2", type_, status)]
+    events = [*GPT_RECUSED, *BOTH_RCO, ev("claude-rco-2", type_, status, ts="2026-10-06T16:55:00Z")]
     result = evaluate(events, consultations=[grok()])
     assert result["decision"] == "blocked"
     assert result["blocking_rcos"] == ["claude-rco-2"]
@@ -294,9 +317,10 @@ def test_block_from_recused_or_implementer_rco_still_blocks_and_recusal_never_cl
     assert evaluate(events, contributors)["decision"] == "blocked"
 
 
-def test_own_later_pass_at_head_clears_earlier_block_and_old_head_block_is_superseded():
-    events = [build_pass("codex-lead-1"), ev("claude-rco-1", "finding", "changes_requested"),
-              *BOTH_RCO, ev("claude-rco-2", "finding", "changes_requested", head=OLD)]
+def test_own_strictly_later_pass_at_head_clears_earlier_blocks_at_any_head():
+    early = "2026-10-06T16:40:00Z"
+    events = [build_pass("codex-lead-1"), ev("claude-rco-1", "finding", "changes_requested", ts=early),
+              *BOTH_RCO, ev("claude-rco-2", "finding", "changes_requested", head=OLD, ts=early)]
     assert evaluate(events)["decision"] == "satisfied"
 
 
@@ -368,3 +392,137 @@ def test_drift_guard_recognized_rcos_and_pass_statuses_match_the_gates():
     assert tuple(r12.RECOGNIZED_RCOS) == tuple(DEFAULT_RCO_AGENTS)
     assert r12.RCO_PASS_STATUSES == RCO_PASS_STATUSES
     assert set(r12.RECOGNIZED_RCOS) <= set(r12.FAMILIES)
+
+
+# --- Grok self-challenge e17c4b1a findings (2026-10-06), each now a regression test ---
+
+
+def test_later_review_request_does_not_erase_an_earlier_pass():
+    later_request = [
+        ev("claude-rco-1", "message", "requested", head=H, ts="2026-10-06T15:55:00Z",
+           to="codex-lead-1,codex-tools-1,claude-rco-2", request_id="req-after-pass"),
+        ev("codex-lead-1", "message", "requested", head=H, ts="2026-10-06T15:55:00Z",
+           to="claude-rco-1", request_id="req-after-pass-2"),
+    ]
+    passes = [build_pass("codex-lead-1", ts="2026-10-06T15:50:00Z"),
+              rco_pass("claude-rco-1", ts="2026-10-06T15:50:00Z"),
+              rco_pass("claude-rco-2", ts="2026-10-06T15:50:00Z")]
+    result = evaluate([*passes, *later_request], consultations=[grok()])
+    assert result["slots"]["opposite_family"]["standing"]["codex-lead-1"] == "eligible"
+    assert result["slots"]["rco"]["holders"] == ["claude-rco-1", "claude-rco-2"]
+    assert result["grok_fallback"]["filled"] == []
+    assert result["decision"] == "satisfied"
+
+
+@pytest.mark.parametrize(
+    "request_event",
+    [
+        ev("fable-5", "message", "requested", ts="2026-10-06T15:00:00Z", to="claude-rco-2",
+           request_id="by-author"),
+        ev("operator", "message", "requested", ts="2026-10-06T15:00:00Z", to="claude-rco-2",
+           request_id="by-unknown"),
+        ev("grok-scout-1", "message", "requested", ts="2026-10-06T15:00:00Z", to="claude-rco-2",
+           request_id="by-grok"),
+        ev("codex-lead-1", "message", "info", ts="2026-10-06T15:00:00Z", to="claude-rco-2",
+           request_id="not-a-request"),
+        ev("codex-lead-1", "message", "requested", ts="2026-10-06T15:00:00Z", to="claude-rco-2"),
+    ],
+)
+def test_absence_cannot_be_forged_by_author_unknown_lane_or_non_request(request_event):
+    result = evaluate([build_pass("codex-lead-1"), rco_pass("claude-rco-1"), request_event])
+    assert result["slots"]["rco"]["standing"]["claude-rco-2"] == "eligible"
+    assert result["decision"] == "not_satisfied"
+
+
+def test_recusal_plus_pass_is_conflicting_counts_nothing_and_is_not_vacant():
+    events = [build_pass("codex-lead-1"), rco_pass("claude-rco-1"), recused("claude-rco-1"),
+              rco_pass("claude-rco-2")]
+    result = evaluate(events)
+    assert result["slots"]["rco"]["standing"]["claude-rco-1"] == "conflicting"
+    assert result["slots"]["rco"]["missing_rco_pass"] == ["claude-rco-1"]
+    assert result["decision"] == "not_satisfied"
+    gpt = [build_pass("codex-lead-1"), *GPT_RECUSED, *BOTH_RCO]
+    result = evaluate(gpt, consultations=[grok()])
+    assert result["slots"]["opposite_family"]["state"] == "pending"
+    assert result["grok_fallback"]["filled"] == []
+
+
+def test_veto_order_is_read_from_timestamps_not_list_position():
+    newer_block_listed_first = [
+        build_pass("codex-lead-1"),
+        ev("claude-rco-1", "finding", "changes_requested", ts="2026-10-06T16:55:00Z"),
+        rco_pass("claude-rco-1", ts="2026-10-06T16:50:00Z"),
+        rco_pass("claude-rco-2"),
+    ]
+    assert evaluate(newer_block_listed_first)["decision"] == "blocked"
+    older_headless_block_listed_last = [
+        build_pass("codex-lead-1"), *BOTH_RCO,
+        ev("claude-rco-1", "finding", "changes_requested", head=None, ts="2026-10-06T16:40:00Z"),
+    ]
+    assert evaluate(older_headless_block_listed_last)["decision"] == "satisfied"
+
+
+@pytest.mark.parametrize("pass_ts", ["bad", "2026-10-06T16:40:00Z"])
+def test_pass_without_valid_or_later_timestamp_does_not_clear_a_block(pass_ts):
+    events = [build_pass("codex-lead-1"), rco_pass("claude-rco-2"),
+              ev("claude-rco-1", "finding", "changes_requested", ts="2026-10-06T16:40:00Z"),
+              rco_pass("claude-rco-1", ts=pass_ts)]
+    assert evaluate(events)["decision"] == "blocked"
+
+
+def test_block_with_unparseable_timestamp_can_never_be_cleared():
+    events = [build_pass("codex-lead-1"), *BOTH_RCO,
+              ev("claude-rco-1", "finding", "changes_requested", ts="")]
+    assert evaluate(events)["decision"] == "blocked"
+
+
+def test_veto_at_another_head_sticks_through_new_head_recusal_or_absence():
+    old_block = ev("claude-rco-2", "finding", "changes_requested", head=OLD,
+                   ts="2026-10-06T15:00:00Z")
+    events = [build_pass("codex-lead-1"), rco_pass("claude-rco-1"), old_block,
+              recused("claude-rco-2")]
+    assert evaluate(events)["decision"] == "blocked"
+    cleared_at_old_head = [*events, rco_pass("claude-rco-2", head=OLD, ts="2026-10-06T15:30:00Z")]
+    assert evaluate(cleared_at_old_head)["decision"] == "satisfied"
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    [
+        [grok(slot="nope", request_id="5" * 32, started_utc="2026-10-06T16:41:00Z"),
+         grok(verdict="reject", request_id="6" * 32, started_utc="2026-10-06T16:42:00Z")],
+        [grok(request_id="7" * 32, started_utc="2026-10-06T16:43:00Z"),
+         grok(verdict="reject", request_id="8" * 32, started_utc="2026-10-06T16:42:00Z")],
+        [grok(request_id="9" * 32, started_utc="2026-10-06T16:42:00Z"),
+         grok(verdict="unclear", request_id="a" * 32, started_utc="2026-10-06T16:42:00Z")],
+        [grok(request_id="b" * 32), grok(slot="nope", request_id="c" * 32, started_utc="")],
+    ],
+)
+def test_mistagged_out_of_order_tied_or_untimed_grok_attempts_cannot_count(attempts):
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=attempts)
+    assert result["grok_fallback"]["filled"] == []
+    assert result["decision"] == "not_satisfied"
+
+
+def test_grok_attempt_tagged_for_the_other_slot_does_not_spend_this_slot():
+    contributors = [*FABLE_AUTHOR]
+    other_slot_first = grok(slot="rco", verdict="reject", request_id="d" * 32,
+                            started_utc="2026-10-06T16:30:00Z")
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], contributors, [other_slot_first, grok()])
+    assert result["decision"] == "satisfied"
+
+
+@pytest.mark.parametrize("status", ["build_consensus_pass", "autonomous_merge_receipt",
+                                    "rco_closed_postmerge"])
+def test_rco_approval_or_tooling_record_status_is_not_a_veto(status):
+    events = [build_pass("codex-lead-1"), *BOTH_RCO, ev("claude-rco-1", "decision", status,
+                                                         ts="2026-10-06T16:55:00Z")]
+    assert evaluate(events)["decision"] == "satisfied"
+
+
+def test_rco_build_consensus_pass_counts_as_opposite_family_for_gpt_authored_work():
+    contributors = [{"agent": "codex-tools-1", "role": "author"}]
+    events = [ev("claude-rco-1", "decision", "build_consensus_pass"), *BOTH_RCO]
+    result = evaluate(events, contributors)
+    assert result["decision"] == "satisfied"
+    assert "claude-rco-1" in result["slots"]["opposite_family"]["holders"]

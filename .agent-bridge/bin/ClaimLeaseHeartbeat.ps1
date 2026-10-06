@@ -637,9 +637,9 @@ function Get-BridgeSessionHeartbeatLiveness {
         'live', 'not_live' or 'unknown' for the session that owns this claim.
 
         'not_live' is proof: no owner fields on the claim (no heartbeat
-        protection, the rule before B7), no artifact, a readable beat that
-        names another identity, a future-dated beat, or a beat older than
-        the recorded TTL.
+        protection, the rule before B7), no artifact, a future-dated beat,
+        or a beat older than the recorded TTL. A beat at this claim's own
+        path that lacks or names another session or token is 'unknown'.
 
         A-F1 (RCO1 2026-09-30; Fable review 99897de5, Lead d06fbf85): an
         artifact that EXISTS but cannot be read or evaluated (an access,
@@ -686,11 +686,14 @@ function Get-BridgeSessionHeartbeatLiveness {
     } catch { return 'unknown' }
     if ($beat -isnot [System.Management.Automation.PSCustomObject]) { return 'unknown' }
 
+    # The artifact sits at the path derived from this claim's own session and token, so a beat
+    # there that lacks or contradicts those fields is damaged or foreign, not proof of absence:
+    # 'unknown', as in the Python sweepers (work_queue.py / bridge_v2_work_queue.py).
     foreach ($field in @('owner_session_id', 'owner_token_sha256')) {
-        if (-not $beat.PSObject.Properties[$field]) { return 'not_live' }
+        if (-not $beat.PSObject.Properties[$field]) { return 'unknown' }
     }
-    if ([string]$beat.owner_session_id -cne $claimSession) { return 'not_live' }
-    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return 'not_live' }
+    if ([string]$beat.owner_session_id -cne $claimSession) { return 'unknown' }
+    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return 'unknown' }
     if (-not $beat.PSObject.Properties['last_beat_utc']) { return 'unknown' }
 
     $ttl = $script:BridgeSessionHeartbeatTtlDefault

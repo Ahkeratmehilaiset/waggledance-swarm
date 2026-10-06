@@ -289,6 +289,9 @@ def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
         "tools.check_rco_pass_present",
         "tools.idle_consensus_auto_merge",
         "tools.bridge_v2_identity_registry",
+        "tools.bridge_rule12_review_eligibility",
+        "tools.merge_with_bridge_receipt",
+        "tools.write_bridge_consensus_merge_receipt",
     }
     definition = _definition()
     paths = {module.replace(".", "/") + ".py" for module in modules}

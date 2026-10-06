@@ -160,7 +160,6 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
-    if ($SessionId -and (Get-BridgeContractField $event 'session_id') -cne $SessionId) { continue }
     if (-not $byId.ContainsKey($id)) {
         $byId[$id]=[pscustomobject]@{first_position=$position;occurrences=1;event=$event}
         $order.Add($id)
@@ -177,8 +176,17 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     }
     $first.occurrences++
 }
-$folded=@{}
+# -SessionId scopes the OUTPUT only. Every own row of every session went through the binding and
+# immutable-content checks above, so a session filter can never hide a conflicting row with the same
+# request_id from another session (session_id is part of the immutable content).
+$sessionOrder=[Collections.Generic.List[string]]::new()
 foreach ($id in $order) {
+    if (-not $SessionId -or (Get-BridgeContractField $byId[$id].event 'session_id') -ceq $SessionId) {
+        $sessionOrder.Add($id)
+    }
+}
+$folded=@{}
+foreach ($id in $sessionOrder) {
     $key=$id.ToLowerInvariant()
     if ($folded.ContainsKey($key)) { $folded[$key]++ } else { $folded[$key]=1 }
 }
@@ -195,8 +203,8 @@ if ($Cursor) {
     $cursorPosition=$position
 }
 $matched=[Collections.Generic.List[object]]::new()
-for ($i=$order.Count-1; $i -ge 0; $i--) {
-    $id=$order[$i]; $entry=$byId[$id]; $event=$entry.event
+for ($i=$sessionOrder.Count-1; $i -ge 0; $i--) {
+    $id=$sessionOrder[$i]; $entry=$byId[$id]; $event=$entry.event
     if ($conflictedIds.Contains($id)) { continue }   # diagnostic only; the default mode threw above
     if ($RequestId -and $id -cne $RequestId) { continue }
     if ($TaskId -and [string]$event.task_id -cne $TaskId) { continue }
@@ -236,7 +244,7 @@ $output=[pscustomobject]@{
     read_started_utc=$started;read_completed_utc=[DateTimeOffset]::UtcNow.ToString('o')
     snapshot_cursor=$snapshot.candidate_cursor;snapshot_bytes=$snapshot.snapshot_length
     parsed_rows=$snapshot.parsed_rows;cache_status=$snapshot.cache_status;cache_path=$snapshot.cache_path
-    request_count=$order.Count;matched_count=$matched.Count;returned_count=$requests.Count
+    request_count=$sessionOrder.Count;matched_count=$matched.Count;returned_count=$requests.Count
     page_size=$PageSize;truncated=$truncated;next_cursor=$nextCursor;requests=$requests
     case_variant_request_ids=@($requests | Where-Object {$_.case_variant_id} | ForEach-Object {$_.request_id})
     answer_authority='Get-BridgeReplySnapshot.ps1 -RequestId <id> -Requester <requester>'
@@ -258,8 +266,8 @@ if ($DiagnosticPartial) {
     foreach ($property in $output.PSObject.Properties) {
         if ($property.Name -cnotin @('schema','requester','note')) { $diagnostic[$property.Name]=$property.Value }
     }
-    # Only ids that are actually inventoried are counted; every conflicted id is in $order.
-    $diagnostic['request_count']=$order.Count-$conflictedIds.Count
+    # Only ids that are actually inventoried are counted: a conflicted id is listed, never inventoried.
+    $diagnostic['request_count']=@($sessionOrder | Where-Object { -not $conflictedIds.Contains($_) }).Count
     $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; a row whose request_id is falsy is never inventoried, refused or listed; answer_state never evaluated.'
     $output=[pscustomobject]$diagnostic
 }

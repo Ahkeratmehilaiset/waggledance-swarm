@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 import sys
 
@@ -19,6 +20,7 @@ H = "a" * 40
 OLD = "b" * 40
 DIFF = "d" * 64
 NOW = "2026-10-06T17:00:00.0000000Z"
+NONCE = "c" * 32
 FABLE_AUTHOR = [{"agent": "fable-5", "role": "author"}]
 
 
@@ -43,6 +45,10 @@ def recused(agent, head=H, **kw):
 
 
 def grok(**overrides):
+    verdict = overrides.pop("verdict", "approve")
+    answer = overrides.pop(
+        "answer", ("APPROVE" if verdict == "approve" else verdict) + "\nFull review of 3 files."
+    )
     consultation = {
         "request_id": "0123456789abcdef0123456789abcdef",
         "requester": "claude-rco-1",
@@ -52,9 +58,10 @@ def grok(**overrides):
         "effort": "high",
         "prompt_sha256": "1" * 64,
         "input_sha256": DIFF,
-        "answer_sha256": "2" * 64,
+        "answer_text": answer,
+        "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        "nonce": NONCE,
         "coverage": {"complete": True, "files_total": 3, "files_reviewed": 3},
-        "verdict": "approve",
         "started_utc": "2026-10-06T16:40:00Z",
     }
     consultation.update(overrides)
@@ -66,6 +73,7 @@ def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), **kw):
     kw.setdefault("expected_diff_sha256", DIFF)
     kw.setdefault("expected_prompt_sha256", "1" * 64)
     kw.setdefault("expected_files_total", 3)
+    kw.setdefault("expected_nonce", NONCE)
     return r12.evaluate_rule12_review_eligibility(
         task_id=kw.pop("task_id", TASK),
         head=kw.pop("head", H),
@@ -173,18 +181,17 @@ def test_grok_fills_vacant_opposite_slot_when_lead_and_tools_are_recused():
     slot = result["slots"]["opposite_family"]
     assert slot["state"] == "held_by_grok_fallback"
     assert slot["grok"]["request_id"] == "0123456789abcdef0123456789abcdef"
-    assert slot["grok"]["answer_sha256"] == "2" * 64
+    assert slot["grok"]["answer_sha256"] == hashlib.sha256(
+        b"APPROVE\nFull review of 3 files.").hexdigest()
+    assert slot["grok"]["reviewer"] == "grok-scout-1"
     assert result["grok_fallback"]["filled"] == ["opposite_family"]
     assert "grok-scout-1" not in result["slots"]["rco"]["holders"]
 
 
 def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
     contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"}]
+    # The requester is a pure relay: even the author may relay, it never supplies the verdict.
     consultation = grok(slot="rco", requester="fable-5")
-    result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
-                      [consultation])
-    assert result["decision"] == "not_satisfied"  # requester fable-5 is the author
-    consultation = grok(slot="rco", requester="codex-lead-1")
     result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
                       [consultation])
     assert result["decision"] == "satisfied"
@@ -192,9 +199,14 @@ def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
     assert result["slots"]["rco"]["holders"] == []  # never recorded as an rco_pass
 
 
-def test_two_vacant_slots_exceed_grok_max_one_slot():
-    events = [*GPT_RECUSED, recused("claude-rco-1"), recused("claude-rco-2")]
-    result = evaluate(events, consultations=[grok(), grok(slot="rco", request_id="f" * 32)])
+def test_two_vacant_slots_without_a_wholly_ineligible_pool_exceed_grok_max_one_slot():
+    absent_rco2 = ev("codex-lead-1", "message", "requested", ts="2026-10-06T15:00:00Z",
+                     to="claude-rco-2", request_id="lead-req")
+    absent_rco2["agent"] = "claude-rco-1"
+    events = [*GPT_RECUSED, recused("claude-rco-1"), absent_rco2]
+    result = evaluate(events, consultations=[grok(slot="external_review")])
+    assert result["grok_fallback"]["pool_standing"]["claude-rco-2"] == "absent"
+    assert result["grok_fallback"]["whole_pool_ineligible"] is False
     assert result["decision"] == "not_satisfied"
     assert result["grok_fallback"]["filled"] == []
     assert "at most 1" in result["grok_fallback"]["reasons"][0]
@@ -224,8 +236,15 @@ def test_two_vacant_slots_exceed_grok_max_one_slot():
         {"started_utc": "later"},
         {"request_id": ""},
         {"request_id": "not-a-ledger-id"},
-        {"requester": "fable-5"},
-        {"requester": "codex-lead-1"},
+        {"nonce": ""},
+        {"nonce": "e" * 32},
+        {"answer_text": None},
+        {"answer_text": "APPROVE\ntampered after hashing"},
+        {"answer": "REJECT\nAPPROVE"},
+        {"answer": "**REJECT** as a gate"},
+        {"answer": "\n\n"},
+        {"answer": "APPROVE, conditionally"},
+        {"answer": "Looks fine. APPROVE"},
         {"requester": "grok-scout-1"},
         {"requester": "operator"},
     ],
@@ -240,9 +259,9 @@ def test_grok_answer_that_is_not_fully_bound_and_positive_leaves_slot_empty(over
 @pytest.mark.parametrize(
     "missing",
     [{"expected_diff_sha256": ""}, {"expected_prompt_sha256": ""}, {"expected_files_total": 0},
-     {"expected_files_total": True}],
+     {"expected_files_total": True}, {"expected_nonce": ""}, {"expected_nonce": "short"}],
 )
-def test_grok_requires_gate_computed_diff_prompt_and_file_count(missing):
+def test_grok_requires_gate_computed_diff_prompt_file_count_and_nonce(missing):
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok()], **missing)
     assert result["decision"] == "not_satisfied"
 
@@ -526,3 +545,120 @@ def test_rco_build_consensus_pass_counts_as_opposite_family_for_gpt_authored_wor
     result = evaluate(events, contributors)
     assert result["decision"] == "satisfied"
     assert "claude-rco-1" in result["slots"]["opposite_family"]["holders"]
+
+# --- Lead request v2 (2026-10-06 17:01Z): Fable before Grok, Grok advice is not
+# implementation, whole-pool external review, pure relay, original answer ---
+
+ALL_POOL_RECUSED = [*GPT_RECUSED, recused("claude-rco-1"), recused("claude-rco-2")]
+
+
+def test_whole_pool_ineligible_grok_external_review_covers_the_review():
+    result = evaluate(ALL_POOL_RECUSED, consultations=[grok(slot="external_review")])
+    assert result["grok_fallback"]["whole_pool_ineligible"] is True
+    assert result["decision"] == "satisfied"
+    assert result["grok_fallback"]["filled"] == ["external_review"]
+    record = result["grok_fallback"]["external_review"]
+    assert record["reviewer"] == "grok-scout-1"
+    assert record["nonce"] == NONCE
+    for name in ("opposite_family", "rco"):
+        assert result["slots"][name]["state"] == "held_by_grok_external_review"
+        assert result["slots"][name]["holders"] == []  # no fabricated agents or rco_pass
+
+
+def test_whole_pool_ineligible_by_implementation_and_recusal_mix():
+    contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"},
+                    {"agent": "codex-tools-1", "role": "measurement"}]
+    events = [recused("codex-lead-1"), recused("claude-rco-1")]
+    result = evaluate(events, contributors, [grok(slot="external_review", requester="fable-5")])
+    assert result["decision"] == "satisfied"
+    assert result["grok_fallback"]["external_review"]["requester_relay"] == "fable-5"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"head": OLD},
+        {"verdict": "REJECT"},
+        {"answer": "APPROVE with conditions"},
+        {"coverage": {"complete": True, "files_total": 3, "files_reviewed": 2}},
+        {"nonce": "e" * 32},
+        {"input_sha256": "e" * 64},
+        {"answer_text": "APPROVE\nedited by the relay"},
+        {"requester": "grok-scout-1"},
+    ],
+)
+def test_whole_pool_external_review_rejects_wrong_binding_partial_or_negative(overrides):
+    result = evaluate(ALL_POOL_RECUSED, consultations=[grok(slot="external_review", **overrides)])
+    assert result["decision"] == "not_satisfied"
+    assert result["grok_fallback"]["filled"] == []
+
+
+def test_whole_pool_external_review_counts_only_the_first_attempt_at_the_head_of_any_tag():
+    earlier = grok(slot="opposite_family", verdict="REJECT", request_id="1" * 32,
+                   started_utc="2026-10-06T16:30:00Z")
+    later = grok(slot="external_review", request_id="2" * 32)
+    result = evaluate(ALL_POOL_RECUSED, consultations=[later, earlier])
+    assert result["decision"] == "not_satisfied"
+
+
+def test_grok_that_authored_the_change_cannot_review_even_when_the_pool_is_ineligible():
+    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": "author"}]
+    result = evaluate(ALL_POOL_RECUSED, contributors, [grok(slot="external_review")])
+    assert result["decision"] == "not_satisfied"
+    assert result["grok_fallback"]["reasons"] == ["Grok is an implementer of this change"]
+
+
+def test_rco_veto_still_outranks_a_whole_pool_external_review():
+    events = [*ALL_POOL_RECUSED, ev("claude-rco-1", "finding", "changes_requested",
+                                    ts="2026-10-06T16:55:00Z")]
+    result = evaluate(events, consultations=[grok(slot="external_review")])
+    assert result["decision"] == "blocked"
+
+
+@pytest.mark.parametrize("role", ["concept", "design", "measurement"])
+def test_grok_advice_or_choice_does_not_block_the_whole_pool_external_review(role):
+    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": role}]
+    result = evaluate(ALL_POOL_RECUSED, contributors, [grok(slot="external_review")])
+    assert result["decision"] == "satisfied"
+
+
+def test_eligible_fable_comes_before_grok_for_gpt_authored_work():
+    contributors = [{"agent": "codex-lead-1", "role": "author"},
+                    {"agent": "codex-tools-1", "role": "design"}]
+    events = [recused("claude-rco-1"), recused("claude-rco-2")]
+    silent_fable = evaluate(events, contributors,
+                            [grok(slot="opposite_family"), grok(slot="rco", request_id="f" * 32,
+                                                                started_utc="2026-10-06T16:41:00Z")])
+    assert silent_fable["slots"]["opposite_family"]["standing"]["fable-5"] == "eligible"
+    assert silent_fable["slots"]["opposite_family"]["state"] == "pending"
+    assert "opposite_family" not in silent_fable["grok_fallback"]["filled"]
+    assert silent_fable["grok_fallback"]["whole_pool_ineligible"] is False
+    assert silent_fable["decision"] == "not_satisfied"
+    fable_reviews = evaluate([*events, build_pass("fable-5")], contributors,
+                             [grok(slot="rco", request_id="f" * 32)])
+    assert fable_reviews["slots"]["opposite_family"]["holders"] == ["fable-5"]
+    assert fable_reviews["slots"]["rco"]["state"] == "held_by_grok_fallback"
+    assert fable_reviews["decision"] == "satisfied"
+
+
+def test_fable_is_not_a_recognized_rco():
+    result = evaluate([build_pass("codex-lead-1"), rco_pass("claude-rco-1"), rco_pass("fable-5")])
+    assert result["slots"]["rco"]["missing_rco_pass"] == ["claude-rco-2"]
+    assert "fable-5" not in result["slots"]["rco"]["standing"]
+
+
+@pytest.mark.parametrize("requester", ["fable-5", "codex-lead-1", "claude-rco-1"])
+def test_ineligible_pure_relay_may_request_but_never_supplies_the_verdict(requester):
+    ok = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(requester=requester)])
+    assert ok["decision"] == "satisfied"
+    assert ok["slots"]["opposite_family"]["grok"]["requester_relay"] == requester
+    relay_says_approve = grok(requester=requester, verdict="REJECT")
+    relay_says_approve["verdict"] = "approve"
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[relay_says_approve])
+    assert result["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize("answer", ["APPROVE", "**APPROVE**\nreasons", "# APPROVE.\n", "\n  APPROVE  \nok"])
+def test_exact_approve_first_line_in_the_original_answer_counts(answer):
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(answer=answer)])
+    assert result["decision"] == "satisfied"

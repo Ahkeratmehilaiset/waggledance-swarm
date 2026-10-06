@@ -10,11 +10,17 @@ held by eligible approvers:
 * the **RCO** slot: ``rco_pass`` at the head from EVERY eligible recognized RCO
   (not an implementer, not self-recused, not absent);
 * a **Grok fallback** may fill one slot whose primaries are all ineligible,
-  recused or absent, bound to one helper-ledger consultation.
+  recused or absent, bound to one helper-ledger consultation;
+* when the WHOLE review pool (Lead, Tools, Fable, RCO1, RCO2) is genuinely
+  ineligible for this change (implementer or self-recused), one Grok
+  **external review** under Grok's own identity covers the review (operator
+  2026-10-06 16:23Z and 16:58Z). It is recorded once, never as two agents and
+  never as an ``rco_pass``. ``fable-5`` is a pool reviewer for other lanes'
+  work (before Grok), not a recognized RCO.
 
 Implementers are every author / concept / design / measurement source of the
-change; Grok counts as one only when it authored code (advice and read-only
-review never do). A recusal is a self-posted ``type=message`` event with a status in
+change; Grok counts as one only when it authored code (advice, a design choice
+and read-only review never do). A recusal is a self-posted ``type=message`` event with a status in
 ``RECUSAL_STATUSES`` bound to the task and the exact head; anything else (for
 example an effort setting such as ``medium``) is not a recusal. A lane that
 both recuses and approves at the head is ``conflicting``: its approval does not
@@ -29,9 +35,12 @@ is read from ``ts_utc``, never from list position: a block is cleared only by a
 strictly later own ``rco_pass`` at the block's head or at this head; a block or
 pass without a parseable timestamp can never clear or be cleared. A Grok answer
 that is missing, partial, unclear, negative, at another head, not the first
-attempt at that head for that slot, or not bound to the gate-built prompt and
-diff leaves its slot empty; it never blocks by itself and it is never recorded
-as an ``rco_pass``.
+attempt at that head for that slot, not bound to the gate nonce, prompt and
+diff, or whose ORIGINAL answer text does not begin with a line that is exactly
+``APPROVE`` leaves its slot empty; it never blocks by itself and it is never
+recorded as an ``rco_pass``. The requester is a pure relay and may itself be
+ineligible: it never supplies or interprets the verdict, which is read from
+the answer text whose sha256 must equal ``answer_sha256``.
 
 Trust boundary: callers must pass identity-verified events (agent + agent_uuid
 checked against the bridge identity registry), the full event log for the task
@@ -45,6 +54,7 @@ a separate (a)-class gate-code PR.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -59,6 +69,14 @@ FAMILIES: Mapping[str, str] = {
     "grok-scout-1": "grok",
 }
 GROK_AGENT = "grok-scout-1"
+# The ordinary review pool; Grok is only the fallback after it.
+REVIEW_POOL: tuple[str, ...] = (
+    "codex-lead-1",
+    "codex-tools-1",
+    "fable-5",
+    "claude-rco-1",
+    "claude-rco-2",
+)
 # Must equal tools.check_promotion_eligible.DEFAULT_RCO_AGENTS (drift-guard test).
 RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
 # Must equal tools.check_rco_pass_present.RCO_PASS_STATUSES (drift-guard test).
@@ -87,14 +105,17 @@ GROK_DISQUALIFYING_ROLES = frozenset({"author"})
 ABSENCE_SECONDS = 60 * 60
 GROK_MAX_SLOTS = 1
 GROK_REQUIRED_EFFORT = "high"
-GROK_APPROVE_VERDICT = "approve"
+GROK_APPROVE_LINE = "APPROVE"
 SLOT_RCO = "rco"
 SLOT_OPPOSITE_FAMILY = "opposite_family"
 SLOTS = (SLOT_OPPOSITE_FAMILY, SLOT_RCO)
+SLOT_EXTERNAL_REVIEW = "external_review"
+GROK_SLOT_TAGS = (*SLOTS, SLOT_EXTERNAL_REVIEW)
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+NONCE_RE = re.compile(r"^[0-9a-f]{32,64}$")
 
 
 def _text(value: Any) -> str:
@@ -246,14 +267,20 @@ def _absent(
 def _first_grok_consultation(
     consultations: Sequence[Mapping[str, Any]], task_id: str, head: str, slot: str
 ) -> tuple[Mapping[str, Any] | None, list[str]]:
-    """First attempt at (task, head) for ``slot``; mistagged attempts count for every slot."""
+    """First attempt at (task, head) that counts for ``slot``.
+
+    External-review and mistagged attempts count for every slot, and every
+    attempt at the head counts for the external review, so changing the tag
+    can never shop for a second answer.
+    """
     attempts = [
         consultation
         for consultation in consultations
         if _text(consultation.get("task_id")) == task_id
         and _text(consultation.get("head")) == head
         and (
-            _text(consultation.get("slot")) == slot
+            slot == SLOT_EXTERNAL_REVIEW
+            or _text(consultation.get("slot")) == slot
             or _text(consultation.get("slot")) not in SLOTS
         )
     ]
@@ -277,16 +304,20 @@ def _grok_reasons(
     expected_diff_sha256: str,
     expected_prompt_sha256: str,
     expected_files_total: int,
-    forbidden_requesters: set[str],
+    expected_nonce: str,
 ) -> list[str]:
     reasons: list[str] = []
     if not REQUEST_ID_RE.match(_text(consultation.get("request_id"))):
         reasons.append("Grok request_id missing or not a ledger id")
+    # The requester is only a relay and may be ineligible; it never supplies the
+    # verdict, so the only requirement is a known, non-Grok bridge lane.
     requester = _text(consultation.get("requester"))
     if requester not in FAMILIES or requester == GROK_AGENT:
         reasons.append(f"Grok requester {requester!r} is not a known bridge lane")
-    elif requester in forbidden_requesters:
-        reasons.append(f"Grok requester {requester!r} is an implementer or a primary of the slot")
+    if not NONCE_RE.match(expected_nonce):
+        reasons.append("expected gate nonce is missing")
+    elif _text(consultation.get("nonce")) != expected_nonce:
+        reasons.append("Grok nonce is not the gate nonce")
     if _text(consultation.get("effort")) != GROK_REQUIRED_EFFORT:
         reasons.append("Grok effort is not high")
     for key in ("prompt_sha256", "input_sha256", "answer_sha256"):
@@ -314,9 +345,25 @@ def _grok_reasons(
         and reviewed == total
     ):
         reasons.append("Grok coverage is not the complete exact-head diff")
-    if _text(consultation.get("verdict")) != GROK_APPROVE_VERDICT:
-        reasons.append("Grok verdict is not an explicit approve")
+    answer_text = consultation.get("answer_text")
+    if not isinstance(answer_text, str):
+        reasons.append("Grok original answer text is missing")
+    elif hashlib.sha256(answer_text.encode("utf-8")).hexdigest() != _text(
+        consultation.get("answer_sha256")
+    ):
+        reasons.append("Grok answer text does not match answer_sha256")
+    elif _answer_verdict_line(answer_text) != GROK_APPROVE_LINE:
+        reasons.append("Grok original answer does not begin with an exact APPROVE line")
     return reasons
+
+
+def _answer_verdict_line(answer_text: str) -> str:
+    """First non-empty line of the original answer, markdown emphasis removed."""
+    for line in answer_text.splitlines():
+        stripped = line.strip().strip("*_#> \t").rstrip(".").strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 def evaluate_rule12_review_eligibility(
@@ -330,6 +377,7 @@ def evaluate_rule12_review_eligibility(
     expected_diff_sha256: str = "",
     expected_prompt_sha256: str = "",
     expected_files_total: int = 0,
+    expected_nonce: str = "",
 ) -> dict[str, Any]:
     """Evaluate the Rule 12 review slots for ``task_id`` at ``head``.
 
@@ -431,43 +479,75 @@ def evaluate_rule12_review_eligibility(
     slots = {SLOT_OPPOSITE_FAMILY: opposite_slot, SLOT_RCO: rco_slot}
     result["slots"] = slots
 
-    # 4. Grok fallback for vacant slots only, at most GROK_MAX_SLOTS.
+    # 4. Grok after the pool: one vacant slot, or one external review when the
+    #    whole pool is genuinely ineligible (implementer or self-recused).
     vacant = [name for name in SLOTS if slots[name]["state"] == "vacant"]
-    grok: dict[str, Any] = {"vacant_slots": vacant, "filled": [], "reasons": []}
+    pool_standing = {
+        agent: standing(
+            agent,
+            RCO_PASS_STATUSES if agent in RECOGNIZED_RCOS else OPPOSITE_FAMILY_APPROVAL_STATUSES,
+        )
+        for agent in REVIEW_POOL
+    }
+    whole_pool_ineligible = all(s in ("implementer", "recused") for s in pool_standing.values())
+    grok: dict[str, Any] = {
+        "vacant_slots": vacant,
+        "pool_standing": pool_standing,
+        "whole_pool_ineligible": whole_pool_ineligible,
+        "filled": [],
+        "reasons": [],
+    }
     result["grok_fallback"] = grok
     consultations = [c for c in grok_consultations if isinstance(c, Mapping)]
+
+    def qualifying(tag: str) -> Mapping[str, Any] | None:
+        consultation, tag_reasons = _first_grok_consultation(consultations, task_id, head, tag)
+        if consultation is not None:
+            tag_reasons = _grok_reasons(
+                consultation,
+                expected_diff_sha256=expected_diff_sha256,
+                expected_prompt_sha256=expected_prompt_sha256,
+                expected_files_total=expected_files_total,
+                expected_nonce=expected_nonce,
+            )
+        if tag_reasons:
+            grok["reasons"].extend(f"{tag}: {reason}" for reason in tag_reasons)
+            return None
+        return consultation
+
+    def grok_record(consultation: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "reviewer": GROK_AGENT,
+            "request_id": consultation["request_id"],
+            "requester_relay": consultation["requester"],
+            "nonce": consultation["nonce"],
+            "prompt_sha256": consultation["prompt_sha256"],
+            "input_sha256": consultation["input_sha256"],
+            "answer_sha256": consultation["answer_sha256"],
+        }
+
     if GROK_AGENT in implementers:
         grok["reasons"].append("Grok is an implementer of this change")
+    elif whole_pool_ineligible:
+        consultation = qualifying(SLOT_EXTERNAL_REVIEW)
+        if consultation is not None:
+            record = grok_record(consultation)
+            for name in SLOTS:
+                slots[name]["state"] = "held_by_grok_external_review"
+            grok["external_review"] = record
+            grok["filled"].append(SLOT_EXTERNAL_REVIEW)
     elif len(vacant) > GROK_MAX_SLOTS:
         grok["reasons"].append(
-            f"{len(vacant)} slots vacant; Rule 12 lets Grok fill at most {GROK_MAX_SLOTS}"
+            f"{len(vacant)} slots vacant but the whole pool is not genuinely ineligible; "
+            f"Grok fills at most {GROK_MAX_SLOTS} slot"
         )
     else:
         for name in vacant:
-            primaries = set(RECOGNIZED_RCOS) if name == SLOT_RCO else set(candidates)
-            consultation, slot_reasons = _first_grok_consultation(
-                consultations, task_id, head, name
-            )
-            if consultation is not None:
-                slot_reasons = _grok_reasons(
-                    consultation,
-                    expected_diff_sha256=expected_diff_sha256,
-                    expected_prompt_sha256=expected_prompt_sha256,
-                    expected_files_total=expected_files_total,
-                    forbidden_requesters=implementers | primaries,
-                )
-            if slot_reasons:
-                grok["reasons"].extend(f"{name}: {reason}" for reason in slot_reasons)
+            consultation = qualifying(name)
+            if consultation is None:
                 continue
-            assert consultation is not None
             slots[name]["state"] = "held_by_grok_fallback"
-            slots[name]["grok"] = {
-                "request_id": consultation["request_id"],
-                "requester": consultation["requester"],
-                "prompt_sha256": consultation["prompt_sha256"],
-                "input_sha256": consultation["input_sha256"],
-                "answer_sha256": consultation["answer_sha256"],
-            }
+            slots[name]["grok"] = grok_record(consultation)
             grok["filled"].append(name)
 
     # 5. Verdict: a veto outranks everything, then every slot must be held.

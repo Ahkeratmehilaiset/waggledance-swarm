@@ -71,10 +71,11 @@ provider's quota): `available` after a completed attempt (`eligible=true`,
 `clock_regressed` when the clock reads earlier than the recorded attempt
 (`eligible=false`, `next_eligible_utc` = that recorded time), and a consultation
 then defers with `deferred_clock_regression`;
-`model_unavailable_cooldown` while the provider has rejected the same model
-twice in a row (see below; `eligible=false`, `next_eligible_utc` = the end of
-the cooldown), and a consultation of THAT model then defers with
-`deferred_model_unavailable`. The removed hourly fields
+`model_unavailable_cooldown` while the provider has rejected a model twice in a
+row (see below; `eligible=false`, `next_eligible_utc` = the end of the last
+open hold), and a consultation of a held model, or one that names no model, then
+defers with `deferred_model_unavailable` (its `next_eligible_utc` is that
+model's own `until_utc`). The removed hourly fields
 (`hourly_budget_*`, `deferred_hourly_limit`) are no longer produced.
 
 Model rejection (`error_class: "model_unavailable"`). An attempt is classed
@@ -91,12 +92,19 @@ reserved; after that, exactly one consultation (single-flight) probes the model
 again, and a new rejection restarts the 900 seconds. On 2026-10-06 the provider
 rejected `grok-4.7` from 21:25:56Z until at least 21:42Z (27 attempts, 25 of
 them automatic relay chunks about 38 s apart); replayed under this rule, 3 of
-those 27 attempts reach the provider. `-Status` shows the record as
-`model_breaker` (`closed`, `open` with `until_utc`, `expired`, or `invalid`
-with a reason). A malformed record never holds anything. Nothing guesses or
-switches the model: a consultation that names another model explicitly is not
-held, and the caller's one submission and the 900-second consultation limit are
-unchanged.
+those 27 attempts reach the provider. `-Status` shows the last record's own
+state as `model_breaker` (`closed`, `open` with `until_utc`, `expired`, or
+`invalid` with a reason) and every model held now as `model_holds`.
+Nothing guesses or switches the model. A consultation that names another model
+explicitly is not held. Because that consultation replaces the one state
+record, each hold still open is carried into the new record
+(`model_unavailable_holds`, at most 8) until its own `until_utc`, so it never
+ends early and never lasts longer. A consultation that names no `--model` is
+held while any hold is open, because the CLI default may be the rejected model.
+`eligible` turns true again when the last hold ends. A malformed record or
+carried hold never holds anything (`model_holds_malformed: true`). Grok
+self-challenge 665ded23 found the replaced-record case. The caller's one
+submission and the 900-second consultation limit are unchanged.
 
 Deferral observations (contract). A deferral reserves nothing, so it never mints
 a consultation `request_id`. The response and its `deferred` lifecycle event

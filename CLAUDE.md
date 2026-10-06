@@ -81,17 +81,22 @@ unnecessary stop-and-handoffs.
 
 ### 8. Strongest-model default
 
-When a session has a model choice, the default is the strongest available
-Claude Opus model in this repo's coding/teaching lane (currently
-`claude-opus-4-7`). This applies to:
+When a session has a model choice, the default is the strongest model
+available to that lane within its current quota limits (operator 2026-10-06,
+Rule 12), and formal votes and reviews use at least `high` effort. A pinned
+model name in this file goes stale, so none is named here. This applies to:
 
 * the active session model;
 * any subagent the session spawns whose model is not explicitly fixed;
 * any `ClaudeCodeBuilder` invocation under
   `waggledance/core/providers/claude_code_builder.py`.
 
-If a fallback to a smaller model occurs, it must be logged explicitly in
-the session state file's `fallback_events`. Anthropic / OpenAI / local
+Each lane's observed model and effort are read from
+`ops/windows/reboot/Get-WdCapacityStatus.ps1` (`observed_model`, `observed_effort`);
+an unobserved value stays unknown, not assumed. If a fallback to a smaller
+model or lower effort occurs, it must be logged explicitly in the session
+state file's `fallback_events`, and a lane below `high` reports that before it
+votes, so another eligible reviewer or a Grok `high` fallback fills the slot. Anthropic / OpenAI / local
 provider lanes remain supported peers; no lane should be over-claimed as
 "already implemented" if it is not.
 
@@ -108,7 +113,8 @@ d) no rule in this file (or in any tracked per-session prompt returned by
    `git ls-files '*master_prompt*.md'`) is violated,
 e) **bridge consensus is verified** per the bridge-consensus approval contract
    below (this replaces the per-action operator query; see
-   `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`).
+   `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`), with the Rule 12
+   Grok fallback slots once their gate code lands (Rule 12, "Code status").
 
 Use `gh pr merge --match-head-commit="$EXPECTED_HEAD"` to refuse stale-SHA
 merges. Never `--admin`, never `--no-verify`, never force-push.
@@ -138,7 +144,10 @@ evaluated fail-closed:
   head, the gate is blocked. The backup RCO can never be used to out-vote a veto.
 * **RCO absence = NO merge** — if no recognized RCO `RCO_PASS` at the exact head
   is present, the gate refuses even when build-consensus and every charter
-  condition pass. Silence blocks; it never default-allows.
+  condition pass. Silence blocks; it never default-allows. **Rule 12 (2026-10-06)**
+  adds one exception: a bound Grok fallback approval may fill the RCO slot when
+  no eligible recognized RCO is present, under the Rule 12 conditions. It is not
+  in effect until its gate code lands, and it never clears an RCO veto.
 * **Three distinct identities** — the approval set is build-lead + build-tools +
   exactly one recognized RCO = three distinct verified identities. An RCO
   identity counts for the RCO slot only, never a build slot; duplicate, missing,
@@ -170,7 +179,13 @@ atomic-flip cutover, which remains operator-signed under Rule 10 until a
 separate future amendment (gated on a matured synthetic adversarial corpus, a
 proven auto-rollback test, and a post-cutover verification harness) loosens it.
 
-#### 9b. Standing consensus-sign for off-allowlist / high-scrutiny PRs (DORMANT until bootstrap-signed)
+#### 9b. Standing consensus-sign for off-allowlist / high-scrutiny PRs (REPLACED by Rule 12, 2026-10-06)
+
+**Status 2026-10-06:** the operator's full-autonomy directive (Rule 12) is the
+standing signature this sub-rule waited for. It replaces the bootstrap below
+and the (a)-class carve-out, and dual-RCO is required only when both recognized
+RCOs are eligible. The cause-B condition stays as Rule 12 states it. The text
+below is kept as history of the 2026-06-25 amendment.
 
 Per operator directive 2026-06-25 ("allekirjoitan parhaan mahdollisen
 konsensus-hyväksynnän JÄLKEEN kaikki, nyt + tulevaisuudessa, jatkakaa"), the
@@ -250,6 +265,115 @@ Docs-only PRs still:
 
 If a session catches itself reasoning "this is trivial, I'll commit
 direct," that is the moment to stop and open a PR.
+
+Rule 12's "fix found defects at once" means fix and test at once, then land it
+through a PR. Speed is no reason to skip the PR, the review or the tests.
+
+### 12. Operator full-autonomy directive (2026-10-06)
+
+The operator directed full bridge autonomy without the operator on 2026-10-06
+and approved recording it here verbatim by a separate PR. The swarm's
+consensus and independent HIGH-effort review and testing are the approval;
+work does not wait on an operator decision. The operator's words, verbatim,
+with the session they were said in and the bridge event that relayed them
+(UTC):
+
+| About | First-hand in | Relayed | Verbatim |
+|---|---|---|---|
+| 06:04Z | fable-5; again first-hand in claude-rco-1 and in claude-rco-2 | 06:04:43Z; 06:17:56Z; 06:18:01Z | "Tämän takia on konsensus ja ulkopuolisien agenttien testaus ja katselmointi HIGH tilassa ettei minun tarvitse vuorovaikuttaa! bridgen agentit tekevät 24/7 työtä kaikki työ valuu hukkaan jos odotetaan vain minun päätöstä, minä annan luvan täyteen autonomiaan, suurin älykkyys on parvessa" (the claude-rco-1 and claude-rco-2 sessions add: "GROKISTA TÄYSI TEHO IRTI VÄLITTÖMÄSTI") |
+| 06:17Z | codex-tools-1 | 06:17:54Z | Relayed as a summary, not verbatim (full text in that event's payload): "full autonomy; use Grok fully now, genuine HIGH independent reviews/tests and consensus, without routine operator interaction" |
+| 06:08Z | claude-rco-1 | 06:08:35Z | "Jos high tasoa käytetään niin sen aikarajat täytyy myös säätää ja kokeilkaa konkraattisesti että kaikki bridgen muut agentit voivat lähettää sille kysymyksiä ilman että ne kaatuu virheesee" |
+| 06:13Z | claude-rco-1 | 06:13:45Z | "GROK ON TARVITTAESSA MYÖS HYVÄKSYJÄ, MUUTTAKAA TÄMÄ TUOTANTOON VÄLITTÖMÄSTI" |
+| 06:15Z | fable-5 (question and answer) | 06:15:39Z | "Missä tilanteessa Grok saa hyväksyä mergen?" = "Kaikki varapaikat"; "Jos Grok vastaa kielteisesti, estääkö se mergen?" = "Ei estä" |
+| 06:26Z | fable-5; again first-hand in claude-rco-1 (relayed there as a summary) | 06:26:46Z; 06:29:23Z | "Bridgessä on bringen säännöt ja jos grok tai mikä tahansa muu agentti havaitse jonkun ongelma joka on osa työtä se korjataan ja testataan välittömästi niin ettei bridgen koodaus agentit tee päällekkäistä työtä, niin että vain odotellaan, brige mahdollistaa sen että jokainen voi tehdä samaan aikaan jotain muut bridgen tavoitteen työtä idle aikaan joka nopeuttaa kokonaisuutta, se täyty pitää mielessä että minkä tahansa työ voidaan testata jollain eri koulutuspohjan claude, codex tai grok tuotteella, meillä on 5 eri koodausikkunaa käytössä ja reviewin voin tehdä mikä tahansa näistä." |
+| 06:29Z | fable-5; again first-hand in claude-rco-1 (relayed there as a summary) | 06:29:13Z; 06:29:23Z | "Hyväksynbridgen täyden autonomian ilman operaattoria eli minua. Näitä bridgen ominaisuuksia rakennetaan parven tehokkaamman toiminnan edellyttämiseksi. Korkein mahdollinen äly suhteessa käytössä oleviin rajoihin" |
+| 06:38Z | fable-5 (the operator pasted fable-5's own proposal back); approval also first-hand in claude-rco-1 ("kyllä") | 06:39:07Z; 06:39:26Z | "Siksi ehdotin, että direktiivisi kirjataan CLAUDE.md:hen sanatarkasti erillisellä PR:llä:<br>- täysi autonomia ilman operaattoria;<br>- Grok varahyväksyjänä kaikissa paikoissa;<br>- löydetyt viat korjataan heti;<br>- katselmointi eri mallilla;<br>- vahvin malli kiintiön rajoissa." |
+| 10:13Z | fable-5; again first-hand in codex-lead-1 at 10:15Z | 10:14:15Z; Lead record 6BDBA007 | "Grok käyttö agenteilla, grok vastaus ei saa jäädä odottamaan max 1 min sen jälkeen mennään omilla avuilla sen ainoa tehtävä on vaan antaa syvyyttä ja näkökulmaa silloin kun se on saatavissa. Grokkia voidaan myös käyttä review autoriteettinä silloin kun muut ovat jäävejä, mutta se ei ole mikään portti, koska siitä saattaa mennä käyttörajat lukkoon ja se ei vastaa sen takia." (the codex-lead-1 session begins "Grok käyttö bridge agenteilla," and adds: "Eli sitä käytetään automaattisesti haaastamaan omia ajatuksia agentti itse tekee päätökset ja tarvittaessa ilman grokkia normaali tehtävissä.") |
+| 10:17Z | fable-5 and codex-lead-1 (the operator pasted fable-5's summary of this rule back into both sessions with the first sub-bullet replaced) | 10:18:33Z; Lead record B950D617 | "#1766, sääntö 12 (täysi autonomia), muuttaa vain ohjeita, ei koodia:<br>- Agentit eivät enää pyydä sinulta allekirjoitusta yksittäisiin PR:iin, eivät edes turvallisuuskriittisiin. Yhdistämiseen riittää paras saatavilla oleva konsensus:<br>  - toteuttajaa vastakkaisen mallipainon, lead toos (GPT), Fabel, rco1, rco2 (CLAUDE) tai Grok hyväksyntä, jos toteutuksessa on molempia, tilanteen mukaan;<br>  - jokaisen esteettömän RCO:n hyväksyntä;<br>  - vihreät testit;<br>  - ei voimassa olevaa RCO-vetoa;<br>  - kirjattu kuitti siitä, kuka hyväksyi." |
+
+The rule text:
+
+* **Full autonomy, any PR class including (a).** A merge needs
+  **best-available consensus** at the exact head, and no per-PR operator
+  signature:
+  - an approval from the model family opposite to the implementer (operator
+    10:17Z): GPT (`codex-lead-1`, `codex-tools-1`) for Claude-authored work,
+    Claude (`fable-5`, `claude-rco-1`, `claude-rco-2`) for GPT-authored work, or
+    Grok (below). When the implementation mixes both families, the approver is
+    chosen case by case so that no approver approves a part it authored;
+  - `RCO_PASS` from every recognized RCO that is eligible (not the author and
+    not a concept, design or measurement source of the change): both when both
+    are eligible, otherwise the one that is; when neither is eligible or
+    present, a Grok fallback fills the RCO slot;
+  - all required CI checks green;
+  - no unretracted veto or finding from any recognized RCO;
+  - the charter checks pass;
+  - a MAGMA receipt that names every slot holder (a Grok fallback by its ledger
+    `request_id`) and cites this rule.
+
+  This directive is the operator's standing signature that Rule 9b waited for;
+  it **replaces** the Rule 9b bootstrap and its (a)-class carve-out. One
+  condition stays: until the cause-B veto fix (PR #1762) is merged, the
+  standing signature does not cover any other (a)-class PR, because a gate that
+  can lose a veto must not grant itself more authority. #1762 itself lands under
+  this rule because it only makes the veto check stricter.
+* **Grok may approve or act as review authority when the other approvers are
+  absent or ineligible, but it is never a gate** (operator 10:13Z). Usage
+  limits can lock Grok, so a Grok answer that is missing, late or rate-limited
+  never blocks a task, a review or a merge, and no agent waits for it longer
+  than 60 seconds; the slot is then filled by another eligible approver. A Grok
+  approval counts only when all of these hold:
+  1. the primary's absence or ineligibility is recorded on the bridge (a
+     recusal, an ineligibility record, or no answer within 60 minutes of a
+     bound review request at that exact head), never asserted by the caller;
+  2. it is bound to one helper-ledger consultation: `request_id`, requester,
+     the exact head SHA, prompt and answer sha256, and effort `high`, with the
+     full diff in the prompt;
+  3. the requester is neither the PR author nor the build peer whose slot Grok
+     fills, and Grok fills at most one slot on a PR;
+  4. one bound answer per head and slot qualifies: the first. Every Grok attempt
+     at that head stays visible, so asking again cannot shop for a yes.
+* **A negative or unclear Grok answer does not block.** It leaves that slot
+  unfilled, and the merge can still proceed if another eligible approver fills
+  it. A recognized-RCO veto is different: it **stays absolute**, outranks every
+  pass, and Grok can never clear or outvote it.
+* **Found defects are fixed at once.** When Grok or any agent finds a problem
+  that is part of the work, the owner of that scope fixes and tests it
+  immediately, through a PR (Rule 11). Write claims keep two lanes from editing
+  the same scope. A lane that finds a defect in another lane's scope tells the
+  owner in one line and does not wait silently.
+* **Idle lanes do other bridge-goal work in parallel**, such as opposite-model
+  reviews, tests and follow-up fixes, without overlapping another lane's claim.
+* **Cross-model review.** Any of the five coding windows (Claude, Codex, Grok)
+  may review work whose author has a different training base. The author is
+  never the reviewer.
+* **Strongest model within the quota limits** for every lane and subagent; see
+  Rule 8.
+
+**Code status (truth, 2026-10-06).** This file does not change the code that
+computes a merge verdict. The gate still fixes the build identities:
+`tools/idle_consensus_auto_merge.py:77-78` sets `BRIDGE_CONSENSUS_LEAD =
+"codex-lead-1"` and `BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"`, and
+`verify_bridge_consensus` (`:1285`) requires both of them plus a recognized
+RCO `rco_pass` at the exact head. Until a gate-code PR changes that, a merge
+through the gate still needs both Codex approvals; the opposite-family rule
+above adds to them and cannot replace them. Any mismatch is reported, never
+treated as satisfied. `verify_bridge_consensus`, `check_rco_pass_present`
+and the merge/receipt executors still require a recognized RCO `RCO_PASS` at
+the exact head, still have no Grok slot, and still fail closed to
+`operator_review_required` where they did before. The Grok fallback slot and
+the standing-signature path take effect in the gate only when a paired
+(a)-class gate-code PR lands under this rule, with its own adversarial review.
+Until then, a merge the gate refuses stays refused; no session works around the
+gate.
+
+**Unchanged:**
+- the RCO veto is absolute and outranks any pass;
+- author ≠ reviewer;
+- exact-head binding and `gh pr merge --match-head-commit`;
+- never `--admin`, `--no-verify` or force-push;
+- PR-only (Rule 6);
+- the Stage-2 cutover stays under Rule 10 unless the operator says otherwise.
 
 ## What this file does NOT override
 

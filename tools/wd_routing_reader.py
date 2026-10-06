@@ -21,7 +21,8 @@ What it never infers (Lead 20:10:11Z):
   yields no worker record.
 * A subject. The checkpoint carries none, a pool-binding decision's subject_id is not verified and names
   no worker, and no Codex lane maps to an auth context. Every lane is ``subject_unbound``.
-* A signature. The signed policy is passed on unverified; shadow weights stay ``None``.
+* A signature. The signed policy is passed on unverified. Optional caller-listed
+  shadow weights are passed through for an inert shadow view, never as authority.
 
 Grok joins only when the caller lists it (``grok_profile_id``): a consult-only record with no subject,
 which compose reports as ``no_measured_grok_capacity`` and the router never ranks.
@@ -46,8 +47,9 @@ from tools.wd_task_router import GROK, MEMBERS
 SCHEMA = "wd.routing-reader.v1"
 CHECKPOINT_SCHEMA = "wd.lane-current.v1"
 STATUS_SCHEMA = "wd.capacity-status.v1"
-DOCUMENT_PATHS = ("task", "capacity_status", "paced", "prepared_artifacts", "routing_policy", "signed_policy")
-OPTIONAL_PATHS = ("signed_policy",)
+DOCUMENT_PATHS = ("task", "capacity_status", "paced", "prepared_artifacts", "routing_policy", "signed_policy",
+                  "shadow_weights")
+OPTIONAL_PATHS = ("signed_policy", "shadow_weights")
 MAX_BYTES = 1048576
 MAX_PATH_TEXT = 1024
 REPARSE_POINT = 0x400       # FILE_ATTRIBUTE_REPARSE_POINT
@@ -205,7 +207,7 @@ def read_routing_inputs(paths: Any, now: Any, *, grok_profile_id: Any = None) ->
             grok = {"listed": True, "ranked": False, "subject": None, "basis": GROK_BASIS}
     assembled = assemble(documents["task"], records, rows, documents["paced"], documents["prepared_artifacts"],
                          documents["routing_policy"], now, signed_policy=documents["signed_policy"],
-                         shadow_weights=None, sources=sources)
+                         shadow_weights=documents["shadow_weights"], sources=sources)
     composed = compose(**assembled["inputs"], now=now)
     return {"schema": SCHEMA, "authority": "none", "execution_allowed": False,
             "now_utc": current.isoformat() if current is not None else None, "reads": reads, "rows_basis": rows_basis,

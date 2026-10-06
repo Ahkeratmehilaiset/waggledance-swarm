@@ -63,6 +63,15 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # RCO2 G1/G2 (76dc): comment and docstring text only; no code, field or behaviour change.
                 "bebc72886259b1c7b3722d983f7f90a1a52ad93e": "de1e612e plus G1/G2 truth comments "
                                                             "(same local eligibility)",
+                # d5864fdd adds update_cli and --update-cli only; status() and the answered report keep every
+                # field admit/bind read (RCO1 non-author compatibility review, 2026-10-01 09:12:32Z).
+                "b9220e21a7a51d9bd1e6f254659fe9d85bfa6386": "bebc7288 plus the CLI update command "
+                                                            "(same local eligibility)",
+                # Fable 2026-10-01: only the one-shot consult default timeout moves from 300 to 900 s
+                # (CONSULT_TIMEOUT_SECONDS); status() and the answered report keep every field admit/bind
+                # read. Awaiting a non-author review like the entries above.
+                "b277544cf23b057f1be5da65d77e92443b4b0264": "b9220e21 plus the 900 s consult default "
+                                                            "(same local eligibility)",
                 # Fable 2026-10-06 (operator directives, hotfix on the d5864fdd helper b9220e21): advisory_command
                 # defaults to high effort chosen from medium/high/xhigh, the one-shot consult default timeout
                 # moves from 300 to 900 s (CONSULT_TIMEOUT_SECONDS, as in b277544c), and the prompt rules allow a

@@ -639,3 +639,200 @@ def test_task_worktree_python_imports_are_unaffected_by_discovery_variables():
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert Path(report["waggledance"]).resolve().is_relative_to(ROOT)
     assert Path(report["tool"]).resolve().is_relative_to(ROOT)
+
+
+# --- Wrapper -VerifyPackage preflight (adopted from Tools 254f8c6c audit, evidence 77620CCA) ------------------
+# The REAL Invoke-WdBridgePython.ps1 and BridgeCodeContext.ps1 of this checkout run on a tiny owned bundle with
+# an externally anchored manifest. "marker" counts the packaged Python tool reaching its first statements; it is
+# NOT a kernel-level trace of every process start. Without -VerifyPackage the wrapper does not inspect the
+# package for bytecode/hash/anchor problems (the configured optional-verification boundary, pinned below).
+
+import hashlib  # noqa: E402
+import os  # noqa: E402
+
+_HOSTS = [("PS5", shutil.which("powershell.exe")), ("PS7", shutil.which("pwsh") or shutil.which("pwsh.exe"))]
+_WHEEL = b"OWNED SYNTHETIC NON-INSTALLED WHEEL\x00\xff"
+_KEYS = ["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH",
+         "PYTHONIOENCODING", "WD_REBOOT_EXPECTED_MANIFEST_HASH", "WD_BRIDGE_PYTHON", "WD_BRIDGE_PYTHON_SHA256"]
+_TOOL = ("from pathlib import Path\nimport sys,os,json\n"
+         "with Path(sys.argv[1]).open('a',encoding='utf-8') as f: f.write('child\\n')\n"
+         "sys.exit(3) if sys.argv[1].endswith('exit3.txt') else None\n"
+         "print(json.dumps(dict(no_site=bool(sys.flags.no_site),no_user_site=bool(sys.flags.no_user_site),"
+         "dont_write=bool(sys.dont_write_bytecode),safe_path=bool(sys.flags.safe_path),"
+         "pythonpath=os.environ.get('PYTHONPATH'),"
+         "present=sorted(k for k in ('PYTHONHOME','PYTHONSTARTUP') if k in os.environ))))\n").encode()
+
+
+def _sha(blob: bytes) -> str:
+    return hashlib.sha256(blob).hexdigest().upper()
+
+
+def _wrapper_bundle(case: Path, damage: str) -> tuple[Path, Path, str]:
+    """An owned bundle (bundle/<40 zeros>) with the real wrapper and context, a synthetic hash-closed package and an
+    external manifest anchor; ``damage`` is clean, cache_dir, pyc, hash or anchor."""
+    bundle = case / ("0" * 40)
+    package = bundle / "tools-bootstrap"
+    definition = {
+        "schema": "wd.bridge-code-package.v1", "purpose": "owned wrapper preflight test",
+        "package_relative_root": "tools-bootstrap", "invocation_wrapper_relative": "Invoke-WdBridgePython.ps1",
+        "python_files": ["tools/__init__.py", "tools/probe.py"], "python_entrypoints": {"probe": "tools/probe.py"},
+        "python_requirements": [{"name": "wdfake", "version": "0.1.0", "wheel": "wdfake-0.1.0-py3-none-any.whl",
+                                 "sha256": _sha(_WHEEL), "import_path": "wdfake/__init__.py"}],
+        "wheel_store_relative": "python-wheels", "python_site_relative": "python-site",
+        "import_smoke": {"third_party_module": "wdfake", "package_modules": ["tools.probe"]},
+        "isolation_environment": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
+                                  "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"}}
+    content = {
+        "BridgeCodeContext.ps1": (REBOOT / "BridgeCodeContext.ps1").read_bytes(),
+        "Invoke-WdBridgePython.ps1": (REBOOT / "Invoke-WdBridgePython.ps1").read_bytes(),
+        "bridge-code-files.json": json.dumps(definition).encode(),
+        "tools-bootstrap/tools/__init__.py": b"", "tools-bootstrap/tools/probe.py": _TOOL,
+        "tools-bootstrap/python-wheels/wdfake-0.1.0-py3-none-any.whl": _WHEEL,
+        "tools-bootstrap/python-site/wdfake/__init__.py": b"",
+        "tools-bootstrap/python-site/binary.pyd": bytes(range(256))}
+    for relative, blob in content.items():
+        (bundle / relative).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / relative).write_bytes(blob)
+    manifest = json.dumps({"schema_version": 1, "source_commit": "0" * 40,
+                           "files": {relative: _sha(blob) for relative, blob in content.items()}}).encode()
+    (bundle / "deployment-manifest.json").write_bytes(manifest)
+    anchor = _sha(manifest)
+    if damage == "cache_dir":
+        (package / "python-site/__pycache__").mkdir()
+        (package / "python-site/__pycache__/unexpected.pyc").write_bytes(b"\0")
+    elif damage == "pyc":
+        (package / "python-site/unexpected.pyc").write_bytes(b"\0")
+    elif damage == "hash":
+        (package / "python-site/binary.pyd").write_bytes(b"tampered")
+    elif damage == "anchor":
+        anchor = "A" * 64
+    return bundle, package, anchor
+
+
+def _interpreter() -> Path:
+    """A real interpreter under the wrapper's trusted per-user root (%LOCALAPPDATA%\\Programs\\Python), as the
+    wrapper requires; a Windows Store app alias or a Program Files install is refused by the wrapper itself."""
+    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
+    for candidate in sorted(root.glob("Python3*/python.exe"), reverse=True) if root.is_dir() else []:
+        try:
+            candidate.read_bytes()
+            return candidate
+        except OSError:
+            continue
+    pytest.skip("no Python under the trusted per-user root on this host (disclosed skip, not a pass)")
+
+
+def _invoke_wrapper(host: str, case: Path, damage: str, verify: bool, inherited: bool,
+                    marker_name: str = "child-marker.txt", extra_env: dict | None = None) -> tuple[dict, int, Path]:
+    python = _interpreter()
+    bundle, package, anchor = _wrapper_bundle(case, damage)
+    marker = case / marker_name
+    before = {str(p.relative_to(bundle)): _sha(p.read_bytes()) for p in bundle.rglob("*") if p.is_file()}
+    # A pwsh 7 parent's PSModulePath would make a PS 5.1 child load 7.x modules (Get-FileHash missing), so each host
+    # builds its own default module path; Windows environment names are case-insensitive.
+    drop = {"PSMODULEPATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONDONTWRITEBYTECODE",
+            "PYTHONNOUSERSITE", "PYTHONSAFEPATH"}
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith(("AGENT_BRIDGE_", "WD_")) and k.upper() not in drop}
+    env.update(WD_REBOOT_EXPECTED_MANIFEST_HASH=anchor, WD_BRIDGE_PYTHON=str(python),
+               WD_BRIDGE_PYTHON_SHA256=_sha(python.read_bytes()))
+    if inherited:
+        env.update(PYTHONPATH=str(case / "task-path"), PYTHONDONTWRITEBYTECODE="0", PYTHONNOUSERSITE="0",
+                   PYTHONSAFEPATH="0", PYTHONIOENCODING="cp1252")
+    env.update(extra_env or {})
+    keys = ",".join("'" + key + "'" for key in _KEYS)
+    wrapper = str(bundle / "Invoke-WdBridgePython.ps1").replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop'\n"
+        f"$keys=@({keys}); $before=@{{}}; $cwd=(Get-Location).Path\n"
+        "foreach($k in $keys){$before[$k]=[Environment]::GetEnvironmentVariable($k,'Process')}\n"
+        "$errorText=$null; $toolResult=$null; $code=$null\n"
+        f"try {{ $output=& '{wrapper}' -Tool tools/probe.py {'-VerifyPackage' if verify else ''} "
+        f"'{str(marker).replace(chr(39), chr(39) * 2)}'; $code=$LASTEXITCODE; $toolResult=$output|ConvertFrom-Json }}\n"
+        "catch { $errorText=$_.Exception.Message }\n"
+        "$changed=@(); foreach($k in $keys){$now=[Environment]::GetEnvironmentVariable($k,'Process');"
+        " if(($null -eq $now) -ne ($null -eq $before[$k]) -or $now -cne $before[$k]){$changed+=$k}}\n"
+        "$startup=[Environment]::GetEnvironmentVariable('PYTHONSTARTUP','Process')\n"
+        "[pscustomobject]@{error=$errorText; tool=$toolResult; code=$code; env_changed=$changed;"
+        " startup_is_null=($null -eq $startup); startup_value=$startup;"
+        " cwd_same=((Get-Location).Path -ceq $cwd)}|ConvertTo-Json -Depth 8 -Compress\n")
+    result = subprocess.run([host, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    after = {str(p.relative_to(bundle)): _sha(p.read_bytes()) for p in bundle.rglob("*") if p.is_file()}
+    assert before == after, "the wrapper must not mutate the package"
+    assert report["cwd_same"] is True, report
+    count = len(marker.read_text(encoding="utf-8").splitlines()) if marker.exists() else 0
+    return report, count, package
+
+
+
+
+def _host(name: str) -> str:
+    host = dict(_HOSTS)[name]
+    if not host or os.name != "nt":
+        pytest.skip(f"{name} not available on this host (disclosed skip, not a pass)")
+    return host
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+@pytest.mark.parametrize("inherited", [False, True], ids=["ordinary", "inherited-env"])
+def test_verify_package_clean_bundle_runs_the_tool_once_isolated(tmp_path, host_name, inherited):
+    report, count, package = _invoke_wrapper(_host(host_name), tmp_path, "clean", True, inherited)
+    assert report["error"] is None and report["code"] == 0 and count == 1, report
+    for flag in ("no_site", "no_user_site", "dont_write", "safe_path"):
+        assert report["tool"][flag] is True, report
+    assert report["tool"]["pythonpath"] == str(package) + ";" + str(package / "python-site"), report
+    # Cleared isolation names are ABSENT for the tool (not empty), in both shells (RCO2 815c, line 846).
+    assert report["tool"]["present"] == [], report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+@pytest.mark.parametrize("inherited", [False, True], ids=["ordinary", "inherited-env"])
+def test_a_launched_tool_leaves_the_caller_environment_exactly_as_it_was(tmp_path, host_name, inherited):
+    # Regression (RCO2 815c): pwsh 7 used to leave previously UNSET PYTHON* names as '' after a launch
+    # (BridgeCodeContext.ps1 passed $null; fixed with [NullString]::Value).
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, "clean", True, inherited)
+    assert count == 1 and report["env_changed"] == [] and report["startup_is_null"] is True, report
+
+
+def test_pwsh7_an_intentionally_empty_variable_stays_empty_not_removed(tmp_path):
+    # pwsh 7 can hold an EMPTY environment variable; the restore must give it back as '', not delete it.
+    report, count, _ = _invoke_wrapper(_host("PS7"), tmp_path, "clean", True, False, extra_env={"PYTHONSTARTUP": ""})
+    assert count == 1 and report["env_changed"] == [], report
+    assert report["startup_is_null"] is False and report["startup_value"] == "", report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+def test_a_tool_that_exits_nonzero_still_restores_the_environment(tmp_path, host_name):
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, "clean", True, True, marker_name="exit3.txt")
+    assert count == 1 and report["code"] == 3 and report["env_changed"] == [] and report["cwd_same"] is True, report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+@pytest.mark.parametrize("damage, error", [
+    ("cache_dir", "bytecode cache inside pinned bridge code package"),
+    ("pyc", "compiled bytecode inside pinned bridge code package"),
+    ("hash", "pinned bridge code hash mismatch"),
+    ("anchor", "differs from its external anchor"),
+])
+def test_verify_package_refuses_a_damaged_bundle_before_the_tool_starts(tmp_path, host_name, damage, error):
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, damage, True, False)
+    assert count == 0 and error in (report["error"] or ""), report
+    assert report["tool"] is None and report["code"] is None and report["env_changed"] == [], report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+def test_verify_package_refusal_restores_an_inherited_environment(tmp_path, host_name):
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, "cache_dir", True, True)
+    assert count == 0 and "bytecode cache inside pinned bridge code package" in (report["error"] or ""), report
+    assert report["env_changed"] == [], report
+
+
+@pytest.mark.parametrize("host_name", ["PS5", "PS7"])
+@pytest.mark.parametrize("damage", ["cache_dir", "pyc"])
+def test_without_verify_package_the_configured_boundary_launches_the_tool(tmp_path, host_name, damage):
+    # Disclosed boundary, not a weakened guard: only -VerifyPackage inspects the package before launch.
+    report, count, _ = _invoke_wrapper(_host(host_name), tmp_path, damage, False, False)
+    assert report["error"] is None and report["code"] == 0 and count == 1, report

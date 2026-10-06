@@ -198,31 +198,105 @@ function Test-BridgeRequestStillOpen {
     return $true
 }
 
+function Get-BridgeExactStringField {
+    param([AllowNull()] [object] $Record, [Parameter(Mandatory)] [string] $Name)
+    # Top-level, case-exact, string-only read: no payload fallback and no case-insensitive PSObject match.
+    if ($null -eq $Record -or $Record.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $null }
+    $property = $Record.PSObject.Properties[$Name]
+    if ($null -eq $property -or -not (Test-BridgeOrdinalEqual $property.Name $Name) -or $property.Value -isnot [string]) {
+        return $null
+    }
+    return [string]$property.Value
+}
+
+function Test-BridgeOrdinalEqual {
+    param([AllowNull()] [object] $Left, [AllowNull()] [object] $Right)
+    # -ceq/-cne compare by culture: U+00AD/U+200D (and U+200B under pwsh 7) are ignored. Protocol fields are
+    # compared ordinally, both values exact strings (RCO2 64140a03 F1).
+    return ($Left -is [string] -and $Right -is [string] -and [string]::Equals($Left, $Right, [StringComparison]::Ordinal))
+}
+
+function Test-BridgeRequestCancelledWithheld {
+    <# ROUTING WITHHOLD only, never an answer, completion or permission: a LATER event on the same task by the
+       exact requester agent AND agent_uuid (any session of that identity), status exactly 'cancelled', whose
+       payload is exactly the closed wd.request-cancellation.v1 {schema, cancelled_request_id, cancelled_request_digest,
+       scope: whole_request} naming this request_id and its stored request_digest. Anything else (another id,
+       digest, task, position, label, uuid, blank or non-string identity, legacy or extra keys) leaves the request
+       open; the shared Test-BridgeReplyBinding contract is unchanged. #>
+    param([Parameter(Mandatory)] [object] $Request)
+    $rid = Get-BridgeExactStringField $Request 'request_id'
+    $digest = Get-BridgeExactStringField $Request 'request_digest'
+    $requester = Get-BridgeExactStringField $Request 'agent'
+    $uuid = Get-BridgeExactStringField $Request 'agent_uuid'
+    $task = Get-BridgeExactStringField $Request 'task_id'
+    # \A..\z, never ^..$: .NET '$' also matches before a final LF (Fable 93d7813e). An invalid shape never withholds.
+    if (-not $rid -or -not $requester -or -not $task -or -not $uuid -or
+        $rid -cnotmatch '\A[A-Za-z0-9._:-]{1,128}\z' -or $uuid -cnotmatch '\A[A-Za-z0-9._:-]{1,128}\z' -or
+        $digest -cnotmatch '\A[0-9a-f]{64}\z' -or -not $requestIndex.positions.ContainsKey($Request) -or
+        -not $requestIndex.by_task.ContainsKey($task)) {
+        return $false
+    }
+    $requestPosition = $requestIndex.positions[$Request]
+    foreach ($event in $requestIndex.by_task[$task]) {
+        if ($requestIndex.positions[$event] -le $requestPosition) { continue }
+        if (-not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'agent') $requester) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'agent_uuid') $uuid) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'task_id') $task) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $event 'status') 'cancelled')) {
+            continue
+        }
+        $payloadProperty = $event.PSObject.Properties['payload']
+        if ($null -eq $payloadProperty -or -not (Test-BridgeOrdinalEqual $payloadProperty.Name 'payload')) { continue }
+        $payload = $payloadProperty.Value
+        if ($null -eq $payload -or $payload.GetType() -ne [System.Management.Automation.PSCustomObject]) { continue }
+        $names = @($payload.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($names.Count -ne 4 -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'schema') 'wd.request-cancellation.v1') -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'scope') 'whole_request') -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'cancelled_request_id') $rid) -or
+            -not (Test-BridgeOrdinalEqual (Get-BridgeExactStringField $payload 'cancelled_request_digest') $digest)) {
+            continue
+        }
+        return $true
+    }
+    return $false
+}
+
+$cancelledWithheld = New-Object System.Collections.Generic.List[object]
 $candidateOpenRequests = New-Object System.Collections.Generic.List[object]
 $freshByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $freshRequestsForAgent) {
     $rid = Get-BridgeContractField $req 'request_id'
-    $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$($req.status)" } else { "event|$($freshByKey.Count)" }
+    $viewKey = Get-BridgeRequestViewKey $req
+    # Conflicting / non-string request_id: the shared typed view key (never an alias of a valid id or of another
+    # invalid request); valid string ids and legacy rows keep their existing fresh key unchanged.
+    $key = if ($viewKey.StartsWith('|invalid-id|', [StringComparison]::Ordinal)) { $viewKey } elseif ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$(Get-BridgeEventStatusText -Event $req)" } else { "event|$($freshByKey.Count)" }
     if ($rid -and $freshByKey.ContainsKey($key)) {
-        if ((Get-BridgeRequestContent $freshByKey[$key]) -cne (Get-BridgeRequestContent $req) -or
-            (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
+        if (Test-BridgeRequestEntryDiffers $freshByKey[$key] $req) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
     } elseif ($freshByKey.ContainsKey($key) -and
-        [string]$freshByKey[$key].ts_utc -ceq [string]$req.ts_utc -and
-        (Get-BridgeRequestContent $freshByKey[$key]) -ceq (Get-BridgeRequestContent $req)) {
+        [string]::Equals([string]$freshByKey[$key].ts_utc, [string]$req.ts_utc, [System.StringComparison]::Ordinal) -and
+        [string]::Equals((Get-BridgeRequestContent $freshByKey[$key]), (Get-BridgeRequestContent $req), [System.StringComparison]::Ordinal)) {
         # An identical replay does not reset the request's append position.
         continue
     } else { $freshByKey[$key] = $req }
 }
 $openEventCount = 0
 foreach ($req in @($freshByKey.Values | Sort-Object ts_utc)) {
-    if (Test-BridgeRequestStillOpen -Request $req) {
+    if ((Test-BridgeRequestStillOpen -Request $req) -and (Test-BridgeRequestCancelledWithheld -Request $req)) {
+        [void]$cancelledWithheld.Add($req)
+    } elseif (Test-BridgeRequestStillOpen -Request $req) {
         [void]$candidateOpenRequests.Add($req)
         $rid = Get-BridgeContractField $req 'request_id'
+        $reqViewKey = Get-BridgeRequestViewKey $req
         $openEventCount += @($freshRequestsForAgent | Where-Object {
-            if ($rid) { (Get-BridgeContractField $_ 'request_id') -ceq $rid -and $_.agent -ceq $req.agent }
-            elseif ($req.type -ceq 'wake_request') { $_.type -ceq $req.type -and $_.agent -ceq $req.agent -and $_.task_id -ceq $req.task_id -and $_.status -ceq $req.status }
+            # Valid and invalid ids count the events with the same typed view key (a fresh conflict marker is never
+            # -ceq another, and 7 -ceq "7" is true), so neither undercounts retries nor counts a different request.
+            if ($reqViewKey.StartsWith('|id|', [StringComparison]::Ordinal) -or $reqViewKey.StartsWith('|invalid-id|', [StringComparison]::Ordinal)) {
+                [string]::Equals((Get-BridgeRequestViewKey $_), $reqViewKey, [System.StringComparison]::Ordinal)
+            }
+            elseif ($req.type -ceq 'wake_request') { $_.type -ceq $req.type -and $_.agent -ceq $req.agent -and $_.task_id -ceq $req.task_id -and (Get-BridgeEventStatusText -Event $_) -ceq (Get-BridgeEventStatusText -Event $req) }
             else { $_ -eq $req }
         }).Count
     }
@@ -236,11 +310,13 @@ $staleOpenRequests = New-Object System.Collections.Generic.List[object]
 $staleByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $staleRequests) {
     $key = Get-BridgeRequestViewKey $req
-    if (-not (Get-BridgeContractField $req 'request_id') -and $req.type -ceq 'wake_request') { $key += '|' + [string]$req.status }
+    if (-not (Get-BridgeContractField $req 'request_id') -and $req.type -ceq 'wake_request') { $key += '|' + (Get-BridgeEventStatusText -Event $req) }
     Set-BridgeRequestViewEntry $staleByKey $key $req
 }
 foreach ($req in @($staleByKey.Values)) {
-    if (Test-BridgeRequestStillOpen -Request $req) {
+    if ((Test-BridgeRequestStillOpen -Request $req) -and (Test-BridgeRequestCancelledWithheld -Request $req)) {
+        [void]$cancelledWithheld.Add($req)
+    } elseif (Test-BridgeRequestStillOpen -Request $req) {
         [void]$staleOpenRequests.Add($req)
     }
 }
@@ -266,7 +342,7 @@ if ($ownClaims.Count -gt 0) {
     $req = @($openRequests | Select-Object -Last 1)[0]
     $kind = 'answer_incoming'
     $taskId = [string]$req.task_id
-    $summary = "answer incoming $([string]$req.type)/$([string]$req.status) from $([string]$req.agent)"
+    $summary = "answer incoming $([string]$req.type)/$(Get-BridgeEventStatusText -Event $req) from $([string]$req.agent)"
     $safeMode = 'read-only'
 } elseif ($foreignWriteClaims.Count -gt 0) {
     $kind = 'parallel_read_only'
@@ -301,6 +377,9 @@ $result = [pscustomobject]@{
     stale_incoming_count = @($staleOpenRequests | Select-Object -ExpandProperty task_id -Unique).Count
     stale_incoming_request_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
+    # Withheld from routing by an exact v1 whole_request cancellation: NOT answered, completed or accepted.
+    cancelled_withheld_count = $cancelledWithheld.Count
+    cancelled_withheld_request_ids = @($cancelledWithheld | ForEach-Object { [string]$_.request_id } | Sort-Object -Unique)
 }
 if ($kind -eq 'answer_incoming') {
     $result | Add-Member -NotePropertyName incoming -NotePropertyValue $req

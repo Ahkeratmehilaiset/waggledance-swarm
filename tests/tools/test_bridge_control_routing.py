@@ -181,3 +181,228 @@ def test_sanitized_september25_canonical_reply_is_not_a_new_assignment():
                                               events=[rco, reply, terminal])
     assert result == [rco]
     assert routing._is_answer_like(reply)  # Still available to reply/gate readers.
+
+
+# --- v1 whole_request cancellation in the PowerShell selector (RCO1 4223 reproduction, Lead 22:26Z) --------------
+# A closed wd.request-cancellation.v1 whole_request row by the exact requester agent AND agent_uuid, later on the same
+# task, naming the exact request_id and the stored request_digest WITHHOLDS the request from routing. It is not an
+# answer and grants nothing; anything else (wrong id/digest/position/identity, legacy or malformed shapes) leaves it open.
+_SHELLS = [shell for shell in dict.fromkeys(filter(None, (shutil.which('powershell.exe'), shutil.which('pwsh'))))]
+_LEAD = {'agent': 'codex-lead-1', 'agent_uuid': 'uuid-lead-1', 'session_id': 'sess-a', 'run_id': 'run-a'}
+_RID, _DIGEST, _TASK = 'req-6ba-fixture', 'a' * 64, 'codex-lead-1/fixture-review'
+
+
+def _request(**over):
+    row = dict(_LEAD, ts_utc='2026-10-01T21:54:05Z', type='wake_request', status='assigned', task_id=_TASK,
+               to='codex-tools-1', request_id=_RID, request_digest=_DIGEST, message='synthetic review',
+               payload={'task_revision': 'rev-1'})
+    row.update(over)
+    return row
+
+
+def _cancel(payload_over=None, drop=(), **over):
+    payload = {'schema': 'wd.request-cancellation.v1', 'cancelled_request_id': _RID,
+               'cancelled_request_digest': _DIGEST, 'scope': 'whole_request'}
+    for key in drop:
+        payload.pop(key)
+    payload.update(payload_over or {})
+    row = dict(_LEAD, ts_utc='2026-10-01T21:55:04Z', type='message', status='cancelled', task_id=_TASK,
+               to='codex-tools-1', message='withdraws only', payload=payload)
+    row.update(over)
+    return row
+
+
+def _answer(rid=_RID, digest=_DIGEST, task=_TASK, stamp='2026-10-01T22:02:41Z'):
+    return {'agent': 'codex-tools-1', 'agent_uuid': 'uuid-tools', 'session_id': 's-t', 'run_id': 'r-t',
+            'ts_utc': stamp, 'type': 'message', 'status': 'answered', 'task_id': task, 'to': 'codex-lead-1',
+            'message': 'result', 'in_reply_to_request_id': rid, 'in_reply_to_request_digest': digest,
+            'in_reply_to_requester': {key: _LEAD[key] for key in ('agent', 'agent_uuid', 'session_id', 'run_id')},
+            'payload': {'result': {}}}
+
+
+def _select(shell, tmp_path, rows):
+    (tmp_path / 'shared').mkdir(parents=True)
+    (tmp_path / 'shared/events.jsonl').write_text(
+        ''.join(json.dumps(row, separators=(',', ':')) + '\n' for row in rows), encoding='utf-8')
+    script = Path(__file__).resolve().parents[2] / '.agent-bridge/bin/Get-BridgeNextAction.ps1'
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('AGENT_BRIDGE_', 'WD_', 'PSMODULEPATH'))}
+    env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(tmp_path)
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script),
+                             '-Agent', 'codex-tools-1', '-Now', '2026-10-01T22:20:00Z', '-Json'],
+                            env=env, text=True, capture_output=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    selected = (out.get('incoming') or {}).get('request_id') if out['action'] == 'answer_incoming' else None
+    return out, selected
+
+
+_OTHER_SESSION = {'session_id': 'sess-b', 'run_id': 'run-b'}
+_WITHHELD = [
+    ('C1 exact v1 cancel', [_request(), _cancel()]),
+    ('C2 v1 cancel + corrected r2 answered', [_request(), _cancel(),
+        _request(request_id='req-8c8', request_digest='b' * 64, task_id=_TASK + '-r2', ts_utc='2026-10-01T21:55:05Z'),
+        _answer('req-8c8', 'b' * 64, _TASK + '-r2')]),
+    ('C9 v1 cancel from a later Lead session, same agent_uuid', [_request(), _cancel(**_OTHER_SESSION)]),
+    ('duplicate identical cancels', [_request(), _cancel(), _cancel(ts_utc='2026-10-01T21:55:30Z')]),
+]
+_OPEN = [
+    ('C3 another digest', [_request(), _cancel({'cancelled_request_digest': 'c' * 64})]),
+    ('C4 another request id', [_request(), _cancel({'cancelled_request_id': 'other-id'})]),
+    ('C5 cancel before the request', [_cancel(ts_utc='2026-10-01T21:54:00Z'), _request()]),
+    ('C10 legacy free-form cancel', [_request(), _cancel(drop=('schema', 'scope', 'cancelled_request_digest'),
+                                                         type='decision')]),
+    ('foreign agent_uuid', [_request(), _cancel(agent_uuid='uuid-someone-else')]),
+    ('rekey same label new uuid', [_request(), _cancel(agent_uuid='uuid-lead-2', **_OTHER_SESSION)]),
+    ('blank agent_uuid on the cancel', [_request(), _cancel(agent_uuid='')]),
+    ('agent_uuid missing on the cancel', [_request(), {k: v for k, v in _cancel().items() if k != 'agent_uuid'}]),
+    ('blank agent_uuid on the request', [_request(agent_uuid=''), _cancel(agent_uuid='')]),
+    ('non-string agent_uuid', [_request(), _cancel(agent_uuid=['uuid-lead-1'])]),
+    ('another label with the lead uuid', [_request(), _cancel(agent='operator')]),
+    ('extra payload key', [_request(), _cancel({'production_hold': True})]),
+    ('scope not whole_request', [_request(), _cancel({'scope': 'source_implementation_only'})]),
+    ('status Cancelled case', [_request(), _cancel(status='Cancelled')]),
+    ('status canceled', [_request(), _cancel(status='canceled')]),
+    ('schema v0', [_request(), _cancel({'schema': 'wd.request-cancellation.v0'})]),
+    ('payload key case Schema', [_request(), _cancel({'Schema': 'wd.request-cancellation.v1'}, drop=('schema',))]),
+    ('list id', [_request(), _cancel({'cancelled_request_id': [_RID]})]),
+    ('request without stored digest', [{k: v for k, v in _request().items() if k != 'request_digest'},
+                                       _cancel({'cancelled_request_digest': ''})]),
+    ('cancel on another task', [_request(), _cancel(task_id=_TASK + '-other')]),
+    ('malformed stored digest copied verbatim', [_request(request_digest='A' * 64), _cancel({'cancelled_request_digest': 'A' * 64})]),
+    ('short stored digest copied verbatim', [_request(request_digest='abc'), _cancel({'cancelled_request_digest': 'abc'})]),
+]
+_CLOSED_AS_BEFORE = [
+    ('C6 late answer after the cancel', [_request(), _cancel(), _answer(stamp='2026-10-01T21:59:00Z')]),
+    ('C11 answered no cancel', [_request(), _answer()]),
+]
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _WITHHELD, ids=[case[0] for case in _WITHHELD])
+def test_a_v1_whole_request_cancellation_withholds_the_request_from_routing(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected != _RID and out['open_incoming_count'] == 0, out
+    assert out['cancelled_withheld_count'] == 1 and out['cancelled_withheld_request_ids'] == [_RID], out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _OPEN, ids=[case[0] for case in _OPEN])
+def test_anything_but_the_exact_v1_cancellation_leaves_the_request_open(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected == _RID and out['open_incoming_count'] == 1, out
+    assert out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, rows', _CLOSED_AS_BEFORE, ids=[case[0] for case in _CLOSED_AS_BEFORE])
+def test_bound_answers_still_close_and_are_not_counted_as_cancellations(shell, tmp_path, name, rows):
+    out, selected = _select(shell, tmp_path, rows)
+    assert selected is None and out['open_incoming_count'] == 0, out
+    assert out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+def test_a_stale_cancelled_request_is_withheld_from_the_stale_count_too(shell, tmp_path):
+    rows = [_request(ts_utc='2026-09-30T01:00:00Z'), _cancel(ts_utc='2026-09-30T01:05:00Z')]
+    out, _ = _select(shell, tmp_path, rows)
+    assert out['stale_incoming_count'] == 0 and out['cancelled_withheld_count'] == 1, out
+
+
+# --- ordinal exactness (RCO2 64140a03 F1; Fable 93d7813e .NET $ before a final LF) -------------------------------
+# Culture comparison ignores U+00AD/U+200D (both shells) and U+200B (pwsh 7), and .NET '$' also matches before a
+# final LF: none of these near-misses may withhold. An invalid shape never conclusively withholds (stays open).
+_INVISIBLE = [chr(0x00AD), chr(0x200D), chr(0x200B)]
+_NEAR_MISS_PAYLOAD = [(f'{key} + U+{ord(ch):04X}', key, value + ch) for ch in _INVISIBLE
+                      for key, value in (('cancelled_request_id', _RID), ('cancelled_request_digest', _DIGEST),
+                                         ('schema', 'wd.request-cancellation.v1'), ('scope', 'whole_request'))]
+_NEAR_MISS_ENVELOPE = [(f'{key} + U+{ord(ch):04X}', key, value + ch) for ch in _INVISIBLE
+                       for key, value in (('agent', _LEAD['agent']), ('agent_uuid', _LEAD['agent_uuid']),
+                                          ('task_id', _TASK), ('status', 'cancelled'))]
+_TRAILING_NEWLINE = [(f'{key} + {name}', key, end) for key in ('request_digest', 'agent_uuid', 'request_id')
+                     for name, end in (('LF', '\n'), ('CRLF', '\r\n'))]
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, value', _NEAR_MISS_PAYLOAD, ids=[case[0] for case in _NEAR_MISS_PAYLOAD])
+def test_an_invisible_character_in_the_cancel_payload_never_withholds(shell, tmp_path, name, key, value):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel({key: value})])
+    assert selected == _RID and out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, value', _NEAR_MISS_ENVELOPE, ids=[case[0] for case in _NEAR_MISS_ENVELOPE])
+def test_an_invisible_character_in_the_cancel_envelope_never_withholds(shell, tmp_path, name, key, value):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel(**{key: value})])
+    assert selected == _RID and out.get('cancelled_withheld_count', 0) == 0, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name, key, end', _TRAILING_NEWLINE, ids=[case[0] for case in _TRAILING_NEWLINE])
+def test_a_stored_field_with_a_trailing_newline_is_an_invalid_shape_and_never_withholds(shell, tmp_path, name, key, end):
+    # The same malformed value on both sides: .NET '$' would accept it, an exact \z anchor must not.
+    request = _request(**{key: _request()[key] + end})
+    if key == 'request_digest':
+        cancel = _cancel({'cancelled_request_digest': _DIGEST + end})
+    elif key == 'request_id':
+        cancel = _cancel({'cancelled_request_id': _RID + end})
+    else:
+        cancel = _cancel(agent_uuid=_LEAD['agent_uuid'] + end)
+    out, _ = _select(shell, tmp_path, [request, cancel])
+    assert out.get('cancelled_withheld_count', 0) == 0 and out['open_incoming_count'] == 1, out
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+def test_the_exact_cancel_still_withholds_after_the_ordinal_repair(shell, tmp_path):
+    out, selected = _select(shell, tmp_path, [_request(), _cancel()])
+    assert selected != _RID and out['cancelled_withheld_count'] == 1, out
+
+# --- status-less / non-string status rows in the selector (Fable 8716 residual at 95a83b4d) ---------------------------
+# A row without a top-level status (or with a non-string status) must not crash the selector (StrictMode $req.status in
+# dedupe, counts and summary) and must route exactly like the same row with status "" (no fabricated assignment).
+def _nostatus(row: dict[str, object]) -> dict[str, object]:
+    return {k: v for k, v in row.items() if k != 'status'}
+
+
+_PENDING_A = _request(request_id='req-a', task_id=_TASK + '-a', ts_utc='2026-10-01T21:50:00Z')
+_PENDING_B = _request(request_id='req-b', task_id=_TASK + '-b', ts_utc='2026-10-01T21:52:00Z')
+_STATUSLESS_CASES = {
+    'request_with_id': [_nostatus(_request())],
+    'wake_without_id': [_nostatus({k: v for k, v in _request().items() if k != 'request_id'})],
+    'message_between_pending': [_PENDING_A, _nostatus(_cancel(type='message', payload={})), _PENDING_B],
+    'wake_before_and_between': [_nostatus({k: v for k, v in _request(task_id=_TASK + '-w').items() if k != 'request_id'}),
+                                _PENDING_A, _nostatus({k: v for k, v in _request(task_id=_TASK + '-w').items()
+                                                       if k != 'request_id'}), _PENDING_B],
+    'duplicate_wake_copies': [_nostatus({k: v for k, v in _request(ts_utc='2026-10-01T21:54:05Z').items() if k != 'request_id'}),
+                              _nostatus({k: v for k, v in _request(ts_utc='2026-10-01T21:55:05Z').items() if k != 'request_id'})],
+    'stale_request_with_id': [_nostatus(_request(ts_utc='2026-09-29T01:00:00Z'))],
+    # an id-less wake (status request) whose open-event count scans a status-less id row of the same task/agent
+    'id_row_beside_idless_wake': [_nostatus(_request(type='wake_request')),
+                                  dict({k: v for k, v in _request(ts_utc='2026-10-01T21:56:00Z').items() if k != 'request_id'}, status='request')],
+}
+
+
+def _with_status(rows: list[dict[str, object]], value: object) -> list[dict[str, object]]:
+    return [dict(r, status=value) if 'status' not in r else r for r in rows]
+
+
+_ROUTING_KEYS = ('action', 'open_incoming_count', 'open_incoming_event_count', 'stale_incoming_count',
+                 'stale_incoming_request_count', 'cancelled_withheld_count')
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('name', list(_STATUSLESS_CASES))
+def test_status_less_rows_route_like_an_empty_status_and_never_crash(shell, tmp_path, name):
+    rows = _STATUSLESS_CASES[name]
+    out, selected = _select(shell, tmp_path / 'missing', rows)
+    twin, twin_selected = _select(shell, tmp_path / 'empty', _with_status(rows, ''))
+    assert selected == twin_selected, (out, twin)
+    assert {k: out.get(k) for k in _ROUTING_KEYS} == {k: twin.get(k) for k in _ROUTING_KEYS}, (out, twin)
+
+
+@pytest.mark.parametrize('shell', _SHELLS)
+@pytest.mark.parametrize('value', [['assigned'], True, {'status': 'assigned'}, 7, None], ids=['list', 'bool', 'object', 'number', 'null'])
+def test_non_string_request_status_routes_like_an_empty_status(shell, tmp_path, value):
+    rows = [_request(status=value), _PENDING_B]
+    out, selected = _select(shell, tmp_path / 'bad', rows)
+    twin, twin_selected = _select(shell, tmp_path / 'empty', [_request(status=''), _PENDING_B])
+    assert selected == twin_selected and {k: out.get(k) for k in _ROUTING_KEYS} == {k: twin.get(k) for k in _ROUTING_KEYS}, (out, twin)

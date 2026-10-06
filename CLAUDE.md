@@ -92,7 +92,7 @@ model name in this file goes stale, so none is named here. This applies to:
   `waggledance/core/providers/claude_code_builder.py`.
 
 Each lane's observed model and effort are read from
-`ops/windows/reboot/Get-WdCapacityStatus.ps1` (`model`, `observed_effort`);
+`ops/windows/reboot/Get-WdCapacityStatus.ps1` (`observed_model`, `observed_effort`);
 an unobserved value stays unknown, not assumed. If a fallback to a smaller
 model or lower effort occurs, it must be logged explicitly in the session
 state file's `fallback_events`, and a lane below `high` reports that before it
@@ -280,7 +280,8 @@ with the session they were said in and the bridge event that relayed them
 
 | About | First-hand in | Relayed | Verbatim |
 |---|---|---|---|
-| 06:04Z | fable-5; again first-hand in claude-rco-1 | 06:04:43Z; 06:17:56Z | "Tämän takia on konsensus ja ulkopuolisien agenttien testaus ja katselmointi HIGH tilassa ettei minun tarvitse vuorovaikuttaa! bridgen agentit tekevät 24/7 työtä kaikki työ valuu hukkaan jos odotetaan vain minun päätöstä, minä annan luvan täyteen autonomiaan, suurin älykkyys on parvessa" (claude-rco-1 session adds: "GROKISTA TÄYSI TEHO IRTI VÄLITTÖMÄSTI") |
+| 06:04Z | fable-5; again first-hand in claude-rco-1 and in claude-rco-2 | 06:04:43Z; 06:17:56Z; 06:18:01Z | "Tämän takia on konsensus ja ulkopuolisien agenttien testaus ja katselmointi HIGH tilassa ettei minun tarvitse vuorovaikuttaa! bridgen agentit tekevät 24/7 työtä kaikki työ valuu hukkaan jos odotetaan vain minun päätöstä, minä annan luvan täyteen autonomiaan, suurin älykkyys on parvessa" (the claude-rco-1 and claude-rco-2 sessions add: "GROKISTA TÄYSI TEHO IRTI VÄLITTÖMÄSTI") |
+| 06:17Z | codex-tools-1 | 06:17:54Z | Relayed as a summary, not verbatim (full text in that event's payload): "full autonomy; use Grok fully now, genuine HIGH independent reviews/tests and consensus, without routine operator interaction" |
 | 06:08Z | claude-rco-1 | 06:08:35Z | "Jos high tasoa käytetään niin sen aikarajat täytyy myös säätää ja kokeilkaa konkraattisesti että kaikki bridgen muut agentit voivat lähettää sille kysymyksiä ilman että ne kaatuu virheeseen" |
 | 06:13Z | claude-rco-1 | 06:13:45Z | "GROK ON TARVITTAESSA MYÖS HYVÄKSYJÄ, MUUTTAKAA TÄMÄ TUOTANTOON VÄLITTÖMÄSTI" |
 | 06:15Z | fable-5 (question and answer) | 06:15:39Z | "Missä tilanteessa Grok saa hyväksyä mergen?" = "Kaikki varapaikat"; "Jos Grok vastaa kielteisesti, estääkö se mergen?" = "Ei estä" |
@@ -315,8 +316,8 @@ The rule text:
   when the primary is absent or ineligible. A Grok approval counts only when all
   of these hold:
   1. the primary's absence or ineligibility is recorded on the bridge (a
-     recusal, an ineligibility record, or no answer within the defined
-     timeout), never asserted by the caller;
+     recusal, an ineligibility record, or no answer within 60 minutes of a
+     bound review request at that exact head), never asserted by the caller;
   2. it is bound to one helper-ledger consultation: `request_id`, requester,
      the exact head SHA, prompt and answer sha256, and effort `high`, with the
      full diff in the prompt;

@@ -7661,8 +7661,13 @@ def test_grok_contract_uses_provider_default_without_strength_guessing() -> None
     assert "no local version-name ranking" in resolver
     # Check actual resolver wiring, not a removed launcher status sentence.
     assert "$resolver = Join-Path $PSScriptRoot 'Resolve-WdGrokModel.ps1'" in launcher
-    assert "& $resolver -DryRun -OutputDirectory" in launcher
-    assert "$grokResult = & $resolver -OutputDirectory" in launcher
+    # The resolver runs through the optional Grok wrapper (#1758 port): dry run in the preflight, real run at apply.
+    assert ("$grokPreflightRecord = Invoke-WdGrokModelResolutionOptional `\n"
+            "  -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) -DryRun"
+            in launcher.replace("\r\n", "\n"))
+    assert ("$grokModelRecord = Invoke-WdGrokModelResolutionOptional `\n"
+            "    -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) `"
+            in launcher.replace("\r\n", "\n"))
     assert "$defaultModel = $defaultMatches[0]" in resolver
     assert "Model = $defaultModel" in resolver
     assert "does not guess a “strongest” model" in runbook

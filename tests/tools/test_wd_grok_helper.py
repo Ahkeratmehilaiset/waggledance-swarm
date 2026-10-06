@@ -597,16 +597,76 @@ def test_a_waiter_takes_the_lock_once_the_holder_releases_it(tmp_path):
     assert pauses == [wd_grok_helper.LOCK_RETRY_SECONDS] * 2
 
 
+def _waiting_time(holder=None, release_at=None, overshoot=0.0):
+    # Monotonic time that moves only while the waiter pauses; overshoot models a late wake-up from sleep.
+    # The holder's lock is released once that time reaches release_at.
+    now, pauses = [0.0], []
+
+    def pause(seconds):
+        pauses.append(seconds)
+        now[0] += seconds + overshoot
+        if holder is not None and now[0] >= release_at:
+            holder.close()
+    return (lambda: now[0]), pause, pauses
+
+
 def test_a_waiter_gives_up_with_a_distinct_busy_error_at_its_limit(tmp_path):
     seed(tmp_path)
-    ticks = iter([0.0, 0.5, 1.5, 2.5])
-    pauses = []
+    clock, pause, pauses = _waiting_time()
     with exclusive(tmp_path):
         with pytest.raises(wd_grok_helper.HelperBusy, match=r"Grok helper busy: .*waited up to 2 s") as raised:
-            with exclusive(tmp_path, 2, clock=lambda: next(ticks), pause=pauses.append):
+            with exclusive(tmp_path, 2, clock=clock, pause=pause):
                 pytest.fail("Second lock acquired")
     assert isinstance(raised.value, OSError) and "Permission denied" not in str(raised.value)
-    assert pauses == [wd_grok_helper.LOCK_RETRY_SECONDS] * 2
+    assert pauses == [wd_grok_helper.LOCK_RETRY_SECONDS] * 2 and clock() == 2
+
+
+def test_the_last_pause_is_cut_to_the_time_left(tmp_path):
+    seed(tmp_path)
+    clock, pause, pauses = _waiting_time()
+    with exclusive(tmp_path), pytest.raises(wd_grok_helper.HelperBusy, match=r"waited up to 1.5 s"):
+        with exclusive(tmp_path, 1.5, clock=clock, pause=pause):
+            pytest.fail("Second lock acquired")
+    assert pauses == [1.0, 0.5] and clock() == 1.5
+
+
+def _queue_behind(tmp_path, monkeypatch, release_at, overshoot):
+    # A waiter with a 2 s limit behind a holder whose lock is released at release_at (waiter time).
+    seed(tmp_path, age=1)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    clock, pause, _ = _waiting_time(holder, release_at, overshoot)
+    original = wd_grok_helper.exclusive
+    monkeypatch.setattr(wd_grok_helper, "exclusive",
+                        lambda root, wait=0: original(root, wait, clock=clock, pause=pause))
+    return holder, clock
+
+
+def test_a_lock_released_after_the_wait_limit_is_not_taken(tmp_path, monkeypatch):
+    # GPT 31cb7f0b finding (Lead 2026-10-06 07:41Z): busy at 1.25 s, a late wake-up at 2.25 s found the lock
+    # free and launched after the 2 s limit. The deadline is now checked before the retry.
+    holder, clock = _queue_behind(tmp_path, monkeypatch, release_at=2.0, overshoot=0.25)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with pytest.raises(wd_grok_helper.HelperBusy, match=r"waited up to 2 s"):
+        consult(tmp_path, "queued/task", "ask", ["fake"], now=NOW, lock_wait_seconds=2,
+                runner=lambda *a, **k: pytest.fail("launched after the wait limit"))
+    holder.close()
+    assert clock() == 2.25
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert not (tmp_path / wd_grok_helper.LEDGER_NAME).exists()
+
+
+def test_a_lock_released_before_the_wait_limit_is_taken(tmp_path, monkeypatch):
+    holder, clock = _queue_behind(tmp_path, monkeypatch, release_at=1.0, overshoot=0.25)
+    launched = []
+
+    def runner(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(returncode=0, stdout="advice")
+
+    report = consult(tmp_path, "queued/task", "ask", ["fake"], runner=runner, now=NOW, lock_wait_seconds=2)
+    holder.close()
+    assert report["status"] == "answered" and len(launched) == 1 and clock() == 1.25
 
 
 def test_a_lock_error_that_is_not_contention_is_raised_at_once(tmp_path, monkeypatch):

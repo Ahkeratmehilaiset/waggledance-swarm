@@ -77,7 +77,7 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # that gives up raises HelperBusy and writes nothing; consult() keeps the one-try default
                 # (lock_wait_seconds=0). status() and the answered report keep every field admit/bind read.
                 # Awaiting a non-author review like the entries above.
-                "a1e0c447470f94412c120b6b0dcfe89189a66bee": "7f824ada plus the bounded lock wait (same local eligibility)"}
+                "d42c12169ddeb2f36225346712cc30e674ae2a1e": "7f824ada plus the bounded lock wait (same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

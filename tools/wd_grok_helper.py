@@ -667,7 +667,9 @@ class HelperBusy(OSError):
 def exclusive(root: Path, wait_seconds: float = 0, *, clock=monotonic, pause=sleep):
     # Hold an OS lock for the entire consultation. Crash releases the lock, but the
     # reservation was already persisted and stays unreconciled until explicitly reconciled.
-    # A held lock is retried every LOCK_RETRY_SECONDS until wait_seconds pass (0 = one try).
+    # A held lock is retried every LOCK_RETRY_SECONDS until wait_seconds pass (0 = one try). The last
+    # pause is cut to the time left and the deadline is checked before every retry, so a waiter never
+    # takes the lock after its limit.
     with (root / "hourly.lock").open("a+b") as stream:
         stream.seek(0, 2)
         if stream.tell() == 0:
@@ -687,10 +689,12 @@ def exclusive(root: Path, wait_seconds: float = 0, *, clock=monotonic, pause=sle
             except OSError as exc:
                 if exc.errno not in LOCK_BUSY_ERRNOS:
                     raise
-                if clock() >= deadline:
+                remaining = deadline - clock()
+                if remaining > 0:
+                    pause(min(LOCK_RETRY_SECONDS, remaining))
+                if remaining <= 0 or clock() > deadline:
                     raise HelperBusy("Grok helper busy: another consultation holds hourly.lock "
                                      f"(waited up to {max(0.0, wait_seconds):g} s)") from None
-                pause(LOCK_RETRY_SECONDS)
         try:
             yield
         finally:

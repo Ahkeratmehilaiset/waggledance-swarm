@@ -41,7 +41,31 @@ MAX_LEDGER_LINE_BYTES = 64 * 1024        # a longer line is counted as malformed
 MAX_LEDGER_EXAMPLES = 20                 # malformed lines listed by line number and reason
 OUTPUT_FORMAT = ("--output-format", "json")
 PURPOSES = ("advisory", "calibration")
-ERROR_CLASSES = ("timeout", "nonzero_exit", "launch_error", "io_error", "ledger_unavailable", "unclassified")
+ERROR_CLASSES = ("timeout", "nonzero_exit", "model_unavailable", "launch_error", "io_error", "ledger_unavailable",
+                 "unclassified")
+# model_unavailable: the CLI exited nonzero AND its stderr names the requested model as an unknown model id,
+# exactly as the provider reported it on 2026-10-06 (27 failures, exit 1, 2-5 s each):
+#   Error: Couldn't set model 'grok-4.7': Invalid params: "unknown model id". Run 'grok models' ...
+# Anything else (a timeout, another nonzero exit, a quota or busy message) keeps its own class.
+MODEL_UNAVAILABLE_STDERR = re.compile(r"Couldn't set model '([^'\r\n]{1,128})': Invalid params: \"unknown model id\"")
+# Same-failure suppression for model_unavailable (Bridge next wave W2, plan 89D6255E). Evidence 2026-10-06:
+# from 21:25:56Z the provider rejected grok-4.7 on every attempt; 27 attempts failed in 16 minutes (25 of
+# them automatic relay chunks about 38 s apart) and the next attempt, at 22:15:35Z, was answered. After
+# MODEL_UNAVAILABLE_THRESHOLD consecutive rejections of the same model, consultations of that model are
+# deferred without a provider attempt until MODEL_UNAVAILABLE_COOLDOWN_SECONDS after the last rejected
+# attempt started; then exactly one attempt (single-flight) probes the model again. A rejection again
+# restarts the cooldown; an answer or any other outcome ends it. During an outage at most about four
+# attempts an hour reach the provider. Nothing is guessed or switched: another explicit model is not held.
+MODEL_UNAVAILABLE_THRESHOLD = 2
+MODEL_UNAVAILABLE_COOLDOWN_SECONDS = 900
+MAX_MODEL_UNAVAILABLE_STREAK = 1_000_000
+# A consultation of another model replaces the one state record, so a still-open hold is carried into
+# that attempt's record (model_unavailable_holds) until its own until_utc. At most this many models are
+# held at once: while that many holds are open, a rejection of a further model opens no hold (it is
+# reported in model_holds_saturated and that model is simply not held), so no live hold is ever evicted
+# and the stored list stays bounded (Tools 05E45621, reproduced 2026-10-06).
+MAX_MODEL_UNAVAILABLE_HOLDS = 8
+HOLD_KEYS = frozenset({"model", "streak", "until_utc"})
 # One-shot consultation limit. The CLI writes its single JSON result only at the end, so a run cut off
 # at the limit leaves nothing. On 2026-10-01 grok-4.7 at medium effort produced about 60-65 output
 # tokens/s, nearly all of them reasoning: the answered runs took 197 s (11.7K tokens) and 249 s (16.3K),
@@ -170,6 +194,81 @@ def _provider_evidence(state: dict) -> dict | None:
                                         "finished_at_utc") if key in state}
 
 
+def model_breaker(state: dict, now: datetime) -> dict:
+    """The model_unavailable same-failure state read from the last completed attempt, never from a guess.
+    "open" holds consultations of ``model`` until ``until_utc``; "expired" lets exactly one probe through;
+    "closed" and "invalid" hold nothing. An invalid record (streak or model of the wrong shape) is
+    reported as such and never blocks: the cooldown only saves provider attempts. The cooldown starts at
+    the rejected attempt's reservation (last_attempt_utc), whose clock the caller's ``now`` is checked
+    against; a clock earlier than that record is already refused as clock_regressed."""
+    if state.get("status") != "failed" or state.get("error_class") != "model_unavailable":
+        return {"state": "closed"}
+    streak, model = state.get("model_unavailable_streak"), state.get("model")
+    if type(streak) is not int or not 1 <= streak <= MAX_MODEL_UNAVAILABLE_STREAK:
+        return {"state": "invalid", "reason": "streak_invalid"}
+    if _label(model) is None:
+        return {"state": "invalid", "reason": "model_invalid"}
+    breaker = {"state": "closed", "model": model, "streak": streak, "threshold": MODEL_UNAVAILABLE_THRESHOLD}
+    if streak < MODEL_UNAVAILABLE_THRESHOLD:
+        return breaker
+    until = datetime.fromisoformat(state["last_attempt_utc"]) + timedelta(seconds=MODEL_UNAVAILABLE_COOLDOWN_SECONDS)
+    breaker.update(state="open" if now < until else "expired", until_utc=until.isoformat())
+    return breaker
+
+
+def carried_holds(state: dict, now: datetime) -> tuple[list[dict], bool]:
+    """The open holds carried in this record from rejections of OTHER models, and whether any carried
+    entry was malformed. A malformed entry (wrong shape, streak below the threshold, a naive or
+    unparseable until_utc, or one later than this record's own reservation plus the cooldown, which
+    no honest carry can be) holds nothing; an expired one is dropped."""
+    holds = state.get("model_unavailable_holds")
+    if holds is None:
+        return [], False
+    if type(holds) is not list or len(holds) > MAX_MODEL_UNAVAILABLE_HOLDS:
+        return [], True
+    bound = datetime.fromisoformat(state["last_attempt_utc"]) + timedelta(seconds=MODEL_UNAVAILABLE_COOLDOWN_SECONDS)
+    found, malformed = [], False
+    for hold in holds:
+        try:
+            if (type(hold) is not dict or set(hold) != HOLD_KEYS or _label(hold["model"]) is None
+                    or type(hold["streak"]) is not int
+                    or not MODEL_UNAVAILABLE_THRESHOLD <= hold["streak"] <= MAX_MODEL_UNAVAILABLE_STREAK
+                    or type(hold["until_utc"]) is not str):
+                raise ValueError("malformed hold")
+            until = datetime.fromisoformat(hold["until_utc"])
+            if until.tzinfo is None or until > bound:
+                raise ValueError("unbounded hold")
+        except ValueError:
+            malformed = True
+            continue
+        if now < until:
+            found.append({"state": "open", "model": hold["model"], "streak": hold["streak"],
+                          "threshold": MODEL_UNAVAILABLE_THRESHOLD, "until_utc": until.isoformat(),
+                          "carried": True})
+    return found, malformed
+
+
+def open_holds(state: dict, now: datetime) -> tuple[list[dict], bool, list[str]]:
+    """Every model held now, one per model (the latest until_utc wins): the open carried holds first,
+    then this record's own open breaker unless MAX_MODEL_UNAVAILABLE_HOLDS other models are already
+    held. Such a breaker is returned in the third item (saturated) and holds nothing; the carried holds
+    it would have displaced stay held until their own until_utc."""
+    carried, malformed = carried_holds(state, now)
+    by_model: dict[str, dict] = {}
+    for hold in carried:
+        if hold["model"] not in by_model or (datetime.fromisoformat(hold["until_utc"])
+                                             > datetime.fromisoformat(by_model[hold["model"]]["until_utc"])):
+            by_model[hold["model"]] = hold
+    saturated = []
+    current = model_breaker(state, now)
+    if current["state"] == "open":
+        if current["model"] in by_model or len(by_model) < MAX_MODEL_UNAVAILABLE_HOLDS:
+            by_model[current["model"]] = current   # newer than any carried hold of the same model
+        else:
+            saturated.append(current["model"])
+    return sorted(by_model.values(), key=lambda hold: hold["model"]), malformed, saturated
+
+
 def status(root: Path, now: datetime | None = None) -> dict:
     """Local availability of this one-at-a-time helper, reported separately from the provider's
     quota, which stays "unknown". There is no local hourly or weekly quota: a completed (answered
@@ -200,6 +299,20 @@ def status(root: Path, now: datetime | None = None) -> dict:
         # The clock reads earlier than the recorded attempt: refuse until it catches up.
         report.update(local_availability="clock_regressed", eligible=False,
                       next_eligible_utc=reserved_at.isoformat())
+    else:
+        report["model_breaker"] = model_breaker(state, now)
+        holds, malformed, saturated = open_holds(state, now)
+        report["model_holds"] = holds
+        if malformed:
+            report["model_holds_malformed"] = True   # reported, never held
+        if saturated:
+            report["model_holds_saturated"] = saturated   # rejected models NOT held: the hold limit is full
+        if holds:
+            # Only consultations of a held model (or of no explicit model) are deferred; consult() lets
+            # another explicit model run. eligible turns True again when the last hold ends.
+            report.update(local_availability="model_unavailable_cooldown", eligible=False,
+                          next_eligible_utc=max(holds, key=lambda hold: datetime.fromisoformat(
+                              hold["until_utc"]))["until_utc"])
     return report
 
 
@@ -733,28 +846,38 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         if history is not None and not isinstance(history, dict):
             raise ValueError("Invalid task exception history")
         availability = previous["local_availability"]
+        model = _option(command, "--model")
+        held = {hold["model"]: hold for hold in previous.get("model_holds", [])}
+        next_eligible = previous["next_eligible_utc"]
+        if availability == "model_unavailable_cooldown":
+            if model is not None and model not in held:
+                availability = "available"   # another explicit model is never held
+            elif model is not None:
+                next_eligible = held[model]["until_utc"]
+            # No explicit model: the CLI default may be a held model, so it waits for the last hold.
         if availability != "available":
             # Never reconcile or overwrite an unfinished attempt, and never order a new attempt
             # before the recorded one. A deferral reserves nothing, so it never mints a
             # consultation request_id; its lifecycle event carries its own observation_id.
-            decision = ("deferred_unreconciled_attempt" if availability == "unreconciled_attempt"
-                        else "deferred_clock_regression")
+            decision = {"unreconciled_attempt": "deferred_unreconciled_attempt",
+                        "model_unavailable_cooldown": "deferred_model_unavailable"}.get(
+                            availability, "deferred_clock_regression")
             observation_id = uuid.uuid4().hex
             deferred = {"schema": SCHEMA, "task_id": task_id, "request_id": None,
                         "observation_id": observation_id,
                         "status": "deferred", "decision": decision,
                         "consultation_attempted": False, "eligible": False,
-                        "next_eligible_utc": previous["next_eligible_utc"],
+                        "next_eligible_utc": next_eligible,
                         "local_availability": availability, "provider_quota": "unknown",
                         "previous_attempt": previous}
             observation = {'task_id': task_id, 'request_id': None, 'observation_id': observation_id,
-                           'status': decision, 'next_eligible_utc': previous["next_eligible_utc"],
+                           'status': decision, 'next_eligible_utc': next_eligible,
                            'local_availability': availability, 'provider_quota': 'unknown'}
             if requested_by is not None:
                 deferred["requested_by"] = observation["requested_by"] = requested_by
             failure = _record_ledger(root, {"event": "deferred", "task_id": task_id, "request_id": None,
                                             "observation_id": observation_id, "requested_by": requested_by,
-                                            "purpose": purpose, "decision": decision,
+                                            "purpose": purpose, "decision": decision, "model": model,
                                             "local_availability": availability, "grok_launched": False})
             if failure is not None:
                 deferred["ledger_errors"] = [failure]
@@ -768,7 +891,18 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                  "timeout_seconds": timeout_seconds,
                  "previous_report": previous.get("report_path", previous.get("previous_report")),
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", ""),
-                 "purpose": purpose, "model": _option(command, "--model"), "effort": _option(command, "--effort")}
+                 "purpose": purpose, "model": model, "effort": _option(command, "--effort")}
+        # The rejection streak this attempt continues: only an earlier model_unavailable of the same model.
+        breaker = previous.get("model_breaker") or {}
+        prior_streak = breaker.get("streak", 0) if model is not None and breaker.get("model") == model else 0
+        if held:
+            # Every hold still open belongs to another model (this one would have been deferred): carry
+            # it into this attempt's record so replacing the record cannot end it early. open_holds never
+            # returns more than MAX_MODEL_UNAVAILABLE_HOLDS, so the slice below never drops a live hold.
+            state["model_unavailable_holds"] = [
+                {"model": hold["model"], "streak": hold["streak"], "until_utc": hold["until_utc"]}
+                for hold in sorted(held.values(), key=lambda hold: datetime.fromisoformat(hold["until_utc"]),
+                                   reverse=True)[:MAX_MODEL_UNAVAILABLE_HOLDS]]
         if requested_by is not None:
             state["requested_by"] = requested_by   # the one agent that also receives the result
         if history:
@@ -845,6 +979,9 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             if stderr:
                 # Kept for every attempt (F4), bounded, and still uninterpreted evidence.
                 state.update(stderr_excerpt=stderr[-2048:], stderr_truncated=len(stderr) > 2048)
+            rejected = MODEL_UNAVAILABLE_STDERR.search(stderr or "")
+            if result.returncode != 0 and model is not None and rejected and rejected.group(1) == model:
+                state["error_class"] = "model_unavailable"
         except Exception as exc:
             state.update(status="failed", error_type=type(exc).__name__, error_class=_classify(exc, stage))
             if isinstance(exc, subprocess.TimeoutExpired):
@@ -873,6 +1010,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             finished_at_utc=datetime.now(timezone.utc).isoformat(),
             timing_scope="consultation_after_budget_reservation",
         )
+        if state.get("error_class") == "model_unavailable":
+            state["model_unavailable_streak"] = min(prior_streak + 1, MAX_MODEL_UNAVAILABLE_STREAK)
         # Ledger before state: the ledger never lacks an outcome that the state records.
         failure = _record_ledger(root, {"event": "finished", **{key: state.get(key) for key in FINISHED_FIELDS}})
         if failure is not None:
@@ -901,7 +1040,9 @@ def update_cli(root: Path, executable: Path, *, runner=subprocess.run) -> dict:
             raise ValueError("Grok update refuses a reparse-point installation")
     with exclusive(root):
         availability = status(root)
-        if not availability["eligible"]:
+        # A model hold makes no consultation and a CLI update may be its remedy (RCO1 F1, 2026-10-06):
+        # only an unreconciled attempt or a clock regression blocks the update, as before the hold.
+        if not availability["eligible"] and availability["local_availability"] != "model_unavailable_cooldown":
             raise ValueError("Grok update blocked: " + availability["local_availability"])
 
         def run(argument: str, timeout: int) -> str:

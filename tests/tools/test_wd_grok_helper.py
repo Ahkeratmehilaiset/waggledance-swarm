@@ -2274,3 +2274,495 @@ def test_a_technical_verdict_grants_no_other_authority(tmp_path):
     assert "No write, merge, deploy, release, signature, RCO-slot or subagent authority." in rules
     assert "Do not execute commands" in rules and "You have NO tools" in rules
     assert "merge, deploy and sign" not in rules
+
+
+# ---------------------------------------------------------------------------
+# model_unavailable and its same-failure cooldown (Bridge next wave W2, plan 89D6255E). The rejection
+# text is the provider's own, as recorded 27 times in the ledger on 2026-10-06 (exit 1). Every runner
+# is a stub: no model is started.
+# ---------------------------------------------------------------------------
+
+REJECTED = ("Error: Couldn't set model 'grok-4.7': Invalid params: \"unknown model id\". "
+            "Run 'grok models' to see available models.\n")
+MODEL_COMMAND = ["fake", "--model", "grok-4.7", "--effort", "high"]
+# getattr: on a helper without the cooldown these tests fail one by one instead of breaking collection.
+COOLDOWN = timedelta(seconds=getattr(wd_grok_helper, "MODEL_UNAVAILABLE_COOLDOWN_SECONDS", 900))
+MAX_STREAK = getattr(wd_grok_helper, "MAX_MODEL_UNAVAILABLE_STREAK", 1_000_000)
+
+
+def _rejecting(calls=None, stderr=REJECTED, returncode=1):
+    def runner(command, **kwargs):
+        if calls is not None:
+            calls.append(command)
+        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+    return runner
+
+
+def _answering(calls=None):
+    def runner(command, **kwargs):
+        if calls is not None:
+            calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="advice", stderr="")
+    return runner
+
+
+def _state(root):
+    return json.loads((root / "hourly-state.json").read_text(encoding="utf-8"))
+
+
+def test_a_nonzero_unknown_model_id_is_model_unavailable_and_one_never_holds(tmp_path):
+    seed(tmp_path)
+    report = consult(tmp_path, "w2/first", "ask", MODEL_COMMAND, now=NOW, runner=_rejecting())
+    state = _state(tmp_path)
+    assert (state["status"], state["error_class"], state["model_unavailable_streak"]) == ("failed", "model_unavailable", 1)
+    assert report["model_breaker"] == {"state": "closed", "model": "grok-4.7", "streak": 1, "threshold": 2}
+    assert (report["local_availability"], report["eligible"], report["next_eligible_utc"]) == ("available", True, None)
+    assert wd_grok_helper.consultation_exit_code(report) == 1
+    finished = [e for e in wd_grok_helper.read_ledger(tmp_path)["entries"] if e["event"] == "finished"]
+    assert finished[-1]["error_class"] == "model_unavailable"
+
+
+@pytest.mark.parametrize("case", ["answered_with_the_text", "other_error", "quota_text", "busy_text",
+                                  "another_model_named", "no_model_option"])
+def test_only_the_exact_rejection_of_the_requested_model_is_model_unavailable(tmp_path, case):
+    seed(tmp_path)
+    command, runner = MODEL_COMMAND, _rejecting()
+    if case == "answered_with_the_text":
+        runner = _rejecting(returncode=0)
+    elif case == "other_error":
+        runner = _rejecting(stderr="Error: connection reset by peer\n")
+    elif case == "quota_text":
+        runner = _rejecting(stderr="Error: rate limit exceeded; try again later\n")
+    elif case == "busy_text":
+        runner = _rejecting(stderr="Error: model is overloaded\n")
+    elif case == "another_model_named":
+        runner = _rejecting(stderr=REJECTED.replace("grok-4.7", "grok-4.6"))
+    elif case == "no_model_option":
+        command = ["fake", "--effort", "high"]
+    consult(tmp_path, "w2/twin", "ask", command, now=NOW, runner=runner)
+    state = _state(tmp_path)
+    assert state["error_class"] != "model_unavailable" and "model_unavailable_streak" not in state
+    expected = None if case == "answered_with_the_text" else "nonzero_exit"
+    assert state["error_class"] == expected
+
+
+def test_a_timeout_carrying_the_rejection_text_stays_a_timeout(tmp_path):
+    seed(tmp_path)
+    def runner(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 900, output=None, stderr=REJECTED)
+    consult(tmp_path, "w2/timeout", "ask", MODEL_COMMAND, now=NOW, runner=runner)
+    state = _state(tmp_path)
+    assert state["error_class"] == "timeout" and "model_unavailable_streak" not in state
+
+
+def test_two_rejections_hold_that_model_without_a_provider_attempt(tmp_path):
+    seed(tmp_path)
+    consult(tmp_path, "w2/one", "ask", MODEL_COMMAND, now=NOW, runner=_rejecting())
+    second = NOW + timedelta(seconds=38)
+    consult(tmp_path, "w2/two", "ask", MODEL_COMMAND, now=second, runner=_rejecting())
+    until = (second + COOLDOWN).isoformat()
+    report = status(tmp_path, second + timedelta(seconds=1))
+    assert report["model_breaker"]["state"] == "open" and report["model_breaker"]["streak"] == 2
+    assert (report["local_availability"], report["eligible"], report["next_eligible_utc"]) == (
+        "model_unavailable_cooldown", False, until)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    events = []
+    held = consult(tmp_path, "w2/three", "ask", MODEL_COMMAND, now=second + timedelta(seconds=38),
+                   runner=lambda *a, **k: pytest.fail("provider attempt during the cooldown"),
+                   emitter=lambda stage, event: events.append((stage, event)))
+    assert (held["status"], held["decision"], held["consultation_attempted"]) == (
+        "deferred", "deferred_model_unavailable", False)
+    assert held["request_id"] is None and held["next_eligible_utc"] == until
+    assert wd_grok_helper.consultation_exit_code(held) == 2
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    deferred = wd_grok_helper.read_ledger(tmp_path)["entries"][-1]
+    assert (deferred["event"], deferred["decision"], deferred["model"], deferred["grok_launched"]) == (
+        "deferred", "deferred_model_unavailable", "grok-4.7", False)
+    assert [stage for stage, _ in events] == ["deferred"]
+    assert events[0][1]["status"] == "deferred_model_unavailable"
+
+
+def test_another_explicit_model_is_not_held(tmp_path):
+    seed(tmp_path)
+    consult(tmp_path, "w2/one", "ask", MODEL_COMMAND, now=NOW, runner=_rejecting())
+    consult(tmp_path, "w2/two", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=1), runner=_rejecting())
+    calls = []
+    other = ["fake", "--model", "grok-4.6", "--effort", "high"]
+    report = consult(tmp_path, "w2/other", "ask", other, now=NOW + timedelta(seconds=2), runner=_answering(calls))
+    assert report["status"] == "answered" and len(calls) == 1
+    assert report["model_breaker"] == {"state": "closed"}
+
+
+def _open_breaker(root, at):
+    consult(root, "w2/one", "ask", MODEL_COMMAND, now=at - timedelta(seconds=38), runner=_rejecting())
+    consult(root, "w2/two", "ask", MODEL_COMMAND, now=at, runner=_rejecting())
+
+
+@pytest.mark.parametrize("offset,held", [(timedelta(microseconds=-1), True), (timedelta(0), False),
+                                         (timedelta(hours=6), False)])
+def test_the_cooldown_ends_exactly_at_its_bound_and_never_later(tmp_path, offset, held):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    when = NOW + COOLDOWN + offset
+    calls = []
+    report = consult(tmp_path, "w2/probe", "ask", MODEL_COMMAND, now=when, runner=_answering(calls))
+    if held:
+        assert report["decision"] == "deferred_model_unavailable" and calls == []
+    else:
+        assert report["status"] == "answered" and len(calls) == 1
+
+
+def test_an_expired_cooldown_lets_one_probe_through_and_a_rejection_restarts_it(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    probe = NOW + COOLDOWN
+    assert status(tmp_path, probe)["model_breaker"]["state"] == "expired"
+    calls = []
+    consult(tmp_path, "w2/probe", "ask", MODEL_COMMAND, now=probe, runner=_rejecting(calls))
+    assert len(calls) == 1 and _state(tmp_path)["model_unavailable_streak"] == 3
+    report = status(tmp_path, probe + timedelta(seconds=1))
+    assert report["local_availability"] == "model_unavailable_cooldown"
+    assert report["next_eligible_utc"] == (probe + COOLDOWN).isoformat()
+
+
+def test_an_answer_ends_the_cooldown_state(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    report = consult(tmp_path, "w2/probe", "ask", MODEL_COMMAND, now=NOW + COOLDOWN, runner=_answering())
+    assert report["status"] == "answered" and "model_unavailable_streak" not in _state(tmp_path)
+    assert report["model_breaker"] == {"state": "closed"} and report["eligible"] is True
+
+
+def test_another_outcome_between_rejections_restarts_the_count(tmp_path):
+    seed(tmp_path)
+    consult(tmp_path, "w2/one", "ask", MODEL_COMMAND, now=NOW, runner=_rejecting())
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 900)
+    consult(tmp_path, "w2/two", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=1), runner=timeout)
+    consult(tmp_path, "w2/three", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=2), runner=_rejecting())
+    report = status(tmp_path, NOW + timedelta(seconds=3))
+    assert report["model_breaker"]["streak"] == 1 and report["eligible"] is True
+
+
+@pytest.mark.parametrize("streak,model,reason", [
+    ("2", "grok-4.7", "streak_invalid"), (0, "grok-4.7", "streak_invalid"), (-1, "grok-4.7", "streak_invalid"),
+    (True, "grok-4.7", "streak_invalid"), (2.0, "grok-4.7", "streak_invalid"),
+    (MAX_STREAK + 1, "grok-4.7", "streak_invalid"), (None, "grok-4.7", "streak_invalid"),
+    (2, None, "model_invalid"), (2, "", "model_invalid"), (2, "grok 4.7", "model_invalid"), (2, 47, "model_invalid"),
+])
+def test_a_malformed_cooldown_record_is_reported_and_never_holds(tmp_path, streak, model, reason):
+    state = {"schema": SCHEMA, "status": "failed", "error_class": "model_unavailable", "task_id": "w2/bad",
+             "request_id": "0" * 32, "last_attempt_utc": NOW.isoformat(), "model": model}
+    if streak is not None:
+        state["model_unavailable_streak"] = streak
+    write_state(tmp_path, state)
+    report = status(tmp_path, NOW + timedelta(seconds=1))
+    assert report["model_breaker"] == {"state": "invalid", "reason": reason}
+    assert (report["local_availability"], report["eligible"]) == ("available", True)
+    calls = []
+    assert consult(tmp_path, "w2/next", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=2),
+                   runner=_answering(calls))["status"] == "answered"
+    assert len(calls) == 1
+
+
+def test_a_cooldown_record_dated_in_the_future_is_a_clock_regression_not_a_cooldown(tmp_path):
+    seed(tmp_path)
+    _open_breaker(tmp_path, NOW)
+    report = consult(tmp_path, "w2/past", "ask", MODEL_COMMAND, now=NOW - timedelta(seconds=1),
+                     runner=lambda *a, **k: pytest.fail("launched before the recorded attempt"))
+    assert report["decision"] == "deferred_clock_regression"
+
+
+def test_a_stale_cooldown_record_holds_nothing(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    report = status(tmp_path, NOW + timedelta(days=3))
+    assert report["model_breaker"]["state"] == "expired" and report["eligible"] is True
+
+
+def test_a_queued_waiter_behind_the_second_rejection_is_held_without_a_launch(tmp_path):
+    seed(tmp_path)
+    consult(tmp_path, "w2/one", "ask", MODEL_COMMAND, now=NOW - timedelta(seconds=38), runner=_rejecting())
+    first = _state(tmp_path)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    second = {**first, "last_attempt_utc": NOW.isoformat(), "request_id": "1" * 32, "task_id": "w2/two",
+              "model_unavailable_streak": 2}
+    timer = _finish_and_release(holder, tmp_path, second)
+    timer.start()
+    report = consult(tmp_path, "w2/queued", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=1), lock_wait_seconds=5,
+                     runner=lambda *a, **k: pytest.fail("launched behind the second rejection"))
+    timer.join()
+    assert report["decision"] == "deferred_model_unavailable"
+    assert _state(tmp_path) == second
+
+
+def test_replaying_the_2026_10_06_outage_reaches_the_provider_three_times_instead_of_27(tmp_path):
+    # 27 attempts about 38 s apart, every one rejected, as recorded from 21:25:56Z.
+    seed(tmp_path, age=7200)
+    calls, decisions = [], []
+    for index in range(27):
+        report = consult(tmp_path, f"w2/c{index:03d}", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=38 * index),
+                         runner=_rejecting(calls))
+        decisions.append(report.get("decision", report["status"]))
+    assert len(calls) == 3
+    assert decisions.count("deferred_model_unavailable") == 24
+    assert [index for index, decision in enumerate(decisions) if decision == "failed"] == [0, 1, 25]
+
+
+# Grok Rule-13 self-challenge 665ded23 (item 3): another model's attempt replaces the one state record, so
+# an open hold is carried into it, and a consultation that names no model is held while any hold is open.
+OTHER_COMMAND = ["fake", "--model", "grok-4.6", "--effort", "high"]
+
+
+def _held_consult(root, at, command=MODEL_COMMAND):
+    return consult(root, "w2/held", "ask", command, now=at,
+                   runner=lambda *a, **k: pytest.fail("provider attempt during the cooldown"))
+
+
+def test_another_models_attempt_keeps_the_open_hold_until_its_own_bound(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    until = NOW + COOLDOWN
+    calls = []
+    other = consult(tmp_path, "w2/other", "ask", OTHER_COMMAND, now=NOW + timedelta(seconds=60),
+                    runner=_answering(calls))
+    assert other["status"] == "answered" and len(calls) == 1
+    assert _state(tmp_path)["model_unavailable_holds"] == [
+        {"model": "grok-4.7", "streak": 2, "until_utc": until.isoformat()}]
+    report = status(tmp_path, NOW + timedelta(seconds=61))
+    assert report["model_breaker"] == {"state": "closed"}   # the answered record itself holds nothing
+    assert [(hold["model"], hold["until_utc"], hold["carried"]) for hold in report["model_holds"]] == [
+        ("grok-4.7", until.isoformat(), True)]
+    assert (report["local_availability"], report["eligible"], report["next_eligible_utc"]) == (
+        "model_unavailable_cooldown", False, until.isoformat())
+    held = _held_consult(tmp_path, until - timedelta(microseconds=1))
+    assert (held["decision"], held["next_eligible_utc"]) == ("deferred_model_unavailable", until.isoformat())
+    calls = []
+    probe = consult(tmp_path, "w2/probe", "ask", MODEL_COMMAND, now=until, runner=_answering(calls))
+    assert probe["status"] == "answered" and len(calls) == 1
+    assert "model_unavailable_holds" not in _state(tmp_path)
+
+
+def test_a_hold_survives_a_chain_of_other_model_attempts_and_never_extends(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    until = NOW + COOLDOWN
+    for index, runner in enumerate([_answering(), _rejecting(stderr="Error: connection reset\n"), _answering()]):
+        consult(tmp_path, f"w2/chain{index}", "ask", OTHER_COMMAND, now=NOW + timedelta(seconds=100 * (index + 1)),
+                runner=runner)
+        assert _state(tmp_path)["model_unavailable_holds"][0]["until_utc"] == until.isoformat()
+    assert _held_consult(tmp_path, until - timedelta(microseconds=1))["decision"] == "deferred_model_unavailable"
+    assert status(tmp_path, until)["model_holds"] == []
+
+
+def test_a_consultation_naming_no_model_is_held_while_a_hold_is_open(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    held = _held_consult(tmp_path, NOW + timedelta(seconds=1), command=["fake", "--effort", "high"])
+    assert (held["decision"], held["next_eligible_utc"]) == ("deferred_model_unavailable", (NOW + COOLDOWN).isoformat())
+    deferred = wd_grok_helper.read_ledger(tmp_path)["entries"][-1]
+    assert (deferred["event"], deferred["model"]) == ("deferred", None)
+    calls = []
+    report = consult(tmp_path, "w2/default", "ask", ["fake", "--effort", "high"], now=NOW + COOLDOWN,
+                     runner=_answering(calls))
+    assert report["status"] == "answered" and len(calls) == 1
+
+
+def test_a_second_model_rejected_during_a_hold_opens_its_own_and_keeps_the_first(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    first_until = NOW + COOLDOWN
+    rejected_other = REJECTED.replace("grok-4.7", "grok-4.6")
+    consult(tmp_path, "w2/b1", "ask", OTHER_COMMAND, now=NOW + timedelta(seconds=10),
+            runner=_rejecting(stderr=rejected_other))
+    second = NOW + timedelta(seconds=20)
+    consult(tmp_path, "w2/b2", "ask", OTHER_COMMAND, now=second, runner=_rejecting(stderr=rejected_other))
+    second_until = second + COOLDOWN
+    report = status(tmp_path, second + timedelta(seconds=1))
+    assert report["model_breaker"]["model"] == "grok-4.6" and report["model_breaker"]["streak"] == 2
+    assert [(hold["model"], hold["until_utc"]) for hold in report["model_holds"]] == [
+        ("grok-4.6", second_until.isoformat()), ("grok-4.7", first_until.isoformat())]
+    assert report["next_eligible_utc"] == second_until.isoformat()
+    at = second + timedelta(seconds=2)
+    assert _held_consult(tmp_path, at)["next_eligible_utc"] == first_until.isoformat()
+    assert _held_consult(tmp_path, at, OTHER_COMMAND)["next_eligible_utc"] == second_until.isoformat()
+    calls = []
+    third = ["fake", "--model", "grok-4.5", "--effort", "high"]
+    assert consult(tmp_path, "w2/c", "ask", third, now=at, runner=_answering(calls))["status"] == "answered"
+    assert sorted(hold["model"] for hold in _state(tmp_path)["model_unavailable_holds"]) == ["grok-4.6", "grok-4.7"]
+
+
+def test_an_expired_hold_is_not_carried(tmp_path):
+    seed(tmp_path, age=7200)
+    _open_breaker(tmp_path, NOW)
+    consult(tmp_path, "w2/late", "ask", OTHER_COMMAND, now=NOW + COOLDOWN, runner=_answering())
+    assert "model_unavailable_holds" not in _state(tmp_path)
+
+
+def _with_holds(root, holds):
+    seed(root, age=7200)
+    state = _state(root)
+    state.update(status="answered", last_attempt_utc=NOW.isoformat(), model_unavailable_holds=holds)
+    (root / "hourly-state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+GOOD_HOLD = {"model": "grok-4.7", "streak": 2, "until_utc": (NOW + timedelta(seconds=60)).isoformat()}
+
+
+@pytest.mark.parametrize("holds", [
+    "grok-4.7", {"model": "grok-4.7"}, [GOOD_HOLD] * 9, ["grok-4.7"],
+    [{**GOOD_HOLD, "extra": 1}], [{k: v for k, v in GOOD_HOLD.items() if k != "streak"}],
+    [{**GOOD_HOLD, "model": "bad model"}], [{**GOOD_HOLD, "model": None}],
+    [{**GOOD_HOLD, "streak": 1}], [{**GOOD_HOLD, "streak": True}], [{**GOOD_HOLD, "streak": MAX_STREAK + 1}],
+    [{**GOOD_HOLD, "until_utc": "not-a-time"}], [{**GOOD_HOLD, "until_utc": 1}],
+    [{**GOOD_HOLD, "until_utc": (NOW + timedelta(seconds=60)).replace(tzinfo=None).isoformat()}],
+    [{**GOOD_HOLD, "until_utc": (NOW + COOLDOWN + timedelta(microseconds=1)).isoformat()}],
+], ids=["string", "dict", "too_many", "entry_string", "extra_key", "missing_key", "bad_model", "null_model",
+        "streak_1", "streak_bool", "streak_huge", "until_text", "until_int", "until_naive", "until_unbounded"])
+def test_a_malformed_carried_hold_never_holds(tmp_path, holds):
+    _with_holds(tmp_path, holds)
+    report = status(tmp_path, NOW + timedelta(seconds=1))
+    assert (report["model_holds"], report["model_holds_malformed"]) == ([], True)
+    assert (report["local_availability"], report["eligible"]) == ("available", True)
+    calls = []
+    assert consult(tmp_path, "w2/ok", "ask", MODEL_COMMAND, now=NOW + timedelta(seconds=1),
+                   runner=_answering(calls))["status"] == "answered" and len(calls) == 1
+
+
+def test_a_well_formed_carried_hold_at_its_bound_holds_until_it(tmp_path):
+    _with_holds(tmp_path, [{**GOOD_HOLD, "until_utc": (NOW + COOLDOWN).isoformat()}])
+    assert status(tmp_path, NOW + COOLDOWN - timedelta(microseconds=1))["eligible"] is False
+    assert status(tmp_path, NOW + COOLDOWN)["model_holds"] == []
+
+
+# Hold saturation (Tools 05E45621, reproduced 2026-10-06 at 615bd65d): with MAX_MODEL_UNAVAILABLE_HOLDS
+# models already held, a rejection of a further model opens no hold; no live hold is ever evicted.
+def _sat_command(model):
+    return ["fake", "--model", model, "--effort", "high"]
+
+
+def _reject_model_twice(root, model, at):
+    for offset in (0, 1):
+        consult(root, f"sat/{model}/{offset}", "ask", _sat_command(model), now=at + timedelta(seconds=offset),
+                runner=_rejecting(stderr=REJECTED.replace("grok-4.7", model)))
+
+
+def _hold_models(root, count):
+    for index in range(count):
+        _reject_model_twice(root, f"model-{index + 1}", NOW + timedelta(seconds=10 * index))
+    return NOW + timedelta(seconds=1) + COOLDOWN   # model-1's own until_utc
+
+
+def test_a_full_hold_list_never_evicts_a_live_hold(tmp_path):
+    seed(tmp_path, age=7200)
+    first_until = _hold_models(tmp_path, 9)
+    at = NOW + timedelta(seconds=100)
+    report = status(tmp_path, at)
+    assert [hold["model"] for hold in report["model_holds"]] == [f"model-{index}" for index in range(1, 9)]
+    assert report["model_holds_saturated"] == ["model-9"]
+    calls = []
+    consult(tmp_path, "sat/healthy", "ask", _sat_command("model-10"), now=at, runner=_answering(calls))
+    assert len(calls) == 1
+    carried = _state(tmp_path)["model_unavailable_holds"]
+    assert sorted(hold["model"] for hold in carried) == [f"model-{index}" for index in range(1, 9)]
+    held = _held_consult(tmp_path, first_until - timedelta(microseconds=1), _sat_command("model-1"))
+    assert (held["decision"], held["next_eligible_utc"]) == ("deferred_model_unavailable", first_until.isoformat())
+    calls = []
+    probe = consult(tmp_path, "sat/first", "ask", _sat_command("model-1"), now=first_until, runner=_answering(calls))
+    assert probe["status"] == "answered" and len(calls) == 1
+
+
+def test_a_saturated_model_is_not_held_and_its_calls_reach_the_provider(tmp_path):
+    seed(tmp_path, age=7200)
+    _hold_models(tmp_path, 9)
+    calls = []
+    report = consult(tmp_path, "sat/ninth", "ask", _sat_command("model-9"), now=NOW + timedelta(seconds=100),
+                     runner=_rejecting(calls, stderr=REJECTED.replace("grok-4.7", "model-9")))
+    assert report["status"] == "failed" and len(calls) == 1
+    assert _state(tmp_path)["model_unavailable_streak"] == 3
+    assert status(tmp_path, NOW + timedelta(seconds=101))["model_holds_saturated"] == ["model-9"]
+
+
+def test_a_saturated_breaker_holds_once_a_slot_frees_while_it_is_still_open(tmp_path):
+    seed(tmp_path, age=7200)
+    first_until = _hold_models(tmp_path, 9)
+    report = status(tmp_path, first_until)
+    assert "model-1" not in [hold["model"] for hold in report["model_holds"]]
+    assert "model-9" in [hold["model"] for hold in report["model_holds"]]
+    assert "model_holds_saturated" not in report
+
+
+def test_exactly_the_limit_of_open_holds_is_carried_whole(tmp_path):
+    seed(tmp_path, age=7200)
+    _hold_models(tmp_path, 8)
+    report = status(tmp_path, NOW + timedelta(seconds=100))
+    assert len(report["model_holds"]) == 8 and "model_holds_saturated" not in report
+    consult(tmp_path, "sat/healthy", "ask", _sat_command("model-10"), now=NOW + timedelta(seconds=100),
+            runner=_answering())
+    assert len(_state(tmp_path)["model_unavailable_holds"]) == 8
+    assert len(status(tmp_path, NOW + timedelta(seconds=101))["model_holds"]) == 8
+
+
+# RCO1 F1 (2026-10-06): a model hold must not block a CLI update (it makes no consultation, and an update
+# may be the remedy for an unknown model id); an unreconciled attempt still blocks it.
+def _cli(tmp_path):
+    executable = tmp_path / "bin" / "grok.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"stub")
+    return executable
+
+
+def _version_runner(calls):
+    def runner(command, **kwargs):
+        calls.append(command[1])
+        return SimpleNamespace(returncode=0, stdout="grok 1.0\n" if command[1] == "--version" else "ok", stderr="")
+    return runner
+
+
+def test_a_model_hold_does_not_block_a_cli_update(tmp_path):
+    now = datetime.now(timezone.utc)
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat(),
+                           "status": "failed", "error_class": "model_unavailable", "model": "grok-4.7",
+                           "model_unavailable_streak": 2})
+    assert status(tmp_path)["local_availability"] == "model_unavailable_cooldown"
+    calls = []
+    report = wd_grok_helper.update_cli(tmp_path, _cli(tmp_path), runner=_version_runner(calls))
+    assert report["update_status"] == "updated" and calls == ["--version", "update", "--version"]
+
+
+def test_an_unreconciled_attempt_still_blocks_a_cli_update(tmp_path):
+    now = datetime.now(timezone.utc)
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat(),
+                           "status": "reserved", "timeout_seconds": 900})
+    with pytest.raises(ValueError, match="unreconciled_attempt"):
+        wd_grok_helper.update_cli(tmp_path, _cli(tmp_path), runner=lambda *a, **k: pytest.fail("update ran"))
+
+
+# The cold start's update path (start-wd-all runs wd_grok_helper.py --update-cli, which calls main()).
+@pytest.mark.parametrize("recorded, expected", [("hold", 0), ("unreconciled", 2)])
+def test_the_cold_start_update_entry_runs_during_a_hold_and_not_during_an_unreconciled_attempt(
+        tmp_path, monkeypatch, capsys, recorded, expected):
+    now = datetime.now(timezone.utc)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    record = {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat()}
+    if recorded == "hold":
+        record.update(status="failed", error_class="model_unavailable", model="grok-4.7", model_unavailable_streak=2)
+    else:
+        record.update(status="reserved", timeout_seconds=900)
+    write_state(state_root, record)
+    profile = tmp_path / "profile"
+    (profile / ".grok" / "bin").mkdir(parents=True)
+    (profile / ".grok" / "bin" / "grok.exe").write_bytes(b"stub")
+    calls = []
+    monkeypatch.setattr(wd_grok_helper, "STATE_ROOT", state_root)
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.setitem(wd_grok_helper.update_cli.__kwdefaults__, "runner", _version_runner(calls))
+    monkeypatch.setattr("sys.argv", ["helper", "--update-cli"])
+    assert wd_grok_helper.main() == expected
+    if expected == 0:
+        assert json.loads(capsys.readouterr().out)["update_status"] == "updated"
+        assert calls == ["--version", "update", "--version"]
+    else:
+        assert calls == [] and "unreconciled_attempt" in capsys.readouterr().out

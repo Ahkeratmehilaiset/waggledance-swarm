@@ -2262,9 +2262,16 @@ def _evaluate_rule12_review(
     be ruled out as a reviewer), or when the registry cannot bind the pool.
     No Grok consultation is passed, so Grok never fills a slot here.
     """
-    author_agent = (
-        str(author_resolution.get("author_agent", ""))
+    author_value = (
+        author_resolution.get("author_agent", "")
         if author_resolution.get("ok") is True
+        else ""
+    )
+    # Only an exact agent id counts; None, numbers or padded strings never
+    # become a contributor name (Grok self-challenge on #1777, item 1).
+    author_agent = (
+        author_value
+        if type(author_value) is str and AGENT_ID_PATTERN.fullmatch(author_value)
         else ""
     )
     result: dict[str, Any] = {
@@ -2295,11 +2302,15 @@ def _evaluate_rule12_review(
         reasons.append("rule12 requires a resolved PR author (implementer set unproven)")
         return result
 
+    shape_reasons = _rule12_contributor_shape_reasons(author_resolution)
+    if shape_reasons:
+        reasons.extend(shape_reasons)
+        return result
+
     unknown = [
         dict(identity)
         for identity in author_resolution.get("unbound_git_identities") or ()
-        if isinstance(identity, Mapping)
-        and identity.get("source") != RULE12_PR_OPENER_SOURCE
+        if identity.get("source") != RULE12_PR_OPENER_SOURCE
     ]
     result["unknown_contributor_identities"] = unknown
     if unknown:
@@ -2317,9 +2328,7 @@ def _evaluate_rule12_review(
 
     contributor_agents = {author_agent}
     for key in ("recognized_git_agents", "contributor_claim_agents"):
-        for agent in author_resolution.get(key) or ():
-            if isinstance(agent, str) and agent:
-                contributor_agents.add(agent)
+        contributor_agents.update(author_resolution.get(key) or ())
     contributors = [
         {"agent": agent, "role": "author"} for agent in sorted(contributor_agents)
     ]
@@ -2453,6 +2462,37 @@ def _evaluate_rule12_review(
         "rule12_best_available_consensus" if result["ok"] else "rule12_review_incomplete"
     )
     return result
+
+
+def _rule12_contributor_shape_reasons(
+    author_resolution: Mapping[str, Any],
+) -> list[str]:
+    """Refuse malformed contributor evidence instead of reading around it.
+
+    A string is not iterated as a list of agents, and a non-object unbound
+    identity is not silently dropped (Grok self-challenge on #1777, item 2).
+    """
+    reasons: list[str] = []
+    for key in ("recognized_git_agents", "contributor_claim_agents"):
+        value = author_resolution.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, (list, tuple)) or not all(
+            type(agent) is str and AGENT_ID_PATTERN.fullmatch(agent)
+            for agent in value
+        ):
+            reasons.append(
+                f"rule12 refuses malformed {key}: expected a list of exact agent ids"
+            )
+    unbound = author_resolution.get("unbound_git_identities")
+    if unbound is not None and (
+        not isinstance(unbound, (list, tuple))
+        or not all(isinstance(identity, Mapping) for identity in unbound)
+    ):
+        reasons.append(
+            "rule12 refuses malformed unbound_git_identities: expected a list of objects"
+        )
+    return reasons
 
 
 def _consensus_scope_match(

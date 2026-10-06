@@ -77,7 +77,16 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # that gives up raises HelperBusy and writes nothing; consult() keeps the one-try default
                 # (lock_wait_seconds=0). status() and the answered report keep every field admit/bind read.
                 # Awaiting a non-author review like the entries above.
-                "d42c12169ddeb2f36225346712cc30e674ae2a1e": "7f824ada plus the bounded lock wait (same local eligibility)"}
+                "d42c12169ddeb2f36225346712cc30e674ae2a1e": "7f824ada plus the bounded lock wait (same local eligibility)",
+                # Fable 2026-10-07 (bridge next wave W2, plan 89D6255E): a nonzero exit whose stderr is the
+                # provider's "unknown model id" rejection of the requested --model is error_class
+                # model_unavailable, and from the second such rejection in a row status() reports
+                # eligible=false (local_availability model_unavailable_cooldown) for 900 s after the last
+                # rejected reservation; consult() defers that model with deferred_model_unavailable (request_id
+                # None, nothing reserved). status() and the answered report keep every field admit/bind read.
+                # Awaiting a non-author review like the entries above.
+                "0f6067f0b621793c1fb874243af021788c7f2ff6": "d42c1216 plus the model_unavailable class and its "
+                                                            "finite same-model cooldown (eligible false while open)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

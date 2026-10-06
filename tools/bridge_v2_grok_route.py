@@ -85,9 +85,11 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # rejected reservation; consult() defers that model with deferred_model_unavailable (request_id
                 # None, nothing reserved). An open hold is carried into the record of another model's attempt
                 # until its own until_utc, and a consultation naming no model is held while any hold is open
-                # (Grok self-challenge 665ded23). status() and the answered report keep every field admit/bind
-                # read. Replaces the unreleased 0f6067f0. Awaiting a non-author review like the entries above.
-                "12807ecc253723fa504fc688bc09e49c37b9c677": "d42c1216 plus the model_unavailable class and its "
+                # (Grok self-challenge 665ded23). At most 8 models are held at once and a live hold is never
+                # evicted (Tools 05E45621); a model hold no longer blocks the CLI update (RCO1 F1). status()
+                # and the answered report keep every field admit/bind read. Replaces the unreleased 0f6067f0
+                # and 12807ecc. Awaiting a non-author review like the entries above.
+                "fecc701a039c56e5999baed4bae86f4e43378f31": "d42c1216 plus the model_unavailable class and its "
                                                             "finite same-model cooldown (eligible false while "
                                                             "any hold is open)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour

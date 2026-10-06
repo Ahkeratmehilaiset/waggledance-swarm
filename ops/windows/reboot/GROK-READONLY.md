@@ -101,7 +101,13 @@ record, each hold still open is carried into the new record
 (`model_unavailable_holds`, at most 8) until its own `until_utc`, so it never
 ends early and never lasts longer. A consultation that names no `--model` is
 held while any hold is open, because the CLI default may be the rejected model.
-`eligible` turns true again when the last hold ends. A malformed record or
+At most 8 models are held at once. While 8 holds are open, a rejection of a
+further model opens no hold: that model is listed in `model_holds_saturated`,
+it is not held, and its calls still reach the provider. A live hold is never
+evicted to make room, and the stored list never exceeds 8 (Tools 05E45621).
+A model hold never blocks `grok update` (the CLI update may be the remedy for
+an unknown model id); only an unreconciled attempt or a clock regression blocks
+it (RCO1 F1). `eligible` turns true again when the last hold ends. A malformed record or
 carried hold never holds anything (`model_holds_malformed: true`). Grok
 self-challenge 665ded23 found the replaced-record case. The caller's one
 submission and the 900-second consultation limit are unchanged.

@@ -2634,3 +2634,135 @@ def test_a_well_formed_carried_hold_at_its_bound_holds_until_it(tmp_path):
     _with_holds(tmp_path, [{**GOOD_HOLD, "until_utc": (NOW + COOLDOWN).isoformat()}])
     assert status(tmp_path, NOW + COOLDOWN - timedelta(microseconds=1))["eligible"] is False
     assert status(tmp_path, NOW + COOLDOWN)["model_holds"] == []
+
+
+# Hold saturation (Tools 05E45621, reproduced 2026-10-06 at 615bd65d): with MAX_MODEL_UNAVAILABLE_HOLDS
+# models already held, a rejection of a further model opens no hold; no live hold is ever evicted.
+def _sat_command(model):
+    return ["fake", "--model", model, "--effort", "high"]
+
+
+def _reject_model_twice(root, model, at):
+    for offset in (0, 1):
+        consult(root, f"sat/{model}/{offset}", "ask", _sat_command(model), now=at + timedelta(seconds=offset),
+                runner=_rejecting(stderr=REJECTED.replace("grok-4.7", model)))
+
+
+def _hold_models(root, count):
+    for index in range(count):
+        _reject_model_twice(root, f"model-{index + 1}", NOW + timedelta(seconds=10 * index))
+    return NOW + timedelta(seconds=1) + COOLDOWN   # model-1's own until_utc
+
+
+def test_a_full_hold_list_never_evicts_a_live_hold(tmp_path):
+    seed(tmp_path, age=7200)
+    first_until = _hold_models(tmp_path, 9)
+    at = NOW + timedelta(seconds=100)
+    report = status(tmp_path, at)
+    assert [hold["model"] for hold in report["model_holds"]] == [f"model-{index}" for index in range(1, 9)]
+    assert report["model_holds_saturated"] == ["model-9"]
+    calls = []
+    consult(tmp_path, "sat/healthy", "ask", _sat_command("model-10"), now=at, runner=_answering(calls))
+    assert len(calls) == 1
+    carried = _state(tmp_path)["model_unavailable_holds"]
+    assert sorted(hold["model"] for hold in carried) == [f"model-{index}" for index in range(1, 9)]
+    held = _held_consult(tmp_path, first_until - timedelta(microseconds=1), _sat_command("model-1"))
+    assert (held["decision"], held["next_eligible_utc"]) == ("deferred_model_unavailable", first_until.isoformat())
+    calls = []
+    probe = consult(tmp_path, "sat/first", "ask", _sat_command("model-1"), now=first_until, runner=_answering(calls))
+    assert probe["status"] == "answered" and len(calls) == 1
+
+
+def test_a_saturated_model_is_not_held_and_its_calls_reach_the_provider(tmp_path):
+    seed(tmp_path, age=7200)
+    _hold_models(tmp_path, 9)
+    calls = []
+    report = consult(tmp_path, "sat/ninth", "ask", _sat_command("model-9"), now=NOW + timedelta(seconds=100),
+                     runner=_rejecting(calls, stderr=REJECTED.replace("grok-4.7", "model-9")))
+    assert report["status"] == "failed" and len(calls) == 1
+    assert _state(tmp_path)["model_unavailable_streak"] == 3
+    assert status(tmp_path, NOW + timedelta(seconds=101))["model_holds_saturated"] == ["model-9"]
+
+
+def test_a_saturated_breaker_holds_once_a_slot_frees_while_it_is_still_open(tmp_path):
+    seed(tmp_path, age=7200)
+    first_until = _hold_models(tmp_path, 9)
+    report = status(tmp_path, first_until)
+    assert "model-1" not in [hold["model"] for hold in report["model_holds"]]
+    assert "model-9" in [hold["model"] for hold in report["model_holds"]]
+    assert "model_holds_saturated" not in report
+
+
+def test_exactly_the_limit_of_open_holds_is_carried_whole(tmp_path):
+    seed(tmp_path, age=7200)
+    _hold_models(tmp_path, 8)
+    report = status(tmp_path, NOW + timedelta(seconds=100))
+    assert len(report["model_holds"]) == 8 and "model_holds_saturated" not in report
+    consult(tmp_path, "sat/healthy", "ask", _sat_command("model-10"), now=NOW + timedelta(seconds=100),
+            runner=_answering())
+    assert len(_state(tmp_path)["model_unavailable_holds"]) == 8
+    assert len(status(tmp_path, NOW + timedelta(seconds=101))["model_holds"]) == 8
+
+
+# RCO1 F1 (2026-10-06): a model hold must not block a CLI update (it makes no consultation, and an update
+# may be the remedy for an unknown model id); an unreconciled attempt still blocks it.
+def _cli(tmp_path):
+    executable = tmp_path / "bin" / "grok.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"stub")
+    return executable
+
+
+def _version_runner(calls):
+    def runner(command, **kwargs):
+        calls.append(command[1])
+        return SimpleNamespace(returncode=0, stdout="grok 1.0\n" if command[1] == "--version" else "ok", stderr="")
+    return runner
+
+
+def test_a_model_hold_does_not_block_a_cli_update(tmp_path):
+    now = datetime.now(timezone.utc)
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat(),
+                           "status": "failed", "error_class": "model_unavailable", "model": "grok-4.7",
+                           "model_unavailable_streak": 2})
+    assert status(tmp_path)["local_availability"] == "model_unavailable_cooldown"
+    calls = []
+    report = wd_grok_helper.update_cli(tmp_path, _cli(tmp_path), runner=_version_runner(calls))
+    assert report["update_status"] == "updated" and calls == ["--version", "update", "--version"]
+
+
+def test_an_unreconciled_attempt_still_blocks_a_cli_update(tmp_path):
+    now = datetime.now(timezone.utc)
+    write_state(tmp_path, {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat(),
+                           "status": "reserved", "timeout_seconds": 900})
+    with pytest.raises(ValueError, match="unreconciled_attempt"):
+        wd_grok_helper.update_cli(tmp_path, _cli(tmp_path), runner=lambda *a, **k: pytest.fail("update ran"))
+
+
+# The cold start's update path (start-wd-all runs wd_grok_helper.py --update-cli, which calls main()).
+@pytest.mark.parametrize("recorded, expected", [("hold", 0), ("unreconciled", 2)])
+def test_the_cold_start_update_entry_runs_during_a_hold_and_not_during_an_unreconciled_attempt(
+        tmp_path, monkeypatch, capsys, recorded, expected):
+    now = datetime.now(timezone.utc)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    record = {"schema": SCHEMA, "last_attempt_utc": (now - timedelta(seconds=30)).isoformat()}
+    if recorded == "hold":
+        record.update(status="failed", error_class="model_unavailable", model="grok-4.7", model_unavailable_streak=2)
+    else:
+        record.update(status="reserved", timeout_seconds=900)
+    write_state(state_root, record)
+    profile = tmp_path / "profile"
+    (profile / ".grok" / "bin").mkdir(parents=True)
+    (profile / ".grok" / "bin" / "grok.exe").write_bytes(b"stub")
+    calls = []
+    monkeypatch.setattr(wd_grok_helper, "STATE_ROOT", state_root)
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.setitem(wd_grok_helper.update_cli.__kwdefaults__, "runner", _version_runner(calls))
+    monkeypatch.setattr("sys.argv", ["helper", "--update-cli"])
+    assert wd_grok_helper.main() == expected
+    if expected == 0:
+        assert json.loads(capsys.readouterr().out)["update_status"] == "updated"
+        assert calls == ["--version", "update", "--version"]
+    else:
+        assert calls == [] and "unreconciled_attempt" in capsys.readouterr().out

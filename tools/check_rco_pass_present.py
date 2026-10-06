@@ -829,11 +829,15 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
     if _is_blocking_status(status, event_type=typ):
         return True
 
+    # A recognized RCO's blocked/finding event is cleared only by the exact
+    # pass status, never by the approval word bag: ``rco_pass_failure``,
+    # ``rco_pass_rejection`` and ``rco_pass_conditional`` carry the pass tokens
+    # but are vetoes (RCO1 Rule-13 self-challenge G1 of #1762, 2026-10-06).
     if typ == "blocked":
-        return not _is_approval_status(status)
+        return status not in RCO_PASS_STATUSES
 
     if typ == "finding":
-        if status in RCO_PASS_STATUSES or _is_approval_status(status):
+        if status in RCO_PASS_STATUSES:
             return False
         if _is_informational_finding_status(status):
             return False

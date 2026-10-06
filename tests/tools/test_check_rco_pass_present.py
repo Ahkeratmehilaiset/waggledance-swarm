@@ -1768,6 +1768,30 @@ def test_negated_pass_finding_after_pass_is_a_veto() -> None:
     assert result["decision"] == "vetoed_after_pass"
 
 
+# RCO1 Rule-13 self-challenge G1 of #1762 (2026-10-06): a recognized RCO's
+# finding/blocked event with a pass-shaped but non-exact status is a veto in
+# this gate too (the peer gate already type-latches every RCO finding).
+@pytest.mark.parametrize("type_", ["finding", "blocked"])
+@pytest.mark.parametrize(
+    "status",
+    ["rco_pass_failure", "rco_pass_rejection", "rco_pass_conditional", "approved", "acknowledged"],
+)
+def test_pass_shaped_rco_finding_after_own_pass_is_a_veto(type_: str, status: str) -> None:
+    events = [
+        _rco_event(
+            ts="2026-10-06T12:00:00Z",
+            status="rco_pass",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(ts="2026-10-06T12:01:00Z", type_=type_, status=status),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["blocking_rco_agents"] == ["claude-rco-1"]
+
 def test_exact_clear_after_pass_keeps_pass() -> None:
     events = [
         _rco_event(

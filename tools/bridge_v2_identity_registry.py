@@ -91,21 +91,18 @@ def bridge_identity_binding_status(
 ) -> str:
     """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``.
 
-    A UUID that is registered to a different agent is a reverse alias and returns
-    ``mismatch_uuid`` before either ``unregistered`` return, so an unregistered or
-    unwatched name can never borrow a registered identity. An unregistered name
-    with an unregistered or absent UUID stays ``unregistered``.
+    The status is deliberately unchanged for a name that is not registered (or not
+    watched): gate readers drop ``missing_uuid``/``mismatch_uuid`` events, so
+    reclassifying such a name would hide its blocks. Acceptance of a borrowed
+    registered UUID is refused in ``event_matches_registered_identity`` instead.
     """
     agent = str(event.get("agent", ""))
-    event_uuid = str(event.get("agent_uuid", "") or "")
-    uuid_owner = _registered_owner_of_uuid(registry, event_uuid)
-    if uuid_owner is not None and uuid_owner != agent:
-        return "mismatch_uuid"
     if restricted_agents is not None and agent not in restricted_agents:
         return "unregistered"
     expected_uuid = registry.get(agent)
     if not expected_uuid:
         return "unregistered"
+    event_uuid = str(event.get("agent_uuid", "") or "")
     if not event_uuid:
         return "missing_uuid"
     if event_uuid != expected_uuid:
@@ -119,12 +116,20 @@ def event_matches_registered_identity(
     registry: Mapping[str, str],
     restricted_agents: set[str] | frozenset[str] | None = None,
 ) -> bool:
-    """True when the event is unregistered or matches its registered UUID."""
-    return bridge_identity_binding_status(
+    """True when the event matches its registered UUID, or is unregistered and does
+    not borrow a UUID that is registered to a different agent (reverse alias, in
+    any UUID spelling)."""
+    status = bridge_identity_binding_status(
         event,
         registry=registry,
         restricted_agents=restricted_agents,
-    ) in {"unregistered", "valid"}
+    )
+    if status == "valid":
+        return True
+    if status != "unregistered":
+        return False
+    uuid_owner = _registered_owner_of_uuid(registry, str(event.get("agent_uuid", "") or ""))
+    return uuid_owner is None or uuid_owner == str(event.get("agent", ""))
 
 
 __all__ = [

@@ -1,10 +1,11 @@
-"""A registered agent_uuid can never be borrowed by another agent name.
+"""A registered agent_uuid can never be borrowed through the generic identity matcher.
 
-Before this fix an unregistered (or unwatched) agent name that reused a registered
-UUID returned ``unregistered`` and was accepted by
-``event_matches_registered_identity``. The reverse binding check now returns
-``mismatch_uuid`` first, in the core helper and in its Bridge v2 port alike; the
-gate consumers already treat ``mismatch_uuid`` as an identity failure.
+Before this fix ``event_matches_registered_identity`` accepted an event whose
+agent name is not registered (or not watched) but whose ``agent_uuid`` belongs to
+another registered agent. The matcher now refuses that reverse alias in any UUID
+spelling. ``bridge_identity_binding_status`` is deliberately unchanged: gate
+readers drop ``missing_uuid``/``mismatch_uuid`` events, so reclassifying such a
+name would hide its blocks (RCO1 F1 on #1772 @4e55b77f).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ RESTRICTIONS = {
     "all_registered": frozenset(REGISTRY),
     "owner_only": frozenset({"fixture-owner"}),
 }
+ALIAS = {r: ("unregistered", False) for r in RESTRICTIONS}
 
 
 def _event(agent: str, agent_uuid: object = None) -> dict:
@@ -34,46 +36,35 @@ def _event(agent: str, agent_uuid: object = None) -> dict:
 
 # (case, agent, uuid, {restriction: (status, accepted)})
 CASES = [
-    ("registered_positive", "fixture-owner", OWNER_UUID,
-     {"default": ("valid", True), "all_registered": ("valid", True), "owner_only": ("valid", True)}),
-    ("registered_foreign_uuid", "fixture-owner", FOREIGN_UUID,
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("registered_missing_uuid", "fixture-owner", "",
-     {r: ("missing_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_unregistered_name", "fixture-alias", OWNER_UUID,
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_uppercase_uuid", "fixture-alias", OWNER_UUID.upper(),
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_braced_uuid", "fixture-alias", "{" + OWNER_UUID + "}",
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_urn_uuid", "fixture-alias", "urn:uuid:" + OWNER_UUID,
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_hyphenless_uuid", "fixture-alias", OWNER_UUID.replace("-", ""),
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    ("reverse_alias_padded_uuid", "fixture-alias", "  " + OWNER_UUID + "\t",
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
-    # The owner's own forward check stays exact: a non-canonical spelling is still a mismatch.
+    ("registered_positive", "fixture-owner", OWNER_UUID, {r: ("valid", True) for r in RESTRICTIONS}),
+    ("registered_foreign_uuid", "fixture-owner", FOREIGN_UUID, {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
+    ("registered_missing_uuid", "fixture-owner", "", {r: ("missing_uuid", False) for r in RESTRICTIONS}),
     ("registered_owner_noncanonical_spelling", "fixture-owner", "{" + OWNER_UUID + "}",
      {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
     ("registered_name_with_other_registered_uuid", "fixture-owner", OTHER_UUID,
      {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
+    ("reverse_alias_unregistered_name", "fixture-alias", OWNER_UUID, ALIAS),
+    ("reverse_alias_uppercase_uuid", "fixture-alias", OWNER_UUID.upper(), ALIAS),
+    ("reverse_alias_braced_uuid", "fixture-alias", "{" + OWNER_UUID + "}", ALIAS),
+    ("reverse_alias_urn_uuid", "fixture-alias", "urn:uuid:" + OWNER_UUID, ALIAS),
+    ("reverse_alias_hyphenless_uuid", "fixture-alias", OWNER_UUID.replace("-", ""), ALIAS),
+    ("reverse_alias_padded_uuid", "fixture-alias", "  " + OWNER_UUID + "\t", ALIAS),
     ("unwatched_registered_agent_borrowing_watched_uuid", "fixture-other", OWNER_UUID,
-     {r: ("mismatch_uuid", False) for r in RESTRICTIONS}),
+     {"default": ("mismatch_uuid", False), "all_registered": ("mismatch_uuid", False),
+      "owner_only": ("unregistered", False)}),
     ("unwatched_registered_agent_own_uuid", "fixture-other", OTHER_UUID,
      {"default": ("valid", True), "all_registered": ("valid", True), "owner_only": ("unregistered", True)}),
-    ("unregistered_name_foreign_uuid_compat", "fixture-alias", FOREIGN_UUID,
-     {r: ("unregistered", True) for r in RESTRICTIONS}),
-    ("unregistered_name_without_uuid_compat", "fixture-alias", None,
-     {r: ("unregistered", True) for r in RESTRICTIONS}),
-    ("unregistered_name_empty_uuid_compat", "fixture-alias", "",
-     {r: ("unregistered", True) for r in RESTRICTIONS}),
+    ("unregistered_name_foreign_uuid_compat", "fixture-alias", FOREIGN_UUID, {r: ("unregistered", True) for r in RESTRICTIONS}),
+    ("unregistered_name_without_uuid_compat", "fixture-alias", None, {r: ("unregistered", True) for r in RESTRICTIONS}),
+    ("unregistered_name_empty_uuid_compat", "fixture-alias", "", {r: ("unregistered", True) for r in RESTRICTIONS}),
+    ("unregistered_name_whitespace_uuid_compat", "fixture-alias", "   ", {r: ("unregistered", True) for r in RESTRICTIONS}),
 ]
 
 
 @pytest.mark.parametrize("module_name", MODULES)
 @pytest.mark.parametrize("case, agent, agent_uuid, expected", CASES, ids=[c[0] for c in CASES])
 @pytest.mark.parametrize("restriction", sorted(RESTRICTIONS))
-def test_binding_status_rejects_reverse_uuid_alias(module_name, case, agent, agent_uuid, expected, restriction):
+def test_matcher_refuses_reverse_uuid_alias(module_name, case, agent, agent_uuid, expected, restriction):
     module = importlib.import_module(module_name)
     kwargs = {"registry": REGISTRY, "restricted_agents": RESTRICTIONS[restriction]}
     event = _event(agent, agent_uuid)
@@ -93,10 +84,35 @@ def test_core_and_port_stay_in_parity(case, agent, agent_uuid, expected, restric
         port.event_matches_registered_identity(event, **kwargs)
 
 
-def test_reverse_alias_is_reported_in_the_status_set_gate_consumers_reject():
-    # check_bridge_changes_requested and check_rco_pass_present ignore events whose
-    # status is in {"missing_uuid", "mismatch_uuid"}; a new status name would slip past them.
+# --- RCO1 F1 twins: a block from a non-RCO name carrying a registered UUID must still hold the peer gate.
+
+LEAD_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+GATE_REGISTRY = {
+    "codex-lead-1": LEAD_UUID,
+    "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+}
+TASK = "fixture/peer-gate-reverse-alias"
+
+
+@pytest.mark.parametrize("agent_uuid", [LEAD_UUID, "{" + LEAD_UUID.upper() + "}", FOREIGN_UUID])
+@pytest.mark.parametrize("event_type, status", [("decision", "changes_requested"), ("blocked", "blocked")])
+def test_block_from_unregistered_name_with_registered_uuid_still_holds_peer_gate(agent_uuid, event_type, status):
+    gate = importlib.import_module("tools.check_bridge_changes_requested")
+    events = [{
+        "ts_utc": "2026-10-06T16:00:00Z", "agent": "operator", "agent_uuid": agent_uuid,
+        "type": event_type, "status": status, "task_id": TASK, "message": "hold this merge",
+    }]
+    result = gate.check_bridge_clear_to_merge(
+        events=events, task_id=TASK, merging_agent="codex-lead-1", identity_registry=GATE_REGISTRY,
+    )
+    assert result["clear_to_merge"] is False, result
+
+
+def test_unregistered_alias_keeps_the_status_gate_readers_process():
     for module_name in MODULES:
         module = importlib.import_module(module_name)
-        status = module.bridge_identity_binding_status(_event("fixture-alias", OWNER_UUID), registry=REGISTRY)
-        assert status in {"missing_uuid", "mismatch_uuid"}
+        event = _event("operator", OWNER_UUID)
+        assert module.bridge_identity_binding_status(event, registry=REGISTRY) == "unregistered"
+        assert module.event_matches_registered_identity(event, registry=REGISTRY) is False

@@ -340,8 +340,8 @@ def test_the_entry_point_consults_at_high_with_the_capped_session_total(iso, tmp
     calls = []
 
     def consult(root, task_id, prompt, command, *, runner=None, emitter=None, exception_path=None,
-                exception_sha256=None, timeout_seconds=None, requested_by=None):
-        calls.append((command, timeout_seconds, requested_by, runner.max_rounds))
+                exception_sha256=None, timeout_seconds=None, requested_by=None, lock_wait_seconds=None):
+        calls.append((command, timeout_seconds, requested_by, runner.max_rounds, lock_wait_seconds))
         return {"status": "answered"}
 
     ask = tmp_path / "ask.md"
@@ -357,7 +357,8 @@ def test_the_entry_point_consults_at_high_with_the_capped_session_total(iso, tmp
                                       str(tmp_path / "git.exe"), "--max-rounds", str(max_rounds),
                                       "--requested-by", "fable-5"])
     assert session.main() == 0
-    (command, timeout, requester, rounds), = calls
+    (command, timeout, requester, rounds, lock_wait), = calls
     assert command[command.index("--effort") + 1] == "high"
     assert (timeout, requester, rounds) == (total, "fable-5", max_rounds)
+    assert lock_wait == session.helper.LOCK_WAIT_SECONDS == 2400  # a read-only session also waits in line
     assert json.loads(capsys.readouterr().out)["status"] == "answered"

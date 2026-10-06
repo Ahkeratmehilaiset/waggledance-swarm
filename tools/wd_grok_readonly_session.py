@@ -729,7 +729,8 @@ def main() -> int:
                                 helper.advisory_command(executable, model["model"], effort=ROUND_EFFORT),
                                 runner=runner, emitter=helper.emit_bridge_event,
                                 exception_path=args.exception_path, exception_sha256=args.exception_sha256,
-                                timeout_seconds=session_seconds(args.max_rounds), **requester)
+                                timeout_seconds=session_seconds(args.max_rounds),
+                                lock_wait_seconds=helper.LOCK_WAIT_SECONDS, **requester)
         report["readonly_session"] = {"commit": broker.sha, "surface_digest": surface["digest"],
                                       "isolation": surface["isolation"], "read_only_guarantee": False,
                                       "runtime_tested": False}

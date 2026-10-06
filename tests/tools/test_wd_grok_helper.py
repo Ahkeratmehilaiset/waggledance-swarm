@@ -1,9 +1,13 @@
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -569,9 +573,182 @@ def test_interrupted_reservation_survives_new_process_and_partial_temp(tmp_path)
 def test_competing_process_lock_blocks_second_request(tmp_path):
     seed(tmp_path)
     with exclusive(tmp_path):
-        with pytest.raises(OSError):
+        with pytest.raises(wd_grok_helper.HelperBusy, match=r"Grok helper busy: .*waited up to 0 s"):
             with exclusive(tmp_path):
                 pytest.fail("Second lock acquired")
+
+
+def test_a_waiter_takes_the_lock_once_the_holder_releases_it(tmp_path):
+    # Operator 2026-10-06: every lane may ask at once, so a held lock is waited for instead of failing at once.
+    seed(tmp_path)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    pauses = []
+
+    def pause(seconds):
+        pauses.append(seconds)
+        if len(pauses) == 2:
+            holder.close()
+
+    with exclusive(tmp_path, 10, clock=lambda: 0.0, pause=pause):
+        with pytest.raises(wd_grok_helper.HelperBusy):  # the waiter now holds it: still single-flight
+            with exclusive(tmp_path):
+                pytest.fail("Second lock acquired")
+    assert pauses == [wd_grok_helper.LOCK_RETRY_SECONDS] * 2
+
+
+def _waiting_time(holder=None, release_at=None, overshoot=0.0):
+    # Monotonic time that moves only while the waiter pauses; overshoot models a late wake-up from sleep.
+    # The holder's lock is released once that time reaches release_at.
+    now, pauses = [0.0], []
+
+    def pause(seconds):
+        pauses.append(seconds)
+        now[0] += seconds + overshoot
+        if holder is not None and now[0] >= release_at:
+            holder.close()
+    return (lambda: now[0]), pause, pauses
+
+
+def test_a_waiter_gives_up_with_a_distinct_busy_error_at_its_limit(tmp_path):
+    seed(tmp_path)
+    clock, pause, pauses = _waiting_time()
+    with exclusive(tmp_path):
+        with pytest.raises(wd_grok_helper.HelperBusy, match=r"Grok helper busy: .*waited up to 2 s") as raised:
+            with exclusive(tmp_path, 2, clock=clock, pause=pause):
+                pytest.fail("Second lock acquired")
+    assert isinstance(raised.value, OSError) and "Permission denied" not in str(raised.value)
+    assert pauses == [wd_grok_helper.LOCK_RETRY_SECONDS] * 2 and clock() == 2
+
+
+def test_the_last_pause_is_cut_to_the_time_left(tmp_path):
+    seed(tmp_path)
+    clock, pause, pauses = _waiting_time()
+    with exclusive(tmp_path), pytest.raises(wd_grok_helper.HelperBusy, match=r"waited up to 1.5 s"):
+        with exclusive(tmp_path, 1.5, clock=clock, pause=pause):
+            pytest.fail("Second lock acquired")
+    assert pauses == [1.0, 0.5] and clock() == 1.5
+
+
+def _queue_behind(tmp_path, monkeypatch, release_at, overshoot):
+    # A waiter with a 2 s limit behind a holder whose lock is released at release_at (waiter time).
+    seed(tmp_path, age=1)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    clock, pause, _ = _waiting_time(holder, release_at, overshoot)
+    original = wd_grok_helper.exclusive
+    monkeypatch.setattr(wd_grok_helper, "exclusive",
+                        lambda root, wait=0: original(root, wait, clock=clock, pause=pause))
+    return holder, clock
+
+
+def test_a_lock_released_after_the_wait_limit_is_not_taken(tmp_path, monkeypatch):
+    # GPT 31cb7f0b finding (Lead 2026-10-06 07:41Z): busy at 1.25 s, a late wake-up at 2.25 s found the lock
+    # free and launched after the 2 s limit. The deadline is now checked before the retry.
+    holder, clock = _queue_behind(tmp_path, monkeypatch, release_at=2.0, overshoot=0.25)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with pytest.raises(wd_grok_helper.HelperBusy, match=r"waited up to 2 s"):
+        consult(tmp_path, "queued/task", "ask", ["fake"], now=NOW, lock_wait_seconds=2,
+                runner=lambda *a, **k: pytest.fail("launched after the wait limit"))
+    holder.close()
+    assert clock() == 2.25
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert not (tmp_path / wd_grok_helper.LEDGER_NAME).exists()
+
+
+def test_a_lock_released_before_the_wait_limit_is_taken(tmp_path, monkeypatch):
+    holder, clock = _queue_behind(tmp_path, monkeypatch, release_at=1.0, overshoot=0.25)
+    launched = []
+
+    def runner(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(returncode=0, stdout="advice")
+
+    report = consult(tmp_path, "queued/task", "ask", ["fake"], runner=runner, now=NOW, lock_wait_seconds=2)
+    holder.close()
+    assert report["status"] == "answered" and len(launched) == 1 and clock() == 1.25
+
+
+def test_a_lock_error_that_is_not_contention_is_raised_at_once(tmp_path, monkeypatch):
+    seed(tmp_path)
+
+    def broken(*args):
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    if os.name == "nt":
+        import msvcrt
+        monkeypatch.setattr(msvcrt, "locking", broken)
+    else:
+        import fcntl
+        monkeypatch.setattr(fcntl, "flock", broken)
+    pauses = []
+    with pytest.raises(OSError) as raised:
+        with exclusive(tmp_path, 60, clock=lambda: 0.0, pause=pauses.append):
+            pytest.fail("lock acquired")
+    assert raised.type is OSError and raised.value.errno == errno.EBADF and pauses == []
+
+
+def _finish_and_release(holder, root, state):
+    # The holder stands in for a running consultation: it records how it ended, then its lock is released.
+    def finish():
+        write_state(root, state)
+        holder.close()
+    return threading.Timer(0.3, finish)
+
+
+def test_a_queued_consultation_runs_after_the_running_one_answers(tmp_path):
+    running = {"schema": SCHEMA, "status": "reserved", "task_id": "first/task", "request_id": "first",
+               "last_attempt_utc": (NOW - timedelta(seconds=2)).isoformat(), "timeout_seconds": 900}
+    write_state(tmp_path, running)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    timer = _finish_and_release(holder, tmp_path, {**running, "status": "answered"})
+    timer.start()
+    launched = []
+
+    def runner(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(returncode=0, stdout="advice")
+
+    # Availability is read after the lock is held: read before, the first attempt would still be reserved.
+    report = consult(tmp_path, "queued/task", "ask", ["fake"], runner=runner, now=NOW, lock_wait_seconds=5)
+    timer.join()
+    assert report["status"] == "answered" and len(launched) == 1
+
+
+def test_a_waiter_behind_a_crashed_consultation_defers_and_keeps_its_reservation(tmp_path):
+    # A killed holder: the OS releases its lock, but its durable reservation stays unreconciled.
+    seed(tmp_path, age=1)
+    holder = ExitStack()
+    holder.enter_context(exclusive(tmp_path))
+    crashed = {"schema": SCHEMA, "status": "reserved", "task_id": "crashed/task", "request_id": "crashed",
+               "last_attempt_utc": (NOW - timedelta(seconds=1)).isoformat(), "timeout_seconds": 900}
+    timer = _finish_and_release(holder, tmp_path, crashed)
+    timer.start()
+    report = consult(tmp_path, "queued/task", "ask", ["fake"], now=NOW, lock_wait_seconds=5,
+                     runner=lambda *a, **k: pytest.fail("launched behind an unreconciled attempt"))
+    timer.join()
+    assert report["status"] == "deferred" and report["decision"] == "deferred_unreconciled_attempt"
+    assert json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8")) == crashed
+
+
+def test_a_waiter_that_gives_up_reserves_and_records_nothing(tmp_path):
+    seed(tmp_path, age=1)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with exclusive(tmp_path), pytest.raises(wd_grok_helper.HelperBusy):
+        consult(tmp_path, "queued/task", "ask", ["fake"], now=NOW, lock_wait_seconds=1,
+                runner=lambda *a, **k: pytest.fail("a second consultation ran"))
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert not (tmp_path / wd_grok_helper.LEDGER_NAME).exists()
+
+
+@pytest.mark.parametrize("wait", [True, -1, 2401, 1.5, "5"])
+def test_the_lock_wait_must_be_an_integer_up_to_2400(tmp_path, wait):
+    seed(tmp_path)
+    with pytest.raises(ValueError, match="Lock wait must be an integer in 0..2400 seconds"):
+        consult(tmp_path, "t", "ask", ["fake"], now=NOW, lock_wait_seconds=wait,
+                runner=lambda *a, **k: pytest.fail("ran"))
+    assert not (tmp_path / "hourly.lock").exists()  # refused before the lock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1952,6 +2129,7 @@ def test_the_cli_consults_at_high_and_leaves_the_900_second_default_in_force(tmp
     (command, kwargs), = calls
     assert command[command.index("--effort") + 1] == "high" and "timeout_seconds" not in kwargs
     assert kwargs["requested_by"] == requester and default == wd_grok_helper.CONSULT_TIMEOUT_SECONDS == 900
+    assert kwargs["lock_wait_seconds"] == wd_grok_helper.LOCK_WAIT_SECONDS == 2400  # the CLI waits in line
     assert json.loads(capsys.readouterr().out)["status"] == "answered"
 
 

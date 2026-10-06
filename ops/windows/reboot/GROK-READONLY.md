@@ -24,7 +24,11 @@ be local, and it is never read as a quota, a reset time or a reason to retry.
 Task exception grants waived the removed hourly budget and are retired: a
 consultation that presents one is refused before the lock, and grants already
 recorded in the state file are carried forward as history only. The global
-consultation lock remains held for the complete session.
+consultation lock remains held for the complete session. A consultation that
+finds the lock held waits in line for it, retrying every second for up to 2400
+seconds, and reads availability only after it holds the lock. Waiters are served
+in no set order. A waiter that is still blocked after 2400 seconds fails with
+"Grok helper busy" and reserves nothing.
 
 The helper's keyword-only `consult(..., timeout_seconds=CONSULT_TIMEOUT_SECONDS)`
 (900 seconds) accepts only a built-in integer from 1 through 2400 seconds,

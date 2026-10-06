@@ -309,6 +309,61 @@ def test_rule12_refuses_when_the_author_is_unresolved(tmp_path: Path) -> None:
     assert any("resolved PR author" in reason for reason in report["reasons"])
 
 
+
+# --- malformed contributor evidence (Grok self-challenge on #1777) ---------
+def _review(author_resolution: dict, events: list[dict] | None = None) -> dict:
+    from tools.idle_consensus_auto_merge import _evaluate_rule12_review
+
+    return _evaluate_rule12_review(
+        events=_rule12_events() if events is None else events,
+        events_path=Path("events.jsonl"),
+        task_id=TASK,
+        head_sha=HEAD,
+        author_resolution=author_resolution,
+        now=NOW,
+    )
+
+
+@pytest.mark.parametrize("author", [None, 5, "", " fable-5", "None ", ["fable-5"]])
+def test_rule12_non_agent_author_value_is_unresolved(author: object) -> None:
+    result = _review({"ok": True, "author_agent": author, "unbound_git_identities": []})
+    assert result["ok"] is False
+    assert result["author_agent"] == ""
+    assert result["contributors"] == []
+    assert any("resolved PR author" in reason for reason in result["reasons"])
+
+
+@pytest.mark.parametrize("key", ["recognized_git_agents", "contributor_claim_agents"])
+@pytest.mark.parametrize("value", ["claude-rco-1", ["claude-rco-1", 7], [" fable-5"], {"a": 1}])
+def test_rule12_malformed_contributor_lists_refuse(key: str, value: object) -> None:
+    result = _review(
+        {"ok": True, "author_agent": "fable-5", "unbound_git_identities": [], key: value}
+    )
+    assert result["ok"] is False
+    assert result["rule12"] is None
+    assert any(f"malformed {key}" in reason for reason in result["reasons"])
+
+
+@pytest.mark.parametrize("value", ["Jani", [{"source": "commit_author:1:1"}, "Jani"], {"x": 1}])
+def test_rule12_malformed_unbound_identities_refuse(value: object) -> None:
+    result = _review({"ok": True, "author_agent": "fable-5", "unbound_git_identities": value})
+    assert result["ok"] is False
+    assert any("malformed unbound_git_identities" in r for r in result["reasons"])
+
+
+def test_rule12_well_formed_contributor_lists_still_satisfy() -> None:
+    result = _review(
+        {
+            "ok": True,
+            "author_agent": "fable-5",
+            "recognized_git_agents": ["fable-5"],
+            "contributor_claim_agents": [],
+            "unbound_git_identities": [{"source": "pr_author", "name": "", "login": "x"}],
+        }
+    )
+    assert result["ok"] is True, result["reasons"]
+
+
 def test_rule12_keeps_the_legacy_rco_pass_blocker(tmp_path: Path) -> None:
     # No RCO speaks at all: the RCO slot would be "eligible but no pass" and the
     # always-on exact-head RCO_PASS blocker also stays in force under rule12.

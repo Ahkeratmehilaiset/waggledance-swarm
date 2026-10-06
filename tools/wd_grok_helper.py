@@ -59,6 +59,10 @@ MODEL_UNAVAILABLE_STDERR = re.compile(r"Couldn't set model '([^'\r\n]{1,128})': 
 MODEL_UNAVAILABLE_THRESHOLD = 2
 MODEL_UNAVAILABLE_COOLDOWN_SECONDS = 900
 MAX_MODEL_UNAVAILABLE_STREAK = 1_000_000
+# A consultation of another model replaces the one state record, so a still-open hold is carried into
+# that attempt's record (model_unavailable_holds) until its own until_utc; at most this many are kept.
+MAX_MODEL_UNAVAILABLE_HOLDS = 8
+HOLD_KEYS = frozenset({"model", "streak", "until_utc"})
 # One-shot consultation limit. The CLI writes its single JSON result only at the end, so a run cut off
 # at the limit leaves nothing. On 2026-10-01 grok-4.7 at medium effort produced about 60-65 output
 # tokens/s, nearly all of them reasoning: the answered runs took 197 s (11.7K tokens) and 249 s (16.3K),
@@ -209,6 +213,51 @@ def model_breaker(state: dict, now: datetime) -> dict:
     return breaker
 
 
+def carried_holds(state: dict, now: datetime) -> tuple[list[dict], bool]:
+    """The open holds carried in this record from rejections of OTHER models, and whether any carried
+    entry was malformed. A malformed entry (wrong shape, streak below the threshold, a naive or
+    unparseable until_utc, or one later than this record's own reservation plus the cooldown, which
+    no honest carry can be) holds nothing; an expired one is dropped."""
+    holds = state.get("model_unavailable_holds")
+    if holds is None:
+        return [], False
+    if type(holds) is not list or len(holds) > MAX_MODEL_UNAVAILABLE_HOLDS:
+        return [], True
+    bound = datetime.fromisoformat(state["last_attempt_utc"]) + timedelta(seconds=MODEL_UNAVAILABLE_COOLDOWN_SECONDS)
+    found, malformed = [], False
+    for hold in holds:
+        try:
+            if (type(hold) is not dict or set(hold) != HOLD_KEYS or _label(hold["model"]) is None
+                    or type(hold["streak"]) is not int
+                    or not MODEL_UNAVAILABLE_THRESHOLD <= hold["streak"] <= MAX_MODEL_UNAVAILABLE_STREAK
+                    or type(hold["until_utc"]) is not str):
+                raise ValueError("malformed hold")
+            until = datetime.fromisoformat(hold["until_utc"])
+            if until.tzinfo is None or until > bound:
+                raise ValueError("unbounded hold")
+        except ValueError:
+            malformed = True
+            continue
+        if now < until:
+            found.append({"state": "open", "model": hold["model"], "streak": hold["streak"],
+                          "threshold": MODEL_UNAVAILABLE_THRESHOLD, "until_utc": until.isoformat(),
+                          "carried": True})
+    return found, malformed
+
+
+def open_holds(state: dict, now: datetime) -> tuple[list[dict], bool]:
+    """Every model held now: this record's own open breaker and the open carried holds, one per model
+    (the latest until_utc wins)."""
+    carried, malformed = carried_holds(state, now)
+    by_model: dict[str, dict] = {}
+    for hold in [model_breaker(state, now), *carried]:
+        if hold["state"] == "open" and (
+                hold["model"] not in by_model or datetime.fromisoformat(hold["until_utc"])
+                > datetime.fromisoformat(by_model[hold["model"]]["until_utc"])):
+            by_model[hold["model"]] = hold
+    return sorted(by_model.values(), key=lambda hold: hold["model"]), malformed
+
+
 def status(root: Path, now: datetime | None = None) -> dict:
     """Local availability of this one-at-a-time helper, reported separately from the provider's
     quota, which stays "unknown". There is no local hourly or weekly quota: a completed (answered
@@ -240,12 +289,17 @@ def status(root: Path, now: datetime | None = None) -> dict:
         report.update(local_availability="clock_regressed", eligible=False,
                       next_eligible_utc=reserved_at.isoformat())
     else:
-        breaker = model_breaker(state, now)
-        report["model_breaker"] = breaker
-        if breaker["state"] == "open":
-            # Only consultations of breaker["model"] are held; consult() lets another explicit model run.
+        report["model_breaker"] = model_breaker(state, now)
+        holds, malformed = open_holds(state, now)
+        report["model_holds"] = holds
+        if malformed:
+            report["model_holds_malformed"] = True   # reported, never held
+        if holds:
+            # Only consultations of a held model (or of no explicit model) are deferred; consult() lets
+            # another explicit model run. eligible turns True again when the last hold ends.
             report.update(local_availability="model_unavailable_cooldown", eligible=False,
-                          next_eligible_utc=breaker["until_utc"])
+                          next_eligible_utc=max(holds, key=lambda hold: datetime.fromisoformat(
+                              hold["until_utc"]))["until_utc"])
     return report
 
 
@@ -780,8 +834,14 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             raise ValueError("Invalid task exception history")
         availability = previous["local_availability"]
         model = _option(command, "--model")
-        if availability == "model_unavailable_cooldown" and model != previous["model_breaker"]["model"]:
-            availability = "available"   # the cooldown holds only the rejected model, never another explicit one
+        held = {hold["model"]: hold for hold in previous.get("model_holds", [])}
+        next_eligible = previous["next_eligible_utc"]
+        if availability == "model_unavailable_cooldown":
+            if model is not None and model not in held:
+                availability = "available"   # another explicit model is never held
+            elif model is not None:
+                next_eligible = held[model]["until_utc"]
+            # No explicit model: the CLI default may be a held model, so it waits for the last hold.
         if availability != "available":
             # Never reconcile or overwrite an unfinished attempt, and never order a new attempt
             # before the recorded one. A deferral reserves nothing, so it never mints a
@@ -794,11 +854,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                         "observation_id": observation_id,
                         "status": "deferred", "decision": decision,
                         "consultation_attempted": False, "eligible": False,
-                        "next_eligible_utc": previous["next_eligible_utc"],
+                        "next_eligible_utc": next_eligible,
                         "local_availability": availability, "provider_quota": "unknown",
                         "previous_attempt": previous}
             observation = {'task_id': task_id, 'request_id': None, 'observation_id': observation_id,
-                           'status': decision, 'next_eligible_utc': previous["next_eligible_utc"],
+                           'status': decision, 'next_eligible_utc': next_eligible,
                            'local_availability': availability, 'provider_quota': 'unknown'}
             if requested_by is not None:
                 deferred["requested_by"] = observation["requested_by"] = requested_by
@@ -822,6 +882,13 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         # The rejection streak this attempt continues: only an earlier model_unavailable of the same model.
         breaker = previous.get("model_breaker") or {}
         prior_streak = breaker.get("streak", 0) if model is not None and breaker.get("model") == model else 0
+        if held:
+            # Every hold still open belongs to another model (this one would have been deferred): carry
+            # it into this attempt's record so replacing the record cannot end it early.
+            state["model_unavailable_holds"] = [
+                {"model": hold["model"], "streak": hold["streak"], "until_utc": hold["until_utc"]}
+                for hold in sorted(held.values(), key=lambda hold: datetime.fromisoformat(hold["until_utc"]),
+                                   reverse=True)[:MAX_MODEL_UNAVAILABLE_HOLDS]]
         if requested_by is not None:
             state["requested_by"] = requested_by   # the one agent that also receives the result
         if history:

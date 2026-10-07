@@ -49,6 +49,8 @@ SCHEMA = "wd.rule12-grok-ledger-adapter.v1"
 PROMPT_SCHEMA = "wd.rule12-grok-prompt.v1"
 REQUEST_EVENT_TYPE = "message"
 REQUEST_STATUS = "grok_review_requested"
+# Lead brokers consultations; the helper records no requested_by for Lead's own (helper REQUESTERS).
+LEAD_AGENT = "codex-lead-1"
 # The helper refuses a caller prompt over 24000 UTF-8 bytes (wd_grok_helper main).
 MAX_PROMPT_BYTES = 24000
 # Fresh per request: secrets.token_hex(16). The evaluator accepts 32..64 hex.
@@ -315,6 +317,9 @@ def collect_rule12_grok_consultations(
             "started_utc": record.get("ts_utc") if type(record.get("ts_utc")) is str else "",
             "request_id": "",
             "effort": "",
+            # The model the helper run recorded (its --model), never the resolver's guess; UNKNOWN
+            # when no bound run exists or its ledger entry has no well-formed model (RCO2 F2).
+            "model": "UNKNOWN",
             "prompt_sha256": "",
             "input_sha256": result["expected_diff_sha256"],
             "answer_sha256": "",
@@ -348,13 +353,27 @@ def collect_rule12_grok_consultations(
         if record_utc is None:
             reasons.append(f"{label}: request record has no parseable ts_utc")
             continue
-        runs = [
+        same_prompt = [
             entry
             for entry in started
             if entry.get("task_id") == task_id and entry.get("request_sha256") == prompt_sha256
         ]
+        # RCO2 F1: a run counts only for the record it was made for. The helper records requested_by,
+        # the agent a consultation is FOR (a relay executor passes the requester's name; Lead's own
+        # consultation has none), never who executed it, so that is the only binding the ledger can
+        # prove. A run made for another requester is reported and never fills or blocks this record.
+        record_agent = consultation["requester"]
+        if record_agent in helper.REQUESTERS:
+            bound_to: str | None = record_agent
+        elif record_agent == LEAD_AGENT:
+            bound_to = None
+        else:
+            reasons.append(f"{label}: request record agent {record_agent!r} is never a helper requester")
+            continue
+        runs = [entry for entry in same_prompt if "requested_by" in entry and entry["requested_by"] == bound_to]
+        consultation["unbound_runs"] = len(same_prompt) - len(runs)
         if not runs:
-            reasons.append(f"{label}: no helper run with the gate-built prompt")
+            reasons.append(f"{label}: no helper run with the gate-built prompt made for this record's requester")
             continue
         if len(runs) > 1:
             reasons.append(f"{label}: the gate-built prompt was run more than once")
@@ -363,6 +382,7 @@ def collect_rule12_grok_consultations(
         request_id = run["request_id"]
         consultation["request_id"] = request_id if REQUEST_ID_RE.match(request_id) else ""
         consultation["effort"] = run.get("effort") if type(run.get("effort")) is str else ""
+        consultation["model"] = helper._label(run.get("model")) or "UNKNOWN"
         reserved = _parse_utc(run.get("reserved_utc"))
         if reserved is None or reserved < record_utc or reserved > now_utc:
             reasons.append(f"{label}: helper run is not after its request record and before the gate clock")

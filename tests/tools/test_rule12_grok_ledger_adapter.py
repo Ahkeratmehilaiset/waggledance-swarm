@@ -89,11 +89,11 @@ def grok_root(tmp_path):
 
 
 def run_grok(root, answer, nonce=NONCE, slot="opposite_family", now=RUN_DT, command=COMMAND,
-             diff=DIFF, task=TASK, returncode=0, finished=None):
+             diff=DIFF, task=TASK, returncode=0, finished=None, requested_by="claude-rco-1"):
     _HelperClock.current = finished or now + timedelta(seconds=30)
     prompt = adapter.build_rule12_grok_prompt(task_id=TASK, head=H, slot=slot, nonce=nonce,
                                               diff_text=diff, changed_paths=PATHS)
-    result = helper.consult(root, task, prompt, list(command), now=now, requested_by="claude-rco-1",
+    result = helper.consult(root, task, prompt, list(command), now=now, requested_by=requested_by,
                             runner=lambda *a, **k: SimpleNamespace(returncode=returncode, stdout=answer))
     return result
 
@@ -417,3 +417,104 @@ def test_adapter_is_not_wired_into_any_gate_or_runtime_path():
         assert "rule12_grok_ledger_adapter" not in path.read_text(encoding="utf-8"), path.name
     definition = json.loads((ROOT / "ops/windows/reboot/bridge-code-files.json").read_text(encoding="utf-8"))
     assert "tools/rule12_grok_ledger_adapter.py" not in json.dumps(definition)
+
+
+# --- RCO2 F1/F2 (2026-10-07): a run binds to the record it was made for; the run's model is exported ---
+
+
+def _rewrite_started(root, **changes):
+    lines = ledger_lines(root)
+    for entry in lines:
+        if entry["event"] == "started":
+            for key, value in changes.items():
+                if value is _DROP:
+                    entry.pop(key, None)
+                else:
+                    entry[key] = value
+    (root / helper.LEDGER_NAME).write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
+
+
+_DROP = object()
+
+
+def test_a_single_run_made_for_another_requester_does_not_fill(grok_root):
+    run_grok(grok_root, "APPROVE", requested_by="claude-rco-2")
+    collected = collect(grok_root, [request()])
+    [consultation] = collected["consultations"]
+    assert consultation["answer_text"] is None and consultation["unbound_runs"] == 1
+    assert any("made for this record's requester" in reason for reason in collected["reasons"])
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+def test_own_and_foreign_runs_of_one_prompt_fill_from_the_own_run_only(grok_root):
+    run = run_grok(grok_root, "APPROVE")
+    run_grok(grok_root, "REJECT", now=RUN_DT + timedelta(minutes=1), requested_by="fable-5")
+    collected = collect(grok_root, [request()])
+    [consultation] = collected["consultations"]
+    assert collected["reasons"] == [] and consultation["request_id"] == run["request_id"]
+    assert consultation["unbound_runs"] == 1
+    assert evaluate(collected)["decision"] == "satisfied"
+
+
+def test_two_runs_made_for_the_same_requester_stay_ambiguous(grok_root):
+    run_grok(grok_root, "APPROVE")
+    run_grok(grok_root, "APPROVE", now=RUN_DT + timedelta(minutes=1))
+    collected = collect(grok_root, [request()])
+    assert any("more than once" in reason for reason in collected["reasons"])
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+def test_a_lead_record_binds_only_to_a_run_without_requested_by(grok_root):
+    run_grok(grok_root, "APPROVE", requested_by=None)
+    collected = collect(grok_root, [request(agent="codex-lead-1")])
+    assert collected["reasons"] == [] and collected["consultations"][0]["answer_text"] is not None
+    other = collect(grok_root, [request()])           # an rco-1 record cannot take Lead's own run
+    assert other["consultations"][0]["answer_text"] is None
+
+
+@pytest.mark.parametrize("agent", ["grok-scout-1", "operator", "Claude-rco-1", ""])
+def test_a_record_agent_the_helper_never_names_binds_no_run(grok_root, agent):
+    run_grok(grok_root, "APPROVE", requested_by=None)
+    collected = collect(grok_root, [request(agent=agent)])
+    assert collected["consultations"][0]["answer_text"] is None
+    assert any("never a helper requester" in reason for reason in collected["reasons"])
+
+
+@pytest.mark.parametrize("value", [_DROP, 5, "Claude-rco-1", ["claude-rco-1"]],
+                         ids=["missing", "int", "case", "list"])
+def test_a_missing_or_malformed_requested_by_never_fills(grok_root, value):
+    run_grok(grok_root, "APPROVE")
+    _rewrite_started(grok_root, requested_by=value)
+    collected = collect(grok_root, [request()])
+    assert collected["consultations"][0]["answer_text"] is None
+    assert evaluate(collected)["decision"] == "not_satisfied"
+
+
+def test_the_run_model_is_exported(grok_root):
+    run_grok(grok_root, "APPROVE")
+    [consultation] = collect(grok_root, [request()])["consultations"]
+    assert consultation["model"] == "grok-test"
+
+
+@pytest.mark.parametrize("value", [_DROP, None, 7, "bad model"], ids=["missing", "null", "int", "space"])
+def test_a_missing_or_malformed_run_model_is_unknown_and_changes_nothing_else(grok_root, value):
+    run_grok(grok_root, "APPROVE")
+    _rewrite_started(grok_root, model=value)
+    collected = collect(grok_root, [request()])
+    [consultation] = collected["consultations"]
+    if collected["reasons"]:
+        assert consultation["answer_text"] is None          # the helper's own ledger check refused it
+    else:
+        assert consultation["model"] == "UNKNOWN" and evaluate(collected)["decision"] == "satisfied"
+
+
+def test_no_bound_run_reports_an_unknown_model(grok_root):
+    [consultation] = collect(grok_root, [request()])["consultations"]
+    assert consultation["model"] == "UNKNOWN"
+
+
+def test_rewriting_the_ledger_unchanged_still_fills(grok_root):
+    run_grok(grok_root, "APPROVE")
+    _rewrite_started(grok_root)
+    collected = collect(grok_root, [request()])
+    assert collected["reasons"] == [] and evaluate(collected)["decision"] == "satisfied"

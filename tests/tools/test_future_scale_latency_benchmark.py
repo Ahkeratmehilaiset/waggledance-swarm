@@ -3,9 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
@@ -16,6 +19,62 @@ import run_future_scale_latency_bench as harness  # noqa: E402
 
 SCRIPT = ROOT / "tools" / "run_future_scale_latency_bench.py"
 FIXED_NOW = datetime(2026, 6, 4, 20, 15, tzinfo=timezone.utc)
+SAFE_FIXTURE_BRANCH = "feature/latency-fixture"
+SAFE_FIXTURE_ALIAS = "feature-latency-fixture"
+UNSAFE_PROVIDER_BRANCH = "claude-rco-2/grok-runtime-fix-20261007"
+FIXTURE_COMMIT_DATE = "2026-06-04T20:15:00+00:00"
+
+
+def _git_free_env() -> dict[str, str]:
+    """The current environment without any inherited Git selector (GIT_DIR, GIT_WORK_TREE, ...)."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+
+
+def _fixture_repo(root: Path, branch: str) -> Path:
+    """A neutral repository with one empty commit on ``branch``, independent of the checkout."""
+    env = _git_free_env()
+    env.update(GIT_AUTHOR_DATE=FIXTURE_COMMIT_DATE, GIT_COMMITTER_DATE=FIXTURE_COMMIT_DATE)
+    identity = ["-c", "user.name=latency-fixture", "-c", "user.email=latency-fixture@example.invalid"]
+    for argv in (
+        ["init", "-q", "-b", branch, str(root)],
+        ["-C", str(root), *identity, "-c", "commit.gpgsign=false",
+         "commit", "-q", "--allow-empty", "-m", "latency fixture"],
+    ):
+        subprocess.run(["git", *argv], check=True, capture_output=True, env=env)
+    return root
+
+
+def _fixture_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True, env=_git_free_env(),
+    ).stdout.strip()
+
+
+def _select_repo(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
+    """Point every git call of the harness (in-process and CLI child) at ``repo``."""
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo))
+
+
+@pytest.fixture(scope="module")
+def safe_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _fixture_repo(tmp_path_factory.mktemp("git-safe"), SAFE_FIXTURE_BRANCH)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_branch_metadata(safe_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the git metadata the report embeds instead of reading the checkout.
+
+    The harness records ``git branch --show-current`` as ``source_branch``, and the
+    leak policy refuses provider tokens there (a workflow_dispatch run checks out
+    branches such as ``claude-rco-2/...``). Every test, including the CLI
+    subprocesses, runs real git against a neutral fixture repository; the harness,
+    validator and leak policy are unchanged.
+    """
+    _select_repo(monkeypatch, safe_repo)
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -260,3 +319,54 @@ def test_cli_rejects_non_utc_now(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "--now requires a UTC timestamp" in result.stderr
+
+
+def test_report_embeds_the_fixture_repository_metadata(safe_repo: Path) -> None:
+    head = _fixture_head(safe_repo)
+    assert len(head) == 40 and set(head) <= set("0123456789abcdef") and head != "0" * 40
+
+    report = harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+
+    assert report["source_branch"] == SAFE_FIXTURE_ALIAS
+    assert report["git_sha"] == head
+    assert report["deterministic_seed"].endswith(head[:8])
+    assert harness.validate_latency_benchmark_report(report) == []
+
+    completed = _run_cli(
+        "--offline",
+        "--deterministic",
+        "--now",
+        "2026-06-04T20:15:00Z",
+        "--json",
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["source_branch"] == SAFE_FIXTURE_ALIAS
+    assert payload["git_sha"] == head
+
+
+def test_provider_token_branch_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: the isolation bypasses nothing; a provider-token branch still fails."""
+    _select_repo(monkeypatch, _fixture_repo(tmp_path / "git-unsafe", UNSAFE_PROVIDER_BRANCH))
+    message = "$.source_branch contains a forbidden secret/path-like string"
+
+    with pytest.raises(ValueError) as refused:
+        harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+    assert message in str(refused.value)
+
+    out_dir = tmp_path / "out"
+    completed = _run_cli(
+        "--offline",
+        "--deterministic",
+        "--now",
+        "2026-06-04T20:15:00Z",
+        "--out-dir",
+        str(out_dir),
+        "--json",
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert message in completed.stderr
+    assert not out_dir.exists()

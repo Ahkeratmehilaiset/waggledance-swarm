@@ -253,17 +253,33 @@ def _subprocess_runner(
     return RunResult(completed.returncode, completed.stdout, completed.stderr)
 
 
-GH_WRITE_FLAGS = frozenset({"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"})
+# The ONLY gh argv shapes this module builds (Tools FC0D3948 / RCO1 G2-L1). Matching whole argv shapes,
+# not refusing known write flags, so attached, ``=`` and future flag forms can never pass.
+GH_PR_NUMBER_RE = re.compile(r"[1-9][0-9]{0,9}")
+GH_API_READS = (
+    re.compile(re.escape(f"repos/{REPOSITORY}/branches/{BASE_REF_NAME}/protection/required_status_checks")),
+    re.compile(re.escape(f"repos/{REPOSITORY}/commits/") + r"[0-9a-f]{40}" + re.escape("/check-runs?per_page=100")),
+    re.compile(r"rate_limit"),
+)
 
 
 def require_read_only_gh(argv: Sequence[str]) -> None:
-    """Refuse any ``gh`` argv other than ``pr view`` or a plain GET ``api`` read."""
+    """Refuse every ``gh`` argv except the exact read shapes built here.
+
+    Accepted: ``pr view <n> --repo <REPOSITORY> --json <GH_VIEW_FIELDS>`` and ``api <endpoint>`` with no
+    other argument, for the required-checks, exact-head check-runs and rate-limit endpoints only.
+    """
     args = list(argv[1:])
-    if args[:2] == ["pr", "view"]:
-        return
-    if args[:1] == ["api"] and len(args) >= 2 and not any(
-        arg in GH_WRITE_FLAGS or arg.startswith(("--method=", "-X")) for arg in args[1:]
+    if not all(type(arg) is str for arg in args):
+        raise AdmissionError("effect_refused", "gh argv holds a non-string element")
+    if (
+        len(args) == 7
+        and args[:2] == ["pr", "view"]
+        and GH_PR_NUMBER_RE.fullmatch(args[2])
+        and args[3:] == ["--repo", REPOSITORY, "--json", ",".join(GH_VIEW_FIELDS)]
     ):
+        return
+    if len(args) == 2 and args[0] == "api" and any(pattern.fullmatch(args[1]) for pattern in GH_API_READS):
         return
     raise AdmissionError("effect_refused", "gh argv is not on the read-only allowlist: " + " ".join(args[:3]))
 
@@ -550,7 +566,11 @@ def _in_negative_scope(event: Mapping[str, Any], *, task_id: str, pull_request: 
     payload = event.get("payload")
     if isinstance(payload, Mapping):
         for key in PR_PAYLOAD_KEYS:
-            if type(payload.get(key)) is int and payload.get(key) == pull_request:
+            value = payload.get(key)
+            if type(value) in (int, float) and value == pull_request:
+                return True
+            # RCO1 G2-L2: a string key ("1763", "#1763", "PR-1763", a PR URL) is in scope too (fail closed).
+            if type(value) is str and re.search(rf"(?<![0-9])0*{pull_request}(?![0-9])", value):
                 return True
     return False
 
@@ -641,7 +661,8 @@ def _check_controls(
         )
     else:
         out.passed("rco_blocking_decision")
-    digest = hashlib.sha256("\n".join(sorted(control_ids)).encode("ascii")).hexdigest()
+    # Snapshot order, not sorted: the veto outcome depends on the order (Tools FC0D3948).
+    digest = hashlib.sha256("\n".join(control_ids).encode("ascii")).hexdigest()
     if expected_controls_digest is not None:
         if expected_controls_digest != digest:
             out.refuse("controls_unchanged", "controls_changed", f"expected {expected_controls_digest} now {digest}")
@@ -775,17 +796,7 @@ def _check_ci(out: _Collector, head_sha: str, *, runner: Runner | None, gh_execu
         )
         if required_raw.returncode != 0:
             raise AdmissionError("required_checks_unknown", f"gh exit {required_raw.returncode}")
-        required_doc = _strict_json(required_raw.stdout, "required checks")
-        names = set()
-        if isinstance(required_doc, dict):
-            for name in required_doc.get("contexts") or []:
-                if type(name) is str and name:
-                    names.add(name)
-            for item in required_doc.get("checks") or []:
-                if isinstance(item, dict) and type(item.get("context")) is str and item["context"]:
-                    names.add(item["context"])
-        if not names:
-            raise AdmissionError("required_checks_unknown", "no required check names could be read")
+        required = _required_checks(_strict_json(required_raw.stdout, "required checks"))
         runs_raw = _run_gh(run, gh_executable, ["api", f"repos/{REPOSITORY}/commits/{head_sha}/check-runs?per_page=100"])
         if runs_raw.returncode != 0:
             raise AdmissionError("ci_unknown", f"gh exit {runs_raw.returncode}")
@@ -798,9 +809,13 @@ def _check_ci(out: _Collector, head_sha: str, *, runner: Runner | None, gh_execu
     if not isinstance(runs, list) or type(total) is not int or total != len(runs):
         out.unknown("ci_required_checks", "ci_partial", "check-run list is missing or paginated")
         return
+    if not all(_well_formed_check_run(item) for item in runs):
+        out.unknown("ci_required_checks", "ci_malformed", "a check run has an unsupported shape")
+        return
     problems = []
-    for name in sorted(names):
-        matching = [item for item in runs if isinstance(item, dict) and item.get("name") == name]
+    for name in sorted(required):
+        # Only a run of the required app counts (RCO1 G2-M1); a same-name run of any other app is ignored.
+        matching = [item for item in runs if item["name"] == name and item["app"]["id"] == required[name]]
         if not matching:
             problems.append(f"ci_missing:{name}")
             continue
@@ -816,7 +831,52 @@ def _check_ci(out: _Collector, head_sha: str, *, runner: Runner | None, gh_execu
     if problems:
         out.refuse("ci_required_checks", problems[0], ",".join(sorted(set(problems))))
     else:
-        out.passed("ci_required_checks", ",".join(sorted(names)))
+        out.passed("ci_required_checks", ",".join(sorted(required)))
+
+
+def _required_checks(doc: Any) -> dict[str, int]:
+    """Required check name -> app id, from the exact protection shape, or ``required_checks_unknown``.
+
+    ``contexts`` and ``checks`` must both be lists naming the same non-empty, distinct contexts, and every
+    check must carry an integer ``app_id``.  Anything else (a malformed or extra entry, a null app meaning
+    any source, one context bound to two apps) is not interpreted: the CI check stays UNKNOWN.
+    """
+    def unknown(detail: str) -> AdmissionError:
+        return AdmissionError("required_checks_unknown", detail)
+
+    if not isinstance(doc, dict):
+        raise unknown("required checks are not an object")
+    contexts, checks = doc.get("contexts"), doc.get("checks")
+    if type(contexts) is not list or type(checks) is not list:
+        raise unknown("contexts and checks must both be lists")
+    if not all(type(name) is str and name for name in contexts) or len(set(contexts)) != len(contexts):
+        raise unknown("contexts must be distinct non-empty strings")
+    required: dict[str, int] = {}
+    for item in checks:
+        if (
+            type(item) is not dict
+            or type(item.get("context")) is not str
+            or not item["context"]
+            or type(item.get("app_id")) is not int
+            or item["context"] in required
+        ):
+            raise unknown("a required check has an unsupported shape, app binding or duplicate context")
+        required[item["context"]] = item["app_id"]
+    if not required or set(required) != set(contexts):
+        raise unknown("no required checks, or contexts and checks disagree")
+    return required
+
+
+def _well_formed_check_run(item: Any) -> bool:
+    return (
+        type(item) is dict
+        and type(item.get("name")) is str
+        and type(item.get("head_sha")) is str
+        and type(item.get("status")) is str
+        and (item.get("conclusion") is None or type(item.get("conclusion")) is str)
+        and type(item.get("app")) is dict
+        and type(item["app"].get("id")) is int
+    )
 
 
 def _check_rate(out: _Collector, *, runner: Runner | None, gh_executable: str) -> None:

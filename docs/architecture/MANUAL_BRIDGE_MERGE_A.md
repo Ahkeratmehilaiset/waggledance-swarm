@@ -327,8 +327,12 @@ are always `unknown` in this slice.
 **Effects.** None.
 
 - No merge, ready, undraft or other GitHub mutation. Every `gh` argv must
-  be `pr view` or a plain `api` GET (no `-X`, `--method`, `-f`, `-F`,
-  `--field`, `--raw-field` or `--input`). The only `git` call of its own is
+  be one of the exact read shapes the module builds, and nothing else:
+  `pr view <n> --repo <repository> --json <the nine fields>`, or `api` with
+  exactly one argument, the `main` required-checks endpoint, the exact-head
+  check-runs endpoint (`?per_page=100`) or `rate_limit`. Any added argument
+  or flag form refuses (`effect_refused`), whether it is spaced, attached
+  or written with `=`. The only `git` call of its own is
   `merge-base --is-ancestor`.
 - No nonce-ledger access, no bridge, receipt or MAGMA write, no provider
   call.
@@ -386,8 +390,10 @@ are always `unknown` in this slice.
   fill a slot.
 - Blocking decisions (T07, DN-A as proposed, not reconciled):
   - Scope: a recognized-RCO control in the conservative negative scope (the
-    exact task, its slash/hyphen alias, the PR payload keys, or the PR
-    pattern in the task id).
+    exact task, its slash/hyphen alias, the PR pattern in the task id, or a
+    PR payload key: an int or float equal to the PR, or a string that holds
+    the PR number between non-digits, such as `"1763"`, `"#1763"`,
+    `"PR-1763"` or a PR URL).
   - Such a control blocks unless it is an `rco_pass` decision or an exact
     retraction. That covers any `finding`, any decision with another
     status, and any event with a blocking status.
@@ -403,11 +409,15 @@ are always `unknown` in this slice.
     contract. Genuine withdrawal and its provenance stay `unknown`.
   - Prose and later passes never clear a block, and a veto outranks the
     other RCO's pass.
-- Controls changed (T08): `controls_digest` (over the scoped control
-  events) differs from the digest the caller saw in an earlier preview.
+- Controls changed (T08): `controls_digest` (over the scoped control event
+  ids in snapshot order, because the order decides whether a retraction
+  clears) differs from the digest the caller saw in an earlier preview.
 - CI (T08): a required check is missing, pending, failed, or reported for
   another head. A required check that was skipped or neutral is named and
-  refused, never bypassed.
+  refused, never bypassed. A required check binds to its `app_id`: only a
+  run of that app counts, and a same-name run of another app is ignored.
+  Legacy commit statuses are not read, so a status-only required context
+  is refused as missing.
 - Rate (T08): fewer than 50 core API requests remain.
 
 **Always `unknown` in this slice.**
@@ -420,6 +430,11 @@ are always `unknown` in this slice.
 - A missing identity registry or expected request ids.
 - An unreadable or paginated CI listing, an unreadable rate limit, an
   unreadable dependency or batch PR, or an inconclusive ancestry check.
+- A required-checks document whose shape is not exactly supported:
+  `contexts` and `checks` not both lists of the same distinct contexts, a
+  malformed entry, a missing or null `app_id` (any source), or one context
+  bound to two apps. A check run without the expected fields, including
+  an integer `app.id`, also stays `unknown`.
 - `UNKNOWN` mergeability.
 - The live PR read when it came from an injected runner.
 

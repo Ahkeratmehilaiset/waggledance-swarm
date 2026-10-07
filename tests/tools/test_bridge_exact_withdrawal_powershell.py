@@ -398,3 +398,49 @@ def test_pure_api_bound_requests_are_never_withdrawn(tmp_path, shell, field, pla
                             env=child_env(tmp_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
+
+
+SELECTOR_FILES = ("Get-BridgeNextAction.ps1", "BridgeRequestContract.ps1", "BridgeRoster.ps1", "BridgeEventClassifier.ps1")
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("registry", ["missing", "invalid_json", "agent_absent", "not_a_uuid", "unreadable_directory", "valid"])
+def test_identity_registry_failures_never_close(tmp_path, shell, registry):
+    """A missing or unreadable registry gives withdrawal_identity_unverified, never a closure."""
+    install = tmp_path / "install"
+    (install / ".agent-bridge" / "bin").mkdir(parents=True)
+    for name in SELECTOR_FILES:
+        shutil.copyfile(BIN / name, install / ".agent-bridge" / "bin" / name)
+    configs = install / "configs"
+    configs.mkdir()
+    path = configs / "bridge_identity_registry.json"
+    identities = dict(REGISTRY)
+    if registry == "invalid_json":
+        path.write_text("{not json", encoding="utf-8")
+    elif registry == "agent_absent":
+        identities.pop(OWNER)
+        path.write_text(json.dumps({"identities": identities}), encoding="utf-8")
+    elif registry == "not_a_uuid":
+        identities[OWNER] = "fable-5"
+        path.write_text(json.dumps({"identities": identities}), encoding="utf-8")
+    elif registry == "unreadable_directory":
+        path.mkdir()
+    elif registry == "valid":
+        path.write_text(json.dumps({"identities": identities}), encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    (runtime / "shared").mkdir(parents=True)
+    v2 = row(V2)
+    (runtime / "shared" / "events.jsonl").write_bytes(v2 + b"\n" + row(withdrawal(descriptor(V2, v2))) + b"\n")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File",
+                             str(install / ".agent-bridge" / "bin" / "Get-BridgeNextAction.ps1"),
+                             "-Agent", TARGET, "-Json", "-Now", NOW],
+                            env=child_env(runtime), capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout[result.stdout.index("{"):])
+    kinds = [item["kind"] for item in data.get("withdrawal_diagnostics", [])]
+    if registry == "valid":
+        assert data["open_incoming_count"] == 0 and kinds == []
+    else:
+        assert data["open_incoming_count"] == 1, data
+        assert kinds == ["withdrawal_identity_unverified"]

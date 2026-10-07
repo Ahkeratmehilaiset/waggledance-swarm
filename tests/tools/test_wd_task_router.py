@@ -150,6 +150,24 @@ def test_t_d1_an_author_that_is_not_an_exact_member_holds_and_is_never_routed(au
     assert out["verdict"] == tr.HOLD and out["reasons"] == ["task_malformed"]
 
 
+class _FirstCompareEqual(str):
+    """A str subclass equal on its first comparison only (RCO2 TD1R-S1): it passes a membership test, then is
+    unequal to the same name at the author-cannot-review-own-work check."""
+    def __init__(self, value):
+        self.calls = 0
+
+    def __eq__(self, other):
+        self.calls += 1
+        return self.calls == 1
+
+    __hash__ = str.__hash__
+
+
+def test_t_d1_a_str_subclass_author_holds_and_never_passes_the_membership_test():
+    out = run(t=task("review", author=_FirstCompareEqual("claude-rco-1")))
+    assert out["verdict"] == tr.HOLD and out["reasons"] == ["task_malformed"]
+
+
 @pytest.mark.parametrize("author", [*tr.MEMBERS, tr.GROK])
 def test_t_d1_every_exact_member_or_grok_is_still_an_accepted_author(author):
     out = run(t=task("review", author=author))

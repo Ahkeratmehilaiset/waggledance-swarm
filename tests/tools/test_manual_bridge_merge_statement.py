@@ -1833,8 +1833,11 @@ def _real_git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
     return done.stdout
 
 
-def _commit(repo: Path, message: str) -> str:
-    _real_git(repo, "add", "-A")
+def _commit(repo: Path, message: str, *, stage: bool = True) -> str:
+    # stage=False commits the index as prepared: with core.filemode=true (the Linux
+    # default) ``git add -A`` would reset an index-only --chmod from the worktree file.
+    if stage:
+        _real_git(repo, "add", "-A")
     _real_git(repo, "commit", "-q", "--allow-empty", "-m", message)
     return _real_git(repo, "rev-parse", "HEAD").decode("ascii").strip()
 
@@ -1855,7 +1858,9 @@ def real_repo(tmp_path):
     (repo / "pääkirja ✓.md").write_bytes("ünïcode\n".encode("utf-8"))        # Unicode path
     _real_git(repo, "add", "-A")
     _real_git(repo, "update-index", "--chmod=+x", "mode.sh")                 # mode-only change
-    head = _commit(repo, "head")
+    head = _commit(repo, "head", stage=False)
+    assert _real_git(repo, "ls-tree", base, "--", "mode.sh").startswith(b"100644 ")
+    assert _real_git(repo, "ls-tree", head, "--", "mode.sh").startswith(b"100755 ")
     return repo, base, head
 
 
@@ -1888,9 +1893,10 @@ def test_g1_real_git_content_or_mode_change_alters_the_digest(real_repo):
     repo, base, head = real_repo
     facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
     (repo / "bin.dat").write_bytes(bytes(range(256)) * 4 + b"\x00")
-    content = _commit(repo, "content")
+    _real_git(repo, "add", "--", "bin.dat")
+    content = _commit(repo, "content", stage=False)
     _real_git(repo, "update-index", "--chmod=-x", "mode.sh")
-    mode_only = _commit(repo, "mode")
+    mode_only = _commit(repo, "mode", stage=False)
     changed = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=content)
     assert changed.paths == facts.paths and changed.diff_digest_sha256 != facts.diff_digest_sha256
     reverted = mms.read_git_diff_facts(repo_root=repo, base_sha=head, head_sha=mode_only)

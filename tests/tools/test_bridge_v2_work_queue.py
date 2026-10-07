@@ -864,6 +864,22 @@ def test_wq_f1_a_retry_after_a_crash_recovers_and_heartbeat_and_release_succeed(
     assert events == (["claim", "release"] if retry_at == timedelta(0) else ["claim", "claim", "release"])
 
 
+def test_wq_f1_a_changed_retry_at_the_same_now_after_a_crash_is_a_refresh_under_a_new_key(env, monkeypatch):
+    # Not a replay (another summary), so only the key derived under the locks keeps it off the redone record's key.
+    txns, cwd = env
+    _crash_the_first_claim_write(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        claim(env, task="team/f1", scope=("tools/f1.py",))
+    monkeypatch.undo()
+    record = wq.claim_task(txns, agent="claude-rco-2", task_id="team/f1", summary="changed", mode="write",
+                           write_scope=("tools/f1.py",), identity=OWNER, cwd=cwd, now=NOW)
+    assert record["summary"] == "changed" and claim_file(env, "team/f1").read_bytes() == claim_bytes(record)
+    assert set(_wal_states(txns)) == {"outboxed"} and len(_outbox_records(txns)) == 2   # the redo, then the refresh
+    wq.heartbeat(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW)
+    wq.release_task(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW)
+    assert wq.find_claim(txns, "team/f1") is None and set(_wal_states(txns)) == {"outboxed"}
+
+
 def test_wq_f1_a_claim_replayed_at_the_same_now_returns_the_same_claim_and_adds_no_event(env):
     first = claim(env, task="team/f1", scope=("tools/f1.py",))
     assert claim(env, task="team/f1", scope=("tools/f1.py",)) == first          # at fb078: a second claim event

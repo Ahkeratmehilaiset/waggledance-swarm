@@ -22,7 +22,8 @@ import threading
 import pytest
 
 from tools import bridge_v2_work_queue as wq
-from tools.bridge_v2_queue_transactions import FileClaimLock, LockTimeout, QueueTransactions, Refused, claim_bytes
+from tools.bridge_v2_queue_transactions import (Blocked, FileClaimLock, LockTimeout, QueueTransactionError,
+                                                QueueTransactions, Refused, claim_bytes)
 from tools.bridge_v2_resource_scope import ScopeError, explain_scope, resolve_scopes
 from tools.bridge_v2_work_queue import OwnerIdentity, WorkQueueError
 
@@ -825,3 +826,185 @@ def test_f8_fence_the_real_powershell_session_writer_skips_its_beat_while_the_fe
     written = json.loads(beat.read_text(encoding="utf-8"))
     assert (written["owner_session_id"], written["owner_token_sha256"]) == (OWNER.owner_session_id,
                                                                            OWNER.owner_token_sha256)
+
+
+# -- WQ-F1 / WQ-F2 (fable-5 runtime audit 462A5609, Lead request lead-wave12h-20261007-fable-wq-runtime-fix-v1) --------
+# Both reproduced offline at fb078f0a. WQ-F1: a claim crashed after its WAL record, and a retry with the SAME now
+# planned a refresh under the idempotency key computed BEFORE the locks from the then-absent claim. That was the key
+# of the record recovery had just redone, so its outbox record conflicted (diverged), and heartbeat and release were
+# then blocked. WQ-F2: find_claim skips a torn, oversize or non-object claim file, so a read-only claim of the same
+# task took the other file name beside it, and the owner's release was then refused.
+
+def _outbox_records(txns):
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(txns.outbox_dir.glob("*.json"))]
+
+
+def _wal_states(txns):
+    paths = sorted(txns.wal_dir.glob("*.json")) + sorted(txns.final_dir.glob("*.json"))
+    return sorted(json.loads(p.read_text(encoding="utf-8"))["state"] for p in paths)
+
+
+@pytest.mark.parametrize("retry_at", [timedelta(0), timedelta(seconds=1)], ids=["same_now", "now_plus_1s"])
+def test_wq_f1_a_retry_after_a_crash_recovers_and_heartbeat_and_release_succeed(env, monkeypatch, retry_at):
+    txns = env[0]
+    _crash_the_first_claim_write(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        claim(env, task="team/f1", scope=("tools/f1.py",))
+    monkeypatch.undo()
+    assert wq.find_claim(txns, "team/f1") is None and _wal_states(txns) == ["prepared"]
+    record = claim(env, task="team/f1", scope=("tools/f1.py",), now=NOW + retry_at)      # the retry
+    assert claim_file(env, "team/f1").read_bytes() == claim_bytes(record)
+    wq.heartbeat(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW + retry_at)
+    released = wq.release_task(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW + retry_at)
+    assert released["claimed_at_utc"] == record["claimed_at_utc"] and wq.find_claim(txns, "team/f1") is None
+    assert set(_wal_states(txns)) == {"outboxed"} and list(txns.wal_dir.glob("*.json")) == []   # nothing diverged
+    assert txns.reconcile() == []
+    events = sorted(r["event"]["type"] for r in _outbox_records(txns))
+    # The same now replays the crashed claim: one logical claim, one claim event. One second later is a real refresh.
+    assert events == (["claim", "release"] if retry_at == timedelta(0) else ["claim", "claim", "release"])
+
+
+def test_wq_f1_a_changed_retry_at_the_same_now_after_a_crash_is_a_refresh_under_a_new_key(env, monkeypatch):
+    # Not a replay (another summary), so only the key derived under the locks keeps it off the redone record's key.
+    txns, cwd = env
+    _crash_the_first_claim_write(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        claim(env, task="team/f1", scope=("tools/f1.py",))
+    monkeypatch.undo()
+    record = wq.claim_task(txns, agent="claude-rco-2", task_id="team/f1", summary="changed", mode="write",
+                           write_scope=("tools/f1.py",), identity=OWNER, cwd=cwd, now=NOW)
+    assert record["summary"] == "changed" and claim_file(env, "team/f1").read_bytes() == claim_bytes(record)
+    assert set(_wal_states(txns)) == {"outboxed"} and len(_outbox_records(txns)) == 2   # the redo, then the refresh
+    wq.heartbeat(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW)
+    wq.release_task(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW)
+    assert wq.find_claim(txns, "team/f1") is None and set(_wal_states(txns)) == {"outboxed"}
+
+
+def test_wq_f1_a_claim_replayed_at_the_same_now_returns_the_same_claim_and_adds_no_event(env):
+    first = claim(env, task="team/f1", scope=("tools/f1.py",))
+    assert claim(env, task="team/f1", scope=("tools/f1.py",)) == first          # at fb078: a second claim event
+    assert claim(env, task="team/f1", scope=("tools/f1.py",)) == first          # at fb078: its key again, diverged
+    assert [r["event"]["type"] for r in _outbox_records(env[0])] == ["claim"] and _wal_states(env[0]) == ["outboxed"]
+    later = claim(env, task="team/f1", scope=("tools/f1.py",), now=NOW + timedelta(seconds=1))   # twin: a refresh
+    assert later["last_heartbeat_utc"] == "2026-09-29T22:00:01Z" and len(_outbox_records(env[0])) == 2
+
+
+def test_wq_f1_s2_a_forged_outbox_record_at_the_key_derived_under_the_locks_is_still_a_visible_conflict(env):
+    txns, cwd = env
+    claim(env, task="team/f1", scope=("tools/f1.py",))
+    forged = txns._outbox_path(wq._key("claim", "team/f1", claim_file(env, "team/f1").read_bytes(), NOW))
+    forged.write_bytes(b'{"forged": true}\n')
+    with pytest.raises(QueueTransactionError, match="WAS applied"):            # a real refresh at the same now
+        wq.claim_task(txns, agent="claude-rco-2", task_id="team/f1", summary="changed", mode="write",
+                      write_scope=("tools/f1.py",), identity=OWNER, cwd=cwd, now=NOW)
+    assert forged.read_bytes() == b'{"forged": true}\n' and "diverged" in _wal_states(txns)
+    with pytest.raises(Blocked, match="diverged"):
+        wq.heartbeat(txns, agent="claude-rco-2", task_id="team/f1", identity=OWNER, now=NOW)
+
+
+def test_wq_f1_s2_a_forged_outbox_record_at_the_crashed_records_key_still_blocks_the_retry(env, monkeypatch):
+    txns = env[0]
+    _crash_the_first_claim_write(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        claim(env, task="team/f1", scope=("tools/f1.py",))
+    monkeypatch.undo()
+    forged = txns._outbox_path(wq._key("claim", "team/f1", None, NOW))
+    forged.parent.mkdir(parents=True, exist_ok=True)
+    forged.write_bytes(b'{"forged": true}\n')
+    with pytest.raises(Blocked, match="diverged") as blocked:
+        claim(env, task="team/f1", scope=("tools/f1.py",))
+    assert [entry["outcome"] for entry in blocked.value.recovered] == ["rolled_forward_diverged"]
+    assert forged.read_bytes() == b'{"forged": true}\n'
+
+
+F2_TASK = "wq-f2-task"   # a safe name: preferred file wq-f2-task.json, alternative wq-f2-task-<sha256[:12]>.json
+F2_CLAIMANTS = {"other_owner": dict(agent="codex-tools-1", identity=OTHER), "same_owner": dict(identity=OWNER)}
+
+
+def _f2_paths(txns):
+    claims = txns.root / "work_queue" / "claims"
+    return claims / f"{F2_TASK}.json", claims / f"{F2_TASK}-{hashlib.sha256(F2_TASK.encode()).hexdigest()[:12]}.json"
+
+
+def _f2_owner_claim(env, where):
+    """The owner's read-only claim of F2_TASK at the preferred or the alternative file name."""
+    preferred, hashed = _f2_paths(env[0])
+    if where == "hashed":   # the preferred name held another task's claim when the owner claimed
+        preferred.parent.mkdir(parents=True, exist_ok=True)
+        preferred.write_bytes(claim_bytes({"agent": "fable-5", "task_id": "decoy-task", "mode": "read-only",
+                                           "last_heartbeat_utc": iso(NOW)}))
+    claim(env, task=F2_TASK, mode="read-only", scope=())
+    path = wq.find_claim(env[0], F2_TASK)
+    assert path == (hashed if where == "hashed" else preferred)
+    if where == "hashed":
+        preferred.unlink()   # that claim was released later: the preferred name is free again
+    return path
+
+
+def _damage(path, how):
+    original = path.read_bytes()
+    if how == "torn":
+        path.write_bytes(original[: len(original) // 2])
+    elif how == "oversize":
+        path.write_bytes(claim_bytes(dict(json.loads(original), pad="x" * (300 * 1024))))
+    else:
+        path.write_bytes(b"[1, 2]\n")
+    return original
+
+
+@pytest.mark.parametrize("claimant", sorted(F2_CLAIMANTS))
+@pytest.mark.parametrize("how", ["torn", "oversize", "non_object"])
+@pytest.mark.parametrize("where", ["preferred", "hashed"])
+def test_wq_f2_an_unreadable_claim_of_the_task_refuses_a_read_only_claim_and_keeps_its_owner(env, where, how, claimant):
+    txns = env[0]
+    path = _f2_owner_claim(env, where)
+    original = _damage(path, how)
+    damaged, states = path.read_bytes(), _wal_states(txns)
+    with pytest.raises(Refused, match="unreadable, over the size bound or not an object; owner unknown"):
+        claim(env, task=F2_TASK, mode="read-only", scope=(), **F2_CLAIMANTS[claimant])
+    assert sorted(path.parent.glob("*.json")) == [path] and path.read_bytes() == damaged   # kept, nothing beside it
+    assert _wal_states(txns) == states
+    path.write_bytes(original)                                    # repaired: the owner still holds the task
+    released = wq.release_task(txns, agent="claude-rco-2", task_id=F2_TASK, identity=OWNER, now=NOW)
+    assert released["task_id"] == F2_TASK and wq.find_claim(txns, F2_TASK) is None
+
+
+@pytest.mark.parametrize("mode", ["write", "keyed"])
+def test_wq_f2_twin_write_and_keyed_claims_beside_an_unreadable_claim_stay_refused(env, mode):
+    path = _f2_owner_claim(env, "preferred")
+    _damage(path, "torn")
+    extra = dict(scope=("tools/f2.py",)) if mode == "write" else dict(mode="read-only", scope=(), dispatch_key=KEY_A)
+    with pytest.raises(Refused, match="unknown"):                 # refused at fb078 too (overlap/duplicate unknown)
+        claim(env, task=F2_TASK, agent="codex-tools-1", identity=OTHER, **extra)
+    assert sorted(path.parent.glob("*.json")) == [path]
+
+
+def test_wq_f2_twin_a_readable_claim_refuses_another_agent_and_refreshes_for_its_owner(env):
+    path = _f2_owner_claim(env, "preferred")
+    with pytest.raises(Refused, match="another agent"):
+        claim(env, task=F2_TASK, mode="read-only", scope=(), agent="codex-tools-1", identity=OTHER)
+    refreshed = claim(env, task=F2_TASK, mode="read-only", scope=(), now=NOW + timedelta(minutes=1))
+    assert refreshed["last_heartbeat_utc"] == "2026-09-29T22:01:00Z" and sorted(path.parent.glob("*.json")) == [path]
+
+
+def test_wq_f2_an_unreadable_file_at_the_other_name_also_refuses_a_refresh_but_not_a_heartbeat(env):
+    txns = env[0]
+    path = _f2_owner_claim(env, "hashed")
+    preferred, _ = _f2_paths(txns)
+    preferred.write_bytes(b'{"agent": "codex-tools-1", "task_id": "wq-f2-t')   # torn: whose claim is unknown
+    with pytest.raises(Refused, match="owner unknown"):
+        claim(env, task=F2_TASK, mode="read-only", scope=(), now=NOW + timedelta(minutes=1))
+    beat = wq.heartbeat(txns, agent="claude-rco-2", task_id=F2_TASK, identity=OWNER, now=NOW + timedelta(minutes=1))
+    assert beat["last_heartbeat_utc"] == "2026-09-29T22:01:00Z" and wq.find_claim(txns, F2_TASK) == path
+    preferred.unlink()
+    claim(env, task=F2_TASK, mode="read-only", scope=(), now=NOW + timedelta(minutes=2))   # success twin
+
+
+def test_wq_f2_a_claim_that_appeared_after_the_pre_lock_lookup_is_rechecked_under_the_locks(env, monkeypatch):
+    path = _f2_owner_claim(env, "preferred")
+    # Deterministic schedule: the claimant looked the task up before the owner's claim landed.
+    monkeypatch.setattr(wq, "find_claim", lambda txns, task: None)
+    with pytest.raises(Refused, match="task already claimed"):
+        claim(env, task=F2_TASK, mode="read-only", scope=(), agent="codex-tools-1", identity=OTHER)
+    monkeypatch.undo()
+    assert sorted(path.parent.glob("*.json")) == [path]

@@ -56,7 +56,7 @@ import re
 from typing import Sequence
 
 from tools.bridge_v2_queue_transactions import (Plan, QueueTransactionError, QueueTransactions, Refused,
-                                                read_bytes_or_none, sha256_or_none)
+                                                claim_bytes, read_bytes_or_none, sha256_or_none)
 from tools.bridge_v2_resource_scope import ScopeError, resolve_scopes, resources_overlap
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -238,16 +238,28 @@ def find_claim(txns: QueueTransactions, task_id: str) -> Path | None:
     return None
 
 
-def _new_claim_path(txns: QueueTransactions, task_id: str) -> Path:
+def _task_claim_paths(txns: QueueTransactions, task_id: str) -> tuple[Path, ...]:
+    """The file names a new claim of task_id can take: the preferred one, then its alternative (one name when
+    they coincide)."""
     preferred = _claims_dir(txns) / f"{safe_name(task_id)}.json"
-    if not preferred.exists():
-        return preferred
     base = re.sub(r"[^A-Za-z0-9._-]", "_", task_id).strip("_") or "claim"
-    return _claims_dir(txns) / f"{base}-{hashlib.sha256(task_id.encode('utf-8')).hexdigest()[:12]}.json"
+    alternative = _claims_dir(txns) / f"{base}-{hashlib.sha256(task_id.encode('utf-8')).hexdigest()[:12]}.json"
+    return (preferred,) if alternative == preferred else (preferred, alternative)
+
+
+def _new_claim_path(txns: QueueTransactions, task_id: str) -> Path:
+    paths = _task_claim_paths(txns, task_id)
+    return paths[0] if not paths[0].exists() else paths[-1]
 
 
 def _key(op: str, task_id: str, before: bytes | None, now: datetime) -> str:
     return f"{op}:{task_id}:{sha256_or_none(before)}:{iso(now)}"
+
+
+def _locked_key(op: str, task_id: str, now: datetime):
+    """WQ-F1 (fable-5 runtime audit 462A5609): the key of the claim bytes the plan sees under the locks, after
+    recovery, never of bytes read before them (that could be the key of the record recovery just redid)."""
+    return lambda before: _key(op, task_id, before, now)
 
 
 # -- operations ---------------------------------------------------------------------------
@@ -305,6 +317,25 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                 raise Refused("dispatch_key is immutable for an active claim")
         elif existing is not None:
             raise Refused("the claim was archived meanwhile; a refresh never recreates it")
+        # WQ-F2 (fable-5 runtime audit 462A5609): find_claim skips a torn, oversize or non-object claim file, so a
+        # claim of the same task could take the other file name beside it. Such a file at either name of this task
+        # refuses every claim here, under the locks, in any mode and for any owner: whose claim it is, is unknown.
+        # The file is kept as it is.
+        for other_path in _task_claim_paths(txns, task_id):
+            if other_path == claim_path:
+                continue
+            try:
+                data = read_bytes_or_none(other_path)
+                if data is not None:
+                    _claim_object(data)
+            except Exception:  # noqa: BLE001 - unreadable, over the size bound or not an object: owner unknown
+                raise Refused("a claim file of this task (" + other_path.name + ") is unreadable, over the size bound "
+                              "or not an object; owner unknown") from None
+        if current is None:
+            # A readable claim of this task that appeared after the pre-lock lookup (:288-290) holds the task.
+            for other_path, other in list_claim_entries(txns):
+                if other_path != claim_path and other.get("task_id") == task_id:
+                    raise Refused("task already claimed (" + other_path.name + ")")
         if dispatch_key is not None and current is None:
             for other_path, other in _strict_claim_entries(txns):
                 if other_path == claim_path:
@@ -383,9 +414,13 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                  "generation_before": sha256_or_none(before)}
         if dispatch_key is not None:
             claim["dispatch_key"] = event["dispatch_key"] = dispatch_key
+        if current is not None and claim_bytes(claim) == before:
+            # WQ-F1: a replay at the same now (the retry of a claim recovery just finished, or of one that succeeded)
+            # changes nothing, so it returns that claim and records no second claim event.
+            return Plan(after=claim, keep=True, result=claim)
         return Plan(after=claim, expect_absent=current is None, result=claim, event=event)
 
-    return txns.transact("claim", claim_path, _key("claim", task_id, read_bytes_or_none(claim_path), now), plan)
+    return txns.transact("claim", claim_path, _locked_key("claim", task_id, now), plan)
 
 
 def release_task(txns: QueueTransactions, *, agent: str, task_id: str, release_status: str = "done",
@@ -421,7 +456,7 @@ def release_task(txns: QueueTransactions, *, agent: str, task_id: str, release_s
                     event={"type": "release", "agent": agent, "task_id": task_id,
                            "status": record["release_status"], "generation_before": sha256_or_none(before)})
 
-    return txns.transact("release", claim_path, _key("release", task_id, read_bytes_or_none(claim_path), now), plan)
+    return txns.transact("release", claim_path, _locked_key("release", task_id, now), plan)
 
 
 def heartbeat(txns: QueueTransactions, *, agent: str, task_id: str, identity: OwnerIdentity | None,
@@ -449,7 +484,7 @@ def heartbeat(txns: QueueTransactions, *, agent: str, task_id: str, identity: Ow
                          claim_lease_expires_utc=iso(now + timedelta(seconds=seconds)))
         return Plan(after=refreshed, result=refreshed, event=None)
 
-    return txns.transact("heartbeat", claim_path, _key("heartbeat", task_id, read_bytes_or_none(claim_path), now), plan)
+    return txns.transact("heartbeat", claim_path, _locked_key("heartbeat", task_id, now), plan)
 
 
 def detect_stale_claims(txns: QueueTransactions, *, now: datetime,
@@ -735,9 +770,8 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
             # F8 fence: the owner's beat lock is held from before the plan's re-read through the delete.
             beat = _session_heartbeat_path(bridge, claim)
             try:
-                transactions.transact("stale_archive", claim_file,
-                                      _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan,
-                                      fences=() if beat is None else (beat,))
+                transactions.transact("stale_archive", claim_file, _locked_key("stale_archive", claim.task_id, now),
+                                      plan, fences=() if beat is None else (beat,))
             except Refused:
                 continue  # as core: a changed claim is skipped, not reported as archived
             except QueueTransactionError as exc:   # timeout, blocked, conflict, bound, unknown: one type (S6)

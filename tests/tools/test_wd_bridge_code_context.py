@@ -139,6 +139,7 @@ def test_tool_output_is_not_combined_with_return_code():
 import ast
 import base64
 import hashlib
+import io
 import os
 import re
 import sys
@@ -185,10 +186,23 @@ def _intra_repo_closure(entrypoints):
                 modules.add(node.module or "")
                 for alias in node.names:
                     modules.add(f"{node.module}.{alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                # A relative import resolves inside the importing file's own package.
+                base = Path(relative).parent
+                for _ in range(node.level - 1):
+                    base = base.parent
+                package = ".".join(base.parts)
+                target = f"{package}.{node.module}" if node.module else package
+                modules.add(target)
+                modules.update(f"{target}.{alias.name}" for alias in node.names)
         for module in modules:
             if not module:
                 continue
             top = module.split(".")[0]
+            if top not in {"tools", "waggledance"} and (ROOT / "tools" / f"{top}.py").is_file():
+                # A flat-layout fallback ("from bridge_capacity_advisor import ...") names a sibling
+                # tools module: it is intra-repo code and must be packaged, never a third-party name.
+                module, top = f"tools.{module}", "tools"
             if top in {"tools", "waggledance"}:
                 target = _module_relative(module)
                 if target and target not in seen:
@@ -204,11 +218,15 @@ def _intra_repo_closure(entrypoints):
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():
-    entrypoints = sorted(set(DEFINITION["python_entrypoints"].values()))
-    closure, third_party = _intra_repo_closure(entrypoints)
+    # Seed with every entrypoint AND every module the import smoke loads: the gate modules reach
+    # jsonschema only through modules that no entrypoint imports.
+    smoke = [_module_relative(module) for module in DEFINITION["import_smoke"]["package_modules"]]
+    assert None not in smoke, DEFINITION["import_smoke"]["package_modules"]
+    seeds = sorted(set(DEFINITION["python_entrypoints"].values()) | set(smoke))
+    closure, third_party = _intra_repo_closure(seeds)
     packaged = set(DEFINITION["python_files"])
     assert closure <= packaged, sorted(closure - packaged)
-    assert third_party == {"pydantic"}, sorted(third_party)
+    assert third_party == {"pydantic", "jsonschema"}, sorted(third_party)
     lock = (ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
     pinned = {
         match.group(1).lower().replace("_", "-"): match.group(2)
@@ -639,3 +657,324 @@ def test_task_worktree_python_imports_are_unaffected_by_discovery_variables():
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert Path(report["waggledance"]).resolve().is_relative_to(ROOT)
     assert Path(report["tool"]).resolve().is_relative_to(ROOT)
+
+
+# --- Case-duplicate parent environment (Tools StageOnly PS5 exit 1, 2026-10-06: BridgeCodeContext.ps1:185
+# "Cannot index into a null array"). An MSYS or Git Bash parent can pass both Path and PATH. Python's subprocess
+# dedupes such keys, so the block is built raw and passed to CreateProcessW.
+
+ENV_SHELLS = [shell for shell in ("powershell.exe", "pwsh.exe") if sys.platform == "win32" and shutil.which(shell)]
+PROBES = {f"WD_ENVFIX_PROBE_{index:03d}": f"probe-{index}" for index in range(200)}
+FIXTURE_SECRET = "fixture-not-a-secret-value"
+CHILD_SOURCE = """import json, os, sys
+keys = ("WD_ENVFIX_SECRET", "PIP_REQUIRE_VIRTUALENV", "WD_ENVFIX_CHILD_ONLY", "PYTHONDONTWRITEBYTECODE")
+probes = {k: v for k, v in os.environ.items() if k.startswith("WD_ENVFIX_PROBE_")}
+print(json.dumps({"probes": probes, "keys": sorted(os.environ), "has_path": bool(os.environ.get("PATH")),
+                  **{k: os.environ.get(k) for k in keys}}))
+"""
+
+
+def _start_with_raw_environment(shell: str, command: str, pairs: list[tuple[str, str]]) -> int:
+    import base64
+    import ctypes
+    from ctypes import wintypes
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("reserved", wintypes.LPWSTR), ("desktop", wintypes.LPWSTR),
+                    ("title", wintypes.LPWSTR)] + [(name, wintypes.DWORD) for name in
+                    ("x", "y", "x_size", "y_size", "x_chars", "y_chars", "fill", "flags")] + [
+                    ("show", wintypes.WORD), ("reserved2_size", wintypes.WORD), ("reserved2", ctypes.c_void_p),
+                    ("stdin", wintypes.HANDLE), ("stdout", wintypes.HANDLE), ("stderr", wintypes.HANDLE)]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [("process", wintypes.HANDLE), ("thread", wintypes.HANDLE),
+                    ("pid", wintypes.DWORD), ("tid", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    block = "".join(f"{key}={value}\0" for key, value in pairs) + "\0"
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode()
+    line = ctypes.create_unicode_buffer(f'"{shell}" -NoProfile -NonInteractive -EncodedCommand {encoded}')
+    startup, info = StartupInfo(cb=ctypes.sizeof(StartupInfo)), ProcessInformation()
+    if not kernel32.CreateProcessW(None, line, None, None, False, 0x00000400 | 0x08000000,  # unicode env, no window
+                                   ctypes.create_unicode_buffer(block, len(block)), None,
+                                   ctypes.byref(startup), ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        assert kernel32.WaitForSingleObject(info.process, 180_000) == 0, "child timed out"
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(info.process, ctypes.byref(code))
+        return code.value
+    finally:
+        kernel32.CloseHandle(info.process)
+        kernel32.CloseHandle(info.thread)
+
+
+@pytest.mark.skipif(not ENV_SHELLS, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+@pytest.mark.parametrize("duplicate", (True, False), ids=("Path_and_PATH", "single_Path"))
+def test_python_call_gets_a_complete_isolated_environment_from_a_case_duplicate_parent(
+    tmp_path: Path, shell: str, duplicate: bool,
+):
+    child = tmp_path / "child.py"
+    child.write_text(CHILD_SOURCE, encoding="utf-8")
+    result_path = tmp_path / "result.json"
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    command = f"""
+$ErrorActionPreference = 'Stop'
+. '{quote(REBOOT / "BridgeCodeContext.ps1")}'
+$out = [ordered]@{{ path_keys = @(@([Environment]::GetEnvironmentVariables().Keys) | Where-Object {{ $_ -match '^path$' }}) }}
+try {{
+    $call = Invoke-WdBridgeCodePython -PythonExecutable '{quote(sys.executable)}' -Arguments @('-B', '{quote(child)}') `
+        -Label 'environment fixture' -Environment @{{
+            PYTHONDONTWRITEBYTECODE = '1'; PIP_REQUIRE_VIRTUALENV = ''; WD_ENVFIX_SECRET = ''; WD_ENVFIX_CHILD_ONLY = 'child'
+        }}
+    $out.child = $call.StdOut.Trim()
+}} catch {{ $out.error = $_.Exception.Message }}
+$out.parent_after = [ordered]@{{}}
+foreach ($key in @('WD_ENVFIX_SECRET', 'PIP_REQUIRE_VIRTUALENV', 'WD_ENVFIX_CHILD_ONLY', 'PYTHONDONTWRITEBYTECODE', 'WD_ENVFIX_PROBE_199')) {{
+    $out.parent_after[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+}}
+[IO.File]::WriteAllText('{quote(result_path)}', ($out | ConvertTo-Json -Depth 5 -Compress), (New-Object Text.UTF8Encoding($false)))
+"""
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith(("WD_", "PIP_", "PYTHON")) and key.upper() != "PATH"}
+    path = os.environ.get("PATH", "")
+    pairs = [("Path", path)] + ([("PATH", path)] if duplicate else []) + sorted(environment.items())
+    pairs += sorted(PROBES.items()) + [("WD_ENVFIX_SECRET", FIXTURE_SECRET), ("PIP_REQUIRE_VIRTUALENV", "1")]
+    assert _start_with_raw_environment(shutil.which(shell), command, pairs) == 0
+    report = json.loads(result_path.read_text(encoding="utf-8"))
+    assert len(report["path_keys"]) == (2 if duplicate else 1), report     # the fixture really is case-duplicate
+    assert "error" not in report, report["error"]
+    seen = json.loads(report["child"])
+    assert seen["probes"] == PROBES
+    # Complete: .NET Framework keeps a PARTIAL copy after the duplicate-key throw (58 of 299 measured), so every
+    # parent variable must reach the child, not only the ones that happened to be copied first.
+    expected = {key.upper() for key, _ in pairs} - {"WD_ENVFIX_SECRET", "PIP_REQUIRE_VIRTUALENV"}
+    assert expected <= {key.upper() for key in seen["keys"]}, sorted(expected - {key.upper() for key in seen["keys"]})
+    assert seen["has_path"] is True
+    assert seen["WD_ENVFIX_SECRET"] is None          # an empty override still removes a parent variable
+    assert seen["PIP_REQUIRE_VIRTUALENV"] is None
+    assert seen["WD_ENVFIX_CHILD_ONLY"] == "child"
+    assert seen["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert report["parent_after"] == {               # only the child's dictionary changed, never this process
+        "WD_ENVFIX_SECRET": FIXTURE_SECRET, "PIP_REQUIRE_VIRTUALENV": "1", "WD_ENVFIX_CHILD_ONLY": None,
+        "PYTHONDONTWRITEBYTECODE": None, "WD_ENVFIX_PROBE_199": "probe-199",
+    }
+
+# --- The one admitted non-.py/.json package file is the exact charter path (Lead v2 2026-10-06).
+
+CHARTER = "docs/architecture/IDLE_AUTONOMY_CHARTER.md"
+PACKAGE_PATH_CASES = {
+    CHARTER: None,
+    "docs/architecture/OTHER.md": "must be .py or .json",
+    "README.md": "must be .py or .json",
+    "docs/architecture/idle_autonomy_charter.md": "must be .py or .json",
+    "Docs/architecture/IDLE_AUTONOMY_CHARTER.md": "must be .py or .json",
+    "x/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "must be .py or .json",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md.txt": "must be .py or .json",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.MD": "must be .py or .json",
+    "../docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs/../docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs/./architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs\\architecture\\IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "C:/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs//architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+}
+
+
+@pytest.mark.skipif(not ENV_SHELLS, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+@pytest.mark.parametrize("relative", sorted(PACKAGE_PATH_CASES))
+def test_only_the_exact_charter_path_is_admitted_beside_py_and_json(tmp_path: Path, shell: str, relative: str):
+    definition = json.loads(json.dumps(DEFINITION))
+    definition["python_files"] = [path for path in definition["python_files"] if path != relative] + [relative]
+    path = tmp_path / "bridge-code-files.json"
+    path.write_text(json.dumps(definition), encoding="utf-8")
+    script = (f"$ErrorActionPreference = 'Stop'; . '{str(REBOOT / 'BridgeCodeContext.ps1').replace(chr(39), chr(39) * 2)}'; "
+              f"try {{ $d = (Get-WdBridgeCodePackageDefinition -Path '{str(path).replace(chr(39), chr(39) * 2)}').Definition; "
+              "'ADMITTED:' + @($d.python_files).Count } catch { 'REFUSED:' + $_.Exception.Message }")
+    result = subprocess.run([shutil.which(shell), "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=120)
+    lines = [line for line in result.stdout.splitlines() if line.startswith(("ADMITTED:", "REFUSED:"))]
+    assert len(lines) == 1, result.stdout + result.stderr
+    expected = PACKAGE_PATH_CASES[relative]
+    if expected is None:
+        assert lines[0] == f"ADMITTED:{len(definition['python_files'])}"
+    else:
+        assert lines[0].startswith("REFUSED:") and expected in lines[0], lines[0]
+
+# --- Declared data files (charter + schema JSON) are admitted by exact path into the manifest entries and the
+# integrity enumeration (Lead P0 2026-10-06: entries returned 90 of 96 for the ca6f664e definition).
+
+DATA_FILES = {
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md": b"# charter fixture\n",
+    "schemas/v3_13_0/fixture.v1.json": b'{"type": "object"}\n',
+}
+
+
+def _stage_bundle_with_data(tmp_path: Path) -> Path:
+    bundle = _stage_fake_bundle(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    definition = json.loads((bundle / "bridge-code-files.json").read_text(encoding="utf-8"))
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    for relative, blob in DATA_FILES.items():
+        (code_root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (code_root / relative).write_bytes(blob)
+        definition["python_files"].append(relative)
+        manifest["files"][f"tools-bootstrap/{relative}"] = hashlib.sha256(blob).hexdigest().upper()
+    (bundle / "bridge-code-files.json").write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
+    manifest["files"]["bridge-code-files.json"] = hashlib.sha256(
+        (bundle / "bridge-code-files.json").read_bytes()).hexdigest().upper()
+    (bundle / "deployment-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return bundle
+
+
+def _integrity(bundle: Path, extra: str = "") -> subprocess.CompletedProcess:
+    context = str(REBOOT / "BridgeCodeContext.ps1").replace("'", "''")
+    literal = str(bundle).replace("'", "''")
+    return _run_pwsh(
+        f"$ErrorActionPreference = 'Stop'; . '{context}'; "
+        f"$deployment = Get-Content -LiteralPath '{literal}\\deployment-manifest.json' -Raw | ConvertFrom-Json; "
+        f"$definition = (Get-WdBridgeCodePackageDefinition -Path '{literal}\\bridge-code-files.json').Definition; "
+        f"{extra}"
+        f"$r = Assert-WdBridgeCodePackageIntegrity -BundleRoot '{literal}' -Deployment $deployment "
+        "-Definition $definition; 'FILES:' + $r.FileCount"
+    )
+
+
+@pytest.mark.skipif(
+    PWSH is None or not HAS_BRIDGE_PYTHON,
+    reason="PowerShell or the pinned bridge interpreter is unavailable",
+)
+def test_declared_data_files_are_verified_by_exact_path_and_extras_fail_closed(tmp_path: Path):
+    bundle = _stage_bundle_with_data(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    package_entries = [name for name in manifest["files"] if name.startswith("tools-bootstrap/")]
+    ok = _integrity(bundle)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert f"FILES:{len(package_entries)}" in ok.stdout          # every declared data file is an entry
+
+    charter = code_root / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md"
+    original = charter.read_bytes()
+    charter.write_bytes(original + b"tampered\n")
+    tampered = _integrity(bundle)
+    assert tampered.returncode != 0 and "pinned bridge code hash mismatch: docs/architecture/IDLE_AUTONOMY_CHARTER.md" \
+        in tampered.stdout + tampered.stderr
+    charter.write_bytes(original)
+
+    for stray in (code_root / "docs" / "architecture" / "OTHER.md", code_root / "docs" / "README.md",
+                  code_root / "schemas" / "v3_13_0" / "extra.v1.json"):
+        stray.write_bytes(b"extra\n")
+        extra = _integrity(bundle)
+        assert extra.returncode != 0, stray
+        assert "unexpected file inside pinned bridge code package" in extra.stdout + extra.stderr, stray
+        stray.unlink()
+
+    # A manifest entry that the definition does not declare is never admitted by its folder.
+    undeclared = code_root / "docs" / "architecture" / "UNDECLARED.md"
+    undeclared.write_bytes(b"undeclared\n")
+    digest = hashlib.sha256(b"undeclared\n").hexdigest().upper()
+    listed = _integrity(bundle, "$deployment.files | Add-Member -NotePropertyName "
+                                "'tools-bootstrap/docs/architecture/UNDECLARED.md' -NotePropertyValue "
+                                f"'{digest}'; ")
+    assert listed.returncode != 0
+    assert "unexpected file inside pinned bridge code package: docs/architecture/UNDECLARED.md" \
+        in listed.stdout + listed.stderr
+    undeclared.unlink()
+
+    missing = _integrity(bundle, "$deployment.files.PSObject.Properties.Remove("
+                                 "'tools-bootstrap/schemas/v3_13_0/fixture.v1.json'); ")
+    assert missing.returncode != 0
+    assert "deployed bundle does not carry pinned bridge code file: schemas/v3_13_0/fixture.v1.json" \
+        in missing.stdout + missing.stderr
+
+    cache = code_root / "schemas" / "__pycache__"
+    cache.mkdir()
+    cached = _integrity(bundle)
+    assert cached.returncode != 0 and "bytecode cache inside pinned bridge code package" in cached.stdout + cached.stderr
+    cache.rmdir()
+
+    target = tmp_path / "outside"
+    target.mkdir()
+    junction = code_root / "docs" / "linked"
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)], capture_output=True, text=True)
+    assert made.returncode == 0, made.stdout + made.stderr
+    try:
+        reparse = _integrity(bundle)
+        assert reparse.returncode != 0
+        assert "reparse point inside pinned bridge code package" in reparse.stdout + reparse.stderr
+    finally:
+        os.rmdir(junction)
+
+    again = _integrity(bundle)
+    assert again.returncode == 0, again.stdout + again.stderr
+
+# --- Byte-reproducible python site (install of 83da16a7 refused python-site/bin/jsonschema.exe, 2026-10-06 18:46Z):
+# pip writes a launcher for every wheel console script whose zip entry carries the current time unless
+# SOURCE_DATE_EPOCH is set, so stage and install produced different launcher and RECORD hashes.
+
+
+def _write_console_script_wheel(path: Path, name: str, version: str, module: str) -> str:
+    dist_info = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"{module}/__init__.py", "def main():\n    return 0\n")
+        archive.writestr(f"{dist_info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{dist_info}/entry_points.txt", f"[console_scripts]\n{module}-cli = {module}:main\n")
+        archive.writestr(f"{dist_info}/RECORD", "")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.skipif(not ENV_SHELLS or not HAS_BRIDGE_PYTHON,
+                    reason="Windows PowerShell and the pinned bridge interpreter are required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+def test_python_site_is_byte_reproducible_including_console_script_launchers(tmp_path: Path, shell: str):
+    module = "wdscript"
+    source = tmp_path / "src-wheels"
+    source.mkdir()
+    wheel = "wdfake-0.1.0-py3-none-any.whl"   # _fake_definition pins the distribution name wdfake
+    sha256 = _write_console_script_wheel(source / wheel, "wdfake", "0.1.0", module)
+    definition_path = tmp_path / "bridge-code-files.json"
+    definition_path.write_text(json.dumps(_fake_definition(wheel, sha256, module)), encoding="utf-8")
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    runs = [tmp_path / "run1", tmp_path / "run2"]
+    install = (
+        "Install-WdBridgePythonSite -Definition $definition -PythonExecutable '{python}' "
+        "-WheelDirectory '{run}\\wheels' -SiteDirectory '{run}\\site' -WorkDirectory '{run}\\work' -WheelSource '{src}'"
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+. '{quote(REBOOT / "BridgeCodeContext.ps1")}'
+$definition = (Get-WdBridgeCodePackageDefinition -Path '{quote(definition_path)}').Definition
+$first = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[0]), src=quote(source))}
+Start-Sleep -Seconds 3
+$env:SOURCE_DATE_EPOCH = '1700000000'
+$second = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[1]), src=quote(source))}
+$out = [ordered]@{{ first = [ordered]@{{}}; second = [ordered]@{{}} }}
+foreach ($key in @($first.Site.Keys)) {{ $out.first[$key] = $first.Site[$key] }}
+foreach ($key in @($second.Site.Keys)) {{ $out.second[$key] = $second.Site[$key] }}
+'SITES:' + ($out | ConvertTo-Json -Depth 4 -Compress)
+"""
+    # Each shell builds its own default module path: a pwsh 7 PSModulePath inherited by Windows PowerShell 5.1
+    # hides Microsoft.PowerShell.Utility (Get-FileHash).
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() not in ("SOURCE_DATE_EPOCH", "PSMODULEPATH")}
+    result = subprocess.run([shutil.which(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-Command", script], capture_output=True, text=True, timeout=600, env=environment)
+    lines = [line for line in result.stdout.splitlines() if line.startswith("SITES:")]
+    assert result.returncode == 0 and len(lines) == 1, result.stdout + result.stderr
+    sites = json.loads(lines[0].removeprefix("SITES:"))
+    launcher = f"python-site/bin/{module}-cli.exe"
+    assert launcher in sites["first"], sorted(sites["first"])        # the fixture really generates a launcher
+    assert any(key.endswith(".dist-info/RECORD") for key in sites["first"])
+    # Every file, launcher and RECORD included, hashes the same across a clock tick and despite an inherited
+    # SOURCE_DATE_EPOCH: the site the installer re-materializes matches the staged manifest.
+    assert sites["first"] == sites["second"]
+    blob = (runs[0] / "site" / "bin" / f"{module}-cli.exe").read_bytes()
+    stamped = zipfile.ZipFile(io.BytesIO(blob[blob.find(b"PK\x03\x04"):]))
+    assert stamped.infolist()[0].date_time == (1980, 1, 1, 0, 0, 0)   # the fixed epoch, not the clock

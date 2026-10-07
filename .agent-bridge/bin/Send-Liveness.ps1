@@ -123,6 +123,16 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
     try {
         [void](Update-BridgeClaimLease -Root $bridgeRootForLease -AgentName $Agent)
     } catch {
+        # PowerShell may wrap a cancellation in MethodInvocationException.
+        # Preserve the original error record and do not emit after cancellation.
+        $keepaliveException = $_.Exception
+        while ($null -ne $keepaliveException) {
+            if ($keepaliveException -is [System.Management.Automation.PipelineStoppedException] -or
+                $keepaliveException -is [System.OperationCanceledException]) {
+                throw
+            }
+            $keepaliveException = $keepaliveException.InnerException
+        }
         Write-Warning ("claim lease keepalive failed: {0}" -f $_.Exception.Message)
     }
 }

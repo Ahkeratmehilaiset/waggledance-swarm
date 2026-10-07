@@ -11,25 +11,40 @@ This is a thin Python parity wrapper around
 side-effect-free under the default (no ``--apply``) so a curious agent or
 operator can run it to inspect the sweep plan.
 
+With ``--apply`` it first takes the v2 runtime-root mutex, the same one the
+work-queue CLI writers take (``tools/work_queue.py`` ``_root_mutex``; fable-5
+foreman call 2026-10-01, inventory option a). A busy, abandoned or unusable
+mutex, including a root the v2 canonical-root rule refuses, refuses the sweep
+before any claim is archived. The dry run only reads and takes no lock.
+
 Exit codes:
     0 - sweep ran (apply or dry-run); zero or more claims listed
-    1 - argument or I/O error
+    1 - argument or I/O error, or the runtime-root mutex refused --apply
+        (nothing was archived)
     2 - bridge root not found
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from waggledance.core.work_queue import (
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.work_queue import (  # noqa: E402
     ArchivedClaim,
     WorkQueueError,
     archive_stale_claims,
     resolve_bridge_root,
 )
+from tools.bridge_v2_queue_transactions import QueueTransactionError  # noqa: E402
+from tools.work_queue import _root_mutex  # noqa: E402
 
 
 CLI_DEFAULT_MAX_AGE_SECONDS = 300
@@ -94,14 +109,20 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"bridge root not found: {bridge_root}\n")
         return 2
 
-    now = datetime.now(timezone.utc)
     try:
-        archived = archive_stale_claims(
-            bridge_root=bridge_root,
-            now_utc=now,
-            max_age_seconds=args.max_age_seconds,
-            apply=args.apply,
-        )
+        # --apply archives and unlinks claims, so it takes the CLI writers' runtime-root mutex first; the dry run
+        # reads only and takes no lock.
+        with _root_mutex(bridge_root) if args.apply else contextlib.nullcontext():
+            now = datetime.now(timezone.utc)   # read under the lock: a lease renewed during the wait is not stale
+            archived = archive_stale_claims(
+                bridge_root=bridge_root,
+                now_utc=now,
+                max_age_seconds=args.max_age_seconds,
+                apply=args.apply,
+            )
+    except QueueTransactionError as exc:   # the mutex refused (busy, abandoned, unusable root): nothing archived
+        sys.stderr.write(f"sweep refused: runtime-root mutex: {exc}\n")
+        return 1
     except WorkQueueError as exc:
         sys.stderr.write(f"sweep refused: {exc}\n")
         return 1

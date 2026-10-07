@@ -108,6 +108,15 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
+# S2 (Lead 2026-09-30): the listing, the conflict checks and the create or
+# refresh run inside the v2 queue's runtime-root mutex, taken before the
+# claim lock as in the Python queue, so a v2 transaction or claims snapshot
+# never lists claims in the middle of this change. The sweep above takes and
+# releases it on its own, so it is never held twice. The claim event is
+# written after the release.
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 $resources = @(Resolve-BridgeResourceScopes -Scopes $WriteScope -Worktree (Get-Location).Path -BridgeRoot $bridgeRoot)
 $existingClaimPath = ''
@@ -305,6 +314,13 @@ if (-not $existingClaimPath) {
                   (Test-BridgeIdentitylessClaimPair -Claim $current -Identity $ownerIdentity))) {
             Stop-BridgeClaim -Message ("claim changed before refresh: {0}" -f $claimPath) -Code 3
         }
+        # B-F3 (RCO1 2026-09-30; Fable review 99897de5): this writer has no dispatch_key and rebuilds
+        # the claim, so a refresh here would erase the key a v2 claim stores as immutable dispatch
+        # evidence, and a later claim with the same key would pass the v2 duplicate check. As in the
+        # v2 queue, a refresh that cannot present the stored key is refused; the claim is untouched.
+        if ($current.PSObject.Properties['dispatch_key']) {
+            Stop-BridgeClaim -Message ("refusing to refresh a keyed claim without its dispatch_key: {0}" -f $claimPath) -Code 3
+        }
         # Internal review fix R7 (2026-05-09): write to a temp sibling and
         # Replace() so readers always see the old or the new claim, never a
         # torn write.
@@ -322,6 +338,10 @@ if (-not $existingClaimPath) {
     } finally {
         Exit-BridgeClaimLock -Lock $refreshLock
     }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }
 
 & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `

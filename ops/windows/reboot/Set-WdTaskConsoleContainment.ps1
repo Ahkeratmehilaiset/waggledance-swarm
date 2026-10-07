@@ -20,6 +20,8 @@ Set-StrictMode -Version Latest
 $silentLauncher = 'C:\Python\wd_silent_launch.exe'
 $bundleStore = 'C:\Python\wd-reboot-bundles'
 $silentLauncherSha256 = '4CD4FBED01E3EAD1C999493212F7499137C0937F597BDD5172C0EFEEDA3F509F'
+# The fleet's bridge_python.executable (wd-fleet.json); both reporters run on it.
+$reporterPython = 'C:\Users\janik\AppData\Local\Programs\Python\Python313\python.exe'
 
 function Get-RootTask {
   param([Parameter(Mandatory)] [string] $Name)
@@ -33,9 +35,9 @@ function Get-RootTask {
 }
 
 function Get-VerifiedBridgePinSuffix {
-  # The weekly agent-value metric requires --bridge-bundle and --bridge-manifest-sha256
-  # (wd_agent_value_metric.py), so its task may carry exactly that pin after the base
-  # arguments. The pin is accepted only when it names an existing deployed bundle
+  # The weekly agent-value metric and the consensus-stall detector write through a pinned
+  # bridge writer (--bridge-bundle and --bridge-manifest-sha256), so their tasks may carry
+  # exactly that pin after the base arguments. The pin is accepted only when it names an existing deployed bundle
   # whose deployment manifest hashes to the given value. Returns '' for the bare base
   # arguments, the verified suffix for a pinned form, and $null for anything else.
   param(
@@ -64,8 +66,8 @@ function Get-VerifiedBridgePinSuffix {
 }
 
 function Get-TaskBridgePin {
-  # The verified pin of a task's single action, against either base form; '' when the
-  # job takes no pin or the task carries none.
+  # The verified pin of a task's single action, against either base form or a legacy
+  # form that declares bridge_pin; '' when the job takes no pin or the task carries none.
   param([Parameter(Mandatory)] $Task, [Parameter(Mandatory)] $Job, [Parameter(Mandatory)] [string] $BundleStore)
 
   # Only a job that declares bridge_pin takes one; the property is absent elsewhere (StrictMode).
@@ -74,7 +76,14 @@ function Get-TaskBridgePin {
   $actions = @($Task.Actions)
   if ($actions.Count -ne 1) { return '' }
   $arguments = [string]$actions[0].Arguments
-  foreach ($base in @([string]$Job.hidden_arguments, [string]$Job.original_arguments)) {
+  $bases = @([string]$Job.hidden_arguments, [string]$Job.original_arguments)
+  $legacyActions = $Job.PSObject.Properties['legacy_actions']
+  if ($null -ne $legacyActions) {
+    foreach ($form in @($legacyActions.Value)) {
+      if ([bool]$form.bridge_pin) { $bases += [string]$form.arguments }
+    }
+  }
+  foreach ($base in $bases) {
     $suffix = Get-VerifiedBridgePinSuffix -Arguments $arguments -Base $base -BundleStore $BundleStore
     if ($null -ne $suffix) { return $suffix }
   }
@@ -154,20 +163,54 @@ if ($null -ne $legacy -and -not (Test-ActionExact `
 $jobs = @(
   [pscustomobject]@{
     name = 'WD-ConsensusStallDetector'
-    original_execute = 'C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe'
+    original_execute = $reporterPython
     original_arguments = 'C:\Python\wd_consensus_stall_detector.py --alert'
     original_working_directory = 'C:\Python'
-    hidden_arguments = '"C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
+    hidden_arguments = '"' + $reporterPython + '" "C:\Python\wd_consensus_stall_detector.py" --alert'
     hidden_working_directory = 'C:\Python'
+    bridge_pin = $true
+    # WindowsApps python.exe is an app-execution alias for whichever Store Python is
+    # installed. Its exact unpinned forms, bare or hidden, migrate to the fleet
+    # interpreter; any other alias form, pinned included, still drifts.
+    legacy_actions = @(
+      [pscustomobject]@{
+        execute = 'C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe'
+        arguments = 'C:\Python\wd_consensus_stall_detector.py --alert'
+        working_directory = 'C:\Python'
+        bridge_pin = $false
+      },
+      [pscustomobject]@{
+        execute = $silentLauncher
+        arguments = '"C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
+        working_directory = 'C:\Python'
+        bridge_pin = $false
+      }
+    )
   },
   [pscustomobject]@{
     name = 'WD-AgentValue-Weekly'
-    original_execute = 'C:\Python\project2-master\.python\Python313\python.exe'
+    original_execute = $reporterPython
     original_arguments = 'C:\Python\wd-agent-value-metric.py --days 7 --post-bridge'
     original_working_directory = ''
-    hidden_arguments = '"C:\Python\project2-master\.python\Python313\python.exe" "C:\Python\wd-agent-value-metric.py" --days 7 --post-bridge'
+    hidden_arguments = '"' + $reporterPython + '" "C:\Python\wd-agent-value-metric.py" --days 7 --post-bridge'
     hidden_working_directory = ''
     bridge_pin = $true
+    # The project2-master .python copy is an untracked runtime copy. Its exact forms,
+    # bare or hidden, migrate to the fleet interpreter with the verified pin they carry.
+    legacy_actions = @(
+      [pscustomobject]@{
+        execute = 'C:\Python\project2-master\.python\Python313\python.exe'
+        arguments = 'C:\Python\wd-agent-value-metric.py --days 7 --post-bridge'
+        working_directory = ''
+        bridge_pin = $true
+      },
+      [pscustomobject]@{
+        execute = $silentLauncher
+        arguments = '"C:\Python\project2-master\.python\Python313\python.exe" "C:\Python\wd-agent-value-metric.py" --days 7 --post-bridge'
+        working_directory = ''
+        bridge_pin = $true
+      }
+    )
   }
 )
 
@@ -196,7 +239,21 @@ foreach ($job in $jobs) {
     -Execute $silentLauncher `
     -Arguments ([string]$job.hidden_arguments + $pin) `
     -WorkingDirectory ([string]$job.hidden_working_directory)
-  if (-not $isOriginal -and -not $isHidden) {
+  $isLegacy = $false
+  $legacyActions = $job.PSObject.Properties['legacy_actions']
+  if (-not $isOriginal -and -not $isHidden -and $null -ne $legacyActions) {
+    foreach ($form in @($legacyActions.Value)) {
+      $formPin = if ([bool]$form.bridge_pin) { $pin } else { '' }
+      if (Test-ActionExact `
+          -Task $task `
+          -Execute ([string]$form.execute) `
+          -Arguments ([string]$form.arguments + $formPin) `
+          -WorkingDirectory ([string]$form.working_directory)) {
+        $isLegacy = $true
+      }
+    }
+  }
+  if (-not $isOriginal -and -not $isHidden -and -not $isLegacy) {
     throw "scheduled console task action drifted: $($job.name)"
   }
   $planned[[string]$job.name] = [pscustomobject]@{
@@ -207,7 +264,7 @@ foreach ($job in $jobs) {
   }
   [void]$plans.Add([pscustomobject]@{
     name = [string]$job.name
-    action = if ($isHidden) { 'hidden-exact' } else { 'wrap-hidden' }
+    action = if ($isHidden) { 'hidden-exact' } elseif ($isLegacy) { 'migrate-hidden' } else { 'wrap-hidden' }
     enabled = [bool]$task.Settings.Enabled
   })
 }

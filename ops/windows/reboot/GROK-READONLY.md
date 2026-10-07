@@ -1,0 +1,210 @@
+# Grok repository read-only sessions
+
+The installed `C:\Python\Invoke-WdGrok.ps1` exposes the packaged session controller:
+
+```powershell
+& C:\Python\Invoke-WdGrok.ps1 -ReadOnly -TaskId 'review/example' -PromptPath C:\Python\review.md -RepositoryPath C:\Python\project2 -Commit '<full 40-character commit SHA>'
+```
+
+`-ReadOnly` enables model-directed `read_file`, `list_dir` and literal `grep`
+requests against that immutable Git commit through the bounded Git blob broker.
+Git comes from the hash-verified fleet configuration, not PATH. Grok's native
+tools remain denied. `-MaxRounds` is 2..8 (default 6); the helper's single-flight
+reservation, unfinished-attempt refusal, lifecycle events and lock still apply.
+
+There is no local hourly or weekly quota (direct operator direction, 2026-09-30).
+One consultation is reserved once, durably, before any model round starts; all
+2..8 rounds belong to it. An answer, a failure or a timeout completes it, and
+the next consultation may start at once: no cooldown, no local budget and no
+automatic retry (each consultation is one explicit call). Grok's own provider
+limits are real but not readable headless, so `-Status` reports
+`provider_quota: "unknown"` separately from the local `local_availability`.
+`provider_evidence` is the last attempt's own recorded failure, verbatim; it may
+be local, and it is never read as a quota, a reset time or a reason to retry.
+Task exception grants waived the removed hourly budget and are retired: a
+consultation that presents one is refused before the lock, and grants already
+recorded in the state file are carried forward as history only. The global
+consultation lock remains held for the complete session. A consultation that
+finds the lock held waits in line for it, retrying every second for up to 2400
+seconds, and reads availability only after it holds the lock. Waiters are served
+in no set order. A waiter that is still blocked after 2400 seconds fails with
+"Grok helper busy" and reserves nothing.
+
+The helper's keyword-only `consult(..., timeout_seconds=CONSULT_TIMEOUT_SECONDS)`
+(900 seconds) accepts only a built-in integer from 1 through 2400 seconds,
+rejecting booleans and coercible values before acquiring the lock or reserving an
+attempt. It forwards that value to the runner. Text-only advisory mode keeps the
+900-second default.
+
+The controller integration must pass `min(max_rounds * 600, 2400)` as the session
+timeout: 1200 seconds for 2 rounds, 1800 seconds for 3, and 2400 seconds for 4..8
+rounds, including the default six rounds. Each model process must use
+`min(600, remaining_session_seconds)`, so no process gets more than 600 seconds and
+the session deadline never exceeds 2400 seconds.
+This helper interface alone does not establish that the separately owned
+controller enforces these bounds; check its integrated implementation before
+claiming that behavior.
+
+Reservations record their actual `timeout_seconds`. A status read classifies a
+still-`reserved` attempt past that deadline as `interrupted_or_unknown`; older
+reservations with no recorded timeout use the conservative 2400-second bound.
+The response retains `recorded_status` and the complete `raw_state`. It never
+rewrites the state file or kills a process. Such an unknown attempt reports
+`eligible=false` and `local_availability: "unreconciled_attempt"` however much
+time passes. Resolve the durable unknown attempt through an explicitly
+authorized reconciliation rather than treating elapsed time as completion:
+consultation defers with `deferred_unreconciled_attempt` while the durable state
+is still `reserved`, before or after its deadline, without overwriting that
+reservation. An explicit reconciliation adapter is not included; no
+process-exit or readiness guarantee is implied.
+Deferred consultation responses have `status=deferred`,
+`consultation_attempted=false`, and a null new `request_id`. The prior attempt
+is kept under `previous_attempt`, never relabelled as the new caller's task.
+Both consultation entrypoints exit 2 for a deferral (0 only for an answered
+consultation, 1 for a failed attempt); `-Status` remains a read-only observation.
+
+Local availability (`local_availability`; `eligible` describes it, never the
+provider's quota): `available` after a completed attempt (`eligible=true`,
+`next_eligible_utc: null`); `unreconciled_attempt` while the durable state is
+`reserved`, before or after its deadline (`eligible=false`,
+`next_eligible_utc: null`: only an explicit reconciliation resolves it);
+`clock_regressed` when the clock reads earlier than the recorded attempt
+(`eligible=false`, `next_eligible_utc` = that recorded time), and a consultation
+then defers with `deferred_clock_regression`;
+`model_unavailable_cooldown` while the provider has rejected a model twice in a
+row (see below; `eligible=false`, `next_eligible_utc` = the end of the last
+open hold), and a consultation of a held model, or one that names no model, then
+defers with `deferred_model_unavailable` (its `next_eligible_utc` is that
+model's own `until_utc`). The removed hourly fields
+(`hourly_budget_*`, `deferred_hourly_limit`) are no longer produced.
+
+Model rejection (`error_class: "model_unavailable"`). An attempt is classed
+`model_unavailable` only when the CLI exits nonzero AND its stderr carries the
+provider's rejection of the requested `--model`:
+`Couldn't set model '<model>': Invalid params: "unknown model id"` (recorded 27
+times on 2026-10-06, exit 1, 2-5 s each). A timeout, any other nonzero exit, a
+quota or busy message, or a rejection naming a different model keeps its own
+class. The state counts consecutive rejections of one model in
+`model_unavailable_streak`; an answer or any other outcome ends the count. From
+the second rejection in a row, consultations of that model are deferred with
+no provider attempt for 900 seconds after the last rejected attempt was
+reserved; after that, exactly one consultation (single-flight) probes the model
+again, and a new rejection restarts the 900 seconds. On 2026-10-06 the provider
+rejected `grok-4.7` from 21:25:56Z until at least 21:42Z (27 attempts, 25 of
+them automatic relay chunks about 38 s apart); replayed under this rule, 3 of
+those 27 attempts reach the provider. `-Status` shows the last record's own
+state as `model_breaker` (`closed`, `open` with `until_utc`, `expired`, or
+`invalid` with a reason) and every model held now as `model_holds`.
+Nothing guesses or switches the model. A consultation that names another model
+explicitly is not held. Because that consultation replaces the one state
+record, each hold still open is carried into the new record
+(`model_unavailable_holds`, at most 8) until its own `until_utc`, so it never
+ends early and never lasts longer. A consultation that names no `--model` is
+held while any hold is open, because the CLI default may be the rejected model.
+At most 8 models are held at once. While 8 holds are open, a rejection of a
+further model opens no hold: that model is listed in `model_holds_saturated`,
+it is not held, and its calls still reach the provider. A live hold is never
+evicted to make room, and the stored list never exceeds 8 (Tools 05E45621).
+A model hold never blocks `grok update` (the CLI update may be the remedy for
+an unknown model id); only an unreconciled attempt or a clock regression blocks
+it (RCO1 F1). `eligible` turns true again when the last hold ends. A malformed record or
+carried hold never holds anything (`model_holds_malformed: true`). Grok
+self-challenge 665ded23 found the replaced-record case. The caller's one
+submission and the 900-second consultation limit are unchanged.
+
+Deferral observations (contract). A deferral reserves nothing, so it never mints
+a consultation `request_id`. The response and its `deferred` lifecycle event
+carry the same fresh 32-hex `observation_id`. The bridge event payload
+(`wd.grok-consultation-event.v1`) then has `consultation_id: null` and
+`observation_id`, and its session and run are `grok-deferral-<observation_id>`.
+The `started`, `answered` and `failed` stages keep `consultation_id` = the
+reservation `request_id` and session `grok-consult-<request_id>`. The lifecycle
+writer refuses a deferral that names a `request_id` and a consultation stage
+without one.
+
+Exit codes of `Invoke-WdGrok.ps1` are the Python tool's: 0 for an answered
+consultation (or a successful `-Status`/`-Inventory`), 1 for a failed attempt,
+and 2 for a deferral or a blocked input. Tell deferral and block apart by the
+JSON: a deferral has `status: "deferred"` and a `decision`; a block has
+`status: "blocked"` and an `error`. A deferral never presents the earlier
+attempt's answer as its own: that attempt is nested under `previous_attempt`,
+and the exit stays 2. Caller semantics, deliberately:
+- SUPPORTED: a run where this script is the process's own explicit, top-level
+  `-File` target (`powershell -File Invoke-WdGrok.ps1 ...` or
+  `pwsh -File Invoke-WdGrok.ps1 ...`) exits with that code. Before this change,
+  `-File` reported 0 even after a failed consultation. The script detects this
+  case from the process command line. The first `-File` token (also `-f`, `-fi`,
+  `-fil` or a `/` form) must be followed by this script's own path; the paths
+  are compared in full and case-insensitively.
+- The installed launcher `C:\Python\Invoke-WdGrok.ps1` is generated by
+  `Deploy-WdRebootBundle.ps1` and calls this script with `&`, so this script
+  does not `exit` there. The launcher applies the same rule to its own path:
+  as the process's explicit `-File` target
+  (`powershell -File C:\Python\Invoke-WdGrok.ps1 ...`) it exits with this
+  script's code, and any other caller is never exited. It sets `$LASTEXITCODE`
+  to 1 before its integrity checks, so a refusal before this script runs reads
+  as 1 to an in-process caller that catches it, never as that caller's earlier
+  0. Until triage 73DC8665 c016-1 was fixed, the launcher's `-File` run exited
+  0 after a failed or deferred consultation.
+- UNVERIFIED, not a runtime guarantee: a positional invocation with no `-File`
+  token, such as `pwsh Invoke-WdGrok.ps1 ...` (pwsh treats the first positional
+  argument as the file) or `powershell Invoke-WdGrok.ps1 ...` (Windows
+  PowerShell treats it as a command). Other hosts and unusual command lines are
+  also unverified. No `-File` token names this script, so it does not `exit`,
+  and the process exit code is whatever the host reports: it may be 0 after a
+  failed or deferred consultation. Do not rely on the process exit code in these
+  forms. Use the explicit `-File` form, or read `$LASTEXITCODE` and the JSON
+  `status`.
+- A PowerShell caller that runs the script with `&` from another script, or
+  dot-sources it, keeps the `Invoke-WdBridgePython.ps1` convention. This also
+  holds when that other script is itself the process's `-File` target. There is
+  no `exit` (it would abandon the caller's output capture), the code is in
+  `$LASTEXITCODE`, and output capture is unchanged. A dot-source runs in the
+  caller's scope, so the script's `$ErrorActionPreference = 'Stop'` and its
+  local variables stay in that scope.
+- A wrapper that ends without publishing a code is reported as 1: the script
+  sets `$LASTEXITCODE` to 1 before it calls the Python wrapper.
+- `-Command` callers use `& '<Invoke-WdGrok.ps1>' ...; exit $LASTEXITCODE`.
+
+The fixtures for these forms (a top-level `-File`, an in-process `&` capture, a
+dot-source, a distinct outer `-File` script calling with `&` or `.`, and a
+wrapper that publishes no code) use an isolated copy of this script with a stub
+Python wrapper. They are authored but have NOT been run. The positional forms
+have no fixture and stay unverified.
+The installed-launcher fixtures (`*installed_launcher*` in
+`tests/tools/test_wd_grok_helper.py`) generate the real launcher with
+`New-ForwardingWrapper` around an isolated bundle copy and a stub Python
+wrapper; they were run on Windows PowerShell 5.1 and PowerShell 7.
+
+For long consultations, keep the caller window and its command wait alive long
+enough for the configured session (up to 2400 seconds) plus completion logging.
+A detached launch with durable stdout/stderr logs and a recorded process
+identity is a recommended caller arrangement when a terminal wait is too short;
+this document does not launch it. Caller waiting must not introduce a free
+wrapper timeout, retry, additional consultation or lock bypass.
+
+No arguments (or `-Status`) checks the old helper status without a model call.
+`-Inventory` alone inventories inherited hooks/MCP/LSP without a model call.
+`-PromptPath` without `-ReadOnly` retains the existing text-only advisory mode.
+Reboot/startup never automatically initiates a Grok consultation.
+
+The controller is NOT an OS-level read-only sandbox. If inherited executable
+components exist, it refuses before consultation unless their exact inventory
+digest is deliberately supplied as `-AcknowledgeInheritedSurface`. This is an
+acknowledgement of possible inherited execution, not an isolation guarantee;
+the wrapper never supplies it automatically. Unreadable inventory fails closed.
+
+Release integration was requested without additional tests or model trials.
+The controller's multi-round CLI behavior is not runtime-validated. Installation
+and inclusion in the bundle do not establish successful Grok execution.
+
+## Requester-bound results (G1)
+
+Lead brokers every consultation. `-RequestedBy <agent>` names the one other Bridge agent a
+consultation or `-ReadOnly` session is for: `codex-tools-1`, `claude-rco-1`, `claude-rco-2` or
+`fable-5`, in exact case. Lead itself, `grok-scout-1`, `operator`, any other value, and a requester
+without a consultation (`-Status`, `-Inventory`) are refused before the helper runs. The helper
+records `requested_by` in the reservation and in every lifecycle state. `answered` and `failed`
+then go to `codex-lead-1,<requester>` and carry `requested_by`, while `started` and `deferred`
+still go to `operator`. The requester receives an advisory result only: `authority_effect` stays
+`none`, and Lead remains the broker.

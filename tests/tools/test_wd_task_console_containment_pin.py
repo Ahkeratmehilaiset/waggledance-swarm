@@ -10,7 +10,8 @@ from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
 
 SCRIPT = REBOOT / "Set-WdTaskConsoleContainment.ps1"
-BASE = '"C:\\Python\\project2-master\\.python\\Python313\\python.exe" "C:\\Python\\wd-agent-value-metric.py" --days 7 --post-bridge'
+FLEET_PYTHON = "C:\\Users\\janik\\AppData\\Local\\Programs\\Python\\Python313\\python.exe"   # wd-fleet.json bridge_python
+BASE = f'"{FLEET_PYTHON}" "C:\\Python\\wd-agent-value-metric.py" --days 7 --post-bridge'
 ORIGINAL = "C:\\Python\\wd-agent-value-metric.py --days 7 --post-bridge"
 GEN = "d26357e14885e3d9b6d316de1806bdfab6d41026"
 
@@ -116,13 +117,13 @@ def test_the_task_pin_comes_from_either_base_form_and_only_for_a_pinned_job(ps, 
     assert task_pin(ps, [BASE + pin(tmp_path, GEN, "F" * 64)], True, tmp_path) == ""
 
 
-def test_only_the_agent_value_job_takes_a_pin_and_apply_keeps_it():
+def test_exactly_the_two_pinned_writer_jobs_take_a_pin_and_apply_keeps_it():
     text = SCRIPT.read_text(encoding="utf-8")
     weekly = text.index("name = 'WD-AgentValue-Weekly'")
     stall = text.index("name = 'WD-ConsensusStallDetector'")
     assert "bridge_pin = $true" in text[weekly:text.index("}", weekly)]
-    assert "bridge_pin" not in text[stall:text.index("}", stall)]
-    assert text.count("bridge_pin = $true") == 1
+    assert "bridge_pin = $true" in text[stall:text.index("}", stall)]
+    assert text.count("\n    bridge_pin = $true\n") == 2                    # job level; legacy forms are indented deeper
     apply = text.index("# Wrapping keeps the verified pin the plan saw")
     assert text.index("$pins[[string]$job.name] = $pin") < apply
     assert text.count("-Arguments $hiddenArguments") == 2                  # the wrap check and the postcondition
@@ -138,10 +139,14 @@ def test_only_the_agent_value_job_takes_a_pin_and_apply_keeps_it():
 WEEKLY = "WD-AgentValue-Weekly"
 STALL = "WD-ConsensusStallDetector"
 LEGACY = "WD-BridgeMergeDriver"
-WEEKLY_EXECUTE = "C:\\Python\\project2-master\\.python\\Python313\\python.exe"
-STALL_EXECUTE = "C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe"
+WEEKLY_EXECUTE = FLEET_PYTHON
+WEEKLY_COPY = "C:\\Python\\project2-master\\.python\\Python313\\python.exe"          # the untracked runtime copy
+WEEKLY_COPY_HIDDEN = f'"{WEEKLY_COPY}" "C:\\Python\\wd-agent-value-metric.py" --days 7 --post-bridge'
+STALL_EXECUTE = FLEET_PYTHON
 STALL_ORIGINAL = "C:\\Python\\wd_consensus_stall_detector.py --alert"
 STALL_HIDDEN = f'"{STALL_EXECUTE}" "C:\\Python\\wd_consensus_stall_detector.py" --alert'
+STALL_ALIAS = "C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe"
+STALL_ALIAS_HIDDEN = f'"{STALL_ALIAS}" "C:\\Python\\wd_consensus_stall_detector.py" --alert'
 STALL_OTHER = "C:\\Python\\other.py"
 STALL_WD = "C:\\Python"
 OTHER_EXECUTE = "C:\\Python\\other.exe"
@@ -369,3 +374,162 @@ def test_a_dry_run_changes_nothing(ps, tmp_path):
     assert record["result"]["legacy"] == "would-hold"
     assert record["result"]["jobs"] == [{"name": STALL, "action": "absent-skip", "enabled": False},
                                         {"name": WEEKLY, "action": "wrap-hidden", "enabled": False}]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_stall_detector_takes_a_verified_pin_and_apply_keeps_it(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    record = run_apply(ps, tmp_path, {
+        STALL: task_literal(STALL_EXECUTE, STALL_ORIGINAL + good, STALL_WD, enabled=False),
+        LEGACY: legacy_enabled(),
+    })
+    assert record["error"] == ""
+    assert record["tasks"][STALL] == {"execute": record["launcher"], "arguments": STALL_HIDDEN + good,
+                                      "working_directory": STALL_WD, "enabled": False}
+    jobs = {job["name"]: job for job in record["result"]["jobs"]}
+    assert jobs[STALL] == {"name": STALL, "action": "hidden-exact", "enabled": False}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_already_hidden_pinned_stall_detector_is_left_untouched(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    record = run_apply(ps, tmp_path, {STALL: task_literal(str(launcher), STALL_HIDDEN + good, STALL_WD, enabled=True)})
+    assert record["error"] == ""
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["arguments"] == STALL_HIDDEN + good
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_unverified_stall_detector_pin_changes_nothing(ps, tmp_path):
+    store = tmp_path / "store"
+    bundle(store)
+    bad = pin(store, GEN, "0" * 64)
+    record = run_apply(ps, tmp_path, {STALL: task_literal(STALL_EXECUTE, STALL_ORIGINAL + bad, STALL_WD, True),
+                                      LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-ConsensusStallDetector" in record["error"]
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["arguments"] == STALL_ORIGINAL + bad
+
+
+def alias_task(form: str, launcher: Path, suffix: str = "", working_directory: str = STALL_WD,
+               enabled: bool = True) -> str:
+    if form == "bare":
+        return task_literal(STALL_ALIAS, STALL_ORIGINAL + suffix, working_directory, enabled)
+    return task_literal(str(launcher), STALL_ALIAS_HIDDEN + suffix, working_directory, enabled)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("form", ["bare", "hidden"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_exact_windowsapps_alias_forms_migrate_to_the_explicit_interpreter(ps, tmp_path, form, enabled):
+    launcher = tmp_path / "wd_silent_launch.exe"
+    tasks = {STALL: alias_task(form, launcher, enabled=enabled), LEGACY: legacy_enabled()}
+    plan = run_apply(ps, tmp_path, tasks, apply=False)
+    assert plan["error"] == ""
+    assert plan["calls"] == []
+    assert {job["name"]: job for job in plan["result"]["jobs"]}[STALL] == {
+        "name": STALL, "action": "migrate-hidden", "enabled": enabled}
+    record = run_apply(ps, tmp_path, tasks)
+    assert record["error"] == ""
+    assert f"set {STALL}" in record["calls"]
+    assert record["tasks"][STALL] == {"execute": record["launcher"], "arguments": STALL_HIDDEN,
+                                      "working_directory": STALL_WD, "enabled": enabled}
+    assert {job["name"]: job for job in record["result"]["jobs"]}[STALL] == {
+        "name": STALL, "action": "hidden-exact", "enabled": enabled}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("form", ["bare", "hidden"])
+@pytest.mark.parametrize("case", ["pinned", "other_working_directory", "extra_argument"])
+def test_any_other_windowsapps_alias_form_still_drifts(ps, tmp_path, form, case):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    task = {"pinned": alias_task(form, launcher, good),
+            "other_working_directory": alias_task(form, launcher, working_directory=""),
+            "extra_argument": alias_task(form, launcher, " --verbose")}[case]
+    record = run_apply(ps, tmp_path, {STALL: task, LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-ConsensusStallDetector" in record["error"]
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["execute"] in (STALL_ALIAS, str(launcher))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_alias_task_that_changes_between_plan_and_apply_is_not_migrated(ps, tmp_path):
+    launcher = tmp_path / "wd_silent_launch.exe"
+    change = f"$global:WdTasks[{q(STALL)}] = {alias_task('hidden', launcher)}"
+    record = run_apply(ps, tmp_path, {STALL: alias_task("bare", launcher), LEGACY: legacy_enabled()},
+                       change=change, at="hold")
+    assert "scheduled console task changed between plan and apply: WD-ConsensusStallDetector" in record["error"]
+    assert not [call for call in record["calls"] if call.startswith("set ")]
+    assert record["tasks"][STALL]["arguments"] == STALL_ALIAS_HIDDEN
+
+
+def test_both_reporters_run_on_the_fleet_python_and_declare_only_their_live_legacy_forms():
+    text = SCRIPT.read_text(encoding="utf-8")
+    stall = text.index("name = 'WD-ConsensusStallDetector'")
+    weekly = text.index("name = 'WD-AgentValue-Weekly'")
+    fleet = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    assert fleet["bridge_python"]["executable"] == FLEET_PYTHON
+    assert f"$reporterPython = '{FLEET_PYTHON}'" in text
+    assert text.count("original_execute = $reporterPython") == 2
+    assert text.count("legacy_actions = @(") == 2
+    assert text.count(r"WindowsApps\python.exe") == 2                 # the stall detector's two alias forms
+    assert text.count(r"project2-master\.python\Python313\python.exe") == 2   # the weekly job's two copy forms
+    assert text[stall:weekly].count("bridge_pin = $false") == 2         # the alias forms never carry a pin
+    assert text[weekly:].count("bridge_pin = $true") == 3               # the job and both copy forms
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("form", ["bare", "hidden"])
+@pytest.mark.parametrize("pinned", [True, False])
+def test_the_weekly_copy_forms_migrate_to_the_fleet_python_keeping_their_pin(ps, tmp_path, form, pinned):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store)) if pinned else ""
+    launcher = tmp_path / "wd_silent_launch.exe"
+    task = (task_literal(WEEKLY_COPY, ORIGINAL + good, "", False) if form == "bare"
+            else task_literal(str(launcher), WEEKLY_COPY_HIDDEN + good, "", False))
+    plan = run_apply(ps, tmp_path, {WEEKLY: task, LEGACY: legacy_enabled()}, apply=False)
+    assert plan["error"] == ""
+    assert {job["name"]: job for job in plan["result"]["jobs"]}[WEEKLY]["action"] == "migrate-hidden"
+    record = run_apply(ps, tmp_path, {WEEKLY: task, LEGACY: legacy_enabled()})
+    assert record["error"] == ""
+    assert record["tasks"][WEEKLY] == {"execute": record["launcher"], "arguments": BASE + good,
+                                       "working_directory": "", "enabled": False}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["unverified_pin", "other_working_directory", "extra_argument"])
+def test_any_other_weekly_copy_form_still_drifts(ps, tmp_path, case):
+    store = tmp_path / "store"
+    bundle(store)
+    launcher = tmp_path / "wd_silent_launch.exe"
+    task = {"unverified_pin": task_literal(str(launcher), WEEKLY_COPY_HIDDEN + pin(store, GEN, "0" * 64), "", False),
+            "other_working_directory": task_literal(str(launcher), WEEKLY_COPY_HIDDEN, "C:\\Python", False),
+            "extra_argument": task_literal(WEEKLY_COPY, ORIGINAL + " --days 30", "", False)}[case]
+    record = run_apply(ps, tmp_path, {WEEKLY: task, LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-AgentValue-Weekly" in record["error"]
+    assert record["calls"] == []
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_ancillary_installer_final_actions_are_accepted_unchanged(ps, tmp_path):
+    # Install-AncillaryRepair.ps1 writes wd_silent_launch.exe + '"<fleet python>" "<script>" ...' + pin,
+    # disabled, with the stall detector in C:\Python and the weekly job without a working directory.
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    tasks = {WEEKLY: task_literal(str(launcher), BASE + good, "", False),
+             STALL: task_literal(str(launcher), STALL_HIDDEN + good, STALL_WD, False),
+             LEGACY: task_literal("powershell.exe", LEGACY_ARGUMENTS, "", enabled=False)}
+    plan = run_apply(ps, tmp_path, tasks, apply=False)
+    assert plan["error"] == ""
+    assert [job["action"] for job in plan["result"]["jobs"]] == ["hidden-exact", "hidden-exact"]
+    record = run_apply(ps, tmp_path, tasks)
+    assert record["error"] == ""
+    assert not [call for call in record["calls"] if call.startswith("set ")]
+    assert record["tasks"][WEEKLY]["arguments"] == BASE + good
+    assert record["tasks"][STALL]["arguments"] == STALL_HIDDEN + good

@@ -24,8 +24,9 @@ flow is:
 5. the route writes a MAGMA receipt from which a reader can re-derive the
    verdict.
 
-Steps 3 to 5 do not exist yet. Section 2 separates what is delivered from what
-is only planned.
+Step 3 exists only as a read-only preview (section 7a), whose best verdict
+is `unknown`. Steps 4 and 5 do not exist yet. Section 2 separates what is
+delivered from what is only planned.
 
 ## 2. Delivered slice vs. target
 
@@ -35,18 +36,21 @@ is only planned.
 | Live diff facts (G1): signed paths and diff digest vs Git | `tools/manual_bridge_merge_statement.py` | Delivered (section 5a). Unit-tested with injected runners and with real `git` on a throwaway repository. |
 | Receipt contract and writer | `tools/manual_bridge_merge_receipt.py` | Delivered. A genuine receipt is always refused. |
 | Tests for those two modules | `tests/tools/test_manual_bridge_merge_statement.py`, `tests/tools/test_manual_bridge_merge_receipt.py` | Delivered. The evidence class is `unit_mock`. |
-| Admission, preview and execute | `tools/manual_bridge_merge.py` | NOT delivered. |
-| Merge-module tests | (planned with the admission module) | NOT delivered. |
+| Admission preview (G2), read-only | `tools/manual_bridge_merge.py` | Delivered (section 7a). The best verdict is `unknown`; there is no `admitted` verdict. |
+| Execute | `tools/manual_bridge_merge.py` | NOT delivered. `execute` always refuses with `execute_unavailable`. |
+| Admission-preview tests (T05-T09) | `tests/tools/test_manual_bridge_merge.py` | Delivered. Every runner is a fake, so the evidence class is `unit_mock`. |
 | Trust anchor | `ops/security/manual-merge.allowed_signers` | NOT delivered. Absent at main `c5f7c933` and in this PR, so the anchor is UNKNOWN. |
-| DN-A control admission (veto, unknown and replay controls) | (planned inside the admission module) | NOT delivered. An initial contract exists only as an audit proposal. |
+| DN-A control admission (veto, unknown and replay controls) | `tools/manual_bridge_merge.py` (preview only) | Veto and unknown controls are checked in the preview (section 7a), following the unreconciled audit proposal; reported `unknown` until the Lead reconciles it. Replay (nonce) is not checked by the preview. |
 | Live integration prerequisites | (see section 6) | UNKNOWN. |
 | This document | `docs/architecture/MANUAL_BRIDGE_MERGE_A.md` | This file. |
 
 What the delivered code does **not** do:
 
-- it does not admit, preview, execute or merge anything;
-- it does not read or write the bridge, call GitHub, or call any existing gate
-  code;
+- it does not admit, execute or merge anything; the preview only reports;
+- it does not write the bridge, reserve a nonce, write a receipt or MAGMA
+  record, call a provider, or call any existing gate code;
+- its only GitHub calls are read-only `gh pr view` and plain GET `gh api`
+  reads, checked against an allowlist before they run;
 - it cannot produce a genuine receipt.
 
 Positive SSH proof is NOT_RUN: no real operator key has signed a statement
@@ -290,8 +294,11 @@ The following never fill these slots:
 
 A recognized-RCO veto always wins (`CLAUDE.md` Rule 9a).
 
-**Controls (DN-A).** Control admission is not implemented. The initial
-contract is an audit proposal awaiting the Lead's reconciliation. It proposes:
+**Controls (DN-A).** Control admission exists only inside the read-only
+preview (section 7a), which follows the proposal below plus the exact
+retraction of plan test T07. The initial contract is still an audit
+proposal awaiting the Lead's reconciliation, so the preview reports it as
+`unknown`. It proposes:
 
 - The negative-control scope is the conservative union of the legacy readers:
   - the canonical task;
@@ -303,10 +310,112 @@ contract is an audit proposal awaiting the Lead's reconciliation. It proposes:
 - Typed canonical RCO findings cannot be neutralized by status or prose.
 - Unknown or unclassifiable controls refuse.
 - No release path exists in the first version, so an ordinary PASS clears
-  nothing.
+  nothing. (The preview's only clear is the exact retraction of section 7a,
+  from plan test T07; the Lead decides whether it stays.)
 
 The unchanged aggregate gates remain separate mandatory gates. They are
 necessary, never sufficient.
+
+## 7a. Admission preview (G2, delivered; read-only)
+
+`preview_admission` in `tools/manual_bridge_merge.py` evaluates one pull
+request and returns every check with status `pass`, `refuse` or `unknown`.
+The verdict is `refused` if any check refuses, and `unknown` otherwise.
+There is no `admitted` verdict, because the checks in the last group below
+are always `unknown` in this slice.
+
+**Effects.** None.
+
+- No merge, ready, undraft or other GitHub mutation. Every `gh` argv must
+  be `pr view` or a plain `api` GET (no `-X`, `--method`, `-f`, `-F`,
+  `--field`, `--raw-field` or `--input`). The only `git` call of its own is
+  `merge-base --is-ancestor`.
+- No nonce-ledger access, no bridge, receipt or MAGMA write, no provider
+  call.
+- `execute` always refuses with `execute_unavailable`.
+
+**What the preview reads itself.**
+
+- The statement: parsed, then verified with `verify_statement` at the live
+  base and live head (trust anchor, the section 5a diff facts, then the SSH
+  verifier). Injected runners make the result `unit_mock`, so
+  `statement_provenance` is `unknown`.
+- The live PR: the raw `gh pr view --json` output with exactly the fields
+  `number`, `state`, `isDraft`, `headRefOid`, `headRefName`, `baseRefOid`,
+  `baseRefName`, `mergeable` and `mergeStateStatus`. Missing or extra
+  fields, wrong types, duplicate keys or abbreviated ids refuse the read.
+  The canonical task id is `headRefName`.
+- Whether the head contains the live base (`git merge-base --is-ancestor`).
+- The required checks of `main`, and the check runs of the exact head.
+- The API rate limit.
+
+**What the caller hands over as evidence, validated here.**
+
+- Bridge events from a pinned reader: approvals, blocking decisions and
+  retractions.
+- The author and contributor lineage.
+- The identity registry (agent, `agent_uuid`, `session_id`).
+- The expected review request id per role (`payload.lead_request`).
+- The other signed statements of the batch.
+- The autonomous refusal: the original event, preserved unchanged, or an
+  explicit UNKNOWN absence. The preview never builds one.
+
+**Refusals.**
+
+- Live PR (T05, T08): not `OPEN`, draft, base not `main`, signed base or
+  head not the live one, not `MERGEABLE`/`CLEAN`, head not based on the
+  base.
+- Statement (T05): any statement-module refusal, including a tampered
+  constant field, the wrong PR, expiry, a bad signature, or paths or a
+  digest that differ from the live diff.
+- Batch (T05, T08): orders not exactly 1..N, a foreign or duplicate
+  member, or an earlier member or dependency that is not `MERGED`.
+- Bootstrap (T09): a live diff that touches a MANUAL-A route file; the
+  route cannot admit itself.
+- Lineage and approvals (T06, T07):
+  - The lineage map is missing.
+  - There is no exact-head `rco_pass` from a recognized RCO (`claude-rco-1`
+    or `claude-rco-2`) on the canonical task, with `exact_head` present.
+  - That RCO is an author or a contributor.
+  - Either the Lead's or Tools' exact-head `build_consensus_pass` is
+    missing.
+  - The three `agent_uuid` values are not distinct.
+  - An identity or session does not match the registry.
+  - A request id does not match the expected one.
+- Operator, Grok, GPT, a producer lane and any model or effort claim never
+  fill a slot.
+- Blocking decisions (T07, DN-A as proposed, not reconciled):
+  - Scope: a recognized-RCO control in the conservative negative scope (the
+    exact task, its slash/hyphen alias, the PR payload keys, or the PR
+    pattern in the task id).
+  - Such a control blocks unless it is an `rco_pass` decision or an exact
+    retraction. That covers any `finding`, any decision with another
+    status, and any event with a blocking status.
+  - An exact retraction is a `decision` with status `finding_retracted`
+    from the same RCO, with `payload.retracts_event_id` equal to the
+    blocking event's id and `payload.exact_head` equal to the head. It
+    clears only that event.
+  - Prose and later passes never clear a block, and a veto outranks the
+    other RCO's pass.
+- Controls changed (T08): `controls_digest` (over the scoped control
+  events) differs from the digest the caller saw in an earlier preview.
+- CI (T08): a required check is missing, pending, failed, or reported for
+  another head. A required check that was skipped or neutral is named and
+  refused, never bypassed.
+- Rate (T08): fewer than 50 core API requests remain.
+
+**Always `unknown` in this slice.**
+
+- The five receipt integration prerequisites (section 6).
+- The DN-A contract reconciliation.
+- The nonce state: the preview never opens the ledger.
+- Evidence privacy.
+- A missing or absent autonomous refusal.
+- A missing identity registry or expected request ids.
+- An unreadable or paginated CI listing, an unreadable rate limit, an
+  unreadable dependency or batch PR, or an inconclusive ancestry check.
+- `UNKNOWN` mergeability.
+- The live PR read when it came from an injected runner.
 
 ## 8. Operator key guidance (operator only)
 
@@ -446,8 +555,9 @@ head. Signing is possible only once plan step 5.3 holds:
 ## 12. Open items (not decided here)
 
 - Lead reconciliation of the DN-A initial contract and its open questions.
-- The admission, preview and execute module, and its tests (G2). It must
-  re-run the section 5a check immediately before any effect.
+- Execute (after G2): it must re-run every section 7a check, including the
+  section 5a facts, immediately before any effect. It needs genuine
+  adapters for the evidence that the preview reports as `unknown`.
 - The trust anchor, which needs the operator's public line.
 - Real validators for the five integration prerequisites.
 - Positive SSH proof and live proofs, both NOT_RUN.

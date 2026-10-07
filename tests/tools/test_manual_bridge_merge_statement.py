@@ -45,9 +45,19 @@ HEAD = "a" * 40
 NOW = datetime(2026, 10, 5, 6, 0, 0, tzinfo=timezone.utc)
 EXPIRY = "2026-10-05T07:00:00Z"
 NONCE = "0123456789abcdef0123456789abcdef"
-DIFF = "d" * 64
 PATHS = ("tools/manual_bridge_merge_statement.py", "tests/tools/test_manual_bridge_merge_statement.py")
 SORTED_PATHS = tuple(sorted(PATHS))
+
+
+def raw_record(path: str, *, old_mode: str = "100644", new_mode: str = "100644",
+               old: str = "1" * 40, new: str = "2" * 40, status: str = "M") -> bytes:
+    """One ``git diff-tree -r -z --raw`` record (unit_mock bytes)."""
+    return (f":{old_mode} {new_mode} {old} {new} {status}".encode("ascii") + b"\x00"
+            + path.encode("utf-8") + b"\x00")
+
+
+RAW_DIFF = b"".join(raw_record(path) for path in SORTED_PATHS)
+DIFF = hashlib.sha256(RAW_DIFF).hexdigest()
 
 
 def ssh_string(value: bytes) -> bytes:
@@ -81,13 +91,18 @@ class FakeGit:
     """unit_mock git: answers only the four commands the loader may run."""
 
     def __init__(self, data: bytes | None, *, commit: str = BASE, blob_sha: str | None = None,
-                 kind: bytes = b"blob\n", commit_ok: bool = True, content: bytes | None = None):
+                 kind: bytes = b"blob\n", commit_ok: bool = True, content: bytes | None = None,
+                 diff: bytes = RAW_DIFF, diff_returncode: int = 0,
+                 live_commits: tuple[str, ...] = (BASE, HEAD, "e" * 40)):
         self.data = data
         self.commit = commit
         self.blob_sha = blob_sha if blob_sha is not None else (git_blob_sha(data) if data is not None else None)
         self.kind = kind
         self.commit_ok = commit_ok
         self.content = content
+        self.diff = diff
+        self.diff_returncode = diff_returncode
+        self.live_commits = live_commits
         self.calls: list[list[str]] = []
         self.envs: list[dict] = []
 
@@ -95,6 +110,8 @@ class FakeGit:
         self.calls.append(list(argv))
         self.envs.append(dict(env or {}))
         args = list(argv[3:])
+        if args[:1] == ["--no-replace-objects"]:
+            return self._live(args[1:])
         if args[:3] == ["rev-parse", "--verify", "--quiet"] and args[3].endswith("^{commit}"):
             if self.commit_ok and args[3] == f"{self.commit}^{{commit}}":
                 return RunResult(0, (self.commit + "\n").encode(), b"")
@@ -108,6 +125,17 @@ class FakeGit:
         if args[:2] == ["cat-file", "blob"]:
             return RunResult(0, self.content if self.content is not None else self.data, b"")
         raise AssertionError(f"unexpected git call {argv}")
+
+    def _live(self, args):
+        """G1 live facts: commit checks and the one diff-tree call."""
+        if args[:3] == ["rev-parse", "--verify", "--quiet"] and args[3].endswith("^{commit}"):
+            sha = args[3][: -len("^{commit}")]
+            if self.commit_ok and sha in self.live_commits:
+                return RunResult(0, (sha + "\n").encode(), b"")
+            return RunResult(1, b"", b"")
+        if args[:1] == ["diff-tree"] and tuple(args[1:-2]) == mms.GIT_DIFF_ARGS:
+            return RunResult(self.diff_returncode, self.diff, b"")
+        raise AssertionError(f"unexpected live git call {args}")
 
 
 def load_anchor(key_type: str = "ssh-ed25519", **kwargs) -> mms.TrustAnchor:
@@ -430,9 +458,13 @@ def test_anchor_byte_level_rules(data):
 # --- T04 binding and expiry -----------------------------------------------------
 
 
+def live_facts(paths=SORTED_PATHS, digest=DIFF, *, base=BASE, head=HEAD) -> mms.GitDiffFacts:
+    return mms.GitDiffFacts(base_sha=base, head_sha=head, paths=paths, diff_digest_sha256=digest)
+
+
 def _bind(statement, anchor, **overrides):
     kwargs = dict(anchor=anchor, expected_head_sha=HEAD, expected_base_sha=BASE,
-                  live_changed_paths=list(SORTED_PATHS), now_utc=NOW)
+                  live_diff=live_facts(), now_utc=NOW)
     kwargs.update(overrides)
     mms.check_statement_binding(statement, **kwargs)
 
@@ -464,7 +496,7 @@ def test_binding_refusals():
         _bind(statement, fp_anchor)
     assert err.value.reason == "key_fingerprint_mismatch"
     with pytest.raises(StatementError) as err:
-        _bind(statement, anchor, live_changed_paths=[*SORTED_PATHS, ALLOWED_SIGNERS_PATH])
+        _bind(statement, anchor, live_diff=live_facts(tuple(sorted([*SORTED_PATHS, ALLOWED_SIGNERS_PATH]))))
     assert err.value.reason == "allowed_signers_changed"
     with pytest.raises(StatementError) as err:
         _bind(statement, anchor, expected_head_sha="HEAD")
@@ -477,7 +509,7 @@ def test_g1_signed_paths_that_differ_from_the_live_diff_are_refused():
     anchor = load_anchor()
     statement = make_statement(anchor)
     with pytest.raises(StatementError) as err:
-        _bind(statement, anchor, live_changed_paths=["tools/check_rco_pass_present.py"])
+        _bind(statement, anchor, live_diff=live_facts(("tools/check_rco_pass_present.py",)))
     assert err.value.reason == "exact_paths_mismatch"
 
 
@@ -650,7 +682,7 @@ def test_verify_statement_full_flow_unit_mock_consumes_no_nonce(tmp_path):
     ledger_root.mkdir()
     verified = mms.verify_statement(
         statement_bytes=data, signature_bytes=SIGNATURE, repo_root=ROOT, trusted_commit=BASE,
-        expected_head_sha=HEAD, live_changed_paths=list(SORTED_PATHS), now_utc=NOW,
+        expected_head_sha=HEAD, now_utc=NOW,
         ssh_keygen=fake_keygen(tmp_path), runner=FakeSsh(good_line(anchor)), git_runner=FakeGit(anchor_data),
     )
     assert verified.statement.nonce == NONCE
@@ -666,7 +698,7 @@ def test_verify_statement_refuses_stale_head_before_running_verifier(tmp_path):
     with pytest.raises(StatementError) as err:
         mms.verify_statement(
             statement_bytes=data, signature_bytes=SIGNATURE, repo_root=ROOT, trusted_commit=BASE,
-            expected_head_sha="e" * 40, live_changed_paths=list(SORTED_PATHS), now_utc=NOW,
+            expected_head_sha="e" * 40, now_utc=NOW,
             ssh_keygen=fake_keygen(tmp_path), runner=fake, git_runner=FakeGit(anchor_data),
         )
     assert err.value.reason == "signed_head_stale"
@@ -1660,3 +1692,218 @@ def test_import_in_fresh_interpreter_creates_no_files(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.decode().strip() == "waggledance-manual-merge-a"
     assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+# --- G1 signed exact_paths / diff digest vs live Git facts -----------------------
+
+
+def test_g1_matching_live_paths_and_digest_bind():
+    anchor = load_anchor()
+    _bind(make_statement(anchor), anchor, live_diff=live_facts())
+
+
+@pytest.mark.parametrize("live,reason", [
+    (lambda: live_facts(SORTED_PATHS[:1]), "exact_paths_mismatch"),                       # signed path missing
+    (lambda: live_facts(tuple(sorted([*SORTED_PATHS, "tools/x.py"]))), "exact_paths_mismatch"),  # extra path
+    (lambda: live_facts(tuple(sorted(p.upper() for p in SORTED_PATHS))), "exact_paths_mismatch"),  # case variant
+    (lambda: live_facts(digest="0" * 64), "diff_digest_mismatch"),
+    (lambda: live_facts(digest=None), "invalid_live_fact"),
+    (lambda: live_facts(digest=DIFF.upper()), "invalid_live_fact"),
+    (lambda: live_facts(SORTED_PATHS[0]), "invalid_live_fact"),                            # a string, not a tuple
+    (lambda: live_facts(list(SORTED_PATHS)), "invalid_live_fact"),                         # a list
+    (lambda: live_facts((SORTED_PATHS[0], SORTED_PATHS[0])), "invalid_live_fact"),         # duplicate
+    (lambda: live_facts(tuple(reversed(SORTED_PATHS))), "invalid_live_fact"),              # unsorted
+    (lambda: live_facts(("tools/../x.py",)), "invalid_live_fact"),                         # malformed path
+    (lambda: live_facts(base="c" * 40), "invalid_live_fact"),                              # facts for another base
+    (lambda: live_facts(head="e" * 40), "invalid_live_fact"),                              # facts for another head
+    (lambda: None, "invalid_live_fact"),                                                   # no silent bypass
+    (lambda: SORTED_PATHS, "invalid_live_fact"),                                           # caller-supplied paths
+])
+def test_g1_binding_refuses_any_live_diff_that_is_not_the_signed_one(live, reason):
+    anchor = load_anchor()
+    with pytest.raises(StatementError) as err:
+        _bind(make_statement(anchor), anchor, live_diff=live())
+    assert err.value.reason == reason
+
+
+def test_g1_binding_has_no_optional_live_diff():
+    anchor = load_anchor()
+    with pytest.raises(TypeError):
+        mms.check_statement_binding(make_statement(anchor), anchor=anchor, expected_head_sha=HEAD,
+                                    expected_base_sha=BASE, now_utc=NOW)
+
+
+def test_g1_read_git_diff_facts_unit_mock_contract():
+    git = FakeGit(anchor_bytes())
+    facts = mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=HEAD, runner=git)
+    assert facts.paths == SORTED_PATHS
+    assert facts.diff_digest_sha256 == hashlib.sha256(RAW_DIFF).hexdigest() == DIFF
+    assert facts.provenance == mms.EVIDENCE_UNIT_MOCK
+    assert facts.git_argv == ("git", "-C", str(ROOT), "--no-replace-objects", "diff-tree",
+                              *mms.GIT_DIFF_ARGS, BASE, HEAD)
+    assert git.calls[-1] == list(facts.git_argv)
+    assert all(not key.upper().startswith("GIT_") for env in git.envs for key in env)
+    assert mms.GitDiffFacts(base_sha=BASE, head_sha=HEAD, paths=(), diff_digest_sha256=DIFF).provenance \
+        == mms.ANCHOR_UNVERIFIED
+
+
+@pytest.mark.parametrize("diff,reason", [
+    (RAW_DIFF[:-1], "live_diff_malformed"),                                     # unterminated
+    (b":100644 100644 " + b"1" * 40 + b" " + b"2" * 40 + b" M\x00", "live_diff_malformed"),  # no path
+    (raw_record("a.py", status="R100"), "live_diff_malformed"),                 # rename record
+    (raw_record("a.py", old="1" * 7), "live_diff_malformed"),                   # abbreviated id
+    (raw_record("a.py").replace(b"a.py", b"\xff.py"), "live_diff_malformed"),   # not UTF-8
+    (raw_record("a.py") + raw_record("a.py"), "live_diff_malformed"),           # duplicate
+    (raw_record("C:/x.py"), "live_diff_malformed"),                             # reserved char
+    (b"diff --git a/a.py b/a.py\n", "live_diff_malformed"),                     # text patch
+])
+def test_g1_malformed_git_output_refuses(diff, reason):
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=HEAD,
+                                runner=FakeGit(anchor_bytes(), diff=diff))
+    assert err.value.reason == reason
+
+
+def test_g1_git_failures_refuse_without_fallback():
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=HEAD,
+                                runner=FakeGit(anchor_bytes(), diff_returncode=128))
+    assert err.value.reason == "live_diff_unavailable"
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha="9" * 40, runner=FakeGit(anchor_bytes()))
+    assert err.value.reason == "live_commit_unknown"
+    for bad in ("HEAD", "a" * 39, "A" * 40, None):
+        with pytest.raises(StatementError) as err:
+            mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=bad, runner=FakeGit(anchor_bytes()))
+        assert err.value.reason == "invalid_live_fact"
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=Path("relative"), base_sha=BASE, head_sha=HEAD,
+                                runner=FakeGit(anchor_bytes()))
+    assert err.value.reason == "invalid_live_fact"
+
+    def timeout_runner(argv, *, input_bytes, timeout, env):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=HEAD, runner=timeout_runner)
+    assert err.value.reason == "git_unavailable"
+
+    def odd_runner(argv, *, input_bytes, timeout, env):
+        return "not a RunResult"
+
+    with pytest.raises(StatementError) as err:
+        mms.read_git_diff_facts(repo_root=ROOT, base_sha=BASE, head_sha=HEAD, runner=odd_runner)
+    assert err.value.reason == "git_unavailable"
+
+
+@pytest.mark.parametrize("diff,reason", [
+    (raw_record(SORTED_PATHS[0]) + raw_record(SORTED_PATHS[1], new="3" * 40), "diff_digest_mismatch"),  # content
+    (raw_record(SORTED_PATHS[0]) + raw_record(SORTED_PATHS[1], new_mode="100755"), "diff_digest_mismatch"),  # mode
+    (RAW_DIFF + raw_record("tools/zz_extra.py", status="A"), "exact_paths_mismatch"),
+    (raw_record(SORTED_PATHS[0]), "exact_paths_mismatch"),
+])
+def test_g1_verify_statement_refuses_tampered_live_diff_before_ssh(tmp_path, diff, reason):
+    anchor_data = anchor_bytes()
+    anchor = mms.load_trust_anchor(repo_root=ROOT, trusted_commit=BASE, runner=FakeGit(anchor_data))
+    data = mms.canonical_statement_bytes(make_statement(anchor))
+    fake = FakeSsh(good_line(anchor))
+    with pytest.raises(StatementError) as err:
+        mms.verify_statement(
+            statement_bytes=data, signature_bytes=SIGNATURE, repo_root=ROOT, trusted_commit=BASE,
+            expected_head_sha=HEAD, now_utc=NOW, ssh_keygen=fake_keygen(tmp_path), runner=fake,
+            git_runner=FakeGit(anchor_data, diff=diff),
+        )
+    assert err.value.reason == reason
+    assert fake.calls == []
+
+
+def test_g1_verify_statement_reads_live_diff_itself():
+    params = __import__("inspect").signature(mms.verify_statement).parameters
+    assert "live_changed_paths" not in params and "live_diff" not in params
+
+
+# Real git (no keys, no network): deterministic bytes from a throwaway repository.
+
+def _real_git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    done = subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false", "-c", "user.name=g1",
+                           "-c", "user.email=g1@example.invalid", "-c", "commit.gpgsign=false", *args],
+                          input=stdin, capture_output=True, env=env, check=True)
+    return done.stdout
+
+
+def _commit(repo: Path, message: str) -> str:
+    _real_git(repo, "add", "-A")
+    _real_git(repo, "commit", "-q", "--allow-empty", "-m", message)
+    return _real_git(repo, "rev-parse", "HEAD").decode("ascii").strip()
+
+
+@pytest.fixture()
+def real_repo(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    repo = tmp_path / "g1-repo"
+    repo.mkdir()
+    _real_git(repo, "init", "-q")
+    (repo / "keep.txt").write_bytes(b"keep\n")
+    (repo / "old_name.py").write_bytes(b"x = 1\n")
+    (repo / "mode.sh").write_bytes(b"echo hi\n")
+    base = _commit(repo, "base")
+    (repo / "old_name.py").rename(repo / "new_name.py")                     # rename -> delete + add
+    (repo / "bin.dat").write_bytes(bytes(range(256)) * 4)                    # binary content
+    (repo / "pääkirja ✓.md").write_bytes("ünïcode\n".encode("utf-8"))        # Unicode path
+    _real_git(repo, "add", "-A")
+    _real_git(repo, "update-index", "--chmod=+x", "mode.sh")                 # mode-only change
+    head = _commit(repo, "head")
+    return repo, base, head
+
+
+def test_g1_real_git_facts_are_deterministic_bytes(real_repo):
+    repo, base, head = real_repo
+    facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
+    assert facts.provenance == mms.ANCHOR_SUBPROCESS_GIT
+    assert facts.paths == tuple(sorted(["bin.dat", "mode.sh", "new_name.py", "old_name.py", "pääkirja ✓.md"]))
+    raw = _real_git(repo, "--no-replace-objects", "diff-tree", *mms.GIT_DIFF_ARGS, base, head)
+    assert facts.diff_digest_sha256 == hashlib.sha256(raw).hexdigest()
+    assert b":100644 100755 " in raw and b" D\x00old_name.py\x00" in raw and b" A\x00new_name.py\x00" in raw
+    assert mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head) == facts
+
+
+def test_g1_real_git_ignores_working_tree_env_and_diff_config(real_repo, monkeypatch):
+    repo, base, head = real_repo
+    facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
+    (repo / "keep.txt").write_bytes(b"uncommitted change\n")
+    (repo / "untracked.py").write_bytes(b"y = 2\n")
+    _real_git(repo, "config", "diff.external", "definitely-not-a-command")
+    _real_git(repo, "config", "diff.renames", "copies")
+    (repo / ".git" / "info" / "attributes").write_bytes(b"* diff=g1\n")
+    _real_git(repo, "config", "diff.g1.textconv", "definitely-not-a-command")
+    monkeypatch.setenv("GIT_DIR", str(repo / "nowhere"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(repo / "nowhere-index"))
+    assert mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head) == facts
+
+
+def test_g1_real_git_content_or_mode_change_alters_the_digest(real_repo):
+    repo, base, head = real_repo
+    facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
+    (repo / "bin.dat").write_bytes(bytes(range(256)) * 4 + b"\x00")
+    content = _commit(repo, "content")
+    _real_git(repo, "update-index", "--chmod=-x", "mode.sh")
+    mode_only = _commit(repo, "mode")
+    changed = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=content)
+    assert changed.paths == facts.paths and changed.diff_digest_sha256 != facts.diff_digest_sha256
+    reverted = mms.read_git_diff_facts(repo_root=repo, base_sha=head, head_sha=mode_only)
+    assert reverted.paths == ("bin.dat", "mode.sh")
+    only_mode = mms.read_git_diff_facts(repo_root=repo, base_sha=content, head_sha=mode_only)
+    assert only_mode.paths == ("mode.sh",) and only_mode.diff_digest_sha256 not in (
+        facts.diff_digest_sha256, changed.diff_digest_sha256)
+
+
+def test_g1_real_git_refuses_unknown_and_non_commit_ids(real_repo):
+    repo, base, head = real_repo
+    tree = _real_git(repo, "rev-parse", f"{head}^{{tree}}").decode("ascii").strip()
+    for bad in ("0" * 40, tree):
+        with pytest.raises(StatementError) as err:
+            mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=bad)
+        assert err.value.reason == "live_commit_unknown"

@@ -11,6 +11,11 @@ This module is the first slice of the manual merge + MAGMA receipt route
   from a PR head or a worktree file;
 * ``ssh-keygen -Y verify`` invocation with an argument list (no shell) and the
   exact statement bytes on stdin;
+* G1 live diff facts: the signed ``exact_paths`` and ``diff_digest_sha256``
+  must equal the paths and the SHA-256 of the exact ``git diff-tree`` raw
+  bytes read for the exact base/head commits (``read_git_diff_facts``),
+  checked before the SSH verifier runs; there is no caller-supplied path
+  list and no fallback;
 * a one-time nonce ledger (exclusive create per nonce, OS file lock, explicit
   state machine, no retry).
 
@@ -129,6 +134,16 @@ KEY_TYPE_LABELS: Mapping[str, str] = {
 ANCHOR_OPTIONS = f'namespaces="{NAMESPACE}"'
 SSH_VERIFY_TIMEOUT_SECONDS = 30.0
 GIT_TIMEOUT_SECONDS = 30.0
+# G1 diff digest contract: the SHA-256 of the exact stdout bytes of
+#   git -C <repo> --no-replace-objects diff-tree <GIT_DIFF_ARGS> <base> <head>
+# run with every GIT_* variable removed.  Raw records carry both modes and
+# full blob ids, so any content or mode change alters the digest; -z keeps
+# paths as raw bytes (no quoting); no renames, external diff or textconv.
+GIT_DIFF_ARGS: tuple[str, ...] = (
+    "-r", "-z", "--raw", "--full-index", "--no-abbrev", "--no-renames", "--no-ext-diff",
+    "--no-textconv", "--no-color",
+)
+GIT_DIFF_RECORD_RE = re.compile(rb":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([ADMT])")
 MAX_ANCHOR_BYTES = 16 * 1024
 MAX_SIGNATURE_BYTES = 16 * 1024
 MAX_STATEMENT_BYTES = 1024 * 1024
@@ -273,6 +288,26 @@ class VerificationResult:
     evidence_class: str
     # Copied from the anchor that was verified against.
     anchor_provenance: str = ANCHOR_UNVERIFIED
+
+
+@dataclass(frozen=True)
+class GitDiffFacts:
+    """Changed paths and diff digest read from Git for one exact base/head pair (G1).
+
+    ``diff_digest_sha256`` is the SHA-256 of the exact stdout bytes of
+    :data:`GIT_DIFF_ARGS` (``git diff-tree`` raw, NUL-separated, full object
+    ids, no renames), and ``paths`` are the sorted paths of those records.
+    ``provenance`` is ``subprocess_git`` only when :func:`read_git_diff_facts`
+    ran the real git subprocess; ``unit_mock`` for an injected runner; the
+    default marks a value built by hand.
+    """
+
+    base_sha: str
+    head_sha: str
+    paths: tuple[str, ...]
+    diff_digest_sha256: str
+    git_argv: tuple[str, ...] = ()
+    provenance: str = ANCHOR_UNVERIFIED
 
 
 @dataclass(frozen=True)
@@ -574,18 +609,22 @@ def check_statement_binding(
     anchor: TrustAnchor,
     expected_head_sha: str,
     expected_base_sha: str,
-    live_changed_paths: Sequence[str],
+    live_diff: GitDiffFacts,
     now_utc: datetime,
 ) -> None:
-    """Bind the statement to the trusted anchor and the caller's live PR facts."""
+    """Bind the statement to the trusted anchor and the live base/head Git facts.
+
+    ``live_diff`` is required (no fallback): the signed ``exact_paths`` and
+    ``diff_digest_sha256`` must equal the paths and digest read from Git for
+    exactly ``expected_base_sha``..``expected_head_sha`` (G1).
+    """
     validate_statement(statement)
     if not isinstance(anchor, TrustAnchor):
         raise StatementError("anchor_missing", "no trusted anchor")
     for label, value in (("expected_head_sha", expected_head_sha), ("expected_base_sha", expected_base_sha)):
         if type(value) is not str or SHA1_RE.fullmatch(value) is None:
             raise StatementError("invalid_live_fact", label)
-    if isinstance(live_changed_paths, (str, bytes)) or not isinstance(live_changed_paths, Sequence):
-        raise StatementError("invalid_live_fact", "live_changed_paths")
+    _validate_live_diff(live_diff)
     if statement.base_sha != anchor.trusted_commit:
         raise StatementError("anchor_not_from_statement_base", anchor.trusted_commit)
     if statement.base_sha != expected_base_sha:
@@ -596,9 +635,37 @@ def check_statement_binding(
         raise StatementError("anchor_blob_mismatch", anchor.blob_sha)
     if statement.key_fingerprint != anchor.fingerprint:
         raise StatementError("key_fingerprint_mismatch", anchor.fingerprint)
-    if ALLOWED_SIGNERS_PATH in live_changed_paths:
+    if live_diff.base_sha != expected_base_sha or live_diff.head_sha != expected_head_sha:
+        raise StatementError("invalid_live_fact", "live_diff is not for the expected base/head")
+    if ALLOWED_SIGNERS_PATH in live_diff.paths:
         raise StatementError("allowed_signers_changed", "the live PR diff changes the trust anchor")
+    if live_diff.paths != statement.exact_paths:
+        raise StatementError("exact_paths_mismatch", "signed exact_paths differ from the live diff")
+    if live_diff.diff_digest_sha256 != statement.diff_digest_sha256:
+        raise StatementError("diff_digest_mismatch", live_diff.diff_digest_sha256)
     check_statement_expiry(statement, now_utc=now_utc)
+
+
+def _validate_live_diff(live_diff: Any) -> None:
+    if not isinstance(live_diff, GitDiffFacts):
+        raise StatementError("invalid_live_fact", "live_diff must be GitDiffFacts")
+    for label in ("base_sha", "head_sha"):
+        value = getattr(live_diff, label)
+        if type(value) is not str or SHA1_RE.fullmatch(value) is None:
+            raise StatementError("invalid_live_fact", f"live_diff.{label}")
+    digest = live_diff.diff_digest_sha256
+    if type(digest) is not str or SHA256_RE.fullmatch(digest) is None:
+        raise StatementError("invalid_live_fact", "live_diff.diff_digest_sha256")
+    paths = live_diff.paths
+    if type(paths) is not tuple or len(paths) > MAX_PATHS:
+        raise StatementError("invalid_live_fact", "live_diff.paths must be a bounded tuple")
+    for path in paths:
+        try:
+            validate_repo_path(path)
+        except StatementError as exc:
+            raise StatementError("invalid_live_fact", "live_diff.paths: " + exc.reason) from exc
+    if list(paths) != sorted(set(paths)):
+        raise StatementError("invalid_live_fact", "live_diff.paths must be sorted and unique")
 
 
 # --- trust anchor -------------------------------------------------------------
@@ -743,6 +810,78 @@ def load_trust_anchor(
         key_type=key_type,
         key_label=KEY_TYPE_LABELS[key_type],
         fingerprint=fingerprint,
+        provenance=EVIDENCE_UNIT_MOCK if runner is not None else ANCHOR_SUBPROCESS_GIT,
+    )
+
+
+# --- live diff facts (G1) -----------------------------------------------------
+
+
+def _parse_git_diff(stdout: bytes) -> tuple[str, ...]:
+    """Paths of ``git diff-tree -r -z --raw --no-renames`` output, or refuse."""
+    if not stdout:
+        return ()
+    fields = stdout.split(b"\x00")
+    if fields[-1] != b"" or (len(fields) - 1) % 2 != 0:
+        raise StatementError("live_diff_malformed", "unterminated or odd record list")
+    paths: list[str] = []
+    for index in range(0, len(fields) - 1, 2):
+        if GIT_DIFF_RECORD_RE.fullmatch(fields[index]) is None:
+            raise StatementError("live_diff_malformed", f"record {index // 2}")
+        try:
+            path = fields[index + 1].decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise StatementError("live_diff_malformed", "path is not UTF-8") from exc
+        try:
+            paths.append(validate_repo_path(path))
+        except StatementError as exc:
+            raise StatementError("live_diff_malformed", "path: " + exc.reason) from exc
+    if len(paths) > MAX_PATHS or len(set(paths)) != len(paths):
+        raise StatementError("live_diff_malformed", "too many or duplicate paths")
+    return tuple(sorted(paths))
+
+
+def read_git_diff_facts(
+    *,
+    repo_root: Path,
+    base_sha: str,
+    head_sha: str,
+    runner: Runner | None = None,
+    git_executable: str = "git",
+) -> GitDiffFacts:
+    """Read the changed paths and the G1 diff digest for exactly ``base_sha``..``head_sha``.
+
+    Both ids must be full lowercase commit ids that git resolves to
+    themselves; the diff is read only from the object store (never a working
+    tree), with replace objects disabled and every GIT_* variable removed.
+    Any git failure, timeout or unparseable output refuses; there is no
+    fallback.  This reads facts only; it performs no merge or other effect.
+    """
+    for label, value in (("base_sha", base_sha), ("head_sha", head_sha)):
+        if type(value) is not str or SHA1_RE.fullmatch(value) is None:
+            raise StatementError("invalid_live_fact", label)
+    if base_sha == head_sha:
+        raise StatementError("invalid_live_fact", "head equals base")
+    if not isinstance(repo_root, Path) or not repo_root.is_absolute():
+        raise StatementError("invalid_live_fact", "repo_root must be an absolute Path")
+    run = runner if runner is not None else _subprocess_runner
+    for sha in (base_sha, head_sha):
+        commit = _run_git(
+            run, git_executable, repo_root,
+            ["--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+        )
+        if commit.returncode != 0 or commit.stdout.strip() != sha.encode("ascii"):
+            raise StatementError("live_commit_unknown", sha)
+    args = ["--no-replace-objects", "diff-tree", *GIT_DIFF_ARGS, base_sha, head_sha]
+    diff = _run_git(run, git_executable, repo_root, args)
+    if diff.returncode != 0 or type(diff.stdout) is not bytes:
+        raise StatementError("live_diff_unavailable", f"git diff-tree exit {diff.returncode}")
+    return GitDiffFacts(
+        base_sha=base_sha,
+        head_sha=head_sha,
+        paths=_parse_git_diff(diff.stdout),
+        diff_digest_sha256=hashlib.sha256(diff.stdout).hexdigest(),
+        git_argv=(git_executable, "-C", str(repo_root), *args),
         provenance=EVIDENCE_UNIT_MOCK if runner is not None else ANCHOR_SUBPROCESS_GIT,
     )
 
@@ -943,18 +1082,29 @@ def verify_statement(
     repo_root: Path,
     trusted_commit: str,
     expected_head_sha: str,
-    live_changed_paths: Sequence[str],
     now_utc: datetime,
     ssh_keygen: Path,
     runner: Runner | None = None,
     git_runner: Runner | None = None,
     git_executable: str = "git",
 ) -> VerifiedStatement:
-    """Full stateless verification (preview-safe: no nonce is consumed)."""
+    """Full stateless verification (preview-safe: no nonce is consumed).
+
+    The live paths and diff digest are read from Git for exactly
+    ``trusted_commit``..``expected_head_sha`` (never supplied by the caller)
+    and must match the signed fields before the SSH verifier runs.
+    """
     statement = parse_statement(statement_bytes)
     anchor = load_trust_anchor(
         repo_root=repo_root,
         trusted_commit=trusted_commit,
+        runner=git_runner,
+        git_executable=git_executable,
+    )
+    live_diff = read_git_diff_facts(
+        repo_root=repo_root,
+        base_sha=trusted_commit,
+        head_sha=expected_head_sha,
         runner=git_runner,
         git_executable=git_executable,
     )
@@ -963,7 +1113,7 @@ def verify_statement(
         anchor=anchor,
         expected_head_sha=expected_head_sha,
         expected_base_sha=trusted_commit,
-        live_changed_paths=live_changed_paths,
+        live_diff=live_diff,
         now_utc=now_utc,
     )
     verification = verify_statement_signature(

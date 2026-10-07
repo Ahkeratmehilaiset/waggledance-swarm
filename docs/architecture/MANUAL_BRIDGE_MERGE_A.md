@@ -29,14 +29,15 @@ is only planned.
 
 ## 2. Delivered slice vs. target
 
-| Component | Path | State at head `43af852a` |
+| Component | Path | State in this PR |
 |---|---|---|
 | Statement contract, trust-anchor loader, SSH verify, nonce ledger | `tools/manual_bridge_merge_statement.py` | Delivered. Unit-tested with injected runners only. |
+| Live diff facts (G1): signed paths and diff digest vs Git | `tools/manual_bridge_merge_statement.py` | Delivered (section 5a). Unit-tested with injected runners and with real `git` on a throwaway repository. |
 | Receipt contract and writer | `tools/manual_bridge_merge_receipt.py` | Delivered. A genuine receipt is always refused. |
 | Tests for those two modules | `tests/tools/test_manual_bridge_merge_statement.py`, `tests/tools/test_manual_bridge_merge_receipt.py` | Delivered. The evidence class is `unit_mock`. |
 | Admission, preview and execute | `tools/manual_bridge_merge.py` | NOT delivered. |
 | Merge-module tests | (planned with the admission module) | NOT delivered. |
-| Trust anchor | `ops/security/manual-merge.allowed_signers` | NOT delivered. Absent at main `c5f7c933` and at head `43af852a`, so the anchor is UNKNOWN. |
+| Trust anchor | `ops/security/manual-merge.allowed_signers` | NOT delivered. Absent at main `c5f7c933` and in this PR, so the anchor is UNKNOWN. |
 | DN-A control admission (veto, unknown and replay controls) | (planned inside the admission module) | NOT delivered. An initial contract exists only as an audit proposal. |
 | Live integration prerequisites | (see section 6) | UNKNOWN. |
 | This document | `docs/architecture/MANUAL_BRIDGE_MERGE_A.md` | This file. |
@@ -157,8 +158,47 @@ refused with `signature_output_unexpected`.
 - the statement base equals the anchor commit and the live base;
 - the statement head equals the live head (otherwise `signed_head_stale`);
 - the anchor blob and the fingerprint match;
+- `live_diff` (required, no fallback) is a `GitDiffFacts` for exactly the
+  expected base and head (`invalid_live_fact` otherwise);
 - the live diff does not touch the anchor;
+- the live paths equal the signed `exact_paths` (`exact_paths_mismatch`);
+- the live digest equals the signed `diff_digest_sha256`
+  (`diff_digest_mismatch`);
 - the statement has not expired (`statement_expired`).
+
+`verify_statement` reads `live_diff` itself with `read_git_diff_facts`; the
+caller cannot supply a path list. A mismatch refuses before the SSH
+verifier runs.
+
+### 5a. Diff digest contract (G1, delivered)
+
+`read_git_diff_facts` first confirms that both ids are full lowercase
+commit ids that git resolves to themselves, then runs exactly:
+
+```
+git -C <repo> --no-replace-objects diff-tree -r -z --raw --full-index --no-abbrev --no-renames --no-ext-diff --no-textconv --no-color <base_sha> <head_sha>
+```
+
+- It runs without a shell, with every `GIT_*` environment variable removed
+  and replace objects disabled. It reads only the object store, never a
+  working tree or index.
+- `diff_digest_sha256` is the lowercase hex SHA-256 of the exact stdout
+  bytes. Each raw record holds both modes and both full blob ids, so a
+  content change or a mode-only change alters the digest. A rename appears
+  as a delete plus an add.
+- The paths are the NUL-separated path fields, decoded as strict UTF-8,
+  each passing the statement's path rules, unique and then sorted.
+- Refusals: `invalid_live_fact` (malformed ids or repository path),
+  `live_commit_unknown`, `live_diff_unavailable` (non-zero exit),
+  `git_unavailable` (timeout or spawn failure) and `live_diff_malformed`
+  (any record that is not an `A`, `D`, `M` or `T` raw record with a valid
+  path, a non-UTF-8 path, or a duplicate).
+- The signer computes the same digest with the same argv on the same
+  commits. Use a shell that keeps stdout bytes unchanged (section 9).
+- Limit: the digest proves only which bytes were compared. Protected base
+  identity, live PR metadata, a re-read immediately before any effect,
+  the human signature and the nonce state stay mandatory in the admission
+  module (not delivered).
 
 **One-time use.** `verify_statement` is preview-safe and consumes no nonce.
 One-time use is enforced by the nonce ledger, and only the admission module
@@ -326,7 +366,9 @@ These steps use public material only.
 6. **Live facts.** A good signature alone is not permission. Also check:
    - the head equals the live PR head;
    - the statement has not expired;
-   - the exact paths and the diff digest match;
+   - the exact paths and the diff digest match the section 5a facts for the
+     statement's base and head (`git diff-tree` raw bytes, hashed with
+     SHA-256);
    - the diff does not touch the anchor;
    - the nonce has never been used.
 
@@ -387,7 +429,8 @@ head. Signing is possible only once plan step 5.3 holds:
 ## 12. Open items (not decided here)
 
 - Lead reconciliation of the DN-A initial contract and its open questions.
-- The admission, preview and execute module, and its tests.
+- The admission, preview and execute module, and its tests (G2). It must
+  re-run the section 5a check immediately before any effect.
 - The trust anchor, which needs the operator's public line.
 - Real validators for the five integration prerequisites.
 - Positive SSH proof and live proofs, both NOT_RUN.

@@ -997,7 +997,7 @@ def _open_requests_for_agent(
                 request=request,
                 agent=agent,
                 events=events,
-            )
+            ) or _request_withdrawn_exactly(request, closure_index)
         else:
             answered = _request_closed_by_index(
                 request=request,
@@ -1705,6 +1705,9 @@ def _direct_rco_pass_block_request_closed(
         # A PR may contain several independent review requests. Its number is
         # a fallback for unnamed legacy requests, never a named-task wildcard.
         if not same_task and not (not request_task_id and same_pr):
+            continue
+        if _withdraws_member(event) is not _ABSENT:
+            # Only withdrawal_target may close with a withdraws member.
             continue
         event_agent = _event_agent(event)
         if event_agent == target and _is_substantive_rco_pass_block_response(event):

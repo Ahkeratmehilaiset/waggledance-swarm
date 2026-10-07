@@ -116,9 +116,15 @@ def _write(tmp_path: Path, rows: list[bytes], terminators: list[bytes] | None = 
     return path
 
 
-def _open_statuses(tmp_path: Path, rows: list[bytes], terminators: list[bytes] | None = None) -> list[str]:
+def _open_statuses(
+    tmp_path: Path,
+    rows: list[bytes],
+    terminators: list[bytes] | None = None,
+    *,
+    agent: str = LEAD,
+) -> list[str]:
     events = read_events(_write(tmp_path, rows, terminators))
-    return [str(event["status"]) for event in _open_requests_for_agent(agent=LEAD, events=events)]
+    return [str(event["status"]) for event in _open_requests_for_agent(agent=agent, events=events)]
 
 
 def _report(tmp_path: Path, rows: list[bytes]) -> dict[str, Any]:
@@ -486,6 +492,24 @@ def test_withdraws_never_closes_a_request_id_request(tmp_path: Path) -> None:
     closure = _row(_withdrawal(_descriptor(notice, notice_row)))
 
     assert _open_statuses(tmp_path, [notice_row, closure]) == ["requested"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_open"),
+    [
+        pytest.param({}, [], id="exact"),
+        pytest.param({"ts_utc": "2026-10-06T16:00:00Z"}, ["rco_pass_requested"], id="ts_mismatch"),
+    ],
+)
+def test_direct_rco_pass_request_uses_exact_withdrawal_only(
+    tmp_path: Path, overrides: dict[str, Any], expected_open: list[str]
+) -> None:
+    rco = "claude-rco-1"
+    notice = _notice(V2_TS, "rco_pass_requested", agent=LEAD, agent_uuid=UUIDS[LEAD], to=rco)
+    notice_row = _row(notice)
+    closure = _row(_withdrawal(_descriptor(notice, notice_row, **overrides), agent=LEAD, to=rco))
+
+    assert _open_statuses(tmp_path, [notice_row, closure], agent=rco) == expected_open
 
 
 def test_withdraws_never_closes_a_control_signal(tmp_path: Path) -> None:

@@ -25,20 +25,30 @@ UNSAFE_PROVIDER_BRANCH = "claude-rco-2/grok-runtime-fix-20261007"
 FIXTURE_COMMIT_DATE = "2026-06-04T20:15:00+00:00"
 
 
-def _git_free_env() -> dict[str, str]:
-    """The current environment without any inherited Git selector (GIT_DIR, GIT_WORK_TREE, ...)."""
-    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+# Global and system Git configuration never reaches a fixture git call.
+ISOLATED_GIT_CONFIG = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+
+def _isolated_git_env() -> dict[str, str]:
+    """The current environment with every inherited GIT_* key removed and Git config isolated."""
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update(ISOLATED_GIT_CONFIG)
+    return env
 
 
 def _fixture_repo(root: Path, branch: str) -> Path:
     """A neutral repository with one empty commit on ``branch``, independent of the checkout."""
-    env = _git_free_env()
+    env = _isolated_git_env()
     env.update(GIT_AUTHOR_DATE=FIXTURE_COMMIT_DATE, GIT_COMMITTER_DATE=FIXTURE_COMMIT_DATE)
-    identity = ["-c", "user.name=latency-fixture", "-c", "user.email=latency-fixture@example.invalid"]
+    settings = [
+        "-c", "user.name=latency-fixture",
+        "-c", "user.email=latency-fixture@example.invalid",
+        "-c", "commit.gpgsign=false",
+        "-c", f"core.hooksPath={root / 'no-hooks'}",
+    ]
     for argv in (
-        ["init", "-q", "-b", branch, str(root)],
-        ["-C", str(root), *identity, "-c", "commit.gpgsign=false",
-         "commit", "-q", "--allow-empty", "-m", "latency fixture"],
+        ["init", "-q", "--template=", "-b", branch, str(root)],
+        ["-C", str(root), *settings, "commit", "-q", "--allow-empty", "-m", "latency fixture"],
     ):
         subprocess.run(["git", *argv], check=True, capture_output=True, env=env)
     return root
@@ -47,14 +57,16 @@ def _fixture_repo(root: Path, branch: str) -> Path:
 def _fixture_head(repo: Path) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True, env=_git_free_env(),
+        check=True, capture_output=True, text=True, env=_isolated_git_env(),
     ).stdout.strip()
 
 
 def _select_repo(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
-    """Point every git call of the harness (in-process and CLI child) at ``repo``."""
+    """Point every git call of the harness (in-process and CLI child) at ``repo`` only."""
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
+    for name, value in ISOLATED_GIT_CONFIG.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(repo))
 

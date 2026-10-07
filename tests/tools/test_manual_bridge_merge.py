@@ -464,8 +464,8 @@ def test_t07_same_rco_later_pass_does_not_clear_its_own_veto(tmp_path):
     assert result.check("rco_blocking_decision").reason == "rco_veto_active"
 
 
-def retraction(block: dict, *, agent=None, head=HEAD, target=None) -> dict:
-    return event(agent or block["agent"], mbm.RETRACTION_STATUS, head=head,
+def retraction(block: dict, *, agent=None, head=HEAD, target=None, ts="2026-10-07T11:30:00Z") -> dict:
+    return event(agent or block["agent"], mbm.RETRACTION_STATUS, head=head, ts=ts,
                  payload_extra={"retracts_event_id": target or mmr.bridge_event_id(block)})
 
 
@@ -485,6 +485,63 @@ def test_t07_free_text_never_clears(tmp_path):
     prose["message"] = "finding retracted, RCO_PASS, all clear"
     result = preview(tmp_path, bridge=with_events(block, prose))
     assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+BLOCK_TS = "2026-10-07T11:10:00Z"
+
+
+@pytest.mark.parametrize("order", ["preemptive", "listed_first_later_ts", "listed_after_earlier_ts", "same_ts"])
+def test_t07_retraction_must_follow_the_block_in_order_and_time(tmp_path, order):
+    block = finding(ts=BLOCK_TS)
+    events = {
+        "preemptive": [retraction(block, ts="2026-10-07T11:05:00Z"), block],
+        "listed_first_later_ts": [retraction(block), block],
+        "listed_after_earlier_ts": [block, retraction(block, ts="2026-10-07T11:05:00Z")],
+        "same_ts": [block, retraction(block, ts=BLOCK_TS)],
+    }[order]
+    result = preview(tmp_path, bridge=with_events(*events))
+    assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("agent_uuid", "ffffffff-0000-4000-8000-00000000beef"),
+    ("agent_uuid", ""),
+    ("agent_uuid", None),
+    ("ts_utc", "2026-10-07 11:30:00"),
+    ("ts_utc", None),
+])
+def test_t07_retraction_identity_and_time_are_never_waived(tmp_path, field, value):
+    block = finding(ts=BLOCK_TS)
+    bad = retraction(block)
+    bad[field] = value
+    result = preview(tmp_path, bridge=with_events(block, bad))
+    assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+def test_t07_unparseable_block_time_is_never_cleared(tmp_path):
+    block = finding(ts="yesterday")
+    result = preview(tmp_path, bridge=with_events(block, retraction(block)))
+    assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+def test_t07_a_retraction_clears_only_the_occurrences_before_it(tmp_path):
+    block = finding(ts=BLOCK_TS)
+    result = preview(tmp_path, bridge=with_events(block, retraction(block), copy.deepcopy(block)))
+    assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+@pytest.mark.parametrize("pass_position", ["before_block", "between", "after_retraction"])
+def test_t07_exact_retraction_clears_with_the_pass_anywhere(tmp_path, pass_position):
+    block = finding(ts=BLOCK_TS)
+    rco_pass, *builds = approvals()
+    sequence = {
+        "before_block": [rco_pass, block, retraction(block)],
+        "between": [block, rco_pass, retraction(block)],
+        "after_retraction": [block, retraction(block), rco_pass],
+    }[pass_position]
+    result = preview(tmp_path, bridge=mbm.BridgeSnapshot(tuple(builds + sequence)))
+    assert result.check("rco_blocking_decision").status == mbm.CHECK_PASS
+    assert result.check("approval_rco").status == mbm.CHECK_PASS
 
 
 def test_t07_the_other_rco_veto_outranks_a_pass(tmp_path):

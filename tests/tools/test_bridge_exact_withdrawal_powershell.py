@@ -160,6 +160,24 @@ def scenario(case):
                                                     raw_line_sha256="1" * 64)
             return [raw, row(response)], [V2_TS], []
         return [raw, row(response)], [], []
+    if case.startswith("partially_bound_"):
+        # Lead 05:20Z: any correlation field binds the request, so an exact
+        # withdrawal descriptor must not close it, and the withdraws-bearing
+        # closure needs explicit correlation (expected_responders alone has
+        # none; the base closed it).
+        field = case[len("partially_bound_"):]
+        values = {"nonce": "n-1", "token": "t-1", "task_revision": "r-1",
+                  "expected_responders": {TARGET: {"agent_uuid": REGISTRY[TARGET]}}}
+        if field == "payload_nonce":
+            bound = request(V2_TS, "review_requested", payload={"nonce": "n-1"})
+        else:
+            bound = request(V2_TS, "review_requested", **{field: values[field]})
+        raw = row(bound)
+        return [raw, row(withdrawal(descriptor(bound, raw)))], [V2_TS], []
+    if case == "correlated_expected_responders_withdrawal":
+        bound = request(V2_TS, "review_requested", expected_responders={TARGET: {"agent_uuid": REGISTRY[TARGET]}})
+        raw = row(bound)
+        return [raw, row(withdrawal(descriptor(bound, raw), request_ts_utc=V2_TS))], [], []
     if case == "legacy_closure_without_withdraws":
         return [v2, row(withdrawal())], [], []
     if case == "legacy_ambiguous_without_withdraws":
@@ -211,6 +229,12 @@ CASES = {
     "duplicate_identical_rows": [],
     "duplicate_lf_and_crlf_rows": [],
     "bound_request_id": [V2_TS],
+    "partially_bound_nonce": [V2_TS],
+    "partially_bound_token": [V2_TS],
+    "partially_bound_task_revision": [V2_TS],
+    "partially_bound_expected_responders": [],
+    "partially_bound_payload_nonce": [V2_TS],
+    "correlated_expected_responders_withdrawal": [],
     "idle_progress_wrong_withdraws": [],
     "idle_progress_without_withdraws": [],
     "legacy_closure_without_withdraws": [],
@@ -271,7 +295,7 @@ def test_base_expectations_differ_only_where_the_fix_applies():
         "identity_request_foreign_uuid", "crlf_request_row_digest_with_cr", "double_cr_request_row",
         "bare_cr_inside_request_row", "bom_request_row", "duplicate_identical_rows",
         "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws", "ts_equal_instant_other_spelling",
-        "ts_extra_fraction_digit",
+        "ts_extra_fraction_digit", "partially_bound_expected_responders",
     ])
 
 
@@ -333,3 +357,44 @@ def test_reader_window_and_reader_row_digests(tmp_path, shell, tail):
     window = MIXED_LINES if tail <= 0 else MIXED_LINES[-tail:]
     assert list(zip(events, digests)) == [line for line in window if line is not None]
     assert len(events) == len(digests)
+
+PURE_API_PROBE = r"""
+param([string] $Contract, [string] $Field, [string] $Placement)
+$ErrorActionPreference = 'Stop'
+. $Contract
+$uuid = 'f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80'
+$request = [pscustomobject]@{ agent = 'fable-5'; type = 'message'; status = 'review_requested'; task_id = 't'
+    ts_utc = '2026-10-06T17:29:29Z'; agent_uuid = $uuid; payload = [pscustomobject]@{} }
+$value = if ($Field -eq 'expected_responders') { [pscustomobject]@{ 'codex-tools-1' = [pscustomobject]@{ agent_uuid = 'x' } } } else { 'v-1' }
+if ($Field -ne 'none') {
+    if ($Placement -eq 'payload') { $request.payload | Add-Member -NotePropertyName $Field -NotePropertyValue $value }
+    else { $request | Add-Member -NotePropertyName $Field -NotePropertyValue $value }
+}
+$digest = 'a' * 64
+$closure = [pscustomobject]@{ agent = 'fable-5'; type = 'message'; status = 'withdrawn'; task_id = 't'
+    ts_utc = '2026-10-06T18:00:00Z'; agent_uuid = $uuid
+    payload = [pscustomobject]@{ withdraws = [pscustomobject]@{ agent = 'fable-5'; type = 'message'; status = 'review_requested'
+        task_id = 't'; ts_utc = '2026-10-06T17:29:29Z'; raw_line_sha256 = $digest } } }
+Get-BridgeWithdrawalTarget -Request $request -Closure $closure -RequestRawSha256 $digest -RequestPosition 0 -ClosurePosition 1 -RegisteredAgentUuid $uuid
+"""
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("field,placement,expected", [
+    ("none", "top", "exact"),
+    ("request_id", "top", "mismatch"),
+    ("nonce", "top", "mismatch"),
+    ("token", "top", "mismatch"),
+    ("task_revision", "top", "mismatch"),
+    ("expected_responders", "top", "mismatch"),
+    ("nonce", "payload", "mismatch"),
+    ("expected_responders", "payload", "mismatch"),
+])
+def test_pure_api_bound_requests_are_never_withdrawn(tmp_path, shell, field, placement, expected):
+    probe = tmp_path / "pure.ps1"
+    probe.write_text(PURE_API_PROBE, encoding="utf-8-sig")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(probe),
+                             "-Contract", str(BIN / "BridgeRequestContract.ps1"), "-Field", field, "-Placement", placement],
+                            env=child_env(tmp_path), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected

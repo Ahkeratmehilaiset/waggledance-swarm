@@ -300,7 +300,7 @@ function Test-BridgeRequestStillOpen {
     param([Parameter(Mandatory)] [object] $Request)
     $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $Request
     $requestPosition = $requestIndex.positions[$Request]
-    $unbound = $null -eq (Get-BridgeContractField $Request 'request_id')
+    $unbound = -not (Test-BridgeBoundRequest $Request)
     foreach ($answer in $requestIndex.by_task[[string]$Request.task_id]) {
         $closure = $answer.agent -ceq $Request.agent -and (Test-BridgeRequesterClosureEvent $answer)
         if ($closure -and $unbound) {
@@ -331,8 +331,13 @@ function Test-BridgeRequestStillOpen {
                 continue
             }
         }
+        # On a bound request a withdraws-bearing closure closes only through an
+        # explicitly correlated reply (request_id contract, nonce/token/
+        # revision or request_ts_utc), never by the bare requester closure.
+        $requireCorrelation = $closure -and -not $unbound -and
+            $null -ne (Get-BridgeWithdrawalTarget -Request $Request -Closure $answer)
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
-            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
+            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequireExplicitCorrelation $requireCorrelation -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
             return $false
         }
     }

@@ -195,8 +195,8 @@ function Test-BridgeReplyBinding {
 # 'identity_unverified' (request and closure do not both carry the registered
 # agent_uuid of their agent). Only 'exact' closes, and only that version; a
 # withdraws-bearing closure never falls back to generic same-task closure.
-# Request_id requests and control signals are never withdrawn this way: they
-# keep the full reply contract.
+# Bound requests (any correlation field) and control signals are never
+# withdrawn this way: they keep the full reply contract.
 function Get-BridgeWithdrawalTarget {
     param($Request, $Closure, [AllowNull()][string]$RequestRawSha256='', [int]$RequestPosition=-1, [int]$ClosurePosition=-1,
         [AllowNull()][string]$RegisteredAgentUuid='')
@@ -217,7 +217,10 @@ function Get-BridgeWithdrawalTarget {
     }
     if ($descriptor.raw_line_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { return 'malformed' }
     if ($null -eq (ConvertTo-BridgeContractTime $descriptor.ts_utc)) { return 'malformed' }
-    if ($null -ne (Get-BridgeContractField $Request 'request_id')) { return 'mismatch' }
+    # Any correlation field (request_id, nonce, token, task_revision,
+    # expected_responders; top-level or payload, conflicts included) makes the
+    # request bound, and bound requests keep the full reply contract.
+    if (Test-BridgeBoundRequest $Request) { return 'mismatch' }
     # Control signals (negative reviews) need explicit correlation and are
     # never closed by a withdrawal, matching Test-BridgeReplyBinding.
     $controlType = ([string](Get-BridgeContractField $Request 'type')).Trim().ToLowerInvariant()

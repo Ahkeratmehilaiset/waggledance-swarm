@@ -75,10 +75,13 @@ function Get-JsonNestingDepth {
 
 # C-F1 (RCO1 2026-09-30; Fable review 99897de5): the reader's -Raw view is ConvertTo-Json -Depth 12, which
 # replaces anything nested deeper with its string form (Windows PowerShell silently, pwsh with a warning).
-# Measured in both shells: an event 13 containers deep (the event itself counts one) comes back intact, a
-# deeper one comes back exactly 13 deep with strings in place of its deepest containers. A reply binds the
-# request as logged, so a request that reaches this depth is refused, never bound to a changed copy.
-$script:ReaderRawIntactDepth = 13
+# R-D1 (RCO2 8DF45964; Fable 08A5539F): with two or more events that view is an ARRAY, so each event keeps
+# only 12 container levels (the event itself counts one); a single event keeps 13. Measured in both shells:
+# on a multi-event log a 13-15 deep request comes back exactly 12 deep with strings in place of its deepest
+# containers, so a guard at 13 never fires on the copy it measures. A reply binds the request as logged, so
+# any request that reaches 12 is refused, never bound to a changed copy; a genuine 12-deep request is
+# refused as well (fail closed).
+$script:ReaderRawIntactDepth = 12
 
 $candidates = @($events | Where-Object { (Get-ExactField $_ 'request_id') -ceq $RequestId })
 if ($candidates.Count -eq 0) {

@@ -302,12 +302,14 @@ def _held_without_sharing(path: Path):
 
 # A-F1 (Fable review 99897de5, Lead d06fbf85): an owner beat that EXISTS but cannot be read or evaluated is
 # unknown, never "not live", so the sweep keeps the expired claim this round, as the core sweeper
-# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment is unchanged: no beat, a
-# readable beat of another identity, an expired or a future-dated beat. At 7bf841ff the unknown rows archived.
+# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment: no beat, or an expired or
+# a future-dated beat of THIS owner. A readable beat of another session or token at the path derived from this
+# claim's own session and token is damaged or foreign, so it is unknown and the claim stays (ClaimLeaseHeartbeat.ps1
+# owner-field check since 83da16a7, as work_queue.py). At 7bf841ff the unknown rows archived.
 @pytest.mark.skipif(os.name != "nt", reason="the share-locked beat and the sweep's file locks are Windows-only")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(("beat_kind", "archived"), [
-    ("absent", True), ("expired", True), ("future", True), ("foreign", True), ("fresh", False),
+    ("absent", True), ("expired", True), ("future", True), ("foreign", False), ("fresh", False),
     ("fresh_share_locked", False), ("torn", False), ("empty", False), ("not_object", False),
     ("bad_time", False), ("directory", False),
     # S1 (Fable review 0286732f): pwsh 7 read an explicit-offset timestamp as local wall time taken for UTC, so
@@ -382,3 +384,106 @@ def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_e
         assert len(swept) == 1 and not claim.exists(), beat_kind
     else:
         assert not swept and claim.exists(), (beat_kind, done.stdout + done.stderr)
+
+
+# SW-S1 (RCO2 ledger 4EE1BFA8, Fable audit DF73436F): the sweep read its clock once (:186) before the root mutex
+# and every claim/beat lock wait, then judged the owner's beat with that clock. A valid beat the owner wrote
+# while the sweep waited, more than 60 s after that read, looked future-dated (not live) and a live claim was
+# reaped. Test-only ports appended to the FIXTURE copy of ClaimLeaseHeartbeat.ps1 (dot-sourced by the sweep, so
+# they replace the real ones in the sweep's scope only): Get-Date is a controlled clock; the root mutex and the
+# claim/beat locks are bookkeeping only (no kernel mutex, no lock file); taking the beat lock moves the clock
+# DELAY_SECONDS on, which models a decision delayed by lock waits. The real wait is not performed or measured.
+CLOCK_PORTS = r"""
+
+# TEST-ONLY ports (tests/tools/test_bridge_stale_routing.py, SW-S1); appended to the fixture copy only.
+$global:StaleFixtureClockUtc = New-Object DateTime (__T0_TICKS__L, [DateTimeKind]::Utc)
+function Get-Date { return $global:StaleFixtureClockUtc }
+function Enter-BridgeQueueRootMutex { param([Parameter(Mandatory)] [string] $Root, [int] $TimeoutMs = 0) return $null }
+function Exit-BridgeQueueRootMutex { param($Mutex, [switch] $Completed) }
+function Enter-BridgeClaimLock {
+    param([Parameter(Mandatory)] [string] $ClaimPath, [int] $TimeoutMs = 0)
+    if ((Split-Path -Leaf (Split-Path -Parent $ClaimPath)) -ceq 'heartbeats') {
+        $global:StaleFixtureClockUtc = $global:StaleFixtureClockUtc.AddSeconds(__DELAY_SECONDS__)
+    }
+    return [pscustomobject]@{ Name = $null }
+}
+function Exit-BridgeClaimLock { param($Lock) }
+"""
+DELAY_SECONDS = 90
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize(("beat_kind", "archived"), [
+    ("delayed_owner_t0_plus_90", False),       # the reproduced case: valid beat written during the wait
+    ("skew_boundary_decision_plus_60", False),  # exactly at the 60 s future bound of the decision clock
+    ("past_skew_decision_plus_61", True),       # the future guard is kept, against the decision clock
+    ("genuinely_future", True),
+    ("old_clock_boundary_t0_plus_60", False),
+    ("expired_by_decision", True),             # live at the :186 read, past its ttl when decided
+    ("malformed", False), ("foreign", False),  # UNKNOWN keeps the claim
+    ("missing", True),
+])
+def test_stale_sweep_judges_owner_liveness_with_the_clock_read_after_the_locks(
+    tmp_path: Path, shell: str, beat_kind: str, archived: bool,
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    t0 = datetime.now(timezone.utc).replace(microsecond=0)
+    decision = t0 + timedelta(seconds=DELAY_SECONDS)
+    runtime = tmp_path / "runtime"
+    claims = runtime / "work_queue/claims"
+    claims.mkdir(parents=True)
+    (runtime / "shared").mkdir(parents=True)
+    past = t0 - timedelta(minutes=20)
+    session, token_sha = "tools-session-clock", hashlib.sha256(b"clock-token").hexdigest()
+    claim = claims / "stale-clock.json"
+    claim.write_text(json.dumps({
+        "task_id": "codex-lead-1/stale-clock", "agent": "codex-tools-1",
+        "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102", "owner_session_id": session,
+        "owner_token_sha256": token_sha, "run_id": session, "claimed_at_utc": past.isoformat(),
+        "last_heartbeat_utc": past.isoformat(), "lease_seconds": 60,
+        "claim_lease_expires_utc": (past + timedelta(minutes=1)).isoformat(),
+        "write_scope": ["tests/tools/test_bridge_stale_routing.py"],
+    }), encoding="utf-8")
+    claim_bytes = claim.read_bytes()
+    digest = hashlib.sha256(f"{session}\n{token_sha}".encode("utf-8")).hexdigest()
+    beat = runtime / "work_queue/heartbeats" / f"{digest}.json"
+    beat.parent.mkdir(parents=True)
+
+    def body(owner_token: str, moment: datetime) -> str:
+        return json.dumps({"owner_session_id": session, "owner_token_sha256": owner_token,
+                           "last_beat_utc": moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "ttl_seconds": 180})
+
+    contents = {
+        "delayed_owner_t0_plus_90": body(token_sha, t0 + timedelta(seconds=90)),
+        "skew_boundary_decision_plus_60": body(token_sha, decision + timedelta(seconds=60)),
+        "past_skew_decision_plus_61": body(token_sha, decision + timedelta(seconds=61)),
+        "genuinely_future": body(token_sha, decision + timedelta(hours=1)),
+        "old_clock_boundary_t0_plus_60": body(token_sha, t0 + timedelta(seconds=60)),
+        "expired_by_decision": body(token_sha, decision - timedelta(seconds=181)),
+        "malformed": "{not json",
+        "foreign": body(hashlib.sha256(b"someone-else").hexdigest(), t0),
+    }
+    if beat_kind in contents:
+        beat.write_bytes(contents[beat_kind].encode("utf-8"))
+    sweep = _fixture_sweep(tmp_path, real_writer=False)
+    helper = sweep.parent / "ClaimLeaseHeartbeat.ps1"
+    ports = (CLOCK_PORTS.replace("__T0_TICKS__", str(int((t0 - datetime(1, 1, 1, tzinfo=timezone.utc))
+                                                          // timedelta(microseconds=1)) * 10))
+             .replace("__DELAY_SECONDS__", str(DELAY_SECONDS)))
+    helper.write_text(helper.read_text(encoding="utf-8-sig") + ports, encoding="utf-8-sig")
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("AGENT_BRIDGE_", "WD_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+    command = [executable, "-NoProfile", "-NonInteractive", "-File", str(sweep), "-StaleSeconds", "1", "-Quiet"]
+    done = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    swept = list((runtime / "work_queue/done").glob("*.stale_lease.json"))
+    events = runtime / "shared/events.jsonl"
+    if archived:
+        assert len(swept) == 1 and not claim.exists(), (beat_kind, done.stdout + done.stderr)
+        rows = [json.loads(line) for line in events.read_text(encoding="utf-8-sig").splitlines()]
+        assert [(row["type"], row["status"]) for row in rows] == [("release", "stale_lease")]
+    else:
+        assert not swept and claim.exists(), (beat_kind, done.stdout + done.stderr)
+        assert claim.read_bytes() == claim_bytes and not events.exists(), beat_kind

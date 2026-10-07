@@ -362,3 +362,79 @@ def test_the_entry_point_consults_at_high_with_the_capped_session_total(iso, tmp
     assert (timeout, requester, rounds) == (total, "fable-5", max_rounds)
     assert lock_wait == session.helper.LOCK_WAIT_SECONDS == 2400  # a read-only session also waits in line
     assert json.loads(capsys.readouterr().out)["status"] == "answered"
+
+
+# --- RS-F5 (RCO2 runtime repro 2984861A): a lone surrogate in a reply never loses the round record ------------
+# The reply is valid JSON whose stopReason or sessionId is an escaped lone surrogate. The round must still be
+# accounted (one JSON line, the surrogate escaped) and the session must report the protocol error it hit, not
+# a UnicodeEncodeError from the accounting write.
+
+class _SurrogateReply:
+    def __init__(self, field):
+        self.field, self.calls = field, 0
+
+    def __call__(self, command, **kwargs):
+        self.calls += 1
+        reply = {"text": FINAL, "stopReason": "EndTurn", "sessionId": "sess-1"}
+        reply[self.field] = "\ud800"
+        body = json.dumps(reply, ensure_ascii=True).encode("ascii")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=body, stderr=b"")
+
+
+@pytest.mark.parametrize("field,outcome", [
+    ("stopReason", "failed:ValueError:Grok round did not end with EndTurn"),
+    ("sessionId", "failed:ValueError:Grok returned an invalid session id"),
+])
+def test_rs_f5_a_lone_surrogate_keeps_the_round_record_and_the_protocol_outcome(iso, tmp_path, field, outcome):
+    home, cwd = iso
+    state = _state(tmp_path, "surrogate-" + field)
+    model = _SurrogateReply(field)
+    result, summary = _session(state, cwd, model)              # the runner's actual return value
+    assert model.calls == 1 and result.returncode == 1
+    assert summary["outcome"] == outcome                        # the protocol error, not UnicodeEncodeError
+    lines = (state / (REQUEST_ID + "-rounds.jsonl")).read_bytes().splitlines()
+    assert len(lines) == 1                                      # the launched round is accounted
+    record = json.loads(lines[0])
+    assert record["round"] == 1 and record["outcome"] == outcome
+    assert record["stop_reason" if field == "stopReason" else "session_id"] == "\ud800"
+    assert b"\\ud800" in lines[0]                               # stored escaped, never as a raw surrogate
+
+
+# --- RS-F5-R1 (RCO1 97EA6325): a lone surrogate in reply text never makes the session output unwritable --------
+# wd_grok_helper.consult writes a read-only session's stdout to the report with write_text(..., encoding="utf-8").
+# A raw lone surrogate there failed that write and lost the answer. The text is now escaped explicitly (\udXXX),
+# the refusal, exit code and outcome stay exactly as they were, and ordinary Unicode and control characters pass.
+
+def _written_as_the_helper_writes(stdout, tmp_path):
+    report = tmp_path / "report.md"
+    report.write_text(stdout, encoding="utf-8")
+    return report.read_text(encoding="utf-8")
+
+
+def test_rs_f5_r1_a_raw_surrogate_in_reply_text_is_escaped_and_the_refusal_kept(iso, tmp_path):
+    home, cwd = iso
+    model = Model([("\ud800 not an action", "sess-1")])
+    result, summary = _session(_state(tmp_path, "raw-text"), cwd, model)
+    assert len(model.calls) == 1 and result.returncode == 1
+    assert summary["outcome"].startswith("failed:")              # still refused, never a success
+    text = _written_as_the_helper_writes(result.stdout, tmp_path)
+    assert "READ-ONLY SESSION FAILED" in text
+    assert "\\ud800 not an action" in text                        # explicit escape: the reply text is kept
+
+
+def test_rs_f5_r1_an_escaped_surrogate_in_a_final_action_is_refused_and_writable(iso, tmp_path):
+    home, cwd = iso
+    model = Model([(json.dumps({"op": "final", "text": "ok \ud800"}), "sess-1")])
+    result, summary = _session(_state(tmp_path, "final-surrogate"), cwd, model)
+    assert result.returncode == 1 and summary["outcome"].startswith("failed:")   # never claimed as final
+    assert "READ-ONLY SESSION FAILED" in _written_as_the_helper_writes(result.stdout, tmp_path)
+
+
+def test_rs_f5_r1_ordinary_unicode_and_control_characters_are_kept_unchanged(iso, tmp_path):
+    home, cwd = iso
+    answer = "Ääkköset ja 🙂\tsarake\nrivi \\ud800 kirjaimellisesti"
+    model = Model([(json.dumps({"op": "final", "text": answer}, ensure_ascii=False), "sess-1")])
+    result, summary = _session(_state(tmp_path, "unicode"), cwd, model)
+    assert result.returncode == 0 and summary["outcome"] == "final"
+    assert result.stdout.startswith(answer)                       # byte-for-byte the model's final text
+    assert _written_as_the_helper_writes(result.stdout, tmp_path).startswith(answer)

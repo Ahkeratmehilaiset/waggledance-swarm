@@ -649,3 +649,168 @@ def test_unrelated_task_withdrawal_has_no_effect(tmp_path: Path) -> None:
     closure = _row(_withdrawal(_descriptor(other, other_row), task_id="fable-5/other-task"))
 
     assert _open_statuses(tmp_path, [_row(notice), other_row, closure]) == ["fix_pushed"]
+
+
+# --- withdraws member spelling (C69-L1c) --------------------------------------
+#
+# Any ASCII case variant of ``withdraws`` at the top level or in payload marks a
+# withdrawal-bearing event. It is malformed and never enters generic closure,
+# even when its digest is exact. Only the exact spelling may close.
+
+WRONG_DIGEST = "0" * 64
+
+
+def _spelled_closure(
+    top: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    agent: str = FABLE,
+    **extra: Any,
+) -> dict[str, Any]:
+    event = _withdrawal(None, agent=agent, **extra)
+    event["payload"] = {**{k: v for k, v in event["payload"].items() if k != "withdraws"}, **payload}
+    event.update(top)
+    return event
+
+
+@pytest.mark.parametrize("key", ["Withdraws", "WITHDRAWS", "withDraws"])
+@pytest.mark.parametrize("where", ["top", "payload"])
+@pytest.mark.parametrize("digest", ["exact", "wrong"])
+def test_case_variant_withdraws_member_is_malformed_and_never_closes(
+    tmp_path: Path, key: str, where: str, digest: str
+) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    overrides = {} if digest == "exact" else {"raw_line_sha256": WRONG_DIGEST}
+    member = {key: _descriptor(notice, notice_row, **overrides)}
+    closure = _spelled_closure(member if where == "top" else {}, member if where == "payload" else {})
+    rows = [notice_row, _row(closure)]
+
+    assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
+    assert "malformed_withdrawal" in _reasons(_report(tmp_path / "r", rows))
+
+
+@pytest.mark.parametrize(
+    ("top_keys", "payload_keys"),
+    [
+        pytest.param([], ["withdraws", "Withdraws"], id="payload_exact_plus_variant"),
+        pytest.param([], ["Withdraws", "WITHDRAWS"], id="payload_two_variants"),
+        pytest.param(["withdraws", "WITHDRAWS"], [], id="top_exact_plus_variant"),
+        pytest.param(["Withdraws"], ["withdraws"], id="top_variant_payload_exact"),
+        pytest.param(["withdraws"], ["Withdraws"], id="top_exact_payload_variant"),
+    ],
+)
+def test_ambiguous_withdraws_spellings_are_malformed_even_with_exact_digest(
+    tmp_path: Path, top_keys: list[str], payload_keys: list[str]
+) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    exact = _descriptor(notice, notice_row)
+    closure = _spelled_closure(
+        {key: dict(exact) for key in top_keys},
+        {key: dict(exact) for key in payload_keys},
+    )
+    rows = [notice_row, _row(closure)]
+
+    assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
+    assert "malformed_withdrawal" in _reasons(_report(tmp_path / "r", rows))
+
+
+@pytest.mark.parametrize("where", ["top", "payload"])
+@pytest.mark.parametrize(
+    ("digest", "expected_open"),
+    [
+        pytest.param("exact", [], id="exact_digest"),
+        pytest.param("wrong", ["fix_pushed"], id="wrong_digest"),
+    ],
+)
+def test_exactly_spelled_withdraws_twins(
+    tmp_path: Path, where: str, digest: str, expected_open: list[str]
+) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    overrides = {} if digest == "exact" else {"raw_line_sha256": WRONG_DIGEST}
+    member = {"withdraws": _descriptor(notice, notice_row, **overrides)}
+    closure = _spelled_closure(member if where == "top" else {}, member if where == "payload" else {})
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == expected_open
+
+
+@pytest.mark.parametrize("key", ["withdraw", "withdraws_", "unwithdraws", "withdrawn"])
+def test_near_miss_member_name_is_absent_and_legacy_closure_applies(tmp_path: Path, key: str) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    closure = _spelled_closure({}, {key: _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST)})
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == []
+
+
+def test_target_answer_with_case_variant_withdraws_does_not_generically_close(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    answer = _spelled_closure(
+        {},
+        {"Withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST)},
+        agent=LEAD,
+        to=FABLE,
+        status="answered",
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(answer)]) == ["fix_pushed"]
+
+
+def test_case_variant_withdraws_never_closes_a_control_signal(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "changes_requested", type="decision")
+    notice_row = _row(notice)
+    closure = _spelled_closure(
+        {}, {"Withdraws": _descriptor(notice, notice_row)}, type="decision", status="withdrawn"
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["changes_requested"]
+
+
+def test_case_variant_withdraws_never_closes_a_request_id_request(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "requested", payload={"request_id": "req-1"})
+    notice_row = _row(notice)
+    closure = _spelled_closure({}, {"Withdraws": _descriptor(notice, notice_row)})
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["requested"]
+
+
+def test_full_bound_reply_with_case_variant_withdraws_keeps_the_bound_contract(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "requested", payload={"request_id": "req-1"})
+    notice_row = _row(notice)
+    reply = _spelled_closure(
+        {},
+        {
+            "in_reply_to_request_id": "req-1",
+            "in_reply_to_requester": {"agent": FABLE, "agent_uuid": UUIDS[FABLE]},
+            "Withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST),
+        },
+        agent=LEAD,
+        to=FABLE,
+        status="answered",
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(reply)]) == []
+
+
+def test_direct_rco_pass_request_case_variant_withdraws_closes_nothing(tmp_path: Path) -> None:
+    rco = "claude-rco-1"
+    notice = _notice(V2_TS, "rco_pass_requested", agent=LEAD, agent_uuid=UUIDS[LEAD], to=rco)
+    notice_row = _row(notice)
+    closure = _spelled_closure(
+        {}, {"Withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST)}, agent=LEAD, to=rco
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)], agent=rco) == ["rco_pass_requested"]
+
+
+def test_idle_protocol_progress_with_case_variant_withdraws_closes_nothing(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "proposal", payload=dict(IDLE_REQUEST))
+    notice_row = _row(notice)
+    closure = _spelled_closure(
+        {}, {"Withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST), **IDLE_RESPONSE}
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["proposal"]

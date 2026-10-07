@@ -1228,3 +1228,13 @@ def test_c_d2_structured_covering_and_fm3_outrank_an_unbounded_wake():
     assert only(covered, "checkpoint")["reasons"][0] == "covered_by_open_work"
     fm3 = evaluate(snap(checkpoint=cp(status="waiting_on_rco", next_wakeup=FAR_WAKE)), NOW)
     assert only(fm3, "checkpoint")["reasons"] == ["waiting_without_structured_predicate"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_c_d1_before_c_d2_a_future_dated_checkpoint_with_a_far_wake_is_unknown(scope_snap):
+    # Composition order: the future-dated checkpoint (C-D1, unknown) is decided before the
+    # unbounded wake (C-D2, decide); swapping the two branches would downgrade it to decide.
+    c = cp(updated="2026-09-29T00:01:01Z", next_wakeup=FAR_WAKE)
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_from_future"]

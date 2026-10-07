@@ -1963,7 +1963,7 @@ def test_g1_f1_real_git_gitlink_change_is_never_hidden(tmp_path, kind, source):
     repo, base, head = _gitlink_repo(tmp_path, kind, source)
     facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
     old_mode, old_id, status = ("000000", "0" * 40, "A") if kind == "added" else ("160000", GITLINK_OLD, "M")
-    expected = f":{old_mode} 160000 {old_id} {GITLINK_NEW} {status} sub ".encode("ascii")
+    expected = f":{old_mode} 160000 {old_id} {GITLINK_NEW} {status}\x00sub\x00".encode("ascii")
     assert facts.paths == ("sub",)
     assert facts.diff_digest_sha256 == hashlib.sha256(expected).hexdigest()
     assert _real_git(repo, "--no-replace-objects", "diff-tree", *mms.GIT_DIFF_ARGS, base, head) == expected

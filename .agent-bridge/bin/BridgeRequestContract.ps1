@@ -195,8 +195,8 @@ function Test-BridgeReplyBinding {
 # 'identity_unverified' (request and closure do not both carry the registered
 # agent_uuid of their agent). Only 'exact' closes, and only that version; a
 # withdraws-bearing closure never falls back to generic same-task closure.
-# Request_id requests are never withdrawn this way: they keep the full reply
-# contract.
+# Request_id requests and control signals are never withdrawn this way: they
+# keep the full reply contract.
 function Get-BridgeWithdrawalTarget {
     param($Request, $Closure, [AllowNull()][string]$RequestRawSha256='', [int]$RequestPosition=-1, [int]$ClosurePosition=-1,
         [AllowNull()][string]$RegisteredAgentUuid='')
@@ -211,27 +211,33 @@ function Get-BridgeWithdrawalTarget {
         (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) { return 'malformed' }
     $descriptor = if ($null -ne $nested) { $nested.Value } else { $direct.Value }
     if ($null -eq $descriptor -or $descriptor.GetType() -ne [System.Management.Automation.PSCustomObject]) { return 'malformed' }
-    foreach ($key in @('agent','type','status','task_id','raw_line_sha256')) {
+    foreach ($key in @('agent','type','status','task_id','ts_utc','raw_line_sha256')) {
         $property = $descriptor.PSObject.Properties[$key]
         if ($null -eq $property -or $property.Value -isnot [string]) { return 'malformed' }
     }
     if ($descriptor.raw_line_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { return 'malformed' }
-    $stamp = $descriptor.PSObject.Properties['ts_utc']
-    $target = if ($null -ne $stamp) { ConvertTo-BridgeContractTime $stamp.Value } else { $null }
-    if ($null -eq $target) { return 'malformed' }
+    if ($null -eq (ConvertTo-BridgeContractTime $descriptor.ts_utc)) { return 'malformed' }
     if ($null -ne (Get-BridgeContractField $Request 'request_id')) { return 'mismatch' }
+    # Control signals (negative reviews) need explicit correlation and are
+    # never closed by a withdrawal, matching Test-BridgeReplyBinding.
+    $controlType = ([string](Get-BridgeContractField $Request 'type')).Trim().ToLowerInvariant()
+    $controlStatus = ([string](Get-BridgeContractField $Request 'status')).Trim().ToLowerInvariant()
+    if ($controlType -in @('decision', 'finding')) {
+        foreach ($status in @('changes_requested', 'rco_fail', 'review_failed', 'blocked')) {
+            if ($controlStatus -eq $status -or $controlStatus.StartsWith($status + '_')) { return 'mismatch' }
+        }
+    }
     foreach ($key in @('agent','task_id')) {
         $own = $Request.PSObject.Properties[$key]
         $other = $Closure.PSObject.Properties[$key]
         if ($null -eq $own -or $null -eq $other -or $own.Value -isnot [string] -or [string]$other.Value -cne $own.Value) { return 'mismatch' }
     }
-    foreach ($key in @('agent','type','status','task_id')) {
+    # ts_utc is compared as written, like every other descriptor field (S1
+    # parity: an equal instant spelled differently is a mismatch).
+    foreach ($key in @('agent','type','status','task_id','ts_utc')) {
         $own = $Request.PSObject.Properties[$key]
         if ($null -eq $own -or $own.Value -isnot [string] -or $descriptor.$key -cne $own.Value) { return 'mismatch' }
     }
-    $sent = $Request.PSObject.Properties['ts_utc']
-    $sent = if ($null -ne $sent) { ConvertTo-BridgeContractTime $sent.Value } else { $null }
-    if ($null -eq $sent -or $target -ne $sent) { return 'mismatch' }
     if ($RequestPosition -lt 0 -or $ClosurePosition -le $RequestPosition) { return 'mismatch' }
     $uuidPattern = '\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z'
     if ($RegisteredAgentUuid -cnotmatch $uuidPattern) { return 'identity_unverified' }

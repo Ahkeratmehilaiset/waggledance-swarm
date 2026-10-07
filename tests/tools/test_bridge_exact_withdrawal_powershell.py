@@ -78,7 +78,15 @@ def scenario(case):
         key = "task_id" if key == "task" else key
         return [v2, row(withdrawal(dict(exact, **{key: "other"})))], [V2_TS], []
     if case == "ts_equal_instant_other_spelling":
-        return [v2, row(withdrawal(dict(exact, ts_utc="2026-10-06T20:29:29.9136087+03:00")))], [], []
+        # S1 parity: ts_utc is compared as written, so an equal instant in
+        # another spelling is a mismatch.
+        return [v2, row(withdrawal(dict(exact, ts_utc="2026-10-06T20:29:29.9136087+03:00")))], [V2_TS], []
+    if case == "ts_extra_fraction_digit":
+        return [v2, row(withdrawal(dict(exact, ts_utc="2026-10-06T17:29:29.91360870Z")))], [V2_TS], []
+    if case == "control_signal_exact_withdrawal":
+        control = request(V2_TS, "changes_requested", type="finding")
+        raw = row(control)
+        return [raw, row(withdrawal(descriptor(control, raw)))], [V2_TS], []
     if case == "non_owner":
         return [v2, row(withdrawal(exact, agent="codex-lead-1", agent_uuid=REGISTRY["codex-lead-1"]))], [V2_TS], []
     if case == "withdrawal_before_request":
@@ -177,6 +185,8 @@ CASES = {
     "agent_mismatch": [],
     "task_mismatch": [],
     "ts_equal_instant_other_spelling": [],
+    "ts_extra_fraction_digit": [],
+    "control_signal_exact_withdrawal": [V2_TS],
     "non_owner": [V2_TS],
     "withdrawal_before_request": [V2_TS],
     "malformed_not_object": [],
@@ -260,7 +270,8 @@ def test_base_expectations_differ_only_where_the_fix_applies():
         "identity_missing_uuid", "identity_foreign_uuid", "identity_request_missing_uuid",
         "identity_request_foreign_uuid", "crlf_request_row_digest_with_cr", "double_cr_request_row",
         "bare_cr_inside_request_row", "bom_request_row", "duplicate_identical_rows",
-        "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws",
+        "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws", "ts_equal_instant_other_spelling",
+        "ts_extra_fraction_digit",
     ])
 
 

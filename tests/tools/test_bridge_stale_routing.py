@@ -302,12 +302,14 @@ def _held_without_sharing(path: Path):
 
 # A-F1 (Fable review 99897de5, Lead d06fbf85): an owner beat that EXISTS but cannot be read or evaluated is
 # unknown, never "not live", so the sweep keeps the expired claim this round, as the core sweeper
-# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment is unchanged: no beat, a
-# readable beat of another identity, an expired or a future-dated beat. At 7bf841ff the unknown rows archived.
+# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment: no beat, or an expired or
+# a future-dated beat of THIS owner. A readable beat of another session or token at the path derived from this
+# claim's own session and token is damaged or foreign, so it is unknown and the claim stays (ClaimLeaseHeartbeat.ps1
+# owner-field check since 83da16a7, as work_queue.py). At 7bf841ff the unknown rows archived.
 @pytest.mark.skipif(os.name != "nt", reason="the share-locked beat and the sweep's file locks are Windows-only")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(("beat_kind", "archived"), [
-    ("absent", True), ("expired", True), ("future", True), ("foreign", True), ("fresh", False),
+    ("absent", True), ("expired", True), ("future", True), ("foreign", False), ("fresh", False),
     ("fresh_share_locked", False), ("torn", False), ("empty", False), ("not_object", False),
     ("bad_time", False), ("directory", False),
     # S1 (Fable review 0286732f): pwsh 7 read an explicit-offset timestamp as local wall time taken for UTC, so

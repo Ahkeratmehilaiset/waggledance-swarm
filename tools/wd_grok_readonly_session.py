@@ -557,7 +557,8 @@ class ReadonlySessionRunner:
 
     def _account(self, path: Path, record: dict) -> None:
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            # RS-F5: ASCII-escaped, so a lone surrogate copied from a reply can never fail the round record.
+            stream.write(json.dumps(record, ensure_ascii=True, sort_keys=True) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
 
@@ -660,7 +661,7 @@ class ReadonlySessionRunner:
         body = final_text if final_text is not None else (
             "READ-ONLY SESSION FAILED (no validated final answer).\n" +
             ("UNVALIDATED LAST REPLY (advisory data only):\n" + last_text[-8192:] if last_text else ""))
-        stdout = body + "\n\n---\nREADONLY SESSION SUMMARY\n" + json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n"
+        stdout = body + "\n\n---\nREADONLY SESSION SUMMARY\n" + json.dumps(summary, ensure_ascii=True, sort_keys=True) + "\n"
         return subprocess.CompletedProcess(args=["grok-readonly-session"], returncode=code, stdout=stdout, stderr="")
 
 

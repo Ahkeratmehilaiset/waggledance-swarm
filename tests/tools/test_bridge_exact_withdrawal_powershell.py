@@ -138,6 +138,20 @@ def scenario(case):
     if case == "bound_request_id":
         bound = request(V2_TS, "review_requested", request_id="fixture-r1")
         return [row(bound), row(withdrawal(descriptor(bound, row(bound))))], [V2_TS], []
+    if case in {"idle_progress_wrong_withdraws", "idle_progress_without_withdraws"}:
+        # Lead 05:05Z D2 sibling: an idle-protocol response must not turn a
+        # mismatched withdrawal into progress. PS has no idle-progress path;
+        # this pins that the withdrawal path still closes nothing.
+        idle = request(V2_TS, "review_requested",
+                       payload={"protocol_version": "idle-protocol.v1", "proposal_id": "p"})
+        raw = row(idle)
+        response = withdrawal()
+        response["payload"] = {"protocol_version": "idle-protocol.v1", "responds_to": "p"}
+        if case == "idle_progress_wrong_withdraws":
+            response["payload"]["withdraws"] = dict(descriptor(idle, raw), ts_utc="2026-10-06T16:00:00Z",
+                                                    raw_line_sha256="1" * 64)
+            return [raw, row(response)], [V2_TS], []
+        return [raw, row(response)], [], []
     if case == "legacy_closure_without_withdraws":
         return [v2, row(withdrawal())], [], []
     if case == "legacy_ambiguous_without_withdraws":
@@ -187,6 +201,8 @@ CASES = {
     "duplicate_identical_rows": [],
     "duplicate_lf_and_crlf_rows": [],
     "bound_request_id": [V2_TS],
+    "idle_progress_wrong_withdraws": [],
+    "idle_progress_without_withdraws": [],
     "legacy_closure_without_withdraws": [],
     "legacy_ambiguous_without_withdraws": [V1_TS, V2_TS],
     "legacy_ambiguous_request_ts_utc": [V1_TS],
@@ -244,7 +260,7 @@ def test_base_expectations_differ_only_where_the_fix_applies():
         "identity_missing_uuid", "identity_foreign_uuid", "identity_request_missing_uuid",
         "identity_request_foreign_uuid", "crlf_request_row_digest_with_cr", "double_cr_request_row",
         "bare_cr_inside_request_row", "bom_request_row", "duplicate_identical_rows",
-        "duplicate_lf_and_crlf_rows",
+        "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws",
     ])
 
 

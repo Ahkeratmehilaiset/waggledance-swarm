@@ -650,6 +650,10 @@ def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
     elif snap["evidence"]["scope"] == "canonical" and \
             cp["status"].startswith(WAITING_STATUS_PREFIXES):
         verdict, reasons = "unknown", ["waiting_without_structured_predicate"]
+    elif cp["updated_at"] - now > CLOCK_SKEW:
+        # C-D1 (RCO2 8DF45964): a checkpoint dated beyond the clock skew is never "recent"; it would
+        # otherwise wait for as long as the clocks disagree. Fail closed, like evidence from the future.
+        verdict, reasons = "unknown", ["checkpoint_from_future"]
     elif cp["next_wakeup"] is not None and now >= cp["next_wakeup"]:
         verdict, reasons = "dispatch", ["checkpoint_wakeup_due"]
     elif cp["next_wakeup"] is not None:

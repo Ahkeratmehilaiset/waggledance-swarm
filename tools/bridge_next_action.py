@@ -1150,18 +1150,37 @@ def _request_closed_by_index(
     return False
 
 
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _withdraws_spellings(container: Any) -> list[str]:
+    """Keys of ``container`` equal to ``withdraws`` under ASCII case folding."""
+    if not isinstance(container, Mapping):
+        return []
+    return [
+        key for key in container
+        if isinstance(key, str) and key.translate(_ASCII_LOWER) == "withdraws"
+    ]
+
+
 def _withdraws_member(event: Mapping[str, Any]) -> Any:
     """Return the event's withdraws value, ``_ABSENT`` or ``_CONFLICT``.
 
     Presence is by key, so an explicit ``null`` is present (and malformed).
+    Any ASCII case variant of ``withdraws`` at the top level or in payload
+    also counts as present: a variant spelling, or more than one spelling in
+    one object, is ``_CONFLICT`` (malformed), so it never falls back to
+    generic closure. Only the exact spelling can carry a descriptor.
     """
     payload = event.get("payload")
-    direct = event.get("withdraws", _ABSENT) if "withdraws" in event else _ABSENT
-    nested = (
-        payload.get("withdraws", _ABSENT)
-        if isinstance(payload, Mapping) and "withdraws" in payload
-        else _ABSENT
-    )
+    direct_keys = _withdraws_spellings(event)
+    nested_keys = _withdraws_spellings(payload)
+    if not direct_keys and not nested_keys:
+        return _ABSENT
+    if any(keys and keys != ["withdraws"] for keys in (direct_keys, nested_keys)):
+        return _CONFLICT
+    direct = event["withdraws"] if direct_keys else _ABSENT
+    nested = payload["withdraws"] if nested_keys else _ABSENT
     if direct is not _ABSENT and nested is not _ABSENT and direct != nested:
         return _CONFLICT
     return direct if direct is not _ABSENT else nested

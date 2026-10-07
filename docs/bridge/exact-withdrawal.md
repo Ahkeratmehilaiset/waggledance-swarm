@@ -1,8 +1,12 @@
 # Exact unbound withdrawal in the next-action selector
 
-Status: Python selector (`tools/bridge_next_action.py`). The PowerShell
-selector gets the same rules in a separate change. Decision record:
-Lead byte-contract decision `318100B1…` (2026-10-07).
+Status: one contract for both next-action selectors. The Python selector is
+`tools/bridge_next_action.py`. The PowerShell selector is
+`.agent-bridge/bin/Get-BridgeNextAction.ps1` with
+`.agent-bridge/bin/BridgeRequestContract.ps1`; it is changed in a separate
+change and ships in the same bundle. Decision records: Lead byte-contract
+decision `318100B1…` and case-parity disposition `97083993…`
+(2026-10-07).
 
 ## Problem
 
@@ -21,6 +25,29 @@ not read that descriptor, which caused two defects:
 
 The descriptor can sit at `payload.withdraws` or at a top-level `withdraws`.
 If both are present they must be identical; otherwise it is malformed.
+
+### Member spelling
+
+Only the exact, lowercase spelling `withdraws` can carry a descriptor. Any
+ASCII case variant (`Withdraws`, `WITHDRAWS`, `withDraws`, ...) at the top
+level or in `payload` still marks the event as withdrawal-bearing:
+
+- A variant spelling is malformed, even when its descriptor and digest are
+  exact. It closes nothing and never falls back to generic closure.
+- A variant in one location and the exact spelling in the other is
+  malformed.
+- Two spellings in one JSON object never reach the selector: the canonical
+  reader rejects ASCII-case-colliding keys and the selection fails closed.
+  A caller that passes such a mapping directly still gets `malformed`.
+- A name that is not an ASCII case variant (for example `withdraw`,
+  `withdrawn` or `withdraws_`) is not a withdraws member, and legacy rules
+  apply. The fold is ASCII only. Non-ASCII look-alike letters, such as a
+  dotless `ı` or a long `ſ`, do not fold. Both PowerShell hosts (5.1 and 7)
+  also leave such keys unmatched, which was measured on 2026-10-07.
+
+Descriptor field names, registry owner keys and the request and closure
+fields that only the withdrawal path reads are compared ordinally, as
+written.
 
 ```json
 "withdraws": {
@@ -66,7 +93,8 @@ it.
 
 ## Rules
 
-A closure event that carries a `withdraws` member is handled only by
+A closure event that carries a `withdraws` member (in any ASCII case
+spelling) is handled only by
 `withdrawal_target` or by the full bound reply contract. It never takes part
 in generic same-task, requester-terminal or PR-key closure, including the
 same-task closure of direct RCO pass/block requests and idle-protocol
@@ -103,7 +131,7 @@ following hold:
 |---|---|---|
 | `exact` | closes that one version, also when the task has several versions | — |
 | `mismatch` | closes nothing | — |
-| `malformed` (bad shape, `null`, top-level/payload conflict) | closes nothing | `malformed_withdrawal` |
+| `malformed` (bad shape, `null`, top-level/payload conflict, case-variant or ambiguous member spelling) | closes nothing | `malformed_withdrawal` |
 | `identity_unverified` | closes nothing | `withdrawal_identity_unverified` |
 | `unverifiable` (no reader side table) | closes nothing | `withdrawal_unverifiable` |
 | `non_addressable` (row still has a CR, or the historical bare-CR split row) | closes nothing | `withdrawal_non_addressable` |
@@ -142,4 +170,10 @@ never claims that a request is absent or that coverage is complete.
 - duplicate rows, and a missing or copied side table;
 - malformed descriptors, and a conflict between top-level and payload
   descriptors;
+- case-variant member spellings at the top level and in payload, each with an
+  exact and a wrong digest, plus ambiguous spellings, exactly spelled
+  positives and near-miss names that keep legacy rules;
+- case-variant members on target answers, control signals, `request_id`
+  requests, full bound replies, direct RCO pass requests and idle-protocol
+  progress;
 - bound requests, and the legacy controls.

@@ -1144,3 +1144,27 @@ def test_declared_clear_hold_fields_change_nothing_versus_the_legacy_checkpoint(
     token = dict(cp(), blockers=["HOLD 1549 preserved"])
     declared = dict(token, work_held=False, release_held=False)
     assert evaluate(snap(checkpoint=declared), NOW) == evaluate(snap(checkpoint=token), NOW)
+
+
+# --- C-D1 (RCO2 report 8DF45964; reproduced by Fable 08A5539F): a future-dated checkpoint is never "recent" ----
+# Before the fix a recognized checkpoint dated beyond the 60 s clock skew fell through to checkpoint_recent and
+# waited for as long as the clock lagged (10 years in the reproduction), with no wake and no alert on the
+# checkpoint-only path. It now fails closed like evidence from the future; within the skew nothing changes.
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated,wakeup", [
+    ("2026-09-29T00:01:01Z", None),                      # 61 s ahead: beyond skew
+    ("2036-09-29T00:00:00Z", None),                      # 10 years ahead
+    ("2026-09-29T00:01:01Z", "2026-09-29T00:30:00Z"),    # future update with a bounded, pending wake
+])
+def test_c_d1_a_checkpoint_dated_beyond_the_clock_skew_is_unknown_never_recent(scope_snap, updated, wakeup):
+    d = evaluate(scope_snap(checkpoint=cp(updated=updated, next_wakeup=wakeup)), NOW)
+    assert d["verdict"] == "unknown"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_from_future"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_c_d1_a_checkpoint_within_the_clock_skew_is_still_recent(scope_snap):
+    d = evaluate(scope_snap(checkpoint=cp(updated="2026-09-29T00:00:59Z")), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_recent"]

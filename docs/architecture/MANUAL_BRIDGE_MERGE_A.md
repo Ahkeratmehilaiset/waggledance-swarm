@@ -176,12 +176,29 @@ verifier runs.
 commit ids that git resolves to themselves, then runs exactly:
 
 ```
-git -C <repo> --no-replace-objects diff-tree -r -z --raw --full-index --no-abbrev --no-renames --no-ext-diff --no-textconv --no-color <base_sha> <head_sha>
+git -C <repo> --no-replace-objects diff-tree -r -z --raw --full-index --no-abbrev --no-renames --no-ext-diff --no-textconv --no-color --ignore-submodules=none <base_sha> <head_sha>
 ```
 
 - It runs without a shell, with every `GIT_*` environment variable removed
-  and replace objects disabled. It reads only the object store, never a
-  working tree or index.
+  and replace objects disabled. The records come from the two commits'
+  trees.
+- Gitlinks (G1-F1). Without `--ignore-submodules=none`, git dropped
+  mode-160000 gitlink records when `submodule.<name>.ignore` was `all` in the
+  repository config, or when `.gitmodules` said `ignore = all` in the
+  working tree, or, with no working-tree copy, in the index or `HEAD`. An
+  added or changed gitlink then produced no path and the empty digest. The
+  option overrides all of these, so every gitlink change is a record. Git
+  may still read those settings and files; they no longer change the bytes.
+- Configuration. On git 2.54.0.windows.1 these repository settings did not
+  change the bytes: `diff.orderFile`, `diff.relative`, `core.quotePath`,
+  `diff.noprefix`, `diff.mnemonicPrefix`, `diff.renames`, `diff.algorithm`,
+  `diff.ignoreSubmodules`, `color.ui`, `core.ignoreCase` and
+  `diff.external`. This is evidence for those keys on that version, not a
+  proof for every setting or every git version. A setting that only
+  reorders or reformats the bytes makes the signer's and verifier's digests
+  differ, so the check refuses. A setting that hides records, as the
+  submodule settings did, could hide a real change; for settings and git
+  versions not listed here that risk is UNKNOWN.
 - `diff_digest_sha256` is the lowercase hex SHA-256 of the exact stdout
   bytes. Each raw record holds both modes and both full blob ids, so a
   content change or a mode-only change alters the digest. A rename appears

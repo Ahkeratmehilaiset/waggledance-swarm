@@ -139,9 +139,12 @@ GIT_TIMEOUT_SECONDS = 30.0
 # run with every GIT_* variable removed.  Raw records carry both modes and
 # full blob ids, so any content or mode change alters the digest; -z keeps
 # paths as raw bytes (no quoting); no renames, external diff or textconv.
+# --ignore-submodules=none (G1-F1) keeps every mode-160000 gitlink record even
+# when submodule.<name>.ignore or a .gitmodules "ignore = all" entry (worktree,
+# index or HEAD copy) would otherwise hide it.
 GIT_DIFF_ARGS: tuple[str, ...] = (
     "-r", "-z", "--raw", "--full-index", "--no-abbrev", "--no-renames", "--no-ext-diff",
-    "--no-textconv", "--no-color",
+    "--no-textconv", "--no-color", "--ignore-submodules=none",
 )
 GIT_DIFF_RECORD_RE = re.compile(rb":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([ADMT])")
 MAX_ANCHOR_BYTES = 16 * 1024
@@ -852,8 +855,9 @@ def read_git_diff_facts(
     """Read the changed paths and the G1 diff digest for exactly ``base_sha``..``head_sha``.
 
     Both ids must be full lowercase commit ids that git resolves to
-    themselves; the diff is read only from the object store (never a working
-    tree), with replace objects disabled and every GIT_* variable removed.
+    themselves; the records come from the two commits' trees (never a
+    working tree), with replace objects disabled, every GIT_* variable
+    removed and submodule ignore settings overridden (G1-F1).
     Any git failure, timeout or unparseable output refuses; there is no
     fallback.  This reads facts only; it performs no merge or other effect.
     """

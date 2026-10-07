@@ -1249,3 +1249,73 @@ def test_f8_a_busy_fence_is_a_lock_timeout_that_mutates_nothing(tmp_path):
     assert json.loads(path.read_text()) == CLAIM and wal_records(txns) == before
     busy.transact("heartbeat", path, "hb:1", lambda before: Plan(after=beat(1)))       # twin: no fence, applied
     assert json.loads(path.read_text()) == beat(1)
+
+
+# -- WQ-F1 (fable-5 runtime audit 462A5609, Lead request lead-wave12h-20261007-fable-wq-runtime-fix-v1) ----------------
+# The work queue computed its idempotency key from claim bytes read BEFORE the locks. A retry after a crash then reused
+# the key of the record that recovery had just redone, and its outbox record conflicted. The key may now be a function
+# of the claim bytes the plan sees under the locks, after recovery; a forged outbox record at that key stays the S2
+# conflict.
+
+def test_wq_f1_a_key_function_is_called_under_the_locks_with_the_bytes_the_plan_sees(tmp_path):
+    txns, recorder = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    recorder.events.clear()
+    seen = {}
+
+    def key_fn(before):
+        seen["key"], seen["locks"] = before, list(recorder.events)
+        return "hb:" + hashlib.sha256(before).hexdigest()
+
+    def plan(before):
+        seen["plan"] = before
+        return Plan(after=beat(1), event={"type": "heartbeat"})
+
+    txns.transact("heartbeat", path, key_fn, plan)
+    assert seen["key"] == seen["plan"] == claim_bytes(CLAIM)
+    assert [e[:2] for e in seen["locks"]] == [("enter", "mutex"), ("enter", "claim")]   # both held, none released
+    keys = sorted(json.loads(p.read_text())["idempotency_key"] for p in outbox(txns))
+    assert keys == sorted(["claim:t/1", "hb:" + hashlib.sha256(claim_bytes(CLAIM)).hexdigest()])
+
+
+def test_wq_f1_a_key_function_sees_the_claim_after_recovery_finished_the_crashed_attempt(tmp_path, monkeypatch):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+
+    def crash(*args, **kwargs):
+        raise KeyboardInterrupt("simulated crash after the WAL record, before the claim write")
+
+    monkeypatch.setattr(qt, "_replace_atomic", crash)
+    with pytest.raises(KeyboardInterrupt):
+        txns.transact("heartbeat", path, "hb:1", lambda b: Plan(after=beat(1)))
+    monkeypatch.undo()
+    seen = []
+    txns.transact("heartbeat", path, lambda before: seen.append(before) or "hb:2", lambda b: Plan(after=beat(2)))
+    assert seen == [claim_bytes(beat(1))] and json.loads(path.read_text()) == beat(2)   # recovery redid hb:1 first
+    assert wal_states(txns) == ["outboxed"] * 3
+
+
+@pytest.mark.parametrize("bad", ["", "k" * 513, None, b"k"], ids=["empty", "long", "none", "bytes"])
+def test_wq_f1_a_key_function_without_a_valid_key_is_refused_before_the_wal_record(tmp_path, bad):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    with pytest.raises(QueueTransactionError, match="idempotency key"):
+        txns.transact("heartbeat", path, lambda before: bad, lambda b: Plan(after=beat(1)))
+    assert json.loads(path.read_text()) == CLAIM and wal_states(txns) == ["outboxed"]
+    txns.transact("heartbeat", path, lambda before: "hb:1", lambda b: Plan(after=beat(1)))   # success twin
+    assert json.loads(path.read_text()) == beat(1)
+
+
+def test_wq_f1_s2_a_forged_outbox_record_at_a_key_derived_under_the_locks_is_still_a_visible_conflict(tmp_path):
+    txns, _ = make(tmp_path)
+    path = claim_path(txns)
+    create(txns, path)
+    with pytest.raises(QueueTransactionError, match="WAS applied"):
+        txns.transact("claim", path, lambda before: "claim:t/1",
+                      lambda b: Plan(after=dict(CLAIM, v=2), event={"type": "claim"}))
+    assert len(outbox(txns)) == 1 and wal_states(txns) == ["diverged", "outboxed"]
+    with pytest.raises(Blocked, match="diverged"):
+        txns.transact("heartbeat", path, lambda before: "hb:1", lambda b: Plan(after=beat(1)))

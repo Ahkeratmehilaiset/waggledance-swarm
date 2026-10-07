@@ -28,9 +28,10 @@ from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E40
 from waggledance.core.bridge_workflow import worker_class  # noqa: E402
 from waggledance.core.bridge_request_contract import (  # noqa: E402
     field as correlation_field, reply_matches_request, request_is_bound, request_key, request_content,
-    reply_follows_request, terminal_status_negated,
+    reply_follows_request, terminal_status_negated, timestamp as correlation_timestamp,
 )
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
+    bridge_identity_binding_status,
     load_bridge_identity_registry,
 )
 from waggledance.core.bridge_log_reader import (  # noqa: E402
@@ -79,6 +80,17 @@ _LEGACY_BARE_CR_EVENT_FINGERPRINTS = (
         "bridge_log_repair_note",
     ),
 )
+# A requester closure may name the one unbound request version it withdraws.
+# raw_line_sha256 is a reader-row digest (docs/bridge/exact-withdrawal.md):
+# SHA-256 of the strict UTF-8 row as the canonical reader yields it, split on
+# LF with at most one trailing CR removed. It is not a physical-row hash.
+WITHDRAWAL_DESCRIPTOR_FIELDS = (
+    "agent", "type", "status", "task_id", "ts_utc", "raw_line_sha256",
+)
+_WITHDRAWAL_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+_ABSENT = object()
+_CONFLICT = object()
+_NO_SIDE_TABLE = object()
 REQUEST_TYPES = {
     "message",
     "done",
@@ -488,9 +500,22 @@ def _window_start_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
     return max(probe) if probe else None
 
 
+class _ReaderEvents(list):
+    """Parsed events plus a reader-row digest side table keyed by ``id(event)``.
+
+    The digest never comes from an event field, so log content cannot forge it.
+    A copied plain list loses the table, and withdrawals then fail closed.
+    ``None`` marks an event whose row is not addressable: the row still holds a
+    CR after the reader removed one, or it is the historical bare-CR split row.
+    """
+
+    reader_row_digests: dict[int, str | None]
+
+
 def _parse_selected_rows(selected: Sequence[str]) -> list[dict[str, Any]]:
     lines = list(selected)
-    events: list[dict[str, Any]] = []
+    events = _ReaderEvents()
+    events.reader_row_digests = {}
     for selected_row, raw in enumerate(lines, start=1):
         ascii_trimmed = raw.strip(" \t\r")
         if not ascii_trimmed:
@@ -512,6 +537,10 @@ def _parse_selected_rows(selected: Sequence[str]) -> list[dict[str, Any]]:
                     ],
                 }
             ) from exc
+        addressable = len(row_events) == 1 and "\r" not in raw
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest() if addressable else None
+        for event in row_events:
+            events.reader_row_digests[id(event)] = digest
         events.extend(row_events)
     return events
 
@@ -641,6 +670,38 @@ def recommend_next_action(
     production_liveness_suppressed_agents: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return a deterministic next-action recommendation for ``agent``."""
+    withdrawal_diagnostics: list[dict[str, str]] = []
+    report = _recommend_next_action(
+        agent=agent,
+        events=events,
+        claims=claims,
+        bridge_root=bridge_root,
+        now_utc=now_utc,
+        open_request_max_age_hours=open_request_max_age_hours,
+        stale_report_max_age_hours=stale_report_max_age_hours,
+        production_idle_warn_minutes=production_idle_warn_minutes,
+        production_liveness_suppressed_agents=production_liveness_suppressed_agents,
+        withdrawal_diagnostics=withdrawal_diagnostics,
+    )
+    if withdrawal_diagnostics:
+        # Non-closing withdrawals stay visible; they never prove absence.
+        report["withdrawal_diagnostics"] = withdrawal_diagnostics
+    return report
+
+
+def _recommend_next_action(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    claims: Sequence[Claim],
+    bridge_root: Path | None,
+    now_utc: datetime | None,
+    open_request_max_age_hours: float | None,
+    stale_report_max_age_hours: float | None,
+    production_idle_warn_minutes: float | None,
+    production_liveness_suppressed_agents: Mapping[str, str] | None,
+    withdrawal_diagnostics: list[dict[str, str]],
+) -> dict[str, Any]:
     if not AGENT_ID_PATTERN.fullmatch(agent):
         raise BridgeNextActionError(
             {
@@ -703,7 +764,11 @@ def recommend_next_action(
         for claim in active_claims
         if claim.agent != agent and claim.mode == "write"
     ]
-    all_open_requests = _open_requests_for_agent(agent=agent, events=events)
+    all_open_requests = _open_requests_for_agent(
+        agent=agent,
+        events=events,
+        withdrawal_diagnostics=withdrawal_diagnostics,
+    )
     open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
@@ -910,8 +975,11 @@ def _open_requests_for_agent(
     *,
     agent: str,
     events: Sequence[Mapping[str, Any]],
+    withdrawal_diagnostics: list[dict[str, str]] | None = None,
 ) -> list[Mapping[str, Any]]:
     closure_index = _build_request_closure_index(events)
+    if withdrawal_diagnostics is not None:
+        closure_index["_withdrawal_diagnostics"] = withdrawal_diagnostics
     idle_progress_index = _build_idle_protocol_progress_index(events)
     requests = [
         event
@@ -959,11 +1027,19 @@ def _build_request_closure_index(
         "_answers": {}, "_bound_messages": {}, "_versions": {},
         "_positions": {id(event): position for position, event in enumerate(events)},
         "_closure_events": {},
+        "_withdrawals": {},
+        "_row_digests": getattr(events, "reader_row_digests", None),
+        "_withdrawal_diagnostics": [],
     }
     for event in events:
         if _is_request_like(event):
             version_key = (_event_agent(event), _task_id(event))
             closure_index["_versions"].setdefault(version_key, set()).add(_event_ts(event))
+        withdrawing = _withdraws_member(event) is not _ABSENT
+        if withdrawing:
+            closure_index["_withdrawals"].setdefault(
+                str(event.get("task_id") or ""), []
+            ).append(event)
         answer_like = _is_answer_like(event)
         if not answer_like and _is_correlated_bound_message(event):
             closure_index["_bound_messages"].setdefault(
@@ -972,6 +1048,10 @@ def _build_request_closure_index(
         if not answer_like:
             continue
         closure_index["_answers"].setdefault(_task_id(event), []).append(event)
+        if withdrawing:
+            # A withdraws member opts the event out of every generic closure
+            # key; only withdrawal_target or the bound reply contract apply.
+            continue
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
         task_id = _task_id(event)
@@ -1010,10 +1090,13 @@ def _request_closed_by_index(
     def follows(answer):
         return reply_follows_request(request, answer,
             request_position=positions.get(id(request)), reply_position=positions.get(id(answer)))
+    bound = request_is_bound(request)
+    if not bound and _request_withdrawn_exactly(request, closure_index):
+        return True
     ambiguous = len(closure_index.get("_versions", {}).get(
         (_event_agent(request), task_id), ())) > 1
     control = _is_control_signal(request)
-    if request_is_bound(request) or ambiguous or control:
+    if bound or ambiguous or control:
         answer_groups = [closure_index.get("_answers", {}).get(task_id, ())]
         if request_is_bound(request):
             answer_groups.append(
@@ -1030,6 +1113,7 @@ def _request_closed_by_index(
             for answers in answer_groups
             for answer in answers
             if follows(answer) and not _is_interim_bound_status(_event_status(answer))
+            and (bound or _withdraws_member(answer) is _ABSENT)
         )
     closure_keys = []
     if task_id:
@@ -1063,6 +1147,178 @@ def _request_closed_by_index(
         }:
             if any(follows(answer) for answer in task_closures.get(closing_agent, ())):
                 return True
+    return False
+
+
+def _withdraws_member(event: Mapping[str, Any]) -> Any:
+    """Return the event's withdraws value, ``_ABSENT`` or ``_CONFLICT``.
+
+    Presence is by key, so an explicit ``null`` is present (and malformed).
+    """
+    payload = event.get("payload")
+    direct = event.get("withdraws", _ABSENT) if "withdraws" in event else _ABSENT
+    nested = (
+        payload.get("withdraws", _ABSENT)
+        if isinstance(payload, Mapping) and "withdraws" in payload
+        else _ABSENT
+    )
+    if direct is not _ABSENT and nested is not _ABSENT and direct != nested:
+        return _CONFLICT
+    return direct if direct is not _ABSENT else nested
+
+
+def _valid_withdrawal_descriptor(descriptor: Any) -> bool:
+    if not isinstance(descriptor, Mapping):
+        return False
+    if any(not isinstance(descriptor.get(key), str) for key in WITHDRAWAL_DESCRIPTOR_FIELDS):
+        return False
+    if not _WITHDRAWAL_DIGEST_PATTERN.fullmatch(descriptor["raw_line_sha256"]):
+        return False
+    return correlation_timestamp(descriptor["ts_utc"]) is not None
+
+
+def _registered_identity_valid(event: Mapping[str, Any], registry: Mapping[str, str]) -> bool:
+    return bool(registry) and bridge_identity_binding_status(event, registry=registry) == "valid"
+
+
+def withdrawal_target(
+    request: Mapping[str, Any],
+    closure: Mapping[str, Any],
+    *,
+    request_digest: Any,
+    digest_count: int,
+    request_position: int | None,
+    closure_position: int | None,
+    registry: Mapping[str, str],
+) -> str | None:
+    """Classify ``closure`` as a withdrawal of the unbound ``request``.
+
+    Returns ``None`` when the closure has no withdraws member (legacy rules
+    apply), ``"exact"`` when it closes exactly this request version, and a
+    non-closing reason otherwise: ``"malformed"``, ``"mismatch"``,
+    ``"identity_unverified"``, ``"unverifiable"`` (no reader side table),
+    ``"non_addressable"`` (CR-bearing or historical split row) or
+    ``"duplicate"`` (the digest names more than one row in the window).
+    ``request_digest`` is the reader-row digest from the side table, never a
+    value recomputed from the parsed event.
+    """
+    descriptor = _withdraws_member(closure)
+    if descriptor is _ABSENT:
+        return None
+    if descriptor is _CONFLICT or not _valid_withdrawal_descriptor(descriptor):
+        return "malformed"
+    if request_is_bound(request) or _is_control_signal(request):
+        # request_id/nonce requests keep the full bound reply contract, and
+        # control signals keep their explicit-correlation rule.
+        return "mismatch"
+    if (
+        closure.get("agent") != request.get("agent")
+        or closure.get("task_id", "") != request.get("task_id", "")
+        or not _is_explicit_requester_closure(closure)
+    ):
+        return "mismatch"
+    # ts_utc compares as written: Python datetimes keep microseconds only, so
+    # parsed equality would merge 100 ns ticks that the PowerShell reader keeps.
+    if any(
+        descriptor[key] != request.get(key)
+        for key in ("agent", "type", "status", "task_id", "ts_utc")
+    ):
+        return "mismatch"
+    if (
+        type(request_position) is not int
+        or type(closure_position) is not int
+        or closure_position <= request_position
+    ):
+        return "mismatch"
+    if not (
+        _registered_identity_valid(request, registry)
+        and _registered_identity_valid(closure, registry)
+    ):
+        return "identity_unverified"
+    if request_digest is _NO_SIDE_TABLE:
+        return "unverifiable"
+    if request_digest is None:
+        return "non_addressable"
+    if request_digest != descriptor["raw_line_sha256"]:
+        return "mismatch"
+    if digest_count != 1:
+        return "duplicate"
+    return "exact"
+
+
+_WITHDRAWAL_DIAGNOSTIC_REASONS = {
+    "malformed": "malformed_withdrawal",
+    "identity_unverified": "withdrawal_identity_unverified",
+    "unverifiable": "withdrawal_unverifiable",
+    "non_addressable": "withdrawal_non_addressable",
+    "duplicate": "withdrawal_duplicate",
+}
+
+
+def _load_withdrawal_identity_registry() -> dict[str, str]:
+    """Registry for withdrawal identity checks; unreadable means no closure."""
+    try:
+        return load_bridge_identity_registry(allow_missing=True)
+    except ValueError:
+        return {}
+
+
+def _request_withdrawn_exactly(
+    request: Mapping[str, Any],
+    closure_index: Mapping[str, Any],
+) -> bool:
+    closures = closure_index.get("_withdrawals", {}).get(str(request.get("task_id") or ""), ())
+    if not closures:
+        return False
+    if "_registry" not in closure_index:
+        closure_index["_registry"] = _load_withdrawal_identity_registry()  # type: ignore[index]
+    registry = closure_index["_registry"]
+    digests = closure_index.get("_row_digests")
+    if digests is None:
+        request_digest: Any = _NO_SIDE_TABLE
+        digest_count = 0
+    else:
+        if "_digest_counts" not in closure_index:
+            counts: dict[str, int] = {}
+            for value in digests.values():
+                if value is not None:
+                    counts[value] = counts.get(value, 0) + 1
+            closure_index["_digest_counts"] = counts  # type: ignore[index]
+        request_digest = digests.get(id(request), _NO_SIDE_TABLE)
+        digest_count = (
+            closure_index["_digest_counts"].get(request_digest, 0)
+            if isinstance(request_digest, str)
+            else 0
+        )
+    positions = closure_index.get("_positions", {})
+    diagnostics = closure_index.get("_withdrawal_diagnostics")
+    for closure in closures:
+        outcome = withdrawal_target(
+            request,
+            closure,
+            request_digest=request_digest,
+            digest_count=digest_count,
+            request_position=positions.get(id(request)),
+            closure_position=positions.get(id(closure)),
+            registry=registry,
+        )
+        if outcome == "exact":
+            return True
+        reason = _WITHDRAWAL_DIAGNOSTIC_REASONS.get(str(outcome))
+        if reason is None or diagnostics is None:
+            continue
+        if outcome == "malformed" and closure.get("agent") != request.get("agent"):
+            continue
+        item = {
+            "reason": reason,
+            "request_agent": str(request.get("agent") or ""),
+            "request_task_id": str(request.get("task_id") or ""),
+            "request_ts_utc": _event_ts(request),
+            "closure_agent": str(closure.get("agent") or ""),
+            "closure_ts_utc": _event_ts(closure),
+        }
+        if item not in diagnostics:
+            diagnostics.append(item)
     return False
 
 

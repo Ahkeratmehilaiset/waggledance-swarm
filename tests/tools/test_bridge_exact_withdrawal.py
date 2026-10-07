@@ -693,14 +693,11 @@ def test_case_variant_withdraws_member_is_malformed_and_never_closes(
 @pytest.mark.parametrize(
     ("top_keys", "payload_keys"),
     [
-        pytest.param([], ["withdraws", "Withdraws"], id="payload_exact_plus_variant"),
-        pytest.param([], ["Withdraws", "WITHDRAWS"], id="payload_two_variants"),
-        pytest.param(["withdraws", "WITHDRAWS"], [], id="top_exact_plus_variant"),
         pytest.param(["Withdraws"], ["withdraws"], id="top_variant_payload_exact"),
         pytest.param(["withdraws"], ["Withdraws"], id="top_exact_payload_variant"),
     ],
 )
-def test_ambiguous_withdraws_spellings_are_malformed_even_with_exact_digest(
+def test_spellings_split_across_top_and_payload_are_malformed_even_with_exact_digest(
     tmp_path: Path, top_keys: list[str], payload_keys: list[str]
 ) -> None:
     notice = _notice(V2_TS, "fix_pushed")
@@ -714,6 +711,48 @@ def test_ambiguous_withdraws_spellings_are_malformed_even_with_exact_digest(
 
     assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
     assert "malformed_withdrawal" in _reasons(_report(tmp_path / "r", rows))
+
+
+SAME_OBJECT_SPELLINGS = [
+    pytest.param("payload", ["withdraws", "Withdraws"], id="payload_exact_plus_variant"),
+    pytest.param("payload", ["Withdraws", "WITHDRAWS"], id="payload_two_variants"),
+    pytest.param("top", ["withdraws", "WITHDRAWS"], id="top_exact_plus_variant"),
+]
+
+
+@pytest.mark.parametrize(("where", "keys"), SAME_OBJECT_SPELLINGS)
+def test_same_object_spellings_make_the_reader_fail_closed(
+    tmp_path: Path, where: str, keys: list[str]
+) -> None:
+    # The canonical reader already rejects ASCII-case-colliding keys in one
+    # object, so such a row stops the whole selection instead of closing.
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    members = {key: _descriptor(notice, notice_row) for key in keys}
+    closure = _spelled_closure(members if where == "top" else {}, members if where == "payload" else {})
+
+    with pytest.raises(bridge_next_action.BridgeNextActionError, match="ASCII-case-colliding"):
+        _open_statuses(tmp_path, [notice_row, _row(closure)])
+
+
+@pytest.mark.parametrize(("where", "keys"), SAME_OBJECT_SPELLINGS)
+def test_same_object_spellings_are_malformed_for_a_plain_mapping(where: str, keys: list[str]) -> None:
+    # A caller that bypasses the reader still gets a non-closing outcome.
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    members = {key: _descriptor(notice, notice_row) for key in keys}
+    closure = _spelled_closure(members if where == "top" else {}, members if where == "payload" else {})
+
+    outcome = bridge_next_action.withdrawal_target(
+        notice,
+        closure,
+        request_digest=_digest(notice_row),
+        digest_count=1,
+        request_position=0,
+        closure_position=1,
+        registry=dict(UUIDS),
+    )
+    assert outcome == "malformed"
 
 
 @pytest.mark.parametrize("where", ["top", "payload"])

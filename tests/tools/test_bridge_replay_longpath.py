@@ -8,9 +8,11 @@ A queued accepted WAL is produced by the real writer under Windows PowerShell 5.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import uuid
@@ -100,3 +102,84 @@ def test_drain_replays_a_queued_wal_under_a_deep_runtime_root(tmp_path: Path, sh
             (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     assert [row["task_id"] for row in rows] == ["replay-longpath"]
     assert not ready[0].exists()
+
+
+SCRIPTS = {"Restore-BridgeSpool.ps1": (6, 1), "Drain-AcceptedBridgeQueue.ps1": (2, 1)}
+
+
+def _source(name: str) -> str:
+    return (ROOT / ".agent-bridge" / "bin" / name).read_text(encoding="utf-8-sig")
+
+
+def _conversion_function(name: str) -> str:
+    source = _source(name)
+    start = source.index("function ConvertTo-BridgeNativeLongPath")
+    return source[start:source.index("\nfunction ", start + 1)]
+
+
+def test_both_replay_scripts_carry_the_same_conversion() -> None:
+    assert _conversion_function("Restore-BridgeSpool.ps1") == _conversion_function("Drain-AcceptedBridgeQueue.ps1")
+
+
+@pytest.mark.parametrize("name", sorted(SCRIPTS))
+def test_every_native_path_argument_goes_through_the_conversion(name: str) -> None:
+    calls = re.findall(r"::(CreateFileW|MoveFileExW)\(\s*([^\r\n]*)\r?\n\s*([^\r\n]*)", _source(name))
+    creates, moves = SCRIPTS[name]
+
+    assert sorted(kind for kind, _, _ in calls) == ["CreateFileW"] * creates + ["MoveFileExW"] * moves
+    for kind, first, second in calls:
+        assert first.startswith("(ConvertTo-BridgeNativeLongPath "), (kind, first)
+        if kind == "MoveFileExW":
+            assert second.startswith("(ConvertTo-BridgeNativeLongPath "), (kind, second)
+
+
+def _convert(executable: str, path: str) -> str:
+    # The function text and the path both travel inside -EncodedCommand, so no command-line quoting is involved.
+    encoded = base64.b64encode(path.encode("utf-8")).decode("ascii")
+    command = (
+        _conversion_function("Restore-BridgeSpool.ps1")
+        + "\n$value = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "'))"
+        + "\n[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-BridgeNativeLongPath -Path $value))))"
+    )
+    completed = subprocess.run(
+        [executable, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+         base64.b64encode(command.encode("utf-16-le")).decode("ascii")],
+        check=False, capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return base64.b64decode(completed.stdout.strip()).decode("utf-8")
+
+
+LONG = "C:\\" + "\\".join(["segment" + str(i).zfill(3) for i in range(40)]) + "\\events.jsonl"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_only_long_canonical_drive_paths_gain_the_prefix(shell: str) -> None:
+    executable = _shell(shell)
+    assert len(LONG) > 260
+
+    assert _convert(executable, LONG) == "\\\\?\\" + LONG
+    assert _convert(executable, "C:\\short\\events.jsonl") == "C:\\short\\events.jsonl"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("path", [
+    LONG.replace("\\segment005\\", "\\segment005\\..\\"),
+    LONG.replace("\\segment005\\", "\\.\\"),
+    LONG.replace("\\segment005\\", "/segment005/"),
+    LONG.replace("\\segment005\\", "\\segment005.\\"),
+    LONG.replace("\\segment005\\", "\\segment005 \\"),
+    LONG.replace("\\segment005\\", "\\\\"),
+    LONG.replace("\\segment005\\", "\\NUL\\"),
+    LONG.replace("\\segment005\\", "\\com1.txt\\"),
+    LONG.replace("\\events.jsonl", "\\foo.\x00x"),
+    LONG.replace("\\events.jsonl", "\\foo \x00x"),
+    LONG[3:],
+    "\\\\server\\share" + LONG[2:],
+    "\\\\?\\" + LONG,
+    LONG + "\\",
+])
+def test_non_canonical_or_already_qualified_paths_pass_unchanged(shell: str, path: str) -> None:
+    executable = _shell(shell)
+
+    assert _convert(executable, path) == path

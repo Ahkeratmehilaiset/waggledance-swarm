@@ -133,8 +133,11 @@ def gh_pr(number=PR, *, state="OPEN", draft=False, head=HEAD, branch=BRANCH, bas
             "baseRefOid": base, "baseRefName": base_ref, "mergeable": mergeable, "mergeStateStatus": merge_state}
 
 
-def check_run(name, *, head=HEAD, status="completed", conclusion="success") -> dict:
-    return {"name": name, "head_sha": head, "status": status, "conclusion": conclusion}
+GH_APP = 15368  # the app every required check of the fixture is bound to
+
+
+def check_run(name, *, head=HEAD, status="completed", conclusion="success", app=GH_APP) -> dict:
+    return {"name": name, "head_sha": head, "status": status, "conclusion": conclusion, "app": {"id": app}}
 
 
 class FakeGh:
@@ -142,7 +145,7 @@ class FakeGh:
 
     def __init__(self):
         self.prs = {PR: gh_pr()}
-        self.required = {"contexts": list(REQUIRED), "checks": [{"context": name} for name in REQUIRED]}
+        self.required = {"contexts": list(REQUIRED), "checks": [{"context": name, "app_id": GH_APP} for name in REQUIRED]}
         self.required_rc = 0
         self.runs = [check_run(name) for name in REQUIRED]
         self.total = None
@@ -808,6 +811,146 @@ def test_t09_gh_allowlist_refuses_every_mutation(argv):
 def test_t09_git_allowlist_refuses_everything_but_the_ancestry_read(argv):
     with pytest.raises(mbm.AdmissionError):
         mbm.require_read_only_git(argv)
+
+
+# --- G2 hardening (Tools FC0D3948, RCO1 89EF73C8; reproduced at a5b886b1) -----------------------------
+
+GENERATED_GH = [
+    ["gh", "pr", "view", str(PR), "--repo", mms.REPOSITORY, "--json", ",".join(mbm.GH_VIEW_FIELDS)],
+    ["gh", "api", f"repos/{mms.REPOSITORY}/branches/main/protection/required_status_checks"],
+    ["gh", "api", f"repos/{mms.REPOSITORY}/commits/{HEAD}/check-runs?per_page=100"],
+    ["gh", "api", "rate_limit"],
+]
+
+
+@pytest.mark.parametrize("argv", GENERATED_GH)
+def test_g2h_gh_allowlist_accepts_the_generated_reads(argv):
+    mbm.require_read_only_gh(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ["gh", "api", "repos/x/issues/1/comments", "--raw-field=body=x"],
+    ["gh", "api", "repos/x/issues/1/comments", "--field=body=x"],
+    ["gh", "api", "repos/x/issues/1/comments", "-fbody=x"],
+    ["gh", "api", "repos/x/issues/1/comments", "-Fbody=@payload.json"],
+    ["gh", "api", "repos/x/pulls/1/merge", "--input=merge.json"],
+    ["gh", "api", "graphql", "--raw-field=query=mutation{x}"],
+    ["gh", "api", "repos/x/actions/secrets"],
+    ["gh", "api", f"repos/{mms.REPOSITORY}/branches/main/protection/required_status_checks", "--paginate"],
+    ["gh", "api", f"repos/{mms.REPOSITORY}/commits/{HEAD.upper()}/check-runs?per_page=100"],
+    ["gh", "api", "rate_limit", "-XPOST"],
+    ["gh", "pr", "view", str(PR), "--web"],
+    ["gh", "pr", "view", str(PR), "--repo", mms.REPOSITORY, "--json", "body", "--comments"],
+    ["gh", "pr", "view", str(PR), "--repo", "other/repo", "--json", ",".join(mbm.GH_VIEW_FIELDS)],
+    ["gh", "pr", "view", "01800", "--repo", mms.REPOSITORY, "--json", ",".join(mbm.GH_VIEW_FIELDS)],
+    ["gh", "api", "rate_limit", ""],
+    ["gh", "api", b"rate_limit"],
+])
+def test_g2h_gh_allowlist_refuses_every_other_form(argv):
+    with pytest.raises(mbm.AdmissionError) as err:
+        mbm.require_read_only_gh(argv)
+    assert err.value.reason == "effect_refused"
+
+
+def test_g2h_controls_digest_binds_the_snapshot_order(tmp_path):
+    block = finding(ts=BLOCK_TS)
+    cleared = preview(tmp_path, bridge=with_events(block, retraction(block)))
+    reordered = preview(tmp_path, bridge=with_events(retraction(block), block))
+    assert cleared.check("rco_blocking_decision").status == mbm.CHECK_PASS
+    assert reordered.check("rco_blocking_decision").status == mbm.CHECK_REFUSE
+    assert cleared.controls_digest != reordered.controls_digest
+    later = preview(tmp_path, bridge=with_events(retraction(block), block),
+                    expected_controls_digest=cleared.controls_digest)
+    assert later.check("controls_unchanged").reason == "controls_changed"
+    # the positive control: the same events in the same order keep the digest
+    again = preview(tmp_path, bridge=with_events(block, retraction(block)),
+                    expected_controls_digest=cleared.controls_digest)
+    assert again.check("controls_unchanged").status == mbm.CHECK_PASS
+
+
+def checks_doc(apps=None, contexts=None) -> dict:
+    apps = {name: GH_APP for name in REQUIRED} if apps is None else apps
+    return {"contexts": list(apps) if contexts is None else contexts,
+            "checks": [{"context": name, "app_id": app} for name, app in apps.items()]}
+
+
+def ci_check(tmp_path, *, required=None, runs=None, total=None) -> mbm.Check:
+    gh = FakeGh()
+    if required is not None:
+        gh.required = required
+    if runs is not None:
+        gh.runs = runs
+    gh.total = total
+    return preview(tmp_path, gh_runner=gh).check("ci_required_checks")
+
+
+@pytest.mark.parametrize("required", [
+    {"contexts": list(REQUIRED) + [None], "checks": checks_doc()["checks"]},
+    {"contexts": list(REQUIRED), "checks": checks_doc()["checks"] + [{"context": 7, "app_id": GH_APP}]},
+    {"contexts": list(REQUIRED), "checks": checks_doc()["checks"] + ["junk"]},
+    {"contexts": REQUIRED[0], "checks": []},
+    {"contexts": 5, "checks": []},
+    {"contexts": list(REQUIRED), "checks": 5},
+    {"contexts": list(REQUIRED)},
+    {"checks": checks_doc()["checks"]},
+    {"contexts": list(REQUIRED), "checks": [{"context": name} for name in REQUIRED]},
+    {"contexts": list(REQUIRED), "checks": [{"context": name, "app_id": None} for name in REQUIRED]},
+    {"contexts": list(REQUIRED), "checks": [{"context": name, "app_id": True} for name in REQUIRED]},
+    {"contexts": list(REQUIRED[:2]), "checks": checks_doc()["checks"]},
+    {"contexts": list(REQUIRED) + [REQUIRED[0]], "checks": checks_doc()["checks"]},
+    {"contexts": list(REQUIRED), "checks": checks_doc()["checks"] + [{"context": REQUIRED[0], "app_id": 999}]},
+    [],
+], ids=["context-null", "check-context-int", "check-not-object", "contexts-string", "contexts-int", "checks-int",
+        "checks-missing", "contexts-missing", "app-id-missing", "app-id-null", "app-id-bool", "contexts-subset",
+        "context-duplicate", "context-two-apps", "not-an-object"])
+def test_g2h_unsupported_required_check_shape_is_unknown(tmp_path, required):
+    check = ci_check(tmp_path, required=required)
+    assert check.status == mbm.CHECK_UNKNOWN and check.reason == "required_checks_unknown"
+
+
+@pytest.mark.parametrize("runs", [
+    [check_run(name) for name in REQUIRED] + ["junk"],
+    [check_run(name) for name in REQUIRED] + [{"name": None}],
+    [check_run(name) for name in REQUIRED[1:]] + [{k: v for k, v in check_run(REQUIRED[0]).items() if k != "app"}],
+    [check_run(name) for name in REQUIRED[1:]] + [check_run(REQUIRED[0], app="15368")],
+    [check_run(name) for name in REQUIRED[1:]] + [check_run(REQUIRED[0], conclusion=1)],
+], ids=["not-object", "name-null", "app-missing", "app-id-string", "conclusion-int"])
+def test_g2h_malformed_check_run_is_unknown(tmp_path, runs):
+    check = ci_check(tmp_path, runs=runs, total=len(runs))
+    assert check.status == mbm.CHECK_UNKNOWN and check.reason == "ci_malformed"
+
+
+def test_g2h_a_same_name_run_from_another_app_never_satisfies_a_required_check(tmp_path):
+    foreign = [check_run(name, app=999) for name in REQUIRED]
+    check = ci_check(tmp_path, runs=foreign)
+    assert check.status == mbm.CHECK_REFUSE and check.reason == f"ci_missing:{REQUIRED[0]}"
+    # a failing foreign run beside the genuine green run is ignored; a green foreign run never hides a red one
+    mixed = [check_run(name) for name in REQUIRED] + [check_run(REQUIRED[0], app=999, conclusion="failure")]
+    assert ci_check(tmp_path, runs=mixed).status == mbm.CHECK_PASS
+    red = [check_run(REQUIRED[0], conclusion="failure"), check_run(REQUIRED[0], app=999)]
+    red += [check_run(name) for name in REQUIRED[1:]]
+    assert ci_check(tmp_path, runs=red).reason == f"ci_failed:{REQUIRED[0]}"
+
+
+def test_g2h_a_status_only_required_context_is_refused_not_read(tmp_path):
+    required = checks_doc({**{name: GH_APP for name in REQUIRED}, "legacy/status": GH_APP})
+    check = ci_check(tmp_path, required=required)
+    assert check.status == mbm.CHECK_REFUSE and check.reason == "ci_missing:legacy/status"
+
+
+@pytest.mark.parametrize("value", [str(PR), f"#{PR}", f"PR-{PR}", f"pr {PR}", f"0{PR}", float(PR),
+                                   f"https://github.com/{mms.REPOSITORY}/pull/{PR}"])
+def test_g2h_string_or_float_pr_keys_are_in_the_negative_scope(tmp_path, value):
+    veto = event("claude-rco-2", "changes_requested", task="codex-lead-1/unrelated-task", payload_extra={"pr": value})
+    result = preview(tmp_path, bridge=with_events(veto))
+    assert result.check("rco_blocking_decision").reason == "rco_veto_active"
+
+
+@pytest.mark.parametrize("value", [str(PR + 1), f"{PR}0", f"1{PR}", float(PR) + 0.5, True, None])
+def test_g2h_other_pr_values_stay_out_of_the_negative_scope(tmp_path, value):
+    veto = event("claude-rco-2", "changes_requested", task="codex-lead-1/unrelated-task", payload_extra={"pr": value})
+    result = preview(tmp_path, bridge=with_events(veto))
+    assert result.check("rco_blocking_decision").status == mbm.CHECK_PASS
 
 
 def test_module_imports_only_public_route_apis():

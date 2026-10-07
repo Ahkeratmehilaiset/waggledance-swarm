@@ -191,6 +191,7 @@ def test_registry_from_trusted_commit_binds_uuid_only(trusted):
     root, commit = trusted
     registry = ad.load_trusted_registry(root, commit)
     assert dict(registry.identities) == REG
+    assert registry.blob_sha1 == _git(root, "rev-parse", f"{commit}:{ad.REGISTRY_PATH}")  # the Git object id
     assert registry.provenance == ad.PROVENANCE_LOCAL_READ
     assert not hasattr(registry, "session_id")
     with pytest.raises(TypeError):

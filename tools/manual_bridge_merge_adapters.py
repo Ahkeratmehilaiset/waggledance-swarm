@@ -404,7 +404,7 @@ def load_trusted_registry(
         {value.casefold() for value in registry.values()}
     ) != len(registry):
         raise AdapterError("registry_invalid", "case-colliding agent ids or uuids")
-    blob_sha1 = hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()  # noqa: S324 - git object id
+    blob_sha1 = hashlib.sha1(b"blob %d\x00" % len(data) + data, usedforsecurity=False).hexdigest()  # git object id
     return _issue(RegistryEvidence(commit, MappingProxyType(dict(registry)), blob_sha1, provenance))
 
 

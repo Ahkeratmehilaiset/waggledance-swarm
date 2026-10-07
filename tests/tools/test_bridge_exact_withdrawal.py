@@ -853,3 +853,200 @@ def test_idle_protocol_progress_with_case_variant_withdraws_closes_nothing(tmp_p
     )
 
     assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["proposal"]
+
+
+# --- payload container spelling (F17-1) ---------------------------------------
+#
+# Any ASCII case variant of ``payload`` holding any ASCII case variant of
+# ``withdraws`` marks a withdrawal-bearing event, as in the PowerShell selector.
+# Only ``payload.withdraws`` (or top-level ``withdraws``) spelled exactly may
+# close; any other spelling is malformed and never falls back to generic
+# closure. A container variant without a withdraws member stays legacy.
+
+
+def _container_closure(containers: dict[str, Any], *, agent: str = FABLE, **extra: Any) -> dict[str, Any]:
+    event = _withdrawal(None, agent=agent, **extra)
+    del event["payload"]
+    event.update(containers)
+    return event
+
+
+def _target(notice: dict[str, Any], notice_row: bytes, closure: dict[str, Any]) -> str | None:
+    return bridge_next_action.withdrawal_target(
+        notice,
+        closure,
+        request_digest=_digest(notice_row),
+        digest_count=1,
+        request_position=0,
+        closure_position=1,
+        registry=dict(UUIDS),
+    )
+
+
+@pytest.mark.parametrize("container", ["Payload", "PAYLOAD", "pAYLOAD"])
+@pytest.mark.parametrize("member", ["withdraws", "Withdraws"])
+@pytest.mark.parametrize("digest", ["exact", "wrong"])
+@pytest.mark.parametrize("status", ["withdrawn", "closed"])
+def test_case_variant_payload_container_is_malformed_and_never_closes(
+    tmp_path: Path, container: str, member: str, digest: str, status: str
+) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    overrides = {} if digest == "exact" else {"raw_line_sha256": WRONG_DIGEST}
+    closure = _container_closure({container: {member: _descriptor(notice, notice_row, **overrides)}}, status=status)
+    rows = [notice_row, _row(closure)]
+
+    assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
+    assert "malformed_withdrawal" in _reasons(_report(tmp_path / "r", rows))
+    assert _target(notice, notice_row, closure) == "malformed"
+
+
+def test_lowercase_payload_container_exact_withdrawal_still_closes(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    closure = _container_closure({"payload": {"withdraws": _descriptor(notice, notice_row)}})
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == []
+    assert _target(notice, notice_row, closure) == "exact"
+
+
+@pytest.mark.parametrize(
+    "containers",
+    [
+        pytest.param({"Payload": {"note": "no withdrawal here"}}, id="variant_container_without_member"),
+        pytest.param({"Payload": "not an object"}, id="variant_container_not_an_object"),
+        pytest.param({"Payload": None}, id="variant_container_null"),
+    ],
+)
+def test_container_without_a_withdraws_member_keeps_legacy_closure(
+    tmp_path: Path, containers: dict[str, Any]
+) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    closure = _container_closure(containers)
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == []
+    assert _target(notice, notice_row, closure) is None
+
+
+def test_non_ascii_container_lookalike_is_unchanged(tmp_path: Path) -> None:
+    # Unchanged behaviour: the canonical reader rejects non-ASCII property
+    # names, and a plain-mapping caller sees no withdraws member at all.
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    closure = _container_closure({"Pаyload": {"withdraws": _descriptor(notice, notice_row)}})
+
+    with pytest.raises(bridge_next_action.BridgeNextActionError, match="property names must be ASCII"):
+        _open_statuses(tmp_path, [notice_row, _row(closure)])
+    assert _target(notice, notice_row, closure) is None
+
+
+@pytest.mark.parametrize(
+    "containers",
+    [
+        pytest.param(("withdraws", "withdraws"), id="both_containers_exact_member"),
+        pytest.param((None, "withdraws"), id="empty_payload_variant_container_member"),
+        pytest.param(("withdraws", None), id="payload_member_empty_variant_container"),
+        pytest.param(("withdraws", "Withdraws"), id="payload_member_variant_container_variant_member"),
+    ],
+)
+def test_payload_plus_variant_container_is_ambiguous(containers: tuple[str | None, str | None]) -> None:
+    # Both spellings in one event: the canonical reader rejects the row as
+    # ASCII-case-colliding; a plain-mapping caller still gets a non-closing
+    # outcome whenever any withdraws member sits in a variant container.
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    exact = _descriptor(notice, notice_row)
+    lower, variant = containers
+    closure = _container_closure(
+        {
+            "payload": {lower: dict(exact)} if lower else {},
+            "Payload": {variant: dict(exact)} if variant else {},
+        }
+    )
+
+    expected = "exact" if variant is None else "malformed"
+    assert _target(notice, notice_row, closure) == expected
+
+
+def test_payload_plus_variant_container_makes_the_reader_fail_closed(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    exact = _descriptor(notice, notice_row)
+    closure = _container_closure({"payload": {"withdraws": dict(exact)}, "Payload": {"withdraws": dict(exact)}})
+
+    with pytest.raises(bridge_next_action.BridgeNextActionError, match="ASCII-case-colliding"):
+        _open_statuses(tmp_path, [notice_row, _row(closure)])
+
+
+def test_top_level_withdraws_plus_variant_container_member_is_malformed(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    exact = _descriptor(notice, notice_row)
+    closure = _container_closure({"withdraws": dict(exact), "Payload": {"withdraws": dict(exact)}})
+    rows = [notice_row, _row(closure)]
+
+    assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
+    assert "malformed_withdrawal" in _reasons(_report(tmp_path / "r", rows))
+
+
+def test_idle_protocol_with_variant_container_withdraws_closes_nothing(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "proposal", payload=dict(IDLE_REQUEST))
+    notice_row = _row(notice)
+    closure = _container_closure(
+        {"Payload": {**IDLE_RESPONSE, "withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST)}}
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["proposal"]
+
+
+def test_target_answer_with_variant_container_withdraws_does_not_generically_close(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    answer = _container_closure(
+        {"Payload": {"withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST)}},
+        agent=LEAD,
+        to=FABLE,
+        status="answered",
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(answer)]) == ["fix_pushed"]
+
+
+def test_variant_container_withdraws_never_closes_a_control_signal(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "changes_requested", type="decision")
+    notice_row = _row(notice)
+    closure = _container_closure(
+        {"Payload": {"withdraws": _descriptor(notice, notice_row)}}, type="decision", status="withdrawn"
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["changes_requested"]
+
+
+def test_variant_container_withdraws_never_closes_a_request_id_request(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "requested", payload={"request_id": "req-1"})
+    notice_row = _row(notice)
+    closure = _container_closure({"Payload": {"withdraws": _descriptor(notice, notice_row)}})
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == ["requested"]
+
+
+def test_full_bound_reply_closes_despite_variant_container_withdraws(tmp_path: Path) -> None:
+    # The bound reply contract is unchanged: a complete binding in payload
+    # answers the request; a top-level withdraws variant does not reopen it.
+    notice = _notice(V2_TS, "requested", payload={"request_id": "req-1"})
+    notice_row = _row(notice)
+    reply = _container_closure(
+        {
+            "payload": {
+                "in_reply_to_request_id": "req-1",
+                "in_reply_to_requester": {"agent": FABLE, "agent_uuid": UUIDS[FABLE]},
+            },
+            "Withdraws": _descriptor(notice, notice_row, raw_line_sha256=WRONG_DIGEST),
+        },
+        agent=LEAD,
+        to=FABLE,
+        status="answered",
+    )
+
+    assert _open_statuses(tmp_path, [notice_row, _row(reply)]) == []

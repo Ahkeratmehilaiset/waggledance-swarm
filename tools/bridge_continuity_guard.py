@@ -650,6 +650,10 @@ def _evaluate(snap: dict, now: datetime) -> tuple[list[dict], list[str]]:
     elif snap["evidence"]["scope"] == "canonical" and \
             cp["status"].startswith(WAITING_STATUS_PREFIXES):
         verdict, reasons = "unknown", ["waiting_without_structured_predicate"]
+    elif cp["next_wakeup"] is not None and cp["next_wakeup"] - now > unbounded:
+        # C-D2: a wake further ahead than the unbounded horizon would park the lane silently for
+        # as long as it declares; it needs a decision. Exactly at the horizon it stays scheduled.
+        verdict, reasons = "decide", ["checkpoint_wakeup_unbounded"]
     elif cp["next_wakeup"] is not None and now >= cp["next_wakeup"]:
         verdict, reasons = "dispatch", ["checkpoint_wakeup_due"]
     elif cp["next_wakeup"] is not None:

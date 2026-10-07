@@ -40,7 +40,7 @@ Importing this module has no side effects beyond the repository-root
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -58,6 +58,7 @@ from tools.manual_bridge_merge_receipt import (  # noqa: E402
     BASE_REF_NAME,
     BUILD_CONSENSUS_STATUS,
     DECISION_TYPE,
+    EVENT_TS_RE,
     INTEGRATION_PREREQUISITES,
     LEAD_AGENT,
     PR_PAYLOAD_KEYS,
@@ -568,6 +569,34 @@ def _retraction_target(event: Mapping[str, Any], head_sha: str) -> str | None:
     return None
 
 
+def _event_time(value: Any) -> datetime | None:
+    """A bridge ``ts_utc`` as an aware UTC datetime, or None when it is not exact."""
+    if type(value) is not str:
+        return None
+    match = EVENT_TS_RE.fullmatch(value)
+    if match is None:
+        return None
+    micros = int((match.group(7) or "").ljust(6, "0")[:6])
+    try:
+        return datetime(*(int(part) for part in match.groups()[:6]), micros, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _retraction_matches(block: Mapping[str, Any], retraction: Mapping[str, Any]) -> bool:
+    uuid = block.get("agent_uuid")
+    block_time, retraction_time = _event_time(block.get("ts_utc")), _event_time(retraction.get("ts_utc"))
+    return (
+        retraction.get("agent") == block.get("agent")
+        and type(uuid) is str
+        and bool(uuid)
+        and retraction.get("agent_uuid") == uuid
+        and block_time is not None
+        and retraction_time is not None
+        and retraction_time > block_time
+    )
+
+
 def _check_controls(
     out: _Collector,
     snapshot: BridgeSnapshot,
@@ -577,9 +606,14 @@ def _check_controls(
     head_sha: str,
     expected_controls_digest: str | None,
 ) -> str | None:
-    """Recognized-RCO blocking decisions win before and after any PASS; only an exact retraction clears."""
+    """Recognized-RCO blocking decisions win before and after any PASS; only an exact retraction clears.
+
+    Events are taken in snapshot order.  A retraction clears only a block that
+    is already open at that point, from the same agent and ``agent_uuid``, with
+    a strictly earlier parseable timestamp; a later replay of the same block
+    opens it again.  Nothing is waived when a field is missing or unparseable.
+    """
     blocking: dict[str, Mapping[str, Any]] = {}
-    retractions: list[tuple[str, str]] = []
     control_ids: list[str] = []
     for event in snapshot.events:
         agent = event.get("agent")
@@ -595,12 +629,10 @@ def _check_controls(
             continue  # a positive candidate, judged strictly by the approval check
         target = _retraction_target(event, head_sha)
         if target is not None:
-            retractions.append((agent, target))
+            if target in blocking and _retraction_matches(blocking[target], event):
+                del blocking[target]
             continue
         blocking[event_id] = event
-    for agent, target in retractions:
-        if target in blocking and blocking[target].get("agent") == agent:
-            del blocking[target]
     if blocking:
         first = next(iter(blocking.values()))
         out.refuse(

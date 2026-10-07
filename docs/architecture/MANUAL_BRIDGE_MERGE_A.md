@@ -393,8 +393,14 @@ are always `unknown` in this slice.
     status, and any event with a blocking status.
   - An exact retraction is a `decision` with status `finding_retracted`
     from the same RCO, with `payload.retracts_event_id` equal to the
-    blocking event's id and `payload.exact_head` equal to the head. It
-    clears only that event.
+    blocking event's id and `payload.exact_head` equal to the head.
+  - Events are taken in snapshot order. A retraction clears a block only if
+    the block is already open at that point and the retraction has the same
+    `agent_uuid` and a strictly later, exact `ts_utc`. A missing or
+    unparseable identity or time never clears. It clears only that event,
+    and a later replay of the same block opens it again.
+  - This retraction shape is a proposal, not a reconciled canonical DN-A
+    contract. Genuine withdrawal and its provenance stay `unknown`.
   - Prose and later passes never clear a block, and a veto outranks the
     other RCO's pass.
 - Controls changed (T08): `controls_digest` (over the scoped control

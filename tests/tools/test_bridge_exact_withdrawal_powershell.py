@@ -100,6 +100,14 @@ def case_parity_scenario(case, v2, exact):
         event = withdrawal(exact)
         event["Withdraws"] = exact
         return [v2, row(event)], [V2_TS], malformed
+    if case in ("case_long_s_lookalike_member", "case_dotless_i_lookalike_member"):
+        # Only ASCII case variants count (Lead 06:38Z, plan 97083993): a
+        # non-ASCII lookalike is an unknown member, so the event is a legacy
+        # closure without withdraws and closes as before (Python parity).
+        name = "withdrawſ" if "long_s" in case else "wıthdraws"
+        event = withdrawal()
+        event[name] = exact
+        return [v2, row(event)], [], []
     if case == "case_target_answer_variant":
         answer = {"ts_utc": W_TS, "agent": TARGET, "type": "message", "task_id": TASK, "status": "answered",
                   "to": OWNER, "message": "fixture answer", "payload": {"Withdraws": exact},
@@ -335,6 +343,8 @@ CASES = {
     "case_payload_key_variant": [],
     "case_exact_top_plus_variant_payload": [V2_TS],
     "case_exact_payload_plus_variant_top": [],
+    "case_long_s_lookalike_member": [],
+    "case_dotless_i_lookalike_member": [],
     "case_target_answer_variant": [],
     "case_bound_request_variant": [V2_TS],
     "case_control_request_variant": [V2_TS],

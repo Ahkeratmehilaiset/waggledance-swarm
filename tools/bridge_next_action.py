@@ -1153,37 +1153,39 @@ def _request_closed_by_index(
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
-def _withdraws_spellings(container: Any) -> list[str]:
-    """Keys of ``container`` equal to ``withdraws`` under ASCII case folding."""
-    if not isinstance(container, Mapping):
-        return []
-    return [
-        key for key in container
-        if isinstance(key, str) and key.translate(_ASCII_LOWER) == "withdraws"
-    ]
+def _is_ascii_case_variant(key: Any, canonical: str) -> bool:
+    return isinstance(key, str) and key.translate(_ASCII_LOWER) == canonical
 
 
 def _withdraws_member(event: Mapping[str, Any]) -> Any:
     """Return the event's withdraws value, ``_ABSENT`` or ``_CONFLICT``.
 
     Presence is by key, so an explicit ``null`` is present (and malformed).
-    Any ASCII case variant of ``withdraws`` at the top level or in payload
-    also counts as present: a variant spelling, or more than one spelling in
-    one object, is ``_CONFLICT`` (malformed), so it never falls back to
-    generic closure. Only the exact spelling can carry a descriptor.
+    Any ASCII case variant of ``withdraws`` at the top level, or inside any
+    ASCII case variant of ``payload``, also counts as present (as in the
+    PowerShell selector). A variant spelling of either name, or more than one
+    member, is ``_CONFLICT`` (malformed), so it never falls back to generic
+    closure. Only ``withdraws`` or ``payload.withdraws`` spelled exactly can
+    carry a descriptor.
     """
-    payload = event.get("payload")
-    direct_keys = _withdraws_spellings(event)
-    nested_keys = _withdraws_spellings(payload)
-    if not direct_keys and not nested_keys:
+    direct: list[tuple[bool, Any]] = []
+    nested: list[tuple[bool, Any]] = []
+    for key, value in event.items():
+        if _is_ascii_case_variant(key, "withdraws"):
+            direct.append((key == "withdraws", value))
+        elif _is_ascii_case_variant(key, "payload") and isinstance(value, Mapping):
+            nested.extend(
+                (key == "payload" and inner == "withdraws", inner_value)
+                for inner, inner_value in value.items()
+                if _is_ascii_case_variant(inner, "withdraws")
+            )
+    if not direct and not nested:
         return _ABSENT
-    if any(keys and keys != ["withdraws"] for keys in (direct_keys, nested_keys)):
+    if len(direct) > 1 or len(nested) > 1 or not all(exact for exact, _ in direct + nested):
         return _CONFLICT
-    direct = event["withdraws"] if direct_keys else _ABSENT
-    nested = payload["withdraws"] if nested_keys else _ABSENT
-    if direct is not _ABSENT and nested is not _ABSENT and direct != nested:
+    if direct and nested and direct[0][1] != nested[0][1]:
         return _CONFLICT
-    return direct if direct is not _ABSENT else nested
+    return (direct or nested)[0][1]
 
 
 def _valid_withdrawal_descriptor(descriptor: Any) -> bool:

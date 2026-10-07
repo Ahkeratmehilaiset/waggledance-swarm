@@ -45,6 +45,23 @@ level or in `payload` still marks the event as withdrawal-bearing:
   dotless `ı` or a long `ſ`, do not fold. Both PowerShell hosts (5.1 and 7)
   also leave such keys unmatched, which was measured on 2026-10-07.
 
+The same rule applies to the `payload` container (finding F17-1, disposition
+`6B7E5B6D…`). Any ASCII case variant of `payload` (`Payload`, `PAYLOAD`, ...)
+whose value is an object and holds any ASCII case variant of `withdraws`
+marks the event as withdrawal-bearing:
+
+- A withdraws member under a variant container is malformed, even when the
+  member is spelled exactly and its digest is exact. It never falls back to
+  generic closure.
+- `payload` and a variant container in one event never reach the selector:
+  the canonical reader rejects the row as ASCII-case-colliding. A caller that
+  passes such a mapping directly gets `malformed` whenever a variant container
+  holds a withdraws member.
+- A variant container without a withdraws member, or whose value is not an
+  object, adds nothing, and legacy rules apply.
+- The canonical reader rejects non-ASCII property names, so a non-ASCII
+  look-alike container never reaches the Python selector.
+
 Descriptor field names, registry owner keys and the request and closure
 fields that only the withdrawal path reads are compared ordinally, as
 written.
@@ -131,7 +148,7 @@ following hold:
 |---|---|---|
 | `exact` | closes that one version, also when the task has several versions | — |
 | `mismatch` | closes nothing | — |
-| `malformed` (bad shape, `null`, top-level/payload conflict, case-variant or ambiguous member spelling) | closes nothing | `malformed_withdrawal` |
+| `malformed` (bad shape, `null`, top-level/payload conflict, case-variant or ambiguous member or container spelling) | closes nothing | `malformed_withdrawal` |
 | `identity_unverified` | closes nothing | `withdrawal_identity_unverified` |
 | `unverifiable` (no reader side table) | closes nothing | `withdrawal_unverifiable` |
 | `non_addressable` (row still has a CR, or the historical bare-CR split row) | closes nothing | `withdrawal_non_addressable` |
@@ -173,6 +190,13 @@ never claims that a request is absent or that coverage is complete.
 - case-variant member spellings at the top level and in payload, each with an
   exact and a wrong digest, plus ambiguous spellings, exactly spelled
   positives and near-miss names that keep legacy rules;
+- case-variant `payload` containers with exact and variant members, exact and
+  wrong digests and `withdrawn`/`closed` closures; a lowercase exact
+  positive; variant containers without a member, not an object or `null`;
+  `payload` plus a variant container; a top-level member plus a variant
+  container; a non-ASCII look-alike container;
+- variant-container members on idle-protocol progress, target answers,
+  control signals, `request_id` requests and full bound replies;
 - case-variant members on target answers, control signals, `request_id`
   requests, full bound replies, direct RCO pass requests and idle-protocol
   progress;

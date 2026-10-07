@@ -331,11 +331,15 @@ function Test-BridgeRequestStillOpen {
                 continue
             }
         }
+        $carriesWithdraws = $null -ne (Get-BridgeWithdrawalTarget -Request $Request -Closure $answer)
+        # Any other withdraws-bearing event (an answer by the target, or a
+        # non-closure by the owner) never closes an unbound request.
+        if ($carriesWithdraws -and $unbound) { continue }
         # On a bound request a withdraws-bearing closure closes only through an
         # explicitly correlated reply (request_id contract, nonce/token/
         # revision or request_ts_utc), never by the bare requester closure.
-        $requireCorrelation = $closure -and -not $unbound -and
-            $null -ne (Get-BridgeWithdrawalTarget -Request $Request -Closure $answer)
+        # A fully bound answer by the target keeps the full reply contract.
+        $requireCorrelation = $closure -and -not $unbound -and $carriesWithdraws
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
             (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequireExplicitCorrelation $requireCorrelation -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
             return $false

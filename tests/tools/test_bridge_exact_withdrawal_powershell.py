@@ -178,6 +178,24 @@ def scenario(case):
         bound = request(V2_TS, "review_requested", expected_responders={TARGET: {"agent_uuid": REGISTRY[TARGET]}})
         raw = row(bound)
         return [raw, row(withdrawal(descriptor(bound, raw), request_ts_utc=V2_TS))], [], []
+    if case in {"target_answer_with_withdraws", "target_answer_without_withdraws"}:
+        # RCO1 S2D-F1 (Python test :317 analogue): an answer by the selector
+        # target that carries withdraws must not close an unbound request.
+        answer = {"ts_utc": W_TS, "agent": TARGET, "type": "message", "task_id": TASK, "status": "answered",
+                  "to": OWNER, "message": "fixture answer", "payload": {}, "agent_uuid": REGISTRY[TARGET]}
+        if case == "target_answer_with_withdraws":
+            answer["payload"] = {"withdraws": exact}
+            return [v2, row(answer)], [V2_TS], []
+        return [v2, row(answer)], [], []
+    if case == "bound_full_answer_with_withdraws":
+        bound = request(V2_TS, "review_requested", request_id="fixture-r2")
+        raw = row(bound)
+        answer = {"ts_utc": W_TS, "agent": TARGET, "type": "message", "task_id": TASK, "status": "answered",
+                  "to": OWNER, "message": "fixture bound answer", "agent_uuid": REGISTRY[TARGET],
+                  "in_reply_to_request_id": "fixture-r2",
+                  "in_reply_to_requester": {"agent": OWNER, "agent_uuid": REGISTRY[OWNER]},
+                  "payload": {"withdraws": descriptor(bound, raw)}}
+        return [raw, row(answer)], [], []
     if case == "legacy_closure_without_withdraws":
         return [v2, row(withdrawal())], [], []
     if case == "legacy_ambiguous_without_withdraws":
@@ -235,6 +253,9 @@ CASES = {
     "partially_bound_expected_responders": [],
     "partially_bound_payload_nonce": [V2_TS],
     "correlated_expected_responders_withdrawal": [],
+    "target_answer_with_withdraws": [],
+    "target_answer_without_withdraws": [],
+    "bound_full_answer_with_withdraws": [],
     "idle_progress_wrong_withdraws": [],
     "idle_progress_without_withdraws": [],
     "legacy_closure_without_withdraws": [],
@@ -295,7 +316,7 @@ def test_base_expectations_differ_only_where_the_fix_applies():
         "identity_request_foreign_uuid", "crlf_request_row_digest_with_cr", "double_cr_request_row",
         "bare_cr_inside_request_row", "bom_request_row", "duplicate_identical_rows",
         "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws", "ts_equal_instant_other_spelling",
-        "ts_extra_fraction_digit", "partially_bound_expected_responders",
+        "ts_extra_fraction_digit", "partially_bound_expected_responders", "target_answer_with_withdraws",
     ])
 
 

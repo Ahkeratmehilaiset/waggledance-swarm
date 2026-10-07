@@ -237,8 +237,9 @@ function Get-BridgeWithdrawalTarget {
     if ($RegisteredAgentUuid -cnotmatch $uuidPattern) { return 'identity_unverified' }
     foreach ($event in @($Request, $Closure)) {
         $uuid = $event.PSObject.Properties['agent_uuid']
-        if ($null -eq $uuid -or $uuid.Value -isnot [string] -or
-            $uuid.Value.ToLowerInvariant() -cne $RegisteredAgentUuid.ToLowerInvariant()) { return 'identity_unverified' }
+        # Ordinal, like the writer's registry check and the requester-closure
+        # identity binding: no case folding.
+        if ($null -eq $uuid -or $uuid.Value -isnot [string] -or $uuid.Value -cne $RegisteredAgentUuid) { return 'identity_unverified' }
     }
     if ($RequestRawSha256 -cnotmatch '\A[0-9a-f]{64}\z') { return 'unverifiable' }
     if ($descriptor.raw_line_sha256 -cne $RequestRawSha256) { return 'mismatch' }

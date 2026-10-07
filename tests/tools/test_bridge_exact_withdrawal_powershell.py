@@ -113,7 +113,7 @@ def scenario(case):
     if case == "identity_foreign_uuid":
         return [v2, row(withdrawal(exact, agent_uuid=REGISTRY["codex-lead-1"]))], [V2_TS], ["withdrawal_identity_unverified"]
     if case == "identity_uppercase_uuid":
-        return [v2, row(withdrawal(exact, agent_uuid=REGISTRY[OWNER].upper()))], [], []
+        return [v2, row(withdrawal(exact, agent_uuid=REGISTRY[OWNER].upper()))], [V2_TS], ["withdrawal_identity_unverified"]
     if case == "identity_request_missing_uuid":
         bare = dict(V2)
         del bare["agent_uuid"]
@@ -176,7 +176,7 @@ CASES = {
     "top_level_only": [],
     "identity_missing_uuid": [],
     "identity_foreign_uuid": [],
-    "identity_uppercase_uuid": [],
+    "identity_uppercase_uuid": [V2_TS],
     "identity_request_missing_uuid": [],
     "identity_request_foreign_uuid": [],
     "crlf_request_row_digest_without_cr": [],

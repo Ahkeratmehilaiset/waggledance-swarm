@@ -206,8 +206,10 @@ def dispatch_key(task_id: str, revision: str, input_digest: str, scope: list[str
 
 def _task(task: Any, now: datetime) -> dict:
     _require(_closed(task, TASK_REQUIRED, TASK_OPTIONAL) and task["schema"] == TASK_SCHEMA, HOLD, "task_malformed")
+    # T-D1 (RCO2 8DF45964): the author is compared to worker names exactly below, so it must BE an exact
+    # member or grok; a case/padding variant or an unknown name would otherwise review its own work.
     _require(_text(task["task_id"]) and _text(task["revision"]) and _hex(task["input_digest"], 64)
-             and _text(task["author"]), HOLD, "task_malformed")
+             and (task["author"] in MEMBERS or task["author"] == GROK), HOLD, "task_malformed")
     created = _utc(task["created_utc"])
     _require(created is not None and created <= now, HOLD, "task_malformed", "created_utc")
     claims = task.get("class_claims", [])

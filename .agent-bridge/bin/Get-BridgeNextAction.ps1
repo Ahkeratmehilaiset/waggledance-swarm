@@ -92,20 +92,112 @@ function Test-BridgeFollowNudgeRequest {
         )
 }
 
-function Read-BridgeEventObjects {
+function Read-BridgeTailBytes {
+    # The bytes of the last $MaxLines LF rows (the whole file when $MaxLines
+    # is not positive) and the file offset they start at.
     param([string] $Path, [int] $MaxLines)
+    $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    try {
+        $length = $stream.Length
+        $start = [long]0
+        if ($MaxLines -gt 0 -and $length -gt 0) {
+            $buffer = New-Object byte[] 1048576
+            $stream.Position = $length - 1
+            # A final LF terminates the last row; it does not start another.
+            $cursor = if ($stream.ReadByte() -eq 10) { $length - 1 } else { $length }
+            $found = 0
+            while ($cursor -gt 0 -and $start -eq 0) {
+                $size = [int][math]::Min([long]$buffer.Length, $cursor)
+                $cursor -= $size
+                $stream.Position = $cursor
+                $read = 0
+                while ($read -lt $size) {
+                    $count = $stream.Read($buffer, $read, $size - $read)
+                    if ($count -le 0) { throw 'bridge event log shrank while reading' }
+                    $read += $count
+                }
+                $index = $size - 1
+                while ($index -ge 0) {
+                    $index = [Array]::LastIndexOf($buffer, [byte]10, $index)
+                    if ($index -lt 0) { break }
+                    $found++
+                    if ($found -ge $MaxLines) { $start = $cursor + $index + 1; break }
+                    $index--
+                }
+            }
+        }
+        $bytes = New-Object byte[] ([int]($length - $start))
+        $stream.Position = $start
+        $read = 0
+        while ($read -lt $bytes.Length) {
+            $count = $stream.Read($bytes, $read, $bytes.Length - $read)
+            if ($count -le 0) { throw 'bridge event log shrank while reading' }
+            $read += $count
+        }
+        return [pscustomobject]@{ bytes = $bytes; start = $start }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Read-BridgeEventObjects {
+    # Lines are cut as Get-Content cuts them (LF, CRLF and bare CR end a line;
+    # -Tail counts those lines), so the window and parsed events are as
+    # before. $RowSha256 receives, per returned event, its reader-row digest:
+    # the lowercase SHA-256 of the row split on LF with at most one trailing
+    # CR removed, which must decode as strict UTF-8. It is $null when the row
+    # is not addressable: another CR remains, it starts with a BOM, or it is
+    # not strict UTF-8.
+    param([string] $Path, [int] $MaxLines, [System.Collections.Generic.List[string]] $RowSha256 = $null)
     $items = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $items }
-    $lines = if ($MaxLines -le 0) {
-        @(Get-Content -Path $Path -Encoding UTF8)
-    } else {
-        @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
+    $tail = Read-BridgeTailBytes -Path $Path -MaxLines $MaxLines
+    $bytes = $tail.bytes
+    $lenient = New-Object System.Text.UTF8Encoding($false, $false)
+    $strict = New-Object System.Text.UTF8Encoding($false, $true)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $lines = New-Object System.Collections.Generic.List[object]
+    try {
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $end = [Array]::IndexOf($bytes, [byte]10, $offset)
+            if ($end -lt 0) { $end = $bytes.Length }
+            $size = $end - $offset
+            $text = $lenient.GetString($bytes, $offset, $size)
+            $hash = $null
+            $rowSize = if ($size -gt 0 -and $bytes[$end - 1] -eq 13) { $size - 1 } else { $size }
+            if ([Array]::IndexOf($bytes, [byte]13, $offset, $rowSize) -lt 0 -and
+                -not ($rowSize -ge 3 -and $bytes[$offset] -eq 0xEF -and $bytes[$offset + 1] -eq 0xBB -and $bytes[$offset + 2] -eq 0xBF)) {
+                try {
+                    [void]$strict.GetString($bytes, $offset, $rowSize)
+                    $hash = [BitConverter]::ToString($sha256.ComputeHash($bytes, $offset, $rowSize)).Replace('-', '').ToLowerInvariant()
+                } catch {
+                    $hash = $null
+                }
+            }
+            if ($tail.start -eq 0 -and $offset -eq 0 -and $text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+                $text = $text.Substring(1)
+            }
+            if ($text.EndsWith("`r")) { $text = $text.Substring(0, $text.Length - 1) }
+            $fragments = $text.Split([char]13)
+            foreach ($fragment in $fragments) {
+                [void]$lines.Add([pscustomobject]@{ text = $fragment; sha256 = $(if ($fragments.Count -eq 1) { $hash } else { $null }) })
+            }
+            $offset = $end + 1
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($MaxLines -gt 0 -and $lines.Count -gt $MaxLines) {
+        $lines.RemoveRange(0, $lines.Count - $MaxLines)
     }
     $jsonArguments = @{ ErrorAction = 'Stop' }
     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
         $jsonArguments.DateKind = 'String'
     }
-    foreach ($line in $lines) {
+    foreach ($row in $lines) {
+        $line = $row.text
         if (-not $line) { continue }
         try {
             $obj = $line | ConvertFrom-Json @jsonArguments
@@ -123,6 +215,7 @@ function Read-BridgeEventObjects {
                 $null -ne $obj.PSObject.Properties['agent']
             ) {
                 [void]$items.Add($obj)
+                if ($null -ne $RowSha256) { [void]$RowSha256.Add($row.sha256) }
             }
         } catch {}
     }
@@ -158,8 +251,26 @@ function Get-BridgeSuppressedAgentReason {
     return [string]$value
 }
 
-$events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
+$eventRowSha256 = New-Object System.Collections.Generic.List[string]
+$events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail -RowSha256 $eventRowSha256)
 $requestIndex = New-BridgeRequestIndex $events
+$rowSha256Count = [System.Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+foreach ($digest in $eventRowSha256) {
+    if ($null -eq $digest) { continue }
+    $rowSha256Count[$digest] = 1 + $(if ($rowSha256Count.ContainsKey($digest)) { $rowSha256Count[$digest] } else { 0 })
+}
+$withdrawalDiagnostics = New-Object System.Collections.Generic.List[object]
+
+function Get-BridgeRegisteredAgentUuid {
+    param([string] $AgentName)
+    $path = Join-Path (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'configs') 'bridge_identity_registry.json'
+    try {
+        $registry = Get-Content -Raw -LiteralPath $path -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $value = $registry.identities.PSObject.Properties[$AgentName]
+        if ($null -ne $value -and $value.Value -is [string]) { return $value.Value }
+    } catch {}
+    return ''
+}
 $claims = @(Read-ClaimObjects)
 $suppressionReason = Get-BridgeSuppressedAgentReason -AgentName $Agent
 $ownClaims = @($claims | Where-Object { [string]$_.agent -eq $Agent })
@@ -188,8 +299,38 @@ foreach ($req in $requestsForAgent) {
 function Test-BridgeRequestStillOpen {
     param([Parameter(Mandatory)] [object] $Request)
     $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $Request
+    $requestPosition = $requestIndex.positions[$Request]
+    $unbound = $null -eq (Get-BridgeContractField $Request 'request_id')
     foreach ($answer in $requestIndex.by_task[[string]$Request.task_id]) {
         $closure = $answer.agent -ceq $Request.agent -and (Test-BridgeRequesterClosureEvent $answer)
+        if ($closure -and $unbound) {
+            $answerPosition = $requestIndex.positions[$answer]
+            $digest = $eventRowSha256[$requestPosition]
+            # A digest shared by several rows in the window (identical rows, or
+            # LF and CRLF twins) no longer names one row: non-closing.
+            if ($null -ne $digest -and $rowSha256Count[$digest] -ne 1) { $digest = $null }
+            $withdrawal = Get-BridgeWithdrawalTarget -Request $Request -Closure $answer -RequestRawSha256 $digest `
+                -RequestPosition $requestPosition -ClosurePosition $answerPosition `
+                -RegisteredAgentUuid (Get-BridgeRegisteredAgentUuid -AgentName ([string]$answer.agent))
+            if ($null -ne $withdrawal) {
+                if ($withdrawal -ceq 'exact') { return $false }
+                if ($withdrawal -cne 'mismatch' -and $answerPosition -gt $requestPosition) {
+                    [void]$withdrawalDiagnostics.Add([pscustomobject][ordered]@{
+                        kind = $(switch ($withdrawal) {
+                            'malformed' { 'malformed_withdrawal' }
+                            'identity_unverified' { 'withdrawal_identity_unverified' }
+                            default { 'withdrawal_unverifiable' }
+                        })
+                        task_id = [string]$Request.task_id
+                        request_ts_utc = [string]$Request.ts_utc
+                        withdrawal_agent = [string]$answer.agent
+                        withdrawal_ts_utc = [string]$answer.ts_utc
+                    })
+                }
+                # A present withdraws member never falls back to generic closure.
+                continue
+            }
+        }
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
             (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
             return $false
@@ -307,6 +448,9 @@ if ($kind -eq 'answer_incoming') {
 }
 if ($suppressionReason) {
     $result | Add-Member -NotePropertyName suppression_reason -NotePropertyValue $suppressionReason
+}
+if ($withdrawalDiagnostics.Count -gt 0) {
+    $result | Add-Member -NotePropertyName withdrawal_diagnostics -NotePropertyValue ($withdrawalDiagnostics.ToArray())
 }
 
 if ($Json) {

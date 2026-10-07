@@ -266,7 +266,8 @@ function Get-BridgeRegisteredAgentUuid {
     $path = Join-Path (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'configs') 'bridge_identity_registry.json'
     try {
         $registry = Get-Content -Raw -LiteralPath $path -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        $value = $registry.identities.PSObject.Properties[$AgentName]
+        # Ordinal owner key and identities member (C69-L1a): no case folding.
+        $value = Get-BridgeOrdinalMember (Get-BridgeOrdinalMember $registry 'identities').Value $AgentName
         if ($null -ne $value -and $value.Value -is [string]) { return $value.Value }
     } catch {}
     return ''

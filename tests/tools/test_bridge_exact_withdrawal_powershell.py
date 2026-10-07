@@ -59,6 +59,76 @@ V1 = request(V1_TS, "request")
 V2 = request(V2_TS, "review_requested")
 
 
+def case_parity_scenario(case, v2, exact):
+    malformed = ["malformed_withdrawal"]
+    wrong = dict(exact, raw_line_sha256="0" * 64)
+    if case == "case_owner_name":
+        owner = dict(V2, agent="Fable-5")
+        raw = row(owner)
+        return [raw, row(withdrawal(descriptor(owner, raw), agent="Fable-5"))], [V2_TS], ["withdrawal_identity_unverified"]
+    if case in ("case_descriptor_agent_key", "case_descriptor_digest_key"):
+        key = "agent" if case.endswith("agent_key") else "raw_line_sha256"
+        bad = dict(exact)
+        bad[key.upper()] = bad.pop(key)
+        return [v2, row(withdrawal(bad))], [V2_TS], malformed
+    if case == "case_closure_uuid_key":
+        event = withdrawal(exact)
+        event["Agent_Uuid"] = event.pop("agent_uuid")
+        return [v2, row(event)], [V2_TS], ["withdrawal_identity_unverified"]
+    if case in ("case_top_member_exact", "case_top_member_wrong_digest"):
+        event = withdrawal()
+        event["Withdraws"] = exact if case.endswith("exact") else wrong
+        return [v2, row(event)], [V2_TS], malformed
+    if case in ("case_payload_member_exact", "case_payload_member_wrong_digest"):
+        event = withdrawal()
+        event["payload"] = {"WITHDRAWS": exact if case.endswith("exact") else wrong}
+        return [v2, row(event)], [V2_TS], malformed
+    if case == "case_payload_key_variant":
+        event = withdrawal()
+        event.pop("payload")
+        event["Payload"] = {"withdraws": exact}
+        return [v2, row(event)], [V2_TS], malformed
+    if case == "case_exact_top_plus_variant_payload":
+        # Same object holding withdraws and Withdraws: PS 5.1 and 7
+        # ConvertFrom-Json both reject keys that differ only in case, so the
+        # row is no event at all (non-closing, nothing to diagnose).
+        event = withdrawal(exact)
+        event["withdraws"] = exact
+        event["payload"] = {"withdraws": exact, "Withdraws": exact}
+        return [v2, row(event)], [V2_TS], []
+    if case == "case_exact_payload_plus_variant_top":
+        event = withdrawal(exact)
+        event["Withdraws"] = exact
+        return [v2, row(event)], [V2_TS], malformed
+    if case in ("case_long_s_lookalike_member", "case_dotless_i_lookalike_member"):
+        # Only ASCII case variants count (Lead 06:38Z, plan 97083993): a
+        # non-ASCII lookalike is an unknown member, so the event is a legacy
+        # closure without withdraws and closes as before (Python parity).
+        name = "withdrawſ" if "long_s" in case else "wıthdraws"
+        event = withdrawal()
+        event[name] = exact
+        return [v2, row(event)], [], []
+    if case == "case_target_answer_variant":
+        answer = {"ts_utc": W_TS, "agent": TARGET, "type": "message", "task_id": TASK, "status": "answered",
+                  "to": OWNER, "message": "fixture answer", "payload": {"Withdraws": exact},
+                  "agent_uuid": REGISTRY[TARGET]}
+        return [v2, row(answer)], [V2_TS], []
+    if case == "case_bound_request_variant":
+        bound = request(V2_TS, "review_requested", nonce="n-1")
+        raw = row(bound)
+        event = withdrawal()
+        event["payload"] = {"Withdraws": descriptor(bound, raw)}
+        return [raw, row(event)], [V2_TS], []
+    if case == "case_control_request_variant":
+        control = request(V2_TS, "changes_requested", type="finding")
+        raw = row(control)
+        event = withdrawal()
+        event["payload"] = {"Withdraws": descriptor(control, raw)}
+        # Still open; the variant member is reported as malformed.
+        return [raw, row(event)], [V2_TS], malformed
+    raise AssertionError(case)
+
+
 def scenario(case):
     """Return (rows as bytes, expected open request timestamps, expected diagnostic kinds)."""
     v1, v2 = row(V1), row(V2)
@@ -196,6 +266,10 @@ def scenario(case):
                   "in_reply_to_requester": {"agent": OWNER, "agent_uuid": REGISTRY[OWNER]},
                   "payload": {"withdraws": descriptor(bound, raw)}}
         return [raw, row(answer)], [], []
+    if case.startswith("case_"):
+        # C69-L1 (plan 97083993): withdrawal-path names are ordinal; any ASCII
+        # case variant of withdraws is a present, malformed member.
+        return case_parity_scenario(case, v2, exact)
     if case == "legacy_closure_without_withdraws":
         return [v2, row(withdrawal())], [], []
     if case == "legacy_ambiguous_without_withdraws":
@@ -258,6 +332,22 @@ CASES = {
     "bound_full_answer_with_withdraws": [],
     "idle_progress_wrong_withdraws": [],
     "idle_progress_without_withdraws": [],
+    "case_owner_name": [],
+    "case_descriptor_agent_key": [],
+    "case_descriptor_digest_key": [],
+    "case_closure_uuid_key": [],
+    "case_top_member_exact": [],
+    "case_top_member_wrong_digest": [],
+    "case_payload_member_exact": [],
+    "case_payload_member_wrong_digest": [],
+    "case_payload_key_variant": [],
+    "case_exact_top_plus_variant_payload": [V2_TS],
+    "case_exact_payload_plus_variant_top": [],
+    "case_long_s_lookalike_member": [],
+    "case_dotless_i_lookalike_member": [],
+    "case_target_answer_variant": [],
+    "case_bound_request_variant": [V2_TS],
+    "case_control_request_variant": [V2_TS],
     "legacy_closure_without_withdraws": [],
     "legacy_ambiguous_without_withdraws": [V1_TS, V2_TS],
     "legacy_ambiguous_request_ts_utc": [V1_TS],
@@ -317,6 +407,10 @@ def test_base_expectations_differ_only_where_the_fix_applies():
         "bare_cr_inside_request_row", "bom_request_row", "duplicate_identical_rows",
         "duplicate_lf_and_crlf_rows", "idle_progress_wrong_withdraws", "ts_equal_instant_other_spelling",
         "ts_extra_fraction_digit", "partially_bound_expected_responders", "target_answer_with_withdraws",
+        "case_owner_name", "case_descriptor_agent_key", "case_descriptor_digest_key", "case_closure_uuid_key",
+        "case_top_member_exact", "case_top_member_wrong_digest", "case_payload_member_exact",
+        "case_payload_member_wrong_digest", "case_payload_key_variant", "case_exact_payload_plus_variant_top",
+        "case_target_answer_variant",
     ])
 
 

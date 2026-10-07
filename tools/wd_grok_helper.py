@@ -912,7 +912,24 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         # No retry path and no alternate state path in the CLI.
         write_state(root, state)
         record_lifecycle(emitter, 'started', state)
-        write_state(root, state)
+        try:
+            write_state(root, state)
+        except OSError as unpersisted:
+            # GH-F1 (RCO2 2984861A): the reservation is durable but could not be persisted again. Nothing has
+            # launched and nothing will: finalize the attempt as failed with a known no-launch, and only if that
+            # finalizing write itself persists. Otherwise the reservation stays unresolved (no retry, no
+            # clearing). The original error is always the one raised.
+            state.update(status="failed", error_type=type(unpersisted).__name__,
+                         error_class=_classify(unpersisted, "reserve"), grok_launched=False,
+                         finished_at_utc=datetime.now(timezone.utc).isoformat(),
+                         timing_scope="consultation_after_budget_reservation")
+            try:
+                write_state(root, state)
+            except OSError as unfinalized:
+                unpersisted.add_note("reservation not finalized, left unresolved: " + type(unfinalized).__name__)
+            else:
+                record_lifecycle(emitter, state["status"], state)
+            raise
         started = monotonic()
         prompt_path = root / (request_id + "-request.md")
         report_path = root / (request_id + "-response.md")

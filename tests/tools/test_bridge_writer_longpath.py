@@ -98,7 +98,8 @@ def test_writer_appends_canonically_under_a_deep_runtime_root(tmp_path: Path, sh
     events = runtime_root / "shared" / "events.jsonl"
     rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert [row["task_id"] for row in rows] == ["longpath-smoke"]
-    assert len(str(events) + ".append-v1-validation.json.tmp.") > 260
+    # The writer's temporary names are "<path>.tmp.<pid>.<32 hex guid>", so this root really crosses MAX_PATH.
+    assert len(str(events) + ".append-v1-validation.json") + len(".tmp.1.") + 32 > 260
 
 
 def _convert(executable: str, path: str) -> str:

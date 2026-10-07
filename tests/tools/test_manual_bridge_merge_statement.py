@@ -1913,3 +1913,62 @@ def test_g1_real_git_refuses_unknown_and_non_commit_ids(real_repo):
         with pytest.raises(StatementError) as err:
             mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=bad)
         assert err.value.reason == "live_commit_unknown"
+
+
+# G1-F1: a gitlink (mode 160000) change is never hidden by submodule ignore settings.
+
+GITLINK_OLD = "1" * 40
+GITLINK_NEW = "2" * 40
+GITMODULES_IGNORE_ALL = b'[submodule "sub"]
+	path = sub
+	url = ./sub-remote
+	ignore = all
+'
+GITMODULES_PLAIN = b'[submodule "sub"]
+	path = sub
+	url = ./sub-remote
+'
+GITLINK_SOURCES = ("none", "diff_ignore_submodules_all", "submodule_name_ignore_all",
+                   "gitmodules_worktree", "gitmodules_index_head")
+
+
+def _gitlink_repo(tmp_path: Path, kind: str, source: str) -> tuple[Path, str, str]:
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    repo = tmp_path / "g1f1-repo"
+    repo.mkdir()
+    _real_git(repo, "init", "-q")
+    (repo / "keep.txt").write_bytes(b"keep
+")
+    hiding_file = source in ("gitmodules_worktree", "gitmodules_index_head")
+    (repo / ".gitmodules").write_bytes(GITMODULES_IGNORE_ALL if hiding_file else GITMODULES_PLAIN)
+    _real_git(repo, "add", "-A")
+    if kind == "changed":
+        _real_git(repo, "update-index", "--add", "--cacheinfo", f"160000,{GITLINK_OLD},sub")
+    base = _commit(repo, "base", stage=False)
+    _real_git(repo, "update-index", "--add", "--cacheinfo", f"160000,{GITLINK_NEW},sub")
+    head = _commit(repo, "head", stage=False)
+    if source == "diff_ignore_submodules_all":
+        _real_git(repo, "config", "diff.ignoreSubmodules", "all")
+    elif source == "submodule_name_ignore_all":
+        _real_git(repo, "config", "submodule.sub.ignore", "all")
+    elif source == "gitmodules_index_head":
+        (repo / ".gitmodules").unlink()  # only the index and HEAD copies remain
+    return repo, base, head
+
+
+@pytest.mark.parametrize("source", GITLINK_SOURCES)
+@pytest.mark.parametrize("kind", ["added", "changed"])
+def test_g1_f1_real_git_gitlink_change_is_never_hidden(tmp_path, kind, source):
+    repo, base, head = _gitlink_repo(tmp_path, kind, source)
+    facts = mms.read_git_diff_facts(repo_root=repo, base_sha=base, head_sha=head)
+    old_mode, old_id, status = ("000000", "0" * 40, "A") if kind == "added" else ("160000", GITLINK_OLD, "M")
+    expected = f":{old_mode} 160000 {old_id} {GITLINK_NEW} {status} sub ".encode("ascii")
+    assert facts.paths == ("sub",)
+    assert facts.diff_digest_sha256 == hashlib.sha256(expected).hexdigest()
+    assert _real_git(repo, "--no-replace-objects", "diff-tree", *mms.GIT_DIFF_ARGS, base, head) == expected
+
+
+def test_g1_f1_diff_argv_overrides_every_submodule_ignore_source():
+    assert mms.GIT_DIFF_ARGS[-1] == "--ignore-submodules=none"
+    assert sum(arg.startswith("--ignore-submodules") for arg in mms.GIT_DIFF_ARGS) == 1

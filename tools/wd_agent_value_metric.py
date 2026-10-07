@@ -49,16 +49,30 @@ def verified_writer(bundle, manifest_sha256, name='Write-AgentEvent.ps1'):
     return root / relative
 
 
+# Windows PowerShell 5.1 by absolute path, as WD-Supervisor runs. A bare 'pwsh' resolves
+# through PATH (here a per-user WindowsApps alias), so an earlier PATH entry could stand
+# in for the pinned reader or writer.
+POWERSHELL = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+
+def trusted_powershell():
+    if not os.path.isfile(POWERSHELL):
+        raise FileNotFoundError('trusted Windows PowerShell is missing: ' + POWERSHELL)
+    return [POWERSHELL, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']
+
+
 def reporting_env(bridge_root):
-    # Never inherit the calling Lead/RCO's UUID, session or capabilities.
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('AGENT_BRIDGE_')}
+    # Never inherit the calling Lead/RCO's UUID, session or capabilities, nor a
+    # PowerShell 7 module path, which Windows PowerShell cannot load from.
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith('AGENT_BRIDGE_') and key.upper() != 'PSMODULEPATH'}
     env['AGENT_BRIDGE_RUNTIME_ROOT'] = bridge_root
     return env
 
 
 def post_summary(summary, day, bridge_root, bundle, manifest_sha256):
     writer = verified_writer(bundle, manifest_sha256)
-    subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(writer),
+    subprocess.run([*trusted_powershell(), '-File', str(writer),
                     '-Agent', 'wd-agent-value', '-Role', 'monitor', '-Type', 'message',
                     '-TaskId', 'agent-value-metric-' + day, '-Status', 'metric_report',
                     '-To', 'operator,codex-lead-1,codex-tools-1', '-Severity', 'info',
@@ -152,8 +166,11 @@ def classify_pr(files: list[str]) -> tuple[str, dict]:
 
 def load_events(bridge_root, bundle, manifest_sha256):
     reader = verified_writer(bundle, manifest_sha256, 'Read-AgentBridge.ps1')
-    command = "& '" + str(reader).replace("'", "''") + "' -Raw -NoAckReceived -NoContinuity -Tail 0 6>$null"
-    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-Command', command],
+    # Redirected PowerShell stdout uses the OEM code page (0x84 for a Finnish 'ä'), which a
+    # UTF-8 decode rejects; the run then fails before reporting.
+    command = ("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & '"
+               + str(reader).replace("'", "''") + "' -Raw -NoAckReceived -NoContinuity -Tail 0 6>$null")
+    result = subprocess.run([*trusted_powershell(), '-Command', command],
                             check=True, timeout=120, capture_output=True, text=True,
                             encoding='utf-8', env=reporting_env(bridge_root))
     # PowerShell's pipeline JSON unwraps one item; zero items produce no stdout.

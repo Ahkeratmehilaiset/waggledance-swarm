@@ -16,8 +16,17 @@ def load_metric():
     return module
 
 
+def trust_windows_powershell(module, monkeypatch):
+    # The command is recorded, never run, so the host need not have Windows PowerShell at its
+    # absolute path (Linux CI has none): only that constant path stands in as a file, so a test
+    # that points module.POWERSHELL elsewhere still meets the real check (RCO2 T1).
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
+
+
 def invoke_post(module, monkeypatch, fail=False):
     calls = []
+    trust_windows_powershell(module, monkeypatch)
     def run(command, **kwargs):
         calls.append((command, kwargs))
         if fail and kwargs.get('check'):
@@ -78,6 +87,7 @@ def test_pinned_bundle_and_tampering(tmp_path):
 
 def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *args: Path('pinned/Read-AgentBridge.ps1'))
     def run(command, **kwargs):
         assert '-NoAckReceived' in command[-1]
@@ -95,6 +105,7 @@ def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
      '{"agent":"b","type":"message","ts_utc":"2026-09-24T00:00:01Z"}]', 2)])
 def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, count):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
     monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
     assert len(module.load_events('runtime', 'bundle', 'a'*64)) == count
@@ -105,7 +116,80 @@ def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, cou
     '[{"agent":"a","type":"message","ts_utc":"2026-09-24T00:00:00Z"},{}]'])
 def test_reader_rejects_non_event_payload(monkeypatch, output):
     module = load_metric()
+    trust_windows_powershell(module, monkeypatch)
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
     monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
     with pytest.raises(ValueError):
         module.load_events('runtime', 'bundle', 'a'*64)
+
+
+WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+
+
+@pytest.mark.skipif(not Path(WINDOWS_POWERSHELL).is_file(), reason='the reader runs under Windows PowerShell')
+def test_reader_decodes_non_ascii_event_text_from_powershell(monkeypatch, tmp_path):
+    # 2026-09-29: redirected PowerShell stdout used the OEM code page, and a Finnish 'ä'
+    # in the window's events (byte 0x84) broke the UTF-8 decode before any report.
+    module = load_metric()
+    reader = tmp_path / 'Read-AgentBridge.ps1'
+    reader.write_text("param([switch]$Raw,[switch]$NoAckReceived,[switch]$NoContinuity,[int]$Tail)\n"
+                      "@(@{agent='operator';type='message';ts_utc='2026-09-29T18:00:00Z';"
+                      "message=('k' + [char]0x00E4 + 'ytt' + [char]0x00F6)}) | ConvertTo-Json -Compress\n",
+                      encoding='ascii')
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: reader)
+    # Like the hidden scheduled task, the reader gets its own console with the default
+    # code page. A shared test console keeps whatever code page an earlier child set.
+    real_run = module.subprocess.run
+    flags = getattr(module.subprocess, 'CREATE_NO_WINDOW', 0)
+    monkeypatch.setattr(module.subprocess, 'run',
+                        lambda *args, **kwargs: real_run(*args, creationflags=flags, **kwargs))
+    rows = module.load_events(str(tmp_path), 'bundle', 'a' * 64)
+    assert [row['message'] for row in rows] == ['käyttö']
+
+
+def test_reader_command_forces_utf8_output_before_the_pinned_reader():
+    module = load_metric()
+    source = SOURCE.read_text(encoding='utf-8')
+    assert "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); & '" in source
+
+
+def recorded_commands(module, monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/helper.ps1'))
+    return calls
+
+
+def test_reader_and_writer_run_windows_powershell_by_absolute_path(monkeypatch):
+    # 2026-09-29 (Grok d534c2b3): a bare 'pwsh' resolves through PATH, so an earlier
+    # PATH entry could stand in for the pinned reader or writer.
+    module = load_metric()
+    assert module.POWERSHELL == WINDOWS_POWERSHELL
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
+    monkeypatch.setenv('PSModulePath', 'C:\\pwsh7\\Modules')
+    calls = recorded_commands(module, monkeypatch)
+    module.load_events('runtime', 'bundle', 'a' * 64)
+    module.post_summary('summary', '20260929', 'runtime', 'bundle', 'a' * 64)
+    assert [command[:6] for command, _ in calls] == [
+        [WINDOWS_POWERSHELL, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']] * 2
+    assert [command[6] for command, _ in calls] == ['-Command', '-File']
+    for _, kwargs in calls:
+        assert not any(key.upper() == 'PSMODULEPATH' for key in kwargs['env'])
+    assert 'pwsh' not in SOURCE.read_text(encoding='utf-8').replace("bare 'pwsh'", '')
+
+
+def test_a_missing_windows_powershell_fails_closed_before_running_anything(monkeypatch, tmp_path):
+    module = load_metric()
+    monkeypatch.setattr(module, 'POWERSHELL', str(tmp_path / 'missing' / 'powershell.exe'))
+    calls = recorded_commands(module, monkeypatch)
+    with pytest.raises(FileNotFoundError):
+        module.load_events('runtime', 'bundle', 'a' * 64)
+    with pytest.raises(FileNotFoundError):
+        module.post_summary('summary', '20260929', 'runtime', 'bundle', 'a' * 64)
+    assert calls == []

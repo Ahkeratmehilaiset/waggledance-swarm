@@ -30,6 +30,9 @@ $script:WdBridgeCodeContextSchema = 'wd.bridge-code-context.v1'
 $script:WdBridgeCodePackageRoot = 'tools-bootstrap'
 $script:WdBridgeCodeWrapperName = 'Invoke-WdBridgePython.ps1'
 $script:WdBridgeCodeDefinitionName = 'bridge-code-files.json'
+# The one non-Python, non-JSON file the package may carry: the gate code reads the charter at runtime.
+# Exact, case-sensitive path only; no other .md (or any other type) is admitted.
+$script:WdBridgeCodeCharterRelative = 'docs/architecture/IDLE_AUTONOMY_CHARTER.md'
 $script:WdBridgeCodePythonFlags = @('-S', '-B')
 # Invoke-WdBridgePythonTool streams the packaged tool's own output to the
 # caller, so its exit code travels here instead of on the output stream.
@@ -152,6 +155,36 @@ function Read-WdBridgeCodeJsonSnapshot {
     }
 }
 
+function Get-WdBridgeCodeStartEnvironment {
+    <#
+        The child's environment dictionary, complete. On .NET Framework (Windows
+        PowerShell 5.1) ProcessStartInfo.EnvironmentVariables stores an empty
+        dictionary and then copies the parent block into it, throwing on a key
+        that differs only in case (Path and PATH, as an MSYS or Git Bash parent
+        passes them). The throw surfaces as a null dictionary ("Cannot index into
+        a null array"), and a second read returns the PARTIAL copy, so the child
+        would silently lose every variable after the duplicate. Finish the copy
+        from the process environment; the first spelling of a duplicate wins.
+        Only the child's dictionary changes, never this process's environment.
+    #>
+    param([Parameter(Mandatory)] [System.Diagnostics.ProcessStartInfo] $StartInfo)
+
+    try {
+        $variables = $StartInfo.EnvironmentVariables
+    }
+    catch {
+        $variables = $null
+    }
+    if ($null -ne $variables) { return ,$variables }
+    $variables = $StartInfo.get_EnvironmentVariables()
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        if (-not $variables.ContainsKey([string]$entry.Key)) {
+            $variables[[string]$entry.Key] = [string]$entry.Value
+        }
+    }
+    return ,$variables
+}
+
 function Invoke-WdBridgeCodePython {
     param(
         [Parameter(Mandatory)] [string] $PythonExecutable,
@@ -176,13 +209,14 @@ function Invoke-WdBridgeCodePython {
     } else {
         [IO.Path]::GetTempPath()
     }
+    $childEnvironment = Get-WdBridgeCodeStartEnvironment -StartInfo $startInfo
     foreach ($key in @($Environment.Keys)) {
         $value = [string]$Environment[$key]
         if ([string]::IsNullOrEmpty($value)) {
-            [void]$startInfo.EnvironmentVariables.Remove([string]$key)
+            [void]$childEnvironment.Remove([string]$key)
         }
         else {
-            $startInfo.EnvironmentVariables[[string]$key] = $value
+            $childEnvironment[[string]$key] = $value
         }
     }
     $process = New-Object System.Diagnostics.Process
@@ -233,7 +267,7 @@ function Get-WdBridgeCodePackageDefinition {
         if (-not (Test-WdBridgeCodeRelativePath -Relative $relative)) {
             throw "unsafe bridge code package path: $relative"
         }
-        if ($relative -cnotmatch '\.(py|json)$') {
+        if ($relative -cnotmatch '\.(py|json)$' -and $relative -cne $script:WdBridgeCodeCharterRelative) {
             throw "bridge code package file must be .py or .json: $relative"
         }
         if ($seen.ContainsKey($relative)) {
@@ -418,6 +452,48 @@ function Get-WdBridgeCodePackagePrefixes {
     )
 }
 
+function Get-WdBridgeCodePackageDataFiles {
+    <#
+        Declared package files outside the code prefixes (the charter and the
+        schema JSON). They are admitted by EXACT declared path only, never by
+        folder: another manifest entry beside them stays outside the package.
+    #>
+    param([Parameter(Mandatory)] $Definition)
+
+    $prefixes = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)
+    $data = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($relative in @($Definition.python_files | ForEach-Object { [string]$_ })) {
+        $underPrefix = $false
+        foreach ($prefix in $prefixes) {
+            if ($relative.StartsWith($prefix, [StringComparison]::Ordinal)) {
+                $underPrefix = $true
+                break
+            }
+        }
+        if (-not $underPrefix) { [void]$data.Add($relative) }
+    }
+    return ,$data
+}
+
+function Get-WdBridgeCodePackageDataRoots {
+    <#
+        Top-level folders that hold declared data files. The integrity check
+        enumerates them like the code prefixes, so an extra file, bytecode or
+        reparse point beside a declared data file fails closed.
+    #>
+    param([Parameter(Mandatory)] $Definition)
+
+    $data = Get-WdBridgeCodePackageDataFiles -Definition $Definition
+    $roots = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($relative in $data) {
+        $slash = $relative.IndexOf('/')
+        if ($slash -lt 1) { continue }
+        $root = $relative.Substring(0, $slash + 1)
+        if (-not $roots.Contains($root)) { $roots.Add($root) }
+    }
+    return @($roots)
+}
+
 function Get-WdBridgeCodePackageManifestEntries {
     param(
         [Parameter(Mandatory)] $Deployment,
@@ -425,6 +501,7 @@ function Get-WdBridgeCodePackageManifestEntries {
     )
 
     $prefixes = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)
+    $dataFiles = Get-WdBridgeCodePackageDataFiles -Definition $Definition
     $rootPrefix = $script:WdBridgeCodePackageRoot + '/'
     $entries = [ordered]@{}
     foreach ($property in @($Deployment.files.PSObject.Properties)) {
@@ -438,7 +515,7 @@ function Get-WdBridgeCodePackageManifestEntries {
                 break
             }
         }
-        if (-not $matched) { continue }
+        if (-not $matched -and -not $dataFiles.Contains($inner)) { continue }
         if (-not (Test-WdBridgeCodeRelativePath -Relative $inner)) {
             throw "unsafe pinned bridge code manifest path: $name"
         }
@@ -535,7 +612,9 @@ function Assert-WdBridgeCodePackageIntegrity {
         }
     }
     $codePrefix = $codeRoot.TrimEnd('\') + '\'
-    foreach ($prefix in @(Get-WdBridgeCodePackagePrefixes -Definition $Definition)) {
+    $enumerated = @(Get-WdBridgeCodePackagePrefixes -Definition $Definition) +
+        @(Get-WdBridgeCodePackageDataRoots -Definition $Definition)
+    foreach ($prefix in $enumerated) {
         $directory = Join-Path $codeRoot $prefix.TrimEnd('/')
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
         foreach ($subdirectory in @(
@@ -906,7 +985,16 @@ function Install-WdBridgePythonSite {
         (($requirementLines -join "`n") + "`n"),
         (New-Object Text.UTF8Encoding($false))
     )
-    $pipEnvironment = @{ PYTHONDONTWRITEBYTECODE = '1'; PIP_REQUIRE_VIRTUALENV = '' }
+    # SOURCE_DATE_EPOCH: pip writes a launcher (bin/<script>.exe) for each wheel console script, and that
+    # launcher carries a zip entry stamped with the CURRENT time unless SOURCE_DATE_EPOCH is set (pip's
+    # vendored distlib ScriptMaker), so the launcher and the dist-info RECORD that hashes it differed between
+    # stage and install. A fixed epoch (1980-01-01, the earliest zip date) makes the site byte-reproducible;
+    # an inherited value is replaced, never trusted.
+    $pipEnvironment = @{
+        PYTHONDONTWRITEBYTECODE = '1'
+        PIP_REQUIRE_VIRTUALENV = ''
+        SOURCE_DATE_EPOCH = '315532800'
+    }
     $downloadArguments = @(
         '-m', 'pip', 'download',
         '--disable-pip-version-check',

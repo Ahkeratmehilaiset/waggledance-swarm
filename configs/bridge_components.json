@@ -1,0 +1,170 @@
+{
+  "schema": "wd.bridge-components.v1",
+  "description": "F29 component manifest. Read-only input to tools/wd_bridge_doctor.py. Paths are never stored here: every component names a key in the separate local paths config (wd.bridge-local-paths.v1). The doctor never installs; install entries are instructions for a human operator only.",
+  "lanes": [
+    "claude-rco-1",
+    "claude-rco-2",
+    "codex-lead-1",
+    "codex-tools-1",
+    "fable-5"
+  ],
+  "provider_state_max_age_seconds": {
+    "auth": 3600,
+    "quota": 900,
+    "observed_turn": 3600
+  },
+  "components": [
+    {
+      "id": "git",
+      "kind": "executable",
+      "path_key": "git_executable",
+      "description": "Git for Windows; trusted absolute git.exe used by bridge plumbing.",
+      "install": {
+        "instructions": [
+          "Install Git for Windows from https://git-scm.com/download/win using the version recorded in the release notes.",
+          "Set git_executable in the local paths config to the absolute path of git.exe (for example the cmd\\git.exe of that installation)."
+        ]
+      }
+    },
+    {
+      "id": "bridge_python",
+      "kind": "executable",
+      "path_key": "bridge_python_executable",
+      "description": "CPython 3.13 interpreter pinned by the bridge code package.",
+      "install": {
+        "instructions": [
+          "Install CPython 3.13 for the current user from https://www.python.org/downloads/windows/ using the version recorded in the release notes.",
+          "Set bridge_python_executable in the local paths config to the absolute path of that python.exe; the bundle manifest pins its SHA-256."
+        ]
+      }
+    },
+    {
+      "id": "windows_powershell",
+      "kind": "executable",
+      "path_key": "windows_powershell_executable",
+      "description": "Windows PowerShell 5.1 (powershell.exe) used by the pinned bridge scripts.",
+      "install": {
+        "instructions": [
+          "Windows PowerShell 5.1 ships with Windows; if it is missing, repair the Windows installation.",
+          "Set windows_powershell_executable in the local paths config to the absolute path of powershell.exe."
+        ]
+      }
+    },
+    {
+      "id": "pwsh",
+      "kind": "executable",
+      "path_key": "pwsh_executable",
+      "description": "PowerShell 7 (pwsh.exe) for PS5/PS7 parity checks.",
+      "install": {
+        "instructions": [
+          "Install PowerShell 7 from https://github.com/PowerShell/PowerShell/releases using the version recorded in the release notes.",
+          "Set pwsh_executable in the local paths config to the absolute path of pwsh.exe."
+        ]
+      }
+    },
+    {
+      "id": "bridge_runtime_root",
+      "kind": "directory",
+      "path_key": "bridge_runtime_root",
+      "description": "Bridge runtime root holding shared/events.jsonl (data, not source).",
+      "install": {
+        "instructions": [
+          "Create or restore the bridge runtime root with the documented first-run initialization; never point it at a source checkout.",
+          "Set bridge_runtime_root in the local paths config to that absolute directory."
+        ]
+      }
+    },
+    {
+      "id": "codex_cli",
+      "kind": "executable",
+      "path_key": "codex_executable",
+      "description": "Codex CLI used by the Codex lanes.",
+      "install": {
+        "instructions": [
+          "Install the Codex CLI with its supported installer at the version recorded in the release notes, then authenticate interactively as the operator.",
+          "Set codex_executable in the local paths config to the absolute path of the codex executable."
+        ]
+      }
+    },
+    {
+      "id": "claude_cli",
+      "kind": "executable",
+      "path_key": "claude_executable",
+      "description": "Claude Code CLI used by the Claude lanes.",
+      "install": {
+        "instructions": [
+          "Install Claude Code with its supported installer at the version recorded in the release notes, then authenticate interactively as the operator.",
+          "Set claude_executable in the local paths config to the absolute path of the claude executable."
+        ]
+      }
+    },
+    {
+      "id": "grok_cli",
+      "kind": "executable",
+      "path_key": "grok_executable",
+      "description": "Grok CLI used only by the on-demand advisory helper.",
+      "install": {
+        "instructions": [
+          "Install the Grok CLI with its supported installer at the version recorded in the release notes, then authenticate interactively as the operator.",
+          "Set grok_executable in the local paths config to the absolute path of grok.exe."
+        ]
+      }
+    }
+  ],
+  "providers": [
+    {
+      "id": "claude",
+      "cli_component": "claude_cli"
+    },
+    {
+      "id": "codex",
+      "cli_component": "codex_cli"
+    },
+    {
+      "id": "grok",
+      "cli_component": "grok_cli"
+    }
+  ],
+  "features": [
+    {
+      "id": "bridge_core",
+      "description": "Pinned bridge reader/writer and helpers.",
+      "components": ["bridge_python", "bridge_runtime_root", "git", "windows_powershell"],
+      "providers": [],
+      "required_for_lanes": ["*"],
+      "optional_for_lanes": []
+    },
+    {
+      "id": "ps7_parity",
+      "description": "PowerShell 7 parity runs of the bridge scripts.",
+      "components": ["pwsh"],
+      "providers": [],
+      "required_for_lanes": [],
+      "optional_for_lanes": ["*"]
+    },
+    {
+      "id": "codex_lane",
+      "description": "A Codex-backed lane turn.",
+      "components": [],
+      "providers": ["codex"],
+      "required_for_lanes": ["codex-lead-1", "codex-tools-1"],
+      "optional_for_lanes": []
+    },
+    {
+      "id": "claude_lane",
+      "description": "A Claude-backed lane turn.",
+      "components": [],
+      "providers": ["claude"],
+      "required_for_lanes": ["claude-rco-1", "claude-rco-2", "fable-5"],
+      "optional_for_lanes": []
+    },
+    {
+      "id": "grok_advisory",
+      "description": "On-demand Grok advisory consultation for the Lead.",
+      "components": [],
+      "providers": ["grok"],
+      "required_for_lanes": [],
+      "optional_for_lanes": ["codex-lead-1"]
+    }
+  ]
+}

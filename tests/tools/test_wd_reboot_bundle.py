@@ -776,7 +776,8 @@ def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None
         "additional_writable_roots": [],
     }
     assert tools["conversation_permissions"] == {
-        "network_access": True, "additional_writable_roots": [],
+        "network_access": True,
+        "additional_writable_roots": [r"C:\Python\grok-scout-reports"],
     }
 
 
@@ -6740,6 +6741,8 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
         REBOOT / "start-wd-tools-consumer.ps1"
     ).read_text(encoding="utf-8")
     assert launcher.count("-Arguments @('update')") == 2
+    assert launcher.count("$grokUpdateRecord = Invoke-WdGrokCliUpdate") == 1
+    assert "grok update (once)" in launcher
     assert "[switch] $Apply" in launcher
     assert "function Enter-WdFleetRebootMutex" in launcher
     assert "catch [Threading.AbandonedMutexException]" in launcher
@@ -7063,9 +7066,13 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert text.index("if ($Auto -and -not (Test-WdWrapperAdministrator))") < text.index(
         "Write-Host 'Running byte-inert fleet preflight"
     )
-    assert text.index("$dryRunParameters['DryRun'] = $true") < text.index(
-        "$applyParameters['Apply'] = $true"
+    # Since 7779e9a2 (Supervisor OFF) the non-elevated wrapper writes ONE elevated script that
+    # runs the byte-inert DryRun before the Apply, and an elevated -Auto refuses instead of
+    # restoring (it has no Limited context for the bridge workers).
+    assert text.index('("  {0} -DryRun" -f $restoreCommand)') < text.index(
+        '("  {0} -Apply" -f $restoreCommand)'
     )
+    assert "Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools." in text
     assert "'Set-WdTaskConsoleContainment.ps1'," in text
     assert "Name = 'Set-WdTaskConsoleContainment.ps1'" in text
     assert "unexpected recursive file set" in text
@@ -7267,6 +7274,7 @@ param(
   [ValidateRange(10, 300)] [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
   [switch] $NoBridgeConversation,
+  [switch] $SupervisorOff,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -7276,6 +7284,7 @@ $global:LASTEXITCODE = 7
   timeout = $HandshakeTimeoutSeconds
   skip_update = [bool]$SkipCliUpdate
   no_conversation = [bool]$NoBridgeConversation
+  supervisor_off = [bool]$SupervisorOff
   apply = [bool]$Apply
   dry_run = [bool]$DryRun
   handled_native_status = $LASTEXITCODE
@@ -7331,6 +7340,10 @@ param(
     agent_wrapper = str(tmp_path / "agent-wrapper.ps1").replace("'", "''")
     tools_wrapper = str(tmp_path / "tools-wrapper.ps1").replace("'", "''")
     deployment_manifest_quoted = str(deployment_manifest).replace("'", "''")
+    # The 684ceba6 launcher guard: every generated launcher pins this exact final pair and refuses unless the
+    # state pointer next to it matches (all fake targets share tmp_path as their bundle directory).
+    final_commit = "f" * 40
+    pointer_quoted = str(tmp_path / "WD_REBOOT_STATE_CURRENT.json").replace("'", "''")
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'
@@ -7358,11 +7371,24 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $manifestHash = (
   Get-FileHash -LiteralPath '{deployment_manifest_quoted}' -Algorithm SHA256
 ).Hash
+$pointer = [ordered]@{{
+  source_commit = '{final_commit}'
+  final_commit = '{final_commit}'
+  manifest_sha256 = $manifestHash
+  final_manifest_sha256 = $manifestHash
+  active_bundle = (Split-Path -Parent '{target_quoted}')
+}}
+[IO.File]::WriteAllBytes(
+  '{pointer_quoted}',
+  $utf8.GetBytes([string]($pointer | ConvertTo-Json -Compress))
+)
 $fleetText = New-ForwardingWrapper `
   -Target '{target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
-  -WrapperKind fleet
+  -WrapperKind fleet `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{fleet_wrapper}',
   $utf8.GetBytes([string]$fleetText)
@@ -7372,7 +7398,9 @@ $agentText = New-ForwardingWrapper `
   -ExpectedHash (Get-FileHash -LiteralPath '{agent_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
   -WrapperKind agent `
-  -FixedAgent fable-5
+  -FixedAgent fable-5 `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{agent_wrapper}',
   $utf8.GetBytes([string]$agentText)
@@ -7381,7 +7409,9 @@ $toolsText = New-ForwardingWrapper `
   -Target '{tools_target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{tools_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
-  -WrapperKind tools
+  -WrapperKind tools `
+  -ExpectedFinalCommit '{final_commit}' `
+  -ExpectedFinalManifestHash $manifestHash
 [IO.File]::WriteAllBytes(
   '{tools_wrapper}',
   $utf8.GetBytes([string]$toolsText)
@@ -7407,6 +7437,7 @@ foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
     assert "Start-Transcript -LiteralPath" in fleet_wrapper_text
     assert "Elevated restore failure log" in fleet_wrapper_text
     assert "Set-WdWrapperWindowsPowerShellModulePath" in fleet_wrapper_text
+    assert "WD_REBOOT_STATE_CURRENT.json" in fleet_wrapper_text  # the fail-closed pointer guard is generated
     assert fleet_wrapper_text.index(
         "Set-WdWrapperWindowsPowerShellModulePath"
     ) < fleet_wrapper_text.index("Get-FileHash -LiteralPath $manifestPath")
@@ -7443,6 +7474,7 @@ $fleetDry = @(& '{fleet_wrapper}' `
   -HandshakeTimeoutSeconds 42 `
   -SkipCliUpdate `
   -NoBridgeConversation `
+  -SupervisorOff `
   -DryRun) | Where-Object {{ $_.PSObject.Properties['run_id'] }} |
     Select-Object -Last 1
 $fleetApply = @(& '{fleet_wrapper}' `
@@ -7462,6 +7494,7 @@ $tools = @(& '{tools_wrapper}' `
   fleet_dry_timeout = [int]$fleetDry.timeout
   fleet_dry_skip_update = [bool]$fleetDry.skip_update
   fleet_dry_no_conversation = [bool]$fleetDry.no_conversation
+  fleet_dry_supervisor_off = [bool]$fleetDry.supervisor_off
   fleet_dry_apply = [bool]$fleetDry.apply
   fleet_dry_dry_run = [bool]$fleetDry.dry_run
   fleet_dry_native_status = [int]$fleetDry.handled_native_status
@@ -7469,6 +7502,7 @@ $tools = @(& '{tools_wrapper}' `
   fleet_apply_timeout = [int]$fleetApply.timeout
   fleet_apply_skip_update = [bool]$fleetApply.skip_update
   fleet_apply_no_conversation = [bool]$fleetApply.no_conversation
+  fleet_apply_supervisor_off = [bool]$fleetApply.supervisor_off
   fleet_apply_apply = [bool]$fleetApply.apply
   fleet_apply_dry_run = [bool]$fleetApply.dry_run
   fleet_apply_native_status = [int]$fleetApply.handled_native_status
@@ -7489,6 +7523,7 @@ $tools = @(& '{tools_wrapper}' `
         "fleet_dry_timeout": 42,
         "fleet_dry_skip_update": True,
         "fleet_dry_no_conversation": True,
+        "fleet_dry_supervisor_off": True,
         "fleet_dry_apply": False,
         "fleet_dry_dry_run": True,
         "fleet_dry_native_status": 7,
@@ -7496,6 +7531,7 @@ $tools = @(& '{tools_wrapper}' `
         "fleet_apply_timeout": 43,
         "fleet_apply_skip_update": False,
         "fleet_apply_no_conversation": False,
+        "fleet_apply_supervisor_off": False,
         "fleet_apply_apply": True,
         "fleet_apply_dry_run": False,
         "fleet_apply_native_status": 7,
@@ -7623,10 +7659,40 @@ def test_grok_contract_uses_provider_default_without_strength_guessing() -> None
 
     assert "Authenticated CLI provider default" in resolver
     assert "no local version-name ranking" in resolver
-    assert "authenticated CLI provider default" in launcher
+    # Check actual resolver wiring, not a removed launcher status sentence.
+    assert "$resolver = Join-Path $PSScriptRoot 'Resolve-WdGrokModel.ps1'" in launcher
+    # The resolver runs through the optional Grok wrapper (#1758 port): dry run in the preflight, real run at apply.
+    assert ("$grokPreflightRecord = Invoke-WdGrokModelResolutionOptional `\n"
+            "  -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) -DryRun"
+            in launcher.replace("\r\n", "\n"))
+    assert ("$grokModelRecord = Invoke-WdGrokModelResolutionOptional `\n"
+            "    -Resolver $resolver -OutputDirectory ([string]$manifest.grok_output_directory) `"
+            in launcher.replace("\r\n", "\n"))
+    assert "$defaultModel = $defaultMatches[0]" in resolver
+    assert "Model = $defaultModel" in resolver
     assert "does not guess a “strongest” model" in runbook
     assert "strongest current general model" not in launcher
     assert "default/strongest" not in runbook
+
+    # Where PowerShell is available, exercise only the offline parser: a newer
+    # available name must not outrank the provider default. No CLI/provider call.
+    if POWERSHELL is not None:
+        resolver_path = str(REBOOT / "Resolve-WdGrokModel.ps1").replace("'", "''")
+        result = _run_powershell(f"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{resolver_path}',[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'resolver parse failure' }}
+$fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertFrom-GrokModelsOutput'}},$true)
+if ($null -eq $fn) {{ throw 'missing provider-default parser' }}
+. ([scriptblock]::Create($fn.Extent.Text))
+$model=ConvertFrom-GrokModelsOutput -Lines @('Default model: grok-1.0','Available models:','- grok-99.9','* grok-1.0')
+$missing=$false
+try {{ [void](ConvertFrom-GrokModelsOutput -Lines @('Default model: grok-1.0','Available models:','- grok-99.9')) }} catch {{ $missing=$true }}
+@{{model=$model.Model;missing_default_rejected=$missing}} | ConvertTo-Json -Compress
+""")
+        assert json.loads(result.stdout) == {
+            "model": "grok-1.0", "missing_default_rejected": True,
+        }
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
@@ -7716,3 +7782,324 @@ function Start-Process {{
     assert 'Administrator restore started' in progress
     assert 'Restore still running; elapsed=' in progress
     assert 'Waiting for a bounded worker reply' in progress
+
+
+def test_rejection_recovery_helper_is_a_required_bundle_file():
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    required = deployer[deployer.index("foreach ($required in @("):]
+    assert "'Resolve-WdNativeWakeRejection.ps1'," in required[:required.index(")) {")]
+
+
+def test_supervisor_off_is_standing_and_the_fleet_wrapper_ships_the_bridge_bootstrap():
+    launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    # OFF needs no switch and no record; the switch stays accepted, forwarded and inert.
+    assert "[switch] $SupervisorOff" in launcher
+    assert "Supervisor OFF: restore refused before any fleet read" not in launcher
+    assert launcher.count("$restoreSupervisorOff = ") == 1
+    standing = launcher.index("$restoreSupervisorOff = $true")
+    assert launcher.index("$DryRun = $launcherMode -ceq 'DryRun'") < standing
+    assert standing < launcher.index('throw "fleet manifest is missing: $ManifestPath"')
+    exact = launcher.index("if ($restoreSupervisorOff -and [bool]$supervisorTaskActivation.initially_enabled) {")
+    assert launcher.index("$supervisorTaskActivation = Get-WdSupervisorTaskActivationPlan -Task $supervisorTask") < exact
+    assert exact < launcher.index("if ($DryRun) {\n  Assert-WdBridgeSafetyBaseline")
+    assert "[switch] $SupervisorOff" in deployer
+    assert "if ([bool]$targetParameters['SupervisorOff']) {" in deployer
+    assert "[void]$commandParts.Add('-SupervisorOff')" in deployer
+    assert "[void]$commandParts.Add('-Auto')" not in deployer
+    assert "Supervisor OFF: restore refused before Administrator checks" not in deployer
+    required = deployer[deployer.index("foreach ($required in @("):]
+    assert "'WdBridgeLimitedBootstrap.ps1'," in required[:required.index(")) {")]
+    # The sibling supervisor launcher declares -BridgeWorkersOnly and forwards every bound parameter; as an
+    # advanced script it turns an older launcher or supervisor without the switch into a binding error.
+    assert ("'supervisor' {\n@'\nparam(\n    [switch] $Apply,\n    [switch] $BridgeWorkersOnly,\n"
+            "    [string] $ConfigPath = '',\n") in deployer
+    assert "[CmdletBinding()]\n$parameterBlock" in deployer
+    assert "'& $target @PSBoundParameters'" in deployer
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).name)
+def test_every_wd_supervisor_task_path_in_start_all_sits_behind_the_standing_off(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile('__LAUNCHER__', [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'launcher parse failed' }
+function Test-WdOffGuarded($node) {
+    for ($child = $node; $null -ne $child.Parent; $child = $child.Parent) {
+        $parent = $child.Parent
+        if ($parent -is [Management.Automation.Language.FunctionDefinitionAst]) { return $null }
+        if ($parent -is [Management.Automation.Language.IfStatementAst] -and
+            $parent.Clauses[0].Item1.Extent.Text -ceq '-not $restoreSupervisorOff' -and
+            [object]::ReferenceEquals($parent.Clauses[0].Item2, $child)) {
+            return $true
+        }
+    }
+    return $false
+}
+$markers = @(
+    '& $scheduledTaskRegistration',
+    'Invoke-WdSupervisorTaskBootstrapHeld',
+    '& ([string]$supervisorPlan.verify_script)',
+    'Wait-WdToolsCurrentProcess',
+    'Enable-WdSupervisorTaskAfterRestore',
+    'Set-WdSupervisorTaskHeld',
+    'Test-WdBridgeResponsiveness.ps1',
+    '& $taskConsoleContainment -Apply'
+)
+$commands = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true))
+$report = [ordered]@{}
+foreach ($marker in $markers) {
+    $verdicts = @($commands | Where-Object { $_.Extent.Text.Contains($marker) } |
+        ForEach-Object { Test-WdOffGuarded $_ } | Where-Object { $null -ne $_ })
+    $report[$marker] = [ordered]@{ count = $verdicts.Count; guarded = @($verdicts | Where-Object { $_ }).Count }
+}
+$assignments = @($ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -ieq '$restoreSupervisorOff'
+}, $true))
+$switchUses = @($ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.VariableExpressionAst] -and
+        $node.VariablePath.UserPath -ieq 'SupervisorOff'
+}, $true)).Count
+[pscustomobject]@{
+    markers = $report
+    assignments = @($assignments | ForEach-Object { $_.Extent.Text })
+    switch_uses = $switchUses
+} | ConvertTo-Json -Compress -Depth 5
+"""
+    completed = _run_powershell(script.replace("__LAUNCHER__", launcher), executable=ps, check=False)
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip())
+    for marker, verdict in observed["markers"].items():
+        assert verdict["count"] >= 1, marker
+        assert verdict["guarded"] == verdict["count"], marker
+    assert observed["assignments"] == ["$restoreSupervisorOff = $true"]
+    # Declared and forwarded by the fleet wrapper, read nowhere in the launcher.
+    assert observed["switch_uses"] == 1
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("switch", [[], ["-SupervisorOff"]], ids=["standing", "explicit"])
+def test_the_supervisor_off_switch_is_inert_before_the_fleet_manifest(tmp_path, ps, switch):
+    # No early refusal any more: both forms stop at the absent manifest, still before any
+    # fleet read or change.
+    absent = tmp_path / "absent-wd-fleet.json"
+    result = subprocess.run(
+        [ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+         str(REBOOT / "start-wd-all.ps1"), "-ManifestPath", str(absent), *switch, "-DryRun"],
+        cwd=ROOT, capture_output=True, text=True, timeout=60, check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "fleet manifest is missing" in output
+    assert "Supervisor OFF: restore refused" not in output
+
+
+FAKE_BRIDGE_HELPER = r"""
+function Invoke-WdBridgeWrapperBootstrap {
+    param($BundleRoot, $FleetManifestPath, $SupervisorScript, $HostPath)
+    $global:wdCounters.bootstrap++
+    $global:wdBootstrapArgs = [ordered]@{
+        BundleRoot = $BundleRoot; FleetManifestPath = $FleetManifestPath
+        SupervisorScript = $SupervisorScript; HostPath = $HostPath
+    }
+    if ($global:wdBootstrapOk) { return [pscustomobject]@{ ok = $true; stage = 'done'; reasons = @() } }
+    return [pscustomobject]@{ ok = $false; stage = 'tools'; reasons = @('no Tools readiness record bound the pinned generation and thread') }
+}
+"""
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).name)
+@pytest.mark.parametrize(
+    "case, administrator, mode",
+    [
+        ("elevated_auto", True, "-Auto"),
+        ("limited_auto", False, "-Auto"),
+        ("limited_auto_bootstrap_refused", False, "-Auto"),
+        ("limited_auto_restore_failed", False, "-Auto"),
+        ("limited_auto_helper_tampered", False, "-Auto"),
+        ("apply", True, "-Apply"),
+        ("dry_run", False, "-DryRun"),
+        ("default", True, ""),
+    ],
+)
+def test_generated_fleet_wrapper_starts_bridge_workers_only_from_a_limited_auto(
+    tmp_path: Path, ps: str, case: str, administrator: bool, mode: str
+) -> None:
+    """Exercise generated fleet control flow with fake elevation and a fake bootstrap helper."""
+    bundle = tmp_path / ("b" * 40)
+    bundle.mkdir()
+    (bundle / "WdBridgeLimitedBootstrap.ps1").write_text(FAKE_BRIDGE_HELPER, encoding="utf-8")
+    deploy = str(REBOOT / "Deploy-WdRebootBundle.ps1").replace("'", "''")
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile('__DEPLOY__', [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'deployer parse failed' }
+$generator = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-ForwardingWrapper'
+}, $true)
+if ($null -eq $generator) { throw 'generator missing' }
+. ([scriptblock]::Create($generator.Extent.Text))
+$hash = 'a' * 64
+$wrapper = New-ForwardingWrapper -Target 'fake-target.ps1' -ExpectedHash $hash -ExpectedManifestHash $hash `
+    -WrapperKind 'fleet' -ExpectedFinalCommit ('f' * 40) -ExpectedFinalManifestHash $hash
+$wrapperAst = [Management.Automation.Language.Parser]::ParseInput($wrapper, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'generated wrapper parse failed' }
+if ($wrapper.Contains('Supervisor OFF: restore refused')) { throw 'early OFF refusal survived' }
+$start = $wrapper.IndexOf('if ($Auto -and ($Apply -or $DryRun)) {')
+if ($start -lt 0) { throw 'fleet invocation missing' }
+foreach ($integrityCheck in @(
+    'Get-FileHash -LiteralPath $manifestPath',
+    'Get-FileHash -LiteralPath $target',
+    'WD_REBOOT_STATE_CURRENT.json'
+)) {
+    $index = $wrapper.IndexOf($integrityCheck)
+    if ($index -lt 0 -or $index -ge $start) {
+        throw "integrity check lost or moved into the fleet invocation: $integrityCheck"
+    }
+}
+$admin = $wrapperAst.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Test-WdWrapperAdministrator'
+}, $true)
+if ($null -eq $admin -or $admin.Extent.StartOffset -le $start) {
+    throw 'administrator check is not inside the fleet invocation'
+}
+$fakeAdmin = @'
+function Test-WdWrapperAdministrator {
+    $global:wdCounters.admin++
+    return $global:wdFakeAdministrator
+}
+'@
+$body = $wrapper.Substring($start).Replace($admin.Extent.Text, $fakeAdmin)
+$body = '$manifestPath = Join-Path ''__BUNDLE__'' ''deployment-manifest.json''' + [Environment]::NewLine + $body
+$isolated = $wrapperAst.ParamBlock.Extent.Text + [Environment]::NewLine + $body
+if ($isolated.Contains('[Security.Principal.WindowsIdentity]::GetCurrent()')) {
+    throw 'real administrator implementation survived instrumentation'
+}
+$wrapperFile = Join-Path '__ROOT__' 'start-wd-all.ps1'
+[IO.File]::WriteAllText($wrapperFile, $isolated, (New-Object Text.UTF8Encoding($false)))
+$global:wdCounters = [ordered]@{ admin = 0; process = 0; target = 0; bootstrap = 0 }
+$global:wdFakeAdministrator = __ADMIN__
+$global:wdChildExit = __CHILD_EXIT__
+$global:wdBootstrapOk = __BOOTSTRAP_OK__
+$global:wdManifestHash = '__MANIFEST_HASH__'
+$global:wdBootstrapArgs = $null
+$global:wdChildArguments = @()
+$global:wdTargetModes = New-Object System.Collections.Generic.List[string]
+$manifestPath = Join-Path '__BUNDLE__' 'deployment-manifest.json'
+function Start-Process {
+    [CmdletBinding()]
+    param($FilePath, $Verb, $ArgumentList, $WindowStyle, [switch] $PassThru)
+    $global:wdCounters.process++
+    $global:wdChildArguments = @($ArgumentList)
+    $child = [pscustomobject]@{ Handle = 1; ExitCode = $global:wdChildExit }
+    $child | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { if ($args.Count) { return $true } }
+    $child | Add-Member -MemberType ScriptMethod -Name Refresh -Value { }
+    return $child
+}
+function Write-Host { }
+function Test-Path { [CmdletBinding()] param($LiteralPath, $PathType) return $true }
+function Get-Item {
+    [CmdletBinding()] param($LiteralPath, [switch] $Force)
+    return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::Directory }
+}
+function New-Item { throw 'FAKE New-Item denied' }
+function Get-FileHash { [CmdletBinding()] param($LiteralPath, $Algorithm) return [pscustomobject]@{ Hash = 'HELPERHASH' } }
+function Get-Content {
+    [CmdletBinding()] param($LiteralPath, [switch] $Raw, $Encoding, $Tail)
+    if ([string]$LiteralPath -like '*deployment-manifest.json') {
+        return ('{"files":{"WdBridgeLimitedBootstrap.ps1":"' + $global:wdManifestHash + '"}}')
+    }
+    return @('fake elevated restore log line')
+}
+$target = {
+    param([switch] $SupervisorOff, [switch] $Apply, [switch] $DryRun)
+    $global:wdCounters.target++
+    $global:wdTargetModes.Add(('apply={0};dry_run={1};off={2}' -f [bool]$Apply, [bool]$DryRun, [bool]$SupervisorOff))
+}
+$failure = $null
+try {
+    & $wrapperFile __MODE__ -SupervisorOff
+} catch {
+    $failure = $_.Exception.Message
+}
+$child = ''
+$at = [array]::IndexOf([object[]]$global:wdChildArguments, '-EncodedCommand')
+if ($at -ge 0) {
+    $child = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]$global:wdChildArguments[$at + 1]))
+}
+[pscustomobject]@{
+    error = $failure
+    counters = $global:wdCounters
+    child = $child
+    bootstrap = $global:wdBootstrapArgs
+    targets = @($global:wdTargetModes)
+} | ConvertTo-Json -Compress -Depth 5
+"""
+    script = (
+        script.replace("__DEPLOY__", deploy)
+        .replace("__ROOT__", str(tmp_path).replace("'", "''"))
+        .replace("__BUNDLE__", str(bundle).replace("'", "''"))
+        .replace("__ADMIN__", "$true" if administrator else "$false")
+        .replace("__CHILD_EXIT__", "1" if case == "limited_auto_restore_failed" else "0")
+        .replace("__BOOTSTRAP_OK__", "$false" if case == "limited_auto_bootstrap_refused" else "$true")
+        .replace("__MANIFEST_HASH__", "TAMPERED" if case == "limited_auto_helper_tampered" else "HELPERHASH")
+        .replace("__MODE__", mode)
+    )
+    completed = _run_powershell(script, executable=ps, check=False)
+    assert completed.returncode == 0, completed.stderr
+    try:
+        observed = json.loads(completed.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"fake wrapper stdout={completed.stdout!r}; stderr={completed.stderr!r}") from exc
+    counters = observed["counters"]
+    if case == "elevated_auto":
+        assert "Supervisor OFF: an elevated -Auto cannot start" in observed["error"]
+        assert counters == {"admin": 1, "process": 0, "target": 0, "bootstrap": 0}
+    elif case == "limited_auto_helper_tampered":
+        # A bad bundle refuses before the one elevation.
+        assert "integrity mismatch" in observed["error"]
+        assert counters == {"admin": 1, "process": 0, "target": 0, "bootstrap": 0}
+    elif case.startswith("limited_auto"):
+        assert (counters["admin"], counters["process"], counters["target"]) == (1, 1, 0)
+        child = observed["child"]
+        assert " -Auto" not in child
+        assert child.index("-SupervisorOff -DryRun") < child.index("-SupervisorOff -Apply")
+        if case == "limited_auto_restore_failed":
+            assert "elevated automatic restore failed with exit code 1" in observed["error"]
+            assert counters["bootstrap"] == 0
+        else:
+            assert counters["bootstrap"] == 1
+            passed = observed["bootstrap"]
+            assert passed["BundleRoot"] == str(bundle)
+            assert passed["FleetManifestPath"] == str(bundle / "wd-fleet.json")
+            assert passed["SupervisorScript"] == str(tmp_path / "wd_supervisor.ps1")
+            # [Environment]::SystemDirectory is empty off Windows, so there the host is only the relative join
+            # (pwsh on Linux CI, 2026-10-01); the elevated restore it names exists only on Windows.
+            if os.name == "nt":
+                assert passed["HostPath"].lower().endswith("\\windowspowershell\\v1.0\\powershell.exe")
+            if case == "limited_auto":
+                assert observed["error"] is None
+            else:
+                assert "Bridge Limited bootstrap refused at stage tools" in observed["error"]
+    else:
+        assert observed["error"] is None
+        assert counters == {"admin": 0, "process": 0, "target": 1, "bootstrap": 0}
+        assert observed["targets"] == [{
+            "apply": "apply=True;dry_run=False;off=True",
+            "dry_run": "apply=False;dry_run=True;off=True",
+            "default": "apply=False;dry_run=False;off=True",
+        }[case]]

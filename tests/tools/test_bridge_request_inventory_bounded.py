@@ -90,10 +90,33 @@ def test_cursor_is_newest_first_and_refuses_changed_snapshot(tmp_path: Path, she
     log = runtime / "shared/events.jsonl"
     with log.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(dict(ts_utc="2026-09-29T01:00:00Z", agent="fable-5", type="message")) + "\n")
-    stale = _run(shell, runtime, script, "-Cursor", first["next_cursor"])
+    # INV-F1: the SAME query (-PageSize 2) so the only difference is the changed snapshot; without -PageSize the
+    # cursor was refused for its page size and a getter with no snapshot binding still passed.
+    stale = _run(shell, runtime, script, "-PageSize", "2", "-Cursor", first["next_cursor"])
     assert stale.returncode != 0
     assert "cursor does not match" in stale.stderr
     assert not stale.stdout.strip()
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_cursor_with_the_same_query_on_an_unchanged_snapshot_continues(tmp_path: Path, shell: str) -> None:
+    # INV-F1 positive twin: unchanged snapshot, same query -> the next page, newest first.
+    runtime, script = _fixture(tmp_path)
+    first = json.loads(_run(shell, runtime, script, "-PageSize", "2").stdout)
+    again = _run(shell, runtime, script, "-PageSize", "2", "-Cursor", first["next_cursor"])
+    assert again.returncode == 0, again.stderr
+    assert [row["request_id"] for row in json.loads(again.stdout)["requests"]] == ["request-597", "request-596"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_cursor_with_another_page_size_on_an_unchanged_snapshot_is_refused(tmp_path: Path, shell: str) -> None:
+    # INV-F1 negative twin: the snapshot is unchanged, only the query differs (page size 3 instead of 2).
+    runtime, script = _fixture(tmp_path)
+    first = json.loads(_run(shell, runtime, script, "-PageSize", "2").stdout)
+    other = _run(shell, runtime, script, "-PageSize", "3", "-Cursor", first["next_cursor"])
+    assert other.returncode != 0
+    assert "cursor does not match" in other.stderr
+    assert not other.stdout.strip()
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)

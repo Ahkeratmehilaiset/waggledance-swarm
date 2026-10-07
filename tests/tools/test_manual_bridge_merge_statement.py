@@ -1919,15 +1919,8 @@ def test_g1_real_git_refuses_unknown_and_non_commit_ids(real_repo):
 
 GITLINK_OLD = "1" * 40
 GITLINK_NEW = "2" * 40
-GITMODULES_IGNORE_ALL = b'[submodule "sub"]
-	path = sub
-	url = ./sub-remote
-	ignore = all
-'
-GITMODULES_PLAIN = b'[submodule "sub"]
-	path = sub
-	url = ./sub-remote
-'
+GITMODULES_IGNORE_ALL = b'[submodule "sub"]\n\tpath = sub\n\turl = ./sub-remote\n\tignore = all\n'
+GITMODULES_PLAIN = b'[submodule "sub"]\n\tpath = sub\n\turl = ./sub-remote\n'
 GITLINK_SOURCES = ("none", "diff_ignore_submodules_all", "submodule_name_ignore_all",
                    "gitmodules_worktree", "gitmodules_index_head")
 
@@ -1938,8 +1931,7 @@ def _gitlink_repo(tmp_path: Path, kind: str, source: str) -> tuple[Path, str, st
     repo = tmp_path / "g1f1-repo"
     repo.mkdir()
     _real_git(repo, "init", "-q")
-    (repo / "keep.txt").write_bytes(b"keep
-")
+    (repo / "keep.txt").write_bytes(b"keep\n")
     hiding_file = source in ("gitmodules_worktree", "gitmodules_index_head")
     (repo / ".gitmodules").write_bytes(GITMODULES_IGNORE_ALL if hiding_file else GITMODULES_PLAIN)
     _real_git(repo, "add", "-A")

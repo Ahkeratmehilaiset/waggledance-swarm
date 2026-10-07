@@ -34,9 +34,84 @@ still goes through the signed catalog (BRIDGE_LANE_PROFILES.md) and the pacer
 - **Path checks.** Only the registry file itself is checked for a symlink or reparse point, not its
   ancestors. The registry lives at a fixed, git-tracked path (`configs/`), not in a per-lane runtime
   directory, and any redirected file would still have to pass the same strict validation
-  (claude-rco-2 review of #1743).
+  (claude-rco-2 review of #1743). On POSIX the open also uses `O_NOFOLLOW`, so a symlink swapped in
+  after the check fails the open. Windows has no such flag: a reparse point swapped in between the
+  check and the open is **not** closed. This is a disclosed TOCTOU gap, and the fixed path plus the
+  strict validation are the only mitigation.
 - **Updating.** New models and fresh numbers arrive as a PR, normally from the
   post-boot orientation analysis (plan v2, PR-14). They are data, not authority.
+
+## Schema v2: dated evidence (`wd.model-registry.v2`)
+
+The shipped file is v2. v1 files still load and analyse identically (deliberate read
+compatibility), and a v1 document may not carry the v2 tables.
+
+- **Historical block.** `historical` marks exactly the v1 tables (`benchmark`,
+  `coding_benchmark`, `models`) as `historical` evidence, with `source_measured_at`, its
+  basis, and `cost_basis: "api_price_not_quota"`. API dollars are never quota units.
+- **Pools** (`pools.<id>`, exact keys `provider`, `limit_id`, `window`, `tier`, `verification`,
+  `provenance`, `measured_at`, `ttl_seconds`). A `verified` pool needs:
+  - a measuring provenance (`operator_reading`, `local_measurement` or `f21_receipt`);
+  - a `limit_id`;
+  - a `measured_at` date;
+  - a `ttl_seconds` from 1 s to 400 days.
+
+  A verified pool expires. `pool_state(pool, now)` returns:
+  - `verified` while `now - measured_at <= ttl_seconds`, and `stale` after that;
+  - `unknown` when the pool is dated more than 5 minutes ahead, or the clock is unusable (see below);
+  - `unverified` for an unverified pool, whatever the clock.
+- **Candidates** (`candidates."<provider>/<model>"`) are unrated models. They always have
+  `admission: "none"` and `capability: "unknown"`, and may name a pool of the same provider.
+- **Observations.** Each has a unique `id` and these fields:
+  - a `subject` (`provider`, `model`, `effort`, `pool`);
+  - `kind`, `class`, `unit`, `value` and `status`;
+  - `provenance`, `measured_at` and `ttl_seconds`;
+  - an `uncertainty` (`kind`, `low`, `high`, `note`).
+
+  The rules:
+  - `measured` needs a measuring provenance, a date, a TTL and a stated uncertainty. That is
+    either an `interval` that contains the value, or `exact` with a non-empty justification `note`.
+    `none_stated` and `unknown` never make a value measured.
+  - An `interval` is refused for the categorical kinds `tier` and `pool`, because containment is
+    meaningless for a label.
+  - An API-dollar unit never names a pool, and a quota unit or a limit needs `subject.pool`.
+  - An observation never verifies an unverified pool.
+  - `observation_state(observation, now)` is `fresh` inside the TTL and `stale` after it. It is
+    `unknown` if the observation is dated more than 5 minutes ahead or the clock is unusable. The
+    `historical`, `unverified` and `unknown` statuses never depend on the clock.
+- **The evaluation clock.** Both public state functions normalize `now` to aware UTC. The result is
+  the conservative `unknown`, never an exception and never local time, when `now` is:
+  - `None` or not a datetime;
+  - naive, including a tzinfo that names no offset;
+  - not representable in UTC.
+
+  `model_table` still refuses a plain naive time (`tzinfo` is None) with a `RegistryError`. Any
+  other unusable time makes every freshness-dependent cell `unknown`, and `generated_for_utc` is null.
+
+## The model table (advisory)
+
+`model_table(registry, now)` gives one row per model and effort (rated models and candidates).
+Every cell is explicit: `{value, state, source, measured_at, note}`. A stale or unknown cell has no
+value, and the table carries `execution_allowed: false`.
+
+- **One cell from all its candidates.** Resolution goes in this order:
+  - The best state wins: fresh, then historical, then unverified, then stale, then unknown.
+  - Within that state, the latest dated `measured_at` wins. Undated candidates are excluded
+    whenever any candidate is dated.
+  - Different values at that latest time give `conflict` with no value; nothing wins silently.
+  - Older values that disagree are counted in `superseded`.
+- **Pool verification only through a fresh membership.** `pool_verification` is one of:
+  - `unknown` for v1, or when the membership cell is unknown (no membership, or an unusable clock);
+  - `membership_<state>` when the model's pool-membership cell is not fresh (for example
+    `membership_stale` or `membership_conflict`);
+  - otherwise, the `pool_state` of the named pool.
+- **Limitations travel with the table:**
+  - unknown is not zero, and stale values are unknown;
+  - historical benchmarks are not our workload;
+  - an API price is never quota cost;
+  - candidates have no admission;
+  - pool verification needs a fresh membership;
+  - an equal-state disagreement is a conflict, not a choice.
 
 ## The analysis
 

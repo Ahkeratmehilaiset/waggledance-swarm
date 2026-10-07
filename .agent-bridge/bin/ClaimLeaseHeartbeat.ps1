@@ -267,6 +267,64 @@ function Exit-BridgeClaimLock {
     }
 }
 
+function Test-BridgeQueueRootMutexHost {
+    # True where the v2 runtime-root mutex exists: Windows only, as in
+    # tools/work_queue.py _root_mutex.
+    return ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+}
+
+function Enter-BridgeQueueRootMutex {
+    <#
+        S2 (Lead 2026-09-30): every legacy claim/done mutation runs inside the
+        v2 queue's runtime-root mutex, the SAME kernel object that
+        tools/bridge_v2_queue_transactions.mutex_name(root) names, and takes it
+        BEFORE any per-claim lock, as the Python queue does. Otherwise a v2
+        transaction or claims snapshot could list the claims while a legacy
+        writer changes them. Returns the held mutex, or throws with nothing
+        read or changed: busy within the timeout, an abandoned holder
+        (released and refused, never adopted), or a root with no canonical
+        form. Enter and exit on the same thread.
+
+        Off Windows (pwsh on Linux) there is no such mutex: this returns $null
+        and excludes nothing, as tools/work_queue.py _root_mutex does there,
+        and Exit-BridgeQueueRootMutex accepts $null.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [int] $TimeoutMs = 0
+    )
+
+    if (-not (Test-BridgeQueueRootMutexHost)) { return $null }
+    if ($TimeoutMs -le 0) { $TimeoutMs = $script:BridgeClaimLockTimeoutMs }
+    # Loaded here, not when this file is dot-sourced: only a claim/done
+    # mutation needs it, so a missing helper refuses that mutation instead of
+    # breaking every script that shares this file.
+    . (Join-Path $PSScriptRoot 'BridgeV2QueueMutex.ps1')
+    return (Enter-BridgeV2QueueMutex -RuntimeRoot $Root -TimeoutMs $TimeoutMs)
+}
+
+function Exit-BridgeQueueRootMutex {
+    <#
+        Release a mutex Enter-BridgeQueueRootMutex returned; the handle is
+        always disposed. -Completed says the guarded work finished normally:
+        only then does a release failure surface. After an exception, an exit
+        or a cancellation the original outcome stands, and a release failure
+        (for example a disposed handle) is only warned.
+    #>
+    param(
+        $Mutex,
+        [switch] $Completed
+    )
+
+    if ($null -eq $Mutex) { return }
+    try {
+        try { $Mutex.ReleaseMutex() } finally { $Mutex.Dispose() }   # as Exit-BridgeV2QueueMutex
+    } catch {
+        if ($Completed) { throw }
+        Write-Warning ("runtime-root queue mutex release failed after an earlier failure: {0}" -f $_.Exception.Message)
+    }
+}
+
 function ConvertTo-BridgeIsoTimestamps {
     <#
         PowerShell's ConvertFrom-Json turns ISO-8601 strings into
@@ -330,7 +388,27 @@ function Update-BridgeClaimLease {
     $claimsDir = Get-BridgeClaimsDir -Root $Root
     if (-not (Test-Path -LiteralPath $claimsDir -PathType Container)) { return 0 }
 
+    # S2: a lease bump changes claims, so it runs inside the runtime-root
+    # mutex (root first, then each claim lock). A busy or abandoned root
+    # skips this round with a warning, as a busy claim lock skips a claim;
+    # the next beat retries. Anything else (a root with no canonical form, a
+    # missing mutex helper, a cancellation) is not transient and propagates
+    # with its original error, so the lease expiry never silently stops
+    # advancing (RCO2 5416a7ab F2).
+    try {
+        $rootMutex = Enter-BridgeQueueRootMutex -Root $Root
+    } catch {
+        $enterMessage = [string]$_.Exception.Message
+        if ($enterMessage.StartsWith('runtime-root queue mutex busy: ', [StringComparison]::Ordinal) -or
+            $enterMessage.StartsWith('runtime-root queue mutex was abandoned by a holder', [StringComparison]::Ordinal)) {
+            Write-Warning ("claim lease bump skipped this round: {0}" -f $enterMessage)
+            return 0
+        }
+        throw
+    }
+    $rootWorkDone = $false
     $updated = 0
+    try {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     foreach ($file in @(Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' `
                 -File -ErrorAction SilentlyContinue)) {
@@ -392,6 +470,10 @@ function Update-BridgeClaimLease {
         } finally {
             Exit-BridgeClaimLock -Lock $lock
         }
+    }
+    $rootWorkDone = $true
+    } finally {
+        Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
     }
     return $updated
 }
@@ -533,13 +615,39 @@ function Remove-BridgeSessionHeartbeat {
 
 function Test-BridgeSessionHeartbeatLive {
     <#
-        Is the session that owns this claim still beating?
+        Is the session that owns this claim provably still beating?
 
-        Fail-closed in every ambiguous direction: no owner fields on the
-        claim, no artifact, unreadable artifact, a missing or malformed
-        timestamp, identity mismatch, or a beat older than the recorded
-        TTL all return $false, which means the sweeper behaves exactly as
-        it did before B7.
+        $true only when Get-BridgeSessionHeartbeatLiveness says 'live'.
+        $false is NOT proof of abandonment: a sweeper must call
+        Get-BridgeSessionHeartbeatLiveness and act on 'not_live' only.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] $Claim,
+        [Parameter(Mandatory)] [DateTime] $NowUtc,
+        [int] $MaxTtlSeconds = 0
+    )
+
+    return ((Get-BridgeSessionHeartbeatLiveness -Root $Root -Claim $Claim -NowUtc $NowUtc `
+        -MaxTtlSeconds $MaxTtlSeconds) -ceq 'live')
+}
+
+function Get-BridgeSessionHeartbeatLiveness {
+    <#
+        'live', 'not_live' or 'unknown' for the session that owns this claim.
+
+        'not_live' is proof: no owner fields on the claim (no heartbeat
+        protection, the rule before B7), no artifact, a future-dated beat,
+        or a beat older than the recorded TTL. A beat at this claim's own
+        path that lacks or names another session or token is 'unknown'.
+
+        A-F1 (RCO1 2026-09-30; Fable review 99897de5, Lead d06fbf85): an
+        artifact that EXISTS but cannot be read or evaluated (an access,
+        sharing or I/O error, invalid UTF-8, torn, empty or non-object JSON,
+        a missing or malformed timestamp on the owner's own beat, a
+        directory in its place) is 'unknown', never 'not_live': a sweeper
+        keeps a claim it cannot prove abandoned, as the core sweeper
+        (waggledance/core/work_queue.py _session_heartbeat_state) does.
     #>
     param(
         [Parameter(Mandatory)] [string] $Root,
@@ -549,26 +657,44 @@ function Test-BridgeSessionHeartbeatLive {
     )
 
     if ($MaxTtlSeconds -le 0) { $MaxTtlSeconds = $script:BridgeSessionHeartbeatTtlMax }
-    if (-not $Claim.PSObject.Properties['owner_session_id']) { return $false }
-    if (-not $Claim.PSObject.Properties['owner_token_sha256']) { return $false }
+    if (-not $Claim.PSObject.Properties['owner_session_id']) { return 'not_live' }
+    if (-not $Claim.PSObject.Properties['owner_token_sha256']) { return 'not_live' }
     $claimSession = [string]$Claim.owner_session_id
     $claimToken = [string]$Claim.owner_token_sha256
-    if (-not $claimSession -or -not $claimToken) { return $false }
+    if (-not $claimSession -or -not $claimToken) { return 'not_live' }
 
     $path = Get-BridgeSessionHeartbeatPath -Root $Root -SessionId $claimSession `
         -TokenSha256 $claimToken
-    if (-not $path) { return $false }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    if (-not $path) { return 'not_live' }
+    # Only a missing file or directory proves absence: Test-Path also
+    # answers $false when the probe itself fails.
     try {
-        $beat = Get-Content -Raw -LiteralPath $path -Encoding UTF8 |
-            ConvertFrom-Json -ErrorAction Stop
-    } catch { return $false }
-
-    foreach ($field in @('owner_session_id', 'owner_token_sha256', 'last_beat_utc')) {
-        if (-not $beat.PSObject.Properties[$field]) { return $false }
+        $attributes = [IO.File]::GetAttributes($path)
+    } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+        return 'not_live'
+    } catch { return 'unknown' }
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return 'unknown' }
+    try {
+        $text = [IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding($false, $true)))
+    } catch { return 'unknown' }
+    # One JSON object only: pwsh 7 would unroll '[{...}]' into its element.
+    if ($null -eq $text -or -not $text.TrimStart().StartsWith('{', [StringComparison]::Ordinal)) {
+        return 'unknown'
     }
-    if ([string]$beat.owner_session_id -cne $claimSession) { return $false }
-    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return $false }
+    try {
+        $beat = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch { return 'unknown' }
+    if ($beat -isnot [System.Management.Automation.PSCustomObject]) { return 'unknown' }
+
+    # The artifact sits at the path derived from this claim's own session and token, so a beat
+    # there that lacks or contradicts those fields is damaged or foreign, not proof of absence:
+    # 'unknown', as in the Python sweepers (work_queue.py / bridge_v2_work_queue.py).
+    foreach ($field in @('owner_session_id', 'owner_token_sha256')) {
+        if (-not $beat.PSObject.Properties[$field]) { return 'unknown' }
+    }
+    if ([string]$beat.owner_session_id -cne $claimSession) { return 'unknown' }
+    if ([string]$beat.owner_token_sha256 -cne $claimToken) { return 'unknown' }
+    if (-not $beat.PSObject.Properties['last_beat_utc']) { return 'unknown' }
 
     $ttl = $script:BridgeSessionHeartbeatTtlDefault
     if ($beat.PSObject.Properties['ttl_seconds']) {
@@ -582,17 +708,34 @@ function Test-BridgeSessionHeartbeatLive {
     if ($ttl -gt $MaxTtlSeconds) { $ttl = $MaxTtlSeconds }
 
     $beatUtc = $null
-    try {
-        $beatUtc = [DateTime]::Parse(
-            [string]$beat.last_beat_utc,
-            [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
-                [System.Globalization.DateTimeStyles]::AdjustToUniversal
-        ).ToUniversalTime()
-    } catch { return $false }
-    if ($null -eq $beatUtc) { return $false }
+    $rawBeat = $beat.last_beat_utc
+    if ($rawBeat -is [DateTime]) {
+        # S1 (RCO1 2026-09-30; Fable review 0286732f): pwsh 7's ConvertFrom-Json has already made an
+        # ISO string a DateTime, converting an explicit offset to LOCAL time. [string] would drop the
+        # kind and AssumeUniversal would read that local wall time as UTC (a fresh +03:00 beat looked
+        # 3 h in the future on a UTC+3 host, so not live). Use the kind instead: Utc as is, Local
+        # converted, Unspecified taken as UTC (as AssumeUniversal does for a string without a zone).
+        if ($rawBeat.Kind -eq [DateTimeKind]::Utc) {
+            $beatUtc = $rawBeat
+        } elseif ($rawBeat.Kind -eq [DateTimeKind]::Local) {
+            $beatUtc = $rawBeat.ToUniversalTime()
+        } else {
+            $beatUtc = [DateTime]::SpecifyKind($rawBeat, [DateTimeKind]::Utc)
+        }
+    } else {
+        try {
+            $beatUtc = [DateTime]::Parse(
+                [string]$rawBeat,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                    [System.Globalization.DateTimeStyles]::AdjustToUniversal
+            ).ToUniversalTime()
+        } catch { return 'unknown' }
+    }
+    if ($null -eq $beatUtc) { return 'unknown' }
     # A future-dated beat is treated as not live: clock skew must not be
     # a way to pin a claim open forever.
-    if ($beatUtc -gt $NowUtc.AddSeconds(60)) { return $false }
-    return ((($NowUtc - $beatUtc).TotalSeconds) -le $ttl)
+    if ($beatUtc -gt $NowUtc.AddSeconds(60)) { return 'not_live' }
+    if ((($NowUtc - $beatUtc).TotalSeconds) -le $ttl) { return 'live' }
+    return 'not_live'
 }

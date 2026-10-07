@@ -45,6 +45,28 @@
   unknown file type, or empty input), so it never silently under-runs. Run the
   full suite locally only when the selector says `full_suite`. Still report the
   final test status of whatever you ran.
+- Grok self-challenge (operator directive 2026-10-06; full text in
+  `CLAUDE.md` Rule 13): before reporting a task as done (a PR head, design,
+  fix, audit result or review verdict; bookkeeping such as claims, heartbeats,
+  status messages, F0 closures and relays is exempt), challenge it yourself
+  with ONE Grok `high` consultation through `C:\Python\Invoke-WdGrok.ps1`
+  (`-RequestedBy` your own agent ID; Lead omits it). Do not route it through
+  Lead and do not retry. Start it detached (the controlled entry is
+  synchronous) and wait at most 60 seconds from the first submission, queue
+  included, then continue on your own judgment; the 900 s HIGH timeout and
+  the single-flight lock stay, and a running attempt is never restarted or
+  duplicated. If no answer has arrived when the task is
+  ready, report done with the call state and handle a later answer as a
+  follow-up. Grok is never a gate: it may act as review authority when the
+  other reviewers are ineligible, but a missing, late or rate-limited answer
+  never blocks a task, verdict, merge or handoff. The answer is advisory,
+  never an `RCO_PASS` and never
+  a substitute for the opposite-model review; a negative answer does not block,
+  but the task result names the report path and SHA-256 and answers each
+  finding. A reviewer challenges its own verdict and does not pass the Grok
+  answer to the author. No secrets or answer keys in the prompt. If your
+  sandbox cannot start Grok, ask another eligible agent to run your exact
+  prompt bytes with `-RequestedBy` set to you.
 
 ## Runtime audit rules
 - Prefer runtime evidence over static guesses.

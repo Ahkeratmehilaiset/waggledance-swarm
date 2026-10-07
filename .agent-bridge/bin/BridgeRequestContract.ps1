@@ -183,3 +183,120 @@ function Test-BridgeReplyBinding {
     }
     return $true
 }
+
+# The withdrawal path reads names ordinally (C69-L1): exactly one member spelled
+# $Name, never a case variant. Returns the property or $null.
+function Get-BridgeOrdinalMember {
+    param($Object, [string]$Name)
+    if ($null -eq $Object -or $Object.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $null }
+    $found = @($Object.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+    if ($found.Count -eq 1) { return $found[0] }
+    return $null
+}
+
+function Test-BridgeAsciiCaseVariant {
+    param([string]$Name, [string]$Canonical)
+    if ($Name.Length -ne $Canonical.Length) { return $false }
+    foreach ($character in $Name.ToCharArray()) { if ([int]$character -gt 127) { return $false } }
+    return $Name.ToLowerInvariant() -ceq $Canonical
+}
+
+# Every member whose name is an ASCII case variant of withdraws, at the top
+# level or inside any ASCII case variant of payload. Presence is detected
+# case-insensitively (conservative: never treated as absent); only the exact
+# spelling in the exact location is valid.
+function Get-BridgeWithdrawsMembers {
+    param($Event)
+    $members = New-Object System.Collections.Generic.List[object]
+    if ($null -eq $Event -or $Event.GetType() -ne [System.Management.Automation.PSCustomObject]) { return ,$members }
+    foreach ($property in @($Event.PSObject.Properties)) {
+        if (Test-BridgeAsciiCaseVariant $property.Name 'withdraws') {
+            [void]$members.Add([pscustomobject]@{ location = 'top'; exact = ($property.Name -ceq 'withdraws'); value = $property.Value })
+        } elseif ((Test-BridgeAsciiCaseVariant $property.Name 'payload') -and $null -ne $property.Value -and
+            $property.Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
+            foreach ($inner in @($property.Value.PSObject.Properties)) {
+                if (Test-BridgeAsciiCaseVariant $inner.Name 'withdraws') {
+                    [void]$members.Add([pscustomobject]@{ location = 'payload'
+                        exact = ($property.Name -ceq 'payload' -and $inner.Name -ceq 'withdraws'); value = $inner.Value })
+                }
+            }
+        }
+    }
+    return ,$members
+}
+
+# Exact withdrawal: a requester closure carrying `withdraws` names one request
+# version by descriptor and by its reader-row digest (raw_line_sha256: the
+# lowercase SHA-256 of the strict UTF-8 canonical-reader row, split on LF with
+# at most one trailing CR removed; not a physical-row or WAL digest). The
+# caller supplies the digest from reader metadata, or none when the row is not
+# addressable (another CR, BOM, invalid UTF-8) or not unique in the window.
+# Returns $null when the closure carries no withdraws member, else 'exact',
+# 'mismatch', 'malformed', 'unverifiable' (no digest for the request) or
+# 'identity_unverified' (request and closure do not both carry the registered
+# agent_uuid of their agent). Only 'exact' closes, and only that version; a
+# withdraws-bearing closure never falls back to generic same-task closure.
+# Any ASCII case variant of withdraws (top level or payload) is present and
+# malformed; descriptor, request, closure and registry names are ordinal.
+# Bound requests (any correlation field) and control signals are never
+# withdrawn this way: they keep the full reply contract.
+function Get-BridgeWithdrawalTarget {
+    param($Request, $Closure, [AllowNull()][string]$RequestRawSha256='', [int]$RequestPosition=-1, [int]$ClosurePosition=-1,
+        [AllowNull()][string]$RegisteredAgentUuid='')
+    $members = Get-BridgeWithdrawsMembers $Closure
+    if ($members.Count -eq 0) { return $null }
+    # A case variant, a variant payload or a second member is malformed.
+    if (@($members | Where-Object { -not $_.exact }).Count -gt 0) { return 'malformed' }
+    $direct = @($members | Where-Object { $_.location -ceq 'top' })
+    $nested = @($members | Where-Object { $_.location -ceq 'payload' })
+    if ($direct.Count -gt 1 -or $nested.Count -gt 1) { return 'malformed' }
+    if ($direct.Count -eq 1 -and $nested.Count -eq 1 -and
+        (ConvertTo-BridgeContractJson $direct[0].value) -cne (ConvertTo-BridgeContractJson $nested[0].value)) { return 'malformed' }
+    $descriptor = if ($nested.Count -eq 1) { $nested[0].value } else { $direct[0].value }
+    if ($null -eq $descriptor -or $descriptor.GetType() -ne [System.Management.Automation.PSCustomObject]) { return 'malformed' }
+    $fields = @{}
+    foreach ($key in @('agent','type','status','task_id','ts_utc','raw_line_sha256')) {
+        $property = Get-BridgeOrdinalMember $descriptor $key
+        if ($null -eq $property -or $property.Value -isnot [string]) { return 'malformed' }
+        $fields[$key] = $property.Value
+    }
+    if ($fields['raw_line_sha256'] -cnotmatch '\A[0-9a-f]{64}\z') { return 'malformed' }
+    if ($null -eq (ConvertTo-BridgeContractTime $fields['ts_utc'])) { return 'malformed' }
+    # Any correlation field (request_id, nonce, token, task_revision,
+    # expected_responders; top-level or payload, conflicts included) makes the
+    # request bound, and bound requests keep the full reply contract.
+    if (Test-BridgeBoundRequest $Request) { return 'mismatch' }
+    # Control signals (negative reviews) need explicit correlation and are
+    # never closed by a withdrawal, matching Test-BridgeReplyBinding.
+    $controlType = ([string](Get-BridgeContractField $Request 'type')).Trim().ToLowerInvariant()
+    $controlStatus = ([string](Get-BridgeContractField $Request 'status')).Trim().ToLowerInvariant()
+    if ($controlType -in @('decision', 'finding')) {
+        foreach ($status in @('changes_requested', 'rco_fail', 'review_failed', 'blocked')) {
+            if ($controlStatus -eq $status -or $controlStatus.StartsWith($status + '_')) { return 'mismatch' }
+        }
+    }
+    foreach ($key in @('agent','task_id')) {
+        $own = Get-BridgeOrdinalMember $Request $key
+        $other = Get-BridgeOrdinalMember $Closure $key
+        if ($null -eq $own -or $null -eq $other -or $own.Value -isnot [string] -or $other.Value -isnot [string] -or
+            $other.Value -cne $own.Value) { return 'mismatch' }
+    }
+    # ts_utc is compared as written, like every other descriptor field (S1
+    # parity: an equal instant spelled differently is a mismatch).
+    foreach ($key in @('agent','type','status','task_id','ts_utc')) {
+        $own = Get-BridgeOrdinalMember $Request $key
+        if ($null -eq $own -or $own.Value -isnot [string] -or $fields[$key] -cne $own.Value) { return 'mismatch' }
+    }
+    if ($RequestPosition -lt 0 -or $ClosurePosition -le $RequestPosition) { return 'mismatch' }
+    $uuidPattern = '\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z'
+    if ($RegisteredAgentUuid -cnotmatch $uuidPattern) { return 'identity_unverified' }
+    foreach ($event in @($Request, $Closure)) {
+        $uuid = Get-BridgeOrdinalMember $event 'agent_uuid'
+        # Ordinal, like the writer's registry check and the requester-closure
+        # identity binding: no case folding.
+        if ($null -eq $uuid -or $uuid.Value -isnot [string] -or $uuid.Value -cne $RegisteredAgentUuid) { return 'identity_unverified' }
+    }
+    if ($RequestRawSha256 -cnotmatch '\A[0-9a-f]{64}\z') { return 'unverifiable' }
+    if ($fields['raw_line_sha256'] -cne $RequestRawSha256) { return 'mismatch' }
+    return 'exact'
+}

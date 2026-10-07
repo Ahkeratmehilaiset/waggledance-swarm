@@ -1,0 +1,12 @@
+{
+  "schema": "wd.grok-admission-config.v1",
+  "enabled": false,
+  "note": "Default OFF; this file grants nothing. Admission also needs five INJECTED ports, and none is wired or activated: a clock; the read-only snapshot; F0 activation, which evaluates F20 at that snapshot's head/tree under an operator-signed policy whose parameters.F20 carry the caps; the helper, whose own state refuses an unreconciled attempt and whose not-eligible report (its own provider limit or deferral) skips the consult; there is no local hourly quota (operator direction 2026-09-30), and a skipped or refused consult is advisory, never a merge gate; and the durable admission ledger. The ledger port is authored (tools/wd_grok_admission_ledger.py) but dormant: unwired, unactivated and unverified at runtime, and its native accounting is UNKNOWN. No production adapter for the other four ports is built. Each port needs its own reviewed trust contract. An operator request or a relayed event is not a signed activation. There are no exemptions.",
+  "proposed_caps_for_signing": {
+    "model": null,
+    "efforts": [],
+    "allowed_tools": [],
+    "max_prompt_bytes": 48000,
+    "max_intent_ttl_seconds": 900
+  }
+}

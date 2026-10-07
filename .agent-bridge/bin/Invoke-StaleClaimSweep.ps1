@@ -111,6 +111,66 @@ function ConvertTo-BridgeUtc {
     }
 }
 
+function Get-StaleClaimDispatcher {
+    # A task-id prefix is not evidence of who assigned the claim. Only an
+    # addressed assignment whose responder identity matches the archived
+    # claim may add the dispatcher to the release recipients.
+    param([object] $Claim, [string] $BridgeRoot)
+
+    if (-not $Claim.PSObject.Properties['agent_uuid'] -or
+        -not $Claim.PSObject.Properties['owner_session_id']) { return $null }
+    $eventsPath = Join-Path (Join-Path $BridgeRoot 'shared') 'events.jsonl'
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) { return $null }
+    try {
+        . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
+        $snapshot = Read-BridgeEventTail -Path $eventsPath -MaxLines 5000
+        if ($snapshot.status -in @('BLOCKED', 'RETRY')) { return $null }
+        $candidateEvents = @()
+        foreach ($event in @($snapshot.rows)) {
+            if ([string]$event.type -cne 'wake_request' -or
+                [string]$event.status -cne 'assigned' -or
+                [string]$event.task_id -cne [string]$Claim.task_id) { continue }
+            if (@(([string]$event.to -split ',') | ForEach-Object { $_.Trim() }) -cnotcontains
+                [string]$Claim.agent) { continue }
+            if (-not $event.PSObject.Properties['expected_responders']) { continue }
+            $responder = $event.expected_responders.PSObject.Properties[[string]$Claim.agent]
+            if ($null -eq $responder) { continue }
+            if ([string]$responder.Value.agent_uuid -cne [string]$Claim.agent_uuid -or
+                [string]$responder.Value.session_id -cne [string]$Claim.owner_session_id) { continue }
+            $sender = [string]$event.agent
+            # Legacy envelopes can lack these fields. Do not return one and
+            # then dereference its missing members under StrictMode after the
+            # claim has already been archived.
+            if (-not $event.PSObject.Properties['request_id'] -or
+                -not $event.PSObject.Properties['agent_uuid'] -or
+                -not $event.PSObject.Properties['session_id']) { continue }
+            if ($sender -cmatch '^[a-z][a-z0-9_-]{1,32}$' -and
+                $sender -cne [string]$Claim.agent -and
+                [string]$event.request_id -cmatch '^[A-Za-z0-9._:-]{1,128}$' -and
+                [string]$event.agent_uuid -cmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' -and
+                [string]$event.session_id -cmatch '^[A-Za-z0-9._:-]{1,128}$') {
+                $candidateEvents += $event
+            }
+        }
+        # Replayed copies of one request are harmless; two distinct requests
+        # from even the same sender are ambiguous, not permission to pick last.
+        if ($candidateEvents.Count -eq 0) { return $null }
+        $first = $candidateEvents[0]
+        foreach ($candidate in $candidateEvents) {
+            if ([string]$candidate.agent -cne [string]$first.agent -or
+                [string]$candidate.request_id -cne [string]$first.request_id -or
+                [string]$candidate.agent_uuid -cne [string]$first.agent_uuid -or
+                [string]$candidate.session_id -cne [string]$first.session_id) {
+                return $null
+            }
+        }
+        return $first
+    } catch {
+        # Unknown or incomplete history cannot authorize a guessed recipient.
+        return $null
+    }
+}
+
 # Emit zero or more swept-claim records into the pipeline; caller
 # wraps with @(...) to always get an array. Avoid the
 # Generic.List + return-comma trick that PSStrictMode's boolean
@@ -125,6 +185,20 @@ if (-not (Test-Path -LiteralPath $doneDir -PathType Container)) {
 
 $now = (Get-Date).ToUniversalTime()
 
+# S2 (Lead 2026-09-30): the sweep archives claims, so it runs inside the v2
+# queue's runtime-root mutex, taken before any claim or beat lock as in the
+# Python queue. A busy or abandoned root throws with nothing read or changed;
+# the opportunistic callers catch it and sweep on a later round.
+# Liveness (RCO2 5416a7ab F1): only the decision and the archive run under
+# the root and claim locks. The dispatcher lookup (an event-log tail read)
+# and the release event are slow and unbounded, so they run after every lock
+# is released, as Claim-AgentTask and Release-AgentTask write their events,
+# in archive order; a concurrent claim never waits on them.
+$archivedReleases = New-Object System.Collections.Generic.List[object]
+try {
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
     # B7: take the same per-claim lock the keepalive and release use and
@@ -132,6 +206,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     # another writer is part-way through replacing.
     $claimLock = Enter-BridgeClaimLock -ClaimPath $file.FullName
     if ($null -eq $claimLock) { continue }
+    $beatLock = $null
     try {
     if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) { continue }
     $claim = $null
@@ -209,12 +284,45 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     if ($effectiveLeaseSeconds -lt 1) { $effectiveLeaseSeconds = 1 }
     if ($now -lt $effectiveExpiresUtc) { continue }
 
+    # F8 fence (RCO1 2026-09-30): Write-BridgeSessionHeartbeat takes only the
+    # beat's own sibling lock, never this claim lock. Hold that lock from the
+    # liveness read through the archive, so a beat being written is awaited
+    # and then seen; a beat lock still busy after the timeout decides nothing
+    # this round (the claim stays).
+    $beatPath = ''
+    if ($claim.PSObject.Properties['owner_session_id'] -and
+        $claim.PSObject.Properties['owner_token_sha256']) {
+        $beatPath = Get-BridgeSessionHeartbeatPath -Root $bridgeRoot `
+            -SessionId ([string]$claim.owner_session_id) `
+            -TokenSha256 ([string]$claim.owner_token_sha256)
+    }
+    if ($beatPath) {
+        $beatDir = Split-Path -Parent $beatPath
+        if (-not (Test-Path -LiteralPath $beatDir -PathType Container)) {
+            try {
+                [void](New-Item -ItemType Directory -Path $beatDir -Force -ErrorAction Stop)
+            } catch { continue }
+        }
+        $beatLock = Enter-BridgeClaimLock -ClaimPath $beatPath
+        if ($null -eq $beatLock) { continue }
+    }
+
     # B7: expiry alone is no longer sufficient. A claim whose owning
     # session is still beating is live work, not a leak. The check binds
     # owner_session_id plus owner_token_sha256; the recorded pid is
     # deliberately never consulted, because pids are recycled.
-    if (Test-BridgeSessionHeartbeatLive -Root $bridgeRoot -Claim $claim `
-            -NowUtc $now) {
+    # A-F1 (RCO1 2026-09-30): only a PROVEN not-live owner is swept; a beat
+    # that exists but cannot be read or evaluated is 'unknown' and the
+    # claim stays this round, as in the core sweeper.
+    # SW-S1 (RCO2 ledger 4EE1BFA8): judge the beat with a clock read now,
+    # under the claim and beat locks. $now was read once before the root
+    # mutex and every lock wait, so a valid beat the owner wrote while this
+    # sweep waited could lie more than 60 s past it and look future-dated
+    # (not live). $now still drives the expiry check above and the archive
+    # stamp: an older clock only sweeps less.
+    $decisionNowUtc = (Get-Date).ToUniversalTime()
+    if ((Get-BridgeSessionHeartbeatLiveness -Root $bridgeRoot -Claim $claim `
+            -NowUtc $decisionNowUtc) -cne 'not_live') {
         continue
     }
 
@@ -255,15 +363,60 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
             $file.Name, $_.Exception.Message)
         continue
     }
+    # Decided and archived: the owner's writer may beat again.
+    Exit-BridgeClaimLock -Lock $beatLock
+    $beatLock = $null
+
+    # Archived: the release event and the pipeline record follow once every
+    # lock is released (below), with the values decided here.
+    $archivedReleases.Add([pscustomobject]@{
+        Claim = $claim; Agent = $agent; AgeSeconds = $ageSeconds; LastHeartbeat = $tsString
+        ThresholdSeconds = $effectiveLeaseSeconds; LeaseSeconds = $claimLeaseSeconds
+        ExpiresUtc = $effectiveExpiresUtc; DonePath = $donePath
+    })
+    } finally {
+        Exit-BridgeClaimLock -Lock $beatLock
+        Exit-BridgeClaimLock -Lock $claimLock
+    }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
+}
+} finally {
+# Every archive above gets its event and record, in archive order, even when
+# the loop or the root release failed afterwards; no lock is held here.
+foreach ($archived in $archivedReleases) {
+    $claim = $archived.Claim
+    $agent = $archived.Agent
+    $ageSeconds = $archived.AgeSeconds
+    $tsString = $archived.LastHeartbeat
+    $effectiveLeaseSeconds = $archived.ThresholdSeconds
+    $claimLeaseSeconds = $archived.LeaseSeconds
+    $effectiveExpiresUtc = $archived.ExpiresUtc
+    $donePath = $archived.DonePath
 
     # Emit release event (best-effort; lease sweep must not fail
     # because the bridge writer is momentarily contended).
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
         if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
+            $recipients = @()
+            if ($agent -cmatch '^[a-z][a-z0-9_-]{1,32}$') { $recipients += $agent }
+            $dispatcher = Get-StaleClaimDispatcher -Claim $claim -BridgeRoot $bridgeRoot
+            if ($null -ne $dispatcher -and
+                $recipients -cnotcontains [string]$dispatcher.agent) {
+                $recipients += [string]$dispatcher.agent
+            }
             $payload = [pscustomobject]@{
                 task_id            = [string]$claim.task_id
                 claim_agent        = $agent
+                claim_agent_uuid   = if ($claim.PSObject.Properties['agent_uuid']) { [string]$claim.agent_uuid } else { $null }
+                claim_owner_session_id = if ($claim.PSObject.Properties['owner_session_id']) { [string]$claim.owner_session_id } else { $null }
+                claim_run_id       = if ($claim.PSObject.Properties['run_id']) { [string]$claim.run_id } else { $null }
+                dispatcher_request_id = if ($null -ne $dispatcher) { [string]$dispatcher.request_id } else { $null }
+                dispatcher_agent_uuid = if ($null -ne $dispatcher) { [string]$dispatcher.agent_uuid } else { $null }
+                dispatcher_session_id = if ($null -ne $dispatcher) { [string]$dispatcher.session_id } else { $null }
                 last_heartbeat_utc = $tsString
                 age_seconds        = [int]$ageSeconds
                 stale_threshold_s  = $effectiveLeaseSeconds
@@ -279,6 +432,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                 -Status stale_lease `
                 -Severity medium `
                 -TaskId ([string]$claim.task_id) `
+                -To ($recipients -join ',') `
                 -Message ("auto-released stale claim by $agent (heartbeat $([int]$ageSeconds)s old)") `
                 -PayloadJson $payloadJson | Out-Null
         }
@@ -300,7 +454,5 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         age_seconds    = [int]$ageSeconds
         archived_path  = $donePath
     }
-    } finally {
-        Exit-BridgeClaimLock -Lock $claimLock
-    }
+}
 }

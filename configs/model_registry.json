@@ -1,6 +1,6 @@
 {
-  "schema": "wd.model-registry.v1",
-  "updated_at": "2026-09-27",
+  "schema": "wd.model-registry.v2",
+  "updated_at": "2026-09-30",
   "benchmark": {
     "name": "Artificial Analysis Intelligence Index",
     "version": "v4.3.2",
@@ -274,5 +274,214 @@
         }
       }
     }
-  }
+  },
+  "historical": {
+    "status": "historical",
+    "applies_to": [
+      "benchmark",
+      "coding_benchmark",
+      "models"
+    ],
+    "source_measured_at": "2026-09-27",
+    "source_measured_at_basis": "Upper bound: the fetch date of the benchmark pages (benchmark.fetched_at). The sources' own measurement dates were not recorded in v1.",
+    "cost_basis": "api_price_not_quota"
+  },
+  "pools": {
+    "grok-weekly-shared": {
+      "provider": "grok",
+      "limit_id": null,
+      "window": "weekly",
+      "tier": "unknown",
+      "verification": "unverified",
+      "measured_at": "2026-09-28",
+      "ttl_seconds": null,
+      "provenance": {
+        "kind": "plan_transcription",
+        "reference": "docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297",
+        "observer": "fable-5 (2026-09-28)"
+      }
+    }
+  },
+  "candidates": {
+    "claude/claude-haiku-4-5": {
+      "provider": "claude",
+      "model": "claude-haiku-4-5",
+      "admission": "none",
+      "capability": "unknown",
+      "pool": null,
+      "note": "Placeholder only. No sourced benchmark, cost, context, tier or pool value is recorded; every cell is unknown."
+    },
+    "grok/grok-4.7": {
+      "provider": "grok",
+      "model": "grok-4.7",
+      "admission": "none",
+      "capability": "unknown",
+      "pool": "grok-weekly-shared",
+      "note": "Third model family (plan section 2.6). External index values are historical evidence only; capability for our headless, tool-less workload is unknown."
+    }
+  },
+  "observations": [
+    {
+      "id": "grok-4.7-high-intelligence-index",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": "high",
+        "pool": null
+      },
+      "kind": "quality",
+      "class": "general",
+      "value": 46.33,
+      "unit": "intelligence_index",
+      "status": "historical",
+      "provenance": {
+        "kind": "external_benchmark",
+        "reference": "Artificial Analysis Intelligence Index v4.3.2, transcribed from docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297 (sources: https://artificialanalysis.ai/models/grok-4-7, https://artificialanalysis.ai/models/grok-4-7-high, https://artificialanalysis.ai/articles/benchmarking-grok-4-7)",
+        "observer": "fable-5, checked against the raw page data (2026-09-28)"
+      },
+      "measured_at": "2026-09-21",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "none_stated",
+        "low": null,
+        "high": null,
+        "note": "Raw page value; the plan row rounds it to 46."
+      }
+    },
+    {
+      "id": "grok-4.7-xhigh-intelligence-index",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": "xhigh",
+        "pool": null
+      },
+      "kind": "quality",
+      "class": "general",
+      "value": 46.45,
+      "unit": "intelligence_index",
+      "status": "historical",
+      "provenance": {
+        "kind": "external_benchmark",
+        "reference": "Artificial Analysis Intelligence Index v4.3.2, transcribed from docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297 (sources: https://artificialanalysis.ai/models/grok-4-7, https://artificialanalysis.ai/models/grok-4-7-high, https://artificialanalysis.ai/articles/benchmarking-grok-4-7)",
+        "observer": "fable-5, checked against the raw page data (2026-09-28)"
+      },
+      "measured_at": "2026-09-21",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "none_stated",
+        "low": null,
+        "high": null,
+        "note": "Raw page value; the plan row rounds it to 46. No index gain over high."
+      }
+    },
+    {
+      "id": "grok-4.7-high-api-cost",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": "high",
+        "pool": null
+      },
+      "kind": "cost",
+      "class": null,
+      "value": 2.73,
+      "unit": "usd_per_task_api_price",
+      "status": "historical",
+      "provenance": {
+        "kind": "external_benchmark",
+        "reference": "Artificial Analysis Intelligence Index v4.3.2, transcribed from docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297 (sources: https://artificialanalysis.ai/models/grok-4-7, https://artificialanalysis.ai/models/grok-4-7-high, https://artificialanalysis.ai/articles/benchmarking-grok-4-7)",
+        "observer": "fable-5 (2026-09-28)"
+      },
+      "measured_at": "2026-09-21",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "unknown",
+        "low": null,
+        "high": null,
+        "note": "Page summary value, not checked against the raw data. API list price, never quota cost."
+      }
+    },
+    {
+      "id": "grok-4.7-xhigh-api-cost",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": "xhigh",
+        "pool": null
+      },
+      "kind": "cost",
+      "class": null,
+      "value": 3.74,
+      "unit": "usd_per_task_api_price",
+      "status": "historical",
+      "provenance": {
+        "kind": "external_benchmark",
+        "reference": "Artificial Analysis Intelligence Index v4.3.2, transcribed from docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297 (sources: https://artificialanalysis.ai/models/grok-4-7, https://artificialanalysis.ai/models/grok-4-7-high, https://artificialanalysis.ai/articles/benchmarking-grok-4-7)",
+        "observer": "fable-5 (2026-09-28)"
+      },
+      "measured_at": "2026-09-21",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "unknown",
+        "low": null,
+        "high": null,
+        "note": "Page summary value, not checked against the raw data. API list price, never quota cost."
+      }
+    },
+    {
+      "id": "grok-4.7-xhigh-coding-agent-index",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": "xhigh",
+        "pool": null
+      },
+      "kind": "quality",
+      "class": "coding_agent",
+      "value": 56,
+      "unit": "coding_agent_index",
+      "status": "historical",
+      "provenance": {
+        "kind": "external_benchmark",
+        "reference": "Artificial Analysis Intelligence Index v4.3.2, transcribed from docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297 (sources: https://artificialanalysis.ai/models/grok-4-7, https://artificialanalysis.ai/models/grok-4-7-high, https://artificialanalysis.ai/articles/benchmarking-grok-4-7)",
+        "observer": "fable-5 (2026-09-28)"
+      },
+      "measured_at": "2026-09-21",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "unknown",
+        "low": null,
+        "high": null,
+        "note": "Measured with the Grok Build harness, not in our headless, tool-less use."
+      }
+    },
+    {
+      "id": "grok-4.7-pool-membership",
+      "subject": {
+        "provider": "grok",
+        "model": "grok-4.7",
+        "effort": null,
+        "pool": null
+      },
+      "kind": "pool",
+      "class": null,
+      "value": "grok-weekly-shared",
+      "unit": "pool_id",
+      "status": "unverified",
+      "provenance": {
+        "kind": "plan_transcription",
+        "reference": "docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md section 2.1 at c099c211a6fd71c109b6349e9e6ccd8794def297",
+        "observer": "fable-5 (2026-09-28)"
+      },
+      "measured_at": "2026-09-28",
+      "ttl_seconds": null,
+      "uncertainty": {
+        "kind": "unknown",
+        "low": null,
+        "high": null,
+        "note": "Grok weekly pool shared by every Grok product; not readable headless, so its state stays unknown until F4 calibrates it."
+      }
+    }
+  ]
 }

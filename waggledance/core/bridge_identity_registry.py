@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Mapping
+import uuid
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 AGENT_UUID_PATTERN = re.compile(
@@ -60,13 +61,41 @@ def load_bridge_identity_registry(
     return registry
 
 
+def _canonical_uuid_text(value: object) -> str:
+    """One spelling per UUID value: braces, ``urn:uuid:``, missing hyphens, case
+    and surrounding whitespace all map to the canonical lowercase form. Text that
+    is not a UUID is compared case-insensitively as written."""
+    text = str(value).strip()
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text.casefold()
+
+
+def _registered_owner_of_uuid(registry: Mapping[str, str], event_uuid: str) -> str | None:
+    """Return the registered agent that owns ``event_uuid`` in any spelling, if any."""
+    if not event_uuid.strip():
+        return None
+    wanted = _canonical_uuid_text(event_uuid)
+    for owner, registered_uuid in registry.items():
+        if _canonical_uuid_text(registered_uuid) == wanted:
+            return str(owner)
+    return None
+
+
 def bridge_identity_binding_status(
     event: Mapping[str, Any],
     *,
     registry: Mapping[str, str],
     restricted_agents: set[str] | frozenset[str] | None = None,
 ) -> str:
-    """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``."""
+    """Return ``valid``, ``unregistered``, ``missing_uuid``, or ``mismatch_uuid``.
+
+    The status is deliberately unchanged for a name that is not registered (or not
+    watched): gate readers drop ``missing_uuid``/``mismatch_uuid`` events, so
+    reclassifying such a name would hide its blocks. Acceptance of a borrowed
+    registered UUID is refused in ``event_matches_registered_identity`` instead.
+    """
     agent = str(event.get("agent", ""))
     if restricted_agents is not None and agent not in restricted_agents:
         return "unregistered"
@@ -87,12 +116,20 @@ def event_matches_registered_identity(
     registry: Mapping[str, str],
     restricted_agents: set[str] | frozenset[str] | None = None,
 ) -> bool:
-    """True when the event is unregistered or matches its registered UUID."""
-    return bridge_identity_binding_status(
+    """True when the event matches its registered UUID, or is unregistered and does
+    not borrow a UUID that is registered to a different agent (reverse alias, in
+    any UUID spelling)."""
+    status = bridge_identity_binding_status(
         event,
         registry=registry,
         restricted_agents=restricted_agents,
-    ) in {"unregistered", "valid"}
+    )
+    if status == "valid":
+        return True
+    if status != "unregistered":
+        return False
+    uuid_owner = _registered_owner_of_uuid(registry, str(event.get("agent_uuid", "") or ""))
+    return uuid_owner is None or uuid_owner == str(event.get("agent", ""))
 
 
 __all__ = [

@@ -23,6 +23,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_consensus_auto_merge import (  # noqa: E402
+    REVIEW_POLICIES,
+    REVIEW_POLICY_LEGACY,
+    REVIEW_POLICY_RULE12,
     AutoMergeGateError,
     evaluate_auto_merge_gate,
 )
@@ -78,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Actually run gh pr merge after the receipt gate passes.",
     )
     parser.add_argument("--now", default="")
+    parser.add_argument(
+        "--review-policy",
+        choices=sorted(REVIEW_POLICIES),
+        default=REVIEW_POLICY_LEGACY,
+        help="Opt-in rule12 review evaluator; the default is the Rule 9a verifier.",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--operator-path-exception-json", default="",
                         help="Explicit operator invocation only: exact-bound grant JSON; not authentication.")
@@ -119,6 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             now_utc=now_utc,
             operator_path_exception=(json.loads(args.operator_path_exception_json)
                                      if args.operator_path_exception_json else None),
+            review_policy=args.review_policy,
         )
     except ValueError as exc:
         report = {
@@ -167,6 +177,7 @@ def merge_with_bridge_receipt(
     now_utc: datetime | None = None,
     runner: Runner | None = None,
     operator_path_exception: Mapping[str, Any] | None = None,
+    review_policy: str = REVIEW_POLICY_LEGACY,
 ) -> dict[str, Any]:
     """Run snapshot + receipt preflight, then optionally merge exact head."""
     if type(pr_number) is not int or pr_number < 1:
@@ -183,6 +194,10 @@ def merge_with_bridge_receipt(
         raise ValueError("bridge_task_id must be a string")
     if type(method) is not str:
         raise ValueError("method must be a string")
+    if type(review_policy) is not str or review_policy not in REVIEW_POLICIES:
+        raise ValueError(
+            "review_policy must be one of: " + ", ".join(sorted(REVIEW_POLICIES))
+        )
     if not isinstance(events_path, Path):
         raise ValueError("events_path must be a Path")
     if not isinstance(out_dir, Path):
@@ -275,6 +290,7 @@ def merge_with_bridge_receipt(
             bridge_task_id=bridge_task_id,
             now_utc=effective_now_utc,
             operator_path_exception=operator_path_exception,
+            review_policy=review_policy,
         )
     except BridgeConsensusMergeReceiptError as exc:
         return _blocked(
@@ -344,6 +360,13 @@ def merge_with_bridge_receipt(
             },
         )
 
+    # Under rule12 the fresh gate reads the real clock (now_utc omitted), so
+    # evidence posted after the receipt cannot be judged against a stale time.
+    fresh_rule12_kwargs: dict[str, Any] = (
+        {"review_policy": review_policy}
+        if review_policy == REVIEW_POLICY_RULE12
+        else {}
+    )
     try:
         fresh_gate = evaluate_auto_merge_gate(
             pr_status=verified_snapshot,
@@ -358,6 +381,7 @@ def merge_with_bridge_receipt(
             bridge_task_id=bridge_task_id,
             apply=False,
             require_bridge_consensus=True,
+            **fresh_rule12_kwargs,
         )
     except AutoMergeGateError as exc:
         fresh_gate = dict(exc.report)

@@ -221,7 +221,13 @@ function Test-BridgeWakeEligible {
     $payload=$Event.PSObject.Properties['payload']
     if ($null -ne $payload -and $null -ne $payload.Value) {
         $notification=$payload.Value.PSObject.Properties['notification']
-        if ($null -ne $notification -and $notification.Value -ceq 'informational') { return $false }
+        # A hint cannot silence outcomes or unfamiliar control traffic. In the
+        # 2026-09-28 incident full_suite_result was accidentally marked FYI and
+        # left waiting lanes asleep. Only this closed benign envelope is quiet.
+        # Wake eligibility is NOT reply binding, acceptance or task completion.
+        if ($null -ne $notification -and $notification.Value -ceq 'informational' -and
+            $null -ne $type -and $type.Value -ceq 'message' -and
+            $null -ne $status -and $status.Value -cin @('notice','informational')) { return $false }
     }
     return $true
 }

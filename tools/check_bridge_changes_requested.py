@@ -199,11 +199,13 @@ APPROVAL_STATUSES = frozenset(
         # pass/block ONLY; the merge PATH is set by charter (allowlist =
         # autonomous-ok; denylist/off-allowlist = operator-sign), never by an RCO
         # status variant. RCOs post plain rco_pass and convey operator-merge in
-        # the message. Dropping it here is the retirement signal; behaviour stays
-        # safe either way -- _is_approval_status's generic {rco,pass} token
-        # fallback still treats a stray variant as a block-clearing approval, and
-        # check_rco_pass_present intentionally does NOT recognize it as a
-        # qualifying pass, so a stray variant fails toward STUCK, never open.
+        # the message. Dropping it here is the retirement signal. A stray variant
+        # never opens a merge: as a recognized RCO's decision/rco_review it is
+        # that RCO's block (_is_rco_decision_block_status, Cause-B); from any
+        # other peer, _is_approval_status's generic {rco,pass} token fallback
+        # still reads it as a block-clearing approval; and check_rco_pass_present
+        # intentionally does NOT recognize it as a qualifying pass, so the RCO
+        # slot fails toward STUCK, never open.
         "build_consensus_pass",
         "approved",
         "approved_ci_green",
@@ -211,6 +213,79 @@ APPROVAL_STATUSES = frozenset(
     }
 )
 DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})
+# Cause-B C1/C2 (operator directive 2026-10-04). Approval detection falls back
+# to tokens ({rco, pass} / approved / acknowledged), so a negated or withheld
+# pass such as ``rco_pass_withheld``, ``not_approved`` or
+# ``rco_pass_retracted_ci_failure_confirmed`` read as an APPROVAL and replaced a
+# recognized RCO's own standing veto (C1). A recognized RCO's later decision
+# that holds or vetoes (``hold``, ``veto_maintained_*``, ``do_not_merge``) has
+# no block word and was ignored, so its earlier pass stood (C2).
+#
+# A recognized RCO's decision/rco_review is therefore read by an exact
+# allowlist (``_is_rco_decision_block_status``): an exact approval or an exact
+# clear keeps its meaning, an exact tooling record status stays a no-op, and
+# anything else is that RCO's block. A token rule
+# was tried first and rejected because word bags cannot see negation scope:
+# ``veto_not_retracted`` read as resolved and ``rco_pass_not_withheld`` as
+# withheld (Grok advisory review, 2026-10-04). For other peers, a non-exact
+# approval that carries a negation or withholding token is no longer an
+# approval. Fail closed: an unclear RCO status costs a hold that an exact
+# ``rco_pass`` clears; it never opens a merge.
+APPROVAL_DISQUALIFYING_TOKENS = frozenset(
+    {
+        "arent",
+        "cannot",
+        "cant",
+        "declined",
+        "denied",
+        "disapproved",
+        "dont",
+        "fail",
+        "failed",
+        "failing",
+        "fails",
+        "held",
+        "hold",
+        "holding",
+        "holds",
+        "invalid",
+        "invalidated",
+        "isnt",
+        "never",
+        "no",
+        "non",
+        "not",
+        "refused",
+        "rejected",
+        "rescinded",
+        "retracted",
+        "revoked",
+        "superseded",
+        "unapproved",
+        "veto",
+        "vetoed",
+        "vetoes",
+        "vetoing",
+        "withdrawn",
+        "withheld",
+        "withhold",
+        "withholding",
+        "withholds",
+        "without",
+        "wont",
+    }
+)
+# Exact record statuses that bridge tooling posts as ``decision`` events after
+# a merge or an operator action (merge receipt, post-merge RCO close). They are
+# not review verdicts, so they neither block nor clear (unchanged behaviour).
+RCO_NEUTRAL_RECORD_STATUSES = frozenset(
+    {
+        "autonomous_merge_receipt",
+        "merged_operator_authorized",
+        "operator_authorized",
+        "rco_closed_postmerge",
+    }
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -469,7 +544,10 @@ def check_bridge_clear_to_merge(
                         and not _is_informational_finding_status(status)
                     )
                 )
-            ) or _is_blocking_status(status, event_type=event_type)
+            ) or _is_blocking_status(status, event_type=event_type) or (
+                event_type in RCO_RETRACTION_EVENT_TYPES
+                and _is_rco_decision_block_status(status)
+            )
             if agent in recognized_rco_agent_set and block_shaped:
                 summary = _summarize_event(event)
                 if summary is not None:
@@ -526,6 +604,16 @@ def check_bridge_clear_to_merge(
                     peer_signals[agent] = (index, "clear", event)
             continue
         if _is_blocking_status(status, event_type=event_type):
+            peer_signals[agent] = (index, "block", event)
+            continue
+        # Cause-B C1/C2: a recognized RCO's decision/review that is not an exact
+        # approval or clear is that RCO's block. It must neither read as an
+        # approval that replaces its own veto nor be ignored after its pass.
+        if (
+            agent in recognized_rco_agent_set
+            and event_type in RCO_RETRACTION_EVENT_TYPES
+            and _is_rco_decision_block_status(status)
+        ):
             peer_signals[agent] = (index, "block", event)
             continue
         # A recognized RCO's standing veto can be retracted only by a later
@@ -756,11 +844,37 @@ def _is_approval_status(status: str) -> bool:
     if status in APPROVAL_STATUSES:
         return True
     tokens = _status_tokens(status)
+    if tokens & APPROVAL_DISQUALIFYING_TOKENS:
+        return False
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens
         or "acknowledged" in tokens
     )
+
+
+def _is_rco_decision_block_status(status: str) -> bool:
+    """Exact allowlist for a recognized RCO's decision/rco_review status.
+
+    Only an exact approval status and an exact clear/retraction status keep
+    their meaning, and the exact record statuses that tooling posts after a
+    merge stay no-ops. Every other status (a negated or withheld pass, a hold,
+    a veto, free text, an empty status) is that RCO's block.
+
+    This only classifies; each caller keeps its own reset rule. In this peer
+    gate a later verified exact clear or exact approval from the same RCO
+    lifts the block, and a clear records no approval.
+    ``verify_bridge_consensus`` also drops the block on that clear. The
+    exact-head RCO slot (``check_rco_pass_present``) is stricter: a clear
+    never re-issues approval there, so after the block the same RCO needs a
+    fresh exact-head ``rco_pass``.
+    """
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    if normalized in APPROVAL_STATUSES:
+        return False
+    if normalized in RCO_NEUTRAL_RECORD_STATUSES:
+        return False
+    return not _is_clear_status(normalized)
 
 
 def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:

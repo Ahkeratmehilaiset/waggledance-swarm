@@ -1256,10 +1256,14 @@ _WITHDRAWAL_DIAGNOSTIC_REASONS = {
 
 
 def _load_withdrawal_identity_registry() -> dict[str, str]:
-    """Registry for withdrawal identity checks; unreadable means no closure."""
+    """Registry for withdrawal identity checks; unreadable means no closure.
+
+    A missing, malformed or unreadable registry (ValueError or OSError) yields
+    an empty registry, so every withdrawal reports identity_unverified.
+    """
     try:
         return load_bridge_identity_registry(allow_missing=True)
-    except ValueError:
+    except (ValueError, OSError):
         return {}
 
 

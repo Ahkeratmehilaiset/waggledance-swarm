@@ -90,8 +90,10 @@ following hold:
 4. The closure comes after the request in reader append order.
 5. The request and the closure each match their entry in
    `configs/bridge_identity_registry.json` (status `valid`). A missing,
-   foreign or unregistered `agent_uuid`, or a missing or unreadable registry,
-   is `identity_unverified`.
+   foreign or unregistered `agent_uuid`, or a missing, malformed or
+   unreadable registry (including an OS read error such as access denied),
+   is `identity_unverified`. Only the withdrawal path absorbs these errors;
+   other registry users keep their own behaviour.
 6. The request's reader-row digest exists, is addressable, equals
    `raw_line_sha256`, and names exactly one row in the reader window.
 

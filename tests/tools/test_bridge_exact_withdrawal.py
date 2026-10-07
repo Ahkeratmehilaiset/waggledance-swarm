@@ -388,6 +388,40 @@ def test_unreadable_identity_registry_closes_nothing(
     assert _open_statuses(tmp_path, [notice_row, closure]) == ["fix_pushed"]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PermissionError(13, "Access is denied"), id="permission_error"),
+        pytest.param(OSError(5, "I/O error"), id="os_error"),
+        pytest.param(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), id="decode_error"),
+    ],
+)
+def test_registry_read_error_fails_closed_with_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def unreadable(**_: Any) -> dict[str, str]:
+        raise error
+
+    assert _REAL_REGISTRY_LOADER is not None
+    monkeypatch.setattr(bridge_next_action, "load_bridge_identity_registry", unreadable)
+    monkeypatch.setattr(bridge_next_action, "_load_withdrawal_identity_registry", _REAL_REGISTRY_LOADER)
+    notice = _notice(V2_TS, "fix_pushed")
+    notice_row = _row(notice)
+    closure = _row(_withdrawal(_descriptor(notice, notice_row)))
+    rows = [notice_row, closure]
+
+    assert _open_statuses(tmp_path, rows) == ["fix_pushed"]
+    # Liveness has its own registry loader and error behaviour; keep it out.
+    report = recommend_next_action(
+        agent=LEAD,
+        events=read_events(_write(tmp_path / "r", rows)),
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-10-06T18:20:00+00:00"),
+        production_idle_warn_minutes=None,
+    )
+    assert "withdrawal_identity_unverified" in _reasons(report)
+
+
 # --- uniqueness and side table ----------------------------------------------
 
 

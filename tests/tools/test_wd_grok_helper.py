@@ -2766,3 +2766,85 @@ def test_the_cold_start_update_entry_runs_during_a_hold_and_not_during_an_unreco
         assert calls == ["--version", "update", "--version"]
     else:
         assert calls == [] and "unreconciled_attempt" in capsys.readouterr().out
+
+
+# --- GH-F1 (RCO2 runtime repro 2984861A): a failed second reservation write never launches Grok -------------
+# The first write makes the reservation durable; the second only re-persists it with the started lifecycle's
+# delivery errors. If that second write fails, nothing may launch: the attempt is finalized as failed with a
+# known no-launch only when that finalizing write itself persists, the original error is kept, and a finalizing
+# failure leaves the reservation unresolved (no retry, no clearing).
+
+def _gh_f1_consult(root, emitter):
+    launched = []
+
+    def runner(*args, **kwargs):
+        launched.append(args)
+        return SimpleNamespace(returncode=0, stdout="advice")
+    try:
+        consult(root, "gh-f1", "Review the supplied evidence", ["fake"], now=NOW, runner=runner, emitter=emitter)
+    except OSError as exc:
+        return launched, exc
+    return launched, None
+
+
+def _failing_writes(monkeypatch, fail_from, fail_until):
+    original, calls = wd_grok_helper.write_state, []
+
+    def write(root, state):
+        calls.append(state["status"])
+        if fail_from <= len(calls) <= fail_until:
+            raise PermissionError(errno.EACCES, "controlled state write failure %d" % len(calls))
+        return original(root, state)
+    monkeypatch.setattr(wd_grok_helper, "write_state", write)
+    return calls
+
+
+def test_gh_f1_a_failed_second_reservation_write_finalizes_failed_without_a_launch(tmp_path, monkeypatch):
+    seed(tmp_path)
+    calls = _failing_writes(monkeypatch, 2, 2)
+    events = []
+    launched, error = _gh_f1_consult(tmp_path, lambda stage, state: events.append(stage))
+    assert launched == []
+    assert isinstance(error, PermissionError) and "controlled state write failure 2" in str(error)   # the original
+    assert calls == ["reserved", "reserved", "failed"]          # exactly one finalizing write, no retry
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed" and state["grok_launched"] is False
+    assert state["error_type"] == "PermissionError" and state["error_class"] == "io_error"
+    after = status(tmp_path, NOW)
+    assert after["local_availability"] == "available" and after["eligible"] is True
+    assert events == ["started", "failed"]
+    assert not list(tmp_path.glob("*-request.md"))              # the prompt file was never even written
+
+
+def test_gh_f1_a_failed_finalizing_write_leaves_the_reservation_unresolved(tmp_path, monkeypatch):
+    seed(tmp_path)
+    calls = _failing_writes(monkeypatch, 2, 3)
+    events = []
+    launched, error = _gh_f1_consult(tmp_path, lambda stage, state: events.append(stage))
+    assert launched == []
+    assert isinstance(error, PermissionError) and "controlled state write failure 2" in str(error)   # not 3
+    assert any("not finalized" in note for note in getattr(error, "__notes__", []))
+    assert calls == ["reserved", "reserved", "failed"]          # one finalizing attempt, then stop
+    after = status(tmp_path, NOW)
+    assert after["status"] == "reserved" and after["local_availability"] == "unreconciled_attempt"
+    assert after["eligible"] is False and events == ["started"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing: a replace fails while a reader holds the target")
+def test_gh_f1_a_reader_holding_the_state_between_the_writes_never_launches(tmp_path):
+    # Runtime twin of the 2984861A repro: a reader without delete sharing holds hourly-state.json from the
+    # started callback on, so the second write AND the finalizing write both fail; the reservation stays.
+    seed(tmp_path)
+    held = []
+
+    def emitter(stage, state):
+        if stage == "started" and not held:
+            held.append(open(tmp_path / "hourly-state.json", "rb"))
+    try:
+        launched, error = _gh_f1_consult(tmp_path, emitter)
+    finally:
+        for stream in held:
+            stream.close()
+    assert launched == [] and isinstance(error, PermissionError)
+    after = status(tmp_path, NOW)
+    assert after["status"] == "reserved" and after["local_availability"] == "unreconciled_attempt"

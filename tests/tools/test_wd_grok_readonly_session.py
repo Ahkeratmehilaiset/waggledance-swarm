@@ -362,3 +362,39 @@ def test_the_entry_point_consults_at_high_with_the_capped_session_total(iso, tmp
     assert (timeout, requester, rounds) == (total, "fable-5", max_rounds)
     assert lock_wait == session.helper.LOCK_WAIT_SECONDS == 2400  # a read-only session also waits in line
     assert json.loads(capsys.readouterr().out)["status"] == "answered"
+
+
+# --- RS-F5 (RCO2 runtime repro 2984861A): a lone surrogate in a reply never loses the round record ------------
+# The reply is valid JSON whose stopReason or sessionId is an escaped lone surrogate. The round must still be
+# accounted (one JSON line, the surrogate escaped) and the session must report the protocol error it hit, not
+# a UnicodeEncodeError from the accounting write.
+
+class _SurrogateReply:
+    def __init__(self, field):
+        self.field, self.calls = field, 0
+
+    def __call__(self, command, **kwargs):
+        self.calls += 1
+        reply = {"text": FINAL, "stopReason": "EndTurn", "sessionId": "sess-1"}
+        reply[self.field] = "\ud800"
+        body = json.dumps(reply, ensure_ascii=True).encode("ascii")
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=body, stderr=b"")
+
+
+@pytest.mark.parametrize("field,outcome", [
+    ("stopReason", "failed:ValueError:Grok round did not end with EndTurn"),
+    ("sessionId", "failed:ValueError:Grok returned an invalid session id"),
+])
+def test_rs_f5_a_lone_surrogate_keeps_the_round_record_and_the_protocol_outcome(iso, tmp_path, field, outcome):
+    home, cwd = iso
+    state = _state(tmp_path, "surrogate-" + field)
+    model = _SurrogateReply(field)
+    result, summary = _session(state, cwd, model)              # the runner's actual return value
+    assert model.calls == 1 and result.returncode == 1
+    assert summary["outcome"] == outcome                        # the protocol error, not UnicodeEncodeError
+    lines = (state / (REQUEST_ID + "-rounds.jsonl")).read_bytes().splitlines()
+    assert len(lines) == 1                                      # the launched round is accounted
+    record = json.loads(lines[0])
+    assert record["round"] == 1 and record["outcome"] == outcome
+    assert record["stop_reason" if field == "stopReason" else "session_id"] == "\ud800"
+    assert b"\\ud800" in lines[0]                               # stored escaped, never as a raw surrogate

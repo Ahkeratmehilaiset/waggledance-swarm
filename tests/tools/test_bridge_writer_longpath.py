@@ -141,6 +141,10 @@ def test_only_long_canonical_drive_paths_gain_the_prefix(shell: str) -> None:
     LONG.replace("\\segment005\\", "\\\\"),
     LONG.replace("\\segment005\\", "\\NUL\\"),
     LONG.replace("\\segment005\\", "\\com1.txt\\"),
+    # Grok 6972fce6: the native name ends at U+0000, so these .NET strings hide a trailing dot, space or "..".
+    LONG.replace("\\events.jsonl", "\\foo.\x00x"),
+    LONG.replace("\\events.jsonl", "\\foo \x00x"),
+    LONG.replace("\\events.jsonl", "\\..\x00x"),
     LONG[3:],
     "\\\\server\\share" + LONG[2:],
     "\\\\?\\" + LONG,

@@ -873,7 +873,9 @@ function ConvertTo-BridgeNativeLongPath {
     # long, already canonical drive path is prefixed, because \\?\ turns off
     # Win32 name normalization: for such a path normalization is the identity,
     # so the prefixed name denotes exactly the file the plain call would open.
+    # A NUL ends the native name early, so a path holding one is never prefixed.
     # Anything else passes unchanged and keeps the old behavior and failures.
+    if ($Path.IndexOf([char]0) -ge 0) { return $Path }
     if ($Path.Length -lt 248 -or $Path -cnotmatch '^[A-Za-z]:\\[^\\]') { return $Path }
     if ($Path.Contains('/')) { return $Path }
     foreach ($segment in $Path.Substring(3).Split('\')) {

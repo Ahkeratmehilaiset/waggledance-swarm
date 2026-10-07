@@ -512,6 +512,50 @@ def test_direct_rco_pass_request_uses_exact_withdrawal_only(
     assert _open_statuses(tmp_path, [notice_row, closure], agent=rco) == expected_open
 
 
+IDLE_REQUEST = {"protocol_version": "idle-protocol.v1", "proposal_id": "p-1"}
+IDLE_RESPONSE = {"protocol_version": "idle-protocol.v1", "responds_to": "p-1"}
+
+
+@pytest.mark.parametrize(
+    ("closure_agent", "descriptor_overrides", "expected_open"),
+    [
+        pytest.param(FABLE, {"ts_utc": "2026-10-06T16:00:00Z"}, ["proposal"], id="owner_ts_mismatch"),
+        pytest.param(FABLE, {"raw_line_sha256": "0" * 64}, ["proposal"], id="owner_hash_mismatch"),
+        pytest.param(TOOLS, {"ts_utc": "2026-10-06T16:00:00Z"}, ["proposal"], id="peer_mismatch"),
+        pytest.param(FABLE, {}, [], id="owner_exact"),
+    ],
+)
+def test_idle_protocol_progress_never_closes_with_a_withdraws_member(
+    tmp_path: Path,
+    closure_agent: str,
+    descriptor_overrides: dict[str, Any],
+    expected_open: list[str],
+) -> None:
+    notice = _notice(V2_TS, "proposal", payload=dict(IDLE_REQUEST))
+    notice_row = _row(notice)
+    closure = _withdrawal(_descriptor(notice, notice_row, **descriptor_overrides), agent=closure_agent)
+    closure["payload"].update(IDLE_RESPONSE)
+
+    assert _open_statuses(tmp_path, [notice_row, _row(closure)]) == expected_open
+
+
+def test_idle_protocol_progress_without_withdraws_unchanged(tmp_path: Path) -> None:
+    notice = _notice(V2_TS, "proposal", payload=dict(IDLE_REQUEST))
+    progress = {
+        "ts_utc": CLOSE_TS,
+        "agent": TOOLS,
+        "agent_uuid": UUIDS[TOOLS],
+        "to": FABLE,
+        "type": "message",
+        "task_id": TASK,
+        "status": "info",
+        "message": "idle progress",
+        "payload": dict(IDLE_RESPONSE),
+    }
+
+    assert _open_statuses(tmp_path, [_row(notice), _row(progress)]) == []
+
+
 def test_withdraws_never_closes_a_control_signal(tmp_path: Path) -> None:
     notice = _notice(V2_TS, "changes_requested", type="decision")
     notice_row = _row(notice)

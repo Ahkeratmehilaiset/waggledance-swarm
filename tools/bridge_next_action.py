@@ -1567,6 +1567,9 @@ def _build_idle_protocol_progress_index(
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
             continue
+        if _withdraws_member(event) is not _ABSENT:
+            # Only withdrawal_target may close with a withdraws member.
+            continue
         event_ts = _event_ts(event)
         for field in (
             "responds_to",

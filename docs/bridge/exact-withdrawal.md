@@ -69,8 +69,9 @@ it.
 A closure event that carries a `withdraws` member is handled only by
 `withdrawal_target` or by the full bound reply contract. It never takes part
 in generic same-task, requester-terminal or PR-key closure, including the
-same-task closure of direct RCO pass/block requests. Idle-protocol progress
-correlates by an explicit proposal id and is unchanged.
+same-task closure of direct RCO pass/block requests and idle-protocol
+progress (`responds_to` a proposal id). Idle-protocol progress events without
+a `withdraws` member are unchanged.
 
 The withdrawal closes exactly one request version, and only when all of the
 following hold:

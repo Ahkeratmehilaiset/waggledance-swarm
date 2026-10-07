@@ -471,6 +471,16 @@ def test_binding_refusals():
     assert err.value.reason == "invalid_live_fact"
 
 
+def test_g1_signed_paths_that_differ_from_the_live_diff_are_refused():
+    # G1 (RCO1 MA-2): the operator signs exact_paths for one diff, but the live PR changes
+    # another path. Binding must refuse; today the signed list is only form-checked.
+    anchor = load_anchor()
+    statement = make_statement(anchor)
+    with pytest.raises(StatementError) as err:
+        _bind(statement, anchor, live_changed_paths=["tools/check_rco_pass_present.py"])
+    assert err.value.reason == "exact_paths_mismatch"
+
+
 @pytest.mark.parametrize("now,reason", [
     (datetime(2026, 10, 5, 7, 0, 0, tzinfo=timezone.utc), "statement_expired"),
     (datetime(2026, 10, 5, 8, 0, 0, tzinfo=timezone.utc), "statement_expired"),

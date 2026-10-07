@@ -1721,3 +1721,74 @@ def test_claim_records_role_uuid_capabilities_and_lease(tmp_path: Path) -> None:
     assert event["agent_uuid"] == agent_uuid
     assert event["capabilities"] == ["bridge_event", "work_queue"]
     validate_event_line(line)
+
+
+# -- Tools e7 F1-ANSWER-DURABLE-REPLY-TOKEN-WIRING (Lead c0afaa51): the answer_durable reply token ----------
+
+@WINDOWS_APPEND_V1
+def test_answer_durable_observation_carries_the_written_reply_timestamp(tmp_path: Path) -> None:
+    """The public writer, on an isolated root and a fixture copy (no live bridge write): the answer_durable
+    observation carries the FINAL written reply's own ts_utc as its reply token, never the request's time."""
+    from tools import bridge_wake_telemetry as telemetry
+
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    shared = runtime_root / "shared"
+    shared.mkdir(parents=True)
+    tools_uuid = json.loads((root / "configs/bridge_identity_registry.json").read_text(encoding="utf-8"))[
+        "identities"]["codex-tools-1"]
+    (shared / "last_codex-tools-1.json").write_text(json.dumps(dict(
+        agent="codex-tools-1", agent_uuid=tools_uuid, session_id="tools-session", run_id="tools-run")))
+
+    def write(*args: str) -> dict:
+        completed = _run_writer(root, runtime_root, "-TaskId", "fixture/answer-token", *args)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        return json.loads((shared / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+
+    request = write("-Agent", "operator", "-Type", "message", "-Status", "handoff_ready", "-To", "codex-tools-1",
+                    "-SessionId", "operator-session", "-RunId", "operator-run")
+    reply = write("-Agent", "codex-tools-1", "-AgentUuid", tools_uuid, "-SessionId", "tools-session",
+                  "-RunId", "tools-run", "-Type", "message", "-Status", "answered", "-To", "operator",
+                  "-ReplyToEventJson", json.dumps(request))
+    observations = [json.loads(path.read_text(encoding="utf-8"))
+                    for path in sorted((shared / "telemetry").glob("stage-*.json"))]
+    [answer] = [record for record in observations if record["stage"] == "answer_durable"]
+    assert answer["request_id"] == request["request_id"] and answer["target"] == "codex-tools-1"
+    assert answer["reply_ts_utc"] == reply["ts_utc"] != request["ts_utc"]   # the written reply's own time
+    assert telemetry.reply_token(answer["reply_ts_utc"]) == telemetry.reply_token(reply["ts_utc"]) is not None
+
+
+@pytest.mark.parametrize("variant, known", [("missing", 0), ("request_time", 0), ("reply_token", 1)])
+def test_a_missing_or_wrong_answer_token_leaves_answer_to_processed_unknown(tmp_path: Path, variant: str,
+                                                                            known: int) -> None:
+    """The reader pairs post-answer stages only within one exact reply token. Without the reply's own ts_utc
+    (the pre-fix wiring wrote '') or with another time, answer_durable->lead_processed is unknown; the exact
+    token is the known twin. Pure reader input on a tmp directory: nothing is written to a bridge."""
+    from datetime import datetime, timedelta, timezone
+
+    from tools import bridge_wake_telemetry as telemetry
+
+    now = datetime(2026, 9, 30, 1, 0, tzinfo=timezone.utc)
+
+    def ts(seconds_before: int) -> str:   # PowerShell's round-trip shape: seven fraction digits and Z
+        return (now - timedelta(seconds=seconds_before)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "0Z"
+
+    request_ts, reply_ts = ts(300), ts(200)
+    token = {"missing": "", "request_time": request_ts, "reply_token": reply_ts}[variant]
+
+    def stage(name: str, seconds_before: int, reply: str) -> dict:
+        return {"schema": "wd.bridge-stage.v1", "stage": name, "observed_at_utc": ts(seconds_before),
+                "target": "codex-tools-1", "request_id": "r" * 32, "requester": "operator",
+                "requester_session_id": "operator-session", "delivery_id": "", "queue_id": "",
+                "observer_pid": 4242, "authority_effect": "none",
+                "observation_source": "agent_reported" if name in telemetry.AGENT_REPORTED else "runtime_observed",
+                "reply_ts_utc": reply, "report_reference": ""}
+
+    directory = tmp_path / "telemetry"
+    directory.mkdir()
+    for record in (stage("answer_durable", 190, token), stage("lead_processed", 100, reply_ts)):
+        (directory / f"stage-{uuid.uuid4().hex}.json").write_text(json.dumps(record), encoding="utf-8")
+    code, report = telemetry.run(directory, [], now)
+    assert code == 0
+    summary = report["latency"]["answer_durable->lead_processed"]
+    assert (summary["known"], summary["unknown"]) == (known, 1 - known)

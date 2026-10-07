@@ -50,6 +50,13 @@ function ConvertTo-SafeName {
 }
 
 $safeTask = ConvertTo-SafeName $TaskId
+# S2 (Lead 2026-09-30): the lookup, the owner check and the archive run
+# inside the v2 queue's runtime-root mutex, taken before the claim lock as in
+# the Python queue, so a v2 transaction or claims snapshot never lists claims
+# in the middle of this change. The release event is written after.
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 # The claim whose task_id is exactly $TaskId, wherever it lives: never the
 # file that merely shares its sanitized name.
 $claimPath = Find-BridgeClaimFile -ClaimsDir $claimsDir -TaskId $TaskId
@@ -160,6 +167,10 @@ try {
 [System.IO.File]::Move($claimPath, $donePath)
 } finally {
     Exit-BridgeClaimLock -Lock $releaseLock
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }
 
 $eventType = if ($Status -eq 'done') { 'done' } elseif ($Status -eq 'handoff') { 'handoff' } elseif ($Status -eq 'blocked') { 'blocked' } else { 'release' }

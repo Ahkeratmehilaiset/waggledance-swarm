@@ -220,6 +220,26 @@ def test_the_import_smoke_list_only_names_packaged_modules():
     assert not unpackaged, f"import_smoke names unpackaged modules: {unpackaged}"
 
 
+RCO_CHECKERS = (
+    "tools/check_bridge_changes_requested.py",
+    "tools/check_rco_pass_present.py",
+)
+
+
+def test_the_rco_checkers_ship_with_their_existing_internal_closure():
+    """Both Rule 9a checkers are entrypoints, so their whole internal import
+    closure must be packaged too. The seeds are the checkers alone, so this
+    fails on the checkers' own gap even before the global closure test does."""
+    packaged = set(_packaged_python())
+    for checker in RCO_CHECKERS:
+        assert checker in packaged, checker
+    reached, unresolved = _closure(list(RCO_CHECKERS))
+    assert not unresolved, sorted(unresolved)
+    missing = {target: sorted(importers)
+               for target, importers in reached.items() if target not in packaged}
+    assert not missing, f"checker closure not packaged: {missing}"
+
+
 def test_every_entrypoint_is_packaged():
     packaged = set(_packaged_python())
     missing = {name: path

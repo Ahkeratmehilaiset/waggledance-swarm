@@ -117,7 +117,9 @@
     "grok_helper": "tools/wd_grok_helper.py",
     "grok_readonly_session": "tools/wd_grok_readonly_session.py",
     "lane_profile_launch_probe": "tools/lane_profile_launch_probe.py",
-    "bridge_doctor": "tools/wd_bridge_doctor.py"
+    "bridge_doctor": "tools/wd_bridge_doctor.py",
+    "rco_changes_requested": "tools/check_bridge_changes_requested.py",
+    "rco_pass_present": "tools/check_rco_pass_present.py"
   },
   "python_platform": {
     "implementation": "cp",

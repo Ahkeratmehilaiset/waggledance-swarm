@@ -388,8 +388,17 @@ def _manifest_anchor(bundle: Path) -> str:
     return hashlib.sha256(blob).hexdigest().upper()
 
 
-def _stage_fake_bundle(tmp_path: Path) -> Path:
-    """Build a deployed-shaped bundle with a fake pinned wheel closure."""
+def _stage_fake_bundle(
+    tmp_path: Path,
+    real_files: tuple[str, ...] = (),
+    real_entrypoints: dict[str, str] | None = None,
+) -> Path:
+    """Build a deployed-shaped bundle with a fake pinned wheel closure.
+
+    ``real_files`` are copied byte-for-byte from this checkout into the package
+    and listed in ``python_files``; ``real_entrypoints`` are published next to
+    the fake ``next_action`` entrypoint. Both stay hash-anchored like the rest.
+    """
     module = "wdfake"
     bundle = tmp_path / ("0" * 40)
     bundle.mkdir(parents=True)
@@ -401,6 +410,14 @@ def _stage_fake_bundle(tmp_path: Path) -> Path:
     code_root = bundle / "tools-bootstrap"
     (code_root / "tools").mkdir(parents=True)
     (code_root / "tools" / "__init__.py").write_text("", encoding="utf-8")
+    for relative in real_files:
+        if relative in definition["python_files"]:
+            continue
+        target = code_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+        definition["python_files"].append(relative)
+    definition["python_entrypoints"].update(real_entrypoints or {})
     (code_root / "tools" / "bridge_next_action.py").write_text(
         "import json, sys, os\n"
         "print(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
@@ -978,3 +995,237 @@ foreach ($key in @($second.Site.Keys)) {{ $out.second[$key] = $second.Site[$key]
     blob = (runs[0] / "site" / "bin" / f"{module}-cli.exe").read_bytes()
     stamped = zipfile.ZipFile(io.BytesIO(blob[blob.find(b"PK\x03\x04"):]))
     assert stamped.infolist()[0].date_time == (1980, 1, 1, 0, 0, 0)   # the fixed epoch, not the clock
+
+
+# --- RCO checker entrypoints (Rule 9a gate checks through the pinned wrapper) ---
+
+RCO_CHECKER_ENTRYPOINTS = {
+    "rco_changes_requested": "tools/check_bridge_changes_requested.py",
+    "rco_pass_present": "tools/check_rco_pass_present.py",
+}
+
+
+def test_rco_checkers_are_published_entrypoints_and_import_smoked():
+    """The pinned wrapper refuses any tool outside python_entrypoints, so an
+    RCO asked to run a checker "via WD_BRIDGE_PYTHON_WRAPPER" gets native exit
+    1 before Python starts unless both checkers are published here."""
+    entrypoints = DEFINITION["python_entrypoints"]
+    for name, path in RCO_CHECKER_ENTRYPOINTS.items():
+        assert entrypoints.get(name) == path, (name, entrypoints.get(name))
+        assert path in DEFINITION["python_files"], path
+    smoke = DEFINITION["import_smoke"]["package_modules"]
+    for module in ("tools.check_bridge_changes_requested", "tools.check_rco_pass_present"):
+        assert module in smoke, module
+    # Publishing is per path, never a pattern: no other check_* tool rides along.
+    published_checkers = {
+        path for path in entrypoints.values() if Path(path).name.startswith("check_")
+    }
+    assert published_checkers == set(RCO_CHECKER_ENTRYPOINTS.values())
+
+
+def _rco_pass_event(head: str, task_id: str) -> dict:
+    # Same minimal shape as tests/tools/test_check_rco_pass_present.py CLI tests.
+    return {
+        "ts_utc": "2026-06-03T12:00:00Z",
+        "agent": "claude-rco-1",
+        "agent_uuid": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+        "type": "decision",
+        "status": "rco_pass",
+        "task_id": task_id,
+        "message": f"RCO_PASS present at exact head {head}",
+        "payload": {},
+        "severity": "",
+        "to": "",
+        "paths": [],
+        "write_scope": [],
+        "run_id": "",
+        "pid": 0,
+        "cwd": "",
+    }
+
+
+@pytest.mark.skipif(
+    PWSH is None or not HAS_BRIDGE_PYTHON,
+    reason="PowerShell or the pinned bridge interpreter is unavailable",
+)
+def test_pinned_wrapper_runs_both_rco_checkers_with_their_native_exit_codes(tmp_path: Path):
+    """Both checkers run through a disposable hash-anchored package built from
+    THIS checkout's definition: entrypoint names and the packaged closure come
+    from bridge-code-files.json, the bytes from the committed sources."""
+    entrypoints = {
+        name: path
+        for name, path in DEFINITION["python_entrypoints"].items()
+        if path in RCO_CHECKER_ENTRYPOINTS.values()
+    }
+    assert set(entrypoints.values()) == set(RCO_CHECKER_ENTRYPOINTS.values()), entrypoints
+    closure, third_party = _intra_repo_closure(sorted(entrypoints.values()))
+    assert third_party == set(), sorted(third_party)
+    assert closure <= set(DEFINITION["python_files"]), sorted(closure - set(DEFINITION["python_files"]))
+    real_files = tuple(sorted(closure)) + ("configs/bridge_identity_registry.json",)
+    bundle = _stage_fake_bundle(tmp_path, real_files=real_files, real_entrypoints=entrypoints)
+    wrapper = str(bundle / "Invoke-WdBridgePython.ps1").replace("'", "''")
+    head = "abcdef1234567890abcdef1234567890abcdef12"
+    task = "waggledance/fable-5/checker-entrypoint-fixture"
+    with_pass = tmp_path / "with-pass.jsonl"
+    with_pass.write_text(json.dumps(_rco_pass_event(head, task), sort_keys=True) + "\n", encoding="utf-8")
+    silent = tmp_path / "silent.jsonl"
+    silent.write_text("", encoding="utf-8")
+    # An EXISTING (empty) spool/accepted-v1 sends the accepted-queue preflight
+    # past its absent-namespace fast path, which is the only branch that takes
+    # the host-wide Global publication mutex, straight to its missing drain
+    # helper refusal. No mutex, no PowerShell child (P1808-T1).
+    empty_root = tmp_path / "empty-bridge-root"
+    (empty_root / "shared").mkdir(parents=True)
+    (empty_root / "spool" / "accepted-v1").mkdir(parents=True)
+    caller_cwd = tmp_path / "caller"
+    caller_cwd.mkdir()
+
+    def literal(value) -> str:
+        if value == "-VerifyPackage":
+            return value              # the wrapper's own switch, never quoted
+        return "'" + str(value).replace("'", "''") + "'"
+
+    cases = {
+        "pass_at_head": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                         "--events", str(with_pass), "--author-agent", "codex-lead-1"],
+        "pass_at_head_verified": ["-VerifyPackage", "tools/check_rco_pass_present.py", "--task-id", task,
+                                  "--head", head, "--events", str(with_pass),
+                                  "--author-agent", "codex-lead-1"],
+        "pass_absent": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                        "--events", str(silent), "--author-agent", "codex-lead-1"],
+        "malformed_head": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", "ABC",
+                           "--events", str(with_pass), "--author-agent", "codex-lead-1"],
+        "self_review": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                        "--events", str(with_pass), "--rco-agent", "claude-rco-1",
+                        "--author-agent", "claude-rco-1"],
+        "changes_help": ["tools/check_bridge_changes_requested.py", "--help"],
+        "changes_unverified_queue": ["tools/check_bridge_changes_requested.py", "--task-id", task,
+                                     "--from-agent", "codex-lead-1", "--bridge-root", str(empty_root),
+                                     "--json"],
+    }
+    runs = "\n".join(
+        # Join records with LF ourselves: Out-String could wrap a long JSON line.
+        f"$out = @(& '{wrapper}' {' '.join(literal(arg) for arg in argv)} 2>&1 | "
+        "ForEach-Object { [string]$_ }) -join \"`n\"\n"
+        f"$results[{literal(name)}] = [ordered]@{{ exit = $LASTEXITCODE; out = $out }}"
+        for name, argv in cases.items()
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$env:PYTHONPATH = 'C:\\task\\worktree'
+$env:PYTHONDONTWRITEBYTECODE = $null
+Set-Location -LiteralPath {literal(caller_cwd)}
+$results = [ordered]@{{}}
+{runs}
+$results['after'] = [ordered]@{{
+    pythonpath = [string]$env:PYTHONPATH
+    dontwrite = [string]$env:PYTHONDONTWRITEBYTECODE
+    cwd = (Get-Location).Path
+}}
+$results | ConvertTo-Json -Depth 4 -Compress
+"""
+    anchor = {
+        "WD_REBOOT_EXPECTED_MANIFEST_HASH": _manifest_anchor(bundle),
+        "WD_BRIDGE_PYTHON": BRIDGE_PYTHON,
+    }
+    result = _run_pwsh(script, env=anchor)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
+    # Native exit codes travel through the wrapper unchanged.
+    assert report["pass_at_head"]["exit"] == 0, report["pass_at_head"]
+    assert "RCO_PASS present at exact head" in report["pass_at_head"]["out"]
+    assert report["pass_absent"]["exit"] == 3, report["pass_absent"]
+    assert report["malformed_head"]["exit"] == 2, report["malformed_head"]
+    assert report["self_review"]["exit"] != 0, report["self_review"]
+    assert report["changes_help"]["exit"] == 0, report["changes_help"]
+    assert "--from-agent" in report["changes_help"]["out"]
+    # The fixture package ships no Drain-AcceptedBridgeQueue.ps1, so with an
+    # existing queue namespace the peer-block checker refuses on the missing
+    # drain helper (exit 2) and never reports clear_to_merge. This is a
+    # fixture-only refusal: the PowerShell drain child, BridgeNamedMutex.ps1 and
+    # the PATH-resolved interpreter are NOT exercised here (P1808-R1).
+    unverified = report["changes_unverified_queue"]
+    assert unverified["exit"] == 2, unverified
+    verdict = json.loads(
+        [line for line in unverified["out"].splitlines() if line.startswith("{")][-1]
+    )
+    assert verdict["clear_to_merge"] is False, verdict
+    assert verdict["decision"] == "accepted_queue_preflight_failed", verdict
+    assert (
+        verdict["accepted_queue_preflight"]["decision"]
+        == "accepted_queue_drain_helper_missing"
+    ), verdict
+    assert report["pass_at_head_verified"]["exit"] == 0, report["pass_at_head_verified"]
+    # Caller environment and cwd are restored after every call.
+    assert report["after"]["pythonpath"] == "C:\\task\\worktree"
+    assert report["after"]["dontwrite"] == ""
+    assert report["after"]["cwd"].rstrip("\\") == str(caller_cwd).rstrip("\\")
+    # -B and PYTHONDONTWRITEBYTECODE: no bytecode cache anywhere in the package.
+    assert not list(bundle.rglob("__pycache__")), list(bundle.rglob("__pycache__"))
+    assert not list(bundle.rglob("*.pyc"))
+    # A packaged module that is NOT a published entrypoint is still refused.
+    sibling = _run_pwsh(
+        f"$ErrorActionPreference='Stop'; & '{wrapper}' tools/bridge_named_mutex.py", env=anchor
+    )
+    assert sibling.returncode != 0
+    assert "outside the packaged entrypoints" in (sibling.stdout + sibling.stderr)
+
+
+def _instrumented_preflight(monkeypatch):
+    """Import the committed preflight with every mutex and child-process seam
+    replaced by recorders, so no test here touches a live Global mutex."""
+    monkeypatch.syspath_prepend(str(ROOT))
+    import contextlib
+
+    import tools.bridge_accepted_queue_preflight as preflight
+
+    calls: list[str] = []
+
+    @contextlib.contextmanager
+    def recording_lease(label):
+        calls.append(label)
+        yield
+
+    def refuse(label):
+        def _refuse(*args, **kwargs):
+            calls.append(label)
+            raise AssertionError(f"{label} must not be reached")
+        return _refuse
+
+    monkeypatch.setattr(
+        preflight, "_bridge_queue_publication_lease",
+        lambda: recording_lease("queue_publication_mutex"))
+    monkeypatch.setattr(
+        preflight, "_bridge_append_mutex_lease",
+        lambda: recording_lease("append_mutex"))
+    monkeypatch.setattr(preflight, "create_bridge_named_mutex", refuse("named_mutex"))
+    monkeypatch.setattr(preflight.subprocess, "run", refuse("subprocess"))
+    return preflight, calls
+
+
+def test_wrapper_fixture_queue_shape_never_reaches_the_live_publication_mutex(
+    tmp_path: Path, monkeypatch
+):
+    """P1808-T1 isolation proof on the committed source, never on the live
+    mutex: the fixture's queue shape (existing empty spool/accepted-v1, no
+    drain helper) refuses before any lease or PowerShell child. The twin, an
+    ABSENT namespace, does take the publication lease here (a recorder), so the
+    instrumentation is shown to observe that branch."""
+    preflight, calls = _instrumented_preflight(monkeypatch)
+    missing_helper = tmp_path / "no-bin" / "Drain-AcceptedBridgeQueue.ps1"
+
+    fixture_root = tmp_path / "fixture-shape"
+    (fixture_root / "shared").mkdir(parents=True)
+    (fixture_root / "spool" / "accepted-v1").mkdir(parents=True)
+    report = preflight.check_accepted_queue_complete(
+        bridge_root=fixture_root, drain_script=missing_helper)
+    assert report["ok"] is False and report["complete"] is False, report
+    assert report["decision"] == "accepted_queue_drain_helper_missing", report
+    assert calls == [], calls
+
+    absent_root = tmp_path / "absent-shape"
+    (absent_root / "shared").mkdir(parents=True)
+    twin = preflight.check_accepted_queue_complete(
+        bridge_root=absent_root, drain_script=missing_helper)
+    assert twin["decision"] == "accepted_queue_absent", twin
+    assert calls == ["queue_publication_mutex"], calls

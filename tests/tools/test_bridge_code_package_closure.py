@@ -282,8 +282,30 @@ def test_f19_routing_and_shadow_learning_family_is_packaged_and_smoke_checked():
     assert modules <= set(definition["import_smoke"]["package_modules"])
 
 
+RCO_CHECKERS = (
+    "tools/check_bridge_changes_requested.py",
+    "tools/check_rco_pass_present.py",
+)
+# The merge/gate executors and their verdict modules: shipped and smoke-checked, never published.
+GATE_EXECUTORS = (
+    "tools/idle_consensus_auto_merge.py",
+    "tools/merge_with_bridge_receipt.py",
+    "tools/write_bridge_consensus_merge_receipt.py",
+    "tools/bridge_rule12_review_eligibility.py",
+    "tools/bridge_v2_identity_registry.py",
+    "tools/rule12_grok_ledger_adapter.py",
+)
+
+
+def _published_gate_paths(definition: dict) -> set[str]:
+    return set(RCO_CHECKERS + GATE_EXECUTORS) & set(definition["python_entrypoints"].values())
+
+
 def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
-    """A new bundle must deliver its reviewed gate fixes, not just a new pointer."""
+    """A new bundle must deliver its reviewed gate fixes, not just a new pointer.
+
+    The only published gate paths are the two diagnostic RCO checkers (C6, three-party
+    route consensus 6108CB61); every merge/gate executor stays unpublished."""
     modules = {
         "tools.check_bridge_changes_requested",
         "tools.check_rco_pass_present",
@@ -297,7 +319,32 @@ def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     paths = {module.replace(".", "/") + ".py" for module in modules}
     assert paths <= set(definition["python_files"])
     assert modules <= set(definition["import_smoke"]["package_modules"])
-    assert not paths & set(definition["python_entrypoints"].values())
+    assert _published_gate_paths(definition) == set(RCO_CHECKERS)
+    assert definition["python_entrypoints"].get("rco_changes_requested") == RCO_CHECKERS[0]
+    assert definition["python_entrypoints"].get("rco_pass_present") == RCO_CHECKERS[1]
+
+
+@pytest.mark.parametrize("executor", GATE_EXECUTORS)
+def test_publishing_any_gate_executor_breaks_the_no_activation_check(executor):
+    """Negative control: a third published gate module is caught, under any name."""
+    definition = _definition()
+    assert _published_gate_paths(definition) == set(RCO_CHECKERS)
+    definition["python_entrypoints"]["innocent_looking_tool"] = executor
+    assert _published_gate_paths(definition) != set(RCO_CHECKERS)
+
+
+def test_the_rco_checkers_ship_with_their_existing_internal_closure():
+    """Both Rule 9a checkers are entrypoints, so their whole internal import
+    closure must be packaged too. The seeds are the checkers alone, so this
+    fails on the checkers' own gap even before the global closure test does."""
+    packaged = set(_packaged_python())
+    for checker in RCO_CHECKERS:
+        assert checker in packaged, checker
+    reached, unresolved = _closure(list(RCO_CHECKERS))
+    assert not unresolved, sorted(unresolved)
+    missing = {target: sorted(importers)
+               for target, importers in reached.items() if target not in packaged}
+    assert not missing, f"checker closure not packaged: {missing}"
 
 
 def test_consensus_gate_data_and_existing_jsonschema_dependency_are_shipped():

@@ -53,6 +53,14 @@ $savedRunId = $env:AGENT_BRIDGE_RUN_ID
 $savedLocation = (Get-Location).Path
 $agentUuid = '11111111-2222-3333-4444-555555555555'
 
+# Checked before the cleanup-owned region: a root that already exists is not
+# this run's, so the finally block below must never see it.
+foreach ($generatedRoot in $generatedRoots) {
+    if (Test-Path -LiteralPath $generatedRoot) {
+        throw "Pre-condition failed: temp root already exists: $generatedRoot"
+    }
+}
+
 try {
     Write-Host 'Bridge session bootstrap smoke test' -ForegroundColor Cyan
     Write-Host '====================================='
@@ -60,12 +68,6 @@ try {
     Write-Host "Reader runtime root: $readerRootFull"
     Write-Host "Normal runtime root: $tempRootFull"
     Write-Host ''
-
-    foreach ($generatedRoot in $generatedRoots) {
-        if (Test-Path -LiteralPath $generatedRoot) {
-            throw "Pre-condition failed: temp root already exists: $generatedRoot"
-        }
-    }
 
     $quietBootstrap = & $startSession `
         -Agent codex `

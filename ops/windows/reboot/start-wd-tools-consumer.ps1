@@ -1122,7 +1122,7 @@ function Test-WdContinuityControlEvents {
         # observations are not themselves safety HOLDs. This does not infer
         # release from a later approval or normal message.
         $statusTokens = (([string]$event.status -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
-            -replace 'changes[_-]requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+            -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
         $controlTokens = @('hold','held','holding','onhold','pause','paused',
             'cancel','cancelled','canceled','veto','vetoed','freeze','frozen','stop','stopped',
             'halt','halted','abort','aborted','quarantine','quarantined','rollback','revert',
@@ -1149,7 +1149,7 @@ function Test-WdContinuityControlEvents {
             if ($null -eq $names) { $payloadControl = $true }
             foreach ($name in @($names)) {
                 $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
-                    -replace 'changes[_-]requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+                    -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
                 if (@($nameTokens | Where-Object { $controlTokens -ccontains $_ -or $_ -cin @('block','blocked','control') }).Count -gt 0) {
                     $payloadControl = $true
                 }

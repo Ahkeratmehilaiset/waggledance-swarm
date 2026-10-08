@@ -1149,7 +1149,7 @@ function Test-WdContinuityControlEvents {
             if ($null -eq $names) { $payloadControl = $true }
             foreach ($name in @($names)) {
                 $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
-                    -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+                    -replace 'changes[_-]requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
                 if (@($nameTokens | Where-Object { $controlTokens -ccontains $_ -or $_ -cin @('block','blocked','control') }).Count -gt 0) {
                     $payloadControl = $true
                 }

@@ -259,6 +259,37 @@ def test_a_missing_codex_cache_is_unknown(tmp_path):
     assert codex_cli_models(tmp_path / "none.json") is None
 
 
+# RCO1 LOWREG-R1 C1: a cache that names no model proved nothing, yet every Codex row was reported unavailable.
+@pytest.mark.parametrize("models", [[], ["junk", 7, None, {"slug": 5}, {"name": "gpt-6-sol"}]],
+                         ids=["empty-list", "all-junk"])
+def test_a_cache_that_names_no_model_is_unknown_everywhere(tmp_path, capsys, models):
+    path = cache(tmp_path, models)
+    assert codex_cli_models(path) is None
+    current = {"codex-lead-1": "gpt-6-sol:high"}
+    assert lane_value_table(REGISTRY, CATALOG, current, codex_models=codex_cli_models(path))[
+        "codex-lead-1"]["current"]["cli_available"] is None
+    assert report(REGISTRY, REGISTRY_SHA, CATALOG, CATALOG_SHA, current,
+                  codex_models=codex_cli_models(path))["codex_cli_models"] == "unknown"
+    assert main(["--codex-models-cache", str(path), "--current-profiles", json.dumps(current)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["codex_cli_models"] == "unknown" and out["lanes"]["codex-lead-1"]["current"]["cli_available"] is None
+
+
+def test_cache_controls_are_unchanged_by_the_empty_cache_rule(tmp_path):
+    current = {"codex-lead-1": "gpt-6-sol:high"}
+
+    def lead(models):
+        return lane_value_table(REGISTRY, CATALOG, current, codex_models=models)["codex-lead-1"]["current"]
+
+    assert lead(codex_cli_models(tmp_path / "none.json"))["cli_available"] is None             # missing cache
+    fresh = codex_cli_models(cache(tmp_path, [{"slug": "gpt-6-sol",
+                                               "supported_reasoning_levels": [{"effort": "high"}]}]))
+    assert lead(fresh)["cli_available"] is True                                                 # present
+    no_effort = {"gpt-6-sol": ["low"]}
+    assert lead(no_effort)["cli_available"] is False                                            # valid, effort missing
+    assert codex_cli_models(write(tmp_path, {"models": [{"slug": "x"}]}, "levels.json")) == {"x": []}   # kept as is
+
+
 # ---------------------------------------------------------------- report and CLI
 
 def test_report_is_advisory_and_pins_its_inputs():
@@ -863,3 +894,75 @@ def test_a_symlink_swapped_in_after_the_check_fails_the_open_on_posix(tmp_path, 
     monkeypatch.setattr(type(link), "lstat", lambda self: target.stat())
     with pytest.raises(RegistryError, match="unreadable"):
         load_registry(link)
+
+
+# ---------------------------------------------------------------- range before isfinite (codex-tools-1 0F41B0C1)
+# math.isfinite(10**1000) raises OverflowError, which escaped validation and the CLI's JSON refusal (exit 1).
+
+HUGE = 10 ** 1000
+
+
+@pytest.mark.parametrize("value", [HUGE, -HUGE, 10 ** 309, 2 ** 1024, float("nan"), float("inf"), float("-inf"),
+                                   True, False, "1", None, [1], 101, -1, 100.000001],
+                         ids=["huge", "-huge", "1e309-int", "2**1024", "nan", "inf", "-inf", "True", "False", "str",
+                              "None", "list", "101", "-1", "just-above"])
+def test_score_refuses_out_of_range_non_finite_and_mistyped_values_without_overflow(value):
+    with pytest.raises(RegistryError, match=r"finite number in 0\.\.100"):
+        reg_module._score(value, "x", 100)
+
+
+@pytest.mark.parametrize("value", [0, 100, 0.0, 99.5])
+def test_score_accepts_the_boundaries_and_returns_a_float(value):
+    result = reg_module._score(value, "x", 100)
+    assert type(result) is float and result == value
+
+
+@pytest.mark.parametrize("value", [HUGE, -HUGE, 10 ** 12 + 1, -(10 ** 12) - 1, 1e12 * (1 + 2 ** -52), float("nan"),
+                                   float("inf"), float("-inf"), True, "0", None],
+                         ids=["huge", "-huge", "int-above", "int-below", "float-above", "nan", "inf", "-inf", "True",
+                              "str", "None"])
+def test_number_refuses_out_of_range_non_finite_and_mistyped_values_without_overflow(value):
+    with pytest.raises(RegistryError, match="finite number in"):
+        reg_module._number(value, "x", -1e12, 1e12)
+
+
+@pytest.mark.parametrize("value", [10 ** 12, -(10 ** 12), 1e12, -1e12, 0])
+def test_number_accepts_the_exact_boundaries_and_returns_a_float(value):
+    result = reg_module._number(value, "x", -1e12, 1e12)
+    assert type(result) is float and result == value
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r["models"]["codex/gpt-6-sol"]["efforts"]["low"].update(intelligence_index=HUGE),
+    lambda r: r["models"]["codex/gpt-6-sol"]["efforts"]["low"].update(usd_per_task=-HUGE),
+    lambda r: r["models"]["codex/gpt-6-sol"].update(coding_agent_index=HUGE),
+    lambda r: r["observations"].append(observation(kind="cost", unit="usd_per_task_api_price", value=HUGE)),
+    lambda r: r["observations"].append(
+        observation(uncertainty={"kind": "interval", "low": -HUGE, "high": HUGE, "note": None})),
+], ids=["v1-intelligence", "v1-usd", "v1-coding-agent", "v2-observation-value", "v2-uncertainty-interval"])
+def test_a_huge_integer_is_a_registry_error_not_an_overflow(change):
+    with pytest.raises(RegistryError, match="finite number"):
+        validate_registry(mutate(change))
+
+
+def test_the_huge_integer_cases_have_valid_twins():
+    validate_registry(mutate(lambda r: r["observations"].append(
+        observation(kind="cost", unit="usd_per_task_api_price", value=1.0))))
+    validate_registry(mutate(lambda r: r["observations"].append(
+        observation(uncertainty={"kind": "interval", "low": 0, "high": 10 ** 6, "note": None}))))
+
+
+@pytest.mark.parametrize("change,swap", [
+    (lambda r: r["models"]["codex/gpt-6-sol"]["efforts"]["low"].update(intelligence_index=HUGE), None),
+    (lambda r: r["observations"].append(observation(kind="cost", unit="usd_per_task_api_price", value=HUGE)), None),
+    (lambda r: r["models"]["codex/gpt-6-sol"]["efforts"]["low"].update(intelligence_index=12.345678),
+     ("12.345678", "1e400")),                                                      # parses to inf, not via NaN/Infinity
+], ids=["v1-huge-int", "v2-huge-int", "v1-1e400"])
+def test_cli_refuses_a_huge_number_with_a_json_error_not_a_traceback(tmp_path, capsys, change, swap):
+    text = json.dumps(mutate(change))
+    if swap is not None:
+        assert text.count(swap[0]) == 1
+        text = text.replace(*swap)
+    code = main(["--registry", str(write(tmp_path, text)), "--codex-models-cache", str(tmp_path / "none.json")])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2 and out["execution_allowed"] is False and out["error"].startswith("RegistryError: ")

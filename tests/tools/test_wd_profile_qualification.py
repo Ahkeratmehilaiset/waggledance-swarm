@@ -143,7 +143,6 @@ def test_replay_detects_a_tampered_receipt():
     ({"observed_utc": "2026-09-30T12:00:00"}, "malformed"),
     ({"repeat": 0}, "malformed"),
     ({"passed": "yes"}, "malformed"),
-    ({"production_writes": -1}, "malformed"),
     ({"self_graded": True}, "malformed"),
 ])
 def test_unbound_or_malformed_runs_never_count(over, reason):
@@ -446,3 +445,55 @@ def test_an_unsafe_run_refuses_the_receipt_even_when_it_would_not_count(over, un
     rows.append(dict(rows[0], repeat=99, **over, **unsafe))
     receipt = build(r=rows)
     assert receipt["state"] == "refused" and receipt["reasons"][0] == "isolation_violation"
+
+
+# --- Q1810-D1 (RCO1, RCO2): isolation is judged before any other reason, malformed runs included ---------------
+
+def _extra_run(over, drop=None):
+    row = dict(runs()[0], **{"repeat": 99, **over})
+    if drop is not None:
+        del row[drop]
+    return row
+
+
+@pytest.mark.parametrize("over,drop", [
+    ({"observed_utc": "2026-09-30T12:00:00"}, None),   # naive timestamp
+    ({"transcript_sha256": "bad"}, None),              # bad digest
+    ({}, "transcript_sha256"),                         # missing key
+    ({"self_graded": True}, None),                     # extra key
+    ({"repeat": 0}, None),
+])
+@pytest.mark.parametrize("unsafe", [{"isolated": False}, {"production_writes": 4}])
+def test_an_unsafe_run_refuses_the_receipt_even_when_it_is_malformed(over, drop, unsafe):
+    rows = runs() + [_extra_run(dict(over, **unsafe), drop)]
+    receipt = build(r=rows)
+    assert receipt["state"] == "refused" and receipt["reasons"][0] == "isolation_violation"
+    assert receipt["classes"] == [] and receipt["valid_until_utc"] is None
+    assert pq.router_qualification(receipt, BINDING, NOW, evidence(runs=rows)) == []
+
+
+@pytest.mark.parametrize("over,drop", [
+    ({"isolated": "yes"}, None), ({"isolated": 1}, None), ({"isolated": None}, None), ({}, "isolated"),
+    ({"production_writes": -1}, None), ({"production_writes": 0.0}, None), ({"production_writes": False}, None),
+    ({}, "production_writes"),
+])
+def test_a_run_that_does_not_prove_isolation_refuses_the_receipt(over, drop):
+    receipt = build(r=runs() + [_extra_run(over, drop)])
+    assert receipt["state"] == "refused" and receipt["reasons"][0] == "isolation_violation"
+
+
+@pytest.mark.parametrize("over,drop", [
+    ({"observed_utc": "2026-09-30T12:00:00"}, None), ({"transcript_sha256": "bad"}, None),
+    ({}, "transcript_sha256"), ({"self_graded": True}, None),
+])
+def test_a_safe_malformed_run_is_only_rejected(over, drop):
+    receipt = build(r=runs() + [_extra_run(over, drop)])
+    assert receipt["state"] == "built" and [row["reason"] for row in receipt["rejected"]] == ["malformed"]
+    assert cls(receipt, "implementation")["state"] == "qualified"
+    assert cls(receipt, "implementation")["samples"] == 12
+
+
+@pytest.mark.parametrize("junk", ["run", 7, None, []])
+def test_a_run_that_is_not_an_object_is_only_rejected(junk):
+    receipt = build(r=runs() + [junk])
+    assert receipt["state"] == "built" and [row["reason"] for row in receipt["rejected"]] == ["malformed"]

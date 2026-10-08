@@ -193,7 +193,9 @@ def _text(value: Any, label: str) -> str:
 
 
 def _score(value: Any, label: str, upper: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= upper:
+    # Range first: an int of any size compares exactly with a float bound, while math.isfinite(10**1000) raises
+    # OverflowError (codex-tools-1 0F41B0C1). NaN and +-inf already fail the range; isfinite stays as a guard.
+    if type(value) not in (int, float) or not 0 <= value <= upper or not math.isfinite(value):
         raise RegistryError(f"{label} must be a finite number in 0..{upper}")
     return float(value)
 
@@ -291,7 +293,8 @@ def _provenance(value: Any, label: str) -> dict:
 
 
 def _number(value: Any, label: str, lower: float, upper: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
+    # Range first, as in _score: a huge int is refused as out of range instead of raising OverflowError.
+    if type(value) not in (int, float) or not lower <= value <= upper or not math.isfinite(value):
         raise RegistryError(f"{label} must be a finite number in {lower}..{upper}")
     return float(value)
 
@@ -679,7 +682,9 @@ def codex_cli_models(path: str | Path | None = None) -> dict[str, list[str]] | N
         efforts = [level.get("effort") for level in levels if isinstance(level, dict)] \
             if isinstance(levels, list) else []
         result[model["slug"]] = [effort for effort in efforts if isinstance(effort, str)]
-    return result
+    # A cache that names no model at all (an empty list or only junk entries) proves nothing about availability:
+    # unknown, never "every Codex row unavailable" (RCO1 LOWREG-R1 C1).
+    return result or None
 
 
 # ---------------------------------------------------------------- analysis

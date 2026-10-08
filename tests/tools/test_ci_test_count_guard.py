@@ -91,9 +91,15 @@ def test_a_count_below_the_floor_fails(tmp_path):
         "tests collected in 13.80s\n",
         "-28144 tests collected in 13.80s\n",
         "28144 tests collected in 13.80s trailing\n",
+        # Root probe 20:52Z on L 57772fb2: both of these exited 0.
+        "4199 tests collected in 1.00s\n28144 tests collected in 13.80s\n",
+        "999999999999999999999999999999 tests collected in 13.80s\n",
+        "28144 tests collected in 13.80s\n28144 tests collected in 13.80s\n",
+        "9999999999 tests collected in 13.80s\n",
     ],
     ids=["empty", "blank", "no-tests", "bare-numbers", "errors", "trailing-number",
-         "missing-count", "negative", "trailing-text"],
+         "missing-count", "negative", "trailing-text", "two-summaries", "oversized-30-digits",
+         "duplicate-summary", "oversized-10-digits"],
 )
 def test_a_missing_multiple_or_malformed_count_fails(tmp_path, stdout):
     done = _run(tmp_path, stdout)

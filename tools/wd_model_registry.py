@@ -682,7 +682,9 @@ def codex_cli_models(path: str | Path | None = None) -> dict[str, list[str]] | N
         efforts = [level.get("effort") for level in levels if isinstance(level, dict)] \
             if isinstance(levels, list) else []
         result[model["slug"]] = [effort for effort in efforts if isinstance(effort, str)]
-    return result
+    # A cache that names no model at all (an empty list or only junk entries) proves nothing about availability:
+    # unknown, never "every Codex row unavailable" (RCO1 LOWREG-R1 C1).
+    return result or None
 
 
 # ---------------------------------------------------------------- analysis

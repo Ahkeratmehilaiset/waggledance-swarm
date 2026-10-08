@@ -259,6 +259,37 @@ def test_a_missing_codex_cache_is_unknown(tmp_path):
     assert codex_cli_models(tmp_path / "none.json") is None
 
 
+# RCO1 LOWREG-R1 C1: a cache that names no model proved nothing, yet every Codex row was reported unavailable.
+@pytest.mark.parametrize("models", [[], ["junk", 7, None, {"slug": 5}, {"name": "gpt-6-sol"}]],
+                         ids=["empty-list", "all-junk"])
+def test_a_cache_that_names_no_model_is_unknown_everywhere(tmp_path, capsys, models):
+    path = cache(tmp_path, models)
+    assert codex_cli_models(path) is None
+    current = {"codex-lead-1": "gpt-6-sol:high"}
+    assert lane_value_table(REGISTRY, CATALOG, current, codex_models=codex_cli_models(path))[
+        "codex-lead-1"]["current"]["cli_available"] is None
+    assert report(REGISTRY, REGISTRY_SHA, CATALOG, CATALOG_SHA, current,
+                  codex_models=codex_cli_models(path))["codex_cli_models"] == "unknown"
+    assert main(["--codex-models-cache", str(path), "--current-profiles", json.dumps(current)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["codex_cli_models"] == "unknown" and out["lanes"]["codex-lead-1"]["current"]["cli_available"] is None
+
+
+def test_cache_controls_are_unchanged_by_the_empty_cache_rule(tmp_path):
+    current = {"codex-lead-1": "gpt-6-sol:high"}
+
+    def lead(models):
+        return lane_value_table(REGISTRY, CATALOG, current, codex_models=models)["codex-lead-1"]["current"]
+
+    assert lead(codex_cli_models(tmp_path / "none.json"))["cli_available"] is None             # missing cache
+    fresh = codex_cli_models(cache(tmp_path, [{"slug": "gpt-6-sol",
+                                               "supported_reasoning_levels": [{"effort": "high"}]}]))
+    assert lead(fresh)["cli_available"] is True                                                 # present
+    no_effort = {"gpt-6-sol": ["low"]}
+    assert lead(no_effort)["cli_available"] is False                                            # valid, effort missing
+    assert codex_cli_models(write(tmp_path, {"models": [{"slug": "x"}]}, "levels.json")) == {"x": []}   # kept as is
+
+
 # ---------------------------------------------------------------- report and CLI
 
 def test_report_is_advisory_and_pins_its_inputs():

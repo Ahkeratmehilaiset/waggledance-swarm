@@ -63,9 +63,11 @@ def _run(tmp_path: Path, stdout: str, exit_code: int = 0) -> subprocess.Complete
                           capture_output=True, text=True, timeout=60)
 
 
+@pytest.mark.parametrize("duration", ["13.80s", "60.00s (0:01:00)", "61.23s (0:01:01)", "3601.00s (1:00:01)"])
 @pytest.mark.parametrize("count", [FLOOR, 28144])
-def test_a_single_count_at_or_above_the_floor_passes_despite_duration_digits(tmp_path, count):
-    done = _run(tmp_path, f"tests/a.py::test_x\n\n{count} tests collected in 13.80s\n")
+def test_a_single_count_at_or_above_the_floor_passes_despite_duration_digits(tmp_path, count, duration):
+    # pytest's format_session_duration appends " (H:MM:SS)" from 60 s on (Root probe 21:09Z: M refused these).
+    done = _run(tmp_path, f"tests/a.py::test_x\n\n{count} tests collected in {duration}\n")
     assert done.returncode == 0, done.stdout + done.stderr
     assert f"Test count: {count}\n" in done.stdout
     # The K step "passed" this case only because the [ comparison errored
@@ -96,10 +98,21 @@ def test_a_count_below_the_floor_fails(tmp_path):
         "999999999999999999999999999999 tests collected in 13.80s\n",
         "28144 tests collected in 13.80s\n28144 tests collected in 13.80s\n",
         "9999999999 tests collected in 13.80s\n",
+        # Only the exact " (H:MM:SS)" timedelta suffix is accepted; a day count is refused.
+        "28144 tests collected in 60.00s (0:1:00)\n",
+        "28144 tests collected in 60.00s (0:01:60)\n",
+        "28144 tests collected in 60.00s (junk)\n",
+        "28144 tests collected in 60.00s(0:01:00)\n",
+        "28144 tests collected in 60.00s (0:01:00\n",
+        "28144 tests collected in 60.00s (0:01:00) trailing\n",
+        "28144 tests collected in 60.00s (0:01:00) (0:01:00)\n",
+        "28144 tests collected in 86401.00s (1 day, 0:00:01)\n",
     ],
     ids=["empty", "blank", "no-tests", "bare-numbers", "errors", "trailing-number",
          "missing-count", "negative", "trailing-text", "two-summaries", "oversized-30-digits",
-         "duplicate-summary", "oversized-10-digits"],
+         "duplicate-summary", "oversized-10-digits", "suffix-short-minutes", "suffix-bad-seconds",
+         "suffix-junk", "suffix-no-space", "suffix-unclosed", "suffix-trailing-text", "suffix-twice",
+         "suffix-days"],
 )
 def test_a_missing_multiple_or_malformed_count_fails(tmp_path, stdout):
     done = _run(tmp_path, stdout)

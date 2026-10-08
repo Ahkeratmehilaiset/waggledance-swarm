@@ -67,14 +67,15 @@ jobs:
             exit 1
           fi
           # Exactly one summary-like line, and it is the last line; the count has
-          # at most 9 digits so the integer test below cannot overflow.
+          # at most 9 digits so the integer test below cannot overflow. From 60 s on
+          # pytest appends " (H:MM:SS)"; a longer suffix (a day count) is refused.
           SUMMARIES=$(printf '%s\n' "$OUT" | grep -cE '^[0-9]+ tests? collected' || true)
           if [ "$SUMMARIES" != "1" ]; then
             echo "Expected exactly one collection summary, found: $SUMMARIES"
             exit 1
           fi
           LAST=$(printf '%s\n' "$OUT" | tail -1)
-          if ! [[ "$LAST" =~ ^([1-9][0-9]{0,8})\ tests?\ collected\ in\ [0-9]+(\.[0-9]+)?s$ ]]; then
+          if ! [[ "$LAST" =~ ^([1-9][0-9]{0,8})\ tests?\ collected\ in\ [0-9]+(\.[0-9]+)?s(\ \([0-9]{1,2}:[0-5][0-9]:[0-5][0-9]\))?$ ]]; then
             echo "Unrecognized collection summary: $LAST"
             exit 1
           fi

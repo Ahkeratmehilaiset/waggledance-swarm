@@ -593,6 +593,94 @@ def check_rco_pass_present(
     return base
 
 
+def scan_recognized_rco_vetoes(
+    *,
+    events: Sequence[Any],
+    task_id: str,
+    author_agent: str,
+    rco_agent: str | Sequence[str] | None = None,
+    identity_registry: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Every veto-shaped event any recognized RCO posted on ``task_id``.
+
+    ``check_rco_pass_present`` stops at ``no_qualifying_pass`` before it
+    computes ``blocking_rco_agents``, so its ``latest_rco_is_veto`` is no proof
+    that the RCO slot is clear when no RCO passed. This scan has no early
+    return on missing passes and honours no retraction: it covers every
+    recognized RCO (an author RCO too) on the task id and its author aliases,
+    and a veto-shaped event with a missing or mismatched identity still
+    latches. ``ok`` is True only for valid input with no such event; a
+    spurious hold is the safe failure (plan v3 B3).
+    """
+    task_id = task_id.strip() if type(task_id) is str else ""
+    author_agent = author_agent.strip() if type(author_agent) is str else ""
+    result: dict[str, Any] = {
+        "ok": False,
+        "decision": "invalid_input",
+        "task_id": task_id,
+        "author_agent": author_agent,
+        "recognized_rco_agents": [],
+        "task_id_aliases": [],
+        "veto_events": [],
+        "error": None,
+    }
+    try:
+        recognized = _normalize_rco_agents(rco_agent)
+    except (TypeError, ValueError) as exc:
+        result["error"] = f"invalid rco agents: {exc}"
+        return result
+    result["recognized_rco_agents"] = list(recognized)
+    if not task_id:
+        result["error"] = "task_id must not be empty"
+        return result
+    if not recognized or not all(AGENT_ID_RE.fullmatch(agent) for agent in recognized):
+        result["error"] = "rco_agent entries must be bridge agent ids"
+        return result
+    if not AGENT_ID_RE.fullmatch(author_agent):
+        result["error"] = "author_agent must be a bridge agent id"
+        return result
+    if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
+        result["error"] = "events must be a sequence of event objects"
+        return result
+    try:
+        registry = (
+            load_bridge_identity_registry()
+            if identity_registry is None
+            else dict(identity_registry)
+        )
+    except ValueError as exc:
+        result["decision"] = "invalid_identity_registry"
+        result["error"] = str(exc)
+        return result
+    aliases = _author_task_id_aliases(task_id, author_agent)
+    result["task_id_aliases"] = list(aliases)
+    scope = frozenset((task_id, *aliases))
+    restricted = set(recognized)
+    vetoes: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            result["decision"] = "malformed_event"
+            result["error"] = "events must hold only event objects"
+            return result
+        if str(event.get("task_id", "")) not in scope:
+            continue
+        if str(event.get("agent", "")) not in restricted:
+            continue
+        if not _is_rco_veto_event(event):
+            continue
+        summary = _summarize_event(event) or {}
+        summary["identity_binding_status"] = bridge_identity_binding_status(
+            event,
+            registry=registry,
+            restricted_agents=restricted,
+        )
+        vetoes.append(summary)
+    result["veto_events"] = vetoes
+    result["decision"] = "recognized_rco_veto_present" if vetoes else "no_recognized_rco_veto"
+    result["ok"] = not vetoes
+    return result
+
+
 def _find_task_id_mismatch_rco_pass_events(
     *,
     events: Sequence[Mapping[str, Any]],

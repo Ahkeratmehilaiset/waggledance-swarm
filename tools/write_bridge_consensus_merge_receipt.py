@@ -80,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=REVIEW_POLICY_LEGACY,
         help="Opt-in rule12 review evaluator; the default is the Rule 9a verifier.",
     )
+    parser.add_argument(
+        "--grok-fallback",
+        action="store_true",
+        help=(
+            "rule12 only: read bound Grok consultations from the fixed helper "
+            "reports root so Grok may hold a vacant RCO slot (default off)."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -117,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_task_id=args.bridge_task_id,
             now_utc=now_utc,
             review_policy=args.review_policy,
+            grok_fallback=args.grok_fallback,
         )
     except BridgeConsensusMergeReceiptError as exc:
         report = exc.report
@@ -156,8 +165,21 @@ def write_bridge_consensus_merge_receipt(
     now_utc: datetime | None = None,
     operator_path_exception: Mapping[str, Any] | None = None,
     review_policy: str = REVIEW_POLICY_LEGACY,
+    grok_fallback: bool = False,
+    _grok_reports_root: Path | None = None,
 ) -> dict[str, Any]:
     now = _validated_now_utc(now_utc)
+    if type(grok_fallback) is not bool or (
+        grok_fallback and review_policy != REVIEW_POLICY_RULE12
+    ):
+        raise BridgeConsensusMergeReceiptError(
+            {
+                "decision": "invalid_input",
+                "ok": False,
+                "errors": ["grok_fallback must be a boolean and needs review_policy=rule12"],
+                "exit_code": 2,
+            }
+        )
     if type(review_policy) is not str or review_policy not in REVIEW_POLICIES:
         raise BridgeConsensusMergeReceiptError(
             {
@@ -183,6 +205,8 @@ def write_bridge_consensus_merge_receipt(
         bridge_task_id=bridge_task_id,
         now_utc=now,
         review_policy=review_policy,
+        grok_fallback=grok_fallback,
+        grok_reports_root=_grok_reports_root,
     )
     gate_report = apply_operator_path_exception(
         gate_report, grant=operator_path_exception, pr_status=pr_status,
@@ -276,12 +300,18 @@ def _merge_plan_report(
     bridge_task_id: str,
     now_utc: datetime,
     review_policy: str = REVIEW_POLICY_LEGACY,
+    grok_fallback: bool = False,
+    grok_reports_root: Path | None = None,
 ) -> dict[str, Any]:
     rule12_kwargs: dict[str, Any] = (
         {"review_policy": review_policy, "now_utc": now_utc}
         if review_policy == REVIEW_POLICY_RULE12
         else {}
     )
+    if grok_fallback:
+        rule12_kwargs["grok_fallback"] = True
+        if grok_reports_root is not None:
+            rule12_kwargs["_grok_reports_root"] = grok_reports_root
     try:
         return evaluate_auto_merge_gate(
             pr_status=pr_status,
@@ -351,7 +381,18 @@ def _receipt_payload(
             "rco_pass_refs": list(bridge_consensus.get("rco_pass_refs") or []),
             "evaluation": bridge_consensus.get("rule12"),
         }
+        evidence = gate_report.get("grok_fallback_evidence")
+        if isinstance(evidence, Mapping):
+            # The full Grok tuple the merge executor's fresh gate must reproduce
+            # (plan v3 B5); a consumer re-derives it from the ledger request_id.
+            payload["rule12_review"]["grok_fallback"] = dict(evidence)
     return payload
+
+
+def _grok_evidence(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    review = payload.get("rule12_review")
+    evidence = review.get("grok_fallback") if isinstance(review, Mapping) else None
+    return evidence if isinstance(evidence, Mapping) else None
 
 
 def _is_rule12(bridge_consensus: Mapping[str, Any]) -> bool:
@@ -376,16 +417,24 @@ def _write_receipt_bundle(
         if rule12
         else "bridge_consensus:three_identity_head_bound"
     )
+    grok_evidence = _grok_evidence(payload) if rule12 else None
     rco_reason_codes = (
         ["rco:pass_present"]
         if not rule12 or bridge_consensus.get("rco_pass_ref") is not None
         else []
     )
+    if grok_evidence is not None:
+        rco_reason_codes = ["rco:grok_fallback"]
     rco_decision_basis: Any = (
         list(bridge_consensus.get("rco_pass_refs") or [])
         if rule12
         else bridge_consensus["rco_pass_ref"]
     )
+    if grok_evidence is not None:
+        rco_decision_basis = {
+            "rco_pass_refs": rco_decision_basis,
+            "grok_fallback": dict(grok_evidence),
+        }
     evaluation = build_evaluation_result(
         case_id=f"case:bridge_consensus_merge:pr{pr_number}",
         subject_type="promotion",
@@ -396,11 +445,12 @@ def _write_receipt_bundle(
         verifier_path=[
             "idle_consensus_auto_merge_gate",
             consensus_verifier,
+            *(["rule12_grok_ledger_adapter"] if grok_evidence is not None else []),
             "check_rco_pass_present",
             "check_bridge_changes_requested",
             "magma_receipt_verifier_v1",
         ],
-        solver_selection=_solver_selection(bridge_consensus),
+        solver_selection=_solver_selection(bridge_consensus, grok_evidence),
         policy_version=(
             "policy:rule12_best_available_consensus_v1"
             if rule12
@@ -474,7 +524,10 @@ def _write_receipt_bundle(
     )
 
 
-def _solver_selection(bridge_consensus: Mapping[str, Any]) -> list[str]:
+def _solver_selection(
+    bridge_consensus: Mapping[str, Any],
+    grok_evidence: Mapping[str, Any] | None = None,
+) -> list[str]:
     if _is_rule12(bridge_consensus):
         identities = bridge_consensus.get("identities")
         holders: list[str] = []
@@ -487,6 +540,8 @@ def _solver_selection(bridge_consensus: Mapping[str, Any]) -> list[str]:
             for ref in bridge_consensus.get("rco_pass_refs") or []
             if isinstance(ref, Mapping)
         )
+        if grok_evidence is not None:
+            holders.append(str(grok_evidence.get("reviewer", "")))
         return [agent for agent in holders if agent] or [
             "bridge_rule12_review_eligibility"
         ]

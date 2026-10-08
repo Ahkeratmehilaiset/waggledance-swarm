@@ -352,9 +352,9 @@ The rule text:
 
 **Code status (truth, 2026-10-06).** This file does not change the code that
 computes a merge verdict. The gate still fixes the build identities:
-`tools/idle_consensus_auto_merge.py:77-78` sets `BRIDGE_CONSENSUS_LEAD =
+`tools/idle_consensus_auto_merge.py:97-98` sets `BRIDGE_CONSENSUS_LEAD =
 "codex-lead-1"` and `BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"`, and
-`verify_bridge_consensus` (`:1285`) requires both of them plus a recognized
+`verify_bridge_consensus` (`:1412`) requires both of them plus a recognized
 RCO `rco_pass` at the exact head. Until a gate-code PR changes that, a merge
 through the gate still needs both Codex approvals; the opposite-family rule
 above adds to them and cannot replace them. Any mismatch is reported, never
@@ -366,6 +366,35 @@ the standing-signature path take effect in the gate only when a paired
 (a)-class gate-code PR lands under this rule, with its own adversarial review.
 Until then, a merge the gate refuses stays refused; no session works around the
 gate.
+
+**Code status update (2026-10-08, draft gate-code PR, not in effect until it
+merges).** The paired gate-code PR wires the Grok RCO slot only behind an
+opt-in switch: `review_policy=rule12` plus `grok_fallback` (the
+`--grok-fallback` flag of the receipt writer and the merge executor; default
+off; the runbook driver does not pass it). With the switch on:
+- the gate reads Grok consultations only from the fixed helper root
+  `C:\Python\grok-scout-reports`, through `tools/rule12_grok_ledger_adapter.py`;
+- the exact-head `RCO_PASS` blocker lifts only when the RCO slot is
+  `held_by_grok_fallback`, a non-Grok identity-bound lane holds the
+  opposite-family slot, the peer gate is clear, and a full recognized-RCO veto
+  scan (`scan_recognized_rco_vetoes`) finds no veto-shaped event on the task;
+- the receipt binds the whole Grok tuple, and the executor refuses the merge if
+  its fresh gate does not reproduce it.
+
+Still NOT implemented:
+- whole-pool `external_review` (report-only; it approves nothing);
+- chunked review of a diff over the 24000-byte prompt cap;
+- binary or submodule content (refused);
+- activation of the switch.
+
+Known limits:
+- The veto scan honours no retraction, so after any RCO veto on a task only a
+  recognized RCO's own `RCO_PASS` can fill the slot.
+- Condition 3 is enforced in a stricter form: no implementer and no candidate
+  for the filled slot may relay the request.
+- **Trust boundary:** the helper ledger and reports are unsigned. The hashes
+  prove consistency, not origin, so a same-user host writer can forge both.
+  Activating the switch therefore needs an authenticated-origin decision first.
 
 **Unchanged:**
 - the RCO veto is absolute and outranks any pass;

@@ -36,6 +36,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
 from tools.check_rco_pass_present import (  # noqa: E402
     DEFAULT_RCO_AGENTS,
     check_rco_pass_present,
+    scan_recognized_rco_vetoes,
 )
 from tools.idle_consensus_artifact import (  # noqa: E402
     DEFAULT_OUT_DIR as DEFAULT_ARTIFACT_OUT_DIR,
@@ -52,7 +53,12 @@ from tools.bridge_rule12_review_eligibility import (  # noqa: E402
     _evidence_time_ok as _rule12_evidence_time_ok,
     _is_pass_status as _rule12_is_pass_status,
     _on_task as _rule12_on_task,
+    SLOT_OPPOSITE_FAMILY as RULE12_SLOT_OPPOSITE_FAMILY,
+    SLOT_RCO as RULE12_SLOT_RCO,
     evaluate_rule12_review_eligibility,
+)
+from tools.rule12_grok_ledger_adapter import (  # noqa: E402
+    collect_rule12_grok_consultations,
 )
 from tools.bridge_accepted_queue_preflight import (  # noqa: E402
     bridge_events_path_matches_root,
@@ -122,11 +128,17 @@ LEAD_STALL_FAILOVER_THRESHOLD_SECONDS = 90 * 60
 # ``bridge_consensus_v1`` (default) is the Rule 9a three-identity verifier.
 # ``rule12`` replaces it with the Rule 12 best-available-consensus evaluator
 # (tools/bridge_rule12_review_eligibility.py). It is opt-in and never the
-# default; Grok consultations are not wired, so no Grok slot can be filled.
+# default. Grok consultations are read only under rule12 with the separate
+# ``grok_fallback`` switch, from the fixed helper root below (never a caller
+# path), and Grok can then hold only a vacant RCO slot next to a non-Grok
+# opposite-family holder. The ledger is unsigned: a same-user host writer can
+# forge it, so the switch stays off until that trust boundary is resolved.
 REVIEW_POLICY_LEGACY = "bridge_consensus_v1"
 REVIEW_POLICY_RULE12 = "rule12"
 REVIEW_POLICIES = frozenset({REVIEW_POLICY_LEGACY, REVIEW_POLICY_RULE12})
 RULE12_PR_OPENER_SOURCE = "pr_author"
+GROK_REPORTS_ROOT = Path(r"C:\Python\grok-scout-reports")
+GROK_RCO_SLOT_STATE = "held_by_grok_fallback"
 LEAD_STALL_NON_SUBSTANTIVE_TYPES = frozenset({"heartbeat", "liveness"})
 LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
     {"alive", "heartbeat", "heartbeat_ok", "idle_heartbeat", "liveness"}
@@ -341,8 +353,20 @@ def evaluate_auto_merge_gate(
     accepted_queue_checker: AcceptedQueueChecker | None = None,
     review_policy: str = REVIEW_POLICY_LEGACY,
     now_utc: datetime | None = None,
+    grok_fallback: bool = False,
+    _grok_reports_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Evaluate and optionally apply the final idle auto-merge gate."""
+    """Evaluate and optionally apply the final idle auto-merge gate.
+
+    ``grok_fallback`` (rule12 only, default off) lets a bound Grok answer from
+    ``GROK_REPORTS_ROOT`` hold a vacant RCO slot. ``_grok_reports_root`` is a
+    test seam for that fixed root, never a caller-selected authority.
+    """
+    _validate_grok_fallback_inputs(
+        review_policy=review_policy,
+        grok_fallback=grok_fallback,
+        grok_reports_root=_grok_reports_root,
+    )
     _validate_evaluate_inputs(
         pr_status=pr_status,
         expected_head=expected_head,
@@ -542,18 +566,6 @@ def evaluate_auto_merge_gate(
             )
         else:
             blockers.append("unresolved peer bridge block")
-    if events_path is not None and not bool(rco_pass_gate.get("ok", False)):
-        blockers.append("missing exact-head RCO_PASS from recognized non-author RCO")
-    if not receipt_verified_typed:
-        blockers.append("receipt_verified must be a boolean")
-    if not receipt_bundle_path and not (apply and artifact_hook_configured):
-        blockers.append("receipt_bundle_path is required before merge")
-    if (
-        receipt_bundle_path
-        and not receipt_verified
-        and not (apply and artifact_hook_configured)
-    ):
-        blockers.append("receipt bundle verification is required before merge")
 
     if review_policy == REVIEW_POLICY_RULE12:
         assert gate_now is not None
@@ -564,6 +576,13 @@ def evaluate_auto_merge_gate(
             head_sha=head_sha,
             author_resolution=author_resolution,
             now=gate_now,
+            grok_reports_root=(
+                (GROK_REPORTS_ROOT if _grok_reports_root is None else _grok_reports_root)
+                if grok_fallback
+                else None
+            ),
+            changed_paths=changed_paths,
+            diff_text=diff_text,
         )
     else:
         bridge_consensus = _evaluate_bridge_consensus(
@@ -582,6 +601,35 @@ def evaluate_auto_merge_gate(
                 lead_stall_failover_threshold_seconds
             ),
         )
+    grok_rco_slot_lift = (
+        _grok_rco_slot_lift(
+            bridge_consensus=bridge_consensus,
+            bridge_peer_gate=bridge_peer_gate,
+            events=events,
+            task_id=bridge_gate_task_id,
+            author_agent=author_agent,
+            checked=events_path is not None,
+        )
+        if review_policy == REVIEW_POLICY_RULE12 and grok_fallback
+        else None
+    )
+    if (
+        events_path is not None
+        and not bool(rco_pass_gate.get("ok", False))
+        and not (grok_rco_slot_lift is not None and grok_rco_slot_lift["lifted"] is True)
+    ):
+        blockers.append("missing exact-head RCO_PASS from recognized non-author RCO")
+    if not receipt_verified_typed:
+        blockers.append("receipt_verified must be a boolean")
+    if not receipt_bundle_path and not (apply and artifact_hook_configured):
+        blockers.append("receipt_bundle_path is required before merge")
+    if (
+        receipt_bundle_path
+        and not receipt_verified
+        and not (apply and artifact_hook_configured)
+    ):
+        blockers.append("receipt bundle verification is required before merge")
+
     if require_bridge_consensus:
         if events_path is None:
             blockers.append("bridge events path is required for bridge consensus")
@@ -636,6 +684,21 @@ def evaluate_auto_merge_gate(
     )
     base["author_resolution"] = author_resolution
     base["review_policy"] = review_policy
+    if grok_rco_slot_lift is not None:
+        # Only present when the switch is on, so other reports stay unchanged.
+        base["grok_fallback"] = True
+        base["grok_rco_slot_lift"] = grok_rco_slot_lift
+        base["grok_fallback_evidence"] = _grok_fallback_evidence(
+            bridge_consensus=bridge_consensus,
+            lift=grok_rco_slot_lift,
+            task_id=bridge_gate_task_id,
+            pr_number=pr_number,
+            base_sha=expected_base_sha or snapshot_base_sha,
+            head_sha=head_sha,
+            reports_root=(
+                GROK_REPORTS_ROOT if _grok_reports_root is None else _grok_reports_root
+            ),
+        )
     if blockers:
         return {
             **base,
@@ -729,6 +792,8 @@ def evaluate_auto_merge_gate(
             accepted_queue_checker=accepted_queue_checker,
             review_policy=review_policy,
             now_utc=gate_now,
+            grok_fallback=grok_fallback,
+            _grok_reports_root=_grok_reports_root,
         )
         apply_recheck["fresh_gate"] = fresh_gate
         if fresh_gate.get("ok") is not True:
@@ -741,6 +806,15 @@ def evaluate_auto_merge_gate(
                     or fresh_gate.get("errors")
                     or ["unknown fresh-gate refusal"]
                 )
+            ]
+        elif fresh_gate.get("grok_fallback_evidence") != report.get(
+            "grok_fallback_evidence"
+        ):
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = [
+                "fresh apply safety gate drifted: the Grok fallback evidence "
+                "differs from the planned merge"
             ]
     report["apply_recheck"] = apply_recheck
     if apply_recheck.get("ok") is not True:
@@ -2252,6 +2326,9 @@ def _evaluate_rule12_review(
     head_sha: str,
     author_resolution: Mapping[str, Any],
     now: datetime,
+    grok_reports_root: Path | None = None,
+    changed_paths: Sequence[str] = (),
+    diff_text: str = "",
 ) -> dict[str, Any]:
     """Run the Rule 12 evaluator over identity-bound evidence (opt-in policy).
 
@@ -2260,7 +2337,10 @@ def _evaluate_rule12_review(
     under ``rule12``. It fails closed when the author is unresolved, when a
     commit identity maps to no registered agent (an unknown contributor cannot
     be ruled out as a reviewer), or when the registry cannot bind the pool.
-    No Grok consultation is passed, so Grok never fills a slot here.
+    Grok consultations are read only when ``grok_reports_root`` is given (the
+    ``grok_fallback`` switch): the adapter re-derives each one from the gate's
+    own diff, the identity-bound request events and the helper ledger. Adapter
+    doubts only leave a slot unfilled; Grok never vetoes.
     """
     author_value = (
         author_resolution.get("author_agent", "")
@@ -2376,12 +2456,40 @@ def _evaluate_rule12_review(
             continue
         bound_events.append(event)
 
+    grok_kwargs: dict[str, Any] = {}
+    if grok_reports_root is not None:
+        adapter = collect_rule12_grok_consultations(
+            task_id=task_id,
+            head=head_sha,
+            request_events=bound_events,
+            diff_text=diff_text,
+            changed_paths=list(changed_paths),
+            reports_root=grok_reports_root,
+            now_utc=now,
+        )
+        grok_kwargs = {
+            "grok_consultations": adapter["consultations"],
+            "expected_diff_sha256": adapter["expected_diff_sha256"],
+            "expected_prompt_sha256": adapter["expected_prompt_sha256"],
+            "expected_files_total": adapter["expected_files_total"],
+            "expected_nonce": adapter["expected_nonce"],
+        }
+        # The report keeps every attempt but never the answer text itself.
+        result["grok_adapter"] = {
+            **{key: value for key, value in adapter.items() if key != "consultations"},
+            "reports_root": str(grok_reports_root),
+            "consultations": [
+                {key: value for key, value in consultation.items() if key != "answer_text"}
+                for consultation in adapter["consultations"]
+            ],
+        }
     evaluation = evaluate_rule12_review_eligibility(
         task_id=task_id,
         head=head_sha,
         contributors=contributors,
         events=bound_events,
         now_utc=result["now_utc"],
+        **grok_kwargs,
     )
     result["rule12"] = evaluation
     slots = evaluation.get("slots") or {}
@@ -2457,11 +2565,154 @@ def _evaluate_rule12_review(
             f"rule12 review {decision}: {reason}"
             for reason in (evaluation.get("reasons") or ["no reason recorded"])
         )
+    grok_filled = (evaluation.get("grok_fallback") or {}).get("filled") or []
+    if any(slot not in (RULE12_SLOT_RCO, RULE12_SLOT_OPPOSITE_FAMILY) for slot in grok_filled):
+        # Whole-pool external review is report-only in this gate (plan v3 B2):
+        # one Grok answer never stands in for both slots.
+        reasons.append("rule12 Grok external_review is report-only and approves nothing here")
     result["ok"] = not reasons
     result["decision"] = (
         "rule12_best_available_consensus" if result["ok"] else "rule12_review_incomplete"
     )
     return result
+
+
+def _validate_grok_fallback_inputs(
+    *,
+    review_policy: object,
+    grok_fallback: object,
+    grok_reports_root: object,
+) -> None:
+    if type(grok_fallback) is not bool:
+        raise _invalid("invalid_input", "grok_fallback must be a boolean")
+    if grok_fallback and review_policy != REVIEW_POLICY_RULE12:
+        raise _invalid(
+            "invalid_input",
+            "grok_fallback is only read by review_policy=rule12",
+        )
+    if grok_reports_root is not None and (
+        not grok_fallback or not isinstance(grok_reports_root, Path)
+    ):
+        raise _invalid(
+            "invalid_input",
+            "_grok_reports_root is a test seam for grok_fallback and must be a Path",
+        )
+
+
+def _grok_rco_slot_lift(
+    *,
+    bridge_consensus: Mapping[str, Any],
+    bridge_peer_gate: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    author_agent: str,
+    checked: bool,
+) -> dict[str, Any]:
+    """Whether a Grok-held RCO slot may stand in for the missing RCO_PASS.
+
+    Lifted only when the rule12 review is satisfied with the rco slot
+    ``held_by_grok_fallback``, the opposite-family slot plainly ``held`` by
+    non-Grok identity-bound lanes, the peer gate is clear, and a full
+    recognized-RCO veto scan is empty. ``check_rco_pass_present`` returns
+    before its veto logic when no RCO passed, so it cannot prove the slot is
+    clear here (plan v3 B2/B3). Every other case keeps the RCO_PASS blocker.
+    """
+    rule12 = bridge_consensus.get("rule12")
+    rule12 = rule12 if isinstance(rule12, Mapping) else {}
+    slots = rule12.get("slots")
+    slots = slots if isinstance(slots, Mapping) else {}
+    rco_slot = slots.get(RULE12_SLOT_RCO)
+    rco_slot = rco_slot if isinstance(rco_slot, Mapping) else {}
+    opposite_slot = slots.get(RULE12_SLOT_OPPOSITE_FAMILY)
+    opposite_slot = opposite_slot if isinstance(opposite_slot, Mapping) else {}
+    opposite_holders = list(opposite_slot.get("holders") or [])
+    veto_scan = (
+        scan_recognized_rco_vetoes(
+            events=list(events),
+            task_id=task_id,
+            author_agent=author_agent,
+            rco_agent=BRIDGE_CONSENSUS_RCO_AGENTS,
+        )
+        if checked and author_agent
+        else None
+    )
+    reasons: list[str] = []
+    if not checked:
+        reasons.append("bridge events were not read")
+    if bridge_consensus.get("ok") is not True:
+        reasons.append("rule12 review is not satisfied")
+    if rule12.get("decision") != "satisfied":
+        reasons.append("rule12 evaluator decision is not satisfied")
+    if rco_slot.get("state") != GROK_RCO_SLOT_STATE or not isinstance(
+        rco_slot.get("grok"), Mapping
+    ):
+        reasons.append("the rco slot is not held by a bound Grok fallback")
+    if opposite_slot.get("state") != "held" or not opposite_holders or any(
+        holder == RULE12_GROK_AGENT for holder in opposite_holders
+    ):
+        reasons.append("the opposite-family slot has no non-Grok holder")
+    if bridge_peer_gate.get("clear_to_merge") is not True:
+        reasons.append("the peer bridge gate is not clear")
+    if veto_scan is None:
+        reasons.append("recognized-RCO veto scan did not run")
+    elif veto_scan.get("ok") is not True:
+        reasons.append(
+            "recognized-RCO veto scan is not clear: " + str(veto_scan.get("decision", ""))
+        )
+    return {
+        "lifted": not reasons,
+        "reasons": reasons,
+        "rco_slot_state": rco_slot.get("state", ""),
+        "opposite_family_holders": opposite_holders,
+        "veto_scan": veto_scan,
+    }
+
+
+def _grok_fallback_evidence(
+    *,
+    bridge_consensus: Mapping[str, Any],
+    lift: Mapping[str, Any],
+    task_id: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+    reports_root: Path,
+) -> dict[str, Any] | None:
+    """The full Grok tuple a receipt binds and a fresh gate must reproduce.
+
+    ``None`` unless the RCO slot lift holds. Any field change between the
+    receipt and the executor's fresh gate rejects the merge (plan v3 B5).
+    """
+    if lift.get("lifted") is not True:
+        return None
+    rule12 = bridge_consensus.get("rule12") or {}
+    record = ((rule12.get("slots") or {}).get(RULE12_SLOT_RCO) or {}).get("grok") or {}
+    adapter = bridge_consensus.get("grok_adapter") or {}
+    attempt = next(
+        (
+            consultation
+            for consultation in adapter.get("consultations") or []
+            if consultation.get("request_id") == record.get("request_id")
+        ),
+        {},
+    )
+    return {
+        "task_id": task_id,
+        "pr_number": pr_number,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "slot": RULE12_SLOT_RCO,
+        "reviewer": record.get("reviewer", ""),
+        "requester": record.get("requester_relay", ""),
+        "nonce": record.get("nonce", ""),
+        "request_id": record.get("request_id", ""),
+        "input_sha256": record.get("input_sha256", ""),
+        "prompt_sha256": record.get("prompt_sha256", ""),
+        "answer_sha256": record.get("answer_sha256", ""),
+        "coverage": dict(attempt.get("coverage") or {}),
+        "review_policy": REVIEW_POLICY_RULE12,
+        "reports_source": str(reports_root),
+    }
 
 
 def _rule12_contributor_shape_reasons(

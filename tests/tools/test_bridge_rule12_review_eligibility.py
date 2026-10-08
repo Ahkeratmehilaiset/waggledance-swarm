@@ -192,13 +192,31 @@ def test_grok_fills_vacant_opposite_slot_when_lead_and_tools_are_recused():
 
 def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
     contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"}]
-    # The requester is a pure relay: even the author may relay, it never supplies the verdict.
-    consultation = grok(slot="rco", requester="fable-5")
+    # The relay never supplies the verdict, but it may not be an implementer or an RCO
+    # candidate (Rule 12 condition 3, stricter form; Lead Q1 2026-10-08).
+    consultation = grok(slot="rco", requester="codex-lead-1")
     result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
                       [consultation])
     assert result["decision"] == "satisfied"
     assert result["slots"]["rco"]["state"] == "held_by_grok_fallback"
     assert result["slots"]["rco"]["holders"] == []  # never recorded as an rco_pass
+
+
+@pytest.mark.parametrize(
+    "requester",
+    [
+        "fable-5",  # the PR author (the written rule)
+        "claude-rco-2",  # a design implementer
+        "claude-rco-1",  # a recognized RCO: a candidate for the slot it would fill
+    ],
+)
+def test_grok_rco_slot_refuses_an_implementer_or_rco_candidate_requester(requester):
+    contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"}]
+    result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
+                      [grok(slot="rco", requester=requester)])
+    assert result["decision"] == "not_satisfied"
+    assert result["slots"]["rco"]["state"] == "vacant"
+    assert any("implementer or a candidate" in r for r in result["grok_fallback"]["reasons"])
 
 
 def test_two_vacant_slots_without_a_wholly_ineligible_pool_exceed_grok_max_one_slot():
@@ -571,9 +589,14 @@ def test_whole_pool_ineligible_by_implementation_and_recusal_mix():
     contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"},
                     {"agent": "codex-tools-1", "role": "measurement"}]
     events = [recused("codex-lead-1"), recused("claude-rco-1")]
-    result = evaluate(events, contributors, [grok(slot="external_review", requester="fable-5")])
+    result = evaluate(events, contributors,
+                      [grok(slot="external_review", requester="codex-lead-1")])
     assert result["decision"] == "satisfied"
-    assert result["grok_fallback"]["external_review"]["requester_relay"] == "fable-5"
+    assert result["grok_fallback"]["external_review"]["requester_relay"] == "codex-lead-1"
+    # The author may not relay even the whole-pool review (Rule 12 condition 3).
+    by_author = evaluate(events, contributors,
+                         [grok(slot="external_review", requester="fable-5")])
+    assert by_author["decision"] == "not_satisfied"
 
 
 @pytest.mark.parametrize(
@@ -637,7 +660,7 @@ def test_eligible_fable_comes_before_grok_for_gpt_authored_work():
     assert silent_fable["grok_fallback"]["whole_pool_ineligible"] is False
     assert silent_fable["decision"] == "not_satisfied"
     fable_reviews = evaluate([*events, build_pass("fable-5")], contributors,
-                             [grok(slot="rco", request_id="f" * 32)])
+                             [grok(slot="rco", request_id="f" * 32, requester="fable-5")])
     assert fable_reviews["slots"]["opposite_family"]["holders"] == ["fable-5"]
     assert fable_reviews["slots"]["rco"]["state"] == "held_by_grok_fallback"
     assert fable_reviews["decision"] == "satisfied"
@@ -649,7 +672,7 @@ def test_fable_is_not_a_recognized_rco():
     assert "fable-5" not in result["slots"]["rco"]["standing"]
 
 
-@pytest.mark.parametrize("requester", ["fable-5", "codex-lead-1", "claude-rco-1"])
+@pytest.mark.parametrize("requester", ["claude-rco-1", "claude-rco-2"])
 def test_ineligible_pure_relay_may_request_but_never_supplies_the_verdict(requester):
     ok = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(requester=requester)])
     assert ok["decision"] == "satisfied"
@@ -658,6 +681,22 @@ def test_ineligible_pure_relay_may_request_but_never_supplies_the_verdict(reques
     relay_says_approve["verdict"] = "approve"
     result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[relay_says_approve])
     assert result["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize(
+    "requester",
+    [
+        "fable-5",  # the PR author
+        "codex-lead-1",  # a (recused) candidate for the opposite-family slot itself
+        "codex-tools-1",  # the other candidate for that slot
+    ],
+)
+def test_opposite_slot_refuses_an_author_or_slot_candidate_requester(requester):
+    # Stricter than the written condition 3 (author + the filled slot's build peer):
+    # every candidate for the slot is refused as the relay (Lead Q1 2026-10-08).
+    result = evaluate([*GPT_RECUSED, *BOTH_RCO], consultations=[grok(requester=requester)])
+    assert result["decision"] == "not_satisfied"
+    assert result["slots"]["opposite_family"]["state"] == "vacant"
 
 
 @pytest.mark.parametrize("answer", ["APPROVE", "**APPROVE**\nreasons", "# APPROVE.\n", "\n  APPROVE  \nok"])

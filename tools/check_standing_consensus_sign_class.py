@@ -75,6 +75,8 @@ _A_CODE_SUBSTR = (
     "check_rco_pass_present",
     "bridge_rule12_review_eligibility",      # Rule 12 evaluator, read by the gate
     "rule12_gate_wiring",                    # Rule 12 gate-wiring conformance anchor
+    "rule12_grok_ledger_adapter",            # Grok consultations the gate reads (2026-10-08)
+    "rule12_grok_gate_wiring",               # Grok RCO-slot gate-wiring conformance anchor
     "merge_with_bridge_receipt",
     "write_bridge_consensus_merge_receipt",
     "idle_consensus_charter",

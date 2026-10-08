@@ -348,15 +348,21 @@ def _grok_reasons(
     expected_prompt_sha256: str,
     expected_files_total: int,
     expected_nonce: str,
+    excluded_requesters: frozenset[str] = frozenset(),
 ) -> list[str]:
     reasons: list[str] = []
     if not REQUEST_ID_RE.match(_text(consultation.get("request_id"))):
         reasons.append("Grok request_id missing or not a ledger id")
-    # The requester is only a relay and may be ineligible; it never supplies the
-    # verdict, so the only requirement is a known, non-Grok bridge lane.
+    # The requester is a relay: it never supplies the verdict, but it must be a
+    # known, non-Grok bridge lane outside ``excluded_requesters`` (Rule 12
+    # condition 3, enforced in its stricter form; see the evaluator docstring).
     requester = _text(consultation.get("requester"))
     if requester not in FAMILIES or requester == GROK_AGENT:
         reasons.append(f"Grok requester {requester!r} is not a known bridge lane")
+    elif requester in excluded_requesters:
+        reasons.append(
+            f"Grok requester {requester!r} is an implementer or a candidate for this slot"
+        )
     if not NONCE_RE.match(expected_nonce):
         reasons.append("expected gate nonce is missing")
     elif _text(consultation.get("nonce")) != expected_nonce:
@@ -429,6 +435,10 @@ def evaluate_rule12_review_eligibility(
     ``satisfied`` means every review slot is held; CI, charter and receipt
     checks stay with the gate. The ``expected_*`` values must be computed by
     the gate from the exact head, never taken from the requester.
+
+    A Grok requester that is an implementer, or a candidate for the slot it
+    asks Grok to fill, is refused. That is stricter than Rule 12 condition 3
+    (author and the filled slot's build peer only); the rule text is unchanged.
     """
     result: dict[str, Any] = {
         "schema": SCHEMA,
@@ -549,6 +559,18 @@ def evaluate_rule12_review_eligibility(
     result["grok_fallback"] = grok
     consultations = [c for c in grok_consultations if isinstance(c, Mapping)]
 
+    # Rule 12 condition 3 says the requester is neither the PR author nor the
+    # build peer whose slot Grok fills. This evaluator enforces a STRICTER form:
+    # no implementer of any role, and no lane that is itself a candidate for the
+    # slot being filled (every recognized RCO for the rco slot, every
+    # opposite-family candidate for that slot). External review keeps the
+    # implementer exclusion only, because the whole pool is out by definition.
+    slot_candidates = {
+        SLOT_RCO: frozenset(RECOGNIZED_RCOS),
+        SLOT_OPPOSITE_FAMILY: frozenset(candidates),
+        SLOT_EXTERNAL_REVIEW: frozenset(),
+    }
+
     def qualifying(tag: str) -> Mapping[str, Any] | None:
         consultation, tag_reasons = _first_grok_consultation(
             consultations, task_id, head, tag, now
@@ -560,6 +582,7 @@ def evaluate_rule12_review_eligibility(
                 expected_prompt_sha256=expected_prompt_sha256,
                 expected_files_total=expected_files_total,
                 expected_nonce=expected_nonce,
+                excluded_requesters=frozenset(implementers) | slot_candidates[tag],
             )
         if tag_reasons:
             grok["reasons"].extend(f"{tag}: {reason}" for reason in tag_reasons)

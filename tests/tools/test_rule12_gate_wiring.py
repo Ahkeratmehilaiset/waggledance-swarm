@@ -3,8 +3,9 @@
 
 The default ``review_policy`` stays the Rule 9a verifier. ``rule12`` swaps in
 tools/bridge_rule12_review_eligibility.py over identity-bound evidence with an
-explicit UTC clock. Grok consultations are not wired, so Grok never fills a
-slot through the gate.
+explicit UTC clock. Without the separate ``grok_fallback`` switch (these tests)
+no Grok consultation is read, so Grok never fills a slot; the switch is covered
+in tests/tools/test_rule12_grok_gate_wiring.py.
 """
 from __future__ import annotations
 

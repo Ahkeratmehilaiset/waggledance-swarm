@@ -56,6 +56,7 @@
     "tools/merge_with_bridge_receipt.py",
     "tools/operator_path_exception.py",
     "tools/pr_status_snapshot.py",
+    "tools/rule12_grok_ledger_adapter.py",
     "tools/validate_bridge_event.py",
     "tools/verify_magma_receipt.py",
     "tools/wd_bridge_doctor.py",

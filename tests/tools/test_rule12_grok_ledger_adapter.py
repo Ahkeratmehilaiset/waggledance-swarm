@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Tests for tools/rule12_grok_ledger_adapter.py (Rule 12 Grok adapter, dormant)."""
+"""Tests for tools/rule12_grok_ledger_adapter.py (Rule 12 Grok adapter; gate-wired 2026-10-08
+only under rule12 + the grok_fallback switch)."""
 
 from __future__ import annotations
 
@@ -410,10 +411,46 @@ def test_request_payload_validates_its_fields():
             adapter.rule12_grok_request_payload(**kwargs)
 
 
-def test_adapter_is_not_wired_into_any_gate_or_runtime_path():
-    for path in (ROOT / "tools").glob("*.py"):
-        if path.name == "rule12_grok_ledger_adapter.py":
-            continue
-        assert "rule12_grok_ledger_adapter" not in path.read_text(encoding="utf-8"), path.name
+def test_adapter_is_wired_only_into_the_merge_gate_and_ships_in_the_bundle():
+    # Wired 2026-10-08 under rule12 + the grok_fallback switch only; the gate is
+    # the single importer, so no other runtime path reads Grok consultations.
+    def imports_adapter(path: Path) -> bool:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and node.module == "tools.rule12_grok_ledger_adapter":
+                return True
+            if isinstance(node, ast.ImportFrom) and node.module == "tools" and any(
+                alias.name == "rule12_grok_ledger_adapter" for alias in node.names
+            ):
+                return True
+            if isinstance(node, ast.Import) and any(
+                alias.name == "tools.rule12_grok_ledger_adapter" for alias in node.names
+            ):
+                return True
+        return False
+
+    importers = sorted(
+        path.name
+        for path in (ROOT / "tools").glob("*.py")
+        if path.name != "rule12_grok_ledger_adapter.py" and imports_adapter(path)
+    )
+    assert importers == ["idle_consensus_auto_merge.py"]
     definition = json.loads((ROOT / "ops/windows/reboot/bridge-code-files.json").read_text(encoding="utf-8"))
-    assert "tools/rule12_grok_ledger_adapter.py" not in json.dumps(definition)
+    assert "tools/rule12_grok_ledger_adapter.py" in definition["python_files"]
+
+
+@pytest.mark.parametrize(
+    "unreviewable",
+    [
+        "GIT binary patch\nliteral 5\n",
+        "Binary files a/x.png and b/x.png differ\n",
+        "-Subproject commit 1111111111111111111111111111111111111111\n"
+        "+Subproject commit 2222222222222222222222222222222222222222\n",
+    ],
+)
+def test_prompt_refuses_binary_or_submodule_content(unreviewable):
+    diff = "diff --git a/x.png b/x.png\nindex 1..2 100644\n" + unreviewable
+    with pytest.raises(ValueError, match="binary or submodule"):
+        adapter.build_rule12_grok_prompt(
+            task_id="fable-5/x", head=H, slot="rco", nonce=NONCE,
+            diff_text=diff, changed_paths=["x.png"],
+        )

@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Rule 12 Grok ledger adapter (pure plus bounded file reads, DORMANT, UNWIRED).
+"""Rule 12 Grok ledger adapter (pure plus bounded file reads).
+
+Wired into the merge gate ONLY under ``review_policy=rule12`` with the opt-in
+``grok_fallback`` switch (tools/idle_consensus_auto_merge.py); the default
+policy never imports a consultation. The ledger and the reports are unsigned:
+the hashes checked here prove consistency, not origin, so a same-user host
+writer can forge both (trust boundary, plan v3 B9).
 
 Turns Grok consultations recorded by ``tools/wd_grok_helper.py`` into the
 consultation mappings and ``expected_*`` values that
@@ -21,8 +27,7 @@ Flow (design: GROK_ADAPTER_DESIGN.md, 2026-10-06):
    record at the head is an attempt; the FIRST one fixes ``expected_nonce`` and
    ``expected_prompt_sha256``, so a REJECT can never be dropped and re-asked.
 
-The module never calls Grok, writes nothing, and is not imported by any gate
-code. Wiring it into the merge gate is a separate (a)-class change.
+The module never calls Grok and writes nothing.
 """
 
 from __future__ import annotations
@@ -51,6 +56,15 @@ REQUEST_EVENT_TYPE = "message"
 REQUEST_STATUS = "grok_review_requested"
 # The helper refuses a caller prompt over 24000 UTF-8 bytes (wd_grok_helper main).
 MAX_PROMPT_BYTES = 24000
+# Diff lines whose file has no reviewable text: a binary patch, git's binary
+# summary line and a submodule pointer (``Subproject commit`` after +/-/space).
+UNREVIEWABLE_DIFF_LINE_PREFIXES = (
+    "GIT binary patch",
+    "Binary files ",
+    "+Subproject commit ",
+    "-Subproject commit ",
+    " Subproject commit ",
+)
 # Fresh per request: secrets.token_hex(16). The evaluator accepts 32..64 hex.
 NONCE_HEX = re.compile(r"[0-9a-f]{32}")
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}")
@@ -131,6 +145,11 @@ def build_rule12_grok_prompt(
         raise ValueError(errors[0])
     if "--- END DIFF ---" in diff_text:
         raise ValueError("diff_text contains the END DIFF fence")
+    # A binary patch or a submodule pointer shows Grok no reviewable content, so
+    # a file header alone must never count as full coverage (Lead plan v3 B7).
+    for line in diff_text.split("\n"):
+        if line.rstrip("\r").startswith(UNREVIEWABLE_DIFF_LINE_PREFIXES):
+            raise ValueError("diff_text holds binary or submodule content Grok cannot review")
     prompt = (
         f"WD Rule 12 Grok review request ({PROMPT_SCHEMA})\n"
         f"task_id: {task_id}\n"

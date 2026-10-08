@@ -59,7 +59,19 @@ jobs:
 
       - name: Check test count
         run: |
-          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oP '\d+')
+          # Fail closed: a failed collection, or a summary that is not exactly one
+          # "<N> tests collected in <T>s" line, must not pass (K 011920df job
+          # 113510581050 read "28144 13 80" from the duration and still passed).
+          if ! OUT=$(pytest tests/ --collect-only -q 2>/dev/null); then
+            echo "Test collection failed"
+            exit 1
+          fi
+          LAST=$(printf '%s\n' "$OUT" | tail -1)
+          if ! [[ "$LAST" =~ ^([0-9]+)\ tests?\ collected\ in\ [0-9]+(\.[0-9]+)?s$ ]]; then
+            echo "Unrecognized collection summary: $LAST"
+            exit 1
+          fi
+          COUNT=${BASH_REMATCH[1]}
           echo "Test count: $COUNT"
           if [ "$COUNT" -lt 4200 ]; then
             echo "Test count dropped below 4200!"

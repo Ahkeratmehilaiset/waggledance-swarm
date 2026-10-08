@@ -25,7 +25,7 @@ def _event(*, agent="operator", task=TASK, to="", type="message", status="hold")
                 ts_utc="2026-09-28T22:59:00Z", payload={})
 
 
-def _fixture(tmp_path, rows):
+def _fixture(tmp_path, rows, agent=AGENT):
     bundle = tmp_path / "bundle"
     helper_dir = bundle / "tools-bootstrap/.agent-bridge/bin"
     helper_dir.mkdir(parents=True)
@@ -48,7 +48,7 @@ def _fixture(tmp_path, rows):
 $env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
 function Check {{
- try {{@{{ok=$true;held=(Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId {q(TASK)} -Agent {q(AGENT)} -CheckpointAt '2026-09-28T22:00:00Z')}}}}
+ try {{@{{ok=$true;held=(Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId {q(TASK)} -Agent {q(agent)} -CheckpointAt '2026-09-28T22:00:00Z')}}}}
  catch {{@{{ok=$false;error=$_.Exception.Message}}}}
 }}
 """
@@ -103,6 +103,9 @@ DIAGNOSTICS = {
     | {"payload": {"classification": "x", "authority_effect": "x", "native_exit": 1}},
     "lead-own-finding-suspected-bug": _event(agent=AGENT, type="finding", status="suspected_bug")
     | {"payload": {"reviewer": "x", "finding_id": "x"}},
+    # The other known worker (P1806-F1: only known workers are exempt).
+    "known-worker-fable-5-blocked": _event(agent="fable-5", type="blocked", status="waiting_dependency"),
+    "known-worker-fable-5-message-blocked": _event(agent="fable-5", type="message", status="blocked"),
 }
 
 
@@ -152,7 +155,20 @@ CONTROL_TWINS = {
     "worker-unknown-type-blocked": _event(agent=WORKER, type="note", status="blocked"),
     "unknown-empty-agent": _event(agent="", type="blocked", status="blocked"),
     "unknown-agent-shape": _event(agent="Codex-Tools-1", type="blocked", status="blocked"),
+    # P1806-F1 (RCO1 ABF90637): a well-formed name that is not a known worker stays a control.
+    "valid-unknown-agent": _event(agent="mallory-7", type="blocked", status="blocked"),
+    "rotated-lead-identity": _event(agent="codex-lead-2", type="blocked", status="waiting_dependency"),
+    "rotated-rco-identity": _event(agent="claude-rco-3", type="message", status="blocked"),
+    "grok-scout-identity": _event(agent="grok-scout-1", type="status", status="routing_blocked"),
 }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("author,held", [("fable-5", True), (WORKER, False)], ids=["own-lane-blocked", "other-worker"])
+def test_a_known_worker_lane_never_exempts_its_own_blocked_rows(tmp_path, ps, author, held):
+    _, script = _fixture(tmp_path, [_event(agent=author, type="blocked", status="waiting_dependency")], agent="fable-5")
+    report = json.loads(_run_powershell(script + "Check | ConvertTo-Json -Compress", executable=ps).stdout)
+    assert report == {"ok": True, "held": held}, report
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

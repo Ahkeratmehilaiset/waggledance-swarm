@@ -25,7 +25,10 @@ What counts (everything else is listed in ``rejected`` with a stable reason):
   graded by anything else, including the profile itself, never counts). It must
   be dated no later than ``now`` and no older than ``max_run_age_seconds``.
 * One run that is not ``isolated`` or reports production writes refuses the whole
-  receipt: the evidence came from an unsafe harness.
+  receipt: the evidence came from an unsafe harness. That holds even for a run that
+  would not count for another reason (malformed, stale, unknown case, other profile),
+  and a run object without exactly ``isolated: true`` and an integer
+  ``production_writes: 0`` is unsafe (Q1810-D1).
 * ``(case_id, repeat)`` counts once. Identical copies are deduplicated, and a
   conflicting copy rejects every copy.
 
@@ -150,8 +153,19 @@ def _profile(profile: Any) -> dict:
     return profile
 
 
+def _proves_isolation(run: dict) -> bool:
+    """Only exactly ``isolated: true`` and an int ``production_writes`` of 0 prove a safe harness; a missing or
+    mistyped field proves nothing, so it is unsafe (Q1810-D1)."""
+    return run.get("isolated") is True and type(run.get("production_writes")) is int and run["production_writes"] == 0
+
+
 def _run_reason(run: Any, cases: dict, profile: dict, code_sha: str, thresholds: dict,
                 now: datetime) -> tuple[datetime | None, str]:
+    # An unsafe harness taints everything it produced, not only this run: checked before any other reason, so a
+    # malformed, stale, other-profile or unknown-case unsafe run refuses the receipt too (RCO1 F21-N4; RCO1/RCO2
+    # Q1810-D1: the check used to follow the shape and timestamp returns). A run that is not an object carries no
+    # harness fields and is only malformed.
+    _require(not isinstance(run, dict) or _proves_isolation(run), "isolation_violation", digest(run))
     if not (isinstance(run, dict) and set(run) == set(RUN_KEYS) and run["schema"] == RUN_SCHEMA
             and _text(run["case_id"]) and _count(run["repeat"], 1) and type(run["passed"]) is bool
             and type(run["isolated"]) is bool and _count(run["production_writes"], 0)
@@ -161,9 +175,6 @@ def _run_reason(run: Any, cases: dict, profile: dict, code_sha: str, thresholds:
     observed = _utc(run["observed_utc"])
     if observed is None:
         return None, "malformed"
-    # An unsafe harness taints everything it produced, not only this run: checked before any other reason, so a
-    # stale, other-profile or unknown-case unsafe run refuses the receipt too (RCO1 F21-N4).
-    _require(run["isolated"] is True and run["production_writes"] == 0, "isolation_violation", digest(run))
     case = cases.get(run["case_id"])
     if case is None:
         return None, "unknown_case"

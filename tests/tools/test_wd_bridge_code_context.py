@@ -731,8 +731,13 @@ def test_pinned_wrapper_runs_both_rco_checkers_with_their_native_exit_codes(tmp_
     with_pass.write_text(json.dumps(_rco_pass_event(head, task), sort_keys=True) + "\n", encoding="utf-8")
     silent = tmp_path / "silent.jsonl"
     silent.write_text("", encoding="utf-8")
+    # An EXISTING (empty) spool/accepted-v1 sends the accepted-queue preflight
+    # past its absent-namespace fast path, which is the only branch that takes
+    # the host-wide Global publication mutex, straight to its missing drain
+    # helper refusal. No mutex, no PowerShell child (P1808-T1).
     empty_root = tmp_path / "empty-bridge-root"
     (empty_root / "shared").mkdir(parents=True)
+    (empty_root / "spool" / "accepted-v1").mkdir(parents=True)
     caller_cwd = tmp_path / "caller"
     caller_cwd.mkdir()
 
@@ -760,7 +765,9 @@ def test_pinned_wrapper_runs_both_rco_checkers_with_their_native_exit_codes(tmp_
                                      "--json"],
     }
     runs = "\n".join(
-        f"$out = & '{wrapper}' {' '.join(literal(arg) for arg in argv)} 2>&1 | Out-String\n"
+        # Join records with LF ourselves: Out-String could wrap a long JSON line.
+        f"$out = @(& '{wrapper}' {' '.join(literal(arg) for arg in argv)} 2>&1 | "
+        "ForEach-Object { [string]$_ }) -join \"`n\"\n"
         f"$results[{literal(name)}] = [ordered]@{{ exit = $LASTEXITCODE; out = $out }}"
         for name, argv in cases.items()
     )
@@ -793,10 +800,22 @@ $results | ConvertTo-Json -Depth 4 -Compress
     assert report["self_review"]["exit"] != 0, report["self_review"]
     assert report["changes_help"]["exit"] == 0, report["changes_help"]
     assert "--from-agent" in report["changes_help"]["out"]
-    # The fixture ships no accepted-queue drain script and no events file, so
-    # the peer-block checker must refuse and never report clear_to_merge.
-    assert report["changes_unverified_queue"]["exit"] in (2, 3), report["changes_unverified_queue"]
-    assert '"clear_to_merge": true' not in report["changes_unverified_queue"]["out"]
+    # The fixture package ships no Drain-AcceptedBridgeQueue.ps1, so with an
+    # existing queue namespace the peer-block checker refuses on the missing
+    # drain helper (exit 2) and never reports clear_to_merge. This is a
+    # fixture-only refusal: the PowerShell drain child, BridgeNamedMutex.ps1 and
+    # the PATH-resolved interpreter are NOT exercised here (P1808-R1).
+    unverified = report["changes_unverified_queue"]
+    assert unverified["exit"] == 2, unverified
+    verdict = json.loads(
+        [line for line in unverified["out"].splitlines() if line.startswith("{")][-1]
+    )
+    assert verdict["clear_to_merge"] is False, verdict
+    assert verdict["decision"] == "accepted_queue_preflight_failed", verdict
+    assert (
+        verdict["accepted_queue_preflight"]["decision"]
+        == "accepted_queue_drain_helper_missing"
+    ), verdict
     assert report["pass_at_head_verified"]["exit"] == 0, report["pass_at_head_verified"]
     # Caller environment and cwd are restored after every call.
     assert report["after"]["pythonpath"] == "C:\\task\\worktree"
@@ -811,3 +830,63 @@ $results | ConvertTo-Json -Depth 4 -Compress
     )
     assert sibling.returncode != 0
     assert "outside the packaged entrypoints" in (sibling.stdout + sibling.stderr)
+
+
+def _instrumented_preflight(monkeypatch):
+    """Import the committed preflight with every mutex and child-process seam
+    replaced by recorders, so no test here touches a live Global mutex."""
+    monkeypatch.syspath_prepend(str(ROOT))
+    import contextlib
+
+    import tools.bridge_accepted_queue_preflight as preflight
+
+    calls: list[str] = []
+
+    @contextlib.contextmanager
+    def recording_lease(label):
+        calls.append(label)
+        yield
+
+    def refuse(label):
+        def _refuse(*args, **kwargs):
+            calls.append(label)
+            raise AssertionError(f"{label} must not be reached")
+        return _refuse
+
+    monkeypatch.setattr(
+        preflight, "_bridge_queue_publication_lease",
+        lambda: recording_lease("queue_publication_mutex"))
+    monkeypatch.setattr(
+        preflight, "_bridge_append_mutex_lease",
+        lambda: recording_lease("append_mutex"))
+    monkeypatch.setattr(preflight, "create_bridge_named_mutex", refuse("named_mutex"))
+    monkeypatch.setattr(preflight.subprocess, "run", refuse("subprocess"))
+    return preflight, calls
+
+
+def test_wrapper_fixture_queue_shape_never_reaches_the_live_publication_mutex(
+    tmp_path: Path, monkeypatch
+):
+    """P1808-T1 isolation proof on the committed source, never on the live
+    mutex: the fixture's queue shape (existing empty spool/accepted-v1, no
+    drain helper) refuses before any lease or PowerShell child. The twin, an
+    ABSENT namespace, does take the publication lease here (a recorder), so the
+    instrumentation is shown to observe that branch."""
+    preflight, calls = _instrumented_preflight(monkeypatch)
+    missing_helper = tmp_path / "no-bin" / "Drain-AcceptedBridgeQueue.ps1"
+
+    fixture_root = tmp_path / "fixture-shape"
+    (fixture_root / "shared").mkdir(parents=True)
+    (fixture_root / "spool" / "accepted-v1").mkdir(parents=True)
+    report = preflight.check_accepted_queue_complete(
+        bridge_root=fixture_root, drain_script=missing_helper)
+    assert report["ok"] is False and report["complete"] is False, report
+    assert report["decision"] == "accepted_queue_drain_helper_missing", report
+    assert calls == [], calls
+
+    absent_root = tmp_path / "absent-shape"
+    (absent_root / "shared").mkdir(parents=True)
+    twin = preflight.check_accepted_queue_complete(
+        bridge_root=absent_root, drain_script=missing_helper)
+    assert twin["decision"] == "accepted_queue_absent", twin
+    assert calls == ["queue_publication_mutex"], calls

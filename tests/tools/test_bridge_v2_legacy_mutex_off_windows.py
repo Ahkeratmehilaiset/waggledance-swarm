@@ -81,7 +81,9 @@ def bridge(tmp_path):
             script.write_text(source.replace("Global\\WaggleDanceBridge", local), encoding="utf-8-sig")
     (code / "Write-AgentEvent.ps1").write_text("$null = $args\n'fixture: no event written'\n", encoding="utf-8")
     worktree = tmp_path / "wt"
-    worktree.mkdir()
+    for child in ("objects", "refs"):                 # RS7: a claim cwd must be a git top level
+        (worktree / ".git" / child).mkdir(parents=True)
+    (worktree / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     runtime = tmp_path / "runtime"
     (runtime / "work_queue" / "claims").mkdir(parents=True)
     return code, worktree, runtime

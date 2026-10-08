@@ -20,8 +20,9 @@ legacy layouts retain their previous handling.
 
 Every entry is split on commas (as PowerShell does). ``explain_scope`` returns what an
 entry resolves to or why it is refused, with examples (F22 ``-Explain``). Nothing is
-written; the only filesystem access is ``lstat`` on the worktree/shared paths to refuse
-links and reparse points, through an injectable ``lstat``.
+written; the filesystem access is ``lstat`` on the worktree/shared paths to refuse links and
+reparse points, through an injectable ``lstat``, plus a bounded read of a ``.git`` or
+``commondir`` pointer file when the cwd is a linked worktree (RS7).
 """
 from __future__ import annotations
 
@@ -125,6 +126,54 @@ def _roots_overlap(worktree: str, bridge_root: str) -> bool:
     return base == shared or base.startswith(shared + "/") or shared.startswith(base + "/")
 
 
+_ABSOLUTE_POINTER = re.compile(r"^(?:[A-Za-z]:)?[/\\]")
+
+
+def _pointer(path: str) -> str:
+    """The first line of a small git pointer file (.git or commondir), surrounding whitespace removed."""
+    with open(path, "rb") as handle:
+        data = handle.read(4097)
+    if len(data) > 4096:
+        raise ScopeError("git pointer file is oversized")
+    lines = data.decode("utf-8").splitlines()
+    return lines[0].strip() if lines else ""
+
+
+def _require_top_level(worktree: str, lstat: Callable[[str], os.stat_result]) -> None:
+    """RS7 (Grok 44ce90e5): scopes are repository-relative and an absolute entry is made relative to the cwd, so a cwd
+    below the top level (or outside any repository) names one file two ways and resources_overlap misses the conflict.
+    The cwd must be a git top level by git's own discovery test, read from the file system only: "<cwd>/.git" is a
+    directory, or a file "gitdir: <dir>" (a linked worktree); that git dir holds HEAD, and its common dir ("commondir",
+    else itself) holds objects/ and refs/. An empty marker or a dangling pointer is refused; nothing is guessed."""
+    top = worktree.rstrip("/\\")
+    try:
+        marker = lstat(top + "/.git")
+        if stat.S_ISDIR(marker.st_mode):
+            git_dir = top + "/.git"
+        elif stat.S_ISREG(marker.st_mode):
+            line = _pointer(top + "/.git")
+            if not line.startswith("gitdir:") or not line[7:].strip():
+                raise ScopeError("the .git file is not a gitdir pointer")
+            target = line[7:].strip()
+            git_dir = target if _ABSOLUTE_POINTER.match(target) else top + "/" + target
+        else:
+            raise ScopeError(".git is neither a directory nor a file")
+        common = git_dir
+        try:
+            lstat(git_dir + "/commondir")
+        except FileNotFoundError:
+            pass
+        else:
+            target = _pointer(git_dir + "/commondir")
+            common = target if _ABSOLUTE_POINTER.match(target) else git_dir + "/" + target
+        if not (stat.S_ISREG(lstat(git_dir + "/HEAD").st_mode) and stat.S_ISDIR(lstat(common + "/objects").st_mode)
+                and stat.S_ISDIR(lstat(common + "/refs").st_mode)):
+            raise ScopeError("the git dir lacks HEAD, objects or refs")
+    except (OSError, ValueError) as error:   # ScopeError is a ValueError; a decode error is one too
+        raise ScopeError("the claim cwd is not a repository top level (no valid .git there): every scope except * "
+                         "is refused, fail-closed (" + str(error)[:120] + ")") from None
+
+
 def resolve_entry(entry: str, *, worktree: str, bridge_root: str,
                   lstat: Callable[[str], os.stat_result] = os.lstat) -> ResourceScope:
     raw = entry.replace("\\", "/").strip()
@@ -135,6 +184,8 @@ def resolve_entry(entry: str, *, worktree: str, bridge_root: str,
         # which overlaps every claim by resources_overlap's first rule, can never miss a conflict.
         raise ScopeError("the worktree and the shared runtime root overlap (the same directory, or one inside the "
                          "other): every scope except * is refused, fail-closed")
+    if raw != "*" and worktree:
+        _require_top_level(worktree, lstat)
     kind = "repo"
     explicit = _EXPLICIT_KIND.match(raw)
     if explicit and not _WINDOWS_ABSOLUTE.match(raw):

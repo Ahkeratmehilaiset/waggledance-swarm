@@ -21,11 +21,52 @@ function Resolve-BridgeUnaliasedPath {
     return $full.Replace('\','/').TrimEnd('/').ToLowerInvariant()
 }
 
+function Get-BridgeGitPointer {
+    param([string]$Path)
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -gt 4096) { throw 'git pointer file is oversized' }
+    $lines = @(([Text.Encoding]::UTF8.GetString($bytes)) -split "`r?`n")
+    return $lines[0].Trim()
+}
+
+# RS7: scopes are repository-relative, so the cwd must be a git top level by git's own discovery test, read from the
+# file system only: <cwd>/.git is a directory or a "gitdir: <dir>" file; that git dir holds HEAD and its common dir
+# (commondir, else itself) holds objects and refs. An empty marker or a dangling pointer is refused; nothing is guessed.
+function Assert-BridgeRepositoryTopLevel {
+    param([string]$Worktree)
+    $top = $Worktree.TrimEnd('/','\')
+    $valid = $false
+    try {
+        $marker = $top + '/.git'
+        $gitDir = $null
+        if (Test-Path -LiteralPath $marker -PathType Container) { $gitDir = $marker }
+        elseif (Test-Path -LiteralPath $marker -PathType Leaf) {
+            $line = Get-BridgeGitPointer $marker
+            if ($line.StartsWith('gitdir:') -and $line.Substring(7).Trim()) {
+                $target = $line.Substring(7).Trim()
+                $gitDir = if ($target -match '^(?:[A-Za-z]:)?[/\\]') { $target } else { $top + '/' + $target }
+            }
+        }
+        if ($gitDir) {
+            $common = $gitDir
+            if (Test-Path -LiteralPath ($gitDir + '/commondir') -PathType Leaf) {
+                $target = Get-BridgeGitPointer ($gitDir + '/commondir')
+                $common = if ($target -match '^(?:[A-Za-z]:)?[/\\]') { $target } else { $gitDir + '/' + $target }
+            }
+            $valid = (Test-Path -LiteralPath ($gitDir + '/HEAD') -PathType Leaf) -and
+                (Test-Path -LiteralPath ($common + '/objects') -PathType Container) -and
+                (Test-Path -LiteralPath ($common + '/refs') -PathType Container)
+        }
+    } catch { $valid = $false }
+    if (-not $valid) { throw 'the claim cwd is not a repository top level (no valid .git there): every scope except * is refused' }
+}
+
 function Resolve-BridgeResourceScopes {
     param([string[]]$Scopes, [string]$Worktree, [string]$BridgeRoot)
     foreach ($scope in @($Scopes)) {
         foreach ($entry in @($scope -split ',')) {
             $raw = $entry.Replace('\','/').Trim()
+            if ($Worktree -and $raw -ne '*') { Assert-BridgeRepositoryTopLevel $Worktree }
             $kind = 'repo'
             if ($raw -match '^([a-z_-]+):' -and $raw -notmatch '^[A-Za-z]:/') {
                 $pair = $raw -split ':',2

@@ -14,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SHELLS = list(dict.fromkeys(filter(None, [shutil.which('pwsh'), shutil.which('powershell.exe')])))
 
 
+def _git_top_level(path):
+    '''RS7: a claim cwd must be a git top level (.git with HEAD, objects/ and refs/).'''
+    for child in ('objects', 'refs'):
+        (path / '.git' / child).mkdir(parents=True)
+    (path / '.git' / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
+
+
 @pytest.mark.parametrize('engine', ['python'] + SHELLS)
 @pytest.mark.parametrize('case,allowed', [
     ('different_checkpoint', True), ('same_checkpoint', False), ('case_variant', False),
@@ -27,6 +34,7 @@ def test_claim_resource_identity(tmp_path, monkeypatch, engine, case, allowed):
         pytest.skip('PowerShell claim writes are Windows-only')
     work_a, work_b, bridge = (tmp_path / n for n in ('work-a','work-b','bridge'))
     for root in (work_a, work_b, bridge): root.mkdir()
+    for root in (work_a, work_b): _git_top_level(root)
     scopes_a = scopes_b = ['.codex-audit/wd-current-state.json']
     cwd_b = work_b
     if case in ('same_checkpoint', 'case_variant', 'checkpoint_parent'): cwd_b = work_a
@@ -81,6 +89,7 @@ def test_linked_checkpoint_directory_is_rejected(tmp_path, engine):
     from waggledance.core.bridge_resource_scope import resolve_resources
     real, work, bridge = (tmp_path / p for p in ('real', 'work', 'bridge'))
     for path in (real, work, bridge): path.mkdir()
+    _git_top_level(work)
     alias = work / '.codex-audit'
     try:
         alias.symlink_to(real, target_is_directory=True)

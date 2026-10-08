@@ -31,6 +31,13 @@ OWNER = OwnerIdentity("session-a", "token-a")      # the RAW tokens the sessions
 OTHER = OwnerIdentity("session-b", "token-b")
 
 
+def _git_top_level(path: Path) -> None:
+    """The minimum git accepts as a top level: .git with HEAD, objects/ and refs/."""
+    for child in ("objects", "refs"):
+        (path / ".git" / child).mkdir(parents=True)
+    (path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+
 class Lock:
     @contextmanager
     def hold(self, target, timeout_seconds):
@@ -41,6 +48,7 @@ class Lock:
 def env(tmp_path):
     worktree = tmp_path / "wt"
     (worktree / "tools").mkdir(parents=True)
+    _git_top_level(worktree)                          # RS7: a claim cwd must be a git top level
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     return QueueTransactions(runtime, mutex=Lock(), claim_lock=Lock(), clock=lambda: NOW), str(worktree)
@@ -244,6 +252,7 @@ def test_invalid_names_refuse_before_any_lock(tmp_path, agent, task):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (tmp_path / "wt" / "tools").mkdir(parents=True)
+    _git_top_level(tmp_path / "wt")                     # RS7: a claim cwd must be a git top level
     lock = RecordingLock()
     txns = QueueTransactions(runtime, mutex=lock, claim_lock=lock, clock=lambda: NOW)
     with pytest.raises(WorkQueueError):
@@ -324,6 +333,7 @@ def test_n3_ports_off_creates_nothing(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (tmp_path / "wt" / "tools").mkdir(parents=True)
+    _git_top_level(tmp_path / "wt")                     # RS7: a claim cwd must be a git top level
     with pytest.raises(WorkQueueError, match="ports are off"):
         claim((QueueTransactions(runtime), str(tmp_path / "wt")))
     assert not (runtime / "work_queue").exists()
@@ -457,6 +467,7 @@ def test_a_malformed_dispatch_key_is_refused_before_any_lock(tmp_path, key):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (tmp_path / "wt" / "tools").mkdir(parents=True)
+    _git_top_level(tmp_path / "wt")                     # RS7: a claim cwd must be a git top level
     lock = RecordingLock()
     txns = QueueTransactions(runtime, mutex=lock, claim_lock=lock, clock=lambda: NOW)
     with pytest.raises(WorkQueueError, match="dispatch_key"):
@@ -598,6 +609,7 @@ def test_b_f3_the_legacy_writer_refuses_to_refresh_a_keyed_claim_and_refreshes_a
     (code / "Write-AgentEvent.ps1").write_text("$null = $args\n'fixture: no event written'\n", encoding="utf-8")
     worktree = tmp_path / "wt"
     (worktree / "tools").mkdir(parents=True)
+    _git_top_level(worktree)                          # RS7: a claim cwd must be a git top level
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     now = datetime.now(timezone.utc).replace(microsecond=0)              # live leases: the pre-claim sweep keeps them
@@ -664,6 +676,7 @@ def fenced(tmp_path):
     """Real sibling file locks (the PowerShell-compatible claim-lock port); the mutex stays a no-op double."""
     worktree = tmp_path / "wt"
     (worktree / "tools").mkdir(parents=True)
+    _git_top_level(worktree)                          # RS7: a claim cwd must be a git top level
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     return QueueTransactions(runtime, mutex=Lock(), claim_lock=FileClaimLock(), clock=lambda: NOW,

@@ -25,14 +25,18 @@ class _Info:
 
 
 def _absent(path: str):
-    raise FileNotFoundError(path)                      # nothing exists: the resolver never reads the disk
+    if path.endswith(("/.git", "/.git/objects", "/.git/refs")):
+        return _Info(stat.S_IFDIR)                     # RS7: every fixture cwd is a git top level
+    if path.endswith("/.git/HEAD"):
+        return _Info(stat.S_IFREG)
+    raise FileNotFoundError(path)                      # nothing else exists: the resolver never reads the disk
 
 
 def _only(target: str, info: _Info):
     def lstat(path: str):
         if path == target:
             return info
-        raise FileNotFoundError(path)
+        return _absent(path)
     return lstat
 
 

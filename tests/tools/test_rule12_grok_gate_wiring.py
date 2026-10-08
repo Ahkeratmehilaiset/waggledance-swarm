@@ -22,6 +22,7 @@ from tools import rule12_grok_ledger_adapter as adapter
 from tools import wd_grok_helper as helper
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.check_bridge_changes_requested import _author_task_id_aliases
+from tools.check_rco_pass_present import scan_recognized_rco_vetoes
 from tools.check_standing_consensus_sign_class import classify_ab
 from tools.idle_consensus_auto_merge import (
     GROK_REPORTS_ROOT,
@@ -445,6 +446,10 @@ def test_a_recognized_rco_veto_blocks_the_grok_lift(tmp_path, root, veto):
     _run(root)
     report = _gate(tmp_path, root, _events(veto))
     _blocked_on_rco(report)
+    # The peer gate also blocks each of these today; the scan is the lift's own,
+    # independent veto evidence and must say so (mutant M2 on 764aa189).
+    assert any("veto scan is not clear" in reason
+               for reason in report["grok_rco_slot_lift"]["reasons"])
 
 
 def test_a_veto_on_an_author_alias_task_blocks_the_grok_lift(tmp_path, root):
@@ -472,6 +477,8 @@ def test_liveness_limit_an_authorized_retraction_does_not_reopen_the_grok_path(t
     _blocked_on_rco(report)  # the Grok path: still shut
     scan = report["grok_rco_slot_lift"]["veto_scan"]
     assert scan["decision"] == "recognized_rco_veto_present"
+    assert any("veto scan is not clear" in reason
+               for reason in report["grok_rco_slot_lift"]["reasons"])
 
 
 def test_the_veto_scan_runs_when_check_rco_pass_present_returns_early(tmp_path, root):
@@ -483,6 +490,62 @@ def test_the_veto_scan_runs_when_check_rco_pass_present_returns_early(tmp_path, 
     scan = report["grok_rco_slot_lift"]["veto_scan"]
     assert scan["decision"] == "recognized_rco_veto_present"
     assert [row["agent"] for row in scan["veto_events"]] == ["claude-rco-1"]
+
+
+# --- scan_recognized_rco_vetoes directly ----------------------------------------
+REGISTRY = {agent: uuid for agent, uuid in AGENT_UUIDS.items()}
+
+
+def _scan(events=None, **overrides):
+    kwargs = dict(events=events, task_id=TASK, author_agent="fable-5",
+                  rco_agent=("claude-rco-1", "claude-rco-2"), identity_registry=REGISTRY)
+    kwargs.update(overrides)
+    return scan_recognized_rco_vetoes(**kwargs)
+
+
+def test_scan_is_clear_without_veto_shaped_events():
+    scan = _scan(_events())
+    assert scan["ok"] is True and scan["decision"] == "no_recognized_rco_veto"
+
+
+def test_scan_counts_an_author_rco_and_honours_no_retraction():
+    events = [
+        _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T16:30:00Z"),
+        _event("claude-rco-1", "decision", "no_changes_requested", "2026-06-07T16:40:00Z"),
+    ]
+    scan = _scan(events, author_agent="claude-rco-1")
+    assert scan["ok"] is False
+    assert [row["agent"] for row in scan["veto_events"]] == ["claude-rco-1"]
+
+
+def test_scan_latches_unverified_vetoes_and_ignores_non_rco_and_other_tasks():
+    events = [
+        _event("claude-rco-2", "finding", "changes_requested", "2026-06-07T17:40:00Z", uuid=""),
+        _event("codex-lead-1", "finding", "changes_requested", "2026-06-07T17:40:00Z"),
+        _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+               task_id="fable-5/another-task"),
+    ]
+    scan = _scan(events)
+    assert scan["ok"] is False
+    assert [(row["agent"], row["identity_binding_status"]) for row in scan["veto_events"]] == [
+        ("claude-rco-2", "missing_uuid")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "decision"),
+    [
+        ({"task_id": ""}, "invalid_input"),
+        ({"author_agent": "Not An Agent"}, "invalid_input"),
+        ({"rco_agent": ()}, "invalid_input"),
+        ({"events": "not a list"}, "invalid_input"),
+        ({"events": [None]}, "malformed_event"),
+    ],
+)
+def test_scan_fails_closed_on_malformed_input(overrides, decision):
+    overrides = {"events": _events(), **overrides}
+    scan = _scan(**overrides)
+    assert scan["ok"] is False and scan["decision"] == decision
 
 
 # --- independent gates stay in force -------------------------------------------

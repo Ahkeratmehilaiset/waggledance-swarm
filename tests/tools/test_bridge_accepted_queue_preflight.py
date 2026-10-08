@@ -1604,3 +1604,392 @@ def test_deferred_ready_validation_rejects_malformed_wal(
     assert report["ok"] is True, report
     assert report["complete"] is False, report
     assert report["unresolved"][0]["status"] == "failed"
+
+
+# --- C5: canonical prefix bound before the drain child ---------------------
+
+UNRELATED_ROW = b'{"type":"message","status":"informational"}\n'
+DELIVERED_ROW = b'{"type":"finding","status":"changes_requested"}\n'
+
+
+def _delivered_receipt(root: Path, row: bytes = DELIVERED_ROW) -> dict[str, Any]:
+    return _receipt(
+        root,
+        [
+            _result(
+                "already_delivered",
+                digest=hashlib.sha256(row).hexdigest(),
+                wal_bytes=row,
+            )
+        ],
+    )
+
+
+def _check_with_child_effect(
+    root: Path,
+    events: Path,
+    receipt: object,
+    effect,
+) -> tuple[dict[str, Any], list[list[str]]]:
+    calls: list[list[str]] = []
+    stdout = json.dumps(receipt)
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        effect()
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    report = check_accepted_queue_complete(
+        bridge_root=root,
+        events_path=events,
+        runner=runner,
+    )
+    return report, calls
+
+
+def _append(path: Path, data: bytes) -> None:
+    with path.open("ab") as handle:
+        handle.write(data)
+
+
+def test_row_present_before_the_child_resolves(tmp_path: Path) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(UNRELATED_ROW + DELIVERED_ROW)
+
+    report, calls = _check_with_child_effect(
+        root, events, _delivered_receipt(root), lambda: None
+    )
+
+    assert len(calls) == 1
+    assert report["complete"] is True, report
+    assert report["resolved_duplicates"][0]["resolution"] == "exact_canonical_row"
+
+
+def test_child_self_append_never_resolves_in_the_same_invocation(
+    tmp_path: Path,
+) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(UNRELATED_ROW)
+
+    report, calls = _check_with_child_effect(
+        root,
+        events,
+        _delivered_receipt(root),
+        lambda: _append(events, DELIVERED_ROW),
+    )
+
+    assert len(calls) == 1
+    assert events.read_bytes() == UNRELATED_ROW + DELIVERED_ROW
+    assert (report["ok"], report["complete"]) == (True, False), report
+    assert report["decision"] == "accepted_queue_incomplete"
+    assert [item["reason"] for item in report["unresolved"]] == [
+        "exact canonical row is absent"
+    ]
+
+
+def test_same_user_child_row_becomes_old_history_on_the_next_invocation(
+    tmp_path: Path,
+) -> None:
+    """Measured trust limit: prefix binding is temporal, not origin proof.
+
+    A same-user child can append the row in one invocation; the next
+    invocation sees it as ordinary prefix history.  Closing that needs the
+    anchored drain closure, not this check.
+    """
+    root, events = _paths(tmp_path)
+    events.write_bytes(UNRELATED_ROW)
+    receipt = _delivered_receipt(root)
+
+    first, _ = _check_with_child_effect(
+        root, events, receipt, lambda: _append(events, DELIVERED_ROW)
+    )
+    second, _ = _check_with_child_effect(root, events, receipt, lambda: None)
+
+    assert first["complete"] is False, first
+    assert second["complete"] is True, second
+
+
+def test_unrelated_concurrent_suffix_append_is_not_a_refusal(
+    tmp_path: Path,
+) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(DELIVERED_ROW)
+
+    report, _ = _check_with_child_effect(
+        root,
+        events,
+        _delivered_receipt(root),
+        lambda: _append(events, UNRELATED_ROW),
+    )
+
+    assert (report["ok"], report["complete"]) == (True, True), report
+
+
+def test_partial_last_row_completed_after_the_boundary_cannot_prove(
+    tmp_path: Path,
+) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(UNRELATED_ROW + DELIVERED_ROW[:-7])
+
+    report, _ = _check_with_child_effect(
+        root,
+        events,
+        _delivered_receipt(root),
+        lambda: _append(events, DELIVERED_ROW[-7:]),
+    )
+
+    assert events.read_bytes() == UNRELATED_ROW + DELIVERED_ROW
+    assert (report["ok"], report["complete"]) == (True, False), report
+    assert report["resolved_duplicates"] == []
+
+
+def _rewrite_prefix(events: Path) -> None:
+    data = events.read_bytes()
+    with events.open("r+b") as handle:
+        handle.write(b"X" + data[1:])
+
+
+def _truncate_and_regrow(events: Path) -> None:
+    with events.open("r+b") as handle:
+        handle.truncate(0)
+        handle.write(DELIVERED_ROW)
+
+
+def _replace_leaf(events: Path) -> None:
+    replacement = events.with_name("events.replacement")
+    replacement.write_bytes(events.read_bytes())
+    os.replace(replacement, events)
+
+
+def _replace_parent(events: Path) -> None:
+    data = events.read_bytes()
+    shared = events.parent
+    shared.rename(shared.with_name("shared-old"))
+    shared.mkdir()
+    events.write_bytes(data)
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [_rewrite_prefix, _truncate_and_regrow, _replace_leaf, _replace_parent],
+)
+def test_bound_prefix_rewrite_truncation_or_swap_refuses(
+    tmp_path: Path,
+    effect,
+) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(DELIVERED_ROW + UNRELATED_ROW)
+
+    report, calls = _check_with_child_effect(
+        root, events, _delivered_receipt(root), lambda: effect(events)
+    )
+
+    assert len(calls) == 1
+    assert (report["ok"], report["complete"]) == (False, False), report
+    assert report["decision"] == "accepted_queue_canonical_proof_changed"
+    assert report["resolved_duplicates"] == []
+
+
+def test_prefix_is_rechecked_under_the_final_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, events = _paths(tmp_path)
+    events.write_bytes(DELIVERED_ROW + UNRELATED_ROW)
+    seen: list[int] = []
+    original = accepted_queue_preflight._verify_canonical_prefix
+
+    def counting(path, binding):
+        seen.append(binding.boundary)
+        return original(path, binding)
+
+    monkeypatch.setattr(accepted_queue_preflight, "_verify_canonical_prefix", counting)
+
+    report, _ = _check_with_child_effect(
+        root, events, _delivered_receipt(root), lambda: None
+    )
+
+    assert report["complete"] is True, report
+    assert seen == [len(DELIVERED_ROW + UNRELATED_ROW)] * 2
+
+
+# --- C5: pinned bundle verifies the drain closure before any spawn ---------
+
+PINNED_DRAIN_CLOSURE_NAMES = (
+    "Drain-AcceptedBridgeQueue.ps1",
+    "BridgeNamedMutex.ps1",
+    "Restore-BridgeSpool.ps1",
+)
+
+
+def _pinned_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root_name: str = "tools-bootstrap",
+    manifest_files: dict[str, str] | None = None,
+) -> tuple[Path, list[tuple[list[str], dict[str, Any]]]]:
+    code_root = tmp_path / "bundle" / root_name
+    bin_dir = code_root / ".agent-bridge" / "bin"
+    bin_dir.mkdir(parents=True)
+    files: dict[str, str] = {}
+    for name in PINNED_DRAIN_CLOSURE_NAMES:
+        data = f"# {name}\n".encode()
+        (bin_dir / name).write_bytes(data)
+        files[f"tools-bootstrap/.agent-bridge/bin/{name}"] = (
+            hashlib.sha256(data).hexdigest().upper()
+        )
+    raw = json.dumps(
+        {"schema_version": 1, "files": files if manifest_files is None else manifest_files}
+    ).encode()
+    (code_root.parent / "deployment-manifest.json").write_bytes(raw)
+    monkeypatch.setenv(
+        accepted_queue_preflight.MANIFEST_ANCHOR_ENV,
+        hashlib.sha256(raw).hexdigest().upper(),
+    )
+    monkeypatch.setattr(accepted_queue_preflight, "ROOT", code_root.resolve())
+    powershell = tmp_path / "system" / "powershell.exe"
+    powershell.parent.mkdir()
+    powershell.write_bytes(b"")
+    child_env = {"SystemRoot": "S", "PATH": "P", "PSModulePath": "M"}
+    monkeypatch.setattr(
+        accepted_queue_preflight,
+        "_system_powershell",
+        lambda: (powershell, dict(child_env)),
+    )
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    return code_root.resolve(), calls
+
+
+def _pinned_check(
+    tmp_path: Path,
+    code_root: Path,
+    calls: list[tuple[list[str], dict[str, Any]]],
+    *,
+    drain: Path | None = None,
+) -> dict[str, Any]:
+    root, events = _paths(tmp_path)
+
+    def runner(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return SimpleNamespace(returncode=1, stdout="", stderr="recorded")
+
+    return check_accepted_queue_complete(
+        bridge_root=root,
+        events_path=events,
+        runner=runner,
+        drain_script=(
+            drain
+            if drain is not None
+            else code_root / ".agent-bridge" / "bin" / "Drain-AcceptedBridgeQueue.ps1"
+        ),
+    )
+
+
+@pytest.mark.parametrize("root_name", ["tools-bootstrap", "Tools-Bootstrap"])
+def test_pinned_bundle_spawns_only_the_verified_drain_with_allow_listed_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root_name: str,
+) -> None:
+    code_root, calls = _pinned_bundle(tmp_path, monkeypatch, root_name=root_name)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    (tmp_path / "powershell.exe").write_bytes(b"")
+
+    report = _pinned_check(tmp_path, code_root, calls)
+
+    assert report["decision"] == "accepted_queue_drain_failed", report
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[0] == str(tmp_path / "system" / "powershell.exe")
+    assert command[command.index("-File") + 1] == str(
+        code_root / ".agent-bridge" / "bin" / "Drain-AcceptedBridgeQueue.ps1"
+    )
+    assert kwargs["env"] == {"SystemRoot": "S", "PATH": "P", "PSModulePath": "M"}
+
+
+@pytest.mark.parametrize("name", list(PINNED_DRAIN_CLOSURE_NAMES))
+def test_pinned_bundle_tampered_closure_file_never_spawns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    assert accepted_queue_preflight.PINNED_DRAIN_CLOSURE == PINNED_DRAIN_CLOSURE_NAMES
+    code_root, calls = _pinned_bundle(tmp_path, monkeypatch, root_name="TOOLS-BOOTSTRAP")
+    (code_root / ".agent-bridge" / "bin" / name).write_bytes(b"# tampered\n")
+
+    report = _pinned_check(tmp_path, code_root, calls)
+
+    assert calls == []
+    assert (report["ok"], report["complete"]) == (False, False)
+    assert report["decision"] == "accepted_queue_drain_helper_untrusted"
+
+
+@pytest.mark.parametrize("anchor", [None, "", "   ", "0" * 64, "not-hex"])
+def test_pinned_bundle_without_a_matching_anchor_never_spawns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    anchor: str | None,
+) -> None:
+    code_root, calls = _pinned_bundle(tmp_path, monkeypatch)
+    if anchor is None:
+        monkeypatch.delenv(accepted_queue_preflight.MANIFEST_ANCHOR_ENV)
+    else:
+        monkeypatch.setenv(accepted_queue_preflight.MANIFEST_ANCHOR_ENV, anchor)
+
+    report = _pinned_check(tmp_path, code_root, calls)
+
+    assert calls == []
+    assert report["decision"] == "accepted_queue_drain_helper_untrusted"
+
+
+def test_pinned_bundle_missing_manifest_or_entry_never_downgrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_root, calls = _pinned_bundle(tmp_path, monkeypatch, manifest_files={})
+    uncovered = _pinned_check(tmp_path / "a", code_root, calls)
+    (code_root.parent / "deployment-manifest.json").unlink()
+    missing = _pinned_check(tmp_path / "b", code_root, calls)
+
+    assert calls == []
+    assert uncovered["decision"] == "accepted_queue_drain_helper_untrusted"
+    assert missing["decision"] == "accepted_queue_drain_helper_untrusted"
+
+
+def test_pinned_bundle_refuses_a_drain_outside_its_bin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_root, calls = _pinned_bundle(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "elsewhere" / "Drain-AcceptedBridgeQueue.ps1"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(
+        (code_root / ".agent-bridge" / "bin" / "Drain-AcceptedBridgeQueue.ps1").read_bytes()
+    )
+
+    report = _pinned_check(tmp_path, code_root, calls, drain=elsewhere)
+
+    assert calls == []
+    assert report["decision"] == "accepted_queue_drain_helper_untrusted"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="kernel System32 resolution is Windows-only")
+def test_system_powershell_ignores_path_and_inherited_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "powershell.exe").write_bytes(b"")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setenv("COR_ENABLE_PROFILING", "1")
+    monkeypatch.setenv("PSExecutionPolicyPreference", "Unrestricted")
+
+    powershell, env = accepted_queue_preflight._system_powershell()
+
+    system = accepted_queue_preflight._kernel_directory("GetSystemDirectoryW")
+    assert powershell == system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    assert set(env) <= {"SystemRoot", "PATH", "PSModulePath", "TEMP", "TMP"}
+    assert env["SystemRoot"] != str(tmp_path)
+    assert str(tmp_path) not in env["PATH"]
+    assert env["PSModulePath"] == str(powershell.parent / "Modules")

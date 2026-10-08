@@ -609,7 +609,8 @@ def scan_recognized_rco_vetoes(
     return on missing passes and honours no retraction: it covers every
     recognized RCO (an author RCO too) on the task id and its author aliases,
     and a veto-shaped event with a missing or mismatched identity still
-    latches. Task ids match case-insensitively. A veto-shaped event whose
+    latches. Task ids match case-insensitively, and type and status are
+    stripped before classification (on a copy). A veto-shaped event whose
     agent or task id is missing, empty or not a string, and whose other field
     does not place it outside the scan, returns ``unattributable_veto_event``.
     ``ok`` is True only for valid input with no such event; a spurious hold is
@@ -674,7 +675,13 @@ def scan_recognized_rco_vetoes(
             continue
         if event_agent is not None and event_agent.lower() not in restricted:
             continue
-        if not _is_rco_veto_event(event):
+        # The shared classifier lowercases type and status but does not strip
+        # them; classify a stripped copy so padding cannot hide a veto here.
+        classified = dict(event)
+        for key in ("type", "status"):
+            if type(classified.get(key)) is str:
+                classified[key] = classified[key].strip()
+        if not _is_rco_veto_event(classified):
             continue
         if event_task is None or event_agent is None:
             # A missing agent or task id cannot prove this veto is someone

@@ -469,6 +469,52 @@ def test_the_lift_needs_a_real_list_of_opposite_holders(holders):
     assert "the opposite-family slot has no non-Grok holder" in lift["reasons"]
 
 
+def _liftable_consensus() -> dict:
+    return {
+        "ok": True,
+        "rule12": {
+            "decision": "satisfied",
+            "slots": {
+                "rco": {"state": "held_by_grok_fallback", "grok": {"request_id": "0" * 32}},
+                "opposite_family": {"state": "held", "holders": ["codex-lead-1"]},
+            },
+        },
+    }
+
+
+def test_the_lift_control_state_lifts():
+    """Positive control for the skipped-scan twins below: the same inputs with a
+    read event log and a known author do lift."""
+    from tools.idle_consensus_auto_merge import _grok_rco_slot_lift
+
+    lift = _grok_rco_slot_lift(bridge_consensus=_liftable_consensus(), bridge_peer_gate={"clear_to_merge": True},
+                               events=_events(), task_id=TASK, author_agent="fable-5", checked=True)
+    assert lift["lifted"] is True, lift["reasons"]
+    assert lift["veto_scan"]["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("checked", "author_agent", "reason"),
+    [
+        (False, "fable-5", "bridge events were not read"),
+        (True, None, "recognized-RCO veto scan did not run"),
+        (True, "", "recognized-RCO veto scan did not run"),
+        (False, None, "recognized-RCO veto scan did not run"),
+    ],
+)
+def test_a_skipped_veto_scan_never_lifts(checked, author_agent, reason):
+    """Grok 17d48e8a (via RCO1): a scan that did not run must keep the RCO_PASS
+    blocker, even while an RCO veto stands in the unread events."""
+    from tools.idle_consensus_auto_merge import _grok_rco_slot_lift
+
+    events = _events() + [_event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z")]
+    lift = _grok_rco_slot_lift(bridge_consensus=_liftable_consensus(), bridge_peer_gate={"clear_to_merge": True},
+                               events=events, task_id=TASK, author_agent=author_agent, checked=checked)
+    assert lift["lifted"] is False
+    assert reason in lift["reasons"], lift["reasons"]
+    assert lift["veto_scan"] is None
+
+
 # --- recognized-RCO vetoes survive a Grok APPROVE ------------------------------
 @pytest.mark.parametrize(
     "veto",
@@ -638,6 +684,32 @@ def test_scan_fails_closed_on_a_veto_it_cannot_attribute(field, value):
     ],
 )
 def test_scan_keeps_other_task_non_rco_and_non_veto_controls_clear(event):
+    scan = _scan(_events(event))
+    assert scan["ok"] is True and scan["decision"] == "no_recognized_rco_veto", scan
+
+
+@pytest.mark.parametrize(
+    ("type_", "status"),
+    # Each pair is NOT a veto for the shared classifier as given, and is one once stripped.
+    [(" finding", "needs_work"), ("finding ", "needs_work"), ("\tfinding\t", " resolved "),
+     (" decision ", " rco_pass_withheld "), (" blocked", "x")],
+)
+def test_scan_classifies_a_stripped_copy_of_padded_type_and_status(type_, status):
+    # Grok 63c3aff4 (UNKNOWN items): the shared classifier lowercases but does not strip,
+    # so " finding" missed every veto branch. The scan classifies a stripped copy; the
+    # shared classifier itself is unchanged.
+    veto = _event("claude-rco-1", type_, status, "2026-06-07T17:40:00Z")
+    scan = _scan(_events(veto))
+    assert scan["ok"] is False and scan["decision"] == "recognized_rco_veto_present", scan
+    assert scan["veto_events"][0]["type"] == type_       # the recorded event is not rewritten
+
+
+@pytest.mark.parametrize(
+    ("type_", "status"),
+    [(" message ", " informational "), (" decision ", " rco_pass "), ("finding", " rco_pass ")],
+)
+def test_padded_non_veto_statuses_stay_clear(type_, status):
+    event = _event("claude-rco-1", type_, status, "2026-06-07T17:40:00Z")
     scan = _scan(_events(event))
     assert scan["ok"] is True and scan["decision"] == "no_recognized_rco_veto", scan
 

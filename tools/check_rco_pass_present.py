@@ -609,8 +609,11 @@ def scan_recognized_rco_vetoes(
     return on missing passes and honours no retraction: it covers every
     recognized RCO (an author RCO too) on the task id and its author aliases,
     and a veto-shaped event with a missing or mismatched identity still
-    latches. ``ok`` is True only for valid input with no such event; a
-    spurious hold is the safe failure (plan v3 B3).
+    latches. Task ids match case-insensitively. A veto-shaped event whose
+    agent or task id is missing, empty or not a string, and whose other field
+    does not place it outside the scan, returns ``unattributable_veto_event``.
+    ``ok`` is True only for valid input with no such event; a spurious hold is
+    the safe failure (plan v3 B3).
     """
     task_id = task_id.strip() if type(task_id) is str else ""
     author_agent = author_agent.strip() if type(author_agent) is str else ""
@@ -654,7 +657,10 @@ def scan_recognized_rco_vetoes(
         return result
     aliases = _author_task_id_aliases(task_id, author_agent)
     result["task_id_aliases"] = list(aliases)
-    scope = frozenset((task_id, *aliases))
+    # Padded or re-cased task ids and agents still match: on a veto scan the
+    # safe error is to count too much (Grok self-challenges 4fbf92c7 item 3
+    # and 63c3aff4).
+    scope = frozenset(value.casefold() for value in (task_id, *aliases))
     restricted = set(recognized)
     vetoes: list[dict[str, Any]] = []
     for event in events:
@@ -662,14 +668,21 @@ def scan_recognized_rco_vetoes(
             result["decision"] = "malformed_event"
             result["error"] = "events must hold only event objects"
             return result
-        # Padded or re-cased ids still match: on a veto scan the safe error is
-        # to count too much (Grok self-challenge 4fbf92c7, item 3).
-        if str(event.get("task_id", "")).strip() not in scope:
+        event_task = _scan_id(event.get("task_id"))
+        event_agent = _scan_id(event.get("agent"))
+        if event_task is not None and event_task.casefold() not in scope:
             continue
-        if str(event.get("agent", "")).strip().lower() not in restricted:
+        if event_agent is not None and event_agent.lower() not in restricted:
             continue
         if not _is_rco_veto_event(event):
             continue
+        if event_task is None or event_agent is None:
+            # A missing agent or task id cannot prove this veto is someone
+            # else's: unknown attribution never clears the scan.
+            result["decision"] = "unattributable_veto_event"
+            result["error"] = "a veto-shaped event has no usable agent or task_id"
+            result["veto_events"] = vetoes
+            return result
         summary = _summarize_event(event) or {}
         summary["identity_binding_status"] = bridge_identity_binding_status(
             event,
@@ -681,6 +694,13 @@ def scan_recognized_rco_vetoes(
     result["decision"] = "recognized_rco_veto_present" if vetoes else "no_recognized_rco_veto"
     result["ok"] = not vetoes
     return result
+
+
+def _scan_id(value: Any) -> str | None:
+    """A stripped, non-empty string id, or None when the event cannot be attributed."""
+    if type(value) is not str:
+        return None
+    return value.strip() or None
 
 
 def _find_task_id_mismatch_rco_pass_events(

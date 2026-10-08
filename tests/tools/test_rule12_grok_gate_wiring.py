@@ -590,6 +590,59 @@ def test_scan_matches_padded_or_recased_ids(agent, task_id):
 
 
 @pytest.mark.parametrize(
+    "task_id",
+    [TASK.upper(), "Fable-5/Rule12-Grok-Gate-Fixture", "FABLE-5-RULE12-GROK-GATE-FIXTURE",
+     f"  {TASK.upper()}  "],
+)
+def test_scan_matches_a_recased_task_id_or_alias(task_id):
+    # Grok 63c3aff4 (via claude-rco-2): the task id was matched case-sensitively, so a sole
+    # veto under a re-cased task id or author alias left the scan clear.
+    veto = _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+                  task_id=task_id)
+    scan = _scan([veto])
+    assert scan["ok"] is False
+    assert scan["decision"] == "recognized_rco_veto_present"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("task_id", None), ("task_id", 42), ("task_id", ""), ("task_id", "   "),
+     ("agent", None), ("agent", 7), ("agent", ""), ("task_id", ...), ("agent", ...)],
+)
+def test_scan_fails_closed_on_a_veto_it_cannot_attribute(field, value):
+    # Grok 63c3aff4: a veto-shaped event without a usable agent or task id was skipped
+    # silently, so an unknown attribution proved "no veto". The other field is in scope,
+    # so the event may be a recognized RCO's veto on this task.
+    veto = _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z")
+    if value is ...:
+        del veto[field]
+    else:
+        veto[field] = value
+    scan = _scan(_events(veto))
+    assert scan["ok"] is False
+    assert scan["decision"] == "unattributable_veto_event", scan
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        # Attributable to another task: still out of scope.
+        {**_event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+                  task_id="fable-5/another-task"), "agent": None},
+        # Attributable to a non-RCO lane: still out of scope.
+        {**_event("codex-lead-1", "finding", "changes_requested", "2026-06-07T17:40:00Z"),
+         "task_id": None},
+        # Not veto-shaped: chatter without a task id never blocks.
+        {**_event("claude-rco-1", "message", "informational", "2026-06-07T17:40:00Z"),
+         "task_id": None},
+    ],
+)
+def test_scan_keeps_other_task_non_rco_and_non_veto_controls_clear(event):
+    scan = _scan(_events(event))
+    assert scan["ok"] is True and scan["decision"] == "no_recognized_rco_veto", scan
+
+
+@pytest.mark.parametrize(
     ("overrides", "decision"),
     [
         ({"task_id": ""}, "invalid_input"),

@@ -1155,11 +1155,11 @@ function Test-WdContinuityControlEvents {
                 }
             }
         }
-        # Diagnostics, never a standing HOLD (RCO2 triage F209BCC1): a worker's
-        # blocked progress report on this task, and this lane's own bug findings.
-        # The operator, the Lead, this lane and a recognized RCO keep blocked and
-        # finding rows as controls; an unrecognized identity, type or status
-        # stays a control (fail closed).
+        # Diagnostics, never a standing HOLD (RCO2 triage F209BCC1): a known
+        # worker's (codex-tools-1, fable-5) blocked progress report on this task,
+        # never this lane's own, and this lane's own bug findings. Every other
+        # identity - operator, Lead, RCO, an unknown or rotated name (P1806-F1) -
+        # and any unrecognized type or status stays a control (fail closed).
         $author = [string]$event.agent
         $diagnostic = $false
         if (-not $payloadControl -and $author -cmatch '^[a-z][a-z0-9-]{0,63}$' -and
@@ -1167,7 +1167,7 @@ function Test-WdContinuityControlEvents {
             if ($finding) {
                 $diagnostic = $author -ceq $Agent -and [string]$event.status -cin @('confirmed_bug','suspected_bug')
             } else {
-                $diagnostic = $sameTask -and $author -cnotin @('codex-lead-1', $Agent) -and
+                $diagnostic = $sameTask -and $author -cin @('codex-tools-1', 'fable-5') -and $author -cne $Agent -and
                     $event.type -cin @('blocked','message','status')
             }
         }

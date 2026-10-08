@@ -193,7 +193,9 @@ def _text(value: Any, label: str) -> str:
 
 
 def _score(value: Any, label: str, upper: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= upper:
+    # Range first: an int of any size compares exactly with a float bound, while math.isfinite(10**1000) raises
+    # OverflowError (codex-tools-1 0F41B0C1). NaN and +-inf already fail the range; isfinite stays as a guard.
+    if type(value) not in (int, float) or not 0 <= value <= upper or not math.isfinite(value):
         raise RegistryError(f"{label} must be a finite number in 0..{upper}")
     return float(value)
 
@@ -291,7 +293,8 @@ def _provenance(value: Any, label: str) -> dict:
 
 
 def _number(value: Any, label: str, lower: float, upper: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
+    # Range first, as in _score: a huge int is refused as out of range instead of raising OverflowError.
+    if type(value) not in (int, float) or not lower <= value <= upper or not math.isfinite(value):
         raise RegistryError(f"{label} must be a finite number in {lower}..{upper}")
     return float(value)
 

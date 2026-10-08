@@ -106,6 +106,11 @@ DIAGNOSTICS = {
     # The other known worker (P1806-F1: only known workers are exempt).
     "known-worker-fable-5-blocked": _event(agent="fable-5", type="blocked", status="waiting_dependency"),
     "known-worker-fable-5-message-blocked": _event(agent="fable-5", type="message", status="blocked"),
+    # P1806-F2 negatives: payload names that only share a word with changes_requested stay diagnostics.
+    "worker-payload-near-miss-names": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": {"changes": "x", "requested_by": "x", "change_requests": 0, "requestedChanges": "x"}},
+    "own-finding-payload-near-miss-names": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"requested": "x", "changes_seen": 2}},
 }
 
 
@@ -160,6 +165,24 @@ CONTROL_TWINS = {
     "rotated-lead-identity": _event(agent="codex-lead-2", type="blocked", status="waiting_dependency"),
     "rotated-rco-identity": _event(agent="claude-rco-3", type="message", status="blocked"),
     "grok-scout-identity": _event(agent="grok-scout-1", type="status", status="routing_blocked"),
+    # P1806-F2 (Lead FB138C8F): a payload field named changes_requested in any spelling is a control field,
+    # whatever its value, exactly like the status normalization.
+    "payload-changes-requested-true": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"changes_requested": True}},
+    "payload-changes-requested-false": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": {"changes_requested": False}},
+    "payload-changes-requested-camel": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": {"changesRequested": True}},
+    "payload-changes-requested-hyphen": _event(agent=WORKER, type="blocked", status="waiting_dependency")
+    | {"payload": {"changes-requested": False}},
+    "payload-changes-requested-compact": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"changesrequested": True}},
+    "own-finding-payload-changes-requested": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"changes_requested": True}},
+    "own-finding-payload-changes-requested-camel": _event(agent=AGENT, type="finding", status="suspected_bug")
+    | {"payload": {"changesRequested": False}},
+    "status-changes-requested-camel": _event(agent=WORKER, type="message", status="changesRequested"),
+    "status-changes-requested-hyphen": _event(agent=WORKER, type="blocked", status="changes-requested"),
 }
 
 

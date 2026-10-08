@@ -111,6 +111,11 @@ DIAGNOSTICS = {
     | {"payload": {"changes": "x", "requested_by": "x", "change_requests": 0, "requestedChanges": "x"}},
     "own-finding-payload-near-miss-names": _event(agent=AGENT, type="finding", status="confirmed_bug")
     | {"payload": {"requested": "x", "changes_seen": 2}},
+    # P1806-R1 negatives: separate words or the reversed order are not changes_requested.
+    "worker-payload-separate-keys": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"changes": "x", "requested": "x"}},
+    "own-finding-payload-reversed-dot": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"requested.changes": "x"}},
 }
 
 
@@ -165,8 +170,9 @@ CONTROL_TWINS = {
     "rotated-lead-identity": _event(agent="codex-lead-2", type="blocked", status="waiting_dependency"),
     "rotated-rco-identity": _event(agent="claude-rco-3", type="message", status="blocked"),
     "grok-scout-identity": _event(agent="grok-scout-1", type="status", status="routing_blocked"),
-    # P1806-F2 (Lead FB138C8F): a payload field named changes_requested in any spelling is a control field,
-    # whatever its value, exactly like the status normalization.
+    # P1806-F2 (Lead FB138C8F): a payload field named changes_requested is a control field, whatever its value,
+    # exactly like the status normalization. Tested spellings only: snake, camel, hyphen, compact (F2) and space,
+    # dot, double underscore (R1, below); other separators are not claimed.
     "payload-changes-requested-true": _event(agent=WORKER, type="blocked", status="blocked")
     | {"payload": {"changes_requested": True}},
     "payload-changes-requested-false": _event(agent=WORKER, type="message", status="blocked")
@@ -183,6 +189,23 @@ CONTROL_TWINS = {
     | {"payload": {"changesRequested": False}},
     "status-changes-requested-camel": _event(agent=WORKER, type="message", status="changesRequested"),
     "status-changes-requested-hyphen": _event(agent=WORKER, type="blocked", status="changes-requested"),
+    # P1806-R1 (fable-5 E763A68C, 18 failed on PS5/PS7 at 9096825f): space, dot and double-underscore separators
+    # in a known-worker payload name, a known-worker blocked status and an own-finding payload name.
+    "r1-worker-payload-space": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"changes requested": True}},
+    "r1-worker-payload-dot": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": {"changes.requested": False}},
+    "r1-worker-payload-double-underscore": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": {"changes__requested": True}},
+    "r1-worker-status-space": _event(agent=WORKER, type="blocked", status="changes requested"),
+    "r1-worker-status-dot": _event(agent=WORKER, type="blocked", status="changes.requested"),
+    "r1-worker-status-double-underscore": _event(agent=WORKER, type="blocked", status="changes__requested"),
+    "r1-own-finding-payload-space": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"changes requested": False}},
+    "r1-own-finding-payload-dot": _event(agent=AGENT, type="finding", status="suspected_bug")
+    | {"payload": {"changes.requested": True}},
+    "r1-own-finding-payload-double-underscore": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"changes__requested": False}},
 }
 
 

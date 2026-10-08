@@ -85,6 +85,145 @@ def test_scoped_control_tokens_and_broadcasts(tmp_path, ps, event, held):
     assert report == {"ok": True, "held": held}, (event, report)
 
 
+# Shapes of the 17 same-task rows that latched the Lead's 12h wave task (RCO2 triage F209BCC1): worker progress
+# reports and the Lead's own bug findings. Payload keys as observed; values are placeholders.
+WORKER = "codex-tools-1"
+DIAGNOSTICS = {
+    "worker-blocked-waiting-dependency": _event(agent=WORKER, type="blocked", status="waiting_dependency",
+                                                to=AGENT) | {"payload": {"notification": "informational",
+                                                                         "runtime_verification": "NOT_RUN"}},
+    "worker-status-routing-blocked": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": {"notification": "x", "inventory_coverage": "x", "completed_effect_replayed": False}},
+    "worker-message-blocked": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": {"result": {}, "result_validation": {}, "execution_evidence": {}}},
+    "worker-blocked-blocked": _event(agent=WORKER, type="blocked", status="blocked"),
+    "worker-blocked-inventory-conflict": _event(agent=WORKER, type="blocked", status="inventory_binding_conflict")
+    | {"payload": {"diagnostic_only": True, "classification": "x", "next_action": "x"}},
+    "lead-own-finding-confirmed-bug": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"classification": "x", "authority_effect": "x", "native_exit": 1}},
+    "lead-own-finding-suspected-bug": _event(agent=AGENT, type="finding", status="suspected_bug")
+    | {"payload": {"reviewer": "x", "finding_id": "x"}},
+}
+
+
+def _check_log(ps, tmp_path, rows):
+    _, script = _fixture(tmp_path, rows)
+    return json.loads(_run_powershell(script + "Check | ConvertTo-Json -Compress", executable=ps).stdout)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("name", list(DIAGNOSTICS))
+def test_worker_progress_and_own_bug_findings_are_not_holds(tmp_path, ps, name):
+    assert _check_log(ps, tmp_path, [DIAGNOSTICS[name]]) == {"ok": True, "held": False}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_whole_observed_diagnostic_history_is_not_a_hold(tmp_path, ps):
+    assert _check_log(ps, tmp_path, list(DIAGNOSTICS.values()) * 3) == {"ok": True, "held": False}
+
+
+# Positive twins: each is a diagnostic row above with exactly one control element added. Explicit control is
+# classified before the diagnostic exemption, so every one of them must still latch.
+CONTROL_TWINS = {
+    "mixed-row-hard-status-token": _event(agent=WORKER, type="blocked", status="waiting_dependency_on_hold"),
+    "mixed-row-veto-on-message": _event(agent=WORKER, type="message", status="blocked_vetoed"),
+    "own-finding-changes-requested": _event(agent=AGENT, type="finding", status="changes_requested"),
+    "historical-release-held-payload": DIAGNOSTICS["worker-message-blocked"] | {"payload": {"release_held": True}},
+    "release-held-false-still-a-control-field": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"release_held": False}},
+    "work-held-payload": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": {"work_held": True}},
+    "payload-control-field": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": {"control": "pause"}},
+    "camel-payload-hold-field": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": {"onHold": 1}},
+    "payload-not-an-object": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": "hold"},
+    "rco1-blocked": _event(agent="claude-rco-1", type="blocked", status="blocked"),
+    "rco2-message-blocked": _event(agent="claude-rco-2", type="message", status="blocked"),
+    "rco-finding-confirmed-bug": _event(agent="claude-rco-2", type="finding", status="confirmed_bug"),
+    "operator-blocked": _event(agent="operator", type="blocked", status="waiting_dependency"),
+    "operator-broadcast-blocked": _event(agent="operator", task="fleet", to="all", type="message",
+                                         status="blocked"),
+    "lead-blocked-on-own-task": _event(agent=AGENT, type="blocked", status="waiting_dependency"),
+    "lead-identity-blocked": _event(agent="codex-lead-1", type="message", status="blocked"),
+    "peer-finding-confirmed-bug": _event(agent="fable-5", type="finding", status="confirmed_bug"),
+    "own-finding-unknown-status": _event(agent=AGENT, type="finding", status="open"),
+    "own-finding-status-prefix": _event(agent=AGENT, type="finding", status="confirmed_bugs"),
+    "own-finding-status-case": _event(agent=AGENT, type="finding", status="Confirmed_Bug"),
+    "worker-decision-blocked": _event(agent=WORKER, type="decision", status="blocked"),
+    "worker-unknown-type-blocked": _event(agent=WORKER, type="note", status="blocked"),
+    "unknown-empty-agent": _event(agent="", type="blocked", status="blocked"),
+    "unknown-agent-shape": _event(agent="Codex-Tools-1", type="blocked", status="blocked"),
+}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("name", list(CONTROL_TWINS))
+def test_explicit_control_twin_still_latches(tmp_path, ps, name):
+    assert _check_log(ps, tmp_path, [CONTROL_TWINS[name]]) == {"ok": True, "held": True}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("order", ["control-first", "control-last"])
+def test_diagnostics_never_hide_a_control_and_have_no_time_floor(tmp_path, ps, order):
+    # A control far older than the checkpoint still latches: no producer-clock floor for either class.
+    control = _event(agent=WORKER, status="paused") | {"ts_utc": "2020-01-01T00:00:00Z"}
+    diagnostics = [row | {"ts_utc": "2030-01-01T00:00:00Z"} for row in DIAGNOSTICS.values()]
+    rows = [control] + diagnostics if order == "control-first" else diagnostics + [control]
+    assert _check_log(ps, tmp_path, rows) == {"ok": True, "held": True}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_diagnostic_history_then_later_control_latches_and_no_ordinary_row_releases(tmp_path, ps):
+    log, script = _fixture(tmp_path, list(DIAGNOSTICS.values()))
+    script += f"""
+$clear=Check
+[IO.File]::AppendAllText({q(log)}, {q(json.dumps(_event(agent=WORKER, status='on_hold')) + chr(10))})
+$held=Check
+[IO.File]::AppendAllText({q(log)}, {q(json.dumps(DIAGNOSTICS['worker-message-blocked']) + chr(10)
+                                    + json.dumps(_event(type='decision', status='rco_pass')) + chr(10))})
+$after=Check
+@{{clear=$clear;held=$held;after=$after}} | ConvertTo-Json -Depth 6 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report == {"clear": {"ok": True, "held": False}, "held": {"ok": True, "held": True},
+                      "after": {"ok": True, "held": True}}, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_in_place_rewrite_of_a_diagnostic_row_cannot_stay_clear(tmp_path, ps):
+    log, script = _fixture(tmp_path, [DIAGNOSTICS["worker-blocked-blocked"]])
+    marker = b'"status":"blocked"'
+    offset = log.read_bytes().index(marker) + len(b'"status":"')
+    script += f"""
+$before=Check
+$stream=[IO.File]::Open({q(log)},[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+try {{
+ [void]$stream.Seek({offset},[IO.SeekOrigin]::Begin)
+ $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold')
+ $stream.Write($bytes,0,$bytes.Length)
+ $stream.Flush($true)
+}} finally {{$stream.Dispose()}}
+$after=Check
+@{{before=$before;after=$after}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"] == {"ok": True, "held": False}, report
+    assert report["after"] != {"ok": True, "held": False}, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_truncation_after_a_clear_diagnostic_history_is_never_clear(tmp_path, ps):
+    log, script = _fixture(tmp_path, list(DIAGNOSTICS.values()))
+    script += f"""
+$before=Check
+[IO.File]::WriteAllText({q(log)}, '')
+$after=Check
+@{{before=$before;after=$after}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"] == {"ok": True, "held": False}, report
+    assert report["after"]["ok"] is False, report
+
+
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("later", [_event(status="approved"), _event(status="in_progress"),
                                     _event(type="decision", status="rco_pass")],

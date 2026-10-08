@@ -656,7 +656,10 @@ def scan_recognized_rco_vetoes(
         result["decision"] = "invalid_identity_registry"
         result["error"] = str(exc)
         return result
-    aliases = _author_task_id_aliases(task_id, author_agent)
+    # The alias is built from the case-folded id: the shared helper matches the
+    # (lower-case) author prefix case-sensitively, so a re-cased caller id got
+    # no alias (Grok c7307c39 BUG d).
+    aliases = _author_task_id_aliases(task_id.casefold(), author_agent)
     result["task_id_aliases"] = list(aliases)
     # Padded or re-cased task ids and agents still match: on a veto scan the
     # safe error is to count too much (Grok self-challenges 4fbf92c7 item 3

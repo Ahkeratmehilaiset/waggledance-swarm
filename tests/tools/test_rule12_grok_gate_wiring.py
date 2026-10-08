@@ -650,6 +650,42 @@ def test_scan_matches_a_recased_task_id_or_alias(task_id):
     assert scan["decision"] == "recognized_rco_veto_present"
 
 
+CALLER_TASK_IDS = ["FABLE-5/RULE12-GROK-GATE-FIXTURE", "Fable-5/rule12-grok-gate-fixture",
+                   "FABLE-5-RULE12-GROK-GATE-FIXTURE", "Fable-5-Rule12-Grok-Gate-Fixture",
+                   "  Fable-5/Rule12-Grok-Gate-Fixture\t"]
+
+
+@pytest.mark.parametrize("caller_task_id", CALLER_TASK_IDS)
+@pytest.mark.parametrize("veto_task_id", [TASK, "fable-5-rule12-grok-gate-fixture"])
+def test_scan_builds_the_alias_from_a_recased_caller_task_id(caller_task_id, veto_task_id):
+    # Grok c7307c39 BUG (d): the author alias was built from the caller's task id before it
+    # was case-folded, so a re-cased caller id produced no alias and a sole veto under the
+    # other separator form left the scan clear.
+    veto = _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+                  task_id=veto_task_id)
+    scan = _scan([veto], task_id=caller_task_id)
+    assert scan["ok"] is False
+    assert scan["decision"] == "recognized_rco_veto_present", scan
+    assert len(scan["task_id_aliases"]) == 1
+
+
+@pytest.mark.parametrize("caller_task_id", CALLER_TASK_IDS)
+@pytest.mark.parametrize(
+    "event",
+    [
+        _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+               task_id="fable-5-another-task"),
+        _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+               task_id="codex-lead-1/rule12-grok-gate-fixture"),
+        _event("codex-lead-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+               task_id="fable-5-rule12-grok-gate-fixture"),
+    ],
+)
+def test_a_recased_caller_task_id_keeps_other_task_and_non_rco_clear(caller_task_id, event):
+    scan = _scan(_events(event), task_id=caller_task_id)
+    assert scan["ok"] is True and scan["decision"] == "no_recognized_rco_veto", scan
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("task_id", None), ("task_id", 42), ("task_id", ""), ("task_id", "   "),

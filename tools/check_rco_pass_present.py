@@ -662,9 +662,11 @@ def scan_recognized_rco_vetoes(
             result["decision"] = "malformed_event"
             result["error"] = "events must hold only event objects"
             return result
-        if str(event.get("task_id", "")) not in scope:
+        # Padded or re-cased ids still match: on a veto scan the safe error is
+        # to count too much (Grok self-challenge 4fbf92c7, item 3).
+        if str(event.get("task_id", "")).strip() not in scope:
             continue
-        if str(event.get("agent", "")) not in restricted:
+        if str(event.get("agent", "")).strip().lower() not in restricted:
             continue
         if not _is_rco_veto_event(event):
             continue

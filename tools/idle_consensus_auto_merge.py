@@ -2566,10 +2566,15 @@ def _evaluate_rule12_review(
             for reason in (evaluation.get("reasons") or ["no reason recorded"])
         )
     grok_filled = (evaluation.get("grok_fallback") or {}).get("filled") or []
-    if any(slot not in (RULE12_SLOT_RCO, RULE12_SLOT_OPPOSITE_FAMILY) for slot in grok_filled):
-        # Whole-pool external review is report-only in this gate (plan v3 B2):
-        # one Grok answer never stands in for both slots.
-        reasons.append("rule12 Grok external_review is report-only and approves nothing here")
+    if any(slot != RULE12_SLOT_RCO for slot in grok_filled):
+        # Grok may hold only the vacant RCO slot in this gate (plan v3 B2): an
+        # opposite-family fill and the whole-pool external review are
+        # report-only and approve nothing (Grok self-challenge 4fbf92c7, item 1).
+        reasons.append(
+            "rule12 Grok fill of "
+            + ", ".join(str(slot) for slot in grok_filled)
+            + " is report-only; Grok may hold only the RCO slot here"
+        )
     result["ok"] = not reasons
     result["decision"] = (
         "rule12_best_available_consensus" if result["ok"] else "rule12_review_incomplete"
@@ -2625,7 +2630,15 @@ def _grok_rco_slot_lift(
     rco_slot = rco_slot if isinstance(rco_slot, Mapping) else {}
     opposite_slot = slots.get(RULE12_SLOT_OPPOSITE_FAMILY)
     opposite_slot = opposite_slot if isinstance(opposite_slot, Mapping) else {}
-    opposite_holders = list(opposite_slot.get("holders") or [])
+    holders_value = opposite_slot.get("holders")
+    # Only a real list of agent ids counts; a string would iterate as letters
+    # (Grok self-challenge 4fbf92c7, item 2).
+    opposite_holders = (
+        list(holders_value)
+        if isinstance(holders_value, list)
+        and all(type(holder) is str and holder for holder in holders_value)
+        else []
+    )
     veto_scan = (
         scan_recognized_rco_vetoes(
             events=list(events),

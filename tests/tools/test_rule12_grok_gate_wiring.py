@@ -426,6 +426,49 @@ def test_an_opposite_family_grok_fill_never_lifts_the_rco_blocker(tmp_path, root
     assert report["bridge_consensus"]["identities"]["rco"]["agent"] == ""
 
 
+def test_a_grok_opposite_family_fill_approves_nothing_even_with_both_rco_passes(tmp_path, root):
+    # Grok self-challenge 4fbf92c7 item 1: with real RCO passes there is no RCO
+    # blocker to lift, so the opposite-family fill itself must not count here.
+    _run(root, slot="opposite_family", requested_by="claude-rco-1")
+    events = [
+        _claim(),
+        _event("codex-lead-1", "message", "rco_recused", "2026-06-07T17:02:00Z"),
+        _event("codex-tools-1", "message", "review_recused", "2026-06-07T17:03:00Z"),
+        _event("claude-rco-1", "decision", "rco_pass", "2026-06-07T17:05:00Z"),
+        _event("claude-rco-2", "decision", "rco_pass", "2026-06-07T17:06:00Z"),
+        _request(agent="claude-rco-1", slot="opposite_family"),
+    ]
+    report = _gate(tmp_path, root, events)
+    assert report["ok"] is False
+    consensus = report["bridge_consensus"]
+    assert consensus["rule12"]["grok_fallback"]["filled"] == ["opposite_family"]
+    assert consensus["ok"] is False
+    assert any("report-only" in reason for reason in consensus["reasons"])
+    assert report["grok_fallback_evidence"] is None
+    # The same evidence without the switch: no Grok read, the slot stays vacant.
+    assert _gate(tmp_path, None, events)["ok"] is False
+
+
+@pytest.mark.parametrize("holders", ["codex-lead-1", ("codex-lead-1",), [""], [None], None])
+def test_the_lift_needs_a_real_list_of_opposite_holders(holders):
+    from tools.idle_consensus_auto_merge import _grok_rco_slot_lift
+
+    consensus = {
+        "ok": True,
+        "rule12": {
+            "decision": "satisfied",
+            "slots": {
+                "rco": {"state": "held_by_grok_fallback", "grok": {"request_id": "0" * 32}},
+                "opposite_family": {"state": "held", "holders": holders},
+            },
+        },
+    }
+    lift = _grok_rco_slot_lift(bridge_consensus=consensus, bridge_peer_gate={"clear_to_merge": True},
+                               events=_events(), task_id=TASK, author_agent="fable-5", checked=True)
+    assert lift["lifted"] is False
+    assert "the opposite-family slot has no non-Grok holder" in lift["reasons"]
+
+
 # --- recognized-RCO vetoes survive a Grok APPROVE ------------------------------
 @pytest.mark.parametrize(
     "veto",
@@ -530,6 +573,20 @@ def test_scan_latches_unverified_vetoes_and_ignores_non_rco_and_other_tasks():
     assert [(row["agent"], row["identity_binding_status"]) for row in scan["veto_events"]] == [
         ("claude-rco-2", "missing_uuid")
     ]
+
+
+@pytest.mark.parametrize(
+    ("agent", "task_id"),
+    [(" claude-rco-1 ", TASK), ("CLAUDE-RCO-1", TASK), ("claude-rco-1", f" {TASK} ")],
+)
+def test_scan_matches_padded_or_recased_ids(agent, task_id):
+    # Grok self-challenge 4fbf92c7 item 3: on a veto scan, count too much.
+    veto = _event("claude-rco-1", "finding", "changes_requested", "2026-06-07T17:40:00Z",
+                  task_id=task_id)
+    veto["agent"] = agent
+    scan = _scan([veto])
+    assert scan["ok"] is False
+    assert scan["decision"] == "recognized_rco_veto_present"
 
 
 @pytest.mark.parametrize(

@@ -382,7 +382,8 @@ off; the runbook driver does not pass it). With the switch on:
   its fresh gate does not reproduce it.
 
 Still NOT implemented:
-- whole-pool `external_review` (report-only; it approves nothing);
+- a Grok fill of the opposite-family slot, and whole-pool `external_review`
+  (both report-only; they approve nothing);
 - chunked review of a diff over the 24000-byte prompt cap;
 - binary or submodule content (refused);
 - activation of the switch.

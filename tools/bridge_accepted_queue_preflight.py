@@ -18,7 +18,7 @@ import shutil
 import stat
 import subprocess
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, NamedTuple
 
 from tools.bridge_named_mutex import create_bridge_named_mutex
 
@@ -35,6 +35,15 @@ QUEUE_PUBLICATION_MUTEX_NAME = (
     r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1"
 )
 APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
+PINNED_PACKAGE_ROOT_NAME = "tools-bootstrap"
+DEPLOYMENT_MANIFEST_NAME = "deployment-manifest.json"
+MANIFEST_ANCHOR_ENV = "WD_REBOOT_EXPECTED_MANIFEST_HASH"
+PINNED_DRAIN_CLOSURE = (
+    "Drain-AcceptedBridgeQueue.ps1",
+    "BridgeNamedMutex.ps1",
+    "Restore-BridgeSpool.ps1",
+)
+MAX_PINNED_INPUT_BYTES = 16 * 1024 * 1024
 
 TOP_LEVEL_KEYS = frozenset(
     {
@@ -221,6 +230,19 @@ def check_accepted_queue_complete(
             error=namespace_error,
         )
 
+    # Bind the canonical prefix before the drain child starts.  Only complete
+    # rows inside that prefix may prove a duplicate in this invocation, so a
+    # row the child appends cannot prove itself.  This is temporal binding,
+    # not origin authentication: a same-user child's row is ordinary prefix
+    # history on the next invocation.
+    prefix_binding: CanonicalPrefixBinding | None = None
+    prefix_binding_error = "pre-child canonical prefix binding is missing"
+    if before_inventory:
+        try:
+            prefix_binding = _bind_canonical_prefix(canonical_events)
+        except (OSError, ValueError) as exc:
+            prefix_binding_error = f"{type(exc).__name__}: {exc}"
+
     if not script.is_file():
         return _error_report(
             bridge_root=requested_root,
@@ -236,8 +258,23 @@ def check_accepted_queue_complete(
             error="timeout_seconds must be a positive integer",
         )
 
+    # A pinned bundle never trusts the drain child by location or PATH order:
+    # its closure must match the externally anchored deployment manifest and
+    # the interpreter is the kernel-reported Windows PowerShell, before spawn.
+    powershell = None
+    run_kwargs: dict[str, Any] = {}
+    if _is_pinned_package_root(ROOT):
+        try:
+            powershell, run_kwargs["env"] = _verified_pinned_drain(ROOT, script)
+        except Exception as exc:  # noqa: BLE001 - every verification gap holds
+            return _error_report(
+                bridge_root=requested_root,
+                events_path=canonical_events,
+                decision="accepted_queue_drain_helper_untrusted",
+                error=f"{type(exc).__name__}: {exc}",
+            )
     command = [
-        _powershell_executable(),
+        powershell or _powershell_executable(),
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
@@ -261,6 +298,7 @@ def check_accepted_queue_complete(
             errors="strict",
             timeout=timeout_seconds,
             check=False,
+            **run_kwargs,
         )
     except subprocess.TimeoutExpired:
         return _error_report(
@@ -372,6 +410,7 @@ def check_accepted_queue_complete(
     )
     canonical_hashes: set[str] = set()
     canonical_fingerprint = ""
+    proof_hashes: set[str] = set()
     if proof_required:
         try:
             (
@@ -386,6 +425,19 @@ def check_accepted_queue_complete(
                 error=f"{type(exc).__name__}: {exc}",
                 receipt_summary=receipt,
             )
+        try:
+            if prefix_binding is None:
+                raise ValueError(prefix_binding_error)
+            _verify_canonical_prefix(canonical_events, prefix_binding)
+        except (OSError, ValueError) as exc:
+            return _error_report(
+                bridge_root=requested_root,
+                events_path=canonical_events,
+                decision="accepted_queue_canonical_proof_changed",
+                error=f"{type(exc).__name__}: {exc}",
+                receipt_summary=receipt,
+            )
+        proof_hashes = canonical_hashes & prefix_binding.row_hashes
 
     pending_proofs = {
         (item["leaf"], item["sha256"])
@@ -398,7 +450,7 @@ def check_accepted_queue_complete(
     for item in normalized_results:
         status = item["status"]
         digest = item["sha256"]
-        exact_canonical = type(digest) is str and digest in canonical_hashes
+        exact_canonical = type(digest) is str and digest in proof_hashes
         if status in DIRECT_DUPLICATE_STATUSES and exact_canonical:
             resolved.append({**item, "resolution": "exact_canonical_row"})
             continue
@@ -471,6 +523,9 @@ def check_accepted_queue_complete(
                                 ),
                                 receipt_summary=receipt,
                             )
+                        # The bound prefix, leaf and parent chain must still
+                        # hold under the final fences, not only after the child.
+                        _verify_canonical_prefix(canonical_events, prefix_binding)
                         post_proof_inventory, namespace_error = (
                             _accepted_namespace_inventory(accepted_dir)
                         )
@@ -1197,6 +1252,109 @@ def _complete_canonical_row_hashes(events_path: Path) -> tuple[set[str], str]:
         return proof
 
 
+def _canonical_history_identity(
+    events_path: Path,
+) -> tuple[tuple[str, int, int], ...]:
+    chain = _plain_directory_chain_snapshot(events_path.parent)
+    leaf = os.lstat(events_path)
+    return tuple(
+        (str(path), info.st_dev, info.st_ino) for path, info in chain
+    ) + ((str(events_path), leaf.st_dev, leaf.st_ino),)
+
+
+class CanonicalPrefixBinding(NamedTuple):
+    """Complete canonical rows that existed before the drain child started."""
+
+    boundary: int
+    prefix_sha256: str
+    row_hashes: frozenset[str]
+    identity: tuple[tuple[str, int, int], ...]
+
+
+def _open_bound_canonical_leaf(
+    events_path: Path,
+    identity: tuple[tuple[str, int, int], ...],
+) -> int:
+    descriptor = _open_canonical_read_descriptor(events_path)
+    opened = os.fstat(descriptor)
+    # Identity is taken from the handle that is hashed; a zero file index
+    # cannot pin a file, so it never counts as the bound leaf.
+    if (
+        (str(events_path), opened.st_dev, opened.st_ino) != identity[-1]
+        or opened.st_ino == 0
+        or not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+    ):
+        os.close(descriptor)
+        raise ValueError("canonical bridge history leaf is not the bound plain file")
+    return descriptor
+
+
+def _bind_canonical_prefix(events_path: Path) -> CanonicalPrefixBinding:
+    identity = _canonical_history_identity(events_path)
+    descriptor = _open_bound_canonical_leaf(events_path, identity)
+    try:
+        hashes: set[str] = set()
+        prefix = hashlib.sha256()
+        boundary = 0
+        partial = bytearray()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            start = 0
+            while True:
+                end = chunk.find(b"\n", start)
+                if end < 0:
+                    # A torn or still-growing last row is outside the prefix.
+                    partial += chunk[start:]
+                    break
+                row = bytes(partial) + chunk[start : end + 1]
+                partial.clear()
+                hashes.add(hashlib.sha256(row).hexdigest())
+                prefix.update(row)
+                boundary += len(row)
+                start = end + 1
+    finally:
+        os.close(descriptor)
+    if _canonical_history_identity(events_path) != identity:
+        raise ValueError("canonical bridge history moved while its prefix was bound")
+    return CanonicalPrefixBinding(
+        boundary, prefix.hexdigest(), frozenset(hashes), identity
+    )
+
+
+def _verify_canonical_prefix(
+    events_path: Path,
+    binding: CanonicalPrefixBinding,
+) -> None:
+    if _canonical_history_identity(events_path) != binding.identity:
+        raise ValueError(
+            "canonical bridge history or its parent chain was replaced "
+            "after the prefix was bound"
+        )
+    descriptor = _open_bound_canonical_leaf(events_path, binding.identity)
+    try:
+        observed = hashlib.sha256()
+        remaining = binding.boundary
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError(
+                    "canonical bridge history was truncated below its bound prefix"
+                )
+            observed.update(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    if observed.hexdigest() != binding.prefix_sha256:
+        raise ValueError("canonical bridge history bound prefix was rewritten")
+    if _canonical_history_identity(events_path) != binding.identity:
+        raise ValueError(
+            "canonical bridge history moved while its prefix was verified"
+        )
+
+
 def _plain_directory_chain_snapshot(
     directory: Path,
 ) -> tuple[tuple[Path, os.stat_result], ...]:
@@ -1345,6 +1503,87 @@ def _powershell_executable() -> str:
         if found:
             return found
     return "powershell.exe" if os.name == "nt" else "pwsh"
+
+
+def _is_pinned_package_root(root: Path) -> bool:
+    # Path.resolve() reports the on-disk case; a case-varied rename must not
+    # downgrade a pinned bundle to repo mode.
+    return root.name.casefold() == PINNED_PACKAGE_ROOT_NAME
+
+
+def _kernel_directory(function_name: str) -> Path:
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = getattr(ctypes.windll.kernel32, function_name)(buffer, len(buffer))
+    if length <= 0 or length >= len(buffer):
+        raise OSError(f"{function_name} failed")
+    return Path(buffer.value)
+
+
+def _system_powershell() -> tuple[Path, dict[str, str]]:
+    if os.name != "nt":
+        raise ValueError("pinned drain child requires Windows PowerShell")
+    system = _kernel_directory("GetSystemDirectoryW")
+    windows = _kernel_directory("GetSystemWindowsDirectoryW")
+    path = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    info = os.lstat(path)
+    if _stat_is_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("system Windows PowerShell is not a plain file")
+    # Allow-list only: the drain gets -BridgeRoot explicitly and needs no
+    # inherited AGENT_BRIDGE_*, WD_*, COR_*/COMPlus_*/DOTNET_* or PS* values.
+    env = {
+        "SystemRoot": str(windows),
+        "PATH": os.pathsep.join((str(system), str(windows), str(path.parent))),
+        "PSModulePath": str(path.parent / "Modules"),
+    }
+    for name in ("TEMP", "TMP"):
+        value = os.environ.get(name, "")
+        if value and os.path.isabs(value):
+            env[name] = value
+    return path, env
+
+
+def _pinned_input_bytes(path: Path) -> bytes:
+    info = os.lstat(path)
+    if _stat_is_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"pinned input is not a plain file: {path.name}")
+    if info.st_nlink != 1 or info.st_size > MAX_PINNED_INPUT_BYTES:
+        raise ValueError(f"pinned input is linked or oversized: {path.name}")
+    with open(path, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        data = handle.read(MAX_PINNED_INPUT_BYTES + 1)
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        raise ValueError(f"pinned input changed while opening: {path.name}")
+    if len(data) > MAX_PINNED_INPUT_BYTES:
+        raise ValueError(f"pinned input is oversized: {path.name}")
+    return data
+
+
+def _verified_pinned_drain(root: Path, script: Path) -> tuple[str, dict[str, str]]:
+    bin_dir = root / ".agent-bridge" / "bin"
+    if _path_key(script) != _path_key(bin_dir / PINNED_DRAIN_CLOSURE[0]):
+        raise ValueError("pinned package refuses a drain helper outside its bin")
+    for directory in (root.parent, root, root / ".agent-bridge", bin_dir):
+        if _stat_is_reparse(os.lstat(directory)):
+            raise ValueError(f"pinned drain path crosses a reparse point: {directory.name}")
+    anchor = os.environ.get(MANIFEST_ANCHOR_ENV, "").lower()
+    if not SHA256_RE.fullmatch(anchor):
+        raise ValueError(f"{MANIFEST_ANCHOR_ENV} is missing or malformed")
+    raw = _pinned_input_bytes(root.parent / DEPLOYMENT_MANIFEST_NAME)
+    if hashlib.sha256(raw).hexdigest() != anchor:
+        raise ValueError("deployment manifest differs from its external anchor")
+    files = json.loads(raw.decode("utf-8-sig")).get("files")
+    if not isinstance(files, dict):
+        raise ValueError("deployment manifest has no files map")
+    for name in PINNED_DRAIN_CLOSURE:
+        expected = files.get(f"{PINNED_PACKAGE_ROOT_NAME}/.agent-bridge/bin/{name}")
+        if not isinstance(expected, str) or not SHA256_RE.fullmatch(expected.lower()):
+            raise ValueError(f"pinned drain input is not in the anchored manifest: {name}")
+        if hashlib.sha256(_pinned_input_bytes(bin_dir / name)).hexdigest() != expected.lower():
+            raise ValueError(f"pinned drain input hash mismatch: {name}")
+    powershell, env = _system_powershell()
+    return str(powershell), env
 
 
 def _error_report(

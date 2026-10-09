@@ -278,3 +278,57 @@ def test_a_disjoint_finished_own_or_non_write_wal_record_admits_the_write_claim(
     claimed = _claim(shell, bridge)
     assert claimed.returncode == 0, claimed.stdout + claimed.stderr
     assert len(_claims(bridge)) == 1
+
+
+
+# -- RS7F-L1 (RCO1 B4026D50): a REAL digest-valid prepared WAL left by the Python writer, not a hand-made record ------
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+def test_a_real_prepared_wal_from_the_python_writer_refuses_the_overlapping_ps_claim_until_recovery(bridge, shell,
+                                                                                                    monkeypatch):
+    from tools import bridge_v2_queue_transactions as qt
+    from tools import bridge_v2_work_queue as wq
+    from tools.bridge_v2_queue_ports_windows import windows_queue_transactions
+
+    _, worktree, runtime = bridge
+    now = datetime.now(timezone.utc)
+    txns = windows_queue_transactions(runtime, clock=lambda: now)   # the real root mutex the PS writer also takes
+    assert txns.ports_on and type(txns.mutex).__name__ == "NamedMutexPort" and txns.root_id   # mutex_name(runtime)
+    real, calls = qt._replace_atomic, {"n": 0}
+
+    def crashing(*args, **kwargs):                       # model: test_bridge_v2_queue_snapshot_to_w3.py _pending
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt("fixture crash after the WAL record, before the claim write")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(qt, "_replace_atomic", crashing)
+    with pytest.raises(KeyboardInterrupt):
+        wq.claim_task(txns, agent="codex-lead-1", task_id="team/x", summary="x", mode="write",
+                      write_scope=("tools/one.py",), identity=wq.OwnerIdentity("session-x", "token-x"),
+                      cwd=str(worktree), now=now)
+    monkeypatch.setattr(qt, "_replace_atomic", real)      # not undo(): keep the fixture's environment
+    [wal] = sorted(txns.wal_dir.glob("*.json"))
+    record = txns._load(wal)
+    assert record is not None and record["state"] == "prepared"   # digest-valid and bound to this root
+    assert record["after"]["task_id"] == "team/x" and _claims(bridge) == []
+    before = wal.read_bytes()
+
+    refused = _claim(shell, bridge, task="team/y", scope="tools/one.py")
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert "write-scope conflict with an unfinished claim of team/x" in refused.stderr, refused.stderr
+    assert _claims(bridge) == [] and wal.read_bytes() == before       # nothing written, the WAL untouched
+    with pytest.raises(wq.Refused, match="unfinished claim of team/x"):  # the Python writer agrees
+        wq.claim_task(txns, agent="claude-rco-1", task_id="team/y", summary="y", mode="write",
+                      write_scope=("tools/one.py",), identity=wq.OwnerIdentity("session-y", "token-y"),
+                      cwd=str(worktree), now=now)
+
+    assert _claim(shell, bridge, task="team/z", scope="tools/other.py").returncode == 0   # twin: disjoint
+    assert _read_claim(shell, bridge, task="team/reader", scope="tools/one.py").returncode == 0   # twin: read-only
+
+    outcomes = txns.reconcile()                           # the real recovery rolls X forward
+    assert [o["outcome"] for o in outcomes] == ["rolled_forward"], outcomes
+    assert list(txns.wal_dir.glob("*.json")) == []        # the record is filed, nothing left unfinished
+    writes = [json.loads(path.read_text(encoding="utf-8")) for path in (runtime / "work_queue" / "claims").glob("*.json")]
+    writes = {c["task_id"]: c["write_scope"] for c in writes if c.get("mode") == "write"}
+    assert writes == {"team/x": ["tools/one.py"], "team/z": ["tools/other.py"]}   # no overlapping write claims

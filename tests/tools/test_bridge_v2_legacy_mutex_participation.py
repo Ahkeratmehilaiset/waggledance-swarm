@@ -231,3 +231,50 @@ def test_an_abandoned_root_mutex_is_refused_once_and_never_adopted(bridge, shell
         assert claimed.returncode == 0 and "abandoned" in claimed.stdout + claimed.stderr, claimed.stderr
     finally:
         kernel32.CloseHandle(witness)
+
+
+# -- Tools BFE7F4A1 (PS-PENDING-WAL-ADMISSION): the PS writer compares unfinished v2 transactions --------------------
+
+def _wal(bridge, name, state="prepared", task="team/pending", scope="tools/one.py", mode="write", raw=None):
+    """A v2 WAL record as recovery would apply it: only the fields this writer reads (state, after) are real."""
+    wal = bridge[2] / "work_queue" / "v2" / "wal"
+    wal.mkdir(parents=True, exist_ok=True)
+    after = {"agent": "codex-lead-1", "task_id": task, "mode": mode, "cwd": str(bridge[1]), "write_scope": [scope]}
+    record = {"state": state, "claim_rel": "work_queue/claims/x.json", "txid": "0" * 32, "after": after}
+    (wal / name).write_bytes(raw if raw is not None else json.dumps(record).encode("utf-8"))
+
+
+def _read_claim(shell, bridge, task="team/reader", scope="tools/one.py"):
+    return _run(shell, bridge, ["-File", str(bridge[0] / "Claim-AgentTask.ps1"), "-Agent", AGENT, "-TaskId", task,
+                                "-Summary", "legacy read " + task, "-Mode", "read-only", "-WriteScope", scope,
+                                "-LeaseSeconds", "600"])
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+@pytest.mark.parametrize("case", ["pending_overlap", "applied_overlap", "unreadable", "unknown_state"])
+def test_an_unfinished_or_unreadable_wal_record_refuses_an_overlapping_write_claim(bridge, shell, case):
+    raw = b"{not json" if case == "unreadable" else None
+    _wal(bridge, "a.json", state={"applied_overlap": "applied", "unknown_state": "half-done"}.get(case, "prepared"),
+         raw=raw)
+    before = (bridge[2] / "work_queue" / "v2" / "wal" / "a.json").read_bytes()
+    refused = _claim(shell, bridge)
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    expected = "unfinished claim of team/pending" if case.endswith("overlap") else "unreadable; overlap unknown"
+    assert expected in refused.stderr, refused.stderr
+    assert _claims(bridge) == [] and (bridge[2] / "work_queue" / "v2" / "wal" / "a.json").read_bytes() == before
+    assert _read_claim(shell, bridge).returncode == 0                       # twin: a read claim is not compared
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
+@pytest.mark.parametrize("case", ["disjoint", "finished", "same_task", "read_plan", "release_plan"])
+def test_a_disjoint_finished_own_or_non_write_wal_record_admits_the_write_claim(bridge, shell, case):
+    if case == "release_plan":
+        _wal(bridge, "a.json", raw=json.dumps({"state": "prepared", "after": None}).encode("utf-8"))
+    else:
+        _wal(bridge, "a.json", state="aborted" if case == "finished" else "prepared",
+             task="team/one" if case == "same_task" else "team/pending",
+             scope="tools/other.py" if case == "disjoint" else "tools/one.py",
+             mode="read-only" if case == "read_plan" else "write")
+    claimed = _claim(shell, bridge)
+    assert claimed.returncode == 0, claimed.stdout + claimed.stderr
+    assert len(_claims(bridge)) == 1

@@ -162,6 +162,56 @@ foreach ($file in $activeClaims) {
     }
 }
 
+# Tools BFE7F4A1 (PS-PENDING-WAL-ADMISSION): a v2 transaction that stopped between its WAL record and its claim write
+# is applied later by recovery without re-checking this claim (B-F2), so a WRITE claim compares the claim each
+# unfinished record would write, as the Python queue does, under the root mutex held above. Bounded and fail-closed:
+# a linked, oversized, undecodable or unknown-state record makes overlap unknown; finished records are skipped. This
+# writer does not re-verify record digests: a record Python calls corrupt is never applied, so reading its claim can
+# only refuse more.
+if ($Mode -eq 'write') {
+    $walDir = Join-Path $bridgeRoot 'work_queue/v2/wal'
+    $walFiles = @()
+    if (Test-Path -LiteralPath $walDir) {
+        if (-not (Test-Path -LiteralPath $walDir -PathType Container) -or
+            ([IO.File]::GetAttributes($walDir) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Stop-BridgeClaim -Message "the v2 WAL directory is linked or not a directory; overlap unknown: $walDir" -Code 3
+        }
+        $walFiles = @(Get-ChildItem -LiteralPath $walDir -Filter '*.json' -File -Force -ErrorAction Stop)
+    }
+    if ($walFiles.Count -gt 1024) {
+        Stop-BridgeClaim -Message ("{0} unfinished transaction records exceed the 1024 bound; overlap unknown" -f $walFiles.Count) -Code 3
+    }
+    foreach ($walFile in $walFiles) {
+        $txn = $null
+        try {
+            if (($walFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $walFile.Length -gt 262144) { throw 'linked or oversized' }
+            $txn = [IO.File]::ReadAllText($walFile.FullName, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -ErrorAction Stop
+        } catch { $txn = $null }
+        $state = if ($null -ne $txn -and $txn.PSObject.Properties['state']) { [string]$txn.state } else { '' }
+        if ($null -eq $txn -or $state -cnotin @('prepared', 'applied', 'outboxed', 'aborted', 'diverged') -or
+            -not $txn.PSObject.Properties['after']) {
+            Stop-BridgeClaim -Message ("an unfinished transaction record is unreadable; overlap unknown: {0}" -f $walFile.Name) -Code 3
+        }
+        if ($state -cin @('outboxed', 'aborted', 'diverged')) { continue }
+        $planned = $txn.after
+        if ($null -eq $planned) { continue }   # a release or an archive writes no claim
+        if ($planned.GetType().FullName -cne 'System.Management.Automation.PSCustomObject') {
+            Stop-BridgeClaim -Message ("an unfinished transaction record is unreadable; overlap unknown: {0}" -f $walFile.Name) -Code 3
+        }
+        if ([string]$planned.task_id -ceq $TaskId -or [string]$planned.mode -cne 'write') { continue }
+        $plannedCwd = if ($planned.PSObject.Properties['cwd']) { [string]$planned.cwd } else { '' }
+        try {
+            $plannedResources = @(Resolve-BridgeResourceScopes -Scopes @($planned.write_scope) -Worktree $plannedCwd -BridgeRoot $bridgeRoot)
+        } catch {
+            $reason = [string]$_.Exception.Message
+            Stop-BridgeClaim -Message ("an unfinished claim has an unresolvable write scope; overlap unknown (claim {0} by {1}, cwd {2}: {3})" -f $planned.task_id, $planned.agent, $plannedCwd, $reason.Substring(0, [Math]::Min(200, $reason.Length))) -Code 3
+        }
+        if (Test-BridgeResourceOverlap -A $resources -B $plannedResources) {
+            Stop-BridgeClaim -Message ("write-scope conflict with an unfinished claim of {0}" -f $planned.task_id) -Code 3
+        }
+    }
+}
+
 # A refresh rewrites exactly the file that holds this task's claim; a new
 # claim goes to a name no other task's claim occupies. The sanitized name
 # is lossy, so it is never assumed to belong to this task.

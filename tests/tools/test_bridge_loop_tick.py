@@ -33,7 +33,39 @@ from tools.bridge_loop_tick import (
     peer_has_active_pr_producing_claim,
 )
 from tools.bridge_event_writer import BridgeEventWriteError, _PortableTestBackend
-from waggledance.core.work_queue import claim_task
+from waggledance.core.work_queue import WorkQueueError, claim_task
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_owner_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic agents must not inherit the launching bridge lane's owner."""
+    for key in (
+        "AGENT_BRIDGE_AGENT",
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_RUN_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_bound_session_refuses_other_agent_without_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-tools-1")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "synthetic-tools-session")
+    monkeypatch.setenv("AGENT_BRIDGE_RUN_ID", "synthetic-tools-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "synthetic-tools-token")
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(
+            agent="claude",
+            task_id="wrong-session-agent",
+            summary="must refuse before creating bridge state",
+            bridge_root=bridge,
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40

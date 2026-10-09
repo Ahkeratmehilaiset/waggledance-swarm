@@ -140,6 +140,8 @@ def build_inventory(repo: Path, base: str, head: str) -> dict[str, Any]:
     head = _git(repo, "rev-parse", "--verify", head + "^{commit}").decode().strip()
     tree = _git(repo, "rev-parse", head + "^{tree}").decode().strip()
     raw = _git(repo, *DIFF, "--raw", "--no-abbrev", "-z", base, head).split(b"\0")
+    if len(raw) % 2 != 1 or raw[-1] != b"":   # -z output is (meta NUL path NUL)*; nothing may dangle
+        raise DiagnosticRefused(f"unpaired trailing git --raw field {raw[-1][:80]!r}")
     entries = []
     index = 0
     while index < len(raw) - 1:
@@ -293,6 +295,19 @@ def fresh_recheck(repo: Path, result: Mapping[str, Any], ref: str) -> dict[str, 
     return {"schema": SCHEMA, **inert_fields(), "still_current": True, "head": current["head"]}
 
 
+def _read_evidence(path: Path) -> Mapping[str, Any]:
+    """An evidence FILE must hold a JSON object; only an absent --evidence means no evidence."""
+    try:
+        evidence = json.loads(path.read_bytes().decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise DiagnosticRefused(f"evidence file is not UTF-8: {exc}") from exc
+    except RecursionError as exc:
+        raise DiagnosticRefused("evidence JSON nests too deeply") from exc
+    if not isinstance(evidence, Mapping):
+        raise DiagnosticRefused(f"evidence file must contain a JSON object, not {type(evidence).__name__}")
+    return evidence
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -305,10 +320,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.mode not in MODES or args.origin_policy not in ORIGIN_POLICIES:
             assess({"entries": []}, origin_policy=args.origin_policy, mode=args.mode)   # raises the refusal
-        evidence = json.loads(args.evidence.read_text(encoding="utf-8")) if args.evidence else {}
+        evidence = _read_evidence(args.evidence) if args.evidence else {}
         result = assess(build_inventory(args.repo, args.base, args.head), evidence,
                         origin_policy=args.origin_policy, mode=args.mode)
-    except (DiagnosticRefused, OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (DiagnosticRefused, OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"schema": SCHEMA, **inert_fields(), "refused": True, "error": str(exc)}))
         return 2
     print(json.dumps(result, indent=1, ensure_ascii=False))

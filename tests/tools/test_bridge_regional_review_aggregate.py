@@ -485,42 +485,60 @@ def test_none_or_empty_object_evidence_is_an_empty_diagnostic(clean: dict, evide
     _assert_inert(result)
 
 
-@pytest.mark.parametrize("evidence", [b'{"region_records": ["\xff"]}', b"[" * 100000],
-                         ids=["invalid_utf8", "deep_nesting"])
-def test_unreadable_evidence_file_is_an_inert_cli_refusal(repo: dict, tmp_path: Path, capsys,
-                                                          evidence: bytes) -> None:
+@pytest.mark.parametrize(("evidence", "error"), [
+    (b'{"region_records": ["\xff"]}', "not UTF-8"), (b"[" * 100000, "nests too deeply"),
+    (b"null", "not NoneType"), (b"[]", "not list"), (b"0", "not int"), (b"false", "not bool"),
+    (b'""', "not str"), (b"{", "Expecting"),
+], ids=["invalid_utf8", "deep_nesting", "null", "list", "zero", "false", "str", "truncated"])
+def test_unusable_evidence_file_is_an_inert_cli_refusal(repo: dict, tmp_path: Path, capsys,
+                                                        evidence: bytes, error: str) -> None:
     path = tmp_path / "evidence.json"
     path.write_bytes(evidence)
     code = agg.main(["--repo", str(repo["root"]), "--base", repo["base"], "--head", repo["clean_head"],
                      "--evidence", str(path)])
     out = json.loads(capsys.readouterr().out)
-    assert code == 2 and out["refused"] is True
+    assert code == 2 and out["refused"] is True and error in out["error"]
     _assert_inert(out)
 
 
-def _fake_git(raw: bytes):
+def _fake_git(raw: bytes, patch: bytes = b""):
     def fake(repo: Path, *args: str) -> bytes:
         if args[0] == "rev-parse":
             return ("1" * 40 + "\n").encode()
         if args[0] == "diff":
-            return raw
+            return raw if "--raw" in args else patch
+        if args[0] == "cat-file":
+            return b"text\n"
         raise AssertionError(args)
     return fake
 
 
-@pytest.mark.parametrize("raw", [
-    b":000000 100644 " + b"0" * 40 + b" " + b"2" * 40 + b" A\x00bad-\xff-path.txt\x00",
-    b":000000 100644 " + b"0" * 40 + b" A\x00short-record.txt\x00",
-], ids=["non_utf8_path", "malformed_record"])
-def test_undecodable_git_output_is_a_refusal_in_library_and_cli(monkeypatch, capsys, raw: bytes) -> None:
-    monkeypatch.setattr(agg, "_git", _fake_git(raw))
-    with pytest.raises(agg.DiagnosticRefused):
+GOOD_RAW = b":000000 100644 " + b"0" * 40 + b" " + b"2" * 40 + b" A\x00ok.txt\x00"
+
+
+@pytest.mark.parametrize(("raw", "patch", "error"), [
+    (b":000000 100644 " + b"0" * 40 + b" " + b"2" * 40 + b" A\x00bad-\xff-path.txt\x00", b"", "non-UTF-8 path"),
+    (b":000000 100644 " + b"0" * 40 + b" A\x00short-record.txt\x00", b"", "unexpected git --raw record"),
+    (GOOD_RAW + b"dangling-\xff", b"", "unpaired trailing"),
+    (GOOD_RAW[:-1], b"", "unpaired trailing"),
+    (GOOD_RAW, b"@@ -0,0 +1 @@\n+bad \xff\n", "non-UTF-8 patch"),
+], ids=["non_utf8_path", "malformed_record", "dangling_field", "missing_final_nul", "non_utf8_patch"])
+def test_undecodable_git_output_is_a_refusal_in_library_and_cli(monkeypatch, capsys, raw: bytes,
+                                                                 patch: bytes, error: str) -> None:
+    monkeypatch.setattr(agg, "_git", _fake_git(raw, patch))
+    with pytest.raises(agg.DiagnosticRefused, match=error):
         agg.build_inventory(Path("."), "1" * 40, "2" * 40)
     code = agg.main(["--repo", ".", "--base", "1" * 40, "--head", "2" * 40])
     out = json.loads(capsys.readouterr().out)
-    assert code == 2 and out["refused"] is True
+    assert code == 2 and out["refused"] is True and error in out["error"]
     _assert_inert(out)
 
+
+def test_fake_git_success_twin_builds_an_inventory(monkeypatch) -> None:
+    monkeypatch.setattr(agg, "_git", _fake_git(GOOD_RAW, b"@@ -0,0 +1 @@\n+text\n"))
+    inventory = agg.build_inventory(Path("."), "1" * 40, "2" * 40)
+    assert [e["path"] for e in inventory["entries"]] == ["ok.txt"]
+    assert inventory["entries"][0]["changed_lines"] == [{"side": "head", "line": 1, "sha256": agg._sha256(b"text")}]
 
 def test_invalid_refs_refuse_without_a_result(repo: dict) -> None:
     with pytest.raises(agg.DiagnosticRefused):

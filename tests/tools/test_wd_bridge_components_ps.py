@@ -245,9 +245,12 @@ def test_windows_powershell_under_a_powershell7_module_path_still_checks_the_pin
     module_path = _powershell7_module_path()
     env = _contaminated_environment(module_path)
     seen = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
-                           "[Console]::Out.Write($env:PSModulePath)"],
+                           "[Console]::Out.Write($env:PSModulePath + '|' + "
+                           "[bool](Get-Command Get-FileHash -ErrorAction SilentlyContinue))"],
                           env=env, capture_output=True, text=True, encoding="utf-8", timeout=120, check=True)
-    assert seen.stdout == module_path  # the contamination really reaches a Windows PowerShell child
+    # The contamination really reaches a Windows PowerShell child, and Get-FileHash really cannot load there;
+    # on a host where it still loads, these twins would prove nothing, so they fail instead.
+    assert seen.stdout == module_path + "|False"
     wrapper, anchor = _bundle(tmp_path, tamper_wrapper=tampered)
     record_path = tmp_path / "stub-record.json"
     env.update(WD_BRIDGE_PYTHON_WRAPPER=str(wrapper), WD_REBOOT_EXPECTED_MANIFEST_HASH=anchor,

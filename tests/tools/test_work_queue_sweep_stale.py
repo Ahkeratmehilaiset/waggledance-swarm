@@ -184,3 +184,98 @@ def test_cli_bridge_root_missing_returns_2(
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "bridge root not found" in captured.err
+
+
+# -- QB (RCO2 35B5527F): the mutex cleanup fails AFTER --apply archived its claims --------------------------------
+
+def _mutex_failing_after(error: OSError | None):
+    """A _root_mutex stand-in shaped like NamedMutexPort.hold: it yields, and only after the body returned raises
+    ``error`` (the port's ReleaseMutex/CloseHandle failure). A body error propagates unchanged."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def hold(root):
+        yield
+        if error is not None:
+            raise error
+    return hold
+
+
+def _stale(bridge: Path, task_id: str) -> None:
+    claim_task(agent="claude-1", task_id=task_id, summary="stale", bridge_root=bridge,
+               now_utc=_now() - timedelta(hours=1))
+
+
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "human"])
+def test_cli_apply_reports_an_applied_archive_when_the_mutex_cleanup_fails_after_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, as_json: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    _stale(bridge, "task-cli-cleanup")
+    monkeypatch.setattr(sweep_cli, "_root_mutex",
+                        _mutex_failing_after(OSError(None, "the runtime-root mutex release failed", None, 288)))
+    argv = ["--bridge-root", str(bridge), "--max-age-seconds", "60", "--apply"] + (["--json"] if as_json else [])
+    exit_code = sweep_cli.main(argv)
+    captured = capsys.readouterr()
+    assert exit_code == 4 == sweep_cli.MUTEX_CLEANUP_EXIT_CODE     # neither success (0) nor "nothing archived" (1)
+    assert not (bridge / "work_queue" / "claims" / "task-cli-cleanup.json").exists()     # applied, once
+    assert len(list((bridge / "work_queue" / "done").glob("*.stale_lease.json"))) == 1
+    if as_json:
+        payload = json.loads(captured.out)
+        assert payload["applied"] is True and payload["outcome"] == "applied_mutex_cleanup_failed"
+        assert [row["task_id"] for row in payload["archived"]] == ["task-cli-cleanup"]
+        assert "the runtime-root mutex release failed" in payload["mutex_cleanup_error"]
+    else:
+        assert "ARCHIVED: task-cli-cleanup" in captured.out
+        assert "sweep applied, then the runtime-root mutex cleanup failed" in captured.err
+
+
+def test_cli_apply_with_a_clean_mutex_cleanup_is_a_plain_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    _stale(bridge, "task-cli-clean")
+    monkeypatch.setattr(sweep_cli, "_root_mutex", _mutex_failing_after(None))
+    exit_code = sweep_cli.main(["--bridge-root", str(bridge), "--max-age-seconds", "60", "--apply", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0 and "outcome" not in payload and "mutex_cleanup_error" not in payload
+    assert [row["task_id"] for row in payload["archived"]] == ["task-cli-clean"]
+
+
+def test_cli_apply_keeps_an_io_error_inside_the_archive_as_a_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The body's own OSError (before the archive returned) is still "sweep failed", exit 1: only a cleanup failure
+    # AFTER an applied archive is exit 4.
+    bridge = tmp_path / ".agent-bridge"
+    _stale(bridge, "task-cli-ioerror")
+    monkeypatch.setattr(sweep_cli, "_root_mutex", _mutex_failing_after(OSError(None, "cleanup", None, 288)))
+
+    def failing_archive(**kwargs):
+        raise OSError(None, "disk full", None, 112)
+
+    monkeypatch.setattr(sweep_cli, "archive_stale_claims", failing_archive)
+    exit_code = sweep_cli.main(["--bridge-root", str(bridge), "--max-age-seconds", "60", "--apply", "--json"])
+    captured = capsys.readouterr()
+    assert exit_code == 1 and captured.out == "" and "sweep failed: " in captured.err and "disk full" in captured.err
+
+
+def test_cli_dry_run_with_unparseable_timestamps_falls_back_then_uses_the_threshold(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Invalid-timestamp twin (Lead 04:02Z): an unparseable last_heartbeat_utc falls back to claimed_at_utc, and a
+    # claim with neither parseable is aged at the threshold. The out-of-range ISO case (year 1, +14:00, OverflowError)
+    # belongs to the parser fix in fable-5's scope and is not pinned here.
+    bridge = tmp_path / ".agent-bridge"
+    claims = bridge / "work_queue" / "claims"
+    claims.mkdir(parents=True)
+    fresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    for task_id, claimed_at in (("task-bad-beat-fresh-claim", fresh), ("task-bad-both", "not-a-time-either")):
+        (claims / (task_id + ".json")).write_text(json.dumps({
+            "agent": "claude-1", "task_id": task_id, "summary": "s", "mode": "read-only", "write_scope": [],
+            "run_id": "", "claimed_at_utc": claimed_at, "last_heartbeat_utc": "not-a-time", "lease_seconds": 900,
+            "owner_identity": "none"}), encoding="utf-8")
+    exit_code = sweep_cli.main(["--bridge-root", str(bridge), "--max-age-seconds", "60", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert [(row["task_id"], row["age_seconds"]) for row in payload["archived"]] == [("task-bad-both", 60)]

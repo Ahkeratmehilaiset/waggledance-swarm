@@ -41,9 +41,13 @@ from tools.bridge_v2_queue_transactions import (  # noqa: E402
 # (2026-10-01) found no other production caller of the core writers. Reads (list, stale, check-overlap) take no
 # lock. The mutex exists only on Windows; elsewhere nothing is excluded. A refusal exits by its source (fable-5 B1):
 # 2 when the --bridge-root is unusable (the v2 canonical-root rule), 1 for every other refusal.
+# QB (RCO2 35B5527F): releasing or closing the mutex can fail AFTER the writer applied its change. That is neither a
+# success nor a refusal: the report keeps the applied result, says so (applied, outcome) and exits 4; nothing is retried.
 WRITER_COMMANDS = ("claim", "release", "heartbeat")
 LOCK_TIMEOUT_SECONDS = DEFAULT_LOCK_TIMEOUT_SECONDS
 MUTEX_REFUSAL = "runtime-root mutex: "   # the prefix of every refusal: _exit_code_for_error reads it, not the words
+MUTEX_CLEANUP_EXIT_CODE = 4
+MUTEX_CLEANUP_OUTCOME = "applied_mutex_cleanup_failed"
 
 
 def _root_mutex(bridge_root: Path) -> Any:
@@ -130,11 +134,25 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     bridge_root = resolve_bridge_root(args.bridge_root)
     if args.command not in WRITER_COMMANDS:
         return _run(args, bridge_root)
+    report = None
     try:
         with _root_mutex(bridge_root):
-            return _run(args, bridge_root)
+            report = _run(args, bridge_root)
     except QueueTransactionError as exc:     # the mutex refused (busy, abandoned, unusable root): nothing was written
         raise WorkQueueError(MUTEX_REFUSAL + str(exc)) from exc
+    except OSError as exc:
+        if report is None:
+            raise   # the writer's own error, unchanged (the port records a cleanup failure on it)
+        return _mutex_cleanup_failed(report, exc)
+    return report
+
+
+def _mutex_cleanup_failed(report: dict[str, Any], exc: OSError) -> dict[str, Any]:
+    """The applied result of a writer whose root-mutex release or close failed afterwards (QB)."""
+    return {**report, "ok": False, "applied": True, "outcome": MUTEX_CLEANUP_OUTCOME,
+            "errors": ["the change WAS applied; then the runtime-root mutex cleanup failed: "
+                       + type(exc).__name__ + ": " + str(exc)],
+            "exit_code": MUTEX_CLEANUP_EXIT_CODE}
 
 
 def _run(args: argparse.Namespace, bridge_root: Path) -> dict[str, Any]:

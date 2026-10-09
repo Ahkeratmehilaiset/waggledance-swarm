@@ -22,6 +22,9 @@ Exit codes:
     1 - argument or I/O error, or the runtime-root mutex refused --apply
         (nothing was archived)
     2 - bridge root not found
+    4 - --apply archived its claims, then releasing or closing the runtime-root
+        mutex failed: the applied result is still printed, with
+        mutex_cleanup_error and outcome (QB, RCO2 35B5527F); nothing is retried
 """
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ from waggledance.core.work_queue import (  # noqa: E402
     resolve_bridge_root,
 )
 from tools.bridge_v2_queue_transactions import QueueTransactionError  # noqa: E402
-from tools.work_queue import _root_mutex  # noqa: E402
+from tools.work_queue import MUTEX_CLEANUP_EXIT_CODE, MUTEX_CLEANUP_OUTCOME, _root_mutex  # noqa: E402
 
 
 CLI_DEFAULT_MAX_AGE_SECONDS = 300
@@ -109,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"bridge root not found: {bridge_root}\n")
         return 2
 
+    archived = None
+    cleanup_error = None
     try:
         # --apply archives and unlinks claims, so it takes the CLI writers' runtime-root mutex first; the dry run
         # reads only and takes no lock.
@@ -127,8 +132,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"sweep refused: {exc}\n")
         return 1
     except OSError as exc:
-        sys.stderr.write(f"sweep failed: {exc}\n")
-        return 1
+        if archived is None:
+            sys.stderr.write(f"sweep failed: {exc}\n")
+            return 1
+        # The archive WAS applied; only releasing or closing the runtime-root mutex after it failed (QB).
+        cleanup_error = f"{type(exc).__name__}: {exc}"
+    code = 0 if cleanup_error is None else MUTEX_CLEANUP_EXIT_CODE
 
     if args.json:
         payload = {
@@ -137,13 +146,18 @@ def main(argv: list[str] | None = None) -> int:
             "now_utc": now.isoformat().replace("+00:00", "Z"),
             "archived": [_serialize(record) for record in archived],
         }
+        if cleanup_error is not None:
+            payload["outcome"] = MUTEX_CLEANUP_OUTCOME
+            payload["mutex_cleanup_error"] = cleanup_error
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return code
 
+    if cleanup_error is not None:
+        sys.stderr.write(f"sweep applied, then the runtime-root mutex cleanup failed: {cleanup_error}\n")
     label = "ARCHIVED" if args.apply else "WOULD ARCHIVE"
     if not archived:
         print(f"no stale claims (threshold {args.max_age_seconds}s)")
-        return 0
+        return code
     for record in archived:
         print(
             f"{label}: {record.claim.task_id} "
@@ -151,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             f"age={record.age_seconds}s "
             f"-> {record.archived_path}"
         )
-    return 0
+    return code
 
 
 if __name__ == "__main__":

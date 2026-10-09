@@ -11,6 +11,7 @@ from waggledance.core.work_queue import (
     Claim,
     PRIVILEGED_AGENTS,
     WorkQueueError,
+    WorkQueueIOError,
     archive_stale_claims,
     claim_task as _claim_task,
     heartbeat,
@@ -418,3 +419,80 @@ def test_out_of_range_heartbeat_is_unparseable_and_falls_back_to_claimed_at(
     planned = archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=False)
     assert [a.claim.task_id for a in planned] == (["task-overflow"] if archived else [])
     assert claim_file.exists()                                     # a dry run writes nothing
+
+
+# -- QB-L1-a (RCO2 FF7BC9A6): a failed claim unlink keeps the completed archives and rolls back only its own ------
+
+def _deny_unlink(monkeypatch: pytest.MonkeyPatch, *fragments: str) -> None:
+    """The writer's own I/O error: unlink of a path containing any fragment fails as Windows does for a read-only file."""
+    real = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if any(fragment in self.name for fragment in fragments):
+            raise PermissionError(13, "Access is denied", str(self))
+        real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def _three_stale(bridge: Path) -> list:
+    for task in ("task-a", "task-b", "task-c"):
+        claim_task(agent="claude-1", task_id=task, summary="stale " + task, bridge_root=bridge)
+    planned = archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60)
+    assert len(planned) == 3
+    return planned
+
+
+@pytest.mark.parametrize("failing", [0, 1, 2], ids=["zero_completed", "one_completed", "many_completed"])
+def test_a_failed_claim_unlink_rolls_back_its_archive_and_reports_the_completed_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: int
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    planned = _three_stale(bridge)
+    bad = planned[failing]
+    _deny_unlink(monkeypatch, bad.claim.task_id + ".json", bad.claim.task_id + "-")
+    with pytest.raises(WorkQueueIOError) as raised:
+        archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=True)
+    error = raised.value
+    assert isinstance(error, OSError) and error.errno == 13 and isinstance(error.__cause__, PermissionError)
+    assert [a.claim.task_id for a in error.completed] == [a.claim.task_id for a in planned[:failing]]
+    assert all(a.applied and a.archived_path.exists() for a in error.completed)
+    assert (error.applied, error.rollback_errors, error.residual) == (failing > 0, [], [])
+    assert not bad.archived_path.exists()                     # no done record beside the still-active claim
+    assert {c.task_id for c in list_claims(bridge_root=bridge)} == {a.claim.task_id for a in planned[failing:]}
+    for later in planned[failing + 1:]:
+        assert not later.archived_path.exists()               # never reached, nothing written
+
+
+def test_a_failed_rollback_leaves_the_outcome_unknown_and_names_the_residual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    planned = _three_stale(bridge)
+    bad = planned[1]
+    _deny_unlink(monkeypatch, bad.claim.task_id)              # the claim AND its new archive refuse removal
+    with pytest.raises(WorkQueueIOError) as raised:
+        archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=True)
+    error = raised.value
+    assert error.applied is None and error.residual == [str(bad.archived_path)]
+    assert len(error.rollback_errors) == 1 and error.rollback_errors[0].startswith("PermissionError: ")
+    assert [a.claim.task_id for a in error.completed] == [planned[0].claim.task_id]
+    assert bad.archived_path.exists()                         # reported, not hidden
+
+
+def test_an_existing_archive_is_a_collision_never_deleted_and_the_claim_stays_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    planned = _three_stale(bridge)
+    bad = planned[1]
+    bad.archived_path.parent.mkdir(parents=True, exist_ok=True)   # a dry run writes nothing
+    bad.archived_path.write_bytes(b"an earlier, unknown record")
+    with pytest.raises(WorkQueueIOError) as raised:
+        archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=True)
+    error = raised.value
+    assert isinstance(error.__cause__.__cause__, FileExistsError)
+    assert (error.applied, error.rollback_errors, error.residual) == (True, [], [])
+    assert [a.claim.task_id for a in error.completed] == [planned[0].claim.task_id]
+    assert bad.archived_path.read_bytes() == b"an earlier, unknown record"
+    assert bad.claim.task_id in {c.task_id for c in list_claims(bridge_root=bridge)}

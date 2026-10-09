@@ -13,6 +13,7 @@ from waggledance.core.work_queue import (
     DEFAULT_LEASE_SECONDS,
     Claim,
     WorkQueueError,
+    WorkQueueIOError,
     archive_stale_claims,
     check_scope_overlap,
     claim_task,
@@ -1082,3 +1083,40 @@ def test_detect_stale_claims_treats_an_out_of_range_heartbeat_as_stale(tmp_path:
     path.write_text(json.dumps(payload), encoding="utf-8")
     stale = detect_stale_claims(bridge_root=bridge, now_utc=now, max_age_seconds=3600)
     assert {c.task_id for c in stale} == {"odd-task"}
+
+
+# -- QB-L1-b (RCO2 FF7BC9A6): a failed claim unlink removes the done record this release just wrote --------------
+
+def _deny_unlink(monkeypatch: pytest.MonkeyPatch, *fragments: str) -> None:
+    real = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if any(fragment in self.name for fragment in fragments):
+            raise PermissionError(13, "Access is denied", str(self))
+        real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True], ids=["rolled_back", "rollback_failed"])
+def test_a_release_whose_claim_cannot_be_removed_leaves_no_done_record_or_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback_fails: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-release", summary="x", bridge_root=bridge)
+    claim_file = next((bridge / "work_queue" / "claims").glob("*.json"))
+    real_unlink = Path.unlink
+    _deny_unlink(monkeypatch, claim_file.name, *(["task-release-"] if rollback_fails else []))
+    with pytest.raises(WorkQueueIOError) as raised:
+        release_task(agent="claude-1", task_id="task-release", bridge_root=bridge)
+    error = raised.value
+    assert error.errno == 13 and isinstance(error.__cause__, PermissionError) and error.completed == []
+    done = sorted((bridge / "work_queue" / "done").glob("*.json"))
+    assert claim_file.exists()                                # the claim stays active
+    if rollback_fails:
+        assert error.applied is None and error.residual == [str(done[0])] and len(error.rollback_errors) == 1
+    else:
+        assert (error.applied, error.rollback_errors, error.residual, done) == (False, [], [], [])
+    monkeypatch.setattr(Path, "unlink", real_unlink)          # success twin: the same release once removal works
+    assert release_task(agent="claude-1", task_id="task-release", bridge_root=bridge).task_id == "task-release"
+    assert not claim_file.exists()

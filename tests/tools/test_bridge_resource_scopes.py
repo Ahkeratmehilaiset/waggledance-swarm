@@ -106,3 +106,76 @@ def test_linked_checkpoint_directory_is_rejected(tmp_path, engine):
         script = f"$ErrorActionPreference='Stop'; . '{ROOT / '.agent-bridge/bin/BridgeResourceScope.ps1'}'; Resolve-BridgeResourceScopes -Scopes '.codex-audit/wd-current-state.json' -Worktree '{work}' -BridgeRoot '{bridge}'"
         proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True)
         assert proc.returncode != 0 and 'reparse point' in proc.stderr
+
+
+# -- RS7-D (Tools 9758A39B): a valid repository cwd nested inside another valid repository is refused --------------
+# Both tools-owned resolvers (Python tools/bridge_v2_resource_scope.py and BridgeResourceScope.ps1) on real files. The
+# fixtures need a tmp_path that is not itself inside a repository (pytest's default basetemp).
+
+def _linked(main, worktree, name):
+    '''A linked worktree whose admin dir lives in main/.git/worktrees/<name> with matching commondir and back-link.'''
+    admin = main / '.git' / 'worktrees' / name
+    admin.mkdir(parents=True)
+    (admin / 'HEAD').write_text('ref: refs/heads/x\n', encoding='utf-8')
+    (admin / 'commondir').write_text('../..\n', encoding='utf-8')
+    (admin / 'gitdir').write_text(str(worktree / '.git') + '\n', encoding='utf-8')
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / '.git').write_text('gitdir: ' + str(admin) + '\n', encoding='utf-8')
+
+
+def _resolve_engine(engine, entry, worktree, bridge):
+    '''(accepted, path or error text) from one resolver run.'''
+    if engine == 'python':
+        from tools.bridge_v2_resource_scope import ScopeError, resolve_scopes
+        try:
+            return True, resolve_scopes([entry], worktree=str(worktree), bridge_root=str(bridge))[0].path
+        except ScopeError as exc:
+            return False, str(exc)
+    script = (f"$ErrorActionPreference='Stop'; . '{ROOT / '.agent-bridge/bin/BridgeResourceScope.ps1'}'; "
+              f"(Resolve-BridgeResourceScopes -Scopes '{entry}' -Worktree '{worktree}' -BridgeRoot '{bridge}').path")
+    proc = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', script], capture_output=True,
+                          text=True, timeout=60)
+    return proc.returncode == 0, (proc.stdout.strip() if proc.returncode == 0 else proc.stderr)
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('shape', ['nested_git_dir', 'nested_linked'])
+def test_a_repository_nested_inside_another_repository_is_refused(tmp_path, engine, shape):
+    if engine != 'python' and os.name != 'nt':
+        pytest.skip('PowerShell resolver parity is pinned on Windows')
+    outer, bridge = tmp_path / 'outer', tmp_path / 'bridge'
+    bridge.mkdir()
+    outer.mkdir()
+    _git_top_level(outer)
+    inner = outer / 'nested'
+    if shape == 'nested_git_dir':
+        inner.mkdir()
+        _git_top_level(inner)
+    else:
+        _linked(outer, inner, 'nested')
+    (inner / 'file.txt').write_text('x', encoding='utf-8')
+    accepted, detail = _resolve_engine(engine, str(inner / 'file.txt'), inner, bridge)
+    assert not accepted and 'nested inside another repository' in detail
+    assert _resolve_engine(engine, '*', inner, bridge) == (True, '*')                  # * still overlaps everything
+    # Twins: the outer repository names the same physical file once, by its outer path; the same cwd twice agrees.
+    assert _resolve_engine(engine, str(inner / 'file.txt'), outer, bridge) == (True, 'nested/file.txt')
+    assert _resolve_engine(engine, 'nested/file.txt', outer, bridge) == (True, 'nested/file.txt')
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+def test_an_external_linked_worktree_and_a_plain_repository_stay_accepted(tmp_path, engine):
+    if engine != 'python' and os.name != 'nt':
+        pytest.skip('PowerShell resolver parity is pinned on Windows')
+    main, linked, plain, bridge = (tmp_path / n for n in ('main', 'linked', 'plain', 'bridge'))
+    for path in (main, plain, bridge):
+        path.mkdir()
+    _git_top_level(main)
+    _git_top_level(plain)
+    _linked(main, linked, 'linked')                         # a sibling of main, not inside it
+    for cwd in (linked, plain, main):
+        (cwd / 'src').mkdir(exist_ok=True)
+        assert _resolve_engine(engine, str(cwd / 'src' / 'a.py'), cwd, bridge) == (True, 'src/a.py')
+    missing = tmp_path / 'no-git'
+    missing.mkdir()
+    accepted, detail = _resolve_engine(engine, 'src/a.py', missing, bridge)
+    assert not accepted and 'not a repository top level' in detail

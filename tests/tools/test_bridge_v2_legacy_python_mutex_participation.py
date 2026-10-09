@@ -209,6 +209,9 @@ def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypat
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) == 2 and _claims(bridge) == []  # input error
     assert "runtime-root mutex: runtime root" in capsys.readouterr().out
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
+    # RS7 (legacy core): a claim cwd must be a repository top level, and tmp_path is none, so the absolute twin claims
+    # from REPO as every other claim in this file does; the twin is about the absolute root, not about the cwd.
+    monkeypatch.chdir(REPO)
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin
 
 

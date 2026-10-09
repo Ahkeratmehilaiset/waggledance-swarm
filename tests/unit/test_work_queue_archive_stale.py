@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from waggledance.core import work_queue
 from waggledance.core.work_queue import (
     ArchivedClaim,
     Claim,
@@ -496,3 +497,38 @@ def test_an_existing_archive_is_a_collision_never_deleted_and_the_claim_stays_ac
     assert [a.claim.task_id for a in error.completed] == [planned[0].claim.task_id]
     assert bad.archived_path.read_bytes() == b"an earlier, unknown record"
     assert bad.claim.task_id in {c.task_id for c in list_claims(bridge_root=bridge)}
+
+
+@pytest.mark.parametrize("left", ["absent", "partial", "unknown"])
+def test_a_failed_archive_write_is_applied_false_only_when_the_archive_is_provably_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, left: str
+) -> None:
+    # Grok 5321c511 #6: Path.exists() hides a stat error, so only a definite FileNotFoundError proves nothing was left.
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-a", summary="stale", bridge_root=bridge)
+    [planned] = archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60)
+
+    def failing_write(path: Path, payload: dict, *, create_new: bool = False) -> None:
+        if left != "absent":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{", encoding="utf-8")             # a partial record this call created
+        raise OSError(5, "Input/output error", str(path))
+
+    monkeypatch.setattr(work_queue, "_write_json_file", failing_write)
+    if left == "unknown":
+        real_lstat = Path.lstat
+
+        def lstat(self: Path):
+            if self == planned.archived_path:
+                raise OSError(5, "stat failed", str(self))      # the state of the partial file is unknown
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(WorkQueueIOError) as raised:
+        archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=True)
+    error = raised.value
+    if left == "absent":
+        assert (error.applied, error.residual) == (False, [])
+    else:
+        assert (error.applied, error.residual) == (None, [str(planned.archived_path)])
+    assert [c.task_id for c in list_claims(bridge_root=bridge)] == ["task-a"]   # the claim stays active

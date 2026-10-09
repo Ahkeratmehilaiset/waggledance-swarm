@@ -1120,3 +1120,38 @@ def test_a_release_whose_claim_cannot_be_removed_leaves_no_done_record_or_report
     monkeypatch.setattr(Path, "unlink", real_unlink)          # success twin: the same release once removal works
     assert release_task(agent="claude-1", task_id="task-release", bridge_root=bridge).task_id == "task-release"
     assert not claim_file.exists()
+
+
+
+def test_a_claim_removed_meanwhile_keeps_the_done_record_of_the_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Grok 5321c511 #1: a concurrent removal is not a failed release; the done record must not be rolled back.
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-gone", summary="x", bridge_root=bridge)
+    claim_file = next((bridge / "work_queue" / "claims").glob("*.json"))
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == claim_file:
+            real_unlink(self)                                 # another actor removed it first
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    record = release_task(agent="claude-1", task_id="task-gone", bridge_root=bridge)
+    assert record.task_id == "task-gone" and not claim_file.exists()
+    assert len(list((bridge / "work_queue" / "done").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("cause", [
+    PermissionError(13, "Access is denied", "c.json"),
+    OSError(None, "Invalid argument", "claim.json", 5, None),
+    OSError("plain"),
+], ids=["errno_filename", "winerror", "message_only"])
+def test_the_wrapper_keeps_every_os_error_field_and_its_text(cause: OSError) -> None:
+    # Grok 5321c511 #4: the errno-less branch used to drop filename and winerror.
+    error = WorkQueueIOError(cause, applied=None)
+    assert isinstance(error, OSError) and str(error) == str(cause)
+    for name in ("errno", "strerror", "filename", "filename2", "winerror"):
+        assert getattr(error, name, None) == getattr(cause, name, None), name

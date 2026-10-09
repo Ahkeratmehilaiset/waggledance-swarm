@@ -89,11 +89,10 @@ class WorkQueueIOError(OSError):
 
     def __init__(self, cause: OSError, *, applied: bool | None, completed: Sequence[object] = (),
                  rollback_errors: Sequence[str] = (), residual: Sequence[str] = ()) -> None:
-        if cause.errno is None:
-            super().__init__(str(cause))
-        else:
-            super().__init__(cause.errno, cause.strerror, cause.filename, getattr(cause, "winerror", None),
-                             cause.filename2)
+        super().__init__(*cause.args)
+        for name in ("errno", "strerror", "filename", "filename2", "winerror"):   # Grok 5321c511 #4: keep them all
+            if getattr(cause, name, None) is not None:   # a None set explicitly would change str(self)
+                setattr(self, name, getattr(cause, name))
         self.applied = applied
         self.completed = list(completed)
         self.rollback_errors = list(rollback_errors)
@@ -437,6 +436,8 @@ def release_task(
     _write_release_file(done_path, record)
     try:
         claim_path.unlink()
+    except FileNotFoundError:   # removed meanwhile: the done record stands, as in the sweep (Grok 5321c511 #1)
+        pass
     except OSError as error:   # QB-L1-b: no done record beside a still-active claim
         raise _undo_record(error, done_path) from error
     return record
@@ -651,10 +652,14 @@ def archive_stale_claims(
                 if not isinstance(error.__cause__, FileExistsError):
                     raise
                 raise WorkQueueIOError(error.__cause__, applied=bool(archived), completed=archived) from error
-            except OSError as error:
-                residual = [str(archive_path)] if archive_path.exists() else []
-                raise WorkQueueIOError(error, applied=None if residual else bool(archived), completed=archived,
-                                       residual=residual) from error
+            except OSError as error:   # a partial write: only a definite "absent" proves nothing was left
+                try:
+                    archive_path.lstat()
+                except FileNotFoundError:
+                    raise WorkQueueIOError(error, applied=bool(archived), completed=archived) from error
+                except OSError:
+                    pass
+                raise WorkQueueIOError(error, applied=None, completed=archived, residual=[str(archive_path)]) from error
             try:
                 claim_file.unlink()
             except FileNotFoundError:

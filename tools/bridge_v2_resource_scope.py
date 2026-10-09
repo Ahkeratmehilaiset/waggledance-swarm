@@ -144,42 +144,64 @@ def _require_top_level(worktree: str, lstat: Callable[[str], os.stat_result]) ->
     below the top level (or outside any repository) names one file two ways and resources_overlap misses the conflict.
     The cwd must be a git top level by git's own discovery test, read from the file system only: "<cwd>/.git" is a
     directory, or a file "gitdir: <dir>" (a linked worktree); that git dir holds HEAD, and its common dir ("commondir",
-    else itself) holds objects/ and refs/. An empty marker or a dangling pointer is refused; nothing is guessed."""
+    else itself) holds objects/ and refs/. An empty marker or a dangling pointer is refused; nothing is guessed.
+
+    RS7-D (Tools 9758A39B): a valid top level nested below ANOTHER valid top level names one file two ways too
+    (parent-relative from the outer cwd, child-relative from the inner one), so it is refused as well. Only an ancestor
+    that passes the same test counts: one that cannot be validated cannot be a claim cwd either."""
     top = worktree.rstrip("/\\")
     try:
-        marker = lstat(top + "/.git")
-        if stat.S_ISDIR(marker.st_mode):
-            git_dir = top + "/.git"
-        elif stat.S_ISREG(marker.st_mode):
-            line = _pointer(top + "/.git")
-            if not line.startswith("gitdir:") or not line[7:].strip():
-                raise ScopeError("the .git file is not a gitdir pointer")
-            target = line[7:].strip()
-            git_dir = target if _ABSOLUTE_POINTER.match(target) else top + "/" + target
-            # RS7-L2 (RCO1): git would also follow "gitdir: ../.git" from a subdirectory, so a .git FILE counts only
-            # when git's worktree bookkeeping agrees: the admin dir has commondir and its gitdir back-link names
-            # this cwd's .git. A pointer at a main .git or at another worktree's admin dir is refused.
-            lstat(git_dir + "/commondir")
-            back = _pointer(git_dir + "/gitdir")
-            back = back if _ABSOLUTE_POINTER.match(back) else git_dir + "/" + back
-            if os.path.normcase(os.path.normpath(back)) != os.path.normcase(os.path.normpath(top + "/.git")):
-                raise ScopeError("the worktree admin dir's gitdir back-link names another .git")
-        else:
-            raise ScopeError(".git is neither a directory nor a file")
-        common = git_dir
-        try:
-            lstat(git_dir + "/commondir")
-        except FileNotFoundError:
-            pass
-        else:
-            target = _pointer(git_dir + "/commondir")
-            common = target if _ABSOLUTE_POINTER.match(target) else git_dir + "/" + target
-        if not (stat.S_ISREG(lstat(git_dir + "/HEAD").st_mode) and stat.S_ISDIR(lstat(common + "/objects").st_mode)
-                and stat.S_ISDIR(lstat(common + "/refs").st_mode)):
-            raise ScopeError("the git dir lacks HEAD, objects or refs")
+        _git_top_level(top, lstat)
     except (OSError, ValueError) as error:   # ScopeError is a ValueError; a decode error is one too
         raise ScopeError("the claim cwd is not a repository top level (no valid .git there): every scope except * "
                          "is refused, fail-closed (" + str(error)[:120] + ")") from None
+    # The ancestors of the normalized absolute path ("." and ".." resolved, as the file system just did for the test
+    # above), never the lexical ones; a UNC path's shallowest directory is its share (Grok self-challenge cb0429db).
+    normal = os.path.normpath(os.path.abspath(top)).replace("\\", "/")
+    parts = normal.rstrip("/").split("/")
+    floor = 4 if normal.startswith("//") else 1
+    for depth in range(len(parts) - 1, floor - 1, -1):
+        ancestor = "/".join(parts[:depth])
+        try:
+            _git_top_level(ancestor, lstat)
+        except (OSError, ValueError):
+            continue
+        raise ScopeError("the claim cwd is a repository nested inside another repository (" + ancestor[:120]
+                         + "): one file has two repository paths, so every scope except * is refused, fail-closed")
+
+
+def _git_top_level(top: str, lstat: Callable[[str], os.stat_result]) -> None:
+    """Raise unless ``top`` is a git top level by the test _require_top_level describes."""
+    marker = lstat(top + "/.git")
+    if stat.S_ISDIR(marker.st_mode):
+        git_dir = top + "/.git"
+    elif stat.S_ISREG(marker.st_mode):
+        line = _pointer(top + "/.git")
+        if not line.startswith("gitdir:") or not line[7:].strip():
+            raise ScopeError("the .git file is not a gitdir pointer")
+        target = line[7:].strip()
+        git_dir = target if _ABSOLUTE_POINTER.match(target) else top + "/" + target
+        # RS7-L2 (RCO1): git would also follow "gitdir: ../.git" from a subdirectory, so a .git FILE counts only
+        # when git's worktree bookkeeping agrees: the admin dir has commondir and its gitdir back-link names
+        # this cwd's .git. A pointer at a main .git or at another worktree's admin dir is refused.
+        lstat(git_dir + "/commondir")
+        back = _pointer(git_dir + "/gitdir")
+        back = back if _ABSOLUTE_POINTER.match(back) else git_dir + "/" + back
+        if os.path.normcase(os.path.normpath(back)) != os.path.normcase(os.path.normpath(top + "/.git")):
+            raise ScopeError("the worktree admin dir's gitdir back-link names another .git")
+    else:
+        raise ScopeError(".git is neither a directory nor a file")
+    common = git_dir
+    try:
+        lstat(git_dir + "/commondir")
+    except FileNotFoundError:
+        pass
+    else:
+        target = _pointer(git_dir + "/commondir")
+        common = target if _ABSOLUTE_POINTER.match(target) else git_dir + "/" + target
+    if not (stat.S_ISREG(lstat(git_dir + "/HEAD").st_mode) and stat.S_ISDIR(lstat(common + "/objects").st_mode)
+            and stat.S_ISDIR(lstat(common + "/refs").st_mode)):
+        raise ScopeError("the git dir lacks HEAD, objects or refs")
 
 
 def resolve_entry(entry: str, *, worktree: str, bridge_root: str,

@@ -32,9 +32,27 @@ function Get-BridgeGitPointer {
 # RS7: scopes are repository-relative, so the cwd must be a git top level by git's own discovery test, read from the
 # file system only: <cwd>/.git is a directory or a "gitdir: <dir>" file; that git dir holds HEAD and its common dir
 # (commondir, else itself) holds objects and refs. An empty marker or a dangling pointer is refused; nothing is guessed.
+# RS7-D (Tools 9758A39B): a valid top level nested below ANOTHER valid top level names one file two ways too, so it is
+# refused as well. Only an ancestor that passes the same test counts (one that cannot be validated is no claim cwd).
 function Assert-BridgeRepositoryTopLevel {
     param([string]$Worktree)
     $top = $Worktree.TrimEnd('/','\')
+    if (-not (Test-BridgeRepositoryTopLevel $top)) { throw 'the claim cwd is not a repository top level (no valid .git there): every scope except * is refused' }
+    # The ancestors of the full path ("." and ".." resolved), never the lexical ones; a UNC path stops at its share.
+    $normal = [IO.Path]::GetFullPath($top).Replace('\','/').TrimEnd('/')
+    $parts = @($normal -split '/')
+    $floor = if ($normal.StartsWith('//')) { 4 } else { 1 }
+    for ($depth = $parts.Count - 1; $depth -ge $floor; $depth--) {
+        $ancestor = $parts[0..($depth - 1)] -join '/'
+        if (Test-BridgeRepositoryTopLevel $ancestor) {
+            throw "the claim cwd is a repository nested inside another repository ($ancestor): one file has two repository paths, so every scope except * is refused"
+        }
+    }
+}
+
+function Test-BridgeRepositoryTopLevel {
+    param([string]$Top)
+    $top = $Top
     $valid = $false
     try {
         $marker = $top + '/.git'
@@ -66,7 +84,7 @@ function Assert-BridgeRepositoryTopLevel {
                 (Test-Path -LiteralPath ($common + '/refs') -PathType Container)
         }
     } catch { $valid = $false }
-    if (-not $valid) { throw 'the claim cwd is not a repository top level (no valid .git there): every scope except * is refused' }
+    return $valid
 }
 
 function Resolve-BridgeResourceScopes {

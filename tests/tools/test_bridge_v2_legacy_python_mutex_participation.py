@@ -364,3 +364,119 @@ def test_a_relative_root_is_refused_for_sweep_apply_and_the_dry_run_still_reads(
     assert "sweep refused: runtime-root mutex: runtime root" in capsys.readouterr().err
     assert sweep_cli.main(relative) == 0 and _tree(bridge) == before     # the dry run reads the same relative root
     assert _sweep(bridge, "--apply") == 0 and _claims(bridge) == []       # the absolute twin
+
+
+# -- QB (RCO2 35B5527F): releasing or closing the root mutex fails AFTER the writer applied its change -------------
+
+class _Fn:
+    """One wrapped kernel32 function: calls go through ``hook``; argtypes/restype set on it reach the real one."""
+
+    def __init__(self, real, hook) -> None:
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_hook", hook)
+
+    def __call__(self, *args):
+        return self._hook(self._real, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value) -> None:
+        setattr(self._real, name, value)
+
+
+class _CleanupFailingKernel32:
+    """The real kernel32 for the port; after the REAL ReleaseMutex/CloseHandle succeeded, the port is told that the
+    release (step "release") or the close after a release (step "close") failed. No kernel object stays owned or
+    open, so the next holder takes the mutex at once."""
+
+    def __init__(self, real, step: str | None) -> None:
+        self._real, self._step, self._released, self.calls = real, step, False, []
+        self.ReleaseMutex = _Fn(real.ReleaseMutex, self._release)
+        self.CloseHandle = _Fn(real.CloseHandle, self._close)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def _release(self, real, handle):
+        rc = real(handle)
+        self._released = bool(rc)
+        self.calls.append(("ReleaseMutex", rc))
+        return 0 if self._step == "release" else rc
+
+    def _close(self, real, handle):
+        rc = real(handle)
+        self.calls.append(("CloseHandle", rc))
+        return 0 if self._step == "close" and self._released else rc
+
+
+def _cleanup_failing(monkeypatch, step: str | None) -> list:
+    from tools import bridge_v2_queue_ports_windows as ports
+    real_factory = ports._kernel32
+    made: list = []
+
+    def factory():
+        made.append(_CleanupFailingKernel32(real_factory(), step))
+        return made[-1]
+
+    monkeypatch.setattr(ports, "_kernel32", factory)
+    return made
+
+
+@pytest.mark.parametrize("step", ["release", "close"])
+def test_a_mutex_cleanup_failure_after_an_applied_claim_is_reported_as_applied_never_as_success(
+        bridge, monkeypatch, capsys, step):
+    made = _cleanup_failing(monkeypatch, step)
+    code = _cli(bridge, *CLAIM)
+    report = json.loads(capsys.readouterr().out)
+    assert code == wq_cli.MUTEX_CLEANUP_EXIT_CODE == 4
+    assert report["ok"] is False and report["applied"] is True and report["outcome"] == "applied_mutex_cleanup_failed"
+    assert report["decision"] == "claimed" and report["claim"]["task_id"] == "team/s2"   # the applied result is kept
+    assert report["errors"][0].startswith("the change WAS applied; then the runtime-root mutex cleanup failed: OSError")
+    assert ("release failed" if step == "release" else "handle close failed") in report["errors"][0]
+    assert len(_claims(bridge)) == 1 and [c for c in made[0].calls if c[0] == "ReleaseMutex"] == [("ReleaseMutex", 1)]
+    _python_holder(bridge).release()                                 # nothing left held: another process takes it
+
+
+def test_the_same_kernel32_with_no_cleanup_failure_is_a_plain_success(bridge, monkeypatch, capsys):
+    made = _cleanup_failing(monkeypatch, None)
+    assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True and "applied" not in report and "outcome" not in report
+    assert ("ReleaseMutex", 1) in made[0].calls
+
+
+def test_a_writer_error_stays_the_reported_error_when_the_cleanup_also_fails(bridge, monkeypatch, capsys):
+    assert _cli(bridge, *CLAIM) == 0
+    before = _tree(bridge)
+    capsys.readouterr()
+    _cleanup_failing(monkeypatch, "release")
+    code = _cli(bridge, "release", "--agent", "codex-tools-1", "--task-id", "team/s2")   # not the owner
+    assert code not in (0, wq_cli.MUTEX_CLEANUP_EXIT_CODE)
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "work_queue_error" and "applied" not in report and _tree(bridge) == before
+
+
+def test_a_refusal_before_the_write_is_still_a_refusal_with_the_cleanup_wrapper(bridge, monkeypatch, capsys):
+    _cleanup_failing(monkeypatch, "release")
+    holder = _python_holder(bridge)
+    try:
+        assert _cli(bridge, *CLAIM) == 1 and _claims(bridge) == []
+    finally:
+        holder.release()
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "work_queue_error" and "applied" not in report
+    assert report["errors"] == ["runtime-root mutex: runtime-root mutex busy"]
+
+
+@pytest.mark.parametrize("step", ["release", "close"])
+def test_a_mutex_cleanup_failure_after_an_applied_sweep_reports_the_archive_and_exits_4(
+        bridge, monkeypatch, capsys, step):
+    _stale_claim(bridge)
+    _cleanup_failing(monkeypatch, step)
+    code = _sweep(bridge, "--apply", "--json")
+    report = json.loads(capsys.readouterr().out)
+    assert code == 4 and report["applied"] is True and report["outcome"] == "applied_mutex_cleanup_failed"
+    assert [row["task_id"] for row in report["archived"]] == ["team/stale"] and report["mutex_cleanup_error"]
+    assert _claims(bridge) == [] and len(_done(bridge)) == 1        # archived once, never retried
+    _python_holder(bridge).release()

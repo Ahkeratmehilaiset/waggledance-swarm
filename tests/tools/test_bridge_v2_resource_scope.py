@@ -24,11 +24,22 @@ class _Info:
         self.st_mode, self.st_file_attributes = mode, attributes
 
 
+_TOPS = (WORKTREE, ROOT + "/rt/lanes/tree")          # the fixture cwds (INNER_WORKTREE below); no ancestor is a repo
+
+
+def _git_marker(path: str, tops=_TOPS):
+    for top in tops:
+        if path in (top + "/.git", top + "/.git/objects", top + "/.git/refs"):
+            return _Info(stat.S_IFDIR)                 # RS7: every fixture cwd is a git top level
+        if path == top + "/.git/HEAD":
+            return _Info(stat.S_IFREG)
+    return None
+
+
 def _absent(path: str):
-    if path.endswith(("/.git", "/.git/objects", "/.git/refs")):
-        return _Info(stat.S_IFDIR)                     # RS7: every fixture cwd is a git top level
-    if path.endswith("/.git/HEAD"):
-        return _Info(stat.S_IFREG)
+    info = _git_marker(path)
+    if info is not None:
+        return info
     raise FileNotFoundError(path)                      # nothing else exists: the resolver never reads the disk
 
 
@@ -179,6 +190,50 @@ def test_a_non_disjoint_root_layout_refuses_every_entry_form(worktree, shared, f
         resolve_scopes([entry], worktree=worktree, bridge_root=shared, lstat=_absent)
     assert resolve_scopes(["*"], worktree=worktree, bridge_root=shared, lstat=_absent) == (
         ResourceScope("repo", "*"),)                        # the one provably safe entry: * overlaps every claim
+
+
+def _with_repos(*tops):
+    def lstat(path: str):
+        info = _git_marker(path, tops)
+        if info is not None:
+            return info
+        raise FileNotFoundError(path)
+    return lstat
+
+
+# -- RS7-D (Tools 9758A39B): a valid repository cwd nested inside another valid repository is refused ---------------
+
+def test_a_repository_cwd_nested_inside_another_repository_refuses_every_entry_but_star():
+    nested = WORKTREE + "/vendor/inner"
+    lstat = _with_repos(WORKTREE, nested)
+    for entry in ("tools/a.py", nested + "/tools/a.py", "worktree:.codex-audit/notes.md"):
+        with pytest.raises(ScopeError, match="nested inside another repository"):
+            resolve_scopes([entry], worktree=nested, bridge_root=SHARED, lstat=lstat)
+    assert resolve_scopes(["*"], worktree=nested, bridge_root=SHARED, lstat=lstat) == (ResourceScope("repo", "*"),)
+    # The outer repository stays usable and names the inner file by its outer path (one name per file).
+    assert resolve_scopes([nested + "/tools/a.py"], worktree=WORKTREE, bridge_root=SHARED, lstat=lstat) == (
+        ResourceScope("repo", "vendor/inner/tools/a.py"),)
+
+
+def test_an_invalid_ancestor_git_marker_is_not_a_repository_and_does_not_refuse():
+    def lstat(path: str):
+        if path == ROOT + "/.git":
+            return _Info(stat.S_IFDIR)                 # a .git dir without HEAD/objects/refs: not a top level
+        return _absent(path)
+    assert resolve_scopes(["tools/a.py"], worktree=WORKTREE, bridge_root=SHARED, lstat=lstat) == (
+        ResourceScope("repo", "tools/a.py"),)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a UNC path and the current-drive-root reading of '/.git' are Windows forms")
+def test_a_unc_cwd_walks_its_ancestors_only_down_to_the_share():
+    # Grok self-challenge (cb0429db): splitting "//server/share/app" lexically produced the ancestor "", read as
+    # "/.git" = the CURRENT drive's root; a repository there must not make a UNC cwd "nested". (The UNC root is still
+    # refused later as not a local drive-letter path: that rule is unchanged.)
+    unc = "//server/share/app"
+    lstat = _with_repos(unc, "")                       # "" + "/.git" == "/.git": a repository at the drive root
+    with pytest.raises(ScopeError) as error:
+        resolve_scopes(["tools/a.py"], worktree=unc, bridge_root=SHARED, lstat=lstat)
+    assert "nested" not in str(error.value) and "local drive-letter" in str(error.value)
 
 
 def test_disjoint_roots_keep_their_exact_previous_resolution():

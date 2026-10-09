@@ -149,7 +149,13 @@ foreach ($file in $activeClaims) {
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
         $existingCwd = if ($existing.PSObject.Properties['cwd']) { [string]$existing.cwd } else { '' }
-        $existingResources = @(Resolve-BridgeResourceScopes -Scopes @($existing.write_scope) -Worktree $existingCwd -BridgeRoot $bridgeRoot)
+        # RS7-M1 (RCO1): an unresolvable stored scope still fails closed, but names the claim that blocks, not the caller.
+        try {
+            $existingResources = @(Resolve-BridgeResourceScopes -Scopes @($existing.write_scope) -Worktree $existingCwd -BridgeRoot $bridgeRoot)
+        } catch {
+            $reason = [string]$_.Exception.Message
+            Stop-BridgeClaim -Message ("an active claim has an unresolvable write scope; overlap unknown (claim {0} by {1}, cwd {2}: {3})" -f $existing.task_id, $existing.agent, $existingCwd, $reason.Substring(0, [Math]::Min(200, $reason.Length))) -Code 3
+        }
         if (Test-BridgeResourceOverlap -A $resources -B $existingResources) {
             Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, ((@($existing.write_scope)) -join ', ')) -Code 3
         }

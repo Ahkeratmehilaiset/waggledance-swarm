@@ -25,6 +25,7 @@ from tools import bridge_v2_work_queue as wq
 from tools.bridge_v2_queue_transactions import QueueTransactions, Refused, claim_bytes
 from tools.bridge_v2_resource_scope import ResourceScope, ScopeError, resolve_scopes, resources_overlap
 from tools.bridge_v2_work_queue import OwnerIdentity
+from test_bridge_v2_legacy_mutex_participation import SHELLS as WRITER_SHELLS, _claim as _writer_claim, bridge  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELLS = list(dict.fromkeys(filter(None, [shutil.which("pwsh"), shutil.which("powershell.exe")])))
@@ -83,8 +84,19 @@ def test_a_cwd_that_is_not_a_top_level_refuses_every_entry_but_the_whole_reposit
     assert _resolve("*", cwd, bridge) == (ResourceScope("repo", "*"),)      # * overlaps every claim anyway
 
 
+def linked_admin(common: Path, worktree: Path, name: str = "w") -> Path:
+    """A linked worktree's admin dir as git writes it: HEAD, commondir and the gitdir back-link to <worktree>/.git."""
+    admin = common / "worktrees" / name
+    admin.mkdir(parents=True)
+    (admin / "HEAD").write_text(f"ref: refs/heads/{name}\n", encoding="utf-8")
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(str(worktree / ".git") + "\n", encoding="utf-8")
+    return admin
+
+
 @pytest.mark.parametrize("marker", ["empty-nested-dir", "head-only-dir", "dangling-gitdir-file", "not-a-pointer-file",
-                                    "admin-dir-without-common"])
+                                    "admin-dir-without-common", "pointer-to-the-main-git-dir",
+                                    "pointer-to-an-admin-dir-of-another-worktree", "admin-dir-without-back-link"])
 def test_a_marker_that_is_not_a_real_git_top_level_is_refused(layout, marker):
     repo, _, bridge = layout
     sub = repo / "sub"
@@ -97,6 +109,15 @@ def test_a_marker_that_is_not_a_real_git_top_level_is_refused(layout, marker):
         (sub / ".git").write_text("gitdir: " + str(repo / "missing") + "\n", encoding="utf-8")
     elif marker == "not-a-pointer-file":
         (sub / ".git").write_text("", encoding="utf-8")
+    elif marker == "pointer-to-the-main-git-dir":           # RCO1 RS7-L2: git accepts it, but sub is not a top level
+        (sub / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")
+    elif marker == "pointer-to-an-admin-dir-of-another-worktree":
+        admin = linked_admin(repo / ".git", repo.parent / "other")
+        (sub / ".git").write_text("gitdir: " + str(admin) + "\n", encoding="utf-8")
+    elif marker == "admin-dir-without-back-link":
+        admin = linked_admin(repo / ".git", sub)
+        (admin / "gitdir").unlink()
+        (sub / ".git").write_text("gitdir: " + str(admin) + "\n", encoding="utf-8")
     else:
         admin = repo / ".git" / "worktrees" / "w"
         admin.mkdir(parents=True)
@@ -113,10 +134,7 @@ def test_a_top_level_cwd_resolves_absolute_relative_and_checkpoint_entries(tmp_p
     repo, _, bridge = layout
     if git != "directory":
         shutil.rmtree(repo / ".git")
-        admin = git_dir(tmp_path / "main.git") / "worktrees" / "w"   # a linked worktree's admin dir
-        admin.mkdir(parents=True)
-        (admin / "HEAD").write_text("ref: refs/heads/w\n", encoding="utf-8")
-        (admin / "commondir").write_text("../..\n", encoding="utf-8")
+        admin = linked_admin(git_dir(tmp_path / "main.git"), repo)   # a linked worktree's admin dir
         pointer = str(admin) if git == "linked-worktree-absolute" else os.path.relpath(admin, repo)
         (repo / ".git").write_text("gitdir: " + pointer + "\n", encoding="utf-8")
     lowered = str(repo).replace("\\", "/").lower()
@@ -150,7 +168,7 @@ def test_a_stored_claim_with_a_non_top_level_cwd_refuses_new_write_claims(layout
     repo, outside, bridge = layout
     txns = _queue(bridge)
     _stored(bridge, "legacy", str(repo / "sub" if where == "sub" else outside))
-    with pytest.raises(Refused, match="unresolvable write scope"):
+    with pytest.raises(Refused, match=r"unresolvable write scope; overlap unknown \(claim legacy by fable-5, cwd "):
         wq.claim_task(txns, agent="codex-lead-1", task_id="team/new", summary="work", mode="write",
                       write_scope=("tools/z.py",), identity=OwnerIdentity("s", "t"), cwd=str(repo), now=NOW)
     (bridge / "work_queue" / "claims" / "legacy.json").unlink()
@@ -187,15 +205,14 @@ def test_powershell_resolver_copy_refuses_a_non_top_level_cwd(tmp_path, layout, 
     (repo / "sub" / ".git").mkdir()                          # the empty nested marker counterexample
     linked = tmp_path / "linked"
     (linked / "sub").mkdir(parents=True)
-    admin = git_dir(tmp_path / "main.git") / "worktrees" / "w"
-    admin.mkdir(parents=True)
-    (admin / "HEAD").write_text("ref: refs/heads/w\n", encoding="utf-8")
-    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    admin = linked_admin(git_dir(tmp_path / "main.git"), linked)
     (linked / ".git").write_text("gitdir: " + str(admin) + "\n", encoding="utf-8")
+    (repo / "sub2").mkdir()
+    (repo / "sub2" / ".git").write_text("gitdir: ../.git\n", encoding="utf-8")   # RCO1 RS7-L2 spoofed pointer
     target = str(repo / "sub" / "file.txt")
     for entry, cwd in ((target, repo / "sub"), ("file.txt", repo / "sub"), ("tools/a.py", outside),
                        (".codex-audit/wd-current-state.json", repo / ".codex-audit"),
-                       (str(linked / "sub" / "f.txt"), linked / "sub")):
+                       (str(linked / "sub" / "f.txt"), linked / "sub"), ("foo.txt", repo / "sub2")):
         refused = run(entry, cwd)
         assert refused.returncode != 0 and TOP_LEVEL in refused.stderr, (entry, cwd, refused.stdout, refused.stderr)
     accepted = run(target, repo)                                           # success twins
@@ -204,3 +221,25 @@ def test_powershell_resolver_copy_refuses_a_non_top_level_cwd(tmp_path, layout, 
     assert linked_ok.returncode == 0 and linked_ok.stdout.strip() == "repo|sub/f.txt", linked_ok.stderr
     whole = run("*", repo / "sub")
     assert whole.returncode == 0 and whole.stdout.strip() == "repo|*", whole.stderr
+
+
+@pytest.mark.skipif(not WRITER_SHELLS, reason="Windows PowerShell 5.1 / 7 writer fixtures")
+@pytest.mark.parametrize("shell", WRITER_SHELLS)
+def test_the_powershell_writer_names_a_stored_claim_whose_cwd_is_not_a_top_level(bridge, shell):
+    # RS7-M1 (RCO1): the stored claim still blocks (fail-closed, never released), but the refusal names it, not the caller.
+    _, worktree, runtime = bridge
+    (worktree / "sub").mkdir()
+    now = datetime.now(timezone.utc).isoformat()
+    stored = {"agent": "fable-5", "task_id": "team/legacy", "summary": "stored", "mode": "write",
+              "cwd": str(worktree / "sub"), "write_scope": ["tools/a.py"], "claimed_at_utc": now,
+              "last_heartbeat_utc": now, "lease_seconds": 600}
+    path = runtime / "work_queue" / "claims" / "team_legacy.json"
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    refused = _writer_claim(shell, bridge, task="team/new", scope="tools/z.py")
+    assert refused.returncode == 3, refused.stdout + refused.stderr
+    assert ("claim team/legacy by fable-5, cwd " + str(worktree / "sub")) in refused.stderr, refused.stderr
+    assert sorted(p.name for p in path.parent.glob("*.json")) == ["team_legacy.json"]    # nothing written or released
+    stored["cwd"] = str(worktree)                                                       # success twin: a top level
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    accepted = _writer_claim(shell, bridge, task="team/new", scope="tools/z.py")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr

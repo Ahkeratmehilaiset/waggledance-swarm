@@ -124,6 +124,12 @@ def parse_utc(value: str) -> datetime:
         raise ValueError("timestamp is outside the representable UTC range") from None
 
 
+def _offender(claim: dict, error: Exception) -> str:
+    """RS7-M1 (RCO1): which stored claim blocks every new write claim, and why; bounded, never released here."""
+    return "(claim {} by {}, cwd {}: {})".format(str(claim.get("task_id"))[:128], str(claim.get("agent"))[:64],
+                                                str(claim.get("cwd", ""))[:260], str(error)[:200])
+
+
 def _validate(agent: str, task_id: str) -> None:
     if not isinstance(agent, str) or not AGENT_ID_PATTERN.fullmatch(agent):
         raise WorkQueueError("agent invalid")
@@ -338,8 +344,9 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                 try:
                     other_scopes = resolve_scopes(list(other_entries), worktree=str(other.get("cwd", "")),
                                                   bridge_root=str(txns.root))
-                except ScopeError:
-                    raise Refused("an active claim has an unresolvable write scope; overlap unknown") from None
+                except ScopeError as error:   # RS7-M1: fail closed, but name the claim that blocks
+                    raise Refused("an active claim has an unresolvable write scope; overlap unknown "
+                                  + _offender(other, error)) from None
                 if any(resources_overlap(a, b) for a in scopes for b in other_scopes):
                     raise Refused("write-scope conflict with active claim " + str(other.get("task_id"))[:128])
         # B-F2 (RCO1 2026-09-30; Fable review 99897de5): another claim's UNFINISHED transaction (a crash between
@@ -366,8 +373,9 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
                 try:
                     planned_scopes = None if planned_entries is None else resolve_scopes(
                         list(planned_entries), worktree=str(planned.get("cwd", "")), bridge_root=str(txns.root))
-                except ScopeError:
-                    planned_scopes = None
+                except ScopeError as error:   # RS7-M1: fail closed, but name the claim that blocks
+                    raise Refused("an unfinished claim has an unresolvable write scope; overlap unknown "
+                                  + _offender(planned, error)) from None
                 if planned_scopes is None:
                     raise Refused("an unfinished claim has an unresolvable write scope; overlap unknown")
                 if any(resources_overlap(a, b) for a in scopes for b in planned_scopes):

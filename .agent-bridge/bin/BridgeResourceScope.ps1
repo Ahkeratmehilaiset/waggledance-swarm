@@ -45,6 +45,14 @@ function Assert-BridgeRepositoryTopLevel {
             if ($line.StartsWith('gitdir:') -and $line.Substring(7).Trim()) {
                 $target = $line.Substring(7).Trim()
                 $gitDir = if ($target -match '^(?:[A-Za-z]:)?[/\\]') { $target } else { $top + '/' + $target }
+                # RS7-L2 (RCO1): a .git FILE counts only when git's worktree bookkeeping agrees: the admin dir has
+                # commondir and its gitdir back-link names this cwd's .git (not "gitdir: ../.git" from a subdirectory).
+                $back = Get-BridgeGitPointer ($gitDir + '/gitdir')
+                if ($back -notmatch '^(?:[A-Za-z]:)?[/\\]') { $back = $gitDir + '/' + $back }
+                if (-not (Test-Path -LiteralPath ($gitDir + '/commondir') -PathType Leaf) -or
+                    -not ([IO.Path]::GetFullPath($back).TrimEnd('\','/') -ieq [IO.Path]::GetFullPath($top + '/.git').TrimEnd('\','/'))) {
+                    $gitDir = $null
+                }
             }
         }
         if ($gitDir) {

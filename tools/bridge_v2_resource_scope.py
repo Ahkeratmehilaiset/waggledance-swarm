@@ -156,6 +156,14 @@ def _require_top_level(worktree: str, lstat: Callable[[str], os.stat_result]) ->
                 raise ScopeError("the .git file is not a gitdir pointer")
             target = line[7:].strip()
             git_dir = target if _ABSOLUTE_POINTER.match(target) else top + "/" + target
+            # RS7-L2 (RCO1): git would also follow "gitdir: ../.git" from a subdirectory, so a .git FILE counts only
+            # when git's worktree bookkeeping agrees: the admin dir has commondir and its gitdir back-link names
+            # this cwd's .git. A pointer at a main .git or at another worktree's admin dir is refused.
+            lstat(git_dir + "/commondir")
+            back = _pointer(git_dir + "/gitdir")
+            back = back if _ABSOLUTE_POINTER.match(back) else git_dir + "/" + back
+            if os.path.normcase(os.path.normpath(back)) != os.path.normcase(os.path.normpath(top + "/.git")):
+                raise ScopeError("the worktree admin dir's gitdir back-link names another .git")
         else:
             raise ScopeError(".git is neither a directory nor a file")
         common = git_dir

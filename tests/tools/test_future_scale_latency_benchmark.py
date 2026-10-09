@@ -12,10 +12,39 @@ TOOLS_DIR = ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+import pytest  # noqa: E402
+
 import run_future_scale_latency_bench as harness  # noqa: E402
 
 SCRIPT = ROOT / "tools" / "run_future_scale_latency_bench.py"
 FIXED_NOW = datetime(2026, 6, 4, 20, 15, tzinfo=timezone.utc)
+FIXED_GIT_SHA = "0123456789abcdef0123456789abcdef01234567"
+FIXED_BRANCH = "main"
+# Branch names the fleet really uses: a provider token in a branch name must not leak into the artifact.
+PROVIDER_BRANCHES = (
+    "codex-lead-1/grok-fallback-activation-20261009",
+    "claude-rco-1/review-20261009",
+    "feature/openai-adapter",
+)
+
+
+def _fixed_git_text(branch: str):
+    def fixed_git_text(*args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return FIXED_GIT_SHA
+        if args == ("rev-parse", "--short=8", "HEAD"):
+            return FIXED_GIT_SHA[:8]
+        if args == ("branch", "--show-current"):
+            return branch
+        raise AssertionError(f"unexpected git call in a unit test: {args}")
+
+    return fixed_git_text
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_git_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    # In-process builds read fixed Git metadata, so no test depends on the checked-out branch name.
+    monkeypatch.setattr(harness, "_git_text", _fixed_git_text(FIXED_BRANCH))
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -200,6 +229,66 @@ def test_validate_rejects_path_secret_and_provider_leaks() -> None:
         mutated["latency_observations"][0]["run_id"] = value
         errors = harness.validate_latency_benchmark_report(mutated)
         assert errors
+
+
+def test_report_uses_the_fixed_git_metadata() -> None:
+    report = harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+
+    assert report["git_sha"] == FIXED_GIT_SHA
+    assert report["source_branch"] == FIXED_BRANCH
+
+
+@pytest.mark.parametrize("branch", PROVIDER_BRANCHES)
+def test_a_provider_token_branch_gets_a_neutral_deterministic_alias(branch: str) -> None:
+    alias = harness._source_branch_alias(branch)
+
+    assert alias == harness._source_branch_alias(branch)  # deterministic
+    assert alias.startswith("branch-") and len(alias) == len("branch-") + 12
+    assert all(token not in alias for token in ("grok", "claude", "openai"))
+    assert alias != harness._source_branch_alias(PROVIDER_BRANCHES[0] + "-other")
+    assert not harness.looks_like_forbidden_scalar("$.source_branch", alias)
+
+
+@pytest.mark.parametrize("branch", PROVIDER_BRANCHES)
+def test_a_report_built_on_a_provider_token_branch_validates(
+    branch: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(harness, "_git_text", _fixed_git_text(branch))
+    report = harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+
+    assert report["source_branch"] == harness._source_branch_alias(branch)
+    assert harness.validate_latency_benchmark_report(report) == []
+
+
+@pytest.mark.parametrize(
+    "branch, alias",
+    [
+        ("main", "main"),
+        ("fable-5/benchmark-branch-alias-20261009", "fable-5-benchmark-branch-alias-20261009"),
+        ("Release/2026.10", "release-2026.10"),
+        ("", "branch-unknown"),
+    ],
+)
+def test_a_normal_branch_keeps_its_readable_alias(branch: str, alias: str) -> None:
+    assert harness._source_branch_alias(branch) == alias
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "codex-lead-1-grok-fallback-activation-20261009",
+        "claude-rco-1-review-20261009",
+        "feature-openai-adapter",
+    ],
+)
+def test_the_leak_validator_still_rejects_a_raw_provider_branch(value: str) -> None:
+    # Negative control: the fix is in the producer; the shared leak policy still refuses these values.
+    report = harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+    mutated = deepcopy(report)
+    mutated["source_branch"] = value
+
+    errors = harness.validate_latency_benchmark_report(mutated)
+    assert "$.source_branch contains a forbidden secret/path-like string" in errors
 
 
 def test_cli_requires_offline_and_deterministic_flags() -> None:

@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tools.future_scale_contract_safety import (  # noqa: E402
+    looks_like_forbidden_scalar,
     validate_exact_false_fields,
     validate_scalar_safety,
 )
@@ -421,12 +422,18 @@ def _git_text(*args: str) -> str:
         return "unknown"
 
 
-def _source_branch_alias() -> str:
-    branch = _git_text("branch", "--show-current").lower()
-    alias = _SAFE_BRANCH_CHARS.sub("-", branch).strip(".-_")
+def _source_branch_alias(branch: str | None = None) -> str:
+    if branch is None:
+        branch = _git_text("branch", "--show-current")
+    alias = _SAFE_BRANCH_CHARS.sub("-", branch.lower()).strip(".-_")
     if not alias or not alias[0].isalpha():
         alias = f"branch-{alias}" if alias else "branch-unknown"
-    return alias[:80]
+    alias = alias[:80]
+    if looks_like_forbidden_scalar("$.source_branch", alias):
+        # A branch name can carry a provider token (e.g. ".../grok-..."); the artifact's leak policy refuses it.
+        # Keep the policy and emit a neutral, deterministic pseudonym of the branch instead.
+        alias = "branch-" + hashlib.sha256(branch.encode("utf-8")).hexdigest()[:12]
+    return alias
 
 
 def _is_finite_number(value: Any) -> bool:

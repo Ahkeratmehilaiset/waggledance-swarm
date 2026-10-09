@@ -204,8 +204,21 @@ def test_script_source_has_no_fallback_execution_or_writes():
 
 PWSH = shutil.which("pwsh")
 WINDOWS_POWERSHELL = shutil.which("powershell.exe")
-BOTH_ENGINES = pytest.mark.skipif(not (PWSH and WINDOWS_POWERSHELL),
-                                  reason="needs PowerShell 7 and Windows PowerShell on one host")
+
+
+def _require_both_engines() -> None:
+    # A missing prerequisite on Windows fails visibly; it never turns into a silent skip.
+    assert PWSH and WINDOWS_POWERSHELL, (
+        "the PowerShell 7 module-path twins need PowerShell 7 (pwsh) and Windows PowerShell (powershell.exe) "
+        f"on this Windows host; found pwsh={PWSH!r}, powershell.exe={WINDOWS_POWERSHELL!r}")
+
+
+def test_a_missing_engine_fails_the_twins_visibly(monkeypatch):
+    for missing in ("PWSH", "WINDOWS_POWERSHELL"):
+        monkeypatch.setitem(globals(), missing, None)
+        with pytest.raises(AssertionError, match="need PowerShell 7 .pwsh. and Windows PowerShell"):
+            _require_both_engines()
+        monkeypatch.undo()
 
 
 def _powershell7_module_path() -> str:
@@ -217,9 +230,9 @@ def _powershell7_module_path() -> str:
 
 
 @WINDOWS_ROOTS
-@BOTH_ENGINES
 @pytest.mark.parametrize("tampered", [False, True], ids=["pinned", "tampered"])
 def test_windows_powershell_under_a_powershell7_module_path_still_checks_the_pin(tmp_path, monkeypatch, tampered):
+    _require_both_engines()
     # Real contamination: Windows PowerShell inherits PowerShell 7's module path, where Get-FileHash cannot load.
     monkeypatch.setenv("PSModulePath", _powershell7_module_path())
     wrapper, anchor = _bundle(tmp_path, tamper_wrapper=tampered)

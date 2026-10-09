@@ -863,3 +863,35 @@ def test_detect_and_the_dry_sweep_treat_an_out_of_range_heartbeat_as_unparseable
     assert [c["task_id"] for c in wq.detect_stale_claims(txns, now=NOW)] == ["team/odd"]   # unparseable = stale
     [planned] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW)            # falls back to claimed_at
     assert (planned.claim.task_id, planned.applied, planned.age_seconds) == ("team/odd", False, 46800)
+
+
+# -- RS7-D lease overflow (Tools 9758A39B): an unrepresentable lease expiry is UNKNOWN, never sweepable ------------
+
+def _owned_claim(last_beat: str, lease_seconds: int) -> wq.Claim:
+    return wq.Claim(agent="claude-rco-2", task_id="team/lease", summary="s", mode="write", write_scope=("tools/a.py",),
+                    run_id="", claimed_at_utc=last_beat, last_heartbeat_utc=last_beat, lease_seconds=lease_seconds,
+                    owner_session_id=OWNER.owner_session_id, owner_token_sha256=OWNER.owner_token_sha256)
+
+
+@pytest.mark.parametrize("last_beat,lease", [("9999-12-31T23:59:59Z", 600), (iso(NOW - timedelta(hours=13)), 10**30)],
+                         ids=["base_near_max", "huge_lease"])
+def test_an_unrepresentable_lease_expiry_is_not_sweepable_and_never_raises(env, last_beat, lease):
+    assert wq._owned_claim_sweepable(env[0].root, _owned_claim(last_beat, lease), NOW) is False
+
+
+@pytest.mark.parametrize("age,expected", [(timedelta(seconds=60), False), (timedelta(hours=13), True)],
+                         ids=["valid_future_lease", "ordinary_expired_lease"])
+def test_an_ordinary_lease_keeps_its_answer(env, age, expected):
+    # Twins: a lease still running is not sweepable; an expired one with no live session beat is.
+    assert wq._owned_claim_sweepable(env[0].root, _owned_claim(iso(NOW - age), 900), NOW) is expected
+
+
+def test_the_sweep_skips_a_claim_whose_lease_cannot_be_represented_and_keeps_it(env):
+    txns = env[0]
+    claim(env, task="team/huge", now=NOW - timedelta(hours=13))
+    path = claim_file(env, "team/huge")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["lease_seconds"] = 10**30
+    path.write_bytes(claim_bytes(record))
+    assert wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW) == []           # unknown: not swept
+    assert wq.find_claim(txns, "team/huge") == path

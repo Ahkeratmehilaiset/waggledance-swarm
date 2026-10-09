@@ -36,9 +36,6 @@ def fleet(request):
         for agent in ["codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5", "codex-tools-1"]:
             worktree = root / agent
             (worktree / ".codex-audit").mkdir(parents=True)
-            for child in ("objects", "refs"):         # RS7: a claim cwd must be a git top level
-                (worktree / ".git" / child).mkdir(parents=True)
-            (worktree / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
             checkpoint = {
                 "schema": "wd.lane-current.v1", "agent": agent,
                 "worktree": str(worktree), "updated_at_utc": now.isoformat(),
@@ -109,6 +106,10 @@ def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case):
         update(checkpoint(fleet, index), write_scope=scopes, status='completed')
         if case == 'checkpoint_only':
             continue
+        git = Path(fleet['lanes'][index]['worktree']) / '.git'   # RS7: a claim cwd must be a git top level
+        for child in ('objects', 'refs'):
+            (git / child).mkdir(parents=True)
+        (git / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
         now = datetime.now(timezone.utc)
         record = dict(agent=fleet['lanes'][index]['agent'], task_id='active-test',
                       mode='read' if case == 'read_claim' else 'write',

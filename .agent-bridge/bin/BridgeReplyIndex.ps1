@@ -81,6 +81,11 @@ function ConvertFrom-BridgeReplyCacheJson {
 
 function Read-BridgeReplyIndex {
     param([string]$Path,[string]$CachePath,[switch]$NoCache)
+    # Validate the canonical source before creating any derived cache artifact.
+    # In particular an unset runtime root must not pollute a pinned code bundle
+    # with shared/cache lock files before reporting its missing canonical log.
+    $sourceProbe=Open-BridgeLogReadStream -Path $Path
+    $sourceProbe.Dispose()
     $lock=$null
     $cache=$null
     $cacheStatus='disabled'

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -96,18 +98,28 @@ def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monk
 
 
 @pytest.mark.parametrize('case', ['local', 'source_overlap', 'expired', 'checkpoint_only', 'invalid', 'read_claim'])
-def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case):
+def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case, tmp_path):
     scopes = ['.codex-audit/wd-current-state.json'] if case != 'source_overlap' else ['src/module.py']
     claims = fleet['root'] / 'work_queue/claims'
     claims.mkdir(parents=True)
+    # COMPOSE-F1: the fleet lives under ROOT (its lanes observe ROOT's HEAD), so a claim cwd there would be a repository
+    # nested inside ROOT, which the resolver rightly refuses (8c263635). The claiming cwds are separate top levels
+    # outside every repository; the status matches claims by agent and uses cwd only to resolve resources.
+    outer = [str(p) for p in (tmp_path, *tmp_path.parents) if (p / '.git').exists()]
+    assert outer == [], f"tmp_path must lie outside every repository for this fixture: {outer}"
     for index in (0, 4):
         update(checkpoint(fleet, index), write_scope=scopes, status='completed')
         if case == 'checkpoint_only':
             continue
+        cwd = tmp_path / f'claim-cwd-{index}'
+        git = cwd / '.git'   # RS7: a claim cwd must be a git top level
+        for child in ('objects', 'refs'):
+            (git / child).mkdir(parents=True)
+        (git / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
         now = datetime.now(timezone.utc)
         record = dict(agent=fleet['lanes'][index]['agent'], task_id='active-test',
                       mode='read' if case == 'read_claim' else 'write',
-                      cwd=fleet['lanes'][index]['worktree'], write_scope=scopes,
+                      cwd=str(cwd), write_scope=scopes,
                       last_heartbeat_utc=(now - timedelta(seconds=400 if case == 'expired' else 0)).isoformat(),
                       lease_seconds=300)
         (claims / f'{index}.json').write_text('{broken' if case == 'invalid' else json.dumps(record))
@@ -696,3 +708,63 @@ $exclusive.Dispose()
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"snapshot": "before", "current": "after"}
     assert not replacement.exists()
+
+
+def failing_git(fleet, code=128):
+    # A controlled Git that refuses every query, as an unsafe-ownership refusal does (exit 128).
+    fake = fleet["root"] / ("git-refuses.cmd" if os.name == "nt" else "git-refuses")
+    if os.name == "nt":
+        body = "@echo fatal: detected dubious ownership in repository at 'fixture' 1>&2\r\n@exit /b " + str(code) + "\r\n"
+    else:
+        body = "#!/bin/sh\nprintf '%s\\n' \"fatal: detected dubious ownership in repository at 'fixture'\" >&2\nexit " + str(code) + "\n"
+    fake.write_text(body, encoding="ascii", newline="")
+    if os.name != "nt":
+        fake.chmod(0o700)
+    update(fleet["manifest"], git_executable=str(fake))
+
+
+@pytest.mark.parametrize("code", [128, 1])
+def test_a_failed_git_query_is_unknown_never_a_head_mismatch(fleet, code):
+    failing_git(fleet, code)
+    report = run_status(fleet)
+    for lane in report["lanes"]:
+        assert lane["head"] == "" and lane["branch"] == ""
+        assert lane["head_matches"] is None, lane["head_matches"]
+        for field in ("head", "branch"):
+            observation = lane["git_observation"][field]
+            assert observation["status"] == "query_failed"
+            assert observation["exit_code"] == code
+            assert "dubious ownership" in observation["error"] and len(observation["error"]) <= 240
+        assert lane["runnable_evidence"] != "observed"
+    assert report["summary"]["fresh_runnable_evidence_lanes"] == 0
+
+
+def test_an_observed_head_is_true_only_on_match_and_false_only_on_an_observed_mismatch(fleet):
+    update(checkpoint(fleet, 0), head="b" * 40)
+    report = run_status(fleet)
+    mismatch, match = report["lanes"][0], report["lanes"][-1]
+    assert mismatch["git_observation"]["head"] == {"status": "observed", "exit_code": 0, "error": None}
+    assert mismatch["head"] == fleet["head"] and mismatch["head_matches"] is False
+    assert match["head_matches"] is True and match["runnable_evidence"] == "observed"
+
+
+def test_a_failed_branch_query_with_an_observed_head_is_never_runnable_evidence(fleet):
+    # Only the branch query is refused; HEAD is still observed and matches (Tools 38bf).
+    fake = fleet["root"] / ("git-refuses-branch.cmd" if os.name == "nt" else "git-refuses-branch")
+    if os.name == "nt":
+        body = ('@if "%~4"=="branch" (echo fatal: detected dubious ownership in repository at \'fixture\' 1>&2 & exit /b 128)\r\n'
+                '@"' + shutil.which("git") + '" %*\r\n@exit /b %ERRORLEVEL%\r\n')
+    else:
+        body = ('#!/bin/sh\nif [ "$4" = "branch" ]; then\n'
+                '  printf \'%s\\n\' "fatal: detected dubious ownership in repository at \'fixture\'" >&2\n'
+                '  exit 128\nfi\nexec ' + shlex.quote(shutil.which("git")) + ' "$@"\n')
+    fake.write_text(body, encoding="ascii", newline="")
+    if os.name != "nt":
+        fake.chmod(0o700)
+    update(fleet["manifest"], git_executable=str(fake))
+    lane = run_status(fleet)["lanes"][-1]
+    assert lane["git_observation"]["branch"]["status"] == "query_failed"
+    assert lane["git_observation"]["branch"]["exit_code"] == 128
+    assert "dubious ownership" in lane["git_observation"]["branch"]["error"]
+    assert lane["git_observation"]["head"]["status"] == "observed" and lane["head_matches"] is True
+    assert lane["runnable_evidence"] != "observed"

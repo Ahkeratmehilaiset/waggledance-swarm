@@ -75,6 +75,41 @@ class WorkQueueError(ValueError):
     """Recoverable work-queue contract violation."""
 
 
+class WorkQueueIOError(OSError):
+    """QB-L1 (RCO2 FF7BC9A6): a writer's own I/O failure, with what is known about its effects. An OSError subclass,
+    so every ``except OSError`` keeps working; raised ``from`` the original error, whose errno/strerror/filename it
+    keeps. Never retried here.
+
+    * ``applied``: True = a change landed and stays; False = PROVEN nothing of this call is left behind;
+      None = unknown (a rollback failed or a write may be partial).
+    * ``completed``: the sweep's ArchivedClaim records fully applied before the failure ([] elsewhere).
+    * ``rollback_errors``: one "Type: text" per failed rollback step.
+    * ``residual``: paths whose state is unknown or left behind.
+    """
+
+    def __init__(self, cause: OSError, *, applied: bool | None, completed: Sequence[object] = (),
+                 rollback_errors: Sequence[str] = (), residual: Sequence[str] = ()) -> None:
+        super().__init__(*cause.args)
+        for name in ("errno", "strerror", "filename", "filename2", "winerror"):   # Grok 5321c511 #4: keep them all
+            if getattr(cause, name, None) is not None:   # a None set explicitly would change str(self)
+                setattr(self, name, getattr(cause, name))
+        self.applied = applied
+        self.completed = list(completed)
+        self.rollback_errors = list(rollback_errors)
+        self.residual = list(residual)
+
+
+def _undo_record(error: OSError, record: Path, completed: Sequence[object] = ()) -> WorkQueueIOError:
+    """QB-L1: remove the record THIS call just created, because the claim it describes could not be removed; the
+    claim stays active and no done record claims otherwise. A failed undo leaves the outcome unknown (applied=None)."""
+    try:
+        record.unlink()
+    except OSError as undo:
+        return WorkQueueIOError(error, applied=None, completed=completed,
+                                rollback_errors=[f"{type(undo).__name__}: {undo}"[:300]], residual=[str(record)])
+    return WorkQueueIOError(error, applied=bool(completed), completed=completed)
+
+
 @dataclass(frozen=True)
 class Claim:
     """One active work-queue claim."""
@@ -399,7 +434,12 @@ def release_task(
     )
     done_path = done_dir / f"{_safe_name(task_id)}-{_safe_name(released_at)}.json"
     _write_release_file(done_path, record)
-    claim_path.unlink()
+    try:
+        claim_path.unlink()
+    except FileNotFoundError:   # removed meanwhile: the done record stands, as in the sweep (Grok 5321c511 #1)
+        pass
+    except OSError as error:   # QB-L1-b: no done record beside a still-active claim
+        raise _undo_record(error, done_path) from error
     return record
 
 
@@ -604,11 +644,28 @@ def archive_stale_claims(
                 continue
             if current != claim:
                 continue
-            _write_json_file(archive_path, payload, create_new=True)
+            # QB-L1-a: a failure here keeps the archives already completed, and never deletes a file this call did
+            # not create (an existing archive is a collision, untouched; a partial write is reported, not removed).
+            try:
+                _write_json_file(archive_path, payload, create_new=True)
+            except WorkQueueError as error:
+                if not isinstance(error.__cause__, FileExistsError):
+                    raise
+                raise WorkQueueIOError(error.__cause__, applied=bool(archived), completed=archived) from error
+            except OSError as error:   # a partial write: only a definite "absent" proves nothing was left
+                try:
+                    archive_path.lstat()
+                except FileNotFoundError:
+                    raise WorkQueueIOError(error, applied=bool(archived), completed=archived) from error
+                except OSError:
+                    pass
+                raise WorkQueueIOError(error, applied=None, completed=archived, residual=[str(archive_path)]) from error
             try:
                 claim_file.unlink()
             except FileNotFoundError:
                 pass
+            except OSError as error:
+                raise _undo_record(error, archive_path, archived) from error
         archived.append(
             ArchivedClaim(
                 claim=claim,
@@ -779,7 +836,10 @@ def _owned_claim_sweepable(bridge: Path, claim: Claim, now: datetime) -> bool:
         base = _parse_utc(claim.last_heartbeat_utc or claim.claimed_at_utc)
     except (ValueError, TypeError):
         return False
-    expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    try:
+        expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    except (ValueError, TypeError, OverflowError):   # an expiry past the datetime range is unknown: keep the claim
+        return False
     if claim.claim_lease_expires_utc:
         try:
             recorded = _parse_utc(claim.claim_lease_expires_utc)
@@ -933,7 +993,10 @@ def _parse_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:   # year 1 at +14:00 (or 9999 at -14:00) leaves the datetime range: invalid, not a crash
+        raise ValueError("timestamp is outside the representable UTC range") from None
 
 
 def _iso(value: datetime) -> str:

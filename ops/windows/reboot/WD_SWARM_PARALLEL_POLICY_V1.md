@@ -3,6 +3,58 @@
 This policy changes scheduling discipline, not authority. The live bridge,
 current claims, exact Git heads, and explicit role permissions remain binding.
 
+## Operator operating rules (2026-10-06)
+
+This is the boot copy of the operator's 2026-10-06 directives for all five
+lanes. The full text and the operator's verbatim words are `CLAUDE.md` Rules
+12 and 13 and the `AGENTS.md` task rule. This section changes no gate code and
+grants no capability.
+
+1. **Full autonomy.** Work never waits on an operator decision, and no lane
+   asks the operator for a per-PR signature. A merge needs, at the exact head:
+   an approval from the model family opposite to the implementer (GPT:
+   `codex-lead-1`, `codex-tools-1`; Claude: `fable-5`, `claude-rco-1`,
+   `claude-rco-2`; or Grok as in rule 5); `RCO_PASS` from every eligible
+   recognized RCO; all required CI green; no unretracted RCO veto or finding;
+   the charter checks; and a MAGMA receipt naming every approver.
+2. **Gate truth.** The merge-gate code is unchanged. It still requires
+   `codex-lead-1` and `codex-tools-1` build consensus plus a recognized-RCO
+   `RCO_PASS` at the exact head, has no Grok slot, and fails closed where it
+   did. A merge the gate refuses stays refused; no lane works around the gate.
+3. **Unchanged invariants.** The RCO veto is absolute and outranks any pass;
+   author is never reviewer; approvals bind to the exact head and merges use
+   `gh pr merge --match-head-commit`; never `--admin`, `--no-verify` or
+   force-push; PR-only; the Stage-2 cutover stays under Rule 10.
+4. **Grok self-challenge for depth.** Before reporting a deliverable done (a PR
+   head, design, fix, audit result or review verdict; claims, heartbeats,
+   status messages, F0 closures and relays are exempt), run one Grok `high`
+   consultation through `C:\Python\Invoke-WdGrok.ps1` with `-RequestedBy` set
+   to your own agent id (`codex-lead-1` omits it). Do not route it through
+   Lead and do not retry. The entry is synchronous, so start it detached and
+   wait at most 60 seconds from the first submission, queue included; then
+   continue on your own judgment. Do not shorten the 900 s HIGH timeout or
+   bypass the single-flight lock, and never restart or duplicate a running
+   attempt. A late answer is checked against the current work and a real
+   defect it shows is fixed as a follow-up.
+5. **Grok is never a gate and never `RCO_PASS`.** A missing, late, failed or
+   rate-limited answer blocks nothing. Grok may act as review authority only
+   when the other reviewers are absent or ineligible, recorded on the bridge
+   (for example no answer within 60 minutes of a bound review request at that
+   head). A negative answer does not block; the task result names the report
+   path and SHA-256 and answers each finding. A reviewer challenges its own
+   verdict and does not pass the answer to the author. No secrets, credential
+   contents or answer keys go into a prompt.
+6. **Tools relay.** The `codex-tools-1` sandbox cannot start Grok. Tools asks
+   `fable-5` or any other free agent to run its exact prompt bytes with
+   `-RequestedBy codex-tools-1`; the executor returns the report path and hash
+   unchanged and records the question owner and the executor separately. All
+   other lanes call Grok directly.
+7. **Found defects are fixed at once.** The scope owner fixes and tests a
+   defect immediately, through a PR; idle lanes take other file-disjoint
+   bridge-goal work instead of waiting.
+8. **Runtime truth.** The queueing Grok lock and `-RequestedBy` are in the
+   installed `edc18943` runtime (PRs #1767 and #1769), not yet on `main`.
+
 ## Reboot continuation
 
 Each lane keeps its canonical compact checkpoint at

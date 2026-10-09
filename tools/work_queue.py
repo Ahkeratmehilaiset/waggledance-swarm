@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from dataclasses import asdict, is_dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Sequence
@@ -24,6 +26,45 @@ from waggledance.core.work_queue import (  # noqa: E402
     release_task,
     resolve_bridge_root,
 )
+from tools.bridge_v2_queue_transactions import (  # noqa: E402
+    DEFAULT_LOCK_TIMEOUT_SECONDS,
+    QueueTransactionError,
+    mutex_name,
+)
+
+# RCO2 S2 (Lead 0b33855f): the writer commands take the v2 runtime-root mutex first, the same Windows named
+# mutex (mutex_name(root), NamedMutexPort) every v2 writer takes first, so a v2 participant holding it excludes
+# them: the command waits LOCK_TIMEOUT_SECONDS and then refuses before any claim or done file is touched.
+# tools/work_queue_sweep_stale.py --apply takes the same _root_mutex. The legacy PowerShell writers take the same
+# kernel object through Enter-BridgeQueueRootMutex (.agent-bridge/bin/ClaimLeaseHeartbeat.ps1, which loads the twin
+# BridgeV2QueueMutex.ps1) in the S2 PowerShell half (fable-5 1764254b), composed with this one. A static inventory
+# (2026-10-01) found no other production caller of the core writers. Reads (list, stale, check-overlap) take no
+# lock. The mutex exists only on Windows; elsewhere nothing is excluded. A refusal exits by its source (fable-5 B1):
+# 2 when the --bridge-root is unusable (the v2 canonical-root rule), 1 for every other refusal.
+# QB (RCO2 35B5527F): releasing or closing the mutex can fail AFTER the writer applied its change. That is neither a
+# success nor a refusal: the report keeps the applied result, says so (applied, outcome) and exits 4; nothing is retried.
+# QB-L1 (RCO2 FF7BC9A6): a writer's OWN OSError is a JSON io_error report too, never a bare traceback. It exits 1 only
+# when the error proves nothing was left behind; otherwise (applied, unknown, a failed rollback) it is 4, reconcile.
+WRITER_COMMANDS = ("claim", "release", "heartbeat")
+LOCK_TIMEOUT_SECONDS = DEFAULT_LOCK_TIMEOUT_SECONDS
+MUTEX_REFUSAL = "runtime-root mutex: "   # the prefix of every refusal: _exit_code_for_error reads it, not the words
+RECONCILE_EXIT_CODE = 4
+MUTEX_CLEANUP_EXIT_CODE = RECONCILE_EXIT_CODE
+MUTEX_CLEANUP_OUTCOME = "applied_mutex_cleanup_failed"
+IO_ERROR_DECISION = "io_error"
+IO_ERROR_NOTHING_APPLIED = "io_error_nothing_applied"
+IO_ERROR_APPLIED = "io_error_applied"
+IO_ERROR_OUTCOME_UNKNOWN = "io_error_outcome_unknown"
+
+
+def _root_mutex(bridge_root: Path) -> Any:
+    """Hold ``bridge_root``'s v2 runtime-root mutex around one writer command (Windows only). A busy, abandoned or
+    unusable mutex raises QueueTransactionError before the command runs; the port releases it on every path and
+    re-raises a primary error from the command unchanged."""
+    if os.name != "nt":
+        return contextlib.nullcontext()
+    from tools.bridge_v2_queue_ports_windows import NamedMutexPort
+    return NamedMutexPort().hold(mutex_name(bridge_root), LOCK_TIMEOUT_SECONDS)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,6 +139,68 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     bridge_root = resolve_bridge_root(args.bridge_root)
+    if args.command not in WRITER_COMMANDS:
+        return _run(args, bridge_root)
+    report = None
+    try:
+        with _root_mutex(bridge_root):
+            report = _run(args, bridge_root)
+    except QueueTransactionError as exc:     # the mutex refused (busy, abandoned, unusable root): nothing was written
+        raise WorkQueueError(MUTEX_REFUSAL + str(exc)) from exc
+    except OSError as exc:
+        if report is None:   # the writer's own error (the port records a cleanup failure on it)
+            fields, code = io_error_fields(exc)
+            return {"ok": False, "decision": IO_ERROR_DECISION, **fields, "exit_code": code}
+        return _mutex_cleanup_failed(report, exc)
+    return report
+
+
+def io_error_fields(exc: OSError) -> tuple[dict[str, Any], int]:
+    """What a writer's own OSError says about its effects, and the exit code (QB-L1). The core may raise an OSError
+    subclass carrying ``applied`` (True; False = proven nothing left behind; None = unknown), ``completed``,
+    ``rollback_errors`` and ``residual``; a plain OSError carries none of them, so its outcome is UNKNOWN. Only a
+    proven nothing-applied error exits 1; everything else exits 4 (reconcile). Nothing is retried."""
+    applied = getattr(exc, "applied", None)
+    if applied is not True and applied is not False:
+        applied = None
+    rollback_errors = [str(item) for item in getattr(exc, "rollback_errors", None) or []]
+    residual = [str(item) for item in getattr(exc, "residual", None) or []]
+    completed = getattr(exc, "completed", None) or []
+    contradiction = None
+    if completed and applied is False:   # QBL1-L1: listed work was done, so "nothing applied" is not proven
+        contradiction = ("applied is False but completed lists " + str(len(completed))
+                         + " finished item(s): the outcome is UNKNOWN")
+        applied = None
+    elif completed and applied is None:  # the completed list proves that something was applied
+        applied = True
+    nothing = applied is False and not rollback_errors and not residual
+    outcome = IO_ERROR_NOTHING_APPLIED if nothing else IO_ERROR_APPLIED if applied else IO_ERROR_OUTCOME_UNKNOWN
+    fields: dict[str, Any] = {"applied": applied, "outcome": outcome,
+                              "errors": [type(exc).__name__ + ": " + str(exc)],
+                              "rollback_errors": rollback_errors, "residual": residual}
+    if contradiction is not None:
+        fields["contradiction"] = contradiction
+    cleanup = []
+    for record in getattr(exc, "descriptor_close_unknown", None) or []:
+        try:
+            step, _handle, error = record
+        except (TypeError, ValueError):
+            continue
+        cleanup.append(str(step) + " failed: " + type(error).__name__ + ": " + str(error))
+    if cleanup:
+        fields["mutex_cleanup_errors"] = cleanup
+    return fields, (1 if nothing else RECONCILE_EXIT_CODE)
+
+
+def _mutex_cleanup_failed(report: dict[str, Any], exc: OSError) -> dict[str, Any]:
+    """The applied result of a writer whose root-mutex release or close failed afterwards (QB)."""
+    return {**report, "ok": False, "applied": True, "outcome": MUTEX_CLEANUP_OUTCOME,
+            "errors": ["the change WAS applied; then the runtime-root mutex cleanup failed: "
+                       + type(exc).__name__ + ": " + str(exc)],
+            "exit_code": MUTEX_CLEANUP_EXIT_CODE}
+
+
+def _run(args: argparse.Namespace, bridge_root: Path) -> dict[str, Any]:
     if args.command == "claim":
         claim = claim_task(
             agent=args.agent,
@@ -187,6 +290,13 @@ def _to_jsonable(value: object) -> Any:
 
 def _exit_code_for_error(message: str) -> int:
     lowered = message.lower()
+    # A runtime-root mutex refusal exits by its source, never by its words (fable-5 B1): an unusable --bridge-root
+    # (the v2 canonical-root rule, "runtime root: ...") is an input error, 2; every other refusal (busy, abandoned, a
+    # creation failure that may quote a policy literal such as "... is required") is 1.
+    if lowered.startswith(MUTEX_REFUSAL + "runtime root:"):
+        return 2
+    if lowered.startswith(MUTEX_REFUSAL):
+        return 1
     invalid_markers = (
         "invalid",
         "require",
@@ -205,6 +315,14 @@ def _print_human(report: dict[str, Any]) -> None:
     if not report.get("ok", False):
         for error in report.get("errors", []):
             print(f"- {error}", file=sys.stderr)
+        # QBL1-L2: what an io_error or a cleanup failure says about the effects, as in the JSON report.
+        for key in ("outcome", "applied", "contradiction"):
+            if key in report:
+                print(f"{key}: {report[key]}", file=sys.stderr)
+        for key, label in (("rollback_errors", "rollback_error"), ("residual", "residual"),
+                           ("mutex_cleanup_errors", "mutex_cleanup_error")):
+            for item in report.get(key, []):
+                print(f"{label}: {item}", file=sys.stderr)
         return
     claims = report.get("claims")
     if isinstance(claims, list):

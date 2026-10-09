@@ -139,6 +139,7 @@ def test_tool_output_is_not_combined_with_return_code():
 import ast
 import base64
 import hashlib
+import io
 import os
 import re
 import sys
@@ -185,10 +186,23 @@ def _intra_repo_closure(entrypoints):
                 modules.add(node.module or "")
                 for alias in node.names:
                     modules.add(f"{node.module}.{alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                # A relative import resolves inside the importing file's own package.
+                base = Path(relative).parent
+                for _ in range(node.level - 1):
+                    base = base.parent
+                package = ".".join(base.parts)
+                target = f"{package}.{node.module}" if node.module else package
+                modules.add(target)
+                modules.update(f"{target}.{alias.name}" for alias in node.names)
         for module in modules:
             if not module:
                 continue
             top = module.split(".")[0]
+            if top not in {"tools", "waggledance"} and (ROOT / "tools" / f"{top}.py").is_file():
+                # A flat-layout fallback ("from bridge_capacity_advisor import ...") names a sibling
+                # tools module: it is intra-repo code and must be packaged, never a third-party name.
+                module, top = f"tools.{module}", "tools"
             if top in {"tools", "waggledance"}:
                 target = _module_relative(module)
                 if target and target not in seen:
@@ -204,11 +218,15 @@ def _intra_repo_closure(entrypoints):
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():
-    entrypoints = sorted(set(DEFINITION["python_entrypoints"].values()))
-    closure, third_party = _intra_repo_closure(entrypoints)
+    # Seed with every entrypoint AND every module the import smoke loads: the gate modules reach
+    # jsonschema only through modules that no entrypoint imports.
+    smoke = [_module_relative(module) for module in DEFINITION["import_smoke"]["package_modules"]]
+    assert None not in smoke, DEFINITION["import_smoke"]["package_modules"]
+    seeds = sorted(set(DEFINITION["python_entrypoints"].values()) | set(smoke))
+    closure, third_party = _intra_repo_closure(seeds)
     packaged = set(DEFINITION["python_files"])
     assert closure <= packaged, sorted(closure - packaged)
-    assert third_party == {"pydantic"}, sorted(third_party)
+    assert third_party == {"pydantic", "jsonschema"}, sorted(third_party)
     lock = (ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
     pinned = {
         match.group(1).lower().replace("_", "-"): match.group(2)
@@ -370,8 +388,17 @@ def _manifest_anchor(bundle: Path) -> str:
     return hashlib.sha256(blob).hexdigest().upper()
 
 
-def _stage_fake_bundle(tmp_path: Path) -> Path:
-    """Build a deployed-shaped bundle with a fake pinned wheel closure."""
+def _stage_fake_bundle(
+    tmp_path: Path,
+    real_files: tuple[str, ...] = (),
+    real_entrypoints: dict[str, str] | None = None,
+) -> Path:
+    """Build a deployed-shaped bundle with a fake pinned wheel closure.
+
+    ``real_files`` are copied byte-for-byte from this checkout into the package
+    and listed in ``python_files``; ``real_entrypoints`` are published next to
+    the fake ``next_action`` entrypoint. Both stay hash-anchored like the rest.
+    """
     module = "wdfake"
     bundle = tmp_path / ("0" * 40)
     bundle.mkdir(parents=True)
@@ -383,6 +410,14 @@ def _stage_fake_bundle(tmp_path: Path) -> Path:
     code_root = bundle / "tools-bootstrap"
     (code_root / "tools").mkdir(parents=True)
     (code_root / "tools" / "__init__.py").write_text("", encoding="utf-8")
+    for relative in real_files:
+        if relative in definition["python_files"]:
+            continue
+        target = code_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+        definition["python_files"].append(relative)
+    definition["python_entrypoints"].update(real_entrypoints or {})
     (code_root / "tools" / "bridge_next_action.py").write_text(
         "import json, sys, os\n"
         "print(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
@@ -639,3 +674,558 @@ def test_task_worktree_python_imports_are_unaffected_by_discovery_variables():
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert Path(report["waggledance"]).resolve().is_relative_to(ROOT)
     assert Path(report["tool"]).resolve().is_relative_to(ROOT)
+
+
+# --- Case-duplicate parent environment (Tools StageOnly PS5 exit 1, 2026-10-06: BridgeCodeContext.ps1:185
+# "Cannot index into a null array"). An MSYS or Git Bash parent can pass both Path and PATH. Python's subprocess
+# dedupes such keys, so the block is built raw and passed to CreateProcessW.
+
+ENV_SHELLS = [shell for shell in ("powershell.exe", "pwsh.exe") if sys.platform == "win32" and shutil.which(shell)]
+PROBES = {f"WD_ENVFIX_PROBE_{index:03d}": f"probe-{index}" for index in range(200)}
+FIXTURE_SECRET = "fixture-not-a-secret-value"
+CHILD_SOURCE = """import json, os, sys
+keys = ("WD_ENVFIX_SECRET", "PIP_REQUIRE_VIRTUALENV", "WD_ENVFIX_CHILD_ONLY", "PYTHONDONTWRITEBYTECODE")
+probes = {k: v for k, v in os.environ.items() if k.startswith("WD_ENVFIX_PROBE_")}
+print(json.dumps({"probes": probes, "keys": sorted(os.environ), "has_path": bool(os.environ.get("PATH")),
+                  **{k: os.environ.get(k) for k in keys}}))
+"""
+
+
+def _start_with_raw_environment(shell: str, command: str, pairs: list[tuple[str, str]]) -> int:
+    import base64
+    import ctypes
+    from ctypes import wintypes
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("reserved", wintypes.LPWSTR), ("desktop", wintypes.LPWSTR),
+                    ("title", wintypes.LPWSTR)] + [(name, wintypes.DWORD) for name in
+                    ("x", "y", "x_size", "y_size", "x_chars", "y_chars", "fill", "flags")] + [
+                    ("show", wintypes.WORD), ("reserved2_size", wintypes.WORD), ("reserved2", ctypes.c_void_p),
+                    ("stdin", wintypes.HANDLE), ("stdout", wintypes.HANDLE), ("stderr", wintypes.HANDLE)]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [("process", wintypes.HANDLE), ("thread", wintypes.HANDLE),
+                    ("pid", wintypes.DWORD), ("tid", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    block = "".join(f"{key}={value}\0" for key, value in pairs) + "\0"
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode()
+    line = ctypes.create_unicode_buffer(f'"{shell}" -NoProfile -NonInteractive -EncodedCommand {encoded}')
+    startup, info = StartupInfo(cb=ctypes.sizeof(StartupInfo)), ProcessInformation()
+    if not kernel32.CreateProcessW(None, line, None, None, False, 0x00000400 | 0x08000000,  # unicode env, no window
+                                   ctypes.create_unicode_buffer(block, len(block)), None,
+                                   ctypes.byref(startup), ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        assert kernel32.WaitForSingleObject(info.process, 180_000) == 0, "child timed out"
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(info.process, ctypes.byref(code))
+        return code.value
+    finally:
+        kernel32.CloseHandle(info.process)
+        kernel32.CloseHandle(info.thread)
+
+
+@pytest.mark.skipif(not ENV_SHELLS, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+@pytest.mark.parametrize("duplicate", (True, False), ids=("Path_and_PATH", "single_Path"))
+def test_python_call_gets_a_complete_isolated_environment_from_a_case_duplicate_parent(
+    tmp_path: Path, shell: str, duplicate: bool,
+):
+    child = tmp_path / "child.py"
+    child.write_text(CHILD_SOURCE, encoding="utf-8")
+    result_path = tmp_path / "result.json"
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    command = f"""
+$ErrorActionPreference = 'Stop'
+. '{quote(REBOOT / "BridgeCodeContext.ps1")}'
+$out = [ordered]@{{ path_keys = @(@([Environment]::GetEnvironmentVariables().Keys) | Where-Object {{ $_ -match '^path$' }}) }}
+try {{
+    $call = Invoke-WdBridgeCodePython -PythonExecutable '{quote(sys.executable)}' -Arguments @('-B', '{quote(child)}') `
+        -Label 'environment fixture' -Environment @{{
+            PYTHONDONTWRITEBYTECODE = '1'; PIP_REQUIRE_VIRTUALENV = ''; WD_ENVFIX_SECRET = ''; WD_ENVFIX_CHILD_ONLY = 'child'
+        }}
+    $out.child = $call.StdOut.Trim()
+}} catch {{ $out.error = $_.Exception.Message }}
+$out.parent_after = [ordered]@{{}}
+foreach ($key in @('WD_ENVFIX_SECRET', 'PIP_REQUIRE_VIRTUALENV', 'WD_ENVFIX_CHILD_ONLY', 'PYTHONDONTWRITEBYTECODE', 'WD_ENVFIX_PROBE_199')) {{
+    $out.parent_after[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+}}
+[IO.File]::WriteAllText('{quote(result_path)}', ($out | ConvertTo-Json -Depth 5 -Compress), (New-Object Text.UTF8Encoding($false)))
+"""
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith(("WD_", "PIP_", "PYTHON")) and key.upper() != "PATH"}
+    path = os.environ.get("PATH", "")
+    pairs = [("Path", path)] + ([("PATH", path)] if duplicate else []) + sorted(environment.items())
+    pairs += sorted(PROBES.items()) + [("WD_ENVFIX_SECRET", FIXTURE_SECRET), ("PIP_REQUIRE_VIRTUALENV", "1")]
+    assert _start_with_raw_environment(shutil.which(shell), command, pairs) == 0
+    report = json.loads(result_path.read_text(encoding="utf-8"))
+    assert len(report["path_keys"]) == (2 if duplicate else 1), report     # the fixture really is case-duplicate
+    assert "error" not in report, report["error"]
+    seen = json.loads(report["child"])
+    assert seen["probes"] == PROBES
+    # Complete: .NET Framework keeps a PARTIAL copy after the duplicate-key throw (58 of 299 measured), so every
+    # parent variable must reach the child, not only the ones that happened to be copied first.
+    expected = {key.upper() for key, _ in pairs} - {"WD_ENVFIX_SECRET", "PIP_REQUIRE_VIRTUALENV"}
+    assert expected <= {key.upper() for key in seen["keys"]}, sorted(expected - {key.upper() for key in seen["keys"]})
+    assert seen["has_path"] is True
+    assert seen["WD_ENVFIX_SECRET"] is None          # an empty override still removes a parent variable
+    assert seen["PIP_REQUIRE_VIRTUALENV"] is None
+    assert seen["WD_ENVFIX_CHILD_ONLY"] == "child"
+    assert seen["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert report["parent_after"] == {               # only the child's dictionary changed, never this process
+        "WD_ENVFIX_SECRET": FIXTURE_SECRET, "PIP_REQUIRE_VIRTUALENV": "1", "WD_ENVFIX_CHILD_ONLY": None,
+        "PYTHONDONTWRITEBYTECODE": None, "WD_ENVFIX_PROBE_199": "probe-199",
+    }
+
+# --- The one admitted non-.py/.json package file is the exact charter path (Lead v2 2026-10-06).
+
+CHARTER = "docs/architecture/IDLE_AUTONOMY_CHARTER.md"
+PACKAGE_PATH_CASES = {
+    CHARTER: None,
+    "docs/architecture/OTHER.md": "must be .py or .json",
+    "README.md": "must be .py or .json",
+    "docs/architecture/idle_autonomy_charter.md": "must be .py or .json",
+    "Docs/architecture/IDLE_AUTONOMY_CHARTER.md": "must be .py or .json",
+    "x/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "must be .py or .json",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md.txt": "must be .py or .json",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.MD": "must be .py or .json",
+    "../docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs/../docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs/./architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs\\architecture\\IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "C:/docs/architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+    "docs//architecture/IDLE_AUTONOMY_CHARTER.md": "unsafe bridge code package path",
+}
+
+
+@pytest.mark.skipif(not ENV_SHELLS, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+@pytest.mark.parametrize("relative", sorted(PACKAGE_PATH_CASES))
+def test_only_the_exact_charter_path_is_admitted_beside_py_and_json(tmp_path: Path, shell: str, relative: str):
+    definition = json.loads(json.dumps(DEFINITION))
+    definition["python_files"] = [path for path in definition["python_files"] if path != relative] + [relative]
+    path = tmp_path / "bridge-code-files.json"
+    path.write_text(json.dumps(definition), encoding="utf-8")
+    script = (f"$ErrorActionPreference = 'Stop'; . '{str(REBOOT / 'BridgeCodeContext.ps1').replace(chr(39), chr(39) * 2)}'; "
+              f"try {{ $d = (Get-WdBridgeCodePackageDefinition -Path '{str(path).replace(chr(39), chr(39) * 2)}').Definition; "
+              "'ADMITTED:' + @($d.python_files).Count } catch { 'REFUSED:' + $_.Exception.Message }")
+    result = subprocess.run([shutil.which(shell), "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=120)
+    lines = [line for line in result.stdout.splitlines() if line.startswith(("ADMITTED:", "REFUSED:"))]
+    assert len(lines) == 1, result.stdout + result.stderr
+    expected = PACKAGE_PATH_CASES[relative]
+    if expected is None:
+        assert lines[0] == f"ADMITTED:{len(definition['python_files'])}"
+    else:
+        assert lines[0].startswith("REFUSED:") and expected in lines[0], lines[0]
+
+# --- Declared data files (charter + schema JSON) are admitted by exact path into the manifest entries and the
+# integrity enumeration (Lead P0 2026-10-06: entries returned 90 of 96 for the ca6f664e definition).
+
+DATA_FILES = {
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md": b"# charter fixture\n",
+    "schemas/v3_13_0/fixture.v1.json": b'{"type": "object"}\n',
+}
+
+
+def _stage_bundle_with_data(tmp_path: Path) -> Path:
+    bundle = _stage_fake_bundle(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    definition = json.loads((bundle / "bridge-code-files.json").read_text(encoding="utf-8"))
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    for relative, blob in DATA_FILES.items():
+        (code_root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (code_root / relative).write_bytes(blob)
+        definition["python_files"].append(relative)
+        manifest["files"][f"tools-bootstrap/{relative}"] = hashlib.sha256(blob).hexdigest().upper()
+    (bundle / "bridge-code-files.json").write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
+    manifest["files"]["bridge-code-files.json"] = hashlib.sha256(
+        (bundle / "bridge-code-files.json").read_bytes()).hexdigest().upper()
+    (bundle / "deployment-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return bundle
+
+
+def _integrity(bundle: Path, extra: str = "") -> subprocess.CompletedProcess:
+    context = str(REBOOT / "BridgeCodeContext.ps1").replace("'", "''")
+    literal = str(bundle).replace("'", "''")
+    return _run_pwsh(
+        f"$ErrorActionPreference = 'Stop'; . '{context}'; "
+        f"$deployment = Get-Content -LiteralPath '{literal}\\deployment-manifest.json' -Raw | ConvertFrom-Json; "
+        f"$definition = (Get-WdBridgeCodePackageDefinition -Path '{literal}\\bridge-code-files.json').Definition; "
+        f"{extra}"
+        f"$r = Assert-WdBridgeCodePackageIntegrity -BundleRoot '{literal}' -Deployment $deployment "
+        "-Definition $definition; 'FILES:' + $r.FileCount"
+    )
+
+
+@pytest.mark.skipif(
+    PWSH is None or not HAS_BRIDGE_PYTHON,
+    reason="PowerShell or the pinned bridge interpreter is unavailable",
+)
+def test_declared_data_files_are_verified_by_exact_path_and_extras_fail_closed(tmp_path: Path):
+    bundle = _stage_bundle_with_data(tmp_path)
+    code_root = bundle / "tools-bootstrap"
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    package_entries = [name for name in manifest["files"] if name.startswith("tools-bootstrap/")]
+    ok = _integrity(bundle)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert f"FILES:{len(package_entries)}" in ok.stdout          # every declared data file is an entry
+
+    charter = code_root / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md"
+    original = charter.read_bytes()
+    charter.write_bytes(original + b"tampered\n")
+    tampered = _integrity(bundle)
+    assert tampered.returncode != 0 and "pinned bridge code hash mismatch: docs/architecture/IDLE_AUTONOMY_CHARTER.md" \
+        in tampered.stdout + tampered.stderr
+    charter.write_bytes(original)
+
+    for stray in (code_root / "docs" / "architecture" / "OTHER.md", code_root / "docs" / "README.md",
+                  code_root / "schemas" / "v3_13_0" / "extra.v1.json"):
+        stray.write_bytes(b"extra\n")
+        extra = _integrity(bundle)
+        assert extra.returncode != 0, stray
+        assert "unexpected file inside pinned bridge code package" in extra.stdout + extra.stderr, stray
+        stray.unlink()
+
+    # A manifest entry that the definition does not declare is never admitted by its folder.
+    undeclared = code_root / "docs" / "architecture" / "UNDECLARED.md"
+    undeclared.write_bytes(b"undeclared\n")
+    digest = hashlib.sha256(b"undeclared\n").hexdigest().upper()
+    listed = _integrity(bundle, "$deployment.files | Add-Member -NotePropertyName "
+                                "'tools-bootstrap/docs/architecture/UNDECLARED.md' -NotePropertyValue "
+                                f"'{digest}'; ")
+    assert listed.returncode != 0
+    assert "unexpected file inside pinned bridge code package: docs/architecture/UNDECLARED.md" \
+        in listed.stdout + listed.stderr
+    undeclared.unlink()
+
+    missing = _integrity(bundle, "$deployment.files.PSObject.Properties.Remove("
+                                 "'tools-bootstrap/schemas/v3_13_0/fixture.v1.json'); ")
+    assert missing.returncode != 0
+    assert "deployed bundle does not carry pinned bridge code file: schemas/v3_13_0/fixture.v1.json" \
+        in missing.stdout + missing.stderr
+
+    cache = code_root / "schemas" / "__pycache__"
+    cache.mkdir()
+    cached = _integrity(bundle)
+    assert cached.returncode != 0 and "bytecode cache inside pinned bridge code package" in cached.stdout + cached.stderr
+    cache.rmdir()
+
+    target = tmp_path / "outside"
+    target.mkdir()
+    junction = code_root / "docs" / "linked"
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)], capture_output=True, text=True)
+    assert made.returncode == 0, made.stdout + made.stderr
+    try:
+        reparse = _integrity(bundle)
+        assert reparse.returncode != 0
+        assert "reparse point inside pinned bridge code package" in reparse.stdout + reparse.stderr
+    finally:
+        os.rmdir(junction)
+
+    again = _integrity(bundle)
+    assert again.returncode == 0, again.stdout + again.stderr
+
+# --- Byte-reproducible python site (install of 83da16a7 refused python-site/bin/jsonschema.exe, 2026-10-06 18:46Z):
+# pip writes a launcher for every wheel console script whose zip entry carries the current time unless
+# SOURCE_DATE_EPOCH is set, so stage and install produced different launcher and RECORD hashes.
+
+
+def _write_console_script_wheel(path: Path, name: str, version: str, module: str) -> str:
+    dist_info = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"{module}/__init__.py", "def main():\n    return 0\n")
+        archive.writestr(f"{dist_info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{dist_info}/entry_points.txt", f"[console_scripts]\n{module}-cli = {module}:main\n")
+        archive.writestr(f"{dist_info}/RECORD", "")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.skipif(not ENV_SHELLS or not HAS_BRIDGE_PYTHON,
+                    reason="Windows PowerShell and the pinned bridge interpreter are required")
+@pytest.mark.parametrize("shell", ENV_SHELLS, ids=lambda value: value.split(".")[0])
+def test_python_site_is_byte_reproducible_including_console_script_launchers(tmp_path: Path, shell: str):
+    module = "wdscript"
+    source = tmp_path / "src-wheels"
+    source.mkdir()
+    wheel = "wdfake-0.1.0-py3-none-any.whl"   # _fake_definition pins the distribution name wdfake
+    sha256 = _write_console_script_wheel(source / wheel, "wdfake", "0.1.0", module)
+    definition_path = tmp_path / "bridge-code-files.json"
+    definition_path.write_text(json.dumps(_fake_definition(wheel, sha256, module)), encoding="utf-8")
+    quote = lambda value: str(value).replace("'", "''")  # noqa: E731
+    runs = [tmp_path / "run1", tmp_path / "run2"]
+    install = (
+        "Install-WdBridgePythonSite -Definition $definition -PythonExecutable '{python}' "
+        "-WheelDirectory '{run}\\wheels' -SiteDirectory '{run}\\site' -WorkDirectory '{run}\\work' -WheelSource '{src}'"
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+. '{quote(REBOOT / "BridgeCodeContext.ps1")}'
+$definition = (Get-WdBridgeCodePackageDefinition -Path '{quote(definition_path)}').Definition
+$first = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[0]), src=quote(source))}
+Start-Sleep -Seconds 3
+$env:SOURCE_DATE_EPOCH = '1700000000'
+$second = {install.format(python=quote(BRIDGE_PYTHON), run=quote(runs[1]), src=quote(source))}
+$out = [ordered]@{{ first = [ordered]@{{}}; second = [ordered]@{{}} }}
+foreach ($key in @($first.Site.Keys)) {{ $out.first[$key] = $first.Site[$key] }}
+foreach ($key in @($second.Site.Keys)) {{ $out.second[$key] = $second.Site[$key] }}
+'SITES:' + ($out | ConvertTo-Json -Depth 4 -Compress)
+"""
+    # Each shell builds its own default module path: a pwsh 7 PSModulePath inherited by Windows PowerShell 5.1
+    # hides Microsoft.PowerShell.Utility (Get-FileHash).
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() not in ("SOURCE_DATE_EPOCH", "PSMODULEPATH")}
+    result = subprocess.run([shutil.which(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-Command", script], capture_output=True, text=True, timeout=600, env=environment)
+    lines = [line for line in result.stdout.splitlines() if line.startswith("SITES:")]
+    assert result.returncode == 0 and len(lines) == 1, result.stdout + result.stderr
+    sites = json.loads(lines[0].removeprefix("SITES:"))
+    launcher = f"python-site/bin/{module}-cli.exe"
+    assert launcher in sites["first"], sorted(sites["first"])        # the fixture really generates a launcher
+    assert any(key.endswith(".dist-info/RECORD") for key in sites["first"])
+    # Every file, launcher and RECORD included, hashes the same across a clock tick and despite an inherited
+    # SOURCE_DATE_EPOCH: the site the installer re-materializes matches the staged manifest.
+    assert sites["first"] == sites["second"]
+    blob = (runs[0] / "site" / "bin" / f"{module}-cli.exe").read_bytes()
+    stamped = zipfile.ZipFile(io.BytesIO(blob[blob.find(b"PK\x03\x04"):]))
+    assert stamped.infolist()[0].date_time == (1980, 1, 1, 0, 0, 0)   # the fixed epoch, not the clock
+
+
+# --- RCO checker entrypoints (Rule 9a gate checks through the pinned wrapper) ---
+
+RCO_CHECKER_ENTRYPOINTS = {
+    "rco_changes_requested": "tools/check_bridge_changes_requested.py",
+    "rco_pass_present": "tools/check_rco_pass_present.py",
+}
+
+
+def test_rco_checkers_are_published_entrypoints_and_import_smoked():
+    """The pinned wrapper refuses any tool outside python_entrypoints, so an
+    RCO asked to run a checker "via WD_BRIDGE_PYTHON_WRAPPER" gets native exit
+    1 before Python starts unless both checkers are published here."""
+    entrypoints = DEFINITION["python_entrypoints"]
+    for name, path in RCO_CHECKER_ENTRYPOINTS.items():
+        assert entrypoints.get(name) == path, (name, entrypoints.get(name))
+        assert path in DEFINITION["python_files"], path
+    smoke = DEFINITION["import_smoke"]["package_modules"]
+    for module in ("tools.check_bridge_changes_requested", "tools.check_rco_pass_present"):
+        assert module in smoke, module
+    # Publishing is per path, never a pattern: no other check_* tool rides along.
+    published_checkers = {
+        path for path in entrypoints.values() if Path(path).name.startswith("check_")
+    }
+    assert published_checkers == set(RCO_CHECKER_ENTRYPOINTS.values())
+
+
+def _rco_pass_event(head: str, task_id: str) -> dict:
+    # Same minimal shape as tests/tools/test_check_rco_pass_present.py CLI tests.
+    return {
+        "ts_utc": "2026-06-03T12:00:00Z",
+        "agent": "claude-rco-1",
+        "agent_uuid": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+        "type": "decision",
+        "status": "rco_pass",
+        "task_id": task_id,
+        "message": f"RCO_PASS present at exact head {head}",
+        "payload": {},
+        "severity": "",
+        "to": "",
+        "paths": [],
+        "write_scope": [],
+        "run_id": "",
+        "pid": 0,
+        "cwd": "",
+    }
+
+
+@pytest.mark.skipif(
+    PWSH is None or not HAS_BRIDGE_PYTHON,
+    reason="PowerShell or the pinned bridge interpreter is unavailable",
+)
+def test_pinned_wrapper_runs_both_rco_checkers_with_their_native_exit_codes(tmp_path: Path):
+    """Both checkers run through a disposable hash-anchored package built from
+    THIS checkout's definition: entrypoint names and the packaged closure come
+    from bridge-code-files.json, the bytes from the committed sources."""
+    entrypoints = {
+        name: path
+        for name, path in DEFINITION["python_entrypoints"].items()
+        if path in RCO_CHECKER_ENTRYPOINTS.values()
+    }
+    assert set(entrypoints.values()) == set(RCO_CHECKER_ENTRYPOINTS.values()), entrypoints
+    closure, third_party = _intra_repo_closure(sorted(entrypoints.values()))
+    assert third_party == set(), sorted(third_party)
+    assert closure <= set(DEFINITION["python_files"]), sorted(closure - set(DEFINITION["python_files"]))
+    real_files = tuple(sorted(closure)) + ("configs/bridge_identity_registry.json",)
+    bundle = _stage_fake_bundle(tmp_path, real_files=real_files, real_entrypoints=entrypoints)
+    wrapper = str(bundle / "Invoke-WdBridgePython.ps1").replace("'", "''")
+    head = "abcdef1234567890abcdef1234567890abcdef12"
+    task = "waggledance/fable-5/checker-entrypoint-fixture"
+    with_pass = tmp_path / "with-pass.jsonl"
+    with_pass.write_text(json.dumps(_rco_pass_event(head, task), sort_keys=True) + "\n", encoding="utf-8")
+    silent = tmp_path / "silent.jsonl"
+    silent.write_text("", encoding="utf-8")
+    # An EXISTING (empty) spool/accepted-v1 sends the accepted-queue preflight
+    # past its absent-namespace fast path, which is the only branch that takes
+    # the host-wide Global publication mutex, straight to its missing drain
+    # helper refusal. No mutex, no PowerShell child (P1808-T1).
+    empty_root = tmp_path / "empty-bridge-root"
+    (empty_root / "shared").mkdir(parents=True)
+    (empty_root / "spool" / "accepted-v1").mkdir(parents=True)
+    caller_cwd = tmp_path / "caller"
+    caller_cwd.mkdir()
+
+    def literal(value) -> str:
+        if value == "-VerifyPackage":
+            return value              # the wrapper's own switch, never quoted
+        return "'" + str(value).replace("'", "''") + "'"
+
+    cases = {
+        "pass_at_head": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                         "--events", str(with_pass), "--author-agent", "codex-lead-1"],
+        "pass_at_head_verified": ["-VerifyPackage", "tools/check_rco_pass_present.py", "--task-id", task,
+                                  "--head", head, "--events", str(with_pass),
+                                  "--author-agent", "codex-lead-1"],
+        "pass_absent": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                        "--events", str(silent), "--author-agent", "codex-lead-1"],
+        "malformed_head": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", "ABC",
+                           "--events", str(with_pass), "--author-agent", "codex-lead-1"],
+        "self_review": ["tools/check_rco_pass_present.py", "--task-id", task, "--head", head,
+                        "--events", str(with_pass), "--rco-agent", "claude-rco-1",
+                        "--author-agent", "claude-rco-1"],
+        "changes_help": ["tools/check_bridge_changes_requested.py", "--help"],
+        "changes_unverified_queue": ["tools/check_bridge_changes_requested.py", "--task-id", task,
+                                     "--from-agent", "codex-lead-1", "--bridge-root", str(empty_root),
+                                     "--json"],
+    }
+    runs = "\n".join(
+        # Join records with LF ourselves: Out-String could wrap a long JSON line.
+        f"$out = @(& '{wrapper}' {' '.join(literal(arg) for arg in argv)} 2>&1 | "
+        "ForEach-Object { [string]$_ }) -join \"`n\"\n"
+        f"$results[{literal(name)}] = [ordered]@{{ exit = $LASTEXITCODE; out = $out }}"
+        for name, argv in cases.items()
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$env:PYTHONPATH = 'C:\\task\\worktree'
+$env:PYTHONDONTWRITEBYTECODE = $null
+Set-Location -LiteralPath {literal(caller_cwd)}
+$results = [ordered]@{{}}
+{runs}
+$results['after'] = [ordered]@{{
+    pythonpath = [string]$env:PYTHONPATH
+    dontwrite = [string]$env:PYTHONDONTWRITEBYTECODE
+    cwd = (Get-Location).Path
+}}
+$results | ConvertTo-Json -Depth 4 -Compress
+"""
+    anchor = {
+        "WD_REBOOT_EXPECTED_MANIFEST_HASH": _manifest_anchor(bundle),
+        "WD_BRIDGE_PYTHON": BRIDGE_PYTHON,
+    }
+    result = _run_pwsh(script, env=anchor)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
+    # Native exit codes travel through the wrapper unchanged.
+    assert report["pass_at_head"]["exit"] == 0, report["pass_at_head"]
+    assert "RCO_PASS present at exact head" in report["pass_at_head"]["out"]
+    assert report["pass_absent"]["exit"] == 3, report["pass_absent"]
+    assert report["malformed_head"]["exit"] == 2, report["malformed_head"]
+    assert report["self_review"]["exit"] != 0, report["self_review"]
+    assert report["changes_help"]["exit"] == 0, report["changes_help"]
+    assert "--from-agent" in report["changes_help"]["out"]
+    # The fixture package ships no Drain-AcceptedBridgeQueue.ps1, so with an
+    # existing queue namespace the peer-block checker refuses on the missing
+    # drain helper (exit 2) and never reports clear_to_merge. This is a
+    # fixture-only refusal: the PowerShell drain child, BridgeNamedMutex.ps1 and
+    # the PATH-resolved interpreter are NOT exercised here (P1808-R1).
+    unverified = report["changes_unverified_queue"]
+    assert unverified["exit"] == 2, unverified
+    verdict = json.loads(
+        [line for line in unverified["out"].splitlines() if line.startswith("{")][-1]
+    )
+    assert verdict["clear_to_merge"] is False, verdict
+    assert verdict["decision"] == "accepted_queue_preflight_failed", verdict
+    assert (
+        verdict["accepted_queue_preflight"]["decision"]
+        == "accepted_queue_drain_helper_missing"
+    ), verdict
+    assert report["pass_at_head_verified"]["exit"] == 0, report["pass_at_head_verified"]
+    # Caller environment and cwd are restored after every call.
+    assert report["after"]["pythonpath"] == "C:\\task\\worktree"
+    assert report["after"]["dontwrite"] == ""
+    assert report["after"]["cwd"].rstrip("\\") == str(caller_cwd).rstrip("\\")
+    # -B and PYTHONDONTWRITEBYTECODE: no bytecode cache anywhere in the package.
+    assert not list(bundle.rglob("__pycache__")), list(bundle.rglob("__pycache__"))
+    assert not list(bundle.rglob("*.pyc"))
+    # A packaged module that is NOT a published entrypoint is still refused.
+    sibling = _run_pwsh(
+        f"$ErrorActionPreference='Stop'; & '{wrapper}' tools/bridge_named_mutex.py", env=anchor
+    )
+    assert sibling.returncode != 0
+    assert "outside the packaged entrypoints" in (sibling.stdout + sibling.stderr)
+
+
+def _instrumented_preflight(monkeypatch):
+    """Import the committed preflight with every mutex and child-process seam
+    replaced by recorders, so no test here touches a live Global mutex."""
+    monkeypatch.syspath_prepend(str(ROOT))
+    import contextlib
+
+    import tools.bridge_accepted_queue_preflight as preflight
+
+    calls: list[str] = []
+
+    @contextlib.contextmanager
+    def recording_lease(label):
+        calls.append(label)
+        yield
+
+    def refuse(label):
+        def _refuse(*args, **kwargs):
+            calls.append(label)
+            raise AssertionError(f"{label} must not be reached")
+        return _refuse
+
+    monkeypatch.setattr(
+        preflight, "_bridge_queue_publication_lease",
+        lambda: recording_lease("queue_publication_mutex"))
+    monkeypatch.setattr(
+        preflight, "_bridge_append_mutex_lease",
+        lambda: recording_lease("append_mutex"))
+    monkeypatch.setattr(preflight, "create_bridge_named_mutex", refuse("named_mutex"))
+    monkeypatch.setattr(preflight.subprocess, "run", refuse("subprocess"))
+    return preflight, calls
+
+
+def test_wrapper_fixture_queue_shape_never_reaches_the_live_publication_mutex(
+    tmp_path: Path, monkeypatch
+):
+    """P1808-T1 isolation proof on the committed source, never on the live
+    mutex: the fixture's queue shape (existing empty spool/accepted-v1, no
+    drain helper) refuses before any lease or PowerShell child. The twin, an
+    ABSENT namespace, does take the publication lease here (a recorder), so the
+    instrumentation is shown to observe that branch."""
+    preflight, calls = _instrumented_preflight(monkeypatch)
+    missing_helper = tmp_path / "no-bin" / "Drain-AcceptedBridgeQueue.ps1"
+
+    fixture_root = tmp_path / "fixture-shape"
+    (fixture_root / "shared").mkdir(parents=True)
+    (fixture_root / "spool" / "accepted-v1").mkdir(parents=True)
+    report = preflight.check_accepted_queue_complete(
+        bridge_root=fixture_root, drain_script=missing_helper)
+    assert report["ok"] is False and report["complete"] is False, report
+    assert report["decision"] == "accepted_queue_drain_helper_missing", report
+    assert calls == [], calls
+
+    absent_root = tmp_path / "absent-shape"
+    (absent_root / "shared").mkdir(parents=True)
+    twin = preflight.check_accepted_queue_complete(
+        bridge_root=absent_root, drain_script=missing_helper)
+    assert twin["decision"] == "accepted_queue_absent", twin
+    assert calls == ["queue_publication_mutex"], calls

@@ -53,10 +53,12 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
+    APPROVAL_DISQUALIFYING_TOKENS as _BRIDGE_APPROVAL_DISQUALIFYING_TOKENS,
     INFORMATIONAL_FINDING_STATUSES,
     _author_task_id_aliases,
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
+    _is_rco_decision_block_status as _bridge_is_rco_decision_block_status,
 )
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -591,6 +593,126 @@ def check_rco_pass_present(
     return base
 
 
+def scan_recognized_rco_vetoes(
+    *,
+    events: Sequence[Any],
+    task_id: str,
+    author_agent: str,
+    rco_agent: str | Sequence[str] | None = None,
+    identity_registry: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Every veto-shaped event any recognized RCO posted on ``task_id``.
+
+    ``check_rco_pass_present`` stops at ``no_qualifying_pass`` before it
+    computes ``blocking_rco_agents``, so its ``latest_rco_is_veto`` is no proof
+    that the RCO slot is clear when no RCO passed. This scan has no early
+    return on missing passes and honours no retraction: it covers every
+    recognized RCO (an author RCO too) on the task id and its author aliases,
+    and a veto-shaped event with a missing or mismatched identity still
+    latches. Task ids match case-insensitively, and type and status are
+    stripped before classification (on a copy). A veto-shaped event whose
+    agent or task id is missing, empty or not a string, and whose other field
+    does not place it outside the scan, returns ``unattributable_veto_event``.
+    ``ok`` is True only for valid input with no such event; a spurious hold is
+    the safe failure (plan v3 B3).
+    """
+    task_id = task_id.strip() if type(task_id) is str else ""
+    author_agent = author_agent.strip() if type(author_agent) is str else ""
+    result: dict[str, Any] = {
+        "ok": False,
+        "decision": "invalid_input",
+        "task_id": task_id,
+        "author_agent": author_agent,
+        "recognized_rco_agents": [],
+        "task_id_aliases": [],
+        "veto_events": [],
+        "error": None,
+    }
+    try:
+        recognized = _normalize_rco_agents(rco_agent)
+    except (TypeError, ValueError) as exc:
+        result["error"] = f"invalid rco agents: {exc}"
+        return result
+    result["recognized_rco_agents"] = list(recognized)
+    if not task_id:
+        result["error"] = "task_id must not be empty"
+        return result
+    if not recognized or not all(AGENT_ID_RE.fullmatch(agent) for agent in recognized):
+        result["error"] = "rco_agent entries must be bridge agent ids"
+        return result
+    if not AGENT_ID_RE.fullmatch(author_agent):
+        result["error"] = "author_agent must be a bridge agent id"
+        return result
+    if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
+        result["error"] = "events must be a sequence of event objects"
+        return result
+    try:
+        registry = (
+            load_bridge_identity_registry()
+            if identity_registry is None
+            else dict(identity_registry)
+        )
+    except ValueError as exc:
+        result["decision"] = "invalid_identity_registry"
+        result["error"] = str(exc)
+        return result
+    # The alias is built from the case-folded id: the shared helper matches the
+    # (lower-case) author prefix case-sensitively, so a re-cased caller id got
+    # no alias (Grok c7307c39 BUG d).
+    aliases = _author_task_id_aliases(task_id.casefold(), author_agent)
+    result["task_id_aliases"] = list(aliases)
+    # Padded or re-cased task ids and agents still match: on a veto scan the
+    # safe error is to count too much (Grok self-challenges 4fbf92c7 item 3
+    # and 63c3aff4).
+    scope = frozenset(value.casefold() for value in (task_id, *aliases))
+    restricted = set(recognized)
+    vetoes: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            result["decision"] = "malformed_event"
+            result["error"] = "events must hold only event objects"
+            return result
+        event_task = _scan_id(event.get("task_id"))
+        event_agent = _scan_id(event.get("agent"))
+        if event_task is not None and event_task.casefold() not in scope:
+            continue
+        if event_agent is not None and event_agent.lower() not in restricted:
+            continue
+        # The shared classifier lowercases type and status but does not strip
+        # them; classify a stripped copy so padding cannot hide a veto here.
+        classified = dict(event)
+        for key in ("type", "status"):
+            if type(classified.get(key)) is str:
+                classified[key] = classified[key].strip()
+        if not _is_rco_veto_event(classified):
+            continue
+        if event_task is None or event_agent is None:
+            # A missing agent or task id cannot prove this veto is someone
+            # else's: unknown attribution never clears the scan.
+            result["decision"] = "unattributable_veto_event"
+            result["error"] = "a veto-shaped event has no usable agent or task_id"
+            result["veto_events"] = vetoes
+            return result
+        summary = _summarize_event(event) or {}
+        summary["identity_binding_status"] = bridge_identity_binding_status(
+            event,
+            registry=registry,
+            restricted_agents=restricted,
+        )
+        vetoes.append(summary)
+    result["veto_events"] = vetoes
+    result["decision"] = "recognized_rco_veto_present" if vetoes else "no_recognized_rco_veto"
+    result["ok"] = not vetoes
+    return result
+
+
+def _scan_id(value: Any) -> str | None:
+    """A stripped, non-empty string id, or None when the event cannot be attributed."""
+    if type(value) is not str:
+        return None
+    return value.strip() or None
+
+
 def _find_task_id_mismatch_rco_pass_events(
     *,
     events: Sequence[Mapping[str, Any]],
@@ -839,6 +961,12 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
             return False
         return True
 
+    # Cause-B C1/C2: the same RCO's later decision/review that is not an exact
+    # approval or clear (``rco_pass_withheld``, ``hold``, ``do_not_merge``)
+    # supersedes its earlier pass, as in the peer gate.
+    if typ in DECISION_TYPES_FOR_PASS and _bridge_is_rco_decision_block_status(status):
+        return True
+
     return False
 
 
@@ -868,6 +996,8 @@ def _is_approval_status(status: str) -> bool:
     if status in RCO_PASS_STATUSES:
         return True
     tokens = _status_tokens(status)
+    if tokens & _BRIDGE_APPROVAL_DISQUALIFYING_TOKENS:
+        return False
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens

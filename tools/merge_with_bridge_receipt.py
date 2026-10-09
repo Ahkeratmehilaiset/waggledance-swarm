@@ -23,6 +23,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_consensus_auto_merge import (  # noqa: E402
+    REVIEW_POLICIES,
+    REVIEW_POLICY_LEGACY,
+    REVIEW_POLICY_RULE12,
     AutoMergeGateError,
     evaluate_auto_merge_gate,
 )
@@ -78,6 +81,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Actually run gh pr merge after the receipt gate passes.",
     )
     parser.add_argument("--now", default="")
+    parser.add_argument(
+        "--review-policy",
+        choices=sorted(REVIEW_POLICIES),
+        default=REVIEW_POLICY_LEGACY,
+        help="Opt-in rule12 review evaluator; the default is the Rule 9a verifier.",
+    )
+    parser.add_argument(
+        "--grok-fallback",
+        action="store_true",
+        help=(
+            "rule12 only: let a bound Grok answer from the fixed helper reports "
+            "root hold a vacant RCO slot (default off)."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--operator-path-exception-json", default="",
                         help="Explicit operator invocation only: exact-bound grant JSON; not authentication.")
@@ -119,6 +136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             now_utc=now_utc,
             operator_path_exception=(json.loads(args.operator_path_exception_json)
                                      if args.operator_path_exception_json else None),
+            review_policy=args.review_policy,
+            grok_fallback=args.grok_fallback,
         )
     except ValueError as exc:
         report = {
@@ -167,8 +186,28 @@ def merge_with_bridge_receipt(
     now_utc: datetime | None = None,
     runner: Runner | None = None,
     operator_path_exception: Mapping[str, Any] | None = None,
+    review_policy: str = REVIEW_POLICY_LEGACY,
+    grok_fallback: bool = False,
+    _grok_reports_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Run snapshot + receipt preflight, then optionally merge exact head."""
+    """Run snapshot + receipt preflight, then optionally merge exact head.
+
+    With ``grok_fallback`` (rule12 only) the fresh gate must reproduce the
+    receipt's whole Grok evidence tuple, or the merge is refused before gh.
+    """
+    if type(grok_fallback) is not bool:
+        raise ValueError("grok_fallback must be a boolean")
+    if grok_fallback and review_policy != REVIEW_POLICY_RULE12:
+        raise ValueError("grok_fallback needs review_policy=rule12")
+    if _grok_reports_root is not None and (
+        not grok_fallback or not isinstance(_grok_reports_root, Path)
+    ):
+        raise ValueError("_grok_reports_root is a test seam for grok_fallback")
+    grok_kwargs: dict[str, Any] = {}
+    if grok_fallback:
+        grok_kwargs["grok_fallback"] = True
+        if _grok_reports_root is not None:
+            grok_kwargs["_grok_reports_root"] = _grok_reports_root
     if type(pr_number) is not int or pr_number < 1:
         raise ValueError("pr_number must be positive")
     if type(apply) is not bool:
@@ -183,6 +222,10 @@ def merge_with_bridge_receipt(
         raise ValueError("bridge_task_id must be a string")
     if type(method) is not str:
         raise ValueError("method must be a string")
+    if type(review_policy) is not str or review_policy not in REVIEW_POLICIES:
+        raise ValueError(
+            "review_policy must be one of: " + ", ".join(sorted(REVIEW_POLICIES))
+        )
     if not isinstance(events_path, Path):
         raise ValueError("events_path must be a Path")
     if not isinstance(out_dir, Path):
@@ -275,6 +318,8 @@ def merge_with_bridge_receipt(
             bridge_task_id=bridge_task_id,
             now_utc=effective_now_utc,
             operator_path_exception=operator_path_exception,
+            review_policy=review_policy,
+            **grok_kwargs,
         )
     except BridgeConsensusMergeReceiptError as exc:
         return _blocked(
@@ -344,6 +389,13 @@ def merge_with_bridge_receipt(
             },
         )
 
+    # Under rule12 the fresh gate reads the real clock (now_utc omitted), so
+    # evidence posted after the receipt cannot be judged against a stale time.
+    fresh_rule12_kwargs: dict[str, Any] = (
+        {"review_policy": review_policy}
+        if review_policy == REVIEW_POLICY_RULE12
+        else {}
+    )
     try:
         fresh_gate = evaluate_auto_merge_gate(
             pr_status=verified_snapshot,
@@ -358,6 +410,8 @@ def merge_with_bridge_receipt(
             bridge_task_id=bridge_task_id,
             apply=False,
             require_bridge_consensus=True,
+            **fresh_rule12_kwargs,
+            **grok_kwargs,
         )
     except AutoMergeGateError as exc:
         fresh_gate = dict(exc.report)
@@ -375,6 +429,29 @@ def merge_with_bridge_receipt(
             pr_number=pr_number,
             extra={
                 "fresh_gate": fresh_gate,
+                "snapshot_path": str(snapshot_path),
+                "receipt_bundle_path": receipt_report["receipt_bundle_path"],
+            },
+        )
+    receipt_gate_report = receipt_report.get("gate_report")
+    receipt_evidence = (
+        receipt_gate_report.get("grok_fallback_evidence")
+        if isinstance(receipt_gate_report, Mapping)
+        else None
+    )
+    if fresh_gate.get("grok_fallback_evidence") != receipt_evidence:
+        # Any change, refusal or unknown between the receipt's Grok tuple and the
+        # fresh gate's rejects before GitHub; no legacy fallback (plan v3 B5).
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=[
+                "fresh gate Grok fallback evidence differs from the receipt"
+            ],
+            stage="apply_recheck",
+            pr_number=pr_number,
+            extra={
+                "fresh_gate": fresh_gate,
+                "receipt_grok_fallback_evidence": receipt_evidence,
                 "snapshot_path": str(snapshot_path),
                 "receipt_bundle_path": receipt_report["receipt_bundle_path"],
             },

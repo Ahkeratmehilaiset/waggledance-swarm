@@ -259,7 +259,7 @@ function Get-CacheRecord {
         throw 'Grok model cache is missing exact usage examples.'
     }
     # A valid provider cache may contain retired direct-CLI examples. Never
-    # return those as instructions that bypass the fleet's shared hourly gate.
+    # return those as instructions that bypass the fleet's controlled single-flight helper.
     $cache.usage = New-UsageExamples -Executable ([string]$cache.grok_command) -Model $model
 
     return [pscustomobject][ordered]@{
@@ -313,7 +313,9 @@ function New-MarkdownDocument {
         'The provider default is used as the authoritative accessible choice; no model name is hard-coded or guessed from version-like names.',
         '',
         ('- Model: `{0}`' -f [string]$Record.model),
-        ('- Grok CLI: `{0}`' -f [string]$Record.cli_version),
+        ('- Grok CLI: `{0}` (`--version` label, probed {1})' -f [string]$Record.cli_version, [string]$Record.cli_version_probed_utc),
+        ('- Model catalog: `grok models`, probed {0}' -f [string]$Record.models_probed_utc),
+        '- Executing build: unknown (the `--version` label, the CLI catalog cache and session traces are separate labels that can disagree)',
         ('- Executable: `{0}`' -f [string]$Record.grok_command),
         ('- Verified (UTC): `{0}`' -f [string]$Record.discovered_utc),
         ('- Source: `{0}`' -f [string]$Record.source),
@@ -351,6 +353,19 @@ else {
 $jsonPath = Join-Path $OutputDirectory $jsonFileName
 $markdownPath = Join-Path $OutputDirectory $markdownFileName
 $liveDiscoveryComplete = $false
+# Each probe is timestamped when it returns; -NowUtc pins both for tests.
+function Get-WdProbeTime {
+    if ($null -ne $NowUtc) { return $effectiveNow }
+    return [DateTimeOffset]::UtcNow
+}
+# The --version label is what the CLI reports, not proof of the executing build: the CLI catalog cache and
+# session traces carry their own labels, and they have disagreed (1.0.46 vs 1.0.45, 2026-10-06). Each label
+# keeps its own source; none is normalized into another.
+$versionProvenance = [ordered]@{
+    cli_version = 'grok --version output, as reported by the CLI'
+    executing_build = 'unknown'
+    note = 'The --version label, the CLI model-catalog cache label and session trace labels are separate evidence and can disagree; none proves which build executes a consultation.'
+}
 
 try {
     $resolvedExecutable = Resolve-GrokExecutable -RequestedCommand $GrokCommand
@@ -364,12 +379,14 @@ try {
     if ($cliVersion.Count -ne 1) {
         throw 'The Grok CLI version probe returned no version line.'
     }
+    $cliVersionProbedUtc = Get-WdProbeTime
 
     $modelsLines = @(Invoke-GrokProbe `
             -Executable $resolvedExecutable `
             -ArgumentList @('models') `
             -ProbeName 'models')
     $modelSelection = ConvertFrom-GrokModelsOutput -Lines $modelsLines
+    $modelsProbedUtc = Get-WdProbeTime
     $usage = New-UsageExamples `
         -Executable $resolvedExecutable `
         -Model $modelSelection.Model
@@ -379,6 +396,9 @@ try {
         model = $modelSelection.Model
         available_models = @($modelSelection.AvailableModels)
         cli_version = [string]$cliVersion[0]
+        cli_version_probed_utc = $cliVersionProbedUtc.ToString('o')
+        models_probed_utc = $modelsProbedUtc.ToString('o')
+        version_provenance = $versionProvenance
         grok_command = $resolvedExecutable
         discovered_utc = $effectiveNow.ToString('o')
         source = 'Authenticated Grok CLI: grok models'
@@ -407,6 +427,9 @@ try {
         Model = $record.model
         AvailableModels = @($record.available_models)
         CliVersion = $record.cli_version
+        CliVersionProbedUtc = $record.cli_version_probed_utc
+        ModelsProbedUtc = $record.models_probed_utc
+        ExecutingBuild = 'unknown'
         GrokCommand = $record.grok_command
         DiscoveredUtc = $effectiveNow
         Source = $record.source
@@ -446,6 +469,10 @@ catch {
         Model = [string]$cached.Cache.model
         AvailableModels = @($cached.Cache.available_models | ForEach-Object { [string]$_ })
         CliVersion = [string]$cached.Cache.cli_version
+        # An older cache has no probe times: they stay unknown (null), never invented.
+        CliVersionProbedUtc = $(if ($cached.Cache.PSObject.Properties['cli_version_probed_utc']) { [string]$cached.Cache.cli_version_probed_utc } else { $null })
+        ModelsProbedUtc = $(if ($cached.Cache.PSObject.Properties['models_probed_utc']) { [string]$cached.Cache.models_probed_utc } else { $null })
+        ExecutingBuild = 'unknown'
         GrokCommand = [string]$cached.Cache.grok_command
         DiscoveredUtc = $cached.DiscoveredUtc
         Source = [string]$cached.Cache.source

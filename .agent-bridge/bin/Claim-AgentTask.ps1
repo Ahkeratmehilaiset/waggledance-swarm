@@ -108,6 +108,15 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
+# S2 (Lead 2026-09-30): the listing, the conflict checks and the create or
+# refresh run inside the v2 queue's runtime-root mutex, taken before the
+# claim lock as in the Python queue, so a v2 transaction or claims snapshot
+# never lists claims in the middle of this change. The sweep above takes and
+# releases it on its own, so it is never held twice. The claim event is
+# written after the release.
+$rootMutex = Enter-BridgeQueueRootMutex -Root $bridgeRoot
+$rootWorkDone = $false
+try {
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 $resources = @(Resolve-BridgeResourceScopes -Scopes $WriteScope -Worktree (Get-Location).Path -BridgeRoot $bridgeRoot)
 $existingClaimPath = ''
@@ -140,9 +149,66 @@ foreach ($file in $activeClaims) {
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
         $existingCwd = if ($existing.PSObject.Properties['cwd']) { [string]$existing.cwd } else { '' }
-        $existingResources = @(Resolve-BridgeResourceScopes -Scopes @($existing.write_scope) -Worktree $existingCwd -BridgeRoot $bridgeRoot)
+        # RS7-M1 (RCO1): an unresolvable stored scope still fails closed, but names the claim that blocks, not the caller.
+        try {
+            $existingResources = @(Resolve-BridgeResourceScopes -Scopes @($existing.write_scope) -Worktree $existingCwd -BridgeRoot $bridgeRoot)
+        } catch {
+            $reason = [string]$_.Exception.Message
+            Stop-BridgeClaim -Message ("an active claim has an unresolvable write scope; overlap unknown (claim {0} by {1}, cwd {2}: {3})" -f $existing.task_id, $existing.agent, $existingCwd, $reason.Substring(0, [Math]::Min(200, $reason.Length))) -Code 3
+        }
         if (Test-BridgeResourceOverlap -A $resources -B $existingResources) {
             Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, ((@($existing.write_scope)) -join ', ')) -Code 3
+        }
+    }
+}
+
+# Tools BFE7F4A1 (PS-PENDING-WAL-ADMISSION): a v2 transaction that stopped between its WAL record and its claim write
+# is applied later by recovery without re-checking this claim (B-F2), so a WRITE claim compares the claim each
+# unfinished record would write, as the Python queue does, under the root mutex held above. Bounded and fail-closed:
+# a linked, oversized, undecodable or unknown-state record makes overlap unknown; finished records are skipped. This
+# writer does not re-verify record digests or root binding, so it may refuse or admit such a record differently from
+# Python (Grok 21006e13 #9); recovery never applies a record Python calls corrupt, so it cannot create the overlap.
+if ($Mode -eq 'write') {
+    $walDir = Join-Path $bridgeRoot 'work_queue/v2/wal'
+    $walFiles = @()
+    if (Test-Path -LiteralPath $walDir) {
+        if (-not (Test-Path -LiteralPath $walDir -PathType Container) -or
+            ([IO.File]::GetAttributes($walDir) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Stop-BridgeClaim -Message "the v2 WAL directory is linked or not a directory; overlap unknown: $walDir" -Code 3
+        }
+        $walFiles = @(Get-ChildItem -LiteralPath $walDir -Filter '*.json' -File -Force -ErrorAction Stop)
+    }
+    if ($walFiles.Count -gt 1024) {
+        Stop-BridgeClaim -Message ("{0} unfinished transaction records exceed the 1024 bound; overlap unknown" -f $walFiles.Count) -Code 3
+    }
+    foreach ($walFile in $walFiles) {
+        $txn = $null
+        try {
+            if (($walFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $walFile.Length -gt 262144) { throw 'linked or oversized' }
+            $txn = [IO.File]::ReadAllText($walFile.FullName, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -ErrorAction Stop
+        } catch { $txn = $null }
+        $state = if ($null -ne $txn -and $txn.PSObject.Properties['state']) { [string]$txn.state } else { '' }
+        if ($null -eq $txn -or $state -cnotin @('prepared', 'applied', 'outboxed', 'aborted', 'diverged') -or
+            -not $txn.PSObject.Properties['after']) {
+            Stop-BridgeClaim -Message ("an unfinished transaction record is unreadable; overlap unknown: {0}" -f $walFile.Name) -Code 3
+        }
+        if ($state -cin @('outboxed', 'aborted', 'diverged')) { continue }
+        $planned = $txn.after
+        if ($null -eq $planned) { continue }   # a release or an archive writes no claim
+        if ($planned.GetType().FullName -cne 'System.Management.Automation.PSCustomObject') {
+            Stop-BridgeClaim -Message ("an unfinished transaction record is unreadable; overlap unknown: {0}" -f $walFile.Name) -Code 3
+        }
+        # 'write' compares case-insensitively, as the active-claim check above does (Grok 21006e13 #1: a 'Write' plan was skipped)
+        if ([string]$planned.task_id -ceq $TaskId -or [string]$planned.mode -ne 'write') { continue }
+        $plannedCwd = if ($planned.PSObject.Properties['cwd']) { [string]$planned.cwd } else { '' }
+        try {
+            $plannedResources = @(Resolve-BridgeResourceScopes -Scopes @($planned.write_scope) -Worktree $plannedCwd -BridgeRoot $bridgeRoot)
+        } catch {
+            $reason = [string]$_.Exception.Message
+            Stop-BridgeClaim -Message ("an unfinished claim has an unresolvable write scope; overlap unknown (claim {0} by {1}, cwd {2}: {3})" -f $planned.task_id, $planned.agent, $plannedCwd, $reason.Substring(0, [Math]::Min(200, $reason.Length))) -Code 3
+        }
+        if (Test-BridgeResourceOverlap -A $resources -B $plannedResources) {
+            Stop-BridgeClaim -Message ("write-scope conflict with an unfinished claim of {0}" -f $planned.task_id) -Code 3
         }
     }
 }
@@ -305,6 +371,13 @@ if (-not $existingClaimPath) {
                   (Test-BridgeIdentitylessClaimPair -Claim $current -Identity $ownerIdentity))) {
             Stop-BridgeClaim -Message ("claim changed before refresh: {0}" -f $claimPath) -Code 3
         }
+        # B-F3 (RCO1 2026-09-30; Fable review 99897de5): this writer has no dispatch_key and rebuilds
+        # the claim, so a refresh here would erase the key a v2 claim stores as immutable dispatch
+        # evidence, and a later claim with the same key would pass the v2 duplicate check. As in the
+        # v2 queue, a refresh that cannot present the stored key is refused; the claim is untouched.
+        if ($current.PSObject.Properties['dispatch_key']) {
+            Stop-BridgeClaim -Message ("refusing to refresh a keyed claim without its dispatch_key: {0}" -f $claimPath) -Code 3
+        }
         # Internal review fix R7 (2026-05-09): write to a temp sibling and
         # Replace() so readers always see the old or the new claim, never a
         # torn write.
@@ -322,6 +395,10 @@ if (-not $existingClaimPath) {
     } finally {
         Exit-BridgeClaimLock -Lock $refreshLock
     }
+}
+$rootWorkDone = $true
+} finally {
+    Exit-BridgeQueueRootMutex -Mutex $rootMutex -Completed:$rootWorkDone
 }
 
 & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `

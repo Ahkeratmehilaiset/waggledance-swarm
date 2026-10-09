@@ -13,6 +13,7 @@ from waggledance.core.work_queue import (
     DEFAULT_LEASE_SECONDS,
     Claim,
     WorkQueueError,
+    WorkQueueIOError,
     archive_stale_claims,
     check_scope_overlap,
     claim_task,
@@ -1068,3 +1069,123 @@ def test_heartbeat_path_and_claim_lookup_match_powershell(tmp_path: Path) -> Non
     assert result["miss"] == ""
     assert _python_find(claims, "own/9") == claims / "own_9.json"
     assert _python_find(claims, "own_9") is None
+
+
+def test_detect_stale_claims_treats_an_out_of_range_heartbeat_as_stale(tmp_path: Path) -> None:
+    # RCO2 35B5527F P1: year 1 at +14:00 leaves the datetime range; it is unparseable (stale), not an OverflowError.
+    bridge = tmp_path / ".agent-bridge"
+    now = datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc)
+    claim_task(agent="claude-1", task_id="odd-task", summary="x", bridge_root=bridge, now_utc=now)
+    claim_task(agent="claude-2", task_id="fresh-task", summary="y", bridge_root=bridge, now_utc=now)   # twin
+    path = bridge / "work_queue" / "claims" / "odd-task.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["last_heartbeat_utc"] = "0001-01-01T00:00:00+14:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    stale = detect_stale_claims(bridge_root=bridge, now_utc=now, max_age_seconds=3600)
+    assert {c.task_id for c in stale} == {"odd-task"}
+
+
+# -- QB-L1-b (RCO2 FF7BC9A6): a failed claim unlink removes the done record this release just wrote --------------
+
+def _deny_unlink(monkeypatch: pytest.MonkeyPatch, *fragments: str) -> None:
+    real = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if any(fragment in self.name for fragment in fragments):
+            raise PermissionError(13, "Access is denied", str(self))
+        real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True], ids=["rolled_back", "rollback_failed"])
+def test_a_release_whose_claim_cannot_be_removed_leaves_no_done_record_or_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback_fails: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-release", summary="x", bridge_root=bridge)
+    claim_file = next((bridge / "work_queue" / "claims").glob("*.json"))
+    real_unlink = Path.unlink
+    _deny_unlink(monkeypatch, claim_file.name, *(["task-release-"] if rollback_fails else []))
+    with pytest.raises(WorkQueueIOError) as raised:
+        release_task(agent="claude-1", task_id="task-release", bridge_root=bridge)
+    error = raised.value
+    assert error.errno == 13 and isinstance(error.__cause__, PermissionError) and error.completed == []
+    done = sorted((bridge / "work_queue" / "done").glob("*.json"))
+    assert claim_file.exists()                                # the claim stays active
+    if rollback_fails:
+        assert error.applied is None and error.residual == [str(done[0])] and len(error.rollback_errors) == 1
+    else:
+        assert (error.applied, error.rollback_errors, error.residual, done) == (False, [], [], [])
+    monkeypatch.setattr(Path, "unlink", real_unlink)          # success twin: the same release once removal works
+    assert release_task(agent="claude-1", task_id="task-release", bridge_root=bridge).task_id == "task-release"
+    assert not claim_file.exists()
+
+
+
+def test_a_claim_removed_meanwhile_keeps_the_done_record_of_the_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Grok 5321c511 #1: a concurrent removal is not a failed release; the done record must not be rolled back.
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-gone", summary="x", bridge_root=bridge)
+    claim_file = next((bridge / "work_queue" / "claims").glob("*.json"))
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == claim_file:
+            real_unlink(self)                                 # another actor removed it first
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    record = release_task(agent="claude-1", task_id="task-gone", bridge_root=bridge)
+    assert record.task_id == "task-gone" and not claim_file.exists()
+    assert len(list((bridge / "work_queue" / "done").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("cause", [
+    PermissionError(13, "Access is denied", "c.json"),
+    OSError(None, "Invalid argument", "claim.json", 5, None),
+    OSError("plain"),
+], ids=["errno_filename", "winerror", "message_only"])
+def test_the_wrapper_keeps_every_os_error_field_and_its_text(cause: OSError) -> None:
+    # Grok 5321c511 #4: the errno-less branch used to drop filename and winerror.
+    error = WorkQueueIOError(cause, applied=None)
+    assert isinstance(error, OSError) and str(error) == str(cause)
+    for name in ("errno", "strerror", "filename", "filename2", "winerror"):
+        assert getattr(error, name, None) == getattr(cause, name, None), name
+
+
+
+# Tools 9758A39B (RS7-D-LEASE-OVERFLOW): an expiry past datetime.max raised OverflowError out of the sweep. Such an
+# expiry is unknown, so the owned claim is not sweepable; the owner session is dead in every case so only the lease
+# decides, and the expired/future twins keep the ordinary verdicts.
+@pytest.mark.parametrize(
+    ("beat_utc", "lease", "kept"),
+    [
+        ("9999-12-31T23:59:59Z", 600, True),          # base + lease leaves the representable range
+        ("2026-09-28T10:00:00Z", 10**30, True),       # timedelta(seconds=10**30) itself overflows
+        ("2026-09-28T10:00:00Z", 60, False),          # twin: an ordinary expired lease is swept
+        ("2026-09-28T11:59:30Z", 600, True),          # twin: a valid future expiry is kept
+    ],
+    ids=["near_9999_plus_600", "lease_10e30", "expired_twin", "future_twin"],
+)
+def test_an_unrepresentable_lease_expiry_keeps_the_owned_claim(
+    tmp_path: Path, beat_utc: str, lease: int, kept: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "sweep-lease-range.json"
+    _write_raw_claim(
+        path,
+        task_id="sweep-lease-range",
+        claimed_at_utc=beat_utc,
+        last_heartbeat_utc=beat_utc,
+        lease_seconds=lease,
+        claim_lease_expires_utc="",
+        owner_session_id="test-session",
+        owner_token_sha256=TEST_TOKEN_SHA,
+    )
+    archived = archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True)
+    assert path.exists() is kept
+    assert len(archived) == (0 if kept else 1)

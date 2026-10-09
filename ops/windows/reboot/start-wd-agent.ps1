@@ -216,7 +216,8 @@ function Get-WdNativeLeadResumeState {
   $journal = Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop'
   $identityPath = Join-Path $journal 'conversation.json'
   $pointer = Join-Path $RuntimeRoot '.wd-turn-codex-lead-1.owner.json'
-  foreach ($path in @($journal, $identityPath, $pointer)) {
+  $relayPath = Join-Path $journal 'native-bridge-wake.json'
+  foreach ($path in @($journal, $identityPath, $pointer, $relayPath)) {
     $existing = $path
     while (-not (Test-Path -LiteralPath $existing)) { $existing = Split-Path -Parent $existing }
     $kind = if (Test-Path -LiteralPath $existing -PathType Container) { 'Directory' } else { 'Leaf' }
@@ -236,7 +237,80 @@ function Get-WdNativeLeadResumeState {
       @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File).Count) {
     throw 'Native Lead resume cannot bypass pending managed work'
   }
+  # The Lead wake relay's FIRST poll (Invoke-WdNativeToolsWakeStep: e4 plus the RCO1 0900 named-snapshot contract as
+  # RCO2 composes it) refuses an unresolved record, and the fleet's final attestation then fails AFTER every lane
+  # launched. Mirror its acceptance here, before any Apply or launch, and change nothing on disk. Passing proves only
+  # that the relay will not refuse its first poll: it is NOT readiness, NOT a drained queue and NOT consumption, and
+  # it never clears Supervisor OFF. submitting stays UNKNOWN even beside a .refusal-* receipt: only the strict helper
+  # may reconcile it. Fields are read by exact name, and a mis-cased known field refuses.
+  $relay = $null
+  if (Test-Path -LiteralPath $relayPath -PathType Container) {
+    throw 'Native Lead resume requires a reconciled bridge wake relay state'
+  }
+  $relayField = { param($Record, [string] $Name)
+    foreach ($property in $Record.PSObject.Properties) { if ($property.Name -ceq $Name) { return ,$property.Value } }
+    return $null }
+  $relayLeaf = Split-Path -Leaf $relayPath
+  $snapshots = @()
+  if (Test-Path -LiteralPath $journal -PathType Container) {
+    $snapshots = @(Get-ChildItem -LiteralPath $journal -Force |
+      Where-Object { $_.Name.StartsWith($relayLeaf + '.wake', [StringComparison]::OrdinalIgnoreCase) })
+  }
+  foreach ($item in $snapshots) {
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'Native Lead resume requires a reconciled bridge wake relay state'  # a snapshot is a plain file
+    }
+  }
+  # A legacy snapshot the relay already set aside is operator-owned and never sent.
+  $live = @($snapshots |
+    Where-Object { -not $_.Name.StartsWith($relayLeaf + '.wake.legacy-', [StringComparison]::Ordinal) })
+  if (Test-Path -LiteralPath $relayPath -PathType Leaf) {
+    if ((Get-Item -LiteralPath $relayPath -Force).Length -gt 32768) {
+      throw 'Lead bridge wake relay state is oversized'
+    }
+    $relay = (Read-Utf8LaneSnapshot -Path $relayPath).Text | ConvertFrom-Json
+    $known = @('schema', 'status', 'thread_id', 'agent', 'snapshot_id', 'updated_at_utc', 'rejections')
+    $status = & $relayField $relay 'status'
+    $snapshotId = & $relayField $relay 'snapshot_id'
+    $agent = & $relayField $relay 'agent'
+    $unresolved = (& $relayField $relay 'schema') -cne 'wd.native-tools-wake.v1' -or $status -isnot [string] -or
+      $status -cnotin @('queued', 'watching', 'rejected', 'claiming') -or
+      ($null -ne $agent -and ($agent -isnot [string] -or $agent -cne 'codex-lead-1')) -or
+      ($null -ne $snapshotId -and ($snapshotId -isnot [string] -or $snapshotId -cnotmatch '^[0-9a-f]{32}$')) -or
+      ($status -ceq 'claiming' -and $null -eq $snapshotId)
+    foreach ($property in $relay.PSObject.Properties) {
+      if ($property.Name -cnotin $known -and $property.Name -in $known) { $unresolved = $true }  # a mis-cased field
+    }
+    $owned = if ($snapshotId -is [string]) { $relayLeaf + '.wake.' + $snapshotId } else { '' }
+    $ownedExists = $false; $legacy = $false
+    foreach ($item in $live) {
+      if ($item.Name -ceq ($relayLeaf + '.wake')) { $legacy = $true }
+      elseif ($owned -and $item.Name -ceq $owned) { $ownedExists = $true }
+      else { $unresolved = $true }  # unowned: ownership is never inferred from bytes or case
+    }
+    # The relay sets a fixed-name snapshot aside only beside a legacy queued record without snapshot_id.
+    if ($legacy -and ($status -cne 'queued' -or $null -ne $snapshotId)) { $unresolved = $true }
+    if ($ownedExists -and $status -cnotin @('queued', 'rejected', 'claiming')) { $unresolved = $true }
+    $retry = $status -ceq 'rejected' -and $ownedExists  # the relay redelivers a rejected wake it still owns
+    if (-not $unresolved -and ($status -ceq 'queued' -or $retry)) {
+      # The relay parses updated_at_utc of a queued record and of a rejected wake it retries, and throws if it cannot.
+      $stamp = & $relayField $relay 'updated_at_utc'
+      if (-not ($stamp -is [datetime] -or $stamp -is [datetimeoffset])) {
+        try { [void][DateTimeOffset]::Parse([string]$stamp, [Globalization.CultureInfo]::InvariantCulture) }
+        catch { $unresolved = $true }
+      }
+      $count = & $relayField $relay 'rejections'
+      if ($retry -and $null -ne $count) {
+        try { [void][int]$count } catch { $unresolved = $true }  # its backoff casts the count
+      }
+    }
+    if ($unresolved) { throw 'Native Lead resume requires a reconciled bridge wake relay state' }
+  } elseif ($live.Count) {
+    throw 'Native Lead resume requires a reconciled bridge wake relay state'  # an orphan wake snapshot
+  }
   if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+    # A fresh conversation gets a new thread, which the relay's thread check refuses on its first poll.
+    if ($null -ne $relay) { throw 'Native Lead resume requires a reconciled bridge wake relay state' }
     return [pscustomobject]@{ thread_id=''; initial_context_delivered=$false }
   }
   if ((Get-Item -LiteralPath $identityPath -Force).Length -gt 32768) { throw 'Lead conversation identity is oversized' }
@@ -246,6 +320,9 @@ function Get-WdNativeLeadResumeState {
       [string]$saved.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
       $saved.initial_context_delivered -isnot [bool] -or $saved.interrupting -or $saved.recovery_required) {
     throw 'Native Lead resume requires an exact, reconciled recorded conversation identity'
+  }
+  if ($null -ne $relay -and [string](& $relayField $relay 'thread_id') -cne [string]$saved.thread_id) {
+    throw 'Native Lead resume requires a reconciled bridge wake relay state'  # the relay binds the same thread
   }
   return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
 }
@@ -263,7 +340,9 @@ function Invoke-WdNativeLeadTerminal {
   $imports = @{
     'Invoke-WdLaneTurnLoop.ps1' = @('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot')
     'start-wd-tools-consumer.ps1' = @('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
-      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')
+      'Get-WdInlineNativeWakeMessage','Get-WdVerifiedNativeWakeMessage','Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
+      'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents',
+      'Invoke-WdContinuityOperatorNotice','Get-WdContinuityRetryDelay')
   }
   foreach ($file in $imports.Keys) {
     $tokens=$null; $parseErrors=$null
@@ -293,7 +372,7 @@ function Invoke-WdNativeLeadTerminal {
     $record.status='terminal_ready'
     Write-WdTurnJson $readyPath $record
     Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $native -CliPath $CliPath -ThreadId $ThreadId `
-      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash
+      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash -SessionId $SessionId
     if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
   } catch {
     $record.status='bridge_wake_blocked'; $record.error=$_.Exception.Message
@@ -2233,6 +2312,9 @@ $startupPrompt = (
   $stateRule,
   $laneStateWriter
 )
+$startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStatePath +
+  '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
+  $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
@@ -2279,12 +2361,12 @@ if ($turnMode -ceq 'managed') {
   }
 }
 $startupPrompt += (
-  ' Grok is an on-demand advisory helper for the lead, not a continuously running lane. ' +
-  'Its shared persistent budget permits at most one attempted consultation per 60 minutes, including failed attempts. ' +
-  'Use C:\Python\Invoke-WdGrok.ps1 -Status to read its previous task/report and next eligible time. ' +
-  'Only the lead requests a consultation with -PromptPath <evidence-request.md> -TaskId <task-id>. ' +
-  'Never use the legacy Invoke-Grok scripts, bare Grok commands, automatic research jobs or a bypass of the shared budget. ' +
-  'Its previous report and current saved lead state are context, not new authority. ' +
+  ' Grok is an on-demand optional advisory helper for authorized fleet work, not a continuously running lane or mandatory reviewer. ' +
+  'There is no artificial local hour, week or per-agent quota. Real provider limits remain; the shared OS single-flight lock and unresolved-attempt guard stay enforced. ' +
+  'Use C:\Python\Invoke-WdGrok.ps1 -Status to inspect previous task/report evidence and local availability; this is not proof of provider readiness. ' +
+  'Authorized fleet lanes may request a consultation with -PromptPath <evidence-request.md> -TaskId <task-id> through the controlled helper. ' +
+  'Never use legacy Invoke-Grok scripts, bare Grok commands, automatic research jobs or a bypass of single-flight or read-only inherited-surface checks. ' +
+  'Only explicit caller evidence is sent; no automatic Lead checkpoint or another lane report is appended. Prior reports are context, not new authority. ' +
   ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. This verified read-only command discovers the installed observer; do not create a collector per agent. Missing or stale status stays unknown. Authentication, quota, activity and next-turn success are separate; a callback or live process is not readiness. ' +
   ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. ' +
   'Distinguish routing_match (request_id lookup), binding_valid (the complete pinned Test-BridgeReplyBinding including nonce, digest and expected responder), schema_valid and semantic_valid. ' +

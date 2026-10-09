@@ -836,7 +836,10 @@ def _owned_claim_sweepable(bridge: Path, claim: Claim, now: datetime) -> bool:
         base = _parse_utc(claim.last_heartbeat_utc or claim.claimed_at_utc)
     except (ValueError, TypeError):
         return False
-    expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    try:
+        expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    except (ValueError, TypeError, OverflowError):   # an expiry past the datetime range is unknown: keep the claim
+        return False
     if claim.claim_lease_expires_utc:
         try:
             recorded = _parse_utc(claim.claim_lease_expires_utc)

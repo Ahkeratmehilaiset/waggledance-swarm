@@ -1155,3 +1155,37 @@ def test_the_wrapper_keeps_every_os_error_field_and_its_text(cause: OSError) -> 
     assert isinstance(error, OSError) and str(error) == str(cause)
     for name in ("errno", "strerror", "filename", "filename2", "winerror"):
         assert getattr(error, name, None) == getattr(cause, name, None), name
+
+
+
+# Tools 9758A39B (RS7-D-LEASE-OVERFLOW): an expiry past datetime.max raised OverflowError out of the sweep. Such an
+# expiry is unknown, so the owned claim is not sweepable; the owner session is dead in every case so only the lease
+# decides, and the expired/future twins keep the ordinary verdicts.
+@pytest.mark.parametrize(
+    ("beat_utc", "lease", "kept"),
+    [
+        ("9999-12-31T23:59:59Z", 600, True),          # base + lease leaves the representable range
+        ("2026-09-28T10:00:00Z", 10**30, True),       # timedelta(seconds=10**30) itself overflows
+        ("2026-09-28T10:00:00Z", 60, False),          # twin: an ordinary expired lease is swept
+        ("2026-09-28T11:59:30Z", 600, True),          # twin: a valid future expiry is kept
+    ],
+    ids=["near_9999_plus_600", "lease_10e30", "expired_twin", "future_twin"],
+)
+def test_an_unrepresentable_lease_expiry_keeps_the_owned_claim(
+    tmp_path: Path, beat_utc: str, lease: int, kept: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "sweep-lease-range.json"
+    _write_raw_claim(
+        path,
+        task_id="sweep-lease-range",
+        claimed_at_utc=beat_utc,
+        last_heartbeat_utc=beat_utc,
+        lease_seconds=lease,
+        claim_lease_expires_utc="",
+        owner_session_id="test-session",
+        owner_token_sha256=TEST_TOKEN_SHA,
+    )
+    archived = archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True)
+    assert path.exists() is kept
+    assert len(archived) == (0 if kept else 1)

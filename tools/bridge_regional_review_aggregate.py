@@ -298,11 +298,17 @@ def fresh_recheck(repo: Path, result: Mapping[str, Any], ref: str) -> dict[str, 
 def _read_evidence(path: Path) -> Mapping[str, Any]:
     """An evidence FILE must hold a JSON object; only an absent --evidence means no evidence."""
     try:
-        evidence = json.loads(path.read_bytes().decode("utf-8"))
+        text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DiagnosticRefused(f"evidence file is not UTF-8: {exc}") from exc
+    try:
+        evidence = json.loads(text)
+    except json.JSONDecodeError:
+        raise   # main's existing inert refusal, error text unchanged
     except RecursionError as exc:
         raise DiagnosticRefused("evidence JSON nests too deeply") from exc
+    except ValueError as exc:   # e.g. an integer over sys.get_int_max_str_digits(); limit kept as is
+        raise DiagnosticRefused(f"evidence JSON value rejected by the parser: {exc}") from exc
     if not isinstance(evidence, Mapping):
         raise DiagnosticRefused(f"evidence file must contain a JSON object, not {type(evidence).__name__}")
     return evidence

@@ -489,7 +489,8 @@ def test_none_or_empty_object_evidence_is_an_empty_diagnostic(clean: dict, evide
     (b'{"region_records": ["\xff"]}', "not UTF-8"), (b"[" * 100000, "nests too deeply"),
     (b"null", "not NoneType"), (b"[]", "not list"), (b"0", "not int"), (b"false", "not bool"),
     (b'""', "not str"), (b"{", "Expecting"),
-], ids=["invalid_utf8", "deep_nesting", "null", "list", "zero", "false", "str", "truncated"])
+    (b'{"count":' + b"9" * 5000 + b"}", "rejected by the parser"),
+], ids=["invalid_utf8", "deep_nesting", "null", "list", "zero", "false", "str", "truncated", "int_over_limit"])
 def test_unusable_evidence_file_is_an_inert_cli_refusal(repo: dict, tmp_path: Path, capsys,
                                                         evidence: bytes, error: str) -> None:
     path = tmp_path / "evidence.json"
@@ -498,6 +499,17 @@ def test_unusable_evidence_file_is_an_inert_cli_refusal(repo: dict, tmp_path: Pa
                      "--evidence", str(path)])
     out = json.loads(capsys.readouterr().out)
     assert code == 2 and out["refused"] is True and error in out["error"]
+    _assert_inert(out)
+
+
+def test_integer_within_the_parser_limit_is_accepted_and_inert(repo: dict, tmp_path: Path, capsys) -> None:
+    # Positive twin of int_over_limit: same shape, digits under the interpreter's default limit.
+    path = tmp_path / "evidence.json"
+    path.write_bytes(b'{"count":' + b"9" * 4000 + b"}")
+    code = agg.main(["--repo", str(repo["root"]), "--base", repo["base"], "--head", repo["clean_head"],
+                     "--evidence", str(path)])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and "refused" not in out and out["covered_lines"] == 0
     _assert_inert(out)
 
 

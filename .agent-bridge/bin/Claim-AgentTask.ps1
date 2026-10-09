@@ -166,8 +166,8 @@ foreach ($file in $activeClaims) {
 # is applied later by recovery without re-checking this claim (B-F2), so a WRITE claim compares the claim each
 # unfinished record would write, as the Python queue does, under the root mutex held above. Bounded and fail-closed:
 # a linked, oversized, undecodable or unknown-state record makes overlap unknown; finished records are skipped. This
-# writer does not re-verify record digests: a record Python calls corrupt is never applied, so reading its claim can
-# only refuse more.
+# writer does not re-verify record digests or root binding, so it may refuse or admit such a record differently from
+# Python (Grok 21006e13 #9); recovery never applies a record Python calls corrupt, so it cannot create the overlap.
 if ($Mode -eq 'write') {
     $walDir = Join-Path $bridgeRoot 'work_queue/v2/wal'
     $walFiles = @()
@@ -198,7 +198,8 @@ if ($Mode -eq 'write') {
         if ($planned.GetType().FullName -cne 'System.Management.Automation.PSCustomObject') {
             Stop-BridgeClaim -Message ("an unfinished transaction record is unreadable; overlap unknown: {0}" -f $walFile.Name) -Code 3
         }
-        if ([string]$planned.task_id -ceq $TaskId -or [string]$planned.mode -cne 'write') { continue }
+        # 'write' compares case-insensitively, as the active-claim check above does (Grok 21006e13 #1: a 'Write' plan was skipped)
+        if ([string]$planned.task_id -ceq $TaskId -or [string]$planned.mode -ne 'write') { continue }
         $plannedCwd = if ($planned.PSObject.Properties['cwd']) { [string]$planned.cwd } else { '' }
         try {
             $plannedResources = @(Resolve-BridgeResourceScopes -Scopes @($planned.write_scope) -Worktree $plannedCwd -BridgeRoot $bridgeRoot)

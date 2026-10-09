@@ -251,11 +251,11 @@ def _read_claim(shell, bridge, task="team/reader", scope="tools/one.py"):
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: s.split(".")[0])
-@pytest.mark.parametrize("case", ["pending_overlap", "applied_overlap", "unreadable", "unknown_state"])
+@pytest.mark.parametrize("case", ["pending_overlap", "applied_overlap", "capitalised_mode_overlap", "unreadable", "unknown_state"])
 def test_an_unfinished_or_unreadable_wal_record_refuses_an_overlapping_write_claim(bridge, shell, case):
     raw = b"{not json" if case == "unreadable" else None
     _wal(bridge, "a.json", state={"applied_overlap": "applied", "unknown_state": "half-done"}.get(case, "prepared"),
-         raw=raw)
+         mode="Write" if case == "capitalised_mode_overlap" else "write", raw=raw)
     before = (bridge[2] / "work_queue" / "v2" / "wal" / "a.json").read_bytes()
     refused = _claim(shell, bridge)
     assert refused.returncode == 3, refused.stdout + refused.stderr

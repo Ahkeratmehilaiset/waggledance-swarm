@@ -200,3 +200,38 @@ def test_script_source_has_no_fallback_execution_or_writes():
         assert forbidden not in source, forbidden
     assert re.search(r"\$env:WD_BRIDGE_PYTHON_WRAPPER", source)
     assert "not packaged in bundle 8a7576af" in " ".join(source.split()).lower()
+
+
+PWSH = shutil.which("pwsh")
+WINDOWS_POWERSHELL = shutil.which("powershell.exe")
+BOTH_ENGINES = pytest.mark.skipif(not (PWSH and WINDOWS_POWERSHELL),
+                                  reason="needs PowerShell 7 and Windows PowerShell on one host")
+
+
+def _powershell7_module_path() -> str:
+    """The module path a PowerShell 7 parent hands to every child it starts through a copied environment."""
+    process = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($env:PSModulePath)"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=120, check=True)
+    assert process.stdout.strip(), process.stderr
+    return process.stdout
+
+
+@WINDOWS_ROOTS
+@BOTH_ENGINES
+@pytest.mark.parametrize("tampered", [False, True], ids=["pinned", "tampered"])
+def test_windows_powershell_under_a_powershell7_module_path_still_checks_the_pin(tmp_path, monkeypatch, tampered):
+    # Real contamination: Windows PowerShell inherits PowerShell 7's module path, where Get-FileHash cannot load.
+    monkeypatch.setenv("PSModulePath", _powershell7_module_path())
+    wrapper, anchor = _bundle(tmp_path, tamper_wrapper=tampered)
+    process, record = _run(WINDOWS_POWERSHELL, tmp_path, _args(tmp_path), wrapper=wrapper, anchor=anchor,
+                           lines=_report("ready"))
+    if tampered:
+        assert process.returncode == 3
+        report = _json(process)
+        assert report["verdict"] == "doctor_unavailable"
+        assert "pinned wrapper differs from its deployment manifest entry" in report["error"]
+        assert record is None  # refused on the hash itself, before the wrapper
+    else:
+        assert process.returncode == 0, process.stderr
+        assert process.stdout.strip() == _report("ready")
+        assert record["tool"] == "tools/wd_bridge_doctor.py" and record["verify_package"] is True

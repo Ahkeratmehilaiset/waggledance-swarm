@@ -1068,3 +1068,17 @@ def test_heartbeat_path_and_claim_lookup_match_powershell(tmp_path: Path) -> Non
     assert result["miss"] == ""
     assert _python_find(claims, "own/9") == claims / "own_9.json"
     assert _python_find(claims, "own_9") is None
+
+
+def test_detect_stale_claims_treats_an_out_of_range_heartbeat_as_stale(tmp_path: Path) -> None:
+    # RCO2 35B5527F P1: year 1 at +14:00 leaves the datetime range; it is unparseable (stale), not an OverflowError.
+    bridge = tmp_path / ".agent-bridge"
+    now = datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc)
+    claim_task(agent="claude-1", task_id="odd-task", summary="x", bridge_root=bridge, now_utc=now)
+    claim_task(agent="claude-2", task_id="fresh-task", summary="y", bridge_root=bridge, now_utc=now)   # twin
+    path = bridge / "work_queue" / "claims" / "odd-task.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["last_heartbeat_utc"] = "0001-01-01T00:00:00+14:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    stale = detect_stale_claims(bridge_root=bridge, now_utc=now, max_age_seconds=3600)
+    assert {c.task_id for c in stale} == {"odd-task"}

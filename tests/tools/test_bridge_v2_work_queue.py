@@ -838,3 +838,28 @@ def test_f8_fence_the_real_powershell_session_writer_skips_its_beat_while_the_fe
     written = json.loads(beat.read_text(encoding="utf-8"))
     assert (written["owner_session_id"], written["owner_token_sha256"]) == (OWNER.owner_session_id,
                                                                            OWNER.owner_token_sha256)
+
+
+# -- RCO2 35B5527F P1: a year-1 heartbeat at +14:00 leaves the datetime range ----------------------------------
+
+OUT_OF_RANGE = "0001-01-01T00:00:00+14:00"
+
+
+def test_an_out_of_range_timestamp_is_invalid_not_an_overflow():
+    with pytest.raises(ValueError, match="representable UTC range"):
+        wq.parse_utc(OUT_OF_RANGE)                     # was OverflowError, which no reader caught
+    assert wq.parse_utc("0001-01-01T00:00:00Z") == datetime(1, 1, 1, tzinfo=timezone.utc)   # twin: in range
+
+
+@pytest.mark.parametrize("heartbeat", [OUT_OF_RANGE, None], ids=["year1_plus14", "valid_twin"])
+def test_detect_and_the_dry_sweep_treat_an_out_of_range_heartbeat_as_unparseable(env, heartbeat):
+    txns = env[0]
+    claim(env, task="team/odd", identity=None, now=NOW - timedelta(hours=13))
+    if heartbeat:
+        path = claim_file(env, "team/odd")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["last_heartbeat_utc"] = heartbeat
+        path.write_bytes(claim_bytes(record))
+    assert [c["task_id"] for c in wq.detect_stale_claims(txns, now=NOW)] == ["team/odd"]   # unparseable = stale
+    [planned] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW)            # falls back to claimed_at
+    assert (planned.claim.task_id, planned.applied, planned.age_seconds) == ("team/odd", False, 46800)

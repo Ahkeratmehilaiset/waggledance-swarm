@@ -401,3 +401,20 @@ def test_apply_archive_includes_original_metadata(tmp_path: Path) -> None:
     assert payload["write_scope"] == ["tools/foo.py", "tools/bar.py"]
     assert payload["run_id"] == "run-abc"
     assert payload["summary"] == "metadata check"
+
+
+@pytest.mark.parametrize("claimed_age, archived", [(10, False), (600, True)], ids=["fresh_claimed_at", "stale_claimed_at"])
+def test_out_of_range_heartbeat_is_unparseable_and_falls_back_to_claimed_at(
+    tmp_path: Path, claimed_age: int, archived: bool
+) -> None:
+    # RCO2 35B5527F P1: year 1 at +14:00 leaves the datetime range; it was an OverflowError that no reader caught.
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="claude-1", task_id="task-overflow", summary="out-of-range heartbeat", bridge_root=bridge)
+    claim_file = bridge / "work_queue" / "claims" / "task-overflow.json"
+    payload = json.loads(claim_file.read_text(encoding="utf-8"))
+    payload["last_heartbeat_utc"] = "0001-01-01T00:00:00+14:00"
+    payload["claimed_at_utc"] = (_stale_now() - timedelta(seconds=claimed_age)).isoformat().replace("+00:00", "Z")
+    claim_file.write_text(json.dumps(payload), encoding="utf-8")
+    planned = archive_stale_claims(bridge_root=bridge, now_utc=_stale_now(), max_age_seconds=60, apply=False)
+    assert [a.claim.task_id for a in planned] == (["task-overflow"] if archived else [])
+    assert claim_file.exists()                                     # a dry run writes nothing

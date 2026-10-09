@@ -933,7 +933,10 @@ def _parse_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:   # year 1 at +14:00 (or 9999 at -14:00) leaves the datetime range: invalid, not a crash
+        raise ValueError("timestamp is outside the representable UTC range") from None
 
 
 def _iso(value: datetime) -> str:

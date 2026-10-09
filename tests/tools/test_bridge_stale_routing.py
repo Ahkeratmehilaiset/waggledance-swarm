@@ -302,12 +302,14 @@ def _held_without_sharing(path: Path):
 
 # A-F1 (Fable review 99897de5, Lead d06fbf85): an owner beat that EXISTS but cannot be read or evaluated is
 # unknown, never "not live", so the sweep keeps the expired claim this round, as the core sweeper
-# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment is unchanged: no beat, a
-# readable beat of another identity, an expired or a future-dated beat. At 7bf841ff the unknown rows archived.
+# (waggledance/core/work_queue.py _session_heartbeat_state) does. Proof of abandonment: no beat, an expired or a
+# future-dated beat. At 7bf841ff the unknown rows archived. A beat at the claim's own path that names another
+# session or token is unknown too (ClaimLeaseHeartbeat.ps1 Get-BridgeSessionHeartbeatLiveness, 83da16a7), so the
+# "foreign" row keeps the claim; it used to expect an archive (Lead 05:39:30Z test alignment, behaviour unchanged).
 @pytest.mark.skipif(os.name != "nt", reason="the share-locked beat and the sweep's file locks are Windows-only")
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(("beat_kind", "archived"), [
-    ("absent", True), ("expired", True), ("future", True), ("foreign", True), ("fresh", False),
+    ("absent", True), ("expired", True), ("future", True), ("foreign", False), ("fresh", False),
     ("fresh_share_locked", False), ("torn", False), ("empty", False), ("not_object", False),
     ("bad_time", False), ("directory", False),
     # S1 (Fable review 0286732f): pwsh 7 read an explicit-offset timestamp as local wall time taken for UTC, so
@@ -373,6 +375,8 @@ def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_e
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
     sweep = _fixture_sweep(tmp_path, real_writer=False)
     command = [executable, "-NoProfile", "-NonInteractive", "-File", str(sweep), "-StaleSeconds", "1", "-Quiet"]
+    claim_before = claim.read_bytes()
+    beat_before = beat.read_bytes() if beat.is_file() else None
     held = _held_without_sharing(beat) if beat_kind == "fresh_share_locked" else contextlib.nullcontext()
     with held:
         done = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False)
@@ -382,3 +386,6 @@ def test_stale_sweep_keeps_a_claim_whose_existing_owner_beat_cannot_be_read_or_e
         assert len(swept) == 1 and not claim.exists(), beat_kind
     else:
         assert not swept and claim.exists(), (beat_kind, done.stdout + done.stderr)
+        assert claim.read_bytes() == claim_before, beat_kind          # kept as it was, not rewritten
+        if beat_before is not None:
+            assert beat.read_bytes() == beat_before, beat_kind        # the owner's beat (foreign or not) is untouched

@@ -260,6 +260,29 @@ def test_a_report_built_on_a_provider_token_branch_validates(
     assert harness.validate_latency_benchmark_report(report) == []
 
 
+# Refused only BEFORE the lossy normalization: a key-SHAPED synthetic marker (built at run time, not a credential)
+# whose policy rule is case-sensitive, and a provider token that the 80-character cut would split.
+LOSSY_NORMALIZATION_BRANCHES = (
+    pytest.param("feature/" + "AKIA" + "A" * 16, id="key-shape-hidden-by-lowercase"),
+    pytest.param("a" * 77 + "-grok", id="provider-token-split-by-truncation"),
+)
+
+
+@pytest.mark.parametrize("branch", LOSSY_NORMALIZATION_BRANCHES)
+def test_a_branch_refused_before_lossy_normalization_gets_the_neutral_alias(
+    branch: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert harness.looks_like_forbidden_scalar("$.source_branch", branch)  # the raw branch itself is refused
+    alias = harness._source_branch_alias(branch)
+
+    assert alias.startswith("branch-") and len(alias) == len("branch-") + 12
+    assert not harness.looks_like_forbidden_scalar("$.source_branch", alias)
+    monkeypatch.setattr(harness, "_git_text", _fixed_git_text(branch))
+    report = harness.build_future_scale_latency_benchmark(now_utc=FIXED_NOW)
+    assert report["source_branch"] == alias
+    assert harness.validate_latency_benchmark_report(report) == []
+
+
 @pytest.mark.parametrize(
     "branch, alias",
     [

@@ -425,13 +425,16 @@ def _git_text(*args: str) -> str:
 def _source_branch_alias(branch: str | None = None) -> str:
     if branch is None:
         branch = _git_text("branch", "--show-current")
-    alias = _SAFE_BRANCH_CHARS.sub("-", branch.lower()).strip(".-_")
+    normalized = _SAFE_BRANCH_CHARS.sub("-", branch.lower()).strip(".-_")
+    alias = normalized
     if not alias or not alias[0].isalpha():
         alias = f"branch-{alias}" if alias else "branch-unknown"
     alias = alias[:80]
-    if looks_like_forbidden_scalar("$.source_branch", alias):
-        # A branch name can carry a provider token (e.g. ".../grok-..."); the artifact's leak policy refuses it.
-        # Keep the policy and emit a neutral, deterministic pseudonym of the branch instead.
+    # A branch name can carry a provider token (e.g. ".../grok-...") or a key-shaped string; the artifact's leak
+    # policy refuses those. Lowercasing and truncation are lossy and parts of the policy are case-sensitive, so check
+    # the raw branch, the full normalized form and the emitted alias with the same policy; on any refusal emit a
+    # neutral, deterministic pseudonym of the branch instead.
+    if any(looks_like_forbidden_scalar("$.source_branch", value) for value in (branch, normalized, alias)):
         alias = "branch-" + hashlib.sha256(branch.encode("utf-8")).hexdigest()[:12]
     return alias
 

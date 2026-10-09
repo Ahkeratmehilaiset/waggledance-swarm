@@ -98,22 +98,28 @@ def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monk
 
 
 @pytest.mark.parametrize('case', ['local', 'source_overlap', 'expired', 'checkpoint_only', 'invalid', 'read_claim'])
-def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case):
+def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case, tmp_path):
     scopes = ['.codex-audit/wd-current-state.json'] if case != 'source_overlap' else ['src/module.py']
     claims = fleet['root'] / 'work_queue/claims'
     claims.mkdir(parents=True)
+    # COMPOSE-F1: the fleet lives under ROOT (its lanes observe ROOT's HEAD), so a claim cwd there would be a repository
+    # nested inside ROOT, which the resolver rightly refuses (8c263635). The claiming cwds are separate top levels
+    # outside every repository; the status matches claims by agent and uses cwd only to resolve resources.
+    outer = [str(p) for p in (tmp_path, *tmp_path.parents) if (p / '.git').exists()]
+    assert outer == [], f"tmp_path must lie outside every repository for this fixture: {outer}"
     for index in (0, 4):
         update(checkpoint(fleet, index), write_scope=scopes, status='completed')
         if case == 'checkpoint_only':
             continue
-        git = Path(fleet['lanes'][index]['worktree']) / '.git'   # RS7: a claim cwd must be a git top level
+        cwd = tmp_path / f'claim-cwd-{index}'
+        git = cwd / '.git'   # RS7: a claim cwd must be a git top level
         for child in ('objects', 'refs'):
             (git / child).mkdir(parents=True)
         (git / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
         now = datetime.now(timezone.utc)
         record = dict(agent=fleet['lanes'][index]['agent'], task_id='active-test',
                       mode='read' if case == 'read_claim' else 'write',
-                      cwd=fleet['lanes'][index]['worktree'], write_scope=scopes,
+                      cwd=str(cwd), write_scope=scopes,
                       last_heartbeat_utc=(now - timedelta(seconds=400 if case == 'expired' else 0)).isoformat(),
                       lease_seconds=300)
         (claims / f'{index}.json').write_text('{broken' if case == 'invalid' else json.dumps(record))

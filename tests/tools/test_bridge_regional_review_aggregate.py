@@ -143,6 +143,8 @@ def _assert_inert(result: dict) -> None:
     assert result["rco_pass"] is False
     assert result["origin_policy"] == "deny"
     assert result["mode"] == "diagnostic"
+    assert result["evidence_origin"] == "unverified_caller_supplied"
+    assert result["origin_verified"] is False
 
 
 # --- I2 / D1 / D2 inventory ---------------------------------------------------
@@ -438,6 +440,36 @@ def test_diagnostic_cannot_substitute_for_an_rco_pass_or_merge_receipt(clean: di
                     "receipt_manifest_planned", "merge_command"}
     assert not receipt_keys & set(result)
     assert result["schema"] == agg.SCHEMA and not result["schema"].startswith("wd.bridge_consensus")
+
+
+def test_caller_fixtures_compute_coverage_but_never_origin_verification(clean: dict) -> None:
+    # Twin of the complete case: records that merely NAME recognized RCOs, written here by the
+    # test itself, still compute full coverage; the output says the origin is unverified and
+    # reports the names only as claims.
+    evidence = _complete_clean_evidence(clean)
+    result = agg.assess(clean, evidence)
+    assert result["diagnostic_complete"] is True
+    assert result["interaction"]["claimed_reviewers"] == ["claude-rco-2"]
+    assert "reviewers" not in result["interaction"]
+    _assert_inert(result)
+    forged = {**evidence, "evidence_origin": "verified_bridge_event", "origin_verified": True}
+    _assert_inert(agg.assess(clean, forged))
+    # Content-complete never content-covers the metadata-only mode flip; only interaction does.
+    no_interaction = agg.assess(clean, {"region_records": [_region(clean)]})
+    assert no_interaction["content_complete"] is True and _entry(clean, "mode.sh")["metadata_only"] is True
+    assert no_interaction["diagnostic_complete"] is False
+
+
+def test_line_hash_contract_splits_on_lf_and_keeps_cr(tmp_path: Path) -> None:
+    root = tmp_path / "crlf"
+    root.mkdir()
+    _git(root, "init", "-q")
+    base = _commit(root, {"w.txt": ("100644", b"keep\r\n")}, None, "base")
+    head = _commit(root, {"w.txt": ("100644", b"keep\r\nnew\r\nlast")}, base, "head")
+    lines = _entry(agg.build_inventory(root, base, head), "w.txt")["changed_lines"]
+    assert [(line["side"], line["line"]) for line in lines] == [("head", 2), ("head", 3)]
+    assert lines[0]["sha256"] == agg._sha256(b"new\r")
+    assert lines[1]["sha256"] == agg._sha256(b"last")
 
 
 @pytest.mark.parametrize("evidence", [[], "", False, 0], ids=["list", "str", "false", "zero"])

@@ -18,6 +18,11 @@ exactly or the interaction requirement stays unmet.
 D1: a path is unsupported by CONTENT (gitlink, symlink, NUL byte or invalid
 UTF-8 in either blob), never by .gitattributes; unsupported paths keep the
 diagnostic incomplete. Unknown or unverifiable evidence covers nothing.
+
+Evidence origin is NOT verified: records are caller-supplied JSON, bound to no
+bridge event, agent_uuid, signature or file hash. A reviewer name in a record is
+a claim, so coverage is computed from claims and every output says
+evidence_origin="unverified_caller_supplied".
 """
 from __future__ import annotations
 
@@ -36,6 +41,7 @@ ORIGIN_POLICY_DENY = "deny"
 ORIGIN_POLICIES = frozenset({ORIGIN_POLICY_DENY})   # the only implemented policy
 MODE_DIAGNOSTIC = "diagnostic"
 MODES = frozenset({MODE_DIAGNOSTIC})               # no active mode exists
+EVIDENCE_ORIGIN = "unverified_caller_supplied"      # nothing here authenticates who wrote a record
 # Must equal tools.check_rco_pass_present.DEFAULT_RCO_AGENTS (drift-guard test); not imported on purpose.
 RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
 RCO_REGION = "rco_region"
@@ -55,7 +61,8 @@ class DiagnosticRefused(ValueError):
 def inert_fields() -> dict[str, Any]:
     """The authority fields every result carries; nothing in this module can change them."""
     return {"authority_effect": "none", "allowed_to_merge": False, "approval_granted": False,
-            "rco_pass": False, "origin_policy": ORIGIN_POLICY_DENY, "mode": MODE_DIAGNOSTIC}
+            "rco_pass": False, "origin_policy": ORIGIN_POLICY_DENY, "mode": MODE_DIAGNOSTIC,
+            "evidence_origin": EVIDENCE_ORIGIN, "origin_verified": False}
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -269,7 +276,7 @@ def _interaction_status(inventory: Mapping[str, Any], evidence: Mapping[str, Any
         status["reasons"].append("group has unsupported members")
         return status
     status["complete"] = True
-    status["reviewers"] = sorted(set(valid))
+    status["claimed_reviewers"] = sorted(set(valid))   # names as claimed in unverified records
     return status
 
 

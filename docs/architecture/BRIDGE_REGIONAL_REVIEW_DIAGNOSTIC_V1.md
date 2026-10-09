@@ -9,6 +9,16 @@ is present. It grants nothing. It exists so the coverage computation can be
 built, tested and reviewed before anyone decides whether such coverage should
 ever count for anything.
 
+**The evidence origin is not verified.** Records are caller-supplied JSON and
+are not tied to a bridge event, an `agent_uuid`, a signature or a file hash.
+Anyone can write a record that names `claude-rco-1`, so a reviewer name in a
+record is only a claim. The coverage is computed from those claims. Every
+output says so with `evidence_origin: "unverified_caller_supplied"` and
+`origin_verified: false`. The interaction result lists the names as
+`claimed_reviewers`. `content_complete` or `diagnostic_complete` being true
+means the supplied claims add up. It does not prove that a recognized RCO
+reviewed anything.
+
 ## What it is not
 
 * It is **not** an approval, a vote, an `RCO_PASS`, a `build_consensus`, a
@@ -37,12 +47,22 @@ Every output, including refusals, carries:
 | `rco_pass` | `false` |
 | `origin_policy` | `"deny"` |
 | `mode` | `"diagnostic"` |
+| `evidence_origin` | `"unverified_caller_supplied"` |
+| `origin_verified` | `false` |
 
 These are set last, after the evidence is read, so no input can change them.
 `origin_policy="deny"` is the only implemented policy and `"diagnostic"` the
 only mode. Any other value, from the library call or the CLI, refuses (CLI exit
-2 with an inert JSON refusal). The module reads no environment variables and
-no configuration file, so there is no switch to turn on.
+2 with an inert JSON refusal). The module itself reads no environment variables
+or configuration files, so it has no switch to turn on.
+
+The `git` processes it runs do inherit the caller's environment and git
+configuration. For example, `GIT_DIR` or `GIT_CONFIG_*` can select a different
+repository or settings. `diff.algorithm` and `diff.indentHeuristic` can move the
+lines that `-U0` marks as changed. The changed-line coordinates are therefore
+not guaranteed to match across hosts or configurations. This fails closed: a
+record line that does not match the local inventory stays uncovered. The group
+identity uses only the `--raw` entries and does not depend on line coordinates.
 
 `fresh_recheck()` is refusal-only. It refuses when the ref has moved off the
 assessed head, or when the tree or interaction group changed. Passing it grants
@@ -75,6 +95,11 @@ resolved with `rev-parse`. Paths come from
 * Content coverage and interaction review are separate results. Deriving the
   group claims no review: full line coverage without interaction evidence is
   still incomplete.
+* `content_complete` counts changed lines only. A metadata-only change, such as
+  a mode flip or an added or deleted empty file, has no changed lines. It is
+  therefore not content-covered even when `content_complete` is true. Only the
+  whole-group interaction review covers it, which is why `diagnostic_complete`
+  requires the interaction result as well.
 
 ## D1 — unsupported by content, not by attributes
 
@@ -109,7 +134,14 @@ hold:
 * `eligibility_basis` is a non-empty list of non-empty strings.
 * `participation_disclosed` is absent or `[]`.
 * The line's `(path, side, line)` is in the git inventory and its `sha256`
-  equals the content hash of that line.
+  equals the content hash of that line. `side` is `base` for a removed line and
+  `head` for an added line. The line number is on that side's blob.
+
+Line-hash contract: the hash is the sha256 of the line's UTF-8 bytes, split on
+LF only. The LF itself is excluded, and every other byte is included. For a
+CRLF file the trailing CR is therefore part of the hashed content, so
+`"a\r\n"` hashes `b"a\r"`. A final line without a newline hashes its bytes
+as-is.
 
 `grok_region` records never count under `origin_policy=deny`, recusal or not.
 Unknown kinds and malformed records cover nothing. Every ignored record is

@@ -25,10 +25,11 @@ reviewed anything.
   consensus merge receipt or a MAGMA receipt, and it cannot stand in for any of
   them.
 * No merge gate, receipt writer or executor imports or calls it. The
-  authority-path modules (`idle_consensus_auto_merge.py`,
-  `merge_with_bridge_receipt.py`, `write_bridge_consensus_merge_receipt.py`,
-  `check_rco_pass_present.py`, `check_bridge_changes_requested.py`,
-  `verify_bridge_consensus.py`) are unchanged by the change that adds it.
+  authority-path modules are unchanged by the change that adds it:
+  `idle_consensus_auto_merge.py`, `merge_with_bridge_receipt.py`,
+  `write_bridge_consensus_merge_receipt.py`, `check_rco_pass_present.py` and
+  `check_bridge_changes_requested.py`. The `verify_bridge_consensus` function
+  lives in `idle_consensus_auto_merge.py`; there is no separate module for it.
 * It gives PR #1810, or any other PR, no admission route. Charter class (b) /
   (a) membership is unchanged: as a dormant unwired tool it is class (b); any
   change that wires it into a runtime verdict path moves it to class (a) and
@@ -144,8 +145,18 @@ CRLF file the trailing CR is therefore part of the hashed content, so
 as-is.
 
 `grok_region` records never count under `origin_policy=deny`, recusal or not.
-Unknown kinds and malformed records cover nothing. Every ignored record is
-listed with the reason it was ignored.
+Unknown kinds and malformed records cover nothing.
+
+`ignored_records` lists each rejected entry of `region_records`, with its index
+and the reason it was rejected. It does not list everything that was skipped:
+
+* Entries inside `lines` of an accepted record are skipped silently when they
+  are malformed, outside the inventory or have a hash mismatch. They show up
+  only as `uncovered_lines`.
+* Rejected interaction records are summarized as generic
+  `interaction.reasons` lines, not one line per record.
+* Entries of `interaction_records` that are not an `rco_interaction` object are
+  skipped silently.
 
 ## CLI
 

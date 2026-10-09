@@ -440,6 +440,56 @@ def test_diagnostic_cannot_substitute_for_an_rco_pass_or_merge_receipt(clean: di
     assert result["schema"] == agg.SCHEMA and not result["schema"].startswith("wd.bridge_consensus")
 
 
+@pytest.mark.parametrize("evidence", [[], "", False, 0], ids=["list", "str", "false", "zero"])
+def test_falsy_non_object_evidence_refuses_instead_of_defaulting(clean: dict, evidence: object) -> None:
+    with pytest.raises(agg.DiagnosticRefused, match="JSON object"):
+        agg.assess(clean, evidence)
+
+
+@pytest.mark.parametrize("evidence", [None, {}], ids=["none", "empty"])
+def test_none_or_empty_object_evidence_is_an_empty_diagnostic(clean: dict, evidence: object) -> None:
+    result = agg.assess(clean, evidence)
+    assert result["covered_lines"] == 0 and result["diagnostic_complete"] is False
+    _assert_inert(result)
+
+
+@pytest.mark.parametrize("evidence", [b'{"region_records": ["\xff"]}', b"[" * 100000],
+                         ids=["invalid_utf8", "deep_nesting"])
+def test_unreadable_evidence_file_is_an_inert_cli_refusal(repo: dict, tmp_path: Path, capsys,
+                                                          evidence: bytes) -> None:
+    path = tmp_path / "evidence.json"
+    path.write_bytes(evidence)
+    code = agg.main(["--repo", str(repo["root"]), "--base", repo["base"], "--head", repo["clean_head"],
+                     "--evidence", str(path)])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2 and out["refused"] is True
+    _assert_inert(out)
+
+
+def _fake_git(raw: bytes):
+    def fake(repo: Path, *args: str) -> bytes:
+        if args[0] == "rev-parse":
+            return ("1" * 40 + "\n").encode()
+        if args[0] == "diff":
+            return raw
+        raise AssertionError(args)
+    return fake
+
+
+@pytest.mark.parametrize("raw", [
+    b":000000 100644 " + b"0" * 40 + b" " + b"2" * 40 + b" A\x00bad-\xff-path.txt\x00",
+    b":000000 100644 " + b"0" * 40 + b" A\x00short-record.txt\x00",
+], ids=["non_utf8_path", "malformed_record"])
+def test_undecodable_git_output_is_a_refusal_in_library_and_cli(monkeypatch, capsys, raw: bytes) -> None:
+    monkeypatch.setattr(agg, "_git", _fake_git(raw))
+    with pytest.raises(agg.DiagnosticRefused):
+        agg.build_inventory(Path("."), "1" * 40, "2" * 40)
+    code = agg.main(["--repo", ".", "--base", "1" * 40, "--head", "2" * 40])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2 and out["refused"] is True
+    _assert_inert(out)
+
+
 def test_invalid_refs_refuse_without_a_result(repo: dict) -> None:
     with pytest.raises(agg.DiagnosticRefused):
         agg.build_inventory(repo["root"], repo["base"], "f" * 40)

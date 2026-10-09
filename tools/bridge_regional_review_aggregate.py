@@ -92,7 +92,10 @@ def _unsupported_reason(repo: Path, entry: Mapping[str, str]) -> str | None:
 
 def _changed_lines(repo: Path, base: str, head: str, path: str) -> list[dict[str, Any]]:
     """Changed lines from a -U0 --text patch: removed lines on the base side, added on the head side."""
-    patch = _git(repo, *DIFF, "--text", "-U0", base, head, "--", ":(literal)" + path).decode("utf-8")
+    try:
+        patch = _git(repo, *DIFF, "--text", "-U0", base, head, "--", ":(literal)" + path).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DiagnosticRefused(f"non-UTF-8 patch for {path!r}: {exc}") from exc
     lines = [line + "\n" for line in patch.split("\n")]
     lines[-1] = lines[-1][:-1]
     out: list[dict[str, Any]] = []
@@ -133,9 +136,14 @@ def build_inventory(repo: Path, base: str, head: str) -> dict[str, Any]:
     entries = []
     index = 0
     while index < len(raw) - 1:
-        meta = raw[index].decode("ascii")
-        path = raw[index + 1].decode("utf-8")
-        old_mode, new_mode, base_blob, head_blob, status = meta[1:].split(" ")
+        try:
+            meta = raw[index].decode("ascii")
+            path = raw[index + 1].decode("utf-8")
+            old_mode, new_mode, base_blob, head_blob, status = meta[1:].split(" ")
+        except UnicodeDecodeError as exc:
+            raise DiagnosticRefused(f"non-UTF-8 path or diff metadata in git output: {exc}") from exc
+        except ValueError as exc:
+            raise DiagnosticRefused(f"unexpected git --raw record {raw[index][:80]!r}") from exc
         entries.append({"path": path, "status": status, "old_mode": old_mode, "new_mode": new_mode,
                         "base_blob": base_blob, "head_blob": head_blob})
         index += 2
@@ -176,7 +184,8 @@ def assess(inventory: Mapping[str, Any], evidence: Mapping[str, Any] | None = No
         raise DiagnosticRefused(f"mode {mode!r} refused: only the inert diagnostic mode exists")
     if origin_policy not in ORIGIN_POLICIES:
         raise DiagnosticRefused(f"origin policy {origin_policy!r} refused: only 'deny' is implemented")
-    evidence = evidence or {}
+    if evidence is None:   # only None defaults; [], "", False, 0 refuse below
+        evidence = {}
     if not isinstance(evidence, Mapping):
         raise DiagnosticRefused("evidence must be a JSON object")
     notes: list[str] = []
@@ -292,7 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence = json.loads(args.evidence.read_text(encoding="utf-8")) if args.evidence else {}
         result = assess(build_inventory(args.repo, args.base, args.head), evidence,
                         origin_policy=args.origin_policy, mode=args.mode)
-    except (DiagnosticRefused, OSError, json.JSONDecodeError) as exc:
+    except (DiagnosticRefused, OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         print(json.dumps({"schema": SCHEMA, **inert_fields(), "refused": True, "error": str(exc)}))
         return 2
     print(json.dumps(result, indent=1, ensure_ascii=False))

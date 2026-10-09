@@ -122,4 +122,7 @@ python tools/bridge_regional_review_aggregate.py --repo <worktree> --base <sha> 
 ```
 
 Exit 0 means a diagnostic was computed, complete or not. It never means
-permission. Exit 2 means refused.
+permission. Exit 2 means refused, and the refusal is printed as inert JSON. Evidence that is not
+a JSON object refuses: only an absent evidence argument means "no evidence", so `[]`, `""`,
+`false` and `0` refuse too. Evidence that is not UTF-8 or nests too deeply refuses, and so does
+git output that is not UTF-8 or is malformed.

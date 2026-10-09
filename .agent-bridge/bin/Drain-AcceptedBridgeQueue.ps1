@@ -82,6 +82,28 @@ $knownEventTypes = @(
     'wake_request', 'liveness'
 )
 
+function ConvertTo-BridgeNativeLongPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    # kernel32 W calls in a process without longPathAware (MSIX pwsh) fail with
+    # Win32 error 3 at MAX_PATH unless the name carries the \\?\ prefix. Only a
+    # long, already canonical drive path is prefixed, because \\?\ turns off
+    # Win32 name normalization: for such a path normalization is the identity,
+    # so the prefixed name denotes exactly the file the plain call would open.
+    # A NUL ends the native name early, so a path holding one is never prefixed.
+    # Anything else passes unchanged and keeps the old behavior and failures.
+    if ($Path.IndexOf([char]0) -ge 0) { return $Path }
+    if ($Path.Length -lt 248 -or $Path -cnotmatch '^[A-Za-z]:\\[^\\]') { return $Path }
+    if ($Path.Contains('/')) { return $Path }
+    foreach ($segment in $Path.Substring(3).Split('\')) {
+        if ($segment.Length -eq 0 -or $segment -eq '.' -or $segment -eq '..' -or
+            $segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.Contains(':')) { return $Path }
+        $stem = $segment.Split('.')[0].TrimEnd(' ')
+        if ($stem -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9\u00B9\u00B2\u00B3]|LPT[0-9\u00B9\u00B2\u00B3])$') { return $Path }
+    }
+    '\\?\' + $Path
+}
+
 function Initialize-BridgeAcceptedQueueNative {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'accepted pending recovery requires Windows write-through publication'
@@ -264,7 +286,7 @@ function Open-BridgeQueuePlainFileLease {
             $desiredAccess = [uint32]($desiredAccess -bor [uint32]65536)
         }
         $handle = [WaggleDance.BridgeAcceptedQueueNative]::CreateFileW(
-            [System.IO.Path]::GetFullPath($Path),
+            (ConvertTo-BridgeNativeLongPath ([System.IO.Path]::GetFullPath($Path))),
             $desiredAccess,
             [uint32]1,
             [IntPtr]::Zero,
@@ -402,7 +424,7 @@ function Open-BridgeQueuePlainDirectoryLease {
 
     Initialize-BridgeAcceptedQueueNative
     $handle = [WaggleDance.BridgeAcceptedQueueNative]::CreateFileW(
-        [System.IO.Path]::GetFullPath($Path),
+        (ConvertTo-BridgeNativeLongPath ([System.IO.Path]::GetFullPath($Path))),
         [uint32]2147483648,
         [uint32]3,
         [IntPtr]::Zero,
@@ -807,8 +829,8 @@ if ($pendingExists) {
             }
             Initialize-BridgeAcceptedQueueNative
             if (-not [WaggleDance.BridgeAcceptedQueueNative]::MoveFileExW(
-                $pendingFile.FullName,
-                $readyPath,
+                (ConvertTo-BridgeNativeLongPath $pendingFile.FullName),
+                (ConvertTo-BridgeNativeLongPath $readyPath),
                 [uint32]0x00000008
             )) {
                 $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()

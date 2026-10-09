@@ -165,11 +165,21 @@ def io_error_fields(exc: OSError) -> tuple[dict[str, Any], int]:
         applied = None
     rollback_errors = [str(item) for item in getattr(exc, "rollback_errors", None) or []]
     residual = [str(item) for item in getattr(exc, "residual", None) or []]
+    completed = getattr(exc, "completed", None) or []
+    contradiction = None
+    if completed and applied is False:   # QBL1-L1: listed work was done, so "nothing applied" is not proven
+        contradiction = ("applied is False but completed lists " + str(len(completed))
+                         + " finished item(s): the outcome is UNKNOWN")
+        applied = None
+    elif completed and applied is None:  # the completed list proves that something was applied
+        applied = True
     nothing = applied is False and not rollback_errors and not residual
     outcome = IO_ERROR_NOTHING_APPLIED if nothing else IO_ERROR_APPLIED if applied else IO_ERROR_OUTCOME_UNKNOWN
     fields: dict[str, Any] = {"applied": applied, "outcome": outcome,
                               "errors": [type(exc).__name__ + ": " + str(exc)],
                               "rollback_errors": rollback_errors, "residual": residual}
+    if contradiction is not None:
+        fields["contradiction"] = contradiction
     cleanup = []
     for record in getattr(exc, "descriptor_close_unknown", None) or []:
         try:
@@ -305,6 +315,14 @@ def _print_human(report: dict[str, Any]) -> None:
     if not report.get("ok", False):
         for error in report.get("errors", []):
             print(f"- {error}", file=sys.stderr)
+        # QBL1-L2: what an io_error or a cleanup failure says about the effects, as in the JSON report.
+        for key in ("outcome", "applied", "contradiction"):
+            if key in report:
+                print(f"{key}: {report[key]}", file=sys.stderr)
+        for key, label in (("rollback_errors", "rollback_error"), ("residual", "residual"),
+                           ("mutex_cleanup_errors", "mutex_cleanup_error")):
+            for item in report.get(key, []):
+                print(f"{label}: {item}", file=sys.stderr)
         return
     claims = report.get("claims")
     if isinstance(claims, list):

@@ -466,6 +466,43 @@ def test_a_body_error_keeps_its_place_and_lists_the_recorded_mutex_cleanup_failu
     assert cleanup.startswith("mutex_release failed: OSError: ") and cleanup.endswith("release failed")
 
 
+def test_a_typed_error_that_says_nothing_applied_but_lists_completed_work_is_never_exit_1(tmp_path, capsys,
+                                                                                          monkeypatch):
+    # QBL1-L1 (RCO1 20778D3C): applied=False contradicted by a non-empty completed list is UNKNOWN, exit 4.
+    _no_mutex(monkeypatch)
+    _failing(monkeypatch, "release_task", _CoreIOError("contradictory", applied=False, completed=["done/x.json"]))
+    exit_code, report = _release(capsys, tmp_path / ".agent-bridge")
+    assert exit_code == 4 and report["applied"] is None and report["outcome"] == "io_error_outcome_unknown"
+    assert "contradiction" in report and "completed" in report["contradiction"]
+
+
+def test_the_human_writer_io_error_report_is_as_informative_as_the_json(tmp_path, capsys, monkeypatch):
+    # QBL1-L2 (RCO1 20778D3C): the primary error first, then outcome, applied, rollback errors, residual and the
+    # mutex cleanup failure the port recorded.
+    @contextlib.contextmanager
+    def recording(root):
+        try:
+            yield
+        except BaseException as body_error:
+            body_error.descriptor_close_unknown = [("mutex_release", 7, OSError(None, "release failed", None, 288))]
+            raise
+
+    monkeypatch.setattr(wq, "_root_mutex", recording)
+    _failing(monkeypatch, "release_task", _CoreIOError("unlink failed; rollback failed", applied=True,
+                                                       rollback_errors=["PermissionError: done record"],
+                                                       residual=["work_queue/done/task-io.json"]))
+    exit_code = main(["--bridge-root", str(tmp_path / ".agent-bridge"), "release", "--agent", "codex-1",
+                      "--task-id", "task-io"])
+    captured = capsys.readouterr()
+    assert exit_code == 4 and captured.out.splitlines()[0] == "io_error"
+    lines = captured.err.splitlines()
+    assert lines[0].startswith("- _CoreIOError: ") and "unlink failed; rollback failed" in lines[0]   # primary first
+    assert "outcome: io_error_applied" in lines and "applied: True" in lines
+    assert "rollback_error: PermissionError: done record" in lines
+    assert "residual: work_queue/done/task-io.json" in lines
+    assert any(line.startswith("mutex_cleanup_error: mutex_release failed: OSError: ") for line in lines)
+
+
 def test_a_safe_writer_and_the_refusals_are_unchanged(tmp_path, capsys, monkeypatch):
     bridge = tmp_path / ".agent-bridge"
     _no_mutex(monkeypatch)

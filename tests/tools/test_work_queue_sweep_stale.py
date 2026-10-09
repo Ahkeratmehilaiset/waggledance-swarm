@@ -301,6 +301,38 @@ def test_cli_apply_reports_the_archives_a_typed_io_error_says_were_completed(
         assert payload["outcome"] == "io_error_nothing_applied"
 
 
+@pytest.mark.parametrize("count", [1, 2], ids=["one", "many"])
+@pytest.mark.parametrize("as_json", [True, False], ids=["json", "human"])
+def test_cli_apply_never_exits_1_while_listing_completed_archives(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, count: int, as_json: bool
+) -> None:
+    # QBL1-L1 (RCO1 20778D3C): applied=False with completed archives is a contradiction: UNKNOWN, exit 4, never
+    # "nothing archived". applied missing (None) with completed archives is applied (the completed list proves it).
+    bridge = tmp_path / ".agent-bridge"
+    done = _planned(bridge, "task-a", "task-b", "task-c")[:count]
+    exit_code = _sweep_failing(monkeypatch, _CoreIOError("contradictory", applied=False, completed=done),
+                               as_json=as_json, bridge=bridge)
+    captured = capsys.readouterr()
+    assert exit_code == 4
+    if as_json:
+        payload = json.loads(captured.out)
+        assert payload["effects_applied"] is None and payload["outcome"] == "io_error_outcome_unknown"
+        assert [row["task_id"] for row in payload["archived"]] == [record.claim.task_id for record in done]
+        assert "completed" in payload["contradiction"]
+    else:
+        assert "ARCHIVED: task-a" in captured.out and "io_error_outcome_unknown" in captured.err
+
+
+def test_cli_apply_reports_completed_archives_as_applied_when_the_error_omits_applied(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    done = _planned(bridge, "task-a", "task-b")[:1]
+    exit_code = _sweep_failing(monkeypatch, _CoreIOError("no applied field", completed=done), bridge=bridge)
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 4 and payload["effects_applied"] is True and payload["outcome"] == "io_error_applied"
+
+
 @pytest.mark.parametrize("as_json", [True, False], ids=["json", "human"])
 def test_cli_apply_with_a_failed_rollback_names_the_residual_and_exits_4(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, as_json: bool

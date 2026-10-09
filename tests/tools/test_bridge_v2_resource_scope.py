@@ -224,6 +224,18 @@ def test_an_invalid_ancestor_git_marker_is_not_a_repository_and_does_not_refuse(
         ResourceScope("repo", "tools/a.py"),)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="a UNC path and the current-drive-root reading of '/.git' are Windows forms")
+def test_a_unc_cwd_walks_its_ancestors_only_down_to_the_share():
+    # Grok self-challenge (cb0429db): splitting "//server/share/app" lexically produced the ancestor "", read as
+    # "/.git" = the CURRENT drive's root; a repository there must not make a UNC cwd "nested". (The UNC root is still
+    # refused later as not a local drive-letter path: that rule is unchanged.)
+    unc = "//server/share/app"
+    lstat = _with_repos(unc, "")                       # "" + "/.git" == "/.git": a repository at the drive root
+    with pytest.raises(ScopeError) as error:
+        resolve_scopes(["tools/a.py"], worktree=unc, bridge_root=SHARED, lstat=lstat)
+    assert "nested" not in str(error.value) and "local drive-letter" in str(error.value)
+
+
 def test_disjoint_roots_keep_their_exact_previous_resolution():
     for shared in (SHARED, WORKTREE + "2"):                 # siblings; the second shares a name prefix, no "/" boundary
         assert resolve_scopes(["tools/a.py", "shared:work_queue/x.json"], worktree=WORKTREE, bridge_root=shared,

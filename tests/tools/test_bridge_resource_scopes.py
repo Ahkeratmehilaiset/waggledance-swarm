@@ -179,3 +179,20 @@ def test_an_external_linked_worktree_and_a_plain_repository_stay_accepted(tmp_pa
     missing.mkdir()
     accepted, detail = _resolve_engine(engine, 'src/a.py', missing, bridge)
     assert not accepted and 'not a repository top level' in detail
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+def test_dot_segments_in_the_cwd_are_resolved_before_the_ancestor_walk(tmp_path, engine):
+    # Grok self-challenge (cb0429db): the ancestors of "<repo>/." are the ancestors of <repo>, never <repo> itself, so a
+    # plain repository named with a "." segment is not "nested inside" itself. A ".." segment stays refused by the
+    # existing alias rule in both resolvers (it ends in "."), never by the nested rule.
+    if engine != 'python' and os.name != 'nt':
+        pytest.skip('PowerShell resolver parity is pinned on Windows')
+    plain, bridge = tmp_path / 'plain', tmp_path / 'bridge'
+    for path in (plain, bridge):
+        path.mkdir()
+    _git_top_level(plain)
+    (plain / 'sub').mkdir()
+    assert _resolve_engine(engine, 'src/a.py', str(plain) + os.sep + '.', bridge) == (True, 'src/a.py')
+    accepted, detail = _resolve_engine(engine, 'src/a.py', str(plain / 'sub') + os.sep + '..', bridge)
+    assert not accepted and 'alias' in detail and 'nested inside another repository' not in detail

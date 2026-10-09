@@ -155,8 +155,12 @@ def _require_top_level(worktree: str, lstat: Callable[[str], os.stat_result]) ->
     except (OSError, ValueError) as error:   # ScopeError is a ValueError; a decode error is one too
         raise ScopeError("the claim cwd is not a repository top level (no valid .git there): every scope except * "
                          "is refused, fail-closed (" + str(error)[:120] + ")") from None
-    parts = top.replace("\\", "/").split("/")
-    for depth in range(len(parts) - 1, 0, -1):
+    # The ancestors of the normalized absolute path ("." and ".." resolved, as the file system just did for the test
+    # above), never the lexical ones; a UNC path's shallowest directory is its share (Grok self-challenge cb0429db).
+    normal = os.path.normpath(os.path.abspath(top)).replace("\\", "/")
+    parts = normal.rstrip("/").split("/")
+    floor = 4 if normal.startswith("//") else 1
+    for depth in range(len(parts) - 1, floor - 1, -1):
         ancestor = "/".join(parts[:depth])
         try:
             _git_top_level(ancestor, lstat)

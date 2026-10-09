@@ -38,8 +38,11 @@ function Assert-BridgeRepositoryTopLevel {
     param([string]$Worktree)
     $top = $Worktree.TrimEnd('/','\')
     if (-not (Test-BridgeRepositoryTopLevel $top)) { throw 'the claim cwd is not a repository top level (no valid .git there): every scope except * is refused' }
-    $parts = @($top.Replace('\','/') -split '/')
-    for ($depth = $parts.Count - 1; $depth -ge 1; $depth--) {
+    # The ancestors of the full path ("." and ".." resolved), never the lexical ones; a UNC path stops at its share.
+    $normal = [IO.Path]::GetFullPath($top).Replace('\','/').TrimEnd('/')
+    $parts = @($normal -split '/')
+    $floor = if ($normal.StartsWith('//')) { 4 } else { 1 }
+    for ($depth = $parts.Count - 1; $depth -ge $floor; $depth--) {
         $ancestor = $parts[0..($depth - 1)] -join '/'
         if (Test-BridgeRepositoryTopLevel $ancestor) {
             throw "the claim cwd is a repository nested inside another repository ($ancestor): one file has two repository paths, so every scope except * is refused"

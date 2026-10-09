@@ -52,6 +52,9 @@ class Lock:
 @pytest.fixture
 def root(tmp_path):
     (tmp_path / "wt" / "tools").mkdir(parents=True)
+    for child in ("objects", "refs"):                 # RS7: a claim cwd must be a git top level
+        (tmp_path / "wt" / ".git" / child).mkdir(parents=True)
+    (tmp_path / "wt" / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     runtime = tmp_path / "runtime"
     (runtime / "work_queue" / "claims").mkdir(parents=True)
     return runtime

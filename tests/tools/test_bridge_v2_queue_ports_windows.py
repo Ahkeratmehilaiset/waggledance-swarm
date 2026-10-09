@@ -360,6 +360,9 @@ def test_real_ports_run_a_claim_heartbeat_and_release_on_an_isolated_root(tmp_pa
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (tmp_path / "wt" / "tools").mkdir(parents=True)
+    for child in ("objects", "refs"):                 # RS7: a claim cwd must be a git top level
+        (tmp_path / "wt" / ".git" / child).mkdir(parents=True)
+    (tmp_path / "wt" / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     txns = windows_queue_transactions(runtime, clock=lambda: NOW)
     owner = wq.OwnerIdentity("session-a", "token-a")
     wq.claim_task(txns, agent="claude-rco-1", task_id="team/task-1", summary="work", mode="write",

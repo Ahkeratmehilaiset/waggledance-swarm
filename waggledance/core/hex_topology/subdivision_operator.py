@@ -146,7 +146,15 @@ def apply_plan_to_topology(topology: dict,
         )
     # Set parent's subdivision_state + child list
     parent["subdivision_state"] = plan.target_state
-    parent_children = list(parent.get("child_cell_ids") or [])
+    parent_children_value = parent.get("child_cell_ids")
+    if (
+        type(parent_children_value) is not list
+        or not all(type(child_id) is str for child_id in parent_children_value)
+    ):
+        raise ValueError(
+            "parent child_cell_ids must be a plain list of plain strings"
+        )
+    parent_children = list(parent_children_value)
     for c in plan.new_child_cell_ids:
         if c not in parent_children:
             parent_children.append(c)

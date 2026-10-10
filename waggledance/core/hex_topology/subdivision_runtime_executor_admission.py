@@ -144,10 +144,10 @@ def build_subdivision_runtime_executor_admission(
             == execution_request.get("request_metadata_digest")
         ),
         "request_metadata_no_operator_approval": (
-            request_metadata.get("operator_approval") is not True
+            _flag_is_false_or_absent(request_metadata, "operator_approval")
         ),
         "request_metadata_no_runtime_claim": (
-            _contains_no_forbidden_true_flags(request_metadata)
+            _forbidden_flags_are_false_or_absent(request_metadata)
         ),
         "cutover_authorization_absent": not isinstance(
             cutover_authorization,
@@ -266,11 +266,18 @@ def _runtime_flags_false(document: Mapping[str, Any]) -> bool:
     return all(document.get(flag) is False for flag in _RUNTIME_FALSE_FLAGS)
 
 
-def _contains_no_forbidden_true_flags(value: Any) -> bool:
+def _flag_is_false_or_absent(value: Any, flag: str) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and (flag not in value or value[flag] is False)
+    )
+
+
+def _forbidden_flags_are_false_or_absent(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
     return all(
-        value.get(flag) is not True
+        _flag_is_false_or_absent(value, flag)
         for flag in _REQUEST_METADATA_FORBIDDEN_TRUE_FLAGS
     )
 

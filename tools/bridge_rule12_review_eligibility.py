@@ -12,11 +12,16 @@ held by eligible approvers:
 * a **pool fallback** for the RCO slot (operator 2026-10-10 06:56Z): when no
   recognized RCO is present, the first eligible lane of ``RCO_POOL_FALLBACK``
   (Tools, Lead, Fable) with an exact-head ``rco_pass`` and no uncleared block of
-  its own holds it. It never also holds the opposite-family slot (the rule12
-  build slot), so Lead or Tools never sit in both slots on one PR; the legacy
+  its own holds it; every such pass must carry the explicit
+  ``POOL_ATTESTATION_KEY`` statement. The order is a preference among lanes that
+  have passed: the slot does not wait for an earlier lane that has not. A pool
+  lane may share the implementer's family (a GPT lane for GPT-authored work);
+  the opposite-family slot covers the family check. It never also holds the
+  opposite-family slot (the rule12 build slot), so Lead or Tools never sit in
+  both slots on one PR; the legacy
   Rule 9a policy, whose build slots are Lead AND Tools, never reads the pool,
   so its build slots are unchanged. While any
-  such lane is still available (eligible, not the opposite-family holder) the
+  such lane is still available (eligible, not the sole opposite-family holder) the
   slot waits for it (``pending``) and Grok does not fill it; an uncleared block
   from any present pool lane, the opposite-family holder included, blocks the
   slot (``blocked_by_pool_candidate``);
@@ -105,6 +110,12 @@ RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
 RCO_POOL_FALLBACK: tuple[str, ...] = ("codex-tools-1", "codex-lead-1", "fable-5")
 POOL_FALLBACK_STATE = "held_by_pool_fallback"
 POOL_BLOCKED_STATE = "blocked_by_pool_candidate"
+# A pool lane's publisher or measurement role is not always visible to the gate
+# (RCO1 advisory A2 on 3a2aaf3d), so every exact-head rco_pass a pool lane posts
+# must state explicitly in its payload that it is not an implementer (author,
+# concept, design or measurement source). A pass without it never holds the slot.
+POOL_ATTESTATION_KEY = "rule12_pool_attestation"
+POOL_ATTESTATION_VALUE = "not_author_concept_design_or_measurement_source"
 # Must equal tools.check_rco_pass_present.RCO_PASS_STATUSES (drift-guard test).
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 PASS_EVENT_TYPES = frozenset({"decision", "rco_review"})
@@ -512,6 +523,20 @@ def evaluate_rule12_review_eligibility(
             for event in event_list
         )
 
+    def attested(agent: str) -> bool:
+        passes = [
+            event
+            for event in event_list
+            if _on_task(event, agent, task_id)
+            and _is_pass_status(event, RCO_PASS_STATUSES)
+            and _event_head(event) == head
+            and _evidence_time_ok(event, now)
+        ]
+        return bool(passes) and all(
+            _payload(event).get(POOL_ATTESTATION_KEY) == POOL_ATTESTATION_VALUE
+            for event in passes
+        )
+
     def standing(agent: str, statuses: frozenset[str]) -> str:
         if agent in implementers:
             return "implementer"
@@ -558,6 +583,7 @@ def evaluate_rule12_review_eligibility(
             if (
                 pool["standing"][agent] == "eligible"
                 and approved(agent, RCO_PASS_STATUSES)
+                and attested(agent)
                 and not _rco_vetoes(event_list, agent, task_id, head, now)
             ):
                 pool["holder"] = agent
@@ -588,7 +614,12 @@ def evaluate_rule12_review_eligibility(
     #     holds it, or the slot waits for an available lane, and only when none is
     #     left is it vacant for Grok ("tai jos ei mikään niistä niin grok").
     if rco_slot["state"] == "vacant":
-        opposite_holders = set(opposite_slot["holders"])
+        # Only a SOLE opposite-family holder is needed there; with two holders
+        # either one could still hold the RCO slot, so both stay available and
+        # Grok waits (an unattested pool pass also counts as an opposite approval).
+        opposite_holders = (
+            set(opposite_slot["holders"]) if len(opposite_slot["holders"]) == 1 else set()
+        )
         pool["available"] = [
             agent
             for agent in RCO_POOL_FALLBACK

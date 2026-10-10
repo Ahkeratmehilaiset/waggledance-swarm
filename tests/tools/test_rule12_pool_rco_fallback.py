@@ -51,8 +51,14 @@ def ev(agent, type_, status, head=H, task=TASK, ts="2026-10-06T16:50:00Z", **ext
     return event
 
 
-def rco_pass(agent, **kw):
-    return ev(agent, "decision", "rco_pass", **kw)
+ATTESTED = {r12.POOL_ATTESTATION_KEY: r12.POOL_ATTESTATION_VALUE}
+
+
+def rco_pass(agent, head=H, attested=True, **kw):
+    event = ev(agent, "decision", "rco_pass", head=head, **kw)
+    if attested and agent in r12.RCO_POOL_FALLBACK:
+        event["payload"] = {**event["payload"], **ATTESTED}
+    return event
 
 
 def build_pass(agent, **kw):
@@ -286,6 +292,61 @@ def test_an_opposite_family_holder_message_does_not_block_the_rco_slot():
     assert result["decision"] == "satisfied", result["reasons"]
 
 
+def test_a_pool_rco_pass_without_the_explicit_attestation_does_not_hold():
+    events = [*RCOS_RECUSED, build_pass("codex-lead-1"),
+              rco_pass("codex-tools-1", attested=False)]
+    result = evaluate(events)
+    assert result["slots"]["rco"]["pool_fallback"]["holder"] == ""
+    assert result["slots"]["rco"]["state"] == "pending"
+
+
+@pytest.mark.parametrize("value", ["", "yes", r12.POOL_ATTESTATION_VALUE.upper(), True])
+def test_only_the_exact_attestation_value_counts(value):
+    unattested = rco_pass("codex-tools-1", attested=False)
+    unattested["payload"][r12.POOL_ATTESTATION_KEY] = value
+    result = evaluate([*RCOS_RECUSED, build_pass("codex-lead-1"), unattested])
+    assert result["slots"]["rco"]["state"] == "pending"
+
+
+def test_an_unattested_pool_pass_next_to_another_opposite_holder_keeps_grok_out():
+    # Tools' unattested rco_pass counts as an opposite approval next to Lead's, so
+    # neither is the SOLE opposite holder: both stay available and Grok waits.
+    events = [*RCOS_RECUSED, build_pass("codex-lead-1"),
+              rco_pass("codex-tools-1", attested=False)]
+    result = evaluate(events, consultations=[grok(requester="codex-lead-1")])
+    assert result["slots"]["opposite_family"]["holders"] == ["codex-lead-1", "codex-tools-1"]
+    assert result["slots"]["rco"]["pool_fallback"]["available"] == [
+        "codex-tools-1", "codex-lead-1"]
+    assert result["grok_fallback"]["filled"] == []
+
+
+def test_one_unattested_exact_head_pass_spoils_an_attested_one():
+    events = [*RCOS_RECUSED, build_pass("codex-lead-1"),
+              rco_pass("codex-tools-1", ts="2026-10-06T16:50:00Z"),
+              rco_pass("codex-tools-1", attested=False, ts="2026-10-06T16:52:00Z")]
+    result = evaluate(events)
+    assert result["slots"]["rco"]["pool_fallback"]["holder"] == ""
+
+
+def test_a_gpt_pool_lane_may_hold_the_rco_slot_on_gpt_authored_work():
+    contributors = [{"agent": "codex-lead-1", "role": "author"}]
+    events = [*RCOS_RECUSED, rco_pass("codex-tools-1"), build_pass("fable-5")]
+    result = evaluate(events, contributors)
+    assert result["decision"] == "satisfied", result["reasons"]
+    assert result["slots"]["rco"]["holders"] == ["codex-tools-1"]
+    assert result["slots"]["opposite_family"]["holders"] == ["fable-5"]
+
+
+def test_the_order_is_a_preference_the_slot_does_not_wait_for_an_earlier_lane():
+    # Tools is eligible but silent; Lead passed. Lead holds, Fable takes the
+    # opposite slot (GPT-authored by a third lane is impossible, so use RCO author).
+    contributors = [{"agent": "claude-rco-1", "role": "author"}]
+    events = [*RCOS_RECUSED, rco_pass("codex-lead-1"), build_pass("codex-tools-1")]
+    result = evaluate(events, contributors)
+    assert result["slots"]["rco"]["holders"] == ["codex-lead-1"]
+    assert result["decision"] == "satisfied", result["reasons"]
+
+
 def test_a_pool_rco_pass_at_another_head_does_not_hold():
     events = [*RCOS_RECUSED, build_pass("codex-lead-1"), rco_pass("codex-tools-1", head="b" * 40)]
     result = evaluate(events)
@@ -367,7 +428,7 @@ def _status(**overrides) -> dict:
 
 
 def _event(agent: str, type_: str, status: str, ts: str, *, head: str | None = GHEAD,
-           uuid: str | None = None) -> dict:
+           uuid: str | None = None, extra_payload: dict | None = None) -> dict:
     return {
         "ts_utc": ts,
         "agent": agent,
@@ -375,7 +436,7 @@ def _event(agent: str, type_: str, status: str, ts: str, *, head: str | None = G
         "status": status,
         "task_id": GTASK,
         "message": f"{status} exact head {head}" if head is not None else "",
-        "payload": {"pr": 479, "head": head} if head else {},
+        "payload": {"pr": 479, "head": head, **(extra_payload or {})} if head else {},
         "agent_uuid": AGENT_UUIDS.get(agent, "") if uuid is None else uuid,
     }
 
@@ -389,7 +450,8 @@ def _events(*extra: dict, tools_pass: bool = True) -> list[dict]:
         _event("claude-rco-1", "message", "rco_recused", "2026-06-07T17:00:00Z"),
         _event("claude-rco-2", "message", "rco_recused", "2026-06-07T17:01:00Z"),
         _event("codex-lead-1", "decision", "build_consensus_pass", "2026-06-07T17:10:00Z"),
-        *([_event("codex-tools-1", "decision", "rco_pass", "2026-06-07T17:12:00Z")]
+        *([_event("codex-tools-1", "decision", "rco_pass", "2026-06-07T17:12:00Z",
+                  extra_payload=ATTESTED)]
           if tools_pass else []),
         *extra,
     ]
@@ -464,7 +526,7 @@ def test_gate_without_a_pool_pass_keeps_the_blocker(tmp_path):
 
 def test_gate_pool_pass_with_a_forged_identity_does_not_lift(tmp_path):
     forged = _event("codex-tools-1", "decision", "rco_pass", "2026-06-07T17:12:00Z",
-                    uuid="00000000-0000-4000-8000-000000000000")
+                    uuid="00000000-0000-4000-8000-000000000000", extra_payload=ATTESTED)
     report = _gate(tmp_path, _events(forged, tools_pass=False))
     assert report["ok"] is False
     assert MISSING_RCO in report["reasons"]

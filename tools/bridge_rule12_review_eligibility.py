@@ -9,8 +9,25 @@ held by eligible approvers:
   ``codex-tools-1``; Claude ``fable-5`` / ``claude-rco-1`` / ``claude-rco-2``);
 * the **RCO** slot: ``rco_pass`` at the head from EVERY eligible recognized RCO
   (not an implementer, not self-recused, not absent);
-* a **Grok fallback** may fill one slot whose primaries are all ineligible,
-  recused or absent, bound to one helper-ledger consultation;
+* a **pool fallback** for the RCO slot (operator 2026-10-10 06:56Z): when no
+  recognized RCO is present, the first eligible lane of ``RCO_POOL_FALLBACK``
+  (Tools, Lead, Fable) with an exact-head ``rco_pass`` and no uncleared block of
+  its own holds it; every such pass must carry the explicit
+  ``POOL_ATTESTATION_KEY`` statement. The order is a preference among lanes that
+  have passed: the slot does not wait for an earlier lane that has not. A pool
+  lane may share the implementer's family (a GPT lane for GPT-authored work);
+  the opposite-family slot covers the family check. It never also holds the
+  opposite-family slot (the rule12 build slot), so Lead or Tools never sit in
+  both slots on one PR; the legacy
+  Rule 9a policy, whose build slots are Lead AND Tools, never reads the pool,
+  so its build slots are unchanged. While any
+  such lane is still available (eligible, not the sole opposite-family holder) the
+  slot waits for it (``pending``) and Grok does not fill it; an uncleared block
+  from any present pool lane, the opposite-family holder included, blocks the
+  slot (``blocked_by_pool_candidate``);
+* a **Grok fallback** may fill one slot whose primaries (for the RCO slot: the
+  recognized RCOs AND the pool lanes) are all ineligible, recused or absent,
+  bound to one helper-ledger consultation;
 * when the WHOLE review pool (Lead, Tools, Fable, RCO1, RCO2) is genuinely
   ineligible for this change (implementer or self-recused), one Grok
   **external review** under Grok's own identity covers the review (operator
@@ -85,6 +102,20 @@ REVIEW_POOL: tuple[str, ...] = (
 )
 # Must equal tools.check_promotion_eligible.DEFAULT_RCO_AGENTS (drift-guard test).
 RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
+# Operator 2026-10-10 06:56Z, first-hand in the fable-5 session: "RCO paikan voi
+# täyttää tools, lead, fabel tai jos ei mikään niiistä niin grok". With no
+# recognized RCO present, these lanes may hold the RCO slot, in this order,
+# before the Grok fallback. They are never recognized RCOs: their blocks are
+# not recognized-RCO vetoes and no other gate reads their rco_pass.
+RCO_POOL_FALLBACK: tuple[str, ...] = ("codex-tools-1", "codex-lead-1", "fable-5")
+POOL_FALLBACK_STATE = "held_by_pool_fallback"
+POOL_BLOCKED_STATE = "blocked_by_pool_candidate"
+# A pool lane's publisher or measurement role is not always visible to the gate
+# (RCO1 advisory A2 on 3a2aaf3d), so every exact-head rco_pass a pool lane posts
+# must state explicitly in its payload that it is not an implementer (author,
+# concept, design or measurement source). A pass without it never holds the slot.
+POOL_ATTESTATION_KEY = "rule12_pool_attestation"
+POOL_ATTESTATION_VALUE = "not_author_concept_design_or_measurement_source"
 # Must equal tools.check_rco_pass_present.RCO_PASS_STATUSES (drift-guard test).
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 PASS_EVENT_TYPES = frozenset({"decision", "rco_review"})
@@ -492,6 +523,20 @@ def evaluate_rule12_review_eligibility(
             for event in event_list
         )
 
+    def attested(agent: str) -> bool:
+        passes = [
+            event
+            for event in event_list
+            if _on_task(event, agent, task_id)
+            and _is_pass_status(event, RCO_PASS_STATUSES)
+            and _event_head(event) == head
+            and _evidence_time_ok(event, now)
+        ]
+        return bool(passes) and all(
+            _payload(event).get(POOL_ATTESTATION_KEY) == POOL_ATTESTATION_VALUE
+            for event in passes
+        )
+
     def standing(agent: str, statuses: frozenset[str]) -> str:
         if agent in implementers:
             return "implementer"
@@ -519,6 +564,31 @@ def evaluate_rule12_review_eligibility(
     else:
         rco_slot["state"] = "vacant"
 
+    # 2b. Pool fallback (operator 2026-10-10 06:56Z): with no recognized RCO
+    #     present, the first eligible pool lane, in RCO_POOL_FALLBACK order, with an
+    #     exact-head rco_pass and no uncleared block of its own holds the RCO slot.
+    pool: dict[str, Any] = {
+        "order": list(RCO_POOL_FALLBACK),
+        "standing": {},
+        "holder": "",
+        "available": [],
+        "blocking": [],
+    }
+    rco_slot["pool_fallback"] = pool
+    if rco_slot["state"] == "vacant":
+        pool["standing"] = {
+            agent: standing(agent, RCO_PASS_STATUSES) for agent in RCO_POOL_FALLBACK
+        }
+        for agent in RCO_POOL_FALLBACK:
+            if (
+                pool["standing"][agent] == "eligible"
+                and approved(agent, RCO_PASS_STATUSES)
+                and attested(agent)
+                and not _rco_vetoes(event_list, agent, task_id, head, now)
+            ):
+                pool["holder"] = agent
+                break
+
     # 3. Opposite-family slot: one approval from a lane outside every implementer
     #    family that does not already sit in the RCO slot, so one identity never
     #    holds both slots (Rule 9a distinct identities; RCO1 F1 on 0aabaaab).
@@ -528,12 +598,47 @@ def evaluate_rule12_review_eligibility(
         if agent != GROK_AGENT
         and family not in implementer_families
         and agent not in rco_slot["present"]
+        and agent != pool["holder"]
     ]
     opposite_slot = fill(OPPOSITE_FAMILY_APPROVAL_STATUSES, candidates)
     if opposite_slot["present"]:
         opposite_slot["state"] = "held" if opposite_slot["holders"] else "pending"
     else:
         opposite_slot["state"] = "vacant"
+
+    # 3b. Settle the pool fallback now that the opposite-family holders are known.
+    #     A pool lane that holds the opposite-family slot is not available for the
+    #     RCO slot. An uncleared block from any present pool lane (eligible or
+    #     conflicting, the opposite-family holder included) blocks the slot (a
+    #     block outranks a pass, as for recognized RCOs); otherwise the holder
+    #     holds it, or the slot waits for an available lane, and only when none is
+    #     left is it vacant for Grok ("tai jos ei mikään niistä niin grok").
+    if rco_slot["state"] == "vacant":
+        # Only a SOLE opposite-family holder is needed there; with two holders
+        # either one could still hold the RCO slot, so both stay available and
+        # Grok waits (an unattested pool pass also counts as an opposite approval).
+        opposite_holders = (
+            set(opposite_slot["holders"]) if len(opposite_slot["holders"]) == 1 else set()
+        )
+        pool["available"] = [
+            agent
+            for agent in RCO_POOL_FALLBACK
+            if pool["standing"][agent] in ("eligible", "conflicting")
+            and agent not in opposite_holders
+        ]
+        pool["blocking"] = [
+            agent
+            for agent in RCO_POOL_FALLBACK
+            if pool["standing"][agent] in ("eligible", "conflicting")
+            and _rco_vetoes(event_list, agent, task_id, head, now)
+        ]
+        if pool["blocking"]:
+            rco_slot["state"] = POOL_BLOCKED_STATE
+        elif pool["holder"]:
+            rco_slot["state"] = POOL_FALLBACK_STATE
+            rco_slot["holders"] = [pool["holder"]]
+        elif pool["available"]:
+            rco_slot["state"] = "pending"
 
     slots = {SLOT_OPPOSITE_FAMILY: opposite_slot, SLOT_RCO: rco_slot}
     result["slots"] = slots
@@ -565,6 +670,9 @@ def evaluate_rule12_review_eligibility(
     # slot being filled (every recognized RCO for the rco slot, every
     # opposite-family candidate for that slot). External review keeps the
     # implementer exclusion only, because the whole pool is out by definition.
+    # Pool-fallback lanes are not added to the rco set: Grok fills the rco slot
+    # only when no pool lane is available, and adding them would leave no lane
+    # able to relay (every non-Grok lane would be excluded).
     slot_candidates = {
         SLOT_RCO: frozenset(RECOGNIZED_RCOS),
         SLOT_OPPOSITE_FAMILY: frozenset(candidates),
@@ -633,6 +741,11 @@ def evaluate_rule12_review_eligibility(
     if unheld:
         result["decision"] = "not_satisfied"
         reasons.extend(f"{name} slot is {slots[name]['state']}" for name in unheld)
+        if pool["blocking"]:
+            reasons.append(
+                "rco pool fallback lane block not cleared by its own later exact-head "
+                f"rco_pass: {', '.join(pool['blocking'])}"
+            )
         reasons.extend(grok["reasons"])
         return result
     result["decision"] = "satisfied"

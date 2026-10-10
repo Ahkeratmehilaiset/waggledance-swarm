@@ -439,6 +439,28 @@ def merge_with_bridge_receipt(
         if isinstance(receipt_gate_report, Mapping)
         else None
     )
+    receipt_pool_evidence = (
+        receipt_gate_report.get("pool_rco_fallback_evidence")
+        if isinstance(receipt_gate_report, Mapping)
+        else None
+    )
+    if fresh_gate.get("pool_rco_fallback_evidence") != receipt_pool_evidence:
+        # The pool-holder tuple binds like the Grok tuple: any change, refusal or
+        # unknown rejects before GitHub (operator 2026-10-10 06:56Z pool fallback).
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=[
+                "fresh gate pool RCO fallback evidence differs from the receipt"
+            ],
+            stage="apply_recheck",
+            pr_number=pr_number,
+            extra={
+                "fresh_gate": fresh_gate,
+                "receipt_pool_rco_fallback_evidence": receipt_pool_evidence,
+                "snapshot_path": str(snapshot_path),
+                "receipt_bundle_path": receipt_report["receipt_bundle_path"],
+            },
+        )
     if fresh_gate.get("grok_fallback_evidence") != receipt_evidence:
         # Any change, refusal or unknown between the receipt's Grok tuple and the
         # fresh gate's rejects before GitHub; no legacy fallback (plan v3 B5).

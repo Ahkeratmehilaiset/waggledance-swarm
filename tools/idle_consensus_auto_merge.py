@@ -47,7 +47,9 @@ from tools.bridge_rule12_review_eligibility import (  # noqa: E402
     FAMILIES as RULE12_FAMILIES,
     GROK_AGENT as RULE12_GROK_AGENT,
     PASS_EVENT_TYPES as RULE12_PASS_EVENT_TYPES,
+    POOL_FALLBACK_STATE as RULE12_POOL_FALLBACK_STATE,
     RCO_PASS_STATUSES as RULE12_RCO_PASS_STATUSES,
+    RCO_POOL_FALLBACK as RULE12_RCO_POOL_FALLBACK,
     RECOGNIZED_RCOS as RULE12_RECOGNIZED_RCOS,
     _event_head as _rule12_event_head,
     _evidence_time_ok as _rule12_evidence_time_ok,
@@ -613,10 +615,26 @@ def evaluate_auto_merge_gate(
         if review_policy == REVIEW_POLICY_RULE12 and grok_fallback
         else None
     )
+    # Operator 2026-10-10 06:56Z: with no recognized RCO present, a pool lane
+    # (Tools, Lead, Fable) may hold the RCO slot before Grok. Read under the
+    # opt-in rule12 policy only; the legacy policy keeps the plain blocker.
+    pool_rco_slot_lift = (
+        _pool_rco_slot_lift(
+            bridge_consensus=bridge_consensus,
+            bridge_peer_gate=bridge_peer_gate,
+            events=events,
+            task_id=bridge_gate_task_id,
+            author_agent=author_agent,
+            checked=events_path is not None,
+        )
+        if review_policy == REVIEW_POLICY_RULE12
+        else None
+    )
     if (
         events_path is not None
         and not bool(rco_pass_gate.get("ok", False))
         and not (grok_rco_slot_lift is not None and grok_rco_slot_lift["lifted"] is True)
+        and not (pool_rco_slot_lift is not None and pool_rco_slot_lift["lifted"] is True)
     ):
         blockers.append("missing exact-head RCO_PASS from recognized non-author RCO")
     if not receipt_verified_typed:
@@ -684,6 +702,17 @@ def evaluate_auto_merge_gate(
     )
     base["author_resolution"] = author_resolution
     base["review_policy"] = review_policy
+    if pool_rco_slot_lift is not None:
+        # Only present under rule12, so legacy reports stay unchanged.
+        base["pool_rco_slot_lift"] = pool_rco_slot_lift
+        base["pool_rco_fallback_evidence"] = _pool_rco_fallback_evidence(
+            bridge_consensus=bridge_consensus,
+            lift=pool_rco_slot_lift,
+            task_id=bridge_gate_task_id,
+            pr_number=pr_number,
+            base_sha=expected_base_sha or snapshot_base_sha,
+            head_sha=head_sha,
+        )
     if grok_rco_slot_lift is not None:
         # Only present when the switch is on, so other reports stay unchanged.
         base["grok_fallback"] = True
@@ -814,6 +843,15 @@ def evaluate_auto_merge_gate(
             apply_recheck["decision"] = "apply_snapshot_recheck_failed"
             apply_recheck["reasons"] = [
                 "fresh apply safety gate drifted: the Grok fallback evidence "
+                "differs from the planned merge"
+            ]
+        elif fresh_gate.get("pool_rco_fallback_evidence") != report.get(
+            "pool_rco_fallback_evidence"
+        ):
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = [
+                "fresh apply safety gate drifted: the pool RCO fallback evidence "
                 "differs from the planned merge"
             ]
     report["apply_recheck"] = apply_recheck
@@ -2556,6 +2594,7 @@ def _evaluate_rule12_review(
                 }
                 for agent in RULE12_RECOGNIZED_RCOS
             },
+            "pool_fallback": dict(rco_slot.get("pool_fallback") or {}),
         },
     }
 
@@ -2678,6 +2717,154 @@ def _grok_rco_slot_lift(
         "rco_slot_state": rco_slot.get("state", ""),
         "opposite_family_holders": opposite_holders,
         "veto_scan": veto_scan,
+    }
+
+
+def _pool_rco_slot_lift(
+    *,
+    bridge_consensus: Mapping[str, Any],
+    bridge_peer_gate: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    author_agent: str,
+    checked: bool,
+) -> dict[str, Any]:
+    """Whether a pool-held RCO slot may stand in for the missing RCO_PASS.
+
+    Operator 2026-10-10 06:56Z: "RCO paikan voi täyttää tools, lead, fabel tai
+    jos ei mikään niiistä niin grok". Lifted only when the rule12 review is
+    satisfied with the rco slot ``held_by_pool_fallback`` by exactly one
+    ``RCO_POOL_FALLBACK`` lane whose identity-bound exact-head ``rco_pass`` is
+    in ``rco_pass_refs``, the opposite-family slot plainly ``held`` by non-Grok
+    lanes other than that holder, the peer gate is clear, and a full
+    recognized-RCO veto scan is empty (as for the Grok lift). Every other case
+    keeps the RCO_PASS blocker.
+    """
+    rule12 = bridge_consensus.get("rule12")
+    rule12 = rule12 if isinstance(rule12, Mapping) else {}
+    slots = rule12.get("slots")
+    slots = slots if isinstance(slots, Mapping) else {}
+    rco_slot = slots.get(RULE12_SLOT_RCO)
+    rco_slot = rco_slot if isinstance(rco_slot, Mapping) else {}
+    opposite_slot = slots.get(RULE12_SLOT_OPPOSITE_FAMILY)
+    opposite_slot = opposite_slot if isinstance(opposite_slot, Mapping) else {}
+    pool = rco_slot.get("pool_fallback")
+    pool = pool if isinstance(pool, Mapping) else {}
+    holder_value = pool.get("holder")
+    holder = holder_value if type(holder_value) is str else ""
+    rco_holders_value = rco_slot.get("holders")
+    # Only a real list of agent ids counts; a string would iterate as letters.
+    rco_holders = (
+        list(rco_holders_value)
+        if isinstance(rco_holders_value, list)
+        and all(type(agent) is str and agent for agent in rco_holders_value)
+        else []
+    )
+    holders_value = opposite_slot.get("holders")
+    opposite_holders = (
+        list(holders_value)
+        if isinstance(holders_value, list)
+        and all(type(agent) is str and agent for agent in holders_value)
+        else []
+    )
+    refs = [
+        ref
+        for ref in bridge_consensus.get("rco_pass_refs") or []
+        if isinstance(ref, Mapping) and holder and ref.get("agent") == holder
+    ]
+    veto_scan = (
+        scan_recognized_rco_vetoes(
+            events=list(events),
+            task_id=task_id,
+            author_agent=author_agent,
+            rco_agent=BRIDGE_CONSENSUS_RCO_AGENTS,
+        )
+        if checked and author_agent
+        else None
+    )
+    reasons: list[str] = []
+    if not checked:
+        reasons.append("bridge events were not read")
+    if bridge_consensus.get("ok") is not True:
+        reasons.append("rule12 review is not satisfied")
+    if rule12.get("decision") != "satisfied":
+        reasons.append("rule12 evaluator decision is not satisfied")
+    if (
+        rco_slot.get("state") != RULE12_POOL_FALLBACK_STATE
+        or holder not in RULE12_RCO_POOL_FALLBACK
+        or rco_holders != [holder]
+    ):
+        reasons.append("the rco slot is not held by one pool-fallback lane")
+    if len(refs) != 1:
+        reasons.append("the pool holder has no single identity-bound exact-head rco_pass ref")
+    if opposite_slot.get("state") != "held" or not opposite_holders or any(
+        agent == RULE12_GROK_AGENT or agent == holder for agent in opposite_holders
+    ):
+        reasons.append(
+            "the opposite-family slot has no non-Grok holder distinct from the pool holder"
+        )
+    if bridge_peer_gate.get("clear_to_merge") is not True:
+        reasons.append("the peer bridge gate is not clear")
+    if veto_scan is None:
+        reasons.append("recognized-RCO veto scan did not run")
+    elif veto_scan.get("ok") is not True:
+        reasons.append(
+            "recognized-RCO veto scan is not clear: " + str(veto_scan.get("decision", ""))
+        )
+    return {
+        "lifted": not reasons,
+        "reasons": reasons,
+        "rco_slot_state": rco_slot.get("state", ""),
+        "pool_holder": holder,
+        "opposite_family_holders": opposite_holders,
+        "veto_scan": veto_scan,
+    }
+
+
+def _pool_rco_fallback_evidence(
+    *,
+    bridge_consensus: Mapping[str, Any],
+    lift: Mapping[str, Any],
+    task_id: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> dict[str, Any] | None:
+    """The pool-holder tuple a receipt binds and a fresh gate must reproduce.
+
+    ``None`` unless the pool lift holds. Any field change between the receipt
+    and the executor's fresh gate rejects the merge (as for the Grok tuple).
+    """
+    if lift.get("lifted") is not True:
+        return None
+    holder = str(lift.get("pool_holder", ""))
+    ref = next(
+        (
+            ref
+            for ref in bridge_consensus.get("rco_pass_refs") or []
+            if isinstance(ref, Mapping) and ref.get("agent") == holder
+        ),
+        {},
+    )
+    rco_slot = ((bridge_consensus.get("rule12") or {}).get("slots") or {}).get(
+        RULE12_SLOT_RCO
+    ) or {}
+    pool = rco_slot.get("pool_fallback") or {}
+    return {
+        "task_id": task_id,
+        "pr_number": pr_number,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "slot": RULE12_SLOT_RCO,
+        "holder": holder,
+        "agent_uuid": str(ref.get("agent_uuid", "")),
+        "ts_utc": str(ref.get("ts_utc", "")),
+        "status": str(ref.get("status", "")),
+        "rco_pass_task_id": str(ref.get("task_id", "")),
+        "pool_order": list(pool.get("order") or []),
+        "pool_standing": dict(pool.get("standing") or {}),
+        "opposite_family_holders": list(lift.get("opposite_family_holders") or []),
+        "review_policy": REVIEW_POLICY_RULE12,
     }
 
 

@@ -200,3 +200,71 @@ def test_script_source_has_no_fallback_execution_or_writes():
         assert forbidden not in source, forbidden
     assert re.search(r"\$env:WD_BRIDGE_PYTHON_WRAPPER", source)
     assert "not packaged in bundle 8a7576af" in " ".join(source.split()).lower()
+
+
+PWSH = shutil.which("pwsh")
+WINDOWS_POWERSHELL = shutil.which("powershell.exe")
+
+
+def _require_both_engines() -> None:
+    # A missing prerequisite on Windows fails visibly; it never turns into a silent skip.
+    assert PWSH and WINDOWS_POWERSHELL, (
+        "the PowerShell 7 module-path twins need PowerShell 7 (pwsh) and Windows PowerShell (powershell.exe) "
+        f"on this Windows host; found pwsh={PWSH!r}, powershell.exe={WINDOWS_POWERSHELL!r}")
+
+
+def test_a_missing_engine_fails_the_twins_visibly(monkeypatch):
+    for missing in ("PWSH", "WINDOWS_POWERSHELL"):
+        monkeypatch.setitem(globals(), missing, None)
+        with pytest.raises(AssertionError, match="need PowerShell 7 .pwsh. and Windows PowerShell"):
+            _require_both_engines()
+        monkeypatch.undo()
+
+
+def _powershell7_module_path() -> str:
+    """The module path a PowerShell 7 parent hands to every child it starts through a copied environment."""
+    process = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($env:PSModulePath)"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=120, check=True)
+    assert process.stdout.strip(), process.stderr
+    return process.stdout
+
+
+def _contaminated_environment(module_path: str) -> dict[str, str]:
+    # Built here on purpose, not through a shared child-environment helper that may clean PSModulePath for
+    # Windows PowerShell: these twins exist to keep the PowerShell 7 module path in the real child.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB) and k.casefold() != "psmodulepath"}
+    env["PSModulePath"] = module_path
+    return env
+
+
+@WINDOWS_ROOTS
+@pytest.mark.parametrize("tampered", [False, True], ids=["pinned", "tampered"])
+def test_windows_powershell_under_a_powershell7_module_path_still_checks_the_pin(tmp_path, tampered):
+    _require_both_engines()
+    # Real contamination: Windows PowerShell inherits PowerShell 7's module path, where Get-FileHash cannot load.
+    module_path = _powershell7_module_path()
+    env = _contaminated_environment(module_path)
+    seen = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
+                           "[Console]::Out.Write($env:PSModulePath + '|' + "
+                           "[bool](Get-Command Get-FileHash -ErrorAction SilentlyContinue))"],
+                          env=env, capture_output=True, text=True, encoding="utf-8", timeout=120, check=True)
+    # The contamination really reaches a Windows PowerShell child, and Get-FileHash really cannot load there;
+    # on a host where it still loads, these twins would prove nothing, so they fail instead.
+    assert seen.stdout == module_path + "|False"
+    wrapper, anchor = _bundle(tmp_path, tamper_wrapper=tampered)
+    record_path = tmp_path / "stub-record.json"
+    env.update(WD_BRIDGE_PYTHON_WRAPPER=str(wrapper), WD_REBOOT_EXPECTED_MANIFEST_HASH=anchor,
+               STUB_RECORD=str(record_path), STUB_LINES=_report("ready"), STUB_CODE="0", STUB_MODE="")
+    process = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), *_args(tmp_path)],
+                             env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+    record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else None
+    if tampered:
+        assert process.returncode == 3
+        report = _json(process)
+        assert report["verdict"] == "doctor_unavailable"
+        assert "pinned wrapper differs from its deployment manifest entry" in report["error"]
+        assert record is None  # refused on the hash itself, before the wrapper
+    else:
+        assert process.returncode == 0, process.stderr
+        assert process.stdout.strip() == _report("ready")
+        assert record["tool"] == "tools/wd_bridge_doctor.py" and record["verify_package"] is True

@@ -19,6 +19,19 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _literal_true_flag(value: object) -> int:
+    """Return ``1`` only for the literal ``True``; every other value is ``0``.
+
+    The indexed pass column feeds the pass/fail query, pass-rate and stats
+    surfaces, so it must not be derived from Python truthiness: a verifier
+    payload carrying ``"false"``, ``1`` or a non-empty container would
+    otherwise be indexed as a pass. Identity comparison also guarantees that
+    no ``__bool__`` is ever invoked on the stored value. Mirrors the
+    literal-True rule of ``CaseTrajectory.grade()``.
+    """
+    return 1 if value is True else 0
+
+
 class SQLiteCaseStore:
     """Persistent store for CaseTrajectory objects.
 
@@ -95,7 +108,8 @@ class SQLiteCaseStore:
 
         # Extract verifier info
         vr = case_dict.get("verifier_result") or {}
-        v_passed = 1 if vr.get("passed", False) else 0
+        # Fail closed: only the literal True is indexed as a verifier pass.
+        v_passed = _literal_true_flag(vr.get("passed"))
         v_conf = vr.get("confidence", 0.0)
 
         # Snapshot IDs

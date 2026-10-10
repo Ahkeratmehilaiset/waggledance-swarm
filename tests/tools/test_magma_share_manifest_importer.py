@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -22,23 +23,89 @@ from waggledance.core.magma.share_manifest import (
     IMPORT_HANDOFF_VERSION,
     IMPORT_REPORT_VERSION,
     IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
-    build_magma_share_import_admission_status_summary,
+    build_magma_share_import_admission_status_summary as _build_admission_summary,
     build_magma_share_import_handoff_status_summary,
-    build_magma_share_import_peer_review_handoff,
-    build_magma_share_import_replay_sanitization_summary,
-    build_magma_share_manifest_import_report,
-    write_magma_share_import_peer_review_handoff,
+    build_magma_share_import_peer_review_handoff as _build_peer_review_handoff,
+    build_magma_share_import_replay_sanitization_summary as _build_replay_summary,
+    build_magma_share_replay_admission_contract,
+    build_magma_share_manifest_import_report as _build_import_report,
+    build_magma_share_producer_provenance_digest,
+    write_magma_share_import_peer_review_handoff as _write_peer_review_handoff,
     write_magma_share_manifest_export,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "import_magma_share_manifest.py"
 FIXED_NOW = datetime(2026, 5, 28, 8, 0, tzinfo=timezone.utc)
+EXPECTED_PRODUCER = {
+    "expected_producer_agent_id": "codex-lead-1",
+    "expected_producer_role": "lead",
+    "expected_producer_bridge_event_ref": "bridge:wd-image1-magma-share-import",
+}
+EXPECTED_PRODUCER_PROVENANCE_DIGEST = (
+    build_magma_share_producer_provenance_digest(
+        agent_id="codex-lead-1",
+        role="lead",
+        bridge_event_ref="bridge:wd-image1-magma-share-import",
+    )
+)
 SENSITIVE_SNIPPETS = (
     "private runtime query",
     "context secret",
     "DO" + "_NOT" + "_LEAK",
 )
+
+
+def build_magma_share_manifest_import_report(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs.setdefault("expected_share_id", "magma:share:import:001")
+    kwargs.setdefault("expected_purpose", "cross_instance_replay")
+    for field, value in EXPECTED_PRODUCER.items():
+        kwargs.setdefault(field, value)
+    return _build_import_report(**kwargs)
+
+
+def build_magma_share_import_admission_status_summary(
+    import_report: Any = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs.setdefault(
+        "expected_producer_provenance_digest",
+        EXPECTED_PRODUCER_PROVENANCE_DIGEST,
+    )
+    return _build_admission_summary(import_report, **kwargs)
+
+
+def build_magma_share_import_replay_sanitization_summary(
+    import_report: Any = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs.setdefault(
+        "expected_producer_provenance_digest",
+        EXPECTED_PRODUCER_PROVENANCE_DIGEST,
+    )
+    return _build_replay_summary(import_report, **kwargs)
+
+
+def build_magma_share_import_peer_review_handoff(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs.setdefault(
+        "expected_producer_provenance_digest",
+        EXPECTED_PRODUCER_PROVENANCE_DIGEST,
+    )
+    return _build_peer_review_handoff(**kwargs)
+
+
+def write_magma_share_import_peer_review_handoff(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    kwargs.setdefault(
+        "expected_producer_provenance_digest",
+        EXPECTED_PRODUCER_PROVENANCE_DIGEST,
+    )
+    return _write_peer_review_handoff(**kwargs)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -81,6 +148,11 @@ def _run_importer_json(
     max_age_hours: int = 24,
     expected_share_id: str | None = "magma:share:import:001",
     expected_purpose: str | None = "cross_instance_replay",
+    expected_producer_agent: str | None = "codex-lead-1",
+    expected_producer_role: str | None = "lead",
+    expected_producer_bridge_event_ref: str | None = (
+        "bridge:wd-image1-magma-share-import"
+    ),
     admission_status_json: bool = False,
     replay_sanitization_summary_json: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -106,6 +178,21 @@ def _run_importer_json(
         command.extend(["--expected-share-id", expected_share_id])
     if expected_purpose is not None:
         command.extend(["--expected-purpose", expected_purpose])
+    if expected_producer_agent is not None:
+        command.extend(
+            ["--expected-producer-agent", expected_producer_agent]
+        )
+    if expected_producer_role is not None:
+        command.extend(
+            ["--expected-producer-role", expected_producer_role]
+        )
+    if expected_producer_bridge_event_ref is not None:
+        command.extend(
+            [
+                "--expected-producer-bridge-event-ref",
+                expected_producer_bridge_event_ref,
+            ]
+        )
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -120,10 +207,14 @@ def _assert_failed_admission_status(
     *,
     blocker_class: str,
     tmp_path: Path,
+    expected_producer_provenance_configured: bool = True,
 ) -> dict[str, object]:
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert payload["admission_contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
     assert payload["source"] == "magma_share_manifest_import_failure"
     assert payload["status"] == "rejected"
     assert payload["severity"] == "warning"
@@ -138,6 +229,10 @@ def _assert_failed_admission_status(
         item["reason_code"] for item in admission_contract["rejection_modes"]
     }
     assert blocker_class in rejection_codes
+    assert (
+        admission_contract["expected_producer_provenance_digest"]
+        is not None
+    ) is expected_producer_provenance_configured
     assert payload["replay_metadata_only"] is True
     assert payload["no_authority_import"] is True
     assert payload["transport_enabled"] is False
@@ -161,6 +256,92 @@ def _all_json_text(root: Path) -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(root.rglob("*.json"))
     )
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["expected_share_id", "expected_purpose"],
+)
+def test_cross_instance_import_requires_receiver_pinned_identity(
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    expectations = {
+        "expected_share_id": "magma:share:import:001",
+        "expected_purpose": "cross_instance_replay",
+        **EXPECTED_PRODUCER,
+    }
+    expectations[missing_field] = None
+
+    with pytest.raises(
+        ValueError,
+        match="receiver replay identity expectations are required",
+    ):
+        build_magma_share_manifest_import_report(
+            share_manifest_path=share_manifest,
+            source_manifest_path=source_manifest,
+            verify_source_manifest=verify_manifest,
+            now_utc=FIXED_NOW + timedelta(hours=1),
+            max_age_hours=24,
+            **expectations,
+        )
+
+
+@pytest.mark.parametrize("missing_field", sorted(EXPECTED_PRODUCER))
+def test_cross_instance_import_requires_receiver_pinned_producer_provenance(
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    expectations = dict(EXPECTED_PRODUCER)
+    expectations[missing_field] = None
+
+    with pytest.raises(
+        ValueError,
+        match="receiver producer provenance expectations are required",
+    ):
+        build_magma_share_manifest_import_report(
+            share_manifest_path=share_manifest,
+            source_manifest_path=source_manifest,
+            verify_source_manifest=verify_manifest,
+            now_utc=FIXED_NOW + timedelta(hours=1),
+            max_age_hours=24,
+            expected_share_id="magma:share:import:001",
+            expected_purpose="cross_instance_replay",
+            **expectations,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("agent_id", "spoofed-peer-1"),
+        ("role", "operator"),
+        ("bridge_event_ref", "bridge:spoofed:origin"),
+    ],
+)
+def test_importer_rejects_schema_valid_producer_provenance_drift(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    manifest = json.loads(share_manifest.read_text(encoding="utf-8"))
+    manifest["producer"][field] = replacement
+    _write_json(share_manifest, manifest)
+
+    with pytest.raises(ValueError, match="producer provenance mismatch"):
+        build_magma_share_manifest_import_report(
+            share_manifest_path=share_manifest,
+            source_manifest_path=source_manifest,
+            verify_source_manifest=verify_manifest,
+            now_utc=FIXED_NOW + timedelta(hours=1),
+            max_age_hours=24,
+            expected_share_id="magma:share:import:001",
+            expected_purpose="cross_instance_replay",
+            **EXPECTED_PRODUCER,
+        )
 
 
 def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
@@ -188,6 +369,21 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     assert admission_contract["max_age_hours"] == 24
     assert admission_contract["expected_share_id"] == "magma:share:import:001"
     assert admission_contract["expected_purpose"] == "cross_instance_replay"
+    assert admission_contract["expected_producer_provenance_digest"] == (
+        EXPECTED_PRODUCER_PROVENANCE_DIGEST
+    )
+    assert EXPECTED_PRODUCER_PROVENANCE_DIGEST == sha256_digest(
+        {
+            "binding_version": (
+                "magma.share_manifest_producer_provenance_binding.v0"
+            ),
+            "agent_id": "codex-lead-1",
+            "role": "lead",
+            "bridge_event_ref": (
+                "bridge:wd-image1-magma-share-import"
+            ),
+        }
+    )
     assert admission_contract["transport_enabled"] is False
     assert admission_contract["runtime_authority_granted"] is False
     assert admission_contract["payload_files_imported"] == 0
@@ -195,6 +391,11 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     check_names = {item["name"] for item in admission_contract["required_checks"]}
     assert {
         "share_manifest_schema_valid",
+        "receiver_identity_configured",
+        "expected_producer_provenance_configured",
+        "expected_producer_provenance_valid",
+        "expected_producer_provenance_matches",
+        "expected_producer_provenance_binding_preserved",
         "freshness_window_satisfied",
         "source_receipt_manifest_verified",
         "sanitized_source_manifest_digest_matches",
@@ -206,6 +407,11 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     }
     assert {
         "schema_error",
+        "receiver_identity_not_configured",
+        "expected_producer_provenance_required",
+        "expected_producer_provenance_invalid",
+        "expected_producer_provenance_mismatch",
+        "expected_producer_provenance_binding_drift",
         "stale_or_future_manifest",
         "source_receipt_manifest_verification_failed",
         "receipt_digest_context_drift",
@@ -232,6 +438,10 @@ def test_importer_builds_no_authority_replay_plan_from_fresh_share_manifest(
     assert report["payload_digest_imported"] is False
     assert report["raw_material_imported"] is False
     assert report["replacement_map_imported"] is False
+    serialized_report = json.dumps(report, sort_keys=True)
+    assert '"agent_id"' not in serialized_report
+    assert '"role"' not in serialized_report
+    assert '"bridge_event_ref"' not in serialized_report
     assert report["replay_plan"]["mode"] == "no_authority_metadata_replay"
     assert report["replay_plan"]["entry_count"] == 1
     assert set(report["replay_plan"]["entries"][0]) == {
@@ -264,6 +474,9 @@ def test_import_admission_status_summary_is_path_free_and_no_authority(
     summary = build_magma_share_import_admission_status_summary(report)
 
     assert summary["summary_version"] == IMPORT_ADMISSION_STATUS_VERSION
+    assert summary["admission_contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
     assert summary["source"] == "magma_share_manifest_import_report"
     assert summary["status"] == "ready_for_peer_review_handoff"
     assert summary["severity"] == "none"
@@ -296,6 +509,8 @@ def test_import_admission_status_summary_is_path_free_and_no_authority(
     empty = build_magma_share_import_admission_status_summary(None)
     assert empty["source"] == "not_configured"
     assert empty["status"] == "not_configured"
+    assert empty["replay_metadata_only"] is True
+    assert empty["no_authority_import"] is True
     assert empty["runtime_authority_granted"] is False
     assert empty["payload_files_imported"] == 0
 
@@ -454,6 +669,54 @@ def test_import_replay_sanitization_summary_blocks_malformed_report_without_leak
     assert not any(marker in serialized for marker in SENSITIVE_SNIPPETS)
 
 
+def test_ready_summary_builders_require_external_producer_binding(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    for builder in (_build_admission_summary, _build_replay_summary):
+        summary = builder(report)
+        assert summary["ok"] is False
+        assert summary["status"] == "blocked"
+
+
+def test_ready_summary_builders_reject_self_consistent_producer_binding_drift(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    tampered = json.loads(json.dumps(report))
+    tampered["admission_contract"][
+        "expected_producer_provenance_digest"
+    ] = "sha256:" + "0" * 64
+    tampered["admission_contract_digest"] = sha256_digest(
+        tampered["admission_contract"]
+    )
+
+    for builder in (_build_admission_summary, _build_replay_summary):
+        summary = builder(
+            tampered,
+            expected_producer_provenance_digest=(
+                EXPECTED_PRODUCER_PROVENANCE_DIGEST
+            ),
+        )
+        assert summary["ok"] is False
+        assert summary["status"] == "blocked"
+
+
 def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
     tmp_path: Path,
 ) -> None:
@@ -480,6 +743,12 @@ def test_importer_builds_operator_owned_peer_review_handoff_without_authority(
     assert handoff["ok"] is True
     assert handoff["share_id"] == report["share_id"]
     assert handoff["purpose"] == report["purpose"]
+    assert handoff["admission_contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
+    assert handoff["admission_contract_digest"] == report[
+        "admission_contract_digest"
+    ]
     assert handoff["import_report_digest"].startswith("sha256:")
     assert handoff["share_manifest_digest"] == report["share_manifest_digest"]
     assert handoff["source_manifest_digest"] == report["source_manifest_digest"]
@@ -569,6 +838,12 @@ def test_import_handoff_status_summary_is_read_only_and_sanitized(
     assert latest["handoff_id"] == handoff["handoff_id"]
     assert latest["handoff_digest"] == handoff["handoff_digest"]
     assert latest["share_id"] == report["share_id"]
+    assert latest["admission_contract_version"] == (
+        IMPORT_ADMISSION_CONTRACT_VERSION
+    )
+    assert latest["admission_contract_digest"] == report[
+        "admission_contract_digest"
+    ]
     assert latest["handoff_scope"] == "peer_review_only"
     assert latest["import_decision"] == "accepted_for_peer_review"
     assert latest["entry_count"] == 1
@@ -585,6 +860,135 @@ def test_import_handoff_status_summary_is_read_only_and_sanitized(
     assert empty["runtime_authority_granted"] is False
     assert empty["payload_files_imported"] == 0
     assert empty["active"] == []
+
+
+def test_import_handoff_status_rejects_digest_and_id_binding_drift(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:binding",
+        operator_agent_id="operator:original",
+        bridge_event_ref="bridge:handoff-binding",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:handoff-binding",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+
+    content_tamper = json.loads(json.dumps(handoff))
+    content_tamper["operator_ownership"][
+        "operator_agent_id"
+    ] = "operator:attacker"
+    with pytest.raises(ValueError, match="handoff_digest"):
+        build_magma_share_import_handoff_status_summary(content_tamper)
+
+    id_tamper = json.loads(json.dumps(handoff))
+    id_tamper["handoff_id"] = "magma:share-import-handoff:0000000000000000"
+    with pytest.raises(ValueError, match="handoff_id"):
+        build_magma_share_import_handoff_status_summary(id_tamper)
+
+
+def test_import_handoff_status_rejects_unknown_fields_after_rebinding(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:closed-shape",
+        operator_agent_id="operator:original",
+        bridge_event_ref="bridge:handoff-closed-shape",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:handoff-closed-shape",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+
+    variants = []
+    for path in (
+        (),
+        ("operator_ownership",),
+        ("authority",),
+        ("privacy",),
+        ("replay_plan",),
+        ("replay_plan", "entries", 0),
+    ):
+        poisoned = json.loads(json.dumps(handoff))
+        target = poisoned
+        for key in path:
+            target = target[key]
+        target["raw_payload"] = "private_secret_marker"
+        unsigned = dict(poisoned)
+        unsigned.pop("handoff_digest")
+        unsigned.pop("handoff_id")
+        poisoned["handoff_digest"] = sha256_digest(unsigned)
+        poisoned["handoff_id"] = (
+            "magma:share-import-handoff:"
+            f"{poisoned['handoff_digest'].removeprefix('sha256:')[:16]}"
+        )
+        variants.append(poisoned)
+
+    for poisoned in variants:
+        with pytest.raises(ValueError, match="fields") as exc_info:
+            build_magma_share_import_handoff_status_summary(poisoned)
+        assert "private_secret_marker" not in str(exc_info.value)
+
+
+def test_import_handoff_status_rejects_rebound_noncanonical_categories(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    handoff = build_magma_share_import_peer_review_handoff(
+        import_report=report,
+        operator_decision_id="operator:decision:magma-share-import:categories",
+        operator_agent_id="operator:original",
+        bridge_event_ref="bridge:handoff-categories",
+        import_decision="accepted_for_peer_review",
+        decision_reason_ref="reason:handoff-categories",
+        now_utc=FIXED_NOW + timedelta(hours=1),
+    )
+
+    for field in (
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    ):
+        poisoned = json.loads(json.dumps(handoff))
+        poisoned["replay_plan"]["entries"][0][
+            field
+        ] = "private_secret_marker"
+        unsigned = dict(poisoned)
+        unsigned.pop("handoff_digest")
+        unsigned.pop("handoff_id")
+        poisoned["handoff_digest"] = sha256_digest(unsigned)
+        poisoned["handoff_id"] = (
+            "magma:share-import-handoff:"
+            f"{poisoned['handoff_digest'].removeprefix('sha256:')[:16]}"
+        )
+        with pytest.raises(ValueError, match=field):
+            build_magma_share_import_handoff_status_summary(poisoned)
 
 
 def test_import_handoff_status_summary_retains_bounded_history(
@@ -785,13 +1189,15 @@ def test_peer_review_handoff_validates_admission_contract_when_present(
     missing_contract = dict(report)
     missing_contract.pop("admission_contract")
     missing_contract.pop("admission_contract_digest")
-    handoff = build_magma_share_import_peer_review_handoff(
-        import_report=missing_contract,
-        operator_decision_id="operator:decision:magma-share-import:missing",
-        operator_agent_id="operator:wd-image1",
-        bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
-    )
-    assert handoff["handoff_version"] == IMPORT_HANDOFF_VERSION
+    with pytest.raises(ValueError, match="admission_contract"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=missing_contract,
+            operator_decision_id=(
+                "operator:decision:magma-share-import:missing"
+            ),
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
 
     bad_digest = dict(report)
     bad_digest["admission_contract_digest"] = "sha256:" + "0" * 64
@@ -848,6 +1254,89 @@ def test_peer_review_handoff_rejects_external_expected_purpose_mismatch(
             operator_agent_id="operator:wd-image1",
             bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
             expected_purpose="runtime_activation",
+        )
+
+
+def test_peer_review_handoff_rejects_self_consistent_producer_binding_drift(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    tampered = json.loads(json.dumps(report))
+    tampered["admission_contract"][
+        "expected_producer_provenance_digest"
+    ] = "sha256:" + "0" * 64
+    tampered["admission_contract_digest"] = sha256_digest(
+        tampered["admission_contract"]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="expected producer provenance binding drift",
+    ):
+        build_magma_share_import_peer_review_handoff(
+            import_report=tampered,
+            operator_decision_id=(
+                "operator:decision:magma-share-import:producer-binding"
+            ),
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
+def test_peer_review_handoff_requires_external_producer_binding(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="expected producer provenance binding is required",
+    ):
+        _build_peer_review_handoff(
+            import_report=report,
+            operator_decision_id=(
+                "operator:decision:magma-share-import:producer-required"
+            ),
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+        )
+
+
+def test_peer_review_handoff_rejects_persisted_v0_import_report(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    report["report_version"] = "magma.share_manifest_import.v0"
+
+    with pytest.raises(ValueError, match="report_version"):
+        build_magma_share_import_peer_review_handoff(
+            import_report=report,
+            operator_decision_id=(
+                "operator:decision:magma-share-import:persisted-v0"
+            ),
+            operator_agent_id="operator:wd-image1",
+            bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
         )
 
 
@@ -972,6 +1461,137 @@ def test_peer_review_handoff_rejects_self_consistent_report_contract_tamper(
             operator_agent_id="operator:wd-image1",
             bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
         )
+
+
+def test_downstream_consumers_reject_unknown_import_report_fields(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+    variants = []
+    root_extra = json.loads(json.dumps(report))
+    root_extra["raw_payload"] = "private_secret_marker"
+    variants.append(root_extra)
+    plan_extra = json.loads(json.dumps(report))
+    plan_extra["replay_plan"]["raw_context"] = "private_secret_marker"
+    variants.append(plan_extra)
+    entry_extra = json.loads(json.dumps(report))
+    entry_extra["replay_plan"]["entries"][0][
+        "raw_context"
+    ] = "private_secret_marker"
+    variants.append(entry_extra)
+
+    for poisoned in variants:
+        with pytest.raises(ValueError, match="fields"):
+            build_magma_share_import_peer_review_handoff(
+                import_report=poisoned,
+                operator_decision_id=(
+                    "operator:decision:magma-share-import:unknown-fields"
+                ),
+                operator_agent_id="operator:wd-image1",
+                bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+            )
+        admission = build_magma_share_import_admission_status_summary(poisoned)
+        sanitization = build_magma_share_import_replay_sanitization_summary(
+            poisoned
+        )
+        assert admission["ok"] is False
+        assert sanitization["ok"] is False
+        serialized = json.dumps([admission, sanitization], sort_keys=True)
+        assert "private_secret_marker" not in serialized
+
+
+def test_downstream_consumers_reject_noncanonical_entry_categories(
+    tmp_path: Path,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    report = build_magma_share_manifest_import_report(
+        share_manifest_path=share_manifest,
+        source_manifest_path=source_manifest,
+        verify_source_manifest=verify_manifest,
+        now_utc=FIXED_NOW + timedelta(hours=1),
+        max_age_hours=24,
+    )
+
+    for field in (
+        "subject_type",
+        "risk_class",
+        "expected_gate",
+        "actual_gate",
+        "verdict",
+    ):
+        poisoned = json.loads(json.dumps(report))
+        poisoned["replay_plan"]["entries"][0][
+            field
+        ] = "private_secret_marker"
+        with pytest.raises(ValueError, match=field):
+            build_magma_share_import_peer_review_handoff(
+                import_report=poisoned,
+                operator_decision_id=(
+                    "operator:decision:magma-share-import:categorical"
+                ),
+                operator_agent_id="operator:wd-image1",
+                bridge_event_ref="bridge:wd-image1-magma-share-peer-review",
+            )
+
+
+def test_import_max_age_is_bounded_at_contract_ingress(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="between 1 and 168"):
+        build_magma_share_replay_admission_contract(
+            max_age_hours=169,
+            expected_share_id="magma:share:import:001",
+            expected_purpose="cross_instance_replay",
+            **EXPECTED_PRODUCER,
+        )
+
+    share_manifest, source_manifest = _share_export(tmp_path)
+    with pytest.raises(ValueError, match="between 1 and 168"):
+        build_magma_share_manifest_import_report(
+            share_manifest_path=share_manifest,
+            source_manifest_path=source_manifest,
+            verify_source_manifest=verify_manifest,
+            now_utc=FIXED_NOW + timedelta(hours=1),
+            max_age_hours=169,
+        )
+
+
+@pytest.mark.parametrize(
+    ("max_age_hours", "output_mode"),
+    [
+        (200, "admission"),
+        (10**18, "admission"),
+        (200, "replay"),
+        (10**18, "replay"),
+    ],
+)
+def test_cli_rejects_out_of_bounds_max_age_without_traceback(
+    tmp_path: Path,
+    max_age_hours: int,
+    output_mode: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        max_age_hours=max_age_hours,
+        admission_status_json=output_mode == "admission",
+        replay_sanitization_summary_json=output_mode == "replay",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["blocker_class"] == "schema_error"
+    assert "Traceback" not in result.stderr
+    assert str(ROOT) not in result.stderr
 
 
 def test_importer_rejects_stale_share_manifest(tmp_path: Path) -> None:
@@ -1104,6 +1724,118 @@ def test_cli_json_failure_reports_expected_share_id_mismatch(
     )
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"expected_share_id": None},
+        {"expected_purpose": None},
+    ],
+)
+def test_cli_rejects_missing_receiver_replay_identity(
+    tmp_path: Path,
+    kwargs: dict[str, None],
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    _assert_failed_admission_status(
+        _run_importer_json(
+            share_manifest,
+            source_manifest,
+            **kwargs,
+        ),
+        blocker_class="receiver_identity_not_configured",
+        tmp_path=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"expected_producer_agent": None},
+        {"expected_producer_role": None},
+        {"expected_producer_bridge_event_ref": None},
+    ],
+)
+def test_cli_rejects_missing_receiver_producer_provenance(
+    tmp_path: Path,
+    kwargs: dict[str, None],
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    _assert_failed_admission_status(
+        _run_importer_json(
+            share_manifest,
+            source_manifest,
+            **kwargs,
+        ),
+        blocker_class="expected_producer_provenance_required",
+        tmp_path=tmp_path,
+        expected_producer_provenance_configured=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"expected_producer_agent": "spoofed-peer-1"},
+        {"expected_producer_role": "operator"},
+        {
+            "expected_producer_bridge_event_ref": (
+                "bridge:spoofed:origin"
+            )
+        },
+    ],
+)
+def test_cli_rejects_producer_provenance_mismatch(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+
+    _assert_failed_admission_status(
+        _run_importer_json(
+            share_manifest,
+            source_manifest,
+            **kwargs,
+        ),
+        blocker_class="expected_producer_provenance_mismatch",
+        tmp_path=tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "expected_producer_agent",
+        "expected_producer_role",
+        "expected_producer_bridge_event_ref",
+    ],
+)
+def test_cli_invalid_expected_producer_is_sanitized(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    share_manifest, source_manifest = _share_export(tmp_path)
+    private_marker = "DO" + "_NOT" + "_LEAK"
+
+    result = _run_importer_json(
+        share_manifest,
+        source_manifest,
+        **{field: f"C:/private/{private_marker}"},
+    )
+
+    _assert_failed_admission_status(
+        result,
+        blocker_class="expected_producer_provenance_invalid",
+        tmp_path=tmp_path,
+        expected_producer_provenance_configured=False,
+    )
+    assert "C:/private" not in result.stdout
+    assert private_marker not in result.stdout
+    assert "C:/private" not in result.stderr
+    assert private_marker not in result.stderr
+
+
 def test_cli_json_failure_reports_source_manifest_digest_drift(
     tmp_path: Path,
 ) -> None:
@@ -1229,8 +1961,13 @@ def test_cli_admission_status_failure_matrix_covers_rejection_modes(
     }
     assert rejection_codes == {
         "schema_error",
+        "receiver_identity_not_configured",
         "expected_share_id_mismatch",
         "expected_purpose_mismatch",
+        "expected_producer_provenance_required",
+        "expected_producer_provenance_invalid",
+        "expected_producer_provenance_mismatch",
+        "expected_producer_provenance_binding_drift",
         "stale_or_future_manifest",
         "source_receipt_manifest_verification_failed",
         "sanitized_source_manifest_digest_context_drift",
@@ -1437,6 +2174,12 @@ def test_cli_json_import_is_no_authority_and_redacts_payload_markers(
             "magma:share:import:001",
             "--expected-purpose",
             "cross_instance_replay",
+            "--expected-producer-agent",
+            "codex-lead-1",
+            "--expected-producer-role",
+            "lead",
+            "--expected-producer-bridge-event-ref",
+            "bridge:wd-image1-magma-share-import",
             "--max-age-hours",
             "24",
             "--now",

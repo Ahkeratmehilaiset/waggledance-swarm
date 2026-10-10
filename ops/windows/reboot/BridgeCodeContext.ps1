@@ -878,6 +878,7 @@ function Invoke-WdBridgePythonTool {
     $normalizedTool = $Tool.Replace('\', '/')
     $entrypoints = @($definition.python_entrypoints.PSObject.Properties | ForEach-Object { [string]$_.Value })
     $manual = $ToolArguments.Count -gt 0 -and $ToolArguments[0] -ceq '--wd-manual-execution'
+    $manualRuntimeRoot = [string]$env:WD_BRIDGE_RUNTIME_ROOT
     $executors = @(
         'tools/merge_with_bridge_receipt.py', 'tools/write_bridge_consensus_merge_receipt.py',
         'tools/idle_consensus_auto_merge.py', 'tools/bridge_rule12_review_eligibility.py',
@@ -886,7 +887,8 @@ function Invoke-WdBridgePythonTool {
     if ($manual) {
         $ToolArguments = Assert-WdBridgeManualExecution `
             -Deployment $deployment -Definition $definition -DefinitionHash $package.Hash `
-            -ManifestHash $deploymentSnapshot.Hash -Tool $normalizedTool -Arguments $ToolArguments
+            -ManifestHash $deploymentSnapshot.Hash -Tool $normalizedTool -Arguments $ToolArguments `
+            -RuntimeRoot $manualRuntimeRoot
         # A manual driver uses the full dependency closure, not just its leaf.
         $VerifyPackage = $true
     }
@@ -927,6 +929,12 @@ function Invoke-WdBridgePythonTool {
             -Definition $definition)
     }
     $isolation = Get-WdBridgeCodeIsolationEnvironment -Definition $definition -CodeRoot $codeRoot
+    if ($manual) {
+        # Freeze the already validated inherited evidence source for the child.
+        $isolation['WD_BRIDGE_RUNTIME_ROOT'] = $manualRuntimeRoot
+        $isolation['AGENT_BRIDGE_RUNTIME_ROOT'] = $manualRuntimeRoot
+        $isolation['AGENT_BRIDGE_ROOT'] = $manualRuntimeRoot
+    }
     $previous = @{}
     # Restore every variable actually overridden by the pinned definition,
     # including encoding and any future scoped settings, not just legacy keys.
@@ -974,7 +982,8 @@ function Assert-WdBridgeManualExecution {
         [Parameter(Mandatory)] [string] $DefinitionHash,
         [Parameter(Mandatory)] [string] $ManifestHash,
         [Parameter(Mandatory)] [string] $Tool,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments
+        [Parameter(Mandatory)] [AllowEmptyString()] [string[]] $Arguments,
+        [AllowEmptyString()] [string] $RuntimeRoot
     )
     $expected = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
     if ($expected -cnotmatch '^[0-9A-Fa-f]{64}$' -or $expected.ToUpperInvariant() -cne $ManifestHash) {
@@ -1017,10 +1026,30 @@ function Assert-WdBridgeManualExecution {
         (@($activation.tools | Sort-Object) -join ',') -cne ($manualPaths -join ',')
     ) { throw 'manual bridge execution activation binding is invalid' }
 
+    # Never allow the manual caller to select a different consensus log.
+    # This is the existing lane context, not a new runtime trust root.
+    if ($RuntimeRoot -cnotmatch '^[A-Za-z]:[\\/]') {
+        throw 'manual bridge execution runtime context must be an absolute inherited path'
+    }
+    $runtimeFull = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace([string]$env:AGENT_BRIDGE_RUNTIME_ROOT)) {
+        throw 'manual bridge execution runtime source must be inherited explicitly'
+    }
+    foreach ($name in @('AGENT_BRIDGE_RUNTIME_ROOT', 'AGENT_BRIDGE_ROOT')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        if ($value -cnotmatch '^[A-Za-z]:[\\/]' -or
+            -not [IO.Path]::GetFullPath($value).TrimEnd('\').Equals($runtimeFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'manual bridge execution runtime source differs from the inherited context'
+        }
+    }
+    [void](Assert-WdBridgeCodePathWithoutReparse -Path $runtimeFull `
+        -TrustedRoot ([IO.Path]::GetPathRoot($runtimeFull)) -ExpectedType Directory)
+
     # Canonical long options only. Reject argparse abbreviations/duplicates and
     # admission-changing options before Python, rather than trusting last-wins.
     $valued = @('--expected-head', '--expected-base-sha', '--from-agent', '--repo',
-        '--out-dir', '--consensus-proposal-id', '--bridge-task-id', '--events', '--bridge-root')
+        '--out-dir', '--consensus-proposal-id', '--bridge-task-id')
     $flags = @('--json')
     if ($Tool -ceq $manualPaths[0]) { $valued += '--method'; $flags += '--apply' }
     else { $valued += '--pr-status-file' }
@@ -1074,7 +1103,41 @@ function Assert-WdBridgeManualExecution {
     elseif ($positional.Count -ne 0 -or -not $options.ContainsKey('--pr-status-file')) {
         throw 'manual bridge receipt requires a PR status file and no positional arguments'
     }
+    [void](Assert-WdBridgeManualAuditPath -Path $options['--out-dir'] -OutputDirectory)
+    if ($Tool -ceq $manualPaths[1]) {
+        [void](Assert-WdBridgeManualAuditPath -Path $options['--pr-status-file'])
+    }
     return ,@($Arguments | Select-Object -Skip 1)
+}
+
+function Assert-WdBridgeManualAuditPath {
+    param([Parameter(Mandatory)] [string] $Path, [switch] $OutputDirectory)
+    # Refuse aliases before touching the caller's path. Output/input artifacts
+    # must stay in an audit area, never a runtime/source file or NTFS stream.
+    $normalized = $Path.Replace('/', '\')
+    if ($normalized -cnotmatch '^[Cc]:\\' -or $normalized.Substring(2).Contains(':') -or
+        -not $normalized.Contains('\.codex-audit\') -or
+        -not [IO.Path]::GetFullPath($normalized).Equals($normalized, [StringComparison]::OrdinalIgnoreCase) -or
+        @($normalized.Split('\') | Where-Object { $_ -and ($_.EndsWith('.') -or $_.EndsWith(' ')) }).Count) {
+        throw 'manual bridge execution audit path must be a canonical absolute C-drive audit child'
+    }
+    if ($OutputDirectory) {
+        $existing = $normalized
+        while (-not (Test-Path -LiteralPath $existing)) {
+            $existing = [IO.Path]::GetDirectoryName($existing)
+            if ([string]::IsNullOrWhiteSpace($existing)) {
+                throw 'manual bridge execution audit path lacks an existing parent'
+            }
+        }
+        [void](Assert-WdBridgeCodePathWithoutReparse -Path $existing -TrustedRoot 'C:\' -ExpectedType Directory)
+        if ((Test-Path -LiteralPath $normalized) -and @(Get-ChildItem -LiteralPath $normalized -Force).Count) {
+            throw 'manual bridge execution audit output must be a new or empty directory'
+        }
+    }
+    else {
+        [void](Assert-WdBridgeCodePathWithoutReparse -Path $normalized -TrustedRoot 'C:\' -ExpectedType Leaf)
+    }
+    return $normalized
 }
 
 function Get-WdBridgeCodeLastExitCode {

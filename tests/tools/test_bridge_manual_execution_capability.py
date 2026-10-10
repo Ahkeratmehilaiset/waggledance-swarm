@@ -68,7 +68,9 @@ def bundle(tmp_path: Path):
             "import json, os, pathlib, sys\n"
             "pathlib.Path(os.environ['WD_TEST_LAUNCHED']).write_text('launched')\n"
             "print(json.dumps(dict(argv=sys.argv[1:], cwd=os.getcwd(), "
-            "no_site=bool(sys.flags.no_site), bytecode=sys.dont_write_bytecode)))\n",
+            "no_site=bool(sys.flags.no_site), bytecode=sys.dont_write_bytecode, "
+            "runtime_root=os.environ.get('AGENT_BRIDGE_RUNTIME_ROOT'), "
+            "root_alias=os.environ.get('AGENT_BRIDGE_ROOT'))))\n",
             encoding="utf-8",
         )
     wheels = code / "python-wheels"
@@ -104,6 +106,9 @@ def bundle(tmp_path: Path):
     _write(path / "wd-fleet.json", {"bridge_python": {"executable": BRIDGE_PYTHON}})
     for name in ("BridgeCodeContext.ps1", "Invoke-WdBridgePython.ps1"):
         shutil.copy2(OPS / name, path / name)
+    audit = path.parent / ".codex-audit"
+    audit.mkdir()
+    _write(audit / "status.json", {"synthetic_status": "non-authoritative inert fixture"})
     _anchor(path)
     return path
 
@@ -125,32 +130,43 @@ def _activation(bundle: Path) -> dict:
             "tools": list(MANUAL.values()), "approval_reference_sha256": "A" * 64}
 
 
-def _args(tool: str = MERGE) -> list[str]:
-    prefix = ["17"] if tool == MERGE else ["--pr-status-file", "unused-status.json"]
+def _args(tool: str = MERGE, bundle: Path | None = None) -> list[str]:
+    audit = (bundle.parent if bundle else ROOT) / ".codex-audit"
+    prefix = ["17"] if tool == MERGE else ["--pr-status-file", str(audit / "status.json")]
     return [MARKER, *prefix, "--expected-head", HEAD, "--expected-base-sha", BASE,
             "--from-agent", "codex-lead-1", "--repo", "Ahkeratmehilaiset/waggledance-swarm",
-            "--out-dir", "unused-receipt", "--consensus-proposal-id", "proposal-17",
+            "--out-dir", str(audit / "unused-receipt"), "--consensus-proposal-id", "proposal-17",
             "--bridge-task-id", "example/task", "--json"]
 
 
-def _invoke(shell, bundle: Path, tool=MERGE, args=None, *, anchor=True, agent="codex-lead-1", python_pin=True):
+def _invoke(shell, bundle: Path, tool=MERGE, args=None, *, anchor=True, agent="codex-lead-1", python_pin=True, runtime_overrides=None):
     signal = bundle.parent / "driver-launched.txt"
     assert not signal.exists()
     environment = dict(os.environ)
     # Fixture root must never inherit the real lane's deployed package or anchor.
     cleared = {"WD_BRIDGE_PYTHON", "WD_BRIDGE_PYTHON_SHA256",
-               "WD_REBOOT_EXPECTED_MANIFEST_HASH", "PSMODULEPATH"}
+               "WD_REBOOT_EXPECTED_MANIFEST_HASH", "PSMODULEPATH",
+               "WD_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT"}
     for name in list(environment):
         if name.upper() in cleared:
             del environment[name]
     environment.update(AGENT_BRIDGE_AGENT=agent, WD_TEST_LAUNCHED=str(signal))
+    runtime = bundle.parent / "inert-runtime"
+    runtime.mkdir(exist_ok=True)
+    environment.update(WD_BRIDGE_RUNTIME_ROOT=str(runtime),
+                       AGENT_BRIDGE_RUNTIME_ROOT=str(runtime))
+    for name, value in (runtime_overrides or {}).items():
+        if value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = value
     if python_pin:
         environment["WD_BRIDGE_PYTHON_SHA256"] = (
             _sha(Path(BRIDGE_PYTHON)) if python_pin is True else python_pin)
     if anchor:
         environment["WD_REBOOT_EXPECTED_MANIFEST_HASH"] = (
             _sha(bundle / "deployment-manifest.json") if anchor is True else anchor)
-    actual = _args(tool) if args is None else args
+    actual = _args(tool, bundle) if args is None else args
     # Script argument array keeps PS5 and PS7 native quoting identical.
     quote = lambda value: "'" + str(value).replace("'", "''") + "'"
     script = bundle.parent / "invoke.ps1"
@@ -174,9 +190,10 @@ def test_manual_launch_requires_anchored_activation_and_exact_args(shell, bundle
     assert run.returncode == 0, run.stdout + run.stderr
     assert signal.read_text() == "launched"
     output = json.loads(run.stdout.strip())
-    assert output["argv"] == _args(tool)[1:]
+    assert output["argv"] == _args(tool, bundle)[1:]
     assert output["cwd"] == str(ROOT)
     assert output["no_site"] and output["bytecode"]
+    assert output["runtime_root"] == output["root_alias"] == str(bundle.parent / "inert-runtime")
 
 
 @pytest.mark.parametrize("tool", EXECUTORS)
@@ -224,7 +241,8 @@ def test_activation_refuses_before_python(shell, bundle, change):
                                    "empty_base", "duplicate_head", "abbreviation",
                                    "historical_now", "grok", "rule12", "operator_exception",
                                    "extra_marker", "wrong_repo", "missing_task", "option_value",
-                                   "idle_path", "ordinary_marker"])
+                                   "idle_path", "ordinary_marker", "events_override",
+                                   "root_override", "events_equals", "root_equals"])
 def test_manual_arguments_refuse_before_python(shell, bundle, change):
     _anchor(bundle, _activation(bundle))
     args = _args()
@@ -260,6 +278,14 @@ def test_manual_arguments_refuse_before_python(shell, bundle, change):
         tool = "tools/idle_consensus_auto_merge.py"
     elif change == "ordinary_marker":
         tool = "tools/bridge_next_action.py"
+    elif change == "events_override":
+        args += ["--events", str(bundle.parent / "forged/shared/events.jsonl")]
+    elif change == "root_override":
+        args += ["--bridge-root", str(bundle.parent / "forged")]
+    elif change == "events_equals":
+        args += ["--events=" + str(bundle.parent / "forged/shared/events.jsonl")]
+    elif change == "root_equals":
+        args += ["--bridge-root=" + str(bundle.parent / "forged")]
     anchor = False if change == "no_anchor" else "B" * 64 if change == "wrong_anchor" else True
     run, signal = _invoke(shell, bundle, tool, args, anchor=anchor,
                           agent="codex-tools-1" if change == "wrong_lane" else "codex-lead-1",
@@ -269,6 +295,100 @@ def test_manual_arguments_refuse_before_python(shell, bundle, change):
     assert any(message in run.stdout + run.stderr for message in
                ("manual bridge execution", "manual bridge merge", "manual bridge receipt",
                 "differs from its external anchor", "Python changed after the lane handshake"))
+
+
+@pytest.mark.parametrize("change", ["missing_context", "relative_context", "missing_runtime",
+                                   "different_runtime", "different_alias"])
+def test_manual_runtime_source_cannot_be_redirected(shell, bundle, change):
+    _anchor(bundle, _activation(bundle))
+    if change == "missing_context":
+        overrides = {"WD_BRIDGE_RUNTIME_ROOT": None}
+    elif change == "relative_context":
+        overrides = {"WD_BRIDGE_RUNTIME_ROOT": "relative/runtime"}
+    elif change == "missing_runtime":
+        overrides = {"AGENT_BRIDGE_RUNTIME_ROOT": None}
+    elif change == "different_runtime":
+        overrides = {"AGENT_BRIDGE_RUNTIME_ROOT": str(bundle.parent / "forged")}
+    else:
+        overrides = {"AGENT_BRIDGE_ROOT": str(bundle.parent / "forged")}
+    run, signal = _invoke(shell, bundle, runtime_overrides=overrides)
+    assert run.returncode != 0
+    assert not signal.exists(), run.stdout + run.stderr
+    assert "manual bridge execution runtime" in run.stdout + run.stderr
+
+
+def test_matching_legacy_root_alias_is_accepted(shell, bundle):
+    _anchor(bundle, _activation(bundle))
+    root = str(bundle.parent / "inert-runtime")
+    run, signal = _invoke(shell, bundle, runtime_overrides={"AGENT_BRIDGE_ROOT": root})
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert signal.exists()
+    output = json.loads(run.stdout)
+    assert output["runtime_root"] == output["root_alias"] == root
+
+
+def test_standalone_receipt_limit_is_documented_without_gate_changes():
+    doc = (ROOT / "docs/ops/bridge_manual_execution_capability.md").read_text(encoding="utf-8")
+    assert "standalone receipt output is non-authoritative" in doc
+    assert "must not be used as merge authorization" in doc
+
+
+@pytest.mark.parametrize("tool", MANUAL.values())
+@pytest.mark.parametrize("flag", ["--now", "--review-policy", "--grok-fallback",
+                                 "--operator-path-exception-json"])
+@pytest.mark.parametrize("separator", [False, True])
+def test_weakening_tail_after_driver_arguments_is_refused(shell, bundle, tool, flag, separator):
+    _anchor(bundle, _activation(bundle))
+    args = _args(tool, bundle) + (["--"] if separator else []) + [flag]
+    run, signal = _invoke(shell, bundle, tool, args)
+    assert run.returncode != 0
+    assert not signal.exists()
+    assert "duplicate or unknown options" in run.stdout + run.stderr
+
+
+@pytest.mark.parametrize("change", ["relative", "unc", "stream", "dotdot", "outside_audit", "nonempty"])
+def test_output_path_refuses_aliases_and_existing_artifacts(shell, bundle, change):
+    _anchor(bundle, _activation(bundle))
+    args = _args(MERGE, bundle)
+    audit = bundle.parent / ".codex-audit"
+    paths = {"relative": "relative-receipt", "unc": r"\\server\share\.codex-audit\receipt",
+             "stream": str(audit / "receipt") + ":stream",
+             "dotdot": str(audit) + r"\child\..\receipt",
+             # pytest basetemp may itself be below .codex-audit; choose a
+             # non-audit path that the wrapper must reject before touching it.
+             "outside_audit": r"C:\Python\manual-outside-audit-refusal",
+             "nonempty": str(audit / "status.json")}
+    if change == "nonempty":
+        output = audit / "nonempty"
+        output.mkdir()
+        (output / "existing.json").write_text("retain me", encoding="utf-8")
+        paths[change] = str(output)
+    args[args.index("--out-dir") + 1] = paths[change]
+    run, signal = _invoke(shell, bundle, args=args)
+    assert run.returncode != 0
+    assert not signal.exists()
+    assert "manual bridge execution audit" in run.stdout + run.stderr
+
+
+@pytest.mark.parametrize("field", ["--out-dir", "--pr-status-file"])
+def test_artifact_junction_refuses_before_python(shell, bundle, field):
+    _anchor(bundle, _activation(bundle))
+    audit = bundle.parent / ".codex-audit"
+    target = bundle.parent / "inert-artifact-target"
+    target.mkdir()
+    _write(target / "status.json", {"synthetic": True})
+    link = audit / "junction"
+    quote = lambda p: "'" + str(p).replace("'", "''") + "'"
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                             f"New-Item -ItemType Junction -Path {quote(link)} -Target {quote(target)} | Out-Null"],
+                            text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = _args(RECEIPT, bundle)
+    args[args.index(field) + 1] = str(link if field == "--out-dir" else link / "status.json")
+    run, signal = _invoke(shell, bundle, RECEIPT, args)
+    assert run.returncode != 0
+    assert not signal.exists()
+    assert "reparse point" in run.stdout + run.stderr
 
 
 @pytest.mark.parametrize("relative", ["bridge-code-files.json", MERGE, "Invoke-WdBridgePython.ps1",

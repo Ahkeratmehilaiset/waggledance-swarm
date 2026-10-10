@@ -40,6 +40,13 @@ execution. The inherited interpreter hash pin is mandatory for manual calls.
 Definition, driver, wrapper, interpreter and the complete package
 dependency closure retain their existing hash/reparse checks.
 
+The inherited `AGENT_BRIDGE_RUNTIME_ROOT` must explicitly match the absolute
+`WD_BRIDGE_RUNTIME_ROOT` lane context, and any `AGENT_BRIDGE_ROOT` alias must
+match it too. The child receives that validated context for both selectors;
+missing, redirected or reparse runtime roots refuse. Manual `--events` and
+`--bridge-root` overrides are not admitted. These are existing same-user host
+context pins, not independent authentication of the event log.
+
 There is no new trust root, key, signer, credential or unsigned sidecar. The
 approval-reference hash is an audit reference, **not authentication of a human**.
 Activation authority comes through the existing external manifest anchor and
@@ -76,9 +83,20 @@ lowercase 40-character SHAs. `--now`, operator path-exception arguments,
 `--admin`, `--no-verify` or force-push option is admitted. Without `--apply` the
 existing merge driver keeps its dry-run behavior; a dry run is not a merge.
 
+`--out-dir` must be a new or empty directory at an absolute canonical C-drive
+path below `.codex-audit`. The receipt status input must be an existing regular
+file in an audit area. UNC paths, NTFS streams, dot-segment aliases, trailing
+dot/space aliases and reparse ancestors refuse before Python. This protects
+artifact placement; it does not authenticate a caller-supplied status document.
+
 The receipt driver uses the same marker/bindings and additionally requires
 `--pr-status-file`; it admits no `--apply` or positional PR argument. It does
-not perform a merge. The executor's own MAGMA preflight and recorded receipt
+not perform a merge. Its standalone receipt output is non-authoritative:
+it reads a caller-supplied status file and must not be used as merge authorization
+or proof of live GitHub checks. Retain its output as audit material only. The
+merge executor obtains its own live status snapshot and rechecks the gate before
+merging; only that executor's receipt/preflight is used by this launch route.
+The executor's own MAGMA preflight and recorded receipt
 must identify the actual three approval identities, head and RCO_PASS event.
 Never substitute a receipt or approval after any gate refusal. Existing nonce,
 expiry and bound-approval checks keep their original contracts; this launch

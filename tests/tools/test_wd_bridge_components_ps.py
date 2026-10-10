@@ -70,9 +70,37 @@ def _args(tmp_path: Path) -> list[str]:
             "-Lane", "claude-rco-2"]
 
 
+def _child_env(shell: str) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB)}
+    if Path(shell).stem.casefold() == "powershell":
+        # A PS7 parent can put its incompatible Utility module first. Let
+        # Windows PowerShell construct its own module path in this synthetic
+        # child only; never change the parent or the product's pin checks.
+        env = {k: v for k, v in env.items() if k.casefold() != "psmodulepath"}
+    return env
+
+
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "PowerShell.EXE", "pwsh.exe", "pwsh"])
+def test_child_module_environment_is_engine_local_and_parent_unchanged(monkeypatch, shell_name):
+    inherited_path = str(Path("parent-ps7") / "Modules")
+    monkeypatch.setenv("PSModulePath", inherited_path)
+    monkeypatch.setenv("CHILD_ENV_SENTINEL", "preserved")
+    parent = dict(os.environ)
+    shell = str(Path("engines") / shell_name)
+    env = _child_env(shell)
+    expected = {k: v for k, v in parent.items() if not k.startswith(_SCRUB)}
+    if Path(shell).stem.casefold() == "powershell":
+        expected = {k: v for k, v in expected.items() if k.casefold() != "psmodulepath"}
+        assert not any(k.casefold() == "psmodulepath" for k in env)
+    else:
+        assert any(k.casefold() == "psmodulepath" and v == inherited_path for k, v in env.items())
+    assert env == expected  # no unrelated variable or PS7 path is changed
+    assert dict(os.environ) == parent
+
+
 def _run(shell: str, tmp_path: Path, args: list[str], *, wrapper: Path | None, anchor: str | None,
          lines: str = "", code: int = 0, mode: str = "") -> tuple[subprocess.CompletedProcess, dict | None]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB)}
+    env = _child_env(shell)
     record = tmp_path / "stub-record.json"
     if record.exists():
         record.unlink()

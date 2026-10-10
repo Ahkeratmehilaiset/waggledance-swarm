@@ -275,11 +275,32 @@ def test_run_idle_protocol_once_writes_no_claim_or_done_file(bridge, tmp_path):
     (bridge / "shared").mkdir()
     (bridge / "shared" / "events.jsonl").write_text("", encoding="utf-8")
     before = _tree(bridge)
-    subprocess.run([sys.executable, str(REPO / "tools" / "run_idle_protocol_once.py"), "--bridge-root", str(bridge),
+    completed = subprocess.run([sys.executable, str(REPO / "tools" / "run_idle_protocol_once.py"), "--bridge-root", str(bridge),
                     "--from-agent", "fable-5", "--to", "codex-lead-1", "--json",
                     "--scratch-dir", str(tmp_path / "scratch")], cwd=str(REPO), env=_env(), capture_output=True,
                    text=True, timeout=120)
+    assert completed.stdout.strip(), "idle runner emitted no JSON report"
+    report = json.loads(completed.stdout)
+    assert isinstance(report, dict)
+    # Empty events deliberately yield unknown, not a successful idle decision.
+    assert report["decision"] == "unknown" and report["emitted"] is False
+    assert report["errors"]
+    assert completed.returncode == report["exit_code"] == 2
     assert _tree(bridge) == before                                   # a reader only: no participation needed
+
+
+def test_MUTANT_IDLE_CHILD_NOT_STARTED_is_rejected(bridge, tmp_path, monkeypatch):
+    completed_process = subprocess.CompletedProcess
+
+    class IdleChildNotStarted:
+        @staticmethod
+        def run(args, **kwargs):
+            return completed_process(args, 2, stdout="", stderr="")
+
+    # Stub only this module's child call; exercise the actual read-only test oracle.
+    monkeypatch.setitem(globals(), "subprocess", IdleChildNotStarted)
+    with pytest.raises(AssertionError, match="idle runner emitted no JSON report"):
+        test_run_idle_protocol_once_writes_no_claim_or_done_file(bridge, tmp_path)
 
 
 # -- fable-5 foreman call 2026-10-01 00:03:10Z (inventory option a): the sweep's --apply takes the same mutex ------

@@ -485,6 +485,14 @@ The name comes from honeybee waggle dances — a real-world example of a collect
 
 The codebase historically used bee/hive metaphors throughout. New code (Phase 9 onward) is **domain-neutral**: terms like Cognitive Fabric, Reality View, Capsule, Cell, Runtime Topology, Provenance, Distillation, Builder Lane, and Mentor Lane replace bee/swarm/honeycomb/factory metaphors in core modules. Legacy paths and product names remain for compatibility.
 
+## Mehiläisten pölyttämä projekti
+
+WaggleDance syntyi suomalaisen mehiläistarhan kupeessa. Ahkerat Mehiläiset -tarhan hunaja auttoi rahoittamaan kehityksessä käytetyn laskentatehon ja tekoälytyökalut. Mehiläiset pölyttivät siis niittyjen lisäksi myös uusia ideoita ja ohjelmistoa. Jos forkkaat Apache-2.0-lisensoidut osat, olisi hienoa, että tämä pieni tarina kulkisi mukana.
+
+## A project pollinated by bees
+
+WaggleDance began beside a Finnish apiary. Honey from Ahkerat Mehiläiset helped fund the computing and AI tools used in development. The bees pollinated not only the meadows, but new ideas and software too. If you fork the Apache-2.0 components, we would love this little story to travel with them.
+
 ## License
 
 **Dual-licensed:**
@@ -504,6 +512,14 @@ Commercial licensing: see [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md) or contact ja
 ## Credits
 
 Built by **Jani Korpi** ([Ahkerat Mehilaiset](https://github.com/Ahkeratmehilaiset), Helsinki) with [Claude Code](https://claude.ai/claude-code).
+
+## Tue projektia
+
+Jos WaggleDance auttaa sinua tai tarina puhuttelee, voit halutessasi tukea kehitystä vapaaehtoisella lahjoituksella: MobilePay +358 40 742 5479, Jani Korpi. Yrityksille tarjoamme sponsorointia sekä maksullista käyttöönotto- ja integrointiapua: https://qrco.de/beOtLq. Myös osa Ahkerat Mehiläiset -hunajan myyntituloista käytetään projektin laskentatehoon. Tukeminen ei ole ohjelmiston käytön ehto.
+
+## Support the project
+
+If WaggleDance helps you or its story speaks to you, you may choose to support development with a voluntary donation: MobilePay +358 40 742 5479, Jani Korpi. Companies can explore sponsorship and paid onboarding or integration help: https://qrco.de/beOtLq. Part of Ahkerat Mehiläiset honey sales also funds project computing. Support is never a condition of using the software.
 
 ---
 

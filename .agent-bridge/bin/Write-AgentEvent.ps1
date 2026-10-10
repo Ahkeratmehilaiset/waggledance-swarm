@@ -847,7 +847,36 @@ if (Test-OpenOperatorBridgeFollowNudgeDuplicate -Path $eventsPath -Candidate $ev
     return
 }
 
+function Assert-BridgeJsonObjectKeysAscii {
+    param([Parameter(Mandatory)] [string] $Json)
+    # Readers (BridgeLogReader JsonContractValidator.ParseObject) refuse any decoded
+    # object key above 0x7F, and one such row blocks every tail read fleet-wide
+    # (2026-10-10 11:54Z). Refuse the row here, before canonical append, WAL or
+    # outbox, so a bad key fails only its own writer. Non-ASCII VALUES stay allowed.
+    # Every string token is matched in order, so a quoted '"x":' inside a value is
+    # never mistaken for a key; a token is a key when ':' follows it.
+    foreach ($token in [regex]::Matches($Json, '"(?:[^"\\]|\\.)*"')) {
+        $next = $token.Index + $token.Length
+        while ($next -lt $Json.Length -and [char]::IsWhiteSpace($Json[$next])) { $next++ }
+        if ($next -ge $Json.Length -or $Json[$next] -ne ':') { continue }
+        $key = $token.Value.Substring(1, $token.Length - 2)
+        $nonAscii = $false
+        for ($i = 0; $i -lt $key.Length; $i++) {
+            if ([int]$key[$i] -gt 0x7F) { $nonAscii = $true; break }
+            if ($key[$i] -ne '\') { continue }
+            $i++
+            if ($key[$i] -ceq 'u' -and [Convert]::ToInt32($key.Substring($i + 1, 4), 16) -gt 0x7F) { $nonAscii = $true; break }
+            if ($key[$i] -ceq 'u') { $i += 4 }
+        }
+        if ($nonAscii) {
+            $shown = -join ($key.ToCharArray() | ForEach-Object { if ([int]$_ -gt 0x7F) { '\u{0:x4}' -f [int]$_ } else { $_ } })
+            throw "Bridge event JSON object keys must be ASCII before writing (readers refuse the row); offending key: $shown"
+        }
+    }
+}
+
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [char]10)
+Assert-BridgeJsonObjectKeysAscii -Json $line
 
 function New-BridgeV1Mutex {
     param(

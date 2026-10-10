@@ -290,6 +290,9 @@ with the session they were said in and the bridge event that relayed them
 | 06:38Z | fable-5 (the operator pasted fable-5's own proposal back); approval also first-hand in claude-rco-1 ("kyllä") | 06:39:07Z; 06:39:26Z | "Siksi ehdotin, että direktiivisi kirjataan CLAUDE.md:hen sanatarkasti erillisellä PR:llä:<br>- täysi autonomia ilman operaattoria;<br>- Grok varahyväksyjänä kaikissa paikoissa;<br>- löydetyt viat korjataan heti;<br>- katselmointi eri mallilla;<br>- vahvin malli kiintiön rajoissa." |
 | 10:13Z | fable-5; again first-hand in codex-lead-1 at 10:15Z | 10:14:15Z; Lead record 6BDBA007 | "Grok käyttö agenteilla, grok vastaus ei saa jäädä odottamaan max 1 min sen jälkeen mennään omilla avuilla sen ainoa tehtävä on vaan antaa syvyyttä ja näkökulmaa silloin kun se on saatavissa. Grokkia voidaan myös käyttä review autoriteettinä silloin kun muut ovat jäävejä, mutta se ei ole mikään portti, koska siitä saattaa mennä käyttörajat lukkoon ja se ei vastaa sen takia." (the codex-lead-1 session begins "Grok käyttö bridge agenteilla," and adds: "Eli sitä käytetään automaattisesti haaastamaan omia ajatuksia agentti itse tekee päätökset ja tarvittaessa ilman grokkia normaali tehtävissä.") |
 | 10:17Z | fable-5 and codex-lead-1 (the operator pasted fable-5's summary of this rule back into both sessions with the first sub-bullet replaced) | 10:18:33Z; Lead record B950D617 | "#1766, sääntö 12 (täysi autonomia), muuttaa vain ohjeita, ei koodia:<br>- Agentit eivät enää pyydä sinulta allekirjoitusta yksittäisiin PR:iin, eivät edes turvallisuuskriittisiin. Yhdistämiseen riittää paras saatavilla oleva konsensus:<br>  - toteuttajaa vastakkaisen mallipainon, lead toos (GPT), Fabel, rco1, rco2 (CLAUDE) tai Grok hyväksyntä, jos toteutuksessa on molempia, tilanteen mukaan;<br>  - jokaisen esteettömän RCO:n hyväksyntä;<br>  - vihreät testit;<br>  - ei voimassa olevaa RCO-vetoa;<br>  - kirjattu kuitti siitä, kuka hyväksyi." |
+| 2026-10-10 06:56Z | fable-5 | 06:57:47Z | "RCO paikan voi täyttää tools, lead, fabel tai jos ei mikään niiistä niin grok" |
+| 2026-10-10 06:59Z | fable-5 (assignment of this amendment and its gate PR; the operator signs that PR explicitly because #1762 is still open) | relayed with this PR | "kirjoita CLAUDE.md-muutos ja gate-PR, allekirjoitan" |
+| 2026-10-10 07:20Z | fable-5 (pasted, headed "OPERAATTORI") | relayed with this PR | "Prioriteetti on RCO-paikan laajennus ("tools, lead, fabel tai jos ei mikään niistä niin grok").<br>1) Tee kaksi pientä PR:ää: CLAUDE.md:n sanatarkka muutos ja (a)-luokan porttikoodi-PR. Pidä ne mahdollisimman kapeina. Ota huomioon kolmen eri identiteetin sääntö: Lead ja Tools eivät voi samassa PR:ssä olla sekä build- että RCO-paikalla, ellei build-paikkojakin muuteta, joten kirjaa ratkaisu eksplisiittisesti. Jääviyssääntö (ei tekijä, ei konsepti-, suunnittelu- tai mittauslähde) säilyy." |
 
 The rule text:
 
@@ -304,12 +307,45 @@ The rule text:
   - `RCO_PASS` from every recognized RCO that is eligible (not the author and
     not a concept, design or measurement source of the change): both when both
     are eligible, otherwise the one that is; when neither is eligible or
-    present, a Grok fallback fills the RCO slot;
+    present, the pool fallback below fills the RCO slot, and Grok only after
+    it;
   - all required CI checks green;
   - no unretracted veto or finding from any recognized RCO;
   - the charter checks pass;
   - a MAGMA receipt that names every slot holder (a Grok fallback by its ledger
     `request_id`) and cites this rule.
+
+  **RCO-slot pool fallback (operator 2026-10-10 06:56Z).** When no recognized
+  RCO is eligible or present, the RCO slot is filled in this order: `codex-tools-1`,
+  `codex-lead-1`, `fable-5`, and only if none of them can, Grok. A pool lane
+  holds the slot with its own exact-head `rco_pass`, under the same
+  eligibility as an RCO (not the author, not a concept, design or measurement
+  source, not self-recused, not absent). Because a publisher or measurement
+  role is not always visible to the gate, every such `rco_pass` must state it
+  explicitly in its payload (`rule12_pool_attestation:
+  "not_author_concept_design_or_measurement_source"`); a pass without that
+  statement never holds the slot. The order is a preference among lanes that
+  have passed: the slot does not wait for an earlier lane that has not. A
+  pool lane may share the implementer's model family (for example Tools on
+  GPT-authored work); the opposite-family slot is what checks the family.
+
+  **Three distinct identities (resolved explicitly).** On one PR, Lead or Tools
+  never sit in both a build slot and the RCO slot:
+  - under the Rule 12 policy (`review_policy=rule12`) the build slot is the
+    single opposite-family slot, and a pool lane that holds the RCO slot is
+    excluded from it. For a Claude-authored PR that means, for example, Tools
+    in the RCO slot and Lead in the build slot, or the reverse;
+  - the legacy Rule 9a policy, whose build slots are Lead AND Tools, never
+    reads the pool. Its build slots are unchanged, so there Lead and Tools
+    stay build approvers and never fill the RCO slot.
+
+  While a pool lane is still available (eligible, and not the sole
+  opposite-family holder) the slot waits for it and Grok does not fill it. An
+  uncleared block from a present pool lane blocks the slot until that lane's
+  own later exact-head `rco_pass` clears it. A pool lane is never a recognized
+  RCO:
+  its pass does not satisfy `check_rco_pass_present` or Rule 9a/9b, and its block
+  is not a recognized-RCO veto.
 
   This directive is the operator's standing signature that Rule 9b waited for;
   it **replaces** the Rule 9b bootstrap and its (a)-class carve-out. One
@@ -396,6 +432,36 @@ Known limits:
 - **Trust boundary:** the helper ledger and reports are unsigned. The hashes
   prove consistency, not origin, so a same-user host writer can forge both.
   Activating the switch therefore needs an authenticated-origin decision first.
+
+**Code status update (2026-10-10, RCO-slot pool fallback; NOT in effect until
+the separate (a)-class gate-code PR #1826 merges with the operator's explicit
+signature; until then the gate still refuses as described above).** That PR,
+under `review_policy=rule12` only, with no new switch:
+- `tools/bridge_rule12_review_eligibility.py` would fill a vacant RCO slot from
+  `RCO_POOL_FALLBACK` (Tools, Lead, Fable) in that order, as
+  `held_by_pool_fallback`. The slot stays `pending` while a pool lane is
+  available, is `blocked_by_pool_candidate` while a present pool lane has an
+  uncleared block, and only otherwise stays `vacant` for the Grok fallback.
+- `tools/idle_consensus_auto_merge.py` would lift the exact-head `RCO_PASS` blocker
+  through `_pool_rco_slot_lift` only when all of these hold: the rule12 review
+  is satisfied; the RCO slot is `held_by_pool_fallback` by one pool lane whose
+  identity-bound exact-head `rco_pass` is in `rco_pass_refs`; a non-Grok lane
+  other than that holder holds the opposite-family slot; the peer gate is clear;
+  and the full recognized-RCO veto scan is clear.
+- The receipt would bind the pool-holder tuple (`rule12_review.pool_rco_fallback`,
+  reason code `rco:pool_fallback`), and the merge executor would refuse the
+  merge if its fresh gate did not reproduce that tuple.
+
+Still unchanged or not implemented:
+- The legacy policy (Rule 9a `verify_bridge_consensus`, which still needs both
+  Codex approvals plus a recognized RCO) and the runbook driver.
+- `check_rco_pass_present` still recognizes only `claude-rco-1` and
+  `claude-rco-2`.
+- The Grok switch stays off.
+- No authorized merge-execution route exists yet (A5).
+- Because #1762 is still open, this amendment and its (a)-class gate PR each
+  need the operator's explicit per-PR signature; consensus alone does not land
+  them.
 
 **Unchanged:**
 - the RCO veto is absolute and outranks any pass;

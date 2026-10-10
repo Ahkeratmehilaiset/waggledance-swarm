@@ -276,6 +276,7 @@ def test_legacy_request_without_id_hidden_by_noise_is_blocked_not_invented(tmp_p
     # Visible in the recent view, the legacy request is still selected exactly.
     visible = _retrieve(tmp_path / "visible", shell, [*_noise(60), legacy], _route([*_noise(60), legacy]))
     assert visible["status"] == "ok" and visible["path"] == "recent_view"
+    assert json.loads(visible["request_json"]) == legacy  # the legacy row's own body, not another recent row
 
 
 def _legacy_routing() -> tuple[dict, dict]:

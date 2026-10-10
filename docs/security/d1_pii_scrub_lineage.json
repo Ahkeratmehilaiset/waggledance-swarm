@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "waggledance.d1_pii_scrub_preparation",
+  "status": "prepared_blocked",
+  "prepared_from_commit": "f12f6d971accf5717141b7bfa2f54a7a35628f91",
+  "current_tree": {
+    "matched_path_union": 205,
+    "business_id_paths": 15,
+    "legal_keep_paths": 3,
+    "settings_redaction_paths": 2,
+    "remaining_unclassified_paths": 203
+  },
+  "blocked_scope": true,
+  "authority": {
+    "scope": false,
+    "legal": false,
+    "release": false,
+    "production": false,
+    "execution": false
+  },
+  "history": null,
+  "refs": null,
+  "mirror": null,
+  "execution": null
+}

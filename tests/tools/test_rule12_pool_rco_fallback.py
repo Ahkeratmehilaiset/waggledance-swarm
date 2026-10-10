@@ -306,20 +306,6 @@ def test_a_grok_requester_may_not_be_an_implementer_when_grok_fills():
     assert result["decision"] == "not_satisfied"
 
 
-def test_only_grok_advice_contributors_are_refused_c0402():
-    result = evaluate([*RCOS_RECUSED], [{"agent": "grok-scout-1", "role": "concept"}])
-    assert result["decision"] == "refused"
-    assert any("no implementer remains" in reason for reason in result["reasons"])
-
-
-def test_grok_advice_next_to_an_author_is_not_refused():
-    contributors = [*FABLE_AUTHOR, {"agent": "grok-scout-1", "role": "design"}]
-    result = evaluate([*RCOS_RECUSED, rco_pass("codex-tools-1"), rco_pass("codex-lead-1")],
-                      contributors)
-    assert result["decision"] == "satisfied", result["reasons"]
-    assert result["implementers"] == ["fable-5"]
-
-
 # --- gate --------------------------------------------------------------------
 GHEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"

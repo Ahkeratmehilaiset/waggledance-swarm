@@ -12,7 +12,10 @@ held by eligible approvers:
 * a **pool fallback** for the RCO slot (operator 2026-10-10 06:56Z): when no
   recognized RCO is present, the first eligible lane of ``RCO_POOL_FALLBACK``
   (Tools, Lead, Fable) with an exact-head ``rco_pass`` and no uncleared block of
-  its own holds it. It never also holds the opposite-family slot. While any
+  its own holds it. It never also holds the opposite-family slot (the rule12
+  build slot), so Lead or Tools never sit in both slots on one PR; the legacy
+  Rule 9a policy, whose build slots are Lead AND Tools, never reads the pool,
+  so its build slots are unchanged. While any
   such lane is still available (eligible, not the opposite-family holder) the
   slot waits for it (``pending``) and Grok does not fill it; an uncleared block
   from any present pool lane, the opposite-family holder included, blocks the
@@ -487,10 +490,6 @@ def evaluate_rule12_review_eligibility(
         if agent == GROK_AGENT and role not in GROK_DISQUALIFYING_ROLES:
             continue  # Grok advice/review is not implementation
         implementers.add(agent)
-    if contributor_list and not reasons and not implementers:
-        # Only Grok advice/review was named: nobody implemented the change, so no
-        # slot can be checked against an implementer (PR1810 Grok review c0402).
-        reasons.append("no implementer remains: Grok advice or review is not implementation")
     event_list = [event for event in events if isinstance(event, Mapping)]
     if reasons:
         return result

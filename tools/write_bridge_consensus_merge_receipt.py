@@ -386,7 +386,18 @@ def _receipt_payload(
             # The full Grok tuple the merge executor's fresh gate must reproduce
             # (plan v3 B5); a consumer re-derives it from the ledger request_id.
             payload["rule12_review"]["grok_fallback"] = dict(evidence)
+        pool_evidence = gate_report.get("pool_rco_fallback_evidence")
+        if isinstance(pool_evidence, Mapping):
+            # The pool-holder tuple the merge executor's fresh gate must
+            # reproduce (operator 2026-10-10 06:56Z pool fallback).
+            payload["rule12_review"]["pool_rco_fallback"] = dict(pool_evidence)
     return payload
+
+
+def _pool_evidence(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    review = payload.get("rule12_review")
+    evidence = review.get("pool_rco_fallback") if isinstance(review, Mapping) else None
+    return evidence if isinstance(evidence, Mapping) else None
 
 
 def _grok_evidence(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -423,8 +434,11 @@ def _write_receipt_bundle(
         if not rule12 or bridge_consensus.get("rco_pass_ref") is not None
         else []
     )
+    pool_evidence = _pool_evidence(payload) if rule12 else None
     if grok_evidence is not None:
         rco_reason_codes = ["rco:grok_fallback"]
+    elif pool_evidence is not None:
+        rco_reason_codes = ["rco:pool_fallback"]
     rco_decision_basis: Any = (
         list(bridge_consensus.get("rco_pass_refs") or [])
         if rule12
@@ -434,6 +448,11 @@ def _write_receipt_bundle(
         rco_decision_basis = {
             "rco_pass_refs": rco_decision_basis,
             "grok_fallback": dict(grok_evidence),
+        }
+    elif pool_evidence is not None:
+        rco_decision_basis = {
+            "rco_pass_refs": rco_decision_basis,
+            "pool_rco_fallback": dict(pool_evidence),
         }
     evaluation = build_evaluation_result(
         case_id=f"case:bridge_consensus_merge:pr{pr_number}",

@@ -157,12 +157,18 @@ def _request(agent: str = "codex-tools-1", nonce: str = NONCE, slot: str = "rco"
 
 
 def _events(*extra: dict, requests: list[dict] | None = None) -> list[dict]:
-    """Claude-authored; both RCOs recused at the head; Lead approves opposite family."""
+    """Claude-authored; both RCOs recused at the head; Lead approves opposite family.
+
+    Tools also recuses for the RCO slot, so no RCO-slot pool lane is left (Lead holds
+    the opposite slot, fable-5 is the author) and Grok may fill it (operator
+    2026-10-10 06:56Z: Tools, Lead, Fable before Grok). A recused lane may relay.
+    """
     return [
         _claim(),
         _event("codex-lead-1", "decision", "build_consensus_pass", "2026-06-07T17:10:00Z"),
         _event("claude-rco-1", "message", "rco_recused", "2026-06-07T17:00:00Z"),
         _event("claude-rco-2", "message", "rco_recused", "2026-06-07T17:01:00Z"),
+        _event("codex-tools-1", "message", "rco_recused", "2026-06-07T17:02:00Z"),
         *([_request()] if requests is None else requests),
         *extra,
     ]

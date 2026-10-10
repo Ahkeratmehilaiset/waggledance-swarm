@@ -193,10 +193,12 @@ def test_grok_fills_vacant_opposite_slot_when_lead_and_tools_are_recused():
 def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
     contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"}]
     # The relay never supplies the verdict, but it may not be an implementer or an RCO
-    # candidate (Rule 12 condition 3, stricter form; Lead Q1 2026-10-08).
+    # candidate (Rule 12 condition 3, stricter form; Lead Q1 2026-10-08). Lead is
+    # self-recused so no RCO-slot pool lane is left (Tools holds the opposite slot,
+    # fable-5 is the author): only then may Grok fill (operator 2026-10-10 06:56Z).
     consultation = grok(slot="rco", requester="codex-lead-1")
-    result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
-                      [consultation])
+    events = [build_pass("codex-tools-1"), recused("claude-rco-1"), recused("codex-lead-1")]
+    result = evaluate(events, contributors, [consultation])
     assert result["decision"] == "satisfied"
     assert result["slots"]["rco"]["state"] == "held_by_grok_fallback"
     assert result["slots"]["rco"]["holders"] == []  # never recorded as an rco_pass
@@ -212,8 +214,8 @@ def test_grok_fills_vacant_rco_slot_when_both_rcos_are_ineligible():
 )
 def test_grok_rco_slot_refuses_an_implementer_or_rco_candidate_requester(requester):
     contributors = [*FABLE_AUTHOR, {"agent": "claude-rco-2", "role": "design"}]
-    result = evaluate([build_pass("codex-tools-1"), recused("claude-rco-1")], contributors,
-                      [grok(slot="rco", requester=requester)])
+    events = [build_pass("codex-tools-1"), recused("claude-rco-1"), recused("codex-lead-1")]
+    result = evaluate(events, contributors, [grok(slot="rco", requester=requester)])
     assert result["decision"] == "not_satisfied"
     assert result["slots"]["rco"]["state"] == "vacant"
     assert any("implementer or a candidate" in r for r in result["grok_fallback"]["reasons"])

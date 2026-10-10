@@ -320,7 +320,14 @@ The rule text:
   `codex-lead-1`, `fable-5`, and only if none of them can, Grok. A pool lane
   holds the slot with its own exact-head `rco_pass`, under the same
   eligibility as an RCO (not the author, not a concept, design or measurement
-  source, not self-recused, not absent).
+  source, not self-recused, not absent). Because a publisher or measurement
+  role is not always visible to the gate, every such `rco_pass` must state it
+  explicitly in its payload (`rule12_pool_attestation:
+  "not_author_concept_design_or_measurement_source"`); a pass without that
+  statement never holds the slot. The order is a preference among lanes that
+  have passed: the slot does not wait for an earlier lane that has not. A
+  pool lane may share the implementer's model family (for example Tools on
+  GPT-authored work); the opposite-family slot is what checks the family.
 
   **Three distinct identities (resolved explicitly).** On one PR, Lead or Tools
   never sit in both a build slot and the RCO slot:
@@ -332,7 +339,8 @@ The rule text:
     reads the pool. Its build slots are unchanged, so there Lead and Tools
     stay build approvers and never fill the RCO slot.
 
-  While a pool lane is still available the slot waits for it and Grok does not fill it. An
+  While a pool lane is still available (eligible, and not the sole
+  opposite-family holder) the slot waits for it and Grok does not fill it. An
   uncleared block from a present pool lane blocks the slot until that lane's
   own later exact-head `rco_pass` clears it. A pool lane is never a recognized
   RCO:

@@ -121,6 +121,14 @@
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
     "rco_pass_present": "tools/check_rco_pass_present.py"
   },
+  "manual_execution_capability": {
+    "schema": "wd.bridge-manual-execution.v1",
+    "entrypoints": {
+      "merge": "tools/merge_with_bridge_receipt.py",
+      "receipt": "tools/write_bridge_consensus_merge_receipt.py"
+    },
+    "invocation_marker": "--wd-manual-execution"
+  },
   "python_platform": {
     "implementation": "cp",
     "python_version": "3.13",

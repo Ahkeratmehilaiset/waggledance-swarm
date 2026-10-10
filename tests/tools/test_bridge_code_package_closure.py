@@ -48,6 +48,23 @@ def _packaged_python() -> list[str]:
     return [entry for entry in _definition()["python_files"] if entry.endswith(".py")]
 
 
+def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
+    definition = _definition()
+    capability = definition["manual_execution_capability"]
+    assert capability == {
+        "schema": "wd.bridge-manual-execution.v1",
+        "entrypoints": {
+            "merge": "tools/merge_with_bridge_receipt.py",
+            "receipt": "tools/write_bridge_consensus_merge_receipt.py",
+        },
+        "invocation_marker": "--wd-manual-execution",
+    }
+    paths = set(capability["entrypoints"].values())
+    assert paths <= set(definition["python_files"])
+    assert not paths & set(definition["python_entrypoints"].values())
+    assert "enabled" not in capability  # declaration is never activation
+
+
 # --- import parsing, on TEXT so every gap below is directly testable -----------
 
 

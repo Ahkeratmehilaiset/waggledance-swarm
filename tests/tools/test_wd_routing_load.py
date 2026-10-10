@@ -9,6 +9,7 @@ F2 (reasons and digests bound), F3 (hostile ranking objects refused, never raise
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -354,7 +355,9 @@ def test_intents_are_advisory_not_exclusive():
 
 def test_outputs_are_fresh_objects_and_the_snapshot_is_not_aliased():
     snapshot = _snapshot()
+    snapshot_before = deepcopy(snapshot)
     first = w3.load_blocks(WORKERS, snapshot, NOW, POLICY)
+    assert snapshot == snapshot_before
     first["claude-rco-2"]["state"] = "busy"
     snapshot["claims"].append(_entry(agent="claude-rco-2"))
     assert w3.load_blocks(WORKERS, _snapshot(), NOW, POLICY)["claude-rco-2"]["state"] == "idle"

@@ -84,6 +84,10 @@ FAMILY_FEATURES: dict[str, dict[str, Any]] = {
 }
 
 
+class _RiskLabelString(str):
+    """A string subtype must not cross the durable schema boundary."""
+
+
 def _ev(*, family_kind: str, feature_dict: dict[str, Any],
          signal_idx: int = 1, confidence: float = 0.9,
          risk: str = "low_risk", cluster_window: str = "",
@@ -189,6 +193,45 @@ def test_normalize_feature_dict_must_be_mapping():
     raw["feature_dict"] = ["not", "a", "mapping"]
     with pytest.raises(GapEventSchemaError, match="feature_dict"):
         normalize_runtime_gap_event(raw)
+
+
+@pytest.mark.parametrize(
+    "risk_label",
+    [
+        pytest.param(None, id="none"),
+        pytest.param("", id="empty-string"),
+        pytest.param(False, id="false"),
+        pytest.param(0, id="zero-int"),
+        pytest.param(0.0, id="zero-float"),
+        pytest.param([], id="empty-list"),
+        pytest.param({}, id="empty-mapping"),
+        pytest.param("LOW_RISK", id="wrong-case"),
+        pytest.param("unknown", id="unknown-label"),
+        pytest.param(_RiskLabelString("low_risk"), id="string-subclass"),
+    ],
+)
+def test_normalize_rejects_noncanonical_risk_label(risk_label):
+    raw = _ev(
+        family_kind="scalar_unit_conversion",
+        feature_dict=FAMILY_FEATURES["scalar_unit_conversion"],
+    )
+    raw["risk_label"] = risk_label
+
+    with pytest.raises(GapEventSchemaError, match="risk_label"):
+        normalize_runtime_gap_event(raw)
+
+
+@pytest.mark.parametrize(
+    "risk_label", ["low_risk", "medium_risk", "high_risk"]
+)
+def test_normalize_accepts_each_canonical_risk_label(risk_label):
+    raw = _ev(
+        family_kind="scalar_unit_conversion",
+        feature_dict=FAMILY_FEATURES["scalar_unit_conversion"],
+        risk=risk_label,
+    )
+
+    assert normalize_runtime_gap_event(raw).risk_label == risk_label
 
 
 def test_normalize_confidence_out_of_range():
@@ -320,6 +363,33 @@ def test_persist_rejects_malformed(temp_cp):
     assert res.inserted_event_ids == ()
     assert res.malformed_event_rejection_count == 2
     assert res.forbidden_field_rejections == 0
+
+
+def test_malformed_risk_label_never_persists_or_registers(temp_cp):
+    events = []
+    for signal_idx, risk_label in enumerate((None, "unknown"), start=1):
+        raw = _ev(
+            family_kind="lookup_table",
+            feature_dict=FAMILY_FEATURES["lookup_table"],
+            signal_idx=signal_idx,
+        )
+        raw["risk_label"] = risk_label
+        events.append(raw)
+
+    persisted = persist_runtime_gap_events(temp_cp, events)
+    replayed = replay_persisted_gap_events(temp_cp)
+
+    assert persisted.inserted_event_ids == ()
+    assert persisted.rejected_event_count == 2
+    assert persisted.malformed_event_rejection_count == 2
+    assert replayed.loaded_event_count == 0
+    assert replayed.registration_summary.registered_count == 0
+    assert (
+        replayed.mining_result.counters.get(
+            GapVerdict.ALLOWLISTED_SOLVER_SPEC.value, 0
+        )
+        == 0
+    )
 
 
 def test_persist_rejects_forbidden_field(temp_cp):

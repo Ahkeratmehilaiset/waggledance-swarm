@@ -74,11 +74,9 @@ def _run_maybe_async(result):
 
 
 def _runtime_receipt_nonnegative_int(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+    if type(value) is not int:
         return 0
-    return max(parsed, 0)
+    return max(value, 0)
 
 
 def _make_adapter_executor(adapter):
@@ -142,6 +140,7 @@ class AutonomyRuntime:
         self._runtime_receipt_failure_total = 0
         self._runtime_receipt_verifier_ok_total = 0
         self._runtime_receipt_verifier_not_ok_total = 0
+        self._runtime_receipt_verified_query_total = 0
         self._runtime_receipt_receipt_count_total = 0
         self._runtime_receipt_last_solver_trace_count = 0
         self._runtime_receipt_last_result_present = False
@@ -524,36 +523,50 @@ class AutonomyRuntime:
             receipt.get("verifier_report", {}) if isinstance(receipt, dict) else {}
         )
         verifier_ok = (
-            bool(verifier_report.get("ok", False))
+            verifier_report.get("ok") is True
             if isinstance(verifier_report, dict)
             else False
         )
         receipt_count = 0
+        verifier_receipt_count = 0
         if isinstance(receipt, dict) and "receipt_count" in receipt:
             receipt_count = _runtime_receipt_nonnegative_int(
                 receipt.get("receipt_count")
             )
-        elif isinstance(verifier_report, dict):
-            receipt_count = _runtime_receipt_nonnegative_int(
+        if isinstance(verifier_report, dict) and "receipt_count" in verifier_report:
+            verifier_receipt_count = _runtime_receipt_nonnegative_int(
                 verifier_report.get("receipt_count")
             )
-        if not verifier_ok:
+        if (
+            not verifier_ok
+            or receipt_count == 0
+            or receipt_count != verifier_receipt_count
+        ):
             receipt_count = 0
         self._runtime_receipt_last_verifier_ok = verifier_ok
         self._runtime_receipt_last_receipt_count = receipt_count
         self._runtime_receipt_receipt_count_total += receipt_count
         if verifier_ok:
             self._runtime_receipt_verifier_ok_total += 1
+            if receipt_count > 0:
+                self._runtime_receipt_verified_query_total += 1
         else:
             self._runtime_receipt_verifier_not_ok_total += 1
         return receipt
 
     def runtime_receipt_metrics_snapshot(self) -> Dict[str, Any]:
-        """Return aggregate, payload-free runtime receipt coverage counters."""
+        """Return payload-free, process-local runtime receipt counters.
+
+        ``coverage_ratio`` counts finalized queries only when the receipt sink
+        returned a strictly verified, non-empty receipt result.  Sink transport
+        success alone is not receipt coverage.  These counters are operational
+        process data, not named-window or ``claim_safe`` evidence.
+        """
         total = self._runtime_receipt_handle_query_total
         solver_trace_total = self._runtime_receipt_solver_trace_present_total
         success_total = self._runtime_receipt_success_total
         verifier_ok_total = self._runtime_receipt_verifier_ok_total
+        verified_query_total = self._runtime_receipt_verified_query_total
         verifier_attempt_total = (
             verifier_ok_total + self._runtime_receipt_verifier_not_ok_total
         )
@@ -570,12 +583,13 @@ class AutonomyRuntime:
             "failure_total": self._runtime_receipt_failure_total,
             "verifier_ok_total": verifier_ok_total,
             "verifier_not_ok_total": self._runtime_receipt_verifier_not_ok_total,
+            "verified_receipt_query_total": verified_query_total,
             "receipt_count_total": self._runtime_receipt_receipt_count_total,
             "last_solver_trace_count": self._runtime_receipt_last_solver_trace_count,
             "last_result_present": self._runtime_receipt_last_result_present,
             "last_verifier_ok": self._runtime_receipt_last_verifier_ok,
             "last_receipt_count": self._runtime_receipt_last_receipt_count,
-            "coverage_ratio": (success_total / total) if total else 0.0,
+            "coverage_ratio": (verified_query_total / total) if total else 0.0,
             "solver_trace_presence_ratio": (
                 solver_trace_total / total if total else 0.0
             ),

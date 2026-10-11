@@ -2830,6 +2830,61 @@ def test_gh_f1_a_failed_finalizing_write_leaves_the_reservation_unresolved(tmp_p
     assert after["eligible"] is False and events == ["started"]
 
 
+# Codex P1 on PR1847 (RCO1-confirmed): the failed lifecycle is recorded after the finalizing write, so a
+# delivery error it records must be persisted by one more write, as the normal completion path does. That
+# write is best effort: the original error is still the one raised, and the finalized state stays.
+
+def _delivery_failing_on(stages, events):
+    def emitter(stage, state):
+        events.append(stage)
+        if stage in stages:
+            raise ConnectionError("controlled delivery failure " + stage)
+    return emitter
+
+
+def _failing_write_numbers(monkeypatch, numbers):
+    original, calls = wd_grok_helper.write_state, []
+
+    def write(root, state):
+        calls.append(state["status"])
+        if len(calls) in numbers:
+            raise PermissionError(errno.EACCES, "controlled state write failure %d" % len(calls))
+        return original(root, state)
+    monkeypatch.setattr(wd_grok_helper, "write_state", write)
+    return calls
+
+
+@pytest.mark.parametrize("failing", [("failed",), ("started", "failed")])
+def test_gh_f1_a_failed_lifecycle_delivery_error_is_persisted(tmp_path, monkeypatch, failing):
+    seed(tmp_path)
+    calls = _failing_write_numbers(monkeypatch, {2})
+    events = []
+    launched, error = _gh_f1_consult(tmp_path, _delivery_failing_on(failing, events))
+    assert launched == [] and events == ["started", "failed"]
+    assert isinstance(error, PermissionError) and "controlled state write failure 2" in str(error)   # the original
+    assert calls == ["reserved", "reserved", "failed", "failed"]   # finalizing write, then the delivery record
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed" and state["grok_launched"] is False
+    assert state["bridge_event_errors"] == [{"stage": stage, "error_type": "ConnectionError"} for stage in failing]
+    assert status(tmp_path, NOW)["eligible"] is True
+
+
+def test_gh_f1_an_unpersistable_delivery_error_keeps_the_original_error_and_the_failed_state(tmp_path, monkeypatch):
+    seed(tmp_path)
+    calls = _failing_write_numbers(monkeypatch, {2, 4})
+    events = []
+    launched, error = _gh_f1_consult(tmp_path, _delivery_failing_on(("failed",), events))
+    assert launched == [] and events == ["started", "failed"]
+    assert isinstance(error, PermissionError) and "controlled state write failure 2" in str(error)   # not 4
+    assert any("delivery error not persisted" in note for note in getattr(error, "__notes__", []))
+    assert calls == ["reserved", "reserved", "failed", "failed"]   # one best-effort write, no retry
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed" and state["grok_launched"] is False   # the finalized state stays
+    assert "bridge_event_errors" not in state
+    after = status(tmp_path, NOW)
+    assert after["local_availability"] == "available" and after["eligible"] is True
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing: a replace fails while a reader holds the target")
 def test_gh_f1_a_reader_holding_the_state_between_the_writes_never_launches(tmp_path):
     # Runtime twin of the 2984861A repro: a reader without delete sharing holds hourly-state.json from the

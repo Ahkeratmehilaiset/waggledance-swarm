@@ -274,6 +274,72 @@ def test_operator_reason_never_reaches_the_cli_and_note_follows_the_continuation
     assert "FreshSession" not in fleet and "SupersededThreadId" not in fleet
 
 
+# ------------------------------------------------ lane eligibility (real if/elseif)
+
+ELIGIBILITY_CASES = {
+    # case: (FreshSession, nativeLead, cliName, launchTurnMode)
+    "native_lead_fresh": (True, True, "codex.cmd", "interactive"),
+    "native_lead_default": (False, True, "codex.cmd", "interactive"),
+    "codex_lane_fresh": (True, False, "codex.cmd", "interactive"),
+    "managed_claude_fresh": (True, False, "claude.cmd", "managed"),
+    "interactive_claude_fresh": (True, False, "claude.cmd", "interactive"),
+    "interactive_claude_default": (False, False, "claude.cmd", "interactive"),
+}
+EXPECTED_ELIGIBILITY = {
+    "native_lead_fresh": "applies only to an interactive Claude lane",
+    "native_lead_default": {"resume": "native-thread", "superseded": ""},
+    "codex_lane_fresh": "applies only to an interactive Claude lane",
+    "managed_claude_fresh": "applies only to an interactive Claude lane",
+    "interactive_claude_fresh": {"resume": "", "superseded": CURRENT},
+    "interactive_claude_default": {"resume": CURRENT, "superseded": ""},
+}
+
+
+def _eligibility(source_path: Path, ps: str, tmp_path: Path) -> dict:
+    """The real lane-selection block, with a matching Claude transcript present for every lane."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir(parents=True)
+    claude_home = tmp_path / "claude"
+    root = claude_home / "projects"
+    root.mkdir(parents=True)
+    _layout(root, worktree, "two")
+    block = _between(source_path, "$claudeResume = $null\nif ($nativeLead) {", "if ($script:WdScrubbedClaudeMarkers.Count)")
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\nfunction Write-Host { param($Object) }\n"
+    for name in ("Assert-LanePathWithoutReparse", "Get-WdClaudeResumeState", "Resolve-WdClaudeFreshSession"):
+        script += load(source_path, name)
+    script += f"""
+function Get-WdNativeLeadResumeState {{ param($Worktree, $RuntimeRoot) [pscustomobject]@{{thread_id='native-thread'; initial_context_delivered=$true}} }}
+$env:CLAUDE_CONFIG_DIR={q(claude_home)}
+function Invoke-Select([bool] $Fresh, [bool] $Native, [string] $Cli, [string] $Mode) {{
+  $FreshSession=$Fresh; $nativeLead=$Native; $cliName=$Cli; $launchTurnMode=$Mode
+  $SupersededThreadId='{CURRENT}'; $Agent='{AGENT}'; $worktree={q(worktree)}; $runtimeRoot={q(tmp_path)}
+  $DryRun=$true; $nativeResume=$null
+  try {{
+{block}
+    [ordered]@{{resume=$resumeThread; superseded=$supersededThread}}
+  }} catch {{ $_.Exception.Message }}
+}}
+$r=[ordered]@{{}}
+"""
+    for case, (fresh, native, cli, mode) in ELIGIBILITY_CASES.items():
+        script += (f"$r['{case}']=Invoke-Select ${str(fresh).lower()} ${str(native).lower()} "
+                   f"'{cli}' '{mode}'\n")
+    script += "$r | ConvertTo-Json -Compress -Depth 4\n"
+    observed = _json(script, ps)
+    return {
+        case: value if isinstance(value, dict) else next(
+            (label for label in EXPECTED_ELIGIBILITY.values() if isinstance(label, str) and label in value), value)
+        for case, value in observed.items()
+    }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_fresh_session_refuses_every_lane_but_an_interactive_claude_lane(tmp_path, ps):
+    # A matching named Claude transcript exists for every case: Lead, Codex and managed
+    # lanes must still refuse because they never consult Claude history at all.
+    assert _eligibility(SOURCE, ps, tmp_path) == EXPECTED_ELIGIBILITY
+
+
 # ------------------------------------------------------ re-bind before launch
 
 def _rebind(source_path: Path, ps: str, tmp_path: Path) -> dict:
@@ -466,6 +532,11 @@ MUTANTS = {
         "    $false -or\n",
         "validation",
     ),
+    "MUT_FRESH_ANY_LANE_RESOLVES_CLAUDE_HISTORY": (
+        "} elseif ($cliName -ieq 'claude.cmd' -and $launchTurnMode -ceq 'interactive') {\n  $claudeHome",
+        "}\nif ($true) {\n  $claudeHome",
+        "eligibility",
+    ),
     "MUT_FRESH_DRY_RUN_UNRECORDED": (
         "      superseded_thread_id = $supersededThread\n",
         "      superseded_thread_id = ''\n",
@@ -475,6 +546,7 @@ MUTANTS = {
 CHECKS = {
     "validation": (_validation, lambda: EXPECTED_VALIDATION),
     "binding": (_binding, lambda: EXPECTED_BINDING),
+    "eligibility": (_eligibility, lambda: EXPECTED_ELIGIBILITY),
     "launch": (_launch, None),
     "rebind": (_rebind, None),
     "dry_run": (lambda path, ps, _tmp: _dry_run(path, ps), None),

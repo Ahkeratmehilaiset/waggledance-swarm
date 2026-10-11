@@ -6,8 +6,11 @@ the basename starts with ``<AGENT_BRIDGE_AGENT>-``; it is not the main or the cu
 not missing and not locked; HEAD is detached (named-branch worktrees are kept); ``git status``
 shows no tracked change and no untracked file; the only ignored content is ``__pycache__/`` or
 ``.pytest_cache/`` (an ignored ``.codex-audit/`` evidence folder keeps the worktree, because
-``git worktree remove`` deletes ignored files silently); and HEAD is contained in a branch,
-remote-tracking ref or tag (a commit reachable only from ``refs/stash`` is not enough). Removal
+``git worktree remove`` deletes ignored files silently); no index entry hides a change
+(assume-unchanged or skip-worktree); the worktree has no per-worktree refs (``refs/worktree``,
+``refs/bisect``, ``refs/rewritten`` are deleted with it); and HEAD and every commit in the
+worktree's HEAD reflog are contained in a branch, remote-tracking ref or tag (a commit
+reachable only from ``refs/stash`` or from that reflog is not enough). Removal
 is ``git worktree remove`` without ``--force``; the default is a dry run. The owner comes from
 the lane identity; another lane's name is refused.
 """
@@ -36,6 +39,10 @@ EXPECTED = {
     "fable-5-branch": ("keep", "named_branch"),
     "fable-5-unreachable": ("keep", "unreachable_head"),
     "fable-5-stash-only": ("keep", "unreachable_head"),
+    "fable-5-reflog-only": ("keep", "reflog_only_commits"),
+    "fable-5-assume-unchanged": ("keep", "hidden_index_flags"),
+    "fable-5-skip-worktree": ("keep", "hidden_index_flags"),
+    "fable-5-worktree-ref": ("keep", "worktree_refs"),
     "fable-5-locked": ("keep", "locked"),
     "fable-5-missing": ("keep", "missing"),
     "fable-5-broken": ("keep", "status_unreadable"),
@@ -106,6 +113,16 @@ def lane(tmp_path, monkeypatch):
     _commit(stash_only, "c.txt", "c\n")
     (stash_only / "a.txt").write_text("stashed\n", encoding="utf-8")
     _git(stash_only, "stash", "push", "-q", "-m", "wd-test-stash")
+    reflog_only = detached("fable-5-reflog-only")
+    _commit(reflog_only, "d.txt", "d\n")
+    _git(reflog_only, "checkout", "-q", "--detach", "HEAD~1")
+    assume = detached("fable-5-assume-unchanged")
+    _git(assume, "update-index", "--assume-unchanged", "a.txt")
+    (assume / "a.txt").write_text("hidden change\n", encoding="utf-8")
+    skip = detached("fable-5-skip-worktree")
+    _git(skip, "update-index", "--skip-worktree", "a.txt")
+    (skip / "a.txt").write_text("hidden change\n", encoding="utf-8")
+    _git(detached("fable-5-worktree-ref"), "update-ref", "refs/worktree/keep", "HEAD")
     locked = detached("fable-5-locked")
     _git(repo, "worktree", "lock", str(locked))
     shutil.rmtree(detached("fable-5-missing"))
@@ -161,6 +178,7 @@ def test_apply_removes_only_eligible_worktrees_and_keeps_every_evidence_byte(lan
     before = _snapshot({name: path for name, path in lane.paths.items() if name not in ELIGIBLE})
     unreachable_head = _git(lane.paths["fable-5-unreachable"], "rev-parse", "HEAD").strip()
     stash_head = _git(lane.paths["fable-5-stash-only"], "rev-parse", "HEAD").strip()
+    reflog_commit = _git(lane.paths["fable-5-reflog-only"], "rev-parse", "HEAD@{1}").strip()
     code, report = _run(capsys, "--repo", str(lane.repo), "--apply")
     assert code == 0 and report["mode"] == "apply"
     entries = _by_name(report)
@@ -174,7 +192,7 @@ def test_apply_removes_only_eligible_worktrees_and_keeps_every_evidence_byte(lan
         if name not in ELIGIBLE:
             assert (entries[name]["decision"], entries[name]["reason"]) == (decision, reason)
     assert _snapshot({name: path for name, path in lane.paths.items() if name not in ELIGIBLE}) == before
-    for sha in (unreachable_head, stash_head):
+    for sha in (unreachable_head, stash_head, reflog_commit):
         _git(lane.repo, "cat-file", "-e", f"{sha}^{{commit}}")
 
 

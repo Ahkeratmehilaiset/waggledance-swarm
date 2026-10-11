@@ -465,3 +465,47 @@ def test_a_rewrite_during_the_delta_read_cannot_stay_clear(tmp_path, ps, where):
     assert report["before"][-1] == CLEAR, report
     assert CLEAR not in report["after"], report
     assert report["after"][-1] == {"ok": True, "held": True}, report
+
+
+APPEND_HOOK = (
+    "\n$script:WdTestDelta = ${function:Read-BridgeEventDelta}\n"
+    "function Read-BridgeEventDelta {\n"
+    " param([string] $Path, $Cursor, [int64] $MaxBytes, [int] $MaxRows)\n"
+    " $row = $env:WD_TEST_APPEND_ROW\n"
+    " if ($row) { Remove-Item Env:WD_TEST_APPEND_ROW; [IO.File]::AppendAllText($Path, $row) }\n"
+    " $result = & $script:WdTestDelta -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -MaxRows $MaxRows\n"
+    " if ($row -and $env:WD_TEST_REWRITE_APPENDED) {\n"
+    "  $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path))\n"
+    "  $at = $text.LastIndexOf('\"status\":\"blocked\"') + 10\n"
+    "  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\n"
+    "  try { [void]$stream.Seek($at,[IO.SeekOrigin]::Begin); $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold');"
+    " $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }\n"
+    " }\n"
+    " $result\n"
+    "}\n"
+)
+CATCHING_UP = {"ok": False, "error": "Continuity canonical scan catching up; recovery withheld"}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("rewrite", [True, False], ids=["rewritten-to-a-control", "left-unchanged"])
+def test_a_row_appended_during_the_read_is_compared_before_the_cursor_moves(tmp_path, ps, rewrite):
+    """Disclosed residual R2 on PR1854, reproduced by Tools: at EOF the pre-read copy is empty, so a row appended
+    after it and rewritten before the post pass was anchored without a compare. Such a check is withheld as
+    catching up (1 s retry, no alert) with the cursor unmoved, and the next check copies and compares the row.
+    The log is over 1 MiB, so a guard that reset the cursor would need more than one further check to rescan."""
+    log, script = _fixture(tmp_path, [FILLER] * 300, reader_suffix=APPEND_HOOK)
+    assert log.stat().st_size > (1 << 20)
+    row = json.dumps(DIAGNOSTICS["worker-blocked-blocked"], separators=(",", ":")) + "\n"
+    script += SETTLE + "$before=Settle\n"
+    script += f"$env:WD_TEST_APPEND_ROW={q(row)}\n"
+    if rewrite:
+        script += "$env:WD_TEST_REWRITE_APPENDED='1'\n"
+    script += "$after=Settle\n$again=Check\n@{before=$before;after=$after;again=$again} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"][-1] == CLEAR, report
+    assert report["after"][0] == CATCHING_UP, report
+    # Withheld once, then the next check resumes from the unmoved cursor: no rescan from byte 0.
+    assert len(report["after"]) == 2, report
+    expected = {"ok": True, "held": rewrite}
+    assert report["after"][-1] == expected and report["again"] == expected, report

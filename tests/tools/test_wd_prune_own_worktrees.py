@@ -302,21 +302,39 @@ def test_current_worktree_protection_compares_file_identity_not_spelling(lane, t
         _remove_link(link)
 
 
-def test_a_change_after_classification_is_caught_before_removal(lane, capsys):
+def _late_change(path: Path, change: str) -> None:
+    if change == "evidence":  # ignored evidence written after the checks
+        (path / ".codex-audit").mkdir()
+        (path / ".codex-audit" / "late.json").write_bytes(b'{"native_exit": 0}')
+    elif change == "commit":  # a new commit on the detached HEAD: status stays clean and HEAD is in no ref
+        _commit(path, "late.txt", "late\n")
+    else:  # a change hidden by an assume-unchanged index flag: status stays clean
+        _git(path, "update-index", "--assume-unchanged", "a.txt")
+        (path / "a.txt").write_text("hidden change\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("change", ["evidence", "commit", "index-flag"])
+def test_a_change_after_classification_is_caught_before_removal(lane, capsys, monkeypatch, change):
+    """RCO1 R2 on PR1859: --apply must re-run every check right before removal, not only the status."""
     prune = _prune()
+    target = lane.paths["fable-5-clean"]
     real_classify = prune.classify
+    changed = []
 
-    def stale_classify(entry, **kwargs):
-        if Path(entry["path"]).name == "fable-5-evidence":
-            return "candidate", "eligible"  # as if the evidence was written after the check
-        return real_classify(entry, **kwargs)
+    def classify_then_change(entry, **kwargs):
+        result = real_classify(entry, **kwargs)
+        if Path(entry["path"]).name == "fable-5-clean" and not changed:
+            assert result == ("candidate", "eligible")
+            _late_change(target, change)  # the worktree changes after its checks passed
+            changed.append(_git(target, "rev-parse", "HEAD").strip())
+        return result
 
-    prune.classify = stale_classify
+    monkeypatch.setattr(prune, "classify", classify_then_change)
     code = prune.main(["--repo", str(lane.repo), "--apply", "--json"])
     report = json.loads(capsys.readouterr().out)
-    entry = _by_name(report)["fable-5-evidence"]
-    assert (entry["decision"], entry["reason"]) == ("keep", "changed_before_removal")
-    assert (lane.paths["fable-5-evidence"] / ".codex-audit" / "evidence-red.json").read_bytes() == b'{"native_exit": 1}'
+    entry = _by_name(report)["fable-5-clean"]
+    assert changed and (entry["decision"], entry["reason"]) == ("keep", "changed_before_removal")
+    assert target.is_dir() and _git(target, "rev-parse", "HEAD").strip() == changed[0]
     assert code == 0
 
 

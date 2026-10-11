@@ -92,6 +92,28 @@ $knownEventTypes = @(
     'wake_request', 'liveness'
 )
 
+function ConvertTo-BridgeNativeLongPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    # kernel32 W calls in a process without longPathAware (MSIX pwsh) fail with
+    # Win32 error 3 at MAX_PATH unless the name carries the \\?\ prefix. Only a
+    # long, already canonical drive path is prefixed, because \\?\ turns off
+    # Win32 name normalization: for such a path normalization is the identity,
+    # so the prefixed name denotes exactly the file the plain call would open.
+    # A NUL ends the native name early, so a path holding one is never prefixed.
+    # Anything else passes unchanged and keeps the old behavior and failures.
+    if ($Path.IndexOf([char]0) -ge 0) { return $Path }
+    if ($Path.Length -lt 248 -or $Path -cnotmatch '^[A-Za-z]:\\[^\\]') { return $Path }
+    if ($Path.Contains('/')) { return $Path }
+    foreach ($segment in $Path.Substring(3).Split('\')) {
+        if ($segment.Length -eq 0 -or $segment -eq '.' -or $segment -eq '..' -or
+            $segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.Contains(':')) { return $Path }
+        $stem = $segment.Split('.')[0].TrimEnd(' ')
+        if ($stem -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9\u00B9\u00B2\u00B3]|LPT[0-9\u00B9\u00B2\u00B3])$') { return $Path }
+    }
+    '\\?\' + $Path
+}
+
 function Assert-BridgeTargetedPlainPath {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -625,7 +647,7 @@ function Open-BridgeTargetedDirectoryLease {
 
     Initialize-BridgeTargetedReplayNative
     $handle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-        $Path,
+        (ConvertTo-BridgeNativeLongPath $Path),
         [uint32]2147483648,
         [uint32]3,
         [IntPtr]::Zero,
@@ -696,7 +718,7 @@ function Open-BridgeTargetedSharedDirectoryLeaseSet {
         # Pin the configured shared entry itself without permitting reparse
         # retargeting or rename/delete while targeted replay is active.
         $entryHandle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-            $Path,
+            (ConvertTo-BridgeNativeLongPath $Path),
             [uint32]2147483648,
             [uint32]1,
             [IntPtr]::Zero,
@@ -739,7 +761,7 @@ function Open-BridgeTargetedSharedDirectoryLeaseSet {
         # the junction entry and its followed target are pinned. The canonical
         # child lease is later required to resolve directly under this target.
         $targetHandle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-            $Path,
+            (ConvertTo-BridgeNativeLongPath $Path),
             [uint32]2147483648,
             [uint32]3,
             [IntPtr]::Zero,
@@ -795,7 +817,7 @@ function Open-BridgeTargetedSpoolLease {
         # FILE_FLAG_OPEN_REPARSE_POINT bind the selected ready identity and
         # prevent path replacement through the final handle disposition.
         $handle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-            $Path,
+            (ConvertTo-BridgeNativeLongPath $Path),
             [uint32]2147549184,
             [uint32]1,
             [IntPtr]::Zero,
@@ -917,7 +939,7 @@ function Open-BridgeTargetedCanonicalLease {
 
     Initialize-BridgeTargetedReplayNative
     $handle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-        $Path,
+        (ConvertTo-BridgeNativeLongPath $Path),
         [uint32]2147483648,
         [uint32]3,
         [IntPtr]::Zero,
@@ -1027,7 +1049,7 @@ function Open-BridgeTargetedCanonicalMutationStream {
     }
     $creationDisposition = if ($Create) { [uint32]4 } else { [uint32]3 }
     $handle = [WaggleDance.BridgeTargetedReplayNative]::CreateFileW(
-        $Path,
+        (ConvertTo-BridgeNativeLongPath $Path),
         [uint32]3221225472,
         [uint32]1,
         [IntPtr]::Zero,
@@ -1235,8 +1257,8 @@ function Invalidate-BridgeAppendValidationCheckpoint {
     try {
         Write-NewBridgeFileDurably -Path $temporaryPath -Bytes $markerBytes
         if (-not [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
-            $temporaryPath,
-            $checkpointPath,
+            (ConvertTo-BridgeNativeLongPath $temporaryPath),
+            (ConvertTo-BridgeNativeLongPath $checkpointPath),
             [uint32]0x00000009
         )) {
             $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()

@@ -76,10 +76,12 @@ $pendingSkipped = 0
 $pendingFailed = 0
 $wouldDrain = 0
 $blockedReadyLeaves = New-Object 'System.Collections.Generic.HashSet[string]'
+# Must equal the Write-AgentEvent -Type ValidateSet: a type the writer accepts
+# into canonical history must never later block replay validation.
 $knownEventTypes = @(
     'status', 'intent', 'claim', 'release', 'message', 'finding',
     'decision', 'test', 'blocked', 'handoff', 'done', 'heartbeat',
-    'wake_request', 'liveness'
+    'wake_request', 'liveness', 'triage_disposition', 'consumer_tick'
 )
 
 function Initialize-BridgeAcceptedQueueNative {

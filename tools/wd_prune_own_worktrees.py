@@ -10,8 +10,12 @@ of these hold, checked in this order (the first failing check is the reported KE
 
 * ``main_worktree`` / ``bare``: never the main or a bare worktree;
 * ``not_owner``: the directory name starts with ``<owner>-``, where the owner is this lane's
-  ``AGENT_BRIDGE_AGENT``; ``--owner`` may only repeat it, never name another lane;
-* ``current_worktree``: not the worktree of ``--repo`` and not the one this runs in;
+  ``AGENT_BRIDGE_AGENT``; ``--owner`` may only repeat it, never name another lane. A lane name
+  must be ``letters(-letters)*-N`` (fable-5, claude-rco-1, codex-tools-1): its only digit
+  segment is the last, so no lane name is a hyphen-prefix of another (``scout`` cannot claim
+  ``scout-2-task``);
+* ``current_worktree``: not the worktree of ``--repo`` and not the one this runs in, compared
+  by file identity, so a junction, symlink, subst drive or other spelling still matches;
 * ``missing`` / ``locked``: the directory exists and the worktree is not locked;
 * ``named_branch``: HEAD is detached (a worktree on a branch is kept);
 * ``head_unreadable`` / ``status_unreadable``: HEAD and ``git status`` are readable;
@@ -19,6 +23,9 @@ of these hold, checked in this order (the first failing check is the reported KE
 * ``ignored_content``: the only ignored entries are ``__pycache__/`` and ``.pytest_cache/``
   directories. ``git worktree remove`` deletes ignored files silently, so an ignored
   ``.codex-audit/`` evidence folder (RED, GREEN, superseded records) keeps the worktree;
+* ``operation_in_progress`` / ``gitdir_unreadable``: no rebase, merge, cherry-pick, revert,
+  bisect or sequencer state in the worktree's git dir (a rebase stopped at ``break`` looks
+  clean, and its todo is deleted with the worktree);
 * ``hidden_index_flags`` / ``index_unreadable``: no index entry is marked assume-unchanged or
   skip-worktree (a change to such a file does not show in ``git status``);
 * ``worktree_refs`` / ``worktree_refs_unreadable``: no per-worktree ref exists
@@ -29,12 +36,16 @@ of these hold, checked in this order (the first failing check is the reported KE
   HEAD reflog (deleted with the worktree) is also reachable from those refs.
 
 Beyond the 2026-10-11 cleanups (which counted any ref, ``refs/stash`` included) this tool
-excludes ``refs/stash`` and adds the index-flag, per-worktree-ref and reflog checks; each of
-those only keeps more, never removes more.
+excludes ``refs/stash`` and adds the lane-name, operation, index-flag, per-worktree-ref and
+reflog checks; each of those only keeps more, never removes more.
 
-The default is a dry run. ``--apply`` runs ``git worktree remove <path>`` WITHOUT --force for
-each candidate right after classifying it, and reports ``removed`` only when the directory is
-gone. It never prunes, never touches another lane's worktree, branches, the bridge or
+The default is a dry run. ``--apply`` re-reads ``git status`` and the operation state of each
+candidate right before removing it (``changed_before_removal`` keeps a worktree written to
+since it was classified), runs ``git worktree remove <path>`` WITHOUT --force, and reports
+``removed`` only when the directory is gone. Residual: a write in the milliseconds between
+that re-check and git's own deletion is not seen, and another process whose current
+directory is inside the worktree can make the removal fail part way (``failed``; the
+worktree was clean, so its files are all in git). It never prunes, never touches another lane's worktree, branches, the bridge or
 anything outside ``git worktree remove``. Exit 0 = done, 1 = a removal failed,
 2 = refused (missing or mismatched lane identity, or the worktrees cannot be listed).
 
@@ -57,7 +68,9 @@ from typing import Sequence
 SCHEMA = "wd.prune-own-worktrees.v1"
 OWNER_ENV = "AGENT_BRIDGE_AGENT"
 CACHE_DIR_NAMES = frozenset({"__pycache__", ".pytest_cache"})
-_OWNER = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_OWNER = re.compile(r"[a-z]+(?:-[a-z]+)*-[0-9]+\Z")
+_OPERATION_MARKERS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                      "BISECT_LOG", "sequencer")
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _REACHABLE_REF_ROOTS = ("refs/heads", "refs/remotes", "refs/tags")
 _PER_WORKTREE_REF_ROOTS = ("refs/worktree", "refs/bisect", "refs/rewritten")
@@ -173,7 +186,39 @@ def _reflog_only_commits(path: str, repo: str) -> bool | None:
     return int(out.strip()) > 0
 
 
-def classify(entry: dict, *, index: int, owner: str, protected: frozenset[str], repo: str) -> tuple[str, str]:
+def _operation_in_progress(path: str) -> bool | None:
+    code, out, _ = _git(["-C", path, "rev-parse", "--absolute-git-dir"])
+    gitdir = out.strip()
+    if code != 0 or not gitdir:
+        return None
+    return any(os.path.exists(os.path.join(gitdir, marker)) for marker in _OPERATION_MARKERS)
+
+
+def _worktree_state(path: str) -> str | None:
+    """The first KEEP reason in the worktree's own state (status, ignored files, operation), or None."""
+    status = _status(path)
+    if status is None:
+        return "status_unreadable"
+    if any(xy != "!!" for xy, _ in status):
+        return "dirty"
+    if any(not _is_cache_dir(item) for _, item in status):
+        return "ignored_content"
+    operation = _operation_in_progress(path)
+    if operation is None:
+        return "gitdir_unreadable"
+    if operation:
+        return "operation_in_progress"
+    return None
+
+
+def _same_dir(left: str, right: str) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return _norm(left) == _norm(right)
+
+
+def classify(entry: dict, *, index: int, owner: str, protected: Sequence[str], repo: str) -> tuple[str, str]:
     """(decision, reason): ``("candidate", "eligible")`` or ``("keep", <first failing check>)``."""
     path = entry["path"]
     name = os.path.basename(path.rstrip("/\\"))
@@ -183,7 +228,7 @@ def classify(entry: dict, *, index: int, owner: str, protected: frozenset[str], 
         return "keep", "bare"
     if not name.startswith(owner + "-"):
         return "keep", "not_owner"
-    if _norm(path) in protected:
+    if any(_same_dir(path, other) for other in protected):
         return "keep", "current_worktree"
     if entry["prunable"] or not os.path.isdir(path):
         return "keep", "missing"
@@ -194,13 +239,9 @@ def classify(entry: dict, *, index: int, owner: str, protected: frozenset[str], 
     head = entry["head"] or ""
     if not _SHA.match(head):
         return "keep", "head_unreadable"
-    status = _status(path)
-    if status is None:
-        return "keep", "status_unreadable"
-    if any(xy != "!!" for xy, _ in status):
-        return "keep", "dirty"
-    if any(not _is_cache_dir(item) for _, item in status):
-        return "keep", "ignored_content"
+    state = _worktree_state(path)
+    if state is not None:
+        return "keep", state
     hidden = _hidden_index_flags(path)
     if hidden is None:
         return "keep", "index_unreadable"
@@ -238,8 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     lane = os.environ.get(OWNER_ENV, "")
     if not _OWNER.match(lane):
-        print(f"refused: {OWNER_ENV} is missing or not a lane name ({lane!r}); the owner comes from the lane identity",
-              file=sys.stderr)
+        print(f"refused: {OWNER_ENV} is missing or not a lane name like fable-5 or codex-tools-1 ({lane!r}); "
+              "the owner comes from the lane identity", file=sys.stderr)
         return 2
     if args.owner is not None and args.owner != lane:
         print(f"refused: --owner {args.owner!r} is not this lane ({OWNER_ENV}={lane!r}); only your own worktrees",
@@ -250,17 +291,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if repo_top is None or code != 0:
         print(f"refused: cannot list the worktrees of {args.repo!r}: {err.strip()}", file=sys.stderr)
         return 2
-    protected = {repo_top}
+    protected = [repo_top]
     here = _toplevel(os.getcwd())
     if here is not None:
-        protected.add(here)
+        protected.append(here)
 
     rows = []
     for index, entry in enumerate(parse_worktree_list(listing)):
-        decision, reason = classify(entry, index=index, owner=lane, protected=frozenset(protected), repo=args.repo)
+        decision, reason = classify(entry, index=index, owner=lane, protected=tuple(protected), repo=args.repo)
         row = {"path": entry["path"], "head": entry["head"], "decision": decision, "reason": reason, "error": None}
         if decision == "candidate" and args.apply:
-            row["decision"], row["error"] = _remove(args.repo, entry["path"])
+            if _worktree_state(entry["path"]) is not None:  # written to since it was classified
+                row["decision"], row["reason"] = "keep", "changed_before_removal"
+            else:
+                row["decision"], row["error"] = _remove(args.repo, entry["path"])
         rows.append(row)
 
     counts = {key: sum(1 for row in rows if row["decision"] == key) for key in ("candidate", "removed", "failed", "keep")}
@@ -272,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for row in rows:
             name = os.path.basename(row["path"].rstrip("/\\"))
             suffix = f" ({row['error']})" if row["error"] else ""
-            print(f"{row['decision'].upper():9} {row['reason']:17} {name}{suffix}")
+            print(f"{row['decision'].upper():9} {row['reason']:22} {name}{suffix}")
         if args.apply:
             print(f"apply: removed {counts['removed']}, failed {counts['failed']}, kept {counts['keep']}")
         else:

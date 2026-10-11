@@ -196,9 +196,20 @@ def pytest_session_guard(session) -> None:
     sys.stderr.flush()
 
 
-def _worktree_add(repo: str, git_args: list[str]) -> int:
-    if git_args[:1] == ["--"]:
-        git_args = git_args[1:]
+def _worktree_add(options: list[str]) -> int:
+    """``worktree-add [--repo R] -- <git worktree add arguments>``, split on the first ``--`` here,
+    not by argparse (whose REMAINDER handling of ``--`` differs between Python versions)."""
+    if "--" not in options:
+        print("WD-DISK-GUARD refused: usage: worktree-add [--repo R] -- <git worktree add arguments>", file=sys.stderr)
+        return 2
+    split = options.index("--")
+    git_args = options[split + 1:]
+    parser = argparse.ArgumentParser(prog="wd_disk_guard.py worktree-add")
+    parser.add_argument("--repo", default=".")
+    try:
+        repo = parser.parse_args(options[:split]).repo
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 2
     try:
         target = worktree_add_target(git_args)
     except ValueError as exc:
@@ -219,16 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--purpose", choices=PURPOSES, required=True)
     check_parser.add_argument("--path", action="append", default=[], help="a target path (repeatable)")
     check_parser.add_argument("--json", action="store_true")
-    add_parser = sub.add_parser("worktree-add", help="check, then run git worktree add with the given arguments")
-    add_parser.add_argument("--repo", default=".", help="a path inside the repository (git -C)")
-    add_parser.add_argument("git_args", nargs=argparse.REMAINDER, help="-- <git worktree add arguments>")
+    sub.add_parser("worktree-add", help="[--repo R] -- <git worktree add arguments>: check the target, then run "
+                                        "git worktree add with those arguments unchanged")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["worktree-add"]:
+        return _worktree_add(argv[1:])
     args = build_parser().parse_args(argv)
-    if args.command == "worktree-add":
-        return _worktree_add(args.repo, list(args.git_args))
     result = check(args.purpose, args.path)
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

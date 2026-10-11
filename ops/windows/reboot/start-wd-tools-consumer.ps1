@@ -1057,54 +1057,101 @@ function Test-WdContinuityControlEvents {
     $cacheVariable = Get-Variable -Name WdContinuityControlCache -Scope Script -ErrorAction SilentlyContinue
     if ($null -eq $cacheVariable -or $null -eq $cacheVariable.Value -or
         $cacheVariable.Value.key -cne $cacheKey) {
-        $script:WdContinuityControlCache = @{key=$cacheKey;cursor=$null;held=$false;prefixLength=0;prefixHash=''}
+        $script:WdContinuityControlCache = @{key=$cacheKey;cursor=$null;held=$false;
+            anchorLength=[int64]0;anchorBlocks=@();anchorTail=''}
     }
     $cache = $script:WdContinuityControlCache
     # A later log truncation, rotation or ordinary message cannot release HOLD.
     if ($cache.held) { return $true }
     # The canonical reader binds identity, generation and length, not content
-    # rewritten in-place below its offset. Anchor a bounded initial prefix as
-    # well; ordinary appends do not alter it. A mismatch is unknown this cycle
-    # and forces a complete bounded rescan, never approval from the old cursor.
-    $readPrefix = {
-        param([string] $FilePath, [int] $Count)
-        $stream = [IO.File]::Open($FilePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-        try {
-            if ($Count -eq 0) { $Count = [int][Math]::Min(65536, $stream.Length) }
-            $bytes = New-Object byte[] $Count
-            $offset = 0
-            while ($offset -lt $Count) {
-                $read = $stream.Read($bytes, $offset, $Count - $offset)
-                if ($read -eq 0) { throw 'Continuity canonical prefix truncated' }
-                $offset += $read
-            }
-            $sha = [Security.Cryptography.SHA256]::Create()
-            try { return @{length=$Count;hash=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')} }
-            finally { $sha.Dispose() }
-        } finally { $stream.Dispose() }
-    }
-    try {
-        $prefix = & $readPrefix $eventsPath $cache.prefixLength
-        if ($cache.prefixLength -gt 0 -and $prefix.hash -cne $cache.prefixHash) {
-            throw 'Continuity canonical prefix changed; rebuild required'
+    # rewritten in place below its offset. Anchor every byte below the cursor in
+    # 1 MiB SHA-256 blocks kept only in this relay's memory: a 64 KiB prefix let
+    # a same-length rewrite further back stay clear (Codex P1 4240977444 on
+    # PR1843). Ordinary appends do not alter the anchor. A mismatch is unknown
+    # this cycle and forces a complete bounded rescan, never approval from the
+    # old cursor. Cost: one hash pass over [0, cursor) per check.
+    $blockSize = 1048576
+    $readExactly = {
+        param([IO.Stream] $Stream, [byte[]] $Buffer, [int] $Count)
+        $offset = 0
+        while ($offset -lt $Count) {
+            $read = $Stream.Read($Buffer, $offset, $Count - $offset)
+            if ($read -eq 0) { throw 'Continuity canonical anchor truncated' }
+            $offset += $read
         }
+    }
+    $hashBytes = {
+        param([byte[]] $Bytes, [int] $Count)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return [BitConverter]::ToString($sha.ComputeHash($Bytes, 0, $Count)).Replace('-', '') }
+        finally { $sha.Dispose() }
+    }
+    $start = [int64]$cache.anchorLength
+    try {
+        # Copy the bytes the delta read is about to parse, to compare after it.
+        $stream = [IO.File]::Open($eventsPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $pendingCount = [int][Math]::Max([int64]0, [Math]::Min([int64]$blockSize, $stream.Length - $start))
+            $pending = New-Object byte[] ([Math]::Max(1, $pendingCount))
+            [void]$stream.Seek($start, [IO.SeekOrigin]::Begin)
+            & $readExactly $stream $pending $pendingCount
+        } finally { $stream.Dispose() }
     } catch {
-        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
+        $cache.cursor=$null; $cache.anchorLength=[int64]0; $cache.anchorBlocks=@(); $cache.anchorTail=''
         throw
     }
     $view = Read-BridgeEventDelta -Path $eventsPath -Cursor $cache.cursor -MaxBytes 1048576 -MaxRows 1000
     if ($view.status -notin @('OK','IDLE') -or $null -eq $view.candidate_cursor) {
-        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
+        $cache.cursor=$null; $cache.anchorLength=[int64]0; $cache.anchorBlocks=@(); $cache.anchorTail=''
         throw 'Continuity canonical snapshot unavailable; rebuild required'
     }
+    # One pass over [0, new cursor): every block below the old cursor must still
+    # match, the bytes just parsed must equal the copy taken before the read, and
+    # the blocks up to the new cursor become the anchor if the scan stays clear.
+    $through = [int64]$view.candidate_cursor.offset
+    $blocks = New-Object Collections.Generic.List[string]
+    $tail = ''
     try {
-        $after = & $readPrefix $eventsPath $prefix.length
-        if ($after.hash -cne $prefix.hash) { throw 'Continuity canonical prefix changed during read; rebuild required' }
+        if ($through -lt $start) { throw 'Continuity canonical cursor moved backwards; rebuild required' }
+        $overlapEnd = $start + [Math]::Min([int64]$pendingCount, $through - $start)
+        $buffer = New-Object byte[] $blockSize
+        $overlap = [Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [IO.File]::Open($eventsPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try {
+                $index = 0
+                for ($blockStart = [int64]0; $blockStart -le $through; $blockStart += $blockSize) {
+                    $count = [int][Math]::Min([int64]$blockSize, $through - $blockStart)
+                    & $readExactly $stream $buffer $count
+                    $digest = & $hashBytes $buffer $count
+                    if ($start -gt 0 -and $blockStart + $blockSize -le $start) {
+                        if ($index -ge @($cache.anchorBlocks).Count -or $digest -cne [string]@($cache.anchorBlocks)[$index]) {
+                            throw 'Continuity canonical anchor changed; rebuild required'
+                        }
+                    } elseif ($start -gt 0 -and $blockStart -le $start) {
+                        if ((& $hashBytes $buffer ([int]($start - $blockStart))) -cne [string]$cache.anchorTail) {
+                            throw 'Continuity canonical anchor changed; rebuild required'
+                        }
+                    }
+                    $from = [Math]::Max($start, $blockStart)
+                    $to = [Math]::Min($overlapEnd, $blockStart + $count)
+                    if ($to -gt $from) {
+                        [void]$overlap.TransformBlock($buffer, [int]($from - $blockStart), [int]($to - $from), $null, 0)
+                    }
+                    if ($count -eq $blockSize) { $blocks.Add($digest) } else { $tail = $digest }
+                    $index++
+                }
+            } finally { $stream.Dispose() }
+            [void]$overlap.TransformFinalBlock($buffer, 0, 0)
+            $parsed = [BitConverter]::ToString($overlap.Hash).Replace('-', '')
+        } finally { $overlap.Dispose() }
+        if ($parsed -cne (& $hashBytes $pending ([int]($overlapEnd - $start)))) {
+            throw 'Continuity canonical log changed during read; rebuild required'
+        }
     } catch {
-        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
+        $cache.cursor=$null; $cache.anchorLength=[int64]0; $cache.anchorBlocks=@(); $cache.anchorTail=''
         throw
     }
-    $cache.prefixLength=$prefix.length; $cache.prefixHash=$prefix.hash
     foreach ($event in @($view.rows)) {
         $recipients = @()
         if ($event.PSObject.Properties['to']) { $recipients = @(([string]$event.to) -split '[,;\s]+' | Where-Object { $_ }) }
@@ -1179,6 +1226,7 @@ function Test-WdContinuityControlEvents {
         }
     }
     $cache.cursor = $view.candidate_cursor
+    $cache.anchorLength = $through; $cache.anchorBlocks = $blocks.ToArray(); $cache.anchorTail = $tail
     if ([int64]$cache.cursor.offset -lt [int64]$view.snapshot_length) {
         if ($view.reason -ceq 'partial_record') { throw 'Continuity canonical partial record; reconciliation required' }
         throw 'Continuity canonical scan catching up; recovery withheld'

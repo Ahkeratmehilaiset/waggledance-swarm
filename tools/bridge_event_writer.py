@@ -532,6 +532,7 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
         raise BridgeEventWriteError(
             f"bridge event cannot be serialized as a JSON object: {exc}"
         ) from exc
+    _assert_ascii_object_keys(event_object)
     validate_v1_replayer_event(event_object)
     try:
         validate_event(event_object)
@@ -555,6 +556,37 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
             "bridge WAL row must be one non-empty strict UTF-8 JSON row ending in LF"
         )
     return row
+
+
+def _assert_ascii_object_keys(event: Mapping[str, Any]) -> None:
+    """Refuse a non-ASCII JSON object key anywhere in the event, before any write.
+
+    Readers (BridgeLogReader JsonContractValidator) refuse any decoded object key
+    above 0x7F, and one such row blocks every tail read fleet-wide (2026-10-10
+    11:54Z). Same contract as Assert-BridgeJsonObjectKeysAscii in
+    Write-AgentEvent.ps1; non-ASCII VALUES stay allowed. Iterative, and each
+    container is visited once, so a cycle reaches json.dumps' own refusal.
+    """
+
+    stack: list[Any] = [event]
+    seen: set[int] = set()
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (dict, list, tuple)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance(key, str) and not key.isascii():
+                    shown = key.encode("ascii", "backslashreplace").decode("ascii")
+                    raise BridgeEventWriteError(
+                        "bridge event JSON object keys must be ASCII before writing "
+                        f"(readers refuse the row); offending key: {shown}"
+                    )
+                stack.append(child)
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
 
 
 def validate_v1_replayer_event(event: Mapping[str, Any]) -> None:

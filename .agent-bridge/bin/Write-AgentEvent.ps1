@@ -875,8 +875,34 @@ function Assert-BridgeJsonObjectKeysAscii {
     }
 }
 
+function Assert-BridgeJsonIntegersSafe {
+    param([Parameter(Mandatory)] [string] $Json)
+    # Readers (BridgeLogReader JsonContractValidator.ParseNumber) refuse an integer
+    # token outside +/-9007199254740991, and such a row blocks every tail read like
+    # a non-ASCII key. Measured 2026-10-11: ConvertTo-Json writes 2^53 on PS5 and
+    # PS7, and a BigInteger raw on PS7. String tokens are matched first and in
+    # order, so digits inside keys and values are never read as numbers.
+    foreach ($token in [regex]::Matches($Json, '"(?:[^"\\]|\\.)*"|-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')) {
+        $text = $token.Value
+        if ($text[0] -eq '"' -or $text.IndexOfAny([char[]]'.eE') -ge 0) { continue }
+        $value = [long]0
+        if (
+            -not [long]::TryParse(
+                $text,
+                [System.Globalization.NumberStyles]::AllowLeadingSign,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref]$value
+            ) -or
+            $value -lt -9007199254740991 -or $value -gt 9007199254740991
+        ) {
+            throw "Bridge event JSON integers must be within +/-9007199254740991 before writing (readers refuse the row); offending value: $text"
+        }
+    }
+}
+
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [char]10)
 Assert-BridgeJsonObjectKeysAscii -Json $line
+Assert-BridgeJsonIntegersSafe -Json $line
 
 function New-BridgeV1Mutex {
     param(

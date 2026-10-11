@@ -448,12 +448,15 @@ def _status_offset(log):
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize("before,after", [(25, 0), (300, 300)], ids=["past-64-kib", "inside-a-full-block"])
-def test_same_length_rewrite_far_behind_the_cursor_cannot_stay_clear(tmp_path, ps, before, after):
+@pytest.mark.parametrize("before,after,block", [(25, 0, None), (300, 300, 1), (25, 600, 0)],
+                         ids=["past-64-kib", "inside-a-full-block", "inside-full-block-0"])
+def test_same_length_rewrite_far_behind_the_cursor_cannot_stay_clear(tmp_path, ps, before, after, block):
     """Codex P1 4240977444 on PR1843: the anchor covers every byte below the cursor, not a 64 KiB prefix."""
     log, script = _fixture(tmp_path, [FILLER] * before + [DIAGNOSTICS["worker-blocked-blocked"]] + [FILLER] * after)
     offset = _status_offset(log)
     assert offset > 65536 and (after == 0 or offset + (1 << 20) < log.stat().st_size)
+    if block is not None:  # the row sits in that 1 MiB block, which is full because the log extends past it
+        assert offset >> 20 == block and log.stat().st_size > (block + 1) << 20
     script += SETTLE + "$before=Settle\n" + _rewrite(log, offset, "on_hold")
     script += "$after=Settle\n@{before=$before;after=$after} | ConvertTo-Json -Depth 6 -Compress"
     report = json.loads(_run_powershell(script, executable=ps).stdout)
@@ -477,38 +480,56 @@ def test_appends_across_block_boundaries_stay_incremental_without_a_rebuild(tmp_
     assert report["after"][-1] == CLEAR and report["again"] == CLEAR, report
 
 
+# The pinned reader copy gains a hook that rewrites one row right after the delta read returns.
+REWRITE_HOOK = (
+    "\n$script:WdTestDelta = ${function:Read-BridgeEventDelta}\n"
+    "function Read-BridgeEventDelta {\n"
+    " param([string] $Path, $Cursor, [int64] $MaxBytes, [int] $MaxRows)\n"
+    " $result = & $script:WdTestDelta -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -MaxRows $MaxRows\n"
+    " if ($env:WD_TEST_REWRITE_AT) {\n"
+    "  $at = [int64]$env:WD_TEST_REWRITE_AT; Remove-Item Env:WD_TEST_REWRITE_AT\n"
+    "  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\n"
+    "  try { [void]$stream.Seek($at,[IO.SeekOrigin]::Begin); $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold');"
+    " $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }\n"
+    " }\n"
+    " $result\n"
+    "}\n"
+)
+
+
+def _rewrite_blocked_after_the_next_read(log):
+    return (
+        "$data=[IO.File]::ReadAllBytes(" + q(log) + "); $text=[Text.Encoding]::UTF8.GetString($data);"
+        " $env:WD_TEST_REWRITE_AT=[string]($text.IndexOf('\"status\":\"blocked\"') + 10)\n"
+    )
+
+
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("where", ["behind-the-cursor", "in-the-bytes-just-parsed"])
 def test_a_rewrite_during_the_delta_read_cannot_stay_clear(tmp_path, ps, where):
-    # The pinned reader copy gains a hook that rewrites one row right after the delta read returns.
-    hook = (
-        "\n$script:WdTestDelta = ${function:Read-BridgeEventDelta}\n"
-        "function Read-BridgeEventDelta {\n"
-        " param([string] $Path, $Cursor, [int64] $MaxBytes, [int] $MaxRows)\n"
-        " $result = & $script:WdTestDelta -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -MaxRows $MaxRows\n"
-        " if ($env:WD_TEST_REWRITE_AT) {\n"
-        "  $at = [int64]$env:WD_TEST_REWRITE_AT; Remove-Item Env:WD_TEST_REWRITE_AT\n"
-        "  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\n"
-        "  try { [void]$stream.Seek($at,[IO.SeekOrigin]::Begin); $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold');"
-        " $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }\n"
-        " }\n"
-        " $result\n"
-        "}\n"
-    )
     diagnostic = DIAGNOSTICS["worker-blocked-blocked"]
     first = [diagnostic, FILLER] if where == "behind-the-cursor" else [FILLER]
-    log, script = _fixture(tmp_path, first, reader_suffix=hook)
+    log, script = _fixture(tmp_path, first, reader_suffix=REWRITE_HOOK)
     later = diagnostic if where == "in-the-bytes-just-parsed" else FILLER
     appended = json.dumps(later, separators=(",", ":")) + "\n"
     script += SETTLE + "$before=Settle\n"
     script += f"[IO.File]::AppendAllText({q(log)}, {q(appended)})\n"
-    offset_script = (
-        "$data=[IO.File]::ReadAllBytes(" + q(log) + "); $text=[Text.Encoding]::UTF8.GetString($data);"
-        " $env:WD_TEST_REWRITE_AT=[string]($text.IndexOf('\"status\":\"blocked\"') + 10)\n"
-    )
-    script += offset_script + "$after=Settle\n@{before=$before;after=$after} | ConvertTo-Json -Depth 6 -Compress"
+    script += _rewrite_blocked_after_the_next_read(log)
+    script += "$after=Settle\n@{before=$before;after=$after} | ConvertTo-Json -Depth 6 -Compress"
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report["before"][-1] == CLEAR, report
+    assert CLEAR not in report["after"], report
+    assert report["after"][-1] == {"ok": True, "held": True}, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_rewrite_during_the_delta_read_of_the_first_scan_cannot_stay_clear(tmp_path, ps):
+    """The first check of a relay (and every rescan after a reset) starts at byte 0 with no anchor yet: the bytes it
+    parsed must still equal the pre-read copy, or a row rewritten into a control during that read stays clear."""
+    log, script = _fixture(tmp_path, [FILLER, DIAGNOSTICS["worker-blocked-blocked"]], reader_suffix=REWRITE_HOOK)
+    script += SETTLE + _rewrite_blocked_after_the_next_read(log)
+    script += "$after=Settle\n@{after=$after} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert CLEAR not in report["after"], report
     assert report["after"][-1] == {"ok": True, "held": True}, report
 

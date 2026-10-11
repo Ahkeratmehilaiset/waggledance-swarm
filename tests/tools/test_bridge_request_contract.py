@@ -236,3 +236,105 @@ def test_malformed_responder_identity_fails_closed(tmp_path, engine, identity):
         proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True, timeout=30)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout) is False
+
+
+def _exact_open_ids(result, open_rows):
+    # counterfeit-open-set: count alone must never fabricate an unseen sibling.
+    ids = [row['request_id'] for row in open_rows]
+    assert len(ids) == len(set(ids)) == result['open_incoming_count']
+    if ids:
+        assert result['incoming']['request_id'] in ids
+    return set(ids)
+
+
+def _route_exact_binding_rows(tmp_path, engine, rows):
+    if engine == 'python':
+        from tools.bridge_next_action import _open_requests_for_agent
+        result = recommend_next_action(agent='codex-tools-1', events=rows, claims=[])
+        assert report_unanswered_requests(events=rows, min_age_minutes=0)['unanswered_count'] == result['open_incoming_count']
+        # These fixtures have two fresh distinct requests, without retries.
+        open_rows = _open_requests_for_agent(agent='codex-tools-1', events=rows)
+    else:
+        (tmp_path / 'shared').mkdir()
+        (tmp_path / 'shared/events.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        script = str(ROOT / '.agent-bridge/bin/Get-BridgeNextAction.ps1').replace("'", "''")
+        # Dot-source in this isolated child so the actual computed open rows are
+        # observable without adding fields or changing production router code.
+        command = (
+            f"$selection = . '{script}' -Agent codex-tools-1 "
+            "-Now '2026-09-18T07:31:00Z' -Json | ConvertFrom-Json; "
+            "[pscustomobject]@{selection=$selection; open_rows=@($openRequests | ForEach-Object {$_})} "
+            "| ConvertTo-Json -Depth 16"
+        )
+        proc = subprocess.run(
+            [engine, '-NoProfile', '-NonInteractive', '-Command', command],
+            env=dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path)),
+            capture_output=True, text=True, timeout=30,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        packet = json.loads(proc.stdout)
+        result, open_rows = packet['selection'], packet['open_rows']
+    return _exact_open_ids(result, open_rows)
+
+
+def _explicit_binding_rows():
+    first, newer, reply = events()
+    first.update(request_id='request-v1', request_digest='digest-v1')
+    newer.update(request_id='request-v2', request_digest='digest-v2')
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='digest-v2',
+                 in_reply_to_requester={k: newer[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    return first, newer, reply
+
+
+@pytest.mark.parametrize('case', ['duplicate_v1', 'unrelated_sibling', 'count_only'])
+def test_exact_open_rows_reject_counterfeit_set(case):
+    # counterfeit-open-set: these all passed the previous count==2 branch.
+    result = {'open_incoming_count': 2, 'incoming': {'request_id': 'request-v1'}}
+    ids = {'duplicate_v1': ['request-v1', 'request-v1'],
+           'unrelated_sibling': ['request-v1', 'unrelated-request'],
+           'count_only': ['request-v1']}[case]
+    with pytest.raises(AssertionError):
+        assert _exact_open_ids(result, [{'request_id': rid} for rid in ids]) == {'request-v1', 'request-v2'}
+    # Positive control: two actually observed distinct requests, not a count guess.
+    assert _exact_open_ids(result, [{'request_id': rid} for rid in ('request-v1', 'request-v2')]) == {'request-v1', 'request-v2'}
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('case', ['correct', 'late_v1', 'wrong_nonce', 'wrong_uuid', 'wrong_session'])
+def test_exact_reply_twins_keep_unrelated_revision_open(tmp_path, engine, case):
+    # binding-check-dropped: accepting a reply on task ID alone fails these oracles.
+    first, newer, reply = _explicit_binding_rows()
+    if case == 'late_v1':
+        reply.update(in_reply_to_request_id='request-v1', in_reply_to_request_digest='digest-v1',
+                     payload={'nonce': 'v1', 'request_ts_utc': first['ts_utc']})
+    elif case == 'wrong_nonce':
+        reply['payload']['nonce'] = 'wrong'
+    elif case == 'wrong_uuid':
+        reply['agent_uuid'] = 'foreign-uuid'
+    elif case == 'wrong_session':
+        reply['session_id'] = 'foreign-session'
+    expected = {'request-v1'} if case == 'correct' else {'request-v2'} if case == 'late_v1' else {'request-v1', 'request-v2'}
+    assert _route_exact_binding_rows(tmp_path, engine, [first, newer, reply]) == expected
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('case', ['v1_only', 'v2_only', 'wrong_nonce', 'wrong_uuid', 'wrong_session', 'different_request'])
+def test_scoped_cancellation_twins_close_only_exact_request(tmp_path, engine, case):
+    # cancel-target-check-dropped: closing every request on this task fails the twin.
+    first, newer, cancellation = _explicit_binding_rows()
+    cancellation.update(agent=newer['agent'], agent_uuid=newer['agent_uuid'],
+                        session_id=newer['session_id'], run_id=newer['run_id'],
+                        to='codex-tools-1', type='message', status='cancelled')
+    if case == 'v1_only':
+        cancellation.update(in_reply_to_request_id='request-v1', in_reply_to_request_digest='digest-v1',
+                            payload={'nonce': 'v1', 'request_ts_utc': first['ts_utc']})
+    elif case == 'wrong_nonce':
+        cancellation['payload']['nonce'] = 'wrong'
+    elif case == 'wrong_uuid':
+        cancellation['agent_uuid'] = 'foreign-uuid'
+    elif case == 'wrong_session':
+        cancellation['session_id'] = 'foreign-session'
+    elif case == 'different_request':
+        cancellation.update(in_reply_to_request_id='unrelated-request', in_reply_to_request_digest='unrelated-digest')
+    expected = {'request-v2'} if case == 'v1_only' else {'request-v1'} if case == 'v2_only' else {'request-v1', 'request-v2'}
+    assert _route_exact_binding_rows(tmp_path, engine, [first, newer, cancellation]) == expected

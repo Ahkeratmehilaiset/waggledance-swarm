@@ -459,7 +459,13 @@ Still unchanged or not implemented:
 - `check_rco_pass_present` still recognizes only `claude-rco-1` and
   `claude-rco-2`.
 - The Grok switch stays off.
-- No authorized merge-execution route exists yet (A5).
+- The A5 manual merge-execution route exists (#1828, `2bd7a010`, installed in
+  2bd7/CC55). It admits only fixed options (`BridgeCodeContext.ps1`), not
+  `--review-policy` or `--grok-fallback`, so it evaluates the legacy policy and
+  cannot use the rule12 pool or Grok fallback; it also refuses CLAUDE.md and
+  other denylisted paths by charter design. The operator-signed merges of #1826
+  and #1832 used a direct `gh pr merge --match-head-commit` with a MAGMA audit
+  receipt, not A5.
 - Because #1762 is still open, this amendment and its (a)-class gate PR each
   need the operator's explicit per-PR signature; consensus alone does not land
   them.

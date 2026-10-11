@@ -1136,9 +1136,11 @@ function Test-WdContinuityControlEvents {
         if (-not ($blocking -or $finding)) { continue }
         # Explicit control is decided before any diagnostic exemption. A payload
         # field named like a control (release_held, work_held, control, ...) keeps
-        # the row a control whatever its value; a payload that is not an object
-        # cannot be inspected and stays a control.
-        $payloadControl = $false
+        # the row a control whatever its value. A payload that cannot be inspected
+        # (missing, null or not an object) stays a control (bot 4241335136 on
+        # PR1849): only an object payload whose field names were all scanned can
+        # clear the row.
+        $payloadControl = $true
         $payloadProperty = $event.PSObject.Properties['payload']
         if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) {
             $payload = $payloadProperty.Value
@@ -1146,7 +1148,7 @@ function Test-WdContinuityControlEvents {
             $names = $null
             if ($payload -is [Collections.IDictionary]) { $names = @($payload.Keys) }
             elseif ($payload -is [Management.Automation.PSCustomObject]) { $names = @($payload.PSObject.Properties | ForEach-Object { $_.Name }) }
-            if ($null -eq $names) { $payloadControl = $true }
+            if ($null -ne $names) { $payloadControl = $false }
             foreach ($name in @($names)) {
                 $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
                     -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'

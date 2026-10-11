@@ -1144,3 +1144,97 @@ def test_declared_clear_hold_fields_change_nothing_versus_the_legacy_checkpoint(
     token = dict(cp(), blockers=["HOLD 1549 preserved"])
     declared = dict(token, work_held=False, release_held=False)
     assert evaluate(snap(checkpoint=declared), NOW) == evaluate(snap(checkpoint=token), NOW)
+
+
+# --- C-D1 (RCO2 report 8DF45964; reproduced by Fable 08A5539F): a future-dated checkpoint is never "recent" ----
+# Before the fix a recognized checkpoint dated beyond the 60 s clock skew fell through to checkpoint_recent and
+# waited for as long as the clock lagged (10 years in the reproduction), with no wake and no alert on the
+# checkpoint-only path. It now fails closed like evidence from the future; within the skew nothing changes.
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated,wakeup", [
+    ("2026-09-29T00:01:01Z", None),                      # 61 s ahead: beyond skew
+    ("2036-09-29T00:00:00Z", None),                      # 10 years ahead
+    ("2026-09-29T00:01:01Z", "2026-09-29T00:30:00Z"),    # future update with a bounded, pending wake
+])
+def test_c_d1_a_checkpoint_dated_beyond_the_clock_skew_is_unknown_never_recent(scope_snap, updated, wakeup):
+    d = evaluate(scope_snap(checkpoint=cp(updated=updated, next_wakeup=wakeup)), NOW)
+    assert d["verdict"] == "unknown"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_from_future"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated", ["2026-09-29T00:00:59Z",
+                                     "2026-09-29T00:01:00Z"])  # exactly CLOCK_SKEW ahead: still within (RCO2 CD1R-A1)
+def test_c_d1_a_checkpoint_within_the_clock_skew_is_still_recent(scope_snap, updated):
+    d = evaluate(scope_snap(checkpoint=cp(updated=updated)), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_recent"]
+
+
+# --- C-D2: a wake beyond policy.unbounded_decide_seconds from now needs a decision ------------
+# NOW = 2026-09-29T00:00:00Z, unbounded = 7200 s. The bound is measured from now; exactly at the
+# bound the wake is still scheduled. Explicit controls and structured covering keep precedence.
+
+FAR_WAKE = "2036-09-29T00:00:00Z"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated", ["2026-09-28T21:59:06Z", "2026-09-28T23:55:00Z"])
+@pytest.mark.parametrize("wakeup", ["2026-09-29T02:00:01Z", FAR_WAKE])
+def test_c_d2_a_wake_beyond_the_unbounded_horizon_decides(scope_snap, updated, wakeup):
+    d = evaluate(scope_snap(checkpoint=cp(next_wakeup=wakeup, updated=updated)), NOW)
+    item = only(d, "checkpoint")
+    assert d["verdict"] == "decide" and item["verdict"] == "decide"
+    assert item["reasons"] == ["checkpoint_wakeup_unbounded"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("updated", ["2026-09-28T21:59:06Z", "2026-09-28T23:55:00Z"])
+@pytest.mark.parametrize("wakeup", ["2026-09-29T01:59:59Z", "2026-09-29T02:00:00Z"])  # below / at
+def test_c_d2_a_wake_within_the_unbounded_horizon_stays_scheduled(scope_snap, updated, wakeup):
+    d = evaluate(scope_snap(checkpoint=cp(next_wakeup=wakeup, updated=updated)), NOW)
+    assert d["verdict"] == "wait"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_wakeup_scheduled"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("over,verdict,reasons", [
+    ({"status": "on_hold"}, "hold", ["checkpoint_paused"]),
+    ({"status": "paused"}, "hold", ["checkpoint_paused"]),
+    ({"status": "cancelled"}, "idle_ok", ["checkpoint_cancelled"]),
+    ({"status": "done"}, "idle_ok", ["checkpoint_done"]),
+    ({"work_held": True, "release_held": False}, "hold", ["checkpoint_work_held"]),
+    ({"blockers": ["HOLD 1549 preserved"]}, "unknown", ["hold_possible_control_token"]),
+])
+def test_c_d2_explicit_controls_outrank_an_unbounded_wake(scope_snap, over, verdict, reasons):
+    c = dict(cp(next_wakeup=FAR_WAKE), **over)
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == verdict
+    assert only(d, "checkpoint")["reasons"] == reasons
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_c_d2_an_active_hold_outranks_an_unbounded_wake(scope_snap):
+    d = evaluate(scope_snap(checkpoint=cp(next_wakeup=FAR_WAKE), holds=[hold(task_ids=[PKG_TASK])]), NOW)
+    assert d["verdict"] == "hold"
+    assert only(d, "checkpoint")["reasons"] == ["held"]
+
+
+def test_c_d2_structured_covering_and_fm3_outrank_an_unbounded_wake():
+    covered = evaluate(snap(checkpoint=cp(next_wakeup=FAR_WAKE),
+                            waits=[wait(deadline="2026-09-29T01:00:00Z")]), NOW)
+    assert only(covered, "checkpoint")["reasons"][0] == "covered_by_open_work"
+    fm3 = evaluate(snap(checkpoint=cp(status="waiting_on_rco", next_wakeup=FAR_WAKE)), NOW)
+    assert only(fm3, "checkpoint")["reasons"] == ["waiting_without_structured_predicate"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_c_d1_before_c_d2_a_future_dated_checkpoint_with_a_far_wake_is_unknown(scope_snap):
+    # Composition order: the future-dated checkpoint (C-D1, unknown) is decided before the
+    # unbounded wake (C-D2, decide); swapping the two branches would downgrade it to decide.
+    c = cp(updated="2026-09-29T00:01:01Z", next_wakeup=FAR_WAKE)
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown"
+    assert only(d, "checkpoint")["reasons"] == ["checkpoint_from_future"]

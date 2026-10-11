@@ -22,11 +22,12 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, Literal, Mapping, Protocol
+from typing import Any, Literal, Mapping, NoReturn, Protocol
 import uuid
 import warnings
 
@@ -66,6 +67,15 @@ V1_EVENT_TYPES = frozenset(
 )
 V1_AGENT_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 V1_REPLAYER_REQUIRED_FIELDS = ("agent", "type", "task_id", "status")
+# BridgeLogReader.ps1 JsonContractValidator.MaxDepth / MaxSafeInteger.
+READER_MAX_DEPTH = 32
+READER_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+# str.splitlines() also breaks at these, and Python readers of events.jsonl
+# split that way: one raw U+2028 turned a row into invalid fragments and made
+# check_bridge_changes_requested refuse the whole log (measured 2026-10-11).
+# json.dumps only emits them inside strings, so the escapes keep the value; the
+# PowerShell writers already escape all three.
+_LINE_SEPARATOR_ESCAPES = {0x85: "\\u0085", 0x2028: "\\u2028", 0x2029: "\\u2029"}
 
 
 class BridgeEventWriteError(RuntimeError):
@@ -247,8 +257,8 @@ def write_bridge_event(
 
     active_backend: AppendV1Backend = backend or WindowsAppendV1Backend()
     active_backend.ensure_supported()
-    row = _event_row_bytes(event)
-    agent = _safe_agent(event)
+    row, written = _written_event(event)
+    agent = _safe_agent(written)
     outbox_path: Path | None = None
     last_path: Path | None = None
     last_bytes: bytes | None = None
@@ -256,9 +266,9 @@ def write_bridge_event(
         # Resolve and validate every fallible sidecar input before the
         # canonical append.  Once canonical bytes are durable, optional cache
         # preparation must never turn success into a retryable failure.
-        outbox_path = root / "outbox" / agent / _event_date_name(event)
+        outbox_path = root / "outbox" / agent / _event_date_name(written)
         last_path = root / "shared" / f"last_{agent}.json"
-        last_bytes = _last_event_bytes(event)
+        last_bytes = _last_event_bytes(written)
 
     warning_messages: list[str] = []
     publication_mutex = _acquire_queue_publication_mutex(active_backend)
@@ -526,19 +536,23 @@ def _lexical_path_key(path: Path) -> str:
 
 
 def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
+    return _written_event(event)[0]
+
+
+def _written_event(event: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """Serialize ``event``; return the final row and the row decoded again.
+
+    Every check reads the decoded final row, never the caller's object: a str
+    subclass can answer ``isascii()`` or ``in V1_EVENT_TYPES`` falsely while
+    json.dumps writes its real code points, and readers and the replayer only
+    see those bytes. The sidecars are built from the same decoded row.
+    """
+
     try:
         event_object = dict(event)
     except Exception as exc:  # noqa: BLE001 - normalize to the typed writer error
         raise BridgeEventWriteError(
             f"bridge event cannot be serialized as a JSON object: {exc}"
-        ) from exc
-    _assert_ascii_object_keys(event_object)
-    validate_v1_replayer_event(event_object)
-    try:
-        validate_event(event_object)
-    except Exception as exc:  # noqa: BLE001 - normalize every schema refusal
-        raise BridgeEventWriteError(
-            f"bridge event schema validation failed: {exc}"
         ) from exc
     try:
         text = json.dumps(
@@ -547,46 +561,90 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
             allow_nan=False,
             separators=(",", ":"),
             sort_keys=False,
-        )
+        ).translate(_LINE_SEPARATOR_ESCAPES)
         row = (text + "\n").encode("utf-8", errors="strict")
-    except (TypeError, ValueError, UnicodeError) as exc:
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise BridgeEventWriteError(f"bridge event is not strict JSON/UTF-8: {exc}") from exc
     if not row or not row.endswith(b"\n") or b"\n" in row[:-1] or b"\r" in row[:-1]:
         raise BridgeEventWriteError(
             "bridge WAL row must be one non-empty strict UTF-8 JSON row ending in LF"
         )
-    return row
+    written = _decode_reader_row(row)
+    validate_v1_replayer_event(written)
+    try:
+        validate_event(written)
+    except Exception as exc:  # noqa: BLE001 - normalize every schema refusal
+        raise BridgeEventWriteError(
+            f"bridge event schema validation failed: {exc}"
+        ) from exc
+    return row, written
 
 
-def _assert_ascii_object_keys(event: Mapping[str, Any]) -> None:
-    """Refuse a non-ASCII JSON object key anywhere in the event, before any write.
+def _decode_reader_row(row: bytes) -> dict[str, Any]:
+    """Decode the final row; refuse it, before any write, unless readers accept it.
 
-    Readers (BridgeLogReader JsonContractValidator) refuse any decoded object key
-    above 0x7F, and one such row blocks every tail read fleet-wide (2026-10-10
-    11:54Z). Same contract as Assert-BridgeJsonObjectKeysAscii in
-    Write-AgentEvent.ps1; non-ASCII VALUES stay allowed. Iterative, and each
-    container is visited once, so a cycle reaches json.dumps' own refusal.
+    One row a reader refuses blocks every tail read fleet-wide (2026-10-10
+    11:54Z, a non-ASCII key). The contract is BridgeLogReader.ps1's
+    JsonContractValidator plus ConvertFrom-Json, measured on PS5 and PS7
+    (2026-10-11): in every object the keys are non-empty, ASCII and unique
+    after ASCII case folding; containers nest at most READER_MAX_DEPTH deep
+    (the row object is depth 1); integers stay within READER_MAX_SAFE_INTEGER;
+    numbers are finite. json.dumps above never writes a surrogate escape or a
+    raw control character, and a lone surrogate already fails the strict UTF-8
+    encode. Non-ASCII VALUES stay allowed (Write-AgentEvent.ps1 parity).
     """
 
-    stack: list[Any] = [event]
-    seen: set[int] = set()
+    def refuse(reason: str) -> NoReturn:
+        raise BridgeEventWriteError(f"bridge {reason} (readers refuse the row)")
+
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        folded: set[str] = set()
+        for key, _ in pairs:
+            shown = key.encode("ascii", "backslashreplace").decode("ascii")
+            if not key.isascii():
+                refuse(f"event JSON object keys must be ASCII before writing; offending key: {shown}")
+            if not key:
+                refuse("event JSON object key is empty")
+            if key.lower() in folded:
+                refuse(f"event JSON object key repeats after ASCII case folding: {shown}")
+            folded.add(key.lower())
+        return dict(pairs)
+
+    def integer(token: str) -> int:
+        value = int(token)
+        if abs(value) > READER_MAX_SAFE_INTEGER:
+            refuse(f"event integer is outside +/-{READER_MAX_SAFE_INTEGER}: {token}")
+        return value
+
+    def number(token: str) -> float:
+        value = float(token)
+        if not math.isfinite(value):
+            refuse(f"event number is not finite: {token}")
+        return value
+
+    def constant(token: str) -> NoReturn:
+        refuse(f"event number is not finite: {token}")
+
+    try:
+        decoded = json.loads(
+            row.decode("utf-8", errors="strict"),
+            object_pairs_hook=object_pairs,
+            parse_int=integer,
+            parse_float=number,
+            parse_constant=constant,
+        )
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        refuse(f"WAL row does not decode as strict JSON: {exc}")
+    if type(decoded) is not dict:
+        refuse("WAL row is not a JSON object")
+    stack: list[tuple[Any, int]] = [(decoded, 1)]
     while stack:
-        item = stack.pop()
-        if isinstance(item, (dict, list, tuple)):
-            if id(item) in seen:
-                continue
-            seen.add(id(item))
-        if isinstance(item, dict):
-            for key, child in item.items():
-                if isinstance(key, str) and not key.isascii():
-                    shown = key.encode("ascii", "backslashreplace").decode("ascii")
-                    raise BridgeEventWriteError(
-                        "bridge event JSON object keys must be ASCII before writing "
-                        f"(readers refuse the row); offending key: {shown}"
-                    )
-                stack.append(child)
-        elif isinstance(item, (list, tuple)):
-            stack.extend(item)
+        item, depth = stack.pop()
+        if depth > READER_MAX_DEPTH:
+            refuse(f"event JSON nests deeper than {READER_MAX_DEPTH} containers")
+        children = item.values() if isinstance(item, dict) else item
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return decoded
 
 
 def validate_v1_replayer_event(event: Mapping[str, Any]) -> None:

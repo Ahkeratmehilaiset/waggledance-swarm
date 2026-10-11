@@ -2,8 +2,10 @@
 """tools/wd_prune_own_worktrees.py: owner-scoped, evidence-preserving worktree cleanup.
 
 A worktree is removed only when every check of the 2026-10-11 disk-incident cleanups holds:
-the basename starts with ``<AGENT_BRIDGE_AGENT>-``; it is not the main or the current worktree,
-not missing and not locked; HEAD is detached (named-branch worktrees are kept); ``git status``
+the basename starts with ``<AGENT_BRIDGE_AGENT>-`` (a lane name is ``letters(-letters)*-N``, so
+no lane name is a hyphen-prefix of another); it is not the main or the current worktree (by
+file identity, so a junction, symlink or other spelling of the path still matches), not
+missing and not locked; no rebase, merge, cherry-pick, revert or bisect is in progress; HEAD is detached (named-branch worktrees are kept); ``git status``
 shows no tracked change and no untracked file; the only ignored content is ``__pycache__/`` or
 ``.pytest_cache/`` (an ignored ``.codex-audit/`` evidence folder keeps the worktree, because
 ``git worktree remove`` deletes ignored files silently); no index entry hides a change
@@ -11,8 +13,8 @@ shows no tracked change and no untracked file; the only ignored content is ``__p
 ``refs/bisect``, ``refs/rewritten`` are deleted with it); and HEAD and every commit in the
 worktree's HEAD reflog are contained in a branch, remote-tracking ref or tag (a commit
 reachable only from ``refs/stash`` or from that reflog is not enough). Removal
-is ``git worktree remove`` without ``--force``; the default is a dry run. The owner comes from
-the lane identity; another lane's name is refused.
+is ``git worktree remove`` without ``--force``, after a final status re-check; the default is a
+dry run. The owner comes from the lane identity; another lane's name is refused.
 """
 from __future__ import annotations
 
@@ -43,6 +45,8 @@ EXPECTED = {
     "fable-5-assume-unchanged": ("keep", "hidden_index_flags"),
     "fable-5-skip-worktree": ("keep", "hidden_index_flags"),
     "fable-5-worktree-ref": ("keep", "worktree_refs"),
+    "fable-5-rebase-in-progress": ("keep", "operation_in_progress"),
+    "fable-5-merge-in-progress": ("keep", "operation_in_progress"),
     "fable-5-locked": ("keep", "locked"),
     "fable-5-missing": ("keep", "missing"),
     "fable-5-broken": ("keep", "status_unreadable"),
@@ -123,6 +127,14 @@ def lane(tmp_path, monkeypatch):
     _git(skip, "update-index", "--skip-worktree", "a.txt")
     (skip / "a.txt").write_text("hidden change\n", encoding="utf-8")
     _git(detached("fable-5-worktree-ref"), "update-ref", "refs/worktree/keep", "HEAD")
+    rebase = detached("fable-5-rebase-in-progress")
+    rebase_dir = Path(_git(rebase, "rev-parse", "--absolute-git-dir").strip()) / "rebase-merge"
+    rebase_dir.mkdir()
+    (rebase_dir / "git-rebase-todo").write_text("break\n", encoding="utf-8")
+    merge = detached("fable-5-merge-in-progress")
+    merge_head = _git(merge, "rev-parse", "HEAD").strip()
+    (Path(_git(merge, "rev-parse", "--absolute-git-dir").strip()) / "MERGE_HEAD").write_text(merge_head + "\n",
+                                                                                            encoding="utf-8")
     locked = detached("fable-5-locked")
     _git(repo, "worktree", "lock", str(locked))
     shutil.rmtree(detached("fable-5-missing"))
@@ -220,14 +232,15 @@ def test_another_lanes_owner_name_is_refused(lane, capsys):
     assert "AGENT_BRIDGE_AGENT" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("value", [None, "", "fable 5", "../fable-5", "Fable-5"])
+@pytest.mark.parametrize("value", [None, "", "fable 5", "../fable-5", "Fable-5", "scout", "fable-5-x", "fable-5x"])
 def test_a_missing_or_invalid_lane_identity_is_refused(lane, capsys, monkeypatch, value):
     if value is None:
         monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
     else:
         monkeypatch.setenv("AGENT_BRIDGE_AGENT", value)
-    code = _prune().main(["--repo", str(lane.repo), "--owner", OWNER, "--apply"])
-    assert code == 2
+    # Without --owner the lane identity alone decides; with it, a mismatch must not be what refuses.
+    assert _prune().main(["--repo", str(lane.repo), "--apply"]) == 2
+    assert _prune().main(["--repo", str(lane.repo), "--owner", OWNER, "--apply"]) == 2
     assert lane.paths["fable-5-clean"].exists() and lane.paths["fable-5-cache-only"].exists()
 
 
@@ -258,6 +271,53 @@ def test_a_detached_main_worktree_with_the_owner_prefix_is_kept(tmp_path, capsys
     entry = _by_name(report)["fable-5-main"]
     assert (entry["decision"], entry["reason"]) == ("keep", "main_worktree")
     assert (repo / "a.txt").exists()
+
+
+def _dir_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=True)
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def _remove_link(link: Path) -> None:
+    if os.name == "nt":
+        os.rmdir(link)  # the junction only, never its target
+    else:
+        link.unlink()
+
+
+def test_current_worktree_protection_compares_file_identity_not_spelling(lane, tmp_path):
+    prune = _prune()
+    target = lane.paths["fable-5-clean"]
+    link = tmp_path / "link-to-clean"
+    _dir_link(link, target)
+    try:
+        entry = {"path": str(target).replace("\\", "/"), "head": _git(target, "rev-parse", "HEAD").strip(),
+                 "branch": None, "detached": True, "bare": False, "locked": False, "prunable": False}
+        decision = prune.classify(entry, index=1, owner=OWNER, protected=(str(link),), repo=str(lane.repo))
+        assert decision == ("keep", "current_worktree")
+        assert prune.classify(entry, index=1, owner=OWNER, protected=(), repo=str(lane.repo)) == ("candidate", "eligible")
+    finally:
+        _remove_link(link)
+
+
+def test_a_change_after_classification_is_caught_before_removal(lane, capsys):
+    prune = _prune()
+    real_classify = prune.classify
+
+    def stale_classify(entry, **kwargs):
+        if Path(entry["path"]).name == "fable-5-evidence":
+            return "candidate", "eligible"  # as if the evidence was written after the check
+        return real_classify(entry, **kwargs)
+
+    prune.classify = stale_classify
+    code = prune.main(["--repo", str(lane.repo), "--apply", "--json"])
+    report = json.loads(capsys.readouterr().out)
+    entry = _by_name(report)["fable-5-evidence"]
+    assert (entry["decision"], entry["reason"]) == ("keep", "changed_before_removal")
+    assert (lane.paths["fable-5-evidence"] / ".codex-audit" / "evidence-red.json").read_bytes() == b'{"native_exit": 1}'
+    assert code == 0
 
 
 def test_human_output_names_each_decision(lane, capsys):

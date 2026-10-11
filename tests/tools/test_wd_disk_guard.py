@@ -248,6 +248,22 @@ def test_worktree_add_relative_target_is_measured_relative_to_the_repo(monkeypat
     assert str(repo) in usage.calls
 
 
+def test_worktree_add_passes_a_dash_dash_path_through(monkeypatch, tmp_path):
+    import shutil
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(shutil, "disk_usage", _fixed(50 * GIB))
+    assert _guard().main(["worktree-add", "--repo", str(repo), "--", "--detach", "--", "-odd-dir", "HEAD"]) == 0
+    assert (repo / "-odd-dir" / ".git").is_file()
+
+
+def test_worktree_add_requires_the_separator(monkeypatch, tmp_path):
+    import shutil
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(shutil, "disk_usage", _fixed(50 * GIB))
+    assert _guard().main(["worktree-add", "--repo", str(repo), "--detach", str(tmp_path / "x"), "HEAD"]) == 2
+    assert not (tmp_path / "x").exists()
+
+
 def test_worktree_add_with_unparseable_arguments_is_refused(monkeypatch, tmp_path):
     import shutil
     repo = _repo(tmp_path)
@@ -274,6 +290,15 @@ def _session(tmp_path, *, worker=False):
     return SimpleNamespace(config=config)
 
 
+def _guard_session(session):
+    """Run the session guard; an unexpected pytest.exit becomes a value, not the end of this session."""
+    try:
+        _guard().pytest_session_guard(session)
+    except pytest.exit.Exception as exc:
+        return exc
+    return None
+
+
 def test_session_guard_blocks_below_three_gib(monkeypatch, tmp_path):
     import shutil
     monkeypatch.setattr(shutil, "disk_usage", _fixed(2 * GIB))
@@ -286,14 +311,14 @@ def test_session_guard_blocks_below_three_gib(monkeypatch, tmp_path):
 def test_session_guard_warns_between_thresholds(monkeypatch, capsys, tmp_path):
     import shutil
     monkeypatch.setattr(shutil, "disk_usage", _fixed(5 * GIB))
-    _guard().pytest_session_guard(_session(tmp_path))
+    assert _guard_session(_session(tmp_path)) is None
     assert "WD-DISK-GUARD WARN" in capsys.readouterr().err
 
 
 def test_session_guard_is_silent_when_space_is_ample(monkeypatch, capsys, tmp_path):
     import shutil
     monkeypatch.setattr(shutil, "disk_usage", _fixed(50 * GIB))
-    _guard().pytest_session_guard(_session(tmp_path))
+    assert _guard_session(_session(tmp_path)) is None
     captured = capsys.readouterr()
     assert "WD-DISK-GUARD" not in captured.out + captured.err
 
@@ -302,7 +327,7 @@ def test_session_guard_measures_the_rootdir_and_the_basetemp_ancestor(monkeypatc
     import shutil
     usage = _fixed(50 * GIB)
     monkeypatch.setattr(shutil, "disk_usage", usage)
-    _guard().pytest_session_guard(_session(tmp_path))
+    assert _guard_session(_session(tmp_path)) is None
     assert str(tmp_path) in usage.calls
 
 
@@ -310,7 +335,7 @@ def test_session_guard_skips_xdist_workers(monkeypatch, tmp_path):
     import shutil
     usage = _fixed(2 * GIB)
     monkeypatch.setattr(shutil, "disk_usage", usage)
-    _guard().pytest_session_guard(_session(tmp_path, worker=True))
+    assert _guard_session(_session(tmp_path, worker=True)) is None
     assert usage.calls == []
 
 

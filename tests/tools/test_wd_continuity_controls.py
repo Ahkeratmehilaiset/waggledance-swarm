@@ -25,6 +25,10 @@ def _event(*, agent="operator", task=TASK, to="", type="message", status="hold")
                 ts_utc="2026-09-28T22:59:00Z", payload={})
 
 
+def _without_payload(row):
+    return {key: value for key, value in row.items() if key != "payload"}
+
+
 def _fixture(tmp_path, rows, agent=AGENT):
     bundle = tmp_path / "bundle"
     helper_dir = bundle / "tools-bootstrap/.agent-bridge/bin"
@@ -149,6 +153,16 @@ CONTROL_TWINS = {
     | {"payload": {"control": "pause"}},
     "camel-payload-hold-field": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": {"onHold": 1}},
     "payload-not-an-object": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": "hold"},
+    # Bot 4241335136 on PR1849 (Lead-confirmed): a missing or null payload cannot be inspected, so a
+    # known-worker or own-finding row that would otherwise be a diagnostic stays a control.
+    "worker-blocked-payload-absent": _without_payload(_event(agent=WORKER, type="blocked", status="blocked")),
+    "worker-blocked-payload-null": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": None},
+    "fable-message-blocked-payload-absent": _without_payload(
+        _event(agent="fable-5", type="message", status="blocked")),
+    "fable-status-blocked-payload-null": _event(agent="fable-5", type="status", status="routing_blocked")
+    | {"payload": None},
+    "own-finding-payload-absent": _without_payload(_event(agent=AGENT, type="finding", status="confirmed_bug")),
+    "own-finding-payload-null": _event(agent=AGENT, type="finding", status="suspected_bug") | {"payload": None},
     "rco1-blocked": _event(agent="claude-rco-1", type="blocked", status="blocked"),
     "rco2-message-blocked": _event(agent="claude-rco-2", type="message", status="blocked"),
     "rco-finding-confirmed-bug": _event(agent="claude-rco-2", type="finding", status="confirmed_bug"),

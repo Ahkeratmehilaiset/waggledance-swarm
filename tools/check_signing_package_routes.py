@@ -24,12 +24,18 @@ the charter the classification used. An unknown driver, a changed charter, an
 RCO-slot refusal this version does not profile, or a malformed report is
 reported as ``operator_review_required``; nothing is default-allowed.
 
-A report binds to its PR by number, head and base. A refusal also binds by the
-gate's own path decision, which must equal this checker's decision on the
-package paths, so a package that omits a changed path cannot pass. A ready
-report carries no gate report, only its exact ``gh`` merge command. The driver
-report carries no source commit or manifest hash, so the driver identity is the
-package's assertion and is reported as unverified.
+A report binds to its PR by number, head and base, and to the profiled
+repository through its exact ``gh`` merge command (a ready report carries the
+driver's command, a refusal the gate's). A refusal also binds by the gate's own
+path decision (reason, blocked and unmatched paths), which must equal this
+checker's decision on the package paths, so an omitted or added path that
+changes that decision cannot pass. Neither report carries the complete changed
+path set, so an omitted path that leaves the decision unchanged (an allowlisted
+path next to a denylisted one) is not detected: ``changed_paths`` are the
+package's assertion and are reported as such. Likewise the driver report carries
+no source commit or manifest hash, so the driver identity is the package's
+assertion and is reported as unverified. An unbound driver gets no route at all
+(``unconfirmed``): its gating is unknown.
 
 Observe-only: the tool writes nothing, merges nothing and exits 0 for any
 well-formed package whatever the verdict (2 for invalid input).
@@ -192,9 +198,12 @@ def _check_pr(
                 f"driver policy {profile.review_policy} cannot seat RCO slot holder {holder}"
             )
             expected = None
-    route = "manual" if route_reasons else "driver"
     if profile is None:
+        # An unknown driver version may gate differently, so no route is claimed.
+        route = "unconfirmed"
         route_reasons.append("route unconfirmed: driver version not bound")
+    else:
+        route = "manual" if route_reasons else "driver"
 
     check = _check_report(
         entry.get("no_apply_report"),
@@ -220,6 +229,8 @@ def _check_pr(
         "route": route,
         "route_reasons": route_reasons,
         "path_gate": _gate_view(path_gate),
+        # Only the path decision binds to a refusal report; the list itself does not.
+        "changed_paths_source": "package_assertion",
         "rco_slot_holder": holder,
         "expected_refusals": None if expected is None else sorted(expected),
         "no_apply": check,
@@ -312,6 +323,19 @@ def _check_report(
         return bad("binding_mismatch", "gate report is for a different base")
     if profile is not None and gate.get("review_policy") != profile.review_policy:
         return bad("binding_mismatch", "gate report used a different review policy")
+    # The gate's planned command (idle_consensus_auto_merge._merge_command) is the
+    # refusal's only repository field.
+    repo = None if profile is None else profile.repo
+    command = gate.get("gh_command")
+    if not (
+        isinstance(command, list)
+        and len(command) == 8
+        and command[:6] == ["gh", "pr", "merge", str(pr), "--squash", f"--match-head-commit={head}"]
+        and command[6] == "--repo"
+        and isinstance(command[7], str)
+        and (repo is None or command[7] == repo)
+    ):
+        return bad("binding_mismatch", "gate merge command does not bind")
     if gate.get("reasons") != errors or not errors:
         return bad("malformed_report", "errors do not equal the gate's refusal reasons")
     reported = gate.get("path_gate")

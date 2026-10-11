@@ -18,7 +18,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from typing import Any, Sequence
 
 import pytest
@@ -59,6 +60,33 @@ A5_ADMITTED = {
     "--pr-status-file",
 }
 DENYLIST_REFUSAL = "path gate failed: denylist hit"
+# Source mutants of the checker: (anchor, replacement), each applied to a fresh
+# module copy so the real module is never edited.
+SOURCE_MUTANTS = {
+    "MUT_UNBOUND_PROFILE_ROUTE_CONFIRMED": (
+        'route = "unconfirmed"\n',
+        'route = "manual" if route_reasons else "driver"\n',
+    ),
+    "MUT_OMITTED_CHANGED_PATH_BINDING": (
+        "if not isinstance(reported, Mapping) or _reported_gate_view(reported) != dict(path_gate):",
+        "if not isinstance(reported, Mapping):",
+    ),
+    "MUT_REFUSAL_REPO_UNBOUND": (
+        "and (repo is None or command[7] == repo)\n    ):\n        return bad(\"binding_mismatch\", \"gate merge",
+        "\n    ):\n        return bad(\"binding_mismatch\", \"gate merge",
+    ),
+}
+
+
+def _mutant_check(name: str, monkeypatch: pytest.MonkeyPatch) -> Any:
+    old, new = SOURCE_MUTANTS[name]
+    source = Path(routes.__file__).read_text(encoding="utf-8")
+    assert source.count(old) == 1, f"{name} anchor must match exactly once"
+    module = ModuleType(f"signing_routes_{name.lower()}")
+    module.__file__ = routes.__file__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source.replace(old, new), routes.__file__, "exec"), module.__dict__)
+    return module.check_package
 
 
 # --- profile re-derivation from the driver source at its commit ---------------
@@ -294,16 +322,39 @@ def test_allowlist_miss_is_manual_with_exactly_the_allowlist_refusal(tmp_path: P
     assert (pr["no_apply"]["status"], pr["verdict"]) == ("match", "consistent")
 
 
-def test_package_that_omits_a_denylisted_path_does_not_bind(tmp_path: Path) -> None:
+def _assert_decision_changing_omission_refused(tmp_path: Path, check: Any) -> None:
     report = _no_apply(tmp_path, ["CLAUDE.md", "tools/agent_next_task.py"])
     assert report["errors"] == [DENYLIST_REFUSAL]
-    result = check_package(_package(["tools/agent_next_task.py"], report),
-                           profiles=_test_profiles())
+    result = check(_package(["tools/agent_next_task.py"], report), profiles=_test_profiles())
     pr = _only(result)
     assert pr["route"] == "driver"
     assert pr["no_apply"]["status"] == "binding_mismatch"
     assert pr["no_apply"]["detail"] == "gate path decision differs from the package paths"
     assert result["verdict"] == "operator_review_required"
+
+
+def test_package_that_omits_a_denylisted_path_does_not_bind(tmp_path: Path) -> None:
+    _assert_decision_changing_omission_refused(tmp_path, check_package)
+
+
+def test_MUT_OMITTED_CHANGED_PATH_BINDING_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutant = _mutant_check("MUT_OMITTED_CHANGED_PATH_BINDING", monkeypatch)
+    with pytest.raises(AssertionError):
+        _assert_decision_changing_omission_refused(tmp_path, mutant)
+
+
+def test_omitted_path_that_keeps_the_decision_is_reported_as_an_assertion(tmp_path: Path) -> None:
+    # Control for the documented limit: neither report carries the full path
+    # set, so dropping an allowlisted path next to a denylisted one keeps the
+    # same decision and the same verdict. The output says the list is asserted.
+    report = _no_apply(tmp_path, ["CLAUDE.md", "tools/agent_next_task.py"])
+    pr = _only(check_package(_package(["CLAUDE.md"], report), profiles=_test_profiles()))
+    assert (pr["route"], pr["no_apply"]["status"], pr["verdict"]) == ("manual", "match", "consistent")
+    assert pr["changed_paths_source"] == "package_assertion"
+    doc = " ".join(str(routes.__doc__).split())
+    assert "carries the complete changed path set" in doc and "is not detected" in doc
 
 
 def test_driver_identity_is_reported_as_the_package_assertion(tmp_path: Path) -> None:
@@ -400,7 +451,7 @@ def _ready(head: str = HEAD, pr: int = PR, base: str = BASE) -> dict[str, Any]:
 
 def _refusal(reasons: list[str], *, head: str = HEAD, policy: str = "bridge_consensus_v1",
              errors: list[str] | None = None, base: str = BASE,
-             blocked: list[str] | None = None) -> dict[str, Any]:
+             blocked: list[str] | None = None, command: Any = None) -> dict[str, Any]:
     return {
         "ok": False, "decision": "receipt_preflight_failed", "stage": "receipt",
         "pr_number": PR, "errors": list(reasons if errors is None else errors),
@@ -408,10 +459,58 @@ def _refusal(reasons: list[str], *, head: str = HEAD, policy: str = "bridge_cons
         "receipt_report": {"decision": "merge_plan_not_receipt_eligible", "gate_report": {
             "pr_number": PR, "expected_head": head, "review_policy": policy,
             "reasons": list(reasons), "base_gate": {"expected_base_sha": base},
+            "gh_command": ["gh", "pr", "merge", str(PR), "--squash",
+                           f"--match-head-commit={head}", "--repo", "example/repo"]
+            if command is None else command,
             "path_gate": {"allowed": False, "reason": "denylist hit",
                           "blocked_paths": ["CLAUDE.md"] if blocked is None else blocked,
                           "unmatched_paths": [], "code_pattern_hits": []}}},
     }
+
+
+# Gate merge commands a refusal must not accept (repo, PR, head, method, shape).
+REFUSAL_COMMANDS = [
+    ["gh", "pr", "merge", str(PR), "--squash", f"--match-head-commit={HEAD}", "--repo", "other/repo"],
+    ["gh", "pr", "merge", str(PR + 1), "--squash", f"--match-head-commit={HEAD}", "--repo", "example/repo"],
+    ["gh", "pr", "merge", str(PR), "--squash", "--match-head-commit=" + "a" * 40, "--repo", "example/repo"],
+    ["gh", "pr", "merge", str(PR), "--merge", f"--match-head-commit={HEAD}", "--repo", "example/repo"],
+    ["gh", "pr", "merge", str(PR), "--squash", f"--match-head-commit={HEAD}"],
+    ["gh", "pr", "merge", str(PR), "--squash", f"--match-head-commit={HEAD}", "--repo", "example/repo",
+     "--admin"],
+    "gh pr merge",
+]
+
+
+def _refusal_without_gate_command() -> dict[str, Any]:
+    report = _refusal([DENYLIST_REFUSAL])
+    del report["receipt_report"]["gate_report"]["gh_command"]
+    return report
+
+
+def test_refusal_report_binds_the_real_gate_repository(tmp_path: Path) -> None:
+    paths = ["CLAUDE.md"]
+    report = _no_apply(tmp_path, paths)
+    gate = report["receipt_report"]["gate_report"]
+    assert gate["gh_command"] == ["gh", "pr", "merge", str(PR), "--squash",
+                                  f"--match-head-commit={HEAD}", "--repo", "example/repo"]
+    other = replace(_test_profiles()[TEST_COMMIT], repo="other/repo")
+    pr = _only(check_package(_package(paths, report), profiles={TEST_COMMIT: other}))
+    assert pr["no_apply"]["detail"] == "gate merge command does not bind"
+    assert pr["verdict"] == "operator_review_required"
+
+
+def _assert_refusal_for_another_repo_refused(check: Any) -> None:
+    pr = _only(check(_package(["CLAUDE.md"], _refusal([DENYLIST_REFUSAL],
+                                                      command=REFUSAL_COMMANDS[0])),
+                     profiles=_test_profiles()))
+    assert pr["no_apply"]["status"] == "binding_mismatch"
+
+
+def test_MUT_REFUSAL_REPO_UNBOUND_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
+    _assert_refusal_for_another_repo_refused(check_package)
+    mutant = _mutant_check("MUT_REFUSAL_REPO_UNBOUND", monkeypatch)
+    with pytest.raises(AssertionError):
+        _assert_refusal_for_another_repo_refused(mutant)
 
 
 @pytest.mark.parametrize(
@@ -435,10 +534,35 @@ def test_unbound_driver_never_reports_consistent(
     assert result["driver"]["bound"] is False
     assert result["driver"]["binding_errors"] == [error]
     pr = _only(result)
-    assert pr["route"] == "manual"
+    assert pr["route"] == "unconfirmed"
+    assert pr["route_reasons"] == ["charter path gate: denylist hit",
+                                   "route unconfirmed: driver version not bound"]
     assert pr["expected_refusals"] is None
     assert pr["no_apply"]["status"] == "unbound_expectation"
     assert result["verdict"] == pr["verdict"] == "operator_review_required"
+
+
+def _assert_unbound_driver_claims_no_route(tmp_path: Path, check: Any) -> None:
+    # Tools 08:04Z repro: an allowlisted PR with an unknown driver read "driver".
+    paths = ["tools/agent_next_task.py"]
+    result = check(_package(paths, _no_apply(tmp_path, paths), commit="0" * 40),
+                   profiles=_test_profiles())
+    pr = _only(result)
+    assert pr["route"] == "unconfirmed"
+    assert pr["route_reasons"] == ["route unconfirmed: driver version not bound"]
+    assert result["verdict"] == pr["verdict"] == "operator_review_required"
+
+
+def test_unbound_driver_with_an_allowlisted_pr_claims_no_route(tmp_path: Path) -> None:
+    _assert_unbound_driver_claims_no_route(tmp_path, check_package)
+
+
+def test_MUT_UNBOUND_PROFILE_ROUTE_CONFIRMED_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutant = _mutant_check("MUT_UNBOUND_PROFILE_ROUTE_CONFIRMED", monkeypatch)
+    with pytest.raises(AssertionError):
+        _assert_unbound_driver_claims_no_route(tmp_path, mutant)
 
 
 def test_charter_digest_ignores_checkout_line_endings(tmp_path: Path) -> None:
@@ -501,6 +625,8 @@ def test_duplicate_refusal_is_a_mismatch() -> None:
         ({**_refusal([DENYLIST_REFUSAL]), "receipt_report": {}}, "malformed_report"),
         ({**_refusal([DENYLIST_REFUSAL]), "errors": "path gate failed"}, "malformed_report"),
         (["not", "an", "object"], "malformed_report"),
+        *[(_refusal([DENYLIST_REFUSAL], command=c), "binding_mismatch") for c in REFUSAL_COMMANDS],
+        (_refusal_without_gate_command(), "binding_mismatch"),
     ],
 )
 def test_report_that_does_not_bind_is_never_consistent(report: Any, status: str) -> None:

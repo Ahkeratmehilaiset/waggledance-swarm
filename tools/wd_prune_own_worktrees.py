@@ -40,9 +40,10 @@ Beyond the 2026-10-11 cleanups (which counted any ref, ``refs/stash`` included) 
 excludes ``refs/stash`` and adds the lane-name, operation, index-flag, per-worktree-ref and
 reflog checks; each of those only keeps more, never removes more.
 
-The default is a dry run. ``--apply`` re-reads ``git status`` and the operation state of each
-candidate right before removing it (``changed_before_removal`` keeps a worktree written to
-since it was classified), runs ``git worktree remove <path>`` WITHOUT --force, and reports
+The default is a dry run. ``--apply`` runs every check again on each candidate right before
+removing it, on the worktree as ``git worktree list`` reports it then, and requires the same
+HEAD (``changed_before_removal``: for example a worktree written to, committed in, moved or
+flagged since it was classified is kept), runs ``git worktree remove <path>`` WITHOUT --force, and reports
 ``removed`` only when the directory is gone. Residual: a write in the milliseconds between
 that re-check and git's own deletion is not seen, and another process whose current
 directory is inside the worktree can make the removal fail part way (``failed``; the
@@ -271,6 +272,17 @@ def classify(entry: dict, *, index: int, owner: str, protected: Sequence[str], r
     return "candidate", "eligible"
 
 
+def _listed_now(repo: str, path: str) -> tuple[int, dict] | None:
+    """(index, entry) for PATH as ``git worktree list`` reports it now, or None."""
+    code, listing, _ = _git(["-C", repo, "worktree", "list", "--porcelain", "-z"])
+    if code != 0:
+        return None
+    for index, entry in enumerate(parse_worktree_list(listing)):
+        if entry["path"] == path:
+            return index, entry
+    return None
+
+
 def _remove(repo: str, path: str) -> tuple[str, str | None]:
     code, _, err = _git(["-C", repo, "worktree", "remove", path])
     if code == 0 and not os.path.exists(path):
@@ -310,7 +322,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         decision, reason = classify(entry, index=index, owner=lane, protected=tuple(protected), repo=args.repo)
         row = {"path": entry["path"], "head": entry["head"], "decision": decision, "reason": reason, "error": None}
         if decision == "candidate" and args.apply:
-            if _worktree_state(entry["path"]) is not None:  # written to since it was classified
+            # Right before removal, every check again on the worktree as git lists it now, with the same HEAD:
+            # any change since the classification above (a write, commit, HEAD move, index flag) keeps it.
+            now = _listed_now(args.repo, entry["path"])
+            if (now is None or now[1]["head"] != entry["head"]
+                    or classify(now[1], index=now[0], owner=lane, protected=tuple(protected),
+                                repo=args.repo) != ("candidate", "eligible")):
                 row["decision"], row["reason"] = "keep", "changed_before_removal"
             else:
                 row["decision"], row["error"] = _remove(args.repo, entry["path"])

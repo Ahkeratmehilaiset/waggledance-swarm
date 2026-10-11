@@ -433,24 +433,25 @@ Known limits:
   prove consistency, not origin, so a same-user host writer can forge both.
   Activating the switch therefore needs an authenticated-origin decision first.
 
-**Code status update (2026-10-10, RCO-slot pool fallback; NOT in effect until
-the separate (a)-class gate-code PR #1826 merges with the operator's explicit
-signature; until then the gate still refuses as described above).** That PR,
-under `review_policy=rule12` only, with no new switch:
-- `tools/bridge_rule12_review_eligibility.py` would fill a vacant RCO slot from
+**Code status update (2026-10-10, RCO-slot pool fallback; merged in source as
+#1826 (`e4208ce3`, 2026-10-10T15:42:56Z) under the opt-in `review_policy=rule12`
+only; an installed generation older than `e4208ce3`, such as 2bd7/CC55, does not
+contain it and still refuses as described above).** Under `review_policy=rule12`
+only, with no new switch:
+- `tools/bridge_rule12_review_eligibility.py` fills a vacant RCO slot from
   `RCO_POOL_FALLBACK` (Tools, Lead, Fable) in that order, as
   `held_by_pool_fallback`. The slot stays `pending` while a pool lane is
   available, is `blocked_by_pool_candidate` while a present pool lane has an
   uncleared block, and only otherwise stays `vacant` for the Grok fallback.
-- `tools/idle_consensus_auto_merge.py` would lift the exact-head `RCO_PASS` blocker
+- `tools/idle_consensus_auto_merge.py` lifts the exact-head `RCO_PASS` blocker
   through `_pool_rco_slot_lift` only when all of these hold: the rule12 review
   is satisfied; the RCO slot is `held_by_pool_fallback` by one pool lane whose
   identity-bound exact-head `rco_pass` is in `rco_pass_refs`; a non-Grok lane
   other than that holder holds the opposite-family slot; the peer gate is clear;
   and the full recognized-RCO veto scan is clear.
-- The receipt would bind the pool-holder tuple (`rule12_review.pool_rco_fallback`,
-  reason code `rco:pool_fallback`), and the merge executor would refuse the
-  merge if its fresh gate did not reproduce that tuple.
+- The receipt binds the pool-holder tuple (`rule12_review.pool_rco_fallback`,
+  reason code `rco:pool_fallback`), and the merge executor refuses the
+  merge if its fresh gate does not reproduce that tuple.
 
 Still unchanged or not implemented:
 - The legacy policy (Rule 9a `verify_bridge_consensus`, which still needs both

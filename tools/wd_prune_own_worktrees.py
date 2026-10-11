@@ -19,8 +19,18 @@ of these hold, checked in this order (the first failing check is the reported KE
 * ``ignored_content``: the only ignored entries are ``__pycache__/`` and ``.pytest_cache/``
   directories. ``git worktree remove`` deletes ignored files silently, so an ignored
   ``.codex-audit/`` evidence folder (RED, GREEN, superseded records) keeps the worktree;
+* ``hidden_index_flags`` / ``index_unreadable``: no index entry is marked assume-unchanged or
+  skip-worktree (a change to such a file does not show in ``git status``);
+* ``worktree_refs`` / ``worktree_refs_unreadable``: no per-worktree ref exists
+  (``refs/worktree``, ``refs/bisect``, ``refs/rewritten`` are deleted with the worktree);
 * ``unreachable_head``: HEAD is contained in a branch, remote-tracking ref or tag
-  (``refs/stash`` does not count; it is shared and short-lived).
+  (``refs/stash`` does not count; it is shared and short-lived);
+* ``reflog_only_commits`` / ``reflog_unreadable``: every commit reachable from the worktree's
+  HEAD reflog (deleted with the worktree) is also reachable from those refs.
+
+Beyond the 2026-10-11 cleanups (which counted any ref, ``refs/stash`` included) this tool
+excludes ``refs/stash`` and adds the index-flag, per-worktree-ref and reflog checks; each of
+those only keeps more, never removes more.
 
 The default is a dry run. ``--apply`` runs ``git worktree remove <path>`` WITHOUT --force for
 each candidate right after classifying it, and reports ``removed`` only when the directory is
@@ -50,6 +60,8 @@ CACHE_DIR_NAMES = frozenset({"__pycache__", ".pytest_cache"})
 _OWNER = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _REACHABLE_REF_ROOTS = ("refs/heads", "refs/remotes", "refs/tags")
+_PER_WORKTREE_REF_ROOTS = ("refs/worktree", "refs/bisect", "refs/rewritten")
+_MAX_REFLOG_COMMITS = 400  # keeps the rev-list command line far below the Windows limit
 
 
 def _git(args: Sequence[str], cwd: str | None = None) -> tuple[int, str, str]:
@@ -130,6 +142,37 @@ def _head_in_ref(repo: str, head: str) -> bool:
     return code == 0 and bool(out.strip())
 
 
+def _hidden_index_flags(path: str) -> bool | None:
+    """True when an index entry is assume-unchanged (lowercase tag) or skip-worktree (``S``)."""
+    code, out, _ = _git(["-C", path, "ls-files", "-v", "-z"])
+    if code != 0:
+        return None
+    return any(field and (field[0] == "S" or field[0].islower()) for field in out.split("\0"))
+
+
+def _has_worktree_refs(path: str) -> bool | None:
+    code, out, _ = _git(["-C", path, "for-each-ref", "--format=%(refname)", *_PER_WORKTREE_REF_ROOTS])
+    if code != 0:
+        return None
+    return bool(out.strip())
+
+
+def _reflog_only_commits(path: str, repo: str) -> bool | None:
+    """True when a commit reachable from the worktree's HEAD reflog is in no branch, remote ref or tag."""
+    code, out, _ = _git(["-C", path, "log", "-g", "--format=%H", "HEAD"])
+    if code != 0:
+        return None
+    shas = sorted({line.strip() for line in out.splitlines() if line.strip()})
+    if not shas:
+        return False
+    if len(shas) > _MAX_REFLOG_COMMITS or not all(_SHA.match(sha) for sha in shas):
+        return None
+    code, out, _ = _git(["-C", repo, "rev-list", "--count", *shas, "--not", "--branches", "--remotes", "--tags"])
+    if code != 0 or not out.strip().isdigit():
+        return None
+    return int(out.strip()) > 0
+
+
 def classify(entry: dict, *, index: int, owner: str, protected: frozenset[str], repo: str) -> tuple[str, str]:
     """(decision, reason): ``("candidate", "eligible")`` or ``("keep", <first failing check>)``."""
     path = entry["path"]
@@ -158,8 +201,23 @@ def classify(entry: dict, *, index: int, owner: str, protected: frozenset[str], 
         return "keep", "dirty"
     if any(not _is_cache_dir(item) for _, item in status):
         return "keep", "ignored_content"
+    hidden = _hidden_index_flags(path)
+    if hidden is None:
+        return "keep", "index_unreadable"
+    if hidden:
+        return "keep", "hidden_index_flags"
+    worktree_refs = _has_worktree_refs(path)
+    if worktree_refs is None:
+        return "keep", "worktree_refs_unreadable"
+    if worktree_refs:
+        return "keep", "worktree_refs"
     if not _head_in_ref(repo, head):
         return "keep", "unreachable_head"
+    reflog_only = _reflog_only_commits(path, repo)
+    if reflog_only is None:
+        return "keep", "reflog_unreadable"
+    if reflog_only:
+        return "keep", "reflog_only_commits"
     return "candidate", "eligible"
 
 

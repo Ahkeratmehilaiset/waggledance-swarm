@@ -34,6 +34,16 @@
 .PARAMETER PendingMinAgeSeconds
     Minimum pending-file age before orphan recovery is attempted. Defaults to
     60 seconds. Tests and an operator-directed recovery may explicitly use 0.
+
+.PARAMETER HonorReplayBackoff
+    For opportunistic callers (readers, consumer loops, session start). A
+    ready WAL whose targeted replay failed is skipped, and still counted as
+    failed, until its backoff expires (60 s doubling to 900 s). Each replay
+    validates the whole canonical history under the publication fence, so
+    retrying a WAL that keeps failing on every read starved writers
+    (2026-10-11, WAL 88DFBB16). The backoff binds the WAL digest and this
+    drain and replay code, so an installed fix retries at once. Explicit
+    drains and DryRun never honor it; any failed mutating replay records it.
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +51,8 @@ param(
     [switch] $DryRun,
     [switch] $ReceiptJson,
     [switch] $DeferCanonicalProof,
-    [ValidateRange(0, 86400)] [int] $PendingMinAgeSeconds = 60
+    [ValidateRange(0, 86400)] [int] $PendingMinAgeSeconds = 60,
+    [switch] $HonorReplayBackoff
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +76,13 @@ $acceptedDir = Join-Path $spoolDir 'accepted-v1'
 $readyDir = Join-Path $acceptedDir 'ready'
 $pendingDir = Join-Path $acceptedDir 'pending'
 $replayedDir = Join-Path $acceptedDir 'replayed'
+# Outside spool/accepted-v1: the merge preflight inventories that namespace
+# strictly, and a backoff memo is advisory state, not queue authority.
+$backoffDir = Join-Path (Join-Path $BridgeRoot 'state') 'accepted-drain-backoff'
+$backoffSchema = 'waggledance.bridge.accepted-drain-backoff.v1'
+$backoffBaseSeconds = 60
+$backoffMaxSeconds = 900
+$drainScriptPath = $PSCommandPath
 $results = New-Object 'System.Collections.Generic.List[object]'
 $drained = 0
 $alreadyDelivered = 0
@@ -163,6 +181,98 @@ function Get-BridgeQueueSha256Hex {
         )).Replace('-', '').ToLowerInvariant()
     } finally {
         $sha.Dispose()
+    }
+}
+
+function Get-BridgeQueueReplayCodeSha256 {
+    $parts = foreach ($path in @($drainScriptPath, $replayScript)) {
+        Get-BridgeQueueSha256Hex -Bytes ([System.IO.File]::ReadAllBytes($path))
+    }
+    return Get-BridgeQueueSha256Hex -Bytes (
+        [System.Text.Encoding]::ASCII.GetBytes(($parts -join "`n"))
+    )
+}
+
+function Read-BridgeQueueReplayBackoff {
+    <# Advisory only: a missing, unreadable, unbound or out-of-range memo is
+       ignored, which falls back to attempting the replay. #>
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $WalSha256,
+        [Parameter(Mandatory)] [string] $CodeSha256,
+        [Parameter(Mandatory)] [int64] $NowUnix
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+        $memo = [System.IO.File]::ReadAllText($Path) |
+            ConvertFrom-Json -ErrorAction Stop
+        if (
+            [string]$memo.schema -cne $backoffSchema -or
+            [string]$memo.wal_sha256 -cne $WalSha256 -or
+            [string]$memo.code_sha256 -cne $CodeSha256
+        ) { return $null }
+        $failures = [int64]$memo.failures
+        $last = [int64]$memo.last_failure_unix
+        $next = [int64]$memo.next_attempt_unix
+        if (
+            $failures -lt 1 -or $last -gt ($NowUnix + 5) -or $next -lt $last -or
+            ($next - $last) -gt $backoffMaxSeconds
+        ) { return $null }
+        return [pscustomobject]@{
+            failures = $failures
+            next_attempt_unix = $next
+            active = $next -gt $NowUnix
+            last_error = [string]$memo.last_error
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Write-BridgeQueueReplayBackoff {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Leaf,
+        [Parameter(Mandatory)] [string] $WalSha256,
+        [Parameter(Mandatory)] [string] $CodeSha256,
+        [Parameter(Mandatory)] [int64] $Failures,
+        [Parameter(Mandatory)] [int64] $NowUnix,
+        [AllowEmptyString()] [string] $LastError = ''
+    )
+
+    $delay = [int64][Math]::Min(
+        $backoffMaxSeconds,
+        $backoffBaseSeconds * [Math]::Pow(2, [Math]::Min($Failures - 1, 10))
+    )
+    if ($LastError.Length -gt 500) { $LastError = $LastError.Substring(0, 500) }
+    $memo = [ordered]@{
+        schema = $backoffSchema
+        wal_leaf = $Leaf
+        wal_sha256 = $WalSha256
+        code_sha256 = $CodeSha256
+        failures = $Failures
+        last_failure_unix = $NowUnix
+        next_attempt_unix = $NowUnix + $delay
+        last_error = $LastError
+    }
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop)
+    }
+    $temporary = "$Path.$PID.tmp"
+    [System.IO.File]::WriteAllText(
+        $temporary,
+        ($memo | ConvertTo-Json -Compress),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # A bare $null binds as "" to a .NET string parameter and Replace refuses it.
+        [System.IO.File]::Replace(
+            $temporary, $Path, [System.Management.Automation.Language.NullString]::Value
+        )
+    } else {
+        [System.IO.File]::Move($temporary, $Path)
     }
 }
 
@@ -1023,12 +1133,21 @@ if (Test-Path -LiteralPath $readyDir -PathType Container) {
     }
 }
 
+$replayCodeSha256 = $null
+$backoffNowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+if (-not $DryRun -and $readyFiles.Count -gt 0) {
+    try { $replayCodeSha256 = Get-BridgeQueueReplayCodeSha256 }
+    catch { $replayCodeSha256 = $null }
+}
 foreach ($file in $readyFiles) {
     $readySeen++
     $sha256 = $null
     $readyRecoveryBlockPath = $null
     $readyLease = $null
     $readyMarkerLease = $null
+    $backoffPath = Join-Path $backoffDir "$($file.Name).json"
+    $priorBackoff = $null
+    $replayAttempted = $false
     try {
         $readyLease = Open-BridgeQueuePlainFileLease `
             -Path $file.FullName -Label 'accepted ready WAL'
@@ -1062,6 +1181,28 @@ foreach ($file in $readyFiles) {
             })
             continue
         }
+        if ($null -ne $replayCodeSha256) {
+            $priorBackoff = Read-BridgeQueueReplayBackoff -Path $backoffPath `
+                -WalSha256 $sha256 -CodeSha256 $replayCodeSha256 `
+                -NowUnix $backoffNowUnix
+        }
+        if ($HonorReplayBackoff -and $null -ne $priorBackoff -and $priorBackoff.active) {
+            $failed++
+            $results.Add([pscustomobject][ordered]@{
+                namespace = 'ready'
+                leaf = $file.Name
+                sha256 = $sha256
+                status = 'replay_backoff'
+                detail = $backoffPath
+                error = (
+                    'targeted replay deferred by backoff until unix ' +
+                    "$($priorBackoff.next_attempt_unix) after " +
+                    "$($priorBackoff.failures) failure(s): $($priorBackoff.last_error)"
+                )
+            })
+            continue
+        }
+        $replayAttempted = $true
         $readyLease.Stream.Dispose()
         $readyLease = $null
         $replayOutput = @(
@@ -1101,8 +1242,22 @@ foreach ($file in $readyFiles) {
             detail = $detail
             error = $null
         })
+        if (-not $DryRun -and (Test-Path -LiteralPath $backoffPath -PathType Leaf)) {
+            try { Remove-Item -LiteralPath $backoffPath -Force -ErrorAction Stop } catch { }
+        }
         if (-not $ReceiptJson -and $detail) { Write-Output $detail }
     } catch {
+        $replayError = $_.Exception.Message
+        if ($replayAttempted -and $null -ne $replayCodeSha256 -and $null -ne $sha256) {
+            # Advisory: a memo that cannot be written never changes the result.
+            try {
+                $priorFailures = if ($null -ne $priorBackoff) { [int64]$priorBackoff.failures } else { [int64]0 }
+                Write-BridgeQueueReplayBackoff -Path $backoffPath -Leaf $file.Name `
+                    -WalSha256 $sha256 -CodeSha256 $replayCodeSha256 `
+                    -Failures ($priorFailures + 1) -NowUnix $backoffNowUnix `
+                    -LastError $replayError
+            } catch { }
+        }
         $failed++
         $results.Add([pscustomobject][ordered]@{
             namespace = 'ready'
@@ -1110,12 +1265,12 @@ foreach ($file in $readyFiles) {
             sha256 = $sha256
             status = 'failed'
             detail = ''
-            error = $_.Exception.Message
+            error = $replayError
         })
         if (-not $ReceiptJson) {
             Write-Warning -WarningAction Continue -Message (
                 "accepted WAL kept after drain failure: $($file.Name) " +
-                "($($_.Exception.Message))"
+                "($replayError)"
             )
         }
     } finally {
@@ -1125,6 +1280,21 @@ foreach ($file in $readyFiles) {
         if ($null -ne $readyMarkerLease -and
             $null -ne $readyMarkerLease.Stream) {
             $readyMarkerLease.Stream.Dispose()
+        }
+    }
+}
+
+# Under the fence: drop memos whose ready WAL is gone (drained or recovered
+# elsewhere) and temporary files a crashed memo write left behind.
+if (-not $DryRun -and (Test-Path -LiteralPath $backoffDir -PathType Container)) {
+    foreach ($memoFile in @(Get-ChildItem -LiteralPath $backoffDir -File -Force -ErrorAction SilentlyContinue)) {
+        $orphanTemporary = $memoFile.Name -cmatch '^bridge-wal-v1-[0-9a-f]{32}\.jsonl\.json\.[0-9]+\.tmp$'
+        $orphanMemo = (
+            $memoFile.Name -cmatch '^(bridge-wal-v1-[0-9a-f]{32}\.jsonl)\.json$' -and
+            -not (Test-Path -LiteralPath (Join-Path $readyDir $Matches[1]) -PathType Leaf)
+        )
+        if ($orphanTemporary -or $orphanMemo) {
+            try { Remove-Item -LiteralPath $memoFile.FullName -Force -ErrorAction Stop } catch { }
         }
     }
 }

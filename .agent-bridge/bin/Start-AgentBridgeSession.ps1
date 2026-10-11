@@ -149,7 +149,7 @@ $acceptedDrain = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
 if (Test-Path -LiteralPath $acceptedDrain -PathType Leaf) {
     try {
         $acceptedDrainSummary = (& $acceptedDrain `
-            -BridgeRoot $runtimeFull -ReceiptJson) |
+            -BridgeRoot $runtimeFull -ReceiptJson -HonorReplayBackoff) |
             ConvertFrom-Json -ErrorAction Stop
         if ([int64]$acceptedDrainSummary.failed -gt 0) {
             throw "accepted-v1 drain failed for $($acceptedDrainSummary.failed) WAL(s)"

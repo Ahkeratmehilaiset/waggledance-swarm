@@ -1469,3 +1469,202 @@ def test_windows_backend_serializes_two_python_writers(tmp_path: Path, monkeypat
         "python-append-v1-1",
         "python-append-v1-2",
     }
+
+
+# --- ASCII object-key guard (2026-10-10 11:54Z fleet read outage) -------------
+# BridgeLogReader refuses any decoded object key above 0x7F, so one such row
+# blocks every reader. The Python writer refuses it before root/WAL creation,
+# with the same contract and refusal text as Write-AgentEvent.ps1 (#1832).
+# Named mutant: MUT_PY_ASCII_KEY_GUARD_DROPPED (guard replaced by a no-op).
+
+_ASCII_KEY_REFUSAL = "JSON object keys must be ASCII before writing"
+_NON_ASCII_KEY_PAYLOADS = {
+    "payload_raw": {"pitk\u00e4 er\u00e4": 1},
+    "nested_in_array": {"items": [{"ok": 1}, {"E10 Grok-er\u00e4": "x"}]},
+    "astral": {"k\U0001F600": 1},
+    "lone_surrogate": {"k\ud800": 1},
+}
+_FINNISH_VALUES_PAYLOAD = {
+    "summary": 'Grok-er\u00e4 valmis \u2260 "pitk\u00e4": 1',
+    "emoji": "\U0001F600",
+    "items": ["\u00e4\u00f6", {"note": '\u00e4":'}],
+}
+
+
+def _all_keys(value: object):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _all_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _all_keys(item)
+
+
+@pytest.mark.parametrize("case", sorted(_NON_ASCII_KEY_PAYLOADS))
+def test_python_writer_refuses_non_ascii_object_key_before_root_or_wal(
+    tmp_path: Path, case: str
+) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["payload"] = _NON_ASCII_KEY_PAYLOADS[case]
+
+    with pytest.raises(BridgeEventWriteError, match=_ASCII_KEY_REFUSAL):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+def test_python_writer_refuses_non_ascii_top_level_key(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["avain\u00e4"] = 1
+
+    with pytest.raises(BridgeEventWriteError, match=_ASCII_KEY_REFUSAL):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+def test_python_writer_keeps_non_ascii_values_and_key_lookalikes(tmp_path: Path) -> None:
+    root = tmp_path / "bridge"
+    event = _event()
+    event["payload"] = _FINNISH_VALUES_PAYLOAD
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    row = _rows(_canonical(root))[-1]
+    assert row["payload"] == _FINNISH_VALUES_PAYLOAD
+    assert all(key.isascii() for key in _all_keys(row))
+
+
+def test_python_writer_cycle_is_refused_without_hanging(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    cycle: dict[str, object] = {"ok": 1}
+    cycle["self"] = cycle
+    event["payload"] = cycle
+
+    with pytest.raises(BridgeEventWriteError, match="not strict JSON"):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+def test_mutant_py_ascii_key_guard_dropped_lets_the_poison_row_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The refusal tests are discriminating: on this mutant the same row lands.
+    monkeypatch.setattr(bridge_writer, "_assert_ascii_object_keys", lambda _event: None)
+    root = tmp_path / "bridge"
+    event = _event()
+    event["payload"] = _NON_ASCII_KEY_PAYLOADS["payload_raw"]
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not all(key.isascii() for key in _all_keys(_rows(_canonical(root))[-1]))
+
+
+def _pinned_engines() -> list[tuple[str, str]]:
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    ps5 = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    engines = [("ps5", ps5)] if os.path.isfile(ps5) else []
+    ps7 = shutil.which("pwsh")
+    if ps7:
+        engines.append(("ps7", ps7))
+    return engines
+
+
+def _fixture_powershell_bin(tmp_path: Path) -> Path:
+    code = tmp_path / "fixture-code" / ".agent-bridge" / "bin"
+    if not code.exists():
+        repo = Path(__file__).resolve().parents[2]
+        shutil.copytree(repo / ".agent-bridge/bin", code)
+        configs = code.parent.parent / "configs"
+        configs.mkdir()
+        shutil.copy2(repo / "configs/bridge_identity_registry.json", configs)
+        prefix = "Local\\WdPyAsciiParity-" + uuid.uuid4().hex + "-"
+        for script in code.glob("*.ps1"):
+            source = script.read_text(encoding="utf-8-sig")
+            if "Global\\WaggleDanceBridge" in source:
+                script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    return code
+
+
+def _run_engine(engine: str, path: str, tmp_path: Path, name: str, script: str, runtime: Path):
+    # Per-engine invocation log: exact engine path, argv, native exit, stdout, stderr.
+    script_path = tmp_path / f"{name}.ps1"
+    script_path.write_text(script, encoding="utf-8-sig")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+    argv = [path, "-NoProfile", "-NonInteractive", "-File", str(script_path)]
+    completed = subprocess.run(argv, env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=60, check=False)
+    (tmp_path / f"{name}.engine-log.json").write_text(json.dumps({
+        "engine": engine, "engine_path": path, "argv": argv, "native_exit": completed.returncode,
+        "stdout": completed.stdout, "stderr": completed.stderr,
+    }, indent=1), encoding="utf-8")
+    return completed
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell writer/reader parity is Windows-only")
+@pytest.mark.parametrize("engine,engine_path", _pinned_engines() or [pytest.param("none", "", marks=pytest.mark.skip(reason="no PowerShell engine"))])
+def test_python_and_powershell_writers_agree_on_ascii_keys(
+    tmp_path: Path, engine: str, engine_path: str
+) -> None:
+    code = _fixture_powershell_bin(tmp_path)
+    for label, payload in (("poison", _NON_ASCII_KEY_PAYLOADS["payload_raw"]), ("control", _FINNISH_VALUES_PAYLOAD)):
+        payload_file = tmp_path / f"{label}.json"
+        payload_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        ps_runtime = tmp_path / f"ps-{label}"
+        ps = _run_engine(engine, engine_path, tmp_path, f"{engine}-{label}-write", (
+            f"& '{code / 'Write-AgentEvent.ps1'}' -Agent operator -Type status -Status evidence "
+            "-TaskId fixture/py-ascii-parity -SessionId s -RunId r "
+            f"-PayloadJson (Get-Content -Raw -Encoding UTF8 '{payload_file}')\n"), ps_runtime)
+        py_root = tmp_path / f"py-{label}"
+        event = _event()
+        event["payload"] = payload
+        try:
+            write_bridge_event(bridge_root=py_root, event=event, backend=_PortableTestBackend())
+            py_error = None
+        except BridgeEventWriteError as exc:
+            py_error = str(exc)
+        if label == "poison":
+            assert ps.returncode != 0 and _ASCII_KEY_REFUSAL in ps.stderr, ps.stderr
+            assert py_error is not None and _ASCII_KEY_REFUSAL in py_error
+            assert not (ps_runtime / "shared/events.jsonl").exists() and not py_root.exists()
+        else:
+            assert ps.returncode == 0, ps.stderr
+            assert py_error is None
+            ps_row = _rows(ps_runtime / "shared/events.jsonl")[-1]
+            assert ps_row["payload"] == _rows(_canonical(py_root))[-1]["payload"] == payload
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell reader is Windows-only")
+@pytest.mark.parametrize("engine,engine_path", _pinned_engines() or [pytest.param("none", "", marks=pytest.mark.skip(reason="no PowerShell engine"))])
+@pytest.mark.parametrize("mutant", [False, True])
+def test_regression_twin_python_row_and_real_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: str, engine_path: str, mutant: bool
+) -> None:
+    # With the guard the real reader still reads the Python-written tail; on
+    # MUT_PY_ASCII_KEY_GUARD_DROPPED the poison row lands and the reader refuses it.
+    if mutant:
+        monkeypatch.setattr(bridge_writer, "_assert_ascii_object_keys", lambda _event: None)
+    code = _fixture_powershell_bin(tmp_path)
+    root = tmp_path / "bridge"
+    write_bridge_event(bridge_root=root, event=_event(1), backend=_PortableTestBackend())
+    poison = _event(2)
+    poison["payload"] = _NON_ASCII_KEY_PAYLOADS["payload_raw"]
+    try:
+        write_bridge_event(bridge_root=root, event=poison, backend=_PortableTestBackend())
+        landed = True
+    except BridgeEventWriteError:
+        landed = False
+    assert landed is mutant
+    tail = _run_engine(engine, engine_path, tmp_path, f"{engine}-reader-{mutant}", (
+        f"& '{code / 'Read-AgentBridge.ps1'}' -Raw -NoAckReceived -NoContinuity -Tail 5\n"), root)
+    if mutant:
+        assert tail.returncode != 0, tail.stdout
+        assert "invalid_json" in tail.stderr + tail.stdout
+    else:
+        assert tail.returncode == 0, tail.stderr

@@ -2739,14 +2739,14 @@ foreach ($name in @(
   . ([scriptblock]::Create($functionAst.Extent.Text))
 }}
 $agents = @(
-  'codex-lead-1', 'codex-tools-1', 'claude-rco-1',
+  'codex-tools-1', 'claude-rco-1',
   'claude-rco-2', 'fable-5'
 )
 $exactSet = $true
 try {{ Assert-WdExactWatcherAgentSet $agents }}
 catch {{ $exactSet = $false }}
 $duplicateRejected = $false
-try {{ Assert-WdExactWatcherAgentSet @($agents[0], $agents[0], $agents[2..4]) }}
+try {{ Assert-WdExactWatcherAgentSet @($agents[0], $agents[0], $agents[2..3]) }}
 catch {{ $duplicateRejected = $true }}
 $disabledToolsEscapeRejected = $false
 try {{
@@ -7124,7 +7124,7 @@ def test_interactive_lane_uses_anchored_bundle_bootstrap() -> None:
     assert "Assert-LaneBootstrapIntegrity" in launcher
     assert "source lane launcher supports -DryRun only" in launcher
     assert "Join-Path $worktree '.agent-bridge\\bin" not in launcher
-    assert "SkipWakeWatcher = $true" in launcher
+    assert "SkipWakeWatcher = (-not $nativeLead)" in launcher
     assert "function Assert-LanePathWithoutReparse" in launcher
     assert launcher.index("-Path $ManifestPath -TrustedRoot") < launcher.index(
         "$manifestSnapshot = Read-Utf8LaneSnapshot"

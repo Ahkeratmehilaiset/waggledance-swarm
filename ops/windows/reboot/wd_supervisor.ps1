@@ -1449,8 +1449,9 @@ function Test-WdWatcherPostReconcileState {
 function Assert-WdExactWatcherAgentSet {
     param([Parameter(Mandatory)] [string[]] $Agents)
 
+    # Native Lead's hash-pinned session owns its watcher even when this
+    # supervisor is OFF. Never add a second producer for that conversation.
     $expected = @(
-        'codex-lead-1',
         'codex-tools-1',
         'claude-rco-1',
         'claude-rco-2',
@@ -1463,7 +1464,7 @@ function Assert-WdExactWatcherAgentSet {
             -DifferenceObject $Agents `
             -CaseSensitive).Count -ne 0
     ) {
-        throw 'supervisor watcher identities are not the exact five-lane set'
+        throw 'supervisor watcher identities are not the exact four supervised lanes; native Lead owns its producer'
     }
 }
 

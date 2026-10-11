@@ -382,7 +382,8 @@ function Invoke-WdNativeLeadTerminal {
   $record=[ordered]@{schema='wd.native-lead-ready.v1';agent='codex-lead-1';status='starting';
     thread_id=$ThreadId;session_id=$SessionId;generation=$Generation;relay_pid=$PID;native_pid=0;
     native_process_start_utc='';relay_process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
-    bridge_wake_transport='codex_queue';worktree=$Worktree;task_completion_verified=$false;error=''}
+    bridge_wake_transport='codex_queue';bridge_wake_producer_status='unchecked';
+    bridge_wake_producer_observed_at_utc='';worktree=$Worktree;task_completion_verified=$false;error=''}
   $native=$null
   try {
     Write-WdTurnJson $readyPath $record
@@ -392,7 +393,38 @@ function Invoke-WdNativeLeadTerminal {
     $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
     $record.status='terminal_ready'
     Write-WdTurnJson $readyPath $record
-    Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $native -CliPath $CliPath -ThreadId $ThreadId `
+    # The native terminal owns its sentinel producer independently of the
+    # Supervisor. Check that exact session job before each shared relay poll;
+    # a dead producer must be visible, not a silently idle queue. The view
+    # delegates only process waiting: it never reads stdin or controls the UI.
+    $relayNative=[pscustomobject]@{Id=$native.Id;StartTime=$native.StartTime;Process=$native;
+      TerminalRecord=$record;ReadyPath=$readyPath;
+      WakeJobId=[string]$env:AGENT_BRIDGE_WAKE_JOB;ProducerEnabled=($env:WAGGLE_BRIDGE_WAKE_ENABLED -cne '0')}
+    $relayNative | Add-Member ScriptMethod WaitForExit {
+      param([int]$TimeoutMilliseconds)
+      $exited=$this.Process.WaitForExit($TimeoutMilliseconds)
+      if (-not $exited) {
+        $jobId=0
+        $job=$null
+        if ($this.ProducerEnabled -and [int]::TryParse($this.WakeJobId,[ref]$jobId) -and $jobId -gt 0) {
+          $job=Get-Job -Id $jobId -ErrorAction SilentlyContinue
+        }
+        if ($null -eq $job -or $job.Name -cne 'agent-bridge-watcher-codex-lead-1' -or $job.State -cne 'Running') {
+          $this.TerminalRecord.bridge_wake_producer_status='unavailable'
+          $this.TerminalRecord.bridge_wake_producer_observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
+          throw 'Native Lead wake producer unavailable; automatic delivery withheld'
+        }
+        if ($this.TerminalRecord.bridge_wake_producer_status -cne 'running') {
+          # A job observation only; terminal_ready never proves watcher baseline
+          # health, a cloud model turn or continued delivery after this instant.
+          $this.TerminalRecord.bridge_wake_producer_status='running'
+          $this.TerminalRecord.bridge_wake_producer_observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
+          Write-WdTurnJson $this.ReadyPath $this.TerminalRecord
+        }
+      }
+      return $exited
+    }
+    Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $relayNative -CliPath $CliPath -ThreadId $ThreadId `
       -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash -SessionId $SessionId
     if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
   } catch {
@@ -406,7 +438,9 @@ function Invoke-WdNativeLeadTerminal {
       if (-not $native.HasExited) { $native.WaitForExit() }
       $native.Dispose()
     }
-    $record.status='stopped'; Write-WdTurnJson $readyPath $record
+    # Keep delivery refusal distinct from clean UI exit; error evidence remains.
+    if ($record.status -cne 'bridge_wake_blocked') { $record.status='stopped' }
+    Write-WdTurnJson $readyPath $record
   }
 }
 
@@ -2634,7 +2668,10 @@ $sessionArgs = @{
   AgentUuid = [string]$lane.agent_uuid
   Capabilities = @($lane.capabilities | ForEach-Object { [string]$_ })
   SkipBridgeRead = $true
-  SkipWakeWatcher = $true
+  # Native Lead's UI and queue relay outlive Supervisor OFF. Its hash-pinned
+  # session watcher owns the dirty bit; the supervisor config excludes Lead
+  # so a single bridge event cannot be produced by two independent watchers.
+  SkipWakeWatcher = (-not $nativeLead)
   PrimaryRepoRoot = $primaryRepo
 }
 if ([bool]$lane.require_dedicated_worktree) {

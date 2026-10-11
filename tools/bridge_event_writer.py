@@ -70,6 +70,12 @@ V1_REPLAYER_REQUIRED_FIELDS = ("agent", "type", "task_id", "status")
 # BridgeLogReader.ps1 JsonContractValidator.MaxDepth / MaxSafeInteger.
 READER_MAX_DEPTH = 32
 READER_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+# str.splitlines() also breaks at these, and Python readers of events.jsonl
+# split that way: one raw U+2028 turned a row into invalid fragments and made
+# check_bridge_changes_requested refuse the whole log (measured 2026-10-11).
+# json.dumps only emits them inside strings, so the escapes keep the value; the
+# PowerShell writers already escape all three.
+_LINE_SEPARATOR_ESCAPES = {0x85: "\\u0085", 0x2028: "\\u2028", 0x2029: "\\u2029"}
 
 
 class BridgeEventWriteError(RuntimeError):
@@ -555,7 +561,7 @@ def _written_event(event: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
             allow_nan=False,
             separators=(",", ":"),
             sort_keys=False,
-        )
+        ).translate(_LINE_SEPARATOR_ESCAPES)
         row = (text + "\n").encode("utf-8", errors="strict")
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise BridgeEventWriteError(f"bridge event is not strict JSON/UTF-8: {exc}") from exc

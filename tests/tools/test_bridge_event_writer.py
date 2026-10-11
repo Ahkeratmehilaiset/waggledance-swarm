@@ -1866,3 +1866,43 @@ def test_real_reader_agrees_with_the_python_row_guard(
         tail = read(root, f"poison-{case}")
         assert tail.returncode != 0, (case, tail.stdout)
         assert "invalid_json" in tail.stderr + tail.stdout, (case, tail.stderr)
+
+
+# --- Line separators (Python readers split events.jsonl with str.splitlines) --
+# Named mutant: MUT_PY_LINE_SEPARATOR_ESCAPE_DROPPED (raw U+0085/U+2028/U+2029).
+_LINE_SEPARATOR_MESSAGE = "a\u0085b\u2028c\u2029d"
+
+
+def test_python_writer_escapes_line_separators_for_line_split_readers(tmp_path: Path) -> None:
+    from tools.check_bridge_changes_requested import _read_events
+
+    root = tmp_path / "bridge"
+    event = _event()
+    event["message"] = _LINE_SEPARATOR_MESSAGE
+    event["payload"] = {"note": _LINE_SEPARATOR_MESSAGE}
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    data = _canonical(root).read_bytes()
+    for raw in ("\u0085", "\u2028", "\u2029"):
+        assert raw.encode("utf-8") not in data
+    assert len(data.decode("utf-8").splitlines()) == data.count(b"\n") == 1
+    row = _read_events(_canonical(root))[-1]
+    assert row["message"] == row["payload"]["note"] == _LINE_SEPARATOR_MESSAGE
+
+
+def test_mutant_py_line_separator_escape_dropped_breaks_the_veto_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.check_bridge_changes_requested import _read_events
+
+    monkeypatch.setattr(bridge_writer, "_LINE_SEPARATOR_ESCAPES", {})
+    root = tmp_path / "bridge"
+    event = _event()
+    event["message"] = _LINE_SEPARATOR_MESSAGE
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert "\u2028".encode("utf-8") in _canonical(root).read_bytes()
+    with pytest.raises(ValueError, match="invalid JSON in bridge events"):
+        _read_events(_canonical(root))

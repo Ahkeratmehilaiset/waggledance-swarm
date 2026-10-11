@@ -57,6 +57,34 @@ modification time. Conflicting, incomplete, or ambiguous named history stops
 preflight instead of silently opening an empty conversation. A genuinely empty
 history starts the initial visual bootstrap once.
 
+An operator may deliberately start one interactive Claude lane (RCO1, RCO2 or
+Fable) in a **new conversation** instead, for example for a new-session canary.
+First read the exact conversation the default launch would resume, then name it:
+
+```powershell
+$Old = '<exact lowercase UUID printed as resume: by the plain -DryRun>'
+$Reason = '<why this lane starts a new conversation>'
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent claude-rco-2 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent claude-rco-2 -FreshSession -SupersededThreadId $Old -FreshSessionReason $Reason -DryRun
+powershell -STA -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent claude-rco-2 -FreshSession -SupersededThreadId $Old -FreshSessionReason $Reason
+```
+
+`-FreshSession` runs every normal resume check first, so conflicting, incomplete
+or ambiguous named history still stops the launch. It then refuses unless
+`-SupersededThreadId` equals the conversation the default launch would resume,
+both before bridge bootstrap and again just before the CLI starts; it also
+refuses when there is no recorded conversation, for Lead, Tools, managed lanes
+and with `-RecoverInteractive`, `-RetireManagedAttempt` or
+`-CheckManagedAdmission`. The CLI starts without `--resume`, with the full
+initial startup prompt and visual bootstrap plus a fixed note naming the
+superseded UUID. The handshake and `-DryRun` output record `fresh_session`,
+`superseded_thread_id` and `fresh_session_reason`; the bridge target-state event
+records `fresh_session` and `superseded_thread_id`, and `native_thread_id` stays
+empty exactly as on a first launch. The old transcript is neither moved nor
+changed. The new conversation carries the lane name, so the next plain launch
+resumes it. No fleet launcher passes this switch; it is one lane, one explicit
+operator command.
+
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
 retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native

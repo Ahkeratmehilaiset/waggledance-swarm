@@ -30,7 +30,10 @@ param(
   [switch] $RecoverInteractive,
   [switch] $RetireManagedAttempt,
   [string] $ReviewedJournalDigest = '',
-  [string] $RetirementReason = ''
+  [string] $RetirementReason = '',
+  [switch] $FreshSession,
+  [string] $SupersededThreadId = '',
+  [string] $FreshSessionReason = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +79,24 @@ if ($RetireManagedAttempt -and (
     $RetirementReason.Length -gt 512 -or
     $RetirementReason -match '[\x00-\x1F\x7F]')) {
   throw 'RetireManagedAttempt requires a 64-hex reviewed digest and a 1-512 character reason without control characters'
+}
+# An operator-explicit fresh session never resumes the lane's recorded Claude
+# conversation. It names the exact conversation it supersedes and why; the
+# default launch keeps resuming, and no fleet launcher passes this switch.
+if ($FreshSession -and ($RecoverInteractive -or $RetireManagedAttempt -or $CheckManagedAdmission)) {
+  throw 'FreshSession cannot be combined with manual Lead recovery or managed admission probing'
+}
+if (-not $FreshSession -and (
+    $PSBoundParameters.ContainsKey('SupersededThreadId') -or
+    $PSBoundParameters.ContainsKey('FreshSessionReason'))) {
+  throw 'superseded thread and fresh-session reason require -FreshSession'
+}
+if ($FreshSession -and (
+    $SupersededThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z' -or
+    [string]::IsNullOrWhiteSpace($FreshSessionReason) -or
+    $FreshSessionReason.Length -gt 512 -or
+    $FreshSessionReason -match '[\x00-\x1F\x7F-\x9F\u2028\u2029]')) {
+  throw 'FreshSession requires the exact lowercase superseded thread id and a 1-512 character reason without control characters'
 }
 $script:WdGitExecutable = ''
 if (-not $ManifestPath) {
@@ -439,6 +460,24 @@ function Get-WdClaudeResumeState {
     throw "Ambiguous latest named Claude conversation for $Agent"
   }
   return [pscustomobject]@{thread_id=[string]$ordered[0].thread_id; initial_context_delivered=$true}
+}
+
+function Resolve-WdClaudeFreshSession {
+  param([AllowNull()] [object] $ResumeState, [string] $SupersededThreadId)
+  # Supersede only the exact conversation this launch would otherwise resume.
+  # Every Get-WdClaudeResumeState refusal (conflicting header, ambiguous latest,
+  # unnamed history) has already been raised; a fresh start never hides one.
+  if ($null -eq $ResumeState) {
+    throw 'FreshSession applies only to an interactive Claude lane'
+  }
+  $current = [string]$ResumeState.thread_id
+  if (-not $current) {
+    throw 'FreshSession found no recorded named conversation to supersede; launch without -FreshSession'
+  }
+  if ($current -cne $SupersededThreadId) {
+    throw "FreshSession superseded thread $SupersededThreadId is not the conversation this launch would resume ($current)"
+  }
+  return [pscustomobject]@{thread_id=''; initial_context_delivered=$false; superseded_thread_id=$current}
 }
 
 function Get-WdLaneConversationPermissions {
@@ -2426,6 +2465,15 @@ if ($nativeLead) {
   )
   $startupPrompt = $visualBootstrapPrompt + $continuationPrompt
 }
+if ($FreshSession) {
+  # Only the validated thread id is interpolated; the operator's free-text
+  # reason stays in the handshake and is never passed on the CLI command line.
+  $startupPrompt += (
+    ' OPERATOR-EXPLICIT FRESH SESSION: the previous lane conversation ' + $SupersededThreadId +
+    ' was deliberately not resumed. Rebuild context from the compact lane state, the live bridge ' +
+    'and the repository before resuming any task; do not assume facts from that conversation.'
+  )
+}
 
 if (-not $HandshakeDirectory) {
   $HandshakeDirectory = Join-Path ([string]$manifest.handshake_root) $RunId
@@ -2467,8 +2515,14 @@ if ($nativeLead) {
   $claudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
   $claudeResume = Get-WdClaudeResumeState -Agent $Agent -Worktree $worktree -ProjectsRoot (Join-Path $claudeHome 'projects')
 }
+$supersededThread = ''
+if ($FreshSession) {
+  $claudeResume = Resolve-WdClaudeFreshSession -ResumeState $claudeResume -SupersededThreadId $SupersededThreadId
+  $supersededThread = [string]$claudeResume.superseded_thread_id
+}
 $resumeThread = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } elseif ($null -ne $claudeResume) { [string]$claudeResume.thread_id } else { '' }
 if ($resumeThread) { Write-Host ("  resume:   {0} (recorded lane conversation)" -f $resumeThread) }
+if ($supersededThread) { Write-Host ("  fresh:    supersedes {0} (operator-explicit; not resumed)" -f $supersededThread) }
 if ($script:WdScrubbedClaudeMarkers.Count) { Write-Host ("  scrubbed: inherited Claude session markers {0}" -f ($script:WdScrubbedClaudeMarkers -join ', ')) }
 if ($null -ne $autoCompactTokens) { Write-Host ("  context:  auto-compact at {0} tokens (lane auto_compact_tokens)" -f $autoCompactTokens) }
 if ($RecoverInteractive) {
@@ -2518,6 +2572,9 @@ if ($DryRun) {
       managed_attempt_digest = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.digest } else { '' }
       managed_attempt_pointer = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.pointer_path } else { '' }
       managed_attempt_pending_count = if ($null -ne $manualAttemptEvidence) { [int]$manualAttemptEvidence.pending_count } else { 0 }
+      fresh_session = [bool]$FreshSession
+      superseded_thread_id = $supersededThread
+      fresh_session_reason = $FreshSessionReason
       dry_run = $true
     }
   } finally {
@@ -2615,6 +2672,8 @@ $targetPayload = [ordered]@{
   conversation_surface = $launchConversationSurface
   configured_conversation_surface = $conversationSurface
   interactive_recovery = [bool]$RecoverInteractive
+  fresh_session = [bool]$FreshSession
+  superseded_thread_id = $supersededThread
   conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
   conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
@@ -2758,6 +2817,9 @@ $handshake = [ordered]@{
   interactive_recovery = [bool]$RecoverInteractive
   managed_attempt_digest = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.digest } else { '' }
   managed_attempt_pointer = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.pointer_path } else { '' }
+  fresh_session = [bool]$FreshSession
+  superseded_thread_id = $supersededThread
+  fresh_session_reason = $FreshSessionReason
   conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
   conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
@@ -2896,6 +2958,13 @@ if ($RecoverInteractive) {
   if ([string]$finalRecoveryEvidence.digest -cne [string]$manualAttemptEvidence.digest) {
     throw 'managed attempt evidence changed before interactive recovery launch'
   }
+}
+if ($FreshSession) {
+  # Re-bind after bootstrap: the recorded superseded thread must still be the
+  # conversation a default launch would resume at the moment the CLI starts.
+  [void](Resolve-WdClaudeFreshSession `
+    -ResumeState (Get-WdClaudeResumeState -Agent $Agent -Worktree $worktree -ProjectsRoot (Join-Path $claudeHome 'projects')) `
+    -SupersededThreadId $supersededThread)
 }
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {

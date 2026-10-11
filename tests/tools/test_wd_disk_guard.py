@@ -256,12 +256,16 @@ def test_worktree_add_passes_a_dash_dash_path_through(monkeypatch, tmp_path):
     assert (repo / "-odd-dir" / ".git").is_file()
 
 
-def test_worktree_add_requires_the_separator(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_repo", [True, False])
+def test_worktree_add_requires_the_separator(monkeypatch, capsys, tmp_path, with_repo):
     import shutil
     repo = _repo(tmp_path)
     monkeypatch.setattr(shutil, "disk_usage", _fixed(50 * GIB))
-    assert _guard().main(["worktree-add", "--repo", str(repo), "--detach", str(tmp_path / "x"), "HEAD"]) == 2
+    monkeypatch.chdir(repo)  # without --repo the default "." is a valid repo, so only the missing -- refuses
+    options = ["--repo", str(repo)] if with_repo else []
+    assert _guard().main(["worktree-add", *options, "--detach", str(tmp_path / "x"), "HEAD"]) == 2
     assert not (tmp_path / "x").exists()
+    assert "usage: worktree-add" in capsys.readouterr().err
 
 
 def test_worktree_add_with_unparseable_arguments_is_refused(monkeypatch, tmp_path):

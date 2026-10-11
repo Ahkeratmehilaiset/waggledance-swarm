@@ -94,13 +94,19 @@ the old lane session first; the refusal never stops or adopts it.
 
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
-retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
-Lead has no managed idle-wake consumer attached to its terminal. Tools has an
-automatic bridge relay: the wrapper polls its targeted wake sentinel once per
-second and uses `codex queue --thread <saved UUID> --message <notification>`.
-Codex receives the notification while idle and serializes it behind an active
-turn. Window focus and minimization do not affect delivery. Operator messages
-and `/model` continue to use the normal Codex UI.
+retrying; cancelled work and explicit operator pauses/HOLDs stay stopped.
+Native Lead and Tools use the same automatic bridge relay: the wrapper polls its
+targeted wake sentinel once per second and uses
+`codex queue --thread <saved UUID> --message <notification>`. For Lead the relay
+runs inside the Lead launcher, but the launcher starts no watcher of its own
+(`SkipWakeWatcher`): `wake_codex-lead-1` is written only by the
+`Watch-Bridge.ps1` watcher that WD-Supervisor reconciles. While the supervisor
+stays in its standing Disabled/HOLD state and that watcher is not running, an
+idle Lead receives no bridge wake and resumes only on operator input.
+`.codex-audit/wd-turn-loop/native-bridge-wake.json` in the Lead worktree records
+the last delivery. Codex receives the notification while idle and serializes it
+behind an active turn. Window focus and minimization do not affect delivery.
+Operator messages and `/model` continue to use the normal Codex UI.
 
 Wake bursts are coalesced over five seconds. The relay moves the sentinel to an
 owned snapshot and records submission before invoking Codex. A confirmed queue
@@ -368,13 +374,14 @@ handoff, and the lane lease is held while the native terminal runs. Previously
 delivered initial image/context is not replayed. Codex restores conversation
 history in its own terminal. Bridge identity and pinned helpers are established
 before native launch; the colored read-only bridge monitor remains separate.
-Native startup does not attach the former managed wake consumer. Bridge watcher
-sentinels alone do not submit prompts to an idle native Codex terminal.
+Native startup does not attach the former managed wake consumer. Idle wake goes
+only through the codex-queue relay described above, which needs a running
+watcher for `codex-lead-1`.
 RCO1, RCO2, Fable and Tools retain their independent sessions.
 
 Do not edit an installed hash-pinned manifest in place. An already-open
-interactive Lead is preserved and is not externally resumable through a wake
-sentinel. Installing source files does not transform that live session into a
+interactive Lead is preserved: installing source files changes neither its
+running launcher nor its relay, and does not transform that live session into a
 managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` and
 `docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the repo.
 Deployed whole-fleet preflight checks native occupancy for a missing managed

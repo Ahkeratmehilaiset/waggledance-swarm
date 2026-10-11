@@ -291,6 +291,12 @@ Two complementary safe lanes for capability growth (`waggledance/core/builder_la
 
 Subprocess invocation is gated for human review by default. The CLI emits an `advisory_only` outcome unless explicitly run with operator approval.
 
+## Development agent bridge
+
+This repository is developed by a fleet of agents that coordinate through an append-only bridge event log (`.agent-bridge/`): Codex Lead and Tools lanes, Claude review (RCO1, RCO2) and implementation (Fable) lanes, and an advisory Grok lane. Every change lands through a pull request. A merge needs Lead and Tools build votes, an independent RCO pass bound to the exact head, and green required CI ([`CLAUDE.md`](CLAUDE.md), Rule 9a); off-allowlist changes also need an explicit operator signature.
+
+After a reboot the operator restores the fleet from the installed reboot bundle with `start-wd-all.ps1 -Auto` ([`ops/windows/reboot/BOOT_AFTER_REBOOT.md`](ops/windows/reboot/BOOT_AFTER_REBOOT.md)). Bridge changes are recorded in [`CHANGELOG.md`](CHANGELOG.md); the last bridge release tag is `bridge-2026.09.27-bridge-final-acceptance`.
+
 ## Memory and Identity
 
 - **Vector identity** (`core/vector_identity/`): every persistent artifact has a 4-level dedup signature, an identity anchor (foundational anchors enter a candidate state first), and a chained provenance graph.

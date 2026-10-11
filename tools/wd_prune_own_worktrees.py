@@ -46,8 +46,16 @@ since it was classified), runs ``git worktree remove <path>`` WITHOUT --force, a
 ``removed`` only when the directory is gone. Residual: a write in the milliseconds between
 that re-check and git's own deletion is not seen, and another process whose current
 directory is inside the worktree can make the removal fail part way (``failed``; the
-worktree was clean, so its files are all in git). It never prunes, never touches another lane's worktree, branches, the bridge or
-anything outside ``git worktree remove``. Exit 0 = done, 1 = a removal failed,
+worktree was clean, so its files are all in git). It never prunes, never touches branches, the
+bridge or anything outside ``git worktree remove``, and removes only worktrees named for the
+lane in ``AGENT_BRIDGE_AGENT``.
+
+Trust model: the owner is whatever ``AGENT_BRIDGE_AGENT`` says, unauthenticated. Owner scoping
+stops a lane from removing another lane's worktrees by mistake, not by impersonation: a process
+that sets another lane's name can remove that lane's clean, detached, fully reachable worktrees
+(no commit or evidence is lost, but the lane may still be using one).
+
+Exit 0 = done, 1 = a removal failed,
 2 = refused (missing or mismatched lane identity, or the worktrees cannot be listed).
 
     python tools/wd_prune_own_worktrees.py --repo .            # dry run

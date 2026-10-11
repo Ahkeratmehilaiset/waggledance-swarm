@@ -83,8 +83,6 @@ $runtimeDirs = @(
     $runtimeFull,
     (Join-Path $runtimeFull 'shared'),
     (Join-Path $runtimeFull 'work_queue'),
-    (Join-Path $runtimeFull 'work_queue\claims'),
-    (Join-Path $runtimeFull 'work_queue\done'),
     (Join-Path $runtimeFull 'outbox'),
     (Join-Path $runtimeFull "outbox\$Agent"),
     (Join-Path $runtimeFull 'inbox'),

@@ -27,8 +27,11 @@ SCRIPTS = (
     ".agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1",
     ".agent-bridge/bin/Restore-BridgeSpool.ps1",
 )
-# PowerShell names are case-insensitive, and a scope modifier still defines the function.
-DEFINITION = re.compile(r"(?im)^[ \t]*function[ \t]+(?:[a-z]+:)?" + re.escape(NAME) + r"\b")
+# PowerShell names are case-insensitive, a scope modifier still defines the function, and filter, workflow (PS 5)
+# and configuration (DSC) define a command of that name just like function does (RCO1 R1 on PR1851).
+DEFINITION = re.compile(
+    r"(?im)^[ \t]*(?:function|filter|workflow|configuration)[ \t]+(?:[a-z]+:)?" + re.escape(NAME) + r"\b"
+)
 # The function runs from its column-0 definition line to the first column-0 closing brace; nested blocks are indented.
 # The next line must be blank and the one after it another column-0 definition, so the brace cannot sit inside a
 # block comment or here-string that the live body continues after (Grok a23616aa B1).

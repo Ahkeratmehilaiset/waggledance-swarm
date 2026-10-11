@@ -2885,6 +2885,33 @@ def test_gh_f1_an_unpersistable_delivery_error_keeps_the_original_error_and_the_
     assert after["local_availability"] == "available" and after["eligible"] is True
 
 
+def test_gh_f1_the_delivery_record_write_cannot_overwrite_a_competing_reservation(tmp_path, monkeypatch):
+    # The extra write runs inside consult()'s exclusive() section, like the rest of the attempt: a
+    # consultation started while the failed lifecycle is being delivered is refused as busy and reserves
+    # nothing, so the extra write cannot put the old state back over a newer reservation.
+    seed(tmp_path)
+    calls = _failing_write_numbers(monkeypatch, {2})
+    events, competing = [], []
+
+    def emitter(stage, state):
+        events.append(stage)
+        if stage == "failed":
+            try:
+                consult(tmp_path, "competing/task", "ask", ["fake"], now=NOW, lock_wait_seconds=0,
+                        runner=lambda *args, **kwargs: competing.append(args))
+            except wd_grok_helper.HelperBusy as busy:
+                competing.append(busy)
+            raise ConnectionError("controlled delivery failure failed")
+    launched, error = _gh_f1_consult(tmp_path, emitter)
+    assert launched == [] and events == ["started", "failed"]
+    assert len(competing) == 1 and isinstance(competing[0], wd_grok_helper.HelperBusy)
+    assert isinstance(error, PermissionError) and "controlled state write failure 2" in str(error)
+    assert calls == ["reserved", "reserved", "failed", "failed"]   # the competing consultation wrote nothing
+    state = json.loads((tmp_path / "hourly-state.json").read_text(encoding="utf-8"))
+    assert state["task_id"] == "gh-f1" and state["status"] == "failed" and state["grok_launched"] is False
+    assert state["bridge_event_errors"] == [{"stage": "failed", "error_type": "ConnectionError"}]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing: a replace fails while a reader holds the target")
 def test_gh_f1_a_reader_holding_the_state_between_the_writes_never_launches(tmp_path):
     # Runtime twin of the 2984861A repro: a reader without delete sharing holds hourly-state.json from the

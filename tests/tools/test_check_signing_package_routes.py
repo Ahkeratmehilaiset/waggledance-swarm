@@ -87,6 +87,8 @@ def _derive_profile_errors(profile: DriverProfile) -> list[str]:
     admitted = set(re.findall(r"'(--[a-z-]+)'", region.group(1))) if region else set()
     if admitted != A5_ADMITTED or admitted & POLICY_OPTIONS:
         errors.append(f"A5 admitted options {sorted(admitted)}")
+    if f"[string]$options['--repo'] -cne '{profile.repo}'" not in context:
+        errors.append("A5 repository binding differs")
     driver = _git_show(commit, "tools/merge_with_bridge_receipt.py")
     if not re.search(
         r'"--review-policy",\s*choices=sorted\(REVIEW_POLICIES\),\s*default=REVIEW_POLICY_LEGACY',
@@ -141,6 +143,7 @@ def test_driver_profile_matches_its_own_source(commit: str) -> None:
                                         "paths not on allowlist": "path gate failed: paths not on allowlist"}},
                      id="MUT_PROFILE_REFUSAL_WORDING"),
         pytest.param({"charter_sha256": "00" * 32}, id="MUT_PROFILE_CHARTER_DIGEST"),
+        pytest.param({"repo": "example/repo"}, id="MUT_PROFILE_REPO"),
     ],
 )
 def test_mutated_profile_is_caught_by_source_rederivation(mutant: dict[str, Any]) -> None:
@@ -224,14 +227,14 @@ def _test_profiles() -> dict[str, DriverProfile]:
     installed = DRIVER_PROFILES[sorted(DRIVER_PROFILES)[0]]
     return {TEST_COMMIT: replace(
         installed, source_commit=TEST_COMMIT, manifest_sha256=TEST_MANIFEST,
-        charter_sha256=charter_digest(DEFAULT_CHARTER_PATH),
+        charter_sha256=charter_digest(DEFAULT_CHARTER_PATH), repo="example/repo",
     )}
 
 
 def _package(paths: Sequence[str], report: Any = None, *, holder: str = "claude-rco-1",
              commit: str = TEST_COMMIT, manifest: str = TEST_MANIFEST) -> dict[str, Any]:
-    entry: dict[str, Any] = {"pr": PR, "head": HEAD, "changed_paths": list(paths),
-                             "rco_slot_holder": holder}
+    entry: dict[str, Any] = {"pr": PR, "head": HEAD, "base": BASE,
+                             "changed_paths": list(paths), "rco_slot_holder": holder}
     if report is not None:
         entry["no_apply_report"] = report
     return {"schema": PACKAGE_SCHEMA, "prs": [entry],
@@ -291,6 +294,56 @@ def test_allowlist_miss_is_manual_with_exactly_the_allowlist_refusal(tmp_path: P
     assert (pr["no_apply"]["status"], pr["verdict"]) == ("match", "consistent")
 
 
+def test_package_that_omits_a_denylisted_path_does_not_bind(tmp_path: Path) -> None:
+    report = _no_apply(tmp_path, ["CLAUDE.md", "tools/agent_next_task.py"])
+    assert report["errors"] == [DENYLIST_REFUSAL]
+    result = check_package(_package(["tools/agent_next_task.py"], report),
+                           profiles=_test_profiles())
+    pr = _only(result)
+    assert pr["route"] == "driver"
+    assert pr["no_apply"]["status"] == "binding_mismatch"
+    assert pr["no_apply"]["detail"] == "gate path decision differs from the package paths"
+    assert result["verdict"] == "operator_review_required"
+
+
+def test_driver_identity_is_reported_as_the_package_assertion(tmp_path: Path) -> None:
+    paths = ["CLAUDE.md"]
+    result = check_package(_package(paths, _no_apply(tmp_path, paths)),
+                           profiles=_test_profiles())
+    assert result["driver"]["identity_source"] == "package_assertion"
+    assert _only(result)["no_apply"]["driver_identity"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["gh", "pr", "merge", str(PR), "--repo", "example/repo",
+         "--match-head-commit=" + "a" * 40, "--squash"],
+        ["gh", "pr", "merge", str(PR + 1), "--repo", "example/repo",
+         f"--match-head-commit={HEAD}", "--squash"],
+        ["gh", "pr", "merge", str(PR), "--repo", "other/repo",
+         f"--match-head-commit={HEAD}", "--squash"],
+        ["gh", "pr", "merge", str(PR), f"--match-head-commit={HEAD}", "--squash"],
+        ["gh", "pr", "merge", str(PR), "--repo", "example/repo",
+         f"--match-head-commit={HEAD}", "--squash", "--admin"],
+        ["gh", "pr", "merge", str(PR), "--repo", "example/repo",
+         f"--match-head-commit={HEAD}", "--auto"],
+        "gh pr merge",
+    ],
+)
+def test_ready_report_must_carry_the_exact_merge_command(
+    tmp_path: Path, command: Any,
+) -> None:
+    paths = ["tools/agent_next_task.py"]
+    report = _no_apply(tmp_path, paths)
+    assert report["gh_command"] == ["gh", "pr", "merge", str(PR), "--repo", "example/repo",
+                                    f"--match-head-commit={HEAD}", "--squash"]
+    pr = _only(check_package(_package(paths, {**report, "gh_command": command}),
+                             profiles=_test_profiles()))
+    assert pr["no_apply"]["status"] == "binding_mismatch"
+    assert pr["verdict"] == "operator_review_required"
+
+
 def test_retained_accepted_queue_wal_is_an_unexpected_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -336,21 +389,28 @@ def test_MUT_SUBSET_ACCEPTS_EXTRA_REFUSAL_is_caught(
 
 # --- binding and fail-closed cases ------------------------------------------
 
-def _ready(head: str = HEAD, pr: int = PR) -> dict[str, Any]:
+def _ready(head: str = HEAD, pr: int = PR, base: str = BASE) -> dict[str, Any]:
     return {"ok": True, "decision": "merge_receipt_ready", "pr_number": pr,
-            "expected_head": head, "gh_merge_attempted": False, "merge_executed": False,
-            "apply": False, "errors": []}
+            "expected_head": head, "expected_base_sha": base,
+            "gh_command": ["gh", "pr", "merge", str(PR), "--repo", "example/repo",
+                           f"--match-head-commit={HEAD}", "--squash"],
+            "gh_merge_attempted": False, "merge_executed": False, "apply": False,
+            "errors": []}
 
 
 def _refusal(reasons: list[str], *, head: str = HEAD, policy: str = "bridge_consensus_v1",
-             errors: list[str] | None = None) -> dict[str, Any]:
+             errors: list[str] | None = None, base: str = BASE,
+             blocked: list[str] | None = None) -> dict[str, Any]:
     return {
         "ok": False, "decision": "receipt_preflight_failed", "stage": "receipt",
         "pr_number": PR, "errors": list(reasons if errors is None else errors),
         "gh_merge_attempted": False, "merge_executed": False,
         "receipt_report": {"decision": "merge_plan_not_receipt_eligible", "gate_report": {
             "pr_number": PR, "expected_head": head, "review_policy": policy,
-            "reasons": list(reasons)}},
+            "reasons": list(reasons), "base_gate": {"expected_base_sha": base},
+            "path_gate": {"allowed": False, "reason": "denylist hit",
+                          "blocked_paths": ["CLAUDE.md"] if blocked is None else blocked,
+                          "unmatched_paths": [], "code_pattern_hits": []}}},
     }
 
 
@@ -424,6 +484,10 @@ def test_duplicate_refusal_is_a_mismatch() -> None:
     [
         (_ready(head="a" * 40), "binding_mismatch"),
         (_ready(pr=PR + 1), "binding_mismatch"),
+        (_ready(base="c" * 40), "binding_mismatch"),
+        (_refusal([DENYLIST_REFUSAL], base="c" * 40), "binding_mismatch"),
+        (_refusal([DENYLIST_REFUSAL], blocked=["CLAUDE.md", "AGENTS.md"]), "binding_mismatch"),
+        (_refusal([DENYLIST_REFUSAL], blocked=[1]), "binding_mismatch"),
         ({**_ready(), "apply": True}, "not_a_no_apply_report"),
         ({**_ready(), "gh_merge_attempted": True}, "not_a_no_apply_report"),
         ({**_ready(), "merge_executed": None}, "not_a_no_apply_report"),
@@ -456,6 +520,7 @@ def test_report_that_does_not_bind_is_never_consistent(report: Any, status: str)
         lambda p: p["prs"][0].update(pr=0),
         lambda p: p["prs"][0].update(pr=True),
         lambda p: p["prs"][0].update(head=HEAD.upper()),
+        lambda p: p["prs"][0].pop("base"),
         lambda p: p["prs"][0].update(changed_paths=[]),
         lambda p: p["prs"][0].update(changed_paths=[" CLAUDE.md"]),
         lambda p: p["prs"][0].update(rco_slot_holder="Claude-RCO-1"),

@@ -24,6 +24,13 @@ the charter the classification used. An unknown driver, a changed charter, an
 RCO-slot refusal this version does not profile, or a malformed report is
 reported as ``operator_review_required``; nothing is default-allowed.
 
+A report binds to its PR by number, head and base. A refusal also binds by the
+gate's own path decision, which must equal this checker's decision on the
+package paths, so a package that omits a changed path cannot pass. A ready
+report carries no gate report, only its exact ``gh`` merge command. The driver
+report carries no source commit or manifest hash, so the driver identity is the
+package's assertion and is reported as unverified.
+
 Observe-only: the tool writes nothing, merges nothing and exits 0 for any
 well-formed package whatever the verdict (2 for invalid input).
 
@@ -66,6 +73,7 @@ class DriverProfile:
     manifest_sha256: str
     charter_sha256: str
     review_policy: str
+    repo: str
     recognized_rcos: tuple[str, ...]
     path_refusals: Mapping[str, str]
 
@@ -85,6 +93,8 @@ DRIVER_PROFILES: Mapping[str, DriverProfile] = {
         ),
         # BridgeCodeContext admits no --review-policy, so only the default runs.
         review_policy="bridge_consensus_v1",
+        # A5 refuses any other --repo value.
+        repo="Ahkeratmehilaiset/waggledance-swarm",
         recognized_rcos=("claude-rco-1", "claude-rco-2"),
         path_refusals={
             "denylist hit": "path gate failed: denylist hit",
@@ -144,6 +154,8 @@ def check_package(
             **driver,
             "bound": not binding_errors,
             "binding_errors": binding_errors,
+            # No driver report names its source commit or manifest hash.
+            "identity_source": "package_assertion",
         },
         "charter_sha256": digest,
         "verdict": verdict,
@@ -188,8 +200,9 @@ def _check_pr(
         entry.get("no_apply_report"),
         pr=entry["pr"],
         head=entry["head"],
-        route=route,
-        review_policy=None if profile is None else profile.review_policy,
+        base=entry["base"],
+        path_gate=_gate_view(path_gate),
+        profile=profile,
     )
     if check["status"] == "report_ok" and expected is None:
         check["status"] = "unbound_expectation"
@@ -206,16 +219,20 @@ def _check_pr(
         "head": entry["head"],
         "route": route,
         "route_reasons": route_reasons,
-        "path_gate": {
-            "allowed": path_gate.allowed,
-            "reason": path_gate.reason,
-            "blocked_paths": list(path_gate.blocked_paths),
-            "unmatched_paths": list(path_gate.unmatched_paths),
-        },
+        "path_gate": _gate_view(path_gate),
         "rco_slot_holder": holder,
         "expected_refusals": None if expected is None else sorted(expected),
         "no_apply": check,
         "verdict": verdict,
+    }
+
+
+def _gate_view(gate: Any) -> dict[str, Any]:
+    return {
+        "allowed": bool(gate.allowed),
+        "reason": str(gate.reason),
+        "blocked_paths": sorted(gate.blocked_paths),
+        "unmatched_paths": sorted(gate.unmatched_paths),
     }
 
 
@@ -236,14 +253,16 @@ def _check_report(
     *,
     pr: int,
     head: str,
-    route: str,
-    review_policy: str | None,
+    base: str,
+    path_gate: Mapping[str, Any],
+    profile: DriverProfile | None,
 ) -> dict[str, Any]:
     if report is None:
         return {"status": "no_report", "observed_refusals": None}
 
     def bad(status: str, detail: str) -> dict[str, Any]:
-        return {"status": status, "detail": detail, "observed_refusals": None}
+        return {"status": status, "detail": detail, "observed_refusals": None,
+                "driver_identity": "unverified"}
 
     if not isinstance(report, Mapping):
         return bad("malformed_report", "report is not an object")
@@ -259,9 +278,23 @@ def _check_report(
     if report.get("ok") is True:
         if report.get("decision") != "merge_receipt_ready" or errors:
             return bad("unexpected_decision", f"ok report with decision {report.get('decision')!r}")
-        if report.get("expected_head") != head:
-            return bad("binding_mismatch", "report is for a different head")
-        return {"status": "report_ok", "decision": "merge_receipt_ready", "observed_refusals": []}
+        if report.get("expected_head") != head or report.get("expected_base_sha") != base:
+            return bad("binding_mismatch", "report is for a different head or base")
+        # The ready report has no gate report; its exact merge command is the
+        # remaining binding (driver _merge_command: repo, head, method).
+        repo = None if profile is None else profile.repo
+        command = report.get("gh_command")
+        if not (
+            isinstance(command, list)
+            and len(command) == 8
+            and command[:5] == ["gh", "pr", "merge", str(pr), "--repo"]
+            and (repo is None or command[5] == repo)
+            and command[6] == f"--match-head-commit={head}"
+            and command[7] in ("--squash", "--merge", "--rebase")
+        ):
+            return bad("binding_mismatch", "ready report merge command does not bind")
+        return {"status": "report_ok", "decision": "merge_receipt_ready",
+                "observed_refusals": [], "driver_identity": "unverified"}
     if report.get("ok") is not False:
         return bad("malformed_report", "ok is not a boolean")
     if report.get("decision") != "receipt_preflight_failed" or report.get("stage") != "receipt":
@@ -274,14 +307,36 @@ def _check_report(
         return bad("unexpected_decision", f"receipt decision {receipt.get('decision')!r}")
     if gate.get("expected_head") != head or gate.get("pr_number") != pr:
         return bad("binding_mismatch", "gate report is for a different PR or head")
-    if review_policy is not None and gate.get("review_policy") != review_policy:
+    base_gate = gate.get("base_gate")
+    if not isinstance(base_gate, Mapping) or base_gate.get("expected_base_sha") != base:
+        return bad("binding_mismatch", "gate report is for a different base")
+    if profile is not None and gate.get("review_policy") != profile.review_policy:
         return bad("binding_mismatch", "gate report used a different review policy")
     if gate.get("reasons") != errors or not errors:
         return bad("malformed_report", "errors do not equal the gate's refusal reasons")
+    reported = gate.get("path_gate")
+    if not isinstance(reported, Mapping) or _reported_gate_view(reported) != dict(path_gate):
+        return bad("binding_mismatch", "gate path decision differs from the package paths")
     return {
         "status": "report_ok",
         "decision": "receipt_preflight_failed",
         "observed_refusals": list(errors),
+        "driver_identity": "unverified",
+    }
+
+
+def _reported_gate_view(reported: Mapping[str, Any]) -> dict[str, Any] | None:
+    blocked = reported.get("blocked_paths")
+    unmatched = reported.get("unmatched_paths")
+    if not isinstance(blocked, list) or not isinstance(unmatched, list):
+        return None
+    if not all(isinstance(p, str) for p in [*blocked, *unmatched]):
+        return None
+    return {
+        "allowed": reported.get("allowed"),
+        "reason": reported.get("reason"),
+        "blocked_paths": sorted(blocked),
+        "unmatched_paths": sorted(unmatched),
     }
 
 
@@ -310,9 +365,10 @@ def _validate_package(package: Any) -> tuple[list[Mapping[str, Any]], dict[str, 
         if type(number) is not int or number < 1 or number in seen:
             raise ValueError("pr must be a unique positive integer")
         seen.add(number)
-        head = entry.get("head")
-        if type(head) is not str or not SHA_RE.fullmatch(head):
-            raise ValueError(f"pr {number}: head must be a 40-char lowercase sha")
+        for field in ("head", "base"):
+            value = entry.get(field)
+            if type(value) is not str or not SHA_RE.fullmatch(value):
+                raise ValueError(f"pr {number}: {field} must be a 40-char lowercase sha")
         paths = entry.get("changed_paths")
         if (
             not isinstance(paths, list)

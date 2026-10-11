@@ -85,6 +85,13 @@ changed. The new conversation carries the lane name, so the next plain launch
 resumes it. No fleet launcher passes this switch; it is one lane, one explicit
 operator command.
 
+Every interactive Claude launch, a default resume as well as `-FreshSession`,
+refuses before bridge bootstrap while the lane already has a live launcher or a
+native CLI under one. It runs the same availability check as managed lanes and
+native Lead: a native `claude.exe`/`codex.exe` without verified launcher
+ancestry also stops it unless it is an operator-approved external runner. Close
+the old lane session first; the refusal never stops or adopts it.
+
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
 retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native

@@ -2589,6 +2589,12 @@ try {
 if ($turnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
 }
+if ($cliName -ieq 'claude.cmd' -and $launchTurnMode -ceq 'interactive') {
+  # Codex P1 4241232081 (RCO1-confirmed on PR1848): a default resume or a
+  # -FreshSession launch must not bootstrap a second session with this lane's
+  # identity and worktree next to a live one. Same check as managed and Lead.
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
+}
 if ($nativeLead) {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   $nativeLock = Join-Path $runtimeRoot '.wd-turn-codex-lead-1.lock'

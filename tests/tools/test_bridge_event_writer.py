@@ -1779,12 +1779,44 @@ def test_python_writer_type_check_reads_the_written_row_not_the_caller_object(tm
 
 
 def test_python_writer_deep_recursion_is_a_typed_refusal(tmp_path: Path) -> None:
+    # Which guard fires first depends on the platform's C recursion limit: on
+    # Windows CPython json.dumps raises RecursionError at this depth, while
+    # Linux CPython 3.12+ serializes it and the reader depth guard refuses.
+    # Either way it is a typed refusal before anything is created.
     root = tmp_path / "bridge-never-created"
     event = _event()
     event["payload"] = _nest(5000)
 
-    with pytest.raises(BridgeEventWriteError, match="not strict JSON"):
+    with pytest.raises(BridgeEventWriteError, match="not strict JSON|nests deeper than 32"):
         write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    [
+        ("dumps", "bridge event is not strict JSON/UTF-8"),
+        ("loads", "WAL row does not decode as strict JSON"),
+    ],
+)
+def test_python_writer_recursion_error_is_a_typed_refusal_on_every_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, message: str,
+) -> None:
+    # Platform-independent twin: force the RecursionError the serializer or
+    # the decoder can raise, on the writer's own json reference only.
+    def recursion(*args: object, **kwargs: object) -> object:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    proxy = type("JsonProxy", (), {})()
+    for name in ("dumps", "loads", "JSONDecodeError"):
+        setattr(proxy, name, getattr(json, name))
+    setattr(proxy, stage, recursion)
+    monkeypatch.setattr(bridge_writer, "json", proxy)
+    root = tmp_path / "bridge-never-created"
+
+    with pytest.raises(BridgeEventWriteError, match=message):
+        write_bridge_event(bridge_root=root, event=_event(), backend=_PortableTestBackend())
 
     assert not root.exists()
 

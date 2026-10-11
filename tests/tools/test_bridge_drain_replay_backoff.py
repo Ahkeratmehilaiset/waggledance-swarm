@@ -47,7 +47,12 @@ if (Test-Path -LiteralPath (Join-Path $BridgeRoot 'replay-succeeds')) { 'spool r
 else { throw 'stub targeted replay failure' }
 """
 
-pytestmark = pytest.mark.skipif(not SHELLS, reason="needs PowerShell (pwsh or powershell.exe)")
+# The drain itself refuses off Windows (write-through publication), even
+# where pwsh exists (Linux CI); the static caller check runs everywhere.
+NATIVE_DRAIN = pytest.mark.skipif(
+    os.name != "nt" or not SHELLS,
+    reason="the accepted-queue drain needs Windows and PowerShell (pwsh or powershell.exe)",
+)
 
 
 def _run(engine: str, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -165,6 +170,7 @@ def _write_memo(root: Path, bin_dir: Path, wal_bytes: bytes, **fields: object) -
 
 # --- real replay ----------------------------------------------------------
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_failed_real_replay_backs_off_for_opportunistic_drains_only(tmp_path: Path, engine: str) -> None:
     root = tmp_path / "bridge"
@@ -194,6 +200,7 @@ def test_failed_real_replay_backs_off_for_opportunistic_drains_only(tmp_path: Pa
     assert events.read_bytes() == before
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_receipt_keeps_the_preflight_v1_shape(tmp_path: Path, engine: str) -> None:
     root = tmp_path / "bridge"
@@ -238,6 +245,7 @@ def _assert_backoff_cycle(engine: str, tmp_path: Path, bin_dir: Path) -> None:
     assert not _memo_path(root).exists()
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_backoff_expires_doubles_and_clears_on_success(tmp_path: Path, engine: str) -> None:
     _assert_backoff_cycle(engine, tmp_path, _isolated_bin(tmp_path, stub=STUB_REPLAY))
@@ -256,6 +264,7 @@ def _assert_code_change_retries_at_once(engine: str, tmp_path: Path, mutate=None
     assert _memo(root)["code_sha256"] == _code_sha256(fixed)
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_changed_drain_or_replay_code_retries_at_once(tmp_path: Path, engine: str) -> None:
     _assert_code_change_retries_at_once(engine, tmp_path)
@@ -274,6 +283,7 @@ def test_changed_drain_or_replay_code_retries_at_once(tmp_path: Path, engine: st
         ("malformed", {}, "{not json"),
     ],
 )
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_unbound_or_out_of_range_memo_is_ignored(
     tmp_path: Path, engine: str, label: str, fields: dict[str, object], raw: str | None,
@@ -295,6 +305,7 @@ def test_unbound_or_out_of_range_memo_is_ignored(
     assert rewritten["code_sha256"] == _code_sha256(bin_dir)
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_dry_run_neither_honors_nor_writes_a_memo(tmp_path: Path, engine: str) -> None:
     root = tmp_path / "bridge"
@@ -313,6 +324,7 @@ def test_dry_run_neither_honors_nor_writes_a_memo(tmp_path: Path, engine: str) -
     assert _memo_path(root).read_bytes() == memo_bytes
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_mutating_drain_removes_orphan_memos_and_temporaries(tmp_path: Path, engine: str) -> None:
     root = tmp_path / "bridge"
@@ -348,6 +360,7 @@ def test_opportunistic_callers_pass_the_switch_and_explicit_ones_do_not() -> Non
 
 # --- named mutants ---------------------------------------------------------
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS[:1])
 def test_MUT_BACKOFF_IGNORES_CODE_BINDING_is_caught(tmp_path: Path, engine: str) -> None:
     def mutant(text: str) -> str:
@@ -357,6 +370,7 @@ def test_MUT_BACKOFF_IGNORES_CODE_BINDING_is_caught(tmp_path: Path, engine: str)
         _assert_code_change_retries_at_once(engine, tmp_path, mutate=mutant)
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS[:1])
 def test_MUT_BACKOFF_HONORED_WITHOUT_SWITCH_is_caught(tmp_path: Path, engine: str) -> None:
     bin_dir = _isolated_bin(tmp_path, stub=STUB_REPLAY, mutate=lambda t: t.replace(
@@ -365,6 +379,7 @@ def test_MUT_BACKOFF_HONORED_WITHOUT_SWITCH_is_caught(tmp_path: Path, engine: st
         _assert_backoff_cycle(engine, tmp_path, bin_dir)
 
 
+@NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS[:1])
 def test_MUT_BACKOFF_SKIP_COUNTS_AS_HEALTHY_is_caught(tmp_path: Path, engine: str) -> None:
     def mutant(text: str) -> str:

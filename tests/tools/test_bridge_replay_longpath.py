@@ -151,6 +151,7 @@ def _convert(executable: str, path: str) -> str:
 
 
 LONG = "C:\\" + "\\".join(["segment" + str(i).zfill(3) for i in range(40)]) + "\\events.jsonl"
+RESERVED_STEMS = [prefix + digit for prefix in ("COM", "LPT") for digit in "123456789\u00b9\u00b2\u00b3"]
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -172,11 +173,11 @@ def test_only_long_canonical_drive_paths_gain_the_prefix(shell: str) -> None:
     LONG.replace("\\segment005\\", "\\\\"),
     LONG.replace("\\segment005\\", "\\NUL\\"),
     LONG.replace("\\segment005\\", "\\com1.txt\\"),
-    # The reserved digits are 1-9 and superscript 1-3 (Codex P2 4240969607 on PR1804): the edges stay unprefixed.
-    LONG.replace("\\segment005\\", "\\COM9\\"),
+    # Every reserved stem stays unprefixed: COM and LPT with digits 1-9 and superscript 1-3 (Codex P2 4240969607 on
+    # PR1804; Grok c0a8c1aa B4: the whole set, so no single-class mutant survives), in any case and with an extension.
+    *[LONG.replace("\\segment005\\", "\\" + stem + "\\") for stem in RESERVED_STEMS],
     LONG.replace("\\segment005\\", "\\lpt1\\"),
     LONG.replace("\\segment005\\", "\\LPT9.log\\"),
-    LONG.replace("\\segment005\\", "\\COM\u00b9\\"),
     LONG.replace("\\segment005\\", "\\lpt\u00b3.txt\\"),
     LONG.replace("\\events.jsonl", "\\foo.\x00x"),
     LONG.replace("\\events.jsonl", "\\foo \x00x"),

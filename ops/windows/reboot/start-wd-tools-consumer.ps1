@@ -1109,6 +1109,11 @@ function Test-WdContinuityControlEvents {
     # match, the bytes just parsed must equal the copy taken before the read, and
     # the blocks up to the new cursor become the anchor if the scan stays clear.
     $through = [int64]$view.candidate_cursor.offset
+    # Bytes the reader parsed beyond the pre-read copy were appended during the
+    # read and cannot be compared with what it saw (R2 on PR1854). Withhold
+    # this cycle as catching up with the cursor and anchor unmoved; the next
+    # check copies those bytes first and compares them.
+    if ($through -gt $start + $pendingCount) { throw 'Continuity canonical scan catching up; recovery withheld' }
     $blocks = New-Object Collections.Generic.List[string]
     $tail = ''
     try {

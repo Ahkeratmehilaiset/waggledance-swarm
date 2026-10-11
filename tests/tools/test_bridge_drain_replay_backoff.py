@@ -16,7 +16,7 @@ Every run uses an isolated bin with Local mutex names; the live fence, WAL and
 canonical log are never touched.
 
 Named mutants: MUT_BACKOFF_IGNORES_CODE_BINDING, MUT_BACKOFF_HONORED_WITHOUT_SWITCH,
-MUT_BACKOFF_SKIP_COUNTS_AS_HEALTHY.
+MUT_BACKOFF_SKIP_COUNTS_AS_HEALTHY, MUT_BACKOFF_WINDOW_DATED_BEFORE_REPLAY.
 """
 from __future__ import annotations
 
@@ -43,6 +43,8 @@ STUB_REPLAY = """param(
     [string] $BridgeRoot, [string] $AcceptedWalLeaf, [string] $ExpectedWalSha256, [switch] $DryRun
 )
 Add-Content -LiteralPath (Join-Path $BridgeRoot 'replay-calls.txt') -Value "$AcceptedWalLeaf dry=$($DryRun.IsPresent)"
+$sleep = Join-Path $BridgeRoot 'replay-sleep-seconds'
+if (Test-Path -LiteralPath $sleep) { Start-Sleep -Seconds ([int](Get-Content -LiteralPath $sleep -Raw)) }
 if (Test-Path -LiteralPath (Join-Path $BridgeRoot 'replay-succeeds')) { 'spool replay complete' }
 else { throw 'stub targeted replay failure' }
 """
@@ -245,6 +247,31 @@ def _assert_backoff_cycle(engine: str, tmp_path: Path, bin_dir: Path) -> None:
     assert not _memo_path(root).exists()
 
 
+def _assert_slow_failure_window_starts_after_the_replay(engine: str, tmp_path: Path, bin_dir: Path) -> None:
+    # Grok 081b1d48: a clock sampled before the replay dated the window from
+    # the start, so a failure slower than the delay published an expired memo
+    # and the next opportunistic drain replayed the full history again.
+    root = tmp_path / "bridge"
+    _seed(root)
+    (root / "replay-sleep-seconds").write_text("3", encoding="utf-8")
+    started = int(time.time())
+    _drain(engine, bin_dir, root, "-HonorReplayBackoff")
+    assert _calls(root) == 1
+    memo = _memo(root)
+    assert memo["last_failure_unix"] >= started + 3
+    assert memo["next_attempt_unix"] - memo["last_failure_unix"] == 60
+    (root / "replay-sleep-seconds").unlink()
+    skipped = _drain(engine, bin_dir, root, "-HonorReplayBackoff")
+    assert _calls(root) == 1
+    assert (_status(skipped), skipped["failed"]) == ("replay_backoff", 1)
+
+
+@NATIVE_DRAIN
+@pytest.mark.parametrize("engine", SHELLS)
+def test_slow_failed_replay_dates_its_window_after_the_replay(tmp_path: Path, engine: str) -> None:
+    _assert_slow_failure_window_starts_after_the_replay(engine, tmp_path, _isolated_bin(tmp_path, stub=STUB_REPLAY))
+
+
 @NATIVE_DRAIN
 @pytest.mark.parametrize("engine", SHELLS)
 def test_backoff_expires_doubles_and_clears_on_success(tmp_path: Path, engine: str) -> None:
@@ -377,6 +404,18 @@ def test_MUT_BACKOFF_HONORED_WITHOUT_SWITCH_is_caught(tmp_path: Path, engine: st
         "if ($HonorReplayBackoff -and $null -ne $priorBackoff", "if ($true -and $null -ne $priorBackoff", 1))
     with pytest.raises(AssertionError):
         _assert_backoff_cycle(engine, tmp_path, bin_dir)
+
+
+@NATIVE_DRAIN
+@pytest.mark.parametrize("engine", SHELLS[:1])
+def test_MUT_BACKOFF_WINDOW_DATED_BEFORE_REPLAY_is_caught(tmp_path: Path, engine: str) -> None:
+    # The window dated 61 s before the failure, as a pre-replay sample is after
+    # a 61 s replay: the memo is expired when written.
+    bin_dir = _isolated_bin(tmp_path, stub=STUB_REPLAY, mutate=lambda t: t.replace(
+        "$failedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()",
+        "$failedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 61", 1))
+    with pytest.raises(AssertionError):
+        _assert_slow_failure_window_starts_after_the_replay(engine, tmp_path, bin_dir)
 
 
 @NATIVE_DRAIN

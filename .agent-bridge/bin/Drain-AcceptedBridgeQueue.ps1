@@ -1134,7 +1134,6 @@ if (Test-Path -LiteralPath $readyDir -PathType Container) {
 }
 
 $replayCodeSha256 = $null
-$backoffNowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 if (-not $DryRun -and $readyFiles.Count -gt 0) {
     try { $replayCodeSha256 = Get-BridgeQueueReplayCodeSha256 }
     catch { $replayCodeSha256 = $null }
@@ -1184,7 +1183,7 @@ foreach ($file in $readyFiles) {
         if ($null -ne $replayCodeSha256) {
             $priorBackoff = Read-BridgeQueueReplayBackoff -Path $backoffPath `
                 -WalSha256 $sha256 -CodeSha256 $replayCodeSha256 `
-                -NowUnix $backoffNowUnix
+                -NowUnix ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
         }
         if ($HonorReplayBackoff -and $null -ne $priorBackoff -and $priorBackoff.active) {
             $failed++
@@ -1252,9 +1251,12 @@ foreach ($file in $readyFiles) {
             # Advisory: a memo that cannot be written never changes the result.
             try {
                 $priorFailures = if ($null -ne $priorBackoff) { [int64]$priorBackoff.failures } else { [int64]0 }
+                # Sampled after the replay: a failure slower than the delay must
+                # not publish a window that has already expired.
+                $failedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
                 Write-BridgeQueueReplayBackoff -Path $backoffPath -Leaf $file.Name `
                     -WalSha256 $sha256 -CodeSha256 $replayCodeSha256 `
-                    -Failures ($priorFailures + 1) -NowUnix $backoffNowUnix `
+                    -Failures ($priorFailures + 1) -NowUnix $failedAtUnix `
                     -LastError $replayError
             } catch { }
         }

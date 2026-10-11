@@ -4,7 +4,7 @@
 A worktree is removed only when every check of the 2026-10-11 disk-incident cleanups holds:
 the basename starts with ``<AGENT_BRIDGE_AGENT>-`` (a lane name is ``letters(-letters)*-N``, so
 no lane name is a hyphen-prefix of another); it is not the main or the current worktree (by
-file identity, so a junction, symlink or other spelling of the path still matches), not
+file identity, so a junction or symlink spelling of the path still matches), not
 missing and not locked; no rebase, merge, cherry-pick, revert or bisect is in progress; HEAD is detached (named-branch worktrees are kept); ``git status``
 shows no tracked change and no untracked file; the only ignored content is ``__pycache__/`` or
 ``.pytest_cache/`` (an ignored ``.codex-audit/`` evidence folder keeps the worktree, because

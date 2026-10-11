@@ -15,7 +15,8 @@ of these hold, checked in this order (the first failing check is the reported KE
   segment is the last, so no lane name is a hyphen-prefix of another (``scout`` cannot claim
   ``scout-2-task``);
 * ``current_worktree``: not the worktree of ``--repo`` and not the one this runs in, compared
-  by file identity, so a junction, symlink, subst drive or other spelling still matches;
+  by file identity (``os.path.samefile``), not by spelling: a junction or symlink spelling
+  still matches (tested); subst and 8.3 spellings rely on the same identity but are untested;
 * ``missing`` / ``locked``: the directory exists and the worktree is not locked;
 * ``named_branch``: HEAD is detached (a worktree on a branch is kept);
 * ``head_unreadable`` / ``status_unreadable``: HEAD and ``git status`` are readable;

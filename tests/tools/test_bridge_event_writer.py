@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -1475,14 +1476,14 @@ def test_windows_backend_serializes_two_python_writers(tmp_path: Path, monkeypat
 # BridgeLogReader refuses any decoded object key above 0x7F, so one such row
 # blocks every reader. The Python writer refuses it before root/WAL creation,
 # with the same contract and refusal text as Write-AgentEvent.ps1 (#1832).
-# Named mutant: MUT_PY_ASCII_KEY_GUARD_DROPPED (guard replaced by a no-op).
+# Named mutant: MUT_PY_READER_ROW_GUARD_DROPPED (the final-row decode keeps no
+# reader contract; supersedes MUT_PY_ASCII_KEY_GUARD_DROPPED).
 
 _ASCII_KEY_REFUSAL = "JSON object keys must be ASCII before writing"
 _NON_ASCII_KEY_PAYLOADS = {
     "payload_raw": {"pitk\u00e4 er\u00e4": 1},
     "nested_in_array": {"items": [{"ok": 1}, {"E10 Grok-er\u00e4": "x"}]},
     "astral": {"k\U0001F600": 1},
-    "lone_surrogate": {"k\ud800": 1},
 }
 _FINNISH_VALUES_PAYLOAD = {
     "summary": 'Grok-er\u00e4 valmis \u2260 "pitk\u00e4": 1',
@@ -1510,6 +1511,17 @@ def test_python_writer_refuses_non_ascii_object_key_before_root_or_wal(
     event["payload"] = _NON_ASCII_KEY_PAYLOADS[case]
 
     with pytest.raises(BridgeEventWriteError, match=_ASCII_KEY_REFUSAL):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+def test_python_writer_refuses_lone_surrogate_key_at_the_strict_utf8_encode(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["payload"] = {"k\ud800": 1}
+
+    with pytest.raises(BridgeEventWriteError, match="not strict JSON/UTF-8"):
         write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
 
     assert not root.exists()
@@ -1551,11 +1563,16 @@ def test_python_writer_cycle_is_refused_without_hanging(tmp_path: Path) -> None:
     assert not root.exists()
 
 
-def test_mutant_py_ascii_key_guard_dropped_lets_the_poison_row_through(
+def _drop_reader_row_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # MUT_PY_READER_ROW_GUARD_DROPPED: the final row is decoded with no contract.
+    monkeypatch.setattr(bridge_writer, "_decode_reader_row", lambda row: json.loads(row))
+
+
+def test_mutant_py_reader_row_guard_dropped_lets_the_poison_row_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The refusal tests are discriminating: on this mutant the same row lands.
-    monkeypatch.setattr(bridge_writer, "_assert_ascii_object_keys", lambda _event: None)
+    _drop_reader_row_guard(monkeypatch)
     root = tmp_path / "bridge"
     event = _event()
     event["payload"] = _NON_ASCII_KEY_PAYLOADS["payload_raw"]
@@ -1649,7 +1666,7 @@ def test_regression_twin_python_row_and_real_reader(
     # With the guard the real reader still reads the Python-written tail; on
     # MUT_PY_ASCII_KEY_GUARD_DROPPED the poison row lands and the reader refuses it.
     if mutant:
-        monkeypatch.setattr(bridge_writer, "_assert_ascii_object_keys", lambda _event: None)
+        _drop_reader_row_guard(monkeypatch)
     code = _fixture_powershell_bin(tmp_path)
     root = tmp_path / "bridge"
     write_bridge_event(bridge_root=root, event=_event(1), backend=_PortableTestBackend())
@@ -1668,3 +1685,184 @@ def test_regression_twin_python_row_and_real_reader(
         assert "invalid_json" in tail.stderr + tail.stdout
     else:
         assert tail.returncode == 0, tail.stderr
+
+
+# --- Final-row reader contract (operator WAL item 3, #1833 follow-up) ---------
+# Every writer check reads the decoded final row, not the caller's object, and
+# that row must pass the whole reader contract: BridgeLogReader.ps1
+# JsonContractValidator plus ConvertFrom-Json, measured on PS5 and PS7
+# 2026-10-11 (each poison below landed before this change and the real reader
+# refused it). Named mutant: MUT_PY_READER_ROW_GUARD_DROPPED.
+
+
+class _LyingAsciiKey(str):
+    def isascii(self) -> bool:  # json.dumps still writes the real code points
+        return True
+
+
+class _LyingStatusType(str):
+    def __eq__(self, other: object) -> bool:
+        return other == "status" or str.__eq__(self, other)
+
+    def __hash__(self) -> int:
+        return hash("status")
+
+
+def _nest(depth: int, *, container: str = "object") -> object:
+    value: object = 1
+    for _ in range(depth):
+        value = {"d": value} if container == "object" else [value]
+    return value
+
+
+_SAFE = bridge_writer.READER_MAX_SAFE_INTEGER
+# The event row object is depth 1, so a payload nested N deep totals N + 1.
+_READER_POISON_PAYLOADS = {
+    "empty_key": ({"": 1}, "key is empty"),
+    "nested_folded_duplicate": ({"x": {"a": 1, "A": 2}}, "repeats after ASCII case folding"),
+    "folded_duplicate_in_array": ({"x": [{"Id": 1, "iD": 2}]}, "repeats after ASCII case folding"),
+    "integer_over_safe": ({"n": _SAFE + 1}, "integer is outside"),
+    "integer_under_safe": ({"n": -_SAFE - 1}, "integer is outside"),
+    "object_depth_33": (_nest(32), "nests deeper than 32"),
+    "array_depth_33": ({"a": _nest(31, container="array")}, "nests deeper than 32"),
+    "lying_isascii_key": ({_LyingAsciiKey("pitk\u00e4"): 1}, _ASCII_KEY_REFUSAL),
+}
+_READER_BOUNDARY_PAYLOADS = {
+    "integer_max_safe": {"n": _SAFE, "m": -_SAFE},
+    "object_depth_32": _nest(31),
+    "array_depth_32": {"a": _nest(30, container="array")},
+    "space_and_dollar_keys": {" ": 1, "$type": "x", "$id": "1", "$ref": "1", "$values": [1]},
+    "case_distinct_across_objects": {"a": {"x": 1}, "b": {"X": 2}},
+    "numbers": {"big": 1e308, "negative_zero": -0.0, "tiny": 5e-324, "fraction": 0.1},
+    "escaped_control_characters": {"a\u0001": "a\u0001\u001f", "line": "\u2028\u2029"},
+}
+
+
+@pytest.mark.parametrize("case", sorted(_READER_POISON_PAYLOADS))
+def test_python_writer_refuses_rows_the_reader_refuses(tmp_path: Path, case: str) -> None:
+    root = tmp_path / "bridge-never-created"
+    payload, refusal = _READER_POISON_PAYLOADS[case]
+    event = _event()
+    event["payload"] = payload
+
+    with pytest.raises(BridgeEventWriteError, match=re.escape(refusal)):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("case", sorted(_READER_BOUNDARY_PAYLOADS))
+def test_python_writer_keeps_reader_boundary_rows(tmp_path: Path, case: str) -> None:
+    root = tmp_path / "bridge"
+    event = _event()
+    event["payload"] = _READER_BOUNDARY_PAYLOADS[case]
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    # Split on LF bytes only: str.splitlines() also splits at U+2028/U+2029.
+    last = _canonical(root).read_bytes().split(b"\n")[-2]
+    assert json.loads(last)["payload"] == _READER_BOUNDARY_PAYLOADS[case]
+
+
+def test_python_writer_type_check_reads_the_written_row_not_the_caller_object(tmp_path: Path) -> None:
+    # The replayer refuses this type; a caller object that claims "status" must
+    # not decide what is written (2026-10-11 retained WAL 88DFBB16 class).
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["type"] = _LyingStatusType("not_a_writer_type")
+    assert event["type"] in V1_EVENT_TYPES
+
+    with pytest.raises(BridgeEventWriteError, match="unknown event type: not_a_writer_type"):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+def test_python_writer_deep_recursion_is_a_typed_refusal(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["payload"] = _nest(5000)
+
+    with pytest.raises(BridgeEventWriteError, match="not strict JSON"):
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert not root.exists()
+
+
+class _ShiftingEvent(Mapping):
+    """A caller mapping whose payload changes on every materialization."""
+
+    def __init__(self, base: dict[str, object]) -> None:
+        self._base = base
+        self.reads = 0
+
+    def __iter__(self):
+        self.reads += 1
+        return iter(self._base)
+
+    def __len__(self) -> int:
+        return len(self._base)
+
+    def __getitem__(self, key: str) -> object:
+        return {"read": self.reads} if key == "payload" else self._base[key]
+
+
+def test_python_writer_sidecars_come_from_the_written_row(tmp_path: Path) -> None:
+    root = tmp_path / "bridge"
+    event = _ShiftingEvent(_event())
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    row = _rows(_canonical(root))[-1]
+    last = json.loads((root / "shared" / "last_codex.json").read_text(encoding="utf-8"))
+    assert event.reads == 1
+    assert last == row
+    assert row["payload"] == {"read": 1}
+
+
+@pytest.mark.parametrize("case", sorted(_READER_POISON_PAYLOADS))
+def test_mutant_py_reader_row_guard_dropped_lands_each_reader_poison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    _drop_reader_row_guard(monkeypatch)
+    root = tmp_path / "bridge"
+    event = _event()
+    event["payload"] = _READER_POISON_PAYLOADS[case][0]
+
+    write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+
+    assert _canonical(root).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell reader is Windows-only")
+@pytest.mark.parametrize("engine,engine_path", _pinned_engines() or [pytest.param("none", "", marks=pytest.mark.skip(reason="no PowerShell engine"))])
+def test_real_reader_agrees_with_the_python_row_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: str, engine_path: str
+) -> None:
+    # Parity, both ways: every boundary row the guard keeps is read by the real
+    # reader, and every row it refuses (written here through the mutant) is
+    # refused by the real reader.
+    code = _fixture_powershell_bin(tmp_path)
+
+    def read(root: Path, name: str) -> subprocess.CompletedProcess[str]:
+        return _run_engine(engine, engine_path, tmp_path, f"{engine}-{name}", (
+            f"& '{code / 'Read-AgentBridge.ps1'}' -Raw -NoAckReceived -NoContinuity -Tail 50\n"), root)
+
+    kept = tmp_path / "kept"
+    for index, case in enumerate(sorted(_READER_BOUNDARY_PAYLOADS), start=1):
+        event = _event(index)
+        event["payload"] = _READER_BOUNDARY_PAYLOADS[case]
+        write_bridge_event(bridge_root=kept, event=event, backend=_PortableTestBackend())
+    tail = read(kept, "kept")
+    assert tail.returncode == 0, tail.stderr
+
+    _drop_reader_row_guard(monkeypatch)
+    for case in sorted(_READER_POISON_PAYLOADS):
+        root = tmp_path / f"poison-{case}"
+        write_bridge_event(bridge_root=root, event=_event(1), backend=_PortableTestBackend())
+        event = _event(2)
+        event["payload"] = _READER_POISON_PAYLOADS[case][0]
+        write_bridge_event(bridge_root=root, event=event, backend=_PortableTestBackend())
+        tail = read(root, f"poison-{case}")
+        assert tail.returncode != 0, (case, tail.stdout)
+        assert "invalid_json" in tail.stderr + tail.stdout, (case, tail.stderr)

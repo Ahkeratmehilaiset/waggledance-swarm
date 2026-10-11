@@ -308,12 +308,15 @@ def _late_change(path: Path, change: str) -> None:
         (path / ".codex-audit" / "late.json").write_bytes(b'{"native_exit": 0}')
     elif change == "commit":  # a new commit on the detached HEAD: status stays clean and HEAD is in no ref
         _commit(path, "late.txt", "late\n")
+    elif change == "moved":  # HEAD moves to a new commit a branch holds: nothing would be lost, but it changed
+        _commit(path, "late.txt", "late\n")
+        _git(path, "branch", "wd-test-late", "HEAD")
     else:  # a change hidden by an assume-unchanged index flag: status stays clean
         _git(path, "update-index", "--assume-unchanged", "a.txt")
         (path / "a.txt").write_text("hidden change\n", encoding="utf-8")
 
 
-@pytest.mark.parametrize("change", ["evidence", "commit", "index-flag"])
+@pytest.mark.parametrize("change", ["evidence", "commit", "moved", "index-flag"])
 def test_a_change_after_classification_is_caught_before_removal(lane, capsys, monkeypatch, change):
     """RCO1 R2 on PR1859: --apply must re-run every check right before removal, not only the status."""
     prune = _prune()

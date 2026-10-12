@@ -34,8 +34,16 @@ def _identity(value):
     return value["pid"], _time(value.get("created_utc")), tuple(argv)
 
 
+def _result(status, reason, restart=False, **facts):
+    # A truthy "unknown" string is unsafe as a readiness bit. Process-only
+    # outcomes never certify a model turn; keep the bit strictly false always.
+    return {"status": status, "reason": reason, "restart": restart,
+            "next_turn_ready": False, "readiness_state": "unknown",
+            "authority": "none", **facts}
+
+
 def _alarm(reason):
-    return {"status": "alarm", "reason": reason, "restart": False}
+    return _result("alarm", reason)
 
 
 def _watcher_argv(argv):
@@ -109,10 +117,10 @@ def evaluate(config, snapshot, now):
         else:
             sentinel_age = None
         if watcher not in identities:
-            return {"status": "restart_required", "reason": "verified_external_watcher_absent", "restart": True}
+            return _result("restart_required", "verified_external_watcher_absent", restart=True)
         if sentinel_age is not None and sentinel_age > 300:
             return _alarm("stale_unconsumed_sentinel")
-        return {"status": "healthy", "reason": "exact_process_live", "restart": False}
+        return _result("healthy", "exact_process_live")
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         return _alarm(str(exc))
 
@@ -159,8 +167,7 @@ an uncoordinated producer: the eventual launcher and adapter MUST share a lock.
         after = evaluate(expected, services.observe(), clock())
         if after["status"] != "healthy":
             return alert(_alarm("started_process_not_verified"))
-        return {"status": "restarted_verified", "reason": "exact_new_process_only",
-                "restart": False, "watcher": receipt, "next_turn_ready": "unknown"}
+        return _result("restarted_verified", "exact_new_process_only", watcher=receipt)
     except Exception as exc:
         # Adapter failures never authorize another attempt or hide the intent.
         return alert(_alarm("adapter_failure:" + type(exc).__name__))

@@ -42,6 +42,14 @@ This proves only a process, not producer readiness, delivery or next-turn
 readiness. A failed notice is explicitly reported; a returned alarm callback
 is not called a durable bridge receipt.
 
+Every result carries strict boolean `next_turn_ready: false`, separate
+`readiness_state: unknown`, and `authority: none`. Never use the state string
+as a readiness bit. The late c063 HIGH report exposed the earlier truthy
+`"unknown"` value; behavioral RED6fail48pass precedes this boolean repair.
+Full call-sequence and a missing post-start process assert the third observation.
+Two additional executed source mutants cover truthy readiness and skipped
+post-start verification. This repair does not complete any adapter sibling.
+
 ## Required follow-up before any installation
 
 Implement and independently review a separate Limited scheduled-task adapter:

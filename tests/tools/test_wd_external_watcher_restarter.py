@@ -125,7 +125,10 @@ def test_intent_before_effect_recheck_and_exact_new_identity(kernel, config, sna
     s = Services([missing, missing, after], receipt)
     result = kernel.run_cycle(config, NOW, s)
     assert result["status"] == "restarted_verified"
-    assert s.calls[:4] == ["observe", "reserve", "observe", ("start", ARGV)]
+    assert s.calls == ["observe", "reserve", "observe", ("start", ARGV), "observe"]
+    assert result["next_turn_ready"] is False
+    assert result["readiness_state"] == "unknown"
+    assert result["restart"] is False
     assert s.intent["schema"] == "wd.watcher-restart-intent.v1"
     # Intent retained, no retry after a lost receipt or process dying again.
     s.snapshots = iter([missing])
@@ -285,3 +288,56 @@ def test_start_exception_retains_intent_and_never_claims_delivery(kernel, config
     assert result["status"] == "alarm"
     assert s.intent is not None
     assert result["alarm_delivery"] == "adapter_returned_not_receipt_verified"
+
+
+@pytest.mark.parametrize("state", ["healthy", "alarm", "restart_required"])
+def test_every_evaluate_result_has_falsy_readiness(kernel, config, snapshot, state):
+    if state == "alarm":
+        snapshot["complete"] = False
+    elif state == "restart_required":
+        snapshot["processes"] = [deepcopy(config["owner"])]
+    result = kernel.evaluate(config, snapshot, NOW)
+    assert result["status"] == state
+    assert result["next_turn_ready"] is False
+    assert result["readiness_state"] == "unknown"
+    assert result["authority"] == "none"
+
+
+def test_post_start_absent_process_never_verified(kernel, config, snapshot):
+    missing = deepcopy(snapshot)
+    missing["processes"] = [deepcopy(config["owner"])]
+    receipt = {"pid": 300, "created_utc": NOW.isoformat(), "argv": deepcopy(ARGV)}
+    s = Services([missing, missing, missing], receipt)
+    result = kernel.run_cycle(config, NOW, s)
+    assert result["status"] == "alarm"
+    assert result["reason"] == "started_process_not_verified"
+    assert result["next_turn_ready"] is False
+    assert result["restart"] is False
+    assert s.calls[:5] == ["observe", "reserve", "observe", ("start", ARGV), "observe"]
+    assert s.intent is not None
+
+
+@pytest.mark.parametrize("mutant", ["MUTANT_TRUTHY_UNKNOWN_READINESS", "MUTANT_SKIP_POST_START_PROCESS_PROOF"])
+def test_late_high_actual_mutants_are_killed(kernel, config, snapshot, mutant):
+    source = Path(kernel.__file__).read_text(encoding="utf-8")
+    if mutant == "MUTANT_TRUTHY_UNKNOWN_READINESS":
+        old, new = '"next_turn_ready": False', '"next_turn_ready": "unknown"'
+        assert old in source
+        scope = {}
+        exec(compile(source.replace(old, new), "<late-high-readiness-mutant>", "exec"), scope)
+        assert kernel.evaluate(config, snapshot, NOW)["next_turn_ready"] is False
+        assert bool(scope["evaluate"](config, snapshot, NOW)["next_turn_ready"]) is True
+    else:
+        old = 'after = evaluate(expected, services.observe(), clock())'
+        assert source.count(old) == 1
+        scope = {}
+        exec(compile(source.replace(old, 'after = {"status": "healthy"}'), "<post-start-mutant>", "exec"), scope)
+        missing = deepcopy(snapshot)
+        missing["processes"] = [deepcopy(config["owner"])]
+        receipt = {"pid": 300, "created_utc": NOW.isoformat(), "argv": deepcopy(ARGV)}
+        actual = Services([missing, missing, missing], receipt)
+        broken = Services([missing, missing, missing], receipt)
+        assert kernel.run_cycle(config, NOW, actual)["status"] == "alarm"
+        assert scope["run_cycle"](config, NOW, broken)["status"] == "restarted_verified"
+        assert actual.calls[:5] == ["observe", "reserve", "observe", ("start", ARGV), "observe"]
+        assert "observe" not in broken.calls[4:]

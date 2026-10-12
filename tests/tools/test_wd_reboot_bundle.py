@@ -41,7 +41,14 @@ WINDOWS_POWERSHELL = (
 )
 
 
-LANE_TEST_SHELLS = list(dict.fromkeys(filter(None, [POWERSHELL, WINDOWS_POWERSHELL])))
+def _unique_shell_paths(paths):
+    # Windows path spelling is case-insensitive. Two PS5 aliases must not
+    # falsely satisfy a regression that requires distinct PS5/PS7 engines.
+    return list({os.path.normcase(os.path.abspath(path)): path
+                 for path in paths if path}.values())
+
+
+LANE_TEST_SHELLS = _unique_shell_paths([POWERSHELL, WINDOWS_POWERSHELL])
 
 
 def _run_powershell(
@@ -1748,10 +1755,10 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     )
     watcher_lock = supervisor[watcher_lock_start:watcher_lock_end]
     assert watcher_lock.index("$watcherProcesses = @(") < watcher_lock.index(
-        "foreach ($agent in $watcherAgents)"
+        "foreach ($agent in $watcherPlanAgents)"
     )
     assert "$watcherProcesses `" in watcher_lock
-    assert watcher_lock.index("foreach ($agent in $watcherAgents)") < (
+    assert watcher_lock.index("foreach ($agent in $watcherPlanAgents)") < (
         watcher_lock.index("Start-OutOfTaskJobPowerShell `")
     )
     assert "watcher reconciliation mutex is owned by another supervisor" in (
@@ -7072,7 +7079,7 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert text.index('("  {0} -DryRun" -f $restoreCommand)') < text.index(
         '("  {0} -Apply" -f $restoreCommand)'
     )
-    assert "Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools." in text
+    assert "Supervisor OFF: an elevated -Auto cannot start the four supervised watchers and Tools." in text
     assert "'Set-WdTaskConsoleContainment.ps1'," in text
     assert "Name = 'Set-WdTaskConsoleContainment.ps1'" in text
     assert "unexpected recursive file set" in text

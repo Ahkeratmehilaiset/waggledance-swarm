@@ -73,11 +73,13 @@ function Get-Job {{
   State=$(if('{case}' -ceq 'producer_not_started'){{'NotStarted'}}elseif('{case}' -ceq 'producer_dead' -or ('{case}' -ceq 'producer_dies' -and $script:polls -ge 2)){{'Failed'}}else{{'Running'}})}}
 }}
 $script:calls=0; $script:polls=0; $script:disposed=$false
+$script:notices=@(); $script:firstReady=$null
 $script:waitedAfterFailure=$false; $script:sent=@(); $script:terminalCalls=0
 $script:native=[pscustomobject]@{{Id=123;StartTime=[DateTime]::UtcNow;ExitCode=0;HasExited=$false}}
 $script:native | Add-Member ScriptMethod WaitForExit {{
  param($Milliseconds)
  if($null -eq $Milliseconds){{$script:waitedAfterFailure=$true; $this.HasExited=$true;return}}
+ if($script:polls -eq 0){{$script:firstReady=Get-Content -LiteralPath {q(journal / 'native-terminal.json')} -Raw | ConvertFrom-Json}}
  $script:polls++
  if($script:polls -eq 2 -and '{case}' -in @('idle','active','producer_dies','idle_after_receipt','active_receipt_later')){{
    [IO.File]::AppendAllText({q(shared / 'events.jsonl')},{q(json.dumps(second_event))}+[Environment]::NewLine,(New-Object Text.UTF8Encoding($false)))
@@ -136,6 +138,12 @@ function Get-WdVerifiedNativeWakeMessage {{
 $tools=Replace-FixtureDefinition $tools Invoke-WdNativeContinuityStep @'
 function Invoke-WdNativeContinuityStep {{ param($CliPath,$ThreadId,$Worktree,$Generation,$Agent,$ExpectedCliHash,$RuntimeRoot,$SessionStartedAt);return 'fixture_no_recovery' }}
 '@
+$tools=Replace-FixtureDefinition $tools Invoke-WdContinuityOperatorNotice @'
+function Invoke-WdContinuityOperatorNotice {{
+ param($Agent,$ThreadId,$Worktree,$ErrorText,$RuntimeRoot,$SessionId)
+ $script:notices+=@{{agent=$Agent;thread=$ThreadId;worktree=$Worktree;error=$ErrorText;runtime=$RuntimeRoot;session=$SessionId}}
+}}
+'@
 $verified=@{{'start-wd-tools-consumer.ps1'=$tools;'Invoke-WdLaneTurnLoop.ps1'=[IO.File]::ReadAllText({q(tmp_path / 'runner.txt')})}}
 $statePath={q(journal / 'native-bridge-wake.json')}
 if('{case}' -ceq 'foreign_thread'){{
@@ -150,7 +158,8 @@ try {{
  $ok=$true
 }} catch {{$fixtureError=$_.Exception.Message}}
 @{{ok=$ok;error=$fixtureError;calls=$script:calls;sent=$script:sent;terminal_calls=$script:terminalCalls;
- terminal_line=$script:terminalLine;disposed=$script:disposed;waited_after_failure=$script:waitedAfterFailure}}|ConvertTo-Json -Depth 8 -Compress
+ terminal_line=$script:terminalLine;disposed=$script:disposed;waited_after_failure=$script:waitedAfterFailure;
+ notices=$script:notices;first_ready=$script:firstReady}}|ConvertTo-Json -Depth 8 -Compress
 """
     result = _run_powershell(script, executable=ps)
     # Non-terminating relay failure warnings precede the single JSON record.
@@ -161,6 +170,21 @@ try {{
     expected_calls = 2 if case in ('idle_after_receipt', 'active_receipt_later') else (1 if case in ('idle', 'active', 'uncertain', 'producer_dies') else 0)
     assert record['ok'] is success, record
     assert record['calls'] == expected_calls, record
+    # MUTANT_LEAD_PRODUCER_NOTICE_OMITTED: refusal must notify the operator,
+    # not merely leave a local JSON record or console warning.
+    if not success:
+        notice, = record['notices']
+        assert notice['agent'] == 'codex-lead-1' and notice['thread'] == THREAD
+        assert notice['worktree'] == str(tmp_path) and notice['runtime'] == str(runtime)
+        assert notice['session'] == 'fixture-session'
+        assert notice['error'].startswith('native_wake_relay_blocked: ')
+    else:
+        assert record['notices'] == []
+    # MUTANT_LEAD_READY_BEFORE_PRODUCER: neither UI creation nor an unchecked
+    # job is evidence that the bridge transport is available.
+    if record['first_ready'] is not None:
+        assert record['first_ready']['status'] == 'native_process_started'
+        assert record['first_ready']['bridge_wake_transport'] == 'withheld'
     state_path = journal / 'native-bridge-wake.json'
     state = json.loads(state_path.read_text(encoding='utf-8-sig')) if state_path.exists() else None
     if case in ('idle', 'active'):
@@ -210,7 +234,8 @@ try {{
     # MUTANT_LEAD_BLOCKED_EVIDENCE_OVERWRITTEN: UI exit must not erase refusal.
     assert ready['status'] == ('stopped' if success else 'bridge_wake_blocked')
     assert ready['thread_id'] == THREAD
-    assert ready['native_pid'] == 123 and ready['bridge_wake_transport'] == 'codex_queue'
+    assert ready['native_pid'] == 123
+    assert ready['bridge_wake_transport'] == ('codex_queue' if success else 'withheld')
     assert ready['bridge_wake_producer_status'] == ('unavailable' if case.startswith('producer_') else 'running')
     assert ready['bridge_wake_producer_observed_at_utc']
 

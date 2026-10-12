@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Bridge-owned Limited bootstrap of the five bridge watchers and Tools while WD-Supervisor is OFF.
+    Bridge-owned Limited bootstrap of four supervised watchers and Tools while WD-Supervisor is OFF.
 
 .DESCRIPTION
     Dot-source only. The fleet wrapper calls Invoke-WdBridgeLimitedBootstrap in its own
@@ -37,7 +37,8 @@ function Get-WdBridgeLimitedBootstrapDecision {
         [AllowEmptyString()] [string] $ToolsThreadId = ''
     )
 
-    $lanes = @('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+    # Native Lead owns its session producer; this result does not certify it.
+    $lanes = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
     $reasons = New-Object System.Collections.Generic.List[string]
     if ($IsAdministrator) {
         $reasons.Add('elevated caller: the workers must run Limited like WD-Supervisor workers; use a non-elevated terminal')
@@ -75,7 +76,7 @@ function Get-WdBridgeLimitedBootstrapDecision {
         foreach ($agent in $agents) { if ($agent -ceq $lane) { $seen++ } }
         if ($seen -ne 1) { $exact = $false }
     }
-    if (-not $exact) { $reasons.Add('the watcher agents are not exactly the five bridge lanes') }
+    if (-not $exact) { $reasons.Add('the watcher agents are not exactly the four supervised bridge lanes') }
     if ($ToolsThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
         $reasons.Add('the Tools thread pin is missing or malformed')
     }
@@ -310,7 +311,7 @@ function Invoke-WdBridgeLimitedBootstrap {
     }
     $result['stage'] = 'done'
     $result['ok'] = $true
-    $result['process_currency'] = 'five_watchers_and_tools_process_current'
+    $result['process_currency'] = 'four_supervised_watchers_and_tools_process_current'
     return [pscustomobject]$result
 }
 

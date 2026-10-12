@@ -382,7 +382,7 @@ function Invoke-WdNativeLeadTerminal {
   $record=[ordered]@{schema='wd.native-lead-ready.v1';agent='codex-lead-1';status='starting';
     thread_id=$ThreadId;session_id=$SessionId;generation=$Generation;relay_pid=$PID;native_pid=0;
     native_process_start_utc='';relay_process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
-    bridge_wake_transport='codex_queue';bridge_wake_producer_status='unchecked';
+    bridge_wake_transport='withheld';bridge_wake_producer_status='unchecked';
     bridge_wake_producer_observed_at_utc='';worktree=$Worktree;task_completion_verified=$false;error=''}
   $native=$null
   try {
@@ -391,7 +391,7 @@ function Invoke-WdNativeLeadTerminal {
     $native=Start-WdToolsNativeProcess -CliPath $CliPath -ArgumentLine $line -Worktree $Worktree
     $record.native_pid=$native.Id
     $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
-    $record.status='terminal_ready'
+    $record.status='native_process_started'
     Write-WdTurnJson $readyPath $record
     # The native terminal owns its sentinel producer independently of the
     # Supervisor. Check that exact session job before each shared relay poll;
@@ -418,6 +418,8 @@ function Invoke-WdNativeLeadTerminal {
           # A job observation only; terminal_ready never proves watcher baseline
           # health, a cloud model turn or continued delivery after this instant.
           $this.TerminalRecord.bridge_wake_producer_status='running'
+          $this.TerminalRecord.status='terminal_ready'
+          $this.TerminalRecord.bridge_wake_transport='codex_queue'
           $this.TerminalRecord.bridge_wake_producer_observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
           Write-WdTurnJson $this.ReadyPath $this.TerminalRecord
         }
@@ -428,10 +430,30 @@ function Invoke-WdNativeLeadTerminal {
       -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash -SessionId $SessionId
     if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
   } catch {
+    $deliveryFailure=$_
     $record.status='bridge_wake_blocked'; $record.error=$_.Exception.Message
+    $record.bridge_wake_transport='withheld'
+    $record['operator_notice_status']='attempting'
     Write-WdTurnJson $readyPath $record
-    Write-Warning ('Lead automatic bridge delivery stopped: ' + $_.Exception.Message)
-    throw
+    # Existing hash-pinned notice publisher owns its durable at-most-once ledger.
+    # Do not restart the producer or retry an uncertain queue submission. A
+    # failed notice must never hide the original refusal or close the native UI.
+    try {
+      $notice=Invoke-WdContinuityOperatorNotice -Agent codex-lead-1 -ThreadId $ThreadId `
+        -Worktree $Worktree -ErrorText ('native_wake_relay_blocked: '+$record.error) `
+        -RuntimeRoot $RuntimeRoot -SessionId $SessionId
+      $record.operator_notice_status='unknown'
+      if ($null -ne $notice -and $null -ne $notice.PSObject.Properties['status']) {
+        $record.operator_notice_status=[string]$notice.status
+      }
+    } catch {
+      $record.operator_notice_status='unavailable'
+      $record['operator_notice_error']=$_.Exception.Message
+      Write-Warning ('Lead operator notice unavailable; evidence retained: '+$_.Exception.Message) -WarningAction Continue
+    }
+    Write-WdTurnJson $readyPath $record
+    Write-Warning ('Lead automatic bridge delivery stopped: ' + $record.error) -WarningAction Continue
+    throw $deliveryFailure
   } finally {
     # Retain ownership if queue delivery fails; do not kill or duplicate the conversation.
     if ($null -ne $native) {

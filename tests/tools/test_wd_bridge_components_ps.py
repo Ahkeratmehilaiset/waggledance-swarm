@@ -73,6 +73,9 @@ def _args(tmp_path: Path) -> list[str]:
 def _run(shell: str, tmp_path: Path, args: list[str], *, wrapper: Path | None, anchor: str | None,
          lines: str = "", code: int = 0, mode: str = "") -> tuple[subprocess.CompletedProcess, dict | None]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB)}
+    if os.name == "nt" and Path(shell).name.casefold() == "powershell.exe":
+        # PS5 must build its own defaults, not import a pwsh 7 Utility module.
+        env = {k: v for k, v in env.items() if k.casefold() != "psmodulepath"}
     record = tmp_path / "stub-record.json"
     if record.exists():
         record.unlink()
@@ -116,6 +119,44 @@ def test_argv_is_passed_as_array_without_shell_building(tmp_path, shell):
                               "--paths-config", str(cfg / "paths.json"), "--lane", "claude-rco-2",
                               "--evidence", str(tmp_path / "ev idence.json"),
                               "--now", "2026-09-29T21:00:00Z"]
+
+
+@WINDOWS_ROOTS
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("bad_pin", [False, True], ids=["pinned-stub", "bad-pin-refused"])
+def test_poisoned_parent_module_path_preserves_native_pinned_stub_contract(
+    tmp_path, shell, monkeypatch, bad_pin,
+):
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("a real PowerShell 7 module directory is required for this poison control")
+    foreign_modules = Path(pwsh).parent / "Modules"
+    assert foreign_modules.is_dir()
+    poisoned_path = str(foreign_modules)
+    monkeypatch.setenv("pSmOdUlEpAtH", poisoned_path)
+    wrapper, anchor = _bundle(tmp_path)
+    if bad_pin:
+        anchor = "0" * 64
+    args = _args(tmp_path) + ["-EvidencePath", str(tmp_path / "ev idence.json"),
+                            "-Now", "2026-09-29T21:00:00Z"]
+    process, record = _run(shell, tmp_path, args, wrapper=wrapper, anchor=anchor,
+                           lines=_report("degraded"), code=1)
+    assert os.environ["pSmOdUlEpAtH"] == poisoned_path
+    if bad_pin:
+        assert process.returncode == 3
+        assert _json(process)["verdict"] == "doctor_unavailable"
+        assert record is None
+    else:
+        assert process.returncode == 1, process.stdout
+        assert process.stdout.strip() == _report("degraded")
+        cfg = tmp_path / "cfg dir; $(calc)"
+        assert record == {
+            "tool": "tools/wd_bridge_doctor.py", "verify_package": True,
+            "argv": ["--manifest", str(cfg / "bridge_components.json"),
+                     "--paths-config", str(cfg / "paths.json"), "--lane", "claude-rco-2",
+                     "--evidence", str(tmp_path / "ev idence.json"),
+                     "--now", "2026-09-29T21:00:00Z"],
+        }
 
 
 @WINDOWS_ROOTS

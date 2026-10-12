@@ -33,7 +33,7 @@ from tools.bridge_loop_tick import (
     peer_has_active_pr_producing_claim,
 )
 from tools.bridge_event_writer import BridgeEventWriteError, _PortableTestBackend
-from waggledance.core.work_queue import claim_task
+from waggledance.core.work_queue import WorkQueueError, claim_task
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
@@ -316,11 +316,28 @@ def test_pr_status_snapshot_fn_passes_resolved_expected_base_sha():
     ]
 
 
+def test_synthetic_claim_still_rejects_a_foreign_bound_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # MUTANT_DROP_SESSION_AGENT_GUARD must fail: fixture isolation is not a bypass.
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-lead-1")
+    runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
+    with pytest.raises(WorkQueueError, match="identity_mismatch: session agent"):
+        claim_task(
+            agent="codex-tools-1", task_id="foreign-bound-synthetic-claim",
+            summary="synthetic identity rejection", mode="read-only",
+            bridge_root=runtime_bridge,
+        )
+    assert not runtime_bridge.exists()
+
+
 def test_cli_defaults_to_runtime_bridge_root_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
+    # This synthetic Tools fixture must not inherit the executing lane's label.
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
     runtime_bridge = tmp_path / "runtime" / ".agent-bridge"
     _events_file(runtime_bridge, [_heartbeat("codex-tools-1", "2026-05-22T13:55:00Z")])
     claim_task(

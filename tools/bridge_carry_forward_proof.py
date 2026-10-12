@@ -33,7 +33,9 @@ and refuses with the first failing check as ``reason``, in this order:
   --merge-base=<old base> <main> <old head>`` exits 0) and ``tree_mismatch`` (the new head's tree is
   exactly that tree: no hand edit);
 * condition 5, ``paths_overlap``: no PR path is in the old base..main delta, compared case-folded (on
-  a case-insensitive checkout ``Foo.txt`` and ``foo.txt`` are one file). That is RCO1's rule
+  a case-insensitive checkout ``Foo.txt`` and ``foo.txt`` are one file; names are folded both with
+  ``casefold()`` and upper-cased first, because NTFS upper-cases and dotless i upper-cases to I
+  while ``casefold()`` keeps it). That is RCO1's rule
   ("overlap only where the file is the same blob in both bases"): a path whose blob is equal in both
   bases is not in the delta. Any overlap needs fresh review, even when the merge is clean;
   ``case_collision``: no PR path shares a case-folded name with another file or a directory in the
@@ -150,6 +152,11 @@ def _patch_id(repo: str, old: str, new: str) -> str | None:
     return value[0] if value else None
 
 
+def _folds(name: str) -> set[str]:
+    """Keys under which a case-insensitive file system may see NAME as another name (over-matching is safe)."""
+    return {name.casefold(), name.upper().casefold()}
+
+
 def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
     """PATHS that share a case-folded name with another file or a directory in TREE (one file on Windows)."""
     names = [name.decode("utf-8", errors="surrogateescape") for name in
@@ -157,14 +164,17 @@ def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
     files: dict[str, set[str]] = {}
     dirs: set[str] = set()
     for name in names:
-        files.setdefault(name.casefold(), set()).add(name)
+        for key in _folds(name):
+            files.setdefault(key, set()).add(name)
         parts = name.split("/")
-        dirs.update("/".join(parts[:end]).casefold() for end in range(1, len(parts)))
+        for end in range(1, len(parts)):
+            dirs.update(_folds("/".join(parts[:end])))
     hits = set()
     for path in paths:
         parts = path.split("/")
-        if (len(files.get(path.casefold(), ())) > 1 or path.casefold() in dirs
-                or any("/".join(parts[:end]).casefold() in files for end in range(1, len(parts)))):
+        keys = _folds(path)
+        if (any(len(files.get(key, ())) > 1 or key in dirs for key in keys)
+                or any(_folds("/".join(parts[:end])) & files.keys() for end in range(1, len(parts)))):
             hits.add(path)
     return sorted(hits)
 
@@ -233,8 +243,8 @@ def _check(repo: str, proof: dict[str, Any]) -> None:
         raise _Refused("gate_or_governance_path")
     base_delta = _delta(repo, base, main)
     proof["base_delta_paths"] = sorted(base_delta)
-    base_folded = {path.casefold() for path in base_delta}
-    proof["overlap_paths"] = sorted(path for path in pr if path.casefold() in base_folded)
+    base_folded = {key for path in base_delta for key in _folds(path)}
+    proof["overlap_paths"] = sorted(path for path in pr if _folds(path) & base_folded)
 
     # Condition 2: the new tree is merge-tree's, exit 0, unedited.
     code, out = _git(repo, ["merge-tree", "--write-tree", "--no-messages", f"--merge-base={base}", main, old_head])

@@ -1449,8 +1449,9 @@ function Test-WdWatcherPostReconcileState {
 function Assert-WdExactWatcherAgentSet {
     param([Parameter(Mandatory)] [string[]] $Agents)
 
+    # Native Lead's hash-pinned session owns its watcher even when this
+    # supervisor is OFF. Never add a second producer for that conversation.
     $expected = @(
-        'codex-lead-1',
         'codex-tools-1',
         'claude-rco-1',
         'claude-rco-2',
@@ -1463,8 +1464,47 @@ function Assert-WdExactWatcherAgentSet {
             -DifferenceObject $Agents `
             -CaseSensitive).Count -ne 0
     ) {
-        throw 'supervisor watcher identities are not the exact five-lane set'
+        throw 'supervisor watcher identities are not the exact four supervised lanes; native Lead owns its producer'
     }
+}
+
+function Get-WdRetiredLeadWatcherDisposition {
+    param(
+        [ValidateRange(0,1000)][int]$AllCount,
+        [ValidateRange(0,1000)][int]$ExactCount,
+        [ValidateRange(0,1000)][int]$ReplaceableCount,
+        [bool]$ConflictMarkerExists,
+        [bool]$NewGenerationProducerVerified = $false
+    )
+    # Never adopt or retire an opaque, duplicate or persistently conflicted
+    # process. The caller independently verifies PID, creation time and paths.
+    if ($ConflictMarkerExists) { return 'conflict' }
+    if ($AllCount -eq 0 -and $ExactCount -eq 0 -and $ReplaceableCount -eq 0) {
+        return 'absent'
+    }
+    if ($AllCount -eq 1 -and ($ExactCount + $ReplaceableCount) -eq 1) {
+        # A canary-first install does not relaunch Lead, so this watcher may be
+        # its only producer: retire it only once a new-generation native Lead
+        # session producer is verified, otherwise keep it.
+        if ($NewGenerationProducerVerified) { return 'retire' }
+        return 'keep'
+    }
+    return 'conflict'
+}
+
+function Get-WdLeadWatcherPostReconcileResult {
+    param(
+        [Parameter(Mandatory)][ValidateSet('absent','keep','retire')][string]$Disposition,
+        [ValidateRange(0,1000)][int]$RemainingCount
+    )
+    # A kept watcher must still be the one external producer; a retired or
+    # absent one must be gone. Anything else is a conflict, never a success.
+    if ($Disposition -ceq 'keep') {
+        if ($RemainingCount -eq 1) { return 'kept' }
+        return 'conflict'
+    }
+    if ($RemainingCount -eq 0) { return 'retired' }
+    return 'conflict'
 }
 
 function Invoke-WdWatcherFleetPlan {
@@ -1487,7 +1527,7 @@ function Invoke-WdWatcherFleetPlan {
     }
     foreach ($plan in $Plans) {
         $action = [string]$plan.action
-        if ($action -notin @('current', 'launch', 'replace')) {
+        if ($action -notin @('current', 'launch', 'replace', 'retire')) {
             throw "unsupported watcher reconciliation action: $action"
         }
         if ($action -ceq 'current') { continue }
@@ -1495,9 +1535,10 @@ function Invoke-WdWatcherFleetPlan {
             $null = & $ReportAction $plan
             continue
         }
-        if ($action -ceq 'replace') {
+        if ($action -cin @('replace','retire')) {
             $null = & $StopAction $plan
         }
+        if ($action -ceq 'retire') { continue }
         $null = & $LaunchAction $plan
     }
     return $true
@@ -3224,7 +3265,12 @@ else {
                     }
             )
             $watcherPlans = [Collections.Generic.List[object]]::new()
-            foreach ($agent in $watcherAgents) {
+            # Inspect the removed externally supervised Lead producer too.
+            # Session-owned Start-Job workers do not have the canonical -File
+            # invocation and are never adopted or stopped by this plan.
+            $watcherPlanAgents=@($watcherAgents)+@('codex-lead-1')
+            $leadWatcherDisposition = 'absent'
+            foreach ($agent in $watcherPlanAgents) {
                 if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
                     throw "invalid configured watcher identity: $agent"
                 }
@@ -3268,6 +3314,31 @@ else {
                     -ExactCount $exactAgentWatchers.Count `
                     -ReplaceableCount $replaceableAgentWatchers.Count `
                     -ConflictMarkerExists $watcherConflictMarkerExists
+                if ($agent -ceq 'codex-lead-1') {
+                    # This supervisor has no certified read of the native Lead
+                    # session producer, so it never claims one: a sole external
+                    # Lead watcher is kept (PR1856 R1).
+                    $watcherDisposition = Get-WdRetiredLeadWatcherDisposition `
+                        -AllCount $allAgentWatchers.Count `
+                        -ExactCount $exactAgentWatchers.Count `
+                        -ReplaceableCount $replaceableAgentWatchers.Count `
+                        -ConflictMarkerExists $watcherConflictMarkerExists `
+                        -NewGenerationProducerVerified $false
+                    $leadWatcherDisposition = $watcherDisposition
+                    if ($watcherDisposition -ceq 'absent') { continue }
+                    if ($watcherDisposition -ceq 'keep') {
+                        $watcherPlans.Add([pscustomobject]@{
+                            agent = $agent
+                            action = 'current'
+                            process = $allAgentWatchers[0]
+                        })
+                        $actions.Add(
+                            "KEPT external supervised Lead watcher pid=$([int]$allAgentWatchers[0].ProcessId): " +
+                            'new-generation native Lead session producer not verified'
+                        )
+                        continue
+                    }
+                }
                 if ($watcherDisposition -ceq 'current') {
                     $watcherPlans.Add([pscustomobject]@{
                         agent = $agent
@@ -3284,8 +3355,8 @@ else {
                     })
                     continue
                 }
-                if ($watcherDisposition -ceq 'replace') {
-                    $replacementProcess = $replaceableAgentWatchers[0]
+                if ($watcherDisposition -cin @('replace','retire')) {
+                    $replacementProcess = $allAgentWatchers[0]
                     $replacementHostKind = if (
                         [string]$replacementProcess.Name -ieq 'powershell.exe'
                     ) {
@@ -3303,17 +3374,19 @@ else {
                     $replacementRelative = $replacementScriptFull.Substring(
                         $replacementPrefix.Length
                     )
-                    if ($replacementRelative -cnotmatch (
+                    $staleGeneration=$watcherTargetGeneration
+                    if ($exactAgentWatchers.Count -eq 0 -and $replacementRelative -cnotmatch (
                             '^(?<generation>[0-9a-f]{40})\\tools-bootstrap\\' +
                             '\.agent-bridge\\bin\\Watch-Bridge\.ps1$'
                         )) {
                         throw 'replaceable watcher lost its generation binding'
                     }
+                    if ($exactAgentWatchers.Count -eq 0) { $staleGeneration=[string]$Matches['generation'] }
                     $watcherPlans.Add([pscustomobject]@{
                         agent = $agent
-                        action = 'replace'
+                        action = $watcherDisposition
                         process = $replacementProcess
-                        stale_generation = [string]$Matches['generation']
+                        stale_generation = $staleGeneration
                         conflict_path = $watcherConflictPath
                     })
                     continue
@@ -3345,7 +3418,7 @@ else {
                 -PrepareAction {
                     param([object[]] $plans)
                     foreach ($plan in @($plans | Where-Object {
-                                [string]$_.action -ceq 'replace'
+                                [string]$_.action -cin @('replace','retire')
                             })) {
                         New-WdWatcherReplacementMarker `
                             -Path ([string]$plan.conflict_path) `
@@ -3364,7 +3437,9 @@ else {
                 } `
                 -ReportAction {
                     param($plan)
-                    if ([string]$plan.action -ceq 'replace') {
+                    if ([string]$plan.action -ceq 'retire') {
+                        $actions.Add("WOULD-RETIRE supervised watcher:$($plan.agent) pid=$([int]$plan.process.ProcessId)")
+                    } elseif ([string]$plan.action -ceq 'replace') {
                         $actions.Add(
                             "WOULD-REPLACE stale-generation watcher:$($plan.agent) " +
                             "pid=$([int]$plan.process.ProcessId)"
@@ -3421,7 +3496,7 @@ else {
                             )
                         }
                 )
-                foreach ($agent in $watcherAgents) {
+                foreach ($agent in $watcherPlanAgents) {
                     $allVerifiedAgentWatchers = @(
                         Get-AgentCommandProcesses `
                             $verifiedWatcherProcesses `
@@ -3439,6 +3514,22 @@ else {
                                     -RuntimeRoot $runtimeRoot
                             }
                     )
+                    if ($agent -ceq 'codex-lead-1') {
+                        $leadPostResult = Get-WdLeadWatcherPostReconcileResult `
+                            -Disposition $leadWatcherDisposition `
+                            -RemainingCount $allVerifiedAgentWatchers.Count
+                        if ($leadPostResult -ceq 'kept') {
+                            $actions.Add('VERIFIED external supervised Lead watcher kept; session producer not certified')
+                        } elseif ($leadPostResult -ceq 'retired') {
+                            $actions.Add('VERIFIED no external supervised Lead watcher; session producer not certified')
+                        } else {
+                            $watcherConflictMessages.Add(
+                                "supervised Lead watcher count=$($allVerifiedAgentWatchers.Count) " +
+                                "after $leadWatcherDisposition"
+                            )
+                        }
+                        continue
+                    }
                     if (-not (Test-WdWatcherPostReconcileState `
                             -AllCount $allVerifiedAgentWatchers.Count `
                             -ExactCount $exactVerifiedAgentWatchers.Count)) {

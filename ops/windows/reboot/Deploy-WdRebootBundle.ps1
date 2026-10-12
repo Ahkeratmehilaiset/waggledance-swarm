@@ -327,7 +327,7 @@ function ConvertTo-WdSingleQuotedLiteral {
 }
 if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     # Supervisor OFF is standing: WD-Supervisor stays exactly Disabled, so after the one elevated
-    # restore below, this non-elevated process starts the five bridge watchers and Tools through
+    # restore below, this non-elevated process starts four supervised watchers and Tools through
     # one run of the installed wd_supervisor.ps1 (WdBridgeLimitedBootstrap.ps1). Verify and load
     # that helper first, so a bad bundle refuses before any elevation.
     $wdBridgeBundleRoot = Split-Path -Parent $manifestPath
@@ -472,7 +472,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     } else {
         Join-Path $wdBridgeBundleRoot 'wd-fleet.json'
     }
-    Write-Host 'Starting the five bridge watchers and Tools from this non-elevated wrapper (Supervisor OFF)...'
+    Write-Host 'Starting four supervised bridge watchers and Tools from this non-elevated wrapper (Supervisor OFF); native Lead owns its session producer...'
     $wdBridgeResult = Invoke-WdBridgeWrapperBootstrap `
         -BundleRoot $wdBridgeBundleRoot `
         -FleetManifestPath $wdBridgeFleetManifest `
@@ -483,13 +483,13 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f
             [string]$wdBridgeResult.stage, (@($wdBridgeResult.reasons) -join '; '))
     }
-    Write-Host 'Fleet restore complete: five bridge watchers and Tools are process-current (responsiveness unknown); WD-Supervisor untouched (Disabled).' -ForegroundColor Green
+    Write-Host 'Fleet restore complete: four supervised watchers and Tools are process-current (native Lead producer and responsiveness not certified); WD-Supervisor untouched (Disabled).' -ForegroundColor Green
     return
 }
 if ($Auto) {
     # Supervisor OFF is standing: an elevated -Auto has no Limited context in which to start the
-    # five bridge watchers and Tools, and it never starts WD-Supervisor for them.
-    throw ('Supervisor OFF: an elevated -Auto cannot start the five bridge watchers and Tools. Run -Auto ' +
+    # four supervised watchers and Tools, and it never starts WD-Supervisor for them.
+    throw ('Supervisor OFF: an elevated -Auto cannot start the four supervised watchers and Tools. Run -Auto ' +
         'from a non-elevated PowerShell: it elevates once for the fleet restore, then starts them from ' +
         'that Limited wrapper. Nothing was changed.')
 }

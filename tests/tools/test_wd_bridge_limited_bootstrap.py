@@ -1,4 +1,4 @@
-"""Bridge-owned Limited bootstrap of the five watchers and Tools while WD-Supervisor is OFF (pure fakes)."""
+"""Bridge-owned Limited bootstrap of four supervised watchers and Tools (pure fakes)."""
 import json
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ FUNCTIONS = ['Get-WdBridgeLimitedBootstrapDecision', 'Get-WdBridgeReconcileVerdi
 PRELUDE = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
 GEN = 'a' * 40
 THREAD = '01a0adff-4558-7e80-8936-6aad0d6df821'
-LANES = "@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')"
+LANES = "@('codex-tools-1','claude-rco-1','claude-rco-2','fable-5')"
 HELD = "[pscustomobject]@{present=$true;enabled=$false;state='Disabled'}"
 GONE = "[pscustomobject]@{present=$false;enabled=$null;state=''}"
 BASE = dict(IsAdministrator='$false', SupervisorTaskEnabled='$false', SupervisorTaskState="'Disabled'",
@@ -112,7 +112,7 @@ $result=Invoke-WdBridgeLimitedBootstrap -Observe $observe -RunSupervisorOnce $ru
     assert list(out['runs'] or []) == runs
     assert result['reconcile_ran'] is (case != 'elevated')
     assert (result['process_currency'], result['responsiveness'], result['legacy_records']) == (
-        'five_watchers_and_tools_process_current' if ok else 'not_claimed', 'unknown', 'unknown')
+        'four_supervised_watchers_and_tools_process_current' if ok else 'not_claimed', 'unknown', 'unknown')
     assert out['naps'] == (2 if case == 'late_readiness' else 4 if case in TOOLS_FAILURES else 0)
     if ok:
         assert result['tools_binding'] == {

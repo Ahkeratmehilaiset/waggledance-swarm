@@ -49,3 +49,17 @@ collect_ignore = [
     str(_dir / "test_statistical_layer.py"),
     str(_dir / "test_symbolic_solver.py"),
 ]
+
+
+def _load_disk_guard():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("wd_disk_guard_conftest", _dir.parent / "tools" / "wd_disk_guard.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def pytest_sessionstart(session):
+    """LLM-free disk guard: refuse a NEW test run below 3 GiB free, warn below 10 GiB (tools/wd_disk_guard.py)."""
+    _load_disk_guard().pytest_session_guard(session)

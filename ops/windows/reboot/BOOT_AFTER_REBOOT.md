@@ -94,13 +94,33 @@ the old lane session first; the refusal never stops or adopts it.
 
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
-retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
-Lead has no managed idle-wake consumer attached to its terminal. Tools has an
-automatic bridge relay: the wrapper polls its targeted wake sentinel once per
-second and uses `codex queue --thread <saved UUID> --message <notification>`.
-Codex receives the notification while idle and serializes it behind an active
-turn. Window focus and minimization do not affect delivery. Operator messages
-and `/model` continue to use the normal Codex UI.
+retrying; cancelled work and explicit operator pauses/HOLDs stay stopped.
+Native Lead and Tools use the same automatic bridge relay: the wrapper polls its
+targeted wake sentinel once per second and uses
+`codex queue --thread <saved UUID> --message <notification>`. For Lead the relay
+runs inside the Lead launcher. In generations containing the native Lead
+producer change (#1856), the launcher starts its own session-owned
+`Watch-Bridge.ps1` watcher (`SkipWakeWatcher = $false` for native Lead).
+WD-Supervisor does not create a Lead watcher on that path. Disabling the
+supervisor therefore does not disable a verified running session producer;
+its lifetime belongs to the Lead launcher. The supervisor keeps a sole
+existing external Lead watcher until a new-generation session producer can be
+verified, so a later relaunch may temporarily leave both producers running.
+Retirement requires the separately verified launcher-side retirement path,
+not an unverified "Running" flag or a PID-only stop.
+
+An older already-running Lead launcher may still have `SkipWakeWatcher = $true`.
+Installing new files does not update that session or its inherited pins. If it
+has no external watcher, it still receives no idle bridge wake and needs
+operator input. Before a cold install containing #1856, follow the approved
+canary runbook's L1 sequence (current-generation `start-wd-all.ps1 -DryRun`,
+then `-Auto -SkipCliUpdate` from a non-elevated shell, including the Tools
+handoff) or its explicitly selected L2 relaunch. Do not infer readiness from
+the new source alone or silently repin a live session.
+`.codex-audit/wd-turn-loop/native-bridge-wake.json` in the Lead worktree records
+the last delivery. Codex receives the notification while idle and serializes it
+behind an active turn. Window focus and minimization do not affect delivery.
+Operator messages and `/model` continue to use the normal Codex UI.
 
 Wake bursts are coalesced over five seconds. The relay moves the sentinel to an
 owned snapshot and records submission before invoking Codex. A confirmed queue
@@ -368,13 +388,14 @@ handoff, and the lane lease is held while the native terminal runs. Previously
 delivered initial image/context is not replayed. Codex restores conversation
 history in its own terminal. Bridge identity and pinned helpers are established
 before native launch; the colored read-only bridge monitor remains separate.
-Native startup does not attach the former managed wake consumer. Bridge watcher
-sentinels alone do not submit prompts to an idle native Codex terminal.
+Native startup does not attach the former managed wake consumer. Idle wake goes
+only through the codex-queue relay described above, which needs a running
+watcher for `codex-lead-1`.
 RCO1, RCO2, Fable and Tools retain their independent sessions.
 
 Do not edit an installed hash-pinned manifest in place. An already-open
-interactive Lead is preserved and is not externally resumable through a wake
-sentinel. Installing source files does not transform that live session into a
+interactive Lead is preserved: installing source files changes neither its
+running launcher nor its relay, and does not transform that live session into a
 managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` and
 `docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the repo.
 Deployed whole-fleet preflight checks native occupancy for a missing managed

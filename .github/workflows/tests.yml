@@ -13,7 +13,13 @@ jobs:
     # In 39 runs (2026-09-29..10-05) passing runs took 24.7-29.9 min and 20 runs
     # were cancelled at the old 30-minute limit (30.25-30.35 min), one measured
     # at 84% about a minute from the end; 60 matches branches that used it.
-    timeout-minutes: 60
+    # On 2026-10-12 the 60-minute limit cancelled PR #1864 (job 38228348100) at
+    # the [ 95%] pytest mark after 56.2 min in pytest (29,344 items); main's run
+    # 38221355158 spent 53.2 min in pytest, and the ci.yml matrix jobs (-q, no
+    # limit) 49.2-55.6 min in tests. The need is about 64 min (3.3 before pytest,
+    # about 60 in it); 90 is a bounded margin, pinned by
+    # tests/tools/test_ci_unified_budget_contract.py.
+    timeout-minutes: 90
 
     steps:
     - uses: actions/checkout@v7

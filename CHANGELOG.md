@@ -1,5 +1,57 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Bridge fleet: review gates, wake delivery, capacity and writer hardening] -- 2026-09-13 to 2026-10-11
+
+Component-scoped bridge changes on main (`32c16efc..46e60547`, 53 first-parent
+merges). This is not a stable WD runtime release; the last bridge release tag
+is `bridge-2026.09.27-bridge-final-acceptance`. Entries are taken from the
+merged pull request titles.
+
+- Review and merge gates: bind the RCO pass to a structured exact head (#1740);
+  exact-bound operator path-exception receipts (#1727); integrated
+  one-signature readiness candidate (#1751); manual merge and MAGMA execution
+  capability (#1828); Rule 12 RCO-slot pool fallback gate code (Tools, Lead,
+  Fable, then Grok) (#1826).
+- Bridge writers and the accepted queue: production 9645 lineage and the C5
+  accepted-queue fix (#1810); the PowerShell and Python writers refuse non-ASCII
+  JSON object keys before any write (#1832, #1833); binding tests composed with
+  WAL replay type parity (#1839).
+- Reboot and lane launch: independent agent conversations and verified reboot
+  recovery (#1689); startup repair, neutral telemetry and corrected Lead
+  authorship (#1711); Tools recovery with the Codex daemon disabled (#1735);
+  per-lane auto-compact window from the fleet manifest (#1748); an
+  operator-explicit fresh session for one interactive Claude lane, and a
+  live-owner guard for every interactive Claude launch (#1852, carries #1848).
+- Wake and reply delivery: wake continuation (#1688); late replies delivered to
+  native Lead and Grok consultations shown (#1697); native inbox noise filtered
+  and wake delivery evidence distinguished (#1701); concurrent reply snapshots
+  preserved and task results validated (#1700); faster reply checks and
+  corrected fleet health evidence (#1698).
+- Capacity observation and recovery: bounded capacity observation and guarded
+  recovery primitives (#1702); reliable observer retries and scheduling
+  (#1703); status hardening, readiness, cron resume, routing and dynamic
+  startup (#1704, #1705, #1706, #1707, #1709); healthy turns preserved and
+  shadow switches gated by task risk (#1714); consolidated capacity and
+  recovery foundations (#1717); the observer task starts through the pinned
+  silent launcher (#1732, #1734).
+- Lane profile switching, shadow and read-only stages: catalog and validator
+  (#1736), record and session binding (#1737), relaunch checks with a shadow
+  planner and executor using fakes (#1739), launcher shadow read (#1742),
+  capacity pacer (#1741), model registry and value analysis (#1743), effective
+  model resolver (#1744), launch preflight in alert mode (#1745), catalog with
+  operator-accepted defaults (#1746), profile cost meter (#1747).
+- Other integration: observability (#1687), chat boot (#1690), runtime recovery
+  (#1693), CLI update guard (#1694), request contract (#1695), launcher identity
+  (#1696), status from the installed root (#1699), dormant admission foundation
+  (#1723), dormant work accounting and evidence sources (#1724), reviewed
+  routing, ownership, journal and transport fixes (#1731), static package
+  closure checks (#1730), Grok operator task exceptions bounded by exact
+  requests and a durable attempt budget (#1713), Grok hourly recovery (#1686).
+
+Operational note: native Lead receives idle bridge wakes only while a
+`Watch-Bridge.ps1` watcher for `codex-lead-1` runs; see
+`ops/windows/reboot/BOOT_AFTER_REBOOT.md`.
+
 ## [Bridge reboot and compact-read improvements] -- 2026-09-13
 
 Component-scoped bridge prerelease changes, not a stable WD runtime release.

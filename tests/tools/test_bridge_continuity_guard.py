@@ -908,11 +908,16 @@ def test_declared_release_policy_unchanged_is_not_an_extra_work_hold(scope_snap)
 
 @pytest.mark.parametrize("scope_snap", [snap, cponly])
 @pytest.mark.parametrize("text", ["cancel task", "CANCELLED until checked", "cancellation pending",
+    "cancellations pending", "cancelations pending", "cancelrequested", "iscancelled", "tocancel",
+    "cancelgroup_requested",
     "cancel_requested", "Pause work; signature unchanged.", "signature unchanged until confirmed",
     "STOP: signature unchanged.", "do not continue; signature unchanged.",
     "ONE final exact-package signature HOLD"])
 def test_real_controls_are_not_exempted_by_release_policy_or_cancel_identifiers(scope_snap, text):
-    """MUTANT_RELEASE_DECLARATION_BLANKET_EXEMPTS_CONTROL_TOKENS."""
+    """MUTANT_RELEASE_DECLARATION_BLANKET_EXEMPTS_CONTROL_TOKENS.
+
+    MUTANT_CANCEL_MORPHOLOGY_ALLOWLIST_LOSES_PLURAL_OR_GLUED_CONTROL.
+    """
     c = dict(cp(), work_held=False, release_held=True, next_action=text)
     d = evaluate(scope_snap(checkpoint=c), NOW)
     assert d["verdict"] == "unknown", d

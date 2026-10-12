@@ -1,9 +1,12 @@
 """Manual-only Windows coverage must not create a seventh PR-required context."""
 from copy import deepcopy
 from pathlib import Path
+import json
 
 import pytest
 import yaml
+from test_wd_reboot_bundle import LANE_TEST_SHELLS, _run_powershell
+from test_wd_startup_recovery import q
 
 PATH = Path(__file__).resolve().parents[2] / ".github/workflows/windows-shell-advisory.yml"
 
@@ -26,7 +29,7 @@ def _assert_advisory(workflow):
     assert job["env"] == {"EXPECTED_HEAD": "${{ inputs.head }}"}
     steps = job["steps"]
     assert steps[0]["name"] == "Validate exact requested head"
-    assert "^[0-9a-f]{40}$" in steps[0]["run"]
+    assert r"\A[0-9a-f]{40}\z" in steps[0]["run"]
     checkout = next(s for s in steps if s.get("uses") == "actions/checkout@v7")
     assert checkout["with"] == {"ref": "${{ inputs.head }}", "fetch-depth": 0, "persist-credentials": False}
     probe = next(s for s in steps if s.get("name") == "Verify exact checkout and distinct PS5/PS7")
@@ -68,3 +71,49 @@ def test_named_advisory_mutants_are_rejected(mutant):
         job["continue-on-error"] = True
     with pytest.raises(AssertionError):
         _assert_advisory(changed)
+
+
+def _execute_validation(ps, guard, candidate):
+    script = f"""
+$env:EXPECTED_HEAD={q(candidate)}
+try {{
+ & {{
+{guard}
+ }}
+ @{{accepted=$true;major=$PSVersionTable.PSVersion.Major}}|ConvertTo-Json -Compress
+}} catch {{
+ @{{accepted=$false;major=$PSVersionTable.PSVersion.Major}}|ConvertTo-Json -Compress
+}}
+"""
+    return json.loads(_run_powershell(script, executable=ps).stdout)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("candidate,accepted", [
+    pytest.param("0" * 40, True, id="valid-40"),
+    pytest.param("0" * 40 + "\n", False, id="MUTANT_DROP_ABSOLUTE_SHA_END_ANCHOR-lf"),
+    pytest.param("0" * 40 + "\r\n", False, id="crlf"),
+    pytest.param("A" * 40, False, id="MUTANT_CASE_INSENSITIVE_SHA_MATCH-uppercase"),
+    pytest.param("refs/heads/main", False, id="ref"),
+])
+def test_actual_validation_step_accepts_only_exact_lowercase_sha(ps, candidate, accepted):
+    guard = _workflow()["jobs"]["windows-shell-advisory"]["steps"][0]["run"]
+    result = _execute_validation(ps, guard, candidate)
+    assert result["major"] >= 5
+    assert result["accepted"] is accepted
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("mutant", ["MUTANT_DROP_ABSOLUTE_SHA_END_ANCHOR", "MUTANT_CASE_INSENSITIVE_SHA_MATCH"])
+def test_executed_validation_source_mutants_are_killed(ps, mutant):
+    guard = _workflow()["jobs"]["windows-shell-advisory"]["steps"][0]["run"]
+    if mutant == "MUTANT_DROP_ABSOLUTE_SHA_END_ANCHOR":
+        assert r"\A[0-9a-f]{40}\z" in guard
+        faulty = guard.replace(r"\A[0-9a-f]{40}\z", "^[0-9a-f]{40}$")
+        candidate = "0" * 40 + "\n"
+    else:
+        assert "-cnotmatch" in guard
+        faulty = guard.replace("-cnotmatch", "-notmatch")
+        candidate = "A" * 40
+    assert _execute_validation(ps, guard, candidate)["accepted"] is False
+    assert _execute_validation(ps, faulty, candidate)["accepted"] is True

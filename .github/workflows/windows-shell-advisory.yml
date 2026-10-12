@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$') {
+          if ($env:EXPECTED_HEAD -cnotmatch '\A[0-9a-f]{40}\z') {
             throw 'Advisory requires an exact lowercase commit SHA, never a ref'
           }
 

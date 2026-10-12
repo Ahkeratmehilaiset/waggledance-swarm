@@ -98,11 +98,25 @@ retrying; cancelled work and explicit operator pauses/HOLDs stay stopped.
 Native Lead and Tools use the same automatic bridge relay: the wrapper polls its
 targeted wake sentinel once per second and uses
 `codex queue --thread <saved UUID> --message <notification>`. For Lead the relay
-runs inside the Lead launcher, but the launcher starts no watcher of its own
-(`SkipWakeWatcher`): `wake_codex-lead-1` is written only by the
-`Watch-Bridge.ps1` watcher that WD-Supervisor reconciles. While the supervisor
-stays in its standing Disabled/HOLD state and that watcher is not running, an
-idle Lead receives no bridge wake and resumes only on operator input.
+runs inside the Lead launcher. In generations containing the native Lead
+producer change (#1856), the launcher starts its own session-owned
+`Watch-Bridge.ps1` watcher (`SkipWakeWatcher = $false` for native Lead).
+WD-Supervisor does not create a Lead watcher on that path. Disabling the
+supervisor therefore does not disable a verified running session producer;
+its lifetime belongs to the Lead launcher. The supervisor keeps a sole
+existing external Lead watcher until a new-generation session producer can be
+verified, so a later relaunch may temporarily leave both producers running.
+Retirement requires the separately verified launcher-side retirement path,
+not an unverified "Running" flag or a PID-only stop.
+
+An older already-running Lead launcher may still have `SkipWakeWatcher = $true`.
+Installing new files does not update that session or its inherited pins. If it
+has no external watcher, it still receives no idle bridge wake and needs
+operator input. Before a cold install containing #1856, follow the approved
+canary runbook's L1 sequence (current-generation `start-wd-all.ps1 -DryRun`,
+then `-Auto -SkipCliUpdate` from a non-elevated shell, including the Tools
+handoff) or its explicitly selected L2 relaunch. Do not infer readiness from
+the new source alone or silently repin a live session.
 `.codex-audit/wd-turn-loop/native-bridge-wake.json` in the Lead worktree records
 the last delivery. Codex receives the notification while idle and serializes it
 behind an active turn. Window focus and minimization do not affect delivery.

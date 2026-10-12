@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Tests for tools/bridge_rule12_review_eligibility.py (Rule 12, unwired)."""
+"""Tests for the pure Rule 12 evaluator and its opt-in merge-gate documentation."""
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 from pathlib import Path
@@ -22,6 +23,67 @@ DIFF = "d" * 64
 NOW = "2026-10-06T17:00:00.0000000Z"
 NONCE = "c" * 32
 FABLE_AUTHOR = [{"agent": "fable-5", "role": "author"}]
+
+
+def _assert_doc_truth(doc, gate_tree):
+    text = " ".join(doc.split())
+    assert "unwired" not in text.lower(), "MUT_DOC_UNWIRED"
+    assert "not read by any merge gate" not in text.lower(), "MUT_DOC_NO_GATE_CALLER"
+    assert "tools/idle_consensus_auto_merge.py" in text
+    assert 'review_policy="rule12"' in text and "opt-in" in text, "MUT_DOC_DEFAULT_ON"
+    assert "default" in text and "legacy Rule 9a" in text
+    assert "CI, charter and receipt" in text
+    policy = next(node for node in gate_tree.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == "REVIEW_POLICY_RULE12"
+                          for target in node.targets))
+    assert ast.literal_eval(policy.value) == "rule12"
+    gate = next(node for node in gate_tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "evaluate_auto_merge_gate")
+    defaults = dict(zip((arg.arg for arg in gate.args.kwonlyargs), gate.args.kw_defaults))
+    assert isinstance(defaults["review_policy"], ast.Name)
+    assert defaults["review_policy"].id == "REVIEW_POLICY_LEGACY"
+    routes = [node for node in ast.walk(gate) if isinstance(node, ast.If)
+              and ast.unparse(node.test) == "review_policy == REVIEW_POLICY_RULE12"
+              and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                      and call.func.id == "_evaluate_rule12_review"
+                      for statement in node.body for call in ast.walk(statement))]
+    assert len(routes) == 1
+    assert any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+               and call.func.id == "_evaluate_bridge_consensus"
+               for statement in routes[0].orelse for call in ast.walk(statement))
+    helper = next(node for node in gate_tree.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "_evaluate_rule12_review")
+    assert any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+               and call.func.id == "evaluate_rule12_review_eligibility" for call in ast.walk(helper))
+
+
+DOC_TRUTH_CONTROL = (
+    'tools/idle_consensus_auto_merge.py selects this pure evaluator for opt-in '
+    'review_policy="rule12". The default remains the legacy Rule 9a policy; '
+    'CI, charter and receipt checks stay in the caller.'
+)
+
+
+def test_rule12_module_doc_truth_matches_actual_opt_in_caller():
+    gate_tree = ast.parse((ROOT / "tools/idle_consensus_auto_merge.py").read_text(encoding="utf-8"))
+    _assert_doc_truth(r12.__doc__, gate_tree)
+
+
+def test_rule12_doc_truth_control_accepts_opt_in_legacy_default():
+    gate_tree = ast.parse((ROOT / "tools/idle_consensus_auto_merge.py").read_text(encoding="utf-8"))
+    _assert_doc_truth(DOC_TRUTH_CONTROL, gate_tree)
+
+
+@pytest.mark.parametrize("mutant", ["MUT_DOC_UNWIRED", "MUT_DOC_NO_GATE_CALLER", "MUT_DOC_DEFAULT_ON"])
+def test_rule12_doc_truth_named_mutants_are_rejected(mutant):
+    doc = {
+        "MUT_DOC_UNWIRED": "UNWIRED. " + DOC_TRUTH_CONTROL,
+        "MUT_DOC_NO_GATE_CALLER": DOC_TRUTH_CONTROL + " This module is NOT read by any merge gate yet.",
+        "MUT_DOC_DEFAULT_ON": DOC_TRUTH_CONTROL.replace("opt-in", "default-on"),
+    }[mutant]
+    gate_tree = ast.parse((ROOT / "tools/idle_consensus_auto_merge.py").read_text(encoding="utf-8"))
+    with pytest.raises(AssertionError, match=mutant):
+        _assert_doc_truth(doc, gate_tree)
 
 
 def ev(agent, type_, status, head=H, task=TASK, ts="2026-10-06T16:50:00Z", **extra):

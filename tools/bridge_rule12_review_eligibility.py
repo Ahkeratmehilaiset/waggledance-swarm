@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""CLAUDE.md Rule 12 review-eligibility evaluator (pure, fail-closed, UNWIRED).
+"""CLAUDE.md Rule 12 review-eligibility evaluator (pure, fail-closed, opt-in).
 
 Computes, for one task at one exact head, whether the Rule 12 review slots are
 held by eligible approvers:
@@ -69,9 +69,11 @@ Trust boundary: callers must pass identity-verified events (agent + agent_uuid
 checked against the bridge identity registry), the full event log for the task
 and the gate's own clock; this function cannot see forged or missing events.
 
-This module is NOT read by any merge gate yet. It decides nothing on its own;
-wiring it into ``tools/idle_consensus_auto_merge.py`` and the receipt writer is
-a separate (a)-class gate-code PR.
+The merge gate in ``tools/idle_consensus_auto_merge.py`` selects this evaluator
+only for opt-in ``review_policy="rule12"``; the default remains the legacy Rule 9a
+policy. This pure evaluator does not merge or activate itself; CI, charter and receipt
+checks stay with the caller. Its historical ``wired=False`` result field is
+unchanged and is not a deployment-status probe.
 """
 
 from __future__ import annotations

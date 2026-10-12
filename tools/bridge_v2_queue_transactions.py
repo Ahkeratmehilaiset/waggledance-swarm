@@ -11,7 +11,9 @@ One transaction (``QueueTransactions.transact``):
 
 1. BEFORE any lock, validates the operation, the idempotency key (1..512 characters) and
    the claim path: inside the root, a ``work_queue/claims/<name>.json`` file, no link or
-   reparse point on any existing component;
+   reparse point on any existing component. A key given as a function of the claim bytes is
+   derived under the locks from the bytes the plan sees, and validated before the WAL record
+   (WQ-F1: a key read before the locks can be the key of the record recovery just redid);
 2. takes the runtime-root mutex (``mutex_name(root)``) FIRST, then the exact legacy
    sibling claim lock ``<claim>.json.lock`` (``Enter-BridgeClaimLock`` spelling, an
    exclusive open retried every 25 ms, 4 s default like PowerShell), then, innermost, the
@@ -682,13 +684,15 @@ class QueueTransactions:
         return tuple(self.root.joinpath(*name.split("/")) for name in sorted(names))
 
     # -- one transaction --------------------------------------------------------------
-    def transact(self, op: str, claim_path: Path, idempotency_key: str,
+    def transact(self, op: str, claim_path: Path, idempotency_key: str | Callable[[bytes | None], str],
                  plan_fn: Callable[[bytes | None], Plan], *, fences: Sequence[Path] = ()) -> Any:
         """One transaction on one claim (module docstring). ``fences`` names session-heartbeat artifacts whose
-        sibling locks are held, innermost, from before the plan reads anything until the transaction ends."""
+        sibling locks are held, innermost, from before the plan reads anything until the transaction ends.
+        ``idempotency_key`` is a key, or a function of the claim bytes the plan sees (under the locks, after
+        recovery) that returns it; a derived key is validated before the WAL record (WQ-F1)."""
         if op not in OPS:
             raise QueueTransactionError("unknown queue operation")
-        if not isinstance(idempotency_key, str) or not 0 < len(idempotency_key) <= MAX_KEY_CHARS:
+        if not callable(idempotency_key) and not _valid_key(idempotency_key):
             raise QueueTransactionError("an idempotency key of 1..512 characters is required")
         claim_rel = self._relative(claim_path, _REL_CLAIM, "claim")   # before any lock (N4, N5)
         fence_paths = self._fence_paths(fences)                       # before any lock
@@ -708,7 +712,11 @@ class QueueTransactions:
                     raise Refused("the claim does not exist; it is never recreated")
                 if before is not None and plan.expect_absent:
                     raise Refused("a claim already exists at this path")
-                txn = self._record(op, claim_rel, idempotency_key, before, plan)   # every pre-effect check
+                key = idempotency_key(before) if callable(idempotency_key) else idempotency_key
+                if not _valid_key(key):
+                    raise QueueTransactionError("an idempotency key of 1..512 characters is required (derived under "
+                                                "the locks); nothing was written")
+                txn = self._record(op, claim_rel, key, before, plan)   # every pre-effect check
                 outcome = self._logged(txn, claim_path, before)
                 if outcome == "aborted":
                     raise Refused("the claim changed outside the lock; nothing applied")
@@ -1104,6 +1112,10 @@ class QueueTransactions:
                   "before_sha256": txn["before_sha256"], "after_sha256": txn["after_sha256"],
                   "event": txn["event"], "event_sha256": txn["event_sha256"]}
         _create_atomic(self._outbox_path(txn["idempotency_key"]), claim_bytes(record))
+
+
+def _valid_key(value: Any) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= MAX_KEY_CHARS
 
 
 def _hex(value: Any, pattern: re.Pattern) -> bool:

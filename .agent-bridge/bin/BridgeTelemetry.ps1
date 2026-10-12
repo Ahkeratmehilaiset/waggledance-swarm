@@ -151,9 +151,12 @@ function Write-BridgeWakeObservation {
     $metadata=ConvertTo-BridgeObservationMetadata -Reason $Reason -Watermark $Watermark -LatencyMs $LatencyMs -LatencyBasis $LatencyBasis
     # A second watcher of the same agent, or the consumer, can replace, hold, create or move the sentinel between
     # the read below and the publication (reproduced 2026-10-12: Win32 1175/1176/1177/32/183 in a third of the
-    # calls of two concurrent writers). Such an IOException is retried from a fresh read, so the other writer's
-    # bindings are merged rather than lost. It counts as success only when this writer's own staged bytes are at
-    # $Path; a lasting IOException is thrown after the fifth attempt, and any other exception at once.
+    # calls of two concurrent writers). Such an IOException is retried from a fresh read, which merges the other
+    # writer's bindings when its publication collided with this one. It counts as success only when this writer's
+    # own staged bytes are at $Path; a lasting IOException is thrown after the fifth attempt, and any other
+    # exception at once. The bindings are relay-latency telemetry only and stay possibly lossy: when both writers
+    # read the same snapshot and both publications succeed, the later one drops the earlier one's bindings and
+    # correlation_complete can stay true. Whether the sentinel exists (the wake itself) does not depend on them.
     for($attempt=1;;$attempt++){
         $bindings=[Collections.Generic.List[object]]::new()
         $complete=$true

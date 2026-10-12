@@ -63,6 +63,7 @@ def _commit(repo: Path, message: str, **files: str | None) -> str:
 REPOSITORY_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
                   "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
                   "GIT_REPLACE_REF_BASE")
+NL = chr(10)
 LINES = "".join(f"line {n}\n" for n in range(1, 21))
 
 
@@ -357,6 +358,31 @@ def test_a_pr_path_colliding_by_case_with_a_file_or_directory_never_carries(repo
     assert (proof["ok"], proof["reason"]) == (False, "case_collision")
     assert proof["case_collisions"] == sorted(name.replace("__", "/") for name in pr_files)
 
+
+DOTLESS_I = "\u0131"  # LATIN SMALL LETTER DOTLESS I: upper() is "I", casefold() is itself
+
+
+def test_a_dotless_i_variant_of_a_pr_path_in_the_base_delta_is_overlap(repo):
+    """RCO1 shared Grok on PR1861 (de7113e9, confirmed): NTFS upper-cases each name, so it holds one of the two."""
+    base = _base(repo)
+    head = _pr(repo, base, **{DOTLESS_I + ".txt": "pr" + NL})
+    main = _commit(repo, "main", **{"i.txt": "base" + NL})
+
+    proof = _verify(repo, head, _update(repo, head, main), main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "paths_overlap")
+    assert proof["overlap_paths"] == [DOTLESS_I + ".txt"]
+
+
+def test_a_dotless_i_pr_file_colliding_with_a_base_directory_never_carries(repo):
+    base = _base(repo)
+    head = _pr(repo, base, **{DOTLESS_I: "pr file" + NL})
+    main = _commit(repo, "main", **{"i__x.txt": "base dir" + NL})
+
+    proof = _verify(repo, head, _update(repo, head, main), main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "case_collision")
+    assert proof["case_collisions"] == [DOTLESS_I]
 
 def test_an_inherited_git_dir_never_redirects_the_proof(repo, tmp_path, monkeypatch):
     """RCO1 R2 / Codex P1 on PR1861 (same here): -C does not pin the repository while GIT_DIR is set."""

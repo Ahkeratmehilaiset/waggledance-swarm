@@ -403,3 +403,35 @@ def test_human_output_names_each_decision(lane, capsys):
     assert "CANDIDATE" in out and "fable-5-clean" in out
     assert "KEEP" in out and "ignored_content" in out and "fable-5-evidence" in out
     assert "dry run" in out.lower()
+
+
+# --- e30166d0 mutant survivors: an unreadable or odd git answer must keep the worktree -----------
+
+
+@pytest.mark.parametrize("answer", [(128, "", ""), (0, "", ""), (0, "two\n", ""), (0, "-1\n", "")])
+def test_an_unreadable_outside_refs_count_is_unknown_not_clean(monkeypatch, answer):
+    """Survivor MUT_PR_OUTSIDE_REFS_FAILS_OPEN: a failed or non-numeric rev-list count is unknown (keep),
+    never "every commit is in a ref" (which would let the worktree be removed)."""
+    prune = _prune()
+    monkeypatch.setattr(prune, "_git", lambda args, cwd=None, stdin=None: answer)
+
+    assert prune._outside_refs("repo", {"a" * 40}) is None
+
+
+@pytest.mark.parametrize("line", ["--all", "not-a-sha", "a" * 39, "A" * 40])
+def test_a_reflog_line_that_is_not_an_object_name_is_unknown_and_never_reaches_rev_list(monkeypatch, line):
+    """Survivor MUT_PR_REFLOG_SHA_UNCHECKED: rev-list --stdin also reads pseudo-options such as --all, so an
+    unvalidated reflog line could change the count; it must make the answer unknown before rev-list runs."""
+    prune = _prune()
+    calls = []
+
+    def fake_git(args, cwd=None, stdin=None):
+        calls.append(list(args))
+        if "log" in args:
+            return 0, f"{'b' * 40}\n{line}\n", ""
+        return 0, "0\n", ""  # rev-list would say "no commit outside the refs"
+
+    monkeypatch.setattr(prune, "_git", fake_git)
+
+    assert prune._reflog_only_commits("worktree", "repo") is None
+    assert not any("rev-list" in call for call in calls)

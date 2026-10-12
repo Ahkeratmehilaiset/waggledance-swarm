@@ -25,6 +25,18 @@ def _event(*, agent="operator", task=TASK, to="", type="message", status="hold")
                 ts_utc="2026-09-28T22:59:00Z", payload={})
 
 
+def _nest(levels, leaf):
+    """A payload whose innermost object, ``leaf``, sits at nesting level ``levels`` (the payload is level 1)."""
+    node = leaf
+    for _ in range(levels - 1):
+        node = {"n": node}
+    return node
+
+
+def _without_payload(row):
+    return {key: value for key, value in row.items() if key != "payload"}
+
+
 def _fixture(tmp_path, rows, agent=AGENT):
     bundle = tmp_path / "bundle"
     helper_dir = bundle / "tools-bootstrap/.agent-bridge/bin"
@@ -116,6 +128,19 @@ DIAGNOSTICS = {
     | {"payload": {"changes": "x", "requested": "x"}},
     "own-finding-payload-reversed-dot": _event(agent=AGENT, type="finding", status="confirmed_bug")
     | {"payload": {"requested.changes": "x"}},
+    # RCO1/RCO2 on PR1843: nested structure without a control-named field stays a diagnostic, up to the
+    # 16-level and 8192-value bounds.
+    "worker-nested-clean-evidence": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"evidence": {"tests": [{"name": "x", "outcome": "passed"}], "head": "x"},
+                   "findings": [{"id": "x", "classification": "x"}, ["x", {"note": "x"}, []]]}},
+    "fable-nested-clean-evidence": _event(agent="fable-5", type="message", status="blocked")
+    | {"payload": {"evidence": [{"path": "x"}, []], "result": {"summary": "x", "native_exit": 0}}},
+    "own-finding-nested-clean": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"finding": {"id": "x", "evidence": ["x", {"path": "x"}]}}},
+    "worker-nested-clean-at-level-16": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": _nest(16, {"x": 1})},
+    "worker-payload-8002-values": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": {"items": list(range(8000))}},
 }
 
 
@@ -149,6 +174,41 @@ CONTROL_TWINS = {
     | {"payload": {"control": "pause"}},
     "camel-payload-hold-field": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": {"onHold": 1}},
     "payload-not-an-object": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": "hold"},
+    # Bot 4241335136 on PR1849 (Lead-confirmed): a missing or null payload cannot be inspected, so a
+    # known-worker or own-finding row that would otherwise be a diagnostic stays a control.
+    "worker-blocked-payload-absent": _without_payload(_event(agent=WORKER, type="blocked", status="blocked")),
+    "worker-blocked-payload-null": _event(agent=WORKER, type="blocked", status="blocked") | {"payload": None},
+    "fable-message-blocked-payload-absent": _without_payload(
+        _event(agent="fable-5", type="message", status="blocked")),
+    "fable-status-blocked-payload-null": _event(agent="fable-5", type="status", status="routing_blocked")
+    | {"payload": None},
+    "own-finding-payload-absent": _without_payload(_event(agent=AGENT, type="finding", status="confirmed_bug")),
+    "own-finding-payload-null": _event(agent=AGENT, type="finding", status="suspected_bug") | {"payload": None},
+    # RCO1 15:25Z / RCO2 CHANGES_REQUESTED 15:26Z on PR1843 (Tools, bot 4242064499): a control-named field at
+    # any depth, in a nested object or an array element, keeps a known-worker or own-finding row a control.
+    "worker-nested-object-release-held": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"details": {"release_held": True}}},
+    "worker-nested-result-work-held": DIAGNOSTICS["worker-message-blocked"]
+    | {"payload": {"result": {"work_held": True}, "result_validation": {}, "execution_evidence": {}}},
+    "worker-array-element-control": _event(agent=WORKER, type="status", status="routing_blocked")
+    | {"payload": {"details": [{"control": "pause"}]}},
+    "worker-array-in-array-hold-field": _event(agent=WORKER, type="blocked", status="waiting_dependency")
+    | {"payload": {"steps": [[1, {"onHold": 1}]]}},
+    "worker-control-field-at-level-16": _event(agent=WORKER, type="message", status="blocked")
+    | {"payload": _nest(16, {"changes_requested": False})},
+    "fable-nested-object-release-held": _event(agent="fable-5", type="message", status="blocked")
+    | {"payload": {"details": {"release_held": True}}},
+    "fable-array-element-control": _event(agent="fable-5", type="status", status="routing_blocked")
+    | {"payload": {"evidence": [{"path": "x"}, {"control": "pause"}]}},
+    "own-finding-nested-hold-field": _event(agent=AGENT, type="finding", status="confirmed_bug")
+    | {"payload": {"finding": {"release_held": False}}},
+    # A payload that cannot be fully scanned stays a control, even when every name in it is clean.
+    "worker-payload-level-17": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": _nest(17, {"x": 1})},
+    "fable-payload-level-17-array": _event(agent="fable-5", type="message", status="blocked")
+    | {"payload": _nest(16, {"x": [1]})},
+    "worker-payload-8202-values": _event(agent=WORKER, type="blocked", status="blocked")
+    | {"payload": {"items": list(range(8200))}},
     "rco1-blocked": _event(agent="claude-rco-1", type="blocked", status="blocked"),
     "rco2-message-blocked": _event(agent="claude-rco-2", type="message", status="blocked"),
     "rco-finding-confirmed-bug": _event(agent="claude-rco-2", type="finding", status="confirmed_bug"),

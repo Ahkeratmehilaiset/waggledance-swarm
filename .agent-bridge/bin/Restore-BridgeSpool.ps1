@@ -111,7 +111,7 @@ function ConvertTo-BridgeNativeLongPath {
         if ($segment.Length -eq 0 -or $segment -eq '.' -or $segment -eq '..' -or
             $segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.Contains(':')) { return $Path }
         $stem = $segment.Split('.')[0].TrimEnd(' ')
-        if ($stem -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9\u00B9\u00B2\u00B3]|LPT[0-9\u00B9\u00B2\u00B3])$') { return $Path }
+        if ($stem -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$') { return $Path }
     }
     '\\?\' + $Path
 }

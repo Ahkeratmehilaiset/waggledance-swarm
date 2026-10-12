@@ -151,6 +151,7 @@ def _convert(executable: str, path: str) -> str:
 
 
 LONG = "C:\\" + "\\".join(["segment" + str(i).zfill(3) for i in range(40)]) + "\\events.jsonl"
+RESERVED_STEMS = [prefix + digit for prefix in ("COM", "LPT") for digit in "123456789\u00b9\u00b2\u00b3"]
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -172,6 +173,12 @@ def test_only_long_canonical_drive_paths_gain_the_prefix(shell: str) -> None:
     LONG.replace("\\segment005\\", "\\\\"),
     LONG.replace("\\segment005\\", "\\NUL\\"),
     LONG.replace("\\segment005\\", "\\com1.txt\\"),
+    # Every reserved stem stays unprefixed: COM and LPT with digits 1-9 and superscript 1-3 (Codex P2 4240969607 on
+    # PR1804; Grok c0a8c1aa B4: the whole set, so no single-class mutant survives), in any case and with an extension.
+    *[LONG.replace("\\segment005\\", "\\" + stem + "\\") for stem in RESERVED_STEMS],
+    LONG.replace("\\segment005\\", "\\lpt1\\"),
+    LONG.replace("\\segment005\\", "\\LPT9.log\\"),
+    LONG.replace("\\segment005\\", "\\lpt\u00b3.txt\\"),
     LONG.replace("\\events.jsonl", "\\foo.\x00x"),
     LONG.replace("\\events.jsonl", "\\foo \x00x"),
     LONG[3:],
@@ -183,3 +190,13 @@ def test_non_canonical_or_already_qualified_paths_pass_unchanged(shell: str, pat
     executable = _shell(shell)
 
     assert _convert(executable, path) == path
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("name", ["COM0", "lpt0", "COM0.txt", "LPT0.log", "COM10", "LPT10", "COM", "LPTX"])
+def test_names_that_are_not_dos_devices_still_gain_the_prefix(shell: str, name: str) -> None:
+    # Operator train 3 item 2 (Codex P2 4240969607 on PR1804): Windows reserves COM1-COM9 and LPT1-LPT9 and their
+    # superscript 1-3 forms, not COM0 or LPT0, so a deep runtime root through such a directory is still prefixed.
+    path = LONG.replace("\\segment005\\", "\\" + name + "\\")
+
+    assert _convert(_shell(shell), path) == "\\\\?\\" + path

@@ -1119,17 +1119,86 @@ function Test-WdContinuityControlEvents {
         # when the checkpoint is rewritten. We do not infer a HOLD release.
         # Do not allow a later ordinary message to hide an earlier control.
         # Status tokens express controls; ordinary awaiting/result/failure
-        # observations are not themselves safety HOLDs. Same-task findings
-        # remain conservative blockers until the task is reconciled manually.
-        # This does not infer release from a later approval or normal message.
+        # observations are not themselves safety HOLDs. This does not infer
+        # release from a later approval or normal message.
         $statusTokens = (([string]$event.status -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
-            -replace 'changes[_-]requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
-        $controlTokens = @('hold','held','holding','onhold','pause','paused','block','blocked',
+            -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+        $controlTokens = @('hold','held','holding','onhold','pause','paused',
             'cancel','cancelled','canceled','veto','vetoed','freeze','frozen','stop','stopped',
             'halt','halted','abort','aborted','quarantine','quarantined','rollback','revert',
             'reverted','changesrequested')
-        if ($event.type -ceq 'blocked' -or ($sameTask -and $event.type -ceq 'finding') -or
-            @($statusTokens | Where-Object { $controlTokens -ccontains $_ }).Count -gt 0) {
+        $blocking = $event.type -ceq 'blocked' -or @($statusTokens | Where-Object { $_ -cin @('block','blocked') }).Count -gt 0
+        $finding = $sameTask -and $event.type -ceq 'finding'
+        if (@($statusTokens | Where-Object { $controlTokens -ccontains $_ }).Count -gt 0) {
+            $cache.held = $true
+            return $true
+        }
+        if (-not ($blocking -or $finding)) { continue }
+        # Explicit control is decided before any diagnostic exemption. A payload
+        # field named like a control (release_held, work_held, control, ...) keeps
+        # the row a control whatever its value and however deep it sits: the field
+        # names of every nested object, including objects inside arrays, are
+        # scanned (RCO1/RCO2 on PR1843, bot 4242064499). A payload that cannot be
+        # fully inspected stays a control: missing, null or not an object (bot
+        # 4241335136 on PR1849), an object or array nested deeper than 16 levels
+        # (the payload is level 1), or more than 8192 values in all (each object,
+        # array, string, number, boolean and null counts once, the payload
+        # included). Only an object payload whose field names were all scanned
+        # can clear the row.
+        $payloadControl = $true
+        $payloadProperty = $event.PSObject.Properties['payload']
+        if ($null -ne $payloadProperty -and ($payloadProperty.Value -is [Collections.IDictionary] -or
+            $payloadProperty.Value -is [Management.Automation.PSCustomObject])) {
+            $payloadControl = $false
+            $nodes = New-Object Collections.Generic.Stack[object]
+            $levels = New-Object Collections.Generic.Stack[int]
+            $nodes.Push($payloadProperty.Value); $levels.Push(1)
+            $valuesLeft = 8192 - 1
+            while ($nodes.Count -gt 0 -and -not $payloadControl) {
+                $node = $nodes.Pop(); $level = $levels.Pop()
+                $names = New-Object Collections.Generic.List[string]
+                $values = New-Object Collections.Generic.List[object]
+                if ($node -is [Collections.IDictionary]) {
+                    foreach ($entry in $node.GetEnumerator()) { $names.Add([string]$entry.Key); $values.Add($entry.Value) }
+                } elseif ($node -is [Management.Automation.PSCustomObject]) {
+                    foreach ($property in @($node.PSObject.Properties)) { $names.Add($property.Name); $values.Add($property.Value) }
+                } else {
+                    foreach ($item in $node) { $values.Add($item) }
+                }
+                $valuesLeft -= $values.Count
+                if ($level -gt 16 -or $valuesLeft -lt 0) { $payloadControl = $true; break }
+                foreach ($name in $names) {
+                    $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
+                        -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+                    if (@($nameTokens | Where-Object { $controlTokens -ccontains $_ -or $_ -cin @('block','blocked','control') }).Count -gt 0) {
+                        $payloadControl = $true
+                    }
+                }
+                foreach ($value in $values) {
+                    if ($value -is [Collections.IDictionary] -or $value -is [Management.Automation.PSCustomObject] -or
+                        ($value -is [Collections.IEnumerable] -and $value -isnot [string])) {
+                        $nodes.Push($value); $levels.Push($level + 1)
+                    }
+                }
+            }
+        }
+        # Diagnostics, never a standing HOLD (RCO2 triage F209BCC1): a known
+        # worker's (codex-tools-1, fable-5) blocked progress report on this task,
+        # never this lane's own, and this lane's own bug findings. Every other
+        # identity - operator, Lead, RCO, an unknown or rotated name (P1806-F1) -
+        # and any unrecognized type or status stays a control (fail closed).
+        $author = [string]$event.agent
+        $diagnostic = $false
+        if (-not $payloadControl -and $author -cmatch '^[a-z][a-z0-9-]{0,63}$' -and
+            $author -cnotin @('operator','claude-rco-1','claude-rco-2')) {
+            if ($finding) {
+                $diagnostic = $author -ceq $Agent -and [string]$event.status -cin @('confirmed_bug','suspected_bug')
+            } else {
+                $diagnostic = $sameTask -and $author -cin @('codex-tools-1', 'fable-5') -and $author -cne $Agent -and
+                    $event.type -cin @('blocked','message','status')
+            }
+        }
+        if (-not $diagnostic) {
             $cache.held = $true
             return $true
         }

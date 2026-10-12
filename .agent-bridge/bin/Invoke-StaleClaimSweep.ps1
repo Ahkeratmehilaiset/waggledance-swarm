@@ -314,8 +314,15 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     # A-F1 (RCO1 2026-09-30): only a PROVEN not-live owner is swept; a beat
     # that exists but cannot be read or evaluated is 'unknown' and the
     # claim stays this round, as in the core sweeper.
+    # SW-S1 (RCO2 ledger 4EE1BFA8): judge the beat with a clock read now,
+    # under the claim and beat locks. $now was read once before the root
+    # mutex and every lock wait, so a valid beat the owner wrote while this
+    # sweep waited could lie more than 60 s past it and look future-dated
+    # (not live). $now still drives the expiry check above and the archive
+    # stamp: an older clock only sweeps less.
+    $decisionNowUtc = (Get-Date).ToUniversalTime()
     if ((Get-BridgeSessionHeartbeatLiveness -Root $bridgeRoot -Claim $claim `
-            -NowUtc $now) -cne 'not_live') {
+            -NowUtc $decisionNowUtc) -cne 'not_live') {
         continue
     }
 

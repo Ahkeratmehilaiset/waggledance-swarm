@@ -58,9 +58,13 @@ $ok=Invoke-WdWatcherFleetPlan @planArguments
     (1,1,0,False,False,'keep'), (1,0,1,False,False,'keep'),
     (2,1,0,False,True,'conflict'), (1,0,0,False,True,'conflict'), (1,1,1,False,True,'conflict'),
     (0,0,0,True,True,'conflict'), (1,1,0,True,True,'conflict'), (1,1,0,True,False,'conflict'),
-    (0,1,0,False,True,'conflict')])
+    (0,1,0,False,True,'conflict'),
+    (0,0,0,False,False,'absent'), (2,1,0,False,False,'conflict'), (2,0,2,False,False,'conflict'),
+    (1,0,0,False,False,'conflict'), (1,1,1,False,False,'conflict'), (0,0,0,True,False,'conflict'),
+    (1,0,1,True,False,'conflict'), (0,1,0,False,False,'conflict')])
 def test_retirement_requires_one_verified_external_producer(ps, all_count, exact, stale, marker, verified, expected):
-    """MUTANT_RETIRE_OPAQUE_PROCESS / MUTANT_RETIRE_PERSISTENT_CONFLICT / MUTANT_RETIRE_WITHOUT_VERIFIED_PRODUCER."""
+    """MUTANT_RETIRE_OPAQUE_PROCESS / MUTANT_RETIRE_PERSISTENT_CONFLICT / MUTANT_RETIRE_WITHOUT_VERIFIED_PRODUCER /
+    MUTANT_KEEP_BEFORE_COUNT_CHECK: the supervisor passes verified=$false, so every conflict row runs on that path too."""
     script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdRetiredLeadWatcherDisposition')
     script += (f"Get-WdRetiredLeadWatcherDisposition -AllCount {all_count} -ExactCount {exact} -ReplaceableCount {stale}"
                f" -ConflictMarkerExists ${str(marker).lower()} -NewGenerationProducerVerified ${str(verified).lower()}")
@@ -89,6 +93,80 @@ def test_lead_watcher_post_reconcile_matches_the_plan(ps, disposition, remaining
     script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdLeadWatcherPostReconcileResult')
     script += f"Get-WdLeadWatcherPostReconcileResult -Disposition {disposition} -RemainingCount {remaining}"
     assert _run_powershell(script, executable=ps).stdout.strip() == expected
+
+
+def _lead_branch(marker):
+    """PowerShell that runs the supervisor's own `if ($agent -ceq 'codex-lead-1')` branch calling MARKER, inside a
+    one-lane loop as in the supervisor; $script:fell is what reaches the generic code after the branch."""
+    return f"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(REBOOT / 'wd_supervisor.ps1')},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse error'}}
+$branches=@($ast.FindAll({{param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -eq 1 -and
+ $n.Clauses[0].Item1.Extent.Text -ceq "`$agent -ceq 'codex-lead-1'" -and $n.Clauses[0].Item2.Extent.Text.Contains({q(marker)})}},$true))
+if($branches.Count -ne 1){{throw "codex-lead-1 branches calling {marker}: $($branches.Count)"}}
+$script:fell=$null
+. ([scriptblock]::Create("foreach (`$agent in @('codex-lead-1')) {{`n" + $branches[0].Extent.Text + "`n`$script:fell=`$watcherDisposition`n}}"))
+"""
+
+
+def _processes(pids):
+    return '@(' + ','.join(f'[pscustomobject]@{{ProcessId={pid}}}' for pid in pids) + ')'
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case,all_pids,exact,stale,marker,plans,fell,lead', [
+    ('exact', [4242], 1, 0, False, [dict(agent='codex-lead-1', action='current', pid=4242)], None, 'keep'),
+    ('stale', [4242], 0, 1, False, [dict(agent='codex-lead-1', action='current', pid=4242)], None, 'keep'),
+    ('absent', [], 0, 0, False, [], None, 'absent'),
+    ('duplicate', [4242, 4243], 1, 1, False, [], 'conflict', 'conflict'),
+    ('opaque', [4242], 0, 0, False, [], 'conflict', 'conflict'),
+    ('marker', [4242], 1, 0, True, [], 'conflict', 'conflict')])
+def test_supervisor_plan_keeps_the_sole_lead_watcher(ps, case, all_pids, exact, stale, marker, plans, fell, lead):
+    """Grok challenge on the R1 candidate: the pure function alone left the supervisor's own branch untested.
+    MUTANT_KEEP_BRANCH_REMOVED sends 'keep' to the generic conflict sink (fleet never applies);
+    MUTANT_KEEP_PLAN_REPLACES / MUTANT_KEEP_PLAN_WITHOUT_PROCESS change what the plan does to the kept process."""
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdRetiredLeadWatcherDisposition')
+    script += f"""
+$allAgentWatchers={_processes(all_pids)}
+$exactAgentWatchers=@($allAgentWatchers|Select-Object -First {exact})
+$replaceableAgentWatchers=@($allAgentWatchers|Select-Object -Skip {exact}|Select-Object -First {stale})
+$watcherConflictMarkerExists=${str(marker).lower()}
+$watcherPlans=[Collections.Generic.List[object]]::new();$actions=[Collections.Generic.List[string]]::new()
+$leadWatcherDisposition='unset';$watcherDisposition='unset'
+{_lead_branch('Get-WdRetiredLeadWatcherDisposition')}
+@{{plans=@($watcherPlans|ForEach-Object {{@{{agent=$_.agent;action=$_.action;pid=[int]$_.process.ProcessId}}}});
+ actions=@($actions);fell=$script:fell;lead=$leadWatcherDisposition}}|ConvertTo-Json -Depth 5 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout.strip().splitlines()[-1])
+    assert (result['plans'], result['fell'], result['lead']) == (plans, fell, lead), result
+    kept = ['KEPT external supervised Lead watcher pid=4242: new-generation native Lead session producer not verified']
+    assert result['actions'] == (kept if lead == 'keep' else [])
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('disposition,remaining,action,conflict', [
+    ('keep', 1, 'VERIFIED external supervised Lead watcher kept; session producer not certified', None),
+    ('keep', 0, None, 'supervised Lead watcher count=0 after keep'),
+    ('keep', 2, None, 'supervised Lead watcher count=2 after keep'),
+    ('retire', 0, 'VERIFIED no external supervised Lead watcher; session producer not certified', None),
+    ('retire', 1, None, 'supervised Lead watcher count=1 after retire'),
+    ('absent', 0, 'VERIFIED no external supervised Lead watcher; session producer not certified', None),
+    ('absent', 1, None, 'supervised Lead watcher count=1 after absent')])
+def test_supervisor_post_apply_check_reports_the_lead_watcher(ps, disposition, remaining, action, conflict):
+    """MUTANT_POST_RESULT_IGNORED / MUTANT_POST_CONFLICT_DROPPED: the supervisor's own post-apply branch, not only the
+    helper, turns the result into a verified action or a conflict, and never reaches the four-lane check."""
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdLeadWatcherPostReconcileResult')
+    script += f"""
+$leadWatcherDisposition='{disposition}'
+$allVerifiedAgentWatchers={_processes(range(4242, 4242 + remaining))}
+$actions=[Collections.Generic.List[string]]::new();$watcherConflictMessages=[Collections.Generic.List[string]]::new()
+$watcherDisposition='unset'
+{_lead_branch('Get-WdLeadWatcherPostReconcileResult')}
+@{{actions=@($actions);conflicts=@($watcherConflictMessages);fell=$script:fell}}|ConvertTo-Json -Depth 5 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout.strip().splitlines()[-1])
+    assert result == dict(actions=[action] if action else [], conflicts=[conflict] if conflict else [], fell=None), result
 
 
 def test_supervisor_never_claims_a_verified_lead_producer():

@@ -336,9 +336,36 @@ def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     paths = {module.replace(".", "/") + ".py" for module in modules}
     assert paths <= set(definition["python_files"])
     assert modules <= set(definition["import_smoke"]["package_modules"])
+    adapter = "tools/rule12_grok_ledger_adapter.py"
+    assert adapter in definition["python_files"]
+    # The already-smoked idle gate imports the adapter transitively; no new entrypoint.
+    reached, _ = _closure(["tools/idle_consensus_auto_merge.py"])
+    assert adapter in reached
     assert _published_gate_paths(definition) == set(RCO_CHECKERS)
     assert definition["python_entrypoints"].get("rco_changes_requested") == RCO_CHECKERS[0]
     assert definition["python_entrypoints"].get("rco_pass_present") == RCO_CHECKERS[1]
+
+
+@pytest.mark.parametrize("mutation", ["adapter_file_drop", "adapter_transitive_smoke_closure_drop"])
+def test_dropping_rule12_grok_adapter_breaks_gate_delivery_checks(monkeypatch, mutation):
+    """c0093: the real delivery check kills adapter drops, with a clean control."""
+    test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation()
+    adapter = "tools/rule12_grok_ledger_adapter.py"
+    if mutation == "adapter_file_drop":
+        definition = _definition()
+        definition["python_files"].remove(adapter)
+        monkeypatch.setitem(globals(), "_definition", lambda: definition)
+    else:
+        original_closure = _closure
+
+        def without_adapter(seeds):
+            reached, unresolved = original_closure(seeds)
+            return {path: importers for path, importers in reached.items()
+                    if path != adapter}, unresolved
+
+        monkeypatch.setitem(globals(), "_closure", without_adapter)
+    with pytest.raises(AssertionError):
+        test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation()
 
 
 @pytest.mark.parametrize("executor", GATE_EXECUTORS)

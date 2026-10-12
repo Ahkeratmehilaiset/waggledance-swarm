@@ -21,8 +21,10 @@ nearest existing ancestor. A measurement that fails counts as BLOCK. The worst v
     python tools/wd_disk_guard.py check --purpose worktree --path C:/path/new-wt --json
     python tools/wd_disk_guard.py worktree-add --repo . -- --detach C:/path/new-wt origin/main
 
-``worktree-add`` checks the target and then runs ``git worktree add`` with the arguments
-unchanged; arguments it cannot parse are refused (exit 2) rather than guessed. Freeing
+``worktree-add`` checks the target, the repository and its common git dir (where git writes
+the new worktree's index and metadata; when git cannot name it, ``git worktree add`` fails on
+its own) and then runs ``git worktree add`` with the arguments unchanged; arguments it cannot
+parse are refused (exit 2) rather than guessed. Freeing
 space: ``tools/wd_prune_own_worktrees.py`` (owner-scoped, dry run by default).
 
 Not covered here: the bridge worktree scripts under ``.agent-bridge/bin`` do not call this
@@ -215,7 +217,13 @@ def _worktree_add(options: list[str]) -> int:
     except ValueError as exc:
         print(f"WD-DISK-GUARD refused: {exc}", file=sys.stderr)
         return 2
-    result = check("worktree", [os.path.join(repo, target)])
+    # git writes the new worktree's index and metadata into the common git dir, so its volume counts too
+    paths = [os.path.join(repo, target), repo]
+    common = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True)
+    if common.returncode == 0 and common.stdout.strip():
+        paths.append(common.stdout.strip())
+    result = check("worktree", paths)
     if result["verdict"] != "ok":
         print(format_line(result), file=sys.stderr)
     if result["verdict"] == "block":

@@ -34,11 +34,14 @@ of these hold, checked in this order (the first failing check is the reported KE
 * ``unreachable_head``: HEAD is contained in a branch, remote-tracking ref or tag
   (``refs/stash`` does not count; it is shared and short-lived);
 * ``reflog_only_commits`` / ``reflog_unreadable``: every commit reachable from the worktree's
-  HEAD reflog (deleted with the worktree) is also reachable from those refs.
+  HEAD reflog (deleted with the worktree) is also reachable from those refs;
+* ``pseudo_ref_only_commits`` / ``pseudo_ref_unreadable``: the commit ``ORIG_HEAD`` names and
+  every commit a ``FETCH_HEAD`` line names (both are files in the worktree's git dir, deleted
+  with it) are reachable from those refs too; a line without an object name keeps the worktree.
 
 Beyond the 2026-10-11 cleanups (which counted any ref, ``refs/stash`` included) this tool
-excludes ``refs/stash`` and adds the lane-name, operation, index-flag, per-worktree-ref and
-reflog checks; each of those only keeps more, never removes more.
+excludes ``refs/stash`` and adds the lane-name, operation, index-flag, per-worktree-ref,
+reflog and ORIG_HEAD/FETCH_HEAD checks; each of those only keeps more, never removes more.
 
 The default is a dry run. ``--apply`` runs every check again on each candidate right before
 removing it, on the worktree as ``git worktree list`` reports it then, and requires the same
@@ -84,6 +87,7 @@ _OPERATION_MARKERS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _REACHABLE_REF_ROOTS = ("refs/heads", "refs/remotes", "refs/tags")
 _PER_WORKTREE_REF_ROOTS = ("refs/worktree", "refs/bisect", "refs/rewritten")
+_PSEUDO_REF_FILES = ("ORIG_HEAD", "FETCH_HEAD")  # per-worktree files that can name a commit no ref holds
 _MAX_REFLOG_COMMITS = 400  # keeps the rev-list command line far below the Windows limit
 
 
@@ -196,6 +200,38 @@ def _reflog_only_commits(path: str, repo: str) -> bool | None:
     return int(out.strip()) > 0
 
 
+def _pseudo_ref_only_commits(path: str, repo: str) -> bool | None:
+    """True when ORIG_HEAD or any FETCH_HEAD line names a commit in no branch, remote ref or tag."""
+    code, out, _ = _git(["-C", path, "rev-parse", "--absolute-git-dir"])
+    gitdir = out.strip()
+    if code != 0 or not gitdir:
+        return None
+    shas = set()
+    for name in _PSEUDO_REF_FILES:
+        try:
+            with open(os.path.join(gitdir, name), "rb") as handle:  # a FETCH_HEAD description may be any bytes
+                lines = handle.read().splitlines()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        for line in lines:
+            if not line.strip():
+                continue
+            sha = line.split(b"\t", 1)[0].strip().decode("ascii", "replace")
+            if not _SHA.match(sha):
+                return None
+            shas.add(sha)
+    if not shas:
+        return False
+    if len(shas) > _MAX_REFLOG_COMMITS:
+        return None
+    code, out, _ = _git(["-C", repo, "rev-list", "--count", *sorted(shas), "--not", "--branches", "--remotes", "--tags"])
+    if code != 0 or not out.strip().isdigit():
+        return None
+    return int(out.strip()) > 0
+
+
 def _operation_in_progress(path: str) -> bool | None:
     code, out, _ = _git(["-C", path, "rev-parse", "--absolute-git-dir"])
     gitdir = out.strip()
@@ -269,6 +305,11 @@ def classify(entry: dict, *, index: int, owner: str, protected: Sequence[str], r
         return "keep", "reflog_unreadable"
     if reflog_only:
         return "keep", "reflog_only_commits"
+    pseudo_only = _pseudo_ref_only_commits(path, repo)
+    if pseudo_only is None:
+        return "keep", "pseudo_ref_unreadable"
+    if pseudo_only:
+        return "keep", "pseudo_ref_only_commits"
     return "candidate", "eligible"
 
 

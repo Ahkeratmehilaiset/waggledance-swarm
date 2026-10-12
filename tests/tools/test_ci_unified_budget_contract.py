@@ -11,6 +11,9 @@ that start PowerShell (1.23 s each).
 The fix is a bounded budget, not fewer tests: the job keeps every step, the pytest
 step keeps the full ``tests/`` run, and the limit is an explicit integer above the
 measured need (about 64 minutes: 3.3 before pytest, about 60 in it) but bounded.
+
+Scope: this pins the workflow file only. Pytest configuration (pyproject.toml) and
+conftest.py files can also narrow a run; they are outside this contract.
 """
 from pathlib import Path
 
@@ -75,3 +78,18 @@ def test_the_unified_budget_is_a_bounded_integer_above_the_measured_need():
 
 def test_the_lock_resolver_budget_is_unchanged():
     assert _jobs()["lock-resolver-check"]["timeout-minutes"] == 10
+
+
+def test_nothing_in_the_workflow_can_skip_or_narrow_the_pytest_run():
+    """Grok advice 4f94920d (Q2): a job-level if, an env or defaults block, a working directory or a
+    GITHUB_ENV/GITHUB_PATH export would skip or narrow the run while the pinned command stays intact."""
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["unified"]
+
+    assert set(workflow) == {"name", True, "jobs"}  # YAML 1.1 reads the "on" key as True
+    assert set(job) == {"runs-on", "timeout-minutes", "steps"}
+    assert set(_step(job, "Run pytest")) == {"name", "run"}
+    assert not [step for step in job["steps"] if "env" in step or "working-directory" in step or "shell" in step]
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for token in ("PYTEST_ADDOPTS", "GITHUB_ENV", "GITHUB_PATH"):
+        assert token not in text, token

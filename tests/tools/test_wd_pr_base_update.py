@@ -335,7 +335,11 @@ def test_push_is_a_verified_fast_forward_of_the_reviewed_head(repo, remote, tmp_
     assert receipt["push"]["remote_tip_before"] == head
     assert receipt["push"]["remote_tip_after"] == new_head
     assert receipt["push"]["verified"] is True
-    assert receipt["push"]["argv"] == ["push", "origin", f"{new_head}:refs/heads/fable-5/topic"]
+    assert receipt["push"]["argv"] == ["push", "--no-follow-tags", "--recurse-submodules=no", "origin",
+                                       f"{new_head}:refs/heads/fable-5/topic"]
+    assert receipt["push"]["ls_remote_before"] == [f"{head}\trefs/heads/fable-5/topic"]
+    assert receipt["push"]["ls_remote_after"] == [f"{new_head}\trefs/heads/fable-5/topic"]
+    assert receipt["push"]["push_url_matches_fetch_url"] is True
 
 
 @pytest.mark.parametrize("case", ["moved", "missing"])
@@ -386,7 +390,7 @@ def test_a_push_the_remote_does_not_show_is_unverified_and_not_retried(repo, rem
 def test_push_argv_never_forces():
     tool = _tool()
     argv = tool._push_argv("origin", "a" * 40, "fable-5/topic")
-    assert argv == ["push", "origin", "a" * 40 + ":refs/heads/fable-5/topic"]
+    assert argv == ["push", "--no-follow-tags", "--recurse-submodules=no", "origin", "a" * 40 + ":refs/heads/fable-5/topic"]
     source = TOOL.read_text(encoding="utf-8")
     for forbidden in ("--force", "force-with-lease", "--mirror", "+refs/", '"-f"', "'-f'"):
         assert forbidden not in source, forbidden
@@ -411,6 +415,191 @@ def test_push_options_require_push(repo, tmp_path, capsys):
     _commit(repo, "main", **{"c.txt": "c\n"})
     assert _tool().main(_args(repo, tmp_path / "r.json", head, base, "main", "--branch", "fable-5/topic")) == 2
     assert _tool().main(_args(repo, tmp_path / "r.json", head, base, "main", "--push")) == 2
+
+
+# --- Grok self-challenge on ee016336 (report 70547a2ed1024a3183da70d0751e5f65) ---
+
+def test_replace_refs_do_not_change_what_is_carried(repo, tmp_path, capsys):
+    """Q1: with refs/replace, diff-tree and merge-tree would read a replacement of the reviewed head while
+    commit-tree still names the real one. Every git call runs with replacement objects disabled."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "reviewed\n"})
+    _git(repo, "checkout", "-q", "--detach", base)
+    _write(repo, "p.txt", "not reviewed\n")
+    _git(repo, "add", "p.txt")
+    other = _git(repo, "commit-tree", _git(repo, "write-tree").strip(), "-p", base, "-m", "pr change").strip()
+    _git(repo, "checkout", "-q", "-f", "main")
+    _git(repo, "replace", head, other)
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "updated"), receipt
+    assert _git(repo, "--no-replace-objects", "show", f"{receipt['new_head']}:p.txt") == "reviewed\n"
+    assert receipt["replace_refs"] == 1
+
+
+def test_grafts_are_refused(repo, tmp_path, capsys):
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    grafts = Path(_git(repo, "rev-parse", "--git-path", "info/grafts").strip())
+    if not grafts.is_absolute():
+        grafts = repo / grafts
+    grafts.parent.mkdir(parents=True, exist_ok=True)
+    grafts.write_text(f"{head} {base}\n", encoding="ascii")
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "grafts_present")
+    assert receipt["new_head"] is None
+
+
+@pytest.mark.parametrize("flag,value", [("--verify-interval", "nan"), ("--verify-interval", "inf"),
+                                        ("--verify-timeout", "nan"), ("--verify-timeout", "inf")])
+def test_non_finite_verify_values_are_usage_errors(repo, remote, tmp_path, capsys, flag, value):
+    """Q2: nan passed `<= 0` and time.sleep(nan) raised after the push had already run."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _git(repo, "push", "-q", "origin", f"{head}:refs/heads/fable-5/topic")
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    args = _args(repo, tmp_path / "receipt.json", head, base, "main", "--push", "--remote", "origin",
+                 "--branch", "fable-5/topic", flag, value)
+
+    assert _tool().main(args) == 2
+    assert not (tmp_path / "receipt.json").exists()
+    assert _git(remote, "rev-parse", "refs/heads/fable-5/topic").strip() == head
+
+
+def test_an_unexpected_error_still_writes_a_refusal_receipt(repo, tmp_path, capsys, monkeypatch):
+    """Q2: any exception, not only a refusal, ends in a receipt and exit 3."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    tool = _tool()
+
+    def broken(*_args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tool, "_delta", broken)
+    receipt_path = tmp_path / "receipt.json"
+
+    code = tool.main(_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "internal_error")
+    assert receipt["error_type"] == "RuntimeError"
+    assert receipt["new_head"] is None
+
+
+def test_a_failing_git_command_is_named_in_the_receipt(repo, tmp_path, capsys, monkeypatch):
+    """Q5: git_failed names the command and its exit code (no stderr: it can carry a remote URL)."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    tool = _tool()
+    real = tool._git
+
+    def failing(repo_, args, stdin=None):
+        return (128, b"") if args[0] == "diff-tree" else real(repo_, args, stdin)
+
+    monkeypatch.setattr(tool, "_git", failing)
+    receipt_path = tmp_path / "receipt.json"
+
+    code = tool.main(_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["reason"]) == (3, "git_failed")
+    assert receipt["failed_command"]["argv"][:2] == ["diff-tree", "-r"]
+    assert receipt["failed_command"]["exit"] == 128
+
+
+@pytest.mark.parametrize("how", ["pushurl", "pushinsteadof"])
+def test_a_push_url_other_than_the_checked_fetch_url_is_refused(repo, remote, tmp_path, capsys, how):
+    """Q3: ls-remote reads the fetch URL; git push would write the push URL."""
+    other = tmp_path / "other.git"
+    _git(tmp_path, "init", "-q", "--bare", str(other))
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    for bare in (remote, other):
+        _git(repo, "push", "-q", str(bare), f"{head}:refs/heads/fable-5/topic")
+    if how == "pushurl":
+        _git(repo, "remote", "set-url", "--push", "origin", str(other))
+    else:
+        _git(repo, "config", f"url.{other.as_posix()}.pushInsteadOf", remote.as_posix())
+        _git(repo, "remote", "set-url", "origin", remote.as_posix())
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main", "--push", "--remote", "origin",
+                                  "--branch", "fable-5/topic", "--verify-interval", "0.05", "--verify-timeout", "0.3"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "push_url_differs")
+    assert receipt["push"]["push_url_matches_fetch_url"] is False
+    for bare in (remote, other):
+        assert _git(bare, "rev-parse", "refs/heads/fable-5/topic").strip() == head
+    assert "other.git" not in receipt_path.read_text(encoding="utf-8")
+
+
+def test_push_does_not_follow_tags(repo, remote, tmp_path, capsys):
+    """Q3: push.followTags=true would also push annotated tags reachable from the new head."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _git(repo, "push", "-q", "origin", f"{head}:refs/heads/fable-5/topic")
+    _git(repo, "tag", "-a", "wd-test-tag", "-m", "tag", head)
+    _git(repo, "config", "push.followTags", "true")
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main", "--push", "--remote", "origin",
+                                  "--branch", "fable-5/topic", "--verify-interval", "0.05", "--verify-timeout", "5"))
+
+    assert (code, _receipt(receipt_path)["status"]) == (0, "pushed")
+    assert _git(remote, "for-each-ref", "--format=%(refname)", "refs/tags") == ""
+
+
+@pytest.mark.parametrize("name", ["https://user:secret@example.invalid/repo.git", "remote.git", "nosuchremote"])
+def test_remote_must_be_a_configured_remote_name(repo, remote, tmp_path, capsys, name):
+    """Q3: a URL as --remote could carry a credential into the receipt; only configured names are taken,
+    and the rejected value is not echoed."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    value = str(remote) if name == "remote.git" else name
+
+    code = _tool().main(_args(repo, tmp_path / "receipt.json", head, base, "main", "--push", "--remote", value,
+                              "--branch", "fable-5/topic"))
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert not (tmp_path / "receipt.json").exists()
+    assert "secret" not in captured.out + captured.err
+
+
+def test_receipt_records_what_a_consumer_needs_to_rederive_the_result(repo, tmp_path, capsys):
+    """Q5: the observed parent line (not the inputs), the base delta paths, and the config merge-tree reads."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    new_base = _commit(repo, "main", **{"c.txt": "c\n", "dir__one.txt": "ONE\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert code == 0
+    new_head = receipt["new_head"]
+    assert receipt["observed_parents"] == _git(repo, "rev-list", "--parents", "-n", "1", new_head).split()
+    assert receipt["observed_parents"] == [new_head, head, new_base]
+    assert receipt["base_delta_paths"] == ["c.txt", "dir/one.txt"]
+    assert set(receipt["config"]) == {"core.autocrlf", "core.ignorecase", "core.symlinks", "merge.renormalize",
+                                      "extensions.objectformat"}
+    assert receipt["config"]["core.autocrlf"] == "false"
+    assert (receipt["replace_refs"], receipt["grafts"]) == (0, False)
 
 
 def test_the_tool_is_not_wired_into_any_runtime_path():

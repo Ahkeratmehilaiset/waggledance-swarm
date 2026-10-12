@@ -130,6 +130,16 @@ function Start-WdToolsNativeProcess {
         '$fn.Extent.Text)', "$fn.Extent.Text.Replace('[Console]::IsInputRedirected','$false'))")
     script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + function + relay_bundle_setup(tmp_path) + f"""
 $global:starts=0; $env:WD_BRIDGE_BIN=''
+$env:WAGGLE_BRIDGE_WAKE_ENABLED='1'; $env:AGENT_BRIDGE_WAKE_JOB='42'
+$global:producerChecks=0
+# A private producer port supplies the new runtime prerequisite. Do not
+# replace the adapter guard, its verified imports, or any queue assertion.
+function Get-Job {{
+ param($Id)
+ if($Id -ne 42){{throw 'Wrong session producer ID'}}
+ $global:producerChecks++
+ return [pscustomobject]@{{Name='agent-bridge-watcher-codex-lead-1';State='Running'}}
+}}
 . ([scriptblock]::Create([IO.File]::ReadAllText({q(runner_path)})))
 . ([scriptblock]::Create([IO.File]::ReadAllText({q(code_path)})))
 $verified=@{{}}
@@ -145,10 +155,11 @@ foreach($file in $groups.Keys){{
 Invoke-WdNativeLeadTerminal -CliPath {q(cli)} -Arguments @('resume','01a0a654-12af-7d81-85fc-d75d515c5b65') `
  -ThreadId 01a0a654-12af-7d81-85fc-d75d515c5b65 -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} `
  -Generation fixture -SessionId session -ExpectedCliHash {hashlib.sha256(cli.read_bytes()).hexdigest().upper()} -VerifiedCode $verified
-@{{starts=$global:starts;arguments=$global:arguments;delivery=$global:delivery}}|ConvertTo-Json -Depth 6
+@{{starts=$global:starts;arguments=$global:arguments;delivery=$global:delivery;producer_checks=$global:producerChecks}}|ConvertTo-Json -Depth 6
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     assert result['starts'] == 1 and result['arguments'] == 'resume 01a0a654-12af-7d81-85fc-d75d515c5b65'
+    assert result['producer_checks'] == 1
     assert result['delivery']['thread'] == '01a0a654-12af-7d81-85fc-d75d515c5b65'
     assert 'Automatic bridge wake for codex-lead-1' in result['delivery']['message']
     journal = tmp_path / '.codex-audit/wd-turn-loop'

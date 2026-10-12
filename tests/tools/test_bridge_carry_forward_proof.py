@@ -298,6 +298,62 @@ def test_a_criss_cross_history_is_refused(repo):
     assert (proof["ok"], proof["reason"]) == (False, "old_base_not_unique")
 
 
+@pytest.mark.parametrize("pr_path,base_path", [("Foo.txt", "foo.txt"), ("dir__Readme.md", "dir__README.md")])
+def test_a_case_variant_of_a_pr_path_in_the_base_delta_is_overlap(repo, pr_path, base_path):
+    """RCO2 R1 on PR1861 (same check here): on a case-insensitive checkout Foo.txt and foo.txt are one file."""
+    base = _base(repo)
+    head = _pr(repo, base, **{pr_path: "pr\n"})
+    main = _commit(repo, "main", **{base_path: "base\n"})
+
+    proof = _verify(repo, head, _update(repo, head, main), main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "paths_overlap")
+    assert proof["overlap_paths"] == [pr_path.replace("__", "/")]
+
+
+@pytest.mark.parametrize("pr_files,base_files", [
+    ({"Foo": "pr file\n"}, {"foo__x.txt": "base dir\n"}),
+    ({"foo__x.txt": "pr dir\n"}, {"Foo": "base file\n"}),
+])
+def test_a_pr_path_colliding_by_case_with_a_file_or_directory_never_carries(repo, pr_files, base_files):
+    base = _base(repo)
+    head = _pr(repo, base, **pr_files)
+    main = _commit(repo, "main", **base_files)
+
+    proof = _verify(repo, head, _update(repo, head, main), main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "case_collision")
+    assert proof["case_collisions"] == sorted(name.replace("__", "/") for name in pr_files)
+
+
+def test_an_inherited_git_dir_never_redirects_the_proof(repo, tmp_path, monkeypatch):
+    """RCO1 R2 / Codex P1 on PR1861 (same here): -C does not pin the repository while GIT_DIR is set."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    main = _commit(repo, "main", **{"c.txt": "c\n"})
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "--no-local", str(repo), str(other))  # has no new head
+    new_head = _update(repo, head, main)
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+
+    proof = _verify(repo, head, new_head, main)
+
+    assert proof["ok"] is True, proof
+    assert proof["stripped_git_env"] == ["GIT_DIR"]
+    assert str(other) not in json.dumps(proof)
+
+
+def test_a_shallow_repository_never_carries(repo, tmp_path):
+    _, head, main, new_head = _scenario(repo)
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "1", Path(repo).as_uri(), str(shallow))
+    _git(shallow, "fetch", "-q", "--depth", "1", "origin", head, new_head)
+
+    proof = _verify(shallow, head, new_head, main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "shallow_repository")
+
+
 # --- condition 6: gate and governance PRs never carry -------------------------------------------
 
 
@@ -534,7 +590,7 @@ def test_a_failed_proof_never_carries_even_with_a_perfect_verdict(repo):
 
 
 READ_ONLY_SUBCOMMANDS = {"for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "patch-id",
-                         "merge-tree"}  # merge-tree --write-tree writes unreachable tree objects only
+                         "ls-tree", "merge-tree"}  # merge-tree --write-tree writes unreachable tree objects only
 
 
 def test_the_module_runs_only_read_only_git_subcommands(repo, monkeypatch):

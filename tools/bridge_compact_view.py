@@ -46,6 +46,24 @@ def event_id(event: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json(event).encode("utf-8")).hexdigest()
 
 
+def _recipient_list(value: Any) -> list[str] | None:
+    """The recipients of ``to`` as a list; None when its shape is unknown.
+
+    A display aid only: it never decides who must answer (the full event and
+    the pinned reply binding do). A comma-joined string and a list of strings
+    are split and trimmed; any other shape stays unknown instead of guessed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split(",")
+    elif isinstance(value, (list, tuple)) and all(isinstance(part, str) for part in value):
+        parts = list(value)
+    else:
+        return None
+    return [part.strip() for part in parts if part.strip()]
+
+
 def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dict:
     """Preserve chronology; deduplicate ONLY byte-equivalent canonical JSON.
 
@@ -85,6 +103,10 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
             "task": row.get("task_id", ""), "head": head,
             "type": kind, "status": row.get("status", ""),
             "to": row.get("to", ""),
+            # Display only, as received; the full event stays authoritative.
+            "to_list": _recipient_list(row.get("to", "")),
+            "request_id": row.get("request_id", ""),
+            "in_reply_to_request_id": row.get("in_reply_to_request_id", ""),
         }
         item["head_bindings"] = bindings
         item["head_conflict"] = len({_json(value) for value in bindings.values()}) > 1

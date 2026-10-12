@@ -91,7 +91,14 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # and 12807ecc. Awaiting a non-author review like the entries above.
                 "fecc701a039c56e5999baed4bae86f4e43378f31": "d42c1216 plus the model_unavailable class and its "
                                                             "finite same-model cooldown (eligible false while "
-                                                            "any hold is open)"}
+                                                            "any hold is open)",
+                # RCO2 2026-10-07 (#1798 GH-F1): consult() only. When re-persisting the started reservation
+                # raises, it records status failed with grok_launched False if that write persists, otherwise it
+                # leaves the reservation unresolved with a note, re-raises the original error and launches nothing
+                # on either path. status() and the answered report are untouched. Independent component review:
+                # RCO1 97EA6325 at 0a60abf0 (same helper blob as 97cc3268); not a formal RCO_PASS.
+                "81f71da5ccc6441047d4395c8bcbed790d4a007a": "fecc701a plus GH-F1: no launch on an unpersisted "
+                                                            "reservation"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

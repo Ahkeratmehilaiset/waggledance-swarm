@@ -37,7 +37,7 @@ def _without_payload(row):
     return {key: value for key, value in row.items() if key != "payload"}
 
 
-def _fixture(tmp_path, rows, agent=AGENT):
+def _fixture(tmp_path, rows, agent=AGENT, reader_suffix=""):
     bundle = tmp_path / "bundle"
     helper_dir = bundle / "tools-bootstrap/.agent-bridge/bin"
     helper_dir.mkdir(parents=True)
@@ -45,6 +45,8 @@ def _fixture(tmp_path, rows, agent=AGENT):
     for leaf in ("BridgeLogReader.ps1", "BridgeIncrementalReader.ps1"):
         target = helper_dir / leaf
         shutil.copyfile(REBOOT.parents[2] / ".agent-bridge/bin" / leaf, target)
+        if leaf == "BridgeIncrementalReader.ps1" and reader_suffix:
+            target.write_bytes(target.read_bytes() + reader_suffix.encode("utf-8"))
         files[target.relative_to(bundle).as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest().upper()
     manifest = bundle / "deployment-manifest.json"
     manifest.write_text(json.dumps({"files": files}), encoding="utf-8")
@@ -419,3 +421,158 @@ $after=Check
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report["before"] == {"ok": True, "held": False}, report
     assert report["after"] != {"ok": True, "held": False}, report
+
+
+FILLER = _event(agent="peer", task="other", to=AGENT, status="notice") | {"message": "x" * 4000}
+CLEAR = {"ok": True, "held": False}
+SETTLE = "function Settle { $r=@(); for ($i=0; $i -lt 10; $i++) { $c=Check; $r+=$c; if ($c.ok) { break } }; ,$r }\n"
+
+
+def _rewrite(log, offset, text):
+    return f"""
+$stream=[IO.File]::Open({q(log)},[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+try {{
+ [void]$stream.Seek({offset},[IO.SeekOrigin]::Begin)
+ $bytes=[Text.Encoding]::ASCII.GetBytes('{text}')
+ $stream.Write($bytes,0,$bytes.Length)
+ $stream.Flush($true)
+}} finally {{$stream.Dispose()}}
+"""
+
+
+def _status_offset(log):
+    data = log.read_bytes()
+    marker = b'"status":"blocked"'
+    assert data.count(marker) == 1
+    return data.index(marker) + len(b'"status":"')
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("before,after,block", [(25, 0, None), (300, 300, 1), (25, 600, 0)],
+                         ids=["past-64-kib", "inside-a-full-block", "inside-full-block-0"])
+def test_same_length_rewrite_far_behind_the_cursor_cannot_stay_clear(tmp_path, ps, before, after, block):
+    """Codex P1 4240977444 on PR1843: the anchor covers every byte below the cursor, not a 64 KiB prefix."""
+    log, script = _fixture(tmp_path, [FILLER] * before + [DIAGNOSTICS["worker-blocked-blocked"]] + [FILLER] * after)
+    offset = _status_offset(log)
+    assert offset > 65536 and (after == 0 or offset + (1 << 20) < log.stat().st_size)
+    if block is not None:  # the row sits in that 1 MiB block, which is full because the log extends past it
+        assert offset >> 20 == block and log.stat().st_size > (block + 1) << 20
+    script += SETTLE + "$before=Settle\n" + _rewrite(log, offset, "on_hold")
+    script += "$after=Settle\n@{before=$before;after=$after} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"][-1] == CLEAR, report
+    assert CLEAR not in report["after"], report
+    assert report["after"][-1] == {"ok": True, "held": True}, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_appends_across_block_boundaries_stay_incremental_without_a_rebuild(tmp_path, ps):
+    log, script = _fixture(tmp_path, [FILLER] * 200)
+    extra = tmp_path / "extra.jsonl"
+    extra.write_text("".join(json.dumps(FILLER, separators=(",", ":")) + "\n" for _ in range(400)), encoding="utf-8")
+    script += SETTLE + "$before=Settle\n"
+    script += f"[IO.File]::AppendAllText({q(log)}, [IO.File]::ReadAllText({q(extra)}))\n"
+    script += "$after=Settle\n$again=Check\n@{before=$before;after=$after;again=$again} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"][-1] == CLEAR, report
+    assert all(item == CLEAR or (item["ok"] is False and "catching up" in item["error"])
+               for item in report["after"]), report
+    assert report["after"][-1] == CLEAR and report["again"] == CLEAR, report
+
+
+# The pinned reader copy gains a hook that rewrites one row right after the delta read returns.
+REWRITE_HOOK = (
+    "\n$script:WdTestDelta = ${function:Read-BridgeEventDelta}\n"
+    "function Read-BridgeEventDelta {\n"
+    " param([string] $Path, $Cursor, [int64] $MaxBytes, [int] $MaxRows)\n"
+    " $result = & $script:WdTestDelta -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -MaxRows $MaxRows\n"
+    " if ($env:WD_TEST_REWRITE_AT) {\n"
+    "  $at = [int64]$env:WD_TEST_REWRITE_AT; Remove-Item Env:WD_TEST_REWRITE_AT\n"
+    "  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\n"
+    "  try { [void]$stream.Seek($at,[IO.SeekOrigin]::Begin); $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold');"
+    " $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }\n"
+    " }\n"
+    " $result\n"
+    "}\n"
+)
+
+
+def _rewrite_blocked_after_the_next_read(log):
+    return (
+        "$data=[IO.File]::ReadAllBytes(" + q(log) + "); $text=[Text.Encoding]::UTF8.GetString($data);"
+        " $env:WD_TEST_REWRITE_AT=[string]($text.IndexOf('\"status\":\"blocked\"') + 10)\n"
+    )
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("where", ["behind-the-cursor", "in-the-bytes-just-parsed"])
+def test_a_rewrite_during_the_delta_read_cannot_stay_clear(tmp_path, ps, where):
+    diagnostic = DIAGNOSTICS["worker-blocked-blocked"]
+    first = [diagnostic, FILLER] if where == "behind-the-cursor" else [FILLER]
+    log, script = _fixture(tmp_path, first, reader_suffix=REWRITE_HOOK)
+    later = diagnostic if where == "in-the-bytes-just-parsed" else FILLER
+    appended = json.dumps(later, separators=(",", ":")) + "\n"
+    script += SETTLE + "$before=Settle\n"
+    script += f"[IO.File]::AppendAllText({q(log)}, {q(appended)})\n"
+    script += _rewrite_blocked_after_the_next_read(log)
+    script += "$after=Settle\n@{before=$before;after=$after} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"][-1] == CLEAR, report
+    assert CLEAR not in report["after"], report
+    assert report["after"][-1] == {"ok": True, "held": True}, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_rewrite_during_the_delta_read_of_the_first_scan_cannot_stay_clear(tmp_path, ps):
+    """The first check of a relay (and every rescan after a reset) starts at byte 0 with no anchor yet: the bytes it
+    parsed must still equal the pre-read copy, or a row rewritten into a control during that read stays clear."""
+    log, script = _fixture(tmp_path, [FILLER, DIAGNOSTICS["worker-blocked-blocked"]], reader_suffix=REWRITE_HOOK)
+    script += SETTLE + _rewrite_blocked_after_the_next_read(log)
+    script += "$after=Settle\n@{after=$after} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert CLEAR not in report["after"], report
+    assert report["after"][-1] == {"ok": True, "held": True}, report
+
+
+APPEND_HOOK = (
+    "\n$script:WdTestDelta = ${function:Read-BridgeEventDelta}\n"
+    "function Read-BridgeEventDelta {\n"
+    " param([string] $Path, $Cursor, [int64] $MaxBytes, [int] $MaxRows)\n"
+    " $row = $env:WD_TEST_APPEND_ROW\n"
+    " if ($row) { Remove-Item Env:WD_TEST_APPEND_ROW; [IO.File]::AppendAllText($Path, $row) }\n"
+    " $result = & $script:WdTestDelta -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -MaxRows $MaxRows\n"
+    " if ($row -and $env:WD_TEST_REWRITE_APPENDED) {\n"
+    "  $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Path))\n"
+    "  $at = $text.LastIndexOf('\"status\":\"blocked\"') + 10\n"
+    "  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\n"
+    "  try { [void]$stream.Seek($at,[IO.SeekOrigin]::Begin); $bytes=[Text.Encoding]::ASCII.GetBytes('on_hold');"
+    " $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }\n"
+    " }\n"
+    " $result\n"
+    "}\n"
+)
+CATCHING_UP = {"ok": False, "error": "Continuity canonical scan catching up; recovery withheld"}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("rewrite", [True, False], ids=["rewritten-to-a-control", "left-unchanged"])
+def test_a_row_appended_during_the_read_is_compared_before_the_cursor_moves(tmp_path, ps, rewrite):
+    """Disclosed residual R2 on PR1854, reproduced by Tools: at EOF the pre-read copy is empty, so a row appended
+    after it and rewritten before the post pass was anchored without a compare. Such a check is withheld as
+    catching up (1 s retry, no alert) with the cursor unmoved, and the next check copies and compares the row.
+    The log is over 1 MiB, so a guard that reset the cursor would need more than one further check to rescan."""
+    log, script = _fixture(tmp_path, [FILLER] * 300, reader_suffix=APPEND_HOOK)
+    assert log.stat().st_size > (1 << 20)
+    row = json.dumps(DIAGNOSTICS["worker-blocked-blocked"], separators=(",", ":")) + "\n"
+    script += SETTLE + "$before=Settle\n"
+    script += f"$env:WD_TEST_APPEND_ROW={q(row)}\n"
+    if rewrite:
+        script += "$env:WD_TEST_REWRITE_APPENDED='1'\n"
+    script += "$after=Settle\n$again=Check\n@{before=$before;after=$after;again=$again} | ConvertTo-Json -Depth 6 -Compress"
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"][-1] == CLEAR, report
+    assert report["after"][0] == CATCHING_UP, report
+    # Withheld once, then the next check resumes from the unmoved cursor: no rescan from byte 0.
+    assert len(report["after"]) == 2, report
+    expected = {"ok": True, "held": rewrite}
+    assert report["after"][-1] == expected and report["again"] == expected, report

@@ -18,6 +18,7 @@ import subprocess
 
 import pytest
 
+from tools import bridge_rule12_review_eligibility as r12
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.idle_consensus_auto_merge import (
     REVIEW_POLICY_LEGACY,
@@ -421,3 +422,87 @@ def test_a_carry_never_lifts_any_other_blocker(tmp_path, heads, override, blocke
     assert report["carry_forward"]["applied"] is True
     assert any(r.startswith(blocker) for r in report["reasons"]), report["reasons"]
     assert _approval_blockers(report) == []
+
+
+# --- each input of the old head's verdict decides on its own (mutant survivors at 699389aa) ----------
+
+
+def _carry_reasons(report: dict, field: str) -> list[str]:
+    return [reason for reason in report["carry_forward"]["reasons"] if field in reason]
+
+
+def test_a_peer_block_at_the_new_head_stops_the_carry(tmp_path, heads):
+    events = _rule12_events(heads.old) + [
+        _event("codex-tools-1", "decision", "changes_requested", "2026-10-12T17:40:00Z", heads.new),
+    ]
+
+    report = _gate(tmp_path, heads, events)
+
+    carry = report["carry_forward"]
+    assert carry["old_head_rco_pass_gate"]["ok"] is True and carry["old_head_consensus"]["ok"] is True, carry
+    assert carry["applied"] is False
+    assert _carry_reasons(report, "veto_clear"), carry
+    assert _approval_blockers(report)
+
+
+def test_a_superseded_rco_veto_still_stops_the_carry(tmp_path, heads):
+    # rco-2 vetoes, then passes. The peer gate and the RCO_PASS gate take the later pass; the
+    # recognized-RCO veto scan honours no retraction, so the carry stays off (a spurious hold is safe).
+    events = _rule12_events(heads.old)
+    events.insert(3, _event("claude-rco-2", "finding", "changes_requested", "2026-10-12T17:15:00Z", heads.old))
+    assert [event["status"] for event in events[3:]] == ["changes_requested", "rco_pass"]
+
+    report = _gate(tmp_path, heads, events)
+
+    carry = report["carry_forward"]
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True, report["bridge_peer_gate"]
+    assert carry["old_head_rco_pass_gate"]["ok"] is True and carry["old_head_consensus"]["ok"] is True, carry
+    assert carry["applied"] is False
+    assert _carry_reasons(report, "veto_clear"), carry
+    assert _approval_blockers(report)
+
+
+def test_rco_passes_without_the_build_vote_never_carry(tmp_path, heads):
+    events = [event for event in _rule12_events(heads.old) if event["agent"] != "codex-lead-1"]
+
+    report = _gate(tmp_path, heads, events)
+
+    carry = report["carry_forward"]
+    assert carry["old_head_rco_pass_gate"]["ok"] is True and carry["old_head_consensus"]["ok"] is False, carry
+    assert carry["applied"] is False
+    assert _carry_reasons(report, "consensus_ok"), carry
+    assert _approval_blockers(report)
+
+
+def test_a_pool_held_rco_slot_at_the_old_head_never_carries(tmp_path, heads):
+    # Direct approvals only: the rule12 review may accept a pool lane in the RCO slot, the carry does not.
+    pool_pass = _event("codex-tools-1", "decision", "rco_pass", "2026-10-12T17:12:00Z", heads.old)
+    pool_pass["payload"][r12.POOL_ATTESTATION_KEY] = r12.POOL_ATTESTATION_VALUE
+    events = [
+        _claim(),
+        _event("claude-rco-1", "message", "rco_recused", "2026-10-12T17:00:00Z", heads.old),
+        _event("claude-rco-2", "message", "rco_recused", "2026-10-12T17:01:00Z", heads.old),
+        _event("codex-lead-1", "decision", "build_consensus_pass", "2026-10-12T17:10:00Z", heads.old),
+        pool_pass,
+    ]
+
+    report = _gate(tmp_path, heads, events)
+
+    carry = report["carry_forward"]
+    assert carry["old_head_consensus"]["ok"] is True and carry["old_head_rco_pass_gate"]["ok"] is False, carry
+    assert carry["applied"] is False
+    assert _carry_reasons(report, "consensus_ok"), carry
+    assert _approval_blockers(report)
+
+
+def test_a_charter_refusal_never_carries(tmp_path, heads):
+    status = _status(heads, diff_text="-    return 0\n+    gate_skip=True\n")
+
+    report = _gate(tmp_path, heads, pr_status=status)
+
+    carry = report["carry_forward"]
+    assert any(r.startswith("diff gate failed") for r in report["reasons"]), report["reasons"]
+    assert carry["old_head_rco_pass_gate"]["ok"] is True and carry["old_head_consensus"]["ok"] is True, carry
+    assert carry["applied"] is False
+    assert _carry_reasons(report, "charter_ok"), carry
+    assert _approval_blockers(report)

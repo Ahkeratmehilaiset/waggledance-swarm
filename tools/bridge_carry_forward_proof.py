@@ -285,6 +285,15 @@ def _check(repo: str, proof: dict[str, Any]) -> None:
     proof["ok"], proof["reason"] = True, "content_identical_base_update"
 
 
+def first_parent(*, repo: str, head: Any) -> str | None:
+    """The first parent of a full object name (the reviewed head of an update), or None if there is none."""
+    if not isinstance(head, str) or not _OBJECT_NAME.match(head):
+        return None
+    code, out = _git(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{head}^1^{{commit}}"])
+    name = _text(out) if code == 0 else ""
+    return name if _OBJECT_NAME.match(name) else None
+
+
 def verify_carry_forward(*, repo: str, old_head: str, new_head: str, main_head: str) -> dict[str, Any]:
     """Prove conditions 2-6 for one base-update step from git objects; fail closed on anything else."""
     proof = _new_proof(old_head, new_head, main_head)

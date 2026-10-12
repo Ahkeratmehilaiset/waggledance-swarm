@@ -341,6 +341,28 @@ def test_push_is_a_verified_fast_forward_of_the_reviewed_head(repo, remote, tmp_
     assert receipt["push"]["ls_remote_before"] == [f"{head}\trefs/heads/fable-5/topic"]
     assert receipt["push"]["ls_remote_after"] == [f"{new_head}\trefs/heads/fable-5/topic"]
     assert receipt["push"]["push_url_matches_fetch_url"] is True
+    url = _git(repo, "remote", "get-url", "--push", "origin").strip()
+    assert receipt["push"]["push_url_sha256"] == hashlib.sha256(url.encode("utf-8")).hexdigest()
+    assert json.dumps(str(remote))[1:-1] not in receipt_path.read_text(encoding="utf-8")
+
+
+def test_the_push_url_hash_is_of_the_effective_url_after_insteadof(repo, remote, tmp_path, capsys):
+    """RCO1 shared Grok on e5711beb (de7113e9) follow-up: record what git actually pushes to, as a hash."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _git(repo, "push", "-q", "origin", f"{head}:refs/heads/fable-5/topic")
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    _git(repo, "config", f"url.{remote.parent.as_posix()}/.insteadOf", "wdtest:")
+    _git(repo, "remote", "set-url", "origin", "wdtest:remote.git")
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main", "--push", "--remote", "origin",
+                                  "--branch", "fable-5/topic", "--verify-interval", "0.05", "--verify-timeout", "5"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "pushed"), receipt
+    effective = remote.parent.as_posix() + "/remote.git"
+    assert receipt["push"]["push_url_sha256"] == hashlib.sha256(effective.encode("utf-8")).hexdigest()
 
 
 @pytest.mark.parametrize("case", ["moved", "missing"])
@@ -640,6 +662,88 @@ def test_a_pr_path_colliding_by_case_with_a_file_or_directory_is_refused(repo, t
     assert receipt["new_head"] is None
 
 
+DOTLESS_I = "\u0131"  # LATIN SMALL LETTER DOTLESS I: upper() is "I", casefold() is itself
+
+
+@pytest.mark.parametrize("pr_files,base_files,reason", [
+    ({DOTLESS_I + ".txt": "pr\n"}, {"i.txt": "base\n"}, "paths_overlap"),
+    ({DOTLESS_I: "pr file\n"}, {"i__x.txt": "base dir\n"}, "case_collision"),
+])
+def test_a_dotless_i_variant_is_the_same_file(repo, tmp_path, capsys, pr_files, base_files, reason):
+    """RCO1 shared Grok on e5711beb (de7113e9), confirmed non-blocking follow-up: NTFS compares names upper-cased."""
+    base = _base(repo)
+    head = _pr(repo, base, **pr_files)
+    _commit(repo, "main", **base_files)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", reason)
+    assert receipt["new_head"] is None
+
+
+def _plumbed(repo: Path, parent: str | None, files: dict[str, str]) -> str:
+    """A commit whose tree is PARENT's top-level tree plus FILES, written with mktree (no checkout).
+
+    A Windows working tree cannot hold a name with a trailing dot or space, so these trees are built
+    from objects only, as a Linux client or plumbing could push them.
+    """
+    entries: dict[str, str] = {}
+    if parent:
+        listing = subprocess.run(["git", "ls-tree", "-z", parent], cwd=repo, capture_output=True, check=True).stdout
+        for record in listing.decode("utf-8").split("\0"):
+            if record:
+                meta, name = record.split("\t", 1)
+                entries[name] = meta
+    for name, text in files.items():
+        entries[name] = "100644 blob " + subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=text.encode("utf-8"), capture_output=True,
+            check=True).stdout.decode("ascii").strip()
+    listing = "".join(f"{meta}\t{name}\0" for name, meta in entries.items()).encode("utf-8")
+    tree = subprocess.run(["git", "mktree", "-z"], cwd=repo, input=listing, capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    return _git(repo, "commit-tree", tree, *(["-p", parent] if parent else []), "-m", "plumbed").strip()
+
+
+@pytest.mark.parametrize("pr_name,base_name", [
+    ("widget.txt", "widget.txt."),
+    ("widget.txt", "widget.txt "),
+    ("widget.txt.", "widget.txt"),
+    ("Widget.TXT", "widget.txt. ."),
+    ("widget.txt", "widget.txt:stream"),
+])
+def test_a_win32_equivalent_name_in_the_base_delta_is_overlap(repo, tmp_path, capsys, pr_name, base_name):
+    """Shared Grok ff5f768d (asked on #1862, same check here): Win32 strips trailing dots and spaces, and
+    NAME:STREAM is a stream of NAME, so both sides change one file on a Windows checkout."""
+    base = _plumbed(repo, None, {"a.txt": "a\n"})
+    head = _plumbed(repo, base, {pr_name: "reviewed\n"})
+    main = _plumbed(repo, base, {base_name: "from main\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, main))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "paths_overlap")
+    assert receipt["overlap_paths"] == [pr_name]
+    assert receipt["new_head"] is None
+
+
+@pytest.mark.parametrize("existing", ["widget.txt.", "widget.txt ", "WIDGET.txt.."])
+def test_a_pr_file_win32_equivalent_to_an_existing_file_is_refused(repo, tmp_path, capsys, existing):
+    base = _plumbed(repo, None, {existing: "existing\n"})
+    head = _plumbed(repo, base, {"widget.txt": "reviewed\n"})
+    main = _plumbed(repo, base, {"other.txt": "main\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, main))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "case_collision")
+    assert receipt["case_collisions"] == ["widget.txt"]
+    assert receipt["new_head"] is None
+
+
 def test_a_clean_update_records_no_case_collision(repo, tmp_path, capsys):
     base = _base(repo)
     head = _pr(repo, base, **{"p.txt": "pr\n"})
@@ -692,6 +796,43 @@ def test_git_never_prompts_and_network_calls_have_a_timeout(repo, monkeypatch):
     network = [timeout for argv, _, timeout in seen if "ls-remote" in argv or "push" in argv]
     assert len(network) == 2 and all(isinstance(t, (int, float)) and 0 < t < 3600 for t in network)
 
+
+
+def test_local_git_calls_also_have_a_timeout(repo, monkeypatch):
+    """RCO1 follow-up (pass 0a032e9c): a hung local git call (a lock, a filter, a slow disk) must end too."""
+    tool = _tool()
+    seen = []
+    real_run = subprocess.run
+
+    def recording_run(argv, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(tool.subprocess, "run", recording_run)
+    tool._git(str(repo), ["version"])
+    tool._git(str(repo), ["rev-parse", "HEAD"])
+
+    assert len(seen) == 2 and all(isinstance(t, (int, float)) and 0 < t <= 3600 for t in seen), seen
+
+
+def test_the_receipt_names_inherited_git_variables_but_never_their_values(repo, tmp_path, capsys, monkeypatch):
+    """RCO1 follow-up (pass 0a032e9c): injected config or transport variables are visible in the receipt by name."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'wd.probe=value-one-7f3a'")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o wd=value-two-7f3a")
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "updated"), receipt
+    assert {"GIT_CONFIG_PARAMETERS", "GIT_SSH_COMMAND"} <= set(receipt["inherited_git_env"])
+    assert receipt["inherited_git_env"] == sorted(receipt["inherited_git_env"])
+    assert not set(receipt["inherited_git_env"]) & set(receipt["stripped_git_env"])
+    assert "value-one-7f3a" not in receipt_path.read_text(encoding="utf-8")
+    assert "value-two-7f3a" not in receipt_path.read_text(encoding="utf-8")
 
 def test_a_network_timeout_is_a_failed_call_not_an_exception(repo, monkeypatch):
     tool = _tool()

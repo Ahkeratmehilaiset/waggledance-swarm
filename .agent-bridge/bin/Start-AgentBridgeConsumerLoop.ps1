@@ -563,7 +563,7 @@ while ($true) {
         } else {
             try {
                 $acceptedDrainSummary = (& $acceptedDrain `
-                    -BridgeRoot $runtimeFull -ReceiptJson) |
+                    -BridgeRoot $runtimeFull -ReceiptJson -HonorReplayBackoff) |
                     ConvertFrom-Json -ErrorAction Stop
                 if ([int64]$acceptedDrainSummary.failed -gt 0) {
                     throw (

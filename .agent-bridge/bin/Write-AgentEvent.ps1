@@ -875,8 +875,34 @@ function Assert-BridgeJsonObjectKeysAscii {
     }
 }
 
+function Assert-BridgeJsonIntegersSafe {
+    param([Parameter(Mandatory)] [string] $Json)
+    # Readers (BridgeLogReader JsonContractValidator.ParseNumber) refuse an integer
+    # token outside +/-9007199254740991, and such a row blocks every tail read like
+    # a non-ASCII key. Measured 2026-10-11: ConvertTo-Json writes 2^53 on PS5 and
+    # PS7, and a BigInteger raw on PS7. String tokens are matched first and in
+    # order, so digits inside keys and values are never read as numbers.
+    foreach ($token in [regex]::Matches($Json, '"(?:[^"\\]|\\.)*"|-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')) {
+        $text = $token.Value
+        if ($text[0] -eq '"' -or $text.IndexOfAny([char[]]'.eE') -ge 0) { continue }
+        $value = [long]0
+        if (
+            -not [long]::TryParse(
+                $text,
+                [System.Globalization.NumberStyles]::AllowLeadingSign,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref]$value
+            ) -or
+            $value -lt -9007199254740991 -or $value -gt 9007199254740991
+        ) {
+            throw "Bridge event JSON integers must be within +/-9007199254740991 before writing (readers refuse the row); offending value: $text"
+        }
+    }
+}
+
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [char]10)
 Assert-BridgeJsonObjectKeysAscii -Json $line
+Assert-BridgeJsonIntegersSafe -Json $line
 
 function New-BridgeV1Mutex {
     param(
@@ -896,6 +922,28 @@ function New-BridgeV1Mutex {
     return New-BridgeNamedMutex -Name $Name
 }
 
+function ConvertTo-BridgeNativeLongPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    # kernel32 W calls in a process without longPathAware (MSIX pwsh) fail with
+    # Win32 error 3 at MAX_PATH unless the name carries the \\?\ prefix. Only a
+    # long, already canonical drive path is prefixed, because \\?\ turns off
+    # Win32 name normalization: for such a path normalization is the identity,
+    # so the prefixed name denotes exactly the file the plain call would open.
+    # A NUL ends the native name early, so a path holding one is never prefixed.
+    # Anything else passes unchanged and keeps the old behavior and failures.
+    if ($Path.IndexOf([char]0) -ge 0) { return $Path }
+    if ($Path.Length -lt 248 -or $Path -cnotmatch '^[A-Za-z]:\\[^\\]') { return $Path }
+    if ($Path.Contains('/')) { return $Path }
+    foreach ($segment in $Path.Substring(3).Split('\')) {
+        if ($segment.Length -eq 0 -or $segment -eq '.' -or $segment -eq '..' -or
+            $segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.Contains(':')) { return $Path }
+        $stem = $segment.Split('.')[0].TrimEnd(' ')
+        if ($stem -match '^(?i:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9\u00B9\u00B2\u00B3]|LPT[0-9\u00B9\u00B2\u00B3])$') { return $Path }
+    }
+    '\\?\' + $Path
+}
+
 function Open-BridgeAcceptedQueueDirectoryLease {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -904,7 +952,7 @@ function Open-BridgeAcceptedQueueDirectoryLease {
 
     Initialize-BridgeAppendV1Native
     $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
-        [System.IO.Path]::GetFullPath($Path),
+        (ConvertTo-BridgeNativeLongPath ([System.IO.Path]::GetFullPath($Path))),
         [uint32]2147483648,
         [uint32]3,
         [IntPtr]::Zero,
@@ -1138,8 +1186,8 @@ function Open-PendingCanonicalWalLease {
                     $false
                 } else {
                     [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
-                        $paths.PendingPath,
-                        $excludedPath,
+                        (ConvertTo-BridgeNativeLongPath $paths.PendingPath),
+                        (ConvertTo-BridgeNativeLongPath $excludedPath),
                         [uint32]0x00000008
                     )
                 }
@@ -1261,8 +1309,8 @@ function Ensure-BridgeAcceptedWalDigestMarker {
         $stream.Dispose()
         $stream = $null
         $markerPublished = [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
-            $temporaryPath,
-            $markerPath,
+            (ConvertTo-BridgeNativeLongPath $temporaryPath),
+            (ConvertTo-BridgeNativeLongPath $markerPath),
             [uint32]0x00000008
         )
         if (-not $markerPublished) {
@@ -1313,8 +1361,8 @@ function Promote-PendingCanonicalWal {
         $false
     } else {
         [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
-            $Wal.PendingPath,
-            $Wal.FinalPath,
+            (ConvertTo-BridgeNativeLongPath $Wal.PendingPath),
+            (ConvertTo-BridgeNativeLongPath $Wal.FinalPath),
             [uint32]0x00000008
         )
     }
@@ -1361,7 +1409,7 @@ function Test-BridgeExactWalRecoveryCandidate {
 
     Initialize-BridgeAppendV1Native
     $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
-        $Path,
+        (ConvertTo-BridgeNativeLongPath $Path),
         [uint32]2147483648,
         [uint32]1,
         [IntPtr]::Zero,
@@ -1520,7 +1568,7 @@ function Open-BridgePlainSingleLinkMutationStream {
 
     Initialize-BridgeAppendV1Native
     $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
-        $Path,
+        (ConvertTo-BridgeNativeLongPath $Path),
         [uint32]3221225472,
         [uint32]1,
         [IntPtr]::Zero,
@@ -1807,8 +1855,8 @@ function Write-BridgeAppendValidationCheckpoint {
 
         Initialize-BridgeAppendV1Native
         if (-not [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
-            $temporaryPath,
-            $CheckpointPath,
+            (ConvertTo-BridgeNativeLongPath $temporaryPath),
+            (ConvertTo-BridgeNativeLongPath $CheckpointPath),
             [uint32]0x00000009
         )) {
             $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()

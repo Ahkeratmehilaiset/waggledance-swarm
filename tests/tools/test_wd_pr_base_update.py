@@ -341,6 +341,28 @@ def test_push_is_a_verified_fast_forward_of_the_reviewed_head(repo, remote, tmp_
     assert receipt["push"]["ls_remote_before"] == [f"{head}\trefs/heads/fable-5/topic"]
     assert receipt["push"]["ls_remote_after"] == [f"{new_head}\trefs/heads/fable-5/topic"]
     assert receipt["push"]["push_url_matches_fetch_url"] is True
+    url = _git(repo, "remote", "get-url", "--push", "origin").strip()
+    assert receipt["push"]["push_url_sha256"] == hashlib.sha256(url.encode("utf-8")).hexdigest()
+    assert json.dumps(str(remote))[1:-1] not in receipt_path.read_text(encoding="utf-8")
+
+
+def test_the_push_url_hash_is_of_the_effective_url_after_insteadof(repo, remote, tmp_path, capsys):
+    """RCO1 shared Grok on e5711beb (de7113e9) follow-up: record what git actually pushes to, as a hash."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _git(repo, "push", "-q", "origin", f"{head}:refs/heads/fable-5/topic")
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    _git(repo, "config", f"url.{remote.parent.as_posix()}/.insteadOf", "wdtest:")
+    _git(repo, "remote", "set-url", "origin", "wdtest:remote.git")
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main", "--push", "--remote", "origin",
+                                  "--branch", "fable-5/topic", "--verify-interval", "0.05", "--verify-timeout", "5"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "pushed"), receipt
+    effective = remote.parent.as_posix() + "/remote.git"
+    assert receipt["push"]["push_url_sha256"] == hashlib.sha256(effective.encode("utf-8")).hexdigest()
 
 
 @pytest.mark.parametrize("case", ["moved", "missing"])
@@ -637,6 +659,27 @@ def test_a_pr_path_colliding_by_case_with_a_file_or_directory_is_refused(repo, t
     receipt = _receipt(receipt_path)
     assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "case_collision")
     assert receipt["case_collisions"] == sorted(name.replace("__", "/") for name in pr_files)
+    assert receipt["new_head"] is None
+
+
+DOTLESS_I = "\u0131"  # LATIN SMALL LETTER DOTLESS I: upper() is "I", casefold() is itself
+
+
+@pytest.mark.parametrize("pr_files,base_files,reason", [
+    ({DOTLESS_I + ".txt": "pr\n"}, {"i.txt": "base\n"}, "paths_overlap"),
+    ({DOTLESS_I: "pr file\n"}, {"i__x.txt": "base dir\n"}, "case_collision"),
+])
+def test_a_dotless_i_variant_is_the_same_file(repo, tmp_path, capsys, pr_files, base_files, reason):
+    """RCO1 shared Grok on e5711beb (de7113e9), confirmed non-blocking follow-up: NTFS compares names upper-cased."""
+    base = _base(repo)
+    head = _pr(repo, base, **pr_files)
+    _commit(repo, "main", **base_files)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", reason)
     assert receipt["new_head"] is None
 
 

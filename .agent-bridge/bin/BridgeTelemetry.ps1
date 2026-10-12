@@ -159,8 +159,8 @@ function Write-BridgeWakeObservation {
     #   stay true. The bindings are relay-latency telemetry only; whether the sentinel exists (the wake itself)
     #   does not depend on them.
     # - A lasting IOException is thrown after the fifth attempt, and any other exception at once. Watch-Bridge.ps1
-    #   calls this function without a catch under ErrorActionPreference Stop, so such a throw ends the watcher.
-    #   Keeping the watcher alive on a failed publication is a separate follow-up.
+    #   catches such a throw, keeps the batch pending and publishes it on a later poll, so the watcher stays alive;
+    #   a caller without that catch still ends on it.
     for($attempt=1;;$attempt++){
         $bindings=[Collections.Generic.List[object]]::new()
         $complete=$true

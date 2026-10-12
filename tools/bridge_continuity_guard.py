@@ -444,10 +444,10 @@ def _control_token(cp: dict) -> bool:
         # a blanket override: other controls in the same text still refuse.
         if cp["work_held"] is False and cp["release_held"] is True:
             lowered = re.sub(r"\bsignature[ \t]+unchanged[ \t]*\.?[ \t]*$", "", lowered)
-        # Closed exceptions for the two observed CI identifiers only. Do not
-        # replace the conservative cancel scan with a morphology allowlist:
-        # plurals and glued control language must still fail closed.
-        lowered = re.sub(r"(?<!\w)(?:stable)?cancelgroup(?!\w)", "", lowered)
+        # Only whitespace-delimited observed CI identifiers are exempt.
+        # Non-word boundaries also match punctuation inside control language
+        # (e.g. do-not-cancelgroup); preserve every such cancel substring.
+        lowered = re.sub(r"(?<!\S)(?:stable)?cancelgroup(?!\S)", "", lowered)
         if any(token in lowered for token in CONTROL_TOKENS):
             return True
     return False

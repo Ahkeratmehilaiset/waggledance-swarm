@@ -930,6 +930,34 @@ def test_unchanged_signature_without_structured_release_hold_stays_unknown(field
     assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "unknown"
 
 
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("text", [
+    "do-not-cancelgroup", "dont-cancelgroup", "no-cancelgroup",
+    "stable-cancelgroup", "do-not-stablecancelgroup",
+    "cancelgroup-requested", "stablecancelgroup-requested",
+    "(cancelgroup)", "[stablecancelgroup]", "cancelgroup.",
+    "cancelgroup;", "stablecancelgroup,", "x/cancelgroup",
+    "cancelgroup/x", "do-not-cancelgroup signature unchanged.",
+])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+def test_punctuation_attached_ci_names_preserve_possible_controls(scope_snap, text, field):
+    """MUTANT_NONWORD_BOUNDARY_ERASES_PUNCTUATED_CANCEL_CONTROL."""
+    c = dict(cp(), work_held=False, release_held=True)
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", d
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("text", ["cancelgroup", "stablecancelgroup",
+                                 "CI\tcancelgroup\tchecks", "CI stablecancelgroup checks"])
+def test_only_whitespace_delimited_observed_ci_names_are_exempt(text):
+    """MUTANT_REMOVE_OBSERVED_CI_IDENTIFIER_EXCEPTION."""
+    c = dict(cp(), next_action=text)
+    assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "dispatch"
+
+
 def test_tools_20261012_checkpoint_false_control_incident_replay():
     """MUTANT_CANCEL_SUBSTRING_IS_A_WORK_CONTROL / MUTANT_RELEASE_POLICY_WORK_HOLD."""
     now = "2026-10-12T08:13:47.3341374+00:00"

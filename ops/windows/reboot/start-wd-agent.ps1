@@ -586,11 +586,31 @@ function Invoke-WdNativeLeadTerminal {
           throw 'Native Lead wake producer unavailable; automatic delivery withheld'
         }
         if ($null -ne $this.RetirementContext -and -not $this.RetirementAttempted) {
-          $retirement=Invoke-WdNativeLeadWatcherRetirement -ProducerContext $this.RetirementContext.producer `
-            -RetirementContext $this.RetirementContext.external -VerifiedSupervisorCode $this.VerifiedSupervisorCode -Worktree $this.Worktree
-          $this.TerminalRecord['external_watcher_retirement']=$retirement
-          $this.RetirementAttempted=($retirement.reason -cne 'producer_identity_not_ready')
-          Write-WdTurnJson $this.ReadyPath $this.TerminalRecord
+          # Retry only a known, pre-intent mutex contention, never an uncertain
+          # stop or an ambiguous identity. Do not publish terminal_ready while
+          # the external producer is kept. Every attempt re-attests identities.
+          for ($attempt=1; $attempt -le 5; $attempt++) {
+            $retirement=Invoke-WdNativeLeadWatcherRetirement -ProducerContext $this.RetirementContext.producer `
+              -RetirementContext $this.RetirementContext.external -VerifiedSupervisorCode $this.VerifiedSupervisorCode -Worktree $this.Worktree
+            $this.TerminalRecord['external_watcher_retirement']=$retirement
+            Write-WdTurnJson $this.ReadyPath $this.TerminalRecord
+            if ($retirement.status -cin @('retired','absent')) {
+              $this.RetirementAttempted=$true
+              break
+            }
+            if ($attempt -lt 5 -and $retirement.status -ceq 'kept' -and
+                $retirement.reason -ceq 'retirement mutex busy; preserve external watcher') {
+              Start-Sleep -Milliseconds (100 * $attempt)
+              continue
+            }
+            # Stop only the exact session-owned job already checked above.
+            # Preserve the external watcher and native terminal; outer failure
+            # handling records the refusal and publishes the operator notice.
+            $this.TerminalRecord.bridge_wake_producer_status='unavailable'
+            $this.TerminalRecord.bridge_wake_transport='withheld'
+            Stop-Job -Job $job -ErrorAction Stop
+            throw ('Native Lead external watcher retirement unresolved; automatic delivery withheld: '+$retirement.reason)
+          }
         }
         if ($this.TerminalRecord.bridge_wake_producer_status -cne 'running') {
           # A job observation only; terminal_ready never proves watcher baseline

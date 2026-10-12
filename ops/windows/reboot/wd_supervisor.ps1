@@ -1473,7 +1473,8 @@ function Get-WdRetiredLeadWatcherDisposition {
         [ValidateRange(0,1000)][int]$AllCount,
         [ValidateRange(0,1000)][int]$ExactCount,
         [ValidateRange(0,1000)][int]$ReplaceableCount,
-        [bool]$ConflictMarkerExists
+        [bool]$ConflictMarkerExists,
+        [bool]$NewGenerationProducerVerified = $false
     )
     # Never adopt or retire an opaque, duplicate or persistently conflicted
     # process. The caller independently verifies PID, creation time and paths.
@@ -1482,8 +1483,27 @@ function Get-WdRetiredLeadWatcherDisposition {
         return 'absent'
     }
     if ($AllCount -eq 1 -and ($ExactCount + $ReplaceableCount) -eq 1) {
-        return 'retire'
+        # A canary-first install does not relaunch Lead, so this watcher may be
+        # its only producer: retire it only once a new-generation native Lead
+        # session producer is verified, otherwise keep it.
+        if ($NewGenerationProducerVerified) { return 'retire' }
+        return 'keep'
     }
+    return 'conflict'
+}
+
+function Get-WdLeadWatcherPostReconcileResult {
+    param(
+        [Parameter(Mandatory)][ValidateSet('absent','keep','retire')][string]$Disposition,
+        [ValidateRange(0,1000)][int]$RemainingCount
+    )
+    # A kept watcher must still be the one external producer; a retired or
+    # absent one must be gone. Anything else is a conflict, never a success.
+    if ($Disposition -ceq 'keep') {
+        if ($RemainingCount -eq 1) { return 'kept' }
+        return 'conflict'
+    }
+    if ($RemainingCount -eq 0) { return 'retired' }
     return 'conflict'
 }
 
@@ -3249,6 +3269,7 @@ else {
             # Session-owned Start-Job workers do not have the canonical -File
             # invocation and are never adopted or stopped by this plan.
             $watcherPlanAgents=@($watcherAgents)+@('codex-lead-1')
+            $leadWatcherDisposition = 'absent'
             foreach ($agent in $watcherPlanAgents) {
                 if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
                     throw "invalid configured watcher identity: $agent"
@@ -3294,12 +3315,29 @@ else {
                     -ReplaceableCount $replaceableAgentWatchers.Count `
                     -ConflictMarkerExists $watcherConflictMarkerExists
                 if ($agent -ceq 'codex-lead-1') {
+                    # This supervisor has no certified read of the native Lead
+                    # session producer, so it never claims one: a sole external
+                    # Lead watcher is kept (PR1856 R1).
                     $watcherDisposition = Get-WdRetiredLeadWatcherDisposition `
                         -AllCount $allAgentWatchers.Count `
                         -ExactCount $exactAgentWatchers.Count `
                         -ReplaceableCount $replaceableAgentWatchers.Count `
-                        -ConflictMarkerExists $watcherConflictMarkerExists
+                        -ConflictMarkerExists $watcherConflictMarkerExists `
+                        -NewGenerationProducerVerified $false
+                    $leadWatcherDisposition = $watcherDisposition
                     if ($watcherDisposition -ceq 'absent') { continue }
+                    if ($watcherDisposition -ceq 'keep') {
+                        $watcherPlans.Add([pscustomobject]@{
+                            agent = $agent
+                            action = 'current'
+                            process = $allAgentWatchers[0]
+                        })
+                        $actions.Add(
+                            "KEPT external supervised Lead watcher pid=$([int]$allAgentWatchers[0].ProcessId): " +
+                            'new-generation native Lead session producer not verified'
+                        )
+                        continue
+                    }
                 }
                 if ($watcherDisposition -ceq 'current') {
                     $watcherPlans.Add([pscustomobject]@{
@@ -3477,9 +3515,19 @@ else {
                             }
                     )
                     if ($agent -ceq 'codex-lead-1') {
-                        if ($allVerifiedAgentWatchers.Count -ne 0) {
-                            $watcherConflictMessages.Add('removed supervised Lead watcher remains after retirement')
-                        } else { $actions.Add('VERIFIED no external supervised Lead watcher; session producer not certified') }
+                        $leadPostResult = Get-WdLeadWatcherPostReconcileResult `
+                            -Disposition $leadWatcherDisposition `
+                            -RemainingCount $allVerifiedAgentWatchers.Count
+                        if ($leadPostResult -ceq 'kept') {
+                            $actions.Add('VERIFIED external supervised Lead watcher kept; session producer not certified')
+                        } elseif ($leadPostResult -ceq 'retired') {
+                            $actions.Add('VERIFIED no external supervised Lead watcher; session producer not certified')
+                        } else {
+                            $watcherConflictMessages.Add(
+                                "supervised Lead watcher count=$($allVerifiedAgentWatchers.Count) " +
+                                "after $leadWatcherDisposition"
+                            )
+                        }
                         continue
                     }
                     if (-not (Test-WdWatcherPostReconcileState `

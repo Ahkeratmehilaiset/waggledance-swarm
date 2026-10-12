@@ -109,7 +109,10 @@ def test_success_twin_feeds_the_real_switch_adapter_and_ratchets_the_high_water(
 
 
 def test_the_shipped_default_off_config_never_enables(world):
-    world.config.write_bytes((ROOT / "configs" / "bridge_v2_activation.json").read_bytes())
+    shipped = (ROOT / "configs" / "bridge_v2_activation.json").read_bytes()
+    # The premise itself: the packet pin alone would refuse any shipped bytes, so check default-off directly.
+    assert json.loads(shipped)["policy"]["features"]["F15"]["enabled"] is False
+    world.config.write_bytes(shipped)
     evidence = world.load()
     assert evidence["decision"]["enabled"] is False
     with pytest.raises(Refusal) as caught:

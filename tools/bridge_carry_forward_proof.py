@@ -11,8 +11,12 @@ below is required, and each is re-derived from git objects here; no receipt, fla
 and refuses with the first failing check as ``reason``, in this order:
 
 * ``invalid_input``: the three heads are full lower-case object names; ``same_head``: they differ;
-* ``grafts_present``: no graft file is in effect; every git call runs with ``--no-replace-objects`` so
-  ``refs/replace`` cannot make the checks read other objects than the commits name (count recorded);
+* ``grafts_present`` / ``shallow_repository``: no graft file is in effect and the repository is not
+  shallow (a shallow boundary hides parents). Every git call runs with ``--no-replace-objects`` so
+  ``refs/replace`` cannot make the checks read other objects than the commits name (count recorded),
+  without the inherited variables that pick another repository, object store, index or graft file
+  (``GIT_DIR``, ``GIT_WORK_TREE``, ...; the stripped names are recorded, never the values) and with
+  ``GIT_TERMINAL_PROMPT=0``;
 * ``unresolvable_commit``: each name is a commit in the repository;
 * condition 4: ``new_head_not_a_two_parent_merge`` (exactly two parents, so an extra commit on top or
   a rebase needs new votes), ``first_parent_not_old_head`` (no force-push: the reviewed head is the
@@ -28,9 +32,12 @@ and refuses with the first failing check as ``reason``, in this order:
 * condition 2: ``merge_conflict`` / ``merge_tree_failed`` (``git merge-tree --write-tree
   --merge-base=<old base> <main> <old head>`` exits 0) and ``tree_mismatch`` (the new head's tree is
   exactly that tree: no hand edit);
-* condition 5, ``paths_overlap``: no PR path is in the old base..main delta. That is RCO1's rule
+* condition 5, ``paths_overlap``: no PR path is in the old base..main delta, compared case-folded (on
+  a case-insensitive checkout ``Foo.txt`` and ``foo.txt`` are one file). That is RCO1's rule
   ("overlap only where the file is the same blob in both bases"): a path whose blob is equal in both
   bases is not in the delta. Any overlap needs fresh review, even when the merge is clean;
+  ``case_collision``: no PR path shares a case-folded name with another file or a directory in the
+  new tree, and no parent directory of a PR path case-folds to a file there;
 * condition 3: ``delta_changed`` (the per-file delta main..new head equals old base..old head entry by
   entry: path, status, both modes, both blob ids; ``git diff-tree -r -z --no-renames``) and
   ``patch_id_changed`` (``git patch-id --stable`` of both deltas, ``git diff`` with pinned options).
@@ -71,6 +78,9 @@ RECEIPT_SCHEMA = "wd.carry-forward-receipt.v1"
 SELF_PATH = "tools/bridge_carry_forward_proof.py"
 VERDICT_FIELDS = ("consensus_ok", "ci_all_green", "charter_ok", "veto_clear")
 _OBJECT_NAME = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_REPOSITORY_ENV = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                             "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+                             "GIT_REPLACE_REF_BASE"})
 _RAW_META = re.compile(r"^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])$")
 # git diff for patch-ids: every option that changes the text of a diff is pinned
 _PATCH_DIFF = ["-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "core.quotePath=true",
@@ -86,9 +96,11 @@ class _Refused(Exception):
 
 
 def _git(repo: str, args: Sequence[str], stdin: bytes | None = None) -> tuple[int, bytes]:
+    env = {key: value for key, value in os.environ.items() if key.upper() not in _REPOSITORY_ENV}
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(["git", "--no-optional-locks", "--no-replace-objects", "-C", repo, *args],
-                              input=stdin, capture_output=True)
+                              input=stdin, capture_output=True, env=env)
     except OSError:
         return 127, b""
     return proc.returncode, proc.stdout
@@ -138,6 +150,25 @@ def _patch_id(repo: str, old: str, new: str) -> str | None:
     return value[0] if value else None
 
 
+def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
+    """PATHS that share a case-folded name with another file or a directory in TREE (one file on Windows)."""
+    names = [name.decode("utf-8", errors="surrogateescape") for name in
+             _must(repo, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", tree]).split(b"\0") if name]
+    files: dict[str, set[str]] = {}
+    dirs: set[str] = set()
+    for name in names:
+        files.setdefault(name.casefold(), set()).add(name)
+        parts = name.split("/")
+        dirs.update("/".join(parts[:end]).casefold() for end in range(1, len(parts)))
+    hits = set()
+    for path in paths:
+        parts = path.split("/")
+        if (len(files.get(path.casefold(), ())) > 1 or path.casefold() in dirs
+                or any("/".join(parts[:end]).casefold() in files for end in range(1, len(parts)))):
+            hits.add(path)
+    return sorted(hits)
+
+
 def _gate_paths(paths: Sequence[str]) -> list[str]:
     hits = set(classify_ab(list(paths)).get("a_hits") or [])
     hits.update(path.lower() for path in paths if path.replace("\\", "/").lower() == SELF_PATH)
@@ -150,8 +181,9 @@ def _new_proof(old_head: Any, new_head: Any, main_head: Any) -> dict[str, Any]:
         "old_head": old_head, "new_head": new_head, "main_head": main_head, "old_base": None,
         "new_head_parents": None, "merge_tree": None, "merge_tree_exit": None,
         "pr_paths": None, "base_delta_paths": None, "overlap_paths": None, "gate_governance_paths": None,
-        "entries": None, "patch_id_old": None, "patch_id_new": None,
-        "replace_refs": None, "grafts": None, "failed_command": None, "error_type": None,
+        "case_collisions": None, "entries": None, "patch_id_old": None, "patch_id_new": None,
+        "stripped_git_env": sorted({key.upper() for key in os.environ if key.upper() in _REPOSITORY_ENV}),
+        "replace_refs": None, "grafts": None, "shallow": None, "failed_command": None, "error_type": None,
     }
 
 
@@ -167,6 +199,9 @@ def _check(repo: str, proof: dict[str, Any]) -> None:
     proof["grafts"] = os.path.exists(grafts if os.path.isabs(grafts) else os.path.join(repo, grafts))
     if proof["grafts"]:
         raise _Refused("grafts_present")
+    proof["shallow"] = _text(_must(repo, ["rev-parse", "--is-shallow-repository"])) == "true"
+    if proof["shallow"]:
+        raise _Refused("shallow_repository")
     for name in (old_head, new_head, main):
         code, out = _git(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{name}^{{commit}}"])
         if code != 0 or _text(out) != name:
@@ -198,7 +233,8 @@ def _check(repo: str, proof: dict[str, Any]) -> None:
         raise _Refused("gate_or_governance_path")
     base_delta = _delta(repo, base, main)
     proof["base_delta_paths"] = sorted(base_delta)
-    proof["overlap_paths"] = sorted(set(pr) & set(base_delta))
+    base_folded = {path.casefold() for path in base_delta}
+    proof["overlap_paths"] = sorted(path for path in pr if path.casefold() in base_folded)
 
     # Condition 2: the new tree is merge-tree's, exit 0, unedited.
     code, out = _git(repo, ["merge-tree", "--write-tree", "--no-messages", f"--merge-base={base}", main, old_head])
@@ -212,9 +248,13 @@ def _check(repo: str, proof: dict[str, Any]) -> None:
     if _text(_must(repo, ["rev-parse", f"{new_head}^{{tree}}"])) != tree:
         raise _Refused("tree_mismatch")
 
-    # Condition 5: no PR path in the base delta (same blob in both bases = not in the delta).
+    # Condition 5: no PR path in the base delta (same blob in both bases = not in the delta), case-folded,
+    # and no PR path that is one file with another file or a directory on a case-insensitive checkout.
     if proof["overlap_paths"]:
         raise _Refused("paths_overlap")
+    proof["case_collisions"] = _case_collisions(repo, tree, proof["pr_paths"])
+    if proof["case_collisions"]:
+        raise _Refused("case_collision")
 
     # Condition 3: every PR file's blob and the stable patch-id are unchanged.
     carried = _delta(repo, main, new_head)
@@ -271,8 +311,10 @@ def evaluate_carry_forward(*, repo: str, old_head: str, new_head: str, main_head
         "patch_id_old": proof["patch_id_old"], "patch_id_new": proof["patch_id_new"],
         "pr_paths": proof["pr_paths"], "base_delta_paths": proof["base_delta_paths"],
         "overlap_paths": proof["overlap_paths"], "gate_governance_paths": proof["gate_governance_paths"],
+        "case_collisions": proof["case_collisions"],
         "entries": proof["entries"], "new_head_parents": proof["new_head_parents"],
-        "replace_refs": proof["replace_refs"], "grafts": proof["grafts"],
+        "stripped_git_env": proof["stripped_git_env"],
+        "replace_refs": proof["replace_refs"], "grafts": proof["grafts"], "shallow": proof["shallow"],
         "old_head_verdict": verdict, "new_head_ci_all_green": new_head_ci_all_green,
         "new_head_veto_clear": new_head_veto_clear,
     }

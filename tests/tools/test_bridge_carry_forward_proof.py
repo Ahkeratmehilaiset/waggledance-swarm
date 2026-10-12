@@ -269,6 +269,34 @@ def test_an_empty_pr_is_not_a_carry(repo):
     assert (proof["ok"], proof["reason"]) == (False, "already_contains_main_or_empty")
 
 
+def test_an_empty_commit_pr_is_not_a_carry(repo):
+    """Mutant MUT_CF_EMPTY_ACCEPTED survived without this: the head is not an ancestor of main, the delta is empty."""
+    base = _base(repo)
+    _git(repo, "checkout", "-q", "-b", "pr", base)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+    head = _rev(repo, "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    main = _commit(repo, "main", **{"c.txt": "c\n"})
+
+    proof = _verify(repo, head, _update(repo, head, main), main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "empty_pr_delta")
+
+
+def test_a_patch_id_mismatch_never_carries(repo, monkeypatch):
+    """Equal per-file entries already imply equal diffs, so this check is the independent second witness; it is
+    exercised through the _patch_id seam (mutant MUT_CF_NO_PATCH_ID_CHECK survived without this)."""
+    base, head, main, new_head = _scenario(repo)
+    module = _module()
+    real = module._patch_id
+    monkeypatch.setattr(module, "_patch_id", lambda repo_, old, new: real(repo_, old, new) + ("x" if old == base else ""))
+
+    proof = module.verify_carry_forward(repo=str(repo), old_head=head, new_head=new_head, main_head=main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "patch_id_changed")
+    assert proof["patch_id_old"] != proof["patch_id_new"]
+
+
 def test_a_head_that_already_contains_main_is_not_a_carry(repo):
     base = _base(repo)
     head = _pr(repo, base, **{"p.txt": "pr\n"})

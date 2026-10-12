@@ -2723,22 +2723,39 @@ def _validate_carry_forward_inputs(
 
 def _carry_forward_old_head_checks(
     pr_status: Mapping[str, Any],
-) -> list[Mapping[str, Any]]:
-    """The old head's CI snapshot; a missing one is empty and never green."""
-    checks = pr_status.get("carry_forward_old_head_checks", [])
+) -> tuple[str | None, list[Mapping[str, Any]]]:
+    """The old head's CI snapshot as (bound head, checks); a missing one is never green.
+
+    The snapshot is ``{"head_sha": <old head>, "checks": [...]}``, so checks of
+    any other commit can never stand in for the old head's CI (Grok 2a680241).
+    """
+    snapshot = pr_status.get("carry_forward_old_head_checks")
+    if snapshot is None:
+        return None, []
+    if not isinstance(snapshot, Mapping):
+        raise _invalid(
+            "invalid_pr_status",
+            "carry_forward_old_head_checks must be an object with head_sha and checks",
+        )
+    head = snapshot.get("head_sha")
+    if type(head) is not str:
+        raise _invalid(
+            "invalid_pr_status", "carry_forward_old_head_checks.head_sha must be a string"
+        )
+    checks = snapshot.get("checks")
     if not isinstance(checks, list):
         raise _invalid(
-            "invalid_pr_status", "carry_forward_old_head_checks must be a list"
+            "invalid_pr_status", "carry_forward_old_head_checks.checks must be a list"
         )
     normalized: list[Mapping[str, Any]] = []
     for check in checks:
         if not isinstance(check, Mapping):
             raise _invalid(
                 "invalid_pr_status",
-                "carry_forward_old_head_checks entries must be objects",
+                "carry_forward_old_head_checks.checks entries must be objects",
             )
         normalized.append(check)
-    return normalized
+    return head, normalized
 
 
 def _carry_forward_gate(
@@ -2787,13 +2804,17 @@ def _carry_forward_gate(
         "receipt": None,
         "old_head_rco_pass_gate": None,
         "old_head_consensus": None,
-        "old_head_checks": [],
+        "old_head_checks": None,
     }
     if not approval_blockers:
         return report
     reasons: list[str] = report["reasons"]
-    old_checks = _carry_forward_old_head_checks(pr_status)
-    report["old_head_checks"] = [dict(check) for check in old_checks]
+    old_checks_head, old_checks = _carry_forward_old_head_checks(pr_status)
+    if old_checks_head is not None:
+        report["old_head_checks"] = {
+            "head_sha": old_checks_head,
+            "checks": [dict(check) for check in old_checks],
+        }
     if events_path is None:
         reasons.append("carry-forward needs the bridge events")
     if not main_head:
@@ -2807,6 +2828,9 @@ def _carry_forward_gate(
     if reasons:
         return report
     assert old_head is not None
+    old_checks_bound = old_checks_head == old_head
+    if old_checks_head is not None and not old_checks_bound:
+        reasons.append("carry_forward_old_head_checks are not bound to the old head")
     old_rco_gate = _bridge_rco_pass_gate(
         events=events,
         task_id=task_id,
@@ -2854,7 +2878,9 @@ def _carry_forward_gate(
     verdict = {
         "head": old_head,
         "consensus_ok": old_rco_gate.get("ok") is True and old_consensus.get("ok") is True,
-        "ci_all_green": bool(old_checks) and all(_check_passed(c) for c in old_checks),
+        "ci_all_green": old_checks_bound
+        and bool(old_checks)
+        and all(_check_passed(c) for c in old_checks),
         "charter_ok": charter_ok is True,
         "veto_clear": bridge_peer_gate.get("clear_to_merge") is True
         and veto_scan.get("ok") is True,

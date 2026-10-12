@@ -377,6 +377,12 @@ function Get-WdNativeLeadProducerAttestation {
         [string]::IsNullOrWhiteSpace([string]$proof.executable_path)) { throw 'producer process identity missing' }
     $producer=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$proof.process_id) -ErrorAction Stop)
     $parent=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$Context.launcher_pid) -ErrorAction Stop)
+    # Win32_Process uses DMTF microseconds; native StartTime retains 100 ns.
+    # Project only the native timestamp into that exact domain using integer
+    # arithmetic. This is not a tolerance: the next microsecond still refuses.
+    $launcherNativeTicks=([DateTimeOffset]$Context.launcher_start_utc).UtcTicks
+    if ($launcherNativeTicks -le 0) { throw 'launcher lifetime missing' }
+    $launcherCimTicks=$launcherNativeTicks - ($launcherNativeTicks % 10)
     if ($producer.Count -ne 1 -or $parent.Count -ne 1 -or
         [int]$parent[0].ProcessId -ne [int]$Context.launcher_pid -or
         [int]$producer[0].ProcessId -ne [int]$proof.process_id -or
@@ -384,7 +390,7 @@ function Get-WdNativeLeadProducerAttestation {
         [string]$producer[0].CommandLine -cne [string]$proof.command_line -or
         [string]$producer[0].ExecutablePath -cne [string]$proof.executable_path -or
         ([DateTimeOffset]$producer[0].CreationDate).UtcTicks -ne ([DateTimeOffset]$proof.creation_utc).UtcTicks -or
-        ([DateTimeOffset]$parent[0].CreationDate).UtcTicks -ne ([DateTimeOffset]$Context.launcher_start_utc).UtcTicks -or
+        ([DateTimeOffset]$parent[0].CreationDate).UtcTicks -ne $launcherCimTicks -or
         ([DateTimeOffset]$proof.parent_start_utc).UtcTicks -ne ([DateTimeOffset]$Context.launcher_start_utc).UtcTicks) {
       throw 'producer or launcher lifetime changed'
     }
@@ -472,7 +478,11 @@ function Invoke-WdNativeLeadWatcherRetirement {
     # Cache the OS process handle before lifetime checks: never kill by a bare PID.
     $targetHandle=Get-Process -Id ([int]$target.ProcessId) -ErrorAction Stop
     $null=$targetHandle.Handle
-    if ($targetHandle.HasExited -or $targetHandle.StartTime.ToUniversalTime().Ticks -ne
+    # Match native handle lifetime in CIM's microsecond domain, not with an
+    # arbitrary time window. All subsequent CIM-to-CIM checks remain exact.
+    $targetNativeTicks=$targetHandle.StartTime.ToUniversalTime().Ticks
+    if ($targetHandle.HasExited -or $targetNativeTicks -le 0 -or
+        ($targetNativeTicks - ($targetNativeTicks % 10)) -ne
         ([DateTimeOffset]$target.CreationDate).UtcTicks) { throw 'external watcher lifetime changed' }
     $fresh=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$target.ProcessId) -ErrorAction Stop)
     if ($fresh.Count -ne 1 -or [int]$fresh[0].ProcessId -ne [int]$target.ProcessId -or

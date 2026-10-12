@@ -12,9 +12,13 @@ from test_wd_startup_recovery import load, q
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['valid', 'job_missing', 'job_failed', 'job_name',
     'token', 'generation', 'session', 'pid', 'creation', 'command', 'parent',
-    'parent_creation', 'duplicate', 'cim_unavailable', 'proof_missing', 'baseline_missing'])
+    'parent_creation', 'duplicate', 'cim_unavailable', 'proof_missing', 'baseline_missing',
+    'parent_native_remainder_7', 'parent_native_remainder_9', 'parent_next_microsecond'])
 def test_retirement_requires_live_exact_session_producer(tmp_path, ps, case):
-    """MUTANT_RETIRE_ON_RUNNING_FLAG / MUTANT_ACCEPT_RECYCLED_PRODUCER_PID."""
+    """MUTANT_RETIRE_ON_RUNNING_FLAG / MUTANT_ACCEPT_RECYCLED_PRODUCER_PID.
+
+    MUTANT_PARENT_EXACT_NATIVE_TICKS / MUTANT_PARENT_LIFETIME_TOLERANCE.
+    """
     ready = tmp_path / 'ready'
     ready.write_text('2026-10-12T07:00:01Z', encoding='utf-8')
     watcher = tmp_path / 'Watch-Bridge.ps1'
@@ -26,6 +30,9 @@ $ctx=@{{job_id=42;token='0123456789abcdef0123456789abcdef';session_id='current-s
  generation='new-generation';runtime_root='C:\\fixture';watcher_script={q(watcher)};
  watcher_sha256=(Get-FileHash {q(watcher)}).Hash;baseline_path={q(ready)};
  launcher_pid=100;launcher_start_utc='2026-10-12T06:59:00Z'}}
+if('{case}' -ceq 'parent_native_remainder_7'){{$ctx.launcher_start_utc='2026-10-12T06:59:00.0000007Z'}}
+if('{case}' -ceq 'parent_native_remainder_9'){{$ctx.launcher_start_utc='2026-10-12T06:59:00.0000009Z'}}
+if('{case}' -ceq 'parent_next_microsecond'){{$ctx.launcher_start_utc='2026-10-12T06:59:00.0000017Z'}}
 $script:proof=[pscustomobject]@{{schema='wd.session-wake-producer.v1';token=$ctx.token;
  session_id=$ctx.session_id;generation=$ctx.generation;agent='codex-lead-1';
  runtime_root=$ctx.runtime_root;watcher_script=$ctx.watcher_script;watcher_sha256=$ctx.watcher_sha256;
@@ -63,9 +70,10 @@ $r=Get-WdNativeLeadProducerAttestation -Context $ctx
 $r|ConvertTo-Json -Depth 6 -Compress
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
-    assert result['verified'] is (case == 'valid'), result
+    valid = case in ('valid', 'parent_native_remainder_7', 'parent_native_remainder_9')
+    assert result['verified'] is valid, result
     assert result['reason']
-    if case == 'valid':
+    if valid:
         assert result['process_id'] == 200
         assert result['command_line'] == 'powershell.exe -s -NoLogo -NoProfile'
     else:
@@ -88,9 +96,16 @@ def test_launcher_does_not_infer_retirement_from_an_old_running_record():
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['valid', 'no_producer', 'producer_dies', 'no_external',
     'duplicates', 'wrong_runtime', 'wrong_script', 'command_payload', 'target_recycled',
-    'target_command_changes', 'intent_exists', 'uncertain_stop'])
+    'target_command_changes', 'intent_exists', 'uncertain_stop',
+    *[f'native_remainder_{i}' for i in range(1, 10)], 'native_next_microsecond'])
 def test_exact_external_stop_is_after_final_producer_attestation(tmp_path, ps, case):
-    """MUTANT_STOP_BEFORE_FINAL_PROOF / MUTANT_KILL_BY_PID / MUTANT_STOP_UNKNOWN."""
+    """MUTANT_STOP_BEFORE_FINAL_PROOF / MUTANT_KILL_BY_PID / MUTANT_STOP_UNKNOWN.
+
+    MUTANT_EXTERNAL_EXACT_NATIVE_TICKS / MUTANT_EXTERNAL_LIFETIME_TOLERANCE.
+    Native remainder 7 reproduces the hash-verified Lead private-process proof:
+    639273977184155957 native ticks versus 639273977184155950 CIM ticks.
+    The next-microsecond twin must preserve the backup and never write intent.
+    """
     journal = tmp_path / '.codex-audit/wd-turn-loop'
     journal.mkdir(parents=True)
     script = load(REBOOT / 'start-wd-agent.ps1', 'Invoke-WdNativeLeadWatcherRetirement')
@@ -117,7 +132,8 @@ switch('{case}'){{
  'intent_exists'{{[IO.File]::WriteAllText({q(journal / 'native-lead-retirement-0123456789abcdef0123456789abcdef.json')},'retained old intent')}}
 }}
 $script:target=[pscustomobject]@{{ProcessId=300;ParentProcessId=1;Name='powershell.exe';ExecutablePath=$exe;
- CreationDate=[datetime]'2026-10-12T06:00:00Z';CommandLine=$line}}
+CreationDate=[datetime]'2026-10-12T06:00:00Z';CommandLine=$line}}
+if('{case}'.StartsWith('native_')){{$script:target.CreationDate=[datetime]'2026-10-12T10:28:38.4155950Z'}}
 function Get-CimInstance {{param($ClassName,$Filter)
  if(-not $Filter){{
   if('{case}' -ceq 'no_external'){{return [pscustomobject]@{{Name='powershell.exe';CommandLine='powershell.exe -s -NoProfile'}}}}
@@ -131,6 +147,11 @@ function Get-CimInstance {{param($ClassName,$Filter)
  }}
 }}
 $script:handle=[pscustomobject]@{{Handle=1;HasExited=$false;StartTime=[datetime]'2026-10-12T06:00:00Z'}}
+if('{case}'.StartsWith('native_remainder_')){{
+ $script:handle.StartTime=[datetime]'2026-10-12T10:28:38.4155950Z'
+ $script:handle.StartTime=$script:handle.StartTime.AddTicks([int]('{case}'.Substring('native_remainder_'.Length)))
+}}
+if('{case}' -ceq 'native_next_microsecond'){{$script:handle.StartTime=[datetime]'2026-10-12T10:28:38.4155967Z'}}
 $script:handle|Add-Member ScriptMethod Kill {{
  if($script:proofCalls -lt 2 -or $script:writes.Count -ne 1 -or $script:writes[0] -cne 'stopping'){{throw 'unsafe stop ordering'}}
  $script:kills++
@@ -145,9 +166,9 @@ $r=Invoke-WdNativeLeadWatcherRetirement -ProducerContext $producer -RetirementCo
 @{{result=$r;kills=$script:kills;proof_calls=$script:proofCalls;writes=$script:writes;disposed=$script:disposed}}|ConvertTo-Json -Depth 6 -Compress
 """
     r = json.loads(_run_powershell(script, executable=ps).stdout)
-    should_stop = case in ('valid', 'uncertain_stop')
+    should_stop = case in ('valid', 'uncertain_stop') or case.startswith('native_remainder_')
     assert r['kills'] == int(should_stop), r
-    if case == 'valid':
+    if case == 'valid' or case.startswith('native_remainder_'):
         assert r['result']['status'] == 'retired' and r['result']['stopped_pid'] == 300, r
         assert r['proof_calls'] == 2 and r['writes'] == ['stopping', 'retired'], r
     elif case in ('no_external', 'command_payload'):

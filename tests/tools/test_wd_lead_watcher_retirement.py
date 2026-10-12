@@ -94,6 +94,59 @@ def test_launcher_does_not_infer_retirement_from_an_old_running_record():
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['busy_then_absent', 'busy_forever', 'ambiguous', 'uncertain'])
+def test_relay_requires_resolved_retirement_before_ready(tmp_path, ps, case):
+    """MUTANT_LATCH_FIRST_REFUSAL / MUTANT_READY_WITH_DUAL_PRODUCERS.
+
+    Execute the actual launcher WaitForExit hook with inert jobs/processes.
+    No real watcher is retired or stopped.
+    """
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
+    start = source.index('    $relayNative | Add-Member ScriptMethod WaitForExit {')
+    end = source.index('    Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1', start)
+    hook = source[start:end]
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$script:calls=0;$script:stops=0;$script:delays=@();$script:writes=@()
+$fakeProcess=[pscustomobject]@{{}}
+$fakeProcess|Add-Member ScriptMethod WaitForExit {{param($ms)return $false}}
+$script:job=[pscustomobject]@{{Id=42;Name='agent-bridge-watcher-codex-lead-1';State='Running'}}
+function Get-Job {{param($Id)return $script:job}}
+function Stop-Job {{param($Job)if($Job -ne $script:job){{throw 'foreign job'}};$script:stops++;$Job.State='Stopped'}}
+function Start-Sleep {{param($Milliseconds)$script:delays+=@($Milliseconds)}}
+function Write-WdTurnJson {{param($Path,$Record)$script:writes+=@($Record.status)}}
+function Invoke-WdNativeLeadWatcherRetirement {{param($ProducerContext,$RetirementContext,$VerifiedSupervisorCode,$Worktree)
+ $script:calls++
+ if('{case}' -ceq 'busy_then_absent' -and $script:calls -gt 1){{return @{{status='absent';reason='verified producer, no external watcher'}}}}
+ if('{case}' -ceq 'ambiguous'){{return @{{status='kept';reason='ambiguous external Lead watchers; preserve all'}}}}
+ if('{case}' -ceq 'uncertain'){{return @{{status='uncertain';reason='external stop uncertain; retained retirement intent'}}}}
+ return @{{status='kept';reason='retirement mutex busy; preserve external watcher'}}
+}}
+$record=@{{status='native_process_started';bridge_wake_producer_status='unchecked';bridge_wake_transport='withheld'}}
+$relayNative=[pscustomobject]@{{Process=$fakeProcess;ProducerEnabled=$true;WakeJobId='42';TerminalRecord=$record;
+ ReadyPath={q(tmp_path / 'ready.json')};RetirementContext=@{{producer=@{{}};external=@{{}}}};
+ VerifiedSupervisorCode='inert';Worktree={q(tmp_path)};RetirementAttempted=$false}}
+{hook}
+$caught=$null
+try{{$null=$relayNative.WaitForExit(1)}}catch{{$caught=$_.Exception.Message}}
+[ordered]@{{calls=$script:calls;stops=$script:stops;delays=$script:delays;record=$record;
+ caught=$caught;retirement_attempted=$relayNative.RetirementAttempted}}|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    if case == 'busy_then_absent':
+        assert result['calls'] == 2, result
+        assert result['stops'] == 0 and result['caught'] is None, result
+        assert result['record']['status'] == 'terminal_ready', result
+        assert result['retirement_attempted'] is True, result
+    else:
+        assert result['calls'] == (5 if case == 'busy_forever' else 1), result
+        assert result['stops'] == 1 and result['caught'], result
+        assert result['record']['bridge_wake_transport'] == 'withheld', result
+        assert result['record']['status'] != 'terminal_ready', result
+        assert result['retirement_attempted'] is False, result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['valid', 'no_producer', 'producer_dies', 'no_external',
     'duplicates', 'wrong_runtime', 'wrong_script', 'command_payload', 'target_recycled',
     'target_command_changes', 'intent_exists', 'uncertain_stop',

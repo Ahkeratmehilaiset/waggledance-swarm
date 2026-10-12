@@ -1136,22 +1136,49 @@ function Test-WdContinuityControlEvents {
         if (-not ($blocking -or $finding)) { continue }
         # Explicit control is decided before any diagnostic exemption. A payload
         # field named like a control (release_held, work_held, control, ...) keeps
-        # the row a control whatever its value; a payload that is not an object
-        # cannot be inspected and stays a control.
-        $payloadControl = $false
+        # the row a control whatever its value and however deep it sits: the field
+        # names of every nested object, including objects inside arrays, are
+        # scanned (RCO1/RCO2 on PR1843, bot 4242064499). A payload that cannot be
+        # fully inspected stays a control: missing, null or not an object (bot
+        # 4241335136 on PR1849), an object or array nested deeper than 16 levels
+        # (the payload is level 1), or more than 8192 values in all (each object,
+        # array, string, number, boolean and null counts once, the payload
+        # included). Only an object payload whose field names were all scanned
+        # can clear the row.
+        $payloadControl = $true
         $payloadProperty = $event.PSObject.Properties['payload']
-        if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) {
-            $payload = $payloadProperty.Value
-            # Direct assignments: an if-expression would unroll an empty name list to $null.
-            $names = $null
-            if ($payload -is [Collections.IDictionary]) { $names = @($payload.Keys) }
-            elseif ($payload -is [Management.Automation.PSCustomObject]) { $names = @($payload.PSObject.Properties | ForEach-Object { $_.Name }) }
-            if ($null -eq $names) { $payloadControl = $true }
-            foreach ($name in @($names)) {
-                $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
-                    -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
-                if (@($nameTokens | Where-Object { $controlTokens -ccontains $_ -or $_ -cin @('block','blocked','control') }).Count -gt 0) {
-                    $payloadControl = $true
+        if ($null -ne $payloadProperty -and ($payloadProperty.Value -is [Collections.IDictionary] -or
+            $payloadProperty.Value -is [Management.Automation.PSCustomObject])) {
+            $payloadControl = $false
+            $nodes = New-Object Collections.Generic.Stack[object]
+            $levels = New-Object Collections.Generic.Stack[int]
+            $nodes.Push($payloadProperty.Value); $levels.Push(1)
+            $valuesLeft = 8192 - 1
+            while ($nodes.Count -gt 0 -and -not $payloadControl) {
+                $node = $nodes.Pop(); $level = $levels.Pop()
+                $names = New-Object Collections.Generic.List[string]
+                $values = New-Object Collections.Generic.List[object]
+                if ($node -is [Collections.IDictionary]) {
+                    foreach ($entry in $node.GetEnumerator()) { $names.Add([string]$entry.Key); $values.Add($entry.Value) }
+                } elseif ($node -is [Management.Automation.PSCustomObject]) {
+                    foreach ($property in @($node.PSObject.Properties)) { $names.Add($property.Name); $values.Add($property.Value) }
+                } else {
+                    foreach ($item in $node) { $values.Add($item) }
+                }
+                $valuesLeft -= $values.Count
+                if ($level -gt 16 -or $valuesLeft -lt 0) { $payloadControl = $true; break }
+                foreach ($name in $names) {
+                    $nameTokens = (([string]$name -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
+                        -replace 'changes[^a-z0-9]*requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+                    if (@($nameTokens | Where-Object { $controlTokens -ccontains $_ -or $_ -cin @('block','blocked','control') }).Count -gt 0) {
+                        $payloadControl = $true
+                    }
+                }
+                foreach ($value in $values) {
+                    if ($value -is [Collections.IDictionary] -or $value -is [Management.Automation.PSCustomObject] -or
+                        ($value -is [Collections.IEnumerable] -and $value -isnot [string])) {
+                        $nodes.Push($value); $levels.Push($level + 1)
+                    }
                 }
             }
         }

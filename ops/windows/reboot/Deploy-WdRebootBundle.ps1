@@ -248,7 +248,10 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
-    [switch] $DryRun
+    [switch] $DryRun,
+    [switch] $FreshSession,
+    [string] $SupersededThreadId = '',
+    [string] $FreshSessionReason = ''
 )
 '@
             }
@@ -264,7 +267,10 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
-    [switch] $DryRun
+    [switch] $DryRun,
+    [switch] $FreshSession,
+    [string] $SupersededThreadId = '',
+    [string] $FreshSessionReason = ''
 )
 '@
             }

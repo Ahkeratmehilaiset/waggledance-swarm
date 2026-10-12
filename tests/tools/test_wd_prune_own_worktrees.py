@@ -12,7 +12,9 @@ shows no tracked change and no untracked file; the only ignored content is ``__p
 (assume-unchanged or skip-worktree); the worktree has no per-worktree refs (``refs/worktree``,
 ``refs/bisect``, ``refs/rewritten`` are deleted with it); and HEAD and every commit in the
 worktree's HEAD reflog are contained in a branch, remote-tracking ref or tag (a commit
-reachable only from ``refs/stash`` or from that reflog is not enough). Removal
+reachable only from ``refs/stash`` or from that reflog is not enough); so is every commit that
+ORIG_HEAD or a FETCH_HEAD line names (both are per-worktree files, deleted with the worktree; an
+unparseable one keeps it). Removal
 is ``git worktree remove`` without ``--force``, after a final status re-check; the default is a
 dry run. The owner comes from the lane identity; another lane's name is refused.
 """
@@ -47,6 +49,10 @@ EXPECTED = {
     "fable-5-worktree-ref": ("keep", "worktree_refs"),
     "fable-5-rebase-in-progress": ("keep", "operation_in_progress"),
     "fable-5-merge-in-progress": ("keep", "operation_in_progress"),
+    "fable-5-orig-head-only": ("keep", "pseudo_ref_only_commits"),
+    "fable-5-fetch-head-only": ("keep", "pseudo_ref_only_commits"),
+    "fable-5-pseudo-refs-in-ref": ("candidate", "eligible"),
+    "fable-5-fetch-head-unreadable": ("keep", "pseudo_ref_unreadable"),
     "fable-5-locked": ("keep", "locked"),
     "fable-5-missing": ("keep", "missing"),
     "fable-5-broken": ("keep", "status_unreadable"),
@@ -75,6 +81,15 @@ def _commit(cwd: Path, name: str, text: str) -> str:
     _git(cwd, "add", name)
     _git(cwd, "commit", "-q", "-m", f"add {name}")
     return _git(cwd, "rev-parse", "HEAD").strip()
+
+
+def _gitdir(cwd: Path) -> Path:
+    return Path(_git(cwd, "rev-parse", "--absolute-git-dir").strip())
+
+
+def _loose_commit(cwd: Path, message: str) -> str:
+    """A commit on top of HEAD that no ref and no reflog holds (HEAD does not move)."""
+    return _git(cwd, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message).strip()
 
 
 @pytest.fixture
@@ -135,6 +150,21 @@ def lane(tmp_path, monkeypatch):
     merge_head = _git(merge, "rev-parse", "HEAD").strip()
     (Path(_git(merge, "rev-parse", "--absolute-git-dir").strip()) / "MERGE_HEAD").write_text(merge_head + "\n",
                                                                                             encoding="utf-8")
+    # ORIG_HEAD and FETCH_HEAD are per-worktree files, deleted with the worktree. Each names a commit made
+    # with commit-tree, so it is in no ref and not in the HEAD reflog either.
+    orig_only = detached("fable-5-orig-head-only")
+    _gitdir(orig_only).joinpath("ORIG_HEAD").write_text(_loose_commit(orig_only, "orig only") + "\n", encoding="utf-8")
+    fetch_only = detached("fable-5-fetch-head-only")
+    head = _git(fetch_only, "rev-parse", "HEAD").strip()
+    _gitdir(fetch_only).joinpath("FETCH_HEAD").write_text(
+        f"{head}\tnot-for-merge\tbranch 'main' of ../repo\n"
+        f"{_loose_commit(fetch_only, 'fetched only')}\t\tbranch 'topic' of ../repo\n", encoding="utf-8")
+    in_ref = detached("fable-5-pseudo-refs-in-ref")
+    head = _git(in_ref, "rev-parse", "HEAD").strip()
+    _gitdir(in_ref).joinpath("ORIG_HEAD").write_text(head + "\n", encoding="utf-8")
+    _gitdir(in_ref).joinpath("FETCH_HEAD").write_text(f"{head}\t\tbranch 'main' of ../repo\n", encoding="utf-8")
+    _gitdir(detached("fable-5-fetch-head-unreadable")).joinpath("FETCH_HEAD").write_text("not a fetch head\n",
+                                                                                          encoding="utf-8")
     locked = detached("fable-5-locked")
     _git(repo, "worktree", "lock", str(locked))
     shutil.rmtree(detached("fable-5-missing"))
@@ -311,12 +341,14 @@ def _late_change(path: Path, change: str) -> None:
     elif change == "moved":  # HEAD moves to a new commit a branch holds: nothing would be lost, but it changed
         _commit(path, "late.txt", "late\n")
         _git(path, "branch", "wd-test-late", "HEAD")
+    elif change == "orig-head":  # ORIG_HEAD names a commit in no ref: HEAD and status do not change
+        _gitdir(path).joinpath("ORIG_HEAD").write_text(_loose_commit(path, "late orig") + "\n", encoding="utf-8")
     else:  # a change hidden by an assume-unchanged index flag: status stays clean
         _git(path, "update-index", "--assume-unchanged", "a.txt")
         (path / "a.txt").write_text("hidden change\n", encoding="utf-8")
 
 
-@pytest.mark.parametrize("change", ["evidence", "commit", "moved", "index-flag"])
+@pytest.mark.parametrize("change", ["evidence", "commit", "moved", "index-flag", "orig-head"])
 def test_a_change_after_classification_is_caught_before_removal(lane, capsys, monkeypatch, change):
     """RCO1 R2 on PR1859: --apply must re-run every check right before removal, not only the status."""
     prune = _prune()

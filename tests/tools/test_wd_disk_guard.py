@@ -248,6 +248,38 @@ def test_worktree_add_relative_target_is_measured_relative_to_the_repo(monkeypat
     assert str(repo) in usage.calls
 
 
+def _blocked_under(root: Path):
+    """A fake disk_usage: 1 GiB free under ROOT (a BLOCK), 50 GiB everywhere else."""
+    prefix = os.path.normcase(str(root.resolve()))
+    return _usage(lambda path: GIB if os.path.normcase(str(Path(path).resolve())).startswith(prefix) else 50 * GIB)
+
+
+def test_worktree_add_also_measures_the_repository(monkeypatch, capsys, tmp_path):
+    """Git writes the new worktree's index and metadata into the repository's git directory, so a
+    blocked repository volume refuses even when the target's volume has room (Tools' Grok on PR1859)."""
+    import shutil
+    repo = _repo(tmp_path)
+    target = tmp_path / "elsewhere" / "wt"
+    monkeypatch.setattr(shutil, "disk_usage", _blocked_under(repo))
+    code = _guard().main(["worktree-add", "--repo", str(repo), "--", "--detach", str(target), "HEAD"])
+    assert code == 28
+    assert not target.exists()
+    assert "WD-DISK-GUARD BLOCK" in capsys.readouterr().err
+
+
+def test_worktree_add_from_a_linked_worktree_measures_the_common_git_dir(monkeypatch, capsys, tmp_path):
+    import shutil
+    repo = _repo(tmp_path)
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", "--detach", str(linked), "HEAD")
+    target = tmp_path / "elsewhere" / "wt"
+    monkeypatch.setattr(shutil, "disk_usage", _blocked_under(repo / ".git"))  # only the common git dir is full
+    code = _guard().main(["worktree-add", "--repo", str(linked), "--", "--detach", str(target), "HEAD"])
+    assert code == 28
+    assert not target.exists()
+    assert "WD-DISK-GUARD BLOCK" in capsys.readouterr().err
+
+
 def test_worktree_add_passes_a_dash_dash_path_through(monkeypatch, tmp_path):
     import shutil
     repo = _repo(tmp_path)

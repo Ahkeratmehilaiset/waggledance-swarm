@@ -32,7 +32,8 @@ param(
     [switch] $SkipWakeWatcher,
     [switch] $SkipHeartbeatJob,
     [switch] $RequireDedicatedWorktree,
-    [string] $PrimaryRepoRoot = 'C:\Python\project2-master'
+    [string] $PrimaryRepoRoot = 'C:\Python\project2-master',
+    [string] $WakeProducerGeneration = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -223,6 +224,7 @@ function Stop-AgentBridgeExistingJob {
 # (Watch-Bridge.ps1 short-circuits on that). The job is recorded in
 # $env:AGENT_BRIDGE_WAKE_JOB so the agent shell can stop it on exit.
 $wakeJobId = ''
+$wakeProducerContext = $null
 $wakeEnabled = $env:WAGGLE_BRIDGE_WAKE_ENABLED -ne '0'
 if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
     $watchScript = Join-Path $PSScriptRoot 'Watch-Bridge.ps1'
@@ -230,10 +232,53 @@ if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
         try {
             $wakeJobName = "agent-bridge-watcher-$Agent"
             Stop-AgentBridgeExistingJob -Name $wakeJobName -EnvName 'AGENT_BRIDGE_WAKE_JOB'
-            $job = Start-Job -Name $wakeJobName -ScriptBlock {
-                param($scriptPath, $agentArg, $runtimeArg)
-                & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
-            } -ArgumentList $watchScript, $Agent, $runtimeFull
+            if ($Agent -ceq 'codex-lead-1' -and $WakeProducerGeneration) {
+                $proofToken = [guid]::NewGuid().ToString('N')
+                $proofParent = Join-Path $repoFull '.codex-audit\wd-turn-loop'
+                [void][IO.Directory]::CreateDirectory($proofParent)
+                $proofDirectory = Get-Item -LiteralPath $proofParent -ErrorAction Stop
+                while ($null -ne $proofDirectory) {
+                    if ($proofDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        throw 'Lead producer proof parent is not plain'
+                    }
+                    $proofDirectory = $proofDirectory.Parent
+                }
+                $baselinePath = Join-Path $proofParent ('session-wake-'+$proofToken+'.ready')
+                if (Test-Path -LiteralPath $baselinePath) { throw 'Lead baseline marker already exists' }
+                $parentStart = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+                $watchHash = (Get-FileHash -LiteralPath $watchScript).Hash
+                $job = Start-Job -Name $wakeJobName -ScriptBlock {
+                    param($scriptPath, $agentArg, $runtimeArg, $tokenArg, $sessionArg,
+                        $generationArg, $parentArg, $parentStartArg, $baselineArg, $hashArg)
+                    $ErrorActionPreference='Stop'
+                    try {
+                        $self = @(Get-CimInstance Win32_Process -Filter ("ProcessId=$PID") -ErrorAction Stop)
+                        if ($self.Count -ne 1 -or [int]$self[0].ParentProcessId -ne [int]$parentArg) {
+                            throw 'Lead producer parent cannot be attested'
+                        }
+                        [pscustomobject]@{schema='wd.session-wake-producer.v1';agent=$agentArg;
+                            token=$tokenArg;session_id=$sessionArg;generation=$generationArg;
+                            process_id=$PID;parent_pid=$parentArg;parent_start_utc=$parentStartArg;
+                            creation_utc=([DateTimeOffset]$self[0].CreationDate).ToString('o');
+                            command_line=[string]$self[0].CommandLine;executable_path=[string]$self[0].ExecutablePath;
+                            runtime_root=$runtimeArg;watcher_script=$scriptPath;watcher_sha256=$hashArg;baseline_path=$baselineArg}
+                    } catch {
+                        # The watcher may still serve the new session, but missing
+                        # process evidence never authorizes retirement of its backup.
+                        [pscustomobject]@{schema='wd.session-wake-producer-refusal.v1';reason=$_.Exception.Message}
+                    }
+                    & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg -ReadyPath $baselineArg
+                } -ArgumentList $watchScript,$Agent,$runtimeFull,$proofToken,$RunId,
+                    $WakeProducerGeneration,$PID,$parentStart,$baselinePath,$watchHash
+                $wakeProducerContext = @{job_id=$job.Id;token=$proofToken;session_id=$RunId;
+                    generation=$WakeProducerGeneration;launcher_pid=$PID;launcher_start_utc=$parentStart;
+                    runtime_root=$runtimeFull;watcher_script=$watchScript;watcher_sha256=$watchHash;baseline_path=$baselinePath}
+            } else {
+                $job = Start-Job -Name $wakeJobName -ScriptBlock {
+                    param($scriptPath, $agentArg, $runtimeArg)
+                    & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
+                } -ArgumentList $watchScript, $Agent, $runtimeFull
+            }
             $wakeJobId = $job.Id
             $env:AGENT_BRIDGE_WAKE_JOB = [string]$wakeJobId
         } catch {
@@ -342,6 +387,7 @@ if (-not $cleanupAlreadyRegistered) {
     capabilities   = @($Capabilities)
     git_branch     = $gitBranch
     wake_job_id    = $wakeJobId
+    wake_producer_context = $wakeProducerContext
     wake_enabled   = $wakeEnabled
     heartbeat_job_id = $heartbeatJobId
     heartbeat_enabled = $heartbeatEnabled

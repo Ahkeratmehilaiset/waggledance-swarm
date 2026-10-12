@@ -10,9 +10,13 @@ Given the reviewed head, its base and a newer base, it builds
 and accepts the tree only when ALL of these hold, checked in this order (the first failing check is
 the refusal ``reason``):
 
-* ``grafts_present``: no graft file is in effect. Every git call also runs with
-  ``--no-replace-objects``, so ``refs/replace`` cannot make the checks read other content than
-  ``git commit-tree`` names (their count is recorded);
+* ``grafts_present`` / ``shallow_repository``: no graft file is in effect and the repository is not
+  shallow (a shallow boundary hides parents). Every git call also runs with ``--no-replace-objects``,
+  so ``refs/replace`` cannot make the checks read other content than ``git commit-tree`` names (their
+  count is recorded), and without the inherited variables that point git at another repository,
+  object store, index or history (``GIT_DIR``, ``GIT_WORK_TREE``, ``GIT_OBJECT_DIRECTORY``,
+  ``GIT_GRAFT_FILE`` and the like: ``-C`` does not override them; the receipt names the ones it
+  stripped, never their values);
 * the three names resolve to commits (``unresolvable_commit``); the old head and old base must be
   given as full object names, because they bind to what was reviewed;
 * ``old_base_not_ancestor_of_head`` / ``new_base_not_descendant_of_old_base``: the old base is an
@@ -22,9 +26,12 @@ the refusal ``reason``):
   new base, so the old base..old head delta is exactly the PR;
 * ``empty_pr_delta``: the PR changes at least one path;
 * ``merge_conflict`` / ``merge_tree_failed``: merge-tree exits 0;
-* ``paths_overlap``: no PR path is in the old base..new base delta. Any overlap means the base
+* ``paths_overlap``: no PR path is in the old base..new base delta, compared case-insensitively
+  (``Foo.txt`` and ``foo.txt`` are one file in a Windows checkout). Any overlap means the base
   touched reviewed content, even when the merge is clean (an identical change on both sides or a
   union merge driver), so it needs fresh review instead of this tool;
+* ``case_collision``: no PR path shares a case-folded name with another file, or with a directory,
+  in the merged tree (such paths cannot both exist in a case-insensitive checkout);
 * ``delta_changed``: the PR's per-file delta on the new base (new base..tree) equals its delta on
   the old base (old base..old head), entry by entry: path, status, both modes and both object ids
   (``git diff-tree -r -z --no-renames``). This catches what overlap cannot, for example merge-ort
@@ -46,11 +53,13 @@ force flag, only when ``git ls-remote`` shows that branch still at the reviewed 
 (``remote_tip_mismatch`` otherwise; nothing is pushed). It is verified by polling ``ls-remote`` every
 ``--verify-interval`` seconds (default 15) for up to ``--verify-timeout`` seconds (default 180,
 CLAUDE.md rule 7); a push whose result is not seen on the remote in that time is ``push_unverified``
-(exit 4), never retried. Residual: a ``pre-push`` hook still runs (hooks are not bypassed).
+(exit 4), never retried. Git never prompts for credentials (``GIT_TERMINAL_PROMPT=0``), and each
+``ls-remote`` or push call times out after 300 seconds; a push that timed out is still verified by
+polling. Residual: a ``pre-push`` hook still runs (hooks are not bypassed).
 
 Every run that gets past argument checks writes a receipt (schema ``wd.pr-base-update-receipt.v1``)
 to ``--receipt``, also on refusal or an unexpected error (``internal_error``); an existing file is
-never overwritten. The receipt binds the old and new heads and bases, the tree, the parent line as
+never overwritten, and if the file cannot be written the receipt goes to stdout (exit 2). The receipt binds the old and new heads and bases, the tree, the parent line as
 ``git rev-list --parents`` reports it, both patch-ids, the per-file entries, the base delta paths and
 overlap, the git config merge-tree reads, the replace-ref count and graft state, raw ``ls-remote``
 lines, the failed git command (argv and exit code) when one failed, the git version and this
@@ -81,6 +90,12 @@ EXIT_OK, EXIT_USAGE, EXIT_REFUSED, EXIT_PUSH_UNVERIFIED = 0, 2, 3, 4
 _OBJECT_NAME = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _RAW_META = re.compile(r"^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])$")
+# Inherited variables that make git use another repository, object store, index or history than --repo
+_REPOSITORY_ENV = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                             "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+                             "GIT_REPLACE_REF_BASE"})
+_NETWORK_COMMANDS = frozenset({"ls-remote", "push"})
+_NETWORK_TIMEOUT = 300.0
 # git config that changes what merge-tree or the checkout of the result produces
 _CONFIG_KEYS = ("core.autocrlf", "core.ignorecase", "core.symlinks", "merge.renormalize", "extensions.objectformat")
 # git diff for patch-ids: every option that changes the text of a diff is pinned
@@ -97,9 +112,16 @@ class Refused(Exception):
 
 
 def _git(repo: str, args: Sequence[str], stdin: bytes | None = None) -> tuple[int, bytes]:
+    # -C does not pin the repository while GIT_DIR and friends are set (RCO1 R2 / Codex P1 4245644006),
+    # and an unattended run must never wait on a credential prompt or a hung remote (RCO2 N2).
+    env = {key: value for key, value in os.environ.items() if key.upper() not in _REPOSITORY_ENV}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    timeout = _NETWORK_TIMEOUT if args and args[0] in _NETWORK_COMMANDS else None
     try:
         proc = subprocess.run(["git", "--no-optional-locks", "--no-replace-objects", "-C", repo, *args],
-                              input=stdin, capture_output=True)
+                              input=stdin, capture_output=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, b""
     except OSError:
         return 127, b""
     return proc.returncode, proc.stdout
@@ -198,6 +220,28 @@ def _environment(repo: str, receipt: dict) -> None:
     receipt["grafts"] = os.path.exists(grafts if os.path.isabs(grafts) else os.path.join(repo, grafts))
     if receipt["grafts"]:
         raise Refused("grafts_present")
+    receipt["shallow"] = _text(_must(repo, ["rev-parse", "--is-shallow-repository"])) == "true"
+    if receipt["shallow"]:
+        raise Refused("shallow_repository")
+
+
+def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
+    """PATHS that share a case-folded name with another file or a directory in TREE (one file on Windows)."""
+    names = [name.decode("utf-8", errors="surrogateescape") for name in
+             _must(repo, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", tree]).split(b"\0") if name]
+    files: dict[str, set[str]] = {}
+    dirs: set[str] = set()
+    for name in names:
+        files.setdefault(name.casefold(), set()).add(name)
+        parts = name.split("/")
+        dirs.update("/".join(parts[:end]).casefold() for end in range(1, len(parts)))
+    hits = set()
+    for path in paths:
+        parts = path.split("/")
+        if (len(files.get(path.casefold(), ())) > 1 or path.casefold() in dirs
+                or any("/".join(parts[:end]).casefold() in files for end in range(1, len(parts)))):
+            hits.add(path)
+    return sorted(hits)
 
 
 def update(repo: str, old_head: str, old_base: str, new_base: str, receipt: dict,
@@ -225,7 +269,9 @@ def update(repo: str, old_head: str, old_base: str, new_base: str, receipt: dict
     base_delta = _delta(repo, base, onto)
     receipt["base_delta_paths"] = sorted(base_delta)
     receipt["base_delta_path_count"] = len(base_delta)
-    receipt["overlap_paths"] = sorted(set(pr) & set(base_delta))
+    # Case-insensitive: on a Windows checkout Foo.txt and foo.txt are one file (RCO2 R1 on 8e117a84).
+    base_folded = {path.casefold() for path in base_delta}
+    receipt["overlap_paths"] = sorted(path for path in pr if path.casefold() in base_folded)
     code, out = _git(repo, ["merge-tree", "--write-tree", "--no-messages", f"--merge-base={base}", onto, head])
     receipt["merge_tree_exit"] = code
     if code == 1:
@@ -236,6 +282,9 @@ def update(repo: str, old_head: str, old_base: str, new_base: str, receipt: dict
     receipt["tree"] = tree
     if receipt["overlap_paths"]:
         raise Refused("paths_overlap")
+    receipt["case_collisions"] = _case_collisions(repo, tree, sorted(pr))
+    if receipt["case_collisions"]:
+        raise Refused("case_collision")
     carried = _delta(repo, onto, tree)
     receipt["entries"] = [{"path": path, "old": pr.get(path), "new": carried.get(path)}
                           for path in sorted(set(pr) | set(carried))]
@@ -343,7 +392,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema": SCHEMA, "status": "refused", "reason": None, "created_utc": _now(),
         "repo": os.path.abspath(args.repo), "git_version": _text(version),
         "tool": "tools/wd_pr_base_update.py", "tool_sha256": _tool_sha256(),
-        "config": None, "replace_refs": None, "grafts": None,
+        # names only: the values are paths of another repository and never enter the receipt
+        "stripped_git_env": sorted({key.upper() for key in os.environ if key.upper() in _REPOSITORY_ENV}),
+        "config": None, "replace_refs": None, "grafts": None, "shallow": None, "case_collisions": None,
         "old_head": args.old_head, "old_base": args.old_base, "new_base": None, "new_base_input": args.new_base,
         "merge_tree_exit": None, "tree": None, "new_head": None, "parents": None, "observed_parents": None,
         "pr_paths": None, "base_delta_paths": None, "base_delta_path_count": None, "overlap_paths": None,
@@ -363,7 +414,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         with open(args.receipt, "x", encoding="ascii", newline="\n") as handle:
             handle.write(body)
     except OSError as exc:
-        print(f"wd_pr_base_update: receipt not written: {exc}", file=sys.stderr)
+        # The update (or push) may already have happened: never lose the result (RCO2 N1).
+        print(f"wd_pr_base_update: receipt not written: {exc}; the receipt follows on stdout", file=sys.stderr)
+        sys.stdout.write(body)
         return EXIT_USAGE
     if args.json:
         sys.stdout.write(body)

@@ -217,12 +217,12 @@ def _worktree_add(options: list[str]) -> int:
     except ValueError as exc:
         print(f"WD-DISK-GUARD refused: {exc}", file=sys.stderr)
         return 2
-    # git writes the new worktree's index and metadata into the common git dir, so its volume counts too
+    # git writes the new worktree's index and metadata into the common git dir, so its volume counts too.
+    # rev-parse prints it absolute or relative to --repo; --path-format (git 2.31+) is not needed.
     paths = [os.path.join(repo, target)]
-    common = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                            capture_output=True, text=True)
+    common = subprocess.run(["git", "-C", repo, "rev-parse", "--git-common-dir"], capture_output=True, text=True)
     if common.returncode == 0 and common.stdout.strip():
-        paths.append(common.stdout.strip())
+        paths.append(os.path.join(repo, common.stdout.strip()))
     result = check("worktree", paths)
     if result["verdict"] != "ok":
         print(format_line(result), file=sys.stderr)

@@ -35,13 +35,16 @@ of these hold, checked in this order (the first failing check is the reported KE
   (``refs/stash`` does not count; it is shared and short-lived);
 * ``reflog_only_commits`` / ``reflog_unreadable``: every commit reachable from the worktree's
   HEAD reflog (deleted with the worktree) is also reachable from those refs;
-* ``pseudo_ref_only_commits`` / ``pseudo_ref_unreadable``: the commit ``ORIG_HEAD`` names and
-  every commit a ``FETCH_HEAD`` line names (both are files in the worktree's git dir, deleted
-  with it) are reachable from those refs too; a line without an object name keeps the worktree.
+* ``pseudo_ref_only_commits`` / ``pseudo_ref_unreadable``: the commits ``ORIG_HEAD`` and
+  ``MERGE_AUTOSTASH`` name and every commit a ``FETCH_HEAD`` line names (all files in the
+  worktree's git dir, deleted with it) are reachable from those refs too; a line without an
+  object name keeps the worktree. The commits go to ``git rev-list --stdin``, so a FETCH_HEAD
+  that lists every branch of a large remote is checked in full, not refused for its length.
 
 Beyond the 2026-10-11 cleanups (which counted any ref, ``refs/stash`` included) this tool
 excludes ``refs/stash`` and adds the lane-name, operation, index-flag, per-worktree-ref,
-reflog and ORIG_HEAD/FETCH_HEAD checks; each of those only keeps more, never removes more.
+reflog and ORIG_HEAD/MERGE_AUTOSTASH/FETCH_HEAD checks; each of those only keeps more, never
+removes more.
 
 The default is a dry run. ``--apply`` runs every check again on each candidate right before
 removing it, on the worktree as ``git worktree list`` reports it then, and requires the same
@@ -87,13 +90,13 @@ _OPERATION_MARKERS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK
 _SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _REACHABLE_REF_ROOTS = ("refs/heads", "refs/remotes", "refs/tags")
 _PER_WORKTREE_REF_ROOTS = ("refs/worktree", "refs/bisect", "refs/rewritten")
-_PSEUDO_REF_FILES = ("ORIG_HEAD", "FETCH_HEAD")  # per-worktree files that can name a commit no ref holds
-_MAX_REFLOG_COMMITS = 400  # keeps the rev-list command line far below the Windows limit
+# per-worktree files that can name a commit no ref holds (MERGE_AUTOSTASH: git merge --autostash)
+_PSEUDO_REF_FILES = ("ORIG_HEAD", "MERGE_AUTOSTASH", "FETCH_HEAD")
 
 
-def _git(args: Sequence[str], cwd: str | None = None) -> tuple[int, str, str]:
+def _git(args: Sequence[str], cwd: str | None = None, stdin: str | None = None) -> tuple[int, str, str]:
     try:
-        proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=cwd, capture_output=True,
+        proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=cwd, capture_output=True, input=stdin,
                               encoding="utf-8", errors="replace")
     except OSError as exc:
         return 1, "", str(exc)
@@ -189,19 +192,27 @@ def _reflog_only_commits(path: str, repo: str) -> bool | None:
     code, out, _ = _git(["-C", path, "log", "-g", "--format=%H", "HEAD"])
     if code != 0:
         return None
-    shas = sorted({line.strip() for line in out.splitlines() if line.strip()})
+    shas = {line.strip() for line in out.splitlines() if line.strip()}
     if not shas:
         return False
-    if len(shas) > _MAX_REFLOG_COMMITS or not all(_SHA.match(sha) for sha in shas):
+    if not all(_SHA.match(sha) for sha in shas):
         return None
-    code, out, _ = _git(["-C", repo, "rev-list", "--count", *shas, "--not", "--branches", "--remotes", "--tags"])
+    return _outside_refs(repo, shas)
+
+
+def _outside_refs(repo: str, shas: set) -> bool | None:
+    """True when a commit in SHAS (validated object names) is in no branch, remote ref or tag.
+
+    The names go to ``rev-list --stdin``, so there is no command-line length limit."""
+    code, out, _ = _git(["-C", repo, "rev-list", "--count", "--stdin", "--not", "--branches", "--remotes", "--tags"],
+                        stdin="".join(sha + "\n" for sha in sorted(shas)))
     if code != 0 or not out.strip().isdigit():
         return None
     return int(out.strip()) > 0
 
 
 def _pseudo_ref_only_commits(path: str, repo: str) -> bool | None:
-    """True when ORIG_HEAD or any FETCH_HEAD line names a commit in no branch, remote ref or tag."""
+    """True when ORIG_HEAD, MERGE_AUTOSTASH or a FETCH_HEAD line names a commit in no branch, remote ref or tag."""
     code, out, _ = _git(["-C", path, "rev-parse", "--absolute-git-dir"])
     gitdir = out.strip()
     if code != 0 or not gitdir:
@@ -224,12 +235,7 @@ def _pseudo_ref_only_commits(path: str, repo: str) -> bool | None:
             shas.add(sha)
     if not shas:
         return False
-    if len(shas) > _MAX_REFLOG_COMMITS:
-        return None
-    code, out, _ = _git(["-C", repo, "rev-list", "--count", *sorted(shas), "--not", "--branches", "--remotes", "--tags"])
-    if code != 0 or not out.strip().isdigit():
-        return None
-    return int(out.strip()) > 0
+    return _outside_refs(repo, shas)
 
 
 def _operation_in_progress(path: str) -> bool | None:

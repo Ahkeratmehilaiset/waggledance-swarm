@@ -57,7 +57,8 @@ force flag, only when ``git ls-remote`` shows that branch still at the reviewed 
 ``--verify-interval`` seconds (default 15) for up to ``--verify-timeout`` seconds (default 180,
 CLAUDE.md rule 7); a push whose result is not seen on the remote in that time is ``push_unverified``
 (exit 4), never retried. Git never prompts for credentials (``GIT_TERMINAL_PROMPT=0``), and each
-``ls-remote`` or push call times out after 300 seconds; a push that timed out is still verified by
+``ls-remote`` or push call times out after 300 seconds (every other git call after 600 seconds, so a
+lock, filter or slow disk cannot hang a run); a push that timed out is still verified by
 polling. Residual: a ``pre-push`` hook still runs (hooks are not bypassed).
 
 Every run that gets past argument checks writes a receipt (schema ``wd.pr-base-update-receipt.v1``)
@@ -99,6 +100,7 @@ _REPOSITORY_ENV = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY",
                              "GIT_REPLACE_REF_BASE"})
 _NETWORK_COMMANDS = frozenset({"ls-remote", "push"})
 _NETWORK_TIMEOUT = 300.0
+_LOCAL_TIMEOUT = 600.0
 # git config that changes what merge-tree or the checkout of the result produces
 _CONFIG_KEYS = ("core.autocrlf", "core.ignorecase", "core.symlinks", "merge.renormalize", "extensions.objectformat")
 # git diff for patch-ids: every option that changes the text of a diff is pinned
@@ -119,7 +121,7 @@ def _git(repo: str, args: Sequence[str], stdin: bytes | None = None) -> tuple[in
     # and an unattended run must never wait on a credential prompt or a hung remote (RCO2 N2).
     env = {key: value for key, value in os.environ.items() if key.upper() not in _REPOSITORY_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
-    timeout = _NETWORK_TIMEOUT if args and args[0] in _NETWORK_COMMANDS else None
+    timeout = _NETWORK_TIMEOUT if args and args[0] in _NETWORK_COMMANDS else _LOCAL_TIMEOUT
     try:
         proc = subprocess.run(["git", "--no-optional-locks", "--no-replace-objects", "-C", repo, *args],
                               input=stdin, capture_output=True, env=env, timeout=timeout)
@@ -410,6 +412,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "tool": "tools/wd_pr_base_update.py", "tool_sha256": _tool_sha256(),
         # names only: the values are paths of another repository and never enter the receipt
         "stripped_git_env": sorted({key.upper() for key in os.environ if key.upper() in _REPOSITORY_ENV}),
+        # inherited config/transport variables (GIT_CONFIG_PARAMETERS, GIT_SSH_COMMAND, ...): names only
+        "inherited_git_env": sorted({key.upper() for key in os.environ
+                                     if key.upper().startswith("GIT_") and key.upper() not in _REPOSITORY_ENV}),
         "config": None, "replace_refs": None, "grafts": None, "shallow": None, "case_collisions": None,
         "old_head": args.old_head, "old_base": args.old_base, "new_base": None, "new_base_input": args.new_base,
         "merge_tree_exit": None, "tree": None, "new_head": None, "parents": None, "observed_parents": None,

@@ -522,8 +522,28 @@ def test_a_failed_proof_never_carries_even_with_a_perfect_verdict(repo):
     assert decision["receipt"]["new_head"] == new_head
 
 
-def test_the_module_writes_no_refs_and_never_pushes():
-    source = MODULE.read_text(encoding="utf-8")
-    for forbidden in ('"commit-tree"', '"update-ref"', '"push"', '"reset"', '"checkout"', '"branch"', '"tag"',
-                      '"replace"'):
-        assert forbidden not in source, forbidden
+READ_ONLY_SUBCOMMANDS = {"for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "patch-id",
+                         "merge-tree"}  # merge-tree --write-tree writes unreachable tree objects only
+
+
+def test_the_module_runs_only_read_only_git_subcommands(repo, monkeypatch):
+    _, head, main, new_head = _scenario(repo)
+    module = _module()
+    real = module._git
+    seen = []
+
+    def recording(repo_, args, stdin=None):
+        args = list(args)
+        while args and args[0] == "-c":
+            args = args[2:]
+        seen.append(args[0])
+        return real(repo_, args, stdin)
+
+    monkeypatch.setattr(module, "_git", recording)
+    decision = module.evaluate_carry_forward(repo=str(repo), old_head=head, new_head=new_head, main_head=main,
+                                             old_head_verdict=dict(GOOD_VERDICT, head=head),
+                                             new_head_ci_all_green=True, new_head_veto_clear=True)
+
+    assert decision["carried"] is True
+    assert seen and set(seen) <= READ_ONLY_SUBCOMMANDS, sorted(set(seen) - READ_ONLY_SUBCOMMANDS)
+    assert seen.count("merge-tree") == 1

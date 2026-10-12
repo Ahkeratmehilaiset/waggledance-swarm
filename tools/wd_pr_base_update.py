@@ -27,7 +27,9 @@ the refusal ``reason``):
 * ``empty_pr_delta``: the PR changes at least one path;
 * ``merge_conflict`` / ``merge_tree_failed``: merge-tree exits 0;
 * ``paths_overlap``: no PR path is in the old base..new base delta, compared case-insensitively
-  (``Foo.txt`` and ``foo.txt`` are one file in a Windows checkout). Any overlap means the base
+  (``Foo.txt`` and ``foo.txt`` are one file in a Windows checkout; names are folded with
+  ``casefold()`` and also upper-cased first, since NTFS upper-cases and dotless i upper-cases to I
+  while ``casefold()`` keeps it; over-matching only refuses more). Any overlap means the base
   touched reviewed content, even when the merge is clean (an identical change on both sides or a
   union merge driver), so it needs fresh review instead of this tool;
 * ``case_collision``: no PR path shares a case-folded name with another file, or with a directory,
@@ -47,7 +49,8 @@ commit stays reachable. Only objects are written: no branch, tag, index or workt
 ``--push`` (with ``--remote`` and ``--branch``) needs ``--remote`` to be a configured remote name
 (never a URL, so no credential reaches the receipt) whose only push URL is its fetch URL
 (``push_url_differs`` otherwise: ``remote.<name>.pushurl`` or ``url.<base>.pushInsteadOf`` would
-send the push to another repository than the one ``ls-remote`` checks). It then runs a plain
+send the push to another repository than the one ``ls-remote`` checks). The receipt records the
+sha256 of that effective URL (after ``insteadOf``), never the URL text. It then runs a plain
 ``git push --no-follow-tags --recurse-submodules=no <remote> <new head>:refs/heads/<branch>`` with no
 force flag, only when ``git ls-remote`` shows that branch still at the reviewed head
 (``remote_tip_mismatch`` otherwise; nothing is pushed). It is verified by polling ``ls-remote`` every
@@ -194,10 +197,13 @@ def _remote_tip(repo: str, remote: str, branch: str) -> tuple[str | None, list[s
     return (exact[0] if len(exact) == 1 else None), lines
 
 
-def _push_url_matches(repo: str, remote: str) -> bool:
+def _push_url(repo: str, remote: str) -> str | None:
+    """REMOTE's effective URL when its only push URL is its fetch URL (both after insteadOf), else None."""
     code, fetch = _git(repo, ["remote", "get-url", remote])
     push_code, push_urls = _git(repo, ["remote", "get-url", "--push", "--all", remote])
-    return code == 0 and push_code == 0 and _text(push_urls).splitlines() == [_text(fetch)]
+    if code == 0 and push_code == 0 and _text(push_urls).splitlines() == [_text(fetch)]:
+        return _text(fetch)
+    return None
 
 
 def _tool_sha256() -> str:
@@ -225,6 +231,11 @@ def _environment(repo: str, receipt: dict) -> None:
         raise Refused("shallow_repository")
 
 
+def _folds(name: str) -> set[str]:
+    """Keys under which a case-insensitive file system may see NAME as another name (over-matching is safe)."""
+    return {name.casefold(), name.upper().casefold()}
+
+
 def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
     """PATHS that share a case-folded name with another file or a directory in TREE (one file on Windows)."""
     names = [name.decode("utf-8", errors="surrogateescape") for name in
@@ -232,14 +243,17 @@ def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
     files: dict[str, set[str]] = {}
     dirs: set[str] = set()
     for name in names:
-        files.setdefault(name.casefold(), set()).add(name)
+        for key in _folds(name):
+            files.setdefault(key, set()).add(name)
         parts = name.split("/")
-        dirs.update("/".join(parts[:end]).casefold() for end in range(1, len(parts)))
+        for end in range(1, len(parts)):
+            dirs.update(_folds("/".join(parts[:end])))
     hits = set()
     for path in paths:
         parts = path.split("/")
-        if (len(files.get(path.casefold(), ())) > 1 or path.casefold() in dirs
-                or any("/".join(parts[:end]).casefold() in files for end in range(1, len(parts)))):
+        keys = _folds(path)
+        if (any(len(files.get(key, ())) > 1 or key in dirs for key in keys)
+                or any(_folds("/".join(parts[:end])) & files.keys() for end in range(1, len(parts)))):
             hits.add(path)
     return sorted(hits)
 
@@ -270,8 +284,8 @@ def update(repo: str, old_head: str, old_base: str, new_base: str, receipt: dict
     receipt["base_delta_paths"] = sorted(base_delta)
     receipt["base_delta_path_count"] = len(base_delta)
     # Case-insensitive: on a Windows checkout Foo.txt and foo.txt are one file (RCO2 R1 on 8e117a84).
-    base_folded = {path.casefold() for path in base_delta}
-    receipt["overlap_paths"] = sorted(path for path in pr if path.casefold() in base_folded)
+    base_folded = {key for path in base_delta for key in _folds(path)}
+    receipt["overlap_paths"] = sorted(path for path in pr if _folds(path) & base_folded)
     code, out = _git(repo, ["merge-tree", "--write-tree", "--no-messages", f"--merge-base={base}", onto, head])
     receipt["merge_tree_exit"] = code
     if code == 1:
@@ -316,8 +330,10 @@ def push(repo: str, remote: str, branch: str, receipt: dict, interval: float, ti
     """Fast-forward REMOTE's BRANCH from the reviewed head to the new head; never forced."""
     head, new_head = receipt["old_head"], receipt["new_head"]
     argv = _push_argv(remote, new_head, branch)
+    url = _push_url(repo, remote)
     receipt["push"] = {"remote": remote, "branch": branch, "argv": argv,
-                       "push_url_matches_fetch_url": _push_url_matches(repo, remote)}
+                       "push_url_matches_fetch_url": url is not None,
+                       "push_url_sha256": None if url is None else hashlib.sha256(url.encode("utf-8")).hexdigest()}
     if not receipt["push"]["push_url_matches_fetch_url"]:
         raise Refused("push_url_differs")
     before, lines = _remote_tip(repo, remote, branch)

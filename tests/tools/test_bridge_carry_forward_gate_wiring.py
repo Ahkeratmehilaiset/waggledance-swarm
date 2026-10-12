@@ -4,7 +4,8 @@
 ``evaluate_auto_merge_gate(carry_forward=True)`` may let approvals given at a reviewed head count at
 its content-identical base update. The old head is the new head's first parent. Its approvals are
 evaluated at the old head with the same functions as today, its CI comes from
-``pr_status["carry_forward_old_head_checks"]``, and tools/bridge_carry_forward_proof.py decides.
+``pr_status["carry_forward_old_head_checks"]`` = ``{"head_sha": <old head>, "checks": [...]}`` (bound to
+the old head, Grok 2a680241), and tools/bridge_carry_forward_proof.py decides.
 When it carries, only the two approval blockers (head-exact RCO_PASS and bridge consensus) are
 lifted; CI, the peer gate and veto scan, mergeable, draft, path, diff, base, receipt and rate stay
 computed at the new head. With the flag off (the default) the report is unchanged.
@@ -144,7 +145,7 @@ def _status(heads: Heads, head: str | None = None, **overrides) -> dict:
         "changed_paths": [PR_PATH],
         "diff_text": "-    return 0\n+    return 1\n",
         "checks": [_check()],
-        "carry_forward_old_head_checks": [_check()],
+        "carry_forward_old_head_checks": {"head_sha": heads.old, "checks": [_check()]},
         "git_identities": identities,
         "git_identity_evidence": material,
     }
@@ -303,13 +304,13 @@ def test_new_head_ci_must_pass_again(tmp_path, heads):
     assert _approval_blockers(report)
 
 
-@pytest.mark.parametrize("old_checks", [[], [_check(conclusion="failure")], None])
+@pytest.mark.parametrize("old_checks", [[], [_check(conclusion="failure")], None], ids=["empty", "failure", "missing"])
 def test_old_head_ci_must_have_passed(tmp_path, heads, old_checks):
     status = _status(heads)
     if old_checks is None:
         del status["carry_forward_old_head_checks"]
     else:
-        status["carry_forward_old_head_checks"] = old_checks
+        status["carry_forward_old_head_checks"] = {"head_sha": heads.old, "checks": old_checks}
 
     report = _gate(tmp_path, heads, pr_status=status)
 
@@ -318,6 +319,35 @@ def test_old_head_ci_must_have_passed(tmp_path, heads, old_checks):
     assert carry["applied"] is False
     assert any("ci_all_green" in reason for reason in carry["reasons"]), carry
     assert _approval_blockers(report)
+
+
+@pytest.mark.parametrize("bound_to", ["new", "main", "empty"])
+def test_old_head_ci_bound_to_another_head_never_counts(tmp_path, heads, bound_to):
+    # Grok 2a680241: green checks of any other commit must not stand in for the old head's CI.
+    head = {"new": heads.new, "main": heads.main, "empty": ""}[bound_to]
+    status = _status(heads, carry_forward_old_head_checks={"head_sha": head, "checks": [_check()]})
+
+    report = _gate(tmp_path, heads, pr_status=status)
+
+    carry = report["carry_forward"]
+    assert carry["applied"] is False
+    assert any("not bound to the old head" in reason for reason in carry["reasons"]), carry
+    assert any("ci_all_green" in reason for reason in carry["reasons"]), carry
+    assert _approval_blockers(report)
+
+
+@pytest.mark.parametrize("snapshot", [
+    [_check()],
+    {"checks": [_check()]},
+    {"head_sha": None, "checks": [_check()]},
+    {"head_sha": "0" * 40, "checks": "success"},
+    {"head_sha": "0" * 40, "checks": ["success"]},
+], ids=["bare-list", "no-head", "null-head", "checks-not-a-list", "entry-not-an-object"])
+def test_an_unbound_old_head_check_snapshot_is_invalid(tmp_path, heads, snapshot):
+    status = _status(heads, carry_forward_old_head_checks=snapshot)
+
+    with pytest.raises(AutoMergeGateError, match="carry_forward_old_head_checks"):
+        _gate(tmp_path, heads, pr_status=status)
 
 
 def test_an_rco_veto_after_the_pass_blocks_the_carry(tmp_path, heads):

@@ -153,10 +153,14 @@ function Write-BridgeWakeObservation {
     # the read below and the publication (reproduced 2026-10-12: Win32 1175/1176/1177/32/183 in a third of the
     # calls of two concurrent writers). Such an IOException is retried from a fresh read, which merges the other
     # writer's bindings when its publication collided with this one. It counts as success only when this writer's
-    # own staged bytes are at $Path; a lasting IOException is thrown after the fifth attempt, and any other
-    # exception at once. The bindings are relay-latency telemetry only and stay possibly lossy: when both writers
-    # read the same snapshot and both publications succeed, the later one drops the earlier one's bindings and
-    # correlation_complete can stay true. Whether the sentinel exists (the wake itself) does not depend on them.
+    # own staged bytes are at $Path. Two limits remain; this function removes neither:
+    # - Lost update: in a non-colliding read-modify-write interleaving (both writers read the same snapshot and
+    #   both publications succeed) the later one drops the earlier one's bindings, and correlation_complete can
+    #   stay true. The bindings are relay-latency telemetry only; whether the sentinel exists (the wake itself)
+    #   does not depend on them.
+    # - A lasting IOException is thrown after the fifth attempt, and any other exception at once. Watch-Bridge.ps1
+    #   calls this function without a catch under ErrorActionPreference Stop, so such a throw ends the watcher.
+    #   Keeping the watcher alive on a failed publication is a separate follow-up.
     for($attempt=1;;$attempt++){
         $bindings=[Collections.Generic.List[object]]::new()
         $complete=$true

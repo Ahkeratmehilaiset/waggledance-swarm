@@ -10,6 +10,155 @@ from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
 
 
+def _baseline_publication_probe(tmp_path, ps, case, *, non_atomic_mutant=False):
+    """Run the real marker block and attestor; intercept only a fixture byte write.
+
+    The write seam polls at the half-written point deterministically, instead
+    of hoping to hit the tiny production timestamp race with a busy loop.
+    """
+    source = (REBOOT.parents[2] / '.agent-bridge/bin/Watch-Bridge.ps1').read_text(encoding='utf-8')
+    start = source.index('if ($ReadyPath) {')
+    block = source[start:source.index('$iteration = 0', start)]
+    if non_atomic_mutant:
+        block = "if ($ReadyPath) { Set-Content -LiteralPath $ReadyPath -Value ([datetime]::UtcNow.ToString('o')) -Encoding UTF8 -NoNewline -Force -ErrorAction Stop }"
+    block = block.replace('$readyStream.Write($readyBytes, 0, $readyBytes.Length)',
+                          'Write-FixtureBaselineBytes $readyStream $readyBytes')
+    block = block.replace('[IO.File]::Move($readyTemp, $readyFile)',
+                          'Publish-FixtureBaseline $readyTemp $readyFile')
+    block = block.replace('[IO.File]::Replace($readyTemp, $readyFile, [NullString]::Value)',
+                          'Publish-FixtureBaseline $readyTemp $readyFile -Replace')
+    watcher = tmp_path / 'Watch-Bridge.ps1'
+    watcher.write_text('# inert identity fixture', encoding='utf-8')
+    script = load(REBOOT / 'start-wd-agent.ps1', 'Get-WdNativeLeadProducerAttestation')
+    script += f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$ReadyPath={q(tmp_path / 'ready')};$case='{case}';$script:observations=@();$script:tempPath=''
+$old='2000-01-01T00:00:01Z'
+if($case -cne 'new'){{[IO.File]::WriteAllText($ReadyPath,$old)}}
+$ctx=@{{job_id=42;token='0123456789abcdef0123456789abcdef';session_id='current-session';
+ generation='new-generation';runtime_root='C:\\fixture';watcher_script={q(watcher)};
+ watcher_sha256=(Get-FileHash {q(watcher)}).Hash;baseline_path=$ReadyPath;
+ launcher_pid=100;launcher_start_utc='1999-12-31T23:59:00Z'}}
+$proof=[pscustomobject]@{{schema='wd.session-wake-producer.v1';token=$ctx.token;
+ session_id=$ctx.session_id;generation=$ctx.generation;agent='codex-lead-1';
+ runtime_root=$ctx.runtime_root;watcher_script=$ctx.watcher_script;watcher_sha256=$ctx.watcher_sha256;
+ baseline_path=$ctx.baseline_path;process_id=200;parent_pid=100;
+ creation_utc='2000-01-01T00:00:00Z';parent_start_utc=$ctx.launcher_start_utc;
+ command_line='inert owned producer';executable_path='C:\\fixture\\powershell.exe'}}
+function Get-Job {{param($Id)[pscustomobject]@{{Id=42;Name='agent-bridge-watcher-codex-lead-1';State='Running'}}}}
+function Receive-Job {{param($Id,[switch]$Keep)if(-not $Keep){{throw 'proof consumed'}};$proof}}
+function Get-CimInstance {{param($ClassName,$Filter)
+ if($Filter -ceq 'ProcessId=200'){{[pscustomobject]@{{ProcessId=200;ParentProcessId=100;
+ CreationDate=[datetime]$proof.creation_utc;CommandLine=$proof.command_line;ExecutablePath=$proof.executable_path}}}}
+ elseif($Filter -ceq 'ProcessId=100'){{[pscustomobject]@{{ProcessId=100;CreationDate=[datetime]$ctx.launcher_start_utc}}}}
+ else{{throw 'live process query forbidden'}}
+}}
+function Observe-FixtureTarget {{
+ $exists=[IO.File]::Exists($ReadyPath)
+ $text=if($exists){{[IO.File]::ReadAllText($ReadyPath)}}else{{$null}}
+ $attestation=Get-WdNativeLeadProducerAttestation -Context $ctx
+ $script:observations+=@(@{{exists=$exists;text=$text;attestation=$attestation}})
+}}
+function Write-FixtureBaselineBytes {{param($Stream,[byte[]]$Bytes)
+ $script:tempPath=$Stream.Name
+ $half=[int][Math]::Floor($Bytes.Length/2)
+ $Stream.Write($Bytes,0,$half);$Stream.Flush()
+ Observe-FixtureTarget
+ if($case -ceq 'write_failure'){{throw 'fixture write refused'}}
+ $Stream.Write($Bytes,$half,$Bytes.Length-$half)
+}}
+function Publish-FixtureBaseline {{param($Temp,$Target,[switch]$Replace)
+ Observe-FixtureTarget
+ if($case -ceq 'publish_failure'){{throw 'fixture publish refused'}}
+ if($Replace){{[IO.File]::Replace($Temp,$Target,[NullString]::Value)}}else{{[IO.File]::Move($Temp,$Target)}}
+}}
+# Non-atomic mutant: emulate the real Set-Content truncation and split write,
+# polling only after the exclusive writer handle is closed to expose parse failure.
+function Set-Content {{param($LiteralPath,$Value,$Encoding,[switch]$NoNewline,[switch]$Force)
+ $bytes=[Text.Encoding]::UTF8.GetBytes($Value);$half=[int][Math]::Floor($bytes.Length/2)
+ [IO.File]::WriteAllBytes($LiteralPath,[byte[]]$bytes[0..($half-1)])
+ Observe-FixtureTarget
+ if($case -ceq 'write_failure'){{throw 'fixture write refused'}}
+ [IO.File]::WriteAllBytes($LiteralPath,$bytes)
+}}
+$caught=$null
+try{{
+{block}
+}}catch{{$caught=$_.Exception.Message}}
+$final=if([IO.File]::Exists($ReadyPath)){{[IO.File]::ReadAllText($ReadyPath)}}else{{$null}}
+@{{observations=$script:observations;final=$final;caught=$caught;
+ final_attestation=(Get-WdNativeLeadProducerAttestation -Context $ctx);
+ temp_exists=($script:tempPath -and [IO.File]::Exists($script:tempPath));
+ leftovers=@(Get-ChildItem -LiteralPath {q(tmp_path)} -Filter '*.tmp').Count}}|ConvertTo-Json -Depth 8 -Compress
+"""
+    completed = _run_powershell(script, executable=ps)
+    assert completed.returncode == 0
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['new', 'replace', 'write_failure', 'publish_failure'])
+def test_baseline_marker_publishes_only_complete_bytes_and_preserves_target_on_error(tmp_path, ps, case):
+    """CONTROL_ATOMIC_BASELINE_NO_MIXED_BYTES / CONTROL_BASELINE_ERROR_PRESERVES_TARGET.
+
+    MUTANT_NON_ATOMIC_BASELINE_STARTUP_RACE.
+    """
+    result = _baseline_publication_probe(tmp_path, ps, case)
+    assert result['observations'], result
+    for observation in result['observations']:
+        if case == 'new':
+            assert observation['exists'] is False and observation['text'] is None, result
+            assert observation['attestation']['reason'] == 'producer_identity_not_ready', result
+            assert observation['attestation']['retirement_allowed'] is False, result
+        else:
+            assert observation['text'] == '2000-01-01T00:00:01Z', result
+            assert observation['attestation']['verified'] is True, result
+    if case.endswith('_failure'):
+        assert result['caught'] == f"fixture {case.removesuffix('_failure')} refused", result
+        assert result['final'] == '2000-01-01T00:00:01Z', result
+    else:
+        assert result['caught'] is None and result['final_attestation']['verified'] is True, result
+        assert result['final'] != '2000-01-01T00:00:01Z', result
+    assert not result['temp_exists'] and result['leftovers'] == 0, result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_non_atomic_baseline_mutant_exposes_terminal_partial_marker_race(tmp_path, ps):
+    """CONTROL_PARTIAL_MARKER_IS_NOT_PRODUCER_READY / MUTANT_NON_ATOMIC_BASELINE_STARTUP_RACE."""
+    result = _baseline_publication_probe(tmp_path, ps, 'new', non_atomic_mutant=True)
+    partial = result['observations'][0]
+    assert partial['exists'] is True and partial['text'] != result['final'], result
+    assert partial['attestation']['verified'] is False, result
+    assert partial['attestation']['retirement_allowed'] is False, result
+    assert partial['attestation']['reason'] != 'producer_identity_not_ready', result
+    assert result['final_attestation']['verified'] is True, result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('existing', [False, True], ids=['new', 'replace'])
+def test_baseline_marker_native_publication_has_no_staging_leftovers(tmp_path, ps, existing):
+    """CONTROL_NATIVE_ATOMIC_BASELINE_PUBLICATION: unmodified real marker block."""
+    source = (REBOOT.parents[2] / '.agent-bridge/bin/Watch-Bridge.ps1').read_text(encoding='utf-8')
+    start = source.index('if ($ReadyPath) {')
+    block = source[start:source.index('$iteration = 0', start)]
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$ReadyPath={q(tmp_path / 'ready')}
+if(${str(existing).lower()}){{[IO.File]::WriteAllText($ReadyPath,'old-marker')}}
+$before=[DateTimeOffset]::UtcNow
+{block}
+$after=[DateTimeOffset]::UtcNow
+$text=[IO.File]::ReadAllText($ReadyPath)
+$parsed=[DateTimeOffset]::ParseExact($text,'o',[Globalization.CultureInfo]::InvariantCulture)
+@{{in_range=($parsed -ge $before -and $parsed -le $after);
+ leftovers=@(Get-ChildItem -LiteralPath {q(tmp_path)} -Filter '*.tmp').Count;
+ byte_count=([IO.File]::ReadAllBytes($ReadyPath)).Length;text=$text}}|ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['in_range'] is True and result['leftovers'] == 0, result
+    assert result['byte_count'] == len(result['text'].encode('utf-8')), result
+
+
 def test_only_win32_external_stop_fixture_has_platform_guard():
     """MUTANT_UNGUARDED_WIN32_RETIREMENT_FIXTURE / MUTANT_SKIP_ALL_LEAD_RETIREMENT_GUARDS."""
     native = test_exact_external_stop_is_after_final_producer_attestation
@@ -30,7 +179,8 @@ def test_only_win32_external_stop_fixture_has_platform_guard():
     'token', 'generation', 'session', 'pid', 'creation', 'command', 'parent',
     'parent_creation', 'duplicate', 'cim_unavailable', 'proof_missing', 'baseline_missing',
     'parent_native_remainder_7', 'parent_native_remainder_9', 'parent_next_microsecond',
-    'explicit_refusal', 'proof_and_refusal'])
+    'explicit_refusal', 'proof_and_refusal', 'baseline_empty', 'baseline_partial',
+    'baseline_invalid', 'baseline_future', 'baseline_before_producer', 'baseline_locked'])
 def test_retirement_requires_live_exact_session_producer(tmp_path, ps, case):
     """MUTANT_RETIRE_ON_RUNNING_FLAG / MUTANT_ACCEPT_RECYCLED_PRODUCER_PID.
 
@@ -63,6 +213,11 @@ switch('{case}'){{
  'command'{{$script:proof.command_line='different command'}}
  'parent'{{$script:proof.parent_pid=101}} 'parent_creation'{{$script:proof.parent_start_utc='2026-10-12T06:58:00Z'}}
  'baseline_missing'{{Remove-Item -LiteralPath {q(ready)}}}
+ 'baseline_empty'{{[IO.File]::WriteAllText({q(ready)},'')}}
+ 'baseline_partial'{{[IO.File]::WriteAllText({q(ready)},'2026-10-12T07:')}}
+ 'baseline_invalid'{{[IO.File]::WriteAllText({q(ready)},'not-a-timestamp')}}
+ 'baseline_future'{{[IO.File]::WriteAllText({q(ready)},'9999-01-01T00:00:00Z')}}
+ 'baseline_before_producer'{{[IO.File]::WriteAllText({q(ready)},'2026-10-12T06:59:59Z')}}
 }}
 function Get-Job {{param($Id)
  if('{case}' -ceq 'job_missing'){{return $null}}
@@ -87,7 +242,11 @@ function Get-CimInstance {{param($ClassName,$Filter)
   [pscustomobject]@{{ProcessId=100;CreationDate=[datetime]'2026-10-12T06:59:00Z'}}
  }}
 }}
-$r=Get-WdNativeLeadProducerAttestation -Context $ctx
+$lock=$null
+try{{
+ if('{case}' -ceq 'baseline_locked'){{$lock=[IO.File]::Open({q(ready)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)}}
+ $r=Get-WdNativeLeadProducerAttestation -Context $ctx
+}}finally{{if($null -ne $lock){{$lock.Dispose()}}}}
 $r|ConvertTo-Json -Depth 6 -Compress
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
@@ -102,6 +261,11 @@ $r|ConvertTo-Json -Depth 6 -Compress
         if case in ('explicit_refusal', 'proof_and_refusal'):
             # CONTROL_EXPLICIT_PRODUCER_REFUSAL_IS_TERMINAL, even beside proof.
             assert result['reason'] == 'producer_identity_refused: private producer refusal'
+        if case in ('baseline_empty', 'baseline_partial', 'baseline_invalid',
+                    'baseline_future', 'baseline_before_producer', 'baseline_locked'):
+            # CONTROL_INVALID_OR_LOCKED_BASELINE_IS_TERMINAL: atomic writer
+            # removes its own partial window, without expanding reader grace.
+            assert result['reason'] != 'producer_identity_not_ready', result
 
 
 def test_launcher_does_not_infer_retirement_from_an_old_running_record():
@@ -172,7 +336,8 @@ try{{$null=$relayNative.WaitForExit(1)}}catch{{$caught=$_.Exception.Message}}
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['not_ready_then_absent', 'not_ready_past_deadline',
-    'not_ready_deadline_not_reset', 'explicit_refusal', 'not_ready_uncertain', 'not_ready_suffix'])
+    'not_ready_deadline_not_reset', 'not_ready_exact_deadline', 'not_ready_last_tick',
+    'explicit_refusal', 'not_ready_uncertain', 'not_ready_suffix', 'invalid_baseline'])
 def test_relay_waits_only_for_pending_producer_with_native_start_deadline(tmp_path, ps, case):
     """MUTANT_STOP_ON_FIRST_NOT_READY / MUTANT_RESET_DEADLINE_EACH_POLL.
 
@@ -189,6 +354,8 @@ $script:calls=0;$script:stops=0;$script:writes=@()
 $script:now=[DateTimeOffset]'2026-10-12T07:00:01Z'
 if('{case}' -ceq 'not_ready_past_deadline'){{$script:now=$script:now.AddSeconds(60)}}
 if('{case}' -ceq 'not_ready_deadline_not_reset'){{$script:now=$script:now.AddSeconds(58)}}
+if('{case}' -ceq 'not_ready_exact_deadline'){{$script:now=[DateTimeOffset]'2026-10-12T07:01:00Z'}}
+if('{case}' -ceq 'not_ready_last_tick'){{$script:now=([DateTimeOffset]'2026-10-12T07:01:00Z').AddTicks(-1)}}
 function Get-FixtureUtcNow {{return $script:now}}
 $fakeProcess=[pscustomobject]@{{StartTime=[datetime]'2026-10-12T07:00:00Z'}}
 $fakeProcess|Add-Member ScriptMethod WaitForExit {{param($ms)return $false}}
@@ -206,6 +373,7 @@ function Invoke-WdNativeLeadWatcherRetirement {{param($ProducerContext,$Retireme
  if('{case}' -ceq 'explicit_refusal'){{return @{{status='kept';reason='producer_identity_refused: private producer refusal'}}}}
  if('{case}' -ceq 'not_ready_uncertain'){{return @{{status='uncertain';reason='producer_identity_not_ready'}}}}
  if('{case}' -ceq 'not_ready_suffix'){{return @{{status='kept';reason='producer_identity_not_ready_extra'}}}}
+ if('{case}' -ceq 'invalid_baseline'){{return @{{status='kept';reason='producer baseline or script changed'}}}}
  return @{{status='kept';reason='producer_identity_not_ready'}}
 }}
 $record=@{{status='native_process_started';bridge_wake_producer_status='unchecked';bridge_wake_transport='withheld'}}
@@ -219,8 +387,8 @@ $first=@{{calls=$script:calls;stops=$script:stops;caught=$firstCaught;exited=$fi
  status=$record.status;transport=$record.bridge_wake_transport;producer_status=$record.bridge_wake_producer_status;
  retirement_attempted=$relayNative.RetirementAttempted;writes=@($script:writes)}}
 $second=$null
-if($null -eq $firstCaught -and '{case}' -cin @('not_ready_then_absent','not_ready_deadline_not_reset')){{
- $script:now=$script:now.AddSeconds(2)
+if($null -eq $firstCaught -and '{case}' -cin @('not_ready_then_absent','not_ready_deadline_not_reset','not_ready_last_tick')){{
+ if('{case}' -ceq 'not_ready_last_tick'){{$script:now=$script:now.AddTicks(1)}}else{{$script:now=$script:now.AddSeconds(2)}}
  $secondCaught=$null;$secondExited=$null
  try{{$secondExited=$relayNative.WaitForExit(1)}}catch{{$secondCaught=$_.Exception.Message}}
  $second=@{{calls=$script:calls;stops=$script:stops;caught=$secondCaught;exited=$secondExited;
@@ -231,7 +399,7 @@ if($null -eq $firstCaught -and '{case}' -cin @('not_ready_then_absent','not_read
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     first = result['first']
     assert first['calls'] == 1, result
-    if case in ('not_ready_then_absent', 'not_ready_deadline_not_reset'):
+    if case in ('not_ready_then_absent', 'not_ready_deadline_not_reset', 'not_ready_last_tick'):
         assert first['caught'] is None and first['exited'] is False, result
         assert first['stops'] == 0 and first['retirement_attempted'] is False, result
         assert first['status'] == 'native_process_started' and first['transport'] == 'withheld', result

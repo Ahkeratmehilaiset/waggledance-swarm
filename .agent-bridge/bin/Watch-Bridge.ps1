@@ -129,9 +129,27 @@ if ($StartLineCount -ge 0) {
 }
 
 if ($ReadyPath) {
-    Set-Content -LiteralPath $ReadyPath `
-        -Value ([datetime]::UtcNow.ToString('o')) `
-        -Encoding UTF8 -NoNewline -Force -ErrorAction Stop
+    # Publish only a complete marker. A polling attestor must never observe
+    # the empty/partial timestamp created by an in-place Set-Content write.
+    $readyFile = [IO.Path]::GetFullPath($ReadyPath)
+    $readyTemp = Join-Path ([IO.Path]::GetDirectoryName($readyFile)) `
+        ('.' + [IO.Path]::GetFileName($readyFile) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $readyBytes = [Text.UTF8Encoding]::new($false).GetBytes([datetime]::UtcNow.ToString('o'))
+        $readyStream = [IO.File]::Open($readyTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $readyStream.Write($readyBytes, 0, $readyBytes.Length)
+            $readyStream.Flush($true)
+        } finally { $readyStream.Dispose() }
+        if ([IO.File]::Exists($readyFile)) {
+            [IO.File]::Replace($readyTemp, $readyFile, [NullString]::Value)
+        } else {
+            [IO.File]::Move($readyTemp, $readyFile)
+        }
+    } finally {
+        # Delete only our staging file; failed publication preserves the target.
+        if ([IO.File]::Exists($readyTemp)) { [IO.File]::Delete($readyTemp) }
+    }
 }
 
 $iteration = 0

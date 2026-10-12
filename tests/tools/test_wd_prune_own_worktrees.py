@@ -13,8 +13,8 @@ shows no tracked change and no untracked file; the only ignored content is ``__p
 ``refs/bisect``, ``refs/rewritten`` are deleted with it); and HEAD and every commit in the
 worktree's HEAD reflog are contained in a branch, remote-tracking ref or tag (a commit
 reachable only from ``refs/stash`` or from that reflog is not enough); so is every commit that
-ORIG_HEAD or a FETCH_HEAD line names (both are per-worktree files, deleted with the worktree; an
-unparseable one keeps it). Removal
+ORIG_HEAD, MERGE_AUTOSTASH or a FETCH_HEAD line names (per-worktree files, deleted with the
+worktree; an unparseable one keeps it, and a long FETCH_HEAD is no reason to keep). Removal
 is ``git worktree remove`` without ``--force``, after a final status re-check; the default is a
 dry run. The owner comes from the lane identity; another lane's name is refused.
 """
@@ -53,6 +53,8 @@ EXPECTED = {
     "fable-5-fetch-head-only": ("keep", "pseudo_ref_only_commits"),
     "fable-5-pseudo-refs-in-ref": ("candidate", "eligible"),
     "fable-5-fetch-head-unreadable": ("keep", "pseudo_ref_unreadable"),
+    "fable-5-merge-autostash": ("keep", "pseudo_ref_only_commits"),
+    "fable-5-fetch-head-many": ("candidate", "eligible"),
     "fable-5-locked": ("keep", "locked"),
     "fable-5-missing": ("keep", "missing"),
     "fable-5-broken": ("keep", "status_unreadable"),
@@ -90,6 +92,17 @@ def _gitdir(cwd: Path) -> Path:
 def _loose_commit(cwd: Path, message: str) -> str:
     """A commit on top of HEAD that no ref and no reflog holds (HEAD does not move)."""
     return _git(cwd, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message).strip()
+
+
+def _many_commits(repo: Path, branch: str, count: int) -> list[str]:
+    """COUNT commits on a new BRANCH from main, made by one git fast-import process; newest first."""
+    stream = "".join(f"commit refs/heads/{branch}\n"
+                     f"committer wd-test <wd-test@example.invalid> {1700000000 + n} +0000\n"
+                     f"data <<END\nmany {n}\nEND\n" + ("from main\n" if n == 0 else "") + "\n"
+                     for n in range(count))
+    subprocess.run(["git", "fast-import", "--quiet"], cwd=repo, input=stream.encode("ascii"), capture_output=True,
+                   check=True)
+    return _git(repo, "rev-list", f"--max-count={count}", branch).split()
 
 
 @pytest.fixture
@@ -165,6 +178,17 @@ def lane(tmp_path, monkeypatch):
     _gitdir(in_ref).joinpath("FETCH_HEAD").write_text(f"{head}\t\tbranch 'main' of ../repo\n", encoding="utf-8")
     _gitdir(detached("fable-5-fetch-head-unreadable")).joinpath("FETCH_HEAD").write_text("not a fetch head\n",
                                                                                           encoding="utf-8")
+    # git merge --autostash records its stash commit (in no ref) in the per-worktree MERGE_AUTOSTASH file.
+    autostash = detached("fable-5-merge-autostash")
+    _gitdir(autostash).joinpath("MERGE_AUTOSTASH").write_text(_loose_commit(autostash, "autostash") + "\n",
+                                                               encoding="utf-8")
+    # A plain fetch from a remote with many branches lists every tip (34 of 140 real FETCH_HEADs had over 400
+    # lines on 2026-10-12). All of them are in a branch here, so the worktree stays eligible.
+    many = detached("fable-5-fetch-head-many")
+    tips = _many_commits(repo, "wd-test-many", 401)
+    assert len(set(tips)) == 401
+    _gitdir(many).joinpath("FETCH_HEAD").write_text(
+        "".join(f"{sha}\tnot-for-merge\tbranch 'b{n}' of ../repo\n" for n, sha in enumerate(tips)), encoding="utf-8")
     locked = detached("fable-5-locked")
     _git(repo, "worktree", "lock", str(locked))
     shutil.rmtree(detached("fable-5-missing"))

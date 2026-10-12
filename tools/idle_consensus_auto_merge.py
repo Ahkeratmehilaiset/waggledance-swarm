@@ -696,6 +696,7 @@ def evaluate_auto_merge_gate(
             bridge_peer_gate=bridge_peer_gate,
             charter_ok=bool(path_gate.allowed) and bool(diff_gate.allowed),
             new_head_ci_all_green=bool(checks) and not failing_checks,
+            new_head_checks=checks,
             charter_path=charter_path,
             changed_paths=changed_paths,
             diff_text=diff_text,
@@ -2758,6 +2759,42 @@ def _carry_forward_old_head_checks(
     return head, normalized
 
 
+def _check_name(check: Mapping[str, Any]) -> object:
+    # A check run carries "name", a commit status "context".
+    return check.get("name") if check.get("name") is not None else check.get("context")
+
+
+def _carry_forward_old_ci_coverage(
+    old_checks: Sequence[Mapping[str, Any]],
+    new_checks: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Why the old head's CI does not cover every check of the new head ([] when it does).
+
+    The required checks are the distinct names of the new head's snapshot. The
+    old head must report each of them once; missing, repeated or unnamed checks
+    refuse, and so does a new-head snapshot whose names are unnamed or repeated,
+    because its required set is then unknown (Lead finding 622a49ff: a non-empty
+    all-green snapshot is not complete CI).
+    """
+    def named(name: object) -> bool:
+        return type(name) is str and bool(name.strip())
+
+    required = [_check_name(check) for check in new_checks]
+    if not required or not all(named(name) for name in required) or len(set(required)) != len(required):
+        return ["carry-forward cannot tell the new head's required checks (none, unnamed or repeated names)"]
+    reasons: list[str] = []
+    old = [_check_name(check) for check in old_checks]
+    if not all(named(name) for name in old):
+        reasons.append("carry_forward_old_head_checks has a check without a name")
+    repeated = sorted({name for name in old if named(name) and old.count(name) > 1})
+    if repeated:
+        reasons.append("carry_forward_old_head_checks repeats checks: " + ", ".join(repeated))
+    missing = sorted(set(required) - {name for name in old if named(name)})
+    if missing:
+        reasons.append("carry_forward_old_head_checks miss required checks: " + ", ".join(missing))
+    return reasons
+
+
 def _carry_forward_gate(
     *,
     repo_path: Path,
@@ -2776,6 +2813,7 @@ def _carry_forward_gate(
     bridge_peer_gate: Mapping[str, Any],
     charter_ok: bool,
     new_head_ci_all_green: bool,
+    new_head_checks: Sequence[Mapping[str, Any]],
     charter_path: Path,
     changed_paths: Sequence[str],
     diff_text: str,
@@ -2831,6 +2869,8 @@ def _carry_forward_gate(
     old_checks_bound = old_checks_head == old_head
     if old_checks_head is not None and not old_checks_bound:
         reasons.append("carry_forward_old_head_checks are not bound to the old head")
+    coverage_reasons = _carry_forward_old_ci_coverage(old_checks, new_head_checks)
+    reasons.extend(coverage_reasons)
     old_rco_gate = _bridge_rco_pass_gate(
         events=events,
         task_id=task_id,
@@ -2880,6 +2920,7 @@ def _carry_forward_gate(
         "consensus_ok": old_rco_gate.get("ok") is True and old_consensus.get("ok") is True,
         "ci_all_green": old_checks_bound
         and bool(old_checks)
+        and not coverage_reasons
         and all(_check_passed(c) for c in old_checks),
         "charter_ok": charter_ok is True,
         "veto_clear": bridge_peer_gate.get("clear_to_merge") is True

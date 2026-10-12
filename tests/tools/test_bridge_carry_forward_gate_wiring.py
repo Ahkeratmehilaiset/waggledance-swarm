@@ -386,6 +386,14 @@ def test_partial_or_repeated_old_ci_never_carries(tmp_path, heads, old_names, re
     assert _approval_blockers(report)
 
 
+def test_commit_statuses_are_named_by_their_context(tmp_path, heads):
+    status_check = {"context": "unified", "state": "success"}
+
+    report = _coverage_gate(tmp_path, heads, [status_check], [status_check])
+
+    assert report["carry_forward"]["applied"] is True, report["carry_forward"]
+
+
 @pytest.mark.parametrize("old_checks,new_checks,reason", [
     ([{"state": "success"}], [_check()], "has a check without a name"),
     ([_check()], [{"state": "success"}], "cannot tell the new head's required checks"),

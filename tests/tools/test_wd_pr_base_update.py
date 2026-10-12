@@ -286,6 +286,7 @@ def test_binary_mode_and_special_path_changes_are_carried_exactly(repo, tmp_path
     (repo / "bin.dat").write_bytes(bytes(range(256)) * 4)
     _write(repo, "space dir/näme.txt", "special\n")
     _git(repo, "add", "bin.dat", "space dir/näme.txt")
+    os.chmod(repo / "b.txt", 0o755)  # Codex P1 4245644000: with core.filemode=true the worktree must match
     _git(repo, "update-index", "--chmod=+x", "b.txt")
     _git(repo, "commit", "-q", "-m", "binary, mode, special path")
     head = _git(repo, "rev-parse", "HEAD").strip()
@@ -600,6 +601,161 @@ def test_receipt_records_what_a_consumer_needs_to_rederive_the_result(repo, tmp_
                                       "extensions.objectformat"}
     assert receipt["config"]["core.autocrlf"] == "false"
     assert (receipt["replace_refs"], receipt["grafts"]) == (0, False)
+
+
+@pytest.mark.parametrize("pr_path,base_path", [("Foo.txt", "foo.txt"), ("dir__Readme.md", "dir__README.md")])
+def test_a_case_variant_of_a_pr_path_in_the_base_delta_is_overlap(repo, tmp_path, capsys, pr_path, base_path):
+    """RCO2 R1 on 8e117a84: on a case-insensitive checkout Foo.txt and foo.txt are one file, so a base that adds
+    a case variant of a PR path touched reviewed content. The overlap check casefolds paths."""
+    base = _base(repo)
+    head = _pr(repo, base, **{pr_path: "pr\n"})
+    _commit(repo, "main", **{base_path: "base\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "paths_overlap")
+    assert receipt["overlap_paths"] == [pr_path.replace("__", "/")]
+    assert receipt["new_head"] is None
+
+
+@pytest.mark.parametrize("pr_files,base_files", [
+    ({"Foo": "pr file\n"}, {"foo__x.txt": "base dir\n"}),
+    ({"foo__x.txt": "pr dir\n"}, {"Foo": "base file\n"}),
+])
+def test_a_pr_path_colliding_by_case_with_a_file_or_directory_is_refused(repo, tmp_path, capsys, pr_files, base_files):
+    """RCO2 R1 (optional part): a PR file and a base directory (or the reverse) that differ only by case cannot both
+    exist in a case-insensitive checkout, although the paths do not overlap."""
+    base = _base(repo)
+    head = _pr(repo, base, **pr_files)
+    _commit(repo, "main", **base_files)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "case_collision")
+    assert receipt["case_collisions"] == sorted(name.replace("__", "/") for name in pr_files)
+    assert receipt["new_head"] is None
+
+
+def test_a_clean_update_records_no_case_collision(repo, tmp_path, capsys):
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["case_collisions"]) == (0, "updated", [])
+
+
+def test_an_unwritable_receipt_still_prints_the_receipt(repo, tmp_path, capsys):
+    """RCO2 N1: when the receipt file cannot be written (here after an update; also after a push), the receipt goes
+    to stdout so the result is not lost; the exit code stays 2."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "missing-dir" / "receipt.json"
+
+    code = _tool().main(["--repo", str(repo), "--old-head", head, "--old-base", base, "--new-base", "main",
+                         "--receipt", str(receipt_path)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert not receipt_path.exists()
+    assert "receipt not written" in captured.err
+    printed = json.loads(captured.out)
+    assert (printed["status"], printed["reason"]) == ("updated", "content_identical")
+
+
+def test_git_never_prompts_and_network_calls_have_a_timeout(repo, monkeypatch):
+    """RCO2 N2: an unattended run must not wait on a credential prompt or a hung remote."""
+    tool = _tool()
+    seen = []
+    real_run = subprocess.run
+
+    def recording_run(argv, **kwargs):
+        seen.append((list(argv), kwargs.get("env"), kwargs.get("timeout")))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(tool.subprocess, "run", recording_run)
+    tool._git(str(repo), ["version"])
+    tool._remote_tip(str(repo), "origin", "topic")
+    tool._git(str(repo), tool._push_argv("origin", "a" * 40, "topic"))
+
+    assert len(seen) == 3
+    assert all(env is not None and env.get("GIT_TERMINAL_PROMPT") == "0" for _, env, _ in seen)
+    network = [timeout for argv, _, timeout in seen if "ls-remote" in argv or "push" in argv]
+    assert len(network) == 2 and all(isinstance(t, (int, float)) and 0 < t < 3600 for t in network)
+
+
+def test_a_network_timeout_is_a_failed_call_not_an_exception(repo, monkeypatch):
+    tool = _tool()
+
+    def timing_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout") or 1)
+
+    monkeypatch.setattr(tool.subprocess, "run", timing_out)
+    assert tool._remote_tip(str(repo), "origin", "topic") == (None, [])
+    assert tool._git(str(repo), tool._push_argv("origin", "a" * 40, "topic"))[0] == 124
+
+
+def test_an_inherited_git_dir_never_redirects_the_tool(repo, tmp_path, capsys, monkeypatch):
+    """RCO1 R2 / Codex P1 4245644006: with GIT_DIR naming another repository, -C repo is not enough; the tool
+    reported repo A but wrote the new head into B. Repository-shaping GIT_* variables are stripped."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", "--no-local", str(repo), str(other))
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_WORK_TREE")
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "updated"), receipt
+    new_head = receipt["new_head"]
+    assert subprocess.run(["git", "-C", str(repo), "cat-file", "-e", new_head]).returncode == 0
+    assert subprocess.run(["git", "-C", str(other), "cat-file", "-e", new_head]).returncode != 0
+
+
+def test_an_inherited_graft_file_is_ignored(repo, tmp_path, capsys, monkeypatch):
+    """GIT_GRAFT_FILE would rewrite parents outside info/grafts; it is stripped like the other variables."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    grafts = tmp_path / "grafts"
+    grafts.write_text(f"{head}\n", encoding="ascii")  # would make the reviewed head a root commit
+    monkeypatch.setenv("GIT_GRAFT_FILE", str(grafts))
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["grafts"]) == (0, "updated", False), receipt
+
+
+def test_a_shallow_repository_is_refused(repo, tmp_path, capsys):
+    """A shallow boundary hides parents, so ancestry and the merge base cannot be trusted."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "1", "--no-single-branch", Path(repo).as_uri(), str(shallow))
+    _git(shallow, "fetch", "-q", "--depth", "1", "origin", head)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(shallow, receipt_path, head, base, "origin/main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "shallow_repository")
 
 
 def test_the_tool_is_not_wired_into_any_runtime_path():

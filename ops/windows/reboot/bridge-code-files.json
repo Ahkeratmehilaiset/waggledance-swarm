@@ -22,6 +22,7 @@
     "tools/bridge_capacity_advisor.py",
     "tools/bridge_capacity_attribution.py",
     "tools/bridge_capacity_collector.py",
+    "tools/bridge_carry_forward_proof.py",
     "tools/bridge_compact_view.py",
     "tools/bridge_continuity_guard.py",
     "tools/bridge_diff_privacy.py",

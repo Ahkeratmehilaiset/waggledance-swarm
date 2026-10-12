@@ -350,6 +350,56 @@ def test_an_unbound_old_head_check_snapshot_is_invalid(tmp_path, heads, snapshot
         _gate(tmp_path, heads, pr_status=status)
 
 
+# --- the old head's CI must cover every check the new head reports (Lead finding 622a49ff) ---------
+
+REQUIRED = ("unified", "lock-resolver-check", "test (3.11)", "test (3.12)", "test (3.13)", "security-scan")
+
+
+def _coverage_gate(tmp_path: Path, heads: Heads, old_checks: list[dict], new_checks: list[dict]) -> dict:
+    status = _status(heads, checks=new_checks,
+                     carry_forward_old_head_checks={"head_sha": heads.old, "checks": old_checks})
+    return _gate(tmp_path, heads, pr_status=status)
+
+
+@pytest.mark.parametrize("old_names", [REQUIRED, REQUIRED[::-1], REQUIRED + ("extra-green",)],
+                         ids=["complete-six", "other-order", "extra-green-check"])
+def test_old_ci_covering_every_new_head_check_carries(tmp_path, heads, old_names):
+    report = _coverage_gate(tmp_path, heads, [_check(name) for name in old_names], [_check(name) for name in REQUIRED])
+
+    assert report["carry_forward"]["applied"] is True, report["carry_forward"]
+    assert report["decision"] == "auto_merge_plan_ready", report
+
+
+@pytest.mark.parametrize("old_names,reason", [
+    (("security-scan",), "miss required checks: lock-resolver-check, test (3.11), test (3.12), test (3.13), unified"),
+    (REQUIRED[:-1], "miss required checks: security-scan"),
+    (("security-scan",) * 6, "repeats checks: security-scan"),
+    (REQUIRED + ("unified",), "repeats checks: unified"),
+], ids=["one-green-check", "missing-required-check", "duplicate-only-six", "complete-six-plus-a-repeat"])
+def test_partial_or_repeated_old_ci_never_carries(tmp_path, heads, old_names, reason):
+    report = _coverage_gate(tmp_path, heads, [_check(name) for name in old_names], [_check(name) for name in REQUIRED])
+
+    carry = report["carry_forward"]
+    assert carry["applied"] is False, carry
+    assert carry["receipt"]["old_head_verdict"]["ci_all_green"] is False, carry
+    assert _carry_reasons(report, reason), carry
+    assert _approval_blockers(report)
+
+
+@pytest.mark.parametrize("old_checks,new_checks,reason", [
+    ([{"state": "success"}], [_check()], "has a check without a name"),
+    ([_check()], [{"state": "success"}], "cannot tell the new head's required checks"),
+    ([_check()], [_check(), _check()], "cannot tell the new head's required checks"),
+], ids=["unnamed-old-check", "unnamed-new-head-check", "repeated-new-head-name"])
+def test_unknown_check_coverage_never_carries(tmp_path, heads, old_checks, new_checks, reason):
+    report = _coverage_gate(tmp_path, heads, old_checks, new_checks)
+
+    carry = report["carry_forward"]
+    assert carry["applied"] is False, carry
+    assert _carry_reasons(report, reason), carry
+    assert _approval_blockers(report)
+
+
 def test_an_rco_veto_after_the_pass_blocks_the_carry(tmp_path, heads):
     events = _rule12_events(heads.old) + [
         _event("claude-rco-2", "finding", "changes_requested", "2026-10-12T17:40:00Z", heads.new),

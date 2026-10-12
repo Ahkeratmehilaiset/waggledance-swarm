@@ -169,4 +169,5 @@ def test_the_listed_chain_exists_and_names_one_file_each() -> None:
         variants = [name for name in listed if name.lower() in lowered and name not in CHAIN]
         assert variants == [], f"{list_name} spells a chain helper in another case: {variants}"
         for helper in CHAIN:
-            assert listed.count(helper) <= 1, f"{list_name} lists {helper} twice"
+            count = listed.count(helper)
+            assert count == 1, f"{list_name} lists {helper} {count} times, not exactly once"

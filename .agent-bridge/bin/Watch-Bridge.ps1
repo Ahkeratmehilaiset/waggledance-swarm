@@ -134,9 +134,11 @@ if ($ReadyPath) {
     $readyFile = [IO.Path]::GetFullPath($ReadyPath)
     $readyTemp = Join-Path ([IO.Path]::GetDirectoryName($readyFile)) `
         ('.' + [IO.Path]::GetFileName($readyFile) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $readyTempOwned = $false
     try {
         $readyBytes = [Text.UTF8Encoding]::new($false).GetBytes([datetime]::UtcNow.ToString('o'))
         $readyStream = [IO.File]::Open($readyTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $readyTempOwned = $true
         try {
             $readyStream.Write($readyBytes, 0, $readyBytes.Length)
             $readyStream.Flush($true)
@@ -146,9 +148,10 @@ if ($ReadyPath) {
         } else {
             [IO.File]::Move($readyTemp, $readyFile)
         }
+        $readyTempOwned = $false
     } finally {
         # Delete only our staging file; failed publication preserves the target.
-        if ([IO.File]::Exists($readyTemp)) { [IO.File]::Delete($readyTemp) }
+        if ($readyTempOwned -and [IO.File]::Exists($readyTemp)) { [IO.File]::Delete($readyTemp) }
     }
 }
 

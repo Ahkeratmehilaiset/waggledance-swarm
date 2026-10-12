@@ -159,6 +159,33 @@ $parsed=[DateTimeOffset]::ParseExact($text,'o',[Globalization.CultureInfo]::Inva
     assert result['byte_count'] == len(result['text'].encode('utf-8')), result
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_baseline_cleanup_preserves_unowned_staging_on_create_collision(tmp_path, ps):
+    """CONTROL_BASELINE_CLEANUP_REQUIRES_CREATED_FILE / MUTANT_DELETE_UNOWNED_BASELINE_STAGING."""
+    source = (REBOOT.parents[2] / '.agent-bridge/bin/Watch-Bridge.ps1').read_text(encoding='utf-8')
+    start = source.index('if ($ReadyPath) {')
+    block = source[start:source.index('$iteration = 0', start)]
+    assert "[guid]::NewGuid().ToString('N')" in block
+    block = block.replace("[guid]::NewGuid().ToString('N')", "'fixturecollision'")
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$ReadyPath={q(tmp_path / 'ready')};$preexisting={q(tmp_path / '.ready.fixturecollision.tmp')}
+[IO.File]::WriteAllText($ReadyPath,'prior target bytes')
+[IO.File]::WriteAllText($preexisting,'prior unrelated staging bytes')
+$caught=$null
+try{{
+{block}
+}}catch{{$caught=$_.Exception.Message}}
+@{{caught=$caught;target=[IO.File]::ReadAllText($ReadyPath);staging_exists=[IO.File]::Exists($preexisting);
+ staging=$(if([IO.File]::Exists($preexisting)){{[IO.File]::ReadAllText($preexisting)}}else{{$null}})}}|ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['caught'] and 'Open' in result['caught'], result
+    assert result['target'] == 'prior target bytes', result
+    assert result['staging_exists'] is True, result
+    assert result['staging'] == 'prior unrelated staging bytes', result
+
+
 def test_only_win32_external_stop_fixture_has_platform_guard():
     """MUTANT_UNGUARDED_WIN32_RETIREMENT_FIXTURE / MUTANT_SKIP_ALL_LEAD_RETIREMENT_GUARDS."""
     native = test_exact_external_stop_is_after_final_producer_attestation

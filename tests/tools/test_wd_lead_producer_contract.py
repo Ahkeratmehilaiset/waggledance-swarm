@@ -53,15 +53,50 @@ $ok=Invoke-WdWatcherFleetPlan @planArguments
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('all_count,exact,stale,marker,expected', [
-    (0,0,0,False,'absent'), (1,1,0,False,'retire'), (1,0,1,False,'retire'),
-    (2,1,0,False,'conflict'), (1,0,0,False,'conflict'), (1,1,1,False,'conflict'),
-    (0,0,0,True,'conflict'), (1,1,0,True,'conflict'), (0,1,0,False,'conflict')])
-def test_retirement_requires_one_verified_external_producer(ps, all_count, exact, stale, marker, expected):
-    """MUTANT_RETIRE_OPAQUE_PROCESS / MUTANT_RETIRE_PERSISTENT_CONFLICT."""
+@pytest.mark.parametrize('all_count,exact,stale,marker,verified,expected', [
+    (0,0,0,False,True,'absent'), (1,1,0,False,True,'retire'), (1,0,1,False,True,'retire'),
+    (1,1,0,False,False,'keep'), (1,0,1,False,False,'keep'),
+    (2,1,0,False,True,'conflict'), (1,0,0,False,True,'conflict'), (1,1,1,False,True,'conflict'),
+    (0,0,0,True,True,'conflict'), (1,1,0,True,True,'conflict'), (1,1,0,True,False,'conflict'),
+    (0,1,0,False,True,'conflict')])
+def test_retirement_requires_one_verified_external_producer(ps, all_count, exact, stale, marker, verified, expected):
+    """MUTANT_RETIRE_OPAQUE_PROCESS / MUTANT_RETIRE_PERSISTENT_CONFLICT / MUTANT_RETIRE_WITHOUT_VERIFIED_PRODUCER."""
     script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdRetiredLeadWatcherDisposition')
-    script += f"Get-WdRetiredLeadWatcherDisposition -AllCount {all_count} -ExactCount {exact} -ReplaceableCount {stale} -ConflictMarkerExists ${str(marker).lower()}"
+    script += (f"Get-WdRetiredLeadWatcherDisposition -AllCount {all_count} -ExactCount {exact} -ReplaceableCount {stale}"
+               f" -ConflictMarkerExists ${str(marker).lower()} -NewGenerationProducerVerified ${str(verified).lower()}")
     assert _run_powershell(script, executable=ps).stdout.strip() == expected
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('exact,stale', [(1, 0), (0, 1)])
+def test_sole_lead_watcher_is_kept_without_a_verified_new_generation_producer(ps, exact, stale):
+    """R1 regression (RCO1/RCO2 on PR1856 15161f7c), MUTANT_RETIRE_WITHOUT_VERIFIED_PRODUCER: a
+    canary-first install does not relaunch Lead, so the one external watcher may be its only
+    producer. Without a verified new-generation session producer it is kept, never retired."""
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdRetiredLeadWatcherDisposition')
+    script += (f"Get-WdRetiredLeadWatcherDisposition -AllCount 1 -ExactCount {exact} -ReplaceableCount {stale}"
+               " -ConflictMarkerExists $false")
+    assert _run_powershell(script, executable=ps).stdout.strip() == 'keep'
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('disposition,remaining,expected', [
+    ('keep', 1, 'kept'), ('keep', 0, 'conflict'), ('keep', 2, 'conflict'),
+    ('retire', 0, 'retired'), ('retire', 1, 'conflict'),
+    ('absent', 0, 'retired'), ('absent', 1, 'conflict')])
+def test_lead_watcher_post_reconcile_matches_the_plan(ps, disposition, remaining, expected):
+    """MUTANT_KEPT_LEAD_WATCHER_REPORTED_AS_CONFLICT / MUTANT_LOST_KEPT_LEAD_WATCHER_ACCEPTED."""
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'wd_supervisor.ps1', 'Get-WdLeadWatcherPostReconcileResult')
+    script += f"Get-WdLeadWatcherPostReconcileResult -Disposition {disposition} -RemainingCount {remaining}"
+    assert _run_powershell(script, executable=ps).stdout.strip() == expected
+
+
+def test_supervisor_never_claims_a_verified_lead_producer():
+    """The supervisor has no certified read of the native Lead session producer, so its only call
+    passes $false; MUTANT_SUPERVISOR_ASSUMES_VERIFIED_PRODUCER flips it."""
+    source = (REBOOT / 'wd_supervisor.ps1').read_text(encoding='utf-8')
+    calls = [line.strip() for line in source.splitlines() if '-NewGenerationProducerVerified' in line]
+    assert calls == ['-NewGenerationProducerVerified $false']
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

@@ -29,7 +29,8 @@ def test_only_win32_external_stop_fixture_has_platform_guard():
 @pytest.mark.parametrize('case', ['valid', 'job_missing', 'job_failed', 'job_name',
     'token', 'generation', 'session', 'pid', 'creation', 'command', 'parent',
     'parent_creation', 'duplicate', 'cim_unavailable', 'proof_missing', 'baseline_missing',
-    'parent_native_remainder_7', 'parent_native_remainder_9', 'parent_next_microsecond'])
+    'parent_native_remainder_7', 'parent_native_remainder_9', 'parent_next_microsecond',
+    'explicit_refusal', 'proof_and_refusal'])
 def test_retirement_requires_live_exact_session_producer(tmp_path, ps, case):
     """MUTANT_RETIRE_ON_RUNNING_FLAG / MUTANT_ACCEPT_RECYCLED_PRODUCER_PID.
 
@@ -71,6 +72,10 @@ function Get-Job {{param($Id)
 function Receive-Job {{param($Id,[switch]$Keep)
  if(-not $Keep){{throw 'producer proof must not consume job output'}}
  if('{case}' -ceq 'proof_missing'){{return}}
+ if('{case}' -cin @('explicit_refusal','proof_and_refusal')){{
+  [pscustomobject]@{{schema='wd.session-wake-producer-refusal.v1';reason='private producer refusal'}}
+  if('{case}' -ceq 'explicit_refusal'){{return}}
+ }}
  $script:proof;if('{case}' -ceq 'duplicate'){{$script:proof}}
 }}
 function Get-CimInstance {{param($ClassName,$Filter)
@@ -94,6 +99,9 @@ $r|ConvertTo-Json -Depth 6 -Compress
         assert result['command_line'] == 'powershell.exe -s -NoLogo -NoProfile'
     else:
         assert result['retirement_allowed'] is False
+        if case in ('explicit_refusal', 'proof_and_refusal'):
+            # CONTROL_EXPLICIT_PRODUCER_REFUSAL_IS_TERMINAL, even beside proof.
+            assert result['reason'] == 'producer_identity_refused: private producer refusal'
 
 
 def test_launcher_does_not_infer_retirement_from_an_old_running_record():
@@ -160,6 +168,88 @@ try{{$null=$relayNative.WaitForExit(1)}}catch{{$caught=$_.Exception.Message}}
         assert result['record']['bridge_wake_transport'] == 'withheld', result
         assert result['record']['status'] != 'terminal_ready', result
         assert result['retirement_attempted'] is False, result
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['not_ready_then_absent', 'not_ready_past_deadline',
+    'not_ready_deadline_not_reset', 'explicit_refusal', 'not_ready_uncertain', 'not_ready_suffix'])
+def test_relay_waits_only_for_pending_producer_with_native_start_deadline(tmp_path, ps, case):
+    """MUTANT_STOP_ON_FIRST_NOT_READY / MUTANT_RESET_DEADLINE_EACH_POLL.
+
+    CONTROL_EXPLICIT_PRODUCER_REFUSAL_IS_TERMINAL. Execute the actual inert
+    WaitForExit hook, substituting only a deterministic clock observation.
+    """
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
+    start = source.index('    $relayNative | Add-Member ScriptMethod WaitForExit {')
+    end = source.index('    Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1', start)
+    hook = source[start:end].replace('[DateTimeOffset]::UtcNow', '(Get-FixtureUtcNow)')
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$script:calls=0;$script:stops=0;$script:writes=@()
+$script:now=[DateTimeOffset]'2026-10-12T07:00:01Z'
+if('{case}' -ceq 'not_ready_past_deadline'){{$script:now=$script:now.AddSeconds(60)}}
+if('{case}' -ceq 'not_ready_deadline_not_reset'){{$script:now=$script:now.AddSeconds(58)}}
+function Get-FixtureUtcNow {{return $script:now}}
+$fakeProcess=[pscustomobject]@{{StartTime=[datetime]'2026-10-12T07:00:00Z'}}
+$fakeProcess|Add-Member ScriptMethod WaitForExit {{param($ms)return $false}}
+$script:job=[pscustomobject]@{{Id=42;Name='agent-bridge-watcher-codex-lead-1';State='Running'}}
+function Get-Job {{param($Id)if($Id -ne 42){{throw 'foreign job query'}};return $script:job}}
+function Stop-Job {{param($Job)if($Job -ne $script:job){{throw 'foreign job'}};$script:stops++;$Job.State='Stopped'}}
+function Stop-Process {{throw 'native or external process stop forbidden'}}
+function Start-Sleep {{throw 'pending producer must wait for a later relay poll'}}
+function Write-WdTurnJson {{param($Path,$Record)$script:writes+=@($Record.status)}}
+function Invoke-WdNativeLeadWatcherRetirement {{param($ProducerContext,$RetirementContext,$VerifiedSupervisorCode,$Worktree)
+ $script:calls++
+ if('{case}' -ceq 'not_ready_then_absent' -and $script:calls -gt 1){{
+  return @{{status='absent';reason='verified producer, no external watcher'}}
+ }}
+ if('{case}' -ceq 'explicit_refusal'){{return @{{status='kept';reason='producer_identity_refused: private producer refusal'}}}}
+ if('{case}' -ceq 'not_ready_uncertain'){{return @{{status='uncertain';reason='producer_identity_not_ready'}}}}
+ if('{case}' -ceq 'not_ready_suffix'){{return @{{status='kept';reason='producer_identity_not_ready_extra'}}}}
+ return @{{status='kept';reason='producer_identity_not_ready'}}
+}}
+$record=@{{status='native_process_started';bridge_wake_producer_status='unchecked';bridge_wake_transport='withheld'}}
+$relayNative=[pscustomobject]@{{Process=$fakeProcess;StartTime=$fakeProcess.StartTime;ProducerEnabled=$true;WakeJobId='42';TerminalRecord=$record;
+ ReadyPath={q(tmp_path / 'ready.json')};RetirementContext=@{{producer=@{{}};external=@{{}}}};
+ VerifiedSupervisorCode='inert';Worktree={q(tmp_path)};RetirementAttempted=$false}}
+{hook}
+$firstCaught=$null;$firstExited=$null
+try{{$firstExited=$relayNative.WaitForExit(1)}}catch{{$firstCaught=$_.Exception.Message}}
+$first=@{{calls=$script:calls;stops=$script:stops;caught=$firstCaught;exited=$firstExited;
+ status=$record.status;transport=$record.bridge_wake_transport;producer_status=$record.bridge_wake_producer_status;
+ retirement_attempted=$relayNative.RetirementAttempted;writes=@($script:writes)}}
+$second=$null
+if($null -eq $firstCaught -and '{case}' -cin @('not_ready_then_absent','not_ready_deadline_not_reset')){{
+ $script:now=$script:now.AddSeconds(2)
+ $secondCaught=$null;$secondExited=$null
+ try{{$secondExited=$relayNative.WaitForExit(1)}}catch{{$secondCaught=$_.Exception.Message}}
+ $second=@{{calls=$script:calls;stops=$script:stops;caught=$secondCaught;exited=$secondExited;
+  status=$record.status;transport=$record.bridge_wake_transport;retirement_attempted=$relayNative.RetirementAttempted}}
+}}
+@{{first=$first;second=$second}}|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    first = result['first']
+    assert first['calls'] == 1, result
+    if case in ('not_ready_then_absent', 'not_ready_deadline_not_reset'):
+        assert first['caught'] is None and first['exited'] is False, result
+        assert first['stops'] == 0 and first['retirement_attempted'] is False, result
+        assert first['status'] == 'native_process_started' and first['transport'] == 'withheld', result
+        assert first['producer_status'] == 'unchecked' and 'terminal_ready' not in first['writes'], result
+        second = result['second']
+        assert second['calls'] == 2, result
+        if case == 'not_ready_then_absent':
+            assert second['caught'] is None and second['exited'] is False and second['stops'] == 0, result
+            assert second['status'] == 'terminal_ready' and second['transport'] == 'codex_queue', result
+            assert second['retirement_attempted'] is True, result
+        else:
+            assert second['caught'] and second['stops'] == 1, result
+            assert second['status'] != 'terminal_ready' and second['transport'] == 'withheld', result
+            assert second['retirement_attempted'] is False, result
+    else:
+        assert first['caught'] and first['stops'] == 1, result
+        assert first['status'] != 'terminal_ready' and first['transport'] == 'withheld', result
+        assert first['producer_status'] == 'unavailable' and first['retirement_attempted'] is False, result
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

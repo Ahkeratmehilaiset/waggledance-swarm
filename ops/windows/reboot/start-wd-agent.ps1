@@ -359,7 +359,15 @@ function Get-WdNativeLeadProducerAttestation {
         $job.Name -cne 'agent-bridge-watcher-codex-lead-1' -or $job.State -cne 'Running') {
       $refused.reason='producer_job_not_running';return $refused
     }
-    $proofs=@(Receive-Job -Id ([int]$Context.job_id) -Keep -ErrorAction Stop | Where-Object {
+    $producerOutput=@(Receive-Job -Id ([int]$Context.job_id) -Keep -ErrorAction Stop)
+    $refusals=@($producerOutput | Where-Object {
+      $null -ne $_ -and $null -ne $_.PSObject.Properties['schema'] -and
+      [string]$_.schema -ceq 'wd.session-wake-producer-refusal.v1'
+    })
+    if ($refusals.Count -gt 0) {
+      $refused.reason='producer_identity_refused: '+[string]$refusals[0].reason;return $refused
+    }
+    $proofs=@($producerOutput | Where-Object {
       $null -ne $_ -and $null -ne $_.PSObject.Properties['schema'] -and
       [string]$_.schema -ceq 'wd.session-wake-producer.v1'
     })
@@ -597,6 +605,13 @@ function Invoke-WdNativeLeadTerminal {
             if ($retirement.status -cin @('retired','absent')) {
               $this.RetirementAttempted=$true
               break
+            }
+            # A new job may not have emitted its proof or established baseline
+            # yet. Leave readiness withheld and retry on the next relay poll,
+            # bounded from the actual native process start, never from a poll.
+            if ($retirement.status -ceq 'kept' -and $retirement.reason -ceq 'producer_identity_not_ready' -and
+                [DateTimeOffset]::UtcNow -lt ([DateTimeOffset]$this.StartTime).AddSeconds(60)) {
+              return $false
             }
             if ($attempt -lt 5 -and $retirement.status -ceq 'kept' -and
                 $retirement.reason -ceq 'retirement mutex busy; preserve external watcher') {

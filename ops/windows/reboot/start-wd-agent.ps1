@@ -2888,9 +2888,10 @@ $sessionArgs = @{
   AgentUuid = [string]$lane.agent_uuid
   Capabilities = @($lane.capabilities | ForEach-Object { [string]$_ })
   SkipBridgeRead = $true
-  # Native Lead's UI and queue relay outlive Supervisor OFF. Its hash-pinned
-  # session watcher owns the dirty bit; the supervisor config excludes Lead
-  # so a single bridge event cannot be produced by two independent watchers.
+  # Native Lead's session watcher outlives Supervisor OFF. The supervisor
+  # excludes new Lead producers but can retain an old external watcher.
+  # Relay readiness requires verified retirement/absence of that watcher;
+  # installation must still establish the single-producer precondition.
   SkipWakeWatcher = (-not $nativeLead)
   PrimaryRepoRoot = $primaryRepo
 }

@@ -60,6 +60,9 @@ def _commit(repo: Path, message: str, **files: str | None) -> str:
     return _git(repo, "rev-parse", "HEAD").strip()
 
 
+REPOSITORY_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                  "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+                  "GIT_REPLACE_REF_BASE")
 LINES = "".join(f"line {n}\n" for n in range(1, 21))
 
 
@@ -72,7 +75,7 @@ def repo(tmp_path, monkeypatch):
     for role in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{role}_NAME", "wd-test")
         monkeypatch.setenv(f"GIT_{role}_EMAIL", "wd-test@example.invalid")
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+    for name in REPOSITORY_ENV:
         monkeypatch.delenv(name, raising=False)
     path = tmp_path / "repo"
     path.mkdir()
@@ -150,6 +153,7 @@ def test_a_content_identical_base_update_is_proven(repo):
     assert [entry["path"] for entry in proof["entries"]] == ["a.txt", "b.txt", "p.txt"]
     assert all(entry["old"] == entry["new"] for entry in proof["entries"])
     assert proof["replace_refs"] == 0 and proof["grafts"] is False
+    assert (proof["shallow"], proof["case_collisions"], proof["stripped_git_env"]) == (False, [], [])
 
 
 def test_a_rebased_head_is_not_a_carry(repo):
@@ -548,6 +552,8 @@ def test_a_full_direct_verdict_carries_and_the_receipt_rederives_it(repo):
     assert receipt["base_delta_paths"] == ["c.txt", "dir/one.txt"]
     assert receipt["old_head_verdict"] == dict(GOOD_VERDICT, head=head)
     assert (receipt["new_head_ci_all_green"], receipt["new_head_veto_clear"]) == (True, True)
+    assert (receipt["shallow"], receipt["case_collisions"], receipt["stripped_git_env"]) == (False, [], [])
+    assert (receipt["replace_refs"], receipt["grafts"]) == (0, False)
     assert json.loads(json.dumps(receipt, ensure_ascii=True)) == receipt
 
 
@@ -628,10 +634,10 @@ def test_the_module_runs_only_read_only_git_subcommands(repo, monkeypatch):
     seen = []
 
     def recording(repo_, args, stdin=None):
-        args = list(args)
-        while args and args[0] == "-c":
-            args = args[2:]
-        seen.append(args[0])
+        words = list(args)
+        while words and words[0] == "-c":
+            words = words[2:]
+        seen.append(words[0])
         return real(repo_, args, stdin)
 
     monkeypatch.setattr(module, "_git", recording)
@@ -642,3 +648,24 @@ def test_the_module_runs_only_read_only_git_subcommands(repo, monkeypatch):
     assert decision["carried"] is True
     assert seen and set(seen) <= READ_ONLY_SUBCOMMANDS, sorted(set(seen) - READ_ONLY_SUBCOMMANDS)
     assert seen.count("merge-tree") == 1
+
+
+def test_git_runs_without_inherited_repository_variables_and_never_prompts(repo, monkeypatch):
+    _, head, main, new_head = _scenario(repo)
+    module = _module()
+    real = subprocess.run
+    envs = []
+
+    def recording(argv, **kwargs):
+        envs.append(kwargs.get("env"))
+        return real(argv, **kwargs)
+
+    monkeypatch.setenv("GIT_INDEX_FILE", str(repo / "elsewhere.index"))
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "1")
+    monkeypatch.setattr(module.subprocess, "run", recording)
+    proof = module.verify_carry_forward(repo=str(repo), old_head=head, new_head=new_head, main_head=main)
+
+    assert proof["ok"] is True, proof
+    assert proof["stripped_git_env"] == ["GIT_INDEX_FILE"]
+    assert envs and all(env is not None and env.get("GIT_TERMINAL_PROMPT") == "0" for env in envs)
+    assert not [key for env in envs for key in env if key.upper() in REPOSITORY_ENV]

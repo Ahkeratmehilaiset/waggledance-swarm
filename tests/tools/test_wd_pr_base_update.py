@@ -360,6 +360,29 @@ def test_push_is_refused_unless_the_remote_branch_is_still_the_reviewed_head(rep
     assert receipt["new_head"] is not None  # the local commit exists; nothing was pushed
 
 
+def test_a_push_the_remote_does_not_show_is_unverified_and_not_retried(repo, remote, tmp_path, capsys):
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _git(repo, "push", "-q", "origin", f"{head}:refs/heads/fable-5/topic")
+    attempts = tmp_path / "attempts.log"
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text(f"#!/bin/sh\necho attempt >> '{attempts.as_posix()}'\nexit 1\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main", "--push", "--remote", "origin",
+                                  "--branch", "fable-5/topic", "--verify-interval", "0.05", "--verify-timeout", "0.3"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (4, "push_unverified", "remote_not_at_new_head")
+    assert receipt["push"]["push_exit"] != 0
+    assert (receipt["push"]["verified"], receipt["push"]["remote_tip_after"]) == (False, head)
+    assert receipt["push"]["waited_seconds"] >= 0.3
+    assert _git(remote, "rev-parse", "refs/heads/fable-5/topic").strip() == head
+    assert attempts.read_text(encoding="utf-8").splitlines() == ["attempt"]
+
+
 def test_push_argv_never_forces():
     tool = _tool()
     argv = tool._push_argv("origin", "a" * 40, "fable-5/topic")

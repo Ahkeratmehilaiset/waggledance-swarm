@@ -1,12 +1,28 @@
 """Owned Lead producer attestation; no real process is stopped in these tests."""
 import json
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
 
 from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load, q
+
+
+def test_only_win32_external_stop_fixture_has_platform_guard():
+    """MUTANT_UNGUARDED_WIN32_RETIREMENT_FIXTURE / MUTANT_SKIP_ALL_LEAD_RETIREMENT_GUARDS."""
+    native = test_exact_external_stop_is_after_final_producer_attestation
+    guards = [mark for mark in getattr(native, 'pytestmark', ()) if mark.name == 'skipif']
+    assert len(guards) == 1
+    assert guards[0].args == (os.name != 'nt',)
+    assert 'SystemRoot' in guards[0].kwargs['reason']
+    assert 'CommandLineToArgvW' in guards[0].kwargs['reason']
+    assert not globals().get('pytestmark'), 'Do not skip the entire portable consumer suite'
+    for name, function in tuple(globals().items()):
+        if name.startswith('test_') and function is not native:
+            assert not any(mark.name in ('skip', 'skipif')
+                           for mark in getattr(function, 'pytestmark', ())), name
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
@@ -151,6 +167,7 @@ try{{$null=$relayNative.WaitForExit(1)}}catch{{$caught=$_.Exception.Message}}
     'duplicates', 'wrong_runtime', 'wrong_script', 'command_payload', 'target_recycled',
     'target_command_changes', 'intent_exists', 'uncertain_stop',
     *[f'native_remainder_{i}' for i in range(1, 10)], 'native_next_microsecond'])
+@pytest.mark.skipif(os.name != 'nt', reason='Win32 fixture requires SystemRoot and native CommandLineToArgvW')
 def test_exact_external_stop_is_after_final_producer_attestation(tmp_path, ps, case):
     """MUTANT_STOP_BEFORE_FINAL_PROOF / MUTANT_KILL_BY_PID / MUTANT_STOP_UNKNOWN.
 

@@ -5,9 +5,9 @@
 
 .DESCRIPTION
     Verifies the reboot bootstrap path without touching the production bridge
-    runtime root. The test uses a fresh temp runtime root, runs the session
-    bootstrap, confirms directories and liveness events land there, and then
-    removes only that generated temp directory.
+    runtime root. The test uses fresh temp runtime roots, runs the session
+    bootstrap in isolated modes, confirms directories and liveness events land
+    under the selected root, and then removes only those generated directories.
 #>
 [CmdletBinding()]
 param()
@@ -39,21 +39,101 @@ function Add-Check {
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r13-5-bootstrap-smoke-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $tempRootFull = [System.IO.Path]::GetFullPath($tempRoot)
+$quietRoot = Join-Path $env:TEMP `
+    "bridge-v15e-bootstrap-quiet-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+$quietRootFull = [System.IO.Path]::GetFullPath($quietRoot)
+$readerRoot = Join-Path $env:TEMP `
+    "bridge-v15e-bootstrap-reader-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+$readerRootFull = [System.IO.Path]::GetFullPath($readerRoot)
 $tempParentFull = [System.IO.Path]::GetFullPath($env:TEMP)
+$generatedRoots = @($quietRootFull, $readerRootFull, $tempRootFull)
 
 $savedRuntime = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
 $savedLocation = (Get-Location).Path
 $agentUuid = '11111111-2222-3333-4444-555555555555'
 
+# Checked before the cleanup-owned region: a root that already exists is not
+# this run's, so the finally block below must never see it.
+foreach ($generatedRoot in $generatedRoots) {
+    if (Test-Path -LiteralPath $generatedRoot) {
+        throw "Pre-condition failed: temp root already exists: $generatedRoot"
+    }
+}
+
 try {
     Write-Host 'Bridge session bootstrap smoke test' -ForegroundColor Cyan
     Write-Host '====================================='
-    Write-Host "Temp runtime root: $tempRootFull"
+    Write-Host "Quiet runtime root: $quietRootFull"
+    Write-Host "Reader runtime root: $readerRootFull"
+    Write-Host "Normal runtime root: $tempRootFull"
     Write-Host ''
 
-    if (Test-Path -LiteralPath $tempRootFull) {
-        throw "Pre-condition failed: temp root already exists: $tempRootFull"
+    $quietBootstrap = & $startSession `
+        -Agent codex `
+        -RuntimeRoot $quietRootFull `
+        -RunId 'codex-bootstrap-smoke-quiet' `
+        -SkipBridgeRead `
+        -SkipLiveness `
+        -SkipGitStatus `
+        -SkipWakeWatcher `
+        -SkipHeartbeatJob
+
+    Add-Check -Name 'quiet bootstrap created runtime root' `
+        -Passed (Test-Path -LiteralPath $quietRootFull -PathType Container) `
+        -Detail $quietRootFull
+    foreach ($relative in @(
+        'shared',
+        'work_queue',
+        'outbox',
+        'outbox\codex',
+        'inbox',
+        'inbox\codex'
+    )) {
+        $dir = Join-Path $quietRootFull $relative
+        Add-Check -Name "quiet bootstrap created $relative" `
+            -Passed (Test-Path -LiteralPath $dir -PathType Container) `
+            -Detail $dir
+    }
+    foreach ($relative in @(
+        'work_queue\claims',
+        'work_queue\done',
+        'work_queue\.claims.mutation.lock',
+        'shared\events.jsonl'
+    )) {
+        $path = Join-Path $quietRootFull $relative
+        Add-Check -Name "quiet bootstrap left $relative absent" `
+            -Passed (-not (Test-Path -LiteralPath $path)) `
+            -Detail $path
+    }
+    Add-Check -Name 'quiet bootstrap skipped wake and heartbeat jobs' `
+        -Passed (
+            [string]::IsNullOrEmpty([string]$quietBootstrap.wake_job_id) -and
+            [string]::IsNullOrEmpty([string]$quietBootstrap.heartbeat_job_id)
+        )
+
+    $readerBootstrapError = ''
+    try {
+        & $startSession `
+            -Agent codex `
+            -RuntimeRoot $readerRootFull `
+            -RunId 'codex-bootstrap-smoke-reader' `
+            -SkipLiveness `
+            -SkipGitStatus `
+            -SkipWakeWatcher `
+            -SkipHeartbeatJob |
+            Out-Null
+    } catch {
+        $readerBootstrapError = $_.Exception.Message
+    }
+    Add-Check -Name 'reader-enabled bootstrap completed without error' `
+        -Passed (-not $readerBootstrapError) `
+        -Detail $readerBootstrapError
+    foreach ($relative in @('work_queue\claims', 'work_queue\done')) {
+        $path = Join-Path $readerRootFull $relative
+        Add-Check -Name "reader-enabled bootstrap left $relative absent" `
+            -Passed (-not (Test-Path -LiteralPath $path)) `
+            -Detail $path
     }
 
     $bootstrap = & $startSession `
@@ -85,8 +165,6 @@ try {
     foreach ($relative in @(
         'shared',
         'work_queue',
-        'work_queue\claims',
-        'work_queue\done',
         'outbox',
         'outbox\codex',
         'inbox',
@@ -96,6 +174,12 @@ try {
         Add-Check -Name "created $relative" `
             -Passed (Test-Path -LiteralPath $dir -PathType Container) `
             -Detail $dir
+    }
+    foreach ($relative in @('work_queue\claims', 'work_queue\done')) {
+        $path = Join-Path $tempRootFull $relative
+        Add-Check -Name "normal bootstrap left $relative absent" `
+            -Passed (-not (Test-Path -LiteralPath $path)) `
+            -Detail $path
     }
 
     $eventsPath = Join-Path $tempRootFull 'shared\events.jsonl'
@@ -144,17 +228,21 @@ try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRuntime
     $env:AGENT_BRIDGE_RUN_ID = $savedRunId
 
-    if (Test-Path -LiteralPath $tempRootFull) {
-        $safeTempChild = $tempRootFull.StartsWith(
-            $tempParentFull.TrimEnd('\') + '\',
-            [System.StringComparison]::OrdinalIgnoreCase
-        ) -and ((Split-Path -Leaf $tempRootFull) -like 'bridge-r13-5-bootstrap-smoke-*')
-        if (-not $safeTempChild) {
-            throw "Refusing cleanup outside generated temp root: $tempRootFull"
+    foreach ($generatedRoot in $generatedRoots) {
+        if (Test-Path -LiteralPath $generatedRoot) {
+            $generatedLeaf = Split-Path -Leaf $generatedRoot
+            $safeTempChild = $generatedRoot.StartsWith(
+                $tempParentFull.TrimEnd('\') + '\',
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -and $generatedLeaf -cmatch `
+                '^bridge-(?:r13-5-bootstrap-smoke|v15e-bootstrap-(?:quiet|reader))-[0-9a-f]{12}$'
+            if (-not $safeTempChild) {
+                throw "Refusing cleanup outside generated temp root: $generatedRoot"
+            }
+            Remove-Item -LiteralPath $generatedRoot -Recurse -Force
+            Write-Host ''
+            Write-Host "Cleanup: removed $generatedRoot"
         }
-        Remove-Item -LiteralPath $tempRootFull -Recurse -Force
-        Write-Host ''
-        Write-Host "Cleanup: removed $tempRootFull"
     }
 }
 

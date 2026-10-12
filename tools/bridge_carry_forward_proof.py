@@ -36,10 +36,12 @@ and refuses with the first failing check as ``reason``, in this order:
 * condition 5, ``paths_overlap``: no PR path is in the old base..main delta, compared case-folded (on
   a case-insensitive checkout ``Foo.txt`` and ``foo.txt`` are one file; names are folded both with
   ``casefold()`` and upper-cased first, because NTFS upper-cases and dotless i upper-cases to I
-  while ``casefold()`` keeps it). That is RCO1's rule
+  while ``casefold()`` keeps it; before folding, each path component drops trailing dots and spaces
+  and anything from the first ``:``, because Win32 opens ``widget.txt.`` and ``widget.txt `` as
+  ``widget.txt`` and ``NAME:STREAM`` is a stream of ``NAME``). That is RCO1's rule
   ("overlap only where the file is the same blob in both bases"): a path whose blob is equal in both
   bases is not in the delta. Any overlap needs fresh review, even when the merge is clean;
-  ``case_collision``: no PR path shares a case-folded name with another file or a directory in the
+  ``case_collision``: no PR path shares a folded name with another file or a directory in the
   new tree, and no parent directory of a PR path case-folds to a file there;
 * condition 3: ``delta_changed`` (the per-file delta main..new head equals old base..old head entry by
   entry: path, status, both modes, both blob ids; ``git diff-tree -r -z --no-renames``) and
@@ -156,9 +158,15 @@ def _patch_id(repo: str, old: str, new: str) -> str | None:
     return value[0] if value else None
 
 
+def _win32_component(part: str) -> str:
+    # Win32 drops trailing dots and spaces, and NAME:STREAM is a stream of the file NAME (Grok ff5f768d).
+    return part.split(":", 1)[0].rstrip(". ")
+
+
 def _folds(name: str) -> set[str]:
-    """Keys under which a case-insensitive file system may see NAME as another name (over-matching is safe)."""
-    return {name.casefold(), name.upper().casefold()}
+    """Keys under which a Windows checkout may see NAME as another name (over-matching is safe)."""
+    win32 = "/".join(_win32_component(part) for part in name.split("/"))
+    return {win32.casefold(), win32.upper().casefold()}
 
 
 def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:

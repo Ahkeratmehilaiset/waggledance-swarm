@@ -185,11 +185,10 @@ function Write-BridgeWakeObservation {
             [IO.File]::WriteAllBytes($temp,$bytes)
             try{Publish-BridgeWakeSnapshot -Temp $temp -Path $Path;return}
             catch [IO.IOException]{
+                # This writer's exact staged bytes at $Path are the only success witness after an error.
                 $published=$false
-                if(-not [IO.File]::Exists($temp)){
-                    try{$published=[Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -ceq [Convert]::ToBase64String($bytes)}
-                    catch [IO.IOException]{$published=$false}
-                }
+                try{$published=[Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -ceq [Convert]::ToBase64String($bytes)}
+                catch [IO.IOException]{$published=$false}
                 if($published){return}
                 if($attempt -ge 5){throw}
             }

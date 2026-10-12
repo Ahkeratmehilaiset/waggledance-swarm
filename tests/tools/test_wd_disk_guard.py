@@ -280,6 +280,27 @@ def test_worktree_add_from_a_linked_worktree_measures_the_common_git_dir(monkeyp
     assert "WD-DISK-GUARD BLOCK" in capsys.readouterr().err
 
 
+def test_worktree_add_measures_the_common_git_dir_without_rev_parse_path_format(monkeypatch, capsys, tmp_path):
+    """git before 2.31 has no --path-format, yet its git worktree add works; the common git dir is
+    still measured (Grok on the PR1859 follow-up)."""
+    import shutil
+    real_run = subprocess.run
+
+    def git_without_path_format(args, *rest, **kwargs):
+        if any(str(arg).startswith("--path-format") for arg in args):
+            return subprocess.CompletedProcess(args, 129, "", "error: unknown option `path-format=absolute'\n")
+        return real_run(args, *rest, **kwargs)
+
+    repo = _repo(tmp_path)
+    target = tmp_path / "elsewhere" / "wt"
+    monkeypatch.setattr(subprocess, "run", git_without_path_format)
+    monkeypatch.setattr(shutil, "disk_usage", _blocked_under(repo / ".git"))
+    code = _guard().main(["worktree-add", "--repo", str(repo), "--", "--detach", str(target), "HEAD"])
+    assert code == 28
+    assert not target.exists()
+    assert "WD-DISK-GUARD BLOCK" in capsys.readouterr().err
+
+
 def test_worktree_add_passes_a_dash_dash_path_through(monkeypatch, tmp_path):
     import shutil
     repo = _repo(tmp_path)

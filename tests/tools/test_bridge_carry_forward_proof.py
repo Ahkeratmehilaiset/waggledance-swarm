@@ -469,6 +469,36 @@ def test_the_same_head_is_not_a_carry(repo):
     assert (proof["ok"], proof["reason"]) == (False, "same_head")
 
 
+# --- first_parent: how the gate finds the reviewed head of an update -----------------------------
+
+
+def test_first_parent_names_the_reviewed_head_of_an_update(repo):
+    _, head, _, new_head = _scenario(repo)
+
+    assert _module().first_parent(repo=str(repo), head=new_head) == head
+
+
+def test_first_parent_of_a_root_commit_is_none(repo):
+    assert _module().first_parent(repo=str(repo), head=_base(repo)) is None
+
+
+@pytest.mark.parametrize("value", ["", "HEAD", "main", "abc1234", None, 7])
+def test_first_parent_needs_a_full_object_name(repo, value):
+    _scenario(repo)
+
+    assert _module().first_parent(repo=str(repo), head=value) is None
+
+
+def test_first_parent_ignores_an_inherited_git_dir(repo, tmp_path, monkeypatch):
+    _, head, _, new_head = _scenario(repo)
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+
+    assert _module().first_parent(repo=str(repo), head=new_head) == head
+
+
 def test_grafts_are_refused(repo):
     base, head, main, new_head = _scenario(repo)
     grafts = Path(_git(repo, "rev-parse", "--git-path", "info/grafts").strip())

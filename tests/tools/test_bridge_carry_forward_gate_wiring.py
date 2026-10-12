@@ -249,6 +249,12 @@ def test_the_repository_seam_needs_the_flag(tmp_path, heads):
         _gate(tmp_path, heads, carry_forward=False)
 
 
+def test_carry_forward_is_evaluation_only_until_the_merge_receipt_records_it(tmp_path, heads):
+    # The apply path re-snapshots the PR, and the merge receipt has no carry-forward fields yet.
+    with pytest.raises(AutoMergeGateError, match="carry_forward"):
+        _gate(tmp_path, heads, apply=True)
+
+
 # --- condition 1 + 7: the old head's direct verdict carries, everything else stays at the new head ---
 
 

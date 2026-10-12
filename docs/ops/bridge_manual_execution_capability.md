@@ -78,10 +78,21 @@ PR's consensus, CI, mergeable state and charter, has this shape:
 
 The marker is stripped before Python. Canonical long options only: duplicate,
 abbreviated and unknown options refuse before Python. Head/base must be full
-lowercase 40-character SHAs. `--now`, operator path-exception arguments,
-`--review-policy` and `--grok-fallback` are not admitted by this route. No
+lowercase 40-character SHAs. `--review-policy` admits only the exact existing
+executor values `bridge_consensus_v1` and `rule12`, with either a separate value
+or `--review-policy=rule12`. Omission preserves the executor's current default.
+The marker and policy argument reach the same pinned driver with the same
+manifest, activation, lane and runtime bindings; admitting the argument does
+not approve its gate verdict or change RCO coverage. Current Rule 12 code still
+requires every eligible recognized RCO; instructions alone do not change that.
+`--now`, operator path-exception arguments and `--grok-fallback` remain refused. No
 `--admin`, `--no-verify` or force-push option is admitted. Without `--apply` the
 existing merge driver keeps its dry-run behavior; a dry run is not a merge.
+
+This policy-argument parity is available only in a newly built, verified and
+separately authorized generation containing this source change. An older
+installed wrapper may reject it before Python. Never alter a live bundle or
+session pin to obtain it, and never call the executor outside the pinned wrapper.
 
 `--out-dir` must be a new or empty directory at an absolute canonical C-drive
 path below `.codex-audit`. The receipt status input must be an existing regular
@@ -117,6 +128,11 @@ They check actual wrapper admission and package checks, not fabricated gate
 PASSes or live GitHub merges. Existing executor/receipt and request-contract
 regressions separately cover their safety contracts. Preserve committed-head
 raw logs, commands, native exit codes and SHA256s outside the signed tree.
+Policy parity has PS5/PS7 positive twins for both drivers, both exact policy
+values and both argument forms, plus missing/invalid/duplicate/abbreviated and
+separator negative controls. A mutant that removes `--review-policy` from
+admission is killed by the Rule 12 positive regression. No gate, charter,
+Grok-switch, activation record or package definition is changed.
 
 Nothing here authorizes installation, repinning, runtime activation, release or
 Rule 10 / Stage-2 cutover. Source merge and installed runtime are separate states.

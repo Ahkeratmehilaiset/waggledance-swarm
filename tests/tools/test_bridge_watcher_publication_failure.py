@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -102,3 +103,54 @@ def test_the_pending_wake_is_published_once_publication_works_again(tmp_path, ps
     observation = json.loads(wake.read_text(encoding='utf-8'))
     expected = ['req-1', 'req-2'] if new_row else ['req-1']
     assert [request['request_id'] for request in observation['requests']] == expected, observation
+
+
+def _wait_for(predicate, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS)
+def test_a_new_failure_streak_after_a_recovery_warns_again(tmp_path, ps):
+    runtime = _runtime(tmp_path, _request('req-1'))
+    wake = _blocked_wake(tmp_path)
+    process = subprocess.Popen(_argv(ps, runtime, 10, 1000), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, env=ENV)
+    lines = []
+    failures = threading.Semaphore(0)
+
+    def pump():
+        for line in process.stdout:
+            lines.append(line)
+            if FAILED in line:
+                failures.release()
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        assert failures.acquire(timeout=60), ''.join(lines)
+        (wake / 'keep').unlink()
+        wake.rmdir()
+        assert _wait_for(wake.is_file, 30), ''.join(lines)  # the first streak recovered
+        wake.unlink()
+        _blocked_wake(tmp_path)
+        _append(runtime, _request('req-2'))
+        assert failures.acquire(timeout=30), ''.join(lines)  # the second streak warns again
+        (wake / 'keep').unlink()
+        wake.rmdir()
+        assert process.wait(60) == 0, ''.join(lines)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    reader.join(10)
+
+    output = ''.join(lines)
+    assert output.count(FAILED) == 2, output
+    assert output.count(RECOVERED) == 2, output
+    observation = json.loads(wake.read_text(encoding='utf-8'))
+    # The first batch was cleared when it was published; only the second one is pending.
+    assert [request['request_id'] for request in observation['requests']] == ['req-2'], observation

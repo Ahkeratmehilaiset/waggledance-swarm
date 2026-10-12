@@ -695,3 +695,52 @@ def test_git_runs_without_inherited_repository_variables_and_never_prompts(repo,
     assert proof["stripped_git_env"] == ["GIT_INDEX_FILE"]
     assert envs and all(env is not None and env.get("GIT_TERMINAL_PROMPT") == "0" for env in envs)
     assert not [key for env in envs for key in env if key.upper() in REPOSITORY_ENV]
+
+
+def test_every_git_call_has_a_timeout(repo, monkeypatch):
+    """RCO1 follow-up on PR1861 (same here): a hung git call (a lock, a filter, a slow disk) must end."""
+    _, head, main, new_head = _scenario(repo)
+    module = _module()
+    real = subprocess.run
+    timeouts = []
+
+    def recording(argv, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", recording)
+    proof = module.verify_carry_forward(repo=str(repo), old_head=head, new_head=new_head, main_head=main)
+
+    assert proof["ok"] is True, proof
+    assert timeouts and all(isinstance(t, (int, float)) and 0 < t <= 3600 for t in timeouts), timeouts
+
+
+def test_a_git_timeout_fails_closed(repo, monkeypatch):
+    _, head, main, new_head = _scenario(repo)
+    module = _module()
+
+    def timing_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout") or 1)
+
+    monkeypatch.setattr(module.subprocess, "run", timing_out)
+    proof = module.verify_carry_forward(repo=str(repo), old_head=head, new_head=new_head, main_head=main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "git_failed")
+    assert proof["failed_command"]["exit"] == 124
+
+
+def test_inherited_git_variables_are_named_but_never_their_values(repo, monkeypatch):
+    """RCO1 follow-up on PR1861 (same here): injected config or transport variables are visible by name."""
+    _, head, main, new_head = _scenario(repo)
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'wd.probe=value-one-7f3a'")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o wd=value-two-7f3a")
+
+    decision = _evaluate(repo, head, new_head, main)
+
+    assert decision["carried"] is True, decision
+    for record in (decision["proof"], decision["receipt"]):
+        assert {"GIT_CONFIG_PARAMETERS", "GIT_SSH_COMMAND"} <= set(record["inherited_git_env"])
+        assert record["inherited_git_env"] == sorted(record["inherited_git_env"])
+        assert not set(record["inherited_git_env"]) & set(REPOSITORY_ENV)
+    dumped = json.dumps(decision)
+    assert "value-one-7f3a" not in dumped and "value-two-7f3a" not in dumped

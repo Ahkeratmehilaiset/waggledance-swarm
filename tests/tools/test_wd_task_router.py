@@ -140,6 +140,57 @@ def test_author_never_reviews_own_work():
     assert "author_cannot_review_own_work" in out["ineligible"]["claude-rco-1"]
 
 
+# T-D1 (RCO2 report 8DF45964; reproduced by Fable 08A5539F): the author was only checked to be non-empty text and
+# then compared to worker names exactly, so a case or padding variant of a member, or a name that is no member,
+# was routed to review its own work. An author must now be an exact bridge member or grok; anything else holds.
+@pytest.mark.parametrize("author", ["Claude-RCO-1", "claude-rco-1 ", " claude-rco-1", "CLAUDE-RCO-1",
+                                    "nobody-at-all", "operator"])
+def test_t_d1_an_author_that_is_not_an_exact_member_holds_and_is_never_routed(author):
+    out = run(t=task("review", author=author))
+    assert out["verdict"] == tr.HOLD and out["reasons"] == ["task_malformed"]
+
+
+class _EqualTwice(str):
+    """A str subclass equal on its first two comparisons only (RCO2 TD1R-S1): the evidence digest round trip and
+    the membership test, then unequal to the same name at the author-cannot-review-own-work check."""
+    def __init__(self, value):
+        self.calls = 0
+
+    def __eq__(self, other):
+        self.calls += 1
+        return self.calls <= 2
+
+    __hash__ = str.__hash__
+
+
+class _AlwaysEqual(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+def test_t_d1_a_str_subclass_author_holds_and_is_never_routed_to_self_review():
+    out = run(t=task("review", author=_EqualTwice("claude-rco-1")))
+    assert out["verdict"] == tr.HOLD and out["reasons"] == ["task_malformed"]
+
+
+def test_t_d1_the_author_check_requires_an_exact_str_not_only_membership():
+    with pytest.raises(tr._Stop) as stop:
+        tr._task(task("review", author=_AlwaysEqual("claude-rco-1")), tr._utc(NOW))
+    assert (stop.value.verdict, stop.value.reasons) == (tr.HOLD, ["task_malformed"])
+
+
+@pytest.mark.parametrize("author", [*tr.MEMBERS, tr.GROK])
+def test_t_d1_every_exact_member_or_grok_is_still_an_accepted_author(author):
+    out = run(t=task("review", author=author))
+    assert out["reasons"] != ["task_malformed"]
+    if author == "claude-rco-1":
+        assert out["reasons"] == ["no_permitted_worker"]
+    else:
+        assert out["verdict"] == tr.ROUTE and out["recommended"]["worker"] == "claude-rco-1"
+
+
 # --- one outcome, one dispatch -----------------------------------------------------------------------
 
 def test_live_lease_on_the_same_key_is_a_duplicate():

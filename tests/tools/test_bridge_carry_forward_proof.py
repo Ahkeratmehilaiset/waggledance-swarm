@@ -336,6 +336,17 @@ def test_an_unknown_object_is_refused(repo):
     assert (proof["ok"], proof["reason"]) == (False, "unresolvable_commit")
 
 
+def test_a_tag_object_is_not_a_head(repo):
+    _, head, main, new_head = _scenario(repo)
+    _git(repo, "tag", "-a", "-m", "reviewed", "reviewed", head)
+    tag_object = _rev(repo, "refs/tags/reviewed")
+    assert tag_object != head
+
+    proof = _verify(repo, tag_object, new_head, main)
+
+    assert (proof["ok"], proof["reason"]) == (False, "unresolvable_commit")
+
+
 def test_the_same_head_is_not_a_carry(repo):
     _, head, main, _ = _scenario(repo)
 

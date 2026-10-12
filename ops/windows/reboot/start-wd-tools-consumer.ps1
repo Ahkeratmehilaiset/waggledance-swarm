@@ -2126,6 +2126,28 @@ function Assert-DirectoryPathWithoutReparse {
     }
 }
 
+function Set-WdToolsGitHubConfigDirectory {
+    param([string] $ConfigDirectory = 'C:\Python\wd-gh-tools')
+
+    # Operator-provisioned directory selection only. Never read/copy credentials,
+    # run gh login, create config files, or change GH_TOKEN/GITHUB_TOKEN. A missing
+    # directory preserves inherited configuration; malformed/reparse paths fail
+    # closed before changing the process environment. Children inherit this value.
+    if (-not [IO.Path]::IsPathRooted($ConfigDirectory)) {
+        throw 'Tools GitHub config directory must be absolute'
+    }
+    $candidate = [IO.Path]::GetFullPath($ConfigDirectory)
+    if ([IO.Path]::GetPathRoot($candidate) -ine 'C:\') {
+        throw 'Tools GitHub config directory must be on persistent C:'
+    }
+    Assert-DirectoryPathWithoutReparse -Candidate $candidate -Root 'C:\' -AllowMissing
+    if (-not (Test-Path -LiteralPath $candidate -PathType Container -ErrorAction Stop)) {
+        return $false
+    }
+    [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', $candidate, 'Process')
+    return $true
+}
+
 function Assert-FilePathWithoutReparse {
     param(
         [Parameter(Mandatory)] [string] $Candidate,
@@ -3224,6 +3246,7 @@ if (Test-Path -LiteralPath $readinessPath -PathType Leaf) {
     Remove-Item -LiteralPath $readinessPath -Force -ErrorAction Stop
 }
 
+$null = Set-WdToolsGitHubConfigDirectory
 $env:Path = $codexPathPlan.Path
 [Environment]::SetEnvironmentVariable(
     'WD_TOOLS_CODEX_REAL_COMMAND',

@@ -437,7 +437,23 @@ def _held(holds: list[dict], task_ids: set[str], request_ids: set[str]) -> list[
 
 def _control_token(cp: dict) -> bool:
     texts = [cp["next_action"], *cp["blockers"]]
-    return any(token in text.lower() for text in texts for token in CONTROL_TOKENS)
+    for text in texts:
+        lowered = text.lower()
+        # A trailing statement that an already-declared release policy is
+        # unchanged is not another HOLD on preparation. This exemption is not
+        # a blanket override: other controls in the same text still refuse.
+        if cp["work_held"] is False and cp["release_held"] is True:
+            lowered = re.sub(r"\bsignature[ \t]+unchanged[ \t]*\.?[ \t]*$", "", lowered)
+        for token in CONTROL_TOKENS:
+            if token == "cancel":
+                # Compound CI identifiers such as stablecancelgroup do not
+                # cancel work. Preserve explicit controls and inflections,
+                # including underscore-separated cancel_requested.
+                if re.search(r"(?<![a-z0-9])cancel(?:s|l?ed|l?ing|lation|ation)?(?![a-z0-9])", lowered):
+                    return True
+            elif token in lowered:
+                return True
+    return False
 
 
 def _alert_gate(snap: dict, cp: dict) -> str | None:

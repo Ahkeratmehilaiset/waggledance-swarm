@@ -98,7 +98,13 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # on either path. status() and the answered report are untouched. Independent component review:
                 # RCO1 97EA6325 at 0a60abf0 (same helper blob as 97cc3268); not a formal RCO_PASS.
                 "81f71da5ccc6441047d4395c8bcbed790d4a007a": "fecc701a plus GH-F1: no launch on an unpersisted "
-                                                            "reservation"}
+                                                            "reservation",
+                # fable-5 2026-10-11 (Codex P1 on PR1847, RCO1-confirmed non-blocking): consult() GH-F1 branch
+                # only. A delivery error that the failed lifecycle records after the finalizing write is
+                # persisted by one best-effort write; if that write fails, the original error is still raised
+                # with a note and the finalized failed state stays. No other path changes. Awaiting review.
+                "8f532699f1c39f89c9905d9e06f6e3172eeb8904": "81f71da5 plus the persisted GH-F1 failed-lifecycle "
+                                                            "delivery error"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

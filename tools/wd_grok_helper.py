@@ -928,7 +928,15 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             except OSError as unfinalized:
                 unpersisted.add_note("reservation not finalized, left unresolved: " + type(unfinalized).__name__)
             else:
+                delivered = len(state.get("bridge_event_errors", ()))
                 record_lifecycle(emitter, state["status"], state)
+                if len(state.get("bridge_event_errors", ())) > delivered:
+                    # The failed lifecycle's delivery error is persisted like on the completion path. Best
+                    # effort: the finalized state already stands, and the original error is still raised.
+                    try:
+                        write_state(root, state)
+                    except OSError as unrecorded:
+                        unpersisted.add_note("lifecycle delivery error not persisted: " + type(unrecorded).__name__)
             raise
         started = monotonic()
         prompt_path = root / (request_id + "-request.md")

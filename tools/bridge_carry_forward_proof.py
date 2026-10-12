@@ -15,8 +15,9 @@ and refuses with the first failing check as ``reason``, in this order:
   shallow (a shallow boundary hides parents). Every git call runs with ``--no-replace-objects`` so
   ``refs/replace`` cannot make the checks read other objects than the commits name (count recorded),
   without the inherited variables that pick another repository, object store, index or graft file
-  (``GIT_DIR``, ``GIT_WORK_TREE``, ...; the stripped names are recorded, never the values) and with
-  ``GIT_TERMINAL_PROMPT=0``;
+  (``GIT_DIR``, ``GIT_WORK_TREE``, ...; the stripped names are recorded, never the values), with
+  ``GIT_TERMINAL_PROMPT=0`` and a 600-second timeout (a timeout is ``git_failed`` with exit 124); the
+  names of other inherited ``GIT_*`` variables (injected config or transport) are recorded too;
 * ``unresolvable_commit``: each name is a commit in the repository;
 * condition 4: ``new_head_not_a_two_parent_merge`` (exactly two parents, so an extra commit on top or
   a rebase needs new votes), ``first_parent_not_old_head`` (no force-push: the reviewed head is the
@@ -83,6 +84,7 @@ _OBJECT_NAME = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _REPOSITORY_ENV = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
                              "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
                              "GIT_REPLACE_REF_BASE"})
+_GIT_TIMEOUT = 600.0
 _RAW_META = re.compile(r"^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])$")
 # git diff for patch-ids: every option that changes the text of a diff is pinned
 _PATCH_DIFF = ["-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "core.quotePath=true",
@@ -102,7 +104,9 @@ def _git(repo: str, args: Sequence[str], stdin: bytes | None = None) -> tuple[in
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(["git", "--no-optional-locks", "--no-replace-objects", "-C", repo, *args],
-                              input=stdin, capture_output=True, env=env)
+                              input=stdin, capture_output=True, env=env, timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 124, b""
     except OSError:
         return 127, b""
     return proc.returncode, proc.stdout
@@ -193,6 +197,8 @@ def _new_proof(old_head: Any, new_head: Any, main_head: Any) -> dict[str, Any]:
         "pr_paths": None, "base_delta_paths": None, "overlap_paths": None, "gate_governance_paths": None,
         "case_collisions": None, "entries": None, "patch_id_old": None, "patch_id_new": None,
         "stripped_git_env": sorted({key.upper() for key in os.environ if key.upper() in _REPOSITORY_ENV}),
+        "inherited_git_env": sorted({key.upper() for key in os.environ
+                                     if key.upper().startswith("GIT_") and key.upper() not in _REPOSITORY_ENV}),
         "replace_refs": None, "grafts": None, "shallow": None, "failed_command": None, "error_type": None,
     }
 
@@ -323,7 +329,7 @@ def evaluate_carry_forward(*, repo: str, old_head: str, new_head: str, main_head
         "overlap_paths": proof["overlap_paths"], "gate_governance_paths": proof["gate_governance_paths"],
         "case_collisions": proof["case_collisions"],
         "entries": proof["entries"], "new_head_parents": proof["new_head_parents"],
-        "stripped_git_env": proof["stripped_git_env"],
+        "stripped_git_env": proof["stripped_git_env"], "inherited_git_env": proof["inherited_git_env"],
         "replace_refs": proof["replace_refs"], "grafts": proof["grafts"], "shallow": proof["shallow"],
         "old_head_verdict": verdict, "new_head_ci_all_green": new_head_ci_all_green,
         "new_head_veto_clear": new_head_veto_clear,

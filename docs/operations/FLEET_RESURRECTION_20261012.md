@@ -62,8 +62,8 @@ to the new native process start.
 | Resumed conversation history | 6.35 GB in five files (6.60 GB with RCO1's predecessor file) | file lengths at 19:07:05Z |
 | Oldest resumed conversation | 28.15 days (`codex-tools-1`, since 2026-09-14T15:14:23Z) | first record timestamp |
 | First to last relaunch, sequential | 3 h 24 min 54 s | native process start times |
-| Lead native start to its first gate decision | 19 min 7 s (BUILD_CONSENSUS_PASS #1861 at 15:56:33Z) | event 7afde5d60ad4 |
-| Blocking daemon exit to Lead launcher start | 7.4 s (15:35:29Z → 15:35:36Z) | process times |
+| Lead native start to its first gate decision | 19 min 7.6 s (BUILD_CONSENSUS_PASS #1861 at 15:56:33Z) | event 7afde5d60ad4 |
+| Blocking daemon exit to Lead launcher start | 6.4–7.4 s after the exit was detected (15:35:29Z → 15:35:36.416Z), at most 22.4 s after the exit itself (15 s poll) | process creation time; event 0f57b928ddce |
 | Bundle closed set | 517 manifest-listed files + the manifest = 518 files | `deployment-manifest.json`, file count |
 | Install verification | 536 machine-integrity rows, 517 package hashes, 518-file closed set | event d0b1e8fed07c |
 | Retained WAL record before relaunch | 1 record, 3,525 bytes (`88DFBB16`); canonical log 144,830,401 bytes | event 2cb7f29878bf |
@@ -83,8 +83,8 @@ to the new native process start.
 | 15:20:03 | Lead verifies the operator's install of 227aa862: 536 machine-integrity rows, 517 package hashes, 518-file closed set. The supervisor is disabled. | d0b1e8fed07c |
 | by 15:27:20 | The operator's Lead launch is **refused**: `cannot prove lane availability: unmarked native claude.exe PID 35140` (`start-wd-agent.ps1:873`). | f2adb2ce4842 |
 | 15:33:48 | RCO2 records the pre-launch state: WAL 3,525 bytes, marker 257 bytes, canonical log 144,830,401 bytes. It warns that starting a lane runs the accepted-queue drain. | 2cb7f29878bf |
-| 15:35:29 | Daemon 35140 exits. | — |
-| 15:35:36 | The operator starts the Lead launcher. | — |
+| 15:35:29 | Daemon 35140's exit is detected by a 15 s poll; it exited within the preceding 15 s. | 0f57b928ddce |
+| 15:35:36 | The operator starts the Lead launcher (process 35484 created at 15:35:36.416Z). | — |
 | 15:37:20 | Lead generation `wd-lane-codex-lead-1-20261012T153537Z` manifests its target state and attempts its append canary. | 77bfa917e614, 0067d2f46db0 |
 | 15:37:25 | Lead `codex.exe` 9156 resumes `01a0a654`. | — |
 | 15:56:33 | Lead's first decision after the relaunch: BUILD_CONSENSUS_PASS on #1861. | 7afde5d60ad4 |
@@ -102,7 +102,8 @@ to the new native process start.
 1. **Launcher ancestry check.** Lead's launch was refused while an unmarked native
    `claude.exe` (PID 35140) without launcher ancestry was alive (`start-wd-agent.ps1:873`,
    reported in event f2adb2ce4842). The refusal was not bypassed. Lead's launcher started
-   only after that process had exited, 7.4 s later (15:35:29Z → 15:35:36Z).
+   only after that process had exited: its exit was detected at 15:35:29Z by a 15 s poll,
+   and the launcher process was created at 15:35:36.416Z.
 2. **No guessing of liveness.** L1 from a Limited window refused (host ownership
    unreadable) instead of assuming which lanes were alive. The fleet `-Auto` path was not
    used at any point.
@@ -209,11 +210,37 @@ welcome.
   `Read-AgentBridge.ps1 -Compact -EventId <full ref>` returns the event, and a
   12-character label does not (exit 2). The full refs are listed under
   [Event refs](#event-refs).
-- **Raw captures:** kept by the author in the ignored audit folder
-  `.codex-audit/fable-resurrection-20261012/`. `facts-20261012.json` has sha256
-  `70A75596F842A91593916AA0E3EAAACEE7D56E2E52B8EDA8BF5F969F4EE286EC`, and the second
-  capture `growth-20261012.json` has sha256
-  `003274E844F6D0B3A82AE23378B43EBFB0CB2C8E4912A4CA47E1D7696743A63D`.
+- **Committed captures:** every value in the fleet table, the Numbers table and the
+  timeline is in the files under
+  [`evidence/fleet-resurrection-20261012/`](evidence/fleet-resurrection-20261012/):
+  - [`measurements.json`](evidence/fleet-resurrection-20261012/measurements.json)
+    (sha256 `4dc65dfc8616d84d6854ed1f4329d03978cdb36185b86f9247abff184e973632`): native processes, conversation file lengths at
+    19:07:05Z and 19:22:26Z, first-record times and ages, RCO1's predecessor file, the
+    totals, the relaunch window, the daemon-to-launcher interval, the bundle and the
+    repository counts;
+  - [`launch-preflight.json`](evidence/fleet-resurrection-20261012/launch-preflight.json)
+    (sha256 `e752f548bc253d751b016b20cb4f6de509084b4b214eea80a6950c092579e485`): the five launch-preflight shadow rows, verbatim, with
+    their source line numbers and line hashes;
+  - [`bridge-events.json`](evidence/fleet-resurrection-20261012/bridge-events.json)
+    (sha256 `9939989243a24671d3cdca5e4230e05623ee40babab13735354dd193c8d83e6d`): every cited event read back by full ref, with sender,
+    time, type, status, a message excerpt and the hash of the full message.
+
+  The hashes are of the committed bytes (LF line endings). Check them with
+  `git show HEAD:<path> | sha256sum`, because a checkout with `core.autocrlf` can change
+  the line endings of the working copy.
+- **Lineage and redaction:** the committed files are derived from the author's local raw
+  captures in the ignored audit folder `.codex-audit/fable-resurrection-20261012/`. Those
+  stay unchanged; each committed file names its sources and their sha256 under `lineage`.
+  The raw sources are `facts-20261012.json` (19:07:05Z, sha256
+  `70A75596F842A91593916AA0E3EAAACEE7D56E2E52B8EDA8BF5F969F4EE286EC`),
+  `growth-20261012.json` (19:22:26Z, sha256
+  `003274E844F6D0B3A82AE23378B43EBFB0CB2C8E4912A4CA47E1D7696743A63D`) and a
+  re-measurement at 20:23:39Z (`remeasure-20261012T202339Z.json`, sha256
+  `4EFA3DD84FD9B19CF40A97558B0B2B87154301C03FF8B0F57AB2C380331BE7F0`), plus the payloads of
+  events 2cb7f29878bf and 5322870dc010 (`event-payloads-20261012T202623Z.json`, sha256
+  `84729EF70107417C31FCAFF1229DF3F8717E4C22B34481BAACF5D2D3C4908859`). Conversation ids
+  are cut to 8 characters, local paths are removed, event messages are cut to 400
+  characters, and no transcript content is included.
 - **Outside review:** one Grok overclaim check (report sha256 `e9cfe6f2…`) flagged five
   sentences. The continuity, prior-art, authority, ancestry and review-gate wording above
   was tightened in response.
@@ -247,3 +274,4 @@ one was read back with the pinned `Read-AgentBridge.ps1 -Compact -EventId` on 20
 | c9c6dd01fcdf | `c9c6dd01fcdf8cd65b645dc8486d144be2997b974d0597cca0f2fa1f25a97e32` |
 | 9bacc8d84de9 | `9bacc8d84de95f1d18261e25dde8e2a26a75d5f17a50ad35138ab26697ffb473` |
 | d6fd45cb5a8e | `d6fd45cb5a8e660892b28c7761905a8bb9d3d7852c02e2e9c36a5ce0eea05e8c` |
+| 0f57b928ddce | `0f57b928ddce46890cfabc5c6934cf593d3cc53a706130d387fc3ff7b3aeb3db` |

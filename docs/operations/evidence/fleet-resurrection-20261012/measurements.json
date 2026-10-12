@@ -1,0 +1,145 @@
+{
+  "schema": "wd.fleet-resurrection-evidence.measurements.v1",
+  "record": "docs/operations/FLEET_RESURRECTION_20261012.md",
+  "lanes": [
+    {
+      "lane": "codex-lead-1",
+      "cli": "codex.exe",
+      "native_pid": 9156,
+      "native_start_utc": "2026-10-12T15:37:25.6166110Z",
+      "conversation_prefix": "01a0a654",
+      "conversation_first_record_utc": "2026-09-16T01:29:34.030Z",
+      "age_reference_first_record_utc": "2026-09-16T01:29:34.030Z",
+      "age_days_at_start": 26.59,
+      "bytes_at_190705Z": 2866845488,
+      "bytes_at_192226Z": 2867401409,
+      "grew_between_captures": true
+    },
+    {
+      "lane": "claude-rco-1",
+      "cli": "claude.exe",
+      "native_pid": 6192,
+      "native_start_utc": "2026-10-12T18:19:43.6623290Z",
+      "conversation_prefix": "8abcb653",
+      "conversation_first_record_utc": "2026-10-12T15:03:03.513Z",
+      "age_reference_first_record_utc": "2026-09-27T17:36:24.160Z",
+      "age_days_at_start": 15.03,
+      "bytes_at_190705Z": 15978901,
+      "bytes_at_192226Z": 16486704,
+      "grew_between_captures": true
+    },
+    {
+      "lane": "codex-tools-1",
+      "cli": "codex.exe",
+      "native_pid": 28600,
+      "native_start_utc": "2026-10-12T18:47:25.3395330Z",
+      "conversation_prefix": "01a0a07b",
+      "conversation_first_record_utc": "2026-09-14T15:14:23.415Z",
+      "age_reference_first_record_utc": "2026-09-14T15:14:23.415Z",
+      "age_days_at_start": 28.15,
+      "bytes_at_190705Z": 2415017966,
+      "bytes_at_192226Z": 2417549091,
+      "grew_between_captures": true
+    },
+    {
+      "lane": "fable-5",
+      "cli": "claude.exe",
+      "native_pid": 33996,
+      "native_start_utc": "2026-10-12T18:54:40.0591210Z",
+      "conversation_prefix": "9f375967",
+      "conversation_first_record_utc": "2026-09-15T18:28:42.333Z",
+      "age_reference_first_record_utc": "2026-09-15T18:28:42.333Z",
+      "age_days_at_start": 27.02,
+      "bytes_at_190705Z": 802850759,
+      "bytes_at_192226Z": 803240638,
+      "grew_between_captures": true
+    },
+    {
+      "lane": "claude-rco-2",
+      "cli": "claude.exe",
+      "native_pid": 28244,
+      "native_start_utc": "2026-10-12T19:02:19.8256030Z",
+      "conversation_prefix": "9d0b4b40",
+      "conversation_first_record_utc": "2026-09-27T17:52:23.396Z",
+      "age_reference_first_record_utc": "2026-09-27T17:52:23.396Z",
+      "age_days_at_start": 15.05,
+      "bytes_at_190705Z": 253804558,
+      "bytes_at_192226Z": 254571985,
+      "grew_between_captures": true
+    }
+  ],
+  "claude_rco_1_predecessor_transcript": {
+    "conversation_prefix": "b562b69a",
+    "bytes": 241409000,
+    "first_record_utc": "2026-09-27T17:36:24.160Z",
+    "last_write_utc": "2026-10-12T18:15:35.5331292Z",
+    "note": "claude-rco-1 continued this conversation as 8abcb653 at 15:02:59Z; the age of claude-rco-1 is counted from this predecessor's first record"
+  },
+  "totals": {
+    "five_files_bytes_at_190705Z": 6354497672,
+    "five_files_gb_decimal": 6.35,
+    "with_predecessor_bytes": 6595906672,
+    "with_predecessor_gb_decimal": 6.6,
+    "files_grown_between_190705Z_and_192226Z": 5,
+    "oldest_age_days": 28.15
+  },
+  "relaunch_window": {
+    "first_native_start_utc": "2026-10-12T15:37:25.616611+00:00",
+    "last_native_start_utc": "2026-10-12T19:02:19.825603+00:00",
+    "seconds": 12294.2
+  },
+  "lead_start_to_first_decision": {
+    "native_start_utc": "2026-10-12T15:37:25.6166110Z",
+    "decision_event_ref": "7afde5d60ad43b01e66048f8331646ecde83f81d4e04f63e2a44baf6fb02479a",
+    "decision_ts_utc": "2026-10-12T15:56:33.2140554Z",
+    "seconds": 1147.6
+  },
+  "blocking_daemon_to_lead_launcher": {
+    "daemon_pid": 35140,
+    "exit_detected_utc": "2026-10-12T15:35:29Z",
+    "exit_detection": "Get-Process poll every 15 s, detection time at second precision; the exit itself happened up to 15 s before detection",
+    "exit_reported_in_event": "0f57b928ddce46890cfabc5c6934cf593d3cc53a706130d387fc3ff7b3aeb3db",
+    "launcher_pid": 35484,
+    "launcher_created_utc": "2026-10-12T15:35:36.4164450Z",
+    "seconds_after_detection_range": [
+      6.4,
+      7.4
+    ],
+    "seconds_after_exit_upper_bound": 22.4
+  },
+  "bundle": {
+    "source_commit": "227aa862763ca058888c81db1cfc148c52d6f479",
+    "manifest_sha256": "3C87E68EDA1EE39502988894F69328905B726C2D05D7A686CCC7E3404D330C4B",
+    "manifest_file_entries": 517,
+    "bundle_files_on_disk": 518
+  },
+  "repository": {
+    "main_head": "227aa862763ca058888c81db1cfc148c52d6f479",
+    "main_commit_count": 2355,
+    "first_commit_utc": "2026-03-01T20:26:58+02:00"
+  },
+  "lineage": {
+    "derived_from": [
+      {
+        "file": "facts-20261012.json",
+        "sha256": "70a75596f842a91593916aa0e3eaaacee7d56e2e52b8eda8bf5f969f4ee286ec",
+        "captured_utc": "2026-10-12T19:07:05.2754562Z"
+      },
+      {
+        "file": "growth-20261012.json",
+        "sha256": "003274e844f6d0b3a82ae23378b43ebfb0cb2c8e4912a4ca47e1d7696743a63d",
+        "captured_utc": "2026-10-12T19:22:26.6410307Z"
+      },
+      {
+        "file": "remeasure-20261012T202339Z.json",
+        "sha256": "4efa3dd84fd9b19cf40a97558b0b2b87154301c03ff8b0f57ab2c380331be7f0",
+        "captured_utc": "2026-10-12T20:23:39.7825695Z"
+      }
+    ],
+    "redactions": [
+      "conversation ids are cut to their first 8 hex characters",
+      "no transcript content is included: only file lengths, file times and the first timestamp field"
+    ],
+    "transform": "lanes from facts.lane_processes + facts.conversations + growth.rows joined by lane; ages recomputed from native start minus first record; predecessor and launcher times from the re-measurement; totals computed here"
+  }
+}

@@ -650,6 +650,7 @@ def test_a_clean_update_records_no_case_collision(repo, tmp_path, capsys):
 
     receipt = _receipt(receipt_path)
     assert (code, receipt["status"], receipt["case_collisions"]) == (0, "updated", [])
+    assert receipt["stripped_git_env"] == []
 
 
 def test_an_unwritable_receipt_still_prints_the_receipt(repo, tmp_path, capsys):
@@ -721,6 +722,8 @@ def test_an_inherited_git_dir_never_redirects_the_tool(repo, tmp_path, capsys, m
     monkeypatch.delenv("GIT_WORK_TREE")
     receipt = _receipt(receipt_path)
     assert (code, receipt["status"]) == (0, "updated"), receipt
+    assert receipt["stripped_git_env"] == ["GIT_DIR", "GIT_WORK_TREE"]  # names only, never values
+    assert str(other) not in json.dumps(receipt)
     new_head = receipt["new_head"]
     assert subprocess.run(["git", "-C", str(repo), "cat-file", "-e", new_head]).returncode == 0
     assert subprocess.run(["git", "-C", str(other), "cat-file", "-e", new_head]).returncode != 0
@@ -740,6 +743,7 @@ def test_an_inherited_graft_file_is_ignored(repo, tmp_path, capsys, monkeypatch)
 
     receipt = _receipt(receipt_path)
     assert (code, receipt["status"], receipt["grafts"]) == (0, "updated", False), receipt
+    assert receipt["stripped_git_env"] == ["GIT_GRAFT_FILE"]
 
 
 def test_a_shallow_repository_is_refused(repo, tmp_path, capsys):

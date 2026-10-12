@@ -683,6 +683,67 @@ def test_a_dotless_i_variant_is_the_same_file(repo, tmp_path, capsys, pr_files, 
     assert receipt["new_head"] is None
 
 
+def _plumbed(repo: Path, parent: str | None, files: dict[str, str]) -> str:
+    """A commit whose tree is PARENT's top-level tree plus FILES, written with mktree (no checkout).
+
+    A Windows working tree cannot hold a name with a trailing dot or space, so these trees are built
+    from objects only, as a Linux client or plumbing could push them.
+    """
+    entries: dict[str, str] = {}
+    if parent:
+        listing = subprocess.run(["git", "ls-tree", "-z", parent], cwd=repo, capture_output=True, check=True).stdout
+        for record in listing.decode("utf-8").split("\0"):
+            if record:
+                meta, name = record.split("\t", 1)
+                entries[name] = meta
+    for name, text in files.items():
+        entries[name] = "100644 blob " + subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=text.encode("utf-8"), capture_output=True,
+            check=True).stdout.decode("ascii").strip()
+    listing = "".join(f"{meta}\t{name}\0" for name, meta in entries.items()).encode("utf-8")
+    tree = subprocess.run(["git", "mktree", "-z"], cwd=repo, input=listing, capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    return _git(repo, "commit-tree", tree, *(["-p", parent] if parent else []), "-m", "plumbed").strip()
+
+
+@pytest.mark.parametrize("pr_name,base_name", [
+    ("widget.txt", "widget.txt."),
+    ("widget.txt", "widget.txt "),
+    ("widget.txt.", "widget.txt"),
+    ("Widget.TXT", "widget.txt. ."),
+    ("widget.txt", "widget.txt:stream"),
+])
+def test_a_win32_equivalent_name_in_the_base_delta_is_overlap(repo, tmp_path, capsys, pr_name, base_name):
+    """Shared Grok ff5f768d (asked on #1862, same check here): Win32 strips trailing dots and spaces, and
+    NAME:STREAM is a stream of NAME, so both sides change one file on a Windows checkout."""
+    base = _plumbed(repo, None, {"a.txt": "a\n"})
+    head = _plumbed(repo, base, {pr_name: "reviewed\n"})
+    main = _plumbed(repo, base, {base_name: "from main\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, main))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "paths_overlap")
+    assert receipt["overlap_paths"] == [pr_name]
+    assert receipt["new_head"] is None
+
+
+@pytest.mark.parametrize("existing", ["widget.txt.", "widget.txt ", "WIDGET.txt.."])
+def test_a_pr_file_win32_equivalent_to_an_existing_file_is_refused(repo, tmp_path, capsys, existing):
+    base = _plumbed(repo, None, {existing: "existing\n"})
+    head = _plumbed(repo, base, {"widget.txt": "reviewed\n"})
+    main = _plumbed(repo, base, {"other.txt": "main\n"})
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, main))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "case_collision")
+    assert receipt["case_collisions"] == ["widget.txt"]
+    assert receipt["new_head"] is None
+
+
 def test_a_clean_update_records_no_case_collision(repo, tmp_path, capsys):
     base = _base(repo)
     head = _pr(repo, base, **{"p.txt": "pr\n"})

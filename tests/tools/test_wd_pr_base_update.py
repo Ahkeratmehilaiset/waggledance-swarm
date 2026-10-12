@@ -736,6 +736,43 @@ def test_git_never_prompts_and_network_calls_have_a_timeout(repo, monkeypatch):
     assert len(network) == 2 and all(isinstance(t, (int, float)) and 0 < t < 3600 for t in network)
 
 
+
+def test_local_git_calls_also_have_a_timeout(repo, monkeypatch):
+    """RCO1 follow-up (pass 0a032e9c): a hung local git call (a lock, a filter, a slow disk) must end too."""
+    tool = _tool()
+    seen = []
+    real_run = subprocess.run
+
+    def recording_run(argv, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(tool.subprocess, "run", recording_run)
+    tool._git(str(repo), ["version"])
+    tool._git(str(repo), ["rev-parse", "HEAD"])
+
+    assert len(seen) == 2 and all(isinstance(t, (int, float)) and 0 < t <= 3600 for t in seen), seen
+
+
+def test_the_receipt_names_inherited_git_variables_but_never_their_values(repo, tmp_path, capsys, monkeypatch):
+    """RCO1 follow-up (pass 0a032e9c): injected config or transport variables are visible in the receipt by name."""
+    base = _base(repo)
+    head = _pr(repo, base, **{"p.txt": "pr\n"})
+    _commit(repo, "main", **{"c.txt": "c\n"})
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'wd.probe=value-one-7f3a'")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o wd=value-two-7f3a")
+    receipt_path = tmp_path / "receipt.json"
+
+    code, _ = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert (code, receipt["status"]) == (0, "updated"), receipt
+    assert {"GIT_CONFIG_PARAMETERS", "GIT_SSH_COMMAND"} <= set(receipt["inherited_git_env"])
+    assert receipt["inherited_git_env"] == sorted(receipt["inherited_git_env"])
+    assert not set(receipt["inherited_git_env"]) & set(receipt["stripped_git_env"])
+    assert "value-one-7f3a" not in receipt_path.read_text(encoding="utf-8")
+    assert "value-two-7f3a" not in receipt_path.read_text(encoding="utf-8")
+
 def test_a_network_timeout_is_a_failed_call_not_an_exception(repo, monkeypatch):
     tool = _tool()
 

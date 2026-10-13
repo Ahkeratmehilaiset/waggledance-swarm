@@ -240,6 +240,24 @@ def test_a_requested_pr_missing_from_the_open_listing_refuses_and_writes_nothing
     assert [row["pr"] for row in json.loads(out.read_text(encoding="utf-8"))["rows"]] == [92]
 
 
+def test_a_full_listing_at_its_limit_refuses_because_it_may_be_cut_off(tmp_path, monkeypatch, capsys):
+    # Same failure as PRRT_kwDORYf3RM6r0aLI without --pr: 197 PRs were open at 11:05Z 2026-10-13, so a listing
+    # that returns exactly its --limit items may be cut off and the board would silently lack the rest.
+    monkeypatch.setattr(board, "LIST_LIMIT", 3)
+    fake = _FakeGitHub([_pr(41), _pr(42), _pr(43)], {41: _gate([RECEIPT]), 42: _gate([RECEIPT]), 43: _gate([RECEIPT])})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 2
+    assert not out.exists() and fake.gate_runs == []
+    assert "refused" in capsys.readouterr().err
+    assert any(command[:3] == ["gh", "pr", "list"] and "3" in command for command in fake.commands)
+    # Explicit PRs that are all in the listing still run: the absent check above covers them.
+    assert board.main(["--repo", "o/r", "--out", str(out), "--pr", "42"]) == 0
+    fewer = _FakeGitHub([_pr(41), _pr(42)], {41: _gate([RECEIPT]), 42: _gate([RECEIPT])})
+    monkeypatch.setattr(board, "_run", fewer)
+    assert board.main(["--repo", "o/r", "--out", str(tmp_path / "two.json")]) == 0
+
+
 def test_the_board_writes_only_its_out_file_and_runs_only_read_commands(tmp_path, monkeypatch):
     fake = _FakeGitHub([_pr(21)], {21: _gate([RECEIPT])})
     monkeypatch.setattr(board, "_run", fake)

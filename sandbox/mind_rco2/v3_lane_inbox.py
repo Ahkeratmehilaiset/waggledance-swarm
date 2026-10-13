@@ -431,13 +431,12 @@ def render_text(inbox: Mapping[str, Any]) -> str:
 def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
     """The tournament driver entry: a pure function of the frozen round inputs, one text view per lane.
 
-    The driver passes the snapshot and the raw context but no capture rows. When ``capture_events`` is absent, the
-    asks, typed recusals, declared Source authors and claim releases are UNKNOWN, and a NOTE line says so; "now" is
-    then the snapshot's ``as_of_utc``."""
+    The driver (from d80c5a1b) passes the frozen capture rows as ``events``. When they are absent, the asks, typed
+    recusals, declared Source authors and claim releases are UNKNOWN, and a NOTE line says so. "Now" is the
+    snapshot's ``as_of_utc``, which the shadow run takes from the capture's ``observed_utc``."""
     snapshot = inputs["snapshot"]
-    rows = inputs.get("capture_events")
-    now = inputs.get("capture_observed_utc") if isinstance(rows, list) else None
-    now = now if workspace.parse_time(now) is not None else snapshot["source"].get("as_of_utc")
+    rows = inputs.get("events")
+    now = snapshot["source"].get("as_of_utc")
     context, _ = workspace.read_context(inputs["context"], workspace.parse_time(now))
     if context is None:
         raise InboxRefused("the context is not usable for this round")

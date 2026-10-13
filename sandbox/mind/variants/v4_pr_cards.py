@@ -223,8 +223,8 @@ def _ready_line(parsed, since, pr, ci, head, status, lane, items):
                   + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""), 340)
 
 
-def _capability_lines(events):
-    """The latest structured installed_capability statement per name from a declared codex-lead-1, else UNKNOWN."""
+def _capabilities(events):
+    """name -> (time, state, ref) of the latest structured installed_capability statement of a declared Lead."""
     latest = {}
     for event in events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -235,6 +235,12 @@ def _capability_lines(events):
                 or not (isinstance(statement.get("name"), str) and ws.SAFE_ID.fullmatch(statement["name"])):
             continue
         latest[statement["name"]] = (str(event.get("ts_utc"))[:19], statement["state"], event_id(event)[:16])
+    return latest
+
+
+def _capability_lines(events):
+    """The latest structured installed_capability statement per name from a declared codex-lead-1, else UNKNOWN."""
+    latest = _capabilities(events)
     if not latest:
         return ["installed merge capability: UNKNOWN (no structured installed_capability statement from "
                 f"{CAPABILITY_SOURCE} in this window; never inferred from votes, CI or source files)"]
@@ -260,7 +266,14 @@ def render(inputs, lane):
              f"{inputs['capture_sha256'][:16]}, context {inputs['context_sha256'][:16]}, as of {source['as_of_utc']}",
              "observe only; before any vote or pass check the canonical tools", ""]
     question = snapshot["next_question"]["lanes"].get(lane, {"question": ws.UNKNOWN})
-    lines.append(f"next question for {lane}: {question['question']}")
+    # Lead 10:45Z and 11:36Z: a declared absent install blocks every merge, so it leads; the workspace question
+    # below it is lane work and is not reordered, and no veto is cleared to move it.
+    absent = [(name, row) for name, row in sorted(_capabilities(inputs["events"]).items()) if row[1] == "absent"]
+    for name, (ts, _, ref) in absent:
+        lines.append(f"FLEET BLOCKER first: installed {name} absent per {CAPABILITY_SOURCE} (declared, origin not "
+                     f"authenticated) at {ts}, ref {ref}; no vote-complete PR merges until it is present")
+    lines.append(f"next question for {lane}" + (" (lane work after the fleet blocker)" if absent else "")
+                 + f": {question['question']}")
     mine = [item for item in snapshot["attention"] if lane in item["actors"]]
     for item in mine:
         lines.append(f"  attention #{item['rank']} {item['kind']}: {_short(item['detail'])}")

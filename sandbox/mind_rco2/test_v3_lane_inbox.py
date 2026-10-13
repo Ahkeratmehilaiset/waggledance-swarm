@@ -167,3 +167,10 @@ def test_grok_round_fixture_storage_order_tools_line():
     assert open_asks == ["R1"]  # a mention by another lane is routing only; R2 has its answer target
     assert result["claims"] == []  # the handoff ends claim C9 whatever the storage order
     assert any(s["kind"] == "claim_ended_by_handoff" for s in result["stale"])
+
+
+def test_a_pr_with_my_vote_in_stays_visible():
+    vote = {"agent": LANE, "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
+    result = inbox([], votes=[vote])
+    assert [(d["pr"], d["missing"]) for d in result["done"]] == [(100, ["build_lead", "build_tools", "claude-rco-1"])]
+    assert "DONE PR100" in v3.render_text(result)

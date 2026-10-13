@@ -285,7 +285,7 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         if request["pr"] is not None:
             pending_by_pr.setdefault(request["pr"], []).append(request)
 
-    act, wait, own, stale, notes, dormant = [], [], [], [], [], []
+    act, wait, own, stale, notes, dormant, done = [], [], [], [], [], [], []
     for ask in asks:  # a routing match only: shown with both refs, never counted as answered or as a closeout
         if ask.get("ended") != "reported_answer_unverified":
             continue
@@ -366,6 +366,11 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             elif mine:  # the lane's vote is at the GitHub head but not bound to the request: never vote twice
                 stale.append({"kind": "content_satisfied_by_vote", "pr": number, "github_head": gh_head,
                               "request_id": mine[0]["request_id"], "refs": sorted({r["ref"] for r in mine})})
+            if my_slot is not None and my_slot in filled:
+                # A PR the lane is party to stays visible after its vote (Q1: what does it still need; Grok round
+                # advice: every PR the lane authors or is party to gets a line).
+                done.append(dict(line, role="my_vote_in", my_vote_refs=sorted({ref for v in votes if v.get("agent") == lane
+                                                                             for ref in v.get("source_refs", [])})))
             continue
         last = missing == [my_slot]
         # A build lane gets no ask: its vote is due once every eligible RCO slot is filled at the GitHub head.
@@ -454,7 +459,7 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         nxt = "nothing addressed to this lane in the round"
     return {"schema": SCHEMA, "authority": "none", "advisory": "canonical gh checks, veto scan and gate read decide",
             "lane": lane, "as_of_utc": now, "capture_first_utc": capture.first_utc, "identity": identity,
-            "act": act, "wait": wait, "own": own, "stale": stale, "dormant_open_prs": dormant,
+            "act": act, "wait": wait, "own": own, "done": done, "stale": stale, "dormant_open_prs": dormant,
             "asks_actionable": sum(1 for i in act + wait if i.get("asks") or i.get("request_id")),
             "asks_stale": sum(1 for i in stale if i["kind"].startswith("request_")),
             "asks_ended_unanswered": len(asks) - len(pending), "claims": claims,
@@ -484,6 +489,17 @@ def render_text(inbox: Mapping[str, Any]) -> str:
                    + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
+    ready: dict[str, list[int]] = {}
+    for item in inbox.get("done", []):
+        if not item["missing"] and item["ci"] == "green_reported":  # nothing left for any voter: one line per class
+            ready.setdefault(item["class"].split(" ")[0], []).append(item["pr"])
+            continue
+        out.append(f"DONE PR{item['pr']} {item['github_head'][:12]} my vote in; ci={item['ci']} missing={'+'.join(item['missing']) or 'none'}"
+                   f" class={item['class'].split(' ')[0]} [" + ",".join(r[:10] for r in item['my_vote_refs'][:2]) + "]")
+    if ready:
+        out.append("READY my vote in, every slot filled, CI reported green; what is left is outside the votes (Lead route, "
+                   "operator sign for a_class or off_allowlist, holds): " + "; ".join(f"{klass} " + " ".join(f"PR{n}" for n in sorted(prs))
+                                                             for klass, prs in sorted(ready.items())))
     # Dead asks (the PR is not open, the ask is for a head GitHub does not show, or my own vote at the GitHub head
     # met it) need no action: one line per kind with the PR numbers; the JSON keeps every item and its refs.
     dead_kinds = ("request_for_pr_not_open", "request_for_other_head", "content_satisfied_by_vote")

@@ -190,3 +190,21 @@ def test_shared_fold_lens_equals_the_one_lane_path_for_every_lane():
     fold = v3.build_fold(snapshot, context, capture, NOW)
     for lane in ("claude-rco-2", "claude-rco-1", "codex-lead-1", "codex-tools-1", "fable-5"):
         assert v3.lens(fold, lane) == v3.build_inbox_direct(snapshot, context, capture, lane, NOW), lane
+
+
+def test_fleet_lens_grok_open_stale_and_answered():
+    def grok(status, cid, ts, extra=None):
+        payload = {"consultation_id": cid, "requested_by": "claude-rco-1"}
+        payload.update(extra or {})
+        return {"agent": "grok-scout-1", "type": "status", "status": status, "to": "", "task_id": "rco1/t",
+                "ts_utc": ts, "message": "", "payload": payload}
+    events = [grok("consultation_started", "old", "2026-10-11T02:00:00Z"),
+              grok("consultation_started", "done", "2026-10-13T11:00:00Z"),
+              grok("consultation_answered", "done", "2026-10-13T11:03:00Z", {"duration_seconds": 160, "report_sha256": "e" * 64}),
+              grok("consultation_started", "live", "2026-10-13T11:50:00Z")]
+    snapshot = {"prs": {}, "lanes": {}, "tensions": []}
+    context = {"charter_ok": True, "prs": {}}
+    text = v3.render_fleet(v3.build_fold(snapshot, context, v3.Capture(events), NOW))
+    assert "GROK open live" in text and "GROK open old" not in text
+    assert "GROK answered done" in text and "in 160 s" in text
+    assert "3 consultations, 1 open, 1 stale starts" in text

@@ -46,6 +46,7 @@ RCOS = workspace.RECOGNIZED_RCOS
 BUILD = workspace.BUILD_SLOT
 SLOTS = workspace.VOTE_SLOTS
 LEASE_SECONDS = 1800  # the default claim lease; a heartbeat is not in the log, so a live lease stays UNKNOWN
+GROK_OPEN_SECONDS = 3600  # a consultation start older than this with no answer is shown as a stale start
 OLD_REQUEST_SECONDS = 12 * 3600  # an unanswered request with no PR older than this is shown as stale, not as work
 INPUT_LIMIT = 64 * 1024 * 1024
 CLOSE_STATUSES = frozenset({"superseded", "cancelled", "canceled", "withdrawn", "closed", "obsolete", "retracted"})
@@ -595,10 +596,31 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
         if tension["rule"] != "stale_vote" and (match is None or int(match.group(1)) in open_prs):
             tensions.append({"rule": tension["rule"], "subject": tension["subject"], "severity": tension["severity"],
                              "refs": tension["refs"], "actors": sorted(tension.get("actors", []))})
+    # Grok consultations (operator idea ~10:40Z: the Mind handles Grok relays and routing; view only, no calls).
+    grok: dict[str, dict[str, Any]] = {}
+    for ref, event in capture.rows:
+        status = str(event.get("status") or "")
+        payload = _payload(event)
+        cid = payload.get("consultation_id")
+        if event.get("agent") != "grok-scout-1" or not status.startswith("consultation_") or not isinstance(cid, str):
+            continue
+        item = grok.setdefault(cid, {"consultation_id": cid, "requested_by": None, "task": str(event.get("task_id")),
+                                     "started_utc": None, "start_ref": None, "end": None})
+        if isinstance(payload.get("requested_by"), str):
+            item["requested_by"] = payload["requested_by"]
+        if status == "consultation_started":
+            item["started_utc"], item["start_ref"] = capture.ts[ref], ref
+        else:
+            report = payload.get("report_sha256")
+            item["end"] = {"status": status.replace("consultation_", ""), "utc": capture.ts[ref], "ref": ref,
+                           "seconds": payload.get("duration_seconds") if isinstance(payload.get("duration_seconds"), (int, float)) else None,
+                           "report_sha256": report if isinstance(report, str) else None}
     fold = {"schema": FOLD_SCHEMA, "authority": "none", "as_of_utc": now, "capture_first_utc": capture.first_utc,
             "snapshot_prs": sorted(int(key) for key in snapshot["prs"]), "branch_pr": branch_pr,
             "open_heads": {str(n): row["head"] for n, row in open_prs.items()}, "prs": prs, "asks": asks,
-            "replies": replies, "ends": ends, "naming": naming, "lanes": lanes, "tensions": tensions}
+            "replies": replies, "ends": ends, "naming": naming, "lanes": lanes, "tensions": tensions,
+            "grok": sorted(grok.values(), key=lambda item: (str(item["started_utc"] or (item["end"] or {}).get("utc") or ""),
+                                                            item["consultation_id"]))}
     workspace.guard_object(fold)
     return fold
 
@@ -939,6 +961,34 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
         out.append("VOTE-COMPLETE, CI not reported in the bridge (check gh): " + _classes(unreported))
     if last:
         out.append("LAST MISSING SLOT: " + ", ".join(last))
+    consultations = fold.get("grok", [])
+    if consultations:
+        started = [c for c in consultations if c["end"] is None and c["start_ref"]]
+        # A start with no answer for over an hour is a stale start (an interrupted run), not an open consultation.
+        open_now = [c for c in started if (_age_seconds(fold["as_of_utc"], c["started_utc"]) or 0) <= GROK_OPEN_SECONDS]
+        stale_starts = len(started) - len(open_now)
+        for item in open_now[-3:]:
+            out.append(f"GROK open {item['consultation_id'][:24]} for {item['requested_by'] or UNKNOWN} task {item['task']} "
+                       f"since {str(item['started_utc'])[:19]} [{item['start_ref'][:10]}]")
+        ended = [c for c in consultations if c["end"] is not None]
+        for item in ended[-3:]:
+            end = item["end"]
+            out.append(f"GROK {end['status']} {item['consultation_id'][:24]} for {item['requested_by'] or UNKNOWN} at {end['utc'][:19]}"
+                       + (f" in {round(end['seconds'])} s" if end["seconds"] is not None else "")
+                       + (f" report {end['report_sha256'][:12]}" if end["report_sha256"] else "") + f" [{end['ref'][:10]}]")
+        by: dict[str, int] = {}
+        for item in consultations:
+            by[item["requested_by"] or UNKNOWN] = by.get(item["requested_by"] or UNKNOWN, 0) + 1
+        out.append(f"GROK window: {len(consultations)} consultations, {len(open_now)} open, {stale_starts} stale starts (no answer "
+                   f"after 1 h), "
+                   f"{sum(1 for c in ended if c['end']['status'] == 'failed')} failed; by requester "
+                   + ", ".join(f"{who} {count}" for who, count in sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))))
+    grok_asks = [ask for ask in fold["asks"] if "grok" in ask["request_id"].lower() and ask["to"]
+                 and ask["to"][0] not in fold["replies"].get(ask["request_id"], {})
+                 and not any(agent == "*" or agent != ask["to"][0] for agent, _, _ in fold["ends"].get(ask["request_id"], []))]
+    if grok_asks:
+        out.append(f"GROK asks with no bound answer by their first addressee (a naming is routing only) {len(grok_asks)}: "
+                   + ", ".join(f"{a['request_id'][:40]} to {a['to'][0]}" for a in grok_asks[-4:]))
     faults = {agent: entry["released"] for agent, entry in sorted(fold["lanes"].items()) if entry.get("released")}
     if faults:
         out.append("MIND FAULT claims released in the log but still listed by the core: "

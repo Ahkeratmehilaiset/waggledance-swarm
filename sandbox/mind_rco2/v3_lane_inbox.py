@@ -209,12 +209,19 @@ class Capture:
             if rid in answered:
                 continue
             start = self.position.get(item["ref"], -1)
-            if any(index > start and rid in text for index, _, text in named):
-                continue  # answered by a later own event that names the request id
+            # The id must stand alone: "ask-1" inside "ask-1-v2" is another request (the wrong-id twin), while
+            # punctuation after it ("ask-1:" or "ask-1.") still names it.
+            whole = re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(rid) + r"(?![A-Za-z0-9_-])")
+            naming = next((ref for index, ref, text in named if index > start and whole.search(text)), None)
             item = dict(item)
             if rid in closed:
                 item["ended"] = "closed_or_superseded"
                 item["end_ref"] = closed[rid]
+            elif naming is not None:
+                # Lead 10-13: naming a request id is a routing match only, never a valid binding or a requester
+                # closeout. It is kept as a reported, unverified answer with its ref, not dropped and not "answered".
+                item["ended"] = "reported_answer_unverified"
+                item["end_ref"] = naming
             out.append(item)
         return sorted(out, key=lambda item: (item["ts"], item["request_id"]))
 
@@ -256,6 +263,18 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             pending_by_pr.setdefault(request["pr"], []).append(request)
 
     act, wait, own, stale, notes, dormant = [], [], [], [], [], []
+    for ask in asks:  # a routing match only: shown with both refs, never counted as answered or as a closeout
+        if ask.get("ended") != "reported_answer_unverified":
+            continue
+        pr = ask["pr"] if ask["pr"] is not None else branch_pr.get(ask["task"])
+        if pr is not None and pr not in open_prs:  # a dead ask stays dead, named or not
+            kind = "request_for_pr_not_open"
+        elif pr is not None and ask["head"] and ask["head"] != open_prs[pr]["head"]:
+            kind = "request_for_other_head"
+        else:
+            kind = "request_reported_answer_unverified"
+        stale.append({"kind": kind, "pr": pr, "task": ask["task"], "request_id": ask["request_id"],
+                      "refs": [ask["ref"], ask["end_ref"]]})
     numbers = sorted({int(key) for key in snapshot["prs"]} | set(pending_by_pr))
     for number in numbers:
         mind = snapshot["prs"].get(str(number)) or {}
@@ -322,7 +341,7 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             if mine and my_slot is None:
                 act.append(dict(line, role="request_on_pr", rank=2))
             elif mine:  # the lane's vote is at the GitHub head but not bound to the request: never vote twice
-                stale.append({"kind": "request_met_by_unbound_vote", "pr": number, "github_head": gh_head,
+                stale.append({"kind": "content_satisfied_by_vote", "pr": number, "github_head": gh_head,
                               "request_id": mine[0]["request_id"], "refs": sorted({r["ref"] for r in mine})})
             continue
         last = missing == [my_slot]
@@ -441,7 +460,7 @@ def render_text(inbox: Mapping[str, Any]) -> str:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
     # Dead asks (the PR is not open, the ask is for a head GitHub does not show, or my own vote at the GitHub head
     # met it) need no action: one line per kind with the PR numbers; the JSON keeps every item and its refs.
-    dead_kinds = ("request_for_pr_not_open", "request_for_other_head", "request_met_by_unbound_vote")
+    dead_kinds = ("request_for_pr_not_open", "request_for_other_head", "content_satisfied_by_vote")
     for kind in dead_kinds:
         prs = [item.get("pr") for item in inbox["stale"] if item["kind"] == kind]
         if prs:
@@ -459,7 +478,7 @@ def render_text(inbox: Mapping[str, Any]) -> str:
     if quiet:
         out.append(f"QUIET my slot empty, no request to me, CI not green: " + " ".join(f"PR{n}" for n in quiet[-12:])
                    + (f" (+{len(quiet) - 12} older)" if len(quiet) > 12 else ""))
-    out.append(f"asks actionable {inbox['asks_actionable']}, stale {inbox['asks_stale']}, ended without my answer "
+    out.append(f"asks actionable {inbox['asks_actionable']}, stale {inbox['asks_stale']}, ended without a bound answer from me "
                f"{inbox['asks_ended_unanswered']}; claims held {len(inbox['claims'])}, released in the log but listed by the Mind "
                f"{inbox['claims_released_but_listed_by_mind']}; identity rows {len(inbox['identity']['lane_rows'])}")
     for note in inbox["notes"]:

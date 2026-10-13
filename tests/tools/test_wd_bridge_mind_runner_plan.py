@@ -9,10 +9,10 @@ H = "a" * 40
 def frame():
     return (
         {"pr": 1902, "head": H, "cycle_utc": "2026-10-13T10:37:02Z"},
-        {"ok": True, "utc": "2026-10-13T10:40:00Z", "state": "OPEN", "draft": False,
-         "head": H, "base": "b" * 40, "checks": dict.fromkeys(REQUIRED, "SUCCESS"),
+        {"ok": True, "pr": 1902, "utc": "2026-10-13T10:40:00Z", "state": "OPEN", "draft": False,
+         "head": H, "base": "b" * 40, "base_ref": "main", "checks": dict.fromkeys(REQUIRED, "SUCCESS"),
          "mergeable": "MERGEABLE", "merge_state": "CLEAN"},
-        {"ok": True, "head": H, "veto_clear": True, "consensus": True,
+        {"ok": True, "pr": 1902, "head": H, "base": "b" * 40, "veto_clear": True, "consensus": True,
          "class": "allowlist", "operator_signed": False, "error": None},
         {"kill_switch": False, "merged": set(), "attempts": {}},
     )
@@ -127,3 +127,42 @@ def test_protected_signature_shape_is_not_execution_authority():
     assert output["status"] == "CANDIDATE"
     assert output["can_execute"] is False
     assert output["authority"] == "none"
+
+
+@pytest.mark.parametrize("index,reason", [(1, "github_pr_not_mind_pr"),
+                                        (2, "gate_pr_not_runner_pr")])
+@pytest.mark.parametrize("value", [1999, True, False, None, "1902", 0])
+def test_mutant_cross_pr_or_missing_pr_refuses_even_with_same_commit(index, reason, value):
+    values = frame()
+    values[index]["pr"] = value
+    assert_refused(plan(*values), reason)
+
+
+def test_mutant_both_read_and_gate_from_another_pr_refuses_same_head():
+    item, read, gate, state = frame()
+    read["pr"] = gate["pr"] = 1999
+    assert_refused(plan(item, read, gate, state), "github_pr_not_mind_pr")
+
+
+@pytest.mark.parametrize("value", ["develop", "MAIN", "", None, True])
+def test_mutant_non_main_base_ref_refuses(value):
+    item, read, gate, state = frame()
+    read["base_ref"] = value
+    assert_refused(plan(item, read, gate, state), "github_base_ref_not_main")
+
+
+@pytest.mark.parametrize("value", ["c" * 40, None, "b" * 39, "B" * 40, True])
+def test_mutant_gate_base_mismatch_or_missing_refuses(value):
+    item, read, gate, state = frame()
+    gate["base"] = value
+    assert_refused(plan(item, read, gate, state), "gate_base_not_runner_base")
+
+
+def test_exact_pr_and_main_base_control_remains_unarmable():
+    item, read, gate, state = frame()
+    output = plan(item, read, gate, state)
+    assert output["status"] == "CANDIDATE"
+    assert output["pr"] == item["pr"] == read["pr"] == gate["pr"]
+    assert output["base"] == read["base"] == gate["base"]
+    assert read["base_ref"] == "main"
+    assert output["can_execute"] is False

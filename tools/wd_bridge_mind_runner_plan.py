@@ -44,6 +44,8 @@ def plan(item, read, gate, state):
         return _refuse("mind_item_malformed")
     if type(read) is not dict or read.get("ok") is not True:
         return _refuse("github_read_failed")
+    if type(read.get("pr")) is not int or read["pr"] != item["pr"]:
+        return _refuse("github_pr_not_mind_pr")
     cycle, observed = _utc(item.get("cycle_utc")), _utc(read.get("utc"))
     if cycle is None or observed is None:
         return _refuse("observation_time_invalid")
@@ -59,6 +61,8 @@ def plan(item, read, gate, state):
         return _refuse("head_moved_since_mind_cycle")
     if not _head(read.get("base")):
         return _refuse("github_base_unknown")
+    if read.get("base_ref") != "main":
+        return _refuse("github_base_ref_not_main")
     completed, attempts = state.get("merged"), state.get("attempts")
     if (type(completed) not in (set, list) or len(completed) > 4096 or type(attempts) is not dict
             or len(attempts) > 4096):
@@ -85,6 +89,10 @@ def plan(item, read, gate, state):
         return _refuse("gate_failed_closed")
     if gate.get("head") != read["head"]:
         return _refuse("gate_head_not_runner_head")
+    if type(gate.get("pr")) is not int or gate["pr"] != item["pr"]:
+        return _refuse("gate_pr_not_runner_pr")
+    if not _head(gate.get("base")) or gate["base"] != read["base"]:
+        return _refuse("gate_base_not_runner_base")
     if gate.get("veto_clear") is not True:
         return _refuse("veto_not_clear")
     if gate.get("consensus") is not True:

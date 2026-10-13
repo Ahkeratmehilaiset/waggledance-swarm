@@ -2,6 +2,7 @@
 
 usage: python -B sandbox/mind/capture/capture_round.py --bin <pinned .agent-bridge/bin> --out <new cycle dir>
            --files-cache <dir> [--seed-from <earlier capture.json>] [--window N] [--workers K] [--detail-tail N]
+           [--reuse-context <earlier capture dir>]
 
 This is the capture step outside the experiment loop (operator 10:17Z: a fresh pinned capture per round; Lead
 09:17Z B1/B3/E4). Experiment code (freeze, driver, variants) never imports it and stays offline; it imports the
@@ -190,6 +191,8 @@ def main():
     parser.add_argument("--window", type=int, default=3000)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--detail-tail", type=int, default=600, help="tail searched for each -EventId detail read")
+    parser.add_argument("--reuse-context", type=Path, default=None,
+                        help="an earlier capture dir whose gh-pr-list.json and context.json are copied, no gh call")
     args = parser.parse_args()
     args.out = Path(os.path.abspath(args.out))
     args.out.mkdir(parents=True)  # exclusive: one capture per directory
@@ -199,7 +202,13 @@ def main():
               "bridge": bridge_capture(args)}
     record["bridge"]["ms"] = round((time.perf_counter() - started) * 1000)
     started = time.perf_counter()
-    record["github"] = github_context(args)
+    if args.reuse_context is not None:
+        for name in ("gh-pr-list.json", "context.json"):
+            (args.out / name).write_bytes((args.reuse_context / name).read_bytes())
+        reused = json.loads((args.out / "context.json").read_text(encoding="ascii"))
+        record["github"] = {"reused_from": args.reuse_context.name, "observed_utc": reused["observed_utc"]}
+    else:
+        record["github"] = github_context(args)
     record["github"]["ms"] = round((time.perf_counter() - started) * 1000)
     record["files"] = {name: sha((args.out / name).read_bytes())
                        for name in ("capture.json", "detail-manifest.txt", "gh-pr-list.json", "context.json")}

@@ -247,6 +247,12 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             stale.append({"kind": "request_for_other_head", "pr": number, "request_head": request["head"],
                           "github_head": gh_head, "request_id": request["request_id"], "refs": [request["ref"]]})
         mine = [r for r in mine if not r["head"] or r["head"] == gh_head]
+        for ask in [r for r in mine if (_age_seconds(now, r["ts"]) or 0) > OLD_REQUEST_SECONDS]:
+            # An ask older than 12 hours is shown for Q3 but never drives the next action; an empty slot with green
+            # CI still does, through the slot rule below.
+            stale.append({"kind": "request_unanswered_over_12h", "pr": number, "request_id": ask["request_id"],
+                          "age_s": _age_seconds(now, ask["ts"]), "refs": [ask["ref"]]})
+        mine = [r for r in mine if (_age_seconds(now, r["ts"]) or 0) <= OLD_REQUEST_SECONDS]
         drift = bool(mind) and mind.get("head") != gh_head
         votes = [v for v in list(mind.get("votes", [])) + list(mind.get("stale_votes", [])) if v.get("head") == gh_head]
         filled = {workspace.vote_slot(v.get("agent", ""), v.get("status", "")) for v in votes} - {None}

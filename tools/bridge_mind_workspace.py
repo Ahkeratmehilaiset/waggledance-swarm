@@ -20,9 +20,14 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
     itself, and the lane's other task claims still count.
   - ``stale_vote``: the votes in ``stale_votes`` of one PR (bound to a head that is not the PR head, or retired
     by the core at the PR head after a later blocking signal of the same identity), folded into one tension per
-    PR that names each of them and keeps every contributing ref. A stale vote never counts.
+    PR that names each of them and keeps every contributing ref. A stale vote never counts. A stale vote bound to
+    the other head that an open PR's context saw is named by ``context_head_mismatch`` instead (it still never
+    counts).
   - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
     Its status is any safe token, ``UNKNOWN`` included.
+  - ``veto_own_later_pass``: in place of ``veto_observed`` for a veto with a known head when the same verified
+    identity later sent ``rco_pass`` at a current head (the snapshot head, or the head an open PR's context saw).
+    The veto stays observed and is never cleared; it only ranks low so questions point at live work.
   - ``expired_claim``: a task claim whose lease ended at or before ``as_of``. An expired claim is not
     completed work. A claim with an UNKNOWN lease is never expired here.
   - ``unacknowledged_command``: an expected responder of an exact request (a ``command`` fact) has no bound
@@ -46,8 +51,13 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   attention item. With it, a PR whose
   context state is not ``OPEN`` gets no suggestion, and the attention items of its tensions are left out
   (listed in ``context_applied``); a PR whose context head is not the snapshot head gets no suggestion either
-  (``context_head_mismatch``). Only attention and questions change: the tensions, votes, veto observations and
-  their refs stay as they are, and nothing clears a veto or infers recusal.
+  (``context_head_mismatch``, which also names the stale votes bound to the head the context saw). Only
+  attention, questions and that stale-vote naming change: the votes, veto observations and their refs stay as
+  they are, and nothing clears a veto.
+* A ``wd.bridge-mind-pr-context.v2`` capture adds per PR ``commit_authors``: null (the list may be incomplete)
+  or the lane-shaped git author names of the PR's commits; any other value refuses the whole context. A
+  recognized RCO among them fills no RCO slot of that PR (author is not reviewer) and is never asked for it.
+  This is the only recusal read here; a declared author is data, not authentication.
 * A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
   artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
   protected hit (an ``a_hits`` or ``denylist_hits`` entry) is ``protected``, none is ``not_protected``. Anything
@@ -435,6 +445,11 @@ class _Inputs:
             heads[row["head"]] = "context"
         return heads
 
+    def context_head_votes(self, pr: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The stale votes of an open PR bound to the other head its context saw; they never count here."""
+        heads = self.current_heads(pr)
+        return [vote for vote in pr["stale_votes"] if heads.get(vote["head"]) == "context"]
+
     def computed_class(self, pr: Mapping[str, Any]) -> str | None:
         """``protected`` or ``not_protected`` from a used context with loaded charter evidence, else None."""
         row = self.context_row(pr)
@@ -656,11 +671,17 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                 closed.append(f"PR{pr['pr']} {reason}")
             elif reason == "head_mismatch":
                 moved.append(f"PR{pr['pr']}")
+                at_context = inputs.context_head_votes(pr)
+                named = sorted({f"{vote['agent']} {vote['status']}" for vote in at_context})
+                votes = (f"; {len(named)} vote(s) in the bridge view are bound to that head and are not counted "
+                         f"here: {', '.join(named)}" if named else "")
                 out.append(_tension("context_head_mismatch", f"pr:{pr['pr']}:context_head",
                                     f"the bridge view of PR{pr['pr']} is at "
                                     f"{pr['head'][:12] if pr['head'] else UNKNOWN}",
                                     f"the context capture {context['capture'][:16]} saw head {row['head'][:12]} on "
-                                    f"{row['branch']}; no suggestion is made for the bridge head", [], pr["refs"]))
+                                    f"{row['branch']}; no suggestion is made for the bridge head" + votes,
+                                    [],  # bridge-view lag: no lane can resolve it, so it asks no one
+                                    pr["refs"] + [ref for vote in at_context for ref in vote["refs"]]))
             computed += inputs.computed_class(pr) is not None
         charter = (f"charter loaded, charter blob {context['charter_blob']}, classifier blob "
                    f"{context['classifier_blob']}" if context["charter_ok"] else "charter evidence not loaded, "
@@ -733,18 +754,20 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                          "overlapping paths: " + ", ".join(sorted(hits)),
                                          [lane_a["agent"], lane_b["agent"]], refs))
     for pr in inputs.prs:
-        if pr["stale_votes"]:
+        # A vote bound to the head an open PR's context saw is not stale noise: context_head_mismatch names it.
+        stale = [vote for vote in pr["stale_votes"] if vote not in inputs.context_head_votes(pr)]
+        if stale:
             # One tension per PR, naming each stale vote and keeping every contributing ref. The core also retires
             # a vote at the PR head when the same identity later sends a blocking signal.
             named = sorted({f"{vote['agent']} {vote['status']}@{vote['head'][:12]}"
                             + (" retired at the PR head" if vote["head"] == pr["head"] else "")
-                            for vote in pr["stale_votes"]})
+                            for vote in stale})
             tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:stale_votes",
                                      f"PR{pr['pr']} at {pr['head'][:12] if pr['head'] else UNKNOWN} has "
                                      f"{len(named)} stale vote(s)",
                                      "; ".join(named) + "; a stale vote cannot approve it",
-                                     [vote["agent"] for vote in pr["stale_votes"]],
-                                     [ref for vote in pr["stale_votes"] for ref in vote["refs"]] + pr["refs"]))
+                                     [vote["agent"] for vote in stale],
+                                     [ref for vote in stale for ref in vote["refs"]] + pr["refs"]))
         heads = inputs.current_heads(pr)
         for veto in pr["vetoes"]:
             # The same verified identity passed later at a current head: the older veto stays observed and is

@@ -817,6 +817,7 @@ def publish_shared(fold: Mapping[str, Any], lanes: Iterable[str], directory: Pat
     directory.mkdir(parents=True, exist_ok=True)
     digests = {}
     files = {f"lens-{lane}.txt": render_text(lens(fold, lane)).encode("utf-8") for lane in lanes}
+    files["lens-fleet.txt"] = render_fleet(fold).encode("utf-8")
     files["fold.json"] = json.dumps(fold, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     for name, data in files.items():  # dict order: lens files first, the fold last
         workspace.guard_object(data.decode("utf-8"))
@@ -843,12 +844,34 @@ def read_lens(directory: Path, lane: str) -> str:
     raise InboxRefused("the lens file could not be read")
 
 
+def _classes(prs: Mapping[str, list[int]]) -> str:
+    return "; ".join(f"{klass} " + " ".join(f"PR{n}" for n in sorted(numbers)) for klass, numbers in sorted(prs.items()))
+
+
 def render_text(inbox: Mapping[str, Any]) -> str:
+    """The lane lens text. Line 1 names the round time: a lens is as old as its round, so check its age."""
     def refs(item: Mapping[str, Any]) -> str:
         return "[" + ",".join(_short(r) for r in item.get("refs", [])[:4]) + (",+" if len(item.get("refs", [])) > 4 else "") + "]"
 
-    out = [f"V3 inbox {inbox['lane']} as of {inbox['as_of_utc']} (window from {inbox['capture_first_utc']}); authority none, advisory",
+    out = [f"V3 lens {inbox['lane']}; round as of {inbox['as_of_utc']} (a lens is as old as its round); window from "
+           f"{inbox['capture_first_utc']}; authority none, advisory",
            f"NEXT {inbox['next_action']}"]
+    ready: dict[str, list[int]] = {}
+    check_ci: list[Mapping[str, Any]] = []
+    others: list[Mapping[str, Any]] = []
+    waiting: list[int] = []
+    for item in inbox.get("done", []):
+        if not item["missing"] and item["ci"] == "green_reported":  # nothing left for any voter
+            ready.setdefault(item["class"].split(" ")[0], []).append(item["pr"])
+        elif not item["missing"]:  # every vote is in; the bridge never reported CI at this head
+            check_ci.append(item)
+        elif item["ci"] == "green_reported":  # CI is green; other voters are still missing
+            others.append(item)
+        else:
+            waiting.append(item["pr"])
+    if ready:  # RCO1 10:33Z: the vote-complete queue is the real bottleneck, so it comes first
+        out.append("READY my vote in, every slot filled, CI reported green; what is left is outside the votes (Lead route, "
+                   "operator sign for a_class or off_allowlist, holds): " + _classes(ready))
     for item in inbox["act"]:
         if "pr" in item:
             out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"
@@ -861,17 +884,14 @@ def render_text(inbox: Mapping[str, Any]) -> str:
                    + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
-    ready: dict[str, list[int]] = {}
-    for item in inbox.get("done", []):
-        if not item["missing"] and item["ci"] == "green_reported":  # nothing left for any voter: one line per class
-            ready.setdefault(item["class"].split(" ")[0], []).append(item["pr"])
-            continue
-        out.append(f"DONE PR{item['pr']} {item['github_head'][:12]} my vote in; ci={item['ci']} missing={'+'.join(item['missing']) or 'none'}"
+    for item in check_ci:
+        out.append(f"DONE PR{item['pr']} {item['github_head'][:12]} every vote in, CI not reported at this head: check gh"
                    f" class={item['class'].split(' ')[0]} [" + ",".join(r[:10] for r in item['my_vote_refs'][:2]) + "]")
-    if ready:
-        out.append("READY my vote in, every slot filled, CI reported green; what is left is outside the votes (Lead route, "
-                   "operator sign for a_class or off_allowlist, holds): " + "; ".join(f"{klass} " + " ".join(f"PR{n}" for n in sorted(prs))
-                                                             for klass, prs in sorted(ready.items())))
+    for item in others:
+        out.append(f"DONE PR{item['pr']} {item['github_head'][:12]} my vote in, CI green; still missing={'+'.join(item['missing'])}"
+                   f" class={item['class'].split(' ')[0]} [" + ",".join(r[:10] for r in item['my_vote_refs'][:2]) + "]")
+    if waiting:
+        out.append(f"DONE my vote in, others and CI still missing {len(waiting)}: " + " ".join(f"PR{n}" for n in sorted(waiting)))
     # Dead asks (the PR is not open, the ask is for a head GitHub does not show, or my own vote at the GitHub head
     # met it) need no action: one line per kind with the PR numbers; the JSON keeps every item and its refs.
     dead_kinds = ("request_for_pr_not_open", "request_for_other_head", "content_satisfied_by_vote")
@@ -893,10 +913,36 @@ def render_text(inbox: Mapping[str, Any]) -> str:
         out.append(f"QUIET my slot empty, no request to me, CI not green: " + " ".join(f"PR{n}" for n in quiet[-12:])
                    + (f" (+{len(quiet) - 12} older)" if len(quiet) > 12 else ""))
     out.append(f"asks actionable {inbox['asks_actionable']}, stale {inbox['asks_stale']}, ended without a bound answer from me "
-               f"{inbox['asks_ended_unanswered']}; claims held {len(inbox['claims'])}, released in the log but listed by the Mind "
-               f"{inbox['claims_released_but_listed_by_mind']}; identity rows {len(inbox['identity']['lane_rows'])}")
+               f"{inbox['asks_ended_unanswered']}; claims held {len(inbox['claims'])}; identity rows {len(inbox['identity']['lane_rows'])}")
     for note in inbox["notes"]:
         out.append(f"NOTE {note}")
+    return "\n".join(out) + "\n"
+
+
+def render_fleet(fold: Mapping[str, Any]) -> str:
+    """One view for the whole fleet and the operator: where the vote-complete queue stands and who holds the rest."""
+    complete: dict[str, list[int]] = {}
+    unreported: dict[str, list[int]] = {}
+    last: list[str] = []
+    for key, row in sorted(fold["prs"].items(), key=lambda kv: int(kv[0])):
+        if not row.get("open"):
+            continue
+        klass = row["class"].split(" ")[0]
+        if not row["missing"]:
+            (complete if row["ci"] == "green_reported" else unreported).setdefault(klass, []).append(int(key))
+        elif len(row["missing"]) == 1 and (row["filled"] or row["ci"] == "green_reported"):
+            last.append(f"PR{key} {row['missing'][0]}" + (" (CI green)" if row["ci"] == "green_reported" else ""))
+    out = [f"V3 fleet lens; round as of {fold['as_of_utc']} (as old as its round); authority none, advisory; the gate decides"]
+    if complete:
+        out.append("VOTE-COMPLETE, CI reported green (left: route, sign, holds): " + _classes(complete))
+    if unreported:
+        out.append("VOTE-COMPLETE, CI not reported in the bridge (check gh): " + _classes(unreported))
+    if last:
+        out.append("LAST MISSING SLOT: " + ", ".join(last))
+    faults = {agent: entry["released"] for agent, entry in sorted(fold["lanes"].items()) if entry.get("released")}
+    if faults:
+        out.append("MIND FAULT claims released in the log but still listed by the core: "
+                   + ", ".join(f"{agent} {count}" for agent, count in faults.items()))
     return "\n".join(out) + "\n"
 
 

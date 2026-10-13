@@ -173,7 +173,8 @@ def test_a_pr_with_my_vote_in_stays_visible():
     vote = {"agent": LANE, "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
     result = inbox([], votes=[vote])
     assert [(d["pr"], d["missing"]) for d in result["done"]] == [(100, ["build_lead", "build_tools", "claude-rco-1"])]
-    assert "DONE PR100" in v3.render_text(result)
+    text = v3.render_text(result)  # others and CI still missing: folded into one DONE line with the PR number
+    assert any(line.startswith("DONE ") and "PR100" in line for line in text.splitlines())
 
 
 def test_shared_fold_lens_equals_the_one_lane_path_for_every_lane():

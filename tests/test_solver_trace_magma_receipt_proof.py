@@ -88,15 +88,17 @@ def test_forge_each_binding_field_fails_closed(monkeypatch, field, blocker):
 
 @pytest.mark.parametrize("field,value,blocker", [
     ("receipt_count", 0, "receipt_count_not_positive"),
+    ("receipt_count", True, "receipt_count_not_positive"),
     ("solver_call_trace_count", 0, "solver_call_trace_count_not_positive"),
+    ("solver_call_trace_count", True, "solver_call_trace_count_not_positive"),
     ("receipt_scope", "production_default_sink", "unexpected_receipt_scope"),
     ("runtime_authority_granted", True, "runtime_authority_granted"),
     ("external_writes_applied", True, "external_writes_applied"),
     ("temp_artifacts_removed", False, "temp_artifacts_not_removed"),
 ])
 def test_forge_count_scope_authority_fields_fail_closed(monkeypatch, field, value, blocker):
-    # Even with inner ok=True + all bindings true, a zero count, wrong scope, or
-    # an authority/leak flag must fail the proof closed (no hardcoded "safe").
+    # Even with inner ok=True + all bindings true, an invalid count, wrong
+    # scope, or authority/leak flag must fail closed (no hardcoded "safe").
     bad = _good_inner()
     bad[field] = value
     monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", lambda: dict(bad))
@@ -139,6 +141,27 @@ def test_forge_nondeterministic_fails_closed(monkeypatch):
     report = mod.build_solver_trace_magma_receipt_standalone_proof()
     assert report["ok"] is False
     assert "non_deterministic_receipt_evidence" in report["blockers"]
+
+
+@pytest.mark.parametrize("field,blocker", [
+    ("receipt_count", "receipt_count_not_positive"),
+    ("solver_call_trace_count", "solver_call_trace_count_not_positive"),
+])
+def test_forge_replay_count_int_subclass_fails_closed(monkeypatch, field, blocker):
+    class IntSubclass(int):
+        pass
+
+    seq = [_good_inner(), {**_good_inner(), field: IntSubclass(1)}]
+
+    def _drift():
+        return seq.pop(0) if seq else _good_inner()
+
+    monkeypatch.setattr(mod, "build_solver_trace_magma_receipt_proof", _drift)
+    report = mod.build_solver_trace_magma_receipt_standalone_proof()
+    assert report["deterministic_replay"]["stable_evidence_identical"] is True
+    assert report["ok"] is False, field
+    assert blocker in report["blockers"], field
+    assert report["evidence_vs_authority"]["evidence_present"] is False, field
 
 
 @pytest.mark.parametrize("drift_field,drift_value", [

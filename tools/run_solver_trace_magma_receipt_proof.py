@@ -97,8 +97,20 @@ def build_solver_trace_magma_receipt_standalone_proof() -> dict[str, Any]:
     # Counts must be real positive evidence, not zero (independent gate).
     receipt_count = run1.get("receipt_count")
     trace_count = run1.get("solver_call_trace_count")
-    receipt_count_ok = isinstance(receipt_count, int) and receipt_count >= 1
-    trace_count_ok = isinstance(trace_count, int) and trace_count >= 1
+    replay_receipt_count = run2.get("receipt_count")
+    replay_trace_count = run2.get("solver_call_trace_count")
+    receipt_count_ok = (
+        type(receipt_count) is int
+        and receipt_count >= 1
+        and type(replay_receipt_count) is int
+        and replay_receipt_count >= 1
+    )
+    trace_count_ok = (
+        type(trace_count) is int
+        and trace_count >= 1
+        and type(replay_trace_count) is int
+        and replay_trace_count >= 1
+    )
 
     # Scope + authority/leak fields DERIVED from the observed inner result
     # (never hardcoded "safe"); each gates independently.

@@ -12,6 +12,10 @@ separate processes of this code tree, ``capture/capture_round.py`` (the external
 dir, or the newest earlier ``questions.round-<M>.json`` when the round has none yet; the frozen manifest records its
 name and sha256. Each round seeds its capture from the previous round's frozen capture.
 
+With ``--from-live <live dir>`` (Lead 10:50Z: one producer, no duplicate), a round makes no capture of its own:
+it freezes the cycle that ``<live dir>/latest.json`` names when its status is ``ok`` and its capture is younger
+than ``--max-live-age`` seconds; otherwise the round is refused (a gap), never captured twice.
+
 Prints one JSON line per cycle (the round, its directories and digests, or the step that refused) and goes on with
 the next cycle after a refusal: a failed round is a gap, never a rewrite. Writes nothing itself; never writes a
 bridge event (the lane posts each round announcement itself).
@@ -54,11 +58,28 @@ def question_set(directory, number):
     return found[max(usable)] if usable else None
 
 
+def live_cycle(args):
+    """The cycle dir the live producer last published, if ok and fresh enough; else a refusal."""
+    latest = json.loads((args.from_live / "latest.json").read_text(encoding="ascii"))
+    if latest.get("status") != "ok":
+        raise RuntimeError("live_not_ok")
+    observed = dt.datetime.strptime(latest["observed_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    if (dt.datetime.now(dt.timezone.utc) - observed).total_seconds() > args.max_live_age:
+        raise RuntimeError("live_too_old")
+    cycle = args.from_live.parent / latest["cycle_dir"]
+    if not (cycle / "capture.json").exists():
+        raise RuntimeError("live_capture_pruned")
+    return cycle
+
+
 def one_round(args, number, seed):
     name = f"round-{number}"
-    cycle = args.data_root / "captures" / f"{name}-{stamp()}"
-    step("capture", HERE / "capture_round.py", "--bin", args.bin, "--out", cycle, "--files-cache", args.files_cache,
-         "--seed-from", seed)
+    if args.from_live is not None:
+        cycle = live_cycle(args)
+    else:
+        cycle = args.data_root / "captures" / f"{name}-{stamp()}"
+        step("capture", HERE / "capture_round.py", "--bin", args.bin, "--out", cycle, "--files-cache",
+             args.files_cache, "--seed-from", seed, "--with-status")
     observed = json.loads((cycle / "capture.json").read_text(encoding="utf-8"))["observed_utc"]
     cards = args.data_root / "tournament" / "side" / f"lesson-cards.{name}.json"
     step("lesson_cards", MIND / "lesson_cards.py", "--notes", args.notes, "--as-of", observed, "--out", cards)
@@ -97,6 +118,9 @@ def main():
     parser.add_argument("--interval", type=int, default=1800)
     parser.add_argument("--rounds", type=int, default=24)
     parser.add_argument("--start-delay", type=int, default=0, help="seconds before the first cycle")
+    parser.add_argument("--from-live", type=Path, default=None,
+                        help="the live producer's dir (with latest.json): freeze its last good cycle, no own capture")
+    parser.add_argument("--max-live-age", type=int, default=300)
     parser.add_argument("--variants", default="v0_board,v4_pr_cards,v6_lessons_room")
     args = parser.parse_args()
     args.files_cache = args.files_cache or args.data_root / "captures" / "files-cache"

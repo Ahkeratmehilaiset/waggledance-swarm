@@ -77,6 +77,8 @@ def capture(args, cycle_dir, seed, previous_dir, context_age):
                "--files-cache", str(args.files_cache), "--seed-from", str(seed)]
     if previous_dir is not None and context_age is not None and context_age < args.context_every:
         command += ["--reuse-context", str(previous_dir)]
+    else:
+        command += ["--with-status"]
     done = subprocess.run(command, capture_output=True, timeout=600)
     if done.returncode != 0:
         raise RuntimeError("capture_exit_%d" % done.returncode)
@@ -123,6 +125,18 @@ def prune(cycles, keep):
                 (old / name).unlink()
 
 
+def stale_after(observed_utc, seconds):
+    """The time after which a reader treats this cycle as stale: observed plus three intervals."""
+    observed = dt.datetime.strptime(observed_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    return (observed + dt.timedelta(seconds=3 * seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def publish_latest(live, document):
+    tmp = live / f".latest.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="ascii")
+    return replace_with_retry(tmp, live / "latest.json")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bin", type=Path, required=True)
@@ -135,14 +149,26 @@ def main():
     parser.add_argument("--keep", type=int, default=20)
     parser.add_argument("--variant", type=Path, action="append", default=[])
     parser.add_argument("--lens-hook", type=Path, default=None)
+    parser.add_argument("--until", default=None, help="stop before starting a cycle at or after this UTC time")
     args = parser.parse_args()
     audit_root = Path(os.path.abspath(args.data_root)) / "tournament" / ".codex-audit"
     live = audit_root / "live"
     cycles = live / "cycles"
     cycles.mkdir(parents=True, exist_ok=True)
     args.files_cache = args.files_cache or args.data_root / "captures" / "files-cache"
-    seed, previous_dir, previous_pub, context_at = args.seed_from, None, None, None
+    seed, previous_dir, previous_pub, context_at, last_ok = args.seed_from, None, None, None, None
+    until = None if args.until is None else dt.datetime.strptime(args.until, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=dt.timezone.utc)
     for number in range(1, args.cycles + 1):
+        if until is not None and dt.datetime.now(dt.timezone.utc) >= until:
+            # Withhold currentness: a stopped producer never leaves an "ok" pointer behind.
+            publish_latest(live, {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
+                                  "status": "stopped", "reason": "until_reached", "stopped_utc": stamp(),
+                                  "last_ok": None if last_ok is None else {key: last_ok[key] for key in (
+                                      "cycle", "cycle_dir", "observed_utc", "snapshot_sha256", "publication")},
+                                  "read": "the producer stopped; every earlier cycle is stale"})
+            print(json.dumps({"cycle": number, "status": "stopped", "reason": "until_reached"}), flush=True)
+            break
         tick = time.perf_counter()
         cycle_dir = cycles / stamp()
         line = {"cycle": number, "cycle_dir": cycle_dir.name}
@@ -162,14 +188,18 @@ def main():
             inputs = {"events": json.loads(capture_bytes.decode("utf-8"))["events"], "round": "live:" + cycle_dir.name,
                       "snapshot": snapshot, "snapshot_sha256": sha(core.canonical_bytes(snapshot)),
                       "context": json.loads(context_bytes.decode("utf-8")), "capture_sha256": sha(capture_bytes),
-                      "context_sha256": sha(context_bytes), "side": None}
+                      "context_sha256": sha(context_bytes), "side": None,
+                      "observed_status": (json.loads((cycle_dir / "observed-status.json").read_text(encoding="ascii"))
+                                          if (cycle_dir / "observed-status.json").exists() else None)}
             started = time.perf_counter()
             views, render_ms = lenses(args, cycle_dir, inputs)
             lens_ms = round((time.perf_counter() - started) * 1000)
             hook_results = hooks(args, cycle_dir, audit_root)
             latest = {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
-                      "cycle": number, "cycle_dir": f"live/cycles/{cycle_dir.name}",
+                      "status": "ok", "cycle": number, "cycle_dir": f"live/cycles/{cycle_dir.name}",
                       "observed_utc": record["bridge"]["observed_utc"],
+                      "stale_after_utc": stale_after(record["bridge"]["observed_utc"], args.interval),
+                      "producer_until_utc": args.until,
                       "context_observed_utc": inputs["context"]["observed_utc"],
                       "capture_sha256": inputs["capture_sha256"], "context_sha256": inputs["context_sha256"],
                       "snapshot_sha256": inputs["snapshot_sha256"],
@@ -185,16 +215,24 @@ def main():
                               "tools/wd_bridge_mind.py read_snapshot(path, audit_root=<this .codex-audit>)",
                       "advisory": "observe only; before any vote or pass check the canonical tools"}
             ws.guard_object(latest)
-            tmp = live / f".latest.{os.getpid()}.tmp"
-            tmp.write_text(json.dumps(latest, indent=2, sort_keys=True) + "\n", encoding="ascii")
-            retries = replace_with_retry(tmp, live / "latest.json")
+            retries = publish_latest(live, latest)
             seed, previous_dir, previous_pub = cycle_dir / "capture.json", cycle_dir, publication
+            last_ok = latest
             line.update(status="ok", events=record["bridge"]["events"], detail=record["bridge"]["detail_calls"],
                         context="reused" if "reused_from" in record["github"] else "fresh",
                         snapshot=inputs["snapshot_sha256"][:16], attention=receipt["counts"]["attention"],
                         replace_retries=retries)
-        except Exception as exc:  # a refused cycle is a gap; latest.json keeps naming the last good one
+        except Exception as exc:  # a refused cycle is a gap, published as such so no lane reads old data silently
             line.update(status="refused", reason=(type(exc).__name__ + ":" + str(exc))[:120])
+            failed = {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
+                      "status": "refused", "reason": type(exc).__name__, "cycle": number, "refused_utc": stamp(),
+                      "last_ok": None if last_ok is None else {key: last_ok[key] for key in (
+                          "cycle", "cycle_dir", "observed_utc", "snapshot_sha256", "publication", "lenses")},
+                      "read": "the last good cycle is older than this refusal; treat its lenses as stale"}
+            try:
+                publish_latest(live, failed)
+            except OSError:
+                pass
         prune(cycles, args.keep)
         line["cycle_ms"] = round((time.perf_counter() - tick) * 1000)
         print(json.dumps(line), flush=True)

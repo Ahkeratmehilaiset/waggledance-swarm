@@ -914,7 +914,9 @@ def test_stale_votes_fold_into_one_tension_per_pr_and_keep_every_ref():
     assert len(tensions) == 1
     assert tensions[0]["refs"] == sorted([ref("pr:10")] + [ref(f"vote:10:{agent}:{'rco_pass' if agent in RCOS else 'build_consensus_pass'}:{head}")
                                                          for agent, head in stale])
-    assert tensions[0]["actors"] == ["claude-rco-1", "claude-rco-2", "codex-lead-1"]
+    # claude-rco-1 and codex-lead-1 already voted at the head: named, not asked (live lens 10:38Z, RCO1).
+    assert tensions[0]["actors"] == ["claude-rco-2"]
+    assert tensions[0]["observation"].endswith("already voted at a current head: claude-rco-1, codex-lead-1")
     assert tensions[0]["claim"] == f"PR10 at {HEAD[:12]} has 3 stale vote(s)"
     reordered = dict(pr, stale_votes=list(reversed(pr["stale_votes"])))
     assert mind.reflection(_snapshot(prs=[(key, reordered)]))["tensions"] == fields["tensions"]
@@ -1856,7 +1858,7 @@ def test_an_actual_core_output_flows_through_the_workspace():
                                              ("tension_high", veto_1895, ["claude-rco-2"]),
                                              ("tension_high", veto_1890, ["claude-rco-1"]),
                                              ("tension_high", blocked_1890, ["codex-tools-1"])])
-    assert sorted(attention[8:]) == sorted([("tension", stale_1899, ["claude-rco-1"]),
+    assert sorted(attention[8:]) == sorted([("tension", stale_1899, []),
                                             ("tension", stale_1895, ["claude-rco-2"]),
                                             ("tension", expired, ["codex-tools-1"])])
     assert by_subject[overlap_new]["observation"] == "overlapping paths: docs/my notes ~ docs/my notes/plan.md, " \
@@ -2054,3 +2056,26 @@ def test_an_rco_recused_at_the_head_fills_no_slot_and_is_never_asked(recusal, ki
     assert both["attention"][0]["detail"].endswith("claude-rco-2 declared rco_recused at this head and fills no RCO "
                                                    "slot")
     assert pr["recusals"][0]["source_refs"][0] in both["attention"][0]["refs"]
+
+
+@pytest.mark.parametrize("current_head, asked", [
+    ("context", []),                 # the same identity passed at the head the context saw: nothing to do
+    ("snapshot", []),                # the same identity passed at the PR head: nothing to do
+    (None, ["claude-rco-1"]),        # only the old vote: the lane is asked as before
+])
+def test_a_stale_vote_never_asks_an_identity_that_already_voted_at_a_current_head(current_head, asked):
+    """Live lens 10:38Z (RCO1): 'resolve stale_vote PR1861' although its rco_pass is at the GitHub head."""
+    context_head = "e" * 40
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"], stale=[("claude-rco-1", OLD)])
+    if current_head == "context":
+        pr["stale_votes"].append(_vote("claude-rco-1", 10, context_head))
+    elif current_head == "snapshot":
+        pr["votes"].append(_vote("claude-rco-1", 10, HEAD))
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context(
+        {10: ("OPEN", context_head if current_head == "context" else HEAD, NOT_PROTECTED)}))
+    stale = [t for t in fields["tensions"] if t["rule"] == "stale_vote"]
+    assert len(stale) == 1 and stale[0]["actors"] == asked
+    assert ("already voted at a current head: claude-rco-1" in stale[0]["observation"]) == (not asked)
+    if not asked:
+        question = fields["next_question"]["lanes"].get("claude-rco-1", {"question": "UNKNOWN"})["question"]
+        assert "stale_vote" not in question

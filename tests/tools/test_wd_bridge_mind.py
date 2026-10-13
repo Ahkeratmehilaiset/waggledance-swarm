@@ -3,6 +3,7 @@
 import ast
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -469,9 +470,11 @@ def test_public_writers_refuse_double_cleanup_failure_after_positive(api, tmp_pa
     with monkeypatch.context() as faults:
         faults.setattr(mind.os, 'replace', denied_replace)
         faults.setattr(mind.os, 'unlink', denied_cleanup)
+        faults.setattr(mind, '_sleep', lambda seconds: None)
         with pytest.raises(mind.ProjectionError) as caught:
             publish()
-    assert attempted == ['replace', 'cleanup']
+    # A denied replace is retried within the sharing-window bound, then the cleanup failure stays a failure.
+    assert attempted == ['replace'] * mind._SHARING_TRIES + ['cleanup']
     assert str(caught.value) == 'snapshot_cleanup_failed'
     assert caught.value.__cause__ is None and caught.value.__suppress_context__ is True
     assert getattr(caught.value, 'filename', None) is None
@@ -593,3 +596,71 @@ def test_rco_recusal_is_recorded_head_bound_never_a_vote_and_survives_checkpoint
                 bad["prs"]["1900"]["recusals"][0].update(change)
             with pytest.raises(mind.ProjectionError):
                 mind._validate_snapshot(bad)
+
+
+@pytest.mark.parametrize("failures, error, published", [
+    (0, PermissionError, True),
+    (2, PermissionError, True),                 # a short Windows sharing window: retried, then published
+    (11, PermissionError, True),                # the last allowed try still publishes
+    (12, PermissionError, False),               # bounded: never more than _SHARING_TRIES attempts
+    (1, FileNotFoundError, False),              # any other error is never retried
+])
+def test_publication_replace_retries_only_the_sharing_window_and_is_bounded(failures, error, published, tmp_path,
+                                                                            monkeypatch):
+    """Sandbox 10:30Z: 1 writer + 5 readers on Windows failed 15 of 313 publishes without a retry (RCO1/RCO2)."""
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "shared.json"
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    real_replace, calls, delays = os.replace, [], []
+
+    def flaky_replace(temporary, target):
+        calls.append(target)
+        if len(calls) <= failures:
+            raise error(32, "synthetic sharing violation", str(target))
+        return real_replace(temporary, target)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(mind.os, "replace", flaky_replace)
+        faults.setattr(mind, "_sleep", delays.append)
+        if published:
+            mind.write_snapshot(snap, path, audit_root=audit)
+        else:
+            with pytest.raises(mind.ProjectionError) as caught:
+                mind.write_snapshot(snap, path, audit_root=audit)
+            assert str(caught.value) == "snapshot_publication_failed" and "synthetic" not in str(caught.value)
+    expected = min(failures + 1, mind._SHARING_TRIES) if error is PermissionError else 1
+    assert len(calls) == expected and len(delays) == expected - 1
+    assert all(delay <= mind._SHARING_MAX_DELAY for delay in delays) and sum(delays) < 1.0
+    assert list(audit.glob(".mind-*.tmp")) == []
+    if published:
+        assert mind.read_snapshot(path, audit_root=audit) == snap
+    else:
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("failures, readable", [(0, True), (3, True), (12, False)])
+def test_publication_read_retries_only_the_sharing_window(failures, readable, tmp_path, monkeypatch):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "shared.json"
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    mind.write_snapshot(snap, path, audit_root=audit)
+    real_read, calls = Path.read_bytes, []
+
+    def flaky_read(self):
+        calls.append(self)
+        if len(calls) <= failures:
+            raise PermissionError(32, "synthetic sharing violation", str(self))
+        return real_read(self)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(mind.Path, "read_bytes", flaky_read)
+        faults.setattr(mind, "_sleep", lambda seconds: None)
+        if readable:
+            assert mind.read_snapshot(path, audit_root=audit) == snap
+        else:
+            with pytest.raises(mind.ProjectionError) as caught:
+                mind.read_snapshot(path, audit_root=audit)
+            assert str(caught.value) == "snapshot_read_refused"
+    assert len(calls) == min(failures + 1, mind._SHARING_TRIES)

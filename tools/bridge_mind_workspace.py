@@ -22,7 +22,8 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
     by the core at the PR head after a later blocking signal of the same identity), folded into one tension per
     PR that names each of them and keeps every contributing ref. A stale vote never counts. A stale vote bound to
     the other head that an open PR's context saw is named by ``context_head_mismatch`` instead (it still never
-    counts).
+    counts). An identity that also sent the same verified vote at a current head (the PR head, or that context
+    head) is named in the observation but is not an actor: it has nothing to do.
   - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
     Its status is any safe token, ``UNKNOWN`` included.
   - ``veto_own_later_pass``: in place of ``veto_observed`` for a veto with a known head when the same verified
@@ -774,11 +775,17 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
             named = sorted({f"{vote['agent']} {vote['status']}@{vote['head'][:12]}"
                             + (" retired at the PR head" if vote["head"] == pr["head"] else "")
                             for vote in stale})
+            # An identity that already sent the same verified vote at a current head (the PR head, or the head an
+            # open PR's context saw) has nothing to do about its older vote: it is named, never asked (RCO1 10:38Z).
+            current = {(vote["agent"], vote["status"]) for vote in pr["votes"] + inputs.context_head_votes(pr)
+                       if vote["verified"]}
+            done = sorted({vote["agent"] for vote in stale if (vote["agent"], vote["status"]) in current})
             tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:stale_votes",
                                      f"PR{pr['pr']} at {pr['head'][:12] if pr['head'] else UNKNOWN} has "
                                      f"{len(named)} stale vote(s)",
-                                     "; ".join(named) + "; a stale vote cannot approve it",
-                                     [vote["agent"] for vote in stale],
+                                     "; ".join(named) + "; a stale vote cannot approve it"
+                                     + (f"; already voted at a current head: {', '.join(done)}" if done else ""),
+                                     sorted({vote["agent"] for vote in stale} - set(done)),
                                      [ref for vote in stale for ref in vote["refs"]] + pr["refs"]))
         heads = inputs.current_heads(pr)
         for veto in pr["vetoes"]:

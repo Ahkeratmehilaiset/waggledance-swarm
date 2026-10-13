@@ -38,6 +38,8 @@ from tools.bridge_compact_view import event_id  # noqa: E402
 MANIFEST_SCHEMA = "wd.bridge-mind-tournament-inputs.v1"
 COMPACT_READER = "Read-AgentBridge.ps1 -Compact -EventId"
 INPUT_FILES = ("capture.json", "detail-manifest.txt", "context.json", "gh-pr-list.json")
+# Optional read-only GitHub status capture (required checks and merge state per open PR head), copied when present.
+OPTIONAL_FILES = ("gh-open-status.json", "observed-status.json")
 # The code a round's outputs depend on; each must be committed and clean in the builder tree.
 MIND_PATHS = ("tools/wd_bridge_mind.py", "tools/bridge_mind_workspace.py", "tools/wd_bridge_mind_shadow.py",
               "tools/wd_bridge_mind_delta_push.py", "tools/wd_pr_missing_slot_board.py",
@@ -135,6 +137,8 @@ def main():
         raise FreezeRefused("round_name_invalid")
     built = builder()
     data = {name: (args.cycle_dir / name).read_bytes() for name in INPUT_FILES}
+    data.update({name: (args.cycle_dir / name).read_bytes() for name in OPTIONAL_FILES
+                 if (args.cycle_dir / name).exists()})
     if args.questions is not None:
         questions = args.questions.read_bytes()
         ws.guard_object(json.loads(questions.decode("utf-8")))

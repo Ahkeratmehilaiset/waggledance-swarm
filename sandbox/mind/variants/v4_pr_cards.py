@@ -123,12 +123,9 @@ def render(inputs, lane):
     mine = [item for item in snapshot["attention"] if lane in item["actors"]]
     for item in mine:
         lines.append(f"  attention #{item['rank']} {item['kind']}: {_short(item['detail'])}")
-    for lane_row in parsed.lanes:
-        if lane_row["agent"] == lane:
-            for claim in lane_row["claims"]:
-                expires = claim["expires"] if isinstance(claim["expires"], str) else claim["expires"].isoformat()
-                lines.append(f"  claim {claim['task']} lease {expires}")
-    current = [row.get("current_task") for row in snapshot["lanes"].values() if row.get("agent") == lane]
+    # Claims are left out: the core v0 still lists claims the log already released (RCO2 09:29Z), and bridge claim
+    # events carry no lease, so a claim list here would be stale noise.
+    current =[row.get("current_task") for row in snapshot["lanes"].values() if row.get("agent") == lane]
     lines.append(f"  current task (last event): {', '.join(sorted({str(task) for task in current})) or ws.UNKNOWN}")
     involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))
                 and parsed.suppressed(pr) not in ("MERGED", "CLOSED")]

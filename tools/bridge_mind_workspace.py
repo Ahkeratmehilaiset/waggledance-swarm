@@ -680,7 +680,7 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                     f"{pr['head'][:12] if pr['head'] else UNKNOWN}",
                                     f"the context capture {context['capture'][:16]} saw head {row['head'][:12]} on "
                                     f"{row['branch']}; no suggestion is made for the bridge head" + votes,
-                                    [vote["agent"] for vote in at_context],
+                                    [],  # bridge-view lag: no lane can resolve it, so it asks no one
                                     pr["refs"] + [ref for vote in at_context for ref in vote["refs"]]))
             computed += inputs.computed_class(pr) is not None
         charter = (f"charter loaded, charter blob {context['charter_blob']}, classifier blob "

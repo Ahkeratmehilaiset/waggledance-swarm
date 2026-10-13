@@ -2017,7 +2017,7 @@ def test_stale_votes_at_the_context_head_are_named_by_the_head_mismatch_and_neve
         mismatch = rules["context_head_mismatch"]
         assert mismatch["observation"].endswith("1 vote(s) in the bridge view are bound to that head and are not "
                                                 "counted here: claude-rco-1 rco_pass")
-        assert mismatch["actors"] == ["claude-rco-1"] and mismatch["refs"] == sorted([rco1_ref, ref("pr:10")])
+        assert mismatch["actors"] == [] and mismatch["refs"] == sorted([rco1_ref, ref("pr:10")])
         # Never counted: the moved PR gets no vote suggestion at either head.
         assert all(item["kind"] not in ("last_missing_vote", "votes_missing", "signature_only")
                    for item in fields["attention"])

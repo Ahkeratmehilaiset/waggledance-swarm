@@ -122,9 +122,10 @@ def _envelope(value: Any) -> tuple[str, dict]:
     return ref, event
 
 
-def _fact(state: MindState, kind: str, key: str, value: dict, ref: str, when: str, salience: int) -> None:
+def _fact(state: MindState, kind: str, key: str, value: dict, ref: str, when: str, salience: int, refs: list | None = None) -> None:
     state.fact_candidates[kind + ":" + key] = {
-        "kind": kind, "value": deepcopy(value), "source_refs": [ref], "canonical_sha256": ref,
+        "fact_id": hashlib.sha256((kind + ":" + key).encode("utf-8")).hexdigest(),
+        "kind": kind, "value": deepcopy(value), "source_refs": sorted(set(refs or [ref])), "canonical_sha256": ref,
         "observed_at_utc": when, "ttl_seconds": state.ttl_seconds, "salience": salience,
         "verification": "declared",
     }
@@ -215,7 +216,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
             record["_vetos"][(agent, uuid, task, head)] = dict(agent=agent, agent_uuid=uuid, head=head,
                   status=status, activity=UNKNOWN, source_refs=[ref], verification="declared")
         record["source_refs"] = sorted({ref} | set(record["_field_refs"].values()))
-        _fact(state, "pr_observation", key, dict(pr=pr, head=record["head"]), ref, when, 100 if status in _VETO else 80)
+        _fact(state, "pr_observation", key, dict(pr=pr, head=record["head"]), ref, when, 100 if status in _VETO else 80, record["source_refs"])
 
 
 def full_rebuild(envelopes: list, *, source: dict, as_of_utc: str, max_facts: int = 64, ttl_seconds: int = 300) -> MindState:
@@ -326,6 +327,22 @@ def _validate_snapshot(value: Any) -> None:
         for record in records.values():
             if not isinstance(record, dict) or set(record) != allowed:
                 raise ProjectionError("snapshot_field_invalid")
+    for record in value["prs"].values():
+        if (record["head"] != UNKNOWN and (not isinstance(record["head"], str) or not _HEAD.fullmatch(record["head"]))) or record["class"] not in (UNKNOWN, "a", "b", "on-allowlist"):
+            raise ProjectionError("snapshot_pr_value_invalid")
+        ci = record["reported_ci"]
+        if not isinstance(ci, dict) or set(ci) - {"status", "head", "source_refs", "verification"} or ci.get("status") not in (UNKNOWN, "reported_green", "reported_not_green"):
+            raise ProjectionError("snapshot_ci_invalid")
+        for name, keys in (("votes", {"agent", "agent_uuid", "head", "status", "source_refs", "verification"}),
+                           ("stale_votes", {"agent", "agent_uuid", "head", "status", "source_refs", "verification"}),
+                           ("veto_observations", {"agent", "agent_uuid", "head", "status", "source_refs", "verification", "activity"})):
+            if not isinstance(record[name], list) or any(not isinstance(row, dict) or set(row) != keys for row in record[name]):
+                raise ProjectionError("snapshot_signal_invalid")
+    for lane in value["lanes"].values():
+        for name, keys in (("claims", {"write_scope", "source_refs", "verification", "lease_expires_utc", "expired"}),
+                           ("waits", {"waiting_on", "source_refs", "verification"})):
+            if lane[name] != UNKNOWN and (not isinstance(lane[name], dict) or set(lane[name]) != keys):
+                raise ProjectionError("snapshot_lane_value_invalid")
     def refs_required(record):
         if isinstance(record, dict):
             if "source_refs" in record:
@@ -343,6 +360,8 @@ def _validate_snapshot(value: Any) -> None:
     for fact in value["facts"]:
         if not isinstance(fact, dict) or fact.get("kind") not in {"lane_observation", "pr_observation"}:
             raise ProjectionError("snapshot_fact_type_invalid")
+        if set(fact) != {"fact_id", "kind", "value", "source_refs", "canonical_sha256", "observed_at_utc", "ttl_seconds", "salience", "verification"} or not _REF.fullmatch(str(fact["fact_id"])) or fact["verification"] != "declared":
+            raise ProjectionError("snapshot_fact_field_invalid")
         refs = fact.get("source_refs")
         if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or not _REF.fullmatch(ref) for ref in refs) or fact.get("canonical_sha256") not in refs:
             raise ProjectionError("provenance_fact_ref_required")
@@ -351,12 +370,9 @@ def _validate_snapshot(value: Any) -> None:
             raise ProjectionError("snapshot_fact_value_invalid")
 
 
-def write_snapshot(value: dict, path: Path, *, audit_root: Path) -> str:
-    """Atomic explicit audit publication; not a concurrent hostile-user sandbox."""
-    _validate_snapshot(value)
+def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
     target = _audit_path(path, audit_root)
-    digest = hashlib.sha256(canonical_bytes(value)).hexdigest()
-    encoded = canonical_bytes(dict(schema="wd.bridge-mind-publication.v1", snapshot=value, snapshot_sha256=digest))
+    encoded = canonical_bytes(publication)
     temporary = None
     try:
         fd, temporary = tempfile.mkstemp(prefix=".mind-", suffix=".tmp", dir=target.parent)
@@ -372,6 +388,17 @@ def write_snapshot(value: dict, path: Path, *, audit_root: Path) -> str:
     finally:
         if temporary is not None:
             os.unlink(temporary)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def write_snapshot(value: dict, path: Path, *, audit_root: Path) -> str:
+    """Publish display+source cursor atomically; use checkpoint APIs to resume.
+
+    These explicit audit APIs are not a concurrent hostile-user sandbox.
+    """
+    _validate_snapshot(value)
+    digest = hashlib.sha256(canonical_bytes(value)).hexdigest()
+    _write_publication(dict(schema="wd.bridge-mind-publication.v1", snapshot=value, snapshot_sha256=digest), path, audit_root)
     return digest
 
 
@@ -380,7 +407,7 @@ def read_snapshot(path: Path, *, audit_root: Path) -> dict:
     target = _audit_path(path, audit_root)
     try:
         raw = target.read_bytes()
-        publication = json.loads(raw)
+        publication = parse_bridge_json_object(raw.decode("utf-8"))
         if not isinstance(publication, dict) or set(publication) != {"schema", "snapshot", "snapshot_sha256"} or publication["schema"] != "wd.bridge-mind-publication.v1":
             raise ProjectionError("snapshot_publication_invalid")
         value = publication["snapshot"]
@@ -390,3 +417,77 @@ def read_snapshot(path: Path, *, audit_root: Path) -> dict:
         return value
     except (OSError, ValueError, TypeError, RecursionError):
         raise ProjectionError("snapshot_read_refused") from None
+
+
+def blocked_snapshot(state: MindState, *, as_of_utc: str, offset: int, reason: str) -> dict:
+    """Diagnostic view only; unchanged accepted state/cursor, never current."""
+    reasons = {"canonical_event_invalid", "provenance_hash_mismatch", "provenance_envelope_required",
+               "source_cursor_required", "source_cursor_count_invalid", "complete_coverage_required",
+               "cursor_discontinuity_rebuild_required", "file_identity_changed", "log_truncated",
+               "generation_changed", "partial_record", "private_marker_refused"}
+    if type(offset) is not int or offset < 0 or reason not in reasons:
+        raise ProjectionError("blocked_diagnostic_invalid")
+    value = snapshot(state, as_of_utc=as_of_utc)
+    value["source"]["blocked"] = dict(active=True, offset=offset, reason=reason)
+    value["tensions"] = [dict(rule_id="source_blocked", offset=offset, reason=reason,
+                              refs=[state.last_ref] if state.last_ref else [UNKNOWN])]
+    return value
+
+
+def state_bytes(state: MindState) -> bytes:
+    """Complete resumable fold state, distinct from bounded display memory."""
+    prs = deepcopy(state.prs)
+    for record in prs.values():
+        record["_votes"] = [v for _, v in sorted(record["_votes"].items())]
+        record["_vetos"] = [[list(key), value] for key, value in sorted(record["_vetos"].items())]
+    return canonical_bytes(dict(schema="wd.bridge-mind-state.v1", source=state.source, max_facts=state.max_facts,
+              ttl_seconds=state.ttl_seconds, seen=sorted(state.seen), prs=prs, lanes=state.lanes,
+              fact_candidates=state.fact_candidates, duplicates=state.duplicates, last_ref=state.last_ref,
+              max_event_utc=state.max_event_utc))
+
+
+def write_checkpoint(state: MindState, path: Path, *, as_of_utc: str, audit_root: Path) -> str:
+    """Atomic reducer+accepted cursor+display, suitable for a dormant restart."""
+    view = snapshot(state, as_of_utc=as_of_utc)
+    _validate_snapshot(view)
+    body = dict(state=json.loads(state_bytes(state)), snapshot=view)
+    digest = hashlib.sha256(canonical_bytes(body)).hexdigest()
+    _write_publication(dict(schema="wd.bridge-mind-checkpoint.v1", body=body, body_sha256=digest), path, audit_root)
+    return digest
+
+
+def read_checkpoint(path: Path, *, audit_root: Path) -> MindState:
+    target = _audit_path(path, audit_root)
+    try:
+        publication = parse_bridge_json_object(target.read_bytes().decode("utf-8"))
+        if set(publication) != {"schema", "body", "body_sha256"} or publication["schema"] != "wd.bridge-mind-checkpoint.v1":
+            raise ValueError
+        body = publication["body"]
+        if hashlib.sha256(canonical_bytes(body)).hexdigest() != publication["body_sha256"]:
+            raise ValueError
+        raw = body["state"]
+        if raw["schema"] != "wd.bridge-mind-state.v1" or set(raw) != {"schema", "source", "max_facts", "ttl_seconds", "seen", "prs", "lanes", "fact_candidates", "duplicates", "last_ref", "max_event_utc"}:
+            raise ValueError
+        origin = _source(raw["source"], raw["source"]["event_count"])
+        if (origin["cursor_start"] != 0 or type(raw["max_facts"]) is not int or not 1 <= raw["max_facts"] <= 10000
+                or type(raw["ttl_seconds"]) is not int or raw["ttl_seconds"] < 1
+                or type(raw["duplicates"]) is not int or raw["duplicates"] < 0
+                or not isinstance(raw["seen"], list) or len(set(raw["seen"])) != len(raw["seen"])
+                or any(not isinstance(ref, str) or not _REF.fullmatch(ref) for ref in raw["seen"])
+                or len(raw["seen"]) + raw["duplicates"] != origin["event_count"]):
+            raise ValueError
+        expected_state = canonical_bytes(raw)
+        prs = deepcopy(raw["prs"])
+        for record in prs.values():
+            record["_votes"] = {(v["agent"], v["agent_uuid"], v["head"], v["status"]): v for v in record["_votes"]}
+            record["_vetos"] = {tuple(key): value for key, value in record["_vetos"]}
+        state = MindState(origin, raw["max_facts"], raw["ttl_seconds"], set(raw["seen"]), prs,
+                  raw["lanes"], raw["fact_candidates"], raw["duplicates"], raw["last_ref"], raw["max_event_utc"])
+        _validate_snapshot(body["snapshot"])
+        if canonical_bytes(snapshot(state, as_of_utc=body["snapshot"]["source"]["as_of_utc"])) != canonical_bytes(body["snapshot"]):
+            raise ValueError
+        if state_bytes(state) != expected_state:
+            raise ValueError
+        return state
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        raise ProjectionError("checkpoint_read_refused") from None

@@ -234,3 +234,54 @@ def test_gate_verdict_bytes_do_not_depend_on_present_absent_or_corrupt_snapshot(
         verdict = check_bridge_clear_to_merge(events=[], task_id="fixture/task", merging_agent="codex-lead-1")
         verdicts.append(json.dumps(verdict, sort_keys=True))
     assert verdicts[0] == verdicts[1] == verdicts[2]
+
+
+def test_double_escaped_marker_refused_without_embedded_json_decode():
+    # MUT_MIND_SKIPS_DOUBLE_ESCAPE_GUARD, positive ordinary embedded JSON is omitted.
+    safe = envelope(message=json.dumps({"question": "ordinary-fixture"}))
+    assert mind.snapshot(build([safe]), as_of_utc=AS_OF)["facts"]
+    marker = "\\u0050RIVATE_MARKER"
+    bad = envelope(message=json.dumps({"question": marker}))
+    with pytest.raises(mind.ProjectionError) as caught:
+        build([bad])
+    assert "MARKER" not in str(caught.value) and "u0050" not in str(caught.value)
+
+
+def test_blocked_view_keeps_good_cursor_and_state_and_never_echoes_bad_content():
+    state = build([envelope()])
+    original = mind.canonical_bytes(mind.snapshot(state, as_of_utc=AS_OF))
+    blocked = mind.blocked_snapshot(state, as_of_utc=AS_OF, offset=1, reason="canonical_event_invalid")
+    assert blocked["source"]["blocked"] == dict(active=True, offset=1, reason="canonical_event_invalid")
+    assert blocked["source"]["cursor_end"] == 1 and blocked["prs"]["1900"]["head"] == HEAD
+    assert mind.canonical_bytes(mind.snapshot(state, as_of_utc=AS_OF)) == original
+    with pytest.raises(mind.ProjectionError):
+        mind.blocked_snapshot(state, as_of_utc=AS_OF, offset=1, reason="arbitrary rejected row text")
+
+
+def test_atomic_resumable_checkpoint_preserves_evicted_history_and_cursor(tmp_path, monkeypatch):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    first = envelope()
+    rows = [first, envelope(status="head_updated", payload=dict(pr=1900, head=OTHER_HEAD)), deepcopy(first)]
+    prefix = build(rows[:2], max_facts=1)
+    path = audit / "checkpoint.json"
+    mind.write_checkpoint(prefix, path, as_of_utc=AS_OF, audit_root=audit)
+    restored = mind.read_checkpoint(path, audit_root=audit)
+    incremental = mind.apply_incremental(restored, rows[2:], source=source(2, 3), as_of_utc=AS_OF)
+    full = build(rows, max_facts=1)
+    assert mind.state_bytes(incremental) == mind.state_bytes(full)
+    assert mind.canonical_bytes(mind.snapshot(incremental, as_of_utc=AS_OF)) == mind.canonical_bytes(mind.snapshot(full, as_of_utc=AS_OF))
+    original = path.read_bytes()
+    monkeypatch.setattr(mind.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("fixture fail")))
+    with pytest.raises(mind.ProjectionError):
+        mind.write_checkpoint(incremental, path, as_of_utc=AS_OF, audit_root=audit)
+    assert path.read_bytes() == original and mind.read_checkpoint(path, audit_root=audit).source["cursor_end"] == 2
+
+
+def test_checkpoint_with_reported_votes_restores_exact_state_bytes(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    state = build([envelope(), envelope(type="decision", status="rco_pass")])
+    path = audit / "votes.json"
+    mind.write_checkpoint(state, path, as_of_utc=AS_OF, audit_root=audit)
+    assert mind.state_bytes(mind.read_checkpoint(path, audit_root=audit)) == mind.state_bytes(state)

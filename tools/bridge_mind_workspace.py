@@ -10,10 +10,20 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   so new evidence for the same contradiction keeps its id; against a previous snapshot each tension is
   ``new`` or ``persisting``. Rules:
 
-  - ``claim_overlap``: live write claims of two agents overlap.
-  - ``stale_vote``: a vote in ``stale_votes`` (bound to a head that is not the PR head). It never counts.
+  - ``claim_overlap``: task claims (the core's ``claims.by_task`` rows) of two agents that are not expired
+    overlap, an UNKNOWN lease included (bridge claim events carry no lease, so an unknown lease is the usual
+    case, never a reason to skip a claim); one tension per pair of lanes, with every overlapping path and the
+    refs of the task claims involved. Paths are compared
+    as text the way Windows compares them (``claim_path_key``): a space or a colon is ordinary, and a path that
+    climbs above its root refuses its task claim. No path is ever opened. A lane-level ``write_scope``, lease or
+    ``expired`` that disagrees with its rows refuses every claim of the lane; one unusable row refuses only
+    itself, and the lane's other task claims still count.
+  - ``stale_vote``: a vote in ``stale_votes`` (bound to a head that is not the PR head, or retired by the core
+    at the PR head after a later blocking signal of the same identity). It never counts.
   - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
-  - ``expired_claim``: a lease that ended at or before ``as_of``. An expired claim is not completed work.
+    Its status is any safe token, ``UNKNOWN`` included.
+  - ``expired_claim``: a task claim whose lease ended at or before ``as_of``. An expired claim is not
+    completed work. A claim with an UNKNOWN lease is never expired here.
   - ``unacknowledged_command``: an expected responder of an exact request (a ``command`` fact) has no bound
     reply after the grace time. The core v0 emits no command facts yet, so this rule waits for them.
   - ``coverage_unknown``: the source does not claim complete coverage, so nothing here is complete.
@@ -23,7 +33,8 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
 
 * ``attention``: one ordered, bounded list of suggestions. For each PR with a known head, reported CI
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
-  the current-head votes of declared identities into the consensus slots by the charter's identity map
+  the current-head votes of declared identities (a valid ``agent_uuid`` and ``verification`` ``declared``;
+  the two must agree) into the consensus slots by the charter's identity map
   (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, and one slot for each recognized RCO,
   because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
   presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
@@ -83,8 +94,11 @@ REF = re.compile(r"[0-9a-f]{64}")
 HEAD = re.compile(r"[0-9a-f]{40}")
 UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,119}")
-SAFE_PATH = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\\+-]{0,199}")
+# The core's claim path alphabet (space, colon and backslash included) and length; the workspace also allows "+".
+SAFE_PATH = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\\:+ -]{0,2047}")
 REASON = re.compile(r"[a-z0-9_]{1,64}")
+# The core's task token (``_token``): a task id from the bridge, or UNKNOWN.
+TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
 # The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty. The installed
@@ -196,21 +210,51 @@ def tension_id(rule: str, subject: str, claim: str, observation: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _scope_key(path: str) -> str:
-    """Repo-relative claim path, normalized the way Windows compares it."""
-    text = path.replace("\\", "/").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    return text.rstrip("/").casefold()
+def claim_path_key(path: str) -> str | None:
+    """A declared claim path normalized the way Windows compares it, or None when it is not safe to compare.
+
+    Text only: the path is never opened or resolved. Backslashes are slashes, ``.`` and empty segments go, ``..``
+    removes the segment before it, each segment loses trailing spaces and dots, and the case is folded. A space
+    or a colon is an ordinary character. A path that climbs above its root, or a segment of only dots and spaces,
+    is None. The whole tree (``.``) is the empty key, which covers every path.
+    """
+    parts: list[str] = []
+    for segment in path.replace("\\", "/").split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        trimmed = segment.rstrip(" .")
+        if not trimmed:
+            return None
+        parts.append(trimmed.casefold())
+    return "/".join(parts)
+
+
+def _claim_key(path: Any) -> str | None:
+    """The key of a declared path in the claim alphabet without a guarded word, or None."""
+    return claim_path_key(path) if _match(SAFE_PATH, path) else None
 
 
 def scopes_overlap(left: Iterable[str], right: Iterable[str]) -> list[str]:
-    """Claim paths that are equal, or where one is a directory above the other; the same whichever side is which."""
+    """Declared claim paths that are equal, or where one is a directory above the other, whichever side is which.
+
+    Compared by ``claim_path_key``; a path that is not safe to compare refuses the call, it is never skipped.
+    """
+    sides = []
+    for paths in (left, right):
+        keys = {_claim_key(path) for path in paths}
+        if None in keys:
+            raise WorkspaceError("a claim path is not safe to compare")
+        sides.append(keys)
     hits = set()
-    for a in {_scope_key(p) for p in left}:
-        for b in {_scope_key(p) for p in right}:
-            if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
-                hits.add(a if a == b else " ~ ".join(sorted((a, b))))
+    for a in sides[0]:
+        for b in sides[1]:
+            if a == b or not a or not b or a.startswith(b + "/") or b.startswith(a + "/"):
+                hits.add((a or ".") if a == b else " ~ ".join(sorted((a or ".", b or "."))))
     return sorted(hits)
 
 
@@ -274,19 +318,25 @@ class _Inputs:
                 out.append(value)
         return out
 
-    def _votes(self, rows: list[Any], where: str, *, head_known: bool = True) -> tuple[list[dict[str, Any]], int]:
-        """Vote-shaped rows and how many were refused. A veto may name no head (``head_known=False``)."""
+    def _votes(self, rows: list[Any], where: str, *, veto: bool = False) -> tuple[list[dict[str, Any]], int]:
+        """Vote-shaped rows and how many were refused.
+
+        Only a declared identity (a valid ``agent_uuid`` with ``verification`` ``declared``) is ``verified``; the
+        core marks an undeclared one ``UNKNOWN`` and ``unverified``, and a row whose two fields disagree is refused.
+        A veto may name no head, and its status is any safe token, ``UNKNOWN`` included (the core keeps the sent one).
+        """
         out, refused = [], 0
         for index, vote in enumerate(rows):
             vote = vote if isinstance(vote, Mapping) else {}
-            head = vote.get("head")
-            uuid = vote.get("agent_uuid")
+            head, uuid, verification = vote.get("head"), vote.get("agent_uuid"), vote.get("verification")
+            declared = isinstance(uuid, str) and bool(UUID.fullmatch(uuid)) and verification == "declared"
             item = {"agent": _match(SAFE_ID, vote.get("agent")),
-                    "head": UNKNOWN if not head_known and head == UNKNOWN else _match(HEAD, head),
-                    "status": _match(REASON, vote.get("status")), "refs": _refs(vote.get("source_refs")),
-                    "verified": bool(isinstance(uuid, str) and UUID.fullmatch(uuid))}
-            if None in item.values() or not (item["verified"] or uuid == UNKNOWN):
-                self._refuse(f"{where}[{index}]", vote, "vote needs agent, agent_uuid, head, status and source_refs")
+                    "head": UNKNOWN if veto and head == UNKNOWN else _match(HEAD, head),
+                    "status": _match(SAFE_ID if veto else REASON, vote.get("status")),
+                    "refs": _refs(vote.get("source_refs")), "verified": declared}
+            if None in item.values() or not (declared or (uuid == UNKNOWN and verification == "unverified")):
+                self._refuse(f"{where}[{index}]", vote, "vote needs agent, head, status, source_refs, and an "
+                             "agent_uuid that agrees with its verification")
                 refused += 1
                 continue
             out.append(item)
@@ -310,7 +360,7 @@ class _Inputs:
         # A vote in the current list at another head is stale too: it can never fill a slot.
         stale += [vote for vote in votes if vote["head"] != head]
         votes = [vote for vote in votes if vote["head"] == head]
-        vetoes, unreadable = self._votes(lists[2], f"{where}.veto_observations", head_known=False)
+        vetoes, unreadable = self._votes(lists[2], f"{where}.veto_observations", veto=True)
         klass = row.get("class") if row.get("class") in ("a", "b", "on-allowlist") else UNKNOWN
         return {"pr": number, "head": head, "refs": refs, "ci_green": ci_green, "ci_refs": ci_refs or [],
                 "class": klass, "votes": votes, "stale_votes": stale, "vetoes": vetoes,
@@ -325,25 +375,65 @@ class _Inputs:
         if refs is None or not keyed:
             self._refuse(where, row, "lane needs a safe agent, an agent_uuid matching its key, and source_refs")
             return None
-        lane = {"agent": agent, "key": name, "refs": refs, "claim": None}
+        lane = {"agent": agent, "key": name, "refs": refs, "claims": []}
         claims = row.get("claims")
         if isinstance(claims, Mapping):
-            scope, claim_refs = claims.get("write_scope"), _refs(claims.get("source_refs"))
-            paths = [_match(SAFE_PATH, path) for path in scope] if isinstance(scope, list) else None
-            lease = claims.get("lease_expires_utc")
-            expires = parse_time(lease) if lease != UNKNOWN else UNKNOWN
-            stated = claims.get("expired")
-            disagrees = expires not in (None, UNKNOWN) and isinstance(stated, bool) and stated != (expires <= self.now)
-            if claim_refs is None or expires is None or disagrees or (paths is None and scope != UNKNOWN) \
-                    or (paths is not None and None in paths):
-                self._refuse(f"{where}.claims", claims,
-                             "claim needs safe paths or UNKNOWN, a lease time or UNKNOWN that agrees with expired, "
-                             "and source_refs")
-            else:
-                lane["claim"] = {"paths": paths, "expires": expires, "refs": claim_refs}
+            lane["claims"] = self._claims(claims, f"{where}.claims")
         elif claims not in (None, UNKNOWN):
             self._refuse(f"{where}.claims", None, "claims is neither an object nor UNKNOWN")
         return lane
+
+    def _lease(self, row: Mapping[str, Any]) -> datetime | str | None:
+        """The lease time, UNKNOWN, or None when it is not a time or disagrees with the row's ``expired``."""
+        lease = row.get("lease_expires_utc")
+        expires = parse_time(lease) if lease != UNKNOWN else UNKNOWN
+        stated = row.get("expired")
+        if expires not in (None, UNKNOWN) and isinstance(stated, bool) and stated != (expires <= self.now):
+            return None
+        return expires
+
+    def _claims(self, claims: Mapping[str, Any], where: str) -> list[dict[str, Any]]:
+        """The usable task claims of one lane (the core's ``by_task`` rows).
+
+        The lane-level fields must be what the rows give: ``write_scope`` the union of the row scopes in any
+        order (UNKNOWN when one is UNKNOWN), ``lease_expires_utc`` the one common lease or UNKNOWN, and
+        ``expired`` agreeing with it. If not, every claim of the lane is refused together. Otherwise a row that is
+        not usable is refused by its own position (in task_id order) and the lane's other task claims still count.
+        """
+        rows = claims.get("by_task")
+        # Read in task_id order, so a refusal names the same position whatever the input order.
+        rows = sorted(rows, key=lambda row: str(row.get("task_id")) if isinstance(row, Mapping) else "") \
+            if isinstance(rows, list) else None
+        scopes = [row.get("write_scope") if isinstance(row, Mapping) else None for row in rows or []]
+        union = sorted({path for scope in scopes for path in scope}) \
+            if all(isinstance(scope, list) and all(isinstance(path, str) for path in scope) for scope in scopes) \
+            else UNKNOWN
+        stated = claims.get("write_scope")
+        if isinstance(stated, list) and all(isinstance(path, str) for path in stated):
+            stated = sorted(set(stated))
+        leases = [row.get("lease_expires_utc") if isinstance(row, Mapping) else None for row in rows or []]
+        common = leases[0] if leases and all(lease == leases[0] for lease in leases) else UNKNOWN
+        tasks = [row.get("task_id") if isinstance(row, Mapping) else None for row in rows or []]
+        if rows is None or _refs(claims.get("source_refs")) is None or stated != union \
+                or claims.get("lease_expires_utc") != common or self._lease(claims) is None \
+                or len(set(map(str, tasks))) != len(tasks):
+            self._refuse(where, claims, "claims need by_task rows with unique task ids, and a write_scope, "
+                         "lease and expired that agree with those rows")
+            return []
+        out = []
+        for index, row in enumerate(rows):
+            row = row if isinstance(row, Mapping) else {}
+            scope, refs, expires = row.get("write_scope"), _refs(row.get("source_refs")), self._lease(row)
+            paths = [path if _claim_key(path) is not None else None for path in scope] \
+                if isinstance(scope, list) else None
+            task = _match(TASK, row.get("task_id"))
+            if task is None or refs is None or expires is None or (paths is None and scope != UNKNOWN) \
+                    or (paths is not None and None in paths):
+                self._refuse(f"{where}.by_task[{index}]", row, "task claim needs a safe task_id, safe paths inside "
+                             "their root or UNKNOWN, a lease time or UNKNOWN that agrees with expired, and source_refs")
+                continue
+            out.append({"task": task, "paths": paths, "expires": expires, "refs": refs})
+        return out
 
     def _facts(self, snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Only ``command`` facts feed the workspace; a fact whose TTL ended at ``as_of`` is not used."""
@@ -392,32 +482,46 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     for refused in inputs.refused:
         tensions.append(_tension("refused_input", refused["where"], f"input {refused['where']}",
                                  f"refused: {refused['reason']}", [], [refused["ref"]]))
-    live = []
+    live: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     for lane in inputs.lanes:
-        claim = lane["claim"]
-        if claim is None or claim["expires"] == UNKNOWN:
-            continue
-        if claim["expires"] <= inputs.now:
-            tensions.append(_tension("expired_claim", f"claim:{lane['key']}", f"{lane['agent']} holds a write claim",
-                                     "its lease ended at or before as_of; that is not completed work",
-                                     [lane["agent"]], claim["refs"]))
-        elif claim["paths"] is not None:
-            live.append((lane, claim))
-    live.sort(key=lambda pair: pair[0]["key"])
-    for index, (lane_a, claim_a) in enumerate(live):
-        for lane_b, claim_b in live[index + 1:]:
-            hits = scopes_overlap(claim_a["paths"], claim_b["paths"]) if lane_a["agent"] != lane_b["agent"] else []
+        for claim in lane["claims"]:
+            # Bridge claim events carry no lease, so most leases are UNKNOWN: such a claim is not expired, and it
+            # still counts for overlap. Only a known lease that ended at or before as_of makes a claim expired.
+            if claim["expires"] != UNKNOWN and claim["expires"] <= inputs.now:
+                tensions.append(_tension("expired_claim", f"claim:{lane['key']}:{claim['task']}",
+                                         f"{lane['agent']} holds a write claim for {claim['task']}",
+                                         "its lease ended at or before as_of; that is not completed work",
+                                         [lane["agent"]], claim["refs"]))
+            elif claim["paths"] is not None:
+                live.setdefault(lane["key"], (lane, []))[1].append(claim)
+    lanes = [live[key] for key in sorted(live)]
+    for index, (lane_a, claims_a) in enumerate(lanes):
+        for lane_b, claims_b in lanes[index + 1:]:
+            if lane_a["agent"] == lane_b["agent"]:
+                continue
+            # Every live task claim of one lane against every one of the other; one tension per pair of lanes.
+            hits, refs = set(), set()
+            for claim_a in claims_a:
+                for claim_b in claims_b:
+                    found = scopes_overlap(claim_a["paths"], claim_b["paths"])
+                    if found:
+                        hits.update(found)
+                        refs.update(claim_a["refs"] + claim_b["refs"])
             if hits:
                 tensions.append(_tension("claim_overlap", f"claims:{lane_a['key']}|{lane_b['key']}",
-                                         f"{lane_a['agent']} and {lane_b['agent']} both hold live write claims",
-                                         "overlapping paths: " + ", ".join(hits), [lane_a["agent"], lane_b["agent"]],
-                                         claim_a["refs"] + claim_b["refs"]))
+                                         f"{lane_a['agent']} and {lane_b['agent']} both hold write claims that are "
+                                         "not expired",
+                                         "overlapping paths: " + ", ".join(sorted(hits)),
+                                         [lane_a["agent"], lane_b["agent"]], refs))
     for pr in inputs.prs:
         for vote in pr["stale_votes"]:
+            # The core also retires a vote at the PR head when the same identity later sends a blocking signal.
+            seen = "the core retired it at the PR head" if vote["head"] == pr["head"] else \
+                "the PR head is " + (pr["head"][:12] if pr["head"] else UNKNOWN)
             tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:{vote['agent']}:{vote['head'][:12]}",
                                      f"{vote['agent']} sent {vote['status']} on PR{pr['pr']} at {vote['head'][:12]}",
-                                     "the PR head is " + (pr["head"][:12] if pr["head"] else UNKNOWN)
-                                     + "; a stale vote cannot approve it", [vote["agent"]], vote["refs"] + pr["refs"]))
+                                     seen + "; a stale vote cannot approve it", [vote["agent"]],
+                                     vote["refs"] + pr["refs"]))
         for veto in pr["vetoes"]:
             tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
                                      f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}",

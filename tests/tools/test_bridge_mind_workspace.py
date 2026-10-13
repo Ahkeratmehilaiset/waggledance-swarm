@@ -41,10 +41,32 @@ def _time(text):
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
+def _expired(lease):
+    return "UNKNOWN" if lease == "UNKNOWN" else _time(lease) <= _time(AS_OF)
+
+
+def _task_claim(paths, expires, name, task=None):
+    """One core ``claims.by_task`` row."""
+    return {"task_id": task or f"task-{name}", "write_scope": list(paths) if paths is not None else "UNKNOWN",
+            "source_refs": [ref(f"claim:{name}")], "verification": "declared", "lease_expires_utc": expires,
+            "expired": _expired(expires), "owner_session_id": "UNKNOWN", "owner_run_id": "UNKNOWN"}
+
+
+def _claims(*tasks):
+    """The core's lane claims: the by_task rows sorted by task id, and the lane-level fields they give."""
+    scopes = [task["write_scope"] for task in tasks]
+    leases = [task["lease_expires_utc"] for task in tasks]
+    lease = leases[0] if leases and all(value == leases[0] for value in leases) else "UNKNOWN"
+    union = sorted({path for scope in scopes for path in scope}) if all(isinstance(s, list) for s in scopes) \
+        else "UNKNOWN"
+    return {"write_scope": union, "source_refs": sorted({r for task in tasks for r in task["source_refs"]})
+            or [ref("claims:none")], "verification": "declared", "lease_expires_utc": lease, "expired": _expired(lease),
+            "by_task": sorted(tasks, key=lambda task: task["task_id"])}
+
+
 def _claim(paths, expires, name):
-    return {"write_scope": list(paths) if paths is not None else "UNKNOWN", "source_refs": [ref(f"claim:{name}")],
-            "verification": "declared", "lease_expires_utc": expires,
-            "expired": "UNKNOWN" if expires == "UNKNOWN" else _time(expires) <= _time(AS_OF)}
+    """A lane holding one task claim."""
+    return _claims(_task_claim(paths, expires, name))
 
 
 def _lane(agent, claim=None, uuid=None):
@@ -127,7 +149,7 @@ def test_each_tension_rule_is_derived_with_its_refs():
     assert overlap["actors"] == ["claude-rco-2", "fable-5"] and overlap["severity"] == "high"
     assert overlap["refs"] == sorted([ref("claim:rco2"), ref("claim:fable")])
     assert overlap["observation"] == "overlapping paths: tools/board.py"
-    assert rules["expired_claim"]["subject"] == "claim:codex-tools-1|" + UUIDS["codex-tools-1"]
+    assert rules["expired_claim"]["subject"] == "claim:codex-tools-1|" + UUIDS["codex-tools-1"] + ":task-tools"
     assert "not completed work" in rules["expired_claim"]["observation"]
     assert rules["stale_vote"]["actors"] == ["claude-rco-2"]
     assert rules["stale_vote"]["refs"] == sorted([ref(f"vote:7:claude-rco-2:rco_pass:{OLD}"), ref("pr:7")])
@@ -154,7 +176,7 @@ def test_lease_ttl_and_grace_boundaries_are_pure_functions_of_as_of():
     ]
     tensions = mind.reflection(_snapshot(lanes=lanes, facts=facts))["tensions"]
     subjects = sorted(tension["subject"] for tension in tensions)
-    assert subjects == ["claim:fable-5|" + UUIDS["fable-5"], "request:grace-exact", "request:ttl-live"]
+    assert subjects == ["claim:fable-5|" + UUIDS["fable-5"] + ":task-at", "request:grace-exact", "request:ttl-live"]
 
 
 def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_suggestion():
@@ -237,10 +259,20 @@ def test_a_veto_is_never_read_as_cleared_and_an_undeclared_identity_fills_no_slo
     no_head["veto_observations"] = [_veto("claude-rco-1", 10, "UNKNOWN")]
     rules = _rules(mind.reflection(_snapshot(prs=[(key, no_head)])))
     assert set(rules) == {"veto_observed"} and rules["veto_observed"]["subject"] == "pr:10:veto:claude-rco-1:UNKNOWN"
+    # An undeclared identity as the core emits it (agent_uuid UNKNOWN, verification unverified) fills no slot.
     undeclared = copy.deepcopy(pr)
-    undeclared["votes"].append({**_vote("claude-rco-2", 10, HEAD), "agent_uuid": "UNKNOWN"})
-    attention = mind.reflection(_snapshot(prs=[(key, undeclared)]))["attention"]
-    assert [(item["kind"], item["actors"]) for item in attention] == [("last_missing_vote", ["claude-rco-2"])]
+    undeclared["votes"].append({**_vote("claude-rco-2", 10, HEAD), "agent_uuid": "UNKNOWN",
+                                "verification": "unverified"})
+    fields = mind.reflection(_snapshot(prs=[(key, undeclared)]))
+    assert [(item["kind"], item["actors"]) for item in fields["attention"]] == [("last_missing_vote", ["claude-rco-2"])]
+    assert fields["tensions"] == []
+    # A row whose agent_uuid and verification disagree is refused by position and fills no slot either.
+    for disagreeing in ({"agent_uuid": "UNKNOWN"}, {"verification": "unverified"}, {"verification": "UNKNOWN"}):
+        refused = copy.deepcopy(pr)
+        refused["votes"].append({**_vote("claude-rco-2", 10, HEAD), **disagreeing})
+        fields = mind.reflection(_snapshot(prs=[(key, refused)]))
+        assert (fields["attention"][0]["kind"], fields["attention"][0]["actors"]) == ("last_missing_vote", ["claude-rco-2"])
+        assert [tension["subject"] for tension in fields["tensions"]] == ["prs[0].votes[3]"]
     declared = copy.deepcopy(pr)
     declared["votes"].append(_vote("claude-rco-2", 10, HEAD))
     assert mind.reflection(_snapshot(prs=[(key, declared)]))["attention"] == []
@@ -329,12 +361,124 @@ def test_a_row_without_a_valid_ref_or_outside_the_allowlist_is_refused_by_positi
     lambda claim: claim.update(expired=False),
     lambda claim: claim.update(write_scope={"tools": True}),
     lambda claim: claim.update(lease_expires_utc="2026-02-30T00:00:00Z"),
-])
+    # The lane-level fields must be what the by_task rows give, and the rows must exist with unique task ids.
+    lambda claim: claim.update(write_scope=["a.py", "b.py"]),
+    lambda claim: claim.update(write_scope=[]),
+    lambda claim: claim.update(lease_expires_utc="UNKNOWN", expired="UNKNOWN"),
+    lambda claim: claim.pop("by_task"),
+    lambda claim: claim.update(by_task={"task-self": claim["by_task"][0]}),
+    lambda claim: claim["by_task"].append(dict(claim["by_task"][0])),
+], ids=["expired", "scope_shape", "lease_calendar", "scope_extra", "scope_missing", "lease_not_common",
+        "no_by_task", "by_task_dict", "task_twice"])
 def test_a_claim_that_contradicts_itself_is_refused(change):
     claim = _claim(["a.py"], AS_OF, "self")
     change(claim)
     fields = mind.reflection(_snapshot(lanes=[_lane("fable-5", claim)]))
     assert [(tension["rule"], tension["subject"]) for tension in fields["tensions"]] == [("refused_input", "lanes[0].claims")]
+
+
+LIVE = "2026-01-01T01:00:00Z"
+
+
+def test_every_task_claim_of_a_lane_counts_on_its_own():
+    """Core 58a30453 by_task: one lane holds several task claims; each overlaps or expires on its own lease."""
+    lanes = [_lane("codex-lead-1", _claims(_task_claim(["docs/plan.md"], LIVE, "plan"),
+                                            _task_claim(["tools/old.py"], AS_OF, "old"))),
+             _lane("fable-5", _claims(_task_claim(["docs"], LIVE, "docs"),
+                                      _task_claim(["tools/old.py"], LIVE, "tools")))]
+    rules = _rules(mind.reflection(_snapshot(lanes=lanes)))
+    assert set(rules) == {"claim_overlap", "expired_claim"}
+    # The expired task claim no longer counts for overlap; the live one of the same lane does.
+    assert rules["claim_overlap"]["observation"] == "overlapping paths: docs ~ docs/plan.md"
+    assert rules["claim_overlap"]["refs"] == sorted([ref("claim:plan"), ref("claim:docs")])
+    assert rules["expired_claim"]["subject"] == f"claim:codex-lead-1|{UUIDS['codex-lead-1']}:task-old"
+    assert rules["expired_claim"]["claim"] == "codex-lead-1 holds a write claim for task-old"
+
+
+def test_a_claim_with_an_unknown_lease_still_counts_for_overlap():
+    """Bridge claim events carry no lease, so the core gives UNKNOWN: such a claim is not expired and still counts."""
+    lanes = [_lane("claude-rco-1", _claim(["tools/x.py"], "UNKNOWN", "rco1")),
+             _lane("fable-5", _claim(["tools"], "UNKNOWN", "fable"))]
+    rules = _rules(mind.reflection(_snapshot(lanes=lanes)))
+    assert set(rules) == {"claim_overlap"}
+    assert rules["claim_overlap"]["claim"] == "claude-rco-1 and fable-5 both hold write claims that are not expired"
+
+
+@pytest.mark.parametrize("change", [
+    lambda row: row.update(expired=True),
+    lambda row: row.update(task_id="task-zbad with space"),
+    lambda row: row.update(source_refs=["not-a-ref"]),
+    lambda row: row.update(write_scope=["../outside.py"]),
+], ids=["expired", "task_id", "refs", "path"])
+def test_an_unusable_task_row_refuses_only_itself_and_the_other_task_claims_still_count(change):
+    rows = [_task_claim(["docs/a.md"], LIVE, "keep"), _task_claim(["tools"], LIVE, "zbad")]
+    change(rows[1])
+    claims = _claims(*rows)
+    # The lane-level fields stay what the rows give (the core's union), with only valid refs at lane level.
+    claims["source_refs"] = [value for value in claims["source_refs"] if len(value) == 64]
+    lanes = [_lane("claude-rco-1", _claim(["docs", "tools/x.py"], LIVE, "rco1")), _lane("fable-5", claims)]
+    fields = mind.reflection(_snapshot(lanes=lanes))
+    assert sorted((tension["rule"], tension["subject"]) for tension in fields["tensions"]) == [
+        ("claim_overlap", f"claims:claude-rco-1|{UUIDS['claude-rco-1']}|fable-5|{UUIDS['fable-5']}"),
+        ("refused_input", "lanes[1].claims.by_task[1]")]
+    assert _rules(fields)["claim_overlap"]["observation"] == "overlapping paths: docs ~ docs/a.md"
+
+
+def test_declared_paths_with_a_space_or_a_colon_are_live_claims_and_overlap():
+    """Lead 04:52Z: the core declares paths with a space or a colon; the workspace keeps them as live claims."""
+    lanes = [_lane("claude-rco-2", _claim(["docs\\My Notes\\", "resource:Grok-Lock"], LIVE, "rco2")),
+             _lane("fable-5", _claim(["docs/my notes/x y.md", "resource:grok-lock"], LIVE, "fable"))]
+    fields = mind.reflection(_snapshot(lanes=lanes))
+    assert [tension["rule"] for tension in fields["tensions"]] == ["claim_overlap"]
+    assert fields["tensions"][0]["observation"] == \
+        "overlapping paths: docs/my notes ~ docs/my notes/x y.md, resource:grok-lock"
+
+
+@pytest.mark.parametrize("path", ["../outside.py", "tools/../../outside.py", "tools/.../x.py", "tools/ ./x.py",
+                                  "tools/a\tb.py", "tools/" + "x" * 2048, "docs/x " + GUARD_WORDS[0].lower() + "/a.md"],
+                         ids=["parent", "climbs_out", "dots_only", "dot_space", "tab", "overlong", "guarded"])
+def test_an_unsafe_declared_path_refuses_its_claim_by_position_without_echo_and_keeps_the_others(path):
+    """Never opened or resolved; a path that climbs out, a dots-only segment, a control character, an overlong or
+    guarded path refuses the claim it is in, named by position only, and every other live claim still counts."""
+    lanes = [_lane("claude-rco-1", _claim(["tools/x.py"], LIVE, "rco1")),
+             _lane("claude-rco-2", _claim(["tools", path], LIVE, "rco2")),
+             _lane("fable-5", _claim(["tools/x.py", "docs/a.md"], LIVE, "fable"))]
+    fields = mind.reflection(_snapshot(lanes=lanes))
+    assert [(tension["rule"], tension["subject"]) for tension in fields["tensions"]] == [
+        ("claim_overlap", f"claims:claude-rco-1|{UUIDS['claude-rco-1']}|fable-5|{UUIDS['fable-5']}"),
+        ("refused_input", "lanes[1].claims.by_task[0]")]
+    text = json.dumps(fields, ensure_ascii=False).casefold()
+    assert path.casefold() not in text and "outside" not in text and "x" * 60 not in text
+    with pytest.raises(mind.WorkspaceError):
+        mind.scopes_overlap(["tools"], [path])
+
+
+def test_a_released_claim_as_the_core_emits_it_is_an_empty_scope_not_a_refusal():
+    """Core 58a30453: releasing the last task claim leaves no by_task row, an empty scope and an UNKNOWN lease."""
+    released = {"write_scope": [], "source_refs": [ref("release:fable")], "verification": "declared",
+                "lease_expires_utc": "UNKNOWN", "expired": "UNKNOWN", "by_task": []}
+    lanes = [_lane("claude-rco-2", _claim(["tools"], LIVE, "rco2")), _lane("fable-5", released)]
+    assert mind.reflection(_snapshot(lanes=lanes))["tensions"] == []
+
+
+@pytest.mark.parametrize("status", ["UNKNOWN", "changes-requested", "hold:blocked", "rco_pass_withdrawn"])
+def test_a_veto_with_any_safe_status_is_observed_and_blocks_every_suggestion(status):
+    """Core 218e6547 keeps the status that was sent, as a token or UNKNOWN; any of them is a veto observation."""
+    key, pr = _pr(10, votes=ALMOST)
+    pr["veto_observations"] = [_veto("claude-rco-2", 10, HEAD, status)]
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]))
+    assert [tension["rule"] for tension in fields["tensions"]] == ["veto_observed"]
+    assert all(item["kind"] in ("tension", "tension_high") for item in fields["attention"])
+
+
+def test_a_vote_the_core_retired_at_the_pr_head_is_stale_and_fills_no_slot():
+    """Core 218e6547: a later blocking signal of the same identity moves its pass to stale_votes at the same head."""
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1", "claude-rco-1"], stale=[("claude-rco-2", HEAD)])
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]))
+    assert [(item["kind"], item["actors"]) for item in fields["attention"]][0] == ("last_missing_vote", ["claude-rco-2"])
+    stale = _rules(fields)["stale_vote"]
+    assert stale["observation"] == "the core retired it at the PR head; a stale vote cannot approve it"
+    assert stale["subject"] == f"pr:10:claude-rco-2:{HEAD[:12]}"
 
 
 def test_an_invalid_calendar_time_is_a_fixed_refusal_not_a_traceback(tmp_path, capsys):
@@ -378,6 +522,9 @@ def _shuffled(snapshot, shuffler):
     for lane in out["lanes"].values():
         if isinstance(lane["claims"], dict):
             shuffler.shuffle(lane["claims"]["write_scope"])
+            shuffler.shuffle(lane["claims"]["by_task"])
+            for task in lane["claims"]["by_task"]:
+                shuffler.shuffle(task["write_scope"])
     shuffler.shuffle(out["facts"])
     for fact in out["facts"]:
         shuffler.shuffle(fact["value"]["expected_responders"])
@@ -424,6 +571,7 @@ def test_tension_ids_are_structural_and_lifecycle_follows_the_previous_snapshot(
     # New evidence for the same contradiction (another ref) keeps the id.
     moved = copy.deepcopy(lanes)
     moved[0][1]["claims"]["source_refs"] = [ref("claim:old:refreshed")]
+    moved[0][1]["claims"]["by_task"][0]["source_refs"] = [ref("claim:old:refreshed")]
     second = mind.reflect(_snapshot(lanes=moved, coverage="partial"), first)
     lifecycle = {tension["tension_id"]: (tension["rule"], tension["lifecycle"]) for tension in second["tensions"]}
     assert lifecycle[expired_id] == ("expired_claim", "persisting")
@@ -457,7 +605,7 @@ def test_guarded_words_in_input_rows_are_refused_by_position_and_never_derived()
     fields = mind.reflection(_snapshot(lanes=lanes, facts=facts, prs=prs))
     _assert_no_guard_word(json.dumps(fields))
     refused = sorted(tension["subject"] for tension in fields["tensions"] if tension["rule"] == "refused_input")
-    assert refused == ["facts[0]", "lanes[0].claims", "lanes[1].claims", "prs[0].votes[0]"]
+    assert refused == ["facts[0]", "lanes[0].claims.by_task[0]", "lanes[1].claims.by_task[0]", "prs[0].votes[0]"]
 
     def leaking(inputs):
         return [mind._tension("stale_vote", "pr:1", "vote by x" + GUARD_WORDS[0], "old head", [], [ref("v")])]
@@ -599,6 +747,13 @@ def test_main_prints_only_to_stdout_and_has_no_file_writer(tmp_path, capsys):
     (["tools/board.py"], ["tools"], ["tools ~ tools/board.py"]),
     (["tools/a"], ["tools/ab.py"], []),
     ([".codex-audit/x/"], [".codex-audit/x"], [".codex-audit/x"]),
+    (["docs/My Notes/a.md"], ["docs/my notes"], ["docs/my notes ~ docs/my notes/a.md"]),
+    (["resource:grok-lock"], ["Resource:Grok-Lock"], ["resource:grok-lock"]),
+    (["tools/sub/../board.py"], ["tools/board.py"], ["tools/board.py"]),
+    (["tools/board.py. "], ["tools/board.py"], ["tools/board.py"]),
+    (["."], ["tools/board.py"], [". ~ tools/board.py"]),
+    (["C:/x"], ["c:\\x\\y"], ["c:/x ~ c:/x/y"]),
+    (["docs/a b.md"], ["docs/a  b.md"], []),
 ])
 def test_claim_scopes_overlap_the_way_windows_compares_paths_whichever_side_is_which(left, right, hit):
     assert mind.scopes_overlap(left, right) == hit
@@ -616,23 +771,30 @@ def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
 
 
 # The positive twin: an actual output of the projector core, tools/wd_bridge_mind.py at codex-tools-1/mind-20261013
-# commit ac61455111bf07b3c05159ce16fde21ddf17c4e6 (blob da7543dfbc9d1341bced07681e69e93ae04863ab), from
+# commit 58a30453cfa29d041f00b3b1b9254305963a1916 (blob 1665da2eebfab7b5896249944495b5942976418e), from
 # full_rebuild(CORE_TWIN_EVENTS as {ref: event_id(event), event}, source=CORE_TWIN_SOURCE, as_of_utc=CORE_TWIN_AS_OF)
 # and snapshot(). The core ran from a git-archive copy of that commit; CORE_TWIN_SHA256 is the sha256 of its canonical
 # bytes, and CORE_BLOCKED_SHA256 that of blocked_snapshot(state, offset=1500, reason="canonical_event_invalid") on the
 # same state. Until the core lands on main the recorded bytes stand in for it; once it does, the twin test reruns it.
-CORE_TWIN_SHA256 = "5c0f98288db4be9242c0a0d465d871bef3606a920e48f4d94635a1f0f18ea148"
-CORE_BLOCKED_SHA256 = "d0c2c206ba91482053959cadeb2fb7837d2a0a1a20c0903df39928f763116d23"
+# The events hold a withdrawn pass (PR1895), a pass from an undeclared identity (PR1896), two task claims of one lane
+# with a space and a colon in their paths, one of them released (codex-lead-1), an expired claim and a stale vote.
+CORE_TWIN_SHA256 = "c483ec114ef1d7dbfaa9ef494c16083843b3d3177dfb1a7ca584c8b5abdde316"
+CORE_BLOCKED_SHA256 = "a7e2b9dd23b0203f8831c711fbd86be2f2408c874344480bb9469fe8cc6031c7"
 CORE_TWIN_AS_OF = "2026-10-13T03:55:00Z"
 CORE_TWIN_SOURCE = {"log_identity": "fixture-log", "generation": "g1", "cursor_start": 0, "cursor_end": 1500,
-                    "coverage": "complete", "event_count": 17}
+                    "coverage": "complete", "event_count": 32}
 _TWIN_UUID = {"fable-5": "f5", "claude-rco-1": "c1", "claude-rco-2": "c2", "codex-lead-1": "a1", "codex-tools-1": "b1"}
 H_OLD, H_NEW, H_1893, H_1890 = "0b" * 20, "1c" * 20, "2d" * 20, "3e" * 20
+H_1895, H_1896 = "4f" * 20, "5a" * 20
 
 
-def _event(ts, agent, kind, status, task, payload):
-    return {"ts_utc": f"2026-10-13T{ts}Z", "agent": agent, "agent_uuid": "00000000-0000-4000-8000-0000000000"
-            + _TWIN_UUID[agent], "type": kind, "status": status, "task_id": task, "payload": payload}
+def _event(ts, agent, kind, status, task, payload, uuid=None):
+    """One synthetic bridge event of a declared identity, or of an undeclared one when ``uuid`` is given."""
+    code = _TWIN_UUID[agent]
+    return {"ts_utc": f"2026-10-13T{ts}Z", "agent": agent,
+            "agent_uuid": uuid if uuid is not None else "00000000-0000-4000-8000-0000000000" + code,
+            "session_id": f"s-{code}", "run_id": f"r-{code}", "type": kind, "status": status, "task_id": task,
+            "payload": payload}
 
 
 CORE_TWIN_EVENTS = [
@@ -640,30 +802,68 @@ CORE_TWIN_EVENTS = [
            {"pr": 1890, "head": H_1890, "class": "b", "required_checks_green": True}),
     _event("03:06:00", "claude-rco-1", "finding", "changes_requested", "claude-rco-1/review-1890",
            {"pr": 1890, "head": H_1890}),
-    _event("03:07:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1890", {"pr": 1890, "head": H_1890}),
+    _event("03:07:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1890",
+           {"pr": 1890, "head": H_1890}),
     _event("03:10:00", "codex-lead-1", "message", "ready", "codex-lead-1/train-1893",
            {"pr": 1893, "head": H_1893, "class": "a", "required_checks_green": True}),
     _event("03:12:00", "codex-lead-1", "decision", "build_consensus_pass", "codex-lead-1/train-1893",
            {"pr": 1893, "head": H_1893}),
     _event("03:13:00", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/train-1893",
            {"pr": 1893, "head": H_1893}),
-    _event("03:14:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1893", {"pr": 1893, "head": H_1893}),
-    _event("03:15:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1893", {"pr": 1893, "head": H_1893}),
+    _event("03:14:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1893",
+           {"pr": 1893, "head": H_1893}),
+    _event("03:15:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1893",
+           {"pr": 1893, "head": H_1893}),
     _event("03:20:00", "codex-tools-1", "claim", "active", "codex-tools-1/mind-20261013",
            {"write_scope": ["tools/wd_bridge_mind.py", "tests/tools/test_wd_bridge_mind.py"],
             "claim_lease_expires_utc": "2026-10-13T03:50:00Z"}),
+    _event("03:21:00", "codex-lead-1", "message", "ready", "codex-lead-1/train-1895",
+           {"pr": 1895, "head": H_1895, "class": "b", "required_checks_green": True}),
+    _event("03:22:00", "codex-lead-1", "decision", "build_consensus_pass", "codex-lead-1/train-1895",
+           {"pr": 1895, "head": H_1895}),
+    _event("03:23:00", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/train-1895",
+           {"pr": 1895, "head": H_1895}),
+    _event("03:24:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1895",
+           {"pr": 1895, "head": H_1895}),
+    _event("03:25:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1895",
+           {"pr": 1895, "head": H_1895}),
+    _event("03:26:00", "claude-rco-2", "decision", "rco_pass_withdrawn", "claude-rco-2/review-1895",
+           {"pr": 1895, "head": H_1895}),
+    _event("03:27:00", "codex-lead-1", "message", "ready", "codex-lead-1/train-1896",
+           {"pr": 1896, "head": H_1896, "class": "b", "required_checks_green": True}),
+    _event("03:27:10", "codex-lead-1", "decision", "build_consensus_pass", "codex-lead-1/train-1896",
+           {"pr": 1896, "head": H_1896}),
+    _event("03:27:20", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/train-1896",
+           {"pr": 1896, "head": H_1896}),
+    _event("03:27:30", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1896",
+           {"pr": 1896, "head": H_1896}),
+    _event("03:28:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1896",
+           {"pr": 1896, "head": H_1896}, uuid="not-a-uuid"),
     _event("03:30:00", "fable-5", "message", "review_requested", "fable-5/bridge-mind-workspace-20261013",
            {"pr": 1899, "head": H_OLD, "class": "b"}),
-    _event("03:35:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1899", {"pr": 1899, "head": H_OLD}),
+    _event("03:31:00", "codex-lead-1", "claim", "active", "codex-lead-1/plan-notes",
+           {"write_scope": ["docs/My Notes/plan.md", "resource:grok-lock"],
+            "claim_lease_expires_utc": "2026-10-13T04:30:00Z"}),
+    _event("03:32:00", "claude-rco-1", "claim", "active", "claude-rco-1/notes-review",
+           {"write_scope": ["docs/my notes", "Resource:Grok-Lock"],
+            "claim_lease_expires_utc": "2026-10-13T04:30:00Z"}),
+    _event("03:33:00", "codex-lead-1", "claim", "active", "codex-lead-1/root-notes",
+           {"write_scope": ["docs/root.md"], "claim_lease_expires_utc": "2026-10-13T04:30:00Z"}),
+    _event("03:34:00", "codex-lead-1", "release", "released", "codex-lead-1/root-notes", {}),
+    _event("03:35:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1899",
+           {"pr": 1899, "head": H_OLD}),
     _event("03:40:00", "fable-5", "claim", "active", "fable-5/bridge-mind-workspace-20261013",
            {"write_scope": ["tools/bridge_mind_workspace.py", "tests/tools/test_bridge_mind_workspace.py"],
             "claim_lease_expires_utc": "2026-10-13T04:30:00Z"}),
     _event("03:41:00", "claude-rco-2", "claim", "active", "claude-rco-2/mind-probes",
-           {"write_scope": ["tests/tools/test_bridge_mind_workspace.py"], "claim_lease_expires_utc": "2026-10-13T04:20:00Z"}),
+           {"write_scope": ["tests/tools/test_bridge_mind_workspace.py"],
+            "claim_lease_expires_utc": "2026-10-13T04:20:00Z"}),
     _event("03:45:00", "fable-5", "message", "head_updated", "fable-5/bridge-mind-workspace-20261013",
            {"pr": 1899, "head": H_NEW, "required_checks_green": True}),
-    _event("03:50:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1899", {"pr": 1899, "head": H_NEW}),
-    _event("03:51:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1899", {"pr": 1899, "head": H_NEW}),
+    _event("03:50:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1899",
+           {"pr": 1899, "head": H_NEW}),
+    _event("03:51:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1899",
+           {"pr": 1899, "head": H_NEW}),
     _event("03:52:00", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/review-1899",
            {"pr": 1899, "head": H_NEW}),
 ]
@@ -673,15 +873,15 @@ CORE_TWIN_JSON = r"""
  "authority": "none",
  "facts": [
   {
-   "canonical_sha256": "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
+   "canonical_sha256": "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
    "fact_id": "fbe79c19ff4c7450d31ab97a89e7c565c64aef9c6762f636450d2fca9ce29f9e",
    "kind": "pr_observation",
    "observed_at_utc": "2026-10-13T03:52:00Z",
    "salience": 80,
    "source_refs": [
-    "342cab9f3d31b20a8af35d30bf08ac99c6828e4870a375f0f9136aad23180543",
-    "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
-    "94731d6594ab48e4698a56fe9a79bcf4135a014b79bd2061f6495d7167ab1a69"
+    "0f39860f875a930842320055220ec0b0ba3160adcc0b4ef1a6b586a6badfee4f",
+    "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
+    "9e05f37b0a4f23f69563ed6466315fbc4435db46ed411178c551274b94883d49"
    ],
    "ttl_seconds": 300,
    "value": {
@@ -691,13 +891,13 @@ CORE_TWIN_JSON = r"""
    "verification": "declared"
   },
   {
-   "canonical_sha256": "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43",
+   "canonical_sha256": "8303eb5a7eb4556dcc42ac038f3bf13663e50d42cd607224aa280e959f3c89ea",
    "fact_id": "f66bf932b5e74ef1067a8d5bafcd5aa9843bcaaefc0da6b4108cfadd2af29ee0",
    "kind": "lane_observation",
    "observed_at_utc": "2026-10-13T03:51:00Z",
    "salience": 50,
    "source_refs": [
-    "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
+    "8303eb5a7eb4556dcc42ac038f3bf13663e50d42cd607224aa280e959f3c89ea"
    ],
    "ttl_seconds": 300,
    "value": {
@@ -708,13 +908,13 @@ CORE_TWIN_JSON = r"""
    "verification": "declared"
   },
   {
-   "canonical_sha256": "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
+   "canonical_sha256": "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
    "fact_id": "9cdb159f675a8fd307d4e28e1b62b17ae6dc44477b25821d5831daaae648f98e",
    "kind": "lane_observation",
    "observed_at_utc": "2026-10-13T03:52:00Z",
    "salience": 50,
    "source_refs": [
-    "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef"
+    "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06"
    ],
    "ttl_seconds": 300,
    "value": {
@@ -729,17 +929,46 @@ CORE_TWIN_JSON = r"""
   "claude-rco-1|00000000-0000-4000-8000-0000000000c1": {
    "agent": "claude-rco-1",
    "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
-   "claims": "UNKNOWN",
+   "claims": {
+    "by_task": [
+     {
+      "expired": false,
+      "lease_expires_utc": "2026-10-13T04:30:00Z",
+      "owner_run_id": "r-c1",
+      "owner_session_id": "s-c1",
+      "source_refs": [
+       "646f3c22bb984bc6886f8ded3eb12b9f70ccb7454e777ccff2bbff0bcdfbe1f3"
+      ],
+      "task_id": "claude-rco-1/notes-review",
+      "verification": "declared",
+      "write_scope": [
+       "docs/my notes",
+       "Resource:Grok-Lock"
+      ]
+     }
+    ],
+    "expired": false,
+    "lease_expires_utc": "2026-10-13T04:30:00Z",
+    "source_refs": [
+     "646f3c22bb984bc6886f8ded3eb12b9f70ccb7454e777ccff2bbff0bcdfbe1f3"
+    ],
+    "verification": "declared",
+    "write_scope": [
+     "Resource:Grok-Lock",
+     "docs/my notes"
+    ]
+   },
    "current_task": "claude-rco-1/review-1899",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43",
+   "last_event_ref": "8303eb5a7eb4556dcc42ac038f3bf13663e50d42cd607224aa280e959f3c89ea",
    "last_event_utc": "2026-10-13T03:51:00Z",
    "next_question": "UNKNOWN",
    "observation_age_seconds": 240.0,
-   "run_id": "UNKNOWN",
-   "session_id": "UNKNOWN",
+   "run_id": "r-c1",
+   "session_id": "s-c1",
    "source_refs": [
-    "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
+    "646f3c22bb984bc6886f8ded3eb12b9f70ccb7454e777ccff2bbff0bcdfbe1f3",
+    "8303eb5a7eb4556dcc42ac038f3bf13663e50d42cd607224aa280e959f3c89ea"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -752,10 +981,26 @@ CORE_TWIN_JSON = r"""
    "agent": "claude-rco-2",
    "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
    "claims": {
+    "by_task": [
+     {
+      "expired": false,
+      "lease_expires_utc": "2026-10-13T04:20:00Z",
+      "owner_run_id": "r-c2",
+      "owner_session_id": "s-c2",
+      "source_refs": [
+       "9c707688210250fff0f1c44bcd47356b65690e022bdd07283cc2121fef23098a"
+      ],
+      "task_id": "claude-rco-2/mind-probes",
+      "verification": "declared",
+      "write_scope": [
+       "tests/tools/test_bridge_mind_workspace.py"
+      ]
+     }
+    ],
     "expired": false,
     "lease_expires_utc": "2026-10-13T04:20:00Z",
     "source_refs": [
-     "e871ab9152092e382cc07582f4816e81e48e822e8ff88e84b2ab0cc9d13bc7f2"
+     "9c707688210250fff0f1c44bcd47356b65690e022bdd07283cc2121fef23098a"
     ],
     "verification": "declared",
     "write_scope": [
@@ -764,15 +1009,15 @@ CORE_TWIN_JSON = r"""
    },
    "current_task": "claude-rco-2/review-1899",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "b85f650f597bd9e25ce43a32d4f68bcddf947598a3653c438daa0ff608518b20",
+   "last_event_ref": "0b31c62369dde32aef0822301a81d22271bae1ce6d71e37380d521cbb2046fe5",
    "last_event_utc": "2026-10-13T03:50:00Z",
    "next_question": "UNKNOWN",
    "observation_age_seconds": 300.0,
-   "run_id": "UNKNOWN",
-   "session_id": "UNKNOWN",
+   "run_id": "r-c2",
+   "session_id": "s-c2",
    "source_refs": [
-    "b85f650f597bd9e25ce43a32d4f68bcddf947598a3653c438daa0ff608518b20",
-    "e871ab9152092e382cc07582f4816e81e48e822e8ff88e84b2ab0cc9d13bc7f2"
+    "0b31c62369dde32aef0822301a81d22271bae1ce6d71e37380d521cbb2046fe5",
+    "9c707688210250fff0f1c44bcd47356b65690e022bdd07283cc2121fef23098a"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -781,20 +1026,71 @@ CORE_TWIN_JSON = r"""
    "verification": "declared",
    "waits": "UNKNOWN"
   },
+  "claude-rco-2|UNKNOWN|80343b3c2262b84af2dae409219162f87d4e17dbe935c4d7e1024da366ec71fa": {
+   "agent": "claude-rco-2",
+   "agent_uuid": "UNKNOWN",
+   "claims": "UNKNOWN",
+   "current_task": "claude-rco-2/review-1896",
+   "idle_status": "UNKNOWN",
+   "last_event_ref": "80343b3c2262b84af2dae409219162f87d4e17dbe935c4d7e1024da366ec71fa",
+   "last_event_utc": "2026-10-13T03:28:00Z",
+   "next_question": "UNKNOWN",
+   "observation_age_seconds": 1620.0,
+   "run_id": "r-c2",
+   "session_id": "s-c2",
+   "source_refs": [
+    "80343b3c2262b84af2dae409219162f87d4e17dbe935c4d7e1024da366ec71fa"
+   ],
+   "uncertainty": [
+    "origin_not_authenticated",
+    "native_readiness_UNKNOWN"
+   ],
+   "verification": "unverified",
+   "waits": "UNKNOWN"
+  },
   "codex-lead-1|00000000-0000-4000-8000-0000000000a1": {
    "agent": "codex-lead-1",
    "agent_uuid": "00000000-0000-4000-8000-0000000000a1",
-   "claims": "UNKNOWN",
-   "current_task": "codex-lead-1/train-1893",
+   "claims": {
+    "by_task": [
+     {
+      "expired": false,
+      "lease_expires_utc": "2026-10-13T04:30:00Z",
+      "owner_run_id": "r-a1",
+      "owner_session_id": "s-a1",
+      "source_refs": [
+       "4723b6587032f3d3799247fc31bb0d2b50f00fed45e09ea0c599fcb34245b421"
+      ],
+      "task_id": "codex-lead-1/plan-notes",
+      "verification": "declared",
+      "write_scope": [
+       "docs/My Notes/plan.md",
+       "resource:grok-lock"
+      ]
+     }
+    ],
+    "expired": false,
+    "lease_expires_utc": "2026-10-13T04:30:00Z",
+    "source_refs": [
+     "4723b6587032f3d3799247fc31bb0d2b50f00fed45e09ea0c599fcb34245b421"
+    ],
+    "verification": "declared",
+    "write_scope": [
+     "docs/My Notes/plan.md",
+     "resource:grok-lock"
+    ]
+   },
+   "current_task": "codex-lead-1/root-notes",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "f5d3b310396af8135c341735ecbb6a3409a1db68ce36da0e5af7c16372333115",
-   "last_event_utc": "2026-10-13T03:12:00Z",
+   "last_event_ref": "202603a083b24a9bf4ab50aca7c908dbe8b81ec9fc1d0d81baa3d1818e3c8d86",
+   "last_event_utc": "2026-10-13T03:34:00Z",
    "next_question": "UNKNOWN",
-   "observation_age_seconds": 2580.0,
-   "run_id": "UNKNOWN",
-   "session_id": "UNKNOWN",
+   "observation_age_seconds": 1260.0,
+   "run_id": "r-a1",
+   "session_id": "s-a1",
    "source_refs": [
-    "f5d3b310396af8135c341735ecbb6a3409a1db68ce36da0e5af7c16372333115"
+    "202603a083b24a9bf4ab50aca7c908dbe8b81ec9fc1d0d81baa3d1818e3c8d86",
+    "4723b6587032f3d3799247fc31bb0d2b50f00fed45e09ea0c599fcb34245b421"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -807,28 +1103,45 @@ CORE_TWIN_JSON = r"""
    "agent": "codex-tools-1",
    "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
    "claims": {
+    "by_task": [
+     {
+      "expired": true,
+      "lease_expires_utc": "2026-10-13T03:50:00Z",
+      "owner_run_id": "r-b1",
+      "owner_session_id": "s-b1",
+      "source_refs": [
+       "ba655a56acaf2116d030b701416cd85a6d26ef375a54e523a82b58fa662723df"
+      ],
+      "task_id": "codex-tools-1/mind-20261013",
+      "verification": "declared",
+      "write_scope": [
+       "tools/wd_bridge_mind.py",
+       "tests/tools/test_wd_bridge_mind.py"
+      ]
+     }
+    ],
     "expired": true,
     "lease_expires_utc": "2026-10-13T03:50:00Z",
     "source_refs": [
-     "cfbd376f6cbe4fb3b9556ad42b75d7c025836ca9c919eac8f2536a9320b53e93"
+     "ba655a56acaf2116d030b701416cd85a6d26ef375a54e523a82b58fa662723df"
     ],
     "verification": "declared",
     "write_scope": [
-     "tools/wd_bridge_mind.py",
-     "tests/tools/test_wd_bridge_mind.py"
+     "tests/tools/test_wd_bridge_mind.py",
+     "tools/wd_bridge_mind.py"
     ]
    },
    "current_task": "codex-tools-1/review-1899",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
+   "last_event_ref": "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
    "last_event_utc": "2026-10-13T03:52:00Z",
    "next_question": "UNKNOWN",
    "observation_age_seconds": 180.0,
-   "run_id": "UNKNOWN",
-   "session_id": "UNKNOWN",
+   "run_id": "r-b1",
+   "session_id": "s-b1",
    "source_refs": [
-    "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
-    "cfbd376f6cbe4fb3b9556ad42b75d7c025836ca9c919eac8f2536a9320b53e93"
+    "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
+    "ba655a56acaf2116d030b701416cd85a6d26ef375a54e523a82b58fa662723df"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -841,28 +1154,45 @@ CORE_TWIN_JSON = r"""
    "agent": "fable-5",
    "agent_uuid": "00000000-0000-4000-8000-0000000000f5",
    "claims": {
+    "by_task": [
+     {
+      "expired": false,
+      "lease_expires_utc": "2026-10-13T04:30:00Z",
+      "owner_run_id": "r-f5",
+      "owner_session_id": "s-f5",
+      "source_refs": [
+       "370fdc9bc95fedc9d0b685cf17fc379f6a0d2032cbd9b4b3d8f9c18c0353f9a1"
+      ],
+      "task_id": "fable-5/bridge-mind-workspace-20261013",
+      "verification": "declared",
+      "write_scope": [
+       "tools/bridge_mind_workspace.py",
+       "tests/tools/test_bridge_mind_workspace.py"
+      ]
+     }
+    ],
     "expired": false,
     "lease_expires_utc": "2026-10-13T04:30:00Z",
     "source_refs": [
-     "0a5764b2c622f14057c2ec1b7aab3ca62c735b25f1591b416e52d204f8f82225"
+     "370fdc9bc95fedc9d0b685cf17fc379f6a0d2032cbd9b4b3d8f9c18c0353f9a1"
     ],
     "verification": "declared",
     "write_scope": [
-     "tools/bridge_mind_workspace.py",
-     "tests/tools/test_bridge_mind_workspace.py"
+     "tests/tools/test_bridge_mind_workspace.py",
+     "tools/bridge_mind_workspace.py"
     ]
    },
    "current_task": "fable-5/bridge-mind-workspace-20261013",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "94731d6594ab48e4698a56fe9a79bcf4135a014b79bd2061f6495d7167ab1a69",
+   "last_event_ref": "0f39860f875a930842320055220ec0b0ba3160adcc0b4ef1a6b586a6badfee4f",
    "last_event_utc": "2026-10-13T03:45:00Z",
    "next_question": "UNKNOWN",
    "observation_age_seconds": 600.0,
-   "run_id": "UNKNOWN",
-   "session_id": "UNKNOWN",
+   "run_id": "r-f5",
+   "session_id": "s-f5",
    "source_refs": [
-    "0a5764b2c622f14057c2ec1b7aab3ca62c735b25f1591b416e52d204f8f82225",
-    "94731d6594ab48e4698a56fe9a79bcf4135a014b79bd2061f6495d7167ab1a69"
+    "0f39860f875a930842320055220ec0b0ba3160adcc0b4ef1a6b586a6badfee4f",
+    "370fdc9bc95fedc9d0b685cf17fc379f6a0d2032cbd9b4b3d8f9c18c0353f9a1"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -894,14 +1224,14 @@ CORE_TWIN_JSON = r"""
    "reported_ci": {
     "head": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
     "source_refs": [
-     "bfe2f194c57cc1d56db69aa9e65df7090265f9bec63aa8e22d72c63acb8618b0"
+     "60442daa4004644f1b764c69335845bbd82447aa65865afbfabbec201c8b6f9a"
     ],
     "status": "reported_green",
     "verification": "declared"
    },
    "source_refs": [
-    "aae0cc7ff0f8fdb9d91354ae7f05818346939dec6c2c51b6fa3617ed5f7393ea",
-    "bfe2f194c57cc1d56db69aa9e65df7090265f9bec63aa8e22d72c63acb8618b0"
+    "60442daa4004644f1b764c69335845bbd82447aa65865afbfabbec201c8b6f9a",
+    "99b5488aab5b2d6002fe0a2d69530c242c6e105b3a4ad1548596b860ffdf9dc9"
    ],
    "stale_votes": [],
    "veto_observations": [
@@ -911,7 +1241,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
      "head": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
      "source_refs": [
-      "b957df27efe8dd10fd68864b272376a44959784bead746822262133dd6bc3a5d"
+      "88e2b130881d7adbd2b355ee962f3c017c063c3a6b348cc1d1b8197504731fd4"
      ],
      "status": "changes_requested",
      "verification": "declared"
@@ -923,7 +1253,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
      "head": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
      "source_refs": [
-      "aae0cc7ff0f8fdb9d91354ae7f05818346939dec6c2c51b6fa3617ed5f7393ea"
+      "99b5488aab5b2d6002fe0a2d69530c242c6e105b3a4ad1548596b860ffdf9dc9"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -941,14 +1271,14 @@ CORE_TWIN_JSON = r"""
    "reported_ci": {
     "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
     "source_refs": [
-     "a1a9983c919085fb37b82c78e452c6d30611b748daf5b23700a860d1c16404cc"
+     "71d91ba1a0b9b4fc22c824ec5d675f81043db77ba2e6a9e94d165c3817a77bf6"
     ],
     "status": "reported_green",
     "verification": "declared"
    },
    "source_refs": [
-    "45e84bfa0345a316612ae19ad77b8f3b93ddb98ad22941b3f4f5cfcfc9349dd9",
-    "a1a9983c919085fb37b82c78e452c6d30611b748daf5b23700a860d1c16404cc"
+    "71d91ba1a0b9b4fc22c824ec5d675f81043db77ba2e6a9e94d165c3817a77bf6",
+    "7b129d10616700ef3dfd50491f128cebde93ba2288d306ef614d33d6797af422"
    ],
    "stale_votes": [],
    "veto_observations": [],
@@ -958,7 +1288,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
      "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
      "source_refs": [
-      "518868632f7c3d30d4394b37d8c343aeb1d61fe097b5d1e6087448901ba37e0d"
+      "fd0416f22bec030e2fc40f71ab7600492a2f36cac3545fb80c7d452cdd744a19"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -968,7 +1298,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
      "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
      "source_refs": [
-      "45e84bfa0345a316612ae19ad77b8f3b93ddb98ad22941b3f4f5cfcfc9349dd9"
+      "7b129d10616700ef3dfd50491f128cebde93ba2288d306ef614d33d6797af422"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -978,7 +1308,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000a1",
      "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
      "source_refs": [
-      "f5d3b310396af8135c341735ecbb6a3409a1db68ce36da0e5af7c16372333115"
+      "a43f6a3d5559392e8fa0d8189c12aa4ece1662856189851df43bf7f9830227fd"
      ],
      "status": "build_consensus_pass",
      "verification": "declared"
@@ -988,7 +1318,150 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
      "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
      "source_refs": [
-      "a763f6f1d8f691c9e3c603a1b6e7b1e901a823aed729e82c7a6c84bea06c048f"
+      "cf83940ed7c8a6fed87c34a0b3b952af2b143923f5b8f7ff53f2ccba12c15136"
+     ],
+     "status": "build_consensus_pass",
+     "verification": "declared"
+    }
+   ]
+  },
+  "1895": {
+   "base": "UNKNOWN",
+   "class": "b",
+   "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+   "missing": [
+    "gate_eligibility_UNKNOWN"
+   ],
+   "pr": 1895,
+   "reported_ci": {
+    "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+    "source_refs": [
+     "2560322ecedaa8fad747c664263ece5419afabe41c6a495219f31e115919d89e"
+    ],
+    "status": "reported_green",
+    "verification": "declared"
+   },
+   "source_refs": [
+    "2560322ecedaa8fad747c664263ece5419afabe41c6a495219f31e115919d89e",
+    "557c98fac1ebf28936a40c149dda4d4d4c53db6d5bd448c0a9704bbac7925cc3"
+   ],
+   "stale_votes": [
+    {
+     "agent": "claude-rco-2",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
+     "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+     "source_refs": [
+      "e83a319c0621bd53b7619292e4119cd19324043da1febed3b06c0043942c3fd9"
+     ],
+     "status": "rco_pass",
+     "verification": "declared"
+    }
+   ],
+   "veto_observations": [
+    {
+     "activity": "UNKNOWN",
+     "agent": "claude-rco-2",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
+     "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+     "source_refs": [
+      "557c98fac1ebf28936a40c149dda4d4d4c53db6d5bd448c0a9704bbac7925cc3"
+     ],
+     "status": "rco_pass_withdrawn",
+     "verification": "declared"
+    }
+   ],
+   "votes": [
+    {
+     "agent": "claude-rco-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
+     "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+     "source_refs": [
+      "2b9b353d5fbca0e99a7facce9ff30c18e795f8ae724289325d543ddf83a1caee"
+     ],
+     "status": "rco_pass",
+     "verification": "declared"
+    },
+    {
+     "agent": "codex-lead-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000a1",
+     "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+     "source_refs": [
+      "473c791e7c578bb0ca9d75959165c40bebdb5e634af96090a7815d07834b68bc"
+     ],
+     "status": "build_consensus_pass",
+     "verification": "declared"
+    },
+    {
+     "agent": "codex-tools-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
+     "head": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+     "source_refs": [
+      "e1ee7f20f12c1e8bedb906fb6c6e8dbc2c8d8de29f4a49bda5a1bebd5972a794"
+     ],
+     "status": "build_consensus_pass",
+     "verification": "declared"
+    }
+   ]
+  },
+  "1896": {
+   "base": "UNKNOWN",
+   "class": "b",
+   "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "missing": [
+    "gate_eligibility_UNKNOWN"
+   ],
+   "pr": 1896,
+   "reported_ci": {
+    "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "source_refs": [
+     "4a95fd4e879d66478cceab39481e89cf3e8f2485607249f511847a1755dc105d"
+    ],
+    "status": "reported_green",
+    "verification": "declared"
+   },
+   "source_refs": [
+    "4a95fd4e879d66478cceab39481e89cf3e8f2485607249f511847a1755dc105d",
+    "80343b3c2262b84af2dae409219162f87d4e17dbe935c4d7e1024da366ec71fa"
+   ],
+   "stale_votes": [],
+   "veto_observations": [],
+   "votes": [
+    {
+     "agent": "claude-rco-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
+     "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+     "source_refs": [
+      "cf0dd4dff93267f6cf2fc6fc3cfef7130f2c566245105688f645b8d2608787b4"
+     ],
+     "status": "rco_pass",
+     "verification": "declared"
+    },
+    {
+     "agent": "claude-rco-2",
+     "agent_uuid": "UNKNOWN",
+     "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+     "source_refs": [
+      "80343b3c2262b84af2dae409219162f87d4e17dbe935c4d7e1024da366ec71fa"
+     ],
+     "status": "rco_pass",
+     "verification": "unverified"
+    },
+    {
+     "agent": "codex-lead-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000a1",
+     "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+     "source_refs": [
+      "b395bcc080cf7594b172286ec35f71c219e4a85fa99c39350df2125a615ddee2"
+     ],
+     "status": "build_consensus_pass",
+     "verification": "declared"
+    },
+    {
+     "agent": "codex-tools-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
+     "head": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+     "source_refs": [
+      "085882e72e7fc16b2070de70eae3a8b8b51627abeeed274c03436e6e82c47509"
      ],
      "status": "build_consensus_pass",
      "verification": "declared"
@@ -1006,15 +1479,15 @@ CORE_TWIN_JSON = r"""
    "reported_ci": {
     "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
     "source_refs": [
-     "94731d6594ab48e4698a56fe9a79bcf4135a014b79bd2061f6495d7167ab1a69"
+     "0f39860f875a930842320055220ec0b0ba3160adcc0b4ef1a6b586a6badfee4f"
     ],
     "status": "reported_green",
     "verification": "declared"
    },
    "source_refs": [
-    "342cab9f3d31b20a8af35d30bf08ac99c6828e4870a375f0f9136aad23180543",
-    "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
-    "94731d6594ab48e4698a56fe9a79bcf4135a014b79bd2061f6495d7167ab1a69"
+    "0f39860f875a930842320055220ec0b0ba3160adcc0b4ef1a6b586a6badfee4f",
+    "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
+    "9e05f37b0a4f23f69563ed6466315fbc4435db46ed411178c551274b94883d49"
    ],
    "stale_votes": [
     {
@@ -1022,7 +1495,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
      "head": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
      "source_refs": [
-      "3774d7c27a790ce591f2b4fb1393987d8af0328b435ae52c4fdd90e6f86aa720"
+      "8a568778b9f01ceba403a38c958aba396afaa248941e78654f4781f2b3583811"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -1035,7 +1508,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
      "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
      "source_refs": [
-      "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
+      "8303eb5a7eb4556dcc42ac038f3bf13663e50d42cd607224aa280e959f3c89ea"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -1045,7 +1518,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
      "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
      "source_refs": [
-      "b85f650f597bd9e25ce43a32d4f68bcddf947598a3653c438daa0ff608518b20"
+      "0b31c62369dde32aef0822301a81d22271bae1ce6d71e37380d521cbb2046fe5"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -1055,7 +1528,7 @@ CORE_TWIN_JSON = r"""
      "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
      "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
      "source_refs": [
-      "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef"
+      "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06"
      ],
      "status": "build_consensus_pass",
      "verification": "declared"
@@ -1072,12 +1545,12 @@ CORE_TWIN_JSON = r"""
   "cursor_end": 1500,
   "cursor_start": 0,
   "duplicate_count": 0,
-  "event_count": 17,
+  "event_count": 32,
   "generation": "g1",
-  "last_event_ref": "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
+  "last_event_ref": "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
   "log_identity": "fixture-log",
   "max_event_utc": "2026-10-13T03:52:00Z",
-  "unique_event_count": 17
+  "unique_event_count": 32
  },
  "tensions": []
 }
@@ -1089,11 +1562,9 @@ def _core_twin():
 
 
 def _core_blocked_twin():
-    """What the core's blocked_snapshot adds to the same state: source.blocked and one core-shaped tension."""
+    """What the core's blocked_snapshot adds to the same state: source.blocked only, no reflection field."""
     twin = _core_twin()
     twin["source"]["blocked"] = {"active": True, "offset": 1500, "reason": "canonical_event_invalid"}
-    twin["tensions"] = [{"rule_id": "source_blocked", "offset": 1500, "reason": "canonical_event_invalid",
-                         "refs": [twin["source"]["last_event_ref"]]}]
     return twin
 
 
@@ -1109,46 +1580,69 @@ def test_an_actual_core_output_flows_through_the_workspace():
     assert twin["prs"]["1899"]["reported_ci"]["head"] == H_NEW and twin["prs"]["1899"]["stale_votes"][0]["head"] == H_OLD
     # The core's own facts (pr and lane observations) are carried, not refused and not derived from.
     assert {fact["kind"] for fact in twin["facts"]} == {"lane_observation", "pr_observation"}
+    # The core's 58a30453 shapes the workspace reads: an undeclared pass is unverified, a withdrawn pass is stale at
+    # the same head, and releasing one task claim of a lane keeps the other.
+    assert ("claude-rco-2", "unverified") in [(vote["agent"], vote["verification"])
+                                              for vote in twin["prs"]["1896"]["votes"]]
+    assert [vote["head"] for vote in twin["prs"]["1895"]["stale_votes"]] == [H_1895]
+    lead = twin["lanes"]["codex-lead-1|" + _event("00:00:00", "codex-lead-1", "", "", "", {})["agent_uuid"]]
+    assert [row["task_id"] for row in lead["claims"]["by_task"]] == ["codex-lead-1/plan-notes"]
     reflected = mind.reflect(twin)
-    attention = [(item["kind"], item["subject"], item["actors"]) for item in reflected["attention"]]
-    by_rule = {tension["rule"]: tension for tension in reflected["tensions"]}
-    assert attention == [
-        ("last_missing_vote", "pr:1899", ["codex-lead-1"]),
-        ("signature_only", "pr:1893", ["operator"]),
-        ("tension_high", "tension:" + by_rule["claim_overlap"]["tension_id"], ["claude-rco-2", "fable-5"]),
-        ("tension_high", "tension:" + by_rule["veto_observed"]["tension_id"], ["claude-rco-1"]),
-        ("tension", "tension:" + by_rule["stale_vote"]["tension_id"], ["claude-rco-1"]),
-        ("tension", "tension:" + by_rule["expired_claim"]["tension_id"], ["codex-tools-1"]),
-    ]
-    assert sorted(by_rule) == ["claim_overlap", "expired_claim", "stale_vote", "veto_observed"]
-    assert by_rule["veto_observed"]["refs"] == sorted({refs["03:06:00"]} | set(twin["prs"]["1890"]["source_refs"]))
-    assert by_rule["stale_vote"]["refs"] == sorted({refs["03:35:00"]} | set(twin["prs"]["1899"]["source_refs"]))
-    assert by_rule["expired_claim"]["refs"] == [refs["03:20:00"]]
-    assert by_rule["claim_overlap"]["refs"] == sorted([refs["03:40:00"], refs["03:41:00"]])
-    assert reflected["attention"][0]["refs"] == sorted(set(twin["prs"]["1899"]["source_refs"]) | {
+    by_subject = {tension["subject"]: tension for tension in reflected["tensions"]}
+    uuid = {agent: _event("00:00:00", agent, "", "", "", {})["agent_uuid"] for agent in _TWIN_UUID}
+    overlap_new = f"claims:claude-rco-1|{uuid['claude-rco-1']}|codex-lead-1|{uuid['codex-lead-1']}"
+    overlap_old = f"claims:claude-rco-2|{uuid['claude-rco-2']}|fable-5|{uuid['fable-5']}"
+    expired = f"claim:codex-tools-1|{uuid['codex-tools-1']}:codex-tools-1/mind-20261013"
+    veto_1895, veto_1890 = f"pr:1895:veto:claude-rco-2:{H_1895[:12]}", f"pr:1890:veto:claude-rco-1:{H_1890[:12]}"
+    stale_1899, stale_1895 = f"pr:1899:claude-rco-1:{H_OLD[:12]}", f"pr:1895:claude-rco-2:{H_1895[:12]}"
+    assert sorted(by_subject) == sorted([overlap_new, overlap_old, expired, veto_1895, veto_1890, stale_1899,
+                                         stale_1895])
+    named = {"tension:" + tension["tension_id"]: subject for subject, tension in by_subject.items()}
+    attention = [(item["kind"], named.get(item["subject"], item["subject"]), item["actors"])
+                 for item in reflected["attention"]]
+    assert attention[:3] == [("last_missing_vote", "pr:1896", ["claude-rco-2"]),
+                             ("last_missing_vote", "pr:1899", ["codex-lead-1"]),
+                             ("signature_only", "pr:1893", ["operator"])]
+    assert sorted(attention[3:7]) == sorted([("tension_high", overlap_new, ["claude-rco-1", "codex-lead-1"]),
+                                             ("tension_high", overlap_old, ["claude-rco-2", "fable-5"]),
+                                             ("tension_high", veto_1895, ["claude-rco-2"]),
+                                             ("tension_high", veto_1890, ["claude-rco-1"])])
+    assert sorted(attention[7:]) == sorted([("tension", stale_1899, ["claude-rco-1"]),
+                                            ("tension", stale_1895, ["claude-rco-2"]),
+                                            ("tension", expired, ["codex-tools-1"])])
+    assert by_subject[overlap_new]["observation"] == "overlapping paths: docs/my notes ~ docs/my notes/plan.md, " \
+                                                     "resource:grok-lock"
+    assert by_subject[overlap_new]["refs"] == sorted([refs["03:31:00"], refs["03:32:00"]])
+    assert by_subject[overlap_old]["refs"] == sorted([refs["03:40:00"], refs["03:41:00"]])
+    assert by_subject[stale_1895]["observation"] == "the core retired it at the PR head; a stale vote cannot approve it"
+    assert by_subject[veto_1890]["refs"] == sorted({refs["03:06:00"]} | set(twin["prs"]["1890"]["source_refs"]))
+    assert by_subject[stale_1899]["refs"] == sorted({refs["03:35:00"]} | set(twin["prs"]["1899"]["source_refs"]))
+    assert by_subject[expired]["refs"] == [refs["03:20:00"]]
+    assert reflected["attention"][1]["refs"] == sorted(set(twin["prs"]["1899"]["source_refs"]) | {
         refs["03:45:00"], refs["03:50:00"], refs["03:51:00"], refs["03:52:00"]})
     question = reflected["next_question"]
-    assert question["global"]["question"] == ("PR1899 at 1c1c1c1c1c1c is reported CI-green; missing: build_lead. "
-                                              "Can codex-lead-1 give it at this exact head?")
+    assert question["global"]["question"] == ("PR1896 at 5a5a5a5a5a5a is reported CI-green; missing: claude-rco-2. "
+                                              "Can claude-rco-2 give it at this exact head?")
     assert sorted(question["lanes"]) == ["claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5",
                                          "operator"]
-    assert question["lanes"]["operator"]["attention_rank"] == 2
+    assert question["lanes"]["operator"]["attention_rank"] == 3
     # The core's own fields are unchanged, including its per-lane next_question placeholder.
     assert {key: value for key, value in reflected.items() if key not in ("tensions", "attention", "next_question")} \
         == {key: value for key, value in twin.items() if key not in ("tensions", "attention", "next_question")}
 
 
 def test_an_actual_core_blocked_view_makes_no_head_bound_suggestion():
-    """P6c on the core's own blocked view: the core tension becomes input_blocked with the same offset, reason and ref."""
+    """P6c on the core's own blocked view: no PR suggestion; input_blocked comes from source.blocked alone."""
     blocked = _core_blocked_twin()
     assert _sha256(blocked) == CORE_BLOCKED_SHA256
+    assert (blocked["tensions"], blocked["attention"]) == ([], [])
     reflected = mind.reflect(blocked)
-    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 3 + ["tension"] * 2
+    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 5 + ["tension"] * 3
     rules = _rules(reflected)
     assert sorted(rules) == ["claim_overlap", "expired_claim", "input_blocked", "stale_vote", "veto_observed"]
     assert rules["input_blocked"]["subject"] == "offset:1500" and "canonical_event_invalid" in rules["input_blocked"][
         "observation"]
-    assert rules["input_blocked"]["refs"] == blocked["tensions"][0]["refs"] == [blocked["source"]["last_event_ref"]]
+    assert rules["input_blocked"]["refs"] == [blocked["source"]["last_event_ref"]]
     assert reflected["next_question"]["global"]["question"].startswith("How can")
     assert "exact head" not in mind.canonical_json(reflected["next_question"])
     assert reflected["source"] == blocked["source"]
@@ -1168,6 +1662,7 @@ def test_the_fixture_builders_have_the_exact_core_shape():
     lane, twin_lane = next(iter(synthetic["lanes"].values())), twin["lanes"]["fable-5|" + _event(
         "00:00:00", "fable-5", "", "", "", {})["agent_uuid"]]
     assert set(lane) == set(twin_lane) and set(lane["claims"]) == set(twin_lane["claims"])
+    assert set(lane["claims"]["by_task"][0]) == set(twin_lane["claims"]["by_task"][0])
     assert set(_command("r", AS_OF, [])) == set(twin["facts"][0])
 
 

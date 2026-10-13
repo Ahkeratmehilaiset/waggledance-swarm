@@ -219,3 +219,15 @@ def test_fleet_lens_shows_posted_usage_limits_and_never_guesses():
                                          v3.Capture([limit, unknown]), NOW))
     assert "LIMITS claude-rco-2 claude session: resets in 60 min" in text
     assert "LIMITS codex-tools-1 codex weekly: UNKNOWN" in text
+
+
+def test_two_windows_of_one_account_both_show():
+    def limit(window, reset, used):
+        return {"agent": "claude-rco-1", "type": "status", "status": "usage_limit", "to": "", "task_id": "x",
+                "ts_utc": "2026-10-13T11:55:00Z", "message": "", "payload": {"provider": "claude", "window": window,
+                "reset_utc": reset, "used_percentage": used, "scope": "shared account of the Claude lanes", "source": "statusline"}}
+    text = v3.render_fleet(v3.build_fold({"prs": {}, "lanes": {}, "tensions": []}, {"charter_ok": True, "prs": {}},
+                                         v3.Capture([limit("five_hour", "2026-10-13T14:50:00Z", 6),
+                                                     limit("seven_day", "2026-10-14T18:00:00Z", 80)]), NOW))
+    assert "claude five_hour: 6% used, resets in 170 min" in text
+    assert "claude seven_day: 80% used, resets in 1800 min" in text

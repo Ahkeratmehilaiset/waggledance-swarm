@@ -67,6 +67,10 @@ def _short(ref: str) -> str:
     return ref[:10]
 
 
+def _cap(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
 def _read_json(path: Path) -> tuple[Any, str]:
     try:
         with open(path, "rb") as handle:
@@ -633,10 +637,15 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
         subject = payload.get("lane") if isinstance(payload.get("lane"), str) else str(event.get("agent"))
         provider = payload.get("provider") if isinstance(payload.get("provider"), str) else UNKNOWN
         reset = payload.get("reset_utc") if workspace.parse_time(payload.get("reset_utc")) is not None else UNKNOWN
-        limits[f"{subject}|{provider}"] = {"lane": subject, "provider": provider, "reset_utc": reset,
-                                           "window": payload.get("window") if isinstance(payload.get("window"), str) else UNKNOWN,
-                                           "source": payload.get("source") if isinstance(payload.get("source"), str) else UNKNOWN,
-                                           "reported_by": str(event.get("agent")), "observed_utc": capture.ts[ref], "ref": ref}
+        window = payload.get("window") if isinstance(payload.get("window"), str) else UNKNOWN
+        used = payload.get("used_percentage")
+        # One row per lane, provider and window (RCO1 10:55Z posted five_hour and seven_day for one account).
+        limits[f"{subject}|{provider}|{window}"] = {
+            "lane": subject, "provider": provider, "reset_utc": reset, "window": window,
+            "used_percentage": used if type(used) in (int, float) else None,
+            "scope": payload.get("scope") if isinstance(payload.get("scope"), str) else None,
+            "source": payload.get("source") if isinstance(payload.get("source"), str) else UNKNOWN,
+            "reported_by": str(event.get("agent")), "observed_utc": capture.ts[ref], "ref": ref}
     fold = {"schema": FOLD_SCHEMA, "authority": "none", "as_of_utc": now, "capture_first_utc": capture.first_utc,
             "snapshot_prs": sorted(int(key) for key in snapshot["prs"]), "branch_pr": branch_pr,
             "open_heads": {str(n): row["head"] for n, row in open_prs.items()}, "prs": prs, "asks": asks,
@@ -1030,8 +1039,11 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
         reset = item["reset_utc"]
         left = _age_seconds(reset, fold["as_of_utc"]) if reset != UNKNOWN else None
         state = UNKNOWN if left is None else (f"resets in {round(left / 60)} min" if left > 0 else "reset time passed")
-        out.append(f"LIMITS {item['lane']} {item['provider']} {item['window']}: {state} (reset {reset}; source {item['source']}, "
-                   f"posted by {item['reported_by']} at {item['observed_utc'][:19]}) [{item['ref'][:10]}]")
+        used = f"{item['used_percentage']}% used, " if item.get("used_percentage") is not None else ""
+        scope = f"; scope {_cap(item['scope'], 70)}" if item.get("scope") else ""
+        out.append(f"LIMITS {item['lane']} {item['provider']} {item['window']}: {used}{state} (reset {reset}{scope}; "
+                   f"source {_cap(item['source'], 60)}; posted by {item['reported_by']} at {item['observed_utc'][:19]}) "
+                   f"[{item['ref'][:10]}]")
     faults = {agent: entry["released"] for agent, entry in sorted(fold["lanes"].items()) if entry.get("released")}
     if faults:
         out.append("MIND FAULT claims released in the log but still listed by the core: "

@@ -69,7 +69,9 @@ def load_round(round_dir):
     context = json.loads((round_dir / "context.json").read_bytes().decode("utf-8"))
     # The frozen capture rows (already digest-checked above), for variants that index events by task or request.
     events = json.loads((round_dir / "capture.json").read_bytes().decode("utf-8"))["events"]
-    return manifest, sha256(manifest_bytes), {"events": events,
+    status = (json.loads((round_dir / "observed-status.json").read_bytes().decode("ascii"))
+              if "observed-status.json" in manifest["files"] else None)
+    return manifest, sha256(manifest_bytes), {"events": events, "observed_status": status,
         "round": manifest["round"], "snapshot": snapshot, "snapshot_sha256": snapshot_sha, "context": context,
         "capture_sha256": manifest["files"]["capture.json"], "context_sha256": manifest["files"]["context.json"]}
 

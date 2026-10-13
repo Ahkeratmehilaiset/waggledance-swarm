@@ -77,6 +77,8 @@ def capture(args, cycle_dir, seed, previous_dir, context_age):
                "--files-cache", str(args.files_cache), "--seed-from", str(seed)]
     if previous_dir is not None and context_age is not None and context_age < args.context_every:
         command += ["--reuse-context", str(previous_dir)]
+    else:
+        command += ["--with-status"]
     done = subprocess.run(command, capture_output=True, timeout=600)
     if done.returncode != 0:
         raise RuntimeError("capture_exit_%d" % done.returncode)
@@ -141,7 +143,7 @@ def main():
     cycles = live / "cycles"
     cycles.mkdir(parents=True, exist_ok=True)
     args.files_cache = args.files_cache or args.data_root / "captures" / "files-cache"
-    seed, previous_dir, previous_pub, context_at = args.seed_from, None, None, None
+    seed, previous_dir, previous_pub, context_at, last_ok = args.seed_from, None, None, None, None
     for number in range(1, args.cycles + 1):
         tick = time.perf_counter()
         cycle_dir = cycles / stamp()
@@ -162,13 +164,15 @@ def main():
             inputs = {"events": json.loads(capture_bytes.decode("utf-8"))["events"], "round": "live:" + cycle_dir.name,
                       "snapshot": snapshot, "snapshot_sha256": sha(core.canonical_bytes(snapshot)),
                       "context": json.loads(context_bytes.decode("utf-8")), "capture_sha256": sha(capture_bytes),
-                      "context_sha256": sha(context_bytes), "side": None}
+                      "context_sha256": sha(context_bytes), "side": None,
+                      "observed_status": (json.loads((cycle_dir / "observed-status.json").read_text(encoding="ascii"))
+                                          if (cycle_dir / "observed-status.json").exists() else None)}
             started = time.perf_counter()
             views, render_ms = lenses(args, cycle_dir, inputs)
             lens_ms = round((time.perf_counter() - started) * 1000)
             hook_results = hooks(args, cycle_dir, audit_root)
             latest = {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
-                      "cycle": number, "cycle_dir": f"live/cycles/{cycle_dir.name}",
+                      "status": "ok", "cycle": number, "cycle_dir": f"live/cycles/{cycle_dir.name}",
                       "observed_utc": record["bridge"]["observed_utc"],
                       "context_observed_utc": inputs["context"]["observed_utc"],
                       "capture_sha256": inputs["capture_sha256"], "context_sha256": inputs["context_sha256"],
@@ -189,12 +193,24 @@ def main():
             tmp.write_text(json.dumps(latest, indent=2, sort_keys=True) + "\n", encoding="ascii")
             retries = replace_with_retry(tmp, live / "latest.json")
             seed, previous_dir, previous_pub = cycle_dir / "capture.json", cycle_dir, publication
+            last_ok = latest
             line.update(status="ok", events=record["bridge"]["events"], detail=record["bridge"]["detail_calls"],
                         context="reused" if "reused_from" in record["github"] else "fresh",
                         snapshot=inputs["snapshot_sha256"][:16], attention=receipt["counts"]["attention"],
                         replace_retries=retries)
-        except Exception as exc:  # a refused cycle is a gap; latest.json keeps naming the last good one
+        except Exception as exc:  # a refused cycle is a gap, published as such so no lane reads old data silently
             line.update(status="refused", reason=(type(exc).__name__ + ":" + str(exc))[:120])
+            failed = {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
+                      "status": "refused", "reason": type(exc).__name__, "cycle": number, "refused_utc": stamp(),
+                      "last_ok": None if last_ok is None else {key: last_ok[key] for key in (
+                          "cycle", "cycle_dir", "observed_utc", "snapshot_sha256", "publication", "lenses")},
+                      "read": "the last good cycle is older than this refusal; treat its lenses as stale"}
+            try:
+                tmp = live / f".latest.{os.getpid()}.tmp"
+                tmp.write_text(json.dumps(failed, indent=2, sort_keys=True) + "\n", encoding="ascii")
+                replace_with_retry(tmp, live / "latest.json")
+            except OSError:
+                pass
         prune(cycles, args.keep)
         line["cycle_ms"] = round((time.perf_counter() - tick) * 1000)
         print(json.dumps(line), flush=True)

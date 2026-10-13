@@ -58,7 +58,7 @@ def one_round(args, number, seed):
     name = f"round-{number}"
     cycle = args.data_root / "captures" / f"{name}-{stamp()}"
     step("capture", HERE / "capture_round.py", "--bin", args.bin, "--out", cycle, "--files-cache", args.files_cache,
-         "--seed-from", seed)
+         "--seed-from", seed, "--with-status")
     observed = json.loads((cycle / "capture.json").read_text(encoding="utf-8"))["observed_utc"]
     cards = args.data_root / "tournament" / "side" / f"lesson-cards.{name}.json"
     step("lesson_cards", MIND / "lesson_cards.py", "--notes", args.notes, "--as-of", observed, "--out", cards)

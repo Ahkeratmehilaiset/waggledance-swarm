@@ -13,6 +13,13 @@ The ready queue (round 3, operator 10:30Z "useful, speeds up current work"; RCO1
 reported green at its head, no observed veto and no empty vote slot (a declared author or recused RCO fills none),
 with the time of its last vote at that head. Nothing in the bridge view is missing for it; whether the merge route
 is active is not in the bridge view, so the queue shows how long finished work has waited, never why.
+
+Round 4 (RCO1/RCO2 10:34-10:38Z, Lead 10:37Z): with ``inputs["observed_status"]`` (the read-only GitHub status
+capture, ``wd.bridge-mind-gh-status.v1``) a PR whose CI nobody posted on the bridge also enters the queue when
+GitHub reported every required check SUCCESS at that same head (labelled "CI observed by GitHub"), and each line
+shows GitHub's merge state at that head (else UNKNOWN). The installed merge capability is one attributed line:
+the latest structured ``installed_capability`` statement of a declared ``codex-lead-1`` identity, else UNKNOWN;
+it is never inferred from votes, CI or a source file.
 """
 
 from tools.bridge_compact_view import event_id
@@ -109,24 +116,62 @@ def _index_line(inputs, pr, items):
     return _short(line, INDEX_LIMIT)
 
 
-def _ready(parsed, events):
-    """(since, pr) for each PR with nothing missing in the bridge view, oldest first; since = its last vote time."""
+STATUS_SCHEMA = "wd.bridge-mind-gh-status.v1"
+CAPABILITY_STATES = ("absent", "present", "unknown")
+CAPABILITY_SOURCE = "codex-lead-1"
+
+
+def _status_row(status, pr):
+    """GitHub's observed row for the PR at the bridge head, or None (no capture, or another head)."""
+    row = (status or {}).get("prs", {}).get(str(pr["pr"]))
+    return row if isinstance(row, dict) and pr["head"] and row.get("head") == pr["head"] else None
+
+
+def _ready(parsed, events, status):
+    """(since, pr, ci) for each PR with no vote missing, oldest first; since = its last vote time at this head."""
     times = {event_id(event): event.get("ts_utc") for event in events if isinstance(event.get("ts_utc"), str)}
     ready = []
     for pr in parsed.prs:
-        if ws._suggestable(pr) and parsed.suppressed(pr) is None and not ws._empty_slots(pr, parsed.authors(pr)):
+        observed = _status_row(status, pr)
+        ci = "bridge" if pr["ci_green"] else ("GitHub" if observed and observed.get("all_required_success") is True
+                                              else None)
+        if ci and pr["head"] and not pr["vetoes"] and not pr["veto_unreadable"] and parsed.suppressed(pr) is None \
+                and not ws._empty_slots(pr, parsed.authors(pr)):
             stamps = [times.get(ref) for vote in pr["votes"] for ref in vote["refs"]]
-            ready.append((max([stamp for stamp in stamps if stamp] or [ws.UNKNOWN]), pr))
-    return sorted(ready, key=lambda pair: (pair[0], pair[1]["pr"]))
+            ready.append((max([stamp for stamp in stamps if stamp] or [ws.UNKNOWN]), pr, ci))
+    return sorted(ready, key=lambda row: (row[0], row[1]["pr"]))
 
 
-def _ready_line(parsed, since, pr, lane, items):
+def _ready_line(parsed, since, pr, ci, status, lane, items):
     computed = parsed.computed_class(pr)
     left = "operator signature (computed protected)" if computed == "protected" else "no vote"
     excused = sorted(set(pr["recused"]) | (set(ws.RECOGNIZED_RCOS) & parsed.authors(pr)))
-    return _short(f"  READY PR{pr['pr']} {_h(pr['head'])} since {since[:16]} (last vote at this head); left: {left}; "
-                  f"class computed {computed or ws.UNKNOWN}" + (f"; excused {', '.join(excused)}" if excused else "")
-                  + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""))
+    observed = _status_row(status, pr)
+    return _short(f"  READY PR{pr['pr']} {_h(pr['head'])} since {since[:16]}; "
+                  f"gh {observed['merge_state'] if observed else ws.UNKNOWN}; "
+                  + ("CI reported on the bridge" if ci == "bridge" else "CI observed by GitHub, not on the bridge")
+                  + f"; left: {left}; class {computed or ws.UNKNOWN}"
+                  + (f"; excused {', '.join(excused)}" if excused else "")
+                  + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""), 260)
+
+
+def _capability_lines(events):
+    """The latest structured installed_capability statement per name from a declared codex-lead-1, else UNKNOWN."""
+    latest = {}
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        statement = payload.get("installed_capability")
+        uuid = event.get("agent_uuid")
+        if event.get("agent") != CAPABILITY_SOURCE or not (isinstance(uuid, str) and ws.UUID.fullmatch(uuid)) \
+                or not isinstance(statement, dict) or statement.get("state") not in CAPABILITY_STATES \
+                or not (isinstance(statement.get("name"), str) and ws.SAFE_ID.fullmatch(statement["name"])):
+            continue
+        latest[statement["name"]] = (str(event.get("ts_utc"))[:19], statement["state"], event_id(event)[:16])
+    if not latest:
+        return ["installed merge capability: UNKNOWN (no structured installed_capability statement from "
+                f"{CAPABILITY_SOURCE} in this window; never inferred from votes, CI or source files)"]
+    return [f"installed capability {name}: {state} per {CAPABILITY_SOURCE} (declared, origin not authenticated) at "
+            f"{ts}, ref {ref}" for name, (ts, state, ref) in sorted(latest.items())]
 
 
 def _involved(inputs, pr, lane, items):
@@ -155,10 +200,13 @@ def render(inputs, lane):
     # events carry no lease, so a claim list here would be stale noise.
     current =[row.get("current_task") for row in snapshot["lanes"].values() if row.get("agent") == lane]
     lines.append(f"  current task (last event): {', '.join(sorted({str(task) for task in current})) or ws.UNKNOWN}")
-    ready = _ready(parsed, inputs["events"])
-    lines += ["", f"ready queue, nothing missing in the bridge view ({len(ready)} PRs"
-              + (f", oldest since {ready[0][0][:16]}" if ready else "") + "; merge route not in the bridge view):"]
-    lines += [_ready_line(parsed, since, pr, lane, items) for since, pr in ready]
+    status = inputs.get("observed_status")
+    status = status if isinstance(status, dict) and status.get("schema") == STATUS_SCHEMA else None
+    ready = _ready(parsed, inputs["events"], status)
+    lines += [""] + _capability_lines(inputs["events"])
+    lines += [f"ready queue, no vote missing ({len(ready)} PRs" + (f", oldest since {ready[0][0][:16]}" if ready else "")
+              + "; GitHub status " + (f"observed {status['observed_utc']}" if status else "UNKNOWN") + "):"]
+    lines += [_ready_line(parsed, since, pr, ci, status, lane, items) for since, pr, ci in ready]
     involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))
                 and parsed.suppressed(pr) not in ("MERGED", "CLOSED")]
     # A full card only where something is live: an attention item, a reported-green head, a vote or a veto.

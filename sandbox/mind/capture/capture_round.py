@@ -182,6 +182,56 @@ def github_context(args):
     return {"prs": len(rows), "views_fetched": fetched, "charter_loaded": loaded, "observed_utc": observed}
 
 
+CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()/:+-]{0,99}")
+MERGE_STATES = frozenset({"CLEAN", "BLOCKED", "BEHIND", "DIRTY", "UNSTABLE", "HAS_HOOKS", "DRAFT", "UNKNOWN"})
+
+
+def github_status(args):
+    """Required checks per open PR head as GitHub reports them, and the merge state; observed, never a verdict.
+
+    The required set is the branch protection's own list for main. A PR is ``all_required_success`` true only when
+    every required name is present and every row of it is SUCCESS; false when one is not; null when the required
+    set could not be read. Merge states outside the known set are UNKNOWN.
+    """
+    required = json.loads(gh("api", f"repos/{REPO}/branches/main", "--jq",
+                             ".protection.required_status_checks.contexts"))
+    if not isinstance(required, list) or not required or not all(isinstance(name, str) and CHECK_NAME.fullmatch(name)
+                                                                 for name in required):
+        required = None
+    data = gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "250", "--json",
+              "number,headRefOid,mergeStateStatus,statusCheckRollup")
+    observed = utc_now()
+    rows = {}
+    for item in json.loads(data):
+        head = item.get("headRefOid")
+        if type(item.get("number")) is not int or not ws.HEAD.fullmatch(head or ""):
+            continue
+        seen = {}
+        for check in item.get("statusCheckRollup") or []:
+            name = (check.get("name") or check.get("context")) if isinstance(check, dict) else None
+            if required is not None and name in required:
+                result = check.get("conclusion") or check.get("state") or "PENDING"
+                seen.setdefault(name, set()).add(result if result in ("SUCCESS", "FAILURE", "PENDING", "NEUTRAL",
+                                                                      "CANCELLED", "SKIPPED", "TIMED_OUT",
+                                                                      "ACTION_REQUIRED", "ERROR", "EXPECTED",
+                                                                      "STALE", "STARTUP_FAILURE") else "UNKNOWN")
+        missing = [] if required is None else [name for name in required if name not in seen]
+        rows[str(item["number"])] = {
+            "head": head,
+            "merge_state": item.get("mergeStateStatus") if item.get("mergeStateStatus") in MERGE_STATES else "UNKNOWN",
+            "required_results": {name: sorted(results) for name, results in sorted(seen.items())},
+            "missing_required": missing,
+            "all_required_success": None if required is None else (not missing and all(
+                results == {"SUCCESS"} for results in seen.values()))}
+    status = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": observed,
+              "required_contexts": required, "list_sha256": sha(data), "prs": rows}
+    ws.guard_object(status)
+    (args.out / "gh-open-status.json").write_bytes(data)
+    (args.out / "observed-status.json").write_bytes(
+        (json.dumps(status, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
+    return {"open_prs": len(rows), "observed_utc": observed}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bin", type=Path, required=True)
@@ -191,6 +241,8 @@ def main():
     parser.add_argument("--window", type=int, default=3000)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--detail-tail", type=int, default=600, help="tail searched for each -EventId detail read")
+    parser.add_argument("--with-status", action="store_true",
+                        help="also capture required checks and merge state of every open PR (about 20 s)")
     parser.add_argument("--reuse-context", type=Path, default=None,
                         help="an earlier capture dir whose gh-pr-list.json and context.json are copied, no gh call")
     args = parser.parse_args()
@@ -203,15 +255,26 @@ def main():
     record["bridge"]["ms"] = round((time.perf_counter() - started) * 1000)
     started = time.perf_counter()
     if args.reuse_context is not None:
-        for name in ("gh-pr-list.json", "context.json"):
-            (args.out / name).write_bytes((args.reuse_context / name).read_bytes())
+        for name in ("gh-pr-list.json", "context.json", "gh-open-status.json", "observed-status.json"):
+            if (args.reuse_context / name).exists() or name in ("gh-pr-list.json", "context.json"):
+                (args.out / name).write_bytes((args.reuse_context / name).read_bytes())
         reused = json.loads((args.out / "context.json").read_text(encoding="ascii"))
         record["github"] = {"reused_from": args.reuse_context.name, "observed_utc": reused["observed_utc"]}
     else:
         record["github"] = github_context(args)
+        if args.with_status:
+            # Optional and heavy (GitHub sometimes times the rollup query out): a failure leaves the status UNKNOWN
+            # (no observed-status.json in this capture) and never refuses the capture itself.
+            started = time.perf_counter()
+            try:
+                record["github"]["status"] = github_status(args)
+            except (CaptureRefused, ValueError, KeyError, TypeError):
+                record["github"]["status"] = {"refused": "status_capture_failed"}
+            record["github"]["status"]["ms"] = round((time.perf_counter() - started) * 1000)
     record["github"]["ms"] = round((time.perf_counter() - started) * 1000)
     record["files"] = {name: sha((args.out / name).read_bytes())
-                       for name in ("capture.json", "detail-manifest.txt", "gh-pr-list.json", "context.json")}
+                       for name in ("capture.json", "detail-manifest.txt", "gh-pr-list.json", "context.json",
+                                    "gh-open-status.json", "observed-status.json") if (args.out / name).exists()}
     ws.guard_object(record)
     (args.out / "capture-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
                                                   encoding="ascii")

@@ -179,7 +179,11 @@ class Capture:
                 named.append((index, ref, " ".join((str(rid or ""), str(event.get("message") or ""),
                                                     json.dumps(payload, sort_keys=True, ensure_ascii=False)))))
             to = [part.strip() for part in str(event.get("to") or "").split(",") if part.strip()]
-            mine = bool(to) and (to[0] == lane or (isinstance(rid, str) and lane in rid))
+            # A review_requested broadcast asks every reviewer it names (RCO1 V5 10-13 showed the PR1850 one); other
+            # asks belong to the first addressee or the lane the request id names.
+            reviewer = lane in RCOS or lane in BUILD
+            mine = bool(to) and (to[0] == lane or (isinstance(rid, str) and lane in rid)
+                                 or (reviewer and str(event.get("status") or "").lower() == "review_requested"))
             if isinstance(rid, str) and rid and not bound and lane in to and mine and event.get("agent") != lane:
                 expects = isinstance(payload.get("result_contract"), Mapping) or payload.get("requires_reply") is True \
                     or str(event.get("status") or "").lower() in ("requested", "review_requested")
@@ -435,7 +439,18 @@ def render_text(inbox: Mapping[str, Any]) -> str:
                    + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
+    # Dead asks (the PR is not open, the ask is for a head GitHub does not show, or my own vote at the GitHub head
+    # met it) need no action: one line per kind with the PR numbers; the JSON keeps every item and its refs.
+    dead_kinds = ("request_for_pr_not_open", "request_for_other_head", "request_met_by_unbound_vote")
+    for kind in dead_kinds:
+        prs = [item.get("pr") for item in inbox["stale"] if item["kind"] == kind]
+        if prs:
+            seen = sorted(set(prs))
+            out.append(f"DEAD {kind} {len(prs)}: " + " ".join(f"PR{n}" for n in seen[:10])
+                       + (f" (+{len(seen) - 10} more)" if len(seen) > 10 else ""))
     for item in inbox["stale"]:
+        if item["kind"] in dead_kinds:
+            continue
         what = item.get("pr") and f"PR{item['pr']}" or item.get("task", UNKNOWN)
         out.append(f"OLD  {item['kind']} {what} {refs(item)}")
     for item in inbox["tensions"]:

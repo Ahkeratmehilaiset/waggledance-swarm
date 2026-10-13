@@ -116,6 +116,22 @@ class Capture:
         self.first_utc = self.rows[0][1].get("ts_utc", UNKNOWN) if self.rows else UNKNOWN
         self._declared: dict[int, dict[str, Any]] | None = None
         self._recusals: dict[int, dict[str, dict[str, Any]]] | None = None
+        self._texts: list[str] | None = None
+        self._tokens: dict[str, list[int]] | None = None
+
+    def naming_index(self) -> tuple[list[str], dict[str, list[int]]]:
+        """Once per capture: each row's searchable text (echoed request id, message, payload) and a whole-token index
+        (maximal runs of [A-Za-z0-9_-]) from token to row positions, in log order."""
+        if self._texts is None:
+            texts, tokens = [], {}
+            for index, (_, event) in enumerate(self.rows):
+                text = " ".join((str(event.get("request_id") or ""), str(event.get("message") or ""),
+                                 json.dumps(_payload(event), sort_keys=True, ensure_ascii=False)))
+                texts.append(text)
+                for token in set(_ID_TOKEN.findall(text)):
+                    tokens.setdefault(token, []).append(index)
+            self._texts, self._tokens = texts, tokens
+        return self._texts, self._tokens
 
     def declared_authors(self) -> dict[int, dict[str, Any]]:
         """Per PR and head, the latest declared ``source_authors`` of a request payload (declared, not authenticated)."""
@@ -172,17 +188,9 @@ class Capture:
         asks: dict[str, dict[str, Any]] = {}
         answered: dict[str, str] = {}
         closed: dict[str, str] = {}
-        named: list[tuple[int, str, str]] = []  # (position, ref, text) of the lane's own events
-        tokens: dict[str, list[tuple[int, str]]] = {}  # whole id-shaped token -> own events naming it, in order
         for index, (ref, event) in enumerate(self.rows):
             rid, bound = event.get("request_id"), event.get("in_reply_to_request_id")
             payload = _payload(event)
-            if event.get("agent") == lane:
-                text = " ".join((str(rid or ""), str(event.get("message") or ""),
-                                 json.dumps(payload, sort_keys=True, ensure_ascii=False)))
-                named.append((index, ref, text))
-                for token in set(_ID_TOKEN.findall(text)):
-                    tokens.setdefault(token, []).append((index, ref))
             to = [part.strip() for part in str(event.get("to") or "").split(",") if part.strip()]
             # A review_requested broadcast asks every reviewer it names (RCO1 V5 10-13 showed the PR1850 one); other
             # asks belong to the first addressee or the lane the request id names.
@@ -210,6 +218,7 @@ class Capture:
                 elif str(event.get("status") or "").lower() in CLOSE_STATUSES:
                     closed.setdefault(bound, ref)
         out = []
+        texts, tokens = self.naming_index() if asks else ([], {})
         for rid, item in asks.items():
             if rid in answered:
                 continue
@@ -217,10 +226,11 @@ class Capture:
             # The id must stand alone: "ask-1" inside "ask-1-v2" is another request (the wrong-id twin), while
             # punctuation after it ("ask-1:" or "ask-1.") still names it.
             whole = re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(rid) + r"(?![A-Za-z0-9_-])")
-            if _ID_TOKEN.fullmatch(rid):  # the same rule as the regex, from one token index per lane (fast)
-                naming = next((ref for index, ref in tokens.get(rid, []) if index > start), None)
+            if _ID_TOKEN.fullmatch(rid):  # the same rule as the regex, from the token index of the capture (fast)
+                later = (index for index in tokens.get(rid, []) if index > start)
             else:
-                naming = next((ref for index, ref, text in named if index > start and whole.search(text)), None)
+                later = (index for index in range(start + 1, len(self.rows)) if whole.search(texts[index]))
+            naming = next((self.rows[index][0] for index in later if self.rows[index][1].get("agent") == lane), None)
             item = dict(item)
             if rid in closed:
                 item["ended"] = "closed_or_superseded"

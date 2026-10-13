@@ -125,3 +125,10 @@ def test_an_id_with_a_dot_uses_the_same_boundary_rule():
     assert "request_reported_answer_unverified" in kinds(result) and result["wait"] == []
     twin = inbox([ask("lead.ask.7"), own(message="lead.ask.7x is another one")])
     assert [w["asks"] for w in twin["wait"]] == [["lead.ask.7"]]
+
+
+def test_another_lane_naming_the_id_does_not_end_my_ask():
+    other = own(message="relaying ask-1 to the reviewers")
+    other["agent"] = "codex-tools-1"
+    result = inbox([ask("ask-1"), other])
+    assert [w["asks"] for w in result["wait"]] == [["ask-1"]]

@@ -550,3 +550,46 @@ def test_case_variants_keep_canonical_blocks_pass_identity_and_claim_lifecycle()
     claims=snap['lanes']['codex-tools-1|'+UUID]['claims']
     assert [r['task_id'] for r in claims['by_task']]==['task/b']
     assert claims['lease_expires_utc']==claims['expired']=='UNKNOWN'
+
+
+@pytest.mark.parametrize("agent, kind, status, recused, kept", [
+    ("claude-rco-2", "message", "rco_recused", True, True),
+    ("claude-rco-2", "decision", "rco_recused", None, True),      # no recused field: the exact status suffices
+    ("claude-rco-2", "message", "rco_recused", False, False),     # recused false is no recusal
+    ("codex-tools-1", "message", "rco_recused", True, False),     # only a recognized RCO recuses
+    ("claude-rco-2", "message", "recused", True, False),          # only the exact status token
+    ("claude-rco-2", "rco_review", "rco_recused", True, False),   # not a message or decision
+])
+def test_rco_recusal_is_recorded_head_bound_never_a_vote_and_survives_checkpoints(agent, kind, status, recused,
+                                                                                  kept, tmp_path):
+    """Sandbox round 2 (fable-5): PR1878 still asked claude-rco-2 after its rco_recused at that exact head."""
+    payload = dict(pr=1900, head=HEAD)
+    if recused is not None:
+        payload["recused"] = recused
+    rows = [envelope(), envelope(agent=agent, type=kind, status=status, payload=payload)]
+    state = build(rows)
+    view = mind.snapshot(state, as_of_utc=AS_OF)
+    pr = view["prs"]["1900"]
+    assert pr["votes"] == [] and pr["stale_votes"] == []
+    if kept:
+        assert [(row["agent"], row["head"], row["status"], row["verification"], row["source_refs"])
+                for row in pr["recusals"]] == [(agent, HEAD, "rco_recused", "declared", [rows[1]["ref"]])]
+    else:
+        assert "recusals" not in pr
+    incremental = mind.apply_incremental(mind.full_rebuild(rows[:1], source=source(0, 1), as_of_utc=AS_OF),
+                                         rows[1:], source=source(1, 2), as_of_utc=AS_OF)
+    assert mind.state_bytes(incremental) == mind.state_bytes(state)
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "recusal.json"
+    mind.write_checkpoint(state, path, as_of_utc=AS_OF, audit_root=audit)
+    assert mind.state_bytes(mind.read_checkpoint(path, audit_root=audit)) == mind.state_bytes(state)
+    if kept:
+        for change in ({"agent": "codex-tools-1"}, {"status": "rco_pass"}, {"head": "UNKNOWN"}, None):
+            bad = deepcopy(view)
+            if change is None:
+                bad["prs"]["1900"]["recusals"] = []
+            else:
+                bad["prs"]["1900"]["recusals"][0].update(change)
+            with pytest.raises(mind.ProjectionError):
+                mind._validate_snapshot(bad)

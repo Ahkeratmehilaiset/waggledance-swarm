@@ -37,6 +37,8 @@ _VETO = {"changes_requested", "rco_fail", "review_failed", "hold", "blocked"}
 _HEAD_UPDATE = {"head_updated", "source_ready", "ready", "published", "opened"}
 _SIGNAL_TYPES = {"decision", "finding", "rco_review"}
 _RCO_ACTORS = {"claude-rco-1", "claude-rco-2"}
+_RECUSED = {"rco_recused"}
+_RECUSAL_KINDS = {"message", "decision"}
 _RCO_NONBLOCK_RECORDS = {"autonomous_merge_receipt", "merged_operator_authorized", "operator_authorized", "rco_closed_postmerge"}
 _RCO_EXACT_NONBLOCK = {"rco_pass", "rco_pass_pending_ci", "build_consensus_pass", "approved", "approved_ci_green", "acknowledged", "no_changes_requested", "no_changes_requested_approved", "approved_waiver_block_cleared", "lead_no_blocker_rco_pending", "producer_no_block_reemit_required"}
 _MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -229,7 +231,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         head = bindings[0] if bindings and isinstance(bindings[0], str) and _HEAD.fullmatch(bindings[0]) else UNKNOWN
         key = str(pr)
         record = state.prs.setdefault(key, dict(pr=pr, head=UNKNOWN, base=UNKNOWN, reported_ci={"status": UNKNOWN},
-                  class_value=UNKNOWN, source_refs=[ref], _field_refs={}, _votes={}, _vetos={}, _invalidated={}))
+                  class_value=UNKNOWN, source_refs=[ref], _field_refs={}, _votes={}, _vetos={}, _invalidated={}, _recusals={}))
         if head != UNKNOWN and (record["head"] == UNKNOWN or status in _HEAD_UPDATE):
             if head != record["head"]:
                 record["reported_ci"] = {"status": UNKNOWN}
@@ -250,6 +252,12 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         if kind in _SIGNAL_TYPES and status in _PASS and head != UNKNOWN:
             vote = dict(agent=agent, agent_uuid=uuid, head=head, status=status, source_refs=[ref], verification="declared" if valid_identity else "unverified")
             record["_votes"][(agent, uuid, head, status)] = vote
+        if agent in _RCO_ACTORS and kind in _RECUSAL_KINDS and status in _RECUSED and head != UNKNOWN \
+                and payload.get("recused", True) is not False:
+            # A recognized RCO's own declared recusal at one exact head. Display only: never a vote, never a
+            # gate slot or verdict, and it clears nothing.
+            record["_recusals"][(agent, uuid, head)] = dict(agent=agent, agent_uuid=uuid, head=head, status=status,
+                  source_refs=[ref], verification="declared" if valid_identity else "unverified")
         if _block_observation(agent, kind, status):
             # Observations only: never infer a gate-clearing transition from a pass/closeout.
             record["_vetos"][(agent, uuid, task, head)] = dict(agent=agent, agent_uuid=uuid, head=head,
@@ -302,6 +310,8 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
         prs[key]["stale_votes"] = [v for v in versions if not current(v)]
         prs[key]["veto_observations"] = [deepcopy(v) for _, v in sorted(record["_vetos"].items())]
         prs[key]["missing"] = ["gate_eligibility_UNKNOWN"]
+        if record["_recusals"]:  # absent when none: a snapshot without a recusal keeps its exact bytes
+            prs[key]["recusals"] = [deepcopy(v) for _, v in sorted(record["_recusals"].items())]
     lanes = deepcopy(state.lanes)
     for lane in lanes.values():
         lane.pop("_claims", None)
@@ -379,9 +389,9 @@ def _validate_snapshot(value: Any) -> None:
     lane_keys = {"agent", "agent_uuid", "session_id", "run_id", "current_task", "claims", "waits", "last_event_ref", "last_event_utc", "source_refs", "verification", "idle_status", "uncertainty", "observation_age_seconds", "next_question"}
     if not isinstance(value.get("prs"), dict) or not isinstance(value.get("lanes"), dict):
         raise ProjectionError("snapshot_entities_invalid")
-    for records, allowed in ((value["prs"], pr_keys), (value["lanes"], lane_keys)):
+    for records, allowed, optional in ((value["prs"], pr_keys, {"recusals"}), (value["lanes"], lane_keys, set())):
         for record in records.values():
-            if not isinstance(record, dict) or set(record) != allowed:
+            if not isinstance(record, dict) or not allowed <= set(record) <= allowed | optional:
                 raise ProjectionError("snapshot_field_invalid")
     for record in value["prs"].values():
         if (record["head"] != UNKNOWN and (not isinstance(record["head"], str) or not _HEAD.fullmatch(record["head"]))) or record["class"] not in (UNKNOWN, "a", "b", "on-allowlist"):
@@ -394,6 +404,11 @@ def _validate_snapshot(value: Any) -> None:
                            ("veto_observations", {"agent", "agent_uuid", "head", "status", "source_refs", "verification", "activity"})):
             if not isinstance(record[name], list) or any(not isinstance(row, dict) or set(row) != keys for row in record[name]):
                 raise ProjectionError("snapshot_signal_invalid")
+        if "recusals" in record and (not isinstance(record["recusals"], list) or not record["recusals"] or any(
+                not isinstance(row, dict) or set(row) != {"agent", "agent_uuid", "head", "status", "source_refs", "verification"}
+                or row["agent"] not in _RCO_ACTORS or row["status"] not in _RECUSED or not isinstance(row["head"], str)
+                or not _HEAD.fullmatch(row["head"]) for row in record["recusals"])):
+            raise ProjectionError("snapshot_signal_invalid")
     for lane in value["lanes"].values():
         for name, keys in (("claims", {"write_scope", "source_refs", "verification", "lease_expires_utc", "expired", "by_task"}),
                            ("waits", {"waiting_on", "source_refs", "verification"})):
@@ -501,6 +516,9 @@ def state_bytes(state: MindState) -> bytes:
     for record in prs.values():
         record["_votes"] = [v for _, v in sorted(record["_votes"].items())]
         record["_vetos"] = [[list(key), value] for key, value in sorted(record["_vetos"].items())]
+        recusals = record.pop("_recusals", {})
+        if recusals:  # absent when none, so an earlier checkpoint keeps its exact state bytes
+            record["_recusals"] = [v for _, v in sorted(recusals.items())]
     return canonical_bytes(dict(schema="wd.bridge-mind-state.v1", source=state.source, max_facts=state.max_facts,
               ttl_seconds=state.ttl_seconds, seen=sorted(state.seen), prs=prs, lanes=lanes,
               fact_candidates=state.fact_candidates, duplicates=state.duplicates, last_ref=state.last_ref,
@@ -542,6 +560,7 @@ def read_checkpoint(path: Path, *, audit_root: Path) -> MindState:
         for record in prs.values():
             record["_votes"] = {(v["agent"], v["agent_uuid"], v["head"], v["status"]): v for v in record["_votes"]}
             record["_vetos"] = {tuple(key): value for key, value in record["_vetos"]}
+            record["_recusals"] = {(v["agent"], v["agent_uuid"], v["head"]): v for v in record.get("_recusals", [])}
         lanes = deepcopy(raw["lanes"])
         for lane in lanes.values():
             lane["_claims"] = {claim["task_id"]: claim for claim in lane["_claims"]}

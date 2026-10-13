@@ -2026,3 +2026,31 @@ def test_stale_votes_at_the_context_head_are_named_by_the_head_mismatch_and_neve
         assert "bound to that head" not in rules.get("context_head_mismatch", {}).get("observation", "")
     # The votes themselves are unchanged in the reflected snapshot.
     assert mind.reflect(snapshot, context=context)["prs"] == snapshot["prs"]
+
+
+def _recusal(agent, number, head, uuid=None):
+    return {"agent": agent, "agent_uuid": uuid or UUIDS[agent], "head": head, "status": "rco_recused",
+            "source_refs": [ref(f"recusal:{number}:{agent}:{head}")],
+            "verification": "unverified" if uuid == "UNKNOWN" else "declared"}
+
+
+@pytest.mark.parametrize("recusal, kinds", [
+    (_recusal("claude-rco-2", 10, HEAD), []),                                # recused at the head: nothing missing
+    (_recusal("claude-rco-2", 10, OLD), ["last_missing_vote"]),              # another head changes nothing
+    (_recusal("claude-rco-2", 10, HEAD, "UNKNOWN"), ["last_missing_vote"]),  # an undeclared identity excuses nothing
+])
+def test_an_rco_recused_at_the_head_fills_no_slot_and_is_never_asked(recusal, kinds):
+    """Sandbox round 2 (fable-5): PR1878 asked claude-rco-2 for the last missing vote after its rco_recused there."""
+    key, pr = _pr(10, votes=ALMOST)
+    pr["recusals"] = [recusal]
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
+    assert [item["kind"] for item in fields["attention"] if item["kind"] != "tension"] == kinds
+    if kinds:
+        assert fields["attention"][0]["detail"].endswith("missing: claude-rco-2")
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    pr["recusals"] = [_recusal("claude-rco-2", 10, HEAD)]
+    both = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
+    assert both["attention"][0]["actors"] == ["claude-rco-1"]
+    assert both["attention"][0]["detail"].endswith("claude-rco-2 declared rco_recused at this head and fills no RCO "
+                                                   "slot")
+    assert pr["recusals"][0]["source_refs"][0] in both["attention"][0]["refs"]

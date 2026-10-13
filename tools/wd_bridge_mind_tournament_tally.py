@@ -90,7 +90,7 @@ caller-supplied observations satisfy this scoring protocol, never gate PASS.
             cohort['unknown'] = True
             refused += 1
             continue
-        if (record.get('schema') != 'wd.bridge-mind-tournament-result.v1'
+        if (record.get('schema') not in ('wd.bridge-mind-tournament-result.v1', 'wd.bridge-mind-tournament-result.v2')
                 or record.get('round_capture_sha256') != capture_sha256
                 or record.get('round_context_sha256') != context_sha256
                 or record.get('round_builder_sha256') != builder_sha256):

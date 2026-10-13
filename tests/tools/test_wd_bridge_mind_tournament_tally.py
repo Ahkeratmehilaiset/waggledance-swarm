@@ -93,6 +93,21 @@ def test_no_answers_means_unknown_not_zero_cost_winner():
     assert score([])['winner'] is None
 
 
+def test_published_v2_template_is_accepted_without_reinterpreting_nulls():
+    records = complete()
+    for record in records:
+        record['schema'] = 'wd.bridge-mind-tournament-result.v2'
+    assert score(records)['winner'] == 'V0'
+    records[0]['answers'][0]['seconds'] = None
+    assert score(records)['winner'] is None
+
+
+def test_unrecognized_template_version_cannot_silently_qualify():
+    records = complete()
+    records[0]['schema'] = 'wd.bridge-mind-tournament-result.v999'
+    assert score(records)['winner'] is None
+
+
 def test_tie_is_deterministic_and_still_only_advisory():
     records = complete('V1') + complete('V0')
     assert score(records) == score(list(reversed(records)))

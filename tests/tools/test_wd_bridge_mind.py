@@ -137,6 +137,37 @@ def test_public_signal_tokens_cannot_collide_with_delimiter(tmp_path, field, col
     assert target.read_bytes() == original
 
 
+@pytest.mark.parametrize("status", ["", "hold:x", "changes requested", "HOLD", "UNKNOWN", ":hold", "a"*65])
+def test_every_producer_veto_status_roundtrips_without_losing_block_or_source_ref(tmp_path, status):
+    # MUT_RAW_PRODUCER_STATUS: real fold -> public write -> public read, no schema bypass.
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    control = envelope(agent="claude-rco-1", type="finding", status="info")
+    control_value = mind.snapshot(build([control]), as_of_utc=AS_OF)
+    control_path = audit / "control.json"
+    mind.write_snapshot(control_value, control_path, audit_root=audit)
+    assert mind.read_snapshot(control_path, audit_root=audit) == control_value
+    original = control_path.read_bytes()
+    passed = envelope(agent="claude-rco-1", type="decision", status="rco_pass")
+    row = envelope(agent="claude-rco-1", type="finding", status=status, ts_utc="2026-10-13T03:59:01Z")
+    value = mind.snapshot(build([passed, row]), as_of_utc=AS_OF)
+    pr = value["prs"]["1900"]
+    assert not pr["votes"] and pr["stale_votes"]  # Blocking observations are never cleared by normalization.
+    assert pr["veto_observations"][0]["source_refs"] == [row["ref"]]
+    assert pr["veto_observations"][0]["activity"] == "UNKNOWN"
+    expected = status.lower() if status.lower() in {"hold", "unknown"} else "unknown_status"
+    assert pr["veto_observations"][0]["status"] == expected
+    path = audit / "produced.json"
+    mind.write_snapshot(value, path, audit_root=audit)
+    assert mind.read_snapshot(path, audit_root=audit) == value
+    assert control_path.read_bytes() == original
+    bad = deepcopy(value)
+    bad["prs"]["1900"]["veto_observations"][0]["status"] = "hold:x"
+    with pytest.raises(mind.ProjectionError):
+        mind.write_snapshot(bad, control_path, audit_root=audit)
+    assert control_path.read_bytes() == original  # Validator remains strict for caller-fed malformed status.
+
+
 def test_exact_provenance_positive_then_missing_or_mixed_ref_refused():
     # MUT_FACT_WITHOUT_REF / MUT_MIND_SKIPS_REF_VALIDATION
     row = envelope()

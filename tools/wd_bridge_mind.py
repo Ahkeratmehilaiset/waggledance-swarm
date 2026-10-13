@@ -83,6 +83,11 @@ def _token(value: Any) -> str:
     return value if isinstance(value, str) and _TOKEN.fullmatch(value) else UNKNOWN
 
 
+def _signal_status(value: Any) -> str:
+    """Opaque display fallback only; block classification uses the original status/ref."""
+    return value if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value) else "unknown_status"
+
+
 def _block_observation(agent: str, kind: str, status: str) -> bool:
     """Conservative signal DISPLAY, never a gate verdict or clearing transition."""
     if kind in BLOCK_BY_TYPE and (kind not in RCO_GATED_TYPES or agent in _RCO_ACTORS):
@@ -253,7 +258,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         if _block_observation(agent, kind, status):
             # Observations only: never infer a gate-clearing transition from a pass/closeout.
             record["_vetos"][(agent, uuid, task, head)] = dict(agent=agent, agent_uuid=uuid, head=head,
-                  status=_token(status), activity=UNKNOWN, source_refs=[ref], verification="declared" if valid_identity else "unverified")
+                  status=_signal_status(status), activity=UNKNOWN, source_refs=[ref], verification="declared" if valid_identity else "unverified")
             for vote in record["_votes"].values():
                 if vote["agent"] == agent and vote["agent_uuid"] == uuid:
                     for old_ref in vote["source_refs"]:

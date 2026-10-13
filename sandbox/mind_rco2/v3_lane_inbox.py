@@ -657,6 +657,43 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
     return fold
 
 
+GH_STATUS_SCHEMA = "wd.bridge-mind-gh-status.v1"
+GH_MAX_SKEW_SECONDS = 900
+
+
+def attach_github(fold: Mapping[str, Any], observed: Any) -> dict[str, Any]:
+    """The fold plus GitHub-observed facts per open PR (fable-5 live capture observed-status.json): merge state,
+    required checks and open bot review threads, attached only where the observed head is the PR's GitHub head
+    from the context. Observed, never authenticated; the gate still decides. An unusable file adds a note only."""
+    out = dict(fold)
+    out["prs"] = {key: dict(row) for key, row in fold["prs"].items()}
+    if not isinstance(observed, Mapping) or observed.get("schema") != GH_STATUS_SCHEMA or observed.get("authority") != "none" \
+            or not isinstance(observed.get("prs"), Mapping):
+        out["github_note"] = "observed GitHub status not usable (schema or authority)"
+        return out
+    skew = _age_seconds(fold["as_of_utc"], observed.get("observed_utc") or "")
+    if skew is None or abs(skew) > GH_MAX_SKEW_SECONDS:
+        out["github_note"] = "observed GitHub status is more than 15 min from the fold time"
+        return out
+    out["github_observed_utc"] = observed["observed_utc"]
+    for key, row in out["prs"].items():
+        gh = observed["prs"].get(key)
+        if not row.get("open") or not isinstance(gh, Mapping) or gh.get("head") != row["github_head"]:
+            continue
+        threads = gh.get("bot_threads") if isinstance(gh.get("bot_threads"), Mapping) else {}
+        open_by: dict[str, int] = {}
+        bots = threads.get("bot") if isinstance(threads.get("bot"), Mapping) else {}
+        for prio, count in (bots.get("open") or {}).items():
+            if isinstance(count, int) and count > 0:
+                open_by[str(prio)] = open_by.get(str(prio), 0) + count
+        row["github"] = {"merge_state": str(gh.get("merge_state") or UNKNOWN),
+                         "ci_observed_green": gh.get("all_required_success") is True,
+                         "missing_required": list(gh.get("missing_required") or []),
+                         "bot_open": sum(open_by.values()), "bot_open_by": open_by,
+                         "threads_complete": threads.get("complete") is True}
+    return out
+
+
 def lens(fold: Mapping[str, Any], lane: str) -> dict[str, Any]:
     """One lane's inbox from the shared fold: only filters and per-lane rules, no capture scan."""
     if not _LANE.match(lane):
@@ -731,6 +768,8 @@ def lens(fold: Mapping[str, Any], lane: str) -> dict[str, Any]:
                 "ci": row["ci"], "missing": missing, "recused_authors": row["recused"], "author_basis": row["author_basis"],
                 "class": row["class"], "asks": [r["request_id"] for r in mine],
                 "refs": sorted(set(row["refs"]) | {r["ref"] for r in mine})}
+        if "github" in row:
+            line["github"] = row["github"]
         my_pass_now = any(v["agent"] == lane and v["status"] == "rco_pass" for v in row["votes"])
         for veto in [v for v in row["vetoes"] if v["agent"] == lane]:
             label = "own_veto_superseded_by_own_pass_at_head" if my_pass_now else (
@@ -918,8 +957,14 @@ def render_text(inbox: Mapping[str, Any]) -> str:
     check_ci: list[Mapping[str, Any]] = []
     others: list[Mapping[str, Any]] = []
     waiting: list[int] = []
+    blocked: list[str] = []
     for item in inbox.get("done", []):
-        if not item["missing"] and item["ci"] == "green_reported":  # nothing left for any voter
+        gh = item.get("github") or {}
+        green = item["ci"] == "green_reported" or gh.get("ci_observed_green") is True
+        if not item["missing"] and green and gh.get("merge_state", "CLEAN") != "CLEAN":
+            blocked.append(f"PR{item['pr']} {gh.get('merge_state')}"
+                           + (f" ({gh['bot_open']} open bot threads)" if gh.get("bot_open") else ""))
+        elif not item["missing"] and green:  # nothing left for any voter
             ready.setdefault(item["class"].split(" ")[0], []).append(item["pr"])
         elif not item["missing"]:  # every vote is in; the bridge never reported CI at this head
             check_ci.append(item)
@@ -928,8 +973,10 @@ def render_text(inbox: Mapping[str, Any]) -> str:
         else:
             waiting.append(item["pr"])
     if ready:  # RCO1 10:33Z: the vote-complete queue is the real bottleneck, so it comes first
-        out.append("READY my vote in, every slot filled, CI reported green; what is left is outside the votes (Lead route, "
-                   "operator sign for a_class or off_allowlist, holds): " + _classes(ready))
+        out.append("READY my vote in, every slot filled, CI green (bridge or GitHub); what is left is outside the votes (Lead "
+                   "route, operator sign for a_class or off_allowlist, holds): " + _classes(ready))
+    if blocked:
+        out.append("BLOCKED on GitHub although every vote is in and CI is green: " + ", ".join(blocked))
     for item in inbox["act"]:
         if "pr" in item:
             out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"
@@ -981,20 +1028,32 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
     """One view for the whole fleet and the operator: where the vote-complete queue stands and who holds the rest."""
     complete: dict[str, list[int]] = {}
     unreported: dict[str, list[int]] = {}
+    stuck: list[str] = []
     last: list[str] = []
     for key, row in sorted(fold["prs"].items(), key=lambda kv: int(kv[0])):
         if not row.get("open"):
             continue
         klass = row["class"].split(" ")[0]
-        if not row["missing"]:
-            (complete if row["ci"] == "green_reported" else unreported).setdefault(klass, []).append(int(key))
+        gh = row.get("github") or {}
+        green = row["ci"] == "green_reported" or gh.get("ci_observed_green") is True
+        if not row["missing"] and green and gh.get("merge_state", "CLEAN") != "CLEAN":
+            stuck.append(f"PR{key} {gh.get('merge_state')}" + (f" ({gh['bot_open']} open bot threads)" if gh.get("bot_open") else ""))
+        elif not row["missing"]:
+            (complete if green else unreported).setdefault(klass, []).append(int(key))
         elif len(row["missing"]) == 1 and (row["filled"] or row["ci"] == "green_reported"):
             last.append(f"PR{key} {row['missing'][0]}" + (" (CI green)" if row["ci"] == "green_reported" else ""))
     out = [f"V3 fleet lens; round as of {fold['as_of_utc']} (as old as its round); authority none, advisory; the gate decides"]
     if complete:
-        out.append("VOTE-COMPLETE, CI reported green (left: route, sign, holds): " + _classes(complete))
+        out.append("VOTE-COMPLETE, CI green on the bridge or GitHub, merge state CLEAN or not observed (left: route, sign, "
+                   "holds): " + _classes(complete))
     if unreported:
         out.append("VOTE-COMPLETE, CI not reported in the bridge (check gh): " + _classes(unreported))
+    if stuck:
+        out.append("VOTE-COMPLETE but BLOCKED on GitHub: " + ", ".join(stuck))
+    if fold.get("github_observed_utc"):
+        out.append(f"GITHUB observed at {fold['github_observed_utc']} (merge state, required checks, bot threads; the gate decides)")
+    elif fold.get("github_note"):
+        out.append(f"GITHUB {fold['github_note']}")
     if last:
         out.append("LAST MISSING SLOT: " + ", ".join(last))
     consultations = fold.get("grok", [])
@@ -1090,7 +1149,7 @@ def inbox_for(inputs: Mapping[str, Any], lane: str) -> dict[str, Any]:
 
 
 def run(publication: Path, context_path: Path, capture_path: Path, audit_root: Path, lanes: Iterable[str],
-        out_dir: Path, publish_dir: Path | None = None) -> dict[str, Any]:
+        out_dir: Path, publish_dir: Path | None = None, observed_path: Path | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     root = Path(os.path.abspath(audit_root))
     snapshot = core.read_snapshot(_inside(publication, root), audit_root=root)
@@ -1111,10 +1170,14 @@ def run(publication: Path, context_path: Path, capture_path: Path, audit_root: P
     target = _inside(out_dir, root)
     if target.exists():
         raise InboxRefused("the output directory already exists")
+    fold = _fold_for(snapshot, context, capture, now)
+    if observed_path is not None:
+        observed, _ = _read_json(_inside(observed_path, root))
+        fold = attach_github(fold, observed)
     results, files = {}, {}
     for lane in lanes:
         t0 = time.perf_counter()
-        inbox = build_inbox(snapshot, context, capture, lane, now)
+        inbox = lens(fold, lane)
         text = render_text(inbox)
         workspace.guard_object(inbox)
         workspace.guard_object(text)
@@ -1134,7 +1197,7 @@ def run(publication: Path, context_path: Path, capture_path: Path, audit_root: P
                "lanes": results, "outputs": digests}
     if publish_dir is not None:  # the shared mind: one fold and a lens per lane, swapped in atomically
         t0 = time.perf_counter()
-        receipt["shared"] = {"files": publish_shared(_fold_for(snapshot, context, capture, now), list(lanes),
+        receipt["shared"] = {"files": publish_shared(fold, list(lanes),
                                                      _inside(publish_dir, root)),
                              "publish_ms": round((time.perf_counter() - t0) * 1000, 1)}
     workspace.guard_object(receipt)
@@ -1153,10 +1216,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--publish-dir", type=Path, default=None,
                         help="also publish the shared fold and one lens file per lane here (inside the audit root)")
+    parser.add_argument("--observed-status", type=Path, default=None,
+                        help="optional GitHub observed status (wd.bridge-mind-gh-status.v1) inside the audit root")
     args = parser.parse_args(argv)
     try:
         receipt = run(args.publication, args.context, args.capture, args.audit_root, args.lane, args.out_dir,
-                      args.publish_dir)
+                      args.publish_dir, args.observed_status)
     except (InboxRefused, core.ProjectionError, workspace.WorkspaceError) as exc:
         sys.stderr.write(f"refused: {exc}\n")
         return 2

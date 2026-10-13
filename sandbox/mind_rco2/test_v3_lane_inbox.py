@@ -231,3 +231,26 @@ def test_two_windows_of_one_account_both_show():
                                                      limit("seven_day", "2026-10-14T18:00:00Z", 80)]), NOW))
     assert "claude five_hour: 6% used, resets in 170 min" in text
     assert "claude seven_day: 80% used, resets in 1800 min" in text
+
+
+def test_github_observed_status_splits_ready_and_blocked_and_checks_the_head():
+    vote = lambda agent, status: {"agent": agent, "status": status, "head": HEAD, "source_refs": ["b" * 64]}
+    votes = [vote("claude-rco-1", "rco_pass"), vote("claude-rco-2", "rco_pass"), vote("codex-lead-1", "build_consensus_pass"),
+             vote("codex-tools-1", "build_consensus_pass")]
+    snapshot = {"prs": {"100": {"head": HEAD, "votes": votes, "stale_votes": [], "veto_observations": [],
+                                "reported_ci": {"status": "UNKNOWN"}, "source_refs": []},
+                        "101": {"head": "c" * 40, "votes": [dict(v, head="c" * 40) for v in votes], "stale_votes": [],
+                                "veto_observations": [], "reported_ci": {"status": "UNKNOWN"}, "source_refs": []}},
+                "lanes": {}, "tensions": []}
+    context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "b100", "authors": ["x-lane"], "path_class": None},
+                                           101: {"state": "OPEN", "head": "c" * 40, "branch": "b101", "authors": ["x-lane"], "path_class": None}}}
+    fold = v3.build_fold(snapshot, context, v3.Capture([]), NOW)
+    observed = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": "2026-10-13T11:58:00Z",
+                "prs": {"100": {"head": HEAD, "merge_state": "BLOCKED", "all_required_success": True,
+                                "bot_threads": {"bot": {"open": {"P2": 2}}, "complete": True}},
+                        "101": {"head": "d" * 40, "merge_state": "CLEAN", "all_required_success": True}}}
+    text = v3.render_text(v3.lens(v3.attach_github(fold, observed), "claude-rco-2"))
+    assert "BLOCKED on GitHub although every vote is in and CI is green: PR100 BLOCKED (2 open bot threads)" in text
+    assert "PR101" in text and "READY" not in text  # 101: observed head differs, so its GitHub facts are not used
+    stale = dict(observed, observed_utc="2026-10-13T10:00:00Z")
+    assert "github" not in v3.attach_github(fold, stale)["prs"]["100"]

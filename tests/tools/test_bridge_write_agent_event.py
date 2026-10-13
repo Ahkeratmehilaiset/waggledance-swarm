@@ -55,8 +55,9 @@ def _run_writer(
     root: Path,
     runtime_root: Path,
     *args: str,
+    shell: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return _run_bridge_script(root, runtime_root, "Write-AgentEvent.ps1", *args)
+    return _run_bridge_script(root, runtime_root, "Write-AgentEvent.ps1", *args, shell=shell)
 
 
 def _run_bridge_script(
@@ -64,6 +65,7 @@ def _run_bridge_script(
     runtime_root: Path,
     script_name: str,
     *args: str,
+    shell: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))
@@ -86,7 +88,7 @@ def _run_bridge_script(
                 script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
     return subprocess.run(
         [
-            _powershell(),
+            shell or _powershell(),
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -1792,3 +1794,190 @@ def test_a_missing_or_wrong_answer_token_leaves_answer_to_processed_unknown(tmp_
     assert code == 0
     summary = report["latency"]["answer_durable->lead_processed"]
     assert (summary["known"], summary["unknown"]) == (known, 1 - known)
+
+
+# -- Requester closeout (Lead lead-fable-requester-closeout-producer-20261013-v1) ---------------------------
+# The original requester closes its own bound request as superseded or cancelled with one exact correlated
+# decision. Every run is native PowerShell 5.1 and 7 on an isolated root and a fixture copy of the writer.
+
+CLOSEOUT_TASK = "fixture/requester-closeout"
+CLOSEOUT_SHELLS = [pytest.param("powershell", id="ps5"), pytest.param("pwsh", id="ps7")]
+
+
+def _native_shell(name: str) -> str:
+    executable = shutil.which(name)
+    if executable is None:
+        pytest.skip(f"{name} is required for the native closeout twin")
+    return executable
+
+
+class _CloseoutWorld:
+    """A Lead request to Tools on an isolated runtime, plus the matching closeout arguments."""
+
+    def __init__(self, tmp_path: Path, shell: str) -> None:
+        self.root = Path(__file__).resolve().parents[2]
+        self.runtime_root = tmp_path / "bridge-runtime"
+        self.shared = self.runtime_root / "shared"
+        self.shared.mkdir(parents=True)
+        self.shell = shell
+        identities = json.loads((self.root / "configs/bridge_identity_registry.json").read_text(
+            encoding="utf-8"))["identities"]
+        self.lead = {"-Agent": "codex-lead-1", "-AgentUuid": identities["codex-lead-1"],
+                     "-SessionId": "lead-session", "-RunId": "lead-run"}
+        self.tools = {"-Agent": "codex-tools-1", "-AgentUuid": identities["codex-tools-1"],
+                      "-SessionId": "tools-session", "-RunId": "tools-run"}
+        (self.shared / "last_codex-tools-1.json").write_text(json.dumps(dict(
+            agent="codex-tools-1", agent_uuid=identities["codex-tools-1"], session_id="tools-session",
+            run_id="tools-run")))
+        completed = self.write({**self.lead, "-Type": "message", "-Status": "requested", "-TaskId": CLOSEOUT_TASK,
+                                "-To": "codex-tools-1", "-Message": "build please",
+                                "-RequestId": "fixture-closeout-request-v1",
+                                "-PayloadJson": json.dumps({"nonce": "n-1", "task_revision": 3})})
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        self.request = self.events()[-1]
+
+    def write(self, arguments: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        flat = [item for pair in arguments.items() for item in pair]
+        return _run_writer(self.root, self.runtime_root, *flat, shell=self.shell)
+
+    def events(self) -> list[dict]:
+        return [json.loads(line) for line in (self.shared / "events.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+
+    def closeout_arguments(self, request: dict | None = None, **changes: str) -> dict[str, str]:
+        arguments = {**self.lead, "-Type": "decision", "-Status": "superseded", "-TaskId": CLOSEOUT_TASK,
+                     "-To": "codex-tools-1", "-Message": "superseded by the train",
+                     "-CloseRequestEventJson": json.dumps(request or self.request)}
+        arguments.update({"-" + key: value for key, value in changes.items()})
+        return arguments
+
+
+def _closes(request: dict, events: list[dict]) -> bool:
+    from tools.bridge_next_action import _open_requests_for_agent
+
+    open_ids = {event.get("request_id") for event in _open_requests_for_agent(agent="codex-tools-1", events=events)}
+    return request["request_id"] not in open_ids
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+@pytest.mark.parametrize("status", ["superseded", "cancelled"])
+def test_requester_closeout_closes_its_own_request_exactly(tmp_path: Path, shell: str, status: str) -> None:
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    request = world.request
+    assert not _closes(request, [request])
+    completed = world.write(world.closeout_arguments(Status=status))
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    line = (world.shared / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    validate_event_line(line)
+    closeout = json.loads(line)
+    assert (closeout["agent"], closeout["type"], closeout["status"]) == ("codex-lead-1", "decision", status)
+    assert (closeout["task_id"], closeout["to"]) == (request["task_id"], request["to"])
+    expected = {
+        "in_reply_to_request_id": request["request_id"],
+        "in_reply_to_request_digest": request["request_digest"],
+        "in_reply_to_requester": {key: request[key] for key in ("agent", "agent_uuid", "session_id", "run_id")},
+        "request_ts_utc": request["ts_utc"],
+        "nonce": "n-1",
+        "task_revision": 3,
+    }
+    for key, value in expected.items():
+        assert closeout[key] == value and closeout["payload"][key] == value, key
+    assert not {"request_id", "request_digest", "expected_responders"} & set(closeout)
+    assert closeout["ts_utc"] > request["ts_utc"]
+    assert reply_matches_request(request, closeout, "codex-tools-1", requester_closure=True)
+    assert _closes(request, [request, closeout])
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+def test_normal_reply_twin_is_unchanged_and_requester_reply_stays_refused(tmp_path: Path, shell: str) -> None:
+    """The ReplyTo path stays responder-only: Tools answers as before (no closeout fields), and Lead can
+    neither reply to its own request nor smuggle correlation through the payload."""
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    request_json = json.dumps(world.request)
+    refused_reply = world.write({**world.lead, "-Type": "decision", "-Status": "superseded",
+                                 "-TaskId": CLOSEOUT_TASK, "-To": "codex-tools-1",
+                                 "-ReplyToEventJson": request_json})
+    assert refused_reply.returncode != 0
+    assert "Reply task, sender or recipient does not match the full request" in refused_reply.stderr
+    refused_payload = world.write({**world.lead, "-Type": "decision", "-Status": "superseded",
+                                   "-TaskId": CLOSEOUT_TASK, "-To": "codex-tools-1",
+                                   "-PayloadJson": json.dumps({"in_reply_to_request_id": world.request["request_id"]})})
+    assert refused_payload.returncode != 0
+    assert "Conflicting payload contract field 'in_reply_to_request_id'" in refused_payload.stderr
+    assert len(world.events()) == 1
+    answered = world.write({**world.tools, "-Type": "message", "-Status": "answered", "-TaskId": CLOSEOUT_TASK,
+                            "-To": "codex-lead-1", "-ReplyToEventJson": request_json})
+    assert answered.returncode == 0, answered.stdout + answered.stderr
+    reply = world.events()[-1]
+    assert reply["in_reply_to_request_id"] == world.request["request_id"]
+    assert not {"request_ts_utc", "nonce", "task_revision"} & set(reply)
+
+
+def _without(event: dict, key: str) -> dict:
+    return {name: value for name, value in event.items() if name != key}
+
+
+CLOSEOUT_REFUSALS = [
+    ("responder_impersonation", lambda w: w.closeout_arguments(**{k[1:]: v for k, v in w.tools.items()}),
+     "Only the exact original requester"),
+    ("wrong_session", lambda w: w.closeout_arguments(SessionId="lead-session-2"), "Only the exact original requester"),
+    ("wrong_run", lambda w: w.closeout_arguments(RunId="lead-run-2"), "Only the exact original requester"),
+    ("wrong_task", lambda w: w.closeout_arguments(TaskId="fixture/other-task"), "task and recipients"),
+    ("wrong_to", lambda w: w.closeout_arguments(To="fable-5"), "task and recipients"),
+    ("extra_to", lambda w: w.closeout_arguments(To="codex-tools-1,fable-5"), "task and recipients"),
+    ("message_type", lambda w: w.closeout_arguments(Type="message"), "-Type decision"),
+    ("approval_status", lambda w: w.closeout_arguments(Status="approved"), "-Type decision"),
+    # The unchanged envelope guard refuses a payload-only contract field before the closeout branch runs.
+    ("payload_digest", lambda w: w.closeout_arguments(PayloadJson=json.dumps(
+        {"in_reply_to_request_digest": "0" * 64})), "Conflicting payload contract field 'in_reply_to_request_digest'"),
+    ("payload_nonce", lambda w: w.closeout_arguments(PayloadJson=json.dumps({"nonce": "n-2"})),
+     "writer copies the request correlation"),
+    ("payload_revision", lambda w: w.closeout_arguments(PayloadJson=json.dumps({"task_revision": 4})),
+     "writer copies the request correlation"),
+    ("pre_request_time", lambda w: w.closeout_arguments({**w.request, "ts_utc": "2099-01-01T00:00:00.0000000Z"}),
+     "cannot predate"),
+    ("no_request_id", lambda w: w.closeout_arguments(_without(w.request, "request_id")), "valid request_id"),
+    ("no_digest", lambda w: w.closeout_arguments(_without(w.request, "request_digest")), "request_digest"),
+    ("no_session", lambda w: w.closeout_arguments(_without(w.request, "session_id")), "lacks requester session_id"),
+    ("binding_conflict", lambda w: w.closeout_arguments({**w.request, "payload": {
+        **w.request["payload"], "request_id": "another-request"}}), "valid request_id"),
+    ("with_reply_to", lambda w: w.closeout_arguments(ReplyToEventJson=json.dumps(w.request)),
+     "cannot also be a reply"),
+    ("with_request_id", lambda w: w.closeout_arguments(RequestId="new-request"), "cannot also declare a new RequestId"),
+]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+@pytest.mark.parametrize("name, build, refusal", CLOSEOUT_REFUSALS, ids=[case[0] for case in CLOSEOUT_REFUSALS])
+def test_requester_closeout_refuses_before_any_write(tmp_path: Path, shell: str, name: str, build,
+                                                    refusal: str) -> None:
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    completed = world.write(build(world))
+    assert completed.returncode != 0, (name, completed.stdout)
+    assert refusal in completed.stderr, (name, completed.stderr)
+    assert world.events() == [world.request]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+@pytest.mark.parametrize("field, value", [("request_digest", "f" * 64), ("payload", {"nonce": "n-2", "task_revision": 3}),
+                                          ("payload", {"nonce": "n-1", "task_revision": 4})],
+                         ids=["digest", "nonce", "revision"])
+def test_a_closeout_from_an_altered_request_copy_never_closes_the_real_request(tmp_path: Path, shell: str,
+                                                                               field: str, value) -> None:
+    """The writer cannot authenticate a caller's request copy without reading the log, so it copies the
+    correlation exactly; the reader then refuses a closeout whose digest, nonce or revision is not the real one."""
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    altered = {**world.request, field: value}
+    completed = world.write(world.closeout_arguments(altered))
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    closeout = world.events()[-1]
+    assert not reply_matches_request(world.request, closeout, "codex-tools-1", requester_closure=True)
+    assert not _closes(world.request, [world.request, closeout])

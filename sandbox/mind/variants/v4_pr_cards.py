@@ -8,7 +8,14 @@ workspace's own reading (``_Inputs``); nothing is recomputed differently and not
 
 A lane is involved in a PR when its branch starts with the lane id, or the lane voted, vetoed or is a declared
 commit author, or an attention item about the PR names the lane.
+
+The ready queue (round 3, operator 10:30Z "useful, speeds up current work"; RCO1 10:31Z): every open PR with CI
+reported green at its head, no observed veto and no empty vote slot (a declared author or recused RCO fills none),
+with the time of its last vote at that head. Nothing in the bridge view is missing for it; whether the merge route
+is active is not in the bridge view, so the queue shows how long finished work has waited, never why.
 """
+
+from tools.bridge_compact_view import event_id
 
 from tools import bridge_mind_workspace as ws
 
@@ -59,7 +66,8 @@ def _card(inputs, pr, items, tensions):
         empty = ws._empty_slots(pr, authors)
         lines.append("  empty slots: " + (", ".join(empty) if empty else "none")
                      + ("" if not set(ws.RECOGNIZED_RCOS) & authors else
-                        f" (author RCO fills none: {', '.join(sorted(set(ws.RECOGNIZED_RCOS) & authors))})"))
+                        f" (author RCO fills none: {', '.join(sorted(set(ws.RECOGNIZED_RCOS) & authors))})")
+                     + ("" if not pr["recused"] else f" (recused at this head: {', '.join(pr['recused'])})"))
     if row is not None:
         lines.append("  commit authors: " + (ws.UNKNOWN if row["authors"] is None else
                                              ", ".join(row["authors"]) or "none lane-shaped"))
@@ -101,6 +109,26 @@ def _index_line(inputs, pr, items):
     return _short(line, INDEX_LIMIT)
 
 
+def _ready(parsed, events):
+    """(since, pr) for each PR with nothing missing in the bridge view, oldest first; since = its last vote time."""
+    times = {event_id(event): event.get("ts_utc") for event in events if isinstance(event.get("ts_utc"), str)}
+    ready = []
+    for pr in parsed.prs:
+        if ws._suggestable(pr) and parsed.suppressed(pr) is None and not ws._empty_slots(pr, parsed.authors(pr)):
+            stamps = [times.get(ref) for vote in pr["votes"] for ref in vote["refs"]]
+            ready.append((max([stamp for stamp in stamps if stamp] or [ws.UNKNOWN]), pr))
+    return sorted(ready, key=lambda pair: (pair[0], pair[1]["pr"]))
+
+
+def _ready_line(parsed, since, pr, lane, items):
+    computed = parsed.computed_class(pr)
+    left = "operator signature (computed protected)" if computed == "protected" else "no vote"
+    excused = sorted(set(pr["recused"]) | (set(ws.RECOGNIZED_RCOS) & parsed.authors(pr)))
+    return _short(f"  READY PR{pr['pr']} {_h(pr['head'])} since {since[:16]} (last vote at this head); left: {left}; "
+                  f"class computed {computed or ws.UNKNOWN}" + (f"; excused {', '.join(excused)}" if excused else "")
+                  + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""))
+
+
 def _involved(inputs, pr, lane, items):
     row = inputs.context_row(pr)
     if row is not None and row["branch"].startswith(lane + "/"):
@@ -127,6 +155,10 @@ def render(inputs, lane):
     # events carry no lease, so a claim list here would be stale noise.
     current =[row.get("current_task") for row in snapshot["lanes"].values() if row.get("agent") == lane]
     lines.append(f"  current task (last event): {', '.join(sorted({str(task) for task in current})) or ws.UNKNOWN}")
+    ready = _ready(parsed, inputs["events"])
+    lines += ["", f"ready queue, nothing missing in the bridge view ({len(ready)} PRs"
+              + (f", oldest since {ready[0][0][:16]}" if ready else "") + "; merge route not in the bridge view):"]
+    lines += [_ready_line(parsed, since, pr, lane, items) for since, pr in ready]
     involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))
                 and parsed.suppressed(pr) not in ("MERGED", "CLOSED")]
     # A full card only where something is live: an attention item, a reported-green head, a vote or a veto.

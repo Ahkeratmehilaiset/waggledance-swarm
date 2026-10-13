@@ -9,7 +9,7 @@ import math
 import re
 
 LANES = frozenset(('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2'))
-VARIANTS = frozenset(f'V{i}' for i in range(7))
+VARIANTS = frozenset(f'V{i}' for i in range(10))
 QUESTIONS = frozenset(f'Q{i}' for i in range(1, 5))
 
 
@@ -70,7 +70,7 @@ Incomplete or duplicate cohorts and unclassified misses cannot win. Canonical
 read cost is reported separately from view cost. A winning label says the
 caller-supplied observations satisfy this scoring protocol, never gate PASS.
 """
-    if (type(records) is not list or len(records) > 35 or type(lanes) not in (list, tuple)
+    if (type(records) is not list or len(records) > len(VARIANTS) * len(LANES) or type(lanes) not in (list, tuple)
             or len(lanes) != 5 or any(type(lane) is not str for lane in lanes)
             or frozenset(lanes) != LANES
             or not all(_digest(d) for d in (capture_sha256, context_sha256, builder_sha256))):

@@ -112,3 +112,27 @@ def test_tie_is_deterministic_and_still_only_advisory():
     records = complete('V1') + complete('V0')
     assert score(records) == score(list(reversed(records)))
     assert score(records)['winner'] == 'V0'
+
+
+@pytest.mark.parametrize('variant', ['V7', 'V8', 'V9'])
+def test_registered_hybrids_can_qualify_without_displacing_null_guard(variant):
+    records = complete(variant, 50)
+    assert score(complete() + records)['winner'] == variant
+    records[0]['answers'][0]['seconds'] = None
+    assert score(complete() + records)['winner'] == 'V0'
+
+
+def test_full_ten_variant_cohort_fits_bound():
+    records = [row for number in range(10) for row in complete(f'V{number}', 100 - number)]
+    scored = score(records)
+    assert scored['winner'] == 'V9'
+    assert len(scored['table']) == 10
+    assert scored['refused_records'] == 0
+    with pytest.raises(ValueError, match='invalid_scoring_round'):
+        score(records + [result(LANES[0])])
+
+
+def test_unregistered_hybrid_cannot_silently_qualify():
+    scored = score(complete() + complete('V10', 0))
+    assert scored['winner'] == 'V0'
+    assert scored['refused_records'] == 5

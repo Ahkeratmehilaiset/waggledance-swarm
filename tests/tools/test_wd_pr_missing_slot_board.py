@@ -401,11 +401,11 @@ def test_an_error_tail_with_a_guarded_word_is_withheld_plain_or_escaped(tmp_path
 # -- Dormant mind mode: one owned reflected Mind snapshot, shown with its refs; never the gate ----------------------
 
 # The actual reflected snapshot of ten bridge events (below): rebuilt by the Mind core (PR1900 at d47f3ef9) and
-# reflected by the workspace CLI (PR1901 at 39770036). MIND_R_SHA256 and MIND_RB_SHA256 are the sha256 of the
+# reflected by the workspace (Mind slice 1 at 6d60d69e). MIND_R_SHA256 and MIND_RB_SHA256 are the sha256 of the
 # workspace's serialized --json text (indent 2, sorted keys, final newline; a Windows console turns each newline
 # into CRLF on stdout). The blocked view differs only in source.blocked and the three reflection fields.
-MIND_R_SHA256 = "9171fd8ea9966ce14953335227157af70af5e72894a57c72823a9cb3746144e0"
-MIND_RB_SHA256 = "685a6be2432fbd0a8fb0f1ffd2f28f323fdfd1b52b0062dca805cb2e94e2049f"
+MIND_R_SHA256 = "4014ce48279e03b0cf29bb9195bdd3f88db9422ce8fcf36e9b1c98bd1f4852ca"
+MIND_RB_SHA256 = "2d9c17b66321341d7c37aeb5e618ef01113c6253857cd1bbfbd2b7b9b4eb9a4d"
 MIND_R_TEXT = """{
  "attention": [
   {
@@ -456,7 +456,7 @@ MIND_R_TEXT = """{
    "actors": [
     "claude-rco-2"
    ],
-   "detail": "stale_vote: claude-rco-2 sent rco_pass on PR2002 at 7c7c7c7c7c7c; the PR head is 8d8d8d8d8d8d; a stale vote cannot approve it",
+   "detail": "stale_vote: PR2002 at 8d8d8d8d8d8d has 1 stale vote(s); claude-rco-2 rco_pass@7c7c7c7c7c7c; a stale vote cannot approve it",
    "kind": "tension",
    "rank": 4,
    "refs": [
@@ -464,7 +464,7 @@ MIND_R_TEXT = """{
     "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
     "da6e6b357d30235f2e6eb69ce701c3efe9e26ca75785f00c2fc37715d4ff2f77"
    ],
-   "subject": "tension:7319427a47dc6fae",
+   "subject": "tension:bb14e7638ad28277",
    "suggestion_only": true
   }
  ],
@@ -911,9 +911,9 @@ MIND_R_TEXT = """{
    "actors": [
     "claude-rco-2"
    ],
-   "claim": "claude-rco-2 sent rco_pass on PR2002 at 7c7c7c7c7c7c",
+   "claim": "PR2002 at 8d8d8d8d8d8d has 1 stale vote(s)",
    "lifecycle": "new",
-   "observation": "the PR head is 8d8d8d8d8d8d; a stale vote cannot approve it",
+   "observation": "claude-rco-2 rco_pass@7c7c7c7c7c7c; a stale vote cannot approve it",
    "refs": [
     "61cd7b7524b15664b5a3ab5518cf606a878606956fbe777bd19a712f38793b44",
     "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
@@ -921,8 +921,8 @@ MIND_R_TEXT = """{
    ],
    "rule": "stale_vote",
    "severity": "medium",
-   "subject": "pr:2002:claude-rco-2:7c7c7c7c7c7c",
-   "tension_id": "7319427a47dc6fae"
+   "subject": "pr:2002:stale_votes",
+   "tension_id": "bb14e7638ad28277"
   },
   {
    "actors": [
@@ -1004,7 +1004,7 @@ MIND_RB_REFLECTION_TEXT = """{
    "actors": [
     "claude-rco-2"
    ],
-   "detail": "stale_vote: claude-rco-2 sent rco_pass on PR2002 at 7c7c7c7c7c7c; the PR head is 8d8d8d8d8d8d; a stale vote cannot approve it",
+   "detail": "stale_vote: PR2002 at 8d8d8d8d8d8d has 1 stale vote(s); claude-rco-2 rco_pass@7c7c7c7c7c7c; a stale vote cannot approve it",
    "kind": "tension",
    "rank": 4,
    "refs": [
@@ -1012,7 +1012,7 @@ MIND_RB_REFLECTION_TEXT = """{
     "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
     "da6e6b357d30235f2e6eb69ce701c3efe9e26ca75785f00c2fc37715d4ff2f77"
    ],
-   "subject": "tension:7319427a47dc6fae",
+   "subject": "tension:bb14e7638ad28277",
    "suggestion_only": true
   }
  ],
@@ -1035,7 +1035,7 @@ MIND_RB_REFLECTION_TEXT = """{
    },
    "claude-rco-2": {
     "attention_rank": 4,
-    "question": "How can claude-rco-2 resolve stale_vote: claude-rco-2 sent rco_pass on PR2002 at 7c7c7c7c7c7c; the PR head is 8d8d8d8d8d8d; a stale vote cannot approve it?",
+    "question": "How can claude-rco-2 resolve stale_vote: PR2002 at 8d8d8d8d8d8d has 1 stale vote(s); claude-rco-2 rco_pass@7c7c7c7c7c7c; a stale vote cannot approve it?",
     "refs": [
      "61cd7b7524b15664b5a3ab5518cf606a878606956fbe777bd19a712f38793b44",
      "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
@@ -1068,23 +1068,6 @@ MIND_RB_REFLECTION_TEXT = """{
  },
  "tensions": [
   {
-   "actors": [
-    "claude-rco-2"
-   ],
-   "claim": "claude-rco-2 sent rco_pass on PR2002 at 7c7c7c7c7c7c",
-   "lifecycle": "new",
-   "observation": "the PR head is 8d8d8d8d8d8d; a stale vote cannot approve it",
-   "refs": [
-    "61cd7b7524b15664b5a3ab5518cf606a878606956fbe777bd19a712f38793b44",
-    "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
-    "da6e6b357d30235f2e6eb69ce701c3efe9e26ca75785f00c2fc37715d4ff2f77"
-   ],
-   "rule": "stale_vote",
-   "severity": "medium",
-   "subject": "pr:2002:claude-rco-2:7c7c7c7c7c7c",
-   "tension_id": "7319427a47dc6fae"
-  },
-  {
    "actors": [],
    "claim": "the log row at offset 1000",
    "lifecycle": "new",
@@ -1096,6 +1079,23 @@ MIND_RB_REFLECTION_TEXT = """{
    "severity": "high",
    "subject": "offset:1000",
    "tension_id": "9d6934a6ebf58ad7"
+  },
+  {
+   "actors": [
+    "claude-rco-2"
+   ],
+   "claim": "PR2002 at 8d8d8d8d8d8d has 1 stale vote(s)",
+   "lifecycle": "new",
+   "observation": "claude-rco-2 rco_pass@7c7c7c7c7c7c; a stale vote cannot approve it",
+   "refs": [
+    "61cd7b7524b15664b5a3ab5518cf606a878606956fbe777bd19a712f38793b44",
+    "cf2926b527d8307c04bafe96ba15da9c794a6f83ed739e487a262cd384d60ff7",
+    "da6e6b357d30235f2e6eb69ce701c3efe9e26ca75785f00c2fc37715d4ff2f77"
+   ],
+   "rule": "stale_vote",
+   "severity": "medium",
+   "subject": "pr:2002:stale_votes",
+   "tension_id": "bb14e7638ad28277"
   },
   {
    "actors": [

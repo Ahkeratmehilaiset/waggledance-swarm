@@ -46,7 +46,7 @@ RCOS = workspace.RECOGNIZED_RCOS
 BUILD = workspace.BUILD_SLOT
 SLOTS = workspace.VOTE_SLOTS
 LEASE_WARN_SECONDS = 300
-LEASE_SECONDS = 1800  # the default claim lease; a heartbeat is not in the log, so a live lease stays UNKNOWN
+LEASE_SECONDS = 1800  # the default claim lease; heartbeat events are not in the pinned compact capture, so a live lease stays UNKNOWN
 PSEUDO_LANES = frozenset({"system", "operator"})
 GROK_OPEN_SECONDS = 3600  # a consultation start older than this with no answer is shown as a stale start
 OLD_REQUEST_SECONDS = 12 * 3600  # an unanswered request with no PR older than this is shown as stale, not as work
@@ -477,7 +477,7 @@ def build_inbox_direct(snapshot: Mapping[str, Any], context: Mapping[str, Any], 
             "limits": ["capture window only: asks and votes before the first captured event are unseen",
                        "authors are declared (commit authors or request source_authors), never authenticated",
                        "CI is what the bridge reported at the GitHub head, not gh checks",
-                       "claim lease heartbeats are not in the log, so a live lease stays UNKNOWN"]}
+                       "claim heartbeats (type heartbeat, Start-BridgeHeartbeat) are not in the pinned compact capture, so a live lease stays UNKNOWN"]}
 
 
 FOLD_SCHEMA = "rco2.sandbox.shared-fold.v1"
@@ -830,8 +830,8 @@ def lens(fold: Mapping[str, Any], lane: str) -> dict[str, Any]:
             stale.append(dict(item, kind="claim_event_older_than_lease"))
         elif item["claim_event_age_s"] is not None and item["claim_event_age_s"] > LEASE_SECONDS - LEASE_WARN_SECONDS:
             # P3 (RCO1 register): the stale-lease sweep released live work today; warn 5 min before the lease ends.
-            # A heartbeat is not in the log, so this says "unless refreshed", never that the claim is gone.
-            stale.append(dict(item, kind="claim_lease_ends_within_5_min_unless_refreshed"))
+            # Heartbeat events are not in the compact capture, so this says "unless refreshed", never that it is gone.
+            stale.append(dict(item, kind="claim_lease_ends_within_5_min_unless_refreshed_or_heartbeated"))
     tensions = [{key: t[key] for key in ("rule", "subject", "severity", "refs")} for t in fold["tensions"] if lane in t["actors"]]
     return _finish(lane, now, fold["capture_first_utc"], identity, act, wait, own, done, stale, dormant, asks, pending,
                    claims, entry["released"], tensions, notes)
@@ -870,7 +870,7 @@ def _finish(lane, now, first_utc, identity, act, wait, own, done, stale, dormant
             "limits": ["capture window only: asks and votes before the first captured event are unseen",
                        "authors are declared (commit authors or request source_authors), never authenticated",
                        "CI is what the bridge reported at the GitHub head, not gh checks",
-                       "claim lease heartbeats are not in the log, so a live lease stays UNKNOWN"]}
+                       "claim heartbeats (type heartbeat, Start-BridgeHeartbeat) are not in the pinned compact capture, so a live lease stays UNKNOWN"]}
 
 
 def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture: Capture, lane: str, now: str) -> dict[str, Any]:
@@ -1090,7 +1090,7 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
             continue
         view = lens(fold, agent)
         age = _age_seconds(fold["as_of_utc"], entry.get("last_event_utc") or "")
-        ending = sum(1 for s in view["stale"] if s["kind"] == "claim_lease_ends_within_5_min_unless_refreshed")
+        ending = sum(1 for s in view["stale"] if s["kind"] == "claim_lease_ends_within_5_min_unless_refreshed_or_heartbeated")
         out.append(f"LANE {agent}: last event " + (f"{round(age / 60)} min" if age is not None else UNKNOWN)
                    + f" before the round; asks open {view['asks_actionable']}; work items {len(view['act'])}; claims held "
                    f"{len(view['claims'])}" + (f", {ending} lease ending within 5 min" if ending else ""))

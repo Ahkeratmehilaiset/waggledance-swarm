@@ -500,7 +500,12 @@ def _capture_for(rows: list) -> Capture:
 
 
 def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
-    """The tournament driver entry: a pure function of the frozen round inputs, one text view per lane.
+    """The tournament driver entry: one text view per lane (see ``inbox_for``)."""
+    return {"inbox.txt": render_text(inbox_for(inputs, lane))}
+
+
+def inbox_for(inputs: Mapping[str, Any], lane: str) -> dict[str, Any]:
+    """The lane inbox from the frozen round inputs of the driver: a pure function, guarded before it is returned.
 
     The driver (from d80c5a1b) passes the frozen capture rows as ``events``. When they are absent, the asks, typed
     recusals, declared Source authors and claim releases are UNKNOWN, and a NOTE line says so. "Now" is the
@@ -515,9 +520,8 @@ def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
     if not isinstance(rows, list):
         inbox["notes"].insert(0, "no capture rows in the driver inputs: asks, typed recusals, declared Source authors "
                                  "and claim releases are UNKNOWN here")
-    text = render_text(inbox)
     workspace.guard_object(inbox)
-    return {"inbox.txt": text}
+    return inbox
 
 
 def run(publication: Path, context_path: Path, capture_path: Path, audit_root: Path, lanes: Iterable[str],

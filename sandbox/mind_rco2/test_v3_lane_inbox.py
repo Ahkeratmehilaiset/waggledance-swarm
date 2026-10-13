@@ -208,3 +208,14 @@ def test_fleet_lens_grok_open_stale_and_answered():
     assert "GROK open live" in text and "GROK open old" not in text
     assert "GROK answered done" in text and "in 160 s" in text
     assert "3 consultations, 1 open, 1 stale starts" in text
+
+
+def test_fleet_lens_shows_posted_usage_limits_and_never_guesses():
+    limit = {"agent": "claude-rco-1", "type": "status", "status": "usage_limit", "to": "", "task_id": "limits",
+             "ts_utc": "2026-10-13T11:50:00Z", "message": "", "payload": {"lane": "claude-rco-2", "provider": "claude",
+             "window": "session", "reset_utc": "2026-10-13T13:00:00Z", "source": "/usage"}}
+    unknown = dict(limit, payload={"provider": "codex", "window": "weekly"}, agent="codex-tools-1")
+    text = v3.render_fleet(v3.build_fold({"prs": {}, "lanes": {}, "tensions": []}, {"charter_ok": True, "prs": {}},
+                                         v3.Capture([limit, unknown]), NOW))
+    assert "LIMITS claude-rco-2 claude session: resets in 60 min" in text
+    assert "LIMITS codex-tools-1 codex weekly: UNKNOWN" in text

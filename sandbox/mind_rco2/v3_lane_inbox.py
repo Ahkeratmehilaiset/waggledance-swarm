@@ -623,12 +623,27 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
             item["end"] = {"status": status.replace("consultation_", ""), "utc": capture.ts[ref], "ref": ref,
                            "seconds": payload.get("duration_seconds") if isinstance(payload.get("duration_seconds"), (int, float)) else None,
                            "report_sha256": report if isinstance(report, str) else None}
+    # Usage limits as observed and posted (RCO1 10:53Z: status=usage_limit with provider, window, reset_utc and
+    # source); the latest per lane and provider. Nothing here estimates a reset that no event reported.
+    limits: dict[str, dict[str, Any]] = {}
+    for ref, event in capture.rows:
+        if str(event.get("status") or "") != "usage_limit":
+            continue
+        payload = _payload(event)
+        subject = payload.get("lane") if isinstance(payload.get("lane"), str) else str(event.get("agent"))
+        provider = payload.get("provider") if isinstance(payload.get("provider"), str) else UNKNOWN
+        reset = payload.get("reset_utc") if workspace.parse_time(payload.get("reset_utc")) is not None else UNKNOWN
+        limits[f"{subject}|{provider}"] = {"lane": subject, "provider": provider, "reset_utc": reset,
+                                           "window": payload.get("window") if isinstance(payload.get("window"), str) else UNKNOWN,
+                                           "source": payload.get("source") if isinstance(payload.get("source"), str) else UNKNOWN,
+                                           "reported_by": str(event.get("agent")), "observed_utc": capture.ts[ref], "ref": ref}
     fold = {"schema": FOLD_SCHEMA, "authority": "none", "as_of_utc": now, "capture_first_utc": capture.first_utc,
             "snapshot_prs": sorted(int(key) for key in snapshot["prs"]), "branch_pr": branch_pr,
             "open_heads": {str(n): row["head"] for n, row in open_prs.items()}, "prs": prs, "asks": asks,
             "replies": replies, "ends": ends, "naming": naming, "lanes": lanes, "tensions": tensions,
             "grok": sorted(grok.values(), key=lambda item: (str(item["started_utc"] or (item["end"] or {}).get("utc") or ""),
-                                                            item["consultation_id"]))}
+                                                            item["consultation_id"])),
+            "limits": [limits[key] for key in sorted(limits)]}
     workspace.guard_object(fold)
     return fold
 
@@ -1011,6 +1026,12 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
         out.append(f"LANE {agent}: last event " + (f"{round(age / 60)} min" if age is not None else UNKNOWN)
                    + f" before the round; asks open {view['asks_actionable']}; work items {len(view['act'])}; claims held "
                    f"{len(view['claims'])}" + (f", {ending} lease ending within 5 min" if ending else ""))
+    for item in fold.get("limits", []):
+        reset = item["reset_utc"]
+        left = _age_seconds(reset, fold["as_of_utc"]) if reset != UNKNOWN else None
+        state = UNKNOWN if left is None else (f"resets in {round(left / 60)} min" if left > 0 else "reset time passed")
+        out.append(f"LIMITS {item['lane']} {item['provider']} {item['window']}: {state} (reset {reset}; source {item['source']}, "
+                   f"posted by {item['reported_by']} at {item['observed_utc'][:19]}) [{item['ref'][:10]}]")
     faults = {agent: entry["released"] for agent, entry in sorted(fold["lanes"].items()) if entry.get("released")}
     if faults:
         out.append("MIND FAULT claims released in the log but still listed by the core: "

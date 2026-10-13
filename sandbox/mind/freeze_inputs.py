@@ -72,9 +72,9 @@ def row_digest(event):
 def builder():
     if git("status", "--porcelain", "--untracked-files=all", "--", *MIND_PATHS):
         raise FreezeRefused("builder_not_clean")
-    files = {}
-    for name in git("ls-files", "--", *MIND_PATHS).splitlines():
-        files[name] = blob_sha1((SRC / name).read_bytes())
+    # The committed blob ids (git normalizes line endings; the tree is clean for these paths).
+    files = {line.split("\t", 1)[1]: line.split(" ")[1]
+             for line in git("ls-files", "-s", "--", *MIND_PATHS).splitlines()}
     return {"head": git("rev-parse", "HEAD"), "branch": git("rev-parse", "--abbrev-ref", "HEAD"), "blobs": files}
 
 

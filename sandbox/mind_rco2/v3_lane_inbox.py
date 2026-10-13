@@ -53,6 +53,7 @@ SUPERSEDE_KEYS = ("supersedes_request_id", "replaces_request_id")
 SUPERSEDE_LIST_KEYS = ("superseded_request_ids",)
 _PR_IN_TASK = re.compile(r"(?:^|[^0-9a-z])pr-?([1-9][0-9]{2,5})(?:[^0-9]|$)", re.IGNORECASE)
 _LANE = re.compile(r"[a-z][a-z0-9-]{1,40}\Z")
+_ID_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class InboxRefused(ValueError):
@@ -172,12 +173,16 @@ class Capture:
         answered: dict[str, str] = {}
         closed: dict[str, str] = {}
         named: list[tuple[int, str, str]] = []  # (position, ref, text) of the lane's own events
+        tokens: dict[str, list[tuple[int, str]]] = {}  # whole id-shaped token -> own events naming it, in order
         for index, (ref, event) in enumerate(self.rows):
             rid, bound = event.get("request_id"), event.get("in_reply_to_request_id")
             payload = _payload(event)
             if event.get("agent") == lane:
-                named.append((index, ref, " ".join((str(rid or ""), str(event.get("message") or ""),
-                                                    json.dumps(payload, sort_keys=True, ensure_ascii=False)))))
+                text = " ".join((str(rid or ""), str(event.get("message") or ""),
+                                 json.dumps(payload, sort_keys=True, ensure_ascii=False)))
+                named.append((index, ref, text))
+                for token in set(_ID_TOKEN.findall(text)):
+                    tokens.setdefault(token, []).append((index, ref))
             to = [part.strip() for part in str(event.get("to") or "").split(",") if part.strip()]
             # A review_requested broadcast asks every reviewer it names (RCO1 V5 10-13 showed the PR1850 one); other
             # asks belong to the first addressee or the lane the request id names.
@@ -212,7 +217,10 @@ class Capture:
             # The id must stand alone: "ask-1" inside "ask-1-v2" is another request (the wrong-id twin), while
             # punctuation after it ("ask-1:" or "ask-1.") still names it.
             whole = re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(rid) + r"(?![A-Za-z0-9_-])")
-            naming = next((ref for index, ref, text in named if index > start and whole.search(text)), None)
+            if _ID_TOKEN.fullmatch(rid):  # the same rule as the regex, from one token index per lane (fast)
+                naming = next((ref for index, ref in tokens.get(rid, []) if index > start), None)
+            else:
+                naming = next((ref for index, ref, text in named if index > start and whole.search(text)), None)
             item = dict(item)
             if rid in closed:
                 item["ended"] = "closed_or_superseded"

@@ -118,3 +118,10 @@ def test_a_named_ask_for_a_closed_pr_stays_dead():
     result = v3.build_inbox(snapshot, context, v3.Capture([closed_ask, own(message="re ask-c")]), LANE, NOW)
     assert "request_for_pr_not_open" in kinds(result)
     assert "request_reported_answer_unverified" not in kinds(result)
+
+
+def test_an_id_with_a_dot_uses_the_same_boundary_rule():
+    result = inbox([ask("lead.ask.7"), own(message="lead.ask.7: done")])
+    assert "request_reported_answer_unverified" in kinds(result) and result["wait"] == []
+    twin = inbox([ask("lead.ask.7"), own(message="lead.ask.7x is another one")])
+    assert [w["asks"] for w in twin["wait"]] == [["lead.ask.7"]]

@@ -4,8 +4,11 @@
 Envelopes are complete ``{ref,event}`` pinned-reader observations. Hashes bind
 content, NOT actor origin or semantic truth. Source coverage/cursors are caller
 declarations. MindState retains the reducer and exact-duplicate index separately
-from TTL/capacity-bounded display facts. No clock, network, provider or bridge
+from TTL/capacity-bounded display facts. No clock read, network, provider or bridge
 write is used. Publication is opt-in to an explicit existing .codex-audit root.
+On Windows a replace or read can meet a reader's or writer's open handle (a sharing
+window, PermissionError): the publication replace and the publication read retry that
+one error a bounded number of times with a short backoff, never any other error.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+import time
 from typing import Any
 
 from tools.bridge_compact_view import event_id
@@ -445,6 +449,27 @@ def _validate_snapshot(value: Any) -> None:
             raise ProjectionError("snapshot_fact_value_invalid")
 
 
+# Sandbox 10:30Z (RCO1 1 writer + 5 readers: 15 of 313 publishes failed without a retry, 0 of 286 with 5 tries;
+# RCO2: 21 of 209 failed with 5 tries, 0 of 205 with 12 tries, 5 ms doubling to 100 ms). Bounded: under 0.9 s.
+_SHARING_TRIES = 12
+_SHARING_FIRST_DELAY = 0.005
+_SHARING_MAX_DELAY = 0.1
+_sleep = time.sleep
+
+
+def _sharing_retry(operation):
+    """Run operation, retrying only PermissionError (the Windows sharing window) with a bounded backoff."""
+    delay = _SHARING_FIRST_DELAY
+    for attempt in range(_SHARING_TRIES):
+        try:
+            return operation()
+        except PermissionError:
+            if attempt == _SHARING_TRIES - 1:
+                raise
+            _sleep(delay)
+            delay = min(_SHARING_MAX_DELAY, delay * 2)
+
+
 def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
     target = _audit_path(path, audit_root)
     encoded = canonical_bytes(publication)
@@ -456,7 +481,7 @@ def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
             stream.flush()
             os.fsync(stream.fileno())
         _audit_path(target, audit_root)
-        os.replace(temporary, target)
+        _sharing_retry(lambda: os.replace(temporary, target))
         temporary = None
     except OSError:
         raise ProjectionError("snapshot_publication_failed") from None
@@ -484,7 +509,7 @@ def read_snapshot(path: Path, *, audit_root: Path) -> dict:
     """Verify an audit publication envelope, not external evidence or authenticity."""
     target = _audit_path(path, audit_root)
     try:
-        raw = target.read_bytes()
+        raw = _sharing_retry(target.read_bytes)
         publication = parse_bridge_json_object(raw.decode("utf-8"))
         if not isinstance(publication, dict) or set(publication) != {"schema", "snapshot", "snapshot_sha256"} or publication["schema"] != "wd.bridge-mind-publication.v1":
             raise ProjectionError("snapshot_publication_invalid")
@@ -538,7 +563,7 @@ def write_checkpoint(state: MindState, path: Path, *, as_of_utc: str, audit_root
 def read_checkpoint(path: Path, *, audit_root: Path) -> MindState:
     target = _audit_path(path, audit_root)
     try:
-        publication = parse_bridge_json_object(target.read_bytes().decode("utf-8"))
+        publication = parse_bridge_json_object(_sharing_retry(target.read_bytes).decode("utf-8"))
         if set(publication) != {"schema", "body", "body_sha256"} or publication["schema"] != "wd.bridge-mind-checkpoint.v1":
             raise ValueError
         body = publication["body"]

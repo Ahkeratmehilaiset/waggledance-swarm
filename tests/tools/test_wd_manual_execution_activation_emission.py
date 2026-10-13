@@ -30,6 +30,7 @@ ACTIVATION = dict(schema="wd.bridge-manual-execution-activation.v1", enabled=Tru
 DEFINITION = dict(schema="wd.bridge-code-package.v1", python_files=TOOLS, manual_execution_capability=dict(
     schema="wd.bridge-manual-execution.v1", invocation_marker="--wd-manual-execution",
     entrypoints=dict(merge=TOOLS[0], receipt=TOOLS[1])))
+DEFINITION.update(wheel_store_relative="wheels", python_site_relative="site")
 
 # Each replacement removes precisely one binding guard, without altering
 # fixtures or test assertions. These are opt-in mutation inputs, not fallbacks.
@@ -44,6 +45,15 @@ MUTANTS = {
     "MUT_SCHEMA_BINDING": ("$record.schema -cne 'wd.bridge-manual-execution-activation.v1'", "$false"),
     "MUT_CLOSED_FIELDS": ("($names -join ',') -cne 'agent,approval_reference_sha256,definition_sha256,enabled,schema,source_commit,tools'", "$false"),
     "MUT_DUPLICATE_JSON": ("-not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($Text)", "$false"),
+}
+
+ADMISSION_MUTANTS = {
+    "MUT_ADMISSION_ANCHOR": ("$expected.ToUpperInvariant() -cne $ManifestHash", "$false"),
+    "MUT_ADMISSION_RUNTIME": (
+        "-not [IO.Path]::GetFullPath($value).TrimEnd('\\').Equals($runtimeFull, [StringComparison]::OrdinalIgnoreCase)", "$false"),
+    "MUT_ADMISSION_DUPLICATE_OPTION": ("$options.ContainsKey($name) -or ", "$false -or "),
+    "MUT_ADMISSION_UNKNOWN_OPTION": ("($name -cnotin $valued -and $name -cnotin $flags)", "$false"),
+    "MUT_ADMISSION_FLAG_VALUE": ("$split.Count -ne 1", "$false"),
 }
 
 
@@ -77,7 +87,8 @@ def _quote(value):
 
 def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
             anchor="D" * 64, actor="codex-tools-1", runtime_alias=None, fleet=None,
-            existing="same"):
+            existing="same", main_flow=False, missing_supervisor=False, approval_bytes=None,
+            hide_hash_cmdlet=False):
     source = Path(os.environ.get("WD_TEST_MANUAL_EMITTER_SOURCE", str(OPS / "Deploy-WdRebootBundle.ps1")))
     before = source.read_bytes()
     fixture = tmp_path / "fixture.json"
@@ -87,7 +98,12 @@ def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
     audit.mkdir(exist_ok=True)
     fixture.write_text(json.dumps(dict(text=json.dumps(ACTIVATION) if text is None else text,
         definition=DEFINITION, admit=admit, omit=omit, tail=tail or [], existing=existing,
-        fleet=fleet or ["codex-tools-1"], mutant=os.environ.get("WD_TEST_EMITTER_MUTANT", ""))), encoding="utf-8")
+        main_flow=main_flow, missing_supervisor=missing_supervisor,
+        read_approval=approval_bytes is not None, hide_hash_cmdlet=hide_hash_cmdlet,
+        fleet=["codex-tools-1"] if fleet is None else fleet,
+        mutant=os.environ.get("WD_TEST_EMITTER_MUTANT", ""))), encoding="utf-8")
+    if approval_bytes is not None:
+        (tmp_path / "approval.json").write_bytes(approval_bytes)
     script = tmp_path / "probe.ps1"
     script.write_text("$ErrorActionPreference='Stop'\n" +
         f"$source={_quote(source)}\n$fixture={_quote(fixture)}\n" +
@@ -103,20 +119,61 @@ def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
         "if($helper.Count -ne 1 -or $binding.Count -ne 1){throw 'EMITTER_HELPER_MISSING'}\n"
         "$body=$helper[0].Extent.Text\n" +
         "$mutations=ConvertFrom-Json -InputObject " + _quote(json.dumps(MUTANTS)) + "\n"
-        "if($f.mutant){\n"
+        "if($f.mutant -and $mutations.PSObject.Properties[[string]$f.mutant]){\n"
         " $m=$mutations.PSObject.Properties[[string]$f.mutant]\n"
         " if($null -eq $m -or ([regex]::Matches($body,[regex]::Escape([string]$m.Value[0]))).Count -ne 1){throw 'MUTATION_NOT_EXACT'}\n"
         " $body=$body.Replace([string]$m.Value[0],[string]$m.Value[1])\n}\n"
         ". ([scriptblock]::Create($body))\n"
         ". ([scriptblock]::Create($binding[0].Extent.Text))\n"
+        "foreach($name in @('Read-WdManualExecutionApprovalText','Assert-WdPathWithoutReparse','Resolve-FullPath')){\n"
+        " $def=@($defs|Where-Object {$_.Name -ceq $name});if($def.Count -ne 1){throw 'READER_HELPER_MISSING'}\n"
+        " . ([scriptblock]::Create($def[0].Extent.Text))\n}\n" +
+        "$admissionMutations=ConvertFrom-Json -InputObject " + _quote(json.dumps(ADMISSION_MUTANTS)) + "\n"
+        "if($f.mutant -and $admissionMutations.PSObject.Properties[[string]$f.mutant]){\n"
+        " $guard='function Assert-WdBridgeManualExecution {'+(Get-Command Assert-WdBridgeManualExecution).Definition+'}'\n"
+        " $m=$admissionMutations.PSObject.Properties[[string]$f.mutant].Value\n"
+        " if(([regex]::Matches($guard,[regex]::Escape([string]$m[0]))).Count -ne 1){throw 'ADMISSION_MUTATION_NOT_EXACT'}\n"
+        " . ([scriptblock]::Create($guard.Replace([string]$m[0],[string]$m[1])))\n}\n"
+        "if($f.mutant -and -not $mutations.PSObject.Properties[[string]$f.mutant] -and -not $admissionMutations.PSObject.Properties[[string]$f.mutant] -and $f.mutant -cnotin @('MUT_MAIN_PREWRITE_VALIDATION','MUT_DEFAULT_SUPERVISOR_READ')){throw 'UNKNOWN_MUTANT'}\n"
+        # Digest real bytes with .NET, independent of PS5 module auto-discovery.
+        "function Get-ProbeSha([string]$path){$s=[Security.Cryptography.SHA256]::Create();try{[BitConverter]::ToString($s.ComputeHash([IO.File]::ReadAllBytes($path))).Replace('-','')}finally{$s.Dispose()}}\n"
+        "function Get-ProbeFiles { @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File|Sort-Object FullName|ForEach-Object {$_.FullName+'='+ (Get-ProbeSha $_.FullName)}) -join '|' }\n"
+        "if($f.hide_hash_cmdlet){function Get-FileHash {throw 'HASH_CMDLET_MUST_NOT_BE_USED'}}\n"
         "$manifestObject=[ordered]@{source_commit='" + SOURCE + "'}\n"
         "$head='" + SOURCE + "';$branch='synthetic';$upstream='synthetic';$sourceHashes=@{}\n"
         "$bridgeCodeDefinition=$f.definition;$bridgeCodePackage=@{Hash='" + DEFINITION_HASH + "'}\n"
         "$bridgePython=@{Path='inert';Sha256=('E'*64)};$bridgePythonStage=@{Wheels=@{};Site=@{}}\n"
         "$definitionHash='" + DEFINITION_HASH + "';$manifestHash=('D'*64)\n"
-        "$before=@(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File|Select-Object -ExpandProperty FullName)\n"
+        "$before=Get-ProbeFiles;$script:sideEffects=@();$manualActivation=$null\n"
         "try {\n"
-        " $manualActivation=$null\n"
+        " if($f.read_approval){$f.text=Read-WdManualExecutionApprovalText -Path (Join-Path $PSScriptRoot 'approval.json')}\n"
+        " if($f.main_flow){\n"
+        # Real enclosing main statement slice, from initialization through its
+        # FIRST staging side effect. Never evaluate the rest of the installer.
+        "  $start=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$manualFleetAgents'},$true)|Where-Object {$_.Parent -is [Management.Automation.Language.StatementBlockAst] -and $_.Parent.Parent -is [Management.Automation.Language.TryStatementAst]})\n"
+        "  $stop=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$bridgePythonStage'},$true))\n"
+        "  if($start.Count -ne 1 -or $stop.Count -ne 1 -or $start[0].Parent -ne $stop[0].Parent){throw 'MAIN_SLICE_NOT_EXACT'}\n"
+        "  $main=$ast.Extent.Text.Substring($start[0].Extent.StartOffset,$stop[0].Extent.EndOffset-$start[0].Extent.StartOffset)\n"
+        "  if($f.mutant -ceq 'MUT_DEFAULT_SUPERVISOR_READ'){\n"
+        "   if(([regex]::Matches($main,[regex]::Escape('$manualFleetAgents = @()'))).Count -ne 1){throw 'MAIN_MUTATION_NOT_EXACT'}\n"
+        "   $main=$main.Replace('$manualFleetAgents = @()','$manualFleetAgents = @([string]$materializedFleet.tools_supervisor.agent)')\n"
+        "  }\n"
+        "  if($f.mutant -ceq 'MUT_MAIN_PREWRITE_VALIDATION'){\n"
+        "   $conversion=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text -match '^\\$manualActivation\\s*=\\s*ConvertFrom-WdManualExecutionApprovalRecord'},$true))\n"
+        "   if($conversion.Count -ne 1 -or -not $main.Contains($conversion[0].Extent.Text)){throw 'MAIN_MUTATION_NOT_EXACT'}\n"
+        "   $main=$main.Replace($conversion[0].Extent.Text,'$manualActivation = $null')\n"
+        "  }\n"
+        "  $materializedFleet=[pscustomobject]@{lanes=@([pscustomobject]@{agent='codex-tools-1'});bridge_python=[pscustomobject]@{executable='inert'}}\n"
+        "  if(-not $f.missing_supervisor){$materializedFleet|Add-Member tools_supervisor ([pscustomobject]@{agent='codex-tools-1'})}\n" +
+        f"  $toolsBootstrapSource={_quote(ROOT / '.agent-bridge/bin')}\n" +
+        "  $materializationRoot=Join-Path $PSScriptRoot 'never-created-stage';$WheelSource='inert'\n"
+        "  $manualApprovalText=if($f.omit){$null}else{$f.text}\n"
+        "  function Resolve-WdBridgePythonExecutable {param($ConfiguredPath) @{Path='inert';Sha256=('E'*64)}}\n"
+        "  function Install-WdBridgePythonSite {param($Definition,$PythonExecutable,$WheelDirectory,$SiteDirectory,$WorkDirectory,$WheelSource) $script:sideEffects+= 'dependency_staging';throw 'STAGING_BOUNDARY_REACHED'}\n"
+        "  Set-StrictMode -Version Latest\n"
+        "  . ([scriptblock]::Create($main)) 6>$null\n"
+        "  throw 'MAIN_BOUNDARY_NOT_REACHED'\n"
+        " }\n"
         " if(-not $f.omit){$manualActivation=ConvertFrom-WdManualExecutionApprovalRecord -Text $f.text -SourceCommit $head -DefinitionHash $definitionHash -Definition $f.definition -FleetAgentNames @($f.fleet)}\n"
         # Execute only the real manifest assignment and its adjacent activation
         # conditional from the installer AST, never its top-level install flow.
@@ -134,13 +191,15 @@ def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
         " Assert-WdManualExecutionManifestBinding -Deployment $existing -ExpectedActivation $manualActivation -SourceCommit $head -DefinitionHash $definitionHash -Definition $f.definition -FleetAgentNames @($f.fleet)\n"
         " if($f.admit){\n"
         "  $argv=@('--wd-manual-execution','17','--expected-head',('a'*40),'--expected-base-sha',('b'*40),'--from-agent','codex-tools-1','--repo','Ahkeratmehilaiset/waggledance-swarm','--out-dir',(Join-Path $PSScriptRoot '.codex-audit/receipt'),'--consensus-proposal-id','synthetic','--bridge-task-id','synthetic/task','--json')+@($f.tail)\n"
+        # Isolate flag-value rejection from duplicate-option rejection.
+        "  if(@($f.tail) -ccontains '--json=true'){$argv=@($argv|Where-Object {$_ -cne '--json'})}\n"
         "  $null=Assert-WdBridgeManualExecution -Deployment $deployment -Definition $f.definition -DefinitionHash $definitionHash -ManifestHash $manifestHash -Tool 'tools/merge_with_bridge_receipt.py' -Arguments $argv -RuntimeRoot (Join-Path $PSScriptRoot 'runtime')\n"
         " }\n"
         " $out=@{accepted=$true;record=$manualActivation;has_activation=($null -ne $deployment.PSObject.Properties['manual_execution'])}\n"
-        "}catch{$out=@{accepted=$false;reason=$_.Exception.Message}}\n"
-        "$after=@(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File|Select-Object -ExpandProperty FullName)\n"
-        "if(($before -join '|') -cne ($after -join '|')){throw 'UNEXPECTED_WRITE'}\n"
-        "$out.source_sha256=(Get-FileHash -LiteralPath $source).Hash;$out.executor_ran=$false;$out.ps_version=$PSVersionTable.PSVersion.ToString()\n"
+        "}catch{$types=@();$cause=$_.Exception;while($null -ne $cause){$types+=$cause.GetType().FullName;$cause=$cause.InnerException};$out=@{accepted=$false;reason=$_.Exception.Message;error_types=$types}}\n"
+        "$after=Get-ProbeFiles;if($before -cne $after){throw 'UNEXPECTED_WRITE'}\n"
+        "$out.side_effects=@($script:sideEffects);$out.main_record=$manualActivation\n"
+        "$out.source_sha256=Get-ProbeSha $source;$out.executor_ran=$false;$out.ps_version=$PSVersionTable.PSVersion.ToString()\n"
         "$out|ConvertTo-Json -Depth 10 -Compress\n", encoding="utf-8")
     env = dict(os.environ)
     env.update(WD_REBOOT_EXPECTED_MANIFEST_HASH=anchor, AGENT_BRIDGE_AGENT=actor,
@@ -160,6 +219,52 @@ def test_emitted_approval_reaches_unchanged_admission_without_executor(shell, tm
     result = _invoke(shell, tmp_path, admit=True)
     assert result["accepted"], result
     assert result["record"] == ACTIVATION and result["has_activation"]
+
+
+def test_real_source_hash_does_not_depend_on_hash_cmdlet(shell, tmp_path):
+    result = _invoke(shell, tmp_path, admit=True, hide_hash_cmdlet=True)
+    assert result["accepted"], result
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_actual_main_validation_reaches_staging_only_for_valid_input(shell, tmp_path, invalid):
+    result = _invoke(shell, tmp_path, main_flow=True, text='{malformed' if invalid else None)
+    if invalid:
+        assert result["side_effects"] == [], result
+        assert "strict JSON contract" in result["reason"], result
+    else:
+        assert result["side_effects"] == ["dependency_staging"], result
+        assert result["reason"] == "STAGING_BOUNDARY_REACHED", result
+        assert result["main_record"] == ACTIVATION, result
+
+
+@pytest.mark.parametrize("missing_supervisor", [False, True])
+def test_omission_without_supervisor_reaches_staging_without_activation(shell, tmp_path, missing_supervisor):
+    result = _invoke(shell, tmp_path, main_flow=True, omit=True, missing_supervisor=missing_supervisor)
+    assert result["reason"] == "STAGING_BOUNDARY_REACHED", result
+    assert result["side_effects"] == ["dependency_staging"] and result["main_record"] is None
+    # Inactive existing-target binding must also accept the real empty list.
+    other = tmp_path / "binding"
+    other.mkdir()
+    inactive = _invoke(shell, other, omit=True, fleet=[])
+    assert inactive["accepted"] and not inactive["has_activation"], inactive
+
+
+@pytest.mark.parametrize("case", ["valid", "bom", "max_bytes", "empty", "oversized", "invalid_utf8"])
+def test_bounded_approval_reader_uses_real_bytes_and_strict_utf8(shell, tmp_path, case):
+    valid = json.dumps(ACTIVATION).encode("utf-8")
+    data = dict(valid=valid, bom=b"\xef\xbb\xbf" + valid, max_bytes=valid + b" " * (16384-len(valid)),
+                empty=b"", oversized=valid + b" " * (16385-len(valid)), invalid_utf8=b"\xff")[case]
+    result = _invoke(shell, tmp_path, approval_bytes=data)
+    if case in {"valid", "bom", "max_bytes"}:
+        assert result["accepted"] and result["record"] == ACTIVATION, result
+    else:
+        assert not result["accepted"], result
+        assert result["side_effects"] == []
+        if case == "invalid_utf8":
+            assert "System.Text.DecoderFallbackException" in result["error_types"], result
+        else:
+            assert "1 to 16384 UTF-8 bytes" in result["reason"], result
 
 
 def test_default_omission_keeps_manifest_shape_and_admission_refuses(shell, tmp_path):

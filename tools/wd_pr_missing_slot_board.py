@@ -40,6 +40,12 @@ Observe-only: the board posts no bridge event and merges nothing. It writes only
 per-PR snapshot files in a temporary directory that it removes. It is not on the verdict path: the
 gate decides, and the board only reports what the gate said. A PR whose snapshot or gate output
 cannot be read becomes a row error, never a silent skip, and the exit code is 1.
+
+PR titles, branch names, gate texts, hold reasons and error tails all come from outside the board.
+Every string it writes is checked after decoding: a string that holds a guarded private-marker word,
+plain or ``\\uXXXX``-escaped, is replaced by a fixed placeholder, and the row counts it in
+``withheld``. The word itself is never written. Classification runs before this, so a withheld text
+keeps its element and state.
 """
 from __future__ import annotations
 
@@ -55,6 +61,13 @@ import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# The shared guarded-word check, imported so this file carries no marker literal: the charter diff gate
+# refuses those literals, and a copied word list could drift from the shared one.
+from tools.bridge_diff_privacy import _marker as _guarded_word  # noqa: E402
+
 SNAPSHOT_TOOL = REPO_ROOT / "tools" / "pr_status_snapshot.py"
 GATE_TOOL = REPO_ROOT / "tools" / "idle_consensus_auto_merge.py"
 SCHEMA = "wd.pr-missing-slot-board.v1"
@@ -62,6 +75,8 @@ RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
 PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CONSENSUS_PREFIX = "bridge consensus incomplete: "
 DECISION_NAME = re.compile(r"[a-z0-9_]{1,64}")
+WITHHELD = "[withheld: holds a guarded word]"
+_ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 # Exact gate texts and prefixes -> element. Order matters only for prefixes that nest.
 EXACT = {
     "PR must not be a draft": "draft",
@@ -219,6 +234,27 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             "approved": _approved_by(consensus), "gate_decision": gate.get("decision"), "author": author}
 
 
+def _has_marker(text: str) -> bool:
+    """A guarded word in the text, or in its ``\\uXXXX``-unescaped form (for example an echoed raw JSON line)."""
+    unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), text)
+    return _guarded_word(text) is not None or _guarded_word(unescaped) is not None
+
+
+def _withhold(value: Any) -> tuple[Any, int]:
+    """Replace every string that holds a guarded word with the placeholder; return the value and the count."""
+    if isinstance(value, str):
+        return (WITHHELD, 1) if _has_marker(value) else (value, 0)
+    if isinstance(value, list):
+        items = [_withhold(item) for item in value]
+        return [item for item, _ in items], sum(count for _, count in items)
+    if isinstance(value, dict):
+        if any(_has_marker(str(key)) for key in value):
+            raise ValueError("a board key holds a guarded word; nothing is written")
+        items = {key: _withhold(item) for key, item in value.items()}
+        return {key: item for key, (item, _) in items.items()}, sum(count for _, count in items.values())
+    return value, 0
+
+
 def _read_json_object(text: str) -> dict[str, Any] | None:
     try:
         value = json.loads(text)
@@ -280,13 +316,19 @@ def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path |
     with tempfile.TemporaryDirectory(prefix="wd-slot-board-") as tmp:
         rows = [board_row(pr, repo, Path(tmp), bridge_root, run, python, holds.get(int(pr["number"]), ()))
                 for pr in prs]
-    for row in rows:
+    withheld = []
+    for index, row in enumerate(rows):
         if main_sha and row.get("base_sha"):
             row["base_is_main"] = row["base_sha"] == main_sha
+        clean, count = _withhold(row)
+        if count:
+            clean["withheld"] = count
+            withheld.append(clean["pr"])
+        rows[index] = clean
     signature_list = [{"pr": row["pr"], "head": row["head"], "title": row["title"],
                        "signature_detail": row["missing"][0]["details"], "approved": row["approved"]}
                       for row in rows if row.get("state") == "signature_only"]
-    return {
+    board, _ = _withhold({
         "schema": SCHEMA,
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo": repo,
@@ -298,8 +340,10 @@ def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path |
         "held": [row["pr"] for row in rows if row.get("state") == "held"],
         "snapshot_refused": [row["pr"] for row in rows if row.get("state") == "snapshot_refused"],
         "signature_list": signature_list,
+        "withheld": withheld,
         "errors": [row["pr"] for row in rows if "error" in row],
-    }
+    })
+    return board
 
 
 def list_open_prs(repo: str, run: Runner | None = None) -> list[dict[str, Any]]:
@@ -307,7 +351,8 @@ def list_open_prs(repo: str, run: Runner | None = None) -> list[dict[str, Any]]:
                 "number,headRefName,headRefOid,isDraft,title"])
     value = json.loads(done.stdout) if done.returncode == 0 else None
     if not isinstance(value, list):
-        raise SystemExit("gh pr list failed: " + (done.stderr or "").strip()[-400:])
+        tail = (done.stderr or "").strip()[-400:]
+        raise SystemExit("gh pr list failed: " + (WITHHELD if _has_marker(tail) else tail))
     return sorted(value, key=lambda pr: int(pr["number"]))
 
 
@@ -324,6 +369,7 @@ def render_text(board: Mapping[str, Any]) -> str:
     lines.append("merge ready: " + (", ".join(f"#{pr}" for pr in board["merge_ready"]) or "none"))
     lines.append("held: " + (", ".join(f"#{pr}" for pr in board["held"]) or "none"))
     lines.append("snapshot refused: " + (", ".join(f"#{pr}" for pr in board["snapshot_refused"]) or "none"))
+    lines.append("texts withheld: " + (", ".join(f"#{pr}" for pr in board["withheld"]) or "none"))
     return "\n".join(lines) + "\n"
 
 

@@ -123,10 +123,13 @@ def test_gate_command_is_the_dry_run_form_only():
 class _FakeGitHub:
     """Answers gh pr list, the snapshot tool and the gate; records every command."""
 
-    def __init__(self, prs, gates, snapshots=None, gate_stdout=None, refusals=None):
+    def __init__(self, prs, gates, snapshots=None, gate_stdout=None, refusals=None, list_run=None,
+                 snapshot_errors=None):
         self.prs, self.gates, self.snapshots = prs, gates, snapshots or {}
         self.gate_stdout = gate_stdout or {}
         self.refusals = refusals or {}
+        self.list_run = list_run
+        self.snapshot_errors = snapshot_errors or {}
         self.gate_runs: list[int] = []
         self.commands: list[list[str]] = []
         self.snapshot_dirs: list[Path] = []
@@ -135,7 +138,7 @@ class _FakeGitHub:
         command = list(command)
         self.commands.append(command)
         if command[:3] == ["gh", "pr", "list"]:
-            return SimpleNamespace(returncode=0, stdout=json.dumps(self.prs), stderr="")
+            return self.list_run or SimpleNamespace(returncode=0, stdout=json.dumps(self.prs), stderr="")
         if str(board.SNAPSHOT_TOOL) in command:
             number = int(command[command.index(str(board.SNAPSHOT_TOOL)) + 1])
             out = Path(command[command.index("--out") + 1])
@@ -143,13 +146,17 @@ class _FakeGitHub:
             if number in self.refusals:
                 code, refusal = self.refusals[number]
                 return SimpleNamespace(returncode=code, stdout=json.dumps(refusal), stderr="")
+            if number in self.snapshot_errors:
+                return SimpleNamespace(returncode=1, stdout="", stderr=self.snapshot_errors[number])
             out.write_text(json.dumps(self.snapshots.get(number, _snapshot())), encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout="{}", stderr="")
         if str(board.GATE_TOOL) in command:
             number = int(Path(command[command.index("--pr-status-file") + 1]).stem.split("-")[1])
             self.gate_runs.append(number)
             if number in self.gate_stdout:
-                return SimpleNamespace(returncode=2, stdout=self.gate_stdout[number], stderr="boom")
+                stdout, stderr = (self.gate_stdout[number] if isinstance(self.gate_stdout[number], tuple)
+                                  else (self.gate_stdout[number], "boom"))
+                return SimpleNamespace(returncode=2, stdout=stdout, stderr=stderr)
             return SimpleNamespace(returncode=0, stdout=json.dumps(self.gates[number]), stderr="")
         raise AssertionError(f"unexpected command {command}")
 
@@ -314,3 +321,74 @@ def test_the_real_gate_blockers_for_a_draft_conflicting_denylisted_pr_all_classi
     assert {"draft", "merge_state", "signature"} <= set(elements)
     assert elements["signature"]["details"] == [
         "path gate failed: denylist hit (.agent-bridge/bin/Write-AgentEvent.ps1)"]
+
+
+# -- Decoded-value guard: no guarded word from a title, branch, gate text, hold or error tail reaches the output --
+
+def _escaped(word):
+    """The word with its first letter as a JSON backslash-u escape, so only a decoded check can see it."""
+    return "\\u%04x" % ord(word[0]) + word[1:]
+
+
+def _assert_no_guard_word(text):
+    assert not any(word in text for word in GUARD_WORDS)
+    decoded = json.dumps(json.loads(text), ensure_ascii=False) if text.lstrip().startswith("{") else text
+    assert not any(word in decoded for word in GUARD_WORDS)
+
+
+def test_a_guarded_word_from_any_outside_text_is_withheld_and_keeps_its_state(tmp_path, monkeypatch, capsys):
+    prs = [_pr(61), _pr(62), _pr(63)]
+    prs[0]["title"] = "fix " + GUARD_WORDS[0] + " title"
+    prs[1]["headRefName"] = "fable-5/x" + GUARD_WORDS[1]
+    # gh pr list output as raw JSON text with the word escaped: the board sees it only after decoding.
+    list_text = json.dumps(prs).replace(GUARD_WORDS[0], _escaped(GUARD_WORDS[0]))
+    assert GUARD_WORDS[0] not in list_text and _escaped(GUARD_WORDS[0]) in list_text
+    denylist = {"allowed": False, "blocked_paths": ["docs/" + GUARD_WORDS[1] + ".md"], "unmatched_paths": [],
+                "reason": "denylist hit"}
+    all_slots = ("build_lead", "build_tools", "claude-rco-2")
+    gates = {61: _gate([RECEIPT], approved=all_slots),
+             62: _gate(["path gate failed: denylist hit", RECEIPT], approved=all_slots, path_gate=denylist),
+             63: _gate(["gate text naming " + GUARD_WORDS[0], RECEIPT], approved=all_slots)}
+    fake = _FakeGitHub(prs, gates, list_run=SimpleNamespace(returncode=0, stdout=list_text, stderr=""))
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out), "--hold", "61=waits on " + GUARD_WORDS[1]]) == 0
+    text = out.read_text(encoding="utf-8")
+    _assert_no_guard_word(text)
+    _assert_no_guard_word(capsys.readouterr().out)
+    result = json.loads(text)
+    rows = {row["pr"]: row for row in result["rows"]}
+    assert rows[61]["title"] == board.WITHHELD and rows[61]["withheld"] == 2
+    assert rows[61]["missing"] == [{"element": "hold", "details": [board.WITHHELD], "actors": ["codex-lead-1"]}]
+    assert rows[62]["branch"] == board.WITHHELD and rows[62]["withheld"] == 2
+    assert rows[62]["missing"][0]["details"] == [board.WITHHELD]
+    assert _elements(rows[63])["other"]["details"] == [board.WITHHELD] and rows[63]["withheld"] == 1
+    # Withholding a text never changes what is missing.
+    assert {pr: row["state"] for pr, row in rows.items()} == {61: "held", 62: "signature_only", 63: "in_progress"}
+    assert [item["pr"] for item in result["signature_list"]] == [62]
+    assert result["withheld"] == [61, 62, 63] and result["errors"] == []
+
+
+def test_an_error_tail_with_a_guarded_word_is_withheld_plain_or_escaped(tmp_path, monkeypatch, capsys):
+    fake = _FakeGitHub([_pr(71), _pr(72), _pr(73)], {73: _gate([RECEIPT])},
+                       snapshot_errors={71: "Traceback: bad value " + GUARD_WORDS[0]},
+                       gate_stdout={72: ("not json", 'echoed line {"m": "' + _escaped(GUARD_WORDS[1]) + '"}')})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out), "--main-sha", "m" + GUARD_WORDS[0]]) == 1
+    text = out.read_text(encoding="utf-8")
+    _assert_no_guard_word(text)
+    _assert_no_guard_word(capsys.readouterr().out)
+    assert json.loads(text)["main_sha"] == board.WITHHELD
+    rows = {row["pr"]: row for row in json.loads(text)["rows"]}
+    assert rows[71]["error"] == rows[72]["error"] == board.WITHHELD
+    assert rows[71]["withheld"] == rows[72]["withheld"] == 1 and "withheld" not in rows[73]
+    failed = SimpleNamespace(returncode=1, stdout="", stderr="gh: " + _escaped(GUARD_WORDS[0]))
+    with pytest.raises(SystemExit) as raised:
+        board.list_open_prs("o/r", run=lambda command: failed)
+    _assert_no_guard_word(str(raised.value))
+    assert board.WITHHELD in str(raised.value)
+    # Keys are the board's own; one holding a guarded word means nothing is written at all.
+    with pytest.raises(ValueError) as raised_key:
+        board._withhold({"rows": [{"k" + GUARD_WORDS[1]: 1}]})
+    _assert_no_guard_word(str(raised_key.value))

@@ -52,7 +52,7 @@ def _words(text):
 
 
 def _rooms(inputs, lane):
-    """Task ids for the lane, in order: current task, attention PR tasks, own recent tasks."""
+    """Task ids for the lane, in order: current task, attention PR tasks, own live PR branches, own recent tasks."""
     snapshot, context = inputs["snapshot"], inputs["context"]
     tasks = []
     lanes = sorted((row for row in snapshot["lanes"].values() if row.get("agent") == lane),
@@ -63,6 +63,14 @@ def _rooms(inputs, lane):
         match = ws._PR_SUBJECT.fullmatch(item["subject"])
         if lane in item["actors"] and match and match.group(1) in prs:
             tasks.append(prs[match.group(1)]["head_ref_name"])
+    # Own open PRs with something live at the head the context saw (reported green CI or votes), newest first.
+    for number, pr in sorted(snapshot["prs"].items(), key=lambda pair: -int(pair[0])):
+        row = prs.get(number)
+        ci = pr.get("reported_ci") or {}
+        live = (ci.get("status") == "reported_green" and ci.get("head") == pr.get("head")) or pr.get("votes")
+        if row and row["state"] == "OPEN" and row["head"] == pr.get("head") and live \
+                and row["head_ref_name"].startswith(lane + "/"):
+            tasks.append(row["head_ref_name"])
     for event in reversed(inputs["events"]):
         if event.get("agent") == lane and isinstance(event.get("task_id"), str) and event.get("type") != "claim":
             tasks.append(event["task_id"])

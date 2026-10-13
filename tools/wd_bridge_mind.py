@@ -40,6 +40,10 @@ _RCO_NONBLOCK_RECORDS = {"autonomous_merge_receipt", "merged_operator_authorized
 _RCO_EXACT_NONBLOCK = {"rco_pass", "rco_pass_pending_ci", "build_consensus_pass", "approved", "approved_ci_green", "acknowledged", "no_changes_requested", "no_changes_requested_approved", "approved_waiver_block_cleared", "lead_no_blocker_rco_pending", "producer_no_block_reemit_required"}
 _MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 _ESCAPED_MARKERS = tuple(re.compile("".join("(?:" + re.escape(char) + r"|\\u" + format(ord(char), "04x") + ")" for char in marker), re.IGNORECASE) for marker in _MARKERS)
+BLOCKED_REASONS = frozenset({"canonical_event_invalid", "provenance_hash_mismatch", "provenance_envelope_required",
+               "source_cursor_required", "source_cursor_count_invalid", "complete_coverage_required",
+               "cursor_discontinuity_rebuild_required", "file_identity_changed", "log_truncated",
+               "generation_changed", "partial_record", "guarded_word_refused", "head_binding_conflict"})
 
 
 class ProjectionError(ValueError):
@@ -174,6 +178,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         kind = event.get("type", "")
         task = _token(event.get("task_id"))
         previous = state.lanes.get(identity, {})
+        task_claims = deepcopy(previous.get("_claims", {}))
         lane = dict(agent=agent, agent_uuid=uuid, session_id=_token(event.get("session_id")),
                     run_id=_token(event.get("run_id")), current_task=task,
                     claims=deepcopy(previous.get("claims", UNKNOWN)), waits=deepcopy(previous.get("waits", UNKNOWN)),
@@ -184,14 +189,28 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         scope = event.get("write_scope", payload.get("write_scope"))
         if scope is not None and kind == "claim":
             valid_scope = isinstance(scope, list) and all(isinstance(p, str) and _PATH.fullmatch(p) for p in scope)
-            lane["claims"] = {"write_scope": deepcopy(scope) if valid_scope else UNKNOWN,
-                              "source_refs": [ref], "verification": "declared"}
+            claimed = {"task_id": task, "write_scope": deepcopy(scope) if valid_scope else UNKNOWN,
+                       "source_refs": [ref], "verification": "declared",
+                       "owner_session_id": lane["session_id"], "owner_run_id": lane["run_id"]}
             if not valid_scope:
                 lane["uncertainty"].append("invalid_write_scope")
             expiry = payload.get("claim_lease_expires_utc", event.get("claim_lease_expires_utc"))
-            lane["claims"]["lease_expires_utc"] = _iso(expiry) if expiry is not None else UNKNOWN
-        elif kind in {"release", "handoff", "done"} and isinstance(lane["claims"], dict) and task == previous.get("current_task"):
-            lane["claims"] = dict(write_scope=[], source_refs=[ref], verification="declared", lease_expires_utc=UNKNOWN)
+            claimed["lease_expires_utc"] = _iso(expiry) if expiry is not None else UNKNOWN
+            task_claims[task] = claimed
+        elif kind == "release" or (kind in {"handoff", "done"} and status == kind):
+            claimed = task_claims.get(task)
+            if (claimed and claimed["owner_session_id"] != UNKNOWN and claimed["owner_run_id"] != UNKNOWN
+                    and claimed["owner_session_id"] == lane["session_id"] and claimed["owner_run_id"] == lane["run_id"]):
+                task_claims.pop(task)
+        lane["_claims"] = task_claims
+        if task_claims or isinstance(previous.get("claims"), dict):
+            claims = [deepcopy(claim) for _, claim in sorted(task_claims.items())]
+            leases = {claim["lease_expires_utc"] for claim in claims}
+            scopes = [claim["write_scope"] for claim in claims]
+            lane["claims"] = dict(by_task=claims, write_scope=sorted({p for paths in scopes for p in paths})
+                   if all(isinstance(paths, list) for paths in scopes) else UNKNOWN,
+                   lease_expires_utc=next(iter(leases)) if len(leases) == 1 else UNKNOWN,
+                   source_refs=sorted({r for claim in claims for r in claim["source_refs"]}) or [ref], verification="declared")
         waiting = payload.get("waiting_on")
         if waiting is not None:
             values = [waiting] if isinstance(waiting, str) else waiting
@@ -284,6 +303,7 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
         prs[key]["missing"] = ["gate_eligibility_UNKNOWN"]
     lanes = deepcopy(state.lanes)
     for lane in lanes.values():
+        lane.pop("_claims", None)
         age = (horizon - _time(lane["last_event_utc"])).total_seconds()
         if age < 0:
             raise ProjectionError("as_of_precedes_event")
@@ -291,6 +311,9 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
         if isinstance(lane["claims"], dict):
             expiry = lane["claims"].get("lease_expires_utc", UNKNOWN)
             lane["claims"]["expired"] = horizon >= _time(expiry) if expiry != UNKNOWN else UNKNOWN
+            for claim in lane["claims"]["by_task"]:
+                expiry = claim["lease_expires_utc"]
+                claim["expired"] = horizon >= _time(expiry) if expiry != UNKNOWN else UNKNOWN
     active = []
     for key, fact in state.fact_candidates.items():
         age = (horizon - _time(fact["observed_at_utc"])).total_seconds()
@@ -368,10 +391,14 @@ def _validate_snapshot(value: Any) -> None:
             if not isinstance(record[name], list) or any(not isinstance(row, dict) or set(row) != keys for row in record[name]):
                 raise ProjectionError("snapshot_signal_invalid")
     for lane in value["lanes"].values():
-        for name, keys in (("claims", {"write_scope", "source_refs", "verification", "lease_expires_utc", "expired"}),
+        for name, keys in (("claims", {"write_scope", "source_refs", "verification", "lease_expires_utc", "expired", "by_task"}),
                            ("waits", {"waiting_on", "source_refs", "verification"})):
             if lane[name] != UNKNOWN and (not isinstance(lane[name], dict) or set(lane[name]) != keys):
                 raise ProjectionError("snapshot_lane_value_invalid")
+        if isinstance(lane["claims"], dict):
+            for claim in lane["claims"]["by_task"]:
+                if not isinstance(claim, dict) or set(claim) != {"task_id", "write_scope", "source_refs", "verification", "lease_expires_utc", "expired", "owner_session_id", "owner_run_id"}:
+                    raise ProjectionError("snapshot_task_claim_invalid")
     def refs_required(record):
         if isinstance(record, dict):
             if "source_refs" in record:
@@ -450,27 +477,25 @@ def read_snapshot(path: Path, *, audit_root: Path) -> dict:
 
 def blocked_snapshot(state: MindState, *, as_of_utc: str, offset: int, reason: str) -> dict:
     """Diagnostic view only; unchanged accepted state/cursor, never current."""
-    reasons = {"canonical_event_invalid", "provenance_hash_mismatch", "provenance_envelope_required",
-               "source_cursor_required", "source_cursor_count_invalid", "complete_coverage_required",
-               "cursor_discontinuity_rebuild_required", "file_identity_changed", "log_truncated",
-               "generation_changed", "partial_record", "guarded_word_refused"}
-    if type(offset) is not int or offset < 0 or reason not in reasons:
+    if type(offset) is not int or offset < 0 or reason not in BLOCKED_REASONS:
         raise ProjectionError("blocked_diagnostic_invalid")
     value = snapshot(state, as_of_utc=as_of_utc)
     value["source"]["blocked"] = dict(active=True, offset=offset, reason=reason)
-    value["tensions"] = [dict(rule_id="source_blocked", offset=offset, reason=reason,
-                              refs=[state.last_ref] if state.last_ref else [UNKNOWN])]
+    # Reflection owns tensions; source.blocked contains the complete safe diagnostic.
     return value
 
 
 def state_bytes(state: MindState) -> bytes:
     """Complete resumable fold state, distinct from bounded display memory."""
     prs = deepcopy(state.prs)
+    lanes = deepcopy(state.lanes)
+    for lane in lanes.values():
+        lane["_claims"] = [claim for _, claim in sorted(lane["_claims"].items())]
     for record in prs.values():
         record["_votes"] = [v for _, v in sorted(record["_votes"].items())]
         record["_vetos"] = [[list(key), value] for key, value in sorted(record["_vetos"].items())]
     return canonical_bytes(dict(schema="wd.bridge-mind-state.v1", source=state.source, max_facts=state.max_facts,
-              ttl_seconds=state.ttl_seconds, seen=sorted(state.seen), prs=prs, lanes=state.lanes,
+              ttl_seconds=state.ttl_seconds, seen=sorted(state.seen), prs=prs, lanes=lanes,
               fact_candidates=state.fact_candidates, duplicates=state.duplicates, last_ref=state.last_ref,
               max_event_utc=state.max_event_utc))
 
@@ -510,8 +535,11 @@ def read_checkpoint(path: Path, *, audit_root: Path) -> MindState:
         for record in prs.values():
             record["_votes"] = {(v["agent"], v["agent_uuid"], v["head"], v["status"]): v for v in record["_votes"]}
             record["_vetos"] = {tuple(key): value for key, value in record["_vetos"]}
+        lanes = deepcopy(raw["lanes"])
+        for lane in lanes.values():
+            lane["_claims"] = {claim["task_id"]: claim for claim in lane["_claims"]}
         state = MindState(origin, raw["max_facts"], raw["ttl_seconds"], set(raw["seen"]), prs,
-                  raw["lanes"], raw["fact_candidates"], raw["duplicates"], raw["last_ref"], raw["max_event_utc"])
+                  lanes, raw["fact_candidates"], raw["duplicates"], raw["last_ref"], raw["max_event_utc"])
         _validate_snapshot(body["snapshot"])
         if canonical_bytes(snapshot(state, as_of_utc=body["snapshot"]["source"]["as_of_utc"])) != canonical_bytes(body["snapshot"]):
             raise ValueError

@@ -351,3 +351,54 @@ def test_sensitive_refusal_can_be_published_as_loud_block(tmp_path):
     mind.write_snapshot(blocked, path, audit_root=audit)
     assert mind.read_snapshot(path, audit_root=audit)["source"]["blocked"]["active"] is True
     assert mind.canonical_bytes(mind.snapshot(state, as_of_utc=AS_OF)) == original
+
+
+def test_multiple_claim_tasks_survive_messages_and_only_named_release_is_retired():
+    # MUT_MIND_LAST_CLAIM_ONLY / MUT_MIND_RELEASE_ALL_CLAIMS
+    a = envelope(type="claim", status="active", task_id="task/a", write_scope=["tools/a.py"])
+    b = envelope(type="claim", status="active", task_id="task/b", write_scope=["tools/b.py"])
+    message = envelope(type="message", status="info", task_id="other/context", write_scope=[])
+    ready = envelope(type="handoff", status="ready", task_id="task/a", write_scope=[])
+    rows = [a, b, message, ready]
+    lane = mind.snapshot(build(rows), as_of_utc=AS_OF)["lanes"]["codex-tools-1|"+UUID]
+    assert lane["claims"]["write_scope"] == ["tools/a.py", "tools/b.py"]
+    assert {claim["task_id"] for claim in lane["claims"]["by_task"]} == {"task/a", "task/b"}
+    released = envelope(type="release", status="abandoned", task_id="task/a", write_scope=[])
+    lane = mind.snapshot(build([*rows, released]), as_of_utc=AS_OF)["lanes"]["codex-tools-1|"+UUID]
+    assert lane["claims"]["write_scope"] == ["tools/b.py"]
+    assert [claim["task_id"] for claim in lane["claims"]["by_task"]] == ["task/b"]
+    assert lane["claims"]["lease_expires_utc"] == lane["claims"]["expired"] == "UNKNOWN"
+
+
+def test_old_review_request_cannot_rewind_head_and_unknown_actor_is_unverified():
+    rows = [envelope(), envelope(payload=dict(pr=1900, head=OTHER_HEAD)),
+            envelope(status="review_requested", payload=dict(pr=1900, head=HEAD))]
+    assert mind.snapshot(build(rows), as_of_utc=AS_OF)["prs"]["1900"]["head"] == OTHER_HEAD
+    for status in ("rco_pass", "hold"):
+        row = envelope(agent="claude-rco-1", agent_uuid="invalid", type="decision", status=status)
+        pr = mind.snapshot(build([row]), as_of_utc=AS_OF)["prs"]["1900"]
+        values = pr["votes"] + pr["veto_observations"]
+        assert values and all(value["verification"] == "unverified" for value in values)
+
+
+def test_all_supported_blocked_reasons_publish_and_pass_positive_neutral_and_closeout_twins(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    state = build([envelope()])
+    for reason in mind.BLOCKED_REASONS:
+        blocked = mind.blocked_snapshot(state, as_of_utc=AS_OF, offset=1, reason=reason)
+        path = audit / (reason+".json")
+        mind.write_snapshot(blocked, path, audit_root=audit)
+        assert mind.read_snapshot(path, audit_root=audit)["source"]["blocked"]["reason"] == reason
+    passed = envelope(agent="claude-rco-1", type="decision", status="rco_pass")
+    neutral = envelope(agent="claude-rco-1", type="decision", status="rco_closed_postmerge")
+    pr = mind.snapshot(build([passed, neutral]), as_of_utc=AS_OF)["prs"]["1900"]
+    assert pr["votes"] and not pr["veto_observations"]
+    held = envelope(agent="claude-rco-1", type="decision", status="hold")
+    closeout = envelope(type="decision", status="cancelled")
+    pr = mind.snapshot(build([passed, held, closeout]), as_of_utc=AS_OF)["prs"]["1900"]
+    assert pr["veto_observations"] and not pr["votes"]
+    new_pass = envelope(agent="claude-rco-1", type="decision", status="rco_pass", ts_utc="2026-10-13T03:59:02Z")
+    pr = mind.snapshot(build([passed, held, new_pass]), as_of_utc=AS_OF)["prs"]["1900"]
+    assert len(pr["votes"]) == 1 and pr["votes"][0]["source_refs"] == [new_pass["ref"]]
+    assert pr["veto_observations"][0]["activity"] == "UNKNOWN"  # no clearing verdict

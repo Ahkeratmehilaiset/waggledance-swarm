@@ -819,16 +819,19 @@ def _write_new_owned(path: Path, audit_root: Path, text: str) -> None:
             handle.write(text)
     except (OSError, ValueError):
         # The refusal writes nothing: remove the file this call created, so no empty or partial file stays
-        # behind to block the next attempt.
+        # behind to block the next attempt. Only "nothing is kept" when that removal really worked; otherwise the
+        # partial file stays as evidence and the fixed reason says so, without echoing the path or the error.
         try:
             os.unlink(target)
         except OSError:
-            pass
+            raise MindRefused("the output file cannot be written and its partial file could not be removed; "
+                              "remove it before the next attempt") from None
         raise MindRefused("the output file cannot be written; nothing is kept") from None
 
 
 def mind_main(args: argparse.Namespace) -> int:
-    """The dormant mind mode, only when asked for explicitly. Exit 2 on any refusal, with nothing written."""
+    """The dormant mind mode, only when asked for explicitly. Exit 2 on any refusal, with nothing written; the one
+    exception is a partial ``--out`` file whose removal failed, which stays as evidence and the refusal says so."""
     try:
         if args.repo is not None or args.pr or args.bridge_root is not None or args.main_sha or args.hold:
             raise MindRefused("the gate-audit flags are not read in mind mode")

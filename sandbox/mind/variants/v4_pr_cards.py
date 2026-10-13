@@ -126,6 +126,26 @@ CAPABILITY_STATES = ("absent", "present", "unknown")
 CAPABILITY_SOURCE = "codex-lead-1"
 
 
+def _bot_text(observed, head):
+    """Bot review threads at this head: open ones by severity (outdated apart), else none, else UNKNOWN."""
+    bot = (observed or {}).get("bot_threads")
+    if not isinstance(bot, dict) or bot.get("head") != head or not isinstance(bot.get("bot"), dict):
+        return "bot review UNKNOWN"
+    open_rows = bot["bot"].get("open") or {}
+    text = ("bot open " + ", ".join(f"{sev}x{n}" for sev, n in sorted(open_rows.items()))) if open_rows \
+        else "bot open none"
+    outdated = sum((bot["bot"].get("outdated") or {}).values())
+    return text + (f" ({outdated} outdated)" if outdated else "") + ("" if bot.get("complete") else " (partial)")
+
+
+def _mentioned_by(status, pr):
+    """Open PRs whose title or body mentions this PR (a GitHub fact; never read as replacement)."""
+    if not status or not status.get("mentions_captured"):
+        return None
+    return sorted(int(number) for number, row in status["prs"].items()
+                  if isinstance(row, dict) and pr["pr"] in (row.get("mentions") or []))
+
+
 def _status_row(status, pr, head=None):
     """GitHub's observed row for the PR at the given head (default: the bridge head), or None."""
     head = head or pr["head"]
@@ -175,12 +195,15 @@ def _ready_line(parsed, since, pr, ci, head, status, lane, items):
                      | (set(ws.RECOGNIZED_RCOS) & parsed.authors(pr)))
     observed = _status_row(status, pr, head)
     lag = "" if head == pr["head"] else f" (GitHub head; bridge view at {_h(pr['head'])})"
-    return _short(f"  READY PR{pr['pr']} {_h(head)}{lag} since {since[:16]}; "
+    by = _mentioned_by(status, pr)
+    return _short(f"  VOTED PR{pr['pr']} {_h(head)}{lag} since {since[:16]}; "
                   f"gh {observed['merge_state'] if observed else ws.UNKNOWN}; "
                   + ("CI reported on the bridge" if ci == "bridge" else "CI observed by GitHub, not on the bridge")
+                  + f"; {_bot_text(observed, head)}"
+                  + ("" if not by else "; mentioned by open " + ", ".join(f"PR{n}" for n in by))
                   + f"; left: {left}; class {computed or ws.UNKNOWN}"
                   + (f"; excused {', '.join(excused)}" if excused else "")
-                  + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""), 260)
+                  + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""), 340)
 
 
 def _capability_lines(events):
@@ -232,7 +255,7 @@ def render(inputs, lane):
     status = status if isinstance(status, dict) and status.get("schema") == STATUS_SCHEMA else None
     ready = _ready(parsed, inputs["events"], status)
     lines += [""] + _capability_lines(inputs["events"])
-    lines += [f"ready queue, no vote missing ({len(ready)} PRs" + (f", oldest since {ready[0][0][:16]}" if ready else "")
+    lines += [f"vote-complete queue, votes only, NOT merge eligibility ({len(ready)} PRs" + (f", oldest since {ready[0][0][:16]}" if ready else "")
               + "; GitHub status " + (f"observed {status['observed_utc']}" if status else "UNKNOWN") + "):"]
     lines += [_ready_line(parsed, since, pr, ci, head, status, lane, items) for since, pr, ci, head in ready]
     involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))

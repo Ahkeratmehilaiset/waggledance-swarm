@@ -186,6 +186,45 @@ CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()/:+-]{0,99}")
 MERGE_STATES = frozenset({"CLEAN", "BLOCKED", "BEHIND", "DIRTY", "UNSTABLE", "HAS_HOOKS", "DRAFT", "UNKNOWN"})
 
 
+BADGE = re.compile(r"!\[(P[0-3]) Badge\]")
+MENTION = re.compile(r"(?<![\w/])#([0-9]{3,5})\b")
+THREADS_QUERY = ("query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n)"
+                 "{headRefOid reviewThreads(first:100){totalCount nodes{isResolved isOutdated "
+                 "comments(first:1){nodes{author{__typename} body}}}}}}}")
+
+
+def bot_threads(number):
+    """Bot review threads of one PR by state (open, outdated, resolved) and badge severity; no comment text kept."""
+    owner, name = REPO.split("/")
+    data = json.loads(gh("api", "graphql", "-f", "query=" + THREADS_QUERY, "-f", "owner=" + owner, "-f", "name=" + name,
+                         "-F", f"n={number}"))
+    pr = data["data"]["repository"]["pullRequest"]
+    nodes = pr["reviewThreads"]["nodes"]
+    counts = {}
+    for node in nodes:
+        first = (node["comments"]["nodes"] or [None])[0]
+        if not isinstance(first, dict) or (first.get("author") or {}).get("__typename") != "Bot":
+            continue
+        match = BADGE.search(first.get("body") or "")
+        state = "resolved" if node["isResolved"] else ("outdated" if node["isOutdated"] else "open")
+        severity = match.group(1) if match else "unrated"
+        counts.setdefault(state, {})[severity] = counts.get(state, {}).get(severity, 0) + 1
+    if not ws.HEAD.fullmatch(pr.get("headRefOid") or ""):
+        raise CaptureRefused("thread_head_invalid")
+    return {"head": pr["headRefOid"], "complete": pr["reviewThreads"]["totalCount"] <= len(nodes), "bot": counts}
+
+
+def mentions():
+    """Open PR number -> the PR numbers its title or body mentions (#NNNN); the text itself is never kept."""
+    data = gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "250", "--json", "number,title,body")
+    out = {}
+    for item in json.loads(data):
+        if type(item.get("number")) is int:
+            text = f"{item.get('title') or ''}\n{item.get('body') or ''}"
+            out[str(item["number"])] = sorted({int(n) for n in MENTION.findall(text)} - {item["number"]})
+    return out
+
+
 def github_status(args):
     """Required checks per open PR head as GitHub reports them, and the merge state; observed, never a verdict.
 
@@ -223,8 +262,26 @@ def github_status(args):
             "missing_required": missing,
             "all_required_success": None if required is None else (not missing and all(
                 results == {"SUCCESS"} for results in seen.values()))}
+    # Lead 10:45Z: bot-review coverage and replacement stay separate facts beside the votes. Each part that fails
+    # is recorded as refused for that part only; the required checks above never depend on it.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        # Only PRs whose required checks all passed at the head: the others cannot be vote-complete on GitHub's side.
+        futures = {number: pool.submit(bot_threads, number) for number, row in rows.items()
+                   if row["all_required_success"] is True}
+        for number, future in futures.items():
+            try:
+                rows[number]["bot_threads"] = future.result()
+            except (CaptureRefused, ValueError, KeyError, TypeError):
+                rows[number]["bot_threads"] = {"refused": "thread_query_failed"}
+    try:
+        mentioned = mentions()
+        for number, row in rows.items():
+            row["mentions"] = mentioned.get(number, [])
+    except (CaptureRefused, ValueError, KeyError, TypeError):
+        mentioned = None
     status = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": observed,
-              "required_contexts": required, "list_sha256": sha(data), "prs": rows}
+              "required_contexts": required, "list_sha256": sha(data), "prs": rows,
+              "mentions_captured": mentioned is not None}
     ws.guard_object(status)
     (args.out / "gh-open-status.json").write_bytes(data)
     (args.out / "observed-status.json").write_bytes(

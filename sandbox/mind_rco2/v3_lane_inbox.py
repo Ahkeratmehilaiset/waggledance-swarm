@@ -299,8 +299,12 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
                               "request_id": mine[0]["request_id"], "refs": sorted({r["ref"] for r in mine})})
             continue
         last = missing == [my_slot]
+        # A build lane gets no ask: its vote is due once every eligible RCO slot is filled at the GitHub head.
+        build_due = my_slot in BUILD.values() and all(slot in filled or slot in authors for slot in RCOS)
         if ci_green == "green_reported":
             act.append(dict(line, role="my_slot_missing", rank=0 if last else 1, last_missing=last))
+        elif last or build_due:  # the slot is due, but CI is not reported green at this head: check CI first
+            act.append(dict(line, role="my_slot_due_check_ci", rank=1, last_missing=last))
         elif mine:
             wait.append(dict(line, role="my_slot_missing_ci_not_green", rank=3, last_missing=last))
         else:  # open with my slot empty, but no request to this lane at the GitHub head and no green CI: quiet
@@ -362,6 +366,8 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         top = act[0]
         if top["role"] == "my_slot_missing":
             nxt = f"{'last missing ' if top['last_missing'] else ''}vote on PR{top['pr']} at {top['github_head'][:12]} (CI reported green); verify with gh checks, veto scan and gate read first"
+        elif top["role"] == "my_slot_due_check_ci":
+            nxt = f"PR{top['pr']} at {top['github_head'][:12]}: my vote is due ({'last missing' if top['last_missing'] else 'every eligible RCO passed'}); check CI with gh first, then vote"
         elif top["role"] == "request_with_slot_filled":
             nxt = f"answer request {top['asks'][0]} on PR{top['pr']} (my slot is already filled at the GitHub head)"
         elif top["role"] == "request_on_pr":

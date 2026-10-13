@@ -605,9 +605,11 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
         if event.get("agent") != "grok-scout-1" or not status.startswith("consultation_") or not isinstance(cid, str):
             continue
         item = grok.setdefault(cid, {"consultation_id": cid, "requested_by": None, "task": str(event.get("task_id")),
-                                     "started_utc": None, "start_ref": None, "end": None})
+                                     "started_utc": None, "start_ref": None, "end": None, "prompt_sha256": None})
         if isinstance(payload.get("requested_by"), str):
             item["requested_by"] = payload["requested_by"]
+        if isinstance(payload.get("prompt_sha256"), str):
+            item["prompt_sha256"] = payload["prompt_sha256"]
         if status == "consultation_started":
             item["started_utc"], item["start_ref"] = capture.ts[ref], ref
         else:

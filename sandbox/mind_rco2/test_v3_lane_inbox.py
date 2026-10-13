@@ -174,3 +174,18 @@ def test_a_pr_with_my_vote_in_stays_visible():
     result = inbox([], votes=[vote])
     assert [(d["pr"], d["missing"]) for d in result["done"]] == [(100, ["build_lead", "build_tools", "claude-rco-1"])]
     assert "DONE PR100" in v3.render_text(result)
+
+
+def test_shared_fold_lens_equals_the_one_lane_path_for_every_lane():
+    vote = {"agent": "claude-rco-1", "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
+    events = [ask("ask-1"), ask("bc-1", to="codex-lead-1,codex-tools-1,claude-rco-2", status="review_requested",
+              agent="fable-5"), own(message="re ask-1"), ask("tools-1", to="codex-tools-1,claude-rco-2")]
+    snapshot = {"prs": {"100": {"head": HEAD, "votes": [vote], "stale_votes": [], "veto_observations": [],
+                                "reported_ci": {"status": "UNKNOWN"}, "source_refs": []}},
+                "lanes": {"operator|x": {"agent": "operator", "claims": "UNKNOWN"}}, "tensions": []}
+    context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "lead/branch-100",
+                                                "authors": ["codex-lead-1"], "path_class": None}}}
+    capture = v3.Capture(events)
+    fold = v3.build_fold(snapshot, context, capture, NOW)
+    for lane in ("claude-rco-2", "claude-rco-1", "codex-lead-1", "codex-tools-1", "fable-5"):
+        assert v3.lens(fold, lane) == v3.build_inbox_direct(snapshot, context, capture, lane, NOW), lane

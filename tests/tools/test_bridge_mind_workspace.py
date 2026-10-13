@@ -424,6 +424,34 @@ def test_an_unusable_task_row_refuses_only_itself_and_the_other_task_claims_stil
     assert _rules(fields)["claim_overlap"]["observation"] == "overlapping paths: docs ~ docs/a.md"
 
 
+@pytest.mark.parametrize("many, one", [("claude-rco-1", "fable-5"), ("fable-5", "claude-rco-1")],
+                         ids=["first_lane", "second_lane"])
+def test_a_later_task_claim_overlaps_whichever_lane_of_the_pair_holds_it(many, one):
+    """Every live task claim of a lane is compared, not only its first one, on either side of the lane pair."""
+    lanes = [_lane(many, _claims(_task_claim(["docs/a.md"], LIVE, "a"), _task_claim(["tools/x.py"], "UNKNOWN", "b"))),
+             _lane(one, _claim(["tools"], LIVE, "one"))]
+    rules = _rules(mind.reflection(_snapshot(lanes=lanes)))
+    assert set(rules) == {"claim_overlap"}
+    assert rules["claim_overlap"]["observation"] == "overlapping paths: tools ~ tools/x.py"
+    assert rules["claim_overlap"]["refs"] == sorted([ref("claim:b"), ref("claim:one")])
+
+
+def test_task_rows_are_read_in_task_id_order_whatever_the_input_order():
+    """A refusal names a task row by its position in task_id order, the order the core emits."""
+    claims = _claims(_task_claim(["docs/a.md"], LIVE, "a"), _task_claim(["../outside.py"], LIVE, "b"))
+    claims["by_task"].reverse()
+    fields = mind.reflection(_snapshot(lanes=[_lane("fable-5", claims)]))
+    assert [(tension["rule"], tension["subject"]) for tension in fields["tensions"]] == [
+        ("refused_input", "lanes[0].claims.by_task[1]")]
+
+
+@pytest.mark.parametrize("lease, rules", [(LIVE, []), (AS_OF, ["expired_claim"])], ids=["live", "expired"])
+def test_a_task_claim_with_an_unknown_scope_is_kept_and_can_expire_but_overlaps_nothing(lease, rules):
+    """The core gives a task row the scope UNKNOWN when the claim event's scope cannot be read: not a refusal."""
+    lanes = [_lane("claude-rco-1", _claim(["tools"], LIVE, "rco1")), _lane("fable-5", _claim(None, lease, "fable"))]
+    assert [tension["rule"] for tension in mind.reflection(_snapshot(lanes=lanes))["tensions"]] == rules
+
+
 def test_declared_paths_with_a_space_or_a_colon_are_live_claims_and_overlap():
     """Lead 04:52Z: the core declares paths with a space or a colon; the workspace keeps them as live claims."""
     lanes = [_lane("claude-rco-2", _claim(["docs\\My Notes\\", "resource:Grok-Lock"], LIVE, "rco2")),

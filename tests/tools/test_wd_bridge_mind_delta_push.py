@@ -313,6 +313,34 @@ def test_a_vote_without_a_declared_identity_is_marked_and_its_declaration_is_pus
     assert push.apply_delta(push.view(previous), changes) == push.view(current)
 
 
+def _with_signal(number, field, agent, status):
+    key, pr = _pr(number)
+    row = _signal(agent, status, "a" * 40, number)
+    pr[field] = [{**row, "activity": "UNKNOWN"} if field == "veto_observations" else row]
+    return key, pr
+
+
+@pytest.mark.parametrize("field, name", [("votes", "votes"), ("stale_votes", "stale_votes"),
+                                         ("veto_observations", "vetoes")])
+def test_signal_fields_that_hold_the_separator_never_collide_and_the_replacement_is_pushed(field, name):
+    """PR1901 Codex P2 thread PRRT_kwDORYf3RM6rxSIA: ``agent:a`` with ``hold`` and ``agent`` with ``a:hold`` at one
+    head are two observations. Each field's ``%`` and ``:`` are percent-encoded, so ``:`` only separates fields and
+    replacing one with the other is pushed; plain tokens keep their exact bytes."""
+    previous = _snapshot(prs=[_with_signal(7, field, "agent:a", "hold")])
+    current = _snapshot(as_of="2026-01-01T00:31:00Z", prs=[_with_signal(7, field, "agent", "a:hold")])
+    before, after = push.view(previous)["prs"]["7"][name], push.view(current)["prs"]["7"][name]
+    assert before != after
+    changes = push.delta(previous, current)
+    assert [(change["section"], change["key"], change["type"]) for change in changes[1:]] == [
+        ("source", "as_of_utc", "changed"), ("prs", "7", "changed")]
+    assert push.apply_delta(push.view(previous), changes) == push.view(current)
+    # An encoded-looking token is not a separator either: the percent sign is encoded too.
+    posing = push.view(_snapshot(prs=[_with_signal(7, field, "agent%3Aa", "hold")]))["prs"]["7"][name]
+    assert posing != before
+    plain = push.view(_snapshot(prs=[_with_signal(7, field, "claude-rco-1", "rco_pass")]))["prs"]["7"][name]
+    assert plain == ["claude-rco-1:rco_pass" + (":aaaaaaaaaaaa" if name != "votes" else "")]
+
+
 def test_a_current_snapshot_older_than_the_previous_one_is_refused_with_fraction_aware_times():
     # 00:30:00Z is earlier than 00:30:00.5Z, although "Z" sorts after "." as text.
     with pytest.raises(push.DeltaError):

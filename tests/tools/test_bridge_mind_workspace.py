@@ -197,6 +197,31 @@ def test_lease_ttl_and_grace_boundaries_are_pure_functions_of_as_of():
     assert subjects == ["claim:fable-5|" + UUIDS["fable-5"] + ":task-at", "request:grace-exact", "request:ttl-live"]
 
 
+@pytest.mark.parametrize("as_of, lease, rules", [
+    ("2026-01-01T00:30:00.0000001Z", "2026-01-01T00:30:00.0000009Z", ["expired_claim"]),
+    ("2026-01-01T00:30:00.000000100Z", "2026-01-01T00:30:00.000000900Z", ["expired_claim"]),
+    ("2026-01-01T00:30:00.0000001Z", "2026-01-01T00:30:00.0000019Z", []),
+], ids=["7_digits_same_microsecond", "9_digits_same_microsecond", "7_digits_next_microsecond"])
+def test_sub_microsecond_times_follow_the_core_time_rule_and_a_matching_claim_is_kept(as_of, lease, rules):
+    """PR1901 Codex P2 thread PRRT_kwDORYf3RM6rxSH7, not reproduced against the core: the core decides ``expired``
+    with ``datetime.fromisoformat``, which cuts every fraction digit after the sixth, and the workspace cuts the same
+    way. Keeping finer digits only here would make the two disagree; this pins the agreement. A claim whose
+    ``expired`` the core computed by that rule is kept: expired when both cut to the same microsecond, live (no
+    tension) one microsecond later, and never refused as contradictory."""
+    for text in (as_of, lease):
+        assert mind.parse_time(text) == datetime.fromisoformat(text.replace("Z", "+00:00"))
+    core_expired = datetime.fromisoformat(lease.replace("Z", "+00:00")) <= \
+        datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    claims = _claim(["a.py"], lease, "sub")
+    claims["expired"] = claims["by_task"][0]["expired"] = core_expired
+    snapshot = _snapshot(lanes=[_lane("fable-5", claims)])
+    snapshot["source"]["as_of_utc"] = snapshot["source"]["max_event_utc"] = as_of
+    tensions = mind.reflection(snapshot)["tensions"]
+    assert sorted(tension["rule"] for tension in tensions) == rules
+    assert [tension["subject"] for tension in tensions] == \
+        [f"claim:fable-5|{UUIDS['fable-5']}:task-sub"] * len(rules)
+
+
 def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_suggestion():
     prs = [
         _pr(30, votes=["codex-tools-1"]),

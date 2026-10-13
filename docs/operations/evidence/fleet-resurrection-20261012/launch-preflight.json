@@ -1,0 +1,235 @@
+{
+  "schema": "wd.fleet-resurrection-evidence.launch-preflight.v1",
+  "meaning": "startup resolution recorded by launch preflight in shadow mode; not an observed runtime model or effort",
+  "source": "lane_profiles/launch-shadow.jsonl in the bridge root (append-only)",
+  "source_total_lines_at_capture": 46,
+  "rows": [
+    {
+      "source_line_number": 42,
+      "source_line_sha256": "de1ada3d59b93d66c700d68f7ff496537fbb0bb0067e36eff35aae826789cf9c",
+      "lane": "codex-lead-1",
+      "ts_utc": "2026-10-12T15:37:23.196106Z",
+      "verdict": "not_in_lane_allowlist",
+      "model": "gpt-6.1-sol",
+      "model_source": "user_config",
+      "effort": "high",
+      "effort_source": "user_config",
+      "row": {
+        "apply_suppressed": false,
+        "argv_effort": "native",
+        "argv_model": "native",
+        "catalog_sha256": "e724dc0c9316807a5f3f5166bc41c7323de792cf1c12ec9f57022227028255c6",
+        "decision_action": "native",
+        "fallback_event": null,
+        "lane": "codex-lead-1",
+        "launch": "native_argv_unchanged",
+        "launcher": "start-wd-agent",
+        "mode": "shadow",
+        "preflight": {
+          "cli": "codex",
+          "effective": {
+            "effort": "high",
+            "effort_source": "user_config",
+            "issues": [],
+            "model": "gpt-6.1-sol",
+            "model_source": "user_config",
+            "provider": "codex",
+            "resolved": true
+          },
+          "profile": null,
+          "reasons": [
+            "not_in_catalog"
+          ],
+          "verdict": "not_in_lane_allowlist"
+        },
+        "schema": "wd.lane-profile-launch-shadow.v1",
+        "ts_utc": "2026-10-12T15:37:23.196106Z",
+        "would_apply": null
+      }
+    },
+    {
+      "source_line_number": 43,
+      "source_line_sha256": "c55e711c2ee6c34d7511094cc3dd44850769cf604c0b52fcb3c357ca1cc364e9",
+      "lane": "claude-rco-1",
+      "ts_utc": "2026-10-12T18:19:43.497474Z",
+      "verdict": "allowed",
+      "model": "claude-opus-5-5",
+      "model_source": "resume_transcript",
+      "effort": "xhigh",
+      "effort_source": "user:modelSettings",
+      "row": {
+        "apply_suppressed": false,
+        "argv_effort": "native",
+        "argv_model": "native",
+        "catalog_sha256": "e724dc0c9316807a5f3f5166bc41c7323de792cf1c12ec9f57022227028255c6",
+        "decision_action": "native",
+        "fallback_event": null,
+        "lane": "claude-rco-1",
+        "launch": "native_argv_unchanged",
+        "launcher": "start-wd-agent",
+        "mode": "shadow",
+        "preflight": {
+          "cli": "claude",
+          "effective": {
+            "effort": "xhigh",
+            "effort_source": "user:modelSettings",
+            "issues": [],
+            "model": "claude-opus-5-5",
+            "model_source": "resume_transcript",
+            "provider": "claude",
+            "resolved": true
+          },
+          "profile": "claude-opus-5-5-xhigh",
+          "reasons": [
+            "in_allowlist"
+          ],
+          "verdict": "allowed"
+        },
+        "schema": "wd.lane-profile-launch-shadow.v1",
+        "ts_utc": "2026-10-12T18:19:43.497474Z",
+        "would_apply": null
+      }
+    },
+    {
+      "source_line_number": 44,
+      "source_line_sha256": "550e6499b6950ba4eb853102e6a0fd7fee100082dc51a2a00f0ef60e38a9fdff",
+      "lane": "codex-tools-1",
+      "ts_utc": "2026-10-12T18:47:24.986116Z",
+      "verdict": "not_in_lane_allowlist",
+      "model": "gpt-6.1-sol",
+      "model_source": "user_config",
+      "effort": "high",
+      "effort_source": "user_config",
+      "row": {
+        "apply_suppressed": false,
+        "argv_effort": "native",
+        "argv_model": "native",
+        "catalog_sha256": "e724dc0c9316807a5f3f5166bc41c7323de792cf1c12ec9f57022227028255c6",
+        "decision_action": "native",
+        "fallback_event": null,
+        "lane": "codex-tools-1",
+        "launch": "native_argv_unchanged",
+        "launcher": "start-wd-tools-consumer",
+        "mode": "shadow",
+        "preflight": {
+          "cli": "codex",
+          "effective": {
+            "effort": "high",
+            "effort_source": "user_config",
+            "issues": [],
+            "model": "gpt-6.1-sol",
+            "model_source": "user_config",
+            "provider": "codex",
+            "resolved": true
+          },
+          "profile": null,
+          "reasons": [
+            "not_in_catalog"
+          ],
+          "verdict": "not_in_lane_allowlist"
+        },
+        "schema": "wd.lane-profile-launch-shadow.v1",
+        "ts_utc": "2026-10-12T18:47:24.986116Z",
+        "would_apply": null
+      }
+    },
+    {
+      "source_line_number": 45,
+      "source_line_sha256": "7195fa91a76cd1bd6dfe2643506f25b6656a65a67658fa3e7b35c8f4bfaf21a3",
+      "lane": "fable-5",
+      "ts_utc": "2026-10-12T18:54:39.954390Z",
+      "verdict": "allowed",
+      "model": "claude-opus-5-5",
+      "model_source": "resume_transcript",
+      "effort": "xhigh",
+      "effort_source": "user:modelSettings",
+      "row": {
+        "apply_suppressed": false,
+        "argv_effort": "native",
+        "argv_model": "native",
+        "catalog_sha256": "e724dc0c9316807a5f3f5166bc41c7323de792cf1c12ec9f57022227028255c6",
+        "decision_action": "native",
+        "fallback_event": null,
+        "lane": "fable-5",
+        "launch": "native_argv_unchanged",
+        "launcher": "start-wd-agent",
+        "mode": "shadow",
+        "preflight": {
+          "cli": "claude",
+          "effective": {
+            "effort": "xhigh",
+            "effort_source": "user:modelSettings",
+            "issues": [],
+            "model": "claude-opus-5-5",
+            "model_source": "resume_transcript",
+            "provider": "claude",
+            "resolved": true
+          },
+          "profile": "claude-opus-5-5-xhigh",
+          "reasons": [
+            "in_allowlist"
+          ],
+          "verdict": "allowed"
+        },
+        "schema": "wd.lane-profile-launch-shadow.v1",
+        "ts_utc": "2026-10-12T18:54:39.954390Z",
+        "would_apply": null
+      }
+    },
+    {
+      "source_line_number": 46,
+      "source_line_sha256": "56af05b7b4d8d5a5bb3a5caf72d29af13cb623300a595cd1f9769f0a3ac932ba",
+      "lane": "claude-rco-2",
+      "ts_utc": "2026-10-12T19:02:19.710606Z",
+      "verdict": "allowed",
+      "model": "claude-opus-5-5",
+      "model_source": "resume_transcript",
+      "effort": "xhigh",
+      "effort_source": "user:modelSettings",
+      "row": {
+        "apply_suppressed": false,
+        "argv_effort": "native",
+        "argv_model": "native",
+        "catalog_sha256": "e724dc0c9316807a5f3f5166bc41c7323de792cf1c12ec9f57022227028255c6",
+        "decision_action": "native",
+        "fallback_event": null,
+        "lane": "claude-rco-2",
+        "launch": "native_argv_unchanged",
+        "launcher": "start-wd-agent",
+        "mode": "shadow",
+        "preflight": {
+          "cli": "claude",
+          "effective": {
+            "effort": "xhigh",
+            "effort_source": "user:modelSettings",
+            "issues": [],
+            "model": "claude-opus-5-5",
+            "model_source": "resume_transcript",
+            "provider": "claude",
+            "resolved": true
+          },
+          "profile": "claude-opus-5-5-xhigh",
+          "reasons": [
+            "in_allowlist"
+          ],
+          "verdict": "allowed"
+        },
+        "schema": "wd.lane-profile-launch-shadow.v1",
+        "ts_utc": "2026-10-12T19:02:19.710606Z",
+        "would_apply": null
+      }
+    }
+  ],
+  "lineage": {
+    "derived_from": [
+      {
+        "file": "remeasure-20261012T202339Z.json",
+        "sha256": "4efa3dd84fd9b19cf40a97558b0b2b87154301c03ff8b0f57ab2c380331be7f0",
+        "captured_utc": "2026-10-12T20:23:39.7825695Z"
+      }
+    ],
+    "redactions": [
+      "none needed: the rows contain no paths or conversation ids"
+    ]
+  }
+}

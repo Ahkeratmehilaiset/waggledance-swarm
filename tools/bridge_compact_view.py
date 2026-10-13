@@ -46,6 +46,21 @@ def event_id(event: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json(event).encode("utf-8")).hexdigest()
 
 
+def _request_binding(row: Mapping[str, Any], payload: Mapping[str, Any], key: str) -> tuple[Any, bool]:
+    """A request binding as the request contract's ``field()`` reads it, and whether it conflicts.
+
+    Display only. The top-level value wins, a payload-only value is used when the top level has none,
+    and two different values are shown both, never one of them: ``{"top_level": .., "payload": ..}``
+    with the conflict flag set. Absent in both places stays "", an explicit top-level null stays null.
+    """
+    direct, nested = row.get(key), payload.get(key)
+    if direct is not None and nested is not None and direct != nested:
+        return {"top_level": direct, "payload": nested}, True
+    if direct is None and nested is not None:
+        return nested, False
+    return row.get(key, ""), False
+
+
 def _recipient_list(value: Any) -> list[str] | None:
     """The recipients of ``to`` as a list; None when its shape is unknown.
 
@@ -62,26 +77,6 @@ def _recipient_list(value: Any) -> list[str] | None:
     else:
         return None
     return [part.strip() for part in parts if part.strip()]
-
-
-def _request_binding(row: Mapping[str, Any], payload: Mapping[str, Any],
-                     key: str) -> tuple[Any, bool]:
-    """Display value of a request binding and whether its two copies conflict.
-
-    Same rule as ``bridge_request_contract.field()``: the top-level copy wins,
-    a payload-only copy is used, and two non-null copies that differ are a
-    conflict. A conflict displays "" and the row lists the key in
-    ``binding_conflicts`` (present only then), never one side guessed. With no
-    non-null copy the received top-level value (or "") is shown unchanged.
-    """
-    direct, nested = row.get(key), payload.get(key)
-    if direct is not None and nested is not None and direct != nested:
-        return "", True
-    if direct is not None:
-        return direct, False
-    if nested is not None:
-        return nested, False
-    return row.get(key, ""), False
 
 
 def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dict:
@@ -117,8 +112,6 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
         bindings = {key: payload[key] for key in ("exact_head", "head_sha", "head")
                     if key in payload}
         head = next(iter(bindings.values()), "")
-        request_id, request_conflict = _request_binding(row, payload, "request_id")
-        reply_id, reply_conflict = _request_binding(row, payload, "in_reply_to_request_id")
         item = {
             "ref": ref, "ts": row.get("ts_utc", ""),
             "agent": row.get("agent", ""), "session": row.get("session_id", ""),
@@ -127,14 +120,13 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
             "to": row.get("to", ""),
             # Display only, as received; the full event stays authoritative.
             "to_list": _recipient_list(row.get("to", "")),
-            "request_id": request_id,
-            "in_reply_to_request_id": reply_id,
         }
-        conflicts = [key for key, conflict in (("request_id", request_conflict),
-                     ("in_reply_to_request_id", reply_conflict)) if conflict]
-        if conflicts:
-            # Only on conflict, so ordinary rows stay as compact as before.
-            item["binding_conflicts"] = conflicts
+        conflicts = []
+        for name in ("request_id", "in_reply_to_request_id"):
+            item[name], conflict = _request_binding(row, payload, name)
+            if conflict:
+                conflicts.append(name)
+        item["request_binding_conflicts"] = conflicts
         item["head_bindings"] = bindings
         item["head_conflict"] = len({_json(value) for value in bindings.values()}) > 1
         message = str(row.get("message", ""))

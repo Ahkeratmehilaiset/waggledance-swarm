@@ -109,11 +109,19 @@ class Capture:
         self.rows = [(event_id(event), event) for event in events]
         self.ts = {ref: str(event.get("ts_utc") or "") for ref, event in self.rows}
         self.position = {ref: index for index, (ref, _) in enumerate(self.rows)}
+        self.by_task: dict[Any, list[int]] = {}
+        for index, (_, event) in enumerate(self.rows):
+            self.by_task.setdefault(event.get("task_id"), []).append(index)
         self.first_utc = self.rows[0][1].get("ts_utc", UNKNOWN) if self.rows else UNKNOWN
+        self._declared: dict[int, dict[str, Any]] | None = None
+        self._recusals: dict[int, dict[str, dict[str, Any]]] | None = None
 
     def declared_authors(self) -> dict[int, dict[str, Any]]:
         """Per PR and head, the latest declared ``source_authors`` of a request payload (declared, not authenticated)."""
+        if self._declared is not None:
+            return self._declared
         out: dict[int, dict[str, Any]] = {}
+        self._declared = out
         for ref, event in self.rows:
             authors, pr = _payload(event).get("source_authors"), _pr_of(event)
             if pr is None or not isinstance(authors, list) or not all(isinstance(a, str) and _LANE.match(a) for a in authors):
@@ -124,7 +132,10 @@ class Capture:
 
     def recusals(self) -> dict[int, dict[str, dict[str, Any]]]:
         """Per PR, each recognized RCO's latest typed ``rco_recused`` event (authorship does not end at a new head)."""
+        if self._recusals is not None:
+            return self._recusals
         out: dict[int, dict[str, dict[str, Any]]] = {}
+        self._recusals = out
         for ref, event in self.rows:
             pr, agent = _pr_of(event), event.get("agent")
             if pr is not None and agent in RCOS and str(event.get("status") or "").lower() == "rco_recused":
@@ -141,8 +152,9 @@ class Capture:
         start, claimed = self.position.get(ref), self.ts.get(ref, "")
         if start is None:
             return None
-        for index, (other, event) in enumerate(self.rows):
-            if index == start or event.get("task_id") != task:
+        for index in self.by_task.get(task, []):
+            other, event = self.rows[index]
+            if index == start:
                 continue
             if event.get("type") == "release" or (event.get("type") == "done" and event.get("agent") == lane):
                 if index > start or (claimed and str(event.get("ts_utc") or "") > claimed):
@@ -428,6 +440,19 @@ def render_text(inbox: Mapping[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+_MEMO: list[tuple[list, Capture]] = []
+
+
+def _capture_for(rows: list) -> Capture:
+    """One indexed capture per driver run: the driver hands every lane the same frozen rows object. The memo keeps
+    that object alive, so its identity cannot be reused; the output never depends on the memo."""
+    if _MEMO and _MEMO[0][0] is rows:
+        return _MEMO[0][1]
+    capture = Capture(rows)
+    _MEMO[:] = [(rows, capture)]
+    return capture
+
+
 def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
     """The tournament driver entry: a pure function of the frozen round inputs, one text view per lane.
 
@@ -440,7 +465,7 @@ def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
     context, _ = workspace.read_context(inputs["context"], workspace.parse_time(now))
     if context is None:
         raise InboxRefused("the context is not usable for this round")
-    inbox = build_inbox(snapshot, context, Capture(rows if isinstance(rows, list) else []), lane, now)
+    inbox = build_inbox(snapshot, context, _capture_for(rows if isinstance(rows, list) else []), lane, now)
     if not isinstance(rows, list):
         inbox["notes"].insert(0, "no capture rows in the driver inputs: asks, typed recusals, declared Source authors "
                                  "and claim releases are UNKNOWN here")

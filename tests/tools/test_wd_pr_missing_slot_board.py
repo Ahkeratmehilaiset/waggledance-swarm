@@ -1781,11 +1781,62 @@ def test_a_failed_out_write_leaves_no_file_so_the_next_attempt_can_write(tmp_pat
     monkeypatch.setattr(board, "open", failing_open, raising=False)
     assert _mind(root, path, "--out", str(out)) == 2
     captured = capsys.readouterr()
-    assert captured.out == "" and "refused" in captured.err
+    assert captured.out == "" and "refused" in captured.err and "nothing is kept" in captured.err
     assert not out.exists()
     monkeypatch.undo()
     assert _mind(root, path, "--out", str(out)) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["attention"] == _mind_r()["attention"]
+
+
+def test_a_failed_cleanup_keeps_the_partial_file_and_never_says_nothing_is_kept(tmp_path, capsys, monkeypatch):
+    # Tools finding tools-pr1902-partial-output-cleanup-refusal-20261013 (12:13Z): the write fails with OSError 28
+    # and removing the partial file fails with PermissionError 13. The partial file stays as evidence, the refusal
+    # says so with a fixed reason that echoes neither the path nor the error, and a file that existed before the
+    # run is never touched.
+    root = _audit(tmp_path)
+    path = _put(root, _mind_r())
+    out = root / "board" / "view.json"
+    other = root / "board" / "earlier.json"
+    other.write_text("keep", encoding="utf-8")
+    real_open, real_unlink = open, board.os.unlink
+    removed = []
+
+    class _FullVolume:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+            return False
+
+        def write(self, text):
+            self.handle.write(text[:10])
+            self.handle.flush()
+            raise OSError(28, "No space left on device")
+
+    def failing_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        return _FullVolume(handle) if "x" in mode else handle
+
+    def locked_unlink(target, *args, **kwargs):
+        removed.append(Path(target))
+        if Path(target) == out:
+            raise PermissionError(13, "Access is denied", str(target))
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(board, "open", failing_open, raising=False)
+    monkeypatch.setattr(board.os, "unlink", locked_unlink)
+    assert _mind(root, path, "--out", str(out)) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "refused" in captured.err
+    assert "partial file could not be removed" in captured.err and "nothing is kept" not in captured.err
+    assert str(out) not in captured.err and "view.json" not in captured.err and "Access is denied" not in captured.err
+    assert removed == [out]
+    assert out.exists() and len(out.read_bytes()) == 10  # the partial file stays as evidence
+    assert other.read_text(encoding="utf-8") == "keep"
 
 
 # -- Mind mode isolation and the unchanged default gate-audit mode ------------------------------------------------

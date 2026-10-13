@@ -112,7 +112,10 @@ SNAPSHOT_TOOL = REPO_ROOT / "tools" / "pr_status_snapshot.py"
 GATE_TOOL = REPO_ROOT / "tools" / "idle_consensus_auto_merge.py"
 SCHEMA = "wd.pr-missing-slot-board.v1"
 RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
-LIST_LIMIT = 200  # gh pr list --limit: a listing of this many items may be cut off
+# gh pr list --limit: a listing of this many items may be cut off. About 197 PRs were open at 11:38Z
+# 2026-10-13, so a limit of 200 would make the default board refuse within hours; gh pages the listing,
+# so the cost follows the real open count, not this number.
+LIST_LIMIT = 1000
 DENYLIST_BLOCKER = "path gate failed: denylist hit"
 DENYLIST_REMEDIATION = ("the gate never admits a denylisted path, so no signature clears it in this run; remove the "
                         "path from the PR, or route it to an operator-explicit merge outside the autonomous gate")

@@ -258,6 +258,11 @@ def test_a_full_listing_at_its_limit_refuses_because_it_may_be_cut_off(tmp_path,
     assert board.main(["--repo", "o/r", "--out", str(tmp_path / "two.json")]) == 0
 
 
+def test_the_default_listing_limit_leaves_room_above_the_current_open_pr_count():
+    # RCO1 11:38Z 2026-10-13: about 197 PRs were open, so a limit of 200 would refuse the default board soon.
+    assert board.LIST_LIMIT >= 1000
+
+
 def test_the_board_writes_only_its_out_file_and_runs_only_read_commands(tmp_path, monkeypatch):
     fake = _FakeGitHub([_pr(21)], {21: _gate([RECEIPT])})
     monkeypatch.setattr(board, "_run", fake)

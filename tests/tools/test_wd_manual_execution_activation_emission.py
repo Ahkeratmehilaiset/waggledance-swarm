@@ -55,6 +55,10 @@ ADMISSION_MUTANTS = {
     "MUT_ADMISSION_UNKNOWN_OPTION": ("($name -cnotin $valued -and $name -cnotin $flags)", "$false"),
     "MUT_ADMISSION_FLAG_VALUE": ("$split.Count -ne 1", "$false"),
 }
+READ_MUTANTS = {
+    "MUT_APPROVAL_OPENED_HANDLE_BINDING": (
+        "$openedPath.Substring(4).Equals($full, [StringComparison]::OrdinalIgnoreCase)", "$true"),
+}
 
 
 @pytest.fixture(scope="session", params=["powershell", "pwsh"])
@@ -88,7 +92,7 @@ def _quote(value):
 def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
             anchor="D" * 64, actor="codex-tools-1", runtime_alias=None, fleet=None,
             existing="same", main_flow=False, missing_supervisor=False, approval_bytes=None,
-            hide_hash_cmdlet=False):
+            hide_hash_cmdlet=False, redirect_open=False):
     source = Path(os.environ.get("WD_TEST_MANUAL_EMITTER_SOURCE", str(OPS / "Deploy-WdRebootBundle.ps1")))
     before = source.read_bytes()
     fixture = tmp_path / "fixture.json"
@@ -100,10 +104,15 @@ def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
         definition=DEFINITION, admit=admit, omit=omit, tail=tail or [], existing=existing,
         main_flow=main_flow, missing_supervisor=missing_supervisor,
         read_approval=approval_bytes is not None, hide_hash_cmdlet=hide_hash_cmdlet,
+        redirect_open=redirect_open,
         fleet=["codex-tools-1"] if fleet is None else fleet,
         mutant=os.environ.get("WD_TEST_EMITTER_MUTANT", ""))), encoding="utf-8")
     if approval_bytes is not None:
         (tmp_path / "approval.json").write_bytes(approval_bytes)
+    if redirect_open:
+        alternate = copy.deepcopy(ACTIVATION)
+        alternate["approval_reference_sha256"] = "F" * 64
+        (tmp_path / "other-approval.json").write_bytes(json.dumps(alternate).encode("utf-8"))
     script = tmp_path / "probe.ps1"
     script.write_text("$ErrorActionPreference='Stop'\n" +
         f"$source={_quote(source)}\n$fixture={_quote(fixture)}\n" +
@@ -124,17 +133,36 @@ def _invoke(shell, tmp_path, *, text=None, admit=False, omit=False, tail=None,
         " if($null -eq $m -or ([regex]::Matches($body,[regex]::Escape([string]$m.Value[0]))).Count -ne 1){throw 'MUTATION_NOT_EXACT'}\n"
         " $body=$body.Replace([string]$m.Value[0],[string]$m.Value[1])\n}\n"
         ". ([scriptblock]::Create($body))\n"
-        ". ([scriptblock]::Create($binding[0].Extent.Text))\n"
+        ". ([scriptblock]::Create($binding[0].Extent.Text))\n" +
+        "$readMutations=ConvertFrom-Json -InputObject " + _quote(json.dumps(READ_MUTANTS)) + "\n"
         "foreach($name in @('Read-WdManualExecutionApprovalText','Assert-WdPathWithoutReparse','Resolve-FullPath')){\n"
         " $def=@($defs|Where-Object {$_.Name -ceq $name});if($def.Count -ne 1){throw 'READER_HELPER_MISSING'}\n"
-        " . ([scriptblock]::Create($def[0].Extent.Text))\n}\n" +
+        " $readBody=$def[0].Extent.Text\n"
+        " if($name -ceq 'Read-WdManualExecutionApprovalText'){\n"
+        "  if($f.redirect_open){\n"
+        # Deterministic I/O fault injection models ancestor redirection between
+        # validation and File.Open. It opens a REAL alternate file/handle, with
+        # no actual rename/junction, Source write, or replacement of the guard.
+        "   $open='[IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)'\n"
+        "   if(([regex]::Matches($readBody,[regex]::Escape($open))).Count -ne 1){throw 'OPEN_INJECTION_NOT_EXACT'}\n"
+        "   $readBody=$readBody.Replace($open," + _quote(
+            "[IO.File]::Open(" + _quote(tmp_path / "other-approval.json") +
+            ", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)") + ")\n"
+        "  }\n"
+        "  if($f.mutant -and $readMutations.PSObject.Properties[[string]$f.mutant]){\n"
+        "   $m=$readMutations.PSObject.Properties[[string]$f.mutant].Value\n"
+        "   if(([regex]::Matches($readBody,[regex]::Escape([string]$m[0]))).Count -ne 1){throw 'READ_MUTATION_NOT_EXACT'}\n"
+        "   $readBody=$readBody.Replace([string]$m[0],[string]$m[1])\n"
+        "  }\n"
+        " }\n"
+        " . ([scriptblock]::Create($readBody))\n}\n" +
         "$admissionMutations=ConvertFrom-Json -InputObject " + _quote(json.dumps(ADMISSION_MUTANTS)) + "\n"
         "if($f.mutant -and $admissionMutations.PSObject.Properties[[string]$f.mutant]){\n"
         " $guard='function Assert-WdBridgeManualExecution {'+(Get-Command Assert-WdBridgeManualExecution).Definition+'}'\n"
         " $m=$admissionMutations.PSObject.Properties[[string]$f.mutant].Value\n"
         " if(([regex]::Matches($guard,[regex]::Escape([string]$m[0]))).Count -ne 1){throw 'ADMISSION_MUTATION_NOT_EXACT'}\n"
         " . ([scriptblock]::Create($guard.Replace([string]$m[0],[string]$m[1])))\n}\n"
-        "if($f.mutant -and -not $mutations.PSObject.Properties[[string]$f.mutant] -and -not $admissionMutations.PSObject.Properties[[string]$f.mutant] -and $f.mutant -cnotin @('MUT_MAIN_PREWRITE_VALIDATION','MUT_DEFAULT_SUPERVISOR_READ')){throw 'UNKNOWN_MUTANT'}\n"
+        "if($f.mutant -and -not $mutations.PSObject.Properties[[string]$f.mutant] -and -not $admissionMutations.PSObject.Properties[[string]$f.mutant] -and -not $readMutations.PSObject.Properties[[string]$f.mutant] -and $f.mutant -cnotin @('MUT_MAIN_PREWRITE_VALIDATION','MUT_DEFAULT_SUPERVISOR_READ')){throw 'UNKNOWN_MUTANT'}\n"
         # Digest real bytes with .NET, independent of PS5 module auto-discovery.
         "function Get-ProbeSha([string]$path){$s=[Security.Cryptography.SHA256]::Create();try{[BitConverter]::ToString($s.ComputeHash([IO.File]::ReadAllBytes($path))).Replace('-','')}finally{$s.Dispose()}}\n"
         "function Get-ProbeFiles { @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File|Sort-Object FullName|ForEach-Object {$_.FullName+'='+ (Get-ProbeSha $_.FullName)}) -join '|' }\n"
@@ -224,6 +252,18 @@ def test_emitted_approval_reaches_unchanged_admission_without_executor(shell, tm
 def test_real_source_hash_does_not_depend_on_hash_cmdlet(shell, tmp_path):
     result = _invoke(shell, tmp_path, admit=True, hide_hash_cmdlet=True)
     assert result["accepted"], result
+
+
+@pytest.mark.parametrize("redirect_open", [False, True])
+def test_checked_approval_path_must_match_real_opened_handle(shell, tmp_path, redirect_open):
+    result = _invoke(shell, tmp_path, approval_bytes=json.dumps(ACTIVATION).encode("utf-8"),
+                     redirect_open=redirect_open)
+    if redirect_open:
+        assert not result["accepted"], result
+        assert "opened handle differs from its checked path" in result["reason"], result
+        assert result["side_effects"] == []
+    else:
+        assert result["accepted"] and result["record"] == ACTIVATION, result
 
 
 @pytest.mark.parametrize("invalid", [False, True])

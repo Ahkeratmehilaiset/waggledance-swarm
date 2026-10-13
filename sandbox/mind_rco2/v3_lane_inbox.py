@@ -45,7 +45,9 @@ UNKNOWN = workspace.UNKNOWN
 RCOS = workspace.RECOGNIZED_RCOS
 BUILD = workspace.BUILD_SLOT
 SLOTS = workspace.VOTE_SLOTS
+LEASE_WARN_SECONDS = 300
 LEASE_SECONDS = 1800  # the default claim lease; a heartbeat is not in the log, so a live lease stays UNKNOWN
+PSEUDO_LANES = frozenset({"system", "operator"})
 GROK_OPEN_SECONDS = 3600  # a consultation start older than this with no answer is shown as a stale start
 OLD_REQUEST_SECONDS = 12 * 3600  # an unanswered request with no PR older than this is shown as stale, not as work
 INPUT_LIMIT = 64 * 1024 * 1024
@@ -565,8 +567,12 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
     lanes: dict[str, Any] = {}
     for key, row in snapshot["lanes"].items():  # snapshot order, as the one-lane path reads it
         agent = str(row.get("agent"))
-        entry = lanes.setdefault(agent, {"rows": [], "verification": [], "uncertainty": [], "items": [], "released": 0})
+        entry = lanes.setdefault(agent, {"rows": [], "verification": [], "uncertainty": [], "items": [], "released": 0,
+                                         "last_event_utc": None})
         entry["rows"].append(key)
+        last = row.get("last_event_utc")
+        if workspace.parse_time(last) is not None and (entry["last_event_utc"] is None or last > entry["last_event_utc"]):
+            entry["last_event_utc"] = last
         entry["verification"] = sorted(set(entry["verification"]) | {row.get("verification", UNKNOWN)})
         entry["uncertainty"] = sorted(set(entry["uncertainty"]) | set(row.get("uncertainty", [])))
         held = row.get("claims")  # a pseudo lane (system, operator) has the string UNKNOWN here
@@ -759,6 +765,10 @@ def lens(fold: Mapping[str, Any], lane: str) -> dict[str, Any]:
             stale.append(dict(item, kind="claim_on_finished_pr"))
         elif item["claim_event_age_s"] is not None and item["claim_event_age_s"] > LEASE_SECONDS:
             stale.append(dict(item, kind="claim_event_older_than_lease"))
+        elif item["claim_event_age_s"] is not None and item["claim_event_age_s"] > LEASE_SECONDS - LEASE_WARN_SECONDS:
+            # P3 (RCO1 register): the stale-lease sweep released live work today; warn 5 min before the lease ends.
+            # A heartbeat is not in the log, so this says "unless refreshed", never that the claim is gone.
+            stale.append(dict(item, kind="claim_lease_ends_within_5_min_unless_refreshed"))
     tensions = [{key: t[key] for key in ("rule", "subject", "severity", "refs")} for t in fold["tensions"] if lane in t["actors"]]
     return _finish(lane, now, fold["capture_first_utc"], identity, act, wait, own, done, stale, dormant, asks, pending,
                    claims, entry["released"], tensions, notes)
@@ -991,6 +1001,16 @@ def render_fleet(fold: Mapping[str, Any]) -> str:
     if grok_asks:
         out.append(f"GROK asks with no bound answer by their first addressee (a naming is routing only) {len(grok_asks)}: "
                    + ", ".join(f"{a['request_id'][:40]} to {a['to'][0]}" for a in grok_asks[-4:]))
+    # P2 (RCO1 register): one health line per lane from the same fold: last event age, open asks, claims.
+    for agent, entry in sorted(fold["lanes"].items()):
+        if agent in PSEUDO_LANES or not _LANE.match(agent):
+            continue
+        view = lens(fold, agent)
+        age = _age_seconds(fold["as_of_utc"], entry.get("last_event_utc") or "")
+        ending = sum(1 for s in view["stale"] if s["kind"] == "claim_lease_ends_within_5_min_unless_refreshed")
+        out.append(f"LANE {agent}: last event " + (f"{round(age / 60)} min" if age is not None else UNKNOWN)
+                   + f" before the round; asks open {view['asks_actionable']}; work items {len(view['act'])}; claims held "
+                   f"{len(view['claims'])}" + (f", {ending} lease ending within 5 min" if ending else ""))
     faults = {agent: entry["released"] for agent, entry in sorted(fold["lanes"].items()) if entry.get("released")}
     if faults:
         out.append("MIND FAULT claims released in the log but still listed by the core: "

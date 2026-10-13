@@ -21,6 +21,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
+from waggledance.core.reasoning.solver_services import (
+    SolverServices,
+    invoke_solver_callable,
+)
+
 from .low_risk_policy import LOW_RISK_FAMILY_KINDS
 
 
@@ -218,7 +223,10 @@ def supported_executor_kinds() -> tuple[str, ...]:
 
 
 def execute_artifact(
-    artifact: Mapping[str, Any], inputs: Mapping[str, Any]
+    artifact: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    *,
+    solver_services: SolverServices | None = None,
 ) -> Any:
     """Execute a compiled artifact against an input record.
 
@@ -239,4 +247,9 @@ def execute_artifact(
         raise UnsupportedFamilyError(
             f"no runtime executor for family {kind!r}"
         )
-    return executor(artifact, inputs)
+    return invoke_solver_callable(
+        executor,
+        artifact,
+        inputs,
+        injected_services=solver_services,
+    )

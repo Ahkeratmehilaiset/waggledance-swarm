@@ -175,6 +175,35 @@ def _assert_magma_receipt(
     assert receipt["operator_gate_required"] is False
 
 
+def test_v313_entrypoint_can_explicitly_opt_into_solver_services(
+    monkeypatch,
+) -> None:
+    from waggledance.core.reasoning.solver_services import solver_services_opt_in
+    from waggledance.core.v3_13_0 import chat_dispatch
+    from waggledance.core.v3_13_0.solver_registry import get_solver_manifest
+
+    @solver_services_opt_in
+    def strategic_entrypoint(payload, *, solver_services):
+        return {
+            "payload": dict(payload),
+            "game_theory_available": solver_services.has_game_theory,
+        }
+
+    monkeypatch.setattr(
+        chat_dispatch,
+        "resolve_solver_entrypoint",
+        lambda _solver: strategic_entrypoint,
+    )
+    solver = get_solver_manifest("FIN-10__cottage_bookkeeping_separator__cottage")
+
+    result = chat_dispatch._call_solver(solver, {"state": "bounded"})
+
+    assert result == {
+        "payload": {"state": "bounded"},
+        "game_theory_available": True,
+    }
+
+
 @pytest.mark.parametrize("solver_name,payload", _payloads().items())
 def test_chat_dispatch_runs_registered_v313_solver(
     solver_name: str,

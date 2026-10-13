@@ -204,3 +204,44 @@ def test_executor_is_deterministic_repeated_calls() -> None:
     first = execute_artifact(artifact, inputs)
     for _ in range(5):
         assert execute_artifact(artifact, inputs) == first
+
+
+def test_autogrown_executor_can_explicitly_opt_into_solver_services(
+    monkeypatch,
+) -> None:
+    from waggledance.core.autonomy_growth import solver_executor
+    from waggledance.core.reasoning.solver_services import (
+        SolverServices,
+        solver_services_opt_in,
+    )
+
+    sentinel_port = object()
+    services = SolverServices(game_theory=sentinel_port)
+
+    @solver_services_opt_in
+    def strategic_executor(artifact, inputs, *, solver_services):
+        return {
+            "kind": artifact["kind"],
+            "input": inputs["key"],
+            "received_port": (
+                solver_services.require_game_theory() is sentinel_port
+            ),
+        }
+
+    monkeypatch.setitem(
+        solver_executor._EXECUTORS,
+        "lookup_table",
+        strategic_executor,
+    )
+
+    result = execute_artifact(
+        {"kind": "lookup_table"},
+        {"key": "state"},
+        solver_services=services,
+    )
+
+    assert result == {
+        "kind": "lookup_table",
+        "input": "state",
+        "received_port": True,
+    }

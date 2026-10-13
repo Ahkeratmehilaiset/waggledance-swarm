@@ -176,7 +176,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         identity = agent + "|" + uuid + ("" if valid_identity else "|" + ref)
         status = event.get("status", "")
         status = status.lower() if isinstance(status, str) else ""
-        kind = event.get("type", "")
+        kind = str(event.get("type", "")).lower()  # Canonical checker semantics; original ref/body stays untouched.
         task = _token(event.get("task_id"))
         previous = state.lanes.get(identity, {})
         task_claims = deepcopy(previous.get("_claims", {}))
@@ -334,25 +334,28 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
 
 
 def _audit_path(path: Path, audit_root: Path) -> Path:
-    path, root = Path(path).absolute(), Path(audit_root).absolute()
-    if ".." in path.parts or ".." in root.parts:
-        raise ProjectionError("audit_traversal_refused")
-    if root.name != ".codex-audit" or not root.is_dir() or path == root or not path.is_relative_to(root) or not path.parent.is_dir():
-        raise ProjectionError("owned_audit_destination_required")
-    for component in [path, *path.parents]:
-        try:
-            info = component.lstat()
-        except FileNotFoundError:
-            if component == path:
-                continue
-            raise ProjectionError("audit_parent_missing") from None
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
-            raise ProjectionError("linked_audit_destination_refused")
-        if component == path and stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            raise ProjectionError("hardlinked_audit_destination_refused")
-    if path.exists() and not path.is_file():
-        raise ProjectionError("audit_file_required")
-    return path
+    try:
+        path, root = Path(path).absolute(), Path(audit_root).absolute()
+        if ".." in path.parts or ".." in root.parts:
+            raise ProjectionError("audit_traversal_refused")
+        if root.name != ".codex-audit" or not root.is_dir() or path == root or not path.is_relative_to(root) or not path.parent.is_dir():
+            raise ProjectionError("owned_audit_destination_required")
+        for component in [path, *path.parents]:
+            try:
+                info = component.lstat()
+            except FileNotFoundError:
+                if component == path:
+                    continue
+                raise ProjectionError("audit_parent_missing") from None
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                raise ProjectionError("linked_audit_destination_refused")
+            if component == path and stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                raise ProjectionError("hardlinked_audit_destination_refused")
+        if path.exists() and not path.is_file():
+            raise ProjectionError("audit_file_required")
+        return path
+    except OSError:
+        raise ProjectionError("audit_path_refused") from None
 
 
 def _validate_snapshot(value: Any) -> None:

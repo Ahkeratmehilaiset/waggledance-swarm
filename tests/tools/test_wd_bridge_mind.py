@@ -432,3 +432,74 @@ def test_canonical_block_type_parity_matrix_keeps_non_rco_peer_blocks_visible():
                 cases += 1
     assert cases == 216
     assert under_reports == []
+
+
+@pytest.mark.parametrize('api', ['write_snapshot','read_snapshot','write_checkpoint','read_checkpoint'])
+def test_all_public_audit_apis_refuse_stat_oserror_without_echo_after_positive(api, tmp_path, monkeypatch):
+    # MUT_RAW_AUDIT_OSERROR: actual public API, isolated synthetic denial, no ACL mutation.
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    path = audit / 'public-caller-fixture.json'
+    state = build([envelope()])
+    snap = mind.snapshot(state, as_of_utc=AS_OF)
+    checkpoint = 'checkpoint' in api
+    if checkpoint:
+        mind.write_checkpoint(state,path,as_of_utc=AS_OF,audit_root=audit)
+        assert mind.state_bytes(mind.read_checkpoint(path,audit_root=audit))==mind.state_bytes(state)
+    else:
+        mind.write_snapshot(snap,path,audit_root=audit)
+        assert mind.read_snapshot(path,audit_root=audit)==snap
+    original=path.read_bytes()
+    real=Path.lstat
+    def denied(value,*args,**kwargs):
+        if value==path:
+            raise PermissionError(13,'synthetic caller text',str(path))
+        return real(value,*args,**kwargs)
+    monkeypatch.setattr(Path,'lstat',denied)
+    with pytest.raises(mind.ProjectionError) as caught:
+        if api=='write_snapshot':mind.write_snapshot(snap,path,audit_root=audit)
+        elif api=='read_snapshot':mind.read_snapshot(path,audit_root=audit)
+        elif api=='write_checkpoint':mind.write_checkpoint(state,path,as_of_utc=AS_OF,audit_root=audit)
+        else:mind.read_checkpoint(path,audit_root=audit)
+    assert str(caught.value)=='audit_path_refused'
+    assert path.name not in str(caught.value) and 'synthetic caller text' not in str(caught.value)
+    assert path.read_bytes()==original
+
+
+def test_case_variants_keep_canonical_blocks_pass_identity_and_claim_lifecycle():
+    # MUT_RAW_CASE_KIND: lowercase control FIRST, original complete event refs retained.
+    from tools.check_bridge_changes_requested import check_bridge_clear_to_merge
+    rco_uuid='2b2f6ff9-06c2-4ec8-b526-f10071ce7103'
+    passed=envelope(agent='claude-rco-1',agent_uuid=rco_uuid,type='decision',status='rco_pass')
+    misses=[]
+    cases=0
+    for kind in ('Decision','DECISION','Finding','FINDING','Blocked','BLOCKED','RCO_REVIEW'):
+        for status in ('superseded','cancelled','rco_pass_withdrawn','info','needs_work','changes_requested','hold','approved'):
+            lower=envelope(agent='claude-rco-1',agent_uuid=rco_uuid,type=kind.lower(),status=status,ts_utc='2026-10-13T03:59:01Z')
+            mixed=envelope(agent='claude-rco-1',agent_uuid=rco_uuid,type=kind,status=status,ts_utc='2026-10-13T03:59:01Z')
+            gate=check_bridge_clear_to_merge(events=[passed['event'],lower['event']],task_id='task/1',merging_agent='codex-lead-1',pr_number=1900,identity_registry={'claude-rco-1':rco_uuid})
+            positive=mind.snapshot(build([passed,lower]),as_of_utc=AS_OF)['prs']['1900']
+            observed=mind.snapshot(build([passed,mixed]),as_of_utc=AS_OF)['prs']['1900']
+            if not gate['clear_to_merge']:
+                assert positive['veto_observations'] and not positive['votes']
+                if not observed['veto_observations'] or observed['votes']:
+                    misses.append((kind,status))
+                else:
+                    assert observed['veto_observations'][0]['source_refs']==[mixed['ref']]
+                    assert observed['veto_observations'][0]['activity']=='UNKNOWN'
+                    assert observed['stale_votes'][0]['source_refs']==[passed['ref']]
+            cases+=1
+    assert cases==56 and misses==[]
+    for kind in ('Decision','DECISION'):
+        fresh=envelope(agent='claude-rco-1',agent_uuid=rco_uuid,type=kind,status='RCO_PASS')
+        pr=mind.snapshot(build([fresh]),as_of_utc=AS_OF)['prs']['1900']
+        assert len(pr['votes'])==1 and not pr['veto_observations']
+        assert pr['votes'][0]['agent_uuid']==rco_uuid and pr['votes'][0]['source_refs']==[fresh['ref']]
+    a=envelope(type='Claim',task_id='task/a',write_scope=['tools/a.py'])
+    b=envelope(type='CLAIM',task_id='task/b',write_scope=['tools/b.py'])
+    msg=envelope(type='Message',task_id='task/a',write_scope=[])
+    release=envelope(type='Release',task_id='task/a',write_scope=[])
+    snap=mind.snapshot(build([a,b,msg,release]),as_of_utc=AS_OF)
+    claims=snap['lanes']['codex-tools-1|'+UUID]['claims']
+    assert [r['task_id'] for r in claims['by_task']]==['task/b']
+    assert claims['lease_expires_utc']==claims['expired']=='UNKNOWN'

@@ -130,10 +130,17 @@ def render(inputs, lane):
                 lines.append(f"  claim {claim['task']} lease {expires}")
     current = [row.get("current_task") for row in snapshot["lanes"].values() if row.get("agent") == lane]
     lines.append(f"  current task (last event): {', '.join(sorted({str(task) for task in current})) or ws.UNKNOWN}")
-    involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))]
-    lines += ["", f"your PRs ({len(involved)}):"]
-    for pr in sorted(involved, key=lambda pr: -pr["pr"]):
+    involved = [pr for pr in parsed.prs if _involved(parsed, pr, lane, items.get(pr["pr"], []))
+                and parsed.suppressed(pr) not in ("MERGED", "CLOSED")]
+    # A full card only where something is live: an attention item, a reported-green head, a vote or a veto.
+    live = [pr for pr in involved if items.get(pr["pr"]) or pr["ci_green"] or pr["votes"] or pr["vetoes"]]
+    lines += ["", f"your PRs with something live ({len(live)} cards, first attention rank first):"]
+    rank = {pr["pr"]: min([item["rank"] for item in items.get(pr["pr"], [])] or [999]) for pr in live}
+    for pr in sorted(live, key=lambda pr: (rank[pr["pr"]], -pr["pr"])):
         lines += _card(parsed, pr, items.get(pr["pr"], []), tensions.get(pr["pr"], []))
+    quiet = [pr for pr in involved if pr not in live]
+    lines += ["", f"your other open PRs ({len(quiet)}, nothing live in this window):"]
+    lines += [_index_line(parsed, pr, []) for pr in sorted(quiet, key=lambda pr: -pr["pr"])]
     others = [pr for pr in parsed.prs if pr not in involved and parsed.suppressed(pr) not in ("MERGED", "CLOSED")]
     lines += ["", f"other open or unknown-state PRs in the bridge view ({len(others)}):"]
     lines += [_index_line(parsed, pr, items.get(pr["pr"], [])) for pr in sorted(others, key=lambda pr: -pr["pr"])]

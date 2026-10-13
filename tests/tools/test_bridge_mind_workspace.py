@@ -28,6 +28,9 @@ GUARD_WORDS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
 UUIDS = {agent: f"00000000-0000-4000-8000-{index:012x}" for index, agent in enumerate(
     ("claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5"), 1)}
 RCOS = ("claude-rco-1", "claude-rco-2")
+# Every slot but claude-rco-2's (the last missing vote), and every slot.
+ALMOST = ["codex-lead-1", "codex-tools-1", "claude-rco-1"]
+EVERY = ALMOST + ["claude-rco-2"]
 
 
 def ref(name: str) -> str:
@@ -155,18 +158,16 @@ def test_lease_ttl_and_grace_boundaries_are_pure_functions_of_as_of():
 
 
 def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_suggestion():
-    both_builds = ["codex-lead-1", "codex-tools-1"]
-    every_slot = both_builds + ["claude-rco-2"]
     prs = [
         _pr(30, votes=["codex-tools-1"]),
-        _pr(20, klass="a", votes=every_slot),
-        _pr(21, klass="b", votes=every_slot),  # every slot and not (a)-class: no suggestion, never "merge"
-        _pr(40, votes=both_builds, ci=False),
-        _pr(42, votes=both_builds, ci=None),
-        _pr(45, votes=both_builds, vetoes=["claude-rco-1"]),
-        _pr(46, klass="a", votes=every_slot, vetoes=["claude-rco-1"]),  # a veto is never "only the signature"
-        _pr(47, klass="a", votes=every_slot, ci=False),
-        _pr(10, votes=both_builds),
+        _pr(20, klass="a", votes=EVERY),
+        _pr(21, klass="b", votes=EVERY),  # every slot and not (a)-class: no suggestion, never "merge"
+        _pr(40, votes=ALMOST, ci=False),
+        _pr(42, votes=ALMOST, ci=None),
+        _pr(45, votes=ALMOST, vetoes=["claude-rco-1"]),
+        _pr(46, klass="a", votes=EVERY, vetoes=["claude-rco-1"]),  # a veto is never "only the signature"
+        _pr(47, klass="a", votes=EVERY, ci=False),
+        _pr(10, votes=ALMOST),
         _pr(50, head="UNKNOWN"),  # the core puts every vote of a PR with an unknown head into stale_votes
     ]
     fields = mind.reflection(_snapshot(prs=prs))
@@ -177,9 +178,9 @@ def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_sugge
         f"pr:45:veto:claude-rco-1:{HEAD[:12]}", f"pr:46:veto:claude-rco-1:{HEAD[:12]}"]
     assert [item["rank"] for item in fields["attention"]] == [1, 2, 3, 4, 5]
     first = fields["attention"][0]
-    assert first["actors"] == ["claude-rco-1", "claude-rco-2"]
-    assert first["refs"] == sorted([ref("pr:10"), ref("ci:10")] + [ref(f"vote:10:{agent}:build_consensus_pass:{HEAD}")
-                                                                  for agent in both_builds])
+    assert first["actors"] == ["claude-rco-2"]
+    assert first["refs"] == sorted([ref("pr:10"), ref("ci:10"), ref(f"vote:10:claude-rco-1:rco_pass:{HEAD}")] + [
+        ref(f"vote:10:{agent}:build_consensus_pass:{HEAD}") for agent in ("codex-lead-1", "codex-tools-1")])
     assert fields["attention"][2]["actors"] == ["claude-rco-1", "claude-rco-2", "codex-lead-1"]
     # P10: a suggestion never carries clearance.
     assert all(item["suggestion_only"] is True for item in fields["attention"])
@@ -197,7 +198,7 @@ def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_sugge
 ])
 def test_ci_counts_as_green_only_when_reported_green_at_the_exact_head(reported, expected):
     """P6b: a green report without a head, for another head, or without refs makes no vote suggestion."""
-    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    key, pr = _pr(10, votes=ALMOST)
     pr["reported_ci"] = {"source_refs": [ref("ci:10")], "verification": "declared", **reported}
     kinds = [item["kind"] for item in mind.reflection(_snapshot(prs=[(key, pr)]))["attention"]]
     assert kinds == ([expected] if expected else [])
@@ -211,8 +212,7 @@ def test_ci_counts_as_green_only_when_reported_green_at_the_exact_head(reported,
 ])
 def test_a_blocked_source_makes_no_head_bound_suggestion(blocked):
     """P6c: blocked input (or a blocked field that is not the core shape) is not current, even with complete coverage."""
-    prs = [_pr(10, votes=["codex-lead-1", "codex-tools-1"]), _pr(20, klass="a",
-                                                                 votes=["codex-lead-1", "codex-tools-1", "claude-rco-1"])]
+    prs = [_pr(10, votes=ALMOST), _pr(20, klass="a", votes=EVERY)]
     fields = mind.reflection(_snapshot(blocked=blocked, prs=prs))
     assert [item["kind"] for item in fields["attention"]] == ["tension_high"]
     assert [tension["rule"] for tension in fields["tensions"]] == ["input_blocked"]
@@ -227,7 +227,7 @@ def test_a_blocked_source_makes_no_head_bound_suggestion(blocked):
 
 
 def test_a_veto_is_never_read_as_cleared_and_an_undeclared_identity_fills_no_slot():
-    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    key, pr = _pr(10, votes=ALMOST)
     unreadable = copy.deepcopy(pr)
     unreadable["veto_observations"] = [{**_veto("claude-rco-1", 10, HEAD), "source_refs": ["not-a-ref"]}]
     fields = mind.reflection(_snapshot(prs=[(key, unreadable)]))
@@ -240,7 +240,7 @@ def test_a_veto_is_never_read_as_cleared_and_an_undeclared_identity_fills_no_slo
     undeclared = copy.deepcopy(pr)
     undeclared["votes"].append({**_vote("claude-rco-2", 10, HEAD), "agent_uuid": "UNKNOWN"})
     attention = mind.reflection(_snapshot(prs=[(key, undeclared)]))["attention"]
-    assert [(item["kind"], item["actors"]) for item in attention] == [("last_missing_vote", list(RCOS))]
+    assert [(item["kind"], item["actors"]) for item in attention] == [("last_missing_vote", ["claude-rco-2"])]
     declared = copy.deepcopy(pr)
     declared["votes"].append(_vote("claude-rco-2", 10, HEAD))
     assert mind.reflection(_snapshot(prs=[(key, declared)]))["attention"] == []
@@ -248,7 +248,7 @@ def test_a_veto_is_never_read_as_cleared_and_an_undeclared_identity_fills_no_slo
     misplaced = copy.deepcopy(pr)
     misplaced["votes"].append(_vote("claude-rco-2", 10, OLD))
     fields = mind.reflection(_snapshot(prs=[(key, misplaced)]))
-    assert [(item["kind"], item["actors"]) for item in fields["attention"]][0] == ("last_missing_vote", list(RCOS))
+    assert [(item["kind"], item["actors"]) for item in fields["attention"]][0] == ("last_missing_vote", ["claude-rco-2"])
     assert [tension["rule"] for tension in fields["tensions"]] == ["stale_vote"]
     # The same veto seen in two rows (two tasks) is one tension with both refs, whatever the order.
     twice = copy.deepcopy(pr)
@@ -260,16 +260,26 @@ def test_a_veto_is_never_read_as_cleared_and_an_undeclared_identity_fills_no_slo
                                                          ref("pr:10")])
 
 
+@pytest.mark.parametrize("klass", ["a", "b"])
+def test_one_rco_pass_never_completes_the_rco_requirement(klass):
+    """RCO2 P10b: the rule-12 policy needs every present eligible RCO, and the snapshot has no presence or author."""
+    for voters, missing in ((ALMOST, "claude-rco-2"), (["codex-lead-1", "codex-tools-1", "claude-rco-2"], "claude-rco-1")):
+        attention = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=voters)]))["attention"]
+        assert [(item["kind"], item["actors"]) for item in attention] == [("last_missing_vote", [missing])]
+        assert attention[0]["detail"].endswith("missing: " + missing)
+    every = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=EVERY)]))["attention"]
+    assert [item["kind"] for item in every] == (["signature_only"] if klass == "a" else [])
+
+
 def test_a_question_per_lane_plus_one_global_and_unknown_where_unsupported():
     """P7: a lane without an item is UNKNOWN, never idle."""
-    prs = [_pr(10, votes=["codex-lead-1", "codex-tools-1"]),
-           _pr(20, klass="a", votes=["codex-lead-1", "codex-tools-1", "claude-rco-1"])]
+    prs = [_pr(10, votes=ALMOST), _pr(20, klass="a", votes=EVERY)]
     lanes = [_lane("claude-rco-2"), _lane("codex-tools-1")]
     question = mind.reflection(_snapshot(prs=prs, lanes=lanes))["next_question"]
     assert question["global"]["attention_rank"] == 1
-    assert question["global"]["question"] == ("PR10 at aaaaaaaaaaaa is reported CI-green; missing: rco. "
-                                              "Can claude-rco-1, claude-rco-2 give it at this exact head?")
-    assert sorted(question["lanes"]) == ["claude-rco-1", "claude-rco-2", "codex-tools-1", "operator"]
+    assert question["global"]["question"] == ("PR10 at aaaaaaaaaaaa is reported CI-green; missing: claude-rco-2. "
+                                              "Can claude-rco-2 give it at this exact head?")
+    assert sorted(question["lanes"]) == ["claude-rco-2", "codex-tools-1", "operator"]
     assert question["lanes"]["operator"]["attention_rank"] == 2
     assert question["lanes"]["codex-tools-1"] == {"question": "UNKNOWN", "attention_rank": None, "refs": ["UNKNOWN"]}
     assert "idle" not in mind.canonical_json(question)
@@ -477,7 +487,7 @@ def _put(snapshot, where, value):
 
 
 def _boundary_snapshot():
-    return _snapshot(prs=[_pr(10, votes=["codex-lead-1", "codex-tools-1"])], lanes=[_lane("fable-5")])
+    return _snapshot(prs=[_pr(10, votes=ALMOST)], lanes=[_lane("fable-5")])
 
 
 @pytest.mark.parametrize("where", ["top_level_key", "source_extra", "source_coverage", "pr_extra", "lane_extra",
@@ -606,16 +616,16 @@ def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
 
 
 # The positive twin: an actual output of the projector core, tools/wd_bridge_mind.py at codex-tools-1/mind-20261013
-# commit 0b8fadf8a9dc7a29c7d64354dc15269d7536a8cb (blob 8bf6da92c0027c936bb541a63d0af7ffbf24a3f6), from
+# commit ac61455111bf07b3c05159ce16fde21ddf17c4e6 (blob da7543dfbc9d1341bced07681e69e93ae04863ab), from
 # full_rebuild(CORE_TWIN_EVENTS as {ref: event_id(event), event}, source=CORE_TWIN_SOURCE, as_of_utc=CORE_TWIN_AS_OF)
 # and snapshot(). The core ran from a git-archive copy of that commit; CORE_TWIN_SHA256 is the sha256 of its canonical
 # bytes, and CORE_BLOCKED_SHA256 that of blocked_snapshot(state, offset=1500, reason="canonical_event_invalid") on the
 # same state. Until the core lands on main the recorded bytes stand in for it; once it does, the twin test reruns it.
-CORE_TWIN_SHA256 = "57b1d554b054615c84b1dcd5424c73d59c3f6d3d5438e510ee51d0c773f9884c"
-CORE_BLOCKED_SHA256 = "80ed14b88c6395cede4bca211974901a4371ce507ced58b3a9aad50a20ec61e0"
+CORE_TWIN_SHA256 = "5c0f98288db4be9242c0a0d465d871bef3606a920e48f4d94635a1f0f18ea148"
+CORE_BLOCKED_SHA256 = "d0c2c206ba91482053959cadeb2fb7837d2a0a1a20c0903df39928f763116d23"
 CORE_TWIN_AS_OF = "2026-10-13T03:55:00Z"
 CORE_TWIN_SOURCE = {"log_identity": "fixture-log", "generation": "g1", "cursor_start": 0, "cursor_end": 1500,
-                    "coverage": "complete", "event_count": 15}
+                    "coverage": "complete", "event_count": 17}
 _TWIN_UUID = {"fable-5": "f5", "claude-rco-1": "c1", "claude-rco-2": "c2", "codex-lead-1": "a1", "codex-tools-1": "b1"}
 H_OLD, H_NEW, H_1893, H_1890 = "0b" * 20, "1c" * 20, "2d" * 20, "3e" * 20
 
@@ -638,6 +648,7 @@ CORE_TWIN_EVENTS = [
     _event("03:13:00", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/train-1893",
            {"pr": 1893, "head": H_1893}),
     _event("03:14:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1893", {"pr": 1893, "head": H_1893}),
+    _event("03:15:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1893", {"pr": 1893, "head": H_1893}),
     _event("03:20:00", "codex-tools-1", "claim", "active", "codex-tools-1/mind-20261013",
            {"write_scope": ["tools/wd_bridge_mind.py", "tests/tools/test_wd_bridge_mind.py"],
             "claim_lease_expires_utc": "2026-10-13T03:50:00Z"}),
@@ -652,6 +663,7 @@ CORE_TWIN_EVENTS = [
     _event("03:45:00", "fable-5", "message", "head_updated", "fable-5/bridge-mind-workspace-20261013",
            {"pr": 1899, "head": H_NEW, "required_checks_green": True}),
     _event("03:50:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1899", {"pr": 1899, "head": H_NEW}),
+    _event("03:51:00", "claude-rco-1", "decision", "rco_pass", "claude-rco-1/review-1899", {"pr": 1899, "head": H_NEW}),
     _event("03:52:00", "codex-tools-1", "decision", "build_consensus_pass", "codex-tools-1/review-1899",
            {"pr": 1899, "head": H_NEW}),
 ]
@@ -675,6 +687,23 @@ CORE_TWIN_JSON = r"""
    "value": {
     "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
     "pr": 1899
+   },
+   "verification": "declared"
+  },
+  {
+   "canonical_sha256": "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43",
+   "fact_id": "f66bf932b5e74ef1067a8d5bafcd5aa9843bcaaefc0da6b4108cfadd2af29ee0",
+   "kind": "lane_observation",
+   "observed_at_utc": "2026-10-13T03:51:00Z",
+   "salience": 50,
+   "source_refs": [
+    "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
+   ],
+   "ttl_seconds": 300,
+   "value": {
+    "agent": "claude-rco-1",
+    "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
+    "current_task": "claude-rco-1/review-1899"
    },
    "verification": "declared"
   },
@@ -703,14 +732,14 @@ CORE_TWIN_JSON = r"""
    "claims": "UNKNOWN",
    "current_task": "claude-rco-1/review-1899",
    "idle_status": "UNKNOWN",
-   "last_event_ref": "3774d7c27a790ce591f2b4fb1393987d8af0328b435ae52c4fdd90e6f86aa720",
-   "last_event_utc": "2026-10-13T03:35:00Z",
+   "last_event_ref": "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43",
+   "last_event_utc": "2026-10-13T03:51:00Z",
    "next_question": "UNKNOWN",
-   "observation_age_seconds": 1200.0,
+   "observation_age_seconds": 240.0,
    "run_id": "UNKNOWN",
    "session_id": "UNKNOWN",
    "source_refs": [
-    "3774d7c27a790ce591f2b4fb1393987d8af0328b435ae52c4fdd90e6f86aa720"
+    "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
    ],
    "uncertainty": [
     "origin_not_authenticated",
@@ -918,7 +947,7 @@ CORE_TWIN_JSON = r"""
     "verification": "declared"
    },
    "source_refs": [
-    "518868632f7c3d30d4394b37d8c343aeb1d61fe097b5d1e6087448901ba37e0d",
+    "45e84bfa0345a316612ae19ad77b8f3b93ddb98ad22941b3f4f5cfcfc9349dd9",
     "a1a9983c919085fb37b82c78e452c6d30611b748daf5b23700a860d1c16404cc"
    ],
    "stale_votes": [],
@@ -930,6 +959,16 @@ CORE_TWIN_JSON = r"""
      "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
      "source_refs": [
       "518868632f7c3d30d4394b37d8c343aeb1d61fe097b5d1e6087448901ba37e0d"
+     ],
+     "status": "rco_pass",
+     "verification": "declared"
+    },
+    {
+     "agent": "claude-rco-2",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
+     "head": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+     "source_refs": [
+      "45e84bfa0345a316612ae19ad77b8f3b93ddb98ad22941b3f4f5cfcfc9349dd9"
      ],
      "status": "rco_pass",
      "verification": "declared"
@@ -992,6 +1031,16 @@ CORE_TWIN_JSON = r"""
    "veto_observations": [],
    "votes": [
     {
+     "agent": "claude-rco-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000c1",
+     "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
+     "source_refs": [
+      "791e590287062c286739e58a06050e376f9f080b18d2cede25cd324fd4ebab43"
+     ],
+     "status": "rco_pass",
+     "verification": "declared"
+    },
+    {
      "agent": "claude-rco-2",
      "agent_uuid": "00000000-0000-4000-8000-0000000000c2",
      "head": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
@@ -1023,12 +1072,12 @@ CORE_TWIN_JSON = r"""
   "cursor_end": 1500,
   "cursor_start": 0,
   "duplicate_count": 0,
-  "event_count": 15,
+  "event_count": 17,
   "generation": "g1",
   "last_event_ref": "85d2787d6e32271a3bb31c034fafc9db9da45ace1bca9e0b263ac1c323f7e3ef",
   "log_identity": "fixture-log",
   "max_event_utc": "2026-10-13T03:52:00Z",
-  "unique_event_count": 15
+  "unique_event_count": 17
  },
  "tensions": []
 }
@@ -1059,7 +1108,7 @@ def test_an_actual_core_output_flows_through_the_workspace():
     refs = {event["ts_utc"][11:19]: event_id(event) for event in CORE_TWIN_EVENTS}
     assert twin["prs"]["1899"]["reported_ci"]["head"] == H_NEW and twin["prs"]["1899"]["stale_votes"][0]["head"] == H_OLD
     # The core's own facts (pr and lane observations) are carried, not refused and not derived from.
-    assert sorted(fact["kind"] for fact in twin["facts"]) == ["lane_observation", "pr_observation"]
+    assert {fact["kind"] for fact in twin["facts"]} == {"lane_observation", "pr_observation"}
     reflected = mind.reflect(twin)
     attention = [(item["kind"], item["subject"], item["actors"]) for item in reflected["attention"]]
     by_rule = {tension["rule"]: tension for tension in reflected["tensions"]}
@@ -1077,7 +1126,7 @@ def test_an_actual_core_output_flows_through_the_workspace():
     assert by_rule["expired_claim"]["refs"] == [refs["03:20:00"]]
     assert by_rule["claim_overlap"]["refs"] == sorted([refs["03:40:00"], refs["03:41:00"]])
     assert reflected["attention"][0]["refs"] == sorted(set(twin["prs"]["1899"]["source_refs"]) | {
-        refs["03:45:00"], refs["03:50:00"], refs["03:52:00"]})
+        refs["03:45:00"], refs["03:50:00"], refs["03:51:00"], refs["03:52:00"]})
     question = reflected["next_question"]
     assert question["global"]["question"] == ("PR1899 at 1c1c1c1c1c1c is reported CI-green; missing: build_lead. "
                                               "Can codex-lead-1 give it at this exact head?")

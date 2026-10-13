@@ -23,10 +23,12 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
 
 * ``attention``: one ordered, bounded list of suggestions. For each PR with a known head, reported CI
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
-  the current-head votes of declared identities into the three consensus slots by the charter's identity
-  map (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, ``rco`` = a recognized RCO). Exactly
-  one empty slot comes first (the last missing vote goes first), then (a)-class PRs with every slot filled
-  (only the operator signature is left), then PRs missing several votes, then high and other tensions. A
+  the current-head votes of declared identities into the consensus slots by the charter's identity map
+  (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, and one slot for each recognized RCO,
+  because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
+  presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
+  slot comes first (the last missing vote goes first), then (a)-class PRs with every slot filled (only the
+  operator signature is left), then PRs missing several votes, then high and other tensions. A
   blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
   gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
 * ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
@@ -85,10 +87,12 @@ SAFE_PATH = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\\+-]{0,199}")
 REASON = re.compile(r"[a-z0-9_]{1,64}")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
-VOTE_SLOTS = ("build_lead", "build_tools", "rco")
-# The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty.
+# The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty. The installed
+# rule-12 review policy needs every present eligible RCO, and the snapshot says nothing about RCO presence or the
+# PR author (recusal), so each recognized RCO is its own slot: a PR with one RCO pass still misses the other.
 BUILD_SLOT = {"codex-lead-1": "build_lead", "codex-tools-1": "build_tools"}
 RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
+VOTE_SLOTS = ("build_lead", "build_tools") + RECOGNIZED_RCOS
 COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
@@ -213,7 +217,7 @@ def scopes_overlap(left: Iterable[str], right: Iterable[str]) -> list[str]:
 def vote_slot(agent: str, status: str) -> str | None:
     """The consensus slot a current-head vote fills, by the charter's identity map; None when it fills none."""
     if status == "rco_pass" and agent in RECOGNIZED_RCOS:
-        return "rco"
+        return agent
     if status == "build_consensus_pass":
         return BUILD_SLOT.get(agent)
     return None
@@ -449,7 +453,7 @@ def _pr_attention(pr: Mapping[str, Any]) -> dict[str, Any] | None:
                 "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
                           "signature is left"}
     actors = sorted({agent for slot in empty for agent in
-                     (RECOGNIZED_RCOS if slot == "rco" else [a for a, s in BUILD_SLOT.items() if s == slot])})
+                     ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
             "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"}
 

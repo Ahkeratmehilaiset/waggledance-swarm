@@ -49,7 +49,7 @@ def test_every_gate_blocker_lands_in_exactly_one_place():
         "PR author resolution requires operator review: no valid UUID-bound canonical write claim covers this PR",
         "PR must not be a draft",
         "mergeable state is not clean: CONFLICTING",
-        "path gate failed: denylist hit",
+        "path gate failed: paths not on allowlist",
         "missing exact-head RCO_PASS from recognized non-author RCO",
         RECEIPT,
         "bridge consensus incomplete: build_lead (codex-lead-1): no head-bound approval at " + HEAD,
@@ -58,8 +58,8 @@ def test_every_gate_blocker_lands_in_exactly_one_place():
         "bridge consensus incomplete: rule12 review is not satisfied",
         "a gate reason this board has never seen",
     ]
-    path_gate = {"allowed": False, "blocked_paths": [".agent-bridge/bin/X.ps1"], "unmatched_paths": [],
-                 "reason": "denylist hit"}
+    path_gate = {"allowed": False, "blocked_paths": [], "unmatched_paths": ["ops/windows/reboot/X.ps1"],
+                 "reason": "paths not on allowlist"}
     row = board.classify(_gate(reasons, path_gate=path_gate), _snapshot())
     elements = _elements(row)
     assert set(elements) == {"author", "draft", "merge_state", "signature", "rco", "build_lead", "build_tools",
@@ -71,7 +71,7 @@ def test_every_gate_blocker_lands_in_exactly_one_place():
     placed = [detail for entry in row["missing"] for detail in entry["details"]] + row["merge_time"]
     for reason in reasons:
         assert sum(detail.startswith(reason) for detail in placed) == 1, reason
-    assert elements["signature"]["details"] == ["path gate failed: denylist hit (.agent-bridge/bin/X.ps1)"]
+    assert elements["signature"]["details"] == ["path gate failed: paths not on allowlist (ops/windows/reboot/X.ps1)"]
     assert elements["signature"]["actors"] == ["operator"]
     assert elements["build_lead"]["actors"] == ["codex-lead-1"]
     assert elements["build_tools"]["actors"] == ["codex-tools-1"]
@@ -171,14 +171,15 @@ def _pr(number):
 
 
 def test_signature_only_rows_form_the_morning_list_and_nothing_else_is_on_it(tmp_path, monkeypatch):
-    denylist = {"allowed": False, "blocked_paths": [".agent-bridge/bin/X.ps1"], "unmatched_paths": [],
-                "reason": "denylist hit"}
+    off_allowlist = {"allowed": False, "blocked_paths": [], "unmatched_paths": ["ops/windows/reboot/X.ps1"],
+                     "reason": "paths not on allowlist"}
     all_slots = ("build_lead", "build_tools", "claude-rco-2")
     gates = {
-        11: _gate(["path gate failed: denylist hit", RECEIPT], approved=all_slots, path_gate=denylist),
-        12: _gate(["path gate failed: denylist hit", RECEIPT,
+        11: _gate(["path gate failed: paths not on allowlist", RECEIPT], approved=all_slots,
+                  path_gate=off_allowlist),
+        12: _gate(["path gate failed: paths not on allowlist", RECEIPT,
                    "missing exact-head RCO_PASS from recognized non-author RCO"],
-                  approved=("build_lead", "build_tools"), path_gate=denylist),
+                  approved=("build_lead", "build_tools"), path_gate=off_allowlist),
         13: _gate([RECEIPT], approved=all_slots),
     }
     fake = _FakeGitHub([_pr(13), _pr(11), _pr(12)], gates)
@@ -194,6 +195,49 @@ def test_signature_only_rows_form_the_morning_list_and_nothing_else_is_on_it(tmp
     assert result["merge_ready"] == [13] and result["errors"] == []
     assert all(row["base_is_main"] is True for row in result["rows"])
     assert result["observe_only"] is True
+
+
+def test_a_denylisted_path_is_its_own_element_and_never_on_the_signature_list(tmp_path, monkeypatch):
+    # Codex P2 PRRT_kwDORYf3RM6r0aK-: the dry-run gate never admits a denylisted path (gate_command passes no
+    # --standing-consensus-sign, and that admission drops only an off-allowlist path blocker), so a signature
+    # cannot clear it. An off-allowlist path stays the signature element.
+    denylist = {"allowed": False, "blocked_paths": [".agent-bridge/bin/X.ps1"], "unmatched_paths": [],
+                "reason": "denylist hit"}
+    off_allowlist = {"allowed": False, "blocked_paths": [], "unmatched_paths": ["ops/windows/reboot/x.ps1"],
+                     "reason": "paths not on allowlist"}
+    all_slots = ("build_lead", "build_tools", "claude-rco-2")
+    gates = {81: _gate(["path gate failed: denylist hit", RECEIPT], approved=all_slots, path_gate=denylist),
+             82: _gate(["path gate failed: paths not on allowlist", RECEIPT], approved=all_slots,
+                       path_gate=off_allowlist)}
+    fake = _FakeGitHub([_pr(81), _pr(82)], gates)
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    rows = {row["pr"]: row for row in result["rows"]}
+    assert rows[81]["state"] == "path_denylisted"
+    assert rows[81]["missing"] == [{"element": "path_denylist", "actors": [], "details": [
+        "path gate failed: denylist hit (.agent-bridge/bin/X.ps1)", board.DENYLIST_REMEDIATION]}]
+    assert rows[82]["state"] == "signature_only"
+    assert rows[82]["missing"] == [{"element": "signature", "actors": ["operator"], "details": [
+        "path gate failed: paths not on allowlist (ops/windows/reboot/x.ps1)"]}]
+    assert [item["pr"] for item in result["signature_list"]] == [82]
+    assert result["path_denylisted"] == [81]
+    assert "#81 aaaaaaaa path_denylisted: path_denylist" in board.render_text(result)
+
+
+def test_a_requested_pr_missing_from_the_open_listing_refuses_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    # Codex P2 PRRT_kwDORYf3RM6r0aLI: gh pr list returns at most --limit items, so a requested PR outside that
+    # page (or one that is not open) would vanish from a board that still exits 0. The board refuses instead.
+    fake = _FakeGitHub([_pr(91), _pr(92)], {91: _gate([RECEIPT]), 92: _gate([RECEIPT])})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out), "--pr", "91", "--pr", "93"]) == 2
+    assert not out.exists() and fake.gate_runs == []
+    captured = capsys.readouterr()
+    assert captured.out == "" and "refused" in captured.err and "#93" in captured.err and "#91" not in captured.err
+    assert board.main(["--repo", "o/r", "--out", str(out), "--pr", "92"]) == 0
+    assert [row["pr"] for row in json.loads(out.read_text(encoding="utf-8"))["rows"]] == [92]
 
 
 def test_the_board_writes_only_its_out_file_and_runs_only_read_commands(tmp_path, monkeypatch):
@@ -322,9 +366,9 @@ def test_the_real_gate_blockers_for_a_draft_conflicting_denylisted_pr_all_classi
                                 "b/.agent-bridge/bin/Write-AgentEvent.ps1\n+# comment\n"))
     elements = _elements(row)
     assert "other" not in elements, elements.get("other")
-    assert {"draft", "merge_state", "signature"} <= set(elements)
-    assert elements["signature"]["details"] == [
-        "path gate failed: denylist hit (.agent-bridge/bin/Write-AgentEvent.ps1)"]
+    assert {"draft", "merge_state", "path_denylist"} <= set(elements) and "signature" not in elements
+    assert elements["path_denylist"]["details"] == [
+        "path gate failed: denylist hit (.agent-bridge/bin/Write-AgentEvent.ps1)", board.DENYLIST_REMEDIATION]
 
 
 # -- Decoded-value guard: no guarded word from a title, branch, gate text, hold or error tail reaches the output --
@@ -347,11 +391,12 @@ def test_a_guarded_word_from_any_outside_text_is_withheld_and_keeps_its_state(tm
     # gh pr list output as raw JSON text with the word escaped: the board sees it only after decoding.
     list_text = json.dumps(prs).replace(GUARD_WORDS[0], _escaped(GUARD_WORDS[0]))
     assert GUARD_WORDS[0] not in list_text and _escaped(GUARD_WORDS[0]) in list_text
-    denylist = {"allowed": False, "blocked_paths": ["docs/" + GUARD_WORDS[1] + ".md"], "unmatched_paths": [],
-                "reason": "denylist hit"}
+    off_allowlist = {"allowed": False, "blocked_paths": [], "unmatched_paths": ["docs/" + GUARD_WORDS[1] + ".md"],
+                     "reason": "paths not on allowlist"}
     all_slots = ("build_lead", "build_tools", "claude-rco-2")
     gates = {61: _gate([RECEIPT], approved=all_slots),
-             62: _gate(["path gate failed: denylist hit", RECEIPT], approved=all_slots, path_gate=denylist),
+             62: _gate(["path gate failed: paths not on allowlist", RECEIPT], approved=all_slots,
+                       path_gate=off_allowlist),
              63: _gate(["gate text naming " + GUARD_WORDS[0], RECEIPT], approved=all_slots)}
     fake = _FakeGitHub(prs, gates, list_run=SimpleNamespace(returncode=0, stdout=list_text, stderr=""))
     monkeypatch.setattr(board, "_run", fake)
@@ -1680,6 +1725,44 @@ def test_out_must_be_a_new_file_in_the_same_audit_root(tmp_path, capsys):
     assert _mind(root, path, "--out", str(root / "board" / "new" / "view.json")) == 2
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err.count("refused") == 3
+
+
+def test_a_failed_out_write_leaves_no_file_so_the_next_attempt_can_write(tmp_path, capsys, monkeypatch):
+    # Codex P2 PRRT_kwDORYf3RM6r0aLN: the exclusive create succeeds, then the write fails (a full audit volume).
+    # The refusal must keep its "writes nothing" contract: no empty or partial file stays to block the retry.
+    root = _audit(tmp_path)
+    path = _put(root, _mind_r())
+    out = root / "board" / "view.json"
+    real_open = open
+
+    class _FullVolume:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+            return False
+
+        def write(self, text):
+            self.handle.write(text[:10])
+            self.handle.flush()
+            raise OSError(28, "No space left on device")
+
+    def failing_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        return _FullVolume(handle) if "x" in mode else handle
+
+    monkeypatch.setattr(board, "open", failing_open, raising=False)
+    assert _mind(root, path, "--out", str(out)) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "refused" in captured.err
+    assert not out.exists()
+    monkeypatch.undo()
+    assert _mind(root, path, "--out", str(out)) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["attention"] == _mind_r()["attention"]
 
 
 # -- Mind mode isolation and the unchanged default gate-audit mode ------------------------------------------------

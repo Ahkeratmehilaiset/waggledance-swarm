@@ -31,6 +31,7 @@
      "unlock": "a code-side allow tuple in mind_sensors that excludes every write path, then a hook entry like rco1-solvers"},
     {"name": "codex_capacity", "state": "reserved", "tool": "installed capacity observer, Codex provider",
      "reason": "the observer has never collected Codex (state pending_or_interrupted since 2026-09-29), so the capacity lens shows UNKNOWN",
-     "unlock": "the observer's own owner collects Codex; the existing hook then shows it with no change here"}
+     "unlock": "the observer's own owner collects Codex (Tools 16:06Z: its pin refuses the updated Codex binary); the existing hook then shows it with no change here",
+     "fallback": "RCO1 16:07Z: RCO1 sensors (sandbox/mind_rco1/mind_sensors.py 5f213040) already read only the rate_limits object of the newest Codex CLI session logs into RCO1's own sensors latest.json; a later live window may read that file as a hook input (a file read, no new process), labelled RCO1-sourced and not observer-verified"}
   ]
 }

@@ -608,6 +608,8 @@ if ($CloseRequestEventJson -and $ReplyToEventJson) { throw 'A requester closeout
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
     $replyTo = $ReplyToEventJson | ConvertFrom-Json @jsonArguments
+    # RCO2 M3: the raw-text check cannot see a JSON-escaped marker in the request copy; check the decoded copy.
+    Assert-NoPrivateMarker -Label 'reply binding' -Value ($replyTo | ConvertTo-Json -Depth 100 -Compress)
     $replyId = Get-BridgeContractField $replyTo 'request_id'
     if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
     if ([string]$replyTo.task_id -cne $TaskId -or -not (Test-BridgeAddressedTo $replyTo $Agent) -or
@@ -649,9 +651,10 @@ if ($ReplyToEventJson) {
         }
     }
 } elseif ($CloseRequestEventJson) {
-    # Requester closeout: the exact original requester (agent, agent_uuid, session_id, run_id) withdraws its own
-    # bound request as superseded or cancelled. ReplyTo stays responder-only. This is not a task result, an
-    # approval or a reply on behalf of the addressed lane, and it releases no claim.
+    # Requester closeout: the declared original requester (agent, agent_uuid, session_id, run_id, consistent with
+    # the inherited launch frame) withdraws its own bound request as superseded or cancelled. ReplyTo stays
+    # responder-only. This is not a task result, an approval or a reply on behalf of the addressed lane, and it
+    # releases no claim.
     if ($RequestId) { throw 'A requester closeout cannot also declare a new RequestId' }
     if ($Type -cne 'decision' -or $Status -cnotin @('superseded', 'cancelled')) {
         throw 'CloseRequestEventJson requires -Type decision with -Status superseded or cancelled'
@@ -660,6 +663,8 @@ if ($ReplyToEventJson) {
     if ($null -eq $closed -or $closed.GetType() -ne [System.Management.Automation.PSCustomObject]) {
         throw 'CloseRequestEventJson must be one full request object'
     }
+    # The raw-text check above cannot see a JSON-escaped marker; check the decoded copy, as for the payload.
+    Assert-NoPrivateMarker -Label 'requester closeout' -Value ($closed | ConvertTo-Json -Depth 100 -Compress)
     $closedId = Get-BridgeContractField $closed 'request_id'
     if ($closedId -isnot [string] -or $closedId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'CloseRequestEventJson requires a valid request_id' }
     $closedDigest = Get-BridgeContractField $closed 'request_digest'
@@ -675,6 +680,25 @@ if ($ReplyToEventJson) {
     if ($requester['agent'] -cne $Agent -or $requester['agent_uuid'] -cne $AgentUuid -or
         $requester['session_id'] -cne $SessionId -or $requester['run_id'] -cne $RunId) {
         throw 'Only the exact original requester (agent, agent_uuid, session_id, run_id) can close this request'
+    }
+    # Launch consistency: the declared actor must be the launch frame inherited now. AGENT_BRIDGE_AGENT, _AGENT_UUID,
+    # _SESSION_ID and _RUN_ID must all be inherited and equal the declared values, so an explicit older (or another
+    # lane's) tuple cannot close a request; any missing field refuses. This compares same-user environment and is
+    # not authentication of origin. Ordinary events keep explicit-metadata precedence.
+    $frame = [ordered]@{
+        AGENT_BRIDGE_AGENT = $Agent
+        AGENT_BRIDGE_AGENT_UUID = $AgentUuid
+        AGENT_BRIDGE_SESSION_ID = $SessionId
+        AGENT_BRIDGE_RUN_ID = $RunId
+    }
+    foreach ($name in @($frame.Keys)) {
+        $inherited = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ([string]::IsNullOrEmpty($inherited)) {
+            throw "A requester closeout needs its inherited launch frame; $name is not inherited"
+        }
+        if ([string]$inherited -cne [string]$frame[$name]) {
+            throw "A requester closeout must match its inherited launch frame; $name differs from the declared value"
+        }
     }
     $closedTask = Get-BridgeContractField $closed 'task_id'
     $closedTo = Get-BridgeContractField $closed 'to'
@@ -694,7 +718,12 @@ if ($ReplyToEventJson) {
     }
     foreach ($key in @('nonce', 'token', 'task_revision')) {
         $value = Get-BridgeContractField $closed $key
-        if ($null -ne $value) { $correlation[$key] = $value }
+        if ($null -eq $value) { continue }
+        if ($value -isnot [string] -and ($value -isnot [ValueType] -or $value -is [bool])) {
+            throw "Closeout correlation '$key' must be a string or a number"
+        }
+        Assert-NoPrivateMarker -Label "requester closeout $key" -Value $value
+        $correlation[$key] = $value
     }
     foreach ($key in @('request_id', 'request_digest', 'expected_responders') + @($correlation.Keys) + @('nonce', 'token', 'task_revision')) {
         if ($null -ne $payload.PSObject.Properties[$key]) { throw "Closeout payload must not carry '$key'; the writer copies the request correlation" }

@@ -81,16 +81,18 @@ def main():
             answer.update({key: item.get(key) for key in JUDGED})
             answer["reads"] = item.get("reads")
             answers.append(answer)
-        result = {"schema": RESULT_SCHEMA, "lane": lane, "variant": variant,
+        # A plan key may name a view set (V3-capture); variant_id is the scored variant (V0..V6).
+        variant_id = spec.get("variant_id", variant)
+        result = {"schema": RESULT_SCHEMA, "lane": lane, "variant": variant_id,
                   "round_capture_sha256": manifest["capture_sha256"],
                   "round_context_sha256": manifest["context_sha256"],
                   "round_builder_sha256": manifest["round_builder_sha256"],
                   "views_manifest_sha256": hashlib.sha256((base / "views-manifest.json").read_bytes()).hexdigest(),
                   "view_files": sorted(read_files.values(), key=lambda item: item["path"]),
                   "answers": answers, "notes": spec.get("notes")}
-        target = args.out_dir / f"{variant}.json"
+        target = args.out_dir / f"{variant_id}.json"
         target.write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="ascii")
-        print(json.dumps({"variant": variant, "bytes_read": {a["id"]: a["bytes_read"] for a in answers},
+        print(json.dumps({"variant": variant_id, "bytes_read": {a["id"]: a["bytes_read"] for a in answers},
                           "correct": {a["id"]: a["correct"] for a in answers}}))
     return 0
 

@@ -286,6 +286,8 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
 
 def _audit_path(path: Path, audit_root: Path) -> Path:
     path, root = Path(path).absolute(), Path(audit_root).absolute()
+    if ".." in path.parts or ".." in root.parts:
+        raise ProjectionError("audit_traversal_refused")
     if root.name != ".codex-audit" or not root.is_dir() or path == root or not path.is_relative_to(root) or not path.parent.is_dir():
         raise ProjectionError("owned_audit_destination_required")
     for component in [path, *path.parents]:
@@ -297,6 +299,8 @@ def _audit_path(path: Path, audit_root: Path) -> Path:
             raise ProjectionError("audit_parent_missing") from None
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
             raise ProjectionError("linked_audit_destination_refused")
+        if component == path and stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+            raise ProjectionError("hardlinked_audit_destination_refused")
     if path.exists() and not path.is_file():
         raise ProjectionError("audit_file_required")
     return path

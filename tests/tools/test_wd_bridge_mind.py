@@ -285,3 +285,20 @@ def test_checkpoint_with_reported_votes_restores_exact_state_bytes(tmp_path):
     path = audit / "votes.json"
     mind.write_checkpoint(state, path, as_of_utc=AS_OF, audit_root=audit)
     assert mind.state_bytes(mind.read_checkpoint(path, audit_root=audit)) == mind.state_bytes(state)
+
+
+def test_audit_dotdot_and_hardlink_refused_without_touching_the_public_control(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    safe = audit / "safe.json"
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    mind.write_snapshot(snap, safe, audit_root=audit)
+    original = safe.read_bytes()
+    with pytest.raises(mind.ProjectionError):
+        mind.write_snapshot(snap, audit / ".." / "outside.json", audit_root=audit)
+    assert not (tmp_path / "outside.json").exists()
+    linked = audit / "linked.json"
+    mind.os.link(safe, linked)
+    with pytest.raises(mind.ProjectionError):
+        mind.read_snapshot(linked, audit_root=audit)
+    assert safe.read_bytes() == original

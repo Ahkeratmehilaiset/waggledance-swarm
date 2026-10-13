@@ -46,7 +46,8 @@ per-PR snapshot files in a temporary directory that it removes. It is not on the
 gate decides, and the board only reports what the gate said. A PR whose snapshot or gate output
 cannot be read becomes a row error, never a silent skip, and the exit code is 1. A ``--pr`` number that
 is not in the open PR listing (which holds at most its ``--limit`` items) refuses the whole run: exit 2,
-nothing written, never a board that silently lacks it.
+nothing written, never a board that silently lacks it. Without ``--pr``, a listing that returns exactly
+``LIST_LIMIT`` items may be cut off, so it refuses the same way.
 
 PR titles, branch names, gate texts, hold reasons and error tails all come from outside the board.
 Every string it writes is checked after decoding: a string that holds a guarded private-marker word,
@@ -111,6 +112,7 @@ SNAPSHOT_TOOL = REPO_ROOT / "tools" / "pr_status_snapshot.py"
 GATE_TOOL = REPO_ROOT / "tools" / "idle_consensus_auto_merge.py"
 SCHEMA = "wd.pr-missing-slot-board.v1"
 RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
+LIST_LIMIT = 200  # gh pr list --limit: a listing of this many items may be cut off
 DENYLIST_BLOCKER = "path gate failed: denylist hit"
 DENYLIST_REMEDIATION = ("the gate never admits a denylisted path, so no signature clears it in this run; remove the "
                         "path from the PR, or route it to an operator-explicit merge outside the autonomous gate")
@@ -402,7 +404,7 @@ def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path |
 
 
 def list_open_prs(repo: str, run: Runner | None = None) -> list[dict[str, Any]]:
-    done = (run or _run)(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json",
+    done = (run or _run)(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", str(LIST_LIMIT), "--json",
                 "number,headRefName,headRefOid,isDraft,title"])
     value = json.loads(done.stdout) if done.returncode == 0 else None
     if not isinstance(value, list):
@@ -880,6 +882,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"--hold needs PR=REASON, got {item!r}")
         holds.setdefault(int(number), []).append(reason.strip())
     prs = list_open_prs(args.repo)
+    if not args.pr and len(prs) >= LIST_LIMIT:
+        sys.stderr.write(f"missing-slot board refused: the open PR listing returned its limit of {LIST_LIMIT} items "
+                         "and may be cut off; pass --pr for the PRs to audit\n")
+        return 2
     if args.pr:
         wanted = set(args.pr)
         prs = [pr for pr in prs if int(pr["number"]) in wanted]

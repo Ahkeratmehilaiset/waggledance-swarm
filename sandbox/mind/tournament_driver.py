@@ -135,7 +135,8 @@ def main():
     record = {"schema": VIEWS_SCHEMA, "authority": "none", "scope": "sandbox_tournament_views_not_gate",
               "round": manifest["round"], "inputs_manifest_sha256": manifest_sha,
               "capture_sha256": inputs["capture_sha256"], "context_sha256": inputs["context_sha256"],
-              "snapshot_sha256": inputs["snapshot_sha256"], "variant": variant,
+              "snapshot_sha256": inputs["snapshot_sha256"],
+              "round_builder_sha256": manifest["round_builder_sha256"], "variant": variant,
               "lanes": {lane: render_lane(module, inputs, lane, base / lane) for lane in lanes}}
     ws.guard_object(record)
     with open(base / "views-manifest.json", "xb") as handle:

@@ -41,7 +41,8 @@ INPUT_FILES = ("capture.json", "detail-manifest.txt", "context.json", "gh-pr-lis
 # The code a round's outputs depend on; each must be committed and clean in the builder tree.
 MIND_PATHS = ("tools/wd_bridge_mind.py", "tools/bridge_mind_workspace.py", "tools/wd_bridge_mind_shadow.py",
               "tools/wd_bridge_mind_delta_push.py", "tools/wd_pr_missing_slot_board.py",
-              "tools/bridge_compact_view.py", "waggledance/core/bridge_log_reader.py", "sandbox/mind")
+              "tools/bridge_compact_view.py", "waggledance/core/bridge_log_reader.py")
+FREEZER = "sandbox/mind/freeze_inputs.py"
 CHARTER_FILES = {"charter_blob": "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
                  "classifier_blob": "tools/check_standing_consensus_sign_class.py"}
 
@@ -70,12 +71,17 @@ def row_digest(event):
 
 
 def builder():
-    if git("status", "--porcelain", "--untracked-files=all", "--", *MIND_PATHS):
+    if git("status", "--porcelain", "--untracked-files=all", "--", *MIND_PATHS, FREEZER):
         raise FreezeRefused("builder_not_clean")
     # The committed blob ids (git normalizes line endings; the tree is clean for these paths).
     files = {line.split("\t", 1)[1]: line.split(" ")[1]
              for line in git("ls-files", "-s", "--", *MIND_PATHS).splitlines()}
-    return {"head": git("rev-parse", "HEAD"), "branch": git("rev-parse", "--abbrev-ref", "HEAD"), "blobs": files}
+    # The round builder identity: the Mind code that produced the snapshot, not the tree head (a variant commit
+    # moves the head but not the snapshot). Every result of one cohort names this same digest.
+    identity = sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode("ascii"))
+    freezer = git("ls-files", "-s", "--error-unmatch", "--", FREEZER).split(" ")[1]
+    return {"head": git("rev-parse", "HEAD"), "branch": git("rev-parse", "--abbrev-ref", "HEAD"), "blobs": files,
+            "round_builder_sha256": identity, "freezer_blob": freezer}
 
 
 def check_capture(capture_bytes, manifest_bytes):
@@ -154,7 +160,7 @@ def main():
         "context": dict(context, sha256=digests["context.json"],
                         provenance="read-only GitHub metadata captured before this round (gh pr list, gh pr view "
                                    "files/commits); imported offline, never refreshed during the round"),
-        "builder": built,
+        "builder": built, "round_builder_sha256": built["round_builder_sha256"],
         "v0": {"dir": "v0-run", "snapshot_sha256": receipt["publication"]["snapshot_sha256"],
                "board_text_sha256": receipt["board_text_sha256"], "counts": receipt["counts"],
                "global_question": receipt["global_question"]},
@@ -167,7 +173,7 @@ def main():
         handle.write((json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
     print(json.dumps({"round": args.round, "dir": str(out), "capture": digests["capture.json"],
                       "context": digests["context.json"], "snapshot": manifest["v0"]["snapshot_sha256"],
-                      "builder": built["head"]}, indent=2))
+                      "builder": built["head"], "round_builder_sha256": built["round_builder_sha256"]}, indent=2))
     return 0
 
 

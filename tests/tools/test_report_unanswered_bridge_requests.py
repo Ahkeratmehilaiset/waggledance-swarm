@@ -193,6 +193,54 @@ def test_target_answer_closes_request() -> None:
     assert report["requests"] == []
 
 
+@pytest.mark.parametrize("wrong_digest", [False, True])
+def test_json_bound_reply_digest_has_exact_control(
+    tmp_path: Path, capsys, wrong_digest: bool
+) -> None:
+    """Kill MUTANT_DROP_REPORT_REPLY_DIGEST in the actual bound consumer."""
+    from tools.report_unanswered_bridge_requests import main
+
+    requester = {
+        "agent": "codex-tools-1", "agent_uuid": "tools-uuid",
+        "session_id": "tools-session", "run_id": "tools-run",
+    }
+    responder = {
+        "agent_uuid": "rco-uuid", "session_id": "rco-session", "run_id": "rco-run",
+    }
+    request = _request() | requester | {
+        "request_id": "bound-request-1", "request_digest": "right-digest",
+        "expected_responders": {"claude-rco-1": responder},
+    }
+    reply = _answer() | responder | {
+        "in_reply_to_request_id": request["request_id"],
+        "in_reply_to_request_digest": "wrong-digest" if wrong_digest else request["request_digest"],
+        "in_reply_to_requester": dict(requester),
+    }
+    events_path = _events_file(tmp_path, [request, reply])
+    exit_code = main([
+        "--bridge-root", str(tmp_path), "--events", str(events_path),
+        "--now", "2026-06-13T12:20:00Z", "--min-age-minutes", "0", "--json",
+    ])
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert report["decision"] == "unanswered_bridge_requests_report"
+    if wrong_digest:
+        assert report["unanswered_count"] == 1
+        assert report["by_agent"] == {"claude-rco-1": 1}
+        row = report["requests"][0]
+        assert row["task_id"] == request["task_id"]
+        assert row["target_agent"] == request["to"]
+        assert row["requester"] == request["agent"]
+        assert row["first_ts_utc"] == request["ts_utc"]
+        assert row["bridge_visible"] is True
+    else:
+        assert report["unanswered_count"] == 0
+        assert report["by_agent"] == {}
+        assert report["requests"] == []
+
+
 def test_requester_terminal_event_closes_request() -> None:
     report = report_unanswered_requests(
         events=[

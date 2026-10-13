@@ -157,10 +157,20 @@ def _ready(parsed, events, status):
     return sorted(ready, key=lambda row: (row[0], row[1]["pr"]))
 
 
+def _class_at(parsed, pr, head):
+    """The computed class at ``head``: the workspace's at the bridge head; at a lagging bridge view, the context
+    row's own charter classification, which GitHub computed at exactly that head (else None)."""
+    if head == pr["head"]:
+        return parsed.computed_class(pr)
+    row = parsed.context_row(pr)
+    if row is None or row["head"] != head or not parsed.context["charter_ok"] or row["path_class"] is None:
+        return None
+    return "protected" if row["path_class"]["a_hits"] or row["path_class"]["denylist_hits"] else "not_protected"
+
+
 def _ready_line(parsed, since, pr, ci, head, status, lane, items):
-    computed = parsed.computed_class(pr) if head == pr["head"] else None
-    left = "operator signature (computed protected)" if computed == "protected" else (
-        "no vote" if head == pr["head"] else "no vote; class not computed at the GitHub head")
+    computed = _class_at(parsed, pr, head)
+    left = "operator signature (computed protected)" if computed == "protected" else "no vote"
     excused = sorted((set(pr["recused"]) if head == pr["head"] else set())
                      | (set(ws.RECOGNIZED_RCOS) & parsed.authors(pr)))
     observed = _status_row(status, pr, head)

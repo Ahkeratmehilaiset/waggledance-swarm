@@ -1,7 +1,7 @@
 """Freeze one tournament round's inputs: an already captured bridge window and PR context, imported offline.
 
 usage: python -B sandbox/mind/freeze_inputs.py --cycle-dir <a finished producer cycle> --data-root <own sandbox dir>
-           --round <name>
+           --round <name> [--questions <question set json>]
 
 Lead 09:17Z B1-B3: the sandbox stays offline. This script reads no bridge, calls no GitHub, provider or gate,
 and starts no process except local ``git`` to record the builder. It imports files that were already captured:
@@ -128,11 +128,17 @@ def main():
     parser.add_argument("--cycle-dir", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--round", required=True)
+    parser.add_argument("--questions", type=Path, default=None,
+                        help="the round's question set, copied as questions.json with its sha256")
     args = parser.parse_args()
     if not ws.TASK.fullmatch(args.round) or "/" in args.round:
         raise FreezeRefused("round_name_invalid")
     built = builder()
     data = {name: (args.cycle_dir / name).read_bytes() for name in INPUT_FILES}
+    if args.questions is not None:
+        questions = args.questions.read_bytes()
+        ws.guard_object(json.loads(questions.decode("utf-8")))
+        data["questions.json"] = questions
     capture, window = check_capture(data["capture.json"], data["detail-manifest.txt"])
     _, context = check_context(data["context.json"], data["gh-pr-list.json"], capture["observed_utc"])
     audit_root = Path(os.path.abspath(args.data_root)) / "tournament" / ".codex-audit"
@@ -151,6 +157,8 @@ def main():
         "schema": MANIFEST_SCHEMA, "authority": "none", "scope": "sandbox_tournament_inputs_not_gate",
         "round": args.round, "frozen_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "imported_from_cycle": args.cycle_dir.name, "files": digests,
+        "questions": ({"file": "questions.json", "sha256": digests["questions.json"],
+                       "source_name": args.questions.name} if args.questions is not None else None),
         "capture": {"sha256": digests["capture.json"], "reader": capture["reader"],
                     "reader_stdout_sha256": capture["reader_stdout_sha256"],
                     "observed_utc": capture["observed_utc"], "window": window,

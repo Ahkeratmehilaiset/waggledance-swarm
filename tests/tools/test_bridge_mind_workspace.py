@@ -1994,3 +1994,35 @@ def test_an_own_later_pass_labels_the_older_own_veto_but_never_clears_it(pass_he
         # Ranked low: a plain tension item, never tension_high.
         kinds = {item["kind"] for item in fields["attention"] if "veto_own_later_pass" in item["detail"]}
         assert kinds == {"tension"}
+
+
+@pytest.mark.parametrize("state, context_head, moved", [
+    ("OPEN", OLD, True),       # the context saw OLD: the vote at OLD is named by the head mismatch
+    ("OPEN", HEAD, False),     # the context agrees with the bridge head: OLD is just stale
+    ("MERGED", OLD, False),    # a merged PR has no current context head
+    (None, None, False),       # no context at all: as before
+])
+def test_stale_votes_at_the_context_head_are_named_by_the_head_mismatch_and_never_count(state, context_head, moved):
+    """Sandbox round 1 (F2): PR1873 votes at the head GitHub reported were folded into stale-vote noise."""
+    other = "e" * 40
+    snapshot = _snapshot(prs=[_pr(10, votes=["codex-lead-1"], stale=[("claude-rco-1", OLD), ("claude-rco-2", other)])])
+    context = None if state is None else _context({10: (state, context_head, NOT_PROTECTED)})
+    fields = mind.reflection(snapshot, context=context)
+    rules = _rules(fields)
+    stale = rules["stale_vote"]
+    rco1_ref = ref(f"vote:10:claude-rco-1:rco_pass:{OLD}")
+    if moved:
+        assert stale["actors"] == ["claude-rco-2"] and "claude-rco-1" not in stale["observation"]
+        assert rco1_ref not in stale["refs"]
+        mismatch = rules["context_head_mismatch"]
+        assert mismatch["observation"].endswith("1 vote(s) in the bridge view are bound to that head and are not "
+                                                "counted here: claude-rco-1 rco_pass")
+        assert mismatch["actors"] == ["claude-rco-1"] and mismatch["refs"] == sorted([rco1_ref, ref("pr:10")])
+        # Never counted: the moved PR gets no vote suggestion at either head.
+        assert all(item["kind"] not in ("last_missing_vote", "votes_missing", "signature_only")
+                   for item in fields["attention"])
+    else:
+        assert stale["actors"] == ["claude-rco-1", "claude-rco-2"] and rco1_ref in stale["refs"]
+        assert "bound to that head" not in rules.get("context_head_mismatch", {}).get("observation", "")
+    # The votes themselves are unchanged in the reflected snapshot.
+    assert mind.reflect(snapshot, context=context)["prs"] == snapshot["prs"]

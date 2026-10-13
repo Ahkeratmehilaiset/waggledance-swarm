@@ -2,6 +2,7 @@
 """Targeted tests for waggledance/core/autonomy/action_gate.py."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,8 +13,10 @@ sys.path.insert(0, str(ROOT))
 
 from waggledance.core.autonomy import (
     action_gate as ag,
+    background_scheduler as bg,
     governor as gov,
     kernel_state as ks,
+    mission_queue as mq,
     policy_core as pc,
 )
 
@@ -95,6 +98,100 @@ def test_half_open_breaker_admits():
     s = ks.with_breakers(s, new_breakers)
     v = ag.evaluate_one(recommendation=_rec(), state=s,
                             hard_rules=_hard_rules())
+    assert v.verdict == "ADMIT_TO_LANE"
+
+
+# ── 2b. lane and kind allowlists fail closed ──────────────────────-
+
+def test_unknown_lane_without_breaker_rejects_hard():
+    s = _state()
+    assert all(b.name != "bogus_lane" for b in s.circuit_breakers)
+
+    v = ag.evaluate_one(
+        recommendation=_rec(kind="noop", lane="bogus_lane"),
+        state=s,
+        hard_rules=_hard_rules(),
+    )
+
+    assert v.verdict == "REJECT_HARD"
+    assert v.reason == "unknown recommendation lane: 'bogus_lane'"
+    assert v.breaker_state is None
+
+
+def test_named_breaker_that_is_not_a_lane_rejects_hard():
+    s = _state()
+    assert any(b.name == "action_gate" for b in s.circuit_breakers)
+
+    v = ag.evaluate_one(
+        recommendation=_rec(kind="noop", lane="action_gate"),
+        state=s,
+        hard_rules=_hard_rules(),
+    )
+
+    assert v.verdict == "REJECT_HARD"
+    assert v.reason == "unknown recommendation lane: 'action_gate'"
+    assert v.breaker_state is None
+
+
+def test_custom_closed_breaker_does_not_create_an_allowed_lane():
+    s = _state()
+    s = ks.with_breakers(
+        s,
+        s.circuit_breakers + (
+            ks.CircuitBreakerSnapshot(name="custom_lane", state="closed"),
+        ),
+    )
+
+    v = ag.evaluate_one(
+        recommendation=_rec(kind="noop", lane="custom_lane"),
+        state=s,
+        hard_rules=_hard_rules(),
+    )
+
+    assert v.verdict == "REJECT_HARD"
+    assert v.reason == "unknown recommendation lane: 'custom_lane'"
+    assert v.breaker_state is None
+
+
+def test_unknown_kind_rejects_hard():
+    v = ag.evaluate_one(
+        recommendation=_rec(kind="external_effect", lane="provider_plane"),
+        state=_state(),
+        hard_rules=_hard_rules(),
+    )
+
+    assert v.verdict == "REJECT_HARD"
+    assert v.reason == "unknown recommendation kind: 'external_effect'"
+    assert v.breaker_state is None
+
+
+_VALID_KIND_LANE_PAIRS = (
+    ("ingest_request", "ingestion"),
+    ("consultation_request", "provider_plane"),
+    ("builder_request", "builder_lane"),
+    ("solver_synthesis_request", "solver_synthesis"),
+    ("shadow_replay_request", "wait"),
+    ("promotion_review_request", "promotion"),
+    ("memory_tier_move", "memory_tiers"),
+    ("calibration_check", "self_inspection"),
+    ("self_inspection", "self_inspection"),
+    ("noop", "wait"),
+)
+
+
+def test_valid_kind_lane_matrix_covers_every_allowlisted_value():
+    assert {kind for kind, _ in _VALID_KIND_LANE_PAIRS} == set(mq.ALLOWED_KINDS)
+    assert {lane for _, lane in _VALID_KIND_LANE_PAIRS} == set(mq.ALLOWED_LANES)
+
+
+@pytest.mark.parametrize(("kind", "lane"), _VALID_KIND_LANE_PAIRS)
+def test_all_allowlisted_kinds_and_lanes_retain_admission(kind, lane):
+    v = ag.evaluate_one(
+        recommendation=_rec(kind=kind, lane=lane),
+        state=_state(),
+        hard_rules=_hard_rules(),
+    )
+
     assert v.verdict == "ADMIT_TO_LANE"
 
 
@@ -203,6 +300,62 @@ def test_batch_counts_sum_to_total():
         recommendations=recs, state=s, hard_rules=_hard_rules(),
     )
     assert sum(report.counts_by_verdict.values()) == 3
+
+
+def test_batch_counts_fail_closed_rejections():
+    report = ag.evaluate_batch(
+        recommendations=[
+            _rec(kind="noop", lane="bogus_lane", intent="unknown lane"),
+            _rec(kind="external_effect", lane="wait", intent="unknown kind"),
+            _rec(kind="noop", lane="wait", intent="valid control"),
+        ],
+        state=_state(),
+        hard_rules=_hard_rules(),
+    )
+
+    assert report.counts_by_verdict == {
+        "ADMIT_TO_LANE": 1,
+        "DEFER": 0,
+        "REJECT_HARD": 2,
+        "REJECT_SOFT": 0,
+    }
+
+
+def test_scheduler_blocks_forged_mission_loaded_from_disk(tmp_path):
+    mission_path = tmp_path / "missions.jsonl"
+    forged = {
+        "schema_version": 1,
+        "mission_id": "forged000001",
+        "kind": "external_effect",
+        "lane": "provider_plane",
+        "priority": 1.0,
+        "intent": "perform an unallowlisted effect",
+        "rationale": "hostile persisted mission",
+        "lifecycle_status": "queued",
+        "no_runtime_mutation": True,
+        "created_tick_id": 1,
+        "capsule_context": "neutral_v1",
+    }
+    mission_path.write_text(
+        json.dumps(forged, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = mq.load_missions(mission_path)
+    assert len(loaded) == 1
+
+    report = bg.schedule_one_tick(
+        state=_state(),
+        missions=loaded,
+        hard_rules=_hard_rules(),
+    )
+
+    assert report.selected_missions == ()
+    assert [m.mission_id for m in report.blocked_missions] == ["forged000001"]
+    assert report.gate_report.counts_by_verdict["REJECT_HARD"] == 1
+    assert report.gate_report.verdicts[0].reason == (
+        "unknown recommendation kind: 'external_effect'"
+    )
 
 
 # ── 9. evaluate_batch tick_id from state ────────────────────────-

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Bridge mind reflective workspace v0: fills the reflection fields of one ``wd.bridge-mind.v1`` snapshot.
 
-Dormant and unwired. The projector core (``tools/wd_bridge_mind.py``) emits a snapshot with ``source``,
-``prs``, ``lanes`` and ``facts`` and empty reflection fields. This workspace is a pure function of that
-snapshot (and, optionally, the previous one) and fills only:
+Dormant and unwired. The projector core (``tools/wd_bridge_mind.py``, ``snapshot()``) emits a snapshot with
+``source``, ``prs`` and ``lanes`` dictionaries, ``facts`` and empty reflection fields. This workspace is a
+pure function of that snapshot (and, optionally, the previous reflected one) and fills only:
 
 * ``tensions``: mechanical contradictions, each with a rule id, the agents it names, and the refs of the
   facts it came from. The ``tension_id`` is structural (sha256 of rule, subject, claim and observation),
@@ -11,38 +11,46 @@ snapshot (and, optionally, the previous one) and fills only:
   ``new`` or ``persisting``. Rules:
 
   - ``claim_overlap``: live write claims of two agents overlap.
-  - ``stale_vote``: a vote bound to a head that is not the PR head. It never counts; it only shows here.
+  - ``stale_vote``: a vote in ``stale_votes`` (bound to a head that is not the PR head). It never counts.
+  - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
   - ``expired_claim``: a lease that ended at or before ``as_of``. An expired claim is not completed work.
-  - ``unacknowledged_command``: an expected responder of an exact request has no bound reply after the
-    grace time.
+  - ``unacknowledged_command``: an expected responder of an exact request (a ``command`` fact) has no bound
+    reply after the grace time. The core v0 emits no command facts yet, so this rule waits for them.
   - ``coverage_unknown``: the source does not claim complete coverage, so nothing here is complete.
-  - ``input_blocked``: the projector blocked a malformed canonical row; only its fixed reason and offset.
-  - ``refused_input``: a fact without a valid event ref, or with a value outside the projection
+  - ``input_blocked``: ``source.blocked`` is active; only its fixed reason and offset.
+  - ``refused_input``: a row without valid ``source_refs``, or with a value outside the projection
     allowlist. It is named by its position only and is never used.
 
-* ``attention``: one ordered, bounded list of suggestions. A PR reported CI-green with no veto whose only
-  missing element is one vote comes first (the last missing vote goes first), then PRs that need only
-  the operator signature, then reported CI-green PRs missing several votes, then high and other tensions.
-  A suggestion is never a clearance.
-* ``next_question``: one bounded question per lane and one global question, each from its first
-  attention item, or ``UNKNOWN`` when the snapshot does not support one. A lane without an item is
-  ``UNKNOWN``, never "idle": absence of a recent event is not proof of anything.
+* ``attention``: one ordered, bounded list of suggestions. For each PR with a known head, reported CI
+  green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
+  the current-head votes of declared identities into the three consensus slots by the charter's identity
+  map (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, ``rco`` = a recognized RCO). Exactly
+  one empty slot comes first (the last missing vote goes first), then (a)-class PRs with every slot filled
+  (only the operator signature is left), then PRs missing several votes, then high and other tensions. A
+  blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
+  gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
+* ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
+  item, or ``UNKNOWN`` when the snapshot does not support one. A lane without an item is ``UNKNOWN``,
+  never "idle": absence of a recent event is not proof of anything.
 
 Rules of the derivation:
 
-* Every tension, attention item and question carries refs: 64-hex event refs, or ``UNKNOWN`` only where
-  the input has none to give (refused input, unknown coverage, a blocked row, an unsupported question).
-  An output item without refs fails the whole run, so nothing is written.
+* Every tension, attention item and question carries refs: 64-hex event refs from ``source_refs``, or
+  ``UNKNOWN`` only where the input has none to give (refused input, unknown coverage, a blocked row, an
+  unsupported question). An output item without refs fails the whole run, so nothing is written.
 * Event time only. "Now" is ``source.as_of_utc``; nothing reads the wall clock. Facts whose TTL has ended
   at ``as_of`` are not used. The same snapshot gives the same bytes, whatever the order of its lists.
-* A strict projection allowlist: only identifiers (agents, tasks, requests, slots, elements, paths, heads)
-  that match fixed patterns are copied, never free text or payloads. Every input string is checked
-  after decoding; one that holds a guarded private-marker word, plain or backslash-u escaped, makes its
-  fact a refused input. A guarded word that still reaches the output fails the run.
-* ``authority`` must be ``none``. The workspace never sets it.
+* A strict projection allowlist: only identifiers (agents, tasks, requests, statuses, paths, heads) that
+  match fixed patterns are copied into derived items, never free text or payloads. An input string that
+  holds a guarded private-marker word makes its row a refused input. JSON inside strings is never parsed.
+* The output boundary: ``reflect`` guards the complete reflected object (every key and value, including
+  fields copied unchanged from the snapshot), and the CLI guards the exact text it prints as well, JSON or
+  plain. The check is in any letter case and compatibility form, and before and after each backslash-u
+  unescape. A hit refuses the whole snapshot with exit 2 and prints nothing; nothing is stripped.
+* ``authority`` must be ``none`` and ``scope`` must be ``bounded_projection_not_gate``; neither is set here.
 
-Observe-only: not on the gate verdict path, reads only its input files, writes only ``--out``, and
-posts no bridge event.
+Observe-only: not on the gate verdict path, reads only its input files, writes only stdout, and posts no
+bridge event. Publishing a reflected snapshot to a file is left to the core's owned, atomic publication.
 """
 from __future__ import annotations
 
@@ -55,6 +63,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any, Iterable, Mapping, Sequence
+import unicodedata
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -63,26 +72,34 @@ if str(REPO_ROOT) not in sys.path:
 # The shared guarded-word check, imported so this file carries no marker literal: the charter diff gate
 # refuses those literals, and a copied word list could drift from the shared one.
 from tools.bridge_diff_privacy import _marker as _guarded_word  # noqa: E402
+from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa: E402
 
 SNAPSHOT_SCHEMA = "wd.bridge-mind.v1"
-POLICY = "wd.bridge-mind.workspace.policy.v0"
+SNAPSHOT_SCOPE = "bounded_projection_not_gate"
 UNKNOWN = "UNKNOWN"
 REF = re.compile(r"[0-9a-f]{64}")
-HEAD = re.compile(r"[0-9a-f]{7,64}")
+HEAD = re.compile(r"[0-9a-f]{40}")
+UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,119}")
 SAFE_PATH = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\\+-]{0,199}")
 REASON = re.compile(r"[a-z0-9_]{1,64}")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
-_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z")
+_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
 VOTE_SLOTS = ("build_lead", "build_tools", "rco")
+# The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty.
+BUILD_SLOT = {"codex-lead-1": "build_lead", "codex-tools-1": "build_tools"}
+RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
 COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
+UNESCAPE_ROUNDS = 4
+KEY_LIMIT = 200
 UNKNOWN_REF_RULES = ("refused_input", "coverage_unknown", "input_blocked")
 RULE_SEVERITY = {
     "claim_overlap": "high",
     "coverage_unknown": "high",
     "input_blocked": "high",
+    "veto_observed": "high",
     "stale_vote": "medium",
     "unacknowledged_command": "medium",
     "refused_input": "medium",
@@ -97,24 +114,73 @@ class WorkspaceError(ValueError):
 
 
 def parse_time(value: Any) -> datetime | None:
-    """A UTC ``YYYY-MM-DDTHH:MM:SS[.fraction]Z`` time, or None. Fractions finer than microseconds are cut."""
+    """A UTC ``YYYY-MM-DDTHH:MM:SS[.fraction](Z|+00:00)`` time, or None. Fractions finer than microseconds are cut."""
     match = _TIME.fullmatch(value) if isinstance(value, str) else None
     if match is None:
         return None
-    base = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    try:
+        base = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:  # the right shape but not a calendar time, such as month 99
+        return None
     return base + timedelta(microseconds=int((match.group(2) or "").ljust(6, "0")[:6]))
 
 
 def _has_marker(text: str) -> bool:
-    """A guarded word in the text, or in its ``\\uXXXX``-unescaped form."""
-    unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), text)
-    return _guarded_word(text) is not None or _guarded_word(unescaped) is not None
+    """A guarded word in the text in any letter case or compatibility form, before or after each ``\\uXXXX`` unescape.
+
+    The shared check is case-sensitive, so each form is NFKC-normalized, case-folded and upper-cased first. The
+    unescape repeats until nothing changes (at most ``UNESCAPE_ROUNDS`` times), so a word escaped twice, which a
+    reader would reveal by decoding twice, is found too. JSON inside the text is never parsed.
+    """
+    form = text
+    for _ in range(UNESCAPE_ROUNDS):
+        if _guarded_word(unicodedata.normalize("NFKC", form).casefold().upper()) is not None:
+            return True
+        unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form)
+        if unescaped == form:
+            return False
+        form = unescaped
+    return True
+
+
+def guard_object(value: Any) -> None:
+    """Refuse a whole object when any key or string value in it holds a guarded word; it is never stripped."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if _has_marker(item):
+                raise WorkspaceError("a guarded word is in the output; nothing is written")
+        elif isinstance(item, Mapping):
+            stack.extend(str(key) for key in item)
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
 
 
 def _match(pattern: re.Pattern, value: Any) -> str | None:
     if isinstance(value, str) and pattern.fullmatch(value) and not _has_marker(value):
         return value
     return None
+
+
+def _refs(value: Any) -> list[str] | None:
+    """A non-empty list of 64-hex event refs, sorted, or None."""
+    if not isinstance(value, list) or not value:
+        return None
+    refs = [_match(REF, ref) for ref in value]
+    return None if None in refs else sorted(set(refs))
+
+
+def _first_ref(value: Any) -> str:
+    """The first valid ref of a row, for a refusal that names it; UNKNOWN when there is none."""
+    if isinstance(value, Mapping):
+        value = value.get("source_refs")
+    if isinstance(value, list):
+        for ref in value:
+            if _match(REF, ref):
+                return ref
+    return UNKNOWN
 
 
 def _canonical(text: str) -> str:
@@ -135,141 +201,177 @@ def _scope_key(path: str) -> str:
 
 
 def scopes_overlap(left: Iterable[str], right: Iterable[str]) -> list[str]:
-    """Claim paths that are equal, or where one is a directory above the other."""
-    hits = []
-    for a in sorted({_scope_key(p) for p in left}):
-        for b in sorted({_scope_key(p) for p in right}):
+    """Claim paths that are equal, or where one is a directory above the other; the same whichever side is which."""
+    hits = set()
+    for a in {_scope_key(p) for p in left}:
+        for b in {_scope_key(p) for p in right}:
             if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
-                hits.append(a if a == b else f"{a} ~ {b}")
-    return hits
+                hits.add(a if a == b else " ~ ".join(sorted((a, b))))
+    return sorted(hits)
+
+
+def vote_slot(agent: str, status: str) -> str | None:
+    """The consensus slot a current-head vote fills, by the charter's identity map; None when it fills none."""
+    if status == "rco_pass" and agent in RECOGNIZED_RCOS:
+        return "rco"
+    if status == "build_consensus_pass":
+        return BUILD_SLOT.get(agent)
+    return None
 
 
 class _Inputs:
-    """The usable facts of one snapshot. A fact that fails the allowlist is refused by position only."""
+    """The usable rows of one core snapshot. A row that fails the allowlist is refused by position only."""
 
     def __init__(self, snapshot: Mapping[str, Any]):
         if snapshot.get("schema") != SNAPSHOT_SCHEMA:
             raise WorkspaceError("snapshot schema is not wd.bridge-mind.v1")
-        if snapshot.get("authority") != "none":
-            raise WorkspaceError("snapshot authority must be none")
+        if snapshot.get("authority") != "none" or snapshot.get("scope") != SNAPSHOT_SCOPE:
+            raise WorkspaceError("snapshot authority must be none and scope bounded_projection_not_gate")
         source = snapshot.get("source") if isinstance(snapshot.get("source"), Mapping) else {}
         self.now = parse_time(source.get("as_of_utc"))
         if self.now is None:
             raise WorkspaceError("snapshot source needs an explicit as_of_utc")
-        self.source_ref = _match(REF, source.get("last_ref")) or UNKNOWN
-        self.coverage = source.get("coverage") if source.get("coverage") in ("complete", "partial", "unknown") \
-            else "unknown"
-        blocked = source.get("blocked") if isinstance(source.get("blocked"), Mapping) else None
+        self.source_ref = _match(REF, source.get("last_event_ref")) or UNKNOWN
+        coverage = source.get("coverage")
+        self.coverage = coverage if coverage in ("complete", "partial", "unknown") else "unknown"
+        # The core contract: blocked is null, or {active: true, offset, reason}. Anything else is read as blocked.
+        blocked = source.get("blocked")
         self.blocked = None
-        if blocked is not None:
+        if isinstance(blocked, Mapping) and blocked.get("active") is True:
             offset = blocked.get("offset")
             self.blocked = {"reason": _match(REASON, blocked.get("reason")) or "unrecognized",
-                            "offset": offset if isinstance(offset, int) and offset >= 0 else None}
+                            "offset": offset if type(offset) is int and offset >= 0 else None}
+        elif blocked is not None:
+            self.blocked = {"reason": "unrecognized", "offset": None}
         self.refused: list[dict[str, str]] = []
-        self.prs = self._rows(snapshot, "prs", self._pr)
-        self.lanes = self._rows(snapshot, "lanes", self._lane)
-        self.commands = [fact for fact in self._rows(snapshot, "facts", self._fact) if fact is not None]
+        self.prs = self._table(snapshot, "prs", self._pr)
+        self.lanes = self._table(snapshot, "lanes", self._lane)
+        self.commands = self._facts(snapshot)
 
-    def _refuse(self, where: str, ref: Any, reason: str) -> None:
-        self.refused.append({"where": where, "ref": _match(REF, ref) or UNKNOWN, "reason": reason})
+    def _refuse(self, where: str, row: Any, reason: str) -> None:
+        self.refused.append({"where": where, "ref": _first_ref(row), "reason": reason})
 
-    def _rows(self, snapshot: Mapping[str, Any], key: str, reader) -> list[Any]:
-        rows = snapshot.get(key) or []
-        if not isinstance(rows, list):
-            self._refuse(key, None, "not a list")
+    def _table(self, snapshot: Mapping[str, Any], key: str, reader) -> list[Any]:
+        table = snapshot.get(key)
+        if table is None:
+            return []
+        if not isinstance(table, Mapping):
+            self._refuse(key, None, "not an object")
             return []
         out = []
-        for index, row in enumerate(rows):
+        for index, name in enumerate(sorted(table, key=str)):
+            row = table[name]
             where = f"{key}[{index}]"
-            if not isinstance(row, Mapping):
-                self._refuse(where, None, "not an object")
+            if not isinstance(row, Mapping) or not isinstance(name, str) or len(name) > KEY_LIMIT or _has_marker(name):
+                self._refuse(where, row, "not an object with a safe key")
                 continue
-            value = reader(row, where)
+            value = reader(name, row, where)
             if value is not None:
                 out.append(value)
         return out
 
-    def _pr(self, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
-        ref, head = _match(REF, row.get("ref")), _match(HEAD, row.get("head"))
-        if ref is None or head is None or not isinstance(row.get("pr"), int) or isinstance(row.get("pr"), bool):
-            self._refuse(where, row.get("ref"), "pr needs pr, head and an event ref")
-            return None
-        ci = row.get("ci") if isinstance(row.get("ci"), Mapping) else {}
-        ci_green = ci.get("state") == "green" and _match(REF, ci.get("ref")) is not None
-        votes, vetoes, missing = [], [], []
-        for index, vote in enumerate(row.get("votes") or []):
+    def _votes(self, rows: list[Any], where: str, *, head_known: bool = True) -> tuple[list[dict[str, Any]], int]:
+        """Vote-shaped rows and how many were refused. A veto may name no head (``head_known=False``)."""
+        out, refused = [], 0
+        for index, vote in enumerate(rows):
             vote = vote if isinstance(vote, Mapping) else {}
-            item = {"slot": vote.get("slot") if vote.get("slot") in VOTE_SLOTS else None,
-                    "agent": _match(SAFE_ID, vote.get("agent")), "head": _match(HEAD, vote.get("head")),
-                    "ref": _match(REF, vote.get("ref"))}
-            if None in item.values():
-                self._refuse(f"{where}.votes[{index}]", vote.get("ref"), "vote needs slot, agent, head and an event ref")
+            head = vote.get("head")
+            uuid = vote.get("agent_uuid")
+            item = {"agent": _match(SAFE_ID, vote.get("agent")),
+                    "head": UNKNOWN if not head_known and head == UNKNOWN else _match(HEAD, head),
+                    "status": _match(REASON, vote.get("status")), "refs": _refs(vote.get("source_refs")),
+                    "verified": bool(isinstance(uuid, str) and UUID.fullmatch(uuid))}
+            if None in item.values() or not (item["verified"] or uuid == UNKNOWN):
+                self._refuse(f"{where}[{index}]", vote, "vote needs agent, agent_uuid, head, status and source_refs")
+                refused += 1
                 continue
-            votes.append(item)
-        for index, veto in enumerate(row.get("vetoes") or []):
-            veto = veto if isinstance(veto, Mapping) else {}
-            item = {"agent": _match(SAFE_ID, veto.get("agent")), "ref": _match(REF, veto.get("ref"))}
-            if None in item.values():
-                self._refuse(f"{where}.vetoes[{index}]", veto.get("ref"), "veto needs agent and an event ref")
-                continue
-            vetoes.append(item)
-        for index, entry in enumerate(row.get("missing") or []):
-            entry = entry if isinstance(entry, Mapping) else {}
-            element, entry_ref = _match(SAFE_ID, entry.get("element")), _match(REF, entry.get("ref"))
-            actors = [_match(SAFE_ID, actor) for actor in entry.get("actors") or []]
-            if element is None or entry_ref is None or None in actors:
-                self._refuse(f"{where}.missing[{index}]", entry.get("ref"),
-                             "missing element needs element, safe actors and an event ref")
-                continue
-            missing.append({"element": element, "actors": sorted(set(actors)), "ref": entry_ref})
-        return {"pr": row["pr"], "head": head, "ref": ref, "ci_green": ci_green,
-                "ci_ref": _match(REF, ci.get("ref")), "votes": votes, "vetoes": vetoes, "missing": missing}
+            out.append(item)
+        return out, refused
 
-    def _lane(self, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
-        ref, agent = _match(REF, row.get("ref")), _match(SAFE_ID, row.get("agent"))
-        if ref is None or agent is None:
-            self._refuse(where, row.get("ref"), "lane needs a safe agent and an event ref")
+    def _pr(self, name: str, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
+        refs = _refs(row.get("source_refs"))
+        number = row.get("pr")
+        lists = [row.get(key) for key in ("votes", "stale_votes", "veto_observations")]
+        if refs is None or type(number) is not int or str(number) != name or not all(isinstance(v, list) for v in lists):
+            self._refuse(where, row, "pr needs pr equal to its key, source_refs and vote lists")
             return None
-        claims = []
-        for index, claim in enumerate(row.get("claims") or []):
-            claim = claim if isinstance(claim, Mapping) else {}
-            task, claim_ref = _match(SAFE_ID, claim.get("task_id")), _match(REF, claim.get("ref"))
-            expires = parse_time(claim.get("lease_expires_utc"))
-            scope = [_match(SAFE_PATH, path) for path in claim.get("write_scope") or []]
-            if task is None or claim_ref is None or expires is None or None in scope:
-                self._refuse(f"{where}.claims[{index}]", claim.get("ref"),
-                             "claim needs task_id, lease_expires_utc, safe paths and an event ref")
-                continue
-            claims.append({"task_id": task, "write_scope": scope, "expires": expires, "ref": claim_ref})
-        return {"agent": agent, "ref": ref, "claims": claims}
+        head = _match(HEAD, row.get("head"))
+        ci = row.get("reported_ci") if isinstance(row.get("reported_ci"), Mapping) else {}
+        ci_refs = _refs(ci.get("source_refs"))
+        # Green only when reported for this exact head, never because the core reset an older report.
+        ci_green = head is not None and ci.get("status") == "reported_green" and ci.get("head") == head \
+            and ci_refs is not None
+        votes, _ = self._votes(lists[0], f"{where}.votes")
+        stale, _ = self._votes(lists[1], f"{where}.stale_votes")
+        # A vote in the current list at another head is stale too: it can never fill a slot.
+        stale += [vote for vote in votes if vote["head"] != head]
+        votes = [vote for vote in votes if vote["head"] == head]
+        vetoes, unreadable = self._votes(lists[2], f"{where}.veto_observations", head_known=False)
+        klass = row.get("class") if row.get("class") in ("a", "b", "on-allowlist") else UNKNOWN
+        return {"pr": number, "head": head, "refs": refs, "ci_green": ci_green, "ci_refs": ci_refs or [],
+                "class": klass, "votes": votes, "stale_votes": stale, "vetoes": vetoes,
+                "veto_unreadable": unreadable > 0}
 
-    def _fact(self, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
+    def _lane(self, name: str, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
+        refs, agent, uuid = _refs(row.get("source_refs")), _match(SAFE_ID, row.get("agent")), row.get("agent_uuid")
+        # The core keys a lane by agent|uuid, or agent|UNKNOWN|ref when the identity is not declared.
+        keyed = agent is not None and isinstance(uuid, str) and (
+            (UUID.fullmatch(uuid) and name == f"{agent}|{uuid}")
+            or (uuid == UNKNOWN and name.startswith(f"{agent}|{UNKNOWN}|") and REF.fullmatch(name.rsplit("|", 1)[1])))
+        if refs is None or not keyed:
+            self._refuse(where, row, "lane needs a safe agent, an agent_uuid matching its key, and source_refs")
+            return None
+        lane = {"agent": agent, "key": name, "refs": refs, "claim": None}
+        claims = row.get("claims")
+        if isinstance(claims, Mapping):
+            scope, claim_refs = claims.get("write_scope"), _refs(claims.get("source_refs"))
+            paths = [_match(SAFE_PATH, path) for path in scope] if isinstance(scope, list) else None
+            lease = claims.get("lease_expires_utc")
+            expires = parse_time(lease) if lease != UNKNOWN else UNKNOWN
+            stated = claims.get("expired")
+            disagrees = expires not in (None, UNKNOWN) and isinstance(stated, bool) and stated != (expires <= self.now)
+            if claim_refs is None or expires is None or disagrees or (paths is None and scope != UNKNOWN) \
+                    or (paths is not None and None in paths):
+                self._refuse(f"{where}.claims", claims,
+                             "claim needs safe paths or UNKNOWN, a lease time or UNKNOWN that agrees with expired, "
+                             "and source_refs")
+            else:
+                lane["claim"] = {"paths": paths, "expires": expires, "refs": claim_refs}
+        elif claims not in (None, UNKNOWN):
+            self._refuse(f"{where}.claims", None, "claims is neither an object nor UNKNOWN")
+        return lane
+
+    def _facts(self, snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Only ``command`` facts feed the workspace; a fact whose TTL ended at ``as_of`` is not used."""
-        ref, observed = _match(REF, row.get("ref")), parse_time(row.get("observed_utc"))
-        ttl = row.get("ttl_seconds")
-        if ref is None or observed is None:
-            self._refuse(where, row.get("ref"), "fact needs observed_utc and an event ref")
-            return None
-        if isinstance(ttl, int) and not isinstance(ttl, bool) and observed + timedelta(seconds=ttl) <= self.now:
-            return None
-        if row.get("kind") != "command":
-            return None
-        value = row.get("value") if isinstance(row.get("value"), Mapping) else {}
-        request_id, sender = _match(SAFE_ID, value.get("request_id")), _match(SAFE_ID, value.get("from"))
-        expected = [_match(SAFE_ID, agent) for agent in value.get("expected_responders") or []]
-        answered = [_match(SAFE_ID, agent) for agent in value.get("answered_by") or []]
-        if request_id is None or sender is None or None in expected or None in answered:
-            self._refuse(where, row.get("ref"), "command needs a safe request_id, sender and responders")
-            return None
-        return {"request_id": request_id, "from": sender, "at": observed, "ref": ref,
-                "unanswered": sorted(set(expected) - set(answered))}
+        rows = snapshot.get("facts")
+        out = []
+        for index, row in enumerate(rows if isinstance(rows, list) else []):
+            where = f"facts[{index}]"
+            if not isinstance(row, Mapping) or row.get("kind") != "command":
+                continue
+            refs, observed, ttl = _refs(row.get("source_refs")), parse_time(row.get("observed_at_utc")), row.get("ttl_seconds")
+            if refs is None or observed is None:
+                self._refuse(where, row, "command fact needs observed_at_utc and source_refs")
+                continue
+            if type(ttl) is int and observed + timedelta(seconds=ttl) <= self.now:
+                continue
+            value = row.get("value") if isinstance(row.get("value"), Mapping) else {}
+            request_id, sender = _match(SAFE_ID, value.get("request_id")), _match(SAFE_ID, value.get("from"))
+            expected = [_match(SAFE_ID, agent) for agent in value.get("expected_responders") or []]
+            answered = [_match(SAFE_ID, agent) for agent in value.get("answered_by") or []]
+            if request_id is None or sender is None or None in expected or None in answered:
+                self._refuse(where, row, "command needs a safe request_id, sender and responders")
+                continue
+            out.append({"request_id": request_id, "from": sender, "at": observed, "refs": refs,
+                        "unanswered": sorted(set(expected) - set(answered))})
+        return out
 
 
 def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iterable[str],
              refs: Iterable[str]) -> dict[str, Any]:
     return {"tension_id": tension_id(rule, subject, claim, observation), "rule": rule,
             "severity": RULE_SEVERITY[rule], "subject": subject, "claim": claim, "observation": observation,
-            "actors": sorted({actor for actor in actors if actor}), "refs": sorted(set(refs))}
+            "actors": sorted({actor for actor in actors if actor and actor != UNKNOWN}), "refs": sorted(set(refs))}
 
 
 def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
@@ -288,59 +390,74 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                  f"refused: {refused['reason']}", [], [refused["ref"]]))
     live = []
     for lane in inputs.lanes:
-        for claim in lane["claims"]:
-            if claim["expires"] <= inputs.now:
-                tensions.append(_tension("expired_claim", f"claim:{claim['task_id']}",
-                                         f"{lane['agent']} holds a write claim on {claim['task_id']}",
-                                         "its lease ended at or before as_of; that is not completed work",
-                                         [lane["agent"]], [claim["ref"]]))
-            else:
-                live.append((lane["agent"], claim))
-    for index, (agent_a, claim_a) in enumerate(live):
-        for agent_b, claim_b in live[index + 1:]:
-            hits = scopes_overlap(claim_a["write_scope"], claim_b["write_scope"]) if agent_a != agent_b else []
+        claim = lane["claim"]
+        if claim is None or claim["expires"] == UNKNOWN:
+            continue
+        if claim["expires"] <= inputs.now:
+            tensions.append(_tension("expired_claim", f"claim:{lane['key']}", f"{lane['agent']} holds a write claim",
+                                     "its lease ended at or before as_of; that is not completed work",
+                                     [lane["agent"]], claim["refs"]))
+        elif claim["paths"] is not None:
+            live.append((lane, claim))
+    live.sort(key=lambda pair: pair[0]["key"])
+    for index, (lane_a, claim_a) in enumerate(live):
+        for lane_b, claim_b in live[index + 1:]:
+            hits = scopes_overlap(claim_a["paths"], claim_b["paths"]) if lane_a["agent"] != lane_b["agent"] else []
             if hits:
-                first, second = sorted([(agent_a, claim_a["task_id"]), (agent_b, claim_b["task_id"])])
-                tensions.append(_tension("claim_overlap", f"claims:{first[1]}|{second[1]}",
-                                         f"{first[0]} and {second[0]} both hold live write claims",
-                                         "overlapping paths: " + ", ".join(hits), [agent_a, agent_b],
-                                         [claim_a["ref"], claim_b["ref"]]))
+                tensions.append(_tension("claim_overlap", f"claims:{lane_a['key']}|{lane_b['key']}",
+                                         f"{lane_a['agent']} and {lane_b['agent']} both hold live write claims",
+                                         "overlapping paths: " + ", ".join(hits), [lane_a["agent"], lane_b["agent"]],
+                                         claim_a["refs"] + claim_b["refs"]))
     for pr in inputs.prs:
-        for vote in pr["votes"]:
-            if vote["head"] != pr["head"]:
-                tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:{vote['slot']}:{vote['agent']}",
-                                         f"{vote['agent']} voted {vote['slot']} on PR{pr['pr']} at {vote['head'][:12]}",
-                                         f"the PR head is {pr['head'][:12]}; a stale vote cannot approve it",
-                                         [vote["agent"]], [vote["ref"], pr["ref"]]))
+        for vote in pr["stale_votes"]:
+            tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:{vote['agent']}:{vote['head'][:12]}",
+                                     f"{vote['agent']} sent {vote['status']} on PR{pr['pr']} at {vote['head'][:12]}",
+                                     "the PR head is " + (pr["head"][:12] if pr["head"] else UNKNOWN)
+                                     + "; a stale vote cannot approve it", [vote["agent"]], vote["refs"] + pr["refs"]))
+        for veto in pr["vetoes"]:
+            tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
+                                     f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}",
+                                     "the veto is observed; whether it is still active is UNKNOWN, never cleared here",
+                                     [veto["agent"]], veto["refs"] + pr["refs"]))
     for command in inputs.commands:
         if command["unanswered"] and inputs.now - command["at"] >= COMMAND_GRACE:
             tensions.append(_tension("unacknowledged_command", f"request:{command['request_id']}",
                                      f"{command['from']} sent request {command['request_id']}",
                                      "no bound reply from " + ", ".join(command["unanswered"]),
-                                     command["unanswered"], [command["ref"]]))
-    unique = {tension["tension_id"]: tension for tension in tensions}
+                                     command["unanswered"], command["refs"]))
+    # The same contradiction seen twice is one tension with the union of its refs, whatever the input order.
+    unique: dict[str, dict[str, Any]] = {}
+    for tension in tensions:
+        kept = unique.setdefault(tension["tension_id"], tension)
+        kept["refs"] = sorted(set(kept["refs"]) | set(tension["refs"]))
+        kept["actors"] = sorted(set(kept["actors"]) | set(tension["actors"]))
     return [unique[key] for key in sorted(unique)]
 
 
 def _pr_attention(pr: Mapping[str, Any]) -> dict[str, Any] | None:
-    elements = {entry["element"]: entry for entry in pr["missing"]}
-    if not elements:
+    # Any veto observation, or one that cannot be read, means no vote or signature suggestion at all.
+    if pr["head"] is None or not pr["ci_green"] or pr["vetoes"] or pr["veto_unreadable"]:
         return None
-    refs = [pr["ref"]] + [entry["ref"] for entry in pr["missing"]]
-    if set(elements) == {"signature"}:
-        return {"kind": "signature_only", "subject": f"pr:{pr['pr']}", "actors": ["operator"],
-                "detail": f"PR{pr['pr']} at {pr['head'][:12]} needs only the operator signature", "refs": refs}
-    if pr["ci_green"] and not pr["vetoes"] and set(elements) <= set(VOTE_SLOTS):
-        actors = sorted({actor for entry in elements.values() for actor in entry["actors"]})
-        slots = sorted(elements)
-        return {"kind": "last_missing_vote" if len(slots) == 1 else "votes_missing", "subject": f"pr:{pr['pr']}",
-                "actors": actors, "refs": refs + [pr["ci_ref"]],
-                "detail": f"PR{pr['pr']} at {pr['head'][:12]} is reported CI-green; missing: {', '.join(slots)}"}
-    return None
+    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
+    empty = [slot for slot in VOTE_SLOTS if slot not in filled]
+    refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]
+    subject, head = f"pr:{pr['pr']}", pr["head"][:12]
+    if not empty:
+        if pr["class"] != "a":
+            return None
+        return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
+                "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
+                          "signature is left"}
+    actors = sorted({agent for slot in empty for agent in
+                     (RECOGNIZED_RCOS if slot == "rco" else [a for a, s in BUILD_SLOT.items() if s == slot])})
+    return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
+            "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"}
 
 
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    items = [item for item in (_pr_attention(pr) for pr in inputs.prs) if item is not None]
+    # A blocked source is not current: no head-bound suggestion is made from it, only its tensions.
+    prs = [] if inputs.blocked is not None else inputs.prs
+    items = [item for item in (_pr_attention(pr) for pr in prs) if item is not None]
     for tension in tensions:
         items.append({"kind": "tension_high" if tension["severity"] == "high" else "tension",
                       "subject": f"tension:{tension['tension_id']}", "actors": list(tension["actors"]),
@@ -355,29 +472,28 @@ def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> 
 
 def _question(item: Mapping[str, Any], who: str) -> str:
     if item["kind"] == "last_missing_vote":
-        text = f"{item['detail']}. Can {who} give it at this exact head?"
-    elif item["kind"] == "votes_missing":
-        text = f"{item['detail']}. Which of these can {who} give at this exact head?"
-    elif item["kind"] == "signature_only":
-        text = f"{item['detail']}. Is it on the morning signature list?"
-    else:
-        text = f"How can {who} resolve {item['detail']}?"
-    return text if len(text) <= QUESTION_LIMIT else UNKNOWN
+        return f"{item['detail']}. Can {who} give it at this exact head?"
+    if item["kind"] == "votes_missing":
+        return f"{item['detail']}. Which of these can {who} give at this exact head?"
+    if item["kind"] == "signature_only":
+        return f"{item['detail']}. Is it on the morning signature list?"
+    return f"How can {who} resolve {item['detail']}?"
 
 
 def _entry(item: Mapping[str, Any] | None, who: str, partial: bool) -> dict[str, Any]:
     if item is None:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     question = _question(item, who)
-    if question != UNKNOWN and partial:
+    if partial:
         question += " Coverage is not complete, so check the exact head first."
-    return {"question": question if len(question) <= QUESTION_LIMIT else UNKNOWN, "attention_rank": item["rank"],
-            "refs": list(item["refs"])}
+    if len(question) > QUESTION_LIMIT:
+        return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
+    return {"question": question, "attention_rank": item["rank"], "refs": list(item["refs"])}
 
 
 def derive_next_question(inputs: _Inputs, attention: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     partial = inputs.coverage != "complete"
-    agents = {lane["agent"] for lane in inputs.lanes} | {actor for item in attention for actor in item["actors"]}
+    agents = ({lane["agent"] for lane in inputs.lanes} | {actor for item in attention for actor in item["actors"]}) - {UNKNOWN}
     lanes = {agent: _entry(next((item for item in attention if agent in item["actors"]), None), agent, partial)
              for agent in sorted(agents)}
     first = attention[0] if attention else None
@@ -433,9 +549,14 @@ def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None =
 
 
 def reflect(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """A copy of the snapshot with only its reflection fields filled; every other field is unchanged."""
+    """A copy of the snapshot with only its reflection fields filled; every other field is unchanged.
+
+    The complete copy, every key and value and not only the reflection fields, is guarded before it is
+    returned: a guarded word anywhere refuses the whole snapshot. Nothing is stripped or rewritten.
+    """
     out = copy.deepcopy(dict(snapshot))
     out.update(reflection(snapshot, previous))
+    guard_object(out)
     return out
 
 
@@ -455,32 +576,39 @@ def render_text(snapshot: Mapping[str, Any]) -> str:
 
 
 def _read_object(path: Path) -> dict[str, Any]:
+    """One JSON object under the canonical bridge JSON contract (no duplicate keys, no NaN, safe numbers)."""
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise WorkspaceError("an input file is not readable JSON") from exc
-    if not isinstance(value, dict):
-        raise WorkspaceError("an input file is not a JSON object")
-    return value
+        return parse_bridge_json_object(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise WorkspaceError("an input file is not one canonical JSON object") from exc
+
+
+def serialize(reflected: Mapping[str, Any], *, as_json: bool) -> str:
+    """The exact text to emit, guarded as a whole: the object first, then the final text itself."""
+    guard_object(reflected)
+    try:
+        text = (json.dumps(reflected, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
+                if as_json else render_text(reflected))
+    except (TypeError, ValueError, KeyError) as exc:
+        raise WorkspaceError("the reflected snapshot cannot be serialized") from exc
+    if _has_marker(text):
+        raise WorkspaceError("a guarded word is in the output; nothing is written")
+    return text
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bridge mind reflective workspace v0 (read-only, dormant).")
     parser.add_argument("--snapshot", type=Path, required=True, help="A wd.bridge-mind.v1 snapshot JSON.")
-    parser.add_argument("--previous", type=Path, default=None, help="The previous snapshot, for lifecycle.")
-    parser.add_argument("--out", type=Path, default=None, help="Write the reflected snapshot JSON here.")
+    parser.add_argument("--previous", type=Path, default=None, help="The previous reflected snapshot, for lifecycle.")
     parser.add_argument("--json", action="store_true", help="Print the reflected snapshot JSON instead of text.")
     args = parser.parse_args(argv)
     try:
         previous = _read_object(args.previous) if args.previous is not None else None
-        reflected = reflect(_read_object(args.snapshot), previous)
+        text = serialize(reflect(_read_object(args.snapshot), previous), as_json=args.json)
     except WorkspaceError as exc:
         sys.stderr.write(f"bridge mind workspace refused: {exc}\n")
         return 2
-    text = json.dumps(reflected, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    if args.out is not None:
-        args.out.write_text(text, encoding="utf-8")
-    sys.stdout.write(text if args.json else render_text(reflected))
+    sys.stdout.write(text)
     return 0
 
 

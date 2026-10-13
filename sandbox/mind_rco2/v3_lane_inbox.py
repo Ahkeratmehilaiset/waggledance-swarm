@@ -280,7 +280,10 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             stale.append({"kind": label, "pr": number, "veto_head": veto.get("head", UNKNOWN), "github_head": gh_head,
                           "refs": sorted(set(veto.get("source_refs", [])))})
         if lane in authors:
-            own.append(dict(line, role="author_recused" if lane in RCOS else "author"))
+            if mine:  # an ask to the author on its own PR (a repair, a rebase) is work, not just an own PR line
+                act.append(dict(line, role="request_on_pr", rank=2))
+            else:
+                own.append(dict(line, role="author_recused" if lane in RCOS else "author"))
             continue
         if my_slot is None or my_slot not in missing:
             if mine and my_slot is None:

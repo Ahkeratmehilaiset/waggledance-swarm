@@ -21,7 +21,9 @@ from waggledance.core.memory_palace.projection import PalaceNode, build_memory_p
 
 VARIANT = "V6"
 ROOM_LIMIT = 6
-DRAWER_LIMIT = 10
+DRAWER_LIMIT = 8
+# Claims and releases stay in the closet counts; a drawer is a decision, request, answer, handoff or note.
+NOT_DRAWER = frozenset({"claim", "release", "heartbeat"})
 CARD_LIMIT = 4
 LINE_LIMIT = 260
 WORD = re.compile(r"[a-z0-9]+")
@@ -109,7 +111,7 @@ def render(inputs, lane):
         lines.append(f"room {' > '.join(paths[node])} ({task})")
         if events:
             lines.append(_closet(events))
-            for event in events[-DRAWER_LIMIT:]:
+            for event in [event for event in events if event.get("type") not in NOT_DRAWER][-DRAWER_LIMIT:]:
                 lines.append(f"  drawer {event_id(event)[:16]} {event.get('ts_utc', '?')[:19]} {event.get('agent')} "
                              f"{event.get('type')}/{event.get('status')} head {_head(event)}")
         else:

@@ -12,8 +12,11 @@ missing element:
 * ``veto`` / ``block``: an unretracted block on the canonical task, from a recognized RCO or from
   another lane.
 * ``build_lead`` / ``build_tools`` / ``rco``: no head-bound approval in that consensus slot.
-* ``signature``: the charter path gate or diff gate refuses (denylist, off-allowlist, or a code
-  pattern), so the operator's explicit per-PR signature is needed after consensus.
+* ``signature``: the charter path gate refuses an off-allowlist path, or the diff gate refuses a code
+  pattern, so the operator's explicit per-PR signature is needed after consensus.
+* ``path_denylist``: the charter path gate refuses a denylisted path. The dry-run gate never admits one
+  (the board passes no ``--standing-consensus-sign``, and that admission drops only an off-allowlist
+  blocker), so no signature clears it: the row names the paths and the real remediation instead.
 * ``accepted_queue``: the gate cannot see the whole accepted bridge queue in canonical history. This
   is a runtime condition, not a fault of the PR.
 * ``hold``: a hold that Lead passes with ``--hold``, for a dependency the gate cannot see (for
@@ -26,12 +29,14 @@ the refusal's decision name is recorded, never its text. A privacy refusal names
 marker, and that word must not travel on in a report that may be posted to the bridge.
 
 In a dry run the gate always asks for a receipt bundle. That is a merge-time artifact, not a missing
-review element, so it is reported separately. Each row ends in one of six states:
+review element, so it is reported separately. Each row ends in one of seven states:
 
 * ``merge_ready``: nothing is missing. The gate itself would still require the receipt.
 * ``signature_only``: the operator signature is the only missing element. These rows form the
   morning signature list.
 * ``held``: only Lead holds are missing.
+* ``path_denylisted``: the path gate's denylist is the only missing element. A signature does not clear
+  it, so these rows are never on the signature list.
 * ``signature_after_consensus``: a signature is needed, but other elements are missing too.
 * ``snapshot_refused``: the snapshot tool refused the PR, so the gate could not be evaluated.
 * ``in_progress``: anything else.
@@ -39,7 +44,9 @@ review element, so it is reported separately. Each row ends in one of six states
 Observe-only: the board posts no bridge event and merges nothing. It writes only ``--out``, plus
 per-PR snapshot files in a temporary directory that it removes. It is not on the verdict path: the
 gate decides, and the board only reports what the gate said. A PR whose snapshot or gate output
-cannot be read becomes a row error, never a silent skip, and the exit code is 1.
+cannot be read becomes a row error, never a silent skip, and the exit code is 1. A ``--pr`` number that
+is not in the open PR listing (which holds at most its ``--limit`` items) refuses the whole run: exit 2,
+nothing written, never a board that silently lacks it.
 
 PR titles, branch names, gate texts, hold reasons and error tails all come from outside the board.
 Every string it writes is checked after decoding: a string that holds a guarded private-marker word,
@@ -104,6 +111,9 @@ SNAPSHOT_TOOL = REPO_ROOT / "tools" / "pr_status_snapshot.py"
 GATE_TOOL = REPO_ROOT / "tools" / "idle_consensus_auto_merge.py"
 SCHEMA = "wd.pr-missing-slot-board.v1"
 RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
+DENYLIST_BLOCKER = "path gate failed: denylist hit"
+DENYLIST_REMEDIATION = ("the gate never admits a denylisted path, so no signature clears it in this run; remove the "
+                        "path from the PR, or route it to an operator-explicit merge outside the autonomous gate")
 PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CONSENSUS_PREFIX = "bridge consensus incomplete: "
 DECISION_NAME = re.compile(r"[a-z0-9_]{1,64}")
@@ -202,6 +212,8 @@ def _state(elements: set[str]) -> str:
         return "signature_only"
     if elements == {"hold"}:
         return "held"
+    if elements == {"path_denylist"}:
+        return "path_denylisted"
     if "signature" in elements:
         return "signature_after_consensus"
     return "in_progress"
@@ -252,8 +264,14 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             add("build_tools", blocker, ["codex-tools-1"])
         elif element == "signature" and blocker.startswith("path gate failed: "):
             path_gate = gate.get("path_gate") or {}
-            paths = list(path_gate.get("blocked_paths") or []) + list(path_gate.get("unmatched_paths") or [])
-            add("signature", blocker + (" (" + ", ".join(paths) + ")" if paths else ""), ["operator"])
+            denied = list(path_gate.get("blocked_paths") or [])
+            if denied or blocker == DENYLIST_BLOCKER:
+                # Not a signature: the dry-run gate keeps a denylist blocker whatever is signed.
+                add("path_denylist", blocker + (" (" + ", ".join(denied) + ")" if denied else ""))
+                add("path_denylist", DENYLIST_REMEDIATION)
+            else:
+                paths = list(path_gate.get("unmatched_paths") or [])
+                add("signature", blocker + (" (" + ", ".join(paths) + ")" if paths else ""), ["operator"])
         elif element == "signature":
             add("signature", blocker, ["operator"])
         elif element in ("author", "draft", "merge_state"):
@@ -374,6 +392,7 @@ def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path |
         "rows": rows,
         "merge_ready": [row["pr"] for row in rows if row.get("state") == "merge_ready"],
         "held": [row["pr"] for row in rows if row.get("state") == "held"],
+        "path_denylisted": [row["pr"] for row in rows if row.get("state") == "path_denylisted"],
         "snapshot_refused": [row["pr"] for row in rows if row.get("state") == "snapshot_refused"],
         "signature_list": signature_list,
         "withheld": withheld,
@@ -404,6 +423,7 @@ def render_text(board: Mapping[str, Any]) -> str:
     lines.append("signature list: " + (", ".join(f"#{item['pr']}" for item in board["signature_list"]) or "none"))
     lines.append("merge ready: " + (", ".join(f"#{pr}" for pr in board["merge_ready"]) or "none"))
     lines.append("held: " + (", ".join(f"#{pr}" for pr in board["held"]) or "none"))
+    lines.append("path denylisted: " + (", ".join(f"#{pr}" for pr in board["path_denylisted"]) or "none"))
     lines.append("snapshot refused: " + (", ".join(f"#{pr}" for pr in board["snapshot_refused"]) or "none"))
     lines.append("texts withheld: " + (", ".join(f"#{pr}" for pr in board["withheld"]) or "none"))
     return "\n".join(lines) + "\n"
@@ -786,10 +806,20 @@ def _write_new_owned(path: Path, audit_root: Path, text: str) -> None:
     if info is not None:
         raise MindRefused("the output file exists; the board never overwrites one")
     try:
-        with open(target, "x", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+        handle = open(target, "x", encoding="utf-8", newline="\n")
     except OSError:
         raise MindRefused("the output file cannot be created") from None
+    try:
+        with handle:
+            handle.write(text)
+    except (OSError, ValueError):
+        # The refusal writes nothing: remove the file this call created, so no empty or partial file stays
+        # behind to block the next attempt.
+        try:
+            os.unlink(target)
+        except OSError:
+            pass
+        raise MindRefused("the output file cannot be written; nothing is kept") from None
 
 
 def mind_main(args: argparse.Namespace) -> int:
@@ -841,6 +871,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.pr:
         wanted = set(args.pr)
         prs = [pr for pr in prs if int(pr["number"]) in wanted]
+        # The listing holds at most its --limit items, so a requested PR beyond that page (or one that is not
+        # open) is absent from it. A board without it would still exit 0, so refuse instead; nothing is written.
+        absent = sorted(wanted - {int(pr["number"]) for pr in prs})
+        if absent:
+            sys.stderr.write("missing-slot board refused: a requested PR is not in the open PR listing ("
+                             + ", ".join(f"#{number}" for number in absent) + ")\n")
+            return 2
     board = build_board(prs, args.repo, args.bridge_root, main_sha=args.main_sha, holds=holds)
     text = json.dumps(board, indent=2, sort_keys=False) + "\n"
     if args.out is not None:

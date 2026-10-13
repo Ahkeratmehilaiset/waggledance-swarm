@@ -12,6 +12,8 @@ What it compares is a small *view* of each snapshot, built from identifiers only
 * ``source``: ``as_of_utc``, ``coverage``, ``log_identity``, ``generation`` and ``blocked``.
 * ``prs``: per PR (the core's ``prs`` dictionary), the head, the reported CI status and its head, the
   class, and the current votes, stale votes and veto observations as ``agent:status[:head]`` identifiers.
+  In each field ``%`` and ``:`` are percent-encoded (``%25``, ``%3A``), so ``:`` only ever separates fields
+  and two different observations never share an identifier; plain tokens keep their exact bytes.
   A row whose ``agent_uuid`` is not a declared identity ends in ``:undeclared``, because the workspace
   never lets it fill a slot.
 * ``tensions``: per ``tension_id``, rule, severity, subject, actors and refs.
@@ -149,12 +151,17 @@ def _identity(value: Any, *, nullable: bool) -> str | None:
     return value if isinstance(value, str) and _TOKEN.fullmatch(value) and value != UNKNOWN else UNKNOWN
 
 
+def _field(value: str) -> str:
+    """One signal field with ``%`` and ``:`` percent-encoded, so ``:`` only separates fields (no collisions)."""
+    return value.replace("%", "%25").replace(":", "%3A")
+
+
 def _signals(rows: Any, with_head: bool) -> list[str]:
     out = set()
     for row in _list(rows):
         row = _map(row)
-        signal = f"{_text(row.get('agent'))}:{_text(row.get('status'))}"
-        signal += f":{_text(row.get('head'))[:12]}" if with_head else ""
+        signal = f"{_field(_text(row.get('agent')))}:{_field(_text(row.get('status')))}"
+        signal += f":{_field(_text(row.get('head'))[:12])}" if with_head else ""
         uuid = row.get("agent_uuid")
         out.add(signal + ("" if isinstance(uuid, str) and _UUID.fullmatch(uuid) else ":undeclared"))
     return sorted(out)

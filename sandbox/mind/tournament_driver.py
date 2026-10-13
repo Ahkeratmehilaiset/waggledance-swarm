@@ -9,7 +9,10 @@ Lead 09:17Z: every lane renders from the same frozen inputs, and the code that r
   reflected snapshot is read with the core's ``read_snapshot`` and must have the manifest's snapshot digest.
 * The variant: a tracked, clean ``.py`` file in a git work tree (its head and blob are recorded). It defines
   ``VARIANT`` (``V0``..``V9``) and ``render(inputs, lane) -> {file name: text}``, a pure function of
-  ``inputs`` = ``{round, snapshot, snapshot_sha256, context, capture_sha256, context_sha256}``. A variant that
+  ``inputs`` = ``{round, snapshot, snapshot_sha256, context, capture_sha256, context_sha256, events, side}``
+  (``events``: the frozen capture rows), where
+  ``side`` is the parsed ``--side-input`` JSON (a variant's own frozen data, such as lesson cards) or None; its
+  sha256 is recorded. A variant that
   names gate code, a process, socket or HTTP module is refused before it is loaded (a hygiene scan, not a
   sandbox).
 * Views: every text passes the workspace's decoded privacy guard and is written once to
@@ -64,7 +67,9 @@ def load_round(round_dir):
     if snapshot_sha != manifest["v0"]["snapshot_sha256"]:
         raise DriverRefused("round_snapshot_digest_mismatch")
     context = json.loads((round_dir / "context.json").read_bytes().decode("utf-8"))
-    return manifest, sha256(manifest_bytes), {
+    # The frozen capture rows (already digest-checked above), for variants that index events by task or request.
+    events = json.loads((round_dir / "capture.json").read_bytes().decode("utf-8"))["events"]
+    return manifest, sha256(manifest_bytes), {"events": events,
         "round": manifest["round"], "snapshot": snapshot, "snapshot_sha256": snapshot_sha, "context": context,
         "capture_sha256": manifest["files"]["capture.json"], "context_sha256": manifest["files"]["context.json"]}
 
@@ -124,9 +129,17 @@ def main():
     parser.add_argument("--variant", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--lanes", default=",".join(LANES))
+    parser.add_argument("--side-input", type=Path, default=None)
     args = parser.parse_args()
     manifest, manifest_sha, inputs = load_round(Path(os.path.abspath(args.round_dir)))
     module, variant = load_variant(args.variant)
+    side = None
+    if args.side_input is not None:
+        side_bytes = args.side_input.read_bytes()
+        inputs["side"] = json.loads(side_bytes.decode("utf-8"))
+        side = {"name": args.side_input.name, "sha256": sha256(side_bytes), "bytes": len(side_bytes)}
+    else:
+        inputs["side"] = None
     lanes = [lane for lane in args.lanes.split(",") if lane]
     if not lanes or not all(ws.LANE_ID.fullmatch(lane) for lane in lanes):
         raise DriverRefused("lanes_invalid")
@@ -136,7 +149,7 @@ def main():
               "round": manifest["round"], "inputs_manifest_sha256": manifest_sha,
               "capture_sha256": inputs["capture_sha256"], "context_sha256": inputs["context_sha256"],
               "snapshot_sha256": inputs["snapshot_sha256"],
-              "round_builder_sha256": manifest["round_builder_sha256"], "variant": variant,
+              "round_builder_sha256": manifest["round_builder_sha256"], "variant": variant, "side_input": side,
               "lanes": {lane: render_lane(module, inputs, lane, base / lane) for lane in lanes}}
     ws.guard_object(record)
     with open(base / "views-manifest.json", "xb") as handle:

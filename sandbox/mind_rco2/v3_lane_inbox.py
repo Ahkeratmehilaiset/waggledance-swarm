@@ -165,13 +165,19 @@ class Capture:
         """Bound asks the lane must answer, with how each one ended (or that it has not).
 
         A request is the lane's to answer when the lane is its first or only addressee or the request id names the
-        lane; the other addressees are copied, and an answer by the first addressee ends it for them."""
+        lane; the other addressees are copied, and an answer by the first addressee ends it for them. Besides a bound
+        reply (``in_reply_to_request_id``), a later event of the lane that names the request id (an echoed
+        ``request_id``, the message or the payload, as relay answers do) ends it too (RCO1 10-13 on round-1b)."""
         asks: dict[str, dict[str, Any]] = {}
         answered: dict[str, str] = {}
         closed: dict[str, str] = {}
-        for ref, event in self.rows:
+        named: list[tuple[int, str, str]] = []  # (position, ref, text) of the lane's own events
+        for index, (ref, event) in enumerate(self.rows):
             rid, bound = event.get("request_id"), event.get("in_reply_to_request_id")
             payload = _payload(event)
+            if event.get("agent") == lane:
+                named.append((index, ref, " ".join((str(rid or ""), str(event.get("message") or ""),
+                                                    json.dumps(payload, sort_keys=True, ensure_ascii=False)))))
             to = [part.strip() for part in str(event.get("to") or "").split(",") if part.strip()]
             mine = bool(to) and (to[0] == lane or (isinstance(rid, str) and lane in rid))
             if isinstance(rid, str) and rid and not bound and lane in to and mine and event.get("agent") != lane:
@@ -198,6 +204,9 @@ class Capture:
         for rid, item in asks.items():
             if rid in answered:
                 continue
+            start = self.position.get(item["ref"], -1)
+            if any(index > start and rid in text for index, _, text in named):
+                continue  # answered by a later own event that names the request id
             item = dict(item)
             if rid in closed:
                 item["ended"] = "closed_or_superseded"
@@ -259,12 +268,6 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             stale.append({"kind": "request_for_other_head", "pr": number, "request_head": request["head"],
                           "github_head": gh_head, "request_id": request["request_id"], "refs": [request["ref"]]})
         mine = [r for r in mine if not r["head"] or r["head"] == gh_head]
-        for ask in [r for r in mine if (_age_seconds(now, r["ts"]) or 0) > OLD_REQUEST_SECONDS]:
-            # An ask older than 12 hours is shown for Q3 but never drives the next action; an empty slot with green
-            # CI still does, through the slot rule below.
-            stale.append({"kind": "request_unanswered_over_12h", "pr": number, "request_id": ask["request_id"],
-                          "age_s": _age_seconds(now, ask["ts"]), "refs": [ask["ref"]]})
-        mine = [r for r in mine if (_age_seconds(now, r["ts"]) or 0) <= OLD_REQUEST_SECONDS]
         drift = bool(mind) and mind.get("head") != gh_head
         votes = [v for v in list(mind.get("votes", [])) + list(mind.get("stale_votes", [])) if v.get("head") == gh_head]
         filled = {workspace.vote_slot(v.get("agent", ""), v.get("status", "")) for v in votes} - {None}
@@ -284,6 +287,14 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         ci = mind.get("reported_ci") or {}
         ci_green = "green_reported" if ci.get("status") == "reported_green" and ci.get("head") == gh_head else "not_reported_green"
         my_slot = lane if lane in RCOS else BUILD.get(lane)
+        if not (my_slot in filled and lane not in authors):
+            # An ask older than 12 hours is shown for Q3 but never drives the next action; an empty slot with green CI
+            # still does, through the slot rule below. When the lane's own vote is at the GitHub head, every ask at
+            # that head (of any age) is met by that vote instead (RCO1 10-13: the age rule ran first and hid it).
+            for ask in [r for r in mine if (_age_seconds(now, r["ts"]) or 0) > OLD_REQUEST_SECONDS]:
+                stale.append({"kind": "request_unanswered_over_12h", "pr": number, "request_id": ask["request_id"],
+                              "age_s": _age_seconds(now, ask["ts"]), "refs": [ask["ref"]]})
+            mine = [r for r in mine if (_age_seconds(now, r["ts"]) or 0) <= OLD_REQUEST_SECONDS]
         refs = sorted(set(mind.get("source_refs", [])) | ({source["ref"]} if source else set()) | {r["ref"] for r in mine}
                       | {t["ref"] for t in typed.values()})
         my_vetoes = [v for v in mind.get("veto_observations", []) if v.get("agent") == lane]

@@ -434,6 +434,53 @@ def test_canonical_block_type_parity_matrix_keeps_non_rco_peer_blocks_visible():
     assert under_reports == []
 
 
+@pytest.mark.parametrize('api', ['write_snapshot', 'write_checkpoint'])
+def test_public_writers_refuse_double_cleanup_failure_after_positive(api, tmp_path, monkeypatch):
+    # MUT_RAW_CLEANUP_ERROR: replace and cleanup both fail, without ACL changes.
+    audit = tmp_path / '.codex-audit'
+    audit.mkdir()
+    path = audit / 'owned-cleanup-publication.json'
+    state = build([envelope()])
+    snap = mind.snapshot(state, as_of_utc=AS_OF)
+
+    def publish():
+        if api == 'write_snapshot':
+            return mind.write_snapshot(snap, path, audit_root=audit)
+        return mind.write_checkpoint(state, path, as_of_utc=AS_OF, audit_root=audit)
+
+    publish()
+    if api == 'write_snapshot':
+        assert mind.read_snapshot(path, audit_root=audit) == snap
+    else:
+        assert mind.state_bytes(mind.read_checkpoint(path, audit_root=audit)) == mind.state_bytes(state)
+    original = path.read_bytes()
+    attempted = []
+
+    def denied_replace(temporary, target):
+        assert Path(target) == path and Path(temporary).parent == audit
+        attempted.append('replace')
+        raise PermissionError(13, 'synthetic atomic replacement denial', str(path))
+
+    def denied_cleanup(temporary):
+        assert Path(temporary).parent == audit
+        attempted.append('cleanup')
+        raise PermissionError(13, 'synthetic temporary cleanup denial', str(temporary))
+
+    with monkeypatch.context() as faults:
+        faults.setattr(mind.os, 'replace', denied_replace)
+        faults.setattr(mind.os, 'unlink', denied_cleanup)
+        with pytest.raises(mind.ProjectionError) as caught:
+            publish()
+    assert attempted == ['replace', 'cleanup']
+    assert str(caught.value) == 'snapshot_cleanup_failed'
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__ is True
+    assert getattr(caught.value, 'filename', None) is None
+    assert path.name not in str(caught.value) and 'synthetic' not in str(caught.value)
+    assert path.read_bytes() == original
+    # Failed cleanup stays a failure; retained temporary evidence is not success.
+    assert len(list(audit.glob('.mind-*.tmp'))) == 1
+
+
 @pytest.mark.parametrize('api', ['write_snapshot','read_snapshot','write_checkpoint','read_checkpoint'])
 def test_all_public_audit_apis_refuse_stat_oserror_without_echo_after_positive(api, tmp_path, monkeypatch):
     # MUT_RAW_AUDIT_OSERROR: actual public API, isolated synthetic denial, no ACL mutation.

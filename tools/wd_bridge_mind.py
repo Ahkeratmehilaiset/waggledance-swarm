@@ -447,7 +447,10 @@ def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
         raise ProjectionError("snapshot_publication_failed") from None
     finally:
         if temporary is not None:
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                raise ProjectionError("snapshot_cleanup_failed") from None
     return hashlib.sha256(encoded).hexdigest()
 
 

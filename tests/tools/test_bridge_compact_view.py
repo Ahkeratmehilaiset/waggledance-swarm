@@ -114,6 +114,58 @@ def test_late_answers_and_corrections_stay_visible_with_their_binding():
     assert items[1]["to_list"] == ["codex-lead-1", "claude-rco-1"]
 
 
+def test_payload_only_request_bindings_are_displayed_not_shown_unbound():
+    row = event(payload={"request_id": "lead-r2", "in_reply_to_request_id": "lead-r1"})
+    item = compact_view([row])["events"][0]
+    assert (item["request_id"], item["in_reply_to_request_id"]) == ("lead-r2", "lead-r1")
+    assert "binding_conflicts" not in item
+
+
+def test_equal_top_level_and_payload_copies_are_not_a_conflict():
+    row = event(request_id="r1", payload={"request_id": "r1"})
+    item = compact_view([row])["events"][0]
+    assert item["request_id"] == "r1"
+    assert "binding_conflicts" not in item
+
+
+@pytest.mark.parametrize("keys", [["request_id"], ["in_reply_to_request_id"],
+                                  ["request_id", "in_reply_to_request_id"]])
+def test_conflicting_copies_are_surfaced_never_one_side_guessed(keys):
+    row = event(payload={key: "payload-side" for key in keys}, **{key: "top-side" for key in keys})
+    item = compact_view([row])["events"][0]
+    assert item["binding_conflicts"] == keys
+    for key in keys:
+        assert item[key] == ""
+    assert row["payload"] == {key: "payload-side" for key in keys}  # input unchanged
+
+
+_ABSENT = object()
+
+
+@pytest.mark.parametrize("direct", [_ABSENT, None, "", "r1", 17])
+@pytest.mark.parametrize("nested", [_ABSENT, None, "", "r1", "r2", 17])
+@pytest.mark.parametrize("key", ["request_id", "in_reply_to_request_id"])
+def test_bindings_follow_the_request_contract_field_rule(key, direct, nested):
+    from waggledance.core import bridge_request_contract as contract
+
+    row = event(payload={} if nested is _ABSENT else {key: nested})
+    if direct is not _ABSENT:
+        row[key] = direct
+    item = compact_view([row])["events"][0]
+    expected = contract.field(row, key)
+    if expected is contract._CONFLICT:
+        assert (item[key], item["binding_conflicts"]) == ("", [key])
+    else:
+        assert item[key] == (expected if expected is not None else row.get(key, ""))
+        assert "binding_conflicts" not in item
+
+
+def test_non_object_payload_keeps_the_top_level_binding():
+    item = compact_view([event(request_id="r1", payload="not-an-object")])["events"][0]
+    assert item["request_id"] == "r1"
+    assert "binding_conflicts" not in item
+
+
 def test_reference_is_key_order_independent():
     row = event()
     assert event_id(row) == event_id(dict(reversed(list(row.items()))))

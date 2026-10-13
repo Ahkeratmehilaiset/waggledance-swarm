@@ -151,11 +151,16 @@ RULE_SEVERITY = {
     "context_head_mismatch": "medium",
     "class_unverified": "medium",
     "expired_claim": "low",
+    "veto_own_later_pass": "low",
     "context_applied": "low",
 }
 CONTEXT_SCHEMA = "wd.bridge-mind-pr-context.v1"
+# v2 adds per PR the declared git author names of its commits (null when the list may be incomplete).
+CONTEXT_SCHEMA_V2 = "wd.bridge-mind-pr-context.v2"
 CONTEXT_KEYS = frozenset({"schema", "authority", "capture_sha256", "observed_utc", "charter", "prs"})
 CONTEXT_PR_KEYS = frozenset({"state", "head", "head_ref_name", "path_class"})
+CONTEXT_PR_KEYS_V2 = CONTEXT_PR_KEYS | {"commit_authors"}
+LANE_ID = re.compile(r"[a-z][a-z0-9-]{1,40}")
 PATH_CLASS_KEYS = frozenset({"charter_allowed", "denylist_hits", "a_hits", "unrecognized"})
 CHARTER_KEYS = frozenset({"loaded", "charter_blob", "classifier_blob"})
 PR_STATES = ("OPEN", "MERGED", "CLOSED")
@@ -320,7 +325,7 @@ def read_context(value: Any, now: datetime) -> tuple[dict[str, Any] | None, str 
         return None, None
     if not isinstance(value, Mapping) or set(value) != CONTEXT_KEYS:
         return None, "context_shape_invalid"
-    if value["schema"] != CONTEXT_SCHEMA or value["authority"] != "none":
+    if value["schema"] not in (CONTEXT_SCHEMA, CONTEXT_SCHEMA_V2) or value["authority"] != "none":
         return None, "context_schema_invalid"
     capture, observed = _match(REF, value["capture_sha256"]), parse_time(value["observed_utc"])
     if capture is None or observed is None:
@@ -339,7 +344,8 @@ def read_context(value: Any, now: datetime) -> tuple[dict[str, Any] | None, str 
     prs: dict[int, dict[str, Any]] = {}
     for key, row in rows.items():
         number = int(key) if isinstance(key, str) and key.isdigit() and key == str(int(key)) and int(key) > 0 else None
-        if number is None or not isinstance(row, Mapping) or set(row) != CONTEXT_PR_KEYS \
+        keys = CONTEXT_PR_KEYS_V2 if value["schema"] == CONTEXT_SCHEMA_V2 else CONTEXT_PR_KEYS
+        if number is None or not isinstance(row, Mapping) or set(row) != keys \
                 or row["state"] not in PR_STATES or _match(HEAD, row["head"]) is None \
                 or _match(TASK, row["head_ref_name"]) is None:
             return None, "context_pr_invalid"
@@ -352,7 +358,12 @@ def read_context(value: Any, now: datetime) -> tuple[dict[str, Any] | None, str 
             if None in hits.values():
                 return None, "context_path_class_invalid"
             path_class = dict(hits, charter_allowed=path_class["charter_allowed"])
-        prs[number] = {"state": row["state"], "head": row["head"], "branch": row["head_ref_name"],
+        authors = row.get("commit_authors")
+        if authors is not None:
+            if not isinstance(authors, list) or not all(_match(LANE_ID, name) for name in authors):
+                return None, "context_pr_invalid"
+            authors = sorted(set(authors))
+        prs[number] = {"state": row["state"], "head": row["head"], "branch": row["head_ref_name"], "authors": authors,
                        "path_class": path_class}
     return {"capture": capture, "observed": value["observed_utc"], "charter_ok": charter_ok,
             "charter_blob": blobs[0] or UNKNOWN, "classifier_blob": blobs[1] or UNKNOWN, "prs": prs}, None
@@ -408,6 +419,21 @@ class _Inputs:
         if row["state"] != "OPEN":
             return row["state"]
         return "head_mismatch" if row["head"] != pr["head"] else None
+
+    def authors(self, pr: Mapping[str, Any]) -> frozenset[str]:
+        """The declared commit authors of a current, open PR from the context; empty when not known."""
+        row = self.context_row(pr)
+        if row is None or self.suppressed(pr) is not None or row["authors"] is None:
+            return frozenset()
+        return frozenset(row["authors"])
+
+    def current_heads(self, pr: Mapping[str, Any]) -> dict[str, str]:
+        """The PR head the snapshot names, and the context head of an open PR when it differs (declared)."""
+        heads = {pr["head"]: "snapshot"} if pr["head"] else {}
+        row = self.context_row(pr)
+        if row is not None and row["state"] == "OPEN" and row["head"] not in heads:
+            heads[row["head"]] = "context"
+        return heads
 
     def computed_class(self, pr: Mapping[str, Any]) -> str | None:
         """``protected`` or ``not_protected`` from a used context with loaded charter evidence, else None."""
@@ -589,9 +615,17 @@ def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iter
             "actors": sorted({actor for actor in actors if actor and actor != UNKNOWN}), "refs": sorted(set(refs))}
 
 
-def _empty_slots(pr: Mapping[str, Any]) -> list[str]:
+def _empty_slots(pr: Mapping[str, Any], authors: frozenset[str] = frozenset()) -> list[str]:
+    """Vote slots with no verified current vote. A recognized RCO who is a declared commit author of the PR fills no
+    RCO slot (author is not reviewer), so that slot is not missing and the author is never asked for it."""
     filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
-    return [slot for slot in VOTE_SLOTS if slot not in filled]
+    return [slot for slot in VOTE_SLOTS if slot not in filled and slot not in authors]
+
+
+def _author_note(inputs: "_Inputs", pr: Mapping[str, Any]) -> str:
+    excluded = sorted(set(RECOGNIZED_RCOS) & inputs.authors(pr))
+    return "" if not excluded else (f"; {', '.join(excluded)} is a declared commit author of this PR and fills no "
+                                    "RCO slot")
 
 
 def _suggestable(pr: Mapping[str, Any]) -> bool:
@@ -640,7 +674,8 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     for pr in inputs.prs:
         # Every reported vote, a declared (a) class, but no computed protected hit: the signature need is UNKNOWN.
         # A blocked source is not current, so it gives no such head-bound observation.
-        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr) and pr["class"] == "a" \
+        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr, inputs.authors(pr)) \
+                and pr["class"] == "a" \
                 and inputs.suppressed(pr) is None and inputs.computed_class(pr) != "protected":
             out.append(_tension("class_unverified", f"pr:{pr['pr']}:class",
                                 f"PR{pr['pr']} at {pr['head'][:12]} has every reported vote and a declared (a) class",
@@ -710,7 +745,22 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                      "; ".join(named) + "; a stale vote cannot approve it",
                                      [vote["agent"] for vote in pr["stale_votes"]],
                                      [ref for vote in pr["stale_votes"] for ref in vote["refs"]] + pr["refs"]))
+        heads = inputs.current_heads(pr)
         for veto in pr["vetoes"]:
+            # The same verified identity passed later at a current head: the older veto stays observed and is
+            # never cleared, but it is labelled and ranked low so questions point at live work.
+            later = sorted({(vote["head"], tuple(vote["refs"])) for vote in pr["votes"] + pr["stale_votes"]
+                            if vote["agent"] == veto["agent"] and vote["status"] == "rco_pass" and vote["verified"]
+                            and vote["head"] in heads and vote["head"] != veto["head"]})
+            if later and veto["head"] != UNKNOWN:  # a veto without a head may be newer than any pass
+                head, refs = later[0]
+                tensions.append(_tension(
+                    "veto_own_later_pass", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
+                    f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}, then rco_pass at "
+                    f"{head[:12]}" + (" (the head from the PR context capture)" if heads[head] == "context" else ""),
+                    "the veto stays observed and is never cleared here; the same identity passed at a current head",
+                    [veto["agent"]], veto["refs"] + list(refs) + pr["refs"]))
+                continue
             tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
                                      f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}",
                                      "the veto is observed; whether it is still active is UNKNOWN, never cleared here",
@@ -735,7 +785,7 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     # A context that says the PR is not open, or saw another head, leaves it without a suggestion.
     if not _suggestable(pr) or inputs.suppressed(pr) is not None:
         return None
-    empty = _empty_slots(pr)
+    empty = _empty_slots(pr, inputs.authors(pr))
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
@@ -746,11 +796,13 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
         return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
                 "detail": f"PR{pr['pr']} at {head} has every reported vote and a computed protected path hit "
                           f"({len(path_class['a_hits'])} a_hits, {len(path_class['denylist_hits'])} denylist, "
-                          f"capture {inputs.context['capture'][:16]}): only the operator signature is left"}
+                          f"capture {inputs.context['capture'][:16]}): only the operator signature is left"
+                          + _author_note(inputs, pr)}
     actors = sorted({agent for slot in empty for agent in
                      ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
-            "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"}
+            "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"
+                                    + _author_note(inputs, pr)}
 
 
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

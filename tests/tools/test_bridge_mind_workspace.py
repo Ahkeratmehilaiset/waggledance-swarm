@@ -936,7 +936,8 @@ def test_a_pseudo_lane_keeps_its_facts_but_gets_no_question():
     (lambda c: c.pop("authority"), "context_shape_invalid"),
     (lambda c: c.update(extra=1), "context_shape_invalid"),
     (lambda c: c.update(authority="merge"), "context_schema_invalid"),
-    (lambda c: c.update(schema="wd.bridge-mind-pr-context.v2"), "context_schema_invalid"),
+    (lambda c: c.update(schema="wd.bridge-mind-pr-context.v3"), "context_schema_invalid"),
+    (lambda c: c.update(schema="wd.bridge-mind-pr-context.v2"), "context_pr_invalid"),  # v1 rows
     (lambda c: c.update(capture_sha256="ab" * 31), "context_identity_invalid"),
     (lambda c: c.update(observed_utc="2026-01-01T00:30:00"), "context_identity_invalid"),
     (lambda c: c.update(observed_utc="2026-01-01T00:14:59Z"), "context_stale"),
@@ -1931,3 +1932,65 @@ def test_the_twin_is_what_the_core_emits_once_the_core_is_on_this_tree():
     assert core.snapshot(state, as_of_utc=CORE_TWIN_AS_OF) == _core_twin()
     assert core.blocked_snapshot(state, as_of_utc=CORE_TWIN_AS_OF, offset=1500,
                                  reason="canonical_event_invalid") == _core_blocked_twin()
+
+
+def _context_v2(rows, **options):
+    """A v2 context: ``rows`` maps a PR number to (state, head, path_class, commit_authors)."""
+    value = _context({number: row[:3] for number, row in rows.items()}, **options)
+    value["schema"] = "wd.bridge-mind-pr-context.v2"
+    for number, row in rows.items():
+        value["prs"][str(number)]["commit_authors"] = row[3]
+    return value
+
+
+@pytest.mark.parametrize("authors, kinds, detail", [
+    (["claude-rco-2"], [], None),                                  # the author fills no slot: nothing is missing
+    (["fable-5"], ["last_missing_vote"], "missing: claude-rco-2"),  # another author changes nothing
+    (None, ["last_missing_vote"], "missing: claude-rco-2"),         # authors unknown: as before
+])
+def test_a_declared_commit_author_rco_is_never_asked_for_its_own_pr(authors, kinds, detail):
+    """Sandbox round 1 (RCO1 W3, RCO2 W1): PR1898 asked its author claude-rco-2 for the last missing vote."""
+    fields = mind.reflection(_snapshot(prs=[_pr(10, votes=ALMOST)]),
+                             context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, authors)}))
+    assert [item["kind"] for item in fields["attention"] if item["kind"] != "tension"] == kinds
+    if detail:
+        assert fields["attention"][0]["detail"].endswith(detail)
+    both = mind.reflection(_snapshot(prs=[_pr(10, votes=["codex-lead-1", "codex-tools-1"])]),
+                           context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, ["claude-rco-2"])}))
+    assert both["attention"][0]["actors"] == ["claude-rco-1"]
+    assert both["attention"][0]["detail"].endswith("claude-rco-2 is a declared commit author of this PR and fills "
+                                                   "no RCO slot")
+
+
+@pytest.mark.parametrize("authors", [["Claude Opus 5.5"], "claude-rco-2", [1]])
+def test_a_malformed_commit_author_list_refuses_the_whole_context(authors):
+    fields = mind.reflection(_snapshot(prs=[_pr(10, votes=ALMOST)]),
+                             context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, authors)}))
+    assert "context_pr_invalid" in mind.canonical_json(_rules(fields)["context_refused"])
+
+
+@pytest.mark.parametrize("pass_head, context_head, rule", [
+    (HEAD, HEAD, "veto_own_later_pass"),       # own pass at the PR head after a veto at an older head
+    (OLD, HEAD, "veto_observed"),               # the pass is at the veto head: nothing later is known
+    ("e" * 40, "e" * 40, "veto_own_later_pass"),  # the pass is at the head the context capture names
+    ("e" * 40, HEAD, "veto_observed"),          # a pass at a head that is not current
+])
+def test_an_own_later_pass_labels_the_older_own_veto_but_never_clears_it(pass_head, context_head, rule):
+    """Sandbox round 1 (RCO1 W4): the lane question pointed at an own veto that the own later pass superseded."""
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    pr["veto_observations"] = [_veto("claude-rco-1", 10, OLD)]
+    target = pr["votes"] if pass_head == HEAD else pr["stale_votes"]
+    target.append(_vote("claude-rco-1", 10, pass_head))
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]),
+                             context=_context({10: ("OPEN", context_head, NOT_PROTECTED)}))
+    rules = _rules(fields)
+    assert rule in rules and ({"veto_observed", "veto_own_later_pass"} - {rule}).isdisjoint(rules)
+    assert rules[rule]["subject"] == f"pr:10:veto:claude-rco-1:{OLD[:12]}"
+    # Never cleared: the PR still gets no vote or signature suggestion while any veto is observed.
+    assert all(item["kind"] not in ("last_missing_vote", "votes_missing", "signature_only")
+               for item in fields["attention"])
+    if rule == "veto_own_later_pass":
+        assert rules[rule]["severity"] == "low"
+        # Ranked low: a plain tension item, never tension_high.
+        kinds = {item["kind"] for item in fields["attention"] if "veto_own_later_pass" in item["detail"]}
+        assert kinds == {"tension"}

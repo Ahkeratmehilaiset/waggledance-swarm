@@ -52,7 +52,7 @@ from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa:
 CAPTURE_SCHEMA = "wd.bridge-mind-capture.v1"
 CAPTURE_KEYS = frozenset({"schema", "reader", "reader_stdout_sha256", "observed_utc", "events"})
 # The inherited pinned readers a capture may come from; the reader string is a label, not authentication.
-READERS = frozenset({"Read-AgentBridge.ps1 -Raw"})
+READERS = frozenset({"Read-AgentBridge.ps1 -Raw", "Read-AgentBridge.ps1 -Compact -EventId"})
 RECEIPT_SCHEMA = "wd.bridge-mind-shadow-receipt.v1"
 INPUT_LIMIT = 64 * 1024 * 1024
 _SHA = re.compile(r"[0-9a-f]{64}")

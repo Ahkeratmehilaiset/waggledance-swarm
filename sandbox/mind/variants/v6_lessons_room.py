@@ -4,9 +4,12 @@ Two files per lane:
 
 * ``room.txt``: the lane's rooms in a small bridge memory palace (``waggledance/core/memory_palace``: a wing per
   lane, a room per bridge task). A room is one task: the lane's current task from the snapshot, the tasks of the
-  PRs whose attention items name the lane, and the lane's most recent own tasks in the window. Each room has a
+  PRs whose attention items name the lane, and the lane's most recent own tasks in the window. A task that is a
+  PR branch also holds the events of any task that names that PR in its payload (votes often sit on a request
+  task, not the branch; RCO2 C1/fable-5 PR1902, round-1b). Each room has a
   closet (counts by type and status, the last decision per agent with its head, first and last time) and its last
-  drawers: event refs with time, agent, type, status and head, never message text (verbatim stays in the pinned
+  drawers: event refs with time, agent (labelled declared or undeclared: origin is never authenticated, RCO2 C3),
+  type, status and head, never message text (verbatim stays in the pinned
   capture, read on demand by ref). Under each room, the lesson cards that name its PR or share its key words.
 * ``lessons.txt``: every frozen lesson card, one line each (id, date, lane, keywords, capped description), newest
   first, meant to be searched (``grep -i <word>``) rather than read whole.
@@ -82,6 +85,14 @@ def _closet(events):
                if last else ""))
 
 
+def _event_pr(event):
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    value = payload.get("pr")
+    if type(value) is int:
+        return value
+    return int(value.lstrip("#")) if isinstance(value, str) and value.lstrip("#").isdigit() else None
+
+
 def _pr_of(task, context):
     for number, row in (context["prs"] if context else {}).items():
         if row["head_ref_name"] == task:
@@ -95,28 +106,36 @@ def render(inputs, lane):
     cards = (inputs.get("side") or {}).get("cards") or []
     tasks = _rooms(inputs, lane)
     by_task = {task: [] for task in tasks}
+    numbers = {task: _pr_of(task, inputs["context"]) for task in tasks}
     for event in inputs["events"]:
-        if event.get("task_id") in by_task:
-            by_task[event["task_id"]].append(event)
+        number = _event_pr(event)
+        for task in tasks:
+            if event.get("task_id") == task or (number is not None and number == numbers[task]):
+                by_task[task].append(event)
     wing = _node_id("wing.", lane)
     nodes = [PalaceNode(node_id=wing, kind="wing", label=lane)]
     nodes += [PalaceNode(node_id=_node_id("room.", task), kind="room", label=task, parent_id=wing) for task in tasks]
     paths = build_memory_palace_navigation_index(nodes)["paths_by_node"]
     lines = [f"V6 palace rooms for {lane}; round {inputs['round']}, capture {inputs['capture_sha256'][:16]}, "
-             f"{len(cards)} lesson cards; drawers hold refs, never message text; observe only, check canonical tools",
+             f"{len(cards)} lesson cards; drawers hold refs, never message text; agent names are declared, origin "
+             "not authenticated; observe only, check canonical tools",
              ""]
     for task in tasks:
         events = by_task[task]
         node = _node_id("room.", task)
-        lines.append(f"room {' > '.join(paths[node])} ({task})")
+        lines.append(f"room {' > '.join(paths[node])} ({task}"
+                     + (f", PR{numbers[task]})" if numbers[task] is not None else ")"))
         if events:
             lines.append(_closet(events))
             for event in [event for event in events if event.get("type") not in NOT_DRAWER][-DRAWER_LIMIT:]:
+                uuid = event.get("agent_uuid")
+                label = "declared" if isinstance(uuid, str) and ws.UUID.fullmatch(uuid) else "undeclared"
                 lines.append(f"  drawer {event_id(event)[:16]} {event.get('ts_utc', '?')[:19]} {event.get('agent')} "
-                             f"{event.get('type')}/{event.get('status')} head {_head(event)}")
+                             f"({label}) {event.get('type')}/{event.get('status')} head {_head(event)}"
+                             + ("" if event.get("task_id") == task else f" on {event.get('task_id')}"))
         else:
             lines.append("  closet: no event of this task in the window")
-        number, words = _pr_of(task, inputs["context"]), _words(task)
+        number, words = numbers[task], _words(task)
         linked = [card for card in cards if (number is not None and number in card["prs"])
                   or len(words & set(card["keywords"])) >= 2][:CARD_LIMIT]
         for card in linked:

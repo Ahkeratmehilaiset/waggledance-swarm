@@ -187,6 +187,62 @@ def test_a_replaced_log_gives_only_rebuild_required(change, reason):
         push.apply_delta(push.view(previous), changes)
 
 
+MISSING = object()
+
+
+def _with_source(snapshot, **fields):
+    out = copy.deepcopy(snapshot)
+    for name, value in fields.items():
+        if value is MISSING:
+            out["source"].pop(name)
+        else:
+            out["source"][name] = value
+    return out
+
+
+@pytest.mark.parametrize("before, after, reason", [
+    ({"log_identity": MISSING}, {"log_identity": MISSING}, "log_identity_unknown"),
+    ({"log_identity": 1}, {"log_identity": 2}, "log_identity_unknown"),
+    ({"log_identity": 1}, {"log_identity": 1}, "log_identity_unknown"),
+    ({"log_identity": "UNKNOWN"}, {"log_identity": "UNKNOWN"}, "log_identity_unknown"),
+    ({"log_identity": ""}, {"log_identity": ""}, "log_identity_unknown"),
+    ({}, {"log_identity": {"rejected": "identity value"}}, "log_identity_unknown"),
+    ({"log_identity": "rejected identity value"}, {}, "log_identity_unknown"),
+    ({"generation": 1}, {"generation": 2}, "generation_unknown"),
+    ({"generation": MISSING}, {"generation": MISSING}, "generation_unknown"),
+    ({"generation": "UNKNOWN"}, {"generation": "UNKNOWN"}, "generation_unknown"),
+    ({}, {"generation": ["g1"]}, "generation_unknown"),
+], ids=["both_missing", "ints_differ", "ints_equal", "literal_unknown", "empty", "object", "not_a_token",
+        "generation_ints", "generation_missing", "generation_literal_unknown", "generation_list"])
+def test_an_unknown_log_identity_or_generation_is_never_continued_and_never_echoed(tmp_path, capsys, before, after,
+                                                                                    reason):
+    """RCO2 F1 on d621d55c: UNKNOWN == UNKNOWN must not continue a delta across a possibly replaced log."""
+    previous = _with_source(_snapshot(prs=[_pr(1)]), **before)
+    current = _with_source(_snapshot(as_of="2026-01-01T00:31:00Z", prs=[_pr(2)]), **after)
+    changes = push.delta(previous, current)
+    assert changes[1:] == [{"schema": "wd.bridge-mind.delta.v0", "type": "rebuild_required", "reason": reason}]
+    old, new = tmp_path / "previous.json", tmp_path / "current.json"
+    old.write_text(json.dumps(previous), encoding="utf-8")
+    new.write_text(json.dumps(current), encoding="utf-8")
+    assert push.main(["--previous", str(old), "--current", str(new)]) == 0
+    captured = capsys.readouterr()
+    assert len(captured.out.splitlines()) == 2 and captured.err == ""
+    assert "rejected" not in captured.out and "identity value" not in captured.out
+
+
+@pytest.mark.parametrize("identity", [{"generation": None}, {"generation": "g1"}, {"log_identity": "log:a/b-1.2"}],
+                         ids=["null_generation", "string_generation", "token_identity"])
+def test_known_equal_identities_give_a_normal_delta(identity):
+    """The positive twin of F1: equal known identities (a null generation is a known one) continue the delta."""
+    previous = _with_source(_snapshot(prs=[_pr(1)]), **identity)
+    current = _with_source(_snapshot(as_of="2026-01-01T00:31:00Z", prs=[_pr(2)]), **identity)
+    changes = push.delta(previous, current)
+    assert changes[0]["type"] == "header"
+    assert {(change["type"], change["section"], change["key"]) for change in changes[1:]} == {
+        ("changed", "source", "as_of_utc"), ("removed", "prs", "1"), ("added", "prs", "2")}
+    assert push.apply_delta(push.view(previous), changes) == push.view(current)
+
+
 @pytest.mark.parametrize("change", [
     {"schema": "wd.bridge-mind.v0"},
     {"authority": "merge"},

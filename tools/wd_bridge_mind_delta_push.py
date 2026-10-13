@@ -34,9 +34,11 @@ Refusals, all fail-closed with a fixed message and nothing printed:
 * a guarded private-marker word in either view or in the printed lines, in any letter case or
   compatibility form, before or after each backslash-u unescape. JSON inside strings is never parsed.
 
-When the log identity or generation differs between the two snapshots, the only change is
-``rebuild_required``: the previous view cannot be updated across a replaced log. Not on the gate verdict
-path. The guard is a copy of the workspace's (a dormant tool may not import another dormant tool, so
+When the log identity or generation differs between the two snapshots, or either side's is not a known
+identity (missing, not a string, not the core's token, or ``UNKNOWN``; a null generation is known), the only
+change is ``rebuild_required`` with a fixed reason: the previous view cannot be updated across a replaced or
+unidentified log, and the rejected value is never printed. The reconstruction contract is at the level of
+this identifier view, not the full snapshot. Not on the gate verdict path. The guard is a copy of the workspace's (a dormant tool may not import another dormant tool, so
 neither becomes wired by the other).
 """
 from __future__ import annotations
@@ -68,6 +70,9 @@ UNESCAPE_ROUNDS = 4
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
 _PR_KEY = re.compile(r"[1-9][0-9]{0,9}")
+# The core's identity token (``_token``); the core refuses a log identity or generation that is not one.
+_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
+_MISSING = object()
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
@@ -137,6 +142,13 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else UNKNOWN
 
 
+def _identity(value: Any, *, nullable: bool) -> str | None:
+    """A known log identity or generation, or UNKNOWN. A null generation is known; a missing one is not."""
+    if nullable and value is None:
+        return None
+    return value if isinstance(value, str) and _TOKEN.fullmatch(value) and value != UNKNOWN else UNKNOWN
+
+
 def _signals(rows: Any, with_head: bool) -> list[str]:
     out = set()
     for row in _list(rows):
@@ -160,9 +172,8 @@ def view(snapshot: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {section: {} for section in SECTIONS}
     blocked = source.get("blocked")
     out["source"] = {"as_of_utc": source["as_of_utc"], "coverage": _text(source.get("coverage")),
-                     "log_identity": _text(source.get("log_identity")),
-                     "generation": source.get("generation") if source.get("generation") is None
-                     else _text(source.get("generation")),
+                     "log_identity": _identity(source.get("log_identity", _MISSING), nullable=False),
+                     "generation": _identity(source.get("generation", _MISSING), nullable=True),
                      "blocked": None if blocked is None else {
                          "active": _map(blocked).get("active") is True,
                          "offset": _map(blocked).get("offset") if type(_map(blocked).get("offset")) is int else None,
@@ -214,6 +225,9 @@ def delta(previous: Mapping[str, Any], current: Mapping[str, Any]) -> list[dict[
     header = {"schema": DELTA_SCHEMA, "type": "header", "from_as_of_utc": old["source"]["as_of_utc"],
               "to_as_of_utc": new["source"]["as_of_utc"]}
     for name in ("log_identity", "generation"):
+        # An unknown identity on either side may hide a replaced log: UNKNOWN never equals UNKNOWN here.
+        if UNKNOWN in (old["source"][name], new["source"][name]):
+            return [header, {"schema": DELTA_SCHEMA, "type": "rebuild_required", "reason": f"{name}_unknown"}]
         if old["source"][name] != new["source"][name]:
             return [header, {"schema": DELTA_SCHEMA, "type": "rebuild_required", "reason": f"{name}_changed"}]
     changes = []

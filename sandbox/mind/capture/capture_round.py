@@ -271,13 +271,13 @@ def github_status(args):
         for number, future in futures.items():
             try:
                 rows[number]["bot_threads"] = future.result()
-            except (CaptureRefused, ValueError, KeyError, TypeError):
+            except (CaptureRefused, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
                 rows[number]["bot_threads"] = {"refused": "thread_query_failed"}
     try:
         mentioned = mentions()
         for number, row in rows.items():
             row["mentions"] = mentioned.get(number, [])
-    except (CaptureRefused, ValueError, KeyError, TypeError):
+    except (CaptureRefused, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         mentioned = None
     status = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": observed,
               "required_contexts": required, "list_sha256": sha(data), "prs": rows,
@@ -325,8 +325,10 @@ def main():
             started = time.perf_counter()
             try:
                 record["github"]["status"] = github_status(args)
-            except (CaptureRefused, ValueError, KeyError, TypeError):
-                record["github"]["status"] = {"refused": "status_capture_failed"}
+            except (CaptureRefused, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+                # A fixed reason only: the refusal code of our own check, else the exception type name.
+                record["github"]["status"] = {"refused": "status_capture_failed", "reason": (
+                    str(exc) if isinstance(exc, CaptureRefused) else type(exc).__name__)}
             record["github"]["status"]["ms"] = round((time.perf_counter() - started) * 1000)
     record["github"]["ms"] = round((time.perf_counter() - started) * 1000)
     record["files"] = {name: sha((args.out / name).read_bytes())

@@ -75,7 +75,10 @@ def replace_with_retry(tmp, target, tries=12):
 def capture(args, cycle_dir, seed, previous_dir, context_age):
     command = [sys.executable, "-B", str(HERE / "capture_round.py"), "--bin", str(args.bin), "--out", str(cycle_dir),
                "--files-cache", str(args.files_cache), "--seed-from", str(seed)]
-    if previous_dir is not None and context_age is not None and context_age < args.context_every:
+    # Reuse only a context that carries its GitHub status: after a failed status capture the next cycle retries
+    # at once instead of publishing "status UNKNOWN" for a whole --context-every period.
+    if previous_dir is not None and context_age is not None and context_age < args.context_every \
+            and (previous_dir / "observed-status.json").exists():
         command += ["--reuse-context", str(previous_dir)]
     else:
         command += ["--with-status"]

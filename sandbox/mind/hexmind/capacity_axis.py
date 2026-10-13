@@ -17,8 +17,10 @@ Every forecast is clipped to 0..100 and skipped when the window resets before th
 t + h is scored against the first reading at or after t + h (within 5 minutes). Learning (Grok's smallest
 mechanism): each method's interval half-width at t is the 90th percentile of its own absolute errors of forecasts
 already RESOLVED before t (at least 10, else no interval); coverage counts actuals inside the interval. Limit alerts:
-a method alerts when its forecast at the reset time reaches 100; no window reached 100 in the data, so only false
-alerts are measurable and misses are UNKNOWN.
+a method alerts when its forecast at the reset time reaches 100. Only a window that CLOSED inside the data can resolve
+an alert (false if it never reached 100); an alert about a window still open at the last reading is UNRESOLVED.
+(Correction after the first run of bbb6eba3: it counted open-window alerts as false.) For every open window the
+report also gives each method's forecast at the reset time from the last reading, labelled FORECAST.
 
 Writes only ``--out``. No network, no provider call, no bridge event, no gate code.
 """
@@ -75,12 +77,14 @@ def evaluate(points, window, methods):
         errors = {h: [] for h in HORIZONS}
         resolved = {h: [] for h in HORIZONS}
         inside = {h: [0, 0] for h in HORIZONS}
-        alerts = 0
+        alerts = {"closed_window_false": 0, "open_window_unresolved": 0}
+        last_seen = points[-1][0] if points else 0.0
         for i in range(2, len(points)):
             t, _, reset = points[i]
             history = points[:i + 1]
             at_reset, _ = forecast(method, history, window, reset - t)
-            alerts += at_reset >= 100.0
+            if at_reset >= 100.0:
+                alerts["closed_window_false" if reset <= last_seen else "open_window_unresolved"] += 1
             for h in HORIZONS:
                 if reset < t + h:
                     continue
@@ -100,8 +104,15 @@ def evaluate(points, window, methods):
                       "max_error": max(errors[h]) if errors[h] else None,
                       "interval_coverage": round(inside[h][0] / inside[h][1], 3) if inside[h][1] else None,
                       "interval_n": inside[h][1]} for h in HORIZONS}
-        out[method]["false_limit_alerts"] = alerts
+        out[method]["limit_alerts"] = alerts
         out[method]["forecasts_at_reset"] = len(points) - 2
+        if points and points[-1][2] > points[-1][0]:
+            value, rate = forecast(method, points, window, points[-1][2] - points[-1][0])
+            out[method]["FORECAST_at_open_window_reset"] = {
+                "from_reading_utc": dt.datetime.fromtimestamp(points[-1][0] * 60, dt.timezone.utc).isoformat(),
+                "used_now": points[-1][1], "percent_per_hour": round(rate * 60, 3),
+                "at_reset": round(value, 1), "reset_utc": dt.datetime.fromtimestamp(points[-1][2] * 60,
+                                                                                   dt.timezone.utc).isoformat()}
     return out
 
 

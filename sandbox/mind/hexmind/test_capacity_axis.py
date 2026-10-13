@@ -13,7 +13,8 @@ def test_slope_is_exact_on_a_straight_burn_and_persist_lags():
     result = c.evaluate(points, "seven_day", ("persist", "lsq30"))
     assert result["lsq30"]["h60"]["mae"] <= 1.0
     assert result["persist"]["h60"]["mae"] >= 5.0
-    assert result["persist"]["false_limit_alerts"] == 0
+    assert result["persist"]["limit_alerts"] == {"closed_window_false": 0, "open_window_unresolved": 0}
+    assert result["lsq30"]["FORECAST_at_open_window_reset"]["at_reset"] == 100.0
 
 
 def test_a_reset_inside_the_horizon_is_skipped():

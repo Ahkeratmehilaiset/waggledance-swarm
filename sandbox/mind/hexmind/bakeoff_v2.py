@@ -27,7 +27,9 @@ tau is chosen ONLY on the calibration split: positives whose expected item is in
 background queries (ordinary info messages before the cutoff, the first 40 by event ref); tau maximises answered
 positives minus answered background (ties: the larger tau). The test splits then report hits, answered positives and
 answered background on the NEXT 40 info messages (a disjoint background set). A background query's own event never
-counts. Background messages are proxy negatives: some may really have an earlier lesson.
+counts. Background messages are proxy negatives: some may really have an earlier lesson. A test set's ``negative``
+situations (the lanes' cases where silence is right) are scored as answered or silent under every rule. (v2.1,
+scoring only: v2 80fee087 ignored the ``negative`` list; no variant, rule or tau changed.)
 
 Writes only under ``--out``. No network, no provider, no bridge event, no gate code; output passes the decoded
 privacy guard of the workspace.
@@ -166,7 +168,7 @@ def evaluate(args):
         testset = json.loads(path.read_text(encoding="utf-8"))
         report["splits"][split] = {"testset_sha256": v1.sha(path.read_bytes()), "file": path.name}
         groups = {}
-        for case in testset["cases"]:
+        for case in testset["cases"] + [dict(n, negative=True) for n in testset.get("negative") or []]:
             groups.setdefault(case.get("before") or v1.DEFAULT_BEFORE, []).append(case)
         for cutoff, cases in sorted(groups.items()):
             before = v1.parse_utc(cutoff)
@@ -188,9 +190,11 @@ def evaluate(args):
                     ranked, ms = read(store, case["situation"], emb.query(case["situation"]))
                     f = features(ranked, case["situation"], idf, median)
                     lines = [{"doc_id": ref, "cell": cell, "score": round(s, 4)} for s, ref, cell, _ in ranked[:v1.LINES]]
-                    score = v1.score_case(case, {"lines": lines}, refs)
-                    report["rows"].append({"split": split, "variant": name, "case": case["id"], "kind": "positive",
-                                           "features": f, "lines": lines, "ms": ms, "score": score})
+                    row = {"split": split, "variant": name, "case": case["id"], "features": f, "lines": lines,
+                           "ms": ms, "kind": "negative" if case.get("negative") else "positive"}
+                    if not case.get("negative"):
+                        row["score"] = v1.score_case(case, {"lines": lines}, refs)
+                    report["rows"].append(row)
                 for ref, text in pool:
                     ranked, ms = read(store, text, emb.query(text), skip=ref)
                     report["rows"].append({"split": split, "variant": name, "case": "bg:" + ref[:12],
@@ -218,12 +222,15 @@ def summarize(report):
             rows = [r for r in report["rows"] if r["split"] == split and r["variant"] == name]
             pos = [r for r in rows if r["kind"] == "positive"]
             neg = [r for r in rows if r["kind"] == "background"]
+            lanes_neg = [r for r in rows if r["kind"] == "negative"]
             entry = {"positives": len(pos), "ceiling": sum(r["score"]["ceiling_hit"] for r in pos),
-                     "background": len(neg), "p95_ms": v1.percentile([r["ms"] for r in rows], 95)}
+                     "background": len(neg), "negatives": len(lanes_neg),
+                     "p95_ms": v1.percentile([r["ms"] for r in rows], 95)}
             for rule in RULES:
                 kept = [r for r in pos if answered(rule, r["features"], taus)]
                 entry[rule] = {"hits": sum(r["score"]["case_hit"] for r in kept), "answered": len(kept),
                                "background_answered": sum(answered(rule, r["features"], taus) for r in neg),
+                               "negatives_answered": sum(answered(rule, r["features"], taus) for r in lanes_neg),
                                "hit_cases": sorted(r["case"] for r in kept if r["score"]["case_hit"])}
             out[f"{split}/{name}"] = entry
     return out

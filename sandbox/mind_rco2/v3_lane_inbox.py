@@ -420,6 +420,7 @@ def render_text(inbox: Mapping[str, Any]) -> str:
             out.append(f"ACT  request {item['request_id']} from {item['from']} task {item['task']} {refs(item)}")
     for item in inbox["wait"]:
         out.append(f"WAIT PR{item['pr']} {item['github_head'][:12]} ci={item['ci']} missing={'+'.join(item['missing'])}"
+                   f" class={item['class'].split(' ')[0]}"
                    + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")

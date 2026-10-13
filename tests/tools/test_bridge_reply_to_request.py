@@ -110,6 +110,21 @@ BINDING = {"request_digest": "sha256:" + "d" * 64, "expected_responders": ["clau
 
 @pytest.mark.skipif(not SHELLS, reason="Windows PowerShell or pwsh is required")
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_requester_run_id_survives_selection_and_exact_replay_to_the_capture_writer(tmp_path, shell):
+    # MUTANT_REPLY_WRAPPER_DROPS_REQUESTER_RUN_ID: exclude run_id at the real writer handoff.
+    event = dict(REQUEST, **BINDING, run_id="requester-run-1")
+    other = dict(event, request_id="req-other", run_id="other-requester-run")
+    script, runtime = _fixture(tmp_path, [NOISE, other, event, dict(event)])
+    done = _run(shell, script, runtime)
+    assert "CAPTURED" in done.stdout, done.stdout + done.stderr  # matching request is accepted, not blanket refused
+    captured = json.loads((runtime / "reply-capture.json").read_text(encoding="utf-8-sig"))
+    assert json.loads(captured["request"]) == event  # complete selected request, including requester run_id
+    assert json.loads(captured["result"]) == {"status": "done"}
+    assert (captured["agent"], captured["status"]) == ("claude-rco-1", "answered")
+
+
+@pytest.mark.skipif(not SHELLS, reason="Windows PowerShell or pwsh is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
 @pytest.mark.parametrize("levels,refused", [(5, False), (12, True)], ids=["control_depth_7", "deep_depth_14"])
 def test_c_f1_a_request_deeper_than_the_reader_view_is_refused_and_a_shallow_one_binds_exactly(tmp_path, shell,
                                                                                                levels, refused):

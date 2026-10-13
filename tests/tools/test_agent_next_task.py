@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from tools.agent_next_task import (
     evaluate_agent_next_task,
     main,
 )
-from waggledance.core.work_queue import claim_task, release_task
+from waggledance.core.work_queue import WorkQueueError, claim_task, release_task
 
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
 BRIDGE_AGENT_UUIDS = {
@@ -31,6 +32,19 @@ RCO_FAILOVER_TASK_ID = (
     "rco-lane-failover-scout-2026-05-20-"
     "claude-rco-2-since-20260520t112000z"
 )
+SESSION_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT",
+    "AGENT_BRIDGE_OWNER_SESSION_ID",
+    "AGENT_BRIDGE_RUN_ID",
+    "AGENT_BRIDGE_OWNER_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_synthetic_claim_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic bridge claims must not inherit the calling agent's identity."""
+    for name in SESSION_IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _rco_lane_stall_event() -> dict:
@@ -147,6 +161,37 @@ def _empty_bridge(tmp_path: Path) -> tuple[Path, Path, Path]:
 # ---------------------------------------------------------------------------
 # input validation
 # ---------------------------------------------------------------------------
+
+
+def test_synthetic_fixture_claim_has_no_inherited_session_identity(tmp_path: Path) -> None:
+    assert all(name not in os.environ for name in SESSION_IDENTITY_ENV)
+    bridge, _, _ = _empty_bridge(tmp_path)
+    claim = claim_task(
+        agent="claude",
+        task_id="synthetic-unbound-claim",
+        summary="synthetic identity isolation control",
+        bridge_root=bridge,
+    )
+    assert claim.owner_session_id == ""
+    assert claim.owner_token_sha256 == ""
+    assert claim.owner_identity == "none"
+
+
+def test_synthetic_fixture_still_refuses_mismatched_bound_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+    original_events = events_path.read_bytes()
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-lead-1")
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(
+            agent="claude",
+            task_id="synthetic-mismatched-claim",
+            summary="negative production identity guard control",
+            bridge_root=bridge,
+        )
+    assert list(claims_dir.iterdir()) == []
+    assert events_path.read_bytes() == original_events
 
 
 def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:

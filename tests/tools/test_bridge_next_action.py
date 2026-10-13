@@ -411,6 +411,45 @@ def test_pending_current_request_selected_after_old_bound_reply() -> None:
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize("wrong_requester_run", [False, True])
+def test_cli_requester_run_id_binding_has_exact_control(
+    tmp_path: Path, capsys, wrong_requester_run: bool
+) -> None:
+    """Kill MUTANT_DROP_REQUESTER_RUN_ID in the actual closing consumer."""
+    request, reply = _restart_bound_request_and_reply()
+    if wrong_requester_run:
+        # Everything else, including requester session, digest and responder
+        # identity, still matches. A different requester run cannot close it.
+        reply["in_reply_to_requester"]["run_id"] = "other-lead-run"
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(bridge, [request, reply])
+
+    exit_code = main(
+        [
+            "--agent", "codex-tools-1",
+            "--bridge-root", str(bridge),
+            "--events", str(events_path),
+            "--now", "2026-09-27T19:05:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "bridge_next_action"
+    assert report["ok"] is True
+    if wrong_requester_run:
+        assert report["safe_mode"] == "read-only"
+        assert report["action"] == "answer_incoming"
+        assert report["task_id"] == request["task_id"]
+        assert report["incoming"]["request_id"] == request["request_id"]
+        assert report["open_incoming_count"] == 1
+    else:
+        assert report["safe_mode"] == "write-or-read-only"
+        assert report["action"] != "answer_incoming"
+        assert report["open_incoming_count"] == 0
+
+
 def test_legacy_custom_message_status_is_not_an_answer_without_binding() -> None:
     request, reply = _restart_bound_request_and_reply()
     for key in ("request_id", "request_digest", "expected_responders"):

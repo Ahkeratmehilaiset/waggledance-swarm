@@ -326,9 +326,13 @@ def test_policy_change_forces_full_independent_of_map(tmp_path, policy):
 def test_non_merge_base_or_missing_base_policy_fails_full(tmp_path):
     root = fixture_repo(tmp_path)
     run, _ = fake_git(EIGHT, merge_base="c" * 40)
-    assert "merge-base" in classify_scope(BASE, HEAD, root, run_git=run)["reason"]
+    result = classify_scope(BASE, HEAD, root, run_git=run)
+    assert result["scope"] == "full", result
+    assert "merge-base" in result["reason"]
     run, _ = fake_git(EIGHT, show_code=128)
-    assert "base policy missing" in classify_scope(BASE, HEAD, root, run_git=run)["reason"]
+    result = classify_scope(BASE, HEAD, root, run_git=run)
+    assert result["scope"] == "full", result
+    assert "base policy missing" in result["reason"]
 
 
 def test_head_self_extending_map_cannot_narrow_product_change(tmp_path):

@@ -286,6 +286,18 @@ def _explicit_binding_rows():
     return first, newer, reply
 
 
+@pytest.mark.parametrize('wrong_requester_run', [False, True])
+def test_v2_requester_run_binding_has_exact_control(wrong_requester_run):
+    # MUTANT_V2_DROP_REQUESTER_RUN_ID: exercise the actual V2 consumer,
+    # independently of the V1/core binding and router assertions below.
+    from tools.bridge_v2_request_contract import reply_matches_request as v2_matches
+
+    _, request, reply = _explicit_binding_rows()
+    if wrong_requester_run:
+        reply['in_reply_to_requester']['run_id'] = 'other-lead-run'
+    assert v2_matches(request, reply, 'codex-tools-1') is (not wrong_requester_run)
+
+
 @pytest.mark.parametrize('case', ['duplicate_v1', 'unrelated_sibling', 'count_only'])
 def test_exact_open_rows_reject_counterfeit_set(case):
     # counterfeit-open-set: these all passed the previous count==2 branch.

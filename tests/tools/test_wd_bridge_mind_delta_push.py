@@ -409,15 +409,49 @@ def test_no_change_gives_only_the_header():
     assert [change["type"] for change in push.delta(snapshot, copy.deepcopy(snapshot))] == ["header"]
 
 
+# The one dormant consumer allowed to name the delta adapter: the shadow pipeline, run by hand on owned captures. It
+# keeps the adapter unwired only while nothing names it in turn, so the check follows that one step as well.
+DORMANT_CONSUMER = "wd_bridge_mind_shadow"
+
+
+def _wiring(root: Path) -> tuple[int, list[str]]:
+    """How many files were read, and every tools, bridge bin or waggledance file that reaches the delta adapter:
+    one naming the adapter (other than itself and the dormant consumer in tools) or naming that consumer."""
+    scanned, found = 0, []
+    for word, own in (("wd_bridge_mind_delta_push", ("wd_bridge_mind_delta_push.py", DORMANT_CONSUMER + ".py")),
+                      (DORMANT_CONSUMER, (DORMANT_CONSUMER + ".py",))):
+        readers = [path for path in (root / "tools").glob("*.py") if path.name not in own]
+        readers += list((root / ".agent-bridge" / "bin").glob("*.ps1"))
+        readers += list((root / "waggledance").rglob("*.py"))
+        scanned = max(scanned, len(readers))
+        found += [f"{path.relative_to(root).as_posix()} names {word}" for path in readers
+                  if word in path.read_text(encoding="utf-8", errors="replace")]
+    return scanned, sorted(found)
+
+
 def test_the_delta_is_not_wired_into_any_gate_monitor_or_bridge_code():
-    """P9: nothing in tools, the bridge bin or waggledance names the delta adapter."""
+    """P9: nothing in tools, the bridge bin or waggledance reaches the delta adapter, except the one named dormant
+    shadow pipeline in tools, which nothing names in turn."""
     root = Path(push.__file__).resolve().parents[1]
-    readers = [path for path in (root / "tools").glob("*.py") if path.name != "wd_bridge_mind_delta_push.py"]
-    readers += list((root / ".agent-bridge" / "bin").glob("*.ps1"))
-    readers += list((root / "waggledance").rglob("*.py"))
-    assert len(readers) > 100
-    assert not [path.name for path in readers
-                if "wd_bridge_mind_delta_push" in path.read_text(encoding="utf-8", errors="replace")]
+    scanned, found = _wiring(root)
+    assert scanned > 100
+    assert found == []
     source = Path(push.__file__).read_text(encoding="utf-8")
     assert "Write-AgentEvent" not in source and "subprocess" not in source and ".now(" not in source
     assert "bridge_mind_workspace" not in source
+
+
+@pytest.mark.parametrize("path, text, flagged", [
+    ("tools/merge_helper.py", "from tools import wd_bridge_mind_delta_push", True),  # an unapproved consumer
+    (".agent-bridge/bin/Monitor-AgentBridge.ps1", "python tools/wd_bridge_mind_shadow.py", True),  # an activation
+    ("waggledance/core/wd_bridge_mind_shadow.py", "import wd_bridge_mind_delta_push", True),  # allowed only in tools
+    ("tools/wd_bridge_mind_shadow.py", "from tools import wd_bridge_mind_delta_push", False),  # the dormant consumer
+])
+def test_the_wiring_check_flags_an_unapproved_consumer_and_an_activation_path(tmp_path, path, text, flagged):
+    """The negative controls of P9: the one allowance is the dormant consumer's own file in tools, nothing else."""
+    for name in ("tools", ".agent-bridge/bin", "waggledance"):
+        (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    assert bool(_wiring(tmp_path)[1]) is flagged

@@ -18,8 +18,9 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
     climbs above its root refuses its task claim. No path is ever opened. A lane-level ``write_scope``, lease or
     ``expired`` that disagrees with its rows refuses every claim of the lane; one unusable row refuses only
     itself, and the lane's other task claims still count.
-  - ``stale_vote``: a vote in ``stale_votes`` (bound to a head that is not the PR head, or retired by the core
-    at the PR head after a later blocking signal of the same identity). It never counts.
+  - ``stale_vote``: the votes in ``stale_votes`` of one PR (bound to a head that is not the PR head, or retired
+    by the core at the PR head after a later blocking signal of the same identity), folded into one tension per
+    PR that names each of them and keeps every contributing ref. A stale vote never counts.
   - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
     Its status is any safe token, ``UNKNOWN`` included.
   - ``expired_claim``: a task claim whose lease ended at or before ``as_of``. An expired claim is not
@@ -30,6 +31,30 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   - ``input_blocked``: ``source.blocked`` is active; only its fixed reason and offset.
   - ``refused_input``: a row without valid ``source_refs``, or with a value outside the projection
     allowlist. It is named by its position only and is never used.
+  - ``context_applied``, ``context_refused``, ``context_head_mismatch`` and ``class_unverified``: see the PR
+    context below.
+
+* Optional PR context (``context``, the CLI's ``--context``): one caller-supplied ``wd.bridge-mind-pr-context.v1``
+  capture, for example of GitHub metadata, with ``authority`` ``none``, its ``capture_sha256`` and
+  ``observed_utc``, the charter evidence ``{loaded, charter_blob, classifier_blob}`` and per PR
+  ``{state, head, head_ref_name, path_class}``, where ``path_class`` is null or
+  ``{charter_allowed, denylist_hits, a_hits, unrecognized}``. It is observational data, never authentication or
+  task authority: a digest proves bytes, not truth. A context of any other shape, or observed more than
+  ``CONTEXT_MAX_AGE`` away from ``as_of``, is not used at all (``context_refused``, with its fixed reason), and
+  everything stays as without one. A used context gives one ``context_applied`` tension naming its full capture
+  digest (a capture digest, not an event ref), observation time and charter evidence; it is a record, never an
+  attention item. With it, a PR whose
+  context state is not ``OPEN`` gets no suggestion, and the attention items of its tensions are left out
+  (listed in ``context_applied``); a PR whose context head is not the snapshot head gets no suggestion either
+  (``context_head_mismatch``). Only attention and questions change: the tensions, votes, veto observations and
+  their refs stay as they are, and nothing clears a veto or infers recusal.
+* A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
+  artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
+  protected hit (an ``a_hits`` or ``denylist_hits`` entry) is ``protected``, none is ``not_protected``. Anything
+  else leaves the class UNKNOWN. A declared class from the bridge is never enough for ``signature_only``: a PR
+  with every reported vote, a declared ``a`` and no computed protected hit is a ``class_unverified`` tension,
+  and empty ``a_hits`` never waive a signature while the charter or denylist evidence is unknown.
+* Pseudo-lanes (``PSEUDO_AGENTS``, such as ``system``) keep their sourced facts but get no action question.
 
 * ``attention``: one ordered, bounded list of suggestions. For each PR with a known head, reported CI
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
@@ -38,8 +63,9 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, and one slot for each recognized RCO,
   because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
   presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
-  slot comes first (the last missing vote goes first), then (a)-class PRs with every slot filled (only the
-  operator signature is left), then PRs missing several votes, then high and other tensions. A
+  slot comes first (the last missing vote goes first), then PRs with every slot filled and a computed
+  protected class (only the operator signature is left), then PRs missing several votes, then high and other
+  tensions. A
   blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
   gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
 * ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
@@ -112,7 +138,7 @@ ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
 UNESCAPE_ROUNDS = 4
 KEY_LIMIT = 200
-UNKNOWN_REF_RULES = ("refused_input", "coverage_unknown", "input_blocked")
+UNKNOWN_REF_RULES = ("refused_input", "coverage_unknown", "input_blocked", "context_applied", "context_refused")
 RULE_SEVERITY = {
     "claim_overlap": "high",
     "coverage_unknown": "high",
@@ -121,8 +147,26 @@ RULE_SEVERITY = {
     "stale_vote": "medium",
     "unacknowledged_command": "medium",
     "refused_input": "medium",
+    "context_refused": "medium",
+    "context_head_mismatch": "medium",
+    "class_unverified": "medium",
     "expired_claim": "low",
+    "context_applied": "low",
 }
+CONTEXT_SCHEMA = "wd.bridge-mind-pr-context.v1"
+CONTEXT_KEYS = frozenset({"schema", "authority", "capture_sha256", "observed_utc", "charter", "prs"})
+CONTEXT_PR_KEYS = frozenset({"state", "head", "head_ref_name", "path_class"})
+PATH_CLASS_KEYS = frozenset({"charter_allowed", "denylist_hits", "a_hits", "unrecognized"})
+CHARTER_KEYS = frozenset({"loaded", "charter_blob", "classifier_blob"})
+PR_STATES = ("OPEN", "MERGED", "CLOSED")
+# A git blob id (sha1 or sha256) of a charter or classifier artifact.
+BLOB = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+CONTEXT_MAX_AGE = timedelta(minutes=15)
+NOT_ATTENTION_RULES = frozenset({"context_applied"})
+CONTEXT_LIST_LIMIT = 40
+# Not fleet lanes: their sourced facts stay visible, but they get no action question.
+PSEUDO_AGENTS = frozenset({"system"})
+_PR_SUBJECT = re.compile(r"pr:([1-9][0-9]{0,8})(?::.*)?")
 ATTENTION_RANK = {"last_missing_vote": 0, "signature_only": 1, "votes_missing": 2, "tension_high": 3,
                   "tension": 4}
 
@@ -258,6 +302,62 @@ def scopes_overlap(left: Iterable[str], right: Iterable[str]) -> list[str]:
     return sorted(hits)
 
 
+def _hits(value: Any) -> list[str] | None:
+    """A list of safe declared paths (possibly empty), or None."""
+    if not isinstance(value, list):
+        return None
+    paths = [_match(SAFE_PATH, path) for path in value]
+    return None if None in paths else sorted(set(paths))
+
+
+def read_context(value: Any, now: datetime) -> tuple[dict[str, Any] | None, str | None]:
+    """A usable PR context and None, or None and the fixed reason it is not used (None, None without one).
+
+    The whole context is used or none of it: one malformed row refuses all of it, so a partial capture never
+    looks complete. Booleans must be exact; ``"true"`` or ``1`` is not ``true``.
+    """
+    if value is None:
+        return None, None
+    if not isinstance(value, Mapping) or set(value) != CONTEXT_KEYS:
+        return None, "context_shape_invalid"
+    if value["schema"] != CONTEXT_SCHEMA or value["authority"] != "none":
+        return None, "context_schema_invalid"
+    capture, observed = _match(REF, value["capture_sha256"]), parse_time(value["observed_utc"])
+    if capture is None or observed is None:
+        return None, "context_identity_invalid"
+    if abs(now - observed) > CONTEXT_MAX_AGE:
+        return None, "context_stale"
+    charter = value["charter"]
+    if not isinstance(charter, Mapping) or set(charter) != CHARTER_KEYS or not isinstance(charter["loaded"], bool):
+        return None, "context_charter_invalid"
+    blobs = (_match(BLOB, charter["charter_blob"]), _match(BLOB, charter["classifier_blob"]))
+    # Computed classes need the charter loaded and both artifact identities; otherwise the class stays UNKNOWN.
+    charter_ok = charter["loaded"] is True and None not in blobs
+    rows = value["prs"]
+    if not isinstance(rows, Mapping):
+        return None, "context_prs_invalid"
+    prs: dict[int, dict[str, Any]] = {}
+    for key, row in rows.items():
+        number = int(key) if isinstance(key, str) and key.isdigit() and key == str(int(key)) and int(key) > 0 else None
+        if number is None or not isinstance(row, Mapping) or set(row) != CONTEXT_PR_KEYS \
+                or row["state"] not in PR_STATES or _match(HEAD, row["head"]) is None \
+                or _match(TASK, row["head_ref_name"]) is None:
+            return None, "context_pr_invalid"
+        path_class = row["path_class"]
+        if path_class is not None:
+            if not isinstance(path_class, Mapping) or set(path_class) != PATH_CLASS_KEYS \
+                    or not isinstance(path_class["charter_allowed"], bool):
+                return None, "context_path_class_invalid"
+            hits = {name: _hits(path_class[name]) for name in ("denylist_hits", "a_hits", "unrecognized")}
+            if None in hits.values():
+                return None, "context_path_class_invalid"
+            path_class = dict(hits, charter_allowed=path_class["charter_allowed"])
+        prs[number] = {"state": row["state"], "head": row["head"], "branch": row["head_ref_name"],
+                       "path_class": path_class}
+    return {"capture": capture, "observed": value["observed_utc"], "charter_ok": charter_ok,
+            "charter_blob": blobs[0] or UNKNOWN, "classifier_blob": blobs[1] or UNKNOWN, "prs": prs}, None
+
+
 def vote_slot(agent: str, status: str) -> str | None:
     """The consensus slot a current-head vote fills, by the charter's identity map; None when it fills none."""
     if status == "rco_pass" and agent in RECOGNIZED_RCOS:
@@ -270,7 +370,7 @@ def vote_slot(agent: str, status: str) -> str | None:
 class _Inputs:
     """The usable rows of one core snapshot. A row that fails the allowlist is refused by position only."""
 
-    def __init__(self, snapshot: Mapping[str, Any]):
+    def __init__(self, snapshot: Mapping[str, Any], context: Any = None):
         if snapshot.get("schema") != SNAPSHOT_SCHEMA:
             raise WorkspaceError("snapshot schema is not wd.bridge-mind.v1")
         if snapshot.get("authority") != "none" or snapshot.get("scope") != SNAPSHOT_SCOPE:
@@ -295,6 +395,27 @@ class _Inputs:
         self.prs = self._table(snapshot, "prs", self._pr)
         self.lanes = self._table(snapshot, "lanes", self._lane)
         self.commands = self._facts(snapshot)
+        self.context, self.context_reason = read_context(context, self.now)
+
+    def context_row(self, pr: Mapping[str, Any]) -> dict[str, Any] | None:
+        return None if self.context is None else self.context["prs"].get(pr["pr"])
+
+    def suppressed(self, pr: Mapping[str, Any]) -> str | None:
+        """Why the context leaves this PR without suggestions (its state, or head_mismatch), or None."""
+        row = self.context_row(pr)
+        if row is None:
+            return None
+        if row["state"] != "OPEN":
+            return row["state"]
+        return "head_mismatch" if row["head"] != pr["head"] else None
+
+    def computed_class(self, pr: Mapping[str, Any]) -> str | None:
+        """``protected`` or ``not_protected`` from a used context with loaded charter evidence, else None."""
+        row = self.context_row(pr)
+        if row is None or not self.context["charter_ok"] or self.suppressed(pr) is not None \
+                or row["path_class"] is None:
+            return None
+        return "protected" if row["path_class"]["a_hits"] or row["path_class"]["denylist_hits"] else "not_protected"
 
     def _refuse(self, where: str, row: Any, reason: str) -> None:
         self.refused.append({"where": where, "ref": _first_ref(row), "reason": reason})
@@ -468,6 +589,69 @@ def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iter
             "actors": sorted({actor for actor in actors if actor and actor != UNKNOWN}), "refs": sorted(set(refs))}
 
 
+def _empty_slots(pr: Mapping[str, Any]) -> list[str]:
+    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
+    return [slot for slot in VOTE_SLOTS if slot not in filled]
+
+
+def _suggestable(pr: Mapping[str, Any]) -> bool:
+    # Any veto observation, or one that cannot be read, means no vote or signature suggestion at all.
+    return pr["head"] is not None and pr["ci_green"] and not pr["vetoes"] and not pr["veto_unreadable"]
+
+
+def _listed(items: Sequence[str]) -> str:
+    shown = list(items[:CONTEXT_LIST_LIMIT])
+    if len(items) > CONTEXT_LIST_LIMIT:
+        shown.append(f"and {len(items) - CONTEXT_LIST_LIMIT} more")
+    return ", ".join(shown) if shown else "none"
+
+
+def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
+    """The context's own tensions: refused or applied, changed heads, and declared classes left unverified."""
+    out = []
+    if inputs.context_reason is not None:
+        out.append(_tension("context_refused", "context", "a PR context was supplied",
+                            f"it is not used ({inputs.context_reason}); class and actionability stay as without "
+                            "one", [], [inputs.source_ref]))
+    context = inputs.context
+    if context is not None:
+        closed, moved, computed = [], [], 0
+        for pr in inputs.prs:
+            reason, row = inputs.suppressed(pr), inputs.context_row(pr)
+            if reason in ("MERGED", "CLOSED"):
+                closed.append(f"PR{pr['pr']} {reason}")
+            elif reason == "head_mismatch":
+                moved.append(f"PR{pr['pr']}")
+                out.append(_tension("context_head_mismatch", f"pr:{pr['pr']}:context_head",
+                                    f"the bridge view of PR{pr['pr']} is at "
+                                    f"{pr['head'][:12] if pr['head'] else UNKNOWN}",
+                                    f"the context capture {context['capture'][:16]} saw head {row['head'][:12]} on "
+                                    f"{row['branch']}; no suggestion is made for the bridge head", [], pr["refs"]))
+            computed += inputs.computed_class(pr) is not None
+        charter = (f"charter loaded, charter blob {context['charter_blob']}, classifier blob "
+                   f"{context['classifier_blob']}" if context["charter_ok"] else "charter evidence not loaded, "
+                   "so no class is computed")
+        out.append(_tension("context_applied", f"context:{context['capture'][:16]}",
+                            f"caller-supplied PR context, capture sha256 {context['capture']} observed "
+                            f"{context['observed']}; {charter}",
+                            f"{len(context['prs'])} PRs in context; no suggestion for: {_listed(closed)}; head "
+                            f"mismatch: {_listed(moved)}; computed class for {computed} PRs; tensions, votes and "
+                            "vetoes stay as observed", [], [inputs.source_ref]))
+    for pr in inputs.prs:
+        # Every reported vote, a declared (a) class, but no computed protected hit: the signature need is UNKNOWN.
+        # A blocked source is not current, so it gives no such head-bound observation.
+        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr) and pr["class"] == "a" \
+                and inputs.suppressed(pr) is None and inputs.computed_class(pr) != "protected":
+            out.append(_tension("class_unverified", f"pr:{pr['pr']}:class",
+                                f"PR{pr['pr']} at {pr['head'][:12]} has every reported vote and a declared (a) class",
+                                "loaded charter evidence computes no protected path hit, so the declared and the "
+                                "computed class disagree" if inputs.computed_class(pr) == "not_protected" else
+                                "no computed protected path hit from loaded charter evidence supports it, so whether "
+                                "an operator signature is needed is UNKNOWN", [],
+                                pr["refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]))
+    return out
+
+
 def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     tensions: list[dict[str, Any]] = []
     if inputs.coverage != "complete":
@@ -514,19 +698,24 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                          "overlapping paths: " + ", ".join(sorted(hits)),
                                          [lane_a["agent"], lane_b["agent"]], refs))
     for pr in inputs.prs:
-        for vote in pr["stale_votes"]:
-            # The core also retires a vote at the PR head when the same identity later sends a blocking signal.
-            seen = "the core retired it at the PR head" if vote["head"] == pr["head"] else \
-                "the PR head is " + (pr["head"][:12] if pr["head"] else UNKNOWN)
-            tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:{vote['agent']}:{vote['head'][:12]}",
-                                     f"{vote['agent']} sent {vote['status']} on PR{pr['pr']} at {vote['head'][:12]}",
-                                     seen + "; a stale vote cannot approve it", [vote["agent"]],
-                                     vote["refs"] + pr["refs"]))
+        if pr["stale_votes"]:
+            # One tension per PR, naming each stale vote and keeping every contributing ref. The core also retires
+            # a vote at the PR head when the same identity later sends a blocking signal.
+            named = sorted({f"{vote['agent']} {vote['status']}@{vote['head'][:12]}"
+                            + (" retired at the PR head" if vote["head"] == pr["head"] else "")
+                            for vote in pr["stale_votes"]})
+            tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:stale_votes",
+                                     f"PR{pr['pr']} at {pr['head'][:12] if pr['head'] else UNKNOWN} has "
+                                     f"{len(named)} stale vote(s)",
+                                     "; ".join(named) + "; a stale vote cannot approve it",
+                                     [vote["agent"] for vote in pr["stale_votes"]],
+                                     [ref for vote in pr["stale_votes"] for ref in vote["refs"]] + pr["refs"]))
         for veto in pr["vetoes"]:
             tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
                                      f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}",
                                      "the veto is observed; whether it is still active is UNKNOWN, never cleared here",
                                      [veto["agent"]], veto["refs"] + pr["refs"]))
+    tensions.extend(_context_tensions(inputs))
     for command in inputs.commands:
         if command["unanswered"] and inputs.now - command["at"] >= COMMAND_GRACE:
             tensions.append(_tension("unacknowledged_command", f"request:{command['request_id']}",
@@ -542,20 +731,22 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     return [unique[key] for key in sorted(unique)]
 
 
-def _pr_attention(pr: Mapping[str, Any]) -> dict[str, Any] | None:
-    # Any veto observation, or one that cannot be read, means no vote or signature suggestion at all.
-    if pr["head"] is None or not pr["ci_green"] or pr["vetoes"] or pr["veto_unreadable"]:
+def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | None:
+    # A context that says the PR is not open, or saw another head, leaves it without a suggestion.
+    if not _suggestable(pr) or inputs.suppressed(pr) is not None:
         return None
-    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
-    empty = [slot for slot in VOTE_SLOTS if slot not in filled]
+    empty = _empty_slots(pr)
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
-        if pr["class"] != "a":
+        # Only a computed protected hit from loaded charter evidence; a declared class never suffices.
+        if inputs.computed_class(pr) != "protected":
             return None
+        path_class = inputs.context_row(pr)["path_class"]
         return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
-                "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
-                          "signature is left"}
+                "detail": f"PR{pr['pr']} at {head} has every reported vote and a computed protected path hit "
+                          f"({len(path_class['a_hits'])} a_hits, {len(path_class['denylist_hits'])} denylist, "
+                          f"capture {inputs.context['capture'][:16]}): only the operator signature is left"}
     actors = sorted({agent for slot in empty for agent in
                      ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
@@ -565,8 +756,14 @@ def _pr_attention(pr: Mapping[str, Any]) -> dict[str, Any] | None:
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     # A blocked source is not current: no head-bound suggestion is made from it, only its tensions.
     prs = [] if inputs.blocked is not None else inputs.prs
-    items = [item for item in (_pr_attention(pr) for pr in prs) if item is not None]
+    items = [item for item in (_pr_attention(inputs, pr) for pr in prs) if item is not None]
+    # The tensions of a PR the context says is merged or closed stay in the tensions, not in attention.
+    closed = {str(pr["pr"]) for pr in inputs.prs if inputs.suppressed(pr) in ("MERGED", "CLOSED")}
     for tension in tensions:
+        about = _PR_SUBJECT.fullmatch(tension["subject"])
+        # context_applied is a record of what the context did, not a contradiction to resolve.
+        if (about is not None and about.group(1) in closed) or tension["rule"] in NOT_ATTENTION_RULES:
+            continue
         items.append({"kind": "tension_high" if tension["severity"] == "high" else "tension",
                       "subject": f"tension:{tension['tension_id']}", "actors": list(tension["actors"]),
                       "detail": f"{tension['rule']}: {tension['claim']}; {tension['observation']}",
@@ -602,7 +799,9 @@ def _entry(item: Mapping[str, Any] | None, who: str, partial: bool) -> dict[str,
 def derive_next_question(inputs: _Inputs, attention: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     partial = inputs.coverage != "complete"
     agents = ({lane["agent"] for lane in inputs.lanes} | {actor for item in attention for actor in item["actors"]}) - {UNKNOWN}
-    lanes = {agent: _entry(next((item for item in attention if agent in item["actors"]), None), agent, partial)
+    # A pseudo-lane keeps its entry, UNKNOWN: its facts stay visible but it is asked nothing.
+    lanes = {agent: _entry(None if agent in PSEUDO_AGENTS else
+                           next((item for item in attention if agent in item["actors"]), None), agent, partial)
              for agent in sorted(agents)}
     first = attention[0] if attention else None
     who = ", ".join(first["actors"]) if first and first["actors"] else "the fleet"
@@ -642,9 +841,10 @@ def _check_output(fields: Mapping[str, Any]) -> None:
         check(entry["refs"], (rank is None and entry["question"] == UNKNOWN) or rank in unknown_ranks)
 
 
-def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The three reflection fields for one snapshot. Pure: no clock, no file, no network."""
-    inputs = _Inputs(snapshot)
+def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
+               context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The three reflection fields for one snapshot and an optional PR context. Pure: no clock, no file, no network."""
+    inputs = _Inputs(snapshot, context)
     tensions = derive_tensions(inputs)
     previous_ids = {str(item.get("tension_id")) for item in (previous or {}).get("tensions") or []
                     if isinstance(item, Mapping)}
@@ -656,14 +856,16 @@ def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None =
     return fields
 
 
-def reflect(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def reflect(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
+            context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """A copy of the snapshot with only its reflection fields filled; every other field is unchanged.
 
     The complete copy, every key and value and not only the reflection fields, is guarded before it is
-    returned: a guarded word anywhere refuses the whole snapshot. Nothing is stripped or rewritten.
+    returned: a guarded word anywhere refuses the whole snapshot. Nothing is stripped or rewritten. The context
+    changes only the reflection fields; it is never copied into the snapshot.
     """
     out = copy.deepcopy(dict(snapshot))
-    out.update(reflection(snapshot, previous))
+    out.update(reflection(snapshot, previous, context))
     guard_object(out)
     return out
 
@@ -708,11 +910,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bridge mind reflective workspace v0 (read-only, dormant).")
     parser.add_argument("--snapshot", type=Path, required=True, help="A wd.bridge-mind.v1 snapshot JSON.")
     parser.add_argument("--previous", type=Path, default=None, help="The previous reflected snapshot, for lifecycle.")
+    parser.add_argument("--context", type=Path, default=None,
+                        help="An optional caller-supplied wd.bridge-mind-pr-context.v1 capture (observational only).")
     parser.add_argument("--json", action="store_true", help="Print the reflected snapshot JSON instead of text.")
     args = parser.parse_args(argv)
     try:
         previous = _read_object(args.previous) if args.previous is not None else None
-        text = serialize(reflect(_read_object(args.snapshot), previous), as_json=args.json)
+        context = _read_object(args.context) if args.context is not None else None
+        text = serialize(reflect(_read_object(args.snapshot), previous, context), as_json=args.json)
     except WorkspaceError as exc:
         sys.stderr.write(f"bridge mind workspace refused: {exc}\n")
         return 2

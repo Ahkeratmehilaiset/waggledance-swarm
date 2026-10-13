@@ -728,30 +728,42 @@ def build_mind_view(snapshot: Any, snapshot_sha256: str) -> dict[str, Any]:
     }
 
 
+def _refs_text(refs: Sequence[str]) -> str:
+    """The event refs exactly as the view holds them (full refs, or UNKNOWN), so the text keeps its provenance."""
+    return "refs=" + ",".join(refs)
+
+
 def render_mind_text(view: Mapping[str, Any]) -> str:
+    """The view as text. Each observation, item and question carries the same refs as in the JSON view."""
     source = view["source"]
     lines = [f"mind snapshot {view['snapshot_sha256'][:12]} as of {source['as_of_utc']}, "
              f"coverage {source['coverage']}, source blocked {source['blocked']}: observe only, no gate run; "
-             "author, recusal and gate slots UNKNOWN"]
+             "author, recusal and gate slots UNKNOWN",
+             f"snapshot sha256 {view['snapshot_sha256']}"]
     for pr in view["prs"]:
-        groups: dict[str, list[str]] = {"at head": [], "not current": [], "head binding UNKNOWN": []}
-        for vote in pr["votes"] + pr["stale_votes"]:
-            group = {True: "at head", False: "not current"}.get(vote["at_head"], "head binding UNKNOWN")
-            groups[group].append(f"{vote['agent']} {vote['status']}@{vote['head'][:12]}")
-        vetoes = [f"{veto['agent']} {veto['status']}@{veto['head'][:12]} (activity UNKNOWN)"
-                  for veto in pr["veto_observations"]]
-        lines.append(f"#{pr['pr']} {pr['head'][:12]} class {pr['class']}: "
-                     f"CI green at head {pr['ci']['green_at_head']}; "
-                     + "; ".join(f"votes {name}: {', '.join(items) or 'none'}" for name, items in groups.items())
-                     + f"; vetoes: {', '.join(vetoes) or 'none'}")
+        ci = pr["ci"]
+        lines.append(f"#{pr['pr']} {pr['head'][:12]} class {pr['class']}: {_refs_text(pr['source_refs'])}")
+        lines.append(f"  CI {ci['status']}@{ci['head'][:12]} green at head {ci['green_at_head']} "
+                     f"{_refs_text(ci['source_refs'])}")
+        for name in ("votes", "stale_votes"):
+            for vote in pr[name]:
+                lines.append(f"  {'vote' if name == 'votes' else 'stale vote'} {vote['agent']} "
+                             f"{vote['status']}@{vote['head'][:12]} at head {vote['at_head']} "
+                             f"{_refs_text(vote['source_refs'])}")
+        for veto in pr["veto_observations"]:
+            lines.append(f"  veto {veto['agent']} {veto['status']}@{veto['head'][:12]} activity UNKNOWN "
+                         f"{_refs_text(veto['source_refs'])}")
     for item in view["attention"]:
         lines.append(f"attention {item['rank']} {item['kind']} {item['subject']} [{', '.join(item['actors'])}]: "
-                     f"{item['detail']}")
+                     f"{item['detail']} {_refs_text(item['refs'])}")
     hidden = view["suppressed_by_block"]["attention_ranks"]
     if hidden:
         lines.append("suppressed, the source is blocked: attention ranks " + ", ".join(str(rank) for rank in hidden))
-    lines.append("next question: " + view["next_question"]["global"]["question"])
-    lines.extend(f"  {agent}: {entry['question']}" for agent, entry in view["next_question"]["lanes"].items())
+    questions = view["next_question"]
+    entries = [("next question", questions["global"])] + [(f"  {agent}", entry)
+                                                          for agent, entry in questions["lanes"].items()]
+    lines.extend(f"{label}: {entry['question']} (attention rank {entry['attention_rank']}, "
+                 f"{_refs_text(entry['refs'])})" for label, entry in entries)
     return "\n".join(lines) + "\n"
 
 

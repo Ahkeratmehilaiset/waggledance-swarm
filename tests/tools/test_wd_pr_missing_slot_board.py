@@ -1297,6 +1297,54 @@ def test_the_mind_text_and_out_file_carry_the_same_view(tmp_path, capsys):
     assert json.loads(out.read_text(encoding="utf-8"))["attention"] == _mind_r()["attention"]
 
 
+def _json_refs(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("refs", "source_refs"):
+                yield from item
+            else:
+                yield from _json_refs(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _json_refs(item)
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["current", "blocked"])
+def test_the_text_carries_every_event_ref_of_the_json_view(tmp_path, capsys, blocked):
+    """Kills MUT_TEXT_OMITS_REFS: the default text keeps the provenance of the JSON view, line by line."""
+    snapshot = _mind_r()
+    if blocked:
+        snapshot["source"]["blocked"] = dict(MIND_RB_BLOCKED)
+    root = _audit(tmp_path)
+    out = root / "board" / "view.json"
+    assert _mind(root, _put(root, snapshot), "--out", str(out)) == 0
+    text = capsys.readouterr().out
+    view = json.loads(out.read_text(encoding="utf-8"))
+    refs = {ref for ref in _json_refs(view) if ref != "UNKNOWN"}
+    # The actual reflected snapshot: one event ref for each of the ten bridge events, all in the view.
+    assert len(refs) == 10
+    assert set(re.findall(r"\b[0-9a-f]{64}\b", text)) == refs | {view["snapshot_sha256"]}
+    joined = ",".join
+    for pr in view["prs"]:
+        assert f"#{pr['pr']} {pr['head'][:12]} class {pr['class']}: refs={joined(pr['source_refs'])}\n" in text
+        assert f" green at head {pr['ci']['green_at_head']} refs={joined(pr['ci']['source_refs'])}\n" in text
+        for vote in pr["votes"] + pr["stale_votes"]:
+            assert f"{vote['agent']} {vote['status']}@{vote['head'][:12]} at head {vote['at_head']} " \
+                   f"refs={joined(vote['source_refs'])}\n" in text
+        for veto in pr["veto_observations"]:
+            assert f"veto {veto['agent']} {veto['status']}@{veto['head'][:12]} activity UNKNOWN " \
+                   f"refs={joined(veto['source_refs'])}\n" in text
+    for item in view["attention"]:
+        assert f"{item['detail']} refs={joined(item['refs'])}\n" in text
+    for entry in [view["next_question"]["global"], *view["next_question"]["lanes"].values()]:
+        assert f"{entry['question']} (attention rank {entry['attention_rank']}, refs={joined(entry['refs'])})" in text
+    # UNKNOWN stays explicit: PR2002 has no reported CI, codex-lead-1 has no question.
+    assert " CI UNKNOWN@UNKNOWN green at head " in text and "refs=UNKNOWN\n" in text
+    assert "  codex-lead-1: UNKNOWN (attention rank None, refs=UNKNOWN)\n" in text
+    # A blocked source still hides the PR suggestion and the questions bound to it.
+    assert ("pr:2001" in text) is not blocked
+
+
 @pytest.mark.parametrize("field,value", [("authority", "gate"), ("authority", "merge"), ("scope", "gate"),
                                          ("schema", "wd.bridge-mind.v2")])
 def test_a_snapshot_claiming_authority_or_another_scope_is_refused_never_trusted(tmp_path, capsys, field, value):

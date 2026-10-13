@@ -2,14 +2,14 @@
 """Sandbox variant V3 (claude-rco-2): one lane's inbox, by identity and currentness. Sandbox code only.
 
 A lane reads only what is its own: open PRs where its vote slot is empty at the GitHub head, PRs it is a declared
-author of (recused), its unanswered bound requests, its own vetoes and its own claims. There is no topology.
+author of (recused), its unanswered bound asks, its own vetoes and its own claims. There is no topology.
 
 Inputs are the frozen files of one round, all inside one ``.codex-audit`` root:
 
 * ``--publication``: the reflected Mind publication of the round, read with the core ``read_snapshot``;
 * ``--context``: the PR context of the round (``tools/bridge_mind_workspace.py`` ``read_context``);
 * ``--capture``: the pinned reader capture the publication was built from (its file sha256 must be named by the
-  snapshot's ``log_identity``), used for bound requests, replies and declared authors. The context binds by time
+  snapshot's ``log_identity``), used for bound asks, replies and declared authors. The context binds by time
   only (``read_context`` refuses one observed more than 15 minutes from the capture); its own ``capture_sha256``
   names the GitHub metadata capture, not the bridge capture.
 
@@ -39,6 +39,7 @@ from tools import wd_bridge_mind as core  # noqa: E402
 from tools.bridge_compact_view import event_id  # noqa: E402
 from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa: E402
 
+VARIANT = "V3"  # the common tournament driver interface (sandbox/mind/tournament_driver.py): VARIANT and render()
 SCHEMA = "rco2.sandbox.v3-lane-inbox.v1"
 UNKNOWN = workspace.UNKNOWN
 RCOS = workspace.RECOGNIZED_RCOS
@@ -148,12 +149,12 @@ class Capture:
                     return other
         return None
 
-    def requests(self, lane: str) -> list[dict[str, Any]]:
-        """Bound requests the lane must answer, with how each one ended (or that it has not).
+    def asks(self, lane: str) -> list[dict[str, Any]]:
+        """Bound asks the lane must answer, with how each one ended (or that it has not).
 
         A request is the lane's to answer when the lane is its first or only addressee or the request id names the
         lane; the other addressees are copied, and an answer by the first addressee ends it for them."""
-        requests: dict[str, dict[str, Any]] = {}
+        asks: dict[str, dict[str, Any]] = {}
         answered: dict[str, str] = {}
         closed: dict[str, str] = {}
         for ref, event in self.rows:
@@ -165,7 +166,7 @@ class Capture:
                 expects = isinstance(payload.get("result_contract"), Mapping) or payload.get("requires_reply") is True \
                     or str(event.get("status") or "").lower() in ("requested", "review_requested")
                 if expects:
-                    requests[rid] = {"request_id": rid, "from": str(event.get("agent")), "task": str(event.get("task_id")),
+                    asks[rid] = {"request_id": rid, "from": str(event.get("agent")), "task": str(event.get("task_id")),
                                      "pr": _pr_of(event), "head": payload.get("head") if isinstance(payload.get("head"), str) else None,
                                      "ts": self.ts[ref], "ref": ref}
             for key in SUPERSEDE_KEYS:
@@ -182,7 +183,7 @@ class Capture:
                 elif str(event.get("status") or "").lower() in CLOSE_STATUSES:
                     closed.setdefault(bound, ref)
         out = []
-        for rid, item in requests.items():
+        for rid, item in asks.items():
             if rid in answered:
                 continue
             item = dict(item)
@@ -216,8 +217,8 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
     recusals = capture.recusals()
     open_prs = {number: row for number, row in context["prs"].items() if row["state"] == "OPEN"}
     states = {number: row["state"] for number, row in context["prs"].items()}
-    requests = capture.requests(lane)
-    pending = [r for r in requests if "ended" not in r]
+    asks = capture.asks(lane)
+    pending = [r for r in asks if "ended" not in r]
     branch_pr: dict[str, int] = {}
     for number, row in sorted(context["prs"].items(), key=lambda kv: (kv[1]["state"] == "OPEN", kv[0])):
         branch_pr[row["branch"]] = number  # an open PR on the branch wins over a closed one
@@ -272,7 +273,7 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         line = {"pr": number, "github_head": gh_head, "mind_head": mind.get("head", UNKNOWN) if mind else UNKNOWN,
                 "head_drift": drift, "ci": ci_green, "missing": missing, "recused_authors": recused,
                 "author_basis": author_basis or UNKNOWN, "class": _class(ctx["path_class"], context["charter_ok"]),
-                "requests": [r["request_id"] for r in mine], "refs": refs}
+                "asks": [r["request_id"] for r in mine], "refs": refs}
         for veto in my_vetoes:
             label = "own_veto_superseded_by_own_pass_at_head" if my_pass_now else (
                 "own_veto_active_at_head" if veto.get("head") == gh_head else "own_veto_at_older_head")
@@ -291,9 +292,9 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
         last = missing == [my_slot]
         if ci_green == "green_reported":
             act.append(dict(line, role="my_slot_missing", rank=0 if last else 1, last_missing=last))
-        elif mine or filled:
+        elif mine:
             wait.append(dict(line, role="my_slot_missing_ci_not_green", rank=3, last_missing=last))
-        else:  # open, but nobody asked this lane and no slot is filled at the GitHub head: not this lane's work now
+        else:  # open with my slot empty, but no request to this lane at the GitHub head and no green CI: quiet
             dormant.append(number)
             continue
         if drift:
@@ -314,7 +315,7 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
                 "uncertainty": sorted({u for k in rows for u in snapshot["lanes"][k].get("uncertainty", [])})}
     if len(rows) != 1:
         notes.append(f"identity: {len(rows)} lane rows carry this agent name; one is expected")
-    claims = []
+    claims, released = [], 0
     for key in rows:
         by_task = (snapshot["lanes"][key].get("claims") or {}).get("by_task", [])
         for claim in by_task if isinstance(by_task, list) else []:
@@ -324,8 +325,8 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             task = str(claim.get("task_id", UNKNOWN))
             latest = max(refs, key=lambda ref: capture.position.get(ref, -1)) if refs else None
             release = capture.released_after(task, lane, latest) if latest else None
-            if release is not None:  # the log released it after the claim; the Mind still lists it
-                notes.append(f"claim {task} is released in the log after its claim event; the Mind still lists it")
+            if release is not None:  # the log released it after the claim; the Mind still lists it (counted only)
+                released += 1
                 continue
             match = _PR_IN_TASK.search(task)
             pr_state = states.get(int(match.group(1)), UNKNOWN) if match else None
@@ -347,30 +348,32 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
                 if lane in t.get("actors", []) and t["rule"] not in ("stale_vote",) and _open_subject(t["subject"])]
 
     act.sort(key=lambda item: (item["rank"], -(item.get("pr") or 0)))
-    wait.sort(key=lambda item: (0 if item["requests"] else 1, -item["pr"]))  # asked first, then the newest PR
+    wait.sort(key=lambda item: (0 if item["asks"] else 1, -item["pr"]))  # asked first, then the newest PR
     if act:
         top = act[0]
         if top["role"] == "my_slot_missing":
             nxt = f"{'last missing ' if top['last_missing'] else ''}vote on PR{top['pr']} at {top['github_head'][:12]} (CI reported green); verify with gh checks, veto scan and gate read first"
         elif top["role"] == "request_with_slot_filled":
-            nxt = f"answer request {top['requests'][0]} on PR{top['pr']} (my slot is already filled at the GitHub head)"
+            nxt = f"answer request {top['asks'][0]} on PR{top['pr']} (my slot is already filled at the GitHub head)"
         elif top["role"] == "request_on_pr":
-            nxt = f"answer request {top['requests'][0]} on PR{top['pr']}"
+            nxt = f"answer request {top['asks'][0]} on PR{top['pr']}"
         else:
             nxt = f"answer request {top['request_id']} from {top['from']}"
     elif wait:
         top = wait[0]
-        nxt = (f"PR{top['pr']} at {top['github_head'][:12]}: request {top['requests'][0]} is pending; review now and vote once CI is green at that head"
-               if top["requests"] else "review now, vote after CI: " + ", ".join(f"PR{w['pr']}" for w in wait[:4]))
+        nxt = (f"PR{top['pr']} at {top['github_head'][:12]}: request {top['asks'][0]} is pending; review now and vote once CI is green at that head"
+               if top["asks"] else "review now, vote after CI: " + ", ".join(f"PR{w['pr']}" for w in wait[:4]))
     else:
         nxt = "nothing addressed to this lane in the round"
     return {"schema": SCHEMA, "authority": "none", "advisory": "canonical gh checks, veto scan and gate read decide",
             "lane": lane, "as_of_utc": now, "capture_first_utc": capture.first_utc, "identity": identity,
             "act": act, "wait": wait, "own": own, "stale": stale, "dormant_open_prs": dormant,
-            "requests_pending": len(pending),
-            "requests_ended_unanswered": len(requests) - len(pending), "claims": claims, "tensions": tensions,
+            "asks_actionable": sum(1 for i in act + wait if i.get("asks") or i.get("request_id")),
+            "asks_stale": sum(1 for i in stale if i["kind"].startswith("request_")),
+            "asks_ended_unanswered": len(asks) - len(pending), "claims": claims,
+            "claims_released_but_listed_by_mind": released, "tensions": tensions,
             "next_action": nxt, "notes": notes,
-            "limits": ["capture window only: requests and votes before the first captured event are unseen",
+            "limits": ["capture window only: asks and votes before the first captured event are unseen",
                        "authors are declared (commit authors or request source_authors), never authenticated",
                        "CI is what the bridge reported at the GitHub head, not gh checks",
                        "claim lease heartbeats are not in the log, so a live lease stays UNKNOWN"]}
@@ -385,12 +388,12 @@ def render_text(inbox: Mapping[str, Any]) -> str:
     for item in inbox["act"]:
         if "pr" in item:
             out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"
-                       + (f" req={','.join(item['requests'])}" if item['requests'] else "") + f" {refs(item)}")
+                       + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
         else:
             out.append(f"ACT  request {item['request_id']} from {item['from']} task {item['task']} {refs(item)}")
     for item in inbox["wait"]:
         out.append(f"WAIT PR{item['pr']} {item['github_head'][:12]} ci={item['ci']} missing={'+'.join(item['missing'])}"
-                   + (f" req={','.join(item['requests'])}" if item['requests'] else "") + f" {refs(item)}")
+                   + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
         out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
     for item in inbox["stale"]:
@@ -398,11 +401,38 @@ def render_text(inbox: Mapping[str, Any]) -> str:
         out.append(f"OLD  {item['kind']} {what} {refs(item)}")
     for item in inbox["tensions"]:
         out.append(f"TEN  {item['rule']} {item['subject']} {item['severity']} {refs(item)}")
-    out.append(f"requests pending {inbox['requests_pending']}, ended without my answer {inbox['requests_ended_unanswered']}; claims {len(inbox['claims'])}; identity rows {len(inbox['identity']['lane_rows'])}"
-               f"; quiet open PRs (no request, no slot filled at the GitHub head) {len(inbox['dormant_open_prs'])}")
+    quiet = inbox["dormant_open_prs"]
+    if quiet:
+        out.append(f"QUIET my slot empty, no request to me, CI not green: " + " ".join(f"PR{n}" for n in quiet[-12:])
+                   + (f" (+{len(quiet) - 12} older)" if len(quiet) > 12 else ""))
+    out.append(f"asks actionable {inbox['asks_actionable']}, stale {inbox['asks_stale']}, ended without my answer "
+               f"{inbox['asks_ended_unanswered']}; claims held {len(inbox['claims'])}, released in the log but listed by the Mind "
+               f"{inbox['claims_released_but_listed_by_mind']}; identity rows {len(inbox['identity']['lane_rows'])}")
     for note in inbox["notes"]:
         out.append(f"NOTE {note}")
     return "\n".join(out) + "\n"
+
+
+def render(inputs: Mapping[str, Any], lane: str) -> dict[str, str]:
+    """The tournament driver entry: a pure function of the frozen round inputs, one text view per lane.
+
+    The driver passes the snapshot and the raw context but no capture rows. When ``capture_events`` is absent, the
+    asks, typed recusals, declared Source authors and claim releases are UNKNOWN, and a NOTE line says so; "now" is
+    then the snapshot's ``as_of_utc``."""
+    snapshot = inputs["snapshot"]
+    rows = inputs.get("capture_events")
+    now = inputs.get("capture_observed_utc") if isinstance(rows, list) else None
+    now = now if workspace.parse_time(now) is not None else snapshot["source"].get("as_of_utc")
+    context, _ = workspace.read_context(inputs["context"], workspace.parse_time(now))
+    if context is None:
+        raise InboxRefused("the context is not usable for this round")
+    inbox = build_inbox(snapshot, context, Capture(rows if isinstance(rows, list) else []), lane, now)
+    if not isinstance(rows, list):
+        inbox["notes"].insert(0, "no capture rows in the driver inputs: asks, typed recusals, declared Source authors "
+                                 "and claim releases are UNKNOWN here")
+    text = render_text(inbox)
+    workspace.guard_object(inbox)
+    return {"inbox.txt": text}
 
 
 def run(publication: Path, context_path: Path, capture_path: Path, audit_root: Path, lanes: Iterable[str],

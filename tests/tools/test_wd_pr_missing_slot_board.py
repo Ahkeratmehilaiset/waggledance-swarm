@@ -123,9 +123,11 @@ def test_gate_command_is_the_dry_run_form_only():
 class _FakeGitHub:
     """Answers gh pr list, the snapshot tool and the gate; records every command."""
 
-    def __init__(self, prs, gates, snapshots=None, gate_stdout=None):
+    def __init__(self, prs, gates, snapshots=None, gate_stdout=None, refusals=None):
         self.prs, self.gates, self.snapshots = prs, gates, snapshots or {}
         self.gate_stdout = gate_stdout or {}
+        self.refusals = refusals or {}
+        self.gate_runs: list[int] = []
         self.commands: list[list[str]] = []
         self.snapshot_dirs: list[Path] = []
 
@@ -138,10 +140,14 @@ class _FakeGitHub:
             number = int(command[command.index(str(board.SNAPSHOT_TOOL)) + 1])
             out = Path(command[command.index("--out") + 1])
             self.snapshot_dirs.append(out.parent)
+            if number in self.refusals:
+                code, refusal = self.refusals[number]
+                return SimpleNamespace(returncode=code, stdout=json.dumps(refusal), stderr="")
             out.write_text(json.dumps(self.snapshots.get(number, _snapshot())), encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout="{}", stderr="")
         if str(board.GATE_TOOL) in command:
             number = int(Path(command[command.index("--pr-status-file") + 1]).stem.split("-")[1])
+            self.gate_runs.append(number)
             if number in self.gate_stdout:
                 return SimpleNamespace(returncode=2, stdout=self.gate_stdout[number], stderr="boom")
             return SimpleNamespace(returncode=0, stdout=json.dumps(self.gates[number]), stderr="")
@@ -201,6 +207,65 @@ def test_an_unreadable_gate_output_is_a_row_error_and_exit_one(tmp_path, monkeyp
     rows = {row["pr"]: row for row in result["rows"]}
     assert rows[31]["error"].startswith("gate output unreadable:") and "state" not in rows[31]
     assert rows[32]["state"] == "merge_ready" and result["errors"] == [31]
+
+
+# Built from parts, as the repo's other guard tests do, so this file never carries the literal tokens.
+GUARD_WORDS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
+
+
+def test_a_snapshot_refusal_is_a_row_state_with_only_its_decision_name(tmp_path, monkeypatch):
+    refusals = {
+        41: (1, {"decision": "stale_base_ref", "errors": ["PR baseRefOid does not match the live base branch tip"],
+                 "exit_code": 1, "ok": False}),
+        42: (2, {"decision": "privacy_marker_refused", "errors": ["privacy marker refused: " + GUARD_WORDS[0]],
+                 "exit_code": 2, "ok": False}),
+    }
+    fake = _FakeGitHub([_pr(41), _pr(42), _pr(43)], {43: _gate([RECEIPT])}, refusals=refusals)
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    result = json.loads(text)
+    rows = {row["pr"]: row for row in result["rows"]}
+    assert rows[41]["state"] == rows[42]["state"] == "snapshot_refused"
+    assert rows[41]["missing"] == [{"element": "base", "details": ["stale_base_ref"], "actors": []}]
+    assert rows[42]["missing"] == [{"element": "snapshot", "details": ["privacy_marker_refused"], "actors": []}]
+    assert not any(word in text for word in GUARD_WORDS)
+    assert result["errors"] == [] and result["snapshot_refused"] == [41, 42] and fake.gate_runs == [43]
+
+
+def test_a_refusal_without_a_plain_decision_name_is_a_row_error(tmp_path, monkeypatch):
+    refusals = {44: (2, {"decision": "refused: " + GUARD_WORDS[1], "ok": False})}
+    fake = _FakeGitHub([_pr(44)], {}, refusals=refusals)
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["errors"] == [44]
+
+
+def test_queue_and_diff_gate_blockers_classify_and_a_code_pattern_needs_the_signature():
+    reasons = ["accepted bridge queue is not fully visible in canonical history: accepted_queue_incomplete",
+               "diff gate failed: code pattern denylist hit", RECEIPT]
+    row = board.classify(_gate(reasons, approved=("build_lead", "build_tools", "claude-rco-1")), _snapshot())
+    elements = _elements(row)
+    assert set(elements) == {"accepted_queue", "signature"}
+    assert elements["signature"]["details"] == ["diff gate failed: code pattern denylist hit"]
+    assert row["state"] == "signature_after_consensus"
+
+
+def test_a_lead_hold_keeps_a_gate_ready_pr_off_the_merge_ready_list(tmp_path, monkeypatch):
+    fake = _FakeGitHub([_pr(51), _pr(52)], {51: _gate([RECEIPT]), 52: _gate([RECEIPT])})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out), "--hold", "51=waits for the M227 activation"]) == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    rows = {row["pr"]: row for row in result["rows"]}
+    assert rows[51]["state"] == "held"
+    assert rows[51]["missing"] == [{"element": "hold", "details": ["waits for the M227 activation"],
+                                    "actors": ["codex-lead-1"]}]
+    assert result["held"] == [51] and result["merge_ready"] == [52]
+    with pytest.raises(SystemExit):
+        board.main(["--repo", "o/r", "--hold", "fifty-one=reason"])
 
 
 # -- Contract with the real gate: its blocker texts must still classify (no silent drift into "other") ------

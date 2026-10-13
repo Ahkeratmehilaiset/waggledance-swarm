@@ -12,17 +12,28 @@ missing element:
 * ``veto`` / ``block``: an unretracted block on the canonical task, from a recognized RCO or from
   another lane.
 * ``build_lead`` / ``build_tools`` / ``rco``: no head-bound approval in that consensus slot.
-* ``signature``: the charter path gate refuses (denylist or off-allowlist), so the operator's
-  explicit per-PR signature is needed after consensus.
+* ``signature``: the charter path gate or diff gate refuses (denylist, off-allowlist, or a code
+  pattern), so the operator's explicit per-PR signature is needed after consensus.
+* ``accepted_queue``: the gate cannot see the whole accepted bridge queue in canonical history. This
+  is a runtime condition, not a fault of the PR.
+* ``hold``: a hold that Lead passes with ``--hold``, for a dependency the gate cannot see (for
+  example an activation that must happen first).
 * ``other``: any gate blocker this board does not recognize, kept verbatim. Nothing is dropped.
 
-In a dry run the gate always asks for a receipt bundle. That is a merge-time artifact, not a missing
-review element, so it is reported separately. Each row ends in one of four states:
+When the snapshot tool itself refuses a PR, the gate is not run, and the row gets the element ``base``
+(a stale base: the PR needs a base update) or ``snapshot`` (any other refusal). For these rows only
+the refusal's decision name is recorded, never its text. A privacy refusal names the guard's own
+marker, and that word must not travel on in a report that may be posted to the bridge.
 
-* ``merge_ready``: nothing is missing.
+In a dry run the gate always asks for a receipt bundle. That is a merge-time artifact, not a missing
+review element, so it is reported separately. Each row ends in one of six states:
+
+* ``merge_ready``: nothing is missing. The gate itself would still require the receipt.
 * ``signature_only``: the operator signature is the only missing element. These rows form the
   morning signature list.
+* ``held``: only Lead holds are missing.
 * ``signature_after_consensus``: a signature is needed, but other elements are missing too.
+* ``snapshot_refused``: the snapshot tool refused the PR, so the gate could not be evaluated.
 * ``in_progress``: anything else.
 
 Observe-only: the board posts no bridge event and merges nothing. It writes only ``--out``, plus
@@ -37,6 +48,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -49,6 +61,7 @@ SCHEMA = "wd.pr-missing-slot-board.v1"
 RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
 PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CONSENSUS_PREFIX = "bridge consensus incomplete: "
+DECISION_NAME = re.compile(r"[a-z0-9_]{1,64}")
 # Exact gate texts and prefixes -> element. Order matters only for prefixes that nest.
 EXACT = {
     "PR must not be a draft": "draft",
@@ -60,6 +73,8 @@ PREFIXES = (
     ("PR author resolution requires operator review: ", "author"),
     ("mergeable state is not clean: ", "merge_state"),
     ("path gate failed: ", "signature"),
+    ("diff gate failed: ", "signature"),
+    ("accepted bridge queue is not fully visible in canonical history: ", "accepted_queue"),
     ("unresolved peer bridge block", "block"),
     (CONSENSUS_PREFIX + "recognized RCO veto blocks consensus: ", "veto"),
     (CONSENSUS_PREFIX + "build_lead (", "build_lead"),
@@ -131,7 +146,19 @@ def _approved_by(consensus: Mapping[str, Any]) -> list[str]:
     return holders
 
 
-def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def _state(elements: set[str]) -> str:
+    if not elements:
+        return "merge_ready"
+    if elements == {"signature"}:
+        return "signature_only"
+    if elements == {"hold"}:
+        return "held"
+    if "signature" in elements:
+        return "signature_after_consensus"
+    return "in_progress"
+
+
+def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequence[str] = ()) -> dict[str, Any]:
     """Sort every gate blocker into exactly one missing element, a merge-time item, or ``other``."""
     consensus = gate.get("bridge_consensus") or {}
     recognized = set(consensus.get("recognized_rco_agents") or [])
@@ -174,27 +201,21 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, 
             add("build_lead", blocker, ["codex-lead-1"])
         elif element == "build_tools":
             add("build_tools", blocker, ["codex-tools-1"])
-        elif element == "signature":
+        elif element == "signature" and blocker.startswith("path gate failed: "):
             path_gate = gate.get("path_gate") or {}
             paths = list(path_gate.get("blocked_paths") or []) + list(path_gate.get("unmatched_paths") or [])
             add("signature", blocker + (" (" + ", ".join(paths) + ")" if paths else ""), ["operator"])
+        elif element == "signature":
+            add("signature", blocker, ["operator"])
         elif element in ("author", "draft", "merge_state"):
             add(element, blocker, [author] if author and element == "draft" else [])
         else:
             add(element, blocker)
+    for reason in holds:
+        add("hold", reason, ["codex-lead-1"])
     if other:
         missing["other"] = {"element": "other", "details": other, "actors": []}
-
-    elements = set(missing)
-    if not elements:
-        state = "merge_ready"
-    elif elements == {"signature"}:
-        state = "signature_only"
-    elif "signature" in elements:
-        state = "signature_after_consensus"
-    else:
-        state = "in_progress"
-    return {"state": state, "missing": [missing[key] for key in sorted(missing)], "merge_time": merge_time,
+    return {"state": _state(set(missing)), "missing": [missing[key] for key in sorted(missing)], "merge_time": merge_time,
             "approved": _approved_by(consensus), "gate_decision": gate.get("decision"), "author": author}
 
 
@@ -206,8 +227,19 @@ def _read_json_object(text: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _snapshot_refusal(done: subprocess.CompletedProcess) -> str | None:
+    """The snapshot tool's refusal decision name, if its output is one refusal object; never its text."""
+    for stream in (done.stdout, done.stderr):
+        value = _read_json_object((stream or "").strip())
+        if value is not None and value.get("ok") is False:
+            decision = value.get("decision")
+            if isinstance(decision, str) and DECISION_NAME.fullmatch(decision):
+                return decision
+    return None
+
+
 def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path | None,
-              run: Runner, python: str) -> dict[str, Any]:
+              run: Runner, python: str, holds: Sequence[str] = ()) -> dict[str, Any]:
     number = int(pr["number"])
     head = str(pr.get("headRefOid", ""))
     task_id = str(pr.get("headRefName", ""))
@@ -216,6 +248,14 @@ def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path
     snapshot_path = workdir / f"pr-{number}.json"
     snap = run(snapshot_command(python, number, repo, snapshot_path))
     snapshot = _read_json_object(snapshot_path.read_text(encoding="utf-8")) if snapshot_path.exists() else None
+    refusal = _snapshot_refusal(snap) if snap.returncode != 0 else None
+    if refusal is not None:
+        missing = [{"element": "base" if refusal == "stale_base_ref" else "snapshot", "details": [refusal],
+                    "actors": []}]
+        missing += [{"element": "hold", "details": list(holds), "actors": ["codex-lead-1"]}] if holds else []
+        row.update({"state": "snapshot_refused", "missing": missing, "merge_time": [], "approved": [],
+                    "gate_decision": None, "author": None})
+        return row
     if snap.returncode != 0 or snapshot is None:
         row["error"] = "snapshot failed: " + (snap.stderr or snap.stdout or "no output").strip()[-400:]
         return row
@@ -228,15 +268,18 @@ def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path
     if gate is None or "decision" not in gate or not isinstance(gate.get("reasons", []), list):
         row["error"] = "gate output unreadable: " + (gate_run.stderr or gate_run.stdout or "no output").strip()[-400:]
         return row
-    row.update(classify(gate, snapshot))
+    row.update(classify(gate, snapshot, holds))
     return row
 
 
 def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path | None, run: Runner | None = None,
-                python: str = sys.executable, main_sha: str = "") -> dict[str, Any]:
+                python: str = sys.executable, main_sha: str = "",
+                holds: Mapping[int, Sequence[str]] | None = None) -> dict[str, Any]:
     run = run or _run
+    holds = holds or {}
     with tempfile.TemporaryDirectory(prefix="wd-slot-board-") as tmp:
-        rows = [board_row(pr, repo, Path(tmp), bridge_root, run, python) for pr in prs]
+        rows = [board_row(pr, repo, Path(tmp), bridge_root, run, python, holds.get(int(pr["number"]), ()))
+                for pr in prs]
     for row in rows:
         if main_sha and row.get("base_sha"):
             row["base_is_main"] = row["base_sha"] == main_sha
@@ -252,6 +295,8 @@ def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path |
         "observe_only": True,
         "rows": rows,
         "merge_ready": [row["pr"] for row in rows if row.get("state") == "merge_ready"],
+        "held": [row["pr"] for row in rows if row.get("state") == "held"],
+        "snapshot_refused": [row["pr"] for row in rows if row.get("state") == "snapshot_refused"],
         "signature_list": signature_list,
         "errors": [row["pr"] for row in rows if "error" in row],
     }
@@ -277,6 +322,8 @@ def render_text(board: Mapping[str, Any]) -> str:
         lines.append(f"#{row['pr']} {row['head'][:8]} {row['state']}: " + (" ".join(parts) or "nothing missing"))
     lines.append("signature list: " + (", ".join(f"#{item['pr']}" for item in board["signature_list"]) or "none"))
     lines.append("merge ready: " + (", ".join(f"#{pr}" for pr in board["merge_ready"]) or "none"))
+    lines.append("held: " + (", ".join(f"#{pr}" for pr in board["held"]) or "none"))
+    lines.append("snapshot refused: " + (", ".join(f"#{pr}" for pr in board["snapshot_refused"]) or "none"))
     return "\n".join(lines) + "\n"
 
 
@@ -287,14 +334,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bridge-root", type=Path, default=None,
                         help="Passed to the gate as --bridge-root (default: the gate's own resolution).")
     parser.add_argument("--main-sha", default="", help="Current main SHA, to mark rows whose base is not main.")
+    parser.add_argument("--hold", action="append", default=[], metavar="PR=REASON",
+                        help="A Lead hold the gate cannot see, for example an activation dependency.")
     parser.add_argument("--out", type=Path, default=None, help="Write the board JSON here.")
     parser.add_argument("--json", action="store_true", help="Print the board JSON instead of the text summary.")
     args = parser.parse_args(argv)
+    holds: dict[int, list[str]] = {}
+    for item in args.hold:
+        number, sep, reason = item.partition("=")
+        if not sep or not number.strip().isdigit() or not reason.strip():
+            parser.error(f"--hold needs PR=REASON, got {item!r}")
+        holds.setdefault(int(number), []).append(reason.strip())
     prs = list_open_prs(args.repo)
     if args.pr:
         wanted = set(args.pr)
         prs = [pr for pr in prs if int(pr["number"]) in wanted]
-    board = build_board(prs, args.repo, args.bridge_root, main_sha=args.main_sha)
+    board = build_board(prs, args.repo, args.bridge_root, main_sha=args.main_sha, holds=holds)
     text = json.dumps(board, indent=2, sort_keys=False) + "\n"
     if args.out is not None:
         args.out.write_text(text, encoding="utf-8")

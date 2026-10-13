@@ -196,6 +196,10 @@ def _ready_line(parsed, since, pr, ci, head, status, lane, items):
     observed = _status_row(status, pr, head)
     lag = "" if head == pr["head"] else f" (GitHub head; bridge view at {_h(pr['head'])})"
     by = _mentioned_by(status, pr)
+    bot = (observed or {}).get("bot_threads") if observed else None
+    open_bot = (sum((bot["bot"].get("open") or {}).values()) if isinstance(bot, dict) and bot.get("head") == head
+                and isinstance(bot.get("bot"), dict) else 0)
+    left += f"; {open_bot} open bot review threads" if open_bot else ""
     return _short(f"  VOTED PR{pr['pr']} {_h(head)}{lag} since {since[:16]}; "
                   f"gh {observed['merge_state'] if observed else ws.UNKNOWN}; "
                   + ("CI reported on the bridge" if ci == "bridge" else "CI observed by GitHub, not on the bridge")

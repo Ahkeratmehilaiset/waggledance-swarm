@@ -115,7 +115,13 @@ def hooks(args, cycle_dir, audit_root):
             results[hook["name"]] = {"skipped": "tree_not_clean", "head": head}
             continue
         started = time.perf_counter()
-        done = subprocess.run(argv, capture_output=True, timeout=120)
+        try:
+            done = subprocess.run(argv, capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            # One lane's slow lens is that lens's gap, recorded here; it never refuses the shared cycle.
+            results[hook["name"]] = {"timeout_s": 120, "head": head,
+                                     "ms": round((time.perf_counter() - started) * 1000)}
+            continue
         results[hook["name"]] = {"exit": done.returncode, "head": head,
                                  "ms": round((time.perf_counter() - started) * 1000)}
     return results
@@ -224,7 +230,12 @@ def main():
             line.update(status="ok", events=record["bridge"]["events"], detail=record["bridge"]["detail_calls"],
                         context="reused" if "reused_from" in record["github"] else "fresh",
                         snapshot=inputs["snapshot_sha256"][:16], attention=receipt["counts"]["attention"],
-                        replace_retries=retries)
+                        replace_retries=retries,
+                        # latest.json keeps these only for the newest cycle; the log line keeps them per cycle, so
+                        # a slowdown can be traced to its stage afterwards.
+                        stage_ms={"bridge": record["bridge"]["ms"], "github": record["github"].get("ms"),
+                                  "run": run_ms, "lens": lens_ms,
+                                  "hooks": {name: row.get("ms") for name, row in hook_results.items()}})
         except Exception as exc:  # a refused cycle is a gap, published as such so no lane reads old data silently
             line.update(status="refused", reason=(type(exc).__name__ + ":" + str(exc))[:120])
             failed = {"schema": LATEST_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",

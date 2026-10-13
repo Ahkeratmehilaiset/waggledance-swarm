@@ -771,18 +771,19 @@ def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
 
 
 # The positive twin: an actual output of the projector core, tools/wd_bridge_mind.py at codex-tools-1/mind-20261013
-# commit 58a30453cfa29d041f00b3b1b9254305963a1916 (blob 1665da2eebfab7b5896249944495b5942976418e), from
+# commit d47f3ef9372c40855a21308147a19531f2fed989 (blob ecd3cde499e0d822188689ce202bdde4997f22c5), from
 # full_rebuild(CORE_TWIN_EVENTS as {ref: event_id(event), event}, source=CORE_TWIN_SOURCE, as_of_utc=CORE_TWIN_AS_OF)
 # and snapshot(). The core ran from a git-archive copy of that commit; CORE_TWIN_SHA256 is the sha256 of its canonical
 # bytes, and CORE_BLOCKED_SHA256 that of blocked_snapshot(state, offset=1500, reason="canonical_event_invalid") on the
 # same state. Until the core lands on main the recorded bytes stand in for it; once it does, the twin test reruns it.
-# The events hold a withdrawn pass (PR1895), a pass from an undeclared identity (PR1896), two task claims of one lane
-# with a space and a colon in their paths, one of them released (codex-lead-1), an expired claim and a stale vote.
-CORE_TWIN_SHA256 = "c483ec114ef1d7dbfaa9ef494c16083843b3d3177dfb1a7ca584c8b5abdde316"
-CORE_BLOCKED_SHA256 = "a7e2b9dd23b0203f8831c711fbd86be2f2408c874344480bb9469fe8cc6031c7"
+# The events hold a withdrawn pass (PR1895), a pass from an undeclared identity (PR1896), a canonical non-RCO
+# type=blocked observation (PR1890), two task claims of one lane with a space and a colon in their paths, one of them
+# released (codex-lead-1), an expired claim and a stale vote.
+CORE_TWIN_SHA256 = "ff80507152793116e6b5f0bac5d39cd5145a5ab879de763e3a0b17570cad64b7"
+CORE_BLOCKED_SHA256 = "990030e082dee1bcafb9ff9d631f16fe0481b11b03be72d2fcdc66fc70f8c3ee"
 CORE_TWIN_AS_OF = "2026-10-13T03:55:00Z"
 CORE_TWIN_SOURCE = {"log_identity": "fixture-log", "generation": "g1", "cursor_start": 0, "cursor_end": 1500,
-                    "coverage": "complete", "event_count": 32}
+                    "coverage": "complete", "event_count": 33}
 _TWIN_UUID = {"fable-5": "f5", "claude-rco-1": "c1", "claude-rco-2": "c2", "codex-lead-1": "a1", "codex-tools-1": "b1"}
 H_OLD, H_NEW, H_1893, H_1890 = "0b" * 20, "1c" * 20, "2d" * 20, "3e" * 20
 H_1895, H_1896 = "4f" * 20, "5a" * 20
@@ -803,6 +804,8 @@ CORE_TWIN_EVENTS = [
     _event("03:06:00", "claude-rco-1", "finding", "changes_requested", "claude-rco-1/review-1890",
            {"pr": 1890, "head": H_1890}),
     _event("03:07:00", "claude-rco-2", "decision", "rco_pass", "claude-rco-2/review-1890",
+           {"pr": 1890, "head": H_1890}),
+    _event("03:08:00", "codex-tools-1", "blocked", "blocked", "codex-tools-1/train-1890",
            {"pr": 1890, "head": H_1890}),
     _event("03:10:00", "codex-lead-1", "message", "ready", "codex-lead-1/train-1893",
            {"pr": 1893, "head": H_1893, "class": "a", "required_checks_green": True}),
@@ -1230,8 +1233,8 @@ CORE_TWIN_JSON = r"""
     "verification": "declared"
    },
    "source_refs": [
-    "60442daa4004644f1b764c69335845bbd82447aa65865afbfabbec201c8b6f9a",
-    "99b5488aab5b2d6002fe0a2d69530c242c6e105b3a4ad1548596b860ffdf9dc9"
+    "2885f94c40b6f75b95a1119fd09fd0e359b46251e15262f0a2364cb5f0845fd4",
+    "60442daa4004644f1b764c69335845bbd82447aa65865afbfabbec201c8b6f9a"
    ],
    "stale_votes": [],
    "veto_observations": [
@@ -1244,6 +1247,17 @@ CORE_TWIN_JSON = r"""
       "88e2b130881d7adbd2b355ee962f3c017c063c3a6b348cc1d1b8197504731fd4"
      ],
      "status": "changes_requested",
+     "verification": "declared"
+    },
+    {
+     "activity": "UNKNOWN",
+     "agent": "codex-tools-1",
+     "agent_uuid": "00000000-0000-4000-8000-0000000000b1",
+     "head": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
+     "source_refs": [
+      "2885f94c40b6f75b95a1119fd09fd0e359b46251e15262f0a2364cb5f0845fd4"
+     ],
+     "status": "blocked",
      "verification": "declared"
     }
    ],
@@ -1545,12 +1559,12 @@ CORE_TWIN_JSON = r"""
   "cursor_end": 1500,
   "cursor_start": 0,
   "duplicate_count": 0,
-  "event_count": 32,
+  "event_count": 33,
   "generation": "g1",
   "last_event_ref": "4f32f2df251a63c06f10dc88af79c2e1b22a906dcfcdee0601daaa225aeb5f06",
   "log_identity": "fixture-log",
   "max_event_utc": "2026-10-13T03:52:00Z",
-  "unique_event_count": 32
+  "unique_event_count": 33
  },
  "tensions": []
 }
@@ -1580,11 +1594,14 @@ def test_an_actual_core_output_flows_through_the_workspace():
     assert twin["prs"]["1899"]["reported_ci"]["head"] == H_NEW and twin["prs"]["1899"]["stale_votes"][0]["head"] == H_OLD
     # The core's own facts (pr and lane observations) are carried, not refused and not derived from.
     assert {fact["kind"] for fact in twin["facts"]} == {"lane_observation", "pr_observation"}
-    # The core's 58a30453 shapes the workspace reads: an undeclared pass is unverified, a withdrawn pass is stale at
-    # the same head, and releasing one task claim of a lane keeps the other.
+    # The core's d47f3ef9 shapes the workspace reads: an undeclared pass is unverified, a withdrawn pass is stale at
+    # the same head, a non-RCO type=blocked is a veto observation, and releasing one task claim of a lane keeps
+    # the other.
     assert ("claude-rco-2", "unverified") in [(vote["agent"], vote["verification"])
                                               for vote in twin["prs"]["1896"]["votes"]]
     assert [vote["head"] for vote in twin["prs"]["1895"]["stale_votes"]] == [H_1895]
+    assert [(veto["agent"], veto["status"]) for veto in twin["prs"]["1890"]["veto_observations"]] == [
+        ("claude-rco-1", "changes_requested"), ("codex-tools-1", "blocked")]
     lead = twin["lanes"]["codex-lead-1|" + _event("00:00:00", "codex-lead-1", "", "", "", {})["agent_uuid"]]
     assert [row["task_id"] for row in lead["claims"]["by_task"]] == ["codex-lead-1/plan-notes"]
     reflected = mind.reflect(twin)
@@ -1594,20 +1611,22 @@ def test_an_actual_core_output_flows_through_the_workspace():
     overlap_old = f"claims:claude-rco-2|{uuid['claude-rco-2']}|fable-5|{uuid['fable-5']}"
     expired = f"claim:codex-tools-1|{uuid['codex-tools-1']}:codex-tools-1/mind-20261013"
     veto_1895, veto_1890 = f"pr:1895:veto:claude-rco-2:{H_1895[:12]}", f"pr:1890:veto:claude-rco-1:{H_1890[:12]}"
+    blocked_1890 = f"pr:1890:veto:codex-tools-1:{H_1890[:12]}"
     stale_1899, stale_1895 = f"pr:1899:claude-rco-1:{H_OLD[:12]}", f"pr:1895:claude-rco-2:{H_1895[:12]}"
-    assert sorted(by_subject) == sorted([overlap_new, overlap_old, expired, veto_1895, veto_1890, stale_1899,
-                                         stale_1895])
+    assert sorted(by_subject) == sorted([overlap_new, overlap_old, expired, veto_1895, veto_1890, blocked_1890,
+                                         stale_1899, stale_1895])
     named = {"tension:" + tension["tension_id"]: subject for subject, tension in by_subject.items()}
     attention = [(item["kind"], named.get(item["subject"], item["subject"]), item["actors"])
                  for item in reflected["attention"]]
     assert attention[:3] == [("last_missing_vote", "pr:1896", ["claude-rco-2"]),
                              ("last_missing_vote", "pr:1899", ["codex-lead-1"]),
                              ("signature_only", "pr:1893", ["operator"])]
-    assert sorted(attention[3:7]) == sorted([("tension_high", overlap_new, ["claude-rco-1", "codex-lead-1"]),
+    assert sorted(attention[3:8]) == sorted([("tension_high", overlap_new, ["claude-rco-1", "codex-lead-1"]),
                                              ("tension_high", overlap_old, ["claude-rco-2", "fable-5"]),
                                              ("tension_high", veto_1895, ["claude-rco-2"]),
-                                             ("tension_high", veto_1890, ["claude-rco-1"])])
-    assert sorted(attention[7:]) == sorted([("tension", stale_1899, ["claude-rco-1"]),
+                                             ("tension_high", veto_1890, ["claude-rco-1"]),
+                                             ("tension_high", blocked_1890, ["codex-tools-1"])])
+    assert sorted(attention[8:]) == sorted([("tension", stale_1899, ["claude-rco-1"]),
                                             ("tension", stale_1895, ["claude-rco-2"]),
                                             ("tension", expired, ["codex-tools-1"])])
     assert by_subject[overlap_new]["observation"] == "overlapping paths: docs/my notes ~ docs/my notes/plan.md, " \
@@ -1616,6 +1635,9 @@ def test_an_actual_core_output_flows_through_the_workspace():
     assert by_subject[overlap_old]["refs"] == sorted([refs["03:40:00"], refs["03:41:00"]])
     assert by_subject[stale_1895]["observation"] == "the core retired it at the PR head; a stale vote cannot approve it"
     assert by_subject[veto_1890]["refs"] == sorted({refs["03:06:00"]} | set(twin["prs"]["1890"]["source_refs"]))
+    assert by_subject[blocked_1890]["refs"] == sorted({refs["03:08:00"]} | set(twin["prs"]["1890"]["source_refs"]))
+    assert by_subject[blocked_1890]["observation"] == "the veto is observed; whether it is still active is UNKNOWN, " \
+                                                      "never cleared here"
     assert by_subject[stale_1899]["refs"] == sorted({refs["03:35:00"]} | set(twin["prs"]["1899"]["source_refs"]))
     assert by_subject[expired]["refs"] == [refs["03:20:00"]]
     assert reflected["attention"][1]["refs"] == sorted(set(twin["prs"]["1899"]["source_refs"]) | {
@@ -1637,7 +1659,7 @@ def test_an_actual_core_blocked_view_makes_no_head_bound_suggestion():
     assert _sha256(blocked) == CORE_BLOCKED_SHA256
     assert (blocked["tensions"], blocked["attention"]) == ([], [])
     reflected = mind.reflect(blocked)
-    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 5 + ["tension"] * 3
+    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 6 + ["tension"] * 3
     rules = _rules(reflected)
     assert sorted(rules) == ["claim_overlap", "expired_claim", "input_blocked", "stale_vote", "veto_observed"]
     assert rules["input_blocked"]["subject"] == "offset:1500" and "canonical_event_invalid" in rules["input_blocked"][

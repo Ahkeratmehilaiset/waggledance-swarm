@@ -185,7 +185,19 @@ def _class_at(parsed, pr, head):
     row = parsed.context_row(pr)
     if row is None or row["head"] != head or not parsed.context["charter_ok"] or row["path_class"] is None:
         return None
-    return "protected" if row["path_class"]["a_hits"] or row["path_class"]["denylist_hits"] else "not_protected"
+    klass = row["path_class"]
+    return "protected" if klass["a_hits"] or klass["denylist_hits"] or not klass["charter_allowed"] else "not_protected"
+
+
+def _class_why(parsed, pr, head):
+    """Why a computed class is protected: a, denylist and/or off-allowlist, from the context row at that head."""
+    row = parsed.context_row(pr)
+    if row is None or row["head"] != head or row["path_class"] is None:
+        return ""
+    klass = row["path_class"]
+    why = [name for name, hit in (("a", klass["a_hits"]), ("denylist", klass["denylist_hits"]),
+                                  ("off-allowlist", not klass["charter_allowed"])) if hit]
+    return f" ({', '.join(why)})" if why else ""
 
 
 def _ready_line(parsed, since, pr, ci, head, status, lane, items):
@@ -206,6 +218,7 @@ def _ready_line(parsed, since, pr, ci, head, status, lane, items):
                   + f"; {_bot_text(observed, head)}"
                   + ("" if not by else "; mentioned by open " + ", ".join(f"PR{n}" for n in by))
                   + f"; left: {left}; class {computed or ws.UNKNOWN}"
+                  + (_class_why(parsed, pr, head) if computed == "protected" else "")
                   + (f"; excused {', '.join(excused)}" if excused else "")
                   + (" (yours)" if _involved(parsed, pr, lane, items.get(pr["pr"], [])) else ""), 340)
 

@@ -888,7 +888,11 @@ def test_a_charter_flag_that_is_not_an_exact_boolean_refuses_the_whole_context(l
     ("UNKNOWN", PROTECTED, ["signature_only"]),        # computed protected hit, whatever the declared class
     ("b", {**NOT_PROTECTED, "denylist_hits": ["CLAUDE.md"]}, ["signature_only"]),  # a denylist hit is protected
     ("b", NOT_PROTECTED, []),                          # every vote, nothing protected: no suggestion at all
-    ("a", {**NOT_PROTECTED, "charter_allowed": False, "unrecognized": ["new/x.py"]}, ["class_unverified"]),
+    # Off-allowlist (the charter does not allow the set, no a or denylist hit) needs the operator signature too:
+    # RCO2 11:11Z listed PR1875 (.github/workflows) as off-allowlist while the class said not_protected.
+    ("a", {**NOT_PROTECTED, "charter_allowed": False, "unrecognized": ["new/x.py"]}, ["signature_only"]),
+    ("b", {**NOT_PROTECTED, "charter_allowed": False, "unrecognized": [".github/workflows/ci.yml"]},
+     ["signature_only"]),
 ])
 def test_a_declared_or_fallback_class_is_never_signature_only_but_a_computed_protected_hit_is(klass, path_class, expected):
     """Shadow S3: PR1900 showed signature_only from a declared class whose computed a_hits were empty."""

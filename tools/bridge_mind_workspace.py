@@ -62,7 +62,9 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   same. These are the only recusal reads here; a declared author or recusal is data, not authentication.
 * A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
   artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
-  protected hit (an ``a_hits`` or ``denylist_hits`` entry) is ``protected``, none is ``not_protected``. Anything
+  protected hit (an ``a_hits`` or ``denylist_hits`` entry) or a path set the charter does not allow
+  (``charter_allowed`` false: off-allowlist, which needs an explicit operator signature while the standing sign
+  is dormant) is ``protected``; an allowed set with no protected hit is ``not_protected``. Anything
   else leaves the class UNKNOWN. A declared class from the bridge is never enough for ``signature_only``: a PR
   with every reported vote, a declared ``a`` and no computed protected hit is a ``class_unverified`` tension,
   and empty ``a_hits`` never waive a signature while the charter or denylist evidence is unknown.
@@ -458,7 +460,9 @@ class _Inputs:
         if row is None or not self.context["charter_ok"] or self.suppressed(pr) is not None \
                 or row["path_class"] is None:
             return None
-        return "protected" if row["path_class"]["a_hits"] or row["path_class"]["denylist_hits"] else "not_protected"
+        klass = row["path_class"]
+        return "protected" if klass["a_hits"] or klass["denylist_hits"] or not klass["charter_allowed"] \
+            else "not_protected"
 
     def _refuse(self, where: str, row: Any, reason: str) -> None:
         self.refused.append({"where": where, "ref": _first_ref(row), "reason": reason})

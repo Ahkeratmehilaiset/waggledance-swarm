@@ -22,6 +22,7 @@ import tempfile
 from typing import Any
 
 from tools.bridge_compact_view import event_id
+from tools.bridge_event_taxonomy import BLOCK_BY_TYPE, RCO_GATED_TYPES
 from waggledance.core.bridge_log_reader import parse_bridge_json_object
 
 UNKNOWN = "UNKNOWN"
@@ -84,12 +85,12 @@ def _token(value: Any) -> str:
 
 def _block_observation(agent: str, kind: str, status: str) -> bool:
     """Conservative signal DISPLAY, never a gate verdict or clearing transition."""
+    if kind in BLOCK_BY_TYPE and (kind not in RCO_GATED_TYPES or agent in _RCO_ACTORS):
+        return True
     if kind in _SIGNAL_TYPES and status in _VETO:
         return True
     if agent not in _RCO_ACTORS:
         return False
-    if kind in {"finding", "blocked"}:
-        return True  # The canonical taxonomy can block by type, even an informational finding.
     if kind not in {"decision", "rco_review"}:
         return False
     normalized = re.sub(r"[^a-z0-9]+", "_", status).strip("_")

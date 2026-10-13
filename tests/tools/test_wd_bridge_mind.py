@@ -402,3 +402,33 @@ def test_all_supported_blocked_reasons_publish_and_pass_positive_neutral_and_clo
     pr = mind.snapshot(build([passed, held, new_pass]), as_of_utc=AS_OF)["prs"]["1900"]
     assert len(pr["votes"]) == 1 and pr["votes"][0]["source_refs"] == [new_pass["ref"]]
     assert pr["veto_observations"][0]["activity"] == "UNKNOWN"  # no clearing verdict
+
+
+def test_canonical_block_type_parity_matrix_keeps_non_rco_peer_blocks_visible():
+    # MUT_MIND_NON_RCO_BLOCKED_IGNORED: actual canonical checker, no alternate gate.
+    from tools.check_bridge_changes_requested import check_bridge_clear_to_merge
+    passed = envelope(agent="claude-rco-1", type="decision", status="rco_pass")
+    positive = mind.snapshot(build([passed]), as_of_utc=AS_OF)["prs"]["1900"]
+    assert positive["votes"] and not positive["veto_observations"]
+    under_reports = []
+    cases = 0
+    for actor in ("claude-rco-1", "codex-tools-1", "codex-lead-1"):
+        for kind in ("decision", "finding", "rco_review", "message", "done", "blocked"):
+            for status in ("superseded", "cancelled", "info", "needs_work", "changes_requested", "hold",
+                           "blocked", "rejected", "veto", "withdrawn", "rco_pass_withdrawn", "approved"):
+                signal = envelope(agent=actor, type=kind, status=status, ts_utc="2026-10-13T03:59:01Z")
+                rows = [passed, signal]
+                gate = check_bridge_clear_to_merge(events=[row["event"] for row in rows], task_id="task/1",
+                                                  merging_agent="codex-lead-1", pr_number=1900)
+                pr = mind.snapshot(build(rows), as_of_utc=AS_OF)["prs"]["1900"]
+                if not gate["clear_to_merge"] and not pr["veto_observations"]:
+                    under_reports.append((actor, kind, status))
+                if actor == "codex-tools-1" and kind == "blocked":
+                    observations = pr["veto_observations"]
+                    if not observations or observations[0]["source_refs"] != [signal["ref"]]:
+                        under_reports.append((actor, kind, status, "lost_ref"))
+                    assert all(item["activity"] == "UNKNOWN" for item in observations)
+                    assert pr["votes"]  # Another actor's block is observed, not a forged pass retraction.
+                cases += 1
+    assert cases == 216
+    assert under_reports == []

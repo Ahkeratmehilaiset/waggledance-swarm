@@ -33,8 +33,11 @@ _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _PATH = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./\\: -]{0,2047}\Z")
 _PASS = {"rco_pass", "build_consensus_pass"}
 _VETO = {"changes_requested", "rco_fail", "review_failed", "hold", "blocked"}
-_HEAD_UPDATE = {"head_updated", "source_ready", "ready", "requested", "review_requested", "published", "opened"}
+_HEAD_UPDATE = {"head_updated", "source_ready", "ready", "published", "opened"}
 _SIGNAL_TYPES = {"decision", "finding", "rco_review"}
+_RCO_ACTORS = {"claude-rco-1", "claude-rco-2"}
+_RCO_NONBLOCK_RECORDS = {"autonomous_merge_receipt", "merged_operator_authorized", "operator_authorized", "rco_closed_postmerge"}
+_RCO_EXACT_NONBLOCK = {"rco_pass", "rco_pass_pending_ci", "build_consensus_pass", "approved", "approved_ci_green", "acknowledged", "no_changes_requested", "no_changes_requested_approved", "approved_waiver_block_cleared", "lead_no_blocker_rco_pending", "producer_no_block_reemit_required"}
 _MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 _ESCAPED_MARKERS = tuple(re.compile("".join("(?:" + re.escape(char) + r"|\\u" + format(ord(char), "04x") + ")" for char in marker), re.IGNORECASE) for marker in _MARKERS)
 
@@ -47,7 +50,7 @@ def canonical_bytes(value: Any) -> bytes:
     try:
         encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         if any(marker in encoded for marker in _MARKERS) or any(pattern.search(encoded) for pattern in _ESCAPED_MARKERS):
-            raise ProjectionError("private_marker_refused")
+            raise ProjectionError("guarded_word_refused")
         return encoded.encode("utf-8")
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         if isinstance(exc, ProjectionError):
@@ -73,6 +76,20 @@ def _iso(value: Any) -> str:
 
 def _token(value: Any) -> str:
     return value if isinstance(value, str) and _TOKEN.fullmatch(value) else UNKNOWN
+
+
+def _block_observation(agent: str, kind: str, status: str) -> bool:
+    """Conservative signal DISPLAY, never a gate verdict or clearing transition."""
+    if kind in _SIGNAL_TYPES and status in _VETO:
+        return True
+    if agent not in _RCO_ACTORS:
+        return False
+    if kind in {"finding", "blocked"}:
+        return True  # The canonical taxonomy can block by type, even an informational finding.
+    if kind not in {"decision", "rco_review"}:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", status).strip("_")
+    return normalized not in (_RCO_EXACT_NONBLOCK | _RCO_NONBLOCK_RECORDS)
 
 
 def _source(value: Any, count: int) -> dict:
@@ -165,7 +182,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
                     uncertainty=["origin_not_authenticated", "native_readiness_UNKNOWN"])
         lane["next_question"] = UNKNOWN
         scope = event.get("write_scope", payload.get("write_scope"))
-        if scope is not None:
+        if scope is not None and kind == "claim":
             valid_scope = isinstance(scope, list) and all(isinstance(p, str) and _PATH.fullmatch(p) for p in scope)
             lane["claims"] = {"write_scope": deepcopy(scope) if valid_scope else UNKNOWN,
                               "source_refs": [ref], "verification": "declared"}
@@ -173,6 +190,8 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
                 lane["uncertainty"].append("invalid_write_scope")
             expiry = payload.get("claim_lease_expires_utc", event.get("claim_lease_expires_utc"))
             lane["claims"]["lease_expires_utc"] = _iso(expiry) if expiry is not None else UNKNOWN
+        elif kind in {"release", "handoff", "done"} and isinstance(lane["claims"], dict) and task == previous.get("current_task"):
+            lane["claims"] = dict(write_scope=[], source_refs=[ref], verification="declared", lease_expires_utc=UNKNOWN)
         waiting = payload.get("waiting_on")
         if waiting is not None:
             values = [waiting] if isinstance(waiting, str) else waiting
@@ -190,7 +209,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         head = bindings[0] if bindings and isinstance(bindings[0], str) and _HEAD.fullmatch(bindings[0]) else UNKNOWN
         key = str(pr)
         record = state.prs.setdefault(key, dict(pr=pr, head=UNKNOWN, base=UNKNOWN, reported_ci={"status": UNKNOWN},
-                  class_value=UNKNOWN, source_refs=[ref], _field_refs={}, _votes={}, _vetos={}))
+                  class_value=UNKNOWN, source_refs=[ref], _field_refs={}, _votes={}, _vetos={}, _invalidated={}))
         if head != UNKNOWN and (record["head"] == UNKNOWN or status in _HEAD_UPDATE):
             if head != record["head"]:
                 record["reported_ci"] = {"status": UNKNOWN}
@@ -209,12 +228,16 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
             record["reported_ci"] = dict(status="reported_green" if ci else "reported_not_green",
                                          head=head, source_refs=[ref], verification="declared")
         if kind in _SIGNAL_TYPES and status in _PASS and head != UNKNOWN:
-            vote = dict(agent=agent, agent_uuid=uuid, head=head, status=status, source_refs=[ref], verification="declared")
+            vote = dict(agent=agent, agent_uuid=uuid, head=head, status=status, source_refs=[ref], verification="declared" if valid_identity else "unverified")
             record["_votes"][(agent, uuid, head, status)] = vote
-        if kind in _SIGNAL_TYPES and status in _VETO:
+        if _block_observation(agent, kind, status):
             # Observations only: never infer a gate-clearing transition from a pass/closeout.
             record["_vetos"][(agent, uuid, task, head)] = dict(agent=agent, agent_uuid=uuid, head=head,
-                  status=status, activity=UNKNOWN, source_refs=[ref], verification="declared")
+                  status=_token(status), activity=UNKNOWN, source_refs=[ref], verification="declared" if valid_identity else "unverified")
+            for vote in record["_votes"].values():
+                if vote["agent"] == agent and vote["agent_uuid"] == uuid:
+                    for old_ref in vote["source_refs"]:
+                        record["_invalidated"][old_ref] = ref
         record["source_refs"] = sorted({ref} | set(record["_field_refs"].values()))
         _fact(state, "pr_observation", key, dict(pr=pr, head=record["head"]), ref, when, 100 if status in _VETO else 80, record["source_refs"])
 
@@ -253,8 +276,10 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
         prs[key] = {name: deepcopy(record[name]) for name in ("pr", "head", "base", "reported_ci", "source_refs")}
         prs[key]["class"] = record["class_value"]
         versions = [deepcopy(v) for _, v in sorted(record["_votes"].items())]
-        prs[key]["votes"] = [v for v in versions if v["head"] == record["head"]]
-        prs[key]["stale_votes"] = [v for v in versions if v["head"] != record["head"]]
+        def current(v):
+            return v["head"] == record["head"] and not any(ref in record["_invalidated"] for ref in v["source_refs"])
+        prs[key]["votes"] = [v for v in versions if current(v)]
+        prs[key]["stale_votes"] = [v for v in versions if not current(v)]
         prs[key]["veto_observations"] = [deepcopy(v) for _, v in sorted(record["_vetos"].items())]
         prs[key]["missing"] = ["gate_eligibility_UNKNOWN"]
     lanes = deepcopy(state.lanes)
@@ -428,7 +453,7 @@ def blocked_snapshot(state: MindState, *, as_of_utc: str, offset: int, reason: s
     reasons = {"canonical_event_invalid", "provenance_hash_mismatch", "provenance_envelope_required",
                "source_cursor_required", "source_cursor_count_invalid", "complete_coverage_required",
                "cursor_discontinuity_rebuild_required", "file_identity_changed", "log_truncated",
-               "generation_changed", "partial_record", "private_marker_refused"}
+               "generation_changed", "partial_record", "guarded_word_refused"}
     if type(offset) is not int or offset < 0 or reason not in reasons:
         raise ProjectionError("blocked_diagnostic_invalid")
     value = snapshot(state, as_of_utc=as_of_utc)

@@ -65,7 +65,7 @@ def test_decoded_marker_is_refused_without_echo_and_positive_is_usable(field):
     with pytest.raises(mind.ProjectionError) as caught:
         build([bad])
     assert marker not in str(caught.value)
-    assert str(caught.value) == "private_marker_refused"
+    assert str(caught.value) == "guarded_word_refused"
 
 
 def test_allowlist_does_not_copy_messages_credentials_or_arbitrary_payloads():
@@ -91,7 +91,7 @@ def test_old_head_vote_never_approves_new_head_and_current_positive_survives():
 
 
 def test_reported_ci_veto_claim_and_identity_are_not_authenticated_or_cleared():
-    rows = [envelope(status="active", payload=dict(pr=1900, head=HEAD, required_checks_green=True,
+    rows = [envelope(type="claim", status="active", payload=dict(pr=1900, head=HEAD, required_checks_green=True,
              write_scope=["tools/a.py"], waiting_on=["peer/task"])),
             envelope(agent="claude-rco-1", type="decision", status="changes_requested"),
             envelope(agent="claude-rco-1", type="decision", status="rco_pass")]
@@ -216,7 +216,7 @@ def test_as_of_cannot_precede_hidden_newer_event_after_late_update():
 
 
 def test_current_head_class_and_preserved_claims_keep_their_actual_source_refs():
-    first = envelope(payload=dict(pr=1900, head=HEAD, **{"class": "a"}, write_scope=["tools/a.py"]))
+    first = envelope(type="claim", status="active", payload=dict(pr=1900, head=HEAD, **{"class": "a"}, write_scope=["tools/a.py"]))
     later = envelope(type="decision", status="build_consensus_pass", payload=dict(pr=1900, head=HEAD))
     snap = mind.snapshot(build([first, later]), as_of_utc=AS_OF)
     assert first["ref"] in snap["prs"]["1900"]["source_refs"]
@@ -302,3 +302,52 @@ def test_audit_dotdot_and_hardlink_refused_without_touching_the_public_control(t
     with pytest.raises(mind.ProjectionError):
         mind.read_snapshot(linked, audit_root=audit)
     assert safe.read_bytes() == original
+
+
+@pytest.mark.parametrize("kind,status", [("decision", "superseded"), ("decision", "cancelled"),
+    ("decision", "rco_pass_withdrawn"), ("rco_review", "needs_work"), ("finding", "info"),
+    ("finding", "high"), ("finding", "changes_requested"), ("decision", "hold")])
+def test_main_gate_block_implies_observation_and_old_pass_not_current(kind, status):
+    # MUT_MIND_CLOSED_VETO_SET / MUT_MIND_KEEPS_SUPERSEDED_PASS
+    from tools.check_bridge_changes_requested import check_bridge_clear_to_merge
+    rco_uuid = "2b2f6ff9-06c2-4ec8-b526-f10071ce7103"
+    passed = envelope(agent="claude-rco-1", agent_uuid=rco_uuid, type="decision", status="rco_pass")
+    positive = mind.snapshot(build([passed]), as_of_utc=AS_OF)["prs"]["1900"]
+    assert len(positive["votes"]) == 1 and positive["veto_observations"] == []
+    signal = envelope(agent="claude-rco-1", agent_uuid=rco_uuid, type=kind, status=status,
+                      ts_utc="2026-10-13T03:59:01Z")
+    rows = [passed, signal]
+    gate = check_bridge_clear_to_merge(events=[row["event"] for row in rows], task_id="task/1",
+                  merging_agent="codex-lead-1", identity_registry={"claude-rco-1": rco_uuid}, pr_number=1900)
+    assert gate["clear_to_merge"] is False
+    observed = mind.snapshot(build(rows), as_of_utc=AS_OF)["prs"]["1900"]
+    assert observed["veto_observations"] and observed["votes"] == []
+    assert observed["stale_votes"]  # retain the earlier pass as evidence, not as current
+
+
+def test_plain_empty_scope_message_does_not_retire_claim_and_release_is_explicit():
+    # MUT_MIND_MESSAGE_WIPES_CLAIM
+    claimed = envelope(type="claim", status="active", write_scope=["tools/a.py"])
+    ordinary = envelope(type="message", status="info", write_scope=[], ts_utc="2026-10-13T03:59:01Z")
+    rows = [claimed, ordinary]
+    lane = mind.snapshot(build(rows), as_of_utc=AS_OF)["lanes"]["codex-tools-1|"+UUID]
+    assert lane["claims"]["write_scope"] == ["tools/a.py"]
+    assert lane["claims"]["lease_expires_utc"] == lane["claims"]["expired"] == "UNKNOWN"
+    released = envelope(type="release", status="abandoned", write_scope=[], ts_utc="2026-10-13T03:59:02Z")
+    lane = mind.snapshot(build([*rows, released]), as_of_utc=AS_OF)["lanes"]["codex-tools-1|"+UUID]
+    assert lane["claims"]["write_scope"] == []
+
+
+def test_sensitive_refusal_can_be_published_as_loud_block(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    state = build([envelope()])
+    original = mind.canonical_bytes(mind.snapshot(state, as_of_utc=AS_OF))
+    bad = envelope(message="PRIVATE"+"_MARKER")
+    with pytest.raises(mind.ProjectionError) as caught:
+        build([bad])
+    blocked = mind.blocked_snapshot(state, as_of_utc=AS_OF, offset=1, reason=str(caught.value))
+    path = audit / "blocked.json"
+    mind.write_snapshot(blocked, path, audit_root=audit)
+    assert mind.read_snapshot(path, audit_root=audit)["source"]["blocked"]["active"] is True
+    assert mind.canonical_bytes(mind.snapshot(state, as_of_utc=AS_OF)) == original

@@ -793,6 +793,56 @@ def _fold_for(snapshot, context, capture, now) -> dict[str, Any]:
     return fold
 
 
+REPLACE_TRIES = 12  # RCO1 10:30Z probe: os.replace on Windows hits the sharing window under concurrent readers
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_TRIES - 1:
+                raise InboxRefused("the shared publication could not be replaced") from None
+            time.sleep(min(0.005 * 2 ** attempt, 0.1))  # 5 ms doubling to 100 ms: about 0.8 s in all
+
+
+def publish_shared(fold: Mapping[str, Any], lanes: Iterable[str], directory: Path) -> dict[str, Any]:
+    """Publish one shared fold and a small lens file per lane, each written whole and swapped in atomically.
+
+    Readers never see a torn file: every file is written beside its target and replaced in one step (with a
+    bounded retry for the Windows sharing window). The fold is the shared mind; a lane joins by reading its 1-5 KB
+    lens file (or by running ``lens`` over the fold). Lens files are written before the fold, so a reader that
+    sees a new fold never sees an older lens than it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    digests = {}
+    files = {f"lens-{lane}.txt": render_text(lens(fold, lane)).encode("utf-8") for lane in lanes}
+    files["fold.json"] = json.dumps(fold, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    for name, data in files.items():  # dict order: lens files first, the fold last
+        workspace.guard_object(data.decode("utf-8"))
+        target = directory / name
+        temporary = directory / f".{name}.tmp"
+        with open(temporary, "wb") as handle:
+            handle.write(data)
+        _replace_with_retry(temporary, target)
+        digests[name] = hashlib.sha256(data).hexdigest()
+    return digests
+
+
+def read_lens(directory: Path, lane: str) -> str:
+    """A lane joins the shared mind: read its lens file, retrying once on the Windows sharing window."""
+    if not _LANE.match(lane):
+        raise InboxRefused("the lane id is not lane-shaped")
+    for attempt in range(2):
+        try:
+            return (directory / f"lens-{lane}.txt").read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == 1:
+                raise InboxRefused("the lens file could not be read") from None
+            time.sleep(0.02)
+    raise InboxRefused("the lens file could not be read")
+
+
 def render_text(inbox: Mapping[str, Any]) -> str:
     def refs(item: Mapping[str, Any]) -> str:
         return "[" + ",".join(_short(r) for r in item.get("refs", [])[:4]) + (",+" if len(item.get("refs", [])) > 4 else "") + "]"
@@ -889,7 +939,7 @@ def inbox_for(inputs: Mapping[str, Any], lane: str) -> dict[str, Any]:
 
 
 def run(publication: Path, context_path: Path, capture_path: Path, audit_root: Path, lanes: Iterable[str],
-        out_dir: Path) -> dict[str, Any]:
+        out_dir: Path, publish_dir: Path | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     root = Path(os.path.abspath(audit_root))
     snapshot = core.read_snapshot(_inside(publication, root), audit_root=root)
@@ -931,6 +981,11 @@ def run(publication: Path, context_path: Path, capture_path: Path, audit_root: P
     receipt = {"schema": SCHEMA + ".receipt", "authority": "none", "capture_sha256": capture_sha, "context_sha256": context_sha,
                "snapshot_log_identity": snapshot["source"]["log_identity"], "as_of_utc": now, "load_ms": round(loaded_ms, 1),
                "lanes": results, "outputs": digests}
+    if publish_dir is not None:  # the shared mind: one fold and a lens per lane, swapped in atomically
+        t0 = time.perf_counter()
+        receipt["shared"] = {"files": publish_shared(_fold_for(snapshot, context, capture, now), list(lanes),
+                                                     _inside(publish_dir, root)),
+                             "publish_ms": round((time.perf_counter() - t0) * 1000, 1)}
     workspace.guard_object(receipt)
     with open(target / "receipt.json", "x", encoding="utf-8") as handle:
         handle.write(json.dumps(receipt, sort_keys=True, indent=1))
@@ -945,9 +1000,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-root", required=True, type=Path)
     parser.add_argument("--lane", action="append", required=True)
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument("--publish-dir", type=Path, default=None,
+                        help="also publish the shared fold and one lens file per lane here (inside the audit root)")
     args = parser.parse_args(argv)
     try:
-        receipt = run(args.publication, args.context, args.capture, args.audit_root, args.lane, args.out_dir)
+        receipt = run(args.publication, args.context, args.capture, args.audit_root, args.lane, args.out_dir,
+                      args.publish_dir)
     except (InboxRefused, core.ProjectionError, workspace.WorkspaceError) as exc:
         sys.stderr.write(f"refused: {exc}\n")
         return 2

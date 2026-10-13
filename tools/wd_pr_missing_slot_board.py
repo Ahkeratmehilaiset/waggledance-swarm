@@ -46,6 +46,34 @@ Every string it writes is checked after decoding: a string that holds a guarded 
 plain or ``\\uXXXX``-escaped, is replaced by a fixed placeholder, and the row counts it in
 ``withheld``. The word itself is never written. Classification runs before this, so a withheld text
 keeps its element and state.
+
+Dormant mind mode (``--mind-snapshot`` with ``--audit-root``, explicit only)
+---------------------------------------------------------------------------
+It reads ONE reflected ``wd.bridge-mind.v1`` snapshot: the projector core's snapshot with the reflective
+workspace's ``attention`` and ``next_question``. The file must sit in an owned ``.codex-audit`` tree. The mode
+shows that snapshot's PR observations, attention and next question with their refs, and recomputes nothing.
+It never imports, runs or reads the merge gate or the snapshot tool. It never calls GitHub or a provider,
+never reads the canonical bridge log and never writes a bridge event. The legacy imports
+(``subprocess``, ``tempfile``) do not run on this path. It infers no ready or merge state and no
+gate slot. Author, recusal and RCO presence are not in the snapshot, so they stay ``UNKNOWN``.
+
+* **Input checks.** Schema, ``authority: none`` and the bounded scope are checked. The whole input is read
+  with the canonical bridge JSON reader (no duplicate keys, no NaN). Any guarded word anywhere refuses the
+  whole input. The guard catches any letter case and compatibility form, before and after each
+  ``\\uXXXX`` unescape.
+* **Binding to refs.** Every attention item must carry refs and ``suggestion_only``. Every next-question
+  entry must name an attention item and carry that item's refs. A PR suggestion must name a PR whose CI is
+  green at its head, with no observed veto. Otherwise the snapshot is refused, with no partial view.
+* **What counts as current.**
+  * CI counts as green at the head only when it is ``reported_green`` for the PR's exact head.
+  * A vote is current only when it is declared and bound to that head. Any other vote is listed as not
+    current.
+  * A veto observation keeps activity ``UNKNOWN``.
+* **Blocked source.** A blocked source (``source.blocked`` not null) suppresses every PR suggestion and
+  every question bound to one. CI-at-head then reads ``UNKNOWN``.
+* **Output.** A refusal exits 2 with a fixed message and writes nothing. ``--out`` must be a new file in the
+  same audit root, created exclusively.
+* **Paths.** ``..``, links, junctions and hard-linked inputs are refused.
 """
 from __future__ import annotations
 
@@ -53,12 +81,16 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
-import subprocess
+import stat
 import sys
-import tempfile
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
+import unicodedata
+
+if TYPE_CHECKING:  # annotations only: the gate-audit mode imports subprocess where it runs a process
+    import subprocess
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -97,10 +129,12 @@ PREFIXES = (
     (CONSENSUS_PREFIX + "rco (", "rco"),
 )
 
-Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
+Runner = Callable[[Sequence[str]], Any]
 
 
 def _run(command: Sequence[str]) -> subprocess.CompletedProcess:
+    import subprocess  # the gate-audit mode only; the mind mode never runs a process
+
     return subprocess.run(list(command), capture_output=True, text=True, encoding="utf-8", errors="replace",
                           check=False, timeout=600)
 
@@ -311,6 +345,8 @@ def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path
 def build_board(prs: Sequence[Mapping[str, Any]], repo: str, bridge_root: Path | None, run: Runner | None = None,
                 python: str = sys.executable, main_sha: str = "",
                 holds: Mapping[int, Sequence[str]] | None = None) -> dict[str, Any]:
+    import tempfile  # the gate-audit mode only
+
     run = run or _run
     holds = holds or {}
     with tempfile.TemporaryDirectory(prefix="wd-slot-board-") as tmp:
@@ -373,9 +409,398 @@ def render_text(board: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# -- Dormant mind mode: one owned reflected Mind snapshot, shown with its refs; never the gate ----------------------
+
+MIND_SCHEMA = "wd.bridge-mind.v1"
+MIND_SCOPE = "bounded_projection_not_gate"
+MIND_KEYS = frozenset({"schema", "authority", "scope", "source", "prs", "lanes", "facts", "tensions", "attention",
+                       "next_question"})
+MIND_VIEW_SCHEMA = "wd.pr-missing-slot-board.mind-view.v1"
+MIND_INPUT_LIMIT = 16 * 1024 * 1024
+UNKNOWN = "UNKNOWN"
+UNESCAPE_ROUNDS = 4
+PR_KEYS = frozenset({"pr", "head", "base", "reported_ci", "source_refs", "class", "votes", "stale_votes",
+                     "veto_observations", "missing"})
+CI_KEYS = frozenset({"status", "head", "source_refs", "verification"})
+CI_STATUSES = (UNKNOWN, "reported_green", "reported_not_green")
+VOTE_KEYS = frozenset({"agent", "agent_uuid", "head", "status", "source_refs", "verification"})
+VETO_KEYS = VOTE_KEYS | {"activity"}
+ATTENTION_KEYS = frozenset({"kind", "subject", "actors", "detail", "refs", "rank", "suggestion_only"})
+QUESTION_KEYS = frozenset({"question", "attention_rank", "refs"})
+SOURCE_FIELDS = ("log_identity", "generation", "cursor_start", "cursor_end", "coverage", "event_count", "as_of_utc",
+                 "last_event_ref")
+# Not in the snapshot, so never guessed: no slot is read from an agent name, no recusal from a git author.
+NOT_IN_SNAPSHOT = ("author", "recusal", "rco_presence", "gate_slots")
+_REF = re.compile(r"[0-9a-f]{64}")
+_HEAD = re.compile(r"[0-9a-f]{40}")
+# A PR suggestion is exactly "pr:<number>"; any other spelling (say "PR:1") is refused, so it cannot slip past the
+# suppression of PR suggestions on a blocked source.
+_SUBJECT = re.compile(r"pr:[1-9][0-9]{0,8}|tension:[0-9a-f]{16}")
+_KIND = re.compile(r"[a-z_]{1,40}")
+_REASON = re.compile(r"[a-z0-9_]{1,64}")
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: a Windows junction or symlink
+
+
+class MindRefused(Exception):
+    """A refusal of the mind mode. Its text is a fixed phrase from this file and never echoes the input."""
+
+
+def _guarded_form(text: str) -> bool:
+    """A guarded word in any letter case or compatibility form, before or after each ``\\uXXXX`` unescape.
+
+    The shared check is case-sensitive, so each form is NFKC-normalized, case-folded and upper-cased first. The
+    unescape repeats until nothing changes. Text that is still changing after ``UNESCAPE_ROUNDS`` rounds counts
+    as guarded, so a deeper escape cannot hide a word.
+    """
+    form = text
+    for _ in range(UNESCAPE_ROUNDS):
+        if _guarded_word(unicodedata.normalize("NFKC", form).casefold().upper()) is not None:
+            return True
+        unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form)
+        if unescaped == form:
+            return False
+        form = unescaped
+    return True
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _lstat_no_link(path: Path) -> os.stat_result | None:
+    """The lstat of ``path``, or None when it does not exist. A symlink, junction or other reparse point is refused."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise MindRefused("an audit path cannot be inspected") from exc
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT:
+        raise MindRefused("an audit path is a link or junction")
+    return info
+
+
+def _owned_audit_path(path: Path, audit_root: Path) -> tuple[Path, os.stat_result | None]:
+    """The absolute path inside the owned ``.codex-audit`` root, as the Mind core checks its own snapshot paths.
+
+    The path has no ``..``, no link or junction on it or on any parent, and an existing file there is a regular
+    file with one link (a hard link could alias a file outside the audit tree). Returns the path and its lstat.
+    """
+    if ".." in Path(path).parts or ".." in Path(audit_root).parts:
+        raise MindRefused("an audit path holds a parent reference")
+    root = Path(os.path.abspath(audit_root))
+    target = Path(os.path.abspath(path))
+    if root.name != ".codex-audit":
+        raise MindRefused("the audit root is not an owned .codex-audit directory")
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise MindRefused("an audit path is outside the audit root") from None
+    if target == root:
+        raise MindRefused("an audit path is the audit root itself")
+    for parent in target.parents:
+        info = _lstat_no_link(parent)
+        if info is None or not stat.S_ISDIR(info.st_mode):
+            raise MindRefused("an audit path parent is missing or not a directory")
+    info = _lstat_no_link(target)
+    if info is not None and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+        raise MindRefused("an audit file is not a regular file with one link")
+    return target, info
+
+
+def read_mind_snapshot(path: Path, audit_root: Path) -> tuple[dict[str, Any], str]:
+    """One reflected snapshot from the owned audit tree, read whole and guarded whole. Returns it and its sha256."""
+    target, info = _owned_audit_path(path, audit_root)
+    if info is None:
+        raise MindRefused("the mind snapshot does not exist")
+    try:
+        with open(target, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            data = handle.read(MIND_INPUT_LIMIT + 1)
+    except OSError as exc:
+        raise MindRefused("the mind snapshot cannot be read") from exc
+    if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1):
+        raise MindRefused("the mind snapshot changed while it was opened")
+    if len(data) > MIND_INPUT_LIMIT:
+        raise MindRefused("the mind snapshot is larger than the board reads")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise MindRefused("the mind snapshot is not UTF-8") from None
+    if _guarded_form(text):
+        raise MindRefused("the mind snapshot holds a guarded word; nothing is shown")
+    # The canonical bridge JSON reader (no duplicate or case-colliding keys, no NaN, safe numbers), imported here:
+    # the gate-audit mode never needs it.
+    from waggledance.core.bridge_log_reader import parse_bridge_json_object
+
+    try:
+        value = parse_bridge_json_object(text)
+    except (ValueError, RecursionError):
+        raise MindRefused("the mind snapshot is not one canonical JSON object") from None
+    if any(_guarded_form(item) for item in _strings(value)):
+        raise MindRefused("the mind snapshot holds a guarded word; nothing is shown")
+    return value, hashlib.sha256(data).hexdigest()
+
+
+def _refs(value: Any, *, unknown_ok: bool = False) -> list[str]:
+    if isinstance(value, list) and value and all(isinstance(ref, str) and _REF.fullmatch(ref) for ref in value):
+        return list(value)
+    if unknown_ok and value == [UNKNOWN]:
+        return [UNKNOWN]
+    raise MindRefused("an observation has no valid event ref")
+
+
+def _text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise MindRefused("a snapshot field does not match the reflected interface")
+    return value
+
+
+def _signal(row: Any, keys: frozenset[str]) -> dict[str, Any]:
+    if not isinstance(row, dict) or set(row) != keys:
+        raise MindRefused("a PR signal does not match the reflected interface")
+    view = {key: _text(row[key]) for key in ("agent", "agent_uuid", "head", "status", "verification")}
+    view["source_refs"] = _refs(row["source_refs"])
+    return view
+
+
+def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
+    """One PR as the snapshot reports it. Whether CI and votes are at the PR head is compared, never assumed."""
+    if not isinstance(record, dict) or set(record) != PR_KEYS:
+        raise MindRefused("a PR observation does not match the reflected interface")
+    number, head = record["pr"], _text(record["head"])
+    if type(number) is not int or number <= 0 or str(number) != key or not (head == UNKNOWN or _HEAD.fullmatch(head)):
+        raise MindRefused("a PR observation does not match the reflected interface")
+    ci = record["reported_ci"]
+    if not isinstance(ci, dict) or "status" not in ci or set(ci) - CI_KEYS or ci["status"] not in CI_STATUSES:
+        raise MindRefused("a PR CI observation does not match the reflected interface")
+    ci_head = _text(ci.get("head", UNKNOWN))
+    ci_verification = _text(ci.get("verification", UNKNOWN))
+    ci_refs = _refs(ci["source_refs"]) if "source_refs" in ci else [UNKNOWN]
+    at_head = head != UNKNOWN
+    # A blocked source is not current, so nothing in it is green at a head. Otherwise CI is green only when it was
+    # reported green for this exact head. CI from an old head, or with no head, is never green here.
+    green: bool | str = UNKNOWN if blocked else (at_head and ci["status"] == "reported_green" and ci_head == head
+                                                 and ci_verification == "declared")
+    votes = []
+    for row in record["votes"] if isinstance(record["votes"], list) else [None]:
+        vote = _signal(row, VOTE_KEYS)
+        vote["at_head"] = UNKNOWN if blocked else (at_head and vote["head"] == head
+                                                   and vote["verification"] == "declared")
+        votes.append(vote)
+    stale = []
+    for row in record["stale_votes"] if isinstance(record["stale_votes"], list) else [None]:
+        vote = _signal(row, VOTE_KEYS)
+        vote["at_head"] = False  # the snapshot itself calls it stale; a stale vote is never current
+        stale.append(vote)
+    vetoes = []
+    for row in record["veto_observations"] if isinstance(record["veto_observations"], list) else [None]:
+        veto = _signal(row, VETO_KEYS)
+        veto["activity"] = UNKNOWN  # an observed veto is never cleared here, whatever the snapshot says
+        vetoes.append(veto)
+    missing = record["missing"]
+    if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
+        raise MindRefused("a PR observation does not match the reflected interface")
+    view = {"pr": number, "head": head, "base": _text(record["base"]), "class": _text(record["class"]),
+            "snapshot_missing": list(missing), "source_refs": _refs(record["source_refs"]),
+            "ci": {"status": ci["status"], "head": ci_head, "verification": ci_verification, "source_refs": ci_refs,
+                   "green_at_head": green},
+            "votes": votes, "stale_votes": stale, "veto_observations": vetoes}
+    view.update({name: UNKNOWN for name in NOT_IN_SNAPSHOT})
+    return view
+
+
+def _attention_view(items: Any) -> list[dict[str, Any]]:
+    """The reflected attention items as they are: ranked 1..n, refs bound, each one a suggestion only."""
+    if not isinstance(items, list):
+        raise MindRefused("the attention list does not match the reflected interface")
+    view = []
+    for rank, item in enumerate(items, 1):
+        if not isinstance(item, dict) or set(item) != ATTENTION_KEYS:
+            raise MindRefused("an attention item does not match the reflected interface")
+        if item["suggestion_only"] is not True:
+            raise MindRefused("an attention item is not marked as a suggestion only")
+        subject, kind = _text(item["subject"]), _text(item["kind"])
+        if type(item["rank"]) is not int or item["rank"] != rank or not _SUBJECT.fullmatch(subject) \
+                or not _KIND.fullmatch(kind):
+            raise MindRefused("an attention item does not match the reflected interface")
+        actors = item["actors"]
+        if not isinstance(actors, list) or not all(isinstance(actor, str) for actor in actors):
+            raise MindRefused("an attention item does not match the reflected interface")
+        # A PR suggestion must name the events it comes from; only a tension may say its refs are UNKNOWN.
+        refs = _refs(item["refs"], unknown_ok=subject.startswith("tension:"))
+        view.append({"rank": rank, "kind": kind, "subject": subject, "actors": list(actors),
+                     "detail": _text(item["detail"]), "refs": refs, "suggestion_only": True})
+    return view
+
+
+def _question_view(entry: Any, by_rank: Mapping[int, Mapping[str, Any]], suppressed: set[int]) -> tuple[dict, bool]:
+    """A next question bound to its attention item by rank and refs; UNKNOWN if that item is suppressed."""
+    if not isinstance(entry, dict) or set(entry) != QUESTION_KEYS:
+        raise MindRefused("a next question does not match the reflected interface")
+    question, rank = _text(entry["question"]), entry["attention_rank"]
+    if rank is None:
+        if question != UNKNOWN or entry["refs"] != [UNKNOWN]:
+            raise MindRefused("a next question is not bound to an attention item")
+        return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}, False
+    if type(rank) is not int or rank not in by_rank or entry["refs"] != by_rank[rank]["refs"]:
+        raise MindRefused("a next question is not bound to an attention item")
+    if rank in suppressed:
+        return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}, True
+    return {"question": question, "attention_rank": rank, "refs": list(entry["refs"])}, False
+
+
+def build_mind_view(snapshot: Any, snapshot_sha256: str) -> dict[str, Any]:
+    """The board's view of one reflected snapshot. It recomputes nothing and infers no ready or merge state."""
+    if not isinstance(snapshot, dict) or set(snapshot) != MIND_KEYS:
+        raise MindRefused("the input is not a reflected wd.bridge-mind.v1 snapshot")
+    # The snapshot is a bounded projection with no authority. One that claims anything else is not read.
+    if snapshot["schema"] != MIND_SCHEMA or snapshot["authority"] != "none" or snapshot["scope"] != MIND_SCOPE:
+        raise MindRefused("the snapshot claims a schema, authority or scope this board does not read")
+    source = snapshot["source"]
+    if not isinstance(source, dict):
+        raise MindRefused("the snapshot source does not match the reflected interface")
+    source_view = {name: (source[name] if isinstance(source.get(name), (str, int)) and type(source[name]) is not bool
+                          else UNKNOWN) for name in SOURCE_FIELDS}
+    # Missing means not known to be current: a source with no blocked field is treated like a blocked one.
+    marker = source.get("blocked", UNKNOWN)
+    if marker is None:
+        blocked, source_view["blocked"], source_view["blocked_reason"] = False, False, None
+    elif isinstance(marker, dict):
+        reason = marker.get("reason")
+        blocked, source_view["blocked"] = True, True
+        source_view["blocked_reason"] = reason if isinstance(reason, str) and _REASON.fullmatch(reason) else UNKNOWN
+    elif marker == UNKNOWN:
+        blocked, source_view["blocked"], source_view["blocked_reason"] = True, UNKNOWN, UNKNOWN
+    else:
+        raise MindRefused("the snapshot source does not match the reflected interface")
+    prs = snapshot["prs"]
+    if not isinstance(prs, dict):
+        raise MindRefused("the snapshot PRs do not match the reflected interface")
+    pr_views = [_pr_view(key, prs[key], blocked) for key in prs]
+    pr_views.sort(key=lambda view: view["pr"])
+    attention = _attention_view(snapshot["attention"])
+    by_number = {view["pr"]: view for view in pr_views}
+    for item in attention:
+        if blocked or not item["subject"].startswith("pr:"):
+            continue
+        # The workspace suggests a vote or signature only for CI reported green at the PR head with no observed
+        # veto. A PR suggestion without that backing would show an old head as current, so nothing is shown.
+        pr = by_number.get(int(item["subject"][3:]))
+        if pr is None or pr["ci"]["green_at_head"] is not True or pr["veto_observations"]:
+            raise MindRefused("a PR suggestion is not backed by CI green at the PR head with no observed veto")
+    by_rank = {item["rank"]: item for item in attention}
+    # A blocked source is not current: no PR suggestion from it is shown, and no question bound to one.
+    suppressed = {item["rank"] for item in attention if blocked and item["subject"].startswith("pr:")}
+    questions = snapshot["next_question"]
+    if not isinstance(questions, dict) or set(questions) != {"global", "lanes"} \
+            or not isinstance(questions["lanes"], dict):
+        raise MindRefused("the next question does not match the reflected interface")
+    global_view, global_suppressed = _question_view(questions["global"], by_rank, suppressed)
+    lanes, suppressed_lanes = {}, []
+    for agent in sorted(questions["lanes"]):
+        lanes[agent], hidden = _question_view(questions["lanes"][agent], by_rank, suppressed)
+        if hidden:
+            suppressed_lanes.append(agent)
+    return {
+        "schema": MIND_VIEW_SCHEMA,
+        "mode": "mind_snapshot",
+        "observe_only": True,
+        "authority": "none",
+        "gate_evaluated": False,
+        "snapshot_sha256": snapshot_sha256,
+        "source": source_view,
+        "prs": pr_views,
+        "attention": [item for item in attention if item["rank"] not in suppressed],
+        "next_question": {"global": global_view, "lanes": lanes},
+        "suppressed_by_block": {"attention_ranks": sorted(suppressed), "global_question": global_suppressed,
+                                "lane_questions": suppressed_lanes},
+        "not_in_snapshot": list(NOT_IN_SNAPSHOT),
+    }
+
+
+def render_mind_text(view: Mapping[str, Any]) -> str:
+    source = view["source"]
+    lines = [f"mind snapshot {view['snapshot_sha256'][:12]} as of {source['as_of_utc']}, "
+             f"coverage {source['coverage']}, source blocked {source['blocked']}: observe only, no gate run; "
+             "author, recusal and gate slots UNKNOWN"]
+    for pr in view["prs"]:
+        groups: dict[str, list[str]] = {"at head": [], "not current": [], "head binding UNKNOWN": []}
+        for vote in pr["votes"] + pr["stale_votes"]:
+            group = {True: "at head", False: "not current"}.get(vote["at_head"], "head binding UNKNOWN")
+            groups[group].append(f"{vote['agent']} {vote['status']}@{vote['head'][:12]}")
+        vetoes = [f"{veto['agent']} {veto['status']}@{veto['head'][:12]} (activity UNKNOWN)"
+                  for veto in pr["veto_observations"]]
+        lines.append(f"#{pr['pr']} {pr['head'][:12]} class {pr['class']}: "
+                     f"CI green at head {pr['ci']['green_at_head']}; "
+                     + "; ".join(f"votes {name}: {', '.join(items) or 'none'}" for name, items in groups.items())
+                     + f"; vetoes: {', '.join(vetoes) or 'none'}")
+    for item in view["attention"]:
+        lines.append(f"attention {item['rank']} {item['kind']} {item['subject']} [{', '.join(item['actors'])}]: "
+                     f"{item['detail']}")
+    hidden = view["suppressed_by_block"]["attention_ranks"]
+    if hidden:
+        lines.append("suppressed, the source is blocked: attention ranks " + ", ".join(str(rank) for rank in hidden))
+    lines.append("next question: " + view["next_question"]["global"]["question"])
+    lines.extend(f"  {agent}: {entry['question']}" for agent, entry in view["next_question"]["lanes"].items())
+    return "\n".join(lines) + "\n"
+
+
+def serialize_mind_view(view: Mapping[str, Any], *, as_json: bool) -> tuple[str, str]:
+    """The JSON text and the text to print, each guarded whole after the view itself is guarded."""
+    if any(_guarded_form(item) for item in _strings(view)):
+        raise MindRefused("a guarded word reached the board view; nothing is written")
+    try:
+        json_text = json.dumps(view, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
+        text = json_text if as_json else render_mind_text(view)
+    except (TypeError, ValueError, KeyError):
+        raise MindRefused("the board view cannot be serialized") from None
+    if _guarded_form(json_text) or _guarded_form(text):
+        raise MindRefused("a guarded word reached the board output; nothing is written")
+    return json_text, text
+
+
+def _write_new_owned(path: Path, audit_root: Path, text: str) -> None:
+    target, info = _owned_audit_path(path, audit_root)
+    if info is not None:
+        raise MindRefused("the output file exists; the board never overwrites one")
+    try:
+        with open(target, "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    except OSError:
+        raise MindRefused("the output file cannot be created") from None
+
+
+def mind_main(args: argparse.Namespace) -> int:
+    """The dormant mind mode, only when asked for explicitly. Exit 2 on any refusal, with nothing written."""
+    try:
+        if args.repo is not None or args.pr or args.bridge_root is not None or args.main_sha or args.hold:
+            raise MindRefused("the gate-audit flags are not read in mind mode")
+        if args.mind_snapshot is None or args.audit_root is None:
+            raise MindRefused("--mind-snapshot and --audit-root must be given together")
+        snapshot, digest = read_mind_snapshot(args.mind_snapshot, args.audit_root)
+        json_text, text = serialize_mind_view(build_mind_view(snapshot, digest), as_json=args.json)
+        if args.out is not None:
+            _write_new_owned(args.out, args.audit_root, json_text)
+    except MindRefused as exc:
+        sys.stderr.write(f"missing-slot board mind mode refused: {exc}\n")
+        return 2
+    sys.stdout.write(text)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only missing-slot board for open PRs.")
-    parser.add_argument("--repo", required=True)
+    parser.add_argument("--repo", default=None, help="Required in the default gate-audit mode.")
     parser.add_argument("--pr", type=int, action="append", default=[], help="Only these PR numbers.")
     parser.add_argument("--bridge-root", type=Path, default=None,
                         help="Passed to the gate as --bridge-root (default: the gate's own resolution).")
@@ -384,7 +809,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="A Lead hold the gate cannot see, for example an activation dependency.")
     parser.add_argument("--out", type=Path, default=None, help="Write the board JSON here.")
     parser.add_argument("--json", action="store_true", help="Print the board JSON instead of the text summary.")
+    parser.add_argument("--mind-snapshot", type=Path, default=None,
+                        help="Dormant mind mode: show one reflected wd.bridge-mind.v1 snapshot from an owned "
+                             ".codex-audit tree. Runs no gate, no GitHub call and no provider.")
+    parser.add_argument("--audit-root", type=Path, default=None,
+                        help="Mind mode only: the owned .codex-audit root that holds the snapshot and any --out.")
     args = parser.parse_args(argv)
+    if args.mind_snapshot is not None or args.audit_root is not None:
+        return mind_main(args)
+    if args.repo is None:
+        parser.error("the following arguments are required: --repo")
     holds: dict[int, list[str]] = {}
     for item in args.hold:
         number, sep, reason = item.partition("=")

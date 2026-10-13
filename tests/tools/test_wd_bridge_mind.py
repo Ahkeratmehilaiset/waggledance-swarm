@@ -41,7 +41,8 @@ def test_exact_provenance_positive_then_missing_or_mixed_ref_refused():
     snap = mind.snapshot(build([row]), as_of_utc=AS_OF)
     assert snap["authority"] == "none" and snap["schema"] == "wd.bridge-mind.v1"
     assert snap["prs"]["1900"]["head"] == HEAD
-    assert snap["tensions"] == snap["attention"] == [] and snap["next_question"] == "UNKNOWN"
+    assert snap["tensions"] == snap["attention"] == []
+    assert snap["next_question"] == {"lanes": {}, "global": {"question": "UNKNOWN", "attention_rank": None, "refs": ["UNKNOWN"]}}
     assert snap["facts"]
     for fact in snap["facts"]:
         assert fact["source_refs"] == [row["ref"]] and fact["canonical_sha256"] == row["ref"]
@@ -123,7 +124,7 @@ def test_incremental_rebuild_byte_parity_with_duplicate_and_late_corrections(cut
     assert len(mind.snapshot(full, as_of_utc=AS_OF)["facts"]) == 1  # eviction did not evict reducer state
 
 
-@pytest.mark.parametrize("change", [dict(cursor_start=9), dict(log_identity="rotated"),
+@pytest.mark.parametrize("change", [dict(cursor_start=2, cursor_end=3), dict(log_identity="rotated"),
                          dict(generation="new-generation"), dict(coverage="partial"),
                          dict(cursor_end=None), dict(event_count=2)])
 def test_cursor_loss_rotation_gap_and_partial_coverage_refused_without_reset(change):
@@ -187,3 +188,49 @@ def test_snapshot_writer_refuses_fact_without_refs_and_no_gate_imports_mind(tmp_
         names = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         names += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
         assert not any("wd_bridge_mind" in name for name in names)
+
+
+def test_snapshot_publication_rejects_unknown_projected_fields_and_tampered_cursor(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    good = audit / "good.json"
+    mind.write_snapshot(snap, good, audit_root=audit)
+    for change in (lambda value: value["prs"]["1900"].update(auth_token="fixture-not-secret"),
+                   lambda value: value["lanes"]["codex-tools-1|"+UUID].update(transcript="fixture-free-text"),
+                   lambda value: value["prs"]["1900"].update(source_refs=[]),
+                   lambda value: value["source"].update(unique_event_count=999)):
+        bad = deepcopy(snap)
+        change(bad)
+        with pytest.raises(mind.ProjectionError):
+            mind.write_snapshot(bad, audit / "bad.json", audit_root=audit)
+    assert mind.read_snapshot(good, audit_root=audit) == snap
+
+
+def test_as_of_cannot_precede_hidden_newer_event_after_late_update():
+    rows = [envelope(), envelope(ts_utc="2026-10-13T03:58:00Z", payload=dict(pr=1900, head=OTHER_HEAD))]
+    state = build(rows)
+    assert mind.snapshot(state, as_of_utc=AS_OF)["prs"]["1900"]["head"] == OTHER_HEAD
+    with pytest.raises(mind.ProjectionError, match="as_of_precedes_event"):
+        mind.snapshot(state, as_of_utc="2026-10-13T03:58:30Z")
+
+
+def test_current_head_class_and_preserved_claims_keep_their_actual_source_refs():
+    first = envelope(payload=dict(pr=1900, head=HEAD, **{"class": "a"}, write_scope=["tools/a.py"]))
+    later = envelope(type="decision", status="build_consensus_pass", payload=dict(pr=1900, head=HEAD))
+    snap = mind.snapshot(build([first, later]), as_of_utc=AS_OF)
+    assert first["ref"] in snap["prs"]["1900"]["source_refs"]
+    assert first["ref"] in snap["lanes"]["codex-tools-1|"+UUID]["source_refs"]
+
+
+def test_gate_verdict_bytes_do_not_depend_on_present_absent_or_corrupt_snapshot(tmp_path, monkeypatch):
+    from tools.check_bridge_changes_requested import check_bridge_clear_to_merge
+    path = tmp_path / "mind.json"
+    monkeypatch.setenv("WD_BRIDGE_MIND_SNAPSHOT", str(path))
+    verdicts = []
+    for contents in (None, "{}", "{corrupt"):
+        if contents is not None:
+            path.write_text(contents, encoding="utf-8")
+        verdict = check_bridge_clear_to_merge(events=[], task_id="fixture/task", merging_agent="codex-lead-1")
+        verdicts.append(json.dumps(verdict, sort_keys=True))
+    assert verdicts[0] == verdicts[1] == verdicts[2]

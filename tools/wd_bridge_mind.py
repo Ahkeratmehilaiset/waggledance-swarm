@@ -36,6 +36,7 @@ _VETO = {"changes_requested", "rco_fail", "review_failed", "hold", "blocked"}
 _HEAD_UPDATE = {"head_updated", "source_ready", "ready", "requested", "review_requested", "published", "opened"}
 _SIGNAL_TYPES = {"decision", "finding", "rco_review"}
 _MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
+_ESCAPED_MARKERS = tuple(re.compile("".join("(?:" + re.escape(char) + r"|\\u" + format(ord(char), "04x") + ")" for char in marker), re.IGNORECASE) for marker in _MARKERS)
 
 
 class ProjectionError(ValueError):
@@ -45,7 +46,7 @@ class ProjectionError(ValueError):
 def canonical_bytes(value: Any) -> bytes:
     try:
         encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        if any(marker in encoded for marker in _MARKERS):
+        if any(marker in encoded for marker in _MARKERS) or any(pattern.search(encoded) for pattern in _ESCAPED_MARKERS):
             raise ProjectionError("private_marker_refused")
         return encoded.encode("utf-8")
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
@@ -102,6 +103,7 @@ class MindState:
     fact_candidates: dict = field(default_factory=dict, repr=False)
     duplicates: int = 0
     last_ref: str = ""
+    max_event_utc: str | None = None
 
 
 def _envelope(value: Any) -> tuple[str, dict]:
@@ -134,6 +136,8 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         when = _iso(event.get("ts_utc"))
         if _time(when) > as_of:
             raise ProjectionError("as_of_precedes_event")
+        if state.max_event_utc is None or _time(when) > _time(state.max_event_utc):
+            state.max_event_utc = when
         state.last_ref = ref
         if ref in state.seen:
             state.duplicates += 1
@@ -158,6 +162,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
                     last_event_ref=ref, last_event_utc=when, source_refs=[ref],
                     verification="declared" if valid_identity else "unverified", idle_status=UNKNOWN,
                     uncertainty=["origin_not_authenticated", "native_readiness_UNKNOWN"])
+        lane["next_question"] = UNKNOWN
         scope = event.get("write_scope", payload.get("write_scope"))
         if scope is not None:
             valid_scope = isinstance(scope, list) and all(isinstance(p, str) and _PATH.fullmatch(p) for p in scope)
@@ -172,6 +177,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
             values = [waiting] if isinstance(waiting, str) else waiting
             lane["waits"] = {"waiting_on": values if isinstance(values, list) and all(_token(x) != UNKNOWN for x in values) else UNKNOWN,
                              "source_refs": [ref], "verification": "declared"}
+        lane["source_refs"] = sorted({ref} | {r for name in ("claims", "waits") if isinstance(lane[name], dict) for r in lane[name]["source_refs"]})
         state.lanes[identity] = lane
         _fact(state, "lane_observation", identity, dict(agent=agent, agent_uuid=uuid, current_task=task), ref, when, 50)
         pr = payload.get("pr")
@@ -183,18 +189,20 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
         head = bindings[0] if bindings and isinstance(bindings[0], str) and _HEAD.fullmatch(bindings[0]) else UNKNOWN
         key = str(pr)
         record = state.prs.setdefault(key, dict(pr=pr, head=UNKNOWN, base=UNKNOWN, reported_ci={"status": UNKNOWN},
-                  class_value=UNKNOWN, source_refs=[ref], _votes={}, _vetos={}))
+                  class_value=UNKNOWN, source_refs=[ref], _field_refs={}, _votes={}, _vetos={}))
         if head != UNKNOWN and (record["head"] == UNKNOWN or status in _HEAD_UPDATE):
             if head != record["head"]:
                 record["reported_ci"] = {"status": UNKNOWN}
             record["head"] = head
-        record["source_refs"] = [ref]
+            record["_field_refs"]["head"] = ref
         base = payload.get("base")
         if isinstance(base, str) and _HEAD.fullmatch(base):
             record["base"] = base
+            record["_field_refs"]["base"] = ref
         classification = payload.get("class", payload.get("classification"))
         if classification in ("a", "b", "on-allowlist"):
             record["class_value"] = classification
+            record["_field_refs"]["class"] = ref
         ci = payload.get("required_checks_green")
         if type(ci) is bool and head != UNKNOWN and head == record["head"]:
             record["reported_ci"] = dict(status="reported_green" if ci else "reported_not_green",
@@ -206,6 +214,7 @@ def _fold(state: MindState, rows: list, as_of: datetime) -> None:
             # Observations only: never infer a gate-clearing transition from a pass/closeout.
             record["_vetos"][(agent, uuid, task, head)] = dict(agent=agent, agent_uuid=uuid, head=head,
                   status=status, activity=UNKNOWN, source_refs=[ref], verification="declared")
+        record["source_refs"] = sorted({ref} | set(record["_field_refs"].values()))
         _fact(state, "pr_observation", key, dict(pr=pr, head=record["head"]), ref, when, 100 if status in _VETO else 80)
 
 
@@ -236,6 +245,8 @@ def apply_incremental(state: MindState, envelopes: list, *, source: dict, as_of_
 
 def snapshot(state: MindState, *, as_of_utc: str) -> dict:
     horizon = _time(as_of_utc)
+    if state.max_event_utc is not None and horizon < _time(state.max_event_utc):
+        raise ProjectionError("as_of_precedes_event")
     prs = {}
     for key, record in sorted(state.prs.items()):
         prs[key] = {name: deepcopy(record[name]) for name in ("pr", "head", "base", "reported_ci", "source_refs")}
@@ -264,9 +275,10 @@ def snapshot(state: MindState, *, as_of_utc: str) -> dict:
     active.sort(key=lambda item: (-item[1]["salience"], item[0]))
     result = dict(schema="wd.bridge-mind.v1", authority="none", scope="bounded_projection_not_gate",
              source=dict(deepcopy(state.source), as_of_utc=_iso(as_of_utc), unique_event_count=len(state.seen),
-                         duplicate_count=state.duplicates, last_event_ref=state.last_ref),
+                         duplicate_count=state.duplicates, last_event_ref=state.last_ref,
+                         max_event_utc=state.max_event_utc, blocked=None),
              prs=prs, lanes=lanes, facts=[deepcopy(fact) for _, fact in active[:state.max_facts]],
-             tensions=[], attention=[], next_question=UNKNOWN)
+             tensions=[], attention=[], next_question={"lanes": {}, "global": {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}})
     canonical_bytes(result)
     return result
 
@@ -282,7 +294,7 @@ def _audit_path(path: Path, audit_root: Path) -> Path:
             if component == path:
                 continue
             raise ProjectionError("audit_parent_missing") from None
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
             raise ProjectionError("linked_audit_destination_refused")
     if path.exists() and not path.is_file():
         raise ProjectionError("audit_file_required")
@@ -302,6 +314,30 @@ def _validate_snapshot(value: Any) -> None:
     fields = {key: src.get(key) for key in ("log_identity", "generation", "cursor_start", "cursor_end", "coverage", "event_count")}
     _source(fields, fields["event_count"])
     _time(src.get("as_of_utc"))
+    if (type(src.get("unique_event_count")) is not int or type(src.get("duplicate_count")) is not int
+            or src["unique_event_count"] < 0 or src["duplicate_count"] < 0
+            or src["unique_event_count"] + src["duplicate_count"] != src["event_count"]):
+        raise ProjectionError("snapshot_source_count_mismatch")
+    pr_keys = {"pr", "head", "base", "reported_ci", "source_refs", "class", "votes", "stale_votes", "veto_observations", "missing"}
+    lane_keys = {"agent", "agent_uuid", "session_id", "run_id", "current_task", "claims", "waits", "last_event_ref", "last_event_utc", "source_refs", "verification", "idle_status", "uncertainty", "observation_age_seconds", "next_question"}
+    if not isinstance(value.get("prs"), dict) or not isinstance(value.get("lanes"), dict):
+        raise ProjectionError("snapshot_entities_invalid")
+    for records, allowed in ((value["prs"], pr_keys), (value["lanes"], lane_keys)):
+        for record in records.values():
+            if not isinstance(record, dict) or set(record) != allowed:
+                raise ProjectionError("snapshot_field_invalid")
+    def refs_required(record):
+        if isinstance(record, dict):
+            if "source_refs" in record:
+                refs = record["source_refs"]
+                if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or not _REF.fullmatch(ref) for ref in refs):
+                    raise ProjectionError("provenance_fact_ref_required")
+            for nested in record.values():
+                refs_required(nested)
+        elif isinstance(record, list):
+            for nested in record:
+                refs_required(nested)
+    refs_required(value)
     if not isinstance(value.get("facts"), list):
         raise ProjectionError("snapshot_facts_invalid")
     for fact in value["facts"]:

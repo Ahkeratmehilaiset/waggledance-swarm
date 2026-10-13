@@ -132,3 +132,38 @@ def test_another_lane_naming_the_id_does_not_end_my_ask():
     other["agent"] = "codex-tools-1"
     result = inbox([ask("ask-1"), other])
     assert [w["asks"] for w in result["wait"]] == [["ask-1"]]
+
+
+def test_grok_round_fixture_storage_order_tools_line():
+    """Grok HIGH fixture relayed by RCO1 10:22Z: storage order, mention versus answer target, handoff ends a claim."""
+    tools, gh = "codex-tools-1", "a" * 40
+    claim_ref_holder = {}
+    handoff = {"agent": tools, "type": "handoff", "status": "ready", "to": "codex-lead-1", "task_id": "tools/C9",
+               "ts_utc": "2026-10-13T11:20:00Z", "message": "C9 done", "payload": {"pr": 42, "head": gh}}
+    claim = {"agent": tools, "type": "claim", "status": "active", "to": "", "task_id": "tools/C9",
+             "ts_utc": "2026-10-13T11:00:00Z", "message": "", "payload": {}, "write_scope": ["tools/x.py"]}
+    r1 = {"agent": "codex-lead-1", "type": "message", "status": "requested", "to": tools, "task_id": "lead/T7",
+          "request_id": "R1", "ts_utc": "2026-10-13T11:05:00Z", "payload": {"result_contract": {"required": []}}}
+    r2 = dict(r1, request_id="R2", ts_utc="2026-10-13T11:06:00Z")
+    lead_mention = {"agent": "codex-lead-1", "type": "message", "status": "info", "to": tools, "task_id": "lead/T7",
+                    "ts_utc": "2026-10-13T11:07:00Z", "message": "about R1", "payload": {}}
+    answer_r2 = {"agent": tools, "type": "message", "status": "answered", "to": "codex-lead-1", "task_id": "lead/T7",
+                 "in_reply_to_request_id": "R2", "ts_utc": "2026-10-13T11:08:00Z", "message": "", "payload": {}}
+    events = [handoff, claim, r1, r2, lead_mention, answer_r2]
+    claim_ref = v3.event_id(claim)
+    snapshot = {"prs": {"42": {"head": gh, "stale_votes": [], "veto_observations": [], "source_refs": [],
+                               "reported_ci": {"status": "UNKNOWN"},
+                               "votes": [{"agent": "claude-rco-1", "status": "rco_pass", "head": gh,
+                                          "source_refs": ["d" * 64]}]}},
+                "lanes": {f"{tools}|7a8af68d-20bc-4598-9953-23c5dd98b102": {
+                    "agent": tools, "verification": "declared", "uncertainty": [],
+                    "claims": {"by_task": [{"task_id": "tools/C9", "source_refs": [claim_ref]}]}}},
+                "tensions": []}
+    context = {"charter_ok": True, "prs": {42: {"state": "OPEN", "head": gh, "branch": "tools/pr42",
+                                               "authors": [tools], "path_class": None}}}
+    result = v3.build_inbox(snapshot, context, v3.Capture(events), tools, NOW)
+    assert [(o["pr"], o["github_head"]) for o in result["own"]] == [(42, gh)]  # author line, no vote ask
+    open_asks = [a["request_id"] for a in result["act"] if a.get("request_id")]
+    assert open_asks == ["R1"]  # a mention by another lane is routing only; R2 has its answer target
+    assert result["claims"] == []  # the handoff ends claim C9 whatever the storage order
+    assert any(s["kind"] == "claim_ended_by_handoff" for s in result["stale"])

@@ -160,23 +160,28 @@ class Capture:
                 out.setdefault(pr, {})[agent] = {"head": head if isinstance(head, str) else UNKNOWN, "ref": ref}
         return out
 
-    def released_after(self, task: str, lane: str, ref: str) -> str | None:
-        """The ref of a release of the task (by anyone, the stale-lease sweep included) or the lane's own ``done`` that
-        follows the claim event in log position or in time; None when there is none.
+    def released_after(self, task: str, lane: str, ref: str) -> tuple[str, str] | None:
+        """How the claim ended: (ref, "released") for a release of the task (by anyone, the stale-lease sweep
+        included) or the lane's own ``done``; (ref, "handoff") for the lane's own handoff that is not in progress.
+        The end must follow the claim event in log position or in time; None when there is none.
 
         Both orders count because the log is not time-ordered: a claim can be appended after a ``done`` that is
-        stamped later than it (seen 10-13 on rco2-pr1893-review). The claim is the lane's latest one by position."""
+        stamped later than it (seen 10-13 on rco2-pr1893-review; the Grok round fixture stores a handoff before its
+        claim). The claim is the lane's latest one by position. A release or done wins over a handoff."""
         start, claimed = self.position.get(ref), self.ts.get(ref, "")
         if start is None:
             return None
+        handoff = None
         for index in self.by_task.get(task, []):
             other, event = self.rows[index]
-            if index == start:
+            if index == start or not (index > start or (claimed and str(event.get("ts_utc") or "") > claimed)):
                 continue
             if event.get("type") == "release" or (event.get("type") == "done" and event.get("agent") == lane):
-                if index > start or (claimed and str(event.get("ts_utc") or "") > claimed):
-                    return other
-        return None
+                return other, "released"
+            if handoff is None and event.get("type") == "handoff" and event.get("agent") == lane \
+                    and str(event.get("status") or "").lower() not in ("in_progress", "started", "working"):
+                handoff = (other, "handoff")
+        return handoff
 
     def asks(self, lane: str) -> list[dict[str, Any]]:
         """Bound asks the lane must answer, with how each one ended (or that it has not).
@@ -402,8 +407,11 @@ def build_inbox(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture
             task = str(claim.get("task_id", UNKNOWN))
             latest = max(refs, key=lambda ref: capture.position.get(ref, -1)) if refs else None
             release = capture.released_after(task, lane, latest) if latest else None
-            if release is not None:  # the log released it after the claim; the Mind still lists it (counted only)
+            if release is not None and release[1] == "released":  # the Mind still lists it (counted only)
                 released += 1
+                continue
+            if release is not None:  # the lane handed the task off after the claim: not held, shown with both refs
+                stale.append({"kind": "claim_ended_by_handoff", "task": task, "refs": sorted(set(refs) | {release[0]})})
                 continue
             match = _PR_IN_TASK.search(task)
             pr_state = states.get(int(match.group(1)), UNKNOWN) if match else None

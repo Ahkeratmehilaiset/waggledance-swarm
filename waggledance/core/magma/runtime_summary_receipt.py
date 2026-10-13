@@ -43,6 +43,30 @@ SOLVER_TRACE_STATUS_VALUES = frozenset({"selected"})
 SOLVER_TRACE_EXECUTION_BOUNDARY_VALUES = frozenset({"safe_action_bus"})
 
 
+def _require_literal_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"runtime summary {field} must be a literal bool")
+    return value
+
+
+def _require_optional_literal_bool(value: object, field: str) -> bool | None:
+    if value is not None and type(value) is not bool:
+        raise ValueError(
+            f"runtime summary {field} must be a literal bool or null"
+        )
+    return value
+
+
+def _require_derived_value(
+    payload: Mapping[str, Any],
+    field: str,
+    expected: str,
+) -> None:
+    value = payload.get(field)
+    if type(value) is not str or value != expected:
+        raise ValueError(f"runtime summary {field} mismatch")
+
+
 def build_handle_query_runtime_summary(
     *,
     query: str,
@@ -65,6 +89,13 @@ def build_handle_query_runtime_summary(
     solver_call_trace: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a payload-safe summary for a completed handle_query path."""
+    approved = _require_literal_bool(approved, "approved")
+    executed = _require_literal_bool(executed, "executed")
+    needs_approval = _require_literal_bool(needs_approval, "needs_approval")
+    verifier_passed = _require_optional_literal_bool(
+        verifier_passed,
+        "verifier_passed",
+    )
     actual_gate = _actual_gate(
         approved=approved,
         executed=executed,
@@ -87,9 +118,9 @@ def build_handle_query_runtime_summary(
         "action_id": str(action_id),
         "case_id": str(case_id),
         "world_snapshot_ref": str(snapshot_id),
-        "approved": bool(approved),
-        "executed": bool(executed),
-        "needs_approval": bool(needs_approval),
+        "approved": approved,
+        "executed": executed,
+        "needs_approval": needs_approval,
         "actual_gate": actual_gate,
         "expected_gate": actual_gate,
         "verdict": verdict,
@@ -239,8 +270,35 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
         "decision_reason_digest",
         "solver_call_trace_digest",
     ):
-        if not payload.get(key):
-            raise ValueError(f"runtime summary missing required field: {key}")
+        value = payload.get(key)
+        if type(value) is not str or not value:
+            raise ValueError(
+                f"runtime summary {key} must be a non-empty string"
+            )
+    approved = _require_literal_bool(payload.get("approved"), "approved")
+    executed = _require_literal_bool(payload.get("executed"), "executed")
+    needs_approval = _require_literal_bool(
+        payload.get("needs_approval"),
+        "needs_approval",
+    )
+    verifier_passed = _require_optional_literal_bool(
+        payload.get("verifier_passed"),
+        "verifier_passed",
+    )
+    expected_gate = _actual_gate(
+        approved=approved,
+        executed=executed,
+        needs_approval=needs_approval,
+    )
+    _require_derived_value(payload, "actual_gate", expected_gate)
+    _require_derived_value(payload, "expected_gate", expected_gate)
+    expected_verdict = _verdict(
+        approved=approved,
+        executed=executed,
+        needs_approval=needs_approval,
+        verifier_passed=verifier_passed,
+    )
+    _require_derived_value(payload, "verdict", expected_verdict)
     _validate_solver_trace_payload(payload)
 
 

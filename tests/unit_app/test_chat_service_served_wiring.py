@@ -17,6 +17,10 @@ from waggledance.core.magma import chat_served_ledger as L
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     derive_instrumented_served_points,
 )
+from waggledance.core.magma.chat_query_route_evidence import (
+    NORMALIZATION_VERSION,
+    canonical_query_digest,
+)
 from waggledance.core.orchestration.routing_policy import select_route
 
 
@@ -63,6 +67,11 @@ def _pending_ids(out_dir):
     return {e["served_id"] for e in entries if e["entry_type"] == "served_pending"}
 
 
+def _pending_metadata(out_dir):
+    entries, _ = L.read_entries(os.path.join(out_dir, "ledger.jsonl"))
+    return [e["metadata"] for e in entries if e["entry_type"] == "served_pending"]
+
+
 def _read_jsonl(path):
     with open(path, encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
@@ -89,6 +98,9 @@ def test_hotcache_served_records_pending_no_raw(
 
     asyncio.run(_run())
     assert len(_pending_ids(out_dir)) == 1                      # the served denominator was recorded
+    metadata = _pending_metadata(out_dir)[0]
+    assert metadata["query_digest"] == canonical_query_digest(raw)
+    assert metadata["normalization_version"] == NORMALIZATION_VERSION
     raw_bytes = open(os.path.join(out_dir, "ledger.jsonl"), "rb").read()
     assert b"SECRET-TOKEN-xyz" not in raw_bytes                 # raw query never persisted
     assert not os.path.exists(os.path.join(out_dir, "claim_window_served_points.jsonl"))

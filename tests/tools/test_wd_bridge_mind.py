@@ -35,6 +35,108 @@ def build(rows, **policy):
     return mind.full_rebuild(rows, source=source(0, len(rows)), as_of_utc=AS_OF, **policy)
 
 
+def nested_publication_fixture():
+    """Synthetic complete core plus the established reflected field shapes."""
+    rows = [envelope(type="claim", status="active", write_scope=["tools/a.py"]),
+            envelope(type="decision", status="build_consensus_pass"),
+            envelope(agent="claude-rco-1", type="finding", status="changes_requested")]
+    value = mind.snapshot(build(rows), as_of_utc=AS_OF)
+    ref = rows[0]["ref"]
+    value["source"]["blocked"] = dict(active=True, offset=0, reason="partial_record")
+    value["tensions"] = [dict(tension_id="d"*64, rule="claim_overlap", severity="high",
+        subject="fixture", claim="fixture claim", observation="fixture observation",
+        actors=["codex-tools-1"], refs=[ref], lifecycle="new")]
+    value["attention"] = [dict(kind="tension_high", subject="fixture", actors=["codex-tools-1"],
+        refs=[ref], detail="fixture detail", rank=1, suggestion_only=True)]
+    question = dict(question="fixture question", attention_rank=1, refs=[ref])
+    value["next_question"] = {"global": deepcopy(question), "lanes": {"codex-tools-1": deepcopy(question)}}
+    return value
+
+
+def _dict_paths(value, path=()):
+    if isinstance(value, dict):
+        yield path
+        for key, child in value.items():
+            yield from _dict_paths(child, (*path, key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _dict_paths(child, (*path, index))
+
+
+def _at_path(value, path):
+    for key in path:
+        value = value[key]
+    return value
+
+
+@pytest.mark.parametrize("api", ["write", "read"])
+def test_every_nested_dict_rejects_extra_key_after_complete_public_positive(tmp_path, api):
+    # MUT_NESTED_PUBLICATION_ALLOWLIST: real public boundary, every dict path.
+    value = nested_publication_fixture()
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    target = audit / "good.json"
+    mind.write_snapshot(value, target, audit_root=audit)
+    assert mind.read_snapshot(target, audit_root=audit) == value
+    original = target.read_bytes()
+    accepted = []
+    paths = list(_dict_paths(value))
+    assert ("source",) in paths and ("source", "blocked") in paths
+    assert ("next_question", "lanes", "codex-tools-1") in paths
+    for path in paths:
+        bad = deepcopy(value)
+        _at_path(bad, path)["unexpected_fixture_key"] = "inert fixture value"
+        if api == "read":
+            altered = dict(schema="wd.bridge-mind-publication.v1", snapshot=bad,
+                snapshot_sha256=mind.hashlib.sha256(mind.canonical_bytes(bad)).hexdigest())
+            poisoned = audit / "poisoned.json"
+            poisoned.write_bytes(mind.canonical_bytes(altered))
+        try:
+            if api == "write":
+                mind.write_snapshot(bad, target, audit_root=audit)
+            else:
+                mind.read_snapshot(poisoned, audit_root=audit)
+        except mind.ProjectionError:
+            assert target.read_bytes() == original
+        else:
+            accepted.append(path)
+            if api == "write":
+                target.write_bytes(original)
+    assert accepted == [], f"nested paths accepted: {accepted}"
+    assert mind.read_snapshot(target, audit_root=audit) == value
+
+
+@pytest.mark.parametrize("field", ["agent", "status"])
+@pytest.mark.parametrize("collection", ["votes", "stale_votes", "veto_observations"])
+@pytest.mark.parametrize("api", ["write", "read"])
+def test_public_signal_tokens_cannot_collide_with_delimiter(tmp_path, field, collection, api):
+    # MUT_SIGNAL_TOKEN_FORMAT: positive every signal family before corruption.
+    value = nested_publication_fixture()
+    pr = value["prs"]["1900"]
+    vote = deepcopy(pr["votes"][0])
+    if collection == "veto_observations":
+        vote["activity"] = "UNKNOWN"
+    pr[collection] = [vote]
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    target = audit / "good.json"
+    mind.write_snapshot(value, target, audit_root=audit)
+    assert mind.read_snapshot(target, audit_root=audit) == value
+    original = target.read_bytes()
+    bad = deepcopy(value)
+    bad["prs"]["1900"][collection][0][field] = "agent:a" if field == "agent" else "a:hold"
+    if api == "read":
+        poisoned = audit / "poisoned.json"
+        poisoned.write_bytes(mind.canonical_bytes(dict(schema="wd.bridge-mind-publication.v1", snapshot=bad,
+            snapshot_sha256=mind.hashlib.sha256(mind.canonical_bytes(bad)).hexdigest())))
+    with pytest.raises(mind.ProjectionError):
+        if api == "write":
+            mind.write_snapshot(bad, target, audit_root=audit)
+        else:
+            mind.read_snapshot(poisoned, audit_root=audit)
+    assert target.read_bytes() == original
+
+
 def test_exact_provenance_positive_then_missing_or_mixed_ref_refused():
     # MUT_FACT_WITHOUT_REF / MUT_MIND_SKIPS_REF_VALIDATION
     row = envelope()
@@ -419,7 +521,12 @@ def test_canonical_block_type_parity_matrix_keeps_non_rco_peer_blocks_visible():
                 signal = envelope(agent=actor, type=kind, status=status, ts_utc="2026-10-13T03:59:01Z")
                 rows = [passed, signal]
                 gate = check_bridge_clear_to_merge(events=[row["event"] for row in rows], task_id="task/1",
-                                                  merging_agent="codex-lead-1", pr_number=1900)
+                                                  merging_agent="codex-lead-1", pr_number=1900,
+                                                  # Same actor bindings as the original owned test config;
+                                                  # do not depend on gitignored host registry provisioning.
+                                                  identity_registry={"claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+                                                      "codex-tools-1": UUID,
+                                                      "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"})
                 pr = mind.snapshot(build(rows), as_of_utc=AS_OF)["prs"]["1900"]
                 if not gate["clear_to_merge"] and not pr["veto_observations"]:
                     under_reports.append((actor, kind, status))

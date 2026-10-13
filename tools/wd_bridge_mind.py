@@ -366,8 +366,15 @@ def _validate_snapshot(value: Any) -> None:
         raise ProjectionError("snapshot_field_invalid")
     canonical_bytes(value)
     src = value.get("source", {})
-    if not isinstance(src, dict):
+    if not isinstance(src, dict) or set(src) != {"log_identity", "generation", "cursor_start", "cursor_end",
+            "coverage", "event_count", "as_of_utc", "unique_event_count", "duplicate_count", "last_event_ref",
+            "max_event_utc", "blocked"}:
         raise ProjectionError("source_cursor_required")
+    blocked = src["blocked"]
+    if blocked is not None and (not isinstance(blocked, dict) or set(blocked) != {"active", "offset", "reason"}
+            or blocked["active"] is not True or type(blocked["offset"]) is not int or blocked["offset"] < 0
+            or blocked["reason"] not in BLOCKED_REASONS):
+        raise ProjectionError("blocked_diagnostic_invalid")
     fields = {key: src.get(key) for key in ("log_identity", "generation", "cursor_start", "cursor_end", "coverage", "event_count")}
     _source(fields, fields["event_count"])
     _time(src.get("as_of_utc"))
@@ -375,6 +382,40 @@ def _validate_snapshot(value: Any) -> None:
             or src["unique_event_count"] < 0 or src["duplicate_count"] < 0
             or src["unique_event_count"] + src["duplicate_count"] != src["event_count"]):
         raise ProjectionError("snapshot_source_count_mismatch")
+    def reflected_refs(refs):
+        return isinstance(refs, list) and bool(refs) and all(isinstance(ref, str)
+            and (ref == UNKNOWN or _REF.fullmatch(ref)) for ref in refs)
+
+    def question(entry):
+        if (not isinstance(entry, dict) or set(entry) != {"question", "attention_rank", "refs"}
+                or not isinstance(entry["question"], str) or not reflected_refs(entry["refs"])
+                or (entry["attention_rank"] is not None and
+                    (type(entry["attention_rank"]) is not int or entry["attention_rank"] < 1))):
+            raise ProjectionError("snapshot_question_invalid")
+
+    questions = value["next_question"]
+    if (not isinstance(questions, dict) or set(questions) != {"global", "lanes"}
+            or not isinstance(questions["lanes"], dict)):
+        raise ProjectionError("snapshot_question_invalid")
+    question(questions["global"])
+    for agent, entry in questions["lanes"].items():
+        if not isinstance(agent, str) or not _AGENT.fullmatch(agent):
+            raise ProjectionError("snapshot_question_invalid")
+        question(entry)
+    tension_keys = {"tension_id", "rule", "severity", "subject", "claim", "observation", "actors", "refs", "lifecycle"}
+    attention_keys = {"kind", "subject", "actors", "refs", "detail", "rank", "suggestion_only"}
+    for name, keys in (("tensions", tension_keys), ("attention", attention_keys)):
+        if not isinstance(value[name], list):
+            raise ProjectionError("snapshot_reflection_invalid")
+        for item in value[name]:
+            if (not isinstance(item, dict) or set(item) != keys or not reflected_refs(item["refs"])
+                    or not isinstance(item["actors"], list) or any(not isinstance(actor, str)
+                        or not _AGENT.fullmatch(actor) for actor in item["actors"])
+                    or any(not isinstance(item[key], str) for key in keys - {"actors", "refs", "rank", "suggestion_only"})):
+                raise ProjectionError("snapshot_reflection_invalid")
+            if name == "attention" and (type(item["rank"]) is not int or item["rank"] < 1
+                    or item["suggestion_only"] is not True):
+                raise ProjectionError("snapshot_reflection_invalid")
     pr_keys = {"pr", "head", "base", "reported_ci", "source_refs", "class", "votes", "stale_votes", "veto_observations", "missing"}
     lane_keys = {"agent", "agent_uuid", "session_id", "run_id", "current_task", "claims", "waits", "last_event_ref", "last_event_utc", "source_refs", "verification", "idle_status", "uncertainty", "observation_age_seconds", "next_question"}
     if not isinstance(value.get("prs"), dict) or not isinstance(value.get("lanes"), dict):
@@ -394,6 +435,10 @@ def _validate_snapshot(value: Any) -> None:
                            ("veto_observations", {"agent", "agent_uuid", "head", "status", "source_refs", "verification", "activity"})):
             if not isinstance(record[name], list) or any(not isinstance(row, dict) or set(row) != keys for row in record[name]):
                 raise ProjectionError("snapshot_signal_invalid")
+            for row in record[name]:
+                if (not isinstance(row["agent"], str) or not _AGENT.fullmatch(row["agent"])
+                        or not isinstance(row["status"], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", row["status"])):
+                    raise ProjectionError("snapshot_signal_invalid")
     for lane in value["lanes"].values():
         for name, keys in (("claims", {"write_scope", "source_refs", "verification", "lease_expires_utc", "expired", "by_task"}),
                            ("waits", {"waiting_on", "source_refs", "verification"})):

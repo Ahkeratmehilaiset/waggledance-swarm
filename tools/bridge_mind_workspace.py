@@ -57,7 +57,8 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
 * A ``wd.bridge-mind-pr-context.v2`` capture adds per PR ``commit_authors``: null (the list may be incomplete)
   or the lane-shaped git author names of the PR's commits; any other value refuses the whole context. A
   recognized RCO among them fills no RCO slot of that PR (author is not reviewer) and is never asked for it.
-  This is the only recusal read here; a declared author is data, not authentication.
+  A recognized RCO's own ``rco_recused`` at the exact PR head (core ``recusals``, a declared identity) does the
+  same. These are the only recusal reads here; a declared author or recusal is data, not authentication.
 * A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
   artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
   protected hit (an ``a_hits`` or ``denylist_hits`` entry) is ``protected``, none is ``not_protected``. Anything
@@ -523,10 +524,16 @@ class _Inputs:
         stale += [vote for vote in votes if vote["head"] != head]
         votes = [vote for vote in votes if vote["head"] == head]
         vetoes, unreadable = self._votes(lists[2], f"{where}.veto_observations", veto=True)
+        # A recognized RCO's own declared recusal counts only at the PR head; an unreadable list counts as none.
+        rows = row.get("recusals", [])
+        recusals, _ = self._votes(rows if isinstance(rows, list) else [], f"{where}.recusals")
+        recusals = [item for item in recusals if item["verified"] and item["head"] == head
+                    and item["agent"] in RECOGNIZED_RCOS and item["status"] == "rco_recused"]
         klass = row.get("class") if row.get("class") in ("a", "b", "on-allowlist") else UNKNOWN
         return {"pr": number, "head": head, "refs": refs, "ci_green": ci_green, "ci_refs": ci_refs or [],
                 "class": klass, "votes": votes, "stale_votes": stale, "vetoes": vetoes,
-                "veto_unreadable": unreadable > 0}
+                "veto_unreadable": unreadable > 0, "recused": sorted({item["agent"] for item in recusals}),
+                "recusal_refs": sorted({ref for item in recusals for ref in item["refs"]})}
 
     def _lane(self, name: str, row: Mapping[str, Any], where: str) -> dict[str, Any] | None:
         refs, agent, uuid = _refs(row.get("source_refs")), _match(SAFE_ID, row.get("agent")), row.get("agent_uuid")
@@ -631,16 +638,21 @@ def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iter
 
 
 def _empty_slots(pr: Mapping[str, Any], authors: frozenset[str] = frozenset()) -> list[str]:
-    """Vote slots with no verified current vote. A recognized RCO who is a declared commit author of the PR fills no
-    RCO slot (author is not reviewer), so that slot is not missing and the author is never asked for it."""
+    """Vote slots with no verified current vote. A recognized RCO who is a declared commit author of the PR, or who
+    declared ``rco_recused`` at the PR head, fills no RCO slot (author is not reviewer), so that slot is not missing
+    and that RCO is never asked for it."""
     filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
-    return [slot for slot in VOTE_SLOTS if slot not in filled and slot not in authors]
+    excused = set(authors) | set(pr.get("recused", ()))
+    return [slot for slot in VOTE_SLOTS if slot not in filled and slot not in excused]
 
 
 def _author_note(inputs: "_Inputs", pr: Mapping[str, Any]) -> str:
     excluded = sorted(set(RECOGNIZED_RCOS) & inputs.authors(pr))
-    return "" if not excluded else (f"; {', '.join(excluded)} is a declared commit author of this PR and fills no "
+    note = "" if not excluded else (f"; {', '.join(excluded)} is a declared commit author of this PR and fills no "
                                     "RCO slot")
+    recused = [agent for agent in pr.get("recused", ()) if agent not in excluded]
+    return note + ("" if not recused else f"; {', '.join(recused)} declared rco_recused at this head and fills no "
+                                          "RCO slot")
 
 
 def _suggestable(pr: Mapping[str, Any]) -> bool:
@@ -809,7 +821,7 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     if not _suggestable(pr) or inputs.suppressed(pr) is not None:
         return None
     empty = _empty_slots(pr, inputs.authors(pr))
-    refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]
+    refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]] + pr["recusal_refs"]
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
         # Only a computed protected hit from loaded charter evidence; a declared class never suffices.

@@ -22,6 +22,8 @@ S2 Wait. ``wait = observed - since``. ``observed`` is the view's ``as_of_utc``; 
    ``waiting_since_utc``, the later of the last credited vote and the CI completion at that head. Both are whole
    seconds, cut and never rounded up. The wait is never extrapolated to ``now``. When since is UNKNOWN or after
    observed, the condition is ``unknown`` (``wait_start_unknown``, ``wait_start_after_observed``).
+   (v1.1) Every time this module reads is cut to whole seconds when it is read, before any comparison: now, as_of,
+   waiting_since, and each receipt's at and complete-through time. A printed time is exactly the time compared.
 S3 Threshold. ``alert`` only when wait > 30 min, i.e. strictly more than 1800 s. 29:59 and 30:00 are
    ``below_threshold``; 30:01 alerts.
 S4 Card trust. The view must report coverage ``complete`` and be at most 15 min old at ``now`` (the workspace's
@@ -37,7 +39,12 @@ S5 Receipts. For the condition's lane, PR and exact head, each of requested, del
    Rows of another lane, another PR or another head never count. The receipts document is strict: an unexpected
    key, kind, lane, head or time, or a guarded word anywhere in it, makes it unreadable as a whole. Receipts never
    create, remove or delay an alert; they only describe it.
-S6 Identity and dedupe. identity = sha256 of the canonical {kind, pr, full head, slot, lane, since}. An alert whose
+   (v1.1) Reading receipts never raises: a value of an unexpected type at any depth makes the document unreadable.
+   The CLI reads each file as strict JSON (a duplicate key, NaN or Infinity, or bytes that are not plain UTF-8 JSON
+   are refused). A receipts file that cannot be read that way is an unreadable document; a view or notified file
+   that cannot be read that way refuses the turn.
+S6 Identity and dedupe. identity = sha256 of the canonical {kind, pr, full head, slot, lane, since}; since is the S2
+   value written as whole UTC seconds with ``Z`` (v1.1), never the view's own spelling. An alert whose
    identity is in ``notified`` is not shown again. It is counted in one line of unchanged waits with its PR and
    identity. A new head, slot, lane or since is a new identity, and it is shown.
 S7 Size. A lane card is at most 2048 UTF-8 bytes. Alert lines that do not fit are not shown and are NOT added to
@@ -48,7 +55,14 @@ S8 Lines. Each alert line uses fixed ``key=value`` fields, so any model family r
    minutes, since, observed, coverage, CI at head, veto none observed, the credited vote refs, the four receipt
    states with refs, and the identity. ``last_open_slot=yes`` is printed only for an ``alert``. The output holds
    only identifiers, refs, SHAs, times, counts and fixed wording, and passes the workspace's decoded guard; a guard
-   hit refuses the whole output.
+   hit refuses the whole output. Known limitation, kept on purpose: one guarded word in one PR's echoed field
+   therefore withholds every lane's card in that turn; refusing only that row needs a separately registered
+   semantics change.
+
+v1.1 (2026-10-14, after RCO1's probes of 2302ee59, plan 4FEAA88E, result 1185E841): F1 a sources entry that was not
+a mapping made reading raise, so one malformed receipts document dropped every lane's alert; F2 the CLI kept the
+last of two duplicate keys, which turned an observed receipt into an affirmative NONE; F3 sub-second times were
+compared uncut.
 
 usage: python -B sandbox/mind/join_card_delivery.py --view <lane-view.json> --receipts <receipts.json> --now <UTC>
        [--notified <json list>] [--out <path under F:\\waggledance_memory\\sandbox>]
@@ -75,7 +89,7 @@ import lane_view as lv  # noqa: E402
 
 SCHEMA = "wd.mind-join-card-delivery.v1"
 RECEIPTS_SCHEMA = "wd.mind-delivery-receipts.v1"
-SEMANTICS = "join-card-delivery-semantics-v1"
+SEMANTICS = "join-card-delivery-semantics-v1.1"
 UNKNOWN = ws.UNKNOWN
 THRESHOLD = timedelta(minutes=30)
 CARD_MAX_AGE = ws.CONTEXT_MAX_AGE
@@ -100,11 +114,24 @@ def identity(pr: int, head: str, slot: str, lane: str, since: str) -> str:
 
 
 def _time(value: Any) -> datetime | None:
-    return ws.parse_time(value) if isinstance(value, str) else None
+    """A UTC time cut to whole seconds (never rounded up), or None. Every time this module reads comes here (S2)."""
+    moment = ws.parse_time(value) if isinstance(value, str) else None
+    return None if moment is None else moment.replace(microsecond=0)
 
 
 def read_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
-    """(rows, complete-through time per kind), or (None, None) when the document is unreadable as a whole."""
+    """(rows, complete-through time per kind), or (None, None) when the document is unreadable as a whole.
+
+    It never raises (S5): a value of an unexpected type anywhere makes the document unreadable, so a receipts
+    document can never remove an alert.
+    """
+    try:
+        return _parse_receipts(receipts)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None, None
+
+
+def _parse_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
     if not isinstance(receipts, Mapping) or set(receipts) != {"schema", "sources", "rows"} \
             or receipts["schema"] != RECEIPTS_SCHEMA:
         return None, None
@@ -117,8 +144,10 @@ def read_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[str,
         return None, None
     through: dict[str, datetime] = {}
     for kind, source in sources.items():
-        when = _time(source.get("complete_through_utc")) if isinstance(source, Mapping) else None
-        if kind not in KINDS or set(source) != {"complete_through_utc"} or when is None:
+        if kind not in KINDS or not isinstance(source, Mapping) or set(source) != {"complete_through_utc"}:
+            return None, None
+        when = _time(source["complete_through_utc"])
+        if when is None:
             return None, None
         through[kind] = when
     parsed = []
@@ -181,10 +210,9 @@ def ledger_rows(view: Mapping[str, Any], receipts: Any, observed: datetime, now:
         if lane is None or type(pr) is not int or str(pr) != key or not isinstance(head, str) \
                 or not HEAD.fullmatch(head):
             raise DeliveryError("a card record is not a lane view v1a action record")
-        since_text = record.get("waiting_since_utc")
-        since = _time(since_text)
+        since = _time(record.get("waiting_since_utc"))
         row: dict[str, Any] = {
-            "identity": identity(pr, head, slot, lane, since_text if since is not None else UNKNOWN),
+            "identity": identity(pr, head, slot, lane, lv.stamp(since)),
             "pr": pr, "head": head, "slot": slot, "lane": lane, "branch": record.get("branch"),
             "checks": record.get("checks"), "waiting_since_utc": lv.stamp(since), "observed_utc": lv.stamp(observed),
             "credited": [{"slot": vote["slot"], "ref": vote["ref"]} for vote in record.get("credited") or []],
@@ -276,6 +304,8 @@ def deliver(view: Any, receipts: Any, *, now_utc: str, notified: Iterable[str] =
     observed = _time(view.get("as_of_utc"))
     if observed is None:
         raise DeliveryError("the card has no as_of_utc")
+    if not isinstance(notified, (list, tuple, set, frozenset)):
+        raise DeliveryError("the notified identities are not a list")
     prior = list(notified)
     if not all(isinstance(item, str) and IDENTITY.fullmatch(item) for item in prior):
         raise DeliveryError("a notified identity is not a sha256")
@@ -340,8 +370,22 @@ def operator_preview(out: Mapping[str, Any]) -> str:
     return text
 
 
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("a duplicate key")
+        out[key] = value
+    return out
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError("NaN or Infinity is not JSON")
+
+
 def _load(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    """Strict JSON (F2): a duplicate key, NaN or Infinity, a byte order mark or bytes that are not UTF-8 raise."""
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object, parse_constant=_no_constant)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -357,12 +401,25 @@ def main(argv: list[str] | None = None) -> int:
         if SANDBOX_ROOT.resolve() not in resolved.parents:
             print("refused: --out must be under the sandbox data root", file=sys.stderr)
             return 2
-    out = deliver(_load(args.view), _load(args.receipts), now_utc=args.now,
-                  notified=_load(args.notified) if args.notified else ())
+    try:
+        view, notified = _load(args.view), (_load(args.notified) if args.notified else ())
+    except (OSError, ValueError):
+        print("refused: the view or notified file is not strict UTF-8 JSON", file=sys.stderr)
+        return 2
+    try:
+        receipts = _load(args.receipts)
+    except (OSError, ValueError):
+        receipts = None  # S5: an unreadable receipts document describes nothing and never removes an alert
+    try:
+        out = deliver(view, receipts, now_utc=args.now, notified=notified)
+        preview = operator_preview(out)
+    except DeliveryError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    sys.stdout.write(operator_preview(out))
+    sys.stdout.write(preview)
     return 0
 
 

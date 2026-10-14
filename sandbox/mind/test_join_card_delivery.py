@@ -1,11 +1,13 @@
 """Tests of the JOIN-card delivery observer (frozen semantics v1, file sha256 d48223d7 posted 18:59:50Z 2026-10-14).
 
 Cases go through the real core and the real step-1 lane view (fixtures of ``step1/test_lane_view.py``), so every card
-is what the lane view really writes. The two named mutants are applied with monkeypatch and must be killed.
+is what the lane view really writes. The named mutants are applied with monkeypatch and must be killed. The v1.1
+repairs after RCO1's probes of 2302ee59 (result 1185E841) are at the end; each was red on 2302ee59 first.
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_card_delivery.py -q
 """
 
+import copy
 import hashlib
 import json
 import sys
@@ -330,3 +332,156 @@ def test_frozen_pr1905_night_views_never_assert_a_wait_from_a_capture_window():
         if view["coverage"] != "complete":
             assert out["operator_lines"] == [] and out["counts"]["alert"] == 0
             assert all(row["reason"] == "card_coverage_not_complete" for row in out["ledger"])
+
+
+# --- v1.1 repairs after RCO1's probes of 2302ee59 (plan 4FEAA88E, result 1185E841) ------------------------------------
+
+TYPES = (None, 0, 1.5, True, "x", [], {}, [None], {"x": None})
+
+
+def substitutions(value):
+    """Copies of a JSON value with ONE position (the root, or any mapping value or list item at any depth) replaced
+    by each value of TYPES."""
+    for substitute in TYPES:
+        yield copy.deepcopy(substitute)
+    if isinstance(value, dict):
+        for key in value:
+            for inner in substitutions(value[key]):
+                yield {**value, key: inner}
+    elif isinstance(value, list):
+        for index in range(len(value)):
+            for inner in substitutions(value[index]):
+                yield value[:index] + [inner] + value[index + 1:]
+
+
+def test_f1_a_source_entry_of_another_type_is_unreadable_and_never_drops_the_alert():
+    as_of = shift(SINCE, minutes=60)
+    view = case(as_of)
+    doc = receipts([rrow("requested", shift(SINCE, minutes=1))], requested=as_of, read=as_of)
+    for value in (None, 5, 1.5, True, "complete_through_utc", ["complete_through_utc"], []):
+        out = jcd.deliver(view, dict(doc, sources=dict(doc["sources"], read=value)), now_utc=as_of)
+        [row] = out["ledger"]
+        assert out["receipts_readable"] is False and row["state"] == "alert" and len(out["operator_lines"]) == 1
+        assert all(state == {"state": "UNKNOWN", "reason": "receipts_unreadable"} for state in row["receipts"].values())
+
+
+def test_f1_reading_receipts_never_raises_for_any_type_at_any_position():
+    as_of = shift(SINCE, minutes=60)
+    view = case(as_of)
+    doc = receipts([rrow("requested", shift(SINCE, minutes=1))], requested=as_of)
+    count = 0
+    for broken in substitutions(doc):
+        jcd.read_receipts(broken)
+        out = jcd.deliver(view, broken, now_utc=as_of)
+        assert out["counts"]["alert"] == 1 and len(out["operator_lines"]) == 1
+        count += 1
+    # positions: the root, 3 top-level values, the source entry and its time, the row and its 6 values
+    assert count == len(TYPES) * 13
+
+
+def cli(tmp_path, capsys, view_text, receipts_text, now, notified_text=None):
+    view_path, receipts_path = tmp_path / "view.json", tmp_path / "receipts.json"
+    view_path.write_text(view_text, encoding="utf-8")
+    receipts_path.write_text(receipts_text, encoding="utf-8")
+    argv = ["--view", str(view_path), "--receipts", str(receipts_path), "--now", now]
+    if notified_text is not None:
+        (tmp_path / "notified.json").write_text(notified_text, encoding="utf-8")
+        argv += ["--notified", str(tmp_path / "notified.json")]
+    code = jcd.main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_f2_cli_duplicate_receipts_key_is_unreadable_and_never_an_affirmative_none(tmp_path, capsys):
+    as_of = shift(SINCE, minutes=60)
+    view_text = json.dumps(case(as_of))
+    read = rrow("read", shift(SINCE, minutes=2))
+    clean = json.dumps(receipts([read], read=as_of))
+    code, out, _ = cli(tmp_path, capsys, view_text, clean, as_of)
+    assert code == 0 and f"read={read['ref'][:16]}@{shift(SINCE, minutes=2)} " in out  # control
+    # RCO1's fixture: the observed read is in the first "rows" and an empty "rows" comes last. A plain reader keeps
+    # the last key and printed read=none_through_... for a file that holds an observed read.
+    duplicated = clean[:-1] + ', "rows": []}'
+    assert json.loads(duplicated)["rows"] == []
+    for text in (duplicated, clean[:-1] + ', "schema": "' + jcd.RECEIPTS_SCHEMA + '"}', "{", "\ufeff" + clean):
+        code, out, _ = cli(tmp_path, capsys, view_text, text, as_of)
+        assert code == 0 and "last_open_slot=yes" in out  # an unreadable receipts file never removes the alert
+        assert "read=UNKNOWN(receipts_unreadable) " in out and "none_through" not in out
+
+
+def test_f2_cli_view_or_notified_file_that_is_not_strict_json_refuses_the_turn(tmp_path, capsys):
+    as_of = shift(SINCE, minutes=60)
+    partial = case(as_of, complete=False)
+    assert partial["coverage"] != "complete"
+    upgraded = json.dumps(partial)[:-1] + ', "coverage": "complete"}'  # a later duplicate key upgrades the coverage
+    assert json.loads(upgraded)["coverage"] == "complete"
+    whole_text = json.dumps(case(as_of))
+    nested = whole_text.replace('"state": "action"', '"state": "abstain", "state": "action"', 1)
+    assert nested != whole_text
+    empty = json.dumps(receipts())
+    for view_text in (upgraded, nested, whole_text[:-1] + ', "x": NaN}'):
+        code, out, err = cli(tmp_path, capsys, view_text, empty, as_of)
+        assert code == 2 and out == "" and err.startswith("refused: ")
+    code, out, _ = cli(tmp_path, capsys, json.dumps(partial), empty, as_of)
+    assert code == 0 and "reason=card_coverage_not_complete" in out  # control: the single key is read as written
+    for notified_text in (json.dumps({"0" * 64: True}), '["' + "0" * 64 + '"', "5"):
+        code, out, err = cli(tmp_path, capsys, whole_text, empty, as_of, notified_text)
+        assert code == 2 and out == "" and err.startswith("refused: ")
+
+
+def fraction(text, digits):
+    return text[:-1] + "." + digits + "Z"
+
+
+def fractional_view(as_of_text, since_text, whole_as_of):
+    view = json.loads(json.dumps(case(whole_as_of)))
+    view["as_of_utc"] = as_of_text
+    view["prs"][str(tlv.NUMBER)]["waiting_since_utc"] = since_text
+    return view
+
+
+@pytest.mark.parametrize("since, seconds, digits, state, wait", [
+    (SINCE, 1800, "999", "below_threshold", 1800),  # RCO1's fixture: 30:00.999 alerted with wait_min=30
+    (fraction(SINCE, "999"), 1801, "000", "alert", 1801),
+    (fraction(SINCE, "500"), 1800, "400", "below_threshold", 1800),
+    (SINCE, 1801, "999", "alert", 1801)])
+def test_f3_times_are_cut_to_whole_seconds_before_the_threshold(since, seconds, digits, state, wait):
+    whole = shift(SINCE, seconds=seconds)
+    observed = fraction(whole, digits)
+    out = jcd.deliver(fractional_view(observed, since, whole), receipts(), now_utc=observed)
+    [row] = out["ledger"]
+    assert row["state"] == state and row["wait_seconds"] == wait and row["observed_utc"] == whole
+    assert row["waiting_since_utc"] == SINCE
+    assert row["identity"] == jcd.identity(tlv.NUMBER, tlv.NEW, "build_tools", TOOLS, SINCE)
+    assert len(out["operator_lines"]) == (state == "alert")
+
+
+@pytest.mark.parametrize("as_of_digits, now_seconds, now_digits, trust", [
+    ("900", 900, "950", "current"),  # uncut: 900.05 s old
+    ("000", 901, "000", "card_stale"),
+    ("900", 0, "100", "current"),  # uncut: 0.8 s in the future
+    ("000", -1, "500", "card_from_future")])
+def test_f3_times_are_cut_to_whole_seconds_before_the_card_age(as_of_digits, now_seconds, now_digits, trust):
+    whole = shift(SINCE, minutes=60)
+    out = jcd.deliver(fractional_view(fraction(whole, as_of_digits), SINCE, whole), receipts(),
+                      now_utc=fraction(shift(whole, seconds=now_seconds), now_digits))
+    assert out["card_trust"] == trust and out["ledger"][0]["state"] == ("alert" if trust == "current" else "unknown")
+
+
+def test_f3_receipt_times_and_the_identity_since_are_cut_too():
+    whole = shift(SINCE, minutes=60)
+    view = fractional_view(fraction(whole, "900"), SINCE, whole)
+    requested = dict(rrow("requested", whole), at_utc=fraction(whole, "950"))  # after the uncut as_of, same second
+    out = jcd.deliver(view, receipts([requested], requested=whole, read=fraction(whole, "500")), now_utc=whole)
+    states = out["ledger"][0]["receipts"]
+    assert states["requested"] == {"state": "OBSERVED", "ref": requested["ref"], "at_utc": whole}
+    assert states["read"] == {"state": "NONE", "through_utc": whole}
+    for since in (fraction(SINCE, "999"), SINCE[:-1] + "+00:00"):  # the same S2 since in other spellings
+        out = jcd.deliver(fractional_view(whole, since, whole), receipts(), now_utc=whole)
+        assert out["ledger"][0]["identity"] == jcd.identity(tlv.NUMBER, tlv.NEW, "build_tools", TOOLS, SINCE)
+
+
+def test_named_mutant_uncut_times_is_killed(monkeypatch):
+    monkeypatch.setattr(jcd, "_time", lambda value: jcd.ws.parse_time(value) if isinstance(value, str) else None)
+    with pytest.raises(AssertionError):
+        test_f3_times_are_cut_to_whole_seconds_before_the_threshold(SINCE, 1800, "999", "below_threshold", 1800)

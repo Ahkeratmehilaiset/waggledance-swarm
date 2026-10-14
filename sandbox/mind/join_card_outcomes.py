@@ -514,28 +514,34 @@ def result_bytes(result: Mapping[str, Any]) -> bytes:
 
 
 def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Contract v1.1 (g) across cards: each event counts once. Identical card results count once; rows of different
-    cards that name the same ``event_ref`` collapse into one row, which is UNKNOWN(aggregate_conflict) when their
-    outcomes disagree; rows without an event (UNKNOWN before any action, NONE, OTHER) stay one per card line.
+    """Contract v1.1 (g) across cards: each event and each card line counts once. Identical results count once.
+    Rows that name the same ``event_ref`` collapse into one row; rows without an event (UNKNOWN before any action,
+    NONE, OTHER) collapse per card line, keyed by (card_sha256, lane, line), so the same card bytes read twice
+    count once (RCO1 observation on c4486586). A collapsed group whose outcomes disagree is one
+    UNKNOWN(aggregate_conflict). Stated limit: an event row and a no-event row of the same card line stay apart.
     Pure and deterministic in any input order."""
     unique = {result_bytes(result): result for result in results}
     by_event: dict[str, list[Mapping[str, Any]]] = {}
-    rows: list[Mapping[str, Any]] = []
+    by_line: dict[tuple[str, str, int], list[Mapping[str, Any]]] = {}
     for key in sorted(unique):
-        for row in unique[key]["rows"]:
+        result = unique[key]
+        for row in result["rows"]:
             if row.get("event_ref"):
                 by_event.setdefault(row["event_ref"], []).append(row)
             else:
-                rows.append(row)
-    for ref in sorted(by_event):
-        group = sorted(by_event[ref], key=canonical)
-        if len({(row["outcome"], row["reason"]) for row in group}) == 1:
-            rows.append(group[0])
-        else:
-            rows.append(dict(group[0], outcome=UNKNOWN, reason="aggregate_conflict"))
+                by_line.setdefault((result["inputs"]["card_sha256"], result["lane"], row["line"]), []).append(row)
+    rows: list[Mapping[str, Any]] = []
+    for groups in (by_event, by_line):
+        for group_key in sorted(groups):
+            group = sorted(groups[group_key], key=canonical)
+            if len({(row["outcome"], row["reason"]) for row in group}) == 1:
+                rows.append(group[0])
+            else:
+                rows.append(dict(group[0], outcome=UNKNOWN, reason="aggregate_conflict"))
     merged = {"schema": SCHEMA + ".aggregate", "authority": "none", "scope": SCOPE, "cards": len(unique),
               "duplicate_results": len(results) - len(unique),
-              "rows_merged_by_event": sum(len(group) - 1 for group in by_event.values()), "counts": counts(rows)}
+              "rows_merged_by_event": sum(len(group) - 1 for group in by_event.values()),
+              "rows_merged_by_card_line": sum(len(group) - 1 for group in by_line.values()), "counts": counts(rows)}
     ws.guard_object(merged)
     return merged
 

@@ -480,6 +480,31 @@ def test_aggregate_counts_each_event_once_across_cards():
     assert jco.aggregate([second, first]) == merged  # order free
 
 
+def _no_event_card(nonce, issued, read, view=None):
+    change = {"events": [], "issue": lambda i: dict(i["issue"], nonce=nonce, issued_utc=issued),
+              "receipts": lambda i: [dict(i["receipts"][0], nonce=nonce, read_utc=read)]}
+    if view is not None:
+        change["view"] = view
+    return run(base(**change))
+
+
+def test_aggregate_counts_a_card_line_once_without_events():
+    first = _no_event_card("nonce-0001", ISSUED, READ)
+    again = _no_event_card("nonce-0002", "2026-10-14T10:05:30Z", "2026-10-14T10:06:00Z")
+    assert [r["outcome"] for r in first["rows"] + again["rows"]] == ["NONE", "NONE"]
+    merged = jco.aggregate([first, again])  # the same card bytes read twice: one line, not two (RCO1 observation)
+    assert merged["counts"]["outcomes"]["NONE"] == 1 and merged["rows_merged_by_card_line"] == 1
+    assert merged["counts"]["follow_through"] == {"numerator": 0, "denominator": 1}
+    other_view = json.loads(make_view())
+    other_view["as_of_utc"] = "2026-10-14T10:01:00Z"  # another view, so other card bytes: a second line
+    other = _no_event_card("nonce-0003", ISSUED, READ, view=json.dumps(other_view, sort_keys=True).encode("utf-8"))
+    assert jco.aggregate([first, other])["counts"]["outcomes"]["NONE"] == 2
+    blind = run(base(events=[], coverage=[], issue=lambda i: dict(i["issue"], nonce="nonce-0004"),
+                     receipts=lambda i: [dict(i["receipts"][0], nonce="nonce-0004")]))
+    assert blind["rows"][0]["reason"] == "coverage_incomplete"
+    assert jco.aggregate([first, blind])["counts"]["unknown_reasons"] == {"aggregate_conflict": 1}
+
+
 def test_aggregate_conflicting_rows_are_unknown():
     conflict = jco.aggregate([run(base()), _second_card(identity=[])])
     assert conflict["counts"]["outcomes"]["UNKNOWN"] == 1

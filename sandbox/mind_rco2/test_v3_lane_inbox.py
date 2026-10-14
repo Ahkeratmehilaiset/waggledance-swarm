@@ -39,6 +39,13 @@ def inbox(events, votes=()):
     return v3.build_inbox(snapshot, context, v3.Capture(events), LANE, NOW)
 
 
+def cast(agent, status, task="lead/branch-100", head=HEAD, pr=100):
+    """A real vote: its event sits in the capture on a task, and the snapshot vote points at that event."""
+    event = {"agent": agent, "type": "decision", "status": status, "to": "", "task_id": task,
+             "ts_utc": "2026-10-13T11:40:00Z", "payload": {"pr": pr, "head": head}}
+    return event, {"agent": agent, "status": status, "head": head, "source_refs": [v3.event_id(event)]}
+
+
 def kinds(result):
     return [item["kind"] for item in result["stale"]]
 
@@ -71,8 +78,8 @@ def test_wrong_id_twin_does_not_end_the_ask():
 
 
 def test_own_vote_at_the_head_satisfies_an_old_ask_before_the_age_rule():
-    vote = {"agent": LANE, "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
-    result = inbox([ask("ask-old", ts="2026-10-12T08:00:00Z")], votes=[vote])
+    event, vote = cast(LANE, "rco_pass")
+    result = inbox([ask("ask-old", ts="2026-10-12T08:00:00Z"), event], votes=[vote])
     assert "content_satisfied_by_vote" in kinds(result)
     assert "request_unanswered_over_12h" not in kinds(result)
 
@@ -170,8 +177,8 @@ def test_grok_round_fixture_storage_order_tools_line():
 
 
 def test_a_pr_with_my_vote_in_stays_visible():
-    vote = {"agent": LANE, "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
-    result = inbox([], votes=[vote])
+    event, vote = cast(LANE, "rco_pass")
+    result = inbox([event], votes=[vote])
     assert [(d["pr"], d["missing"]) for d in result["done"]] == [(100, ["build_lead", "build_tools", "claude-rco-1"])]
     text = v3.render_text(result)  # others and CI still missing: folded into one DONE line with the PR number
     assert any(line.startswith("DONE ") and "PR100" in line for line in text.splitlines())
@@ -234,17 +241,19 @@ def test_two_windows_of_one_account_both_show():
 
 
 def test_github_observed_status_splits_ready_and_blocked_and_checks_the_head():
-    vote = lambda agent, status: {"agent": agent, "status": status, "head": HEAD, "source_refs": ["b" * 64]}
-    votes = [vote("claude-rco-1", "rco_pass"), vote("claude-rco-2", "rco_pass"), vote("codex-lead-1", "build_consensus_pass"),
-             vote("codex-tools-1", "build_consensus_pass")]
+    slots = [("claude-rco-1", "rco_pass"), ("claude-rco-2", "rco_pass"), ("codex-lead-1", "build_consensus_pass"),
+             ("codex-tools-1", "build_consensus_pass")]
+    cast100 = [cast(agent, status, task="b100") for agent, status in slots]
+    cast101 = [cast(agent, status, task="b101", head="c" * 40, pr=101) for agent, status in slots]
+    votes = [vote for _, vote in cast100]
     snapshot = {"prs": {"100": {"head": HEAD, "votes": votes, "stale_votes": [], "veto_observations": [],
                                 "reported_ci": {"status": "UNKNOWN"}, "source_refs": []},
-                        "101": {"head": "c" * 40, "votes": [dict(v, head="c" * 40) for v in votes], "stale_votes": [],
+                        "101": {"head": "c" * 40, "votes": [vote for _, vote in cast101], "stale_votes": [],
                                 "veto_observations": [], "reported_ci": {"status": "UNKNOWN"}, "source_refs": []}},
                 "lanes": {}, "tensions": []}
     context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "b100", "authors": ["x-lane"], "path_class": None},
                                            101: {"state": "OPEN", "head": "c" * 40, "branch": "b101", "authors": ["x-lane"], "path_class": None}}}
-    fold = v3.build_fold(snapshot, context, v3.Capture([]), NOW)
+    fold = v3.build_fold(snapshot, context, v3.Capture([event for event, _ in cast100 + cast101]), NOW)
     observed = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": "2026-10-13T11:58:00Z",
                 "prs": {"100": {"head": HEAD, "merge_state": "BLOCKED", "all_required_success": True,
                                 "bot_threads": {"bot": {"open": {"P2": 2}}, "complete": True}},
@@ -254,3 +263,51 @@ def test_github_observed_status_splits_ready_and_blocked_and_checks_the_head():
     assert "PR101" in text and "READY" not in text  # 101: observed head differs, so its GitHub facts are not used
     stale = dict(observed, observed_utc="2026-10-13T10:00:00Z")
     assert "github" not in v3.attach_github(fold, stale)["prs"]["100"]
+
+
+# B slice (brainstorm 10-14 R5 item 1): the gate binds a vote to task == branch (or its slash/hyphen alias).
+def test_vote_on_another_task_is_not_counted_and_is_shown_as_bind():
+    event, vote = cast("claude-rco-1", "rco_pass", task="fable-5/some-other-pr-branch")  # the PR1902 shape
+    result = inbox([ask("ask-1"), event], votes=[vote])
+    row = (result["wait"] + result["act"] + result["done"])[0]
+    assert "claude-rco-1" in row["missing"]
+    assert row["unbound_votes"] == [{"agent": "claude-rco-1", "status": "rco_pass", "task": "fable-5/some-other-pr-branch"}]
+    assert "BIND PR100 " + HEAD[:12] + ": 1 vote(s) on task fable-5/some-other-pr-branch" in v3.render_text(result)
+
+
+def test_the_slash_hyphen_alias_of_the_branch_counts():
+    event, vote = cast("claude-rco-1", "rco_pass", task="lead-branch-100")
+    row = (lambda r: (r["wait"] + r["act"] + r["done"])[0])(inbox([ask("ask-1"), event], votes=[vote]))
+    assert "claude-rco-1" not in row["missing"] and row["unbound_votes"] == []
+
+
+def test_a_vote_whose_event_is_not_in_the_capture_is_unknown_and_not_counted():
+    vote = {"agent": "claude-rco-1", "status": "rco_pass", "head": HEAD, "source_refs": ["b" * 64]}
+    row = (lambda r: (r["wait"] + r["act"] + r["done"])[0])(inbox([ask("ask-1")], votes=[vote]))
+    assert "claude-rco-1" in row["missing"] and row["unbound_votes"][0]["task"] == "UNKNOWN"
+
+
+def test_fold_parity_holds_with_bound_and_unbound_votes():
+    bound_event, bound = cast("claude-rco-1", "rco_pass")
+    other_event, other = cast("codex-tools-1", "build_consensus_pass", task="tools/elsewhere")
+    events = [ask("ask-1"), bound_event, other_event]
+    snapshot = {"prs": {"100": {"head": HEAD, "votes": [bound, other], "stale_votes": [], "veto_observations": [],
+                                "reported_ci": {"status": "UNKNOWN"}, "source_refs": []}}, "lanes": {}, "tensions": []}
+    context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "lead/branch-100",
+                                                "authors": ["codex-lead-1"], "path_class": None}}}
+    capture = v3.Capture(events)
+    fold = v3.build_fold(snapshot, context, capture, NOW)
+    for lane in ("claude-rco-2", "claude-rco-1", "codex-lead-1", "codex-tools-1", "fable-5"):
+        assert v3.lens(fold, lane) == v3.build_inbox_direct(snapshot, context, capture, lane, NOW), lane
+
+
+def test_own_line_shows_github_green_ci_at_the_github_head():
+    snapshot = {"prs": {"100": {"head": HEAD, "votes": [], "stale_votes": [], "veto_observations": [],
+                                "reported_ci": {"status": "UNKNOWN"}, "source_refs": []}}, "lanes": {}, "tensions": []}
+    context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "lead/branch-100",
+                                                "authors": [LANE], "path_class": None}}}
+    fold = v3.build_fold(snapshot, context, v3.Capture([]), NOW)
+    observed = {"schema": "wd.bridge-mind-gh-status.v1", "authority": "none", "observed_utc": "2026-10-13T11:58:00Z",
+                "prs": {"100": {"head": HEAD, "merge_state": "CLEAN", "all_required_success": True}}}
+    text = v3.render_text(v3.lens(v3.attach_github(fold, observed), LANE))
+    assert "OWN  PR100 " in text and "ci=github_green" in text

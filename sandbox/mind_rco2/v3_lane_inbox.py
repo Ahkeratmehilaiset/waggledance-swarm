@@ -110,6 +110,33 @@ def _pr_of(event: Mapping[str, Any]) -> int | None:
     return pr if type(pr) is int and pr > 0 else None
 
 
+
+def _gate_tasks(branch: Any) -> set[str]:
+    """The task ids the merge gate reads for a PR (check_rco_pass_present binds task == branch): the branch itself or
+    its author-namespace slash/hyphen alias. A vote on any other task is not gate-visible, whatever its payload pr says."""
+    name = str(branch or "")
+    author, sep, rest = name.partition("/")
+    return ({name} if name else set()) | ({f"{author}-{rest}"} if sep and author and rest else set())
+
+
+def _split_by_gate_task(capture: "Capture", votes: list[Mapping[str, Any]], branch: Any) -> tuple[list, list[dict[str, Any]]]:
+    """The votes whose source event sits on a gate task, and the others as {agent, status, task} (UNKNOWN when unseen)."""
+    tasks, bound, unbound = _gate_tasks(branch), [], []
+    for vote in votes:
+        seen = [str(capture.rows[capture.position[ref]][1].get("task_id")) for ref in vote.get("source_refs", [])
+                if ref in capture.position]
+        if any(task in tasks for task in seen):
+            bound.append(vote)
+        else:
+            unbound.append({"agent": vote.get("agent"), "status": vote.get("status"), "task": seen[0] if seen else UNKNOWN})
+    return bound, unbound
+
+
+def _ci_shown(item: Mapping[str, Any]) -> str:
+    """The CI word on ACT/WAIT/OWN lines: GitHub's observed green at the GitHub head wins over a missing bridge report."""
+    return "github_green" if (item.get("github") or {}).get("ci_observed_green") is True else str(item["ci"])
+
+
 class Capture:
     """The rows of one capture with their canonical refs, and the request/answer facts V3 needs."""
 
@@ -325,6 +352,7 @@ def build_inbox_direct(snapshot: Mapping[str, Any], context: Mapping[str, Any], 
         mine = [r for r in mine if not r["head"] or r["head"] == gh_head]
         drift = bool(mind) and mind.get("head") != gh_head
         votes = [v for v in list(mind.get("votes", [])) + list(mind.get("stale_votes", [])) if v.get("head") == gh_head]
+        votes, unbound = _split_by_gate_task(capture, votes, ctx["branch"])
         filled = {workspace.vote_slot(v.get("agent", ""), v.get("status", "")) for v in votes} - {None}
         commit_authors = set(ctx["authors"] or [])
         by_head = declared.get(number, {})
@@ -355,7 +383,7 @@ def build_inbox_direct(snapshot: Mapping[str, Any], context: Mapping[str, Any], 
         my_vetoes = [v for v in mind.get("veto_observations", []) if v.get("agent") == lane]
         my_pass_now = any(v.get("agent") == lane and v.get("status") == "rco_pass" for v in votes)
         line = {"pr": number, "github_head": gh_head, "mind_head": mind.get("head", UNKNOWN) if mind else UNKNOWN,
-                "head_drift": drift, "ci": ci_green, "missing": missing, "recused_authors": recused,
+                "head_drift": drift, "ci": ci_green, "missing": missing, "unbound_votes": unbound, "recused_authors": recused,
                 "author_basis": author_basis or UNKNOWN, "class": _class(ctx["path_class"], context["charter_ok"]),
                 "asks": [r["request_id"] for r in mine], "refs": refs}
         for veto in my_vetoes:
@@ -543,6 +571,7 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
             continue
         gh_head = ctx["head"]
         votes = [v for v in list(mind.get("votes", [])) + list(mind.get("stale_votes", [])) if v.get("head") == gh_head]
+        votes, unbound = _split_by_gate_task(capture, votes, ctx["branch"])
         filled = sorted({workspace.vote_slot(v.get("agent", ""), v.get("status", "")) for v in votes} - {None})
         commit_authors = set(ctx["authors"] or [])
         by_head = declared.get(number, {})
@@ -561,7 +590,7 @@ def build_fold(snapshot: Mapping[str, Any], context: Mapping[str, Any], capture:
             "mind_head": mind.get("head", UNKNOWN) if mind else UNKNOWN, "head_drift": bool(mind) and mind.get("head") != gh_head,
             "votes": [{"agent": v.get("agent"), "status": v.get("status"), "refs": sorted(v.get("source_refs", []))} for v in votes],
             "filled": filled, "authors": sorted(authors), "author_basis": author_basis or UNKNOWN,
-            "missing": [slot for slot in SLOTS if slot not in filled and slot not in authors],
+            "missing": [slot for slot in SLOTS if slot not in filled and slot not in authors], "unbound_votes": unbound,
             "recused": sorted(set(RCOS) & authors),
             "ci": "green_reported" if ci.get("status") == "reported_green" and ci.get("head") == gh_head else "not_reported_green",
             "class": _class(ctx["path_class"], context["charter_ok"]),
@@ -765,7 +794,7 @@ def lens(fold: Mapping[str, Any], lane: str) -> dict[str, Any]:
                               "age_s": _age_seconds(now, ask["ts"]), "refs": [ask["ref"]]})
             mine = [r for r in mine if (_age_seconds(now, r["ts"]) or 0) <= OLD_REQUEST_SECONDS]
         line = {"pr": number, "github_head": gh_head, "mind_head": row["mind_head"], "head_drift": row["head_drift"],
-                "ci": row["ci"], "missing": missing, "recused_authors": row["recused"], "author_basis": row["author_basis"],
+                "ci": row["ci"], "missing": missing, "unbound_votes": row["unbound_votes"], "recused_authors": row["recused"], "author_basis": row["author_basis"],
                 "class": row["class"], "asks": [r["request_id"] for r in mine],
                 "refs": sorted(set(row["refs"]) | {r["ref"] for r in mine})}
         if "github" in row:
@@ -977,18 +1006,24 @@ def render_text(inbox: Mapping[str, Any]) -> str:
                    "route, operator sign for a_class or off_allowlist, holds): " + _classes(ready))
     if blocked:
         out.append("BLOCKED on GitHub although every vote is in and CI is green: " + ", ".join(blocked))
+    for section in ("act", "wait", "own", "done"):  # B slice: a vote the gate cannot see is a tension, never a filled slot
+        for item in inbox.get(section, []):
+            if item.get("unbound_votes"):
+                tasks = sorted({str(v["task"]) for v in item["unbound_votes"]})
+                out.append(f"BIND PR{item['pr']} {item['github_head'][:12]}: {len(item['unbound_votes'])} vote(s) on task "
+                           f"{', '.join(tasks)}, not this PR's branch; the gate (task == branch) does not count them")
     for item in inbox["act"]:
         if "pr" in item:
-            out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"
+            out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={_ci_shown(item)} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"
                        + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
         else:
             out.append(f"ACT  request {item['request_id']} from {item['from']} task {item['task']} {refs(item)}")
     for item in inbox["wait"]:
-        out.append(f"WAIT PR{item['pr']} {item['github_head'][:12]} ci={item['ci']} missing={'+'.join(item['missing'])}"
+        out.append(f"WAIT PR{item['pr']} {item['github_head'][:12]} ci={_ci_shown(item)} missing={'+'.join(item['missing'])}"
                    f" class={item['class'].split(' ')[0]}"
                    + (f" req={','.join(item['asks'])}" if item['asks'] else "") + f" {refs(item)}")
     for item in inbox["own"]:
-        out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={item['ci']} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
+        out.append(f"OWN  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={_ci_shown(item)} missing={'+'.join(item['missing']) or 'none'} by={item['author_basis']} {refs(item)}")
     for item in check_ci:
         out.append(f"DONE PR{item['pr']} {item['github_head'][:12]} every vote in, CI not reported at this head: check gh"
                    f" class={item['class'].split(' ')[0]} [" + ",".join(r[:10] for r in item['my_vote_refs'][:2]) + "]")

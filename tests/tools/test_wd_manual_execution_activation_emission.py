@@ -37,7 +37,7 @@ DEFINITION.update(wheel_store_relative="wheels", python_site_relative="site")
 MUTANTS = {
     "MUT_SOURCE_BINDING": ("$record.source_commit -cne $SourceCommit", "$false"),
     "MUT_DEFINITION_BINDING": ("$record.definition_sha256 -cne $DefinitionHash", "$false"),
-    "MUT_APPROVAL_REFERENCE": ("$record.approval_reference_sha256 -cnotmatch '^[0-9A-Fa-f]{64}$'", "$false"),
+    "MUT_APPROVAL_REFERENCE": (r"$record.approval_reference_sha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z'", "$false"),
     "MUT_ENABLED_NATIVE_BOOL": ("$record.enabled -isnot [bool] -or $record.enabled -ne $true", "$false"),
     "MUT_TOOL_BINDING": ("(@($record.tools | Sort-Object) -join ',') -cne ($manualPaths -join ',')", "$false"),
     "MUT_FLEET_ACTOR_BINDING": ("$record.agent -cnotin $FleetAgentNames", "$false"),
@@ -54,6 +54,18 @@ ADMISSION_MUTANTS = {
     "MUT_ADMISSION_DUPLICATE_OPTION": ("$options.ContainsKey($name) -or ", "$false -or "),
     "MUT_ADMISSION_UNKNOWN_OPTION": ("($name -cnotin $valued -and $name -cnotin $flags)", "$false"),
     "MUT_ADMISSION_FLAG_VALUE": ("$split.Count -ne 1", "$false"),
+    "MUT_ADMISSION_ANCHOR_REASON": (
+        "throw 'manual bridge execution requires the matching external deployment manifest anchor'", "throw 'MUTANT_WRONG_REASON'"),
+    "MUT_ADMISSION_ACTOR_REASON": (
+        "throw 'manual bridge execution activation binding is invalid'", "throw 'MUTANT_WRONG_REASON'"),
+    "MUT_ADMISSION_RUNTIME_REASON": (
+        "throw 'manual bridge execution runtime source differs from the inherited context'", "throw 'MUTANT_WRONG_REASON'"),
+    "MUT_ADMISSION_DUPLICATE_REASON": (
+        "throw 'manual bridge execution refuses duplicate or unknown options'", "throw 'MUTANT_WRONG_REASON'"),
+    "MUT_ADMISSION_UNKNOWN_REASON": (
+        "throw 'manual bridge execution refuses duplicate or unknown options'", "throw 'MUTANT_WRONG_REASON'"),
+    "MUT_ADMISSION_FLAG_REASON": (
+        "throw 'manual bridge execution flag cannot have a value'", "throw 'MUTANT_WRONG_REASON'"),
 }
 READ_MUTANTS = {
     "MUT_APPROVAL_OPENED_HANDLE_BINDING": (
@@ -254,6 +266,19 @@ def test_real_source_hash_does_not_depend_on_hash_cmdlet(shell, tmp_path):
     assert result["accepted"], result
 
 
+@pytest.mark.parametrize("suffix", ["", "\n"], ids=["valid64", "trailing_lf"])
+def test_approval_reference_requires_exact_64_hex_and_no_final_lf(shell, tmp_path, suffix):
+    record = copy.deepcopy(ACTIVATION)
+    record["approval_reference_sha256"] += suffix
+    result = _invoke(shell, tmp_path, text=json.dumps(record))
+    if suffix:
+        assert not result["accepted"], result
+        assert result["reason"] == "manual execution approval binding or field type is invalid", result
+        assert result["side_effects"] == []
+    else:
+        assert result["accepted"] and result["record"] == ACTIVATION, result
+
+
 @pytest.mark.parametrize("redirect_open", [False, True])
 def test_checked_approval_path_must_match_real_opened_handle(shell, tmp_path, redirect_open):
     result = _invoke(shell, tmp_path, approval_bytes=json.dumps(ACTIVATION).encode("utf-8"),
@@ -353,6 +378,15 @@ def test_actual_emitted_record_cannot_weaken_admission(shell, tmp_path, case):
     else: kwargs["tail"] = ["--json=true"]
     result = _invoke(shell, tmp_path, **kwargs)
     assert not result["accepted"], (case, result)
+    reasons = {
+        "anchor": "manual bridge execution requires the matching external deployment manifest anchor",
+        "actor": "manual bridge execution activation binding is invalid",
+        "runtime": "manual bridge execution runtime source differs from the inherited context",
+        "duplicate_option": "manual bridge execution refuses duplicate or unknown options",
+        "unknown_option": "manual bridge execution refuses duplicate or unknown options",
+        "flag_alias": "manual bridge execution flag cannot have a value",
+    }
+    assert result["reason"] == reasons[case], (case, result)
 
 
 @pytest.mark.parametrize("existing", ["missing", "different"])

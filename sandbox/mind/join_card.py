@@ -1,4 +1,4 @@
-"""JOIN card v0: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
+"""JOIN card v0.1: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
 
 The operator's frame (2026-10-14 ~18:28Z): "minä kuulen, minä näen, minä ymmärrän, minä muistan - ja maind oppii"
 (I hear, I see, I understand, I remember, and the Mind learns). ``card(lane, delivery, view, remember, learn_ref=...)``
@@ -18,8 +18,13 @@ outputs do not state:
               (with the reason) when one of the last two fails; otherwise no.
 * UNDERSTAND  derived from SLOT alone: the last open slot, an open slot among others, or UNKNOWN. It never names an
               outcome of a vote or of the gate; the canonical tools decide.
-* REMEMBER    a REMEMBER v2 answer (frozen 2699c0fe; the PRIMARY arm is v2ca): the joiner's picks with their TOPIC,
-              SUPERSEDED and CONTESTED marks, or that nothing applies, or the refusal reason, or that it was not run.
+* REMEMBER    a REMEMBER v2 answer (frozen 2699c0fe; the PRIMARY arm is v2ca) inside a turn-bound envelope
+              (``remember_envelope``): the joiner's picks with their TOPIC, SUPERSEDED and CONTESTED marks, or that
+              nothing applies, or the refusal reason, and one citation ``answer=<12> situation=<12>``. The envelope
+              must name this lane and the view's as_of, and its answer must hash (``lane_view.canonical``) to its
+              ``answer_sha256``; otherwise the card is refused (RCO1 probe P4b). That digest is self-consistency, not
+              origin, and ``situation_sha256`` is cited, not verified: the card cannot see the situation text. With no
+              envelope there is no REMEMBER line at all (P2b: an absence is omitted, never an uncited line).
 * LEARN       v0 learns and records nothing; the line names the LEARN contract (``learn_ref``) the next step uses.
 
 Every line carries refs: identities, SHAs, vote and event refs, lesson files, or the semantics and contract names
@@ -29,7 +34,7 @@ workspace's decoded guard; a hit refuses the card and nothing is returned. Pure:
 bridge write; the same inputs give the same bytes.
 
 usage: python -B sandbox/mind/join_card.py --lane <lane> --view <lane-view.json> --delivery <delivery.json>
-       [--remember <answer.json>] --learn-ref <ref>
+       [--remember <envelope.json>] --learn-ref <ref>
 """
 
 from __future__ import annotations
@@ -49,7 +54,10 @@ from tools import bridge_mind_workspace as ws  # noqa: E402
 import join_card_delivery as jcd  # noqa: E402
 import lane_view as lv  # noqa: E402
 
-VERSION = "join-card-v0"
+VERSION = "join-card-v0.1"
+ENVELOPE_SCHEMA = "join-card-remember-v1"
+ENVELOPE_KEYS = frozenset({"schema", "lane", "as_of_utc", "situation_sha256", "answer_sha256", "answer"})
+HEX64 = re.compile(r"[0-9a-f]{64}")
 CARD_BYTES = 2048
 SEE_LIMIT = 3
 PICK_LIMIT = 3
@@ -80,12 +88,39 @@ def _check_inputs(lane: Any, delivery: Any, view: Any, remember: Any, learn_ref:
         raise JoinCardError("the delivery is not a JOIN-card delivery v1")
     if delivery["card"].get("schema") != view["schema"] or delivery["card"].get("as_of_utc") != view["as_of_utc"]:
         raise JoinCardError("the delivery was made from another view")
-    if remember is not None and (not isinstance(remember, Mapping) or remember.get("status") not in REMEMBER_STATUS
-                                 or not isinstance(remember.get("results"), list)
-                                 or not all(_result_ok(result) for result in remember["results"])):
-        raise JoinCardError("the REMEMBER answer is not a REMEMBER v2 answer")
+    if remember is not None:
+        _check_envelope(remember, lane, view["as_of_utc"])
     if not isinstance(learn_ref, str) or not LEARN_REF.fullmatch(learn_ref):
         raise JoinCardError("the LEARN contract ref is invalid")
+
+
+def remember_envelope(lane: str, as_of_utc: str, situation_sha256: str, answer: Any) -> dict[str, Any]:
+    """The turn-bound envelope a turn runner puts around one REMEMBER v2 answer for one lane's card."""
+    return {"schema": ENVELOPE_SCHEMA, "lane": lane, "as_of_utc": as_of_utc, "situation_sha256": situation_sha256,
+            "answer_sha256": lv.sha256_text(lv.canonical(answer)), "answer": answer}
+
+
+def _check_envelope(envelope: Any, lane: str, as_of_utc: str) -> None:
+    """RCO1 P4b: only an answer made for this lane at this view's as_of renders; the digest is self-consistency."""
+    if not isinstance(envelope, Mapping) or set(envelope) != ENVELOPE_KEYS or envelope.get("schema") != ENVELOPE_SCHEMA:
+        raise JoinCardError("the REMEMBER input is not a turn-bound REMEMBER envelope")
+    if envelope["lane"] != lane:
+        raise JoinCardError("the REMEMBER answer was made for another lane")
+    if envelope["as_of_utc"] != as_of_utc:
+        raise JoinCardError("the REMEMBER answer was made for another turn")
+    if not all(isinstance(envelope[key], str) and HEX64.fullmatch(envelope[key])
+               for key in ("situation_sha256", "answer_sha256")):
+        raise JoinCardError("a REMEMBER digest is not 64 lowercase hex")
+    try:
+        digest = lv.sha256_text(lv.canonical(envelope["answer"]))
+    except (TypeError, ValueError):
+        raise JoinCardError("the REMEMBER answer is not canonical JSON") from None
+    if digest != envelope["answer_sha256"]:
+        raise JoinCardError("the REMEMBER answer does not match its digest")
+    answer = envelope["answer"]
+    if not isinstance(answer, Mapping) or answer.get("status") not in REMEMBER_STATUS \
+            or not isinstance(answer.get("results"), list) or not all(_result_ok(result) for result in answer["results"]):
+        raise JoinCardError("the REMEMBER answer is not a REMEMBER v2 answer")
 
 
 def _result_ok(result: Any) -> bool:
@@ -192,16 +227,18 @@ def understand_line(fields: Mapping[str, Any] | None) -> str:
             f"{', '.join(fields['others'])}; the canonical tools decide what follows")
 
 
-def remember_lines(remember: Mapping[str, Any] | None, limit: int) -> list[str]:
-    if remember is None:
-        return ["REMEMBER not run this turn"]
-    version = remember.get("version", UNKNOWN)
+def remember_lines(envelope: Mapping[str, Any] | None, limit: int) -> list[str]:
+    if envelope is None:
+        return []  # P2b: no REMEMBER input, no line
+    remember = envelope["answer"]
+    cite = (f"[{remember.get('version', UNKNOWN)} answer={envelope['answer_sha256'][:12]} "
+            f"situation={envelope['situation_sha256'][:12]}]")
     status, reason, results = remember["status"], remember.get("reason"), remember["results"]
     if status == "REFUSED":
-        return [f"REMEMBER refused ({reason}) [{version}]"]
+        return [f"REMEMBER refused ({reason}) {cite}"]
     degraded = " degraded (a memory cell is quarantined, fallback)" if status == "DEGRADED" else ""
     if not results:
-        return [f"REMEMBER{degraded} nothing applies ({reason}) [{version}]"]
+        return [f"REMEMBER{degraded} nothing applies ({reason}) {cite}"]
     lines = []
     for number, result in enumerate(results[:limit], 1):
         marks = ""
@@ -216,8 +253,8 @@ def remember_lines(remember: Mapping[str, Any] | None, limit: int) -> list[str]:
         summary = f": {result['summary']}" if isinstance(result.get("summary"), str) and result["summary"] else ""
         lines.append(f"REMEMBER{degraded if number == 1 else ''} [{number}] {result['ref']} ({result['kind']}, "
                      f"{result['time_utc'][:10]}){marks}{summary}")
-    if len(results) > limit:
-        lines.append(f"REMEMBER +{len(results) - limit} more picks not shown [{version}]")
+    more = f"; +{len(results) - limit} more picks not shown" if len(results) > limit else ""
+    lines.append(f"REMEMBER picks {cite}{more}")
     return lines
 
 

@@ -14,8 +14,8 @@ What it compares is a small *view* of each snapshot, built from identifiers only
   class, and the current votes, stale votes and veto observations as ``agent:status[:head]`` identifiers.
   In each field ``%`` and ``:`` are percent-encoded (``%25``, ``%3A``), so ``:`` only ever separates fields
   and two different observations never share an identifier; plain tokens keep their exact bytes.
-  A row whose ``agent_uuid`` is not a declared identity ends in ``:undeclared``, because the workspace
-  never lets it fill a slot.
+  A row without both a valid ``agent_uuid`` and ``verification`` ``declared`` ends in ``:undeclared``,
+  because the workspace never lets it fill a slot.
 * ``tensions``: per ``tension_id``, rule, severity, subject, actors and refs.
 * ``attention``: per kind and subject, rank, actors and refs.
 * ``next_question``: the global question and one per lane, with its refs.
@@ -163,7 +163,8 @@ def _signals(rows: Any, with_head: bool) -> list[str]:
         signal = f"{_field(_text(row.get('agent')))}:{_field(_text(row.get('status')))}"
         signal += f":{_field(_text(row.get('head'))[:12])}" if with_head else ""
         uuid = row.get("agent_uuid")
-        out.add(signal + ("" if isinstance(uuid, str) and _UUID.fullmatch(uuid) else ":undeclared"))
+        declared = isinstance(uuid, str) and _UUID.fullmatch(uuid) and row.get("verification") == "declared"
+        out.add(signal + ("" if declared else ":undeclared"))
     return sorted(out)
 
 

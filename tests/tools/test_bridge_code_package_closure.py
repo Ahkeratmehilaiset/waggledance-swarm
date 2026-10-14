@@ -10,10 +10,10 @@ the difference is why new work silently fails to ship:
 
 These tests make the Python side fail loudly instead of quietly.
 
-WHAT THEY DO NOT PROVE. That a path exists in the repository says nothing about
-whether the module imports once installed under the bundle's isolated
-PYTHONPATH. Only the deployment-time ``import_smoke`` run proves that. These
-tests check the manifest against the source tree and nothing further.
+WHAT THEY DO NOT PROVE. Source presence alone says nothing about installed
+imports. The Mind checks below also import staged manifest files without site
+packages and exercise the two published CLIs' help paths. They do not replace the
+deployment-time ``import_smoke`` against the final installed bundle.
 
 WHY THE PARSING IS SPLIT FROM THE FILESYSTEM. Every helper that interprets
 source or installer text takes TEXT, so each fail-open mode below is
@@ -24,8 +24,12 @@ because the parsing could not be exercised directly.
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import json
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -316,6 +320,133 @@ GATE_EXECUTORS = (
 
 def _published_gate_paths(definition: dict) -> set[str]:
     return set(RCO_CHECKERS + GATE_EXECUTORS) & set(definition["python_entrypoints"].values())
+
+
+MIND_MODULES = (
+    "tools.wd_bridge_mind",
+    "tools.bridge_mind_workspace",
+    "tools.wd_bridge_mind_delta_push",
+    "tools.wd_bridge_mind_rebuild",
+    "tools.wd_pr_missing_slot_board",
+)
+MIND_CLI_MODULES = (
+    "tools.bridge_mind_workspace",
+    "tools.wd_bridge_mind_delta_push",
+)
+
+
+def _assert_mind_delivery(definition: dict) -> None:
+    paths = {module.replace(".", "/") + ".py" for module in MIND_MODULES}
+    missing_files = paths - set(definition["python_files"])
+    assert not missing_files, f"mind_file_drop: {sorted(missing_files)}"
+    missing_smoke = set(MIND_MODULES) - set(definition["import_smoke"]["package_modules"])
+    assert not missing_smoke, f"mind_smoke_drop: {sorted(missing_smoke)}"
+    published = set(definition["python_entrypoints"].values())
+    cli_paths = {module.replace(".", "/") + ".py" for module in MIND_CLI_MODULES}
+    assert cli_paths <= published, f"mind_entrypoint_drop: {sorted(cli_paths - published)}"
+    assert "tools/wd_pr_missing_slot_board.py" not in published, (
+        "board_default_gate_entrypoint: board's default gate route must remain unpublished"
+    )
+    assert not (paths - cli_paths) & published, "Mind libraries must not masquerade as CLI entrypoints"
+    assert not set(GATE_EXECUTORS) & published, "Mind delivery must not publish gate executors"
+    assert definition["manual_execution_capability"] == {
+        "schema": "wd.bridge-manual-execution.v1",
+        "entrypoints": {
+            "merge": "tools/merge_with_bridge_receipt.py",
+            "receipt": "tools/write_bridge_consensus_merge_receipt.py",
+        },
+        "invocation_marker": "--wd-manual-execution",
+    }, "manual execution remains a capability declaration, without activation"
+
+
+def test_mind_family_is_packaged_smoke_checked_and_real_clis_are_published():
+    """RCO2 closure finding: dormant source must reach the bundle before it can be used."""
+    _assert_mind_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation,module", [
+    *(('mind_file_drop', module) for module in MIND_MODULES),
+    *(('mind_smoke_drop', module) for module in MIND_MODULES),
+    *(('mind_entrypoint_drop', module) for module in MIND_CLI_MODULES),
+    ('board_default_gate_entrypoint', 'tools.wd_pr_missing_slot_board'),
+])
+def test_mind_delivery_contract_rejects_named_mutants(mutation, module):
+    """The unchanged real manifest must pass before any single-field omission is tested."""
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    path = module.replace(".", "/") + ".py"
+    if mutation == "mind_file_drop":
+        mutant["python_files"].remove(path)
+    elif mutation == "mind_smoke_drop":
+        mutant["import_smoke"]["package_modules"].remove(module)
+    elif mutation == "mind_entrypoint_drop":
+        mutant["python_entrypoints"] = {
+            name: relative for name, relative in mutant["python_entrypoints"].items()
+            if relative != path
+        }
+    else:
+        mutant["python_entrypoints"]["mind_missing_slot_board"] = path
+    with pytest.raises(AssertionError, match=mutation):
+        _assert_mind_delivery(mutant)
+    _assert_mind_delivery(definition)  # Mutating the copy did not repair or alter the control.
+
+
+@pytest.fixture
+def staged_mind_source(tmp_path):
+    """Stage only manifest Python files; the child cannot fall back to repository or site imports."""
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    staged = tmp_path / "tools-bootstrap"
+    staged.mkdir()
+    for relative in definition["python_files"]:
+        if relative.endswith(".py"):
+            destination = staged / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO_ROOT / relative, destination)
+    return staged
+
+
+def test_staged_mind_modules_import_with_stdlib_only(staged_mind_source):
+    script = (
+        "import importlib, json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "names = json.loads(sys.argv[2])\n"
+        "loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}\n"
+        "internal = {name: str(pathlib.Path(module.__file__).resolve()) for name, module in sys.modules.copy().items() "
+        "if name.split('.')[0] in ('tools', 'waggledance') and getattr(module, '__file__', None)}\n"
+        "assert all(pathlib.Path(path).is_relative_to(root) for path in internal.values()), internal\n"
+        "print(json.dumps(dict(loaded=loaded, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source), json.dumps(MIND_MODULES)],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["isolated"] == observed["no_site"] == 1
+    assert set(observed["loaded"]) == set(MIND_MODULES)
+    assert all(Path(path).is_relative_to(staged_mind_source) for path in observed["loaded"].values())
+
+
+@pytest.mark.parametrize("module", MIND_CLI_MODULES)
+def test_staged_mind_cli_help_is_available_without_site_packages(staged_mind_source, module):
+    script = (
+        "import pathlib, runpy, sys\n"
+        "sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve()))\n"
+        "name = sys.argv[2]\n"
+        "sys.argv = [name, '--help']\n"
+        "runpy.run_module(name, run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source), module],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout.lower()
+    assert "--help" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():

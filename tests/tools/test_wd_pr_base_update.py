@@ -662,6 +662,64 @@ def test_a_pr_path_colliding_by_case_with_a_file_or_directory_is_refused(repo, t
     assert receipt["new_head"] is None
 
 
+@pytest.mark.parametrize("pr_path,base_path", [
+    ("foo__pr.txt", "Foo__base.txt"),
+    ("outer__foo__pr.txt", "outer__Foo__base.txt"),
+    ("foo__deep__pr.txt", "Foo__other__base.txt"),
+])
+def test_a_case_variant_of_a_pr_parent_directory_is_refused(repo, tmp_path, capsys, pr_path, base_path):
+    """Codex P2 4266509450: different leaves still collide when a parent directory differs by case.
+
+    The merge tree retains both directory spellings although a Windows checkout cannot do so.
+    Reject the update before creating a replacement head, including collisions above the immediate parent.
+    Regression twin for the parent_spelling_loss mutant (folded directory keys kept as a set).
+    """
+    base = _base(repo)
+    head = _pr(repo, base, **{pr_path: "pr\n"})
+    _commit(repo, "main", **{base_path: "base\n"})
+    refs_before = _refs(repo)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, printed = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert printed == receipt
+    assert receipt["overlap_paths"] == []
+    assert (code, receipt["status"], receipt["reason"]) == (3, "refused", "case_collision")
+    assert receipt["case_collisions"] == [pr_path.replace("__", "/")]
+    assert receipt["new_head"] is None
+    assert _refs(repo) == refs_before
+
+
+@pytest.mark.parametrize("pr_path,base_path", [
+    ("foo__pr.txt", "foo__base.txt"),
+    ("outer__foo__pr.txt", "outer__foo__base.txt"),
+    ("foo__pr.txt", "unrelated__Foo__base.txt"),
+])
+def test_shared_or_unrelated_pr_parent_directories_remain_valid(repo, tmp_path, capsys, pr_path, base_path):
+    """A shared directory with identical spelling, or a name under another ancestor, is safe."""
+    base = _base(repo)
+    head = _pr(repo, base, **{pr_path: "pr\n"})
+    new_base = _commit(repo, "main", **{base_path: "base\n"})
+    refs_before = _refs(repo)
+    receipt_path = tmp_path / "receipt.json"
+
+    code, printed = _run(capsys, *_args(repo, receipt_path, head, base, "main"))
+
+    receipt = _receipt(receipt_path)
+    assert printed == receipt
+    assert (code, receipt["status"], receipt["reason"]) == (0, "updated", "content_identical")
+    assert receipt["case_collisions"] == []
+    assert receipt["overlap_paths"] == []
+    assert receipt["patch_id_old"] == receipt["patch_id_new"]
+    new_head = receipt["new_head"]
+    assert _git(repo, "rev-parse", f"{new_head}:{pr_path.replace('__', '/')}") == _git(
+        repo, "rev-parse", f"{head}:{pr_path.replace('__', '/')}")
+    assert _git(repo, "rev-parse", f"{new_head}:{base_path.replace('__', '/')}") == _git(
+        repo, "rev-parse", f"{new_base}:{base_path.replace('__', '/')}")
+    assert _refs(repo) == refs_before
+
+
 DOTLESS_I = "\u0131"  # LATIN SMALL LETTER DOTLESS I: upper() is "I", casefold() is itself
 
 

@@ -252,19 +252,22 @@ def _case_collisions(repo: str, tree: str, paths: Sequence[str]) -> list[str]:
     names = [name.decode("utf-8", errors="surrogateescape") for name in
              _must(repo, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", tree]).split(b"\0") if name]
     files: dict[str, set[str]] = {}
-    dirs: set[str] = set()
+    dirs: dict[str, set[str]] = {}
     for name in names:
         for key in _folds(name):
             files.setdefault(key, set()).add(name)
         parts = name.split("/")
         for end in range(1, len(parts)):
-            dirs.update(_folds("/".join(parts[:end])))
+            parent = "/".join(parts[:end])
+            for key in _folds(parent):
+                dirs.setdefault(key, set()).add(parent)
     hits = set()
     for path in paths:
         parts = path.split("/")
         keys = _folds(path)
         if (any(len(files.get(key, ())) > 1 or key in dirs for key in keys)
-                or any(_folds("/".join(parts[:end])) & files.keys() for end in range(1, len(parts)))):
+                or any(key in files or len(dirs.get(key, ())) > 1
+                       for end in range(1, len(parts)) for key in _folds("/".join(parts[:end])))):
             hits.add(path)
     return sorted(hits)
 

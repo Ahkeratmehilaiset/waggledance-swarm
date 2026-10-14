@@ -53,6 +53,8 @@ def inbox_rows(inbox_dir: Path) -> dict[int, dict]:
         inbox = _load(path)
         for section in SECTIONS:
             for item in inbox.get(section) or []:
+                if item.get("pr") is None:  # v1.1: a non-PR ask row (for example an unanswered task request) is not a PR row
+                    continue
                 number = int(item["pr"])
                 entry = seen.setdefault(number, {"ready": False, "filled": False, "unbound": False, "lanes": []})
                 gh = item.get("github") or {}

@@ -251,7 +251,7 @@ function ConvertFrom-WdManualExecutionApprovalRecord {
         $record.enabled -isnot [bool] -or $record.enabled -ne $true -or
         $SourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $record.source_commit -cne $SourceCommit -or
         $DefinitionHash -cnotmatch '^[0-9A-F]{64}$' -or $record.definition_sha256 -cne $DefinitionHash -or
-        $record.approval_reference_sha256 -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        $record.approval_reference_sha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
         $record.agent -cnotin $agents -or $record.agent -cnotin $FleetAgentNames -or
         $record.tools -isnot [Array] -or $record.tools.Count -ne 2) {
         throw 'manual execution approval binding or field type is invalid'

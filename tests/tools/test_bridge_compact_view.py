@@ -67,6 +67,92 @@ def test_exact_duplicates_do_not_drop_different_recipient_or_head():
     assert len(compact_view([event(to="lead"), event(to="tools")])["events"]) == 2
 
 
+@pytest.mark.parametrize("to,expected", [
+    ("codex-lead-1, claude-rco-2", ["codex-lead-1", "claude-rco-2"]),
+    ("claude-rco-2", ["claude-rco-2"]),
+    (["codex-lead-1", " claude-rco-2 "], ["codex-lead-1", "claude-rco-2"]),
+    ("", []),
+    (" , ,", []),
+])
+def test_request_reply_ids_and_explicit_recipient_list_are_displayed(to, expected):
+    row = event(to=to, request_id="lead-rco2-r1", in_reply_to_request_id="rco2-r0")
+    item = compact_view([row])["events"][0]
+    assert item["request_id"] == "lead-rco2-r1"
+    assert item["in_reply_to_request_id"] == "rco2-r0"
+    assert item["to_list"] == expected
+    assert item["to"] == to  # the original field is kept unchanged
+
+
+def test_absent_request_fields_display_empty_not_invented():
+    item = compact_view([event()])["events"][0]
+    assert item["request_id"] == ""
+    assert item["in_reply_to_request_id"] == ""
+    assert item["to_list"] == []
+    assert item["to"] == ""
+
+
+@pytest.mark.parametrize("to", [5, {"agent": "claude-rco-2"}, ["claude-rco-2", 7], None])
+def test_malformed_recipients_stay_unknown_not_guessed(to):
+    item = compact_view([event(to=to)])["events"][0]
+    assert item["to_list"] is None
+    assert item["to"] == to
+
+
+@pytest.mark.parametrize("value", [None, 17, {"id": "x"}])
+def test_non_string_request_ids_are_shown_as_received(value):
+    item = compact_view([event(request_id=value, in_reply_to_request_id=value)])["events"][0]
+    assert item["request_id"] == value
+    assert item["in_reply_to_request_id"] == value
+
+
+def test_late_answers_and_corrections_stay_visible_with_their_binding():
+    rows = [dict(event(in_reply_to_request_id="r1", to="codex-lead-1"), status="answered"),
+            dict(event(request_id="c1", to="codex-lead-1,claude-rco-1"), status="late_correction")]
+    items = compact_view(rows)["events"]
+    assert [item["status"] for item in items] == ["answered", "late_correction"]
+    assert items[0]["in_reply_to_request_id"] == "r1"
+    assert items[1]["to_list"] == ["codex-lead-1", "claude-rco-1"]
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize("top,nested", [
+    ("r1", _MISSING), (_MISSING, "r1"), ("r1", "r1"), ("r1", "r2"), (_MISSING, _MISSING),
+    (None, "r1"), ("r1", None), (17, "17"), ({"id": "x"}, {"id": "x"}),
+])
+def test_request_bindings_follow_the_request_contract_field_and_show_conflicts(top, nested):
+    # Codex P2 PRRT_kwDORYf3RM6ro-M_: a payload-only binding must not show as unbound, and a conflict
+    # between the two places must be visible, never defaulted away. waggledance.core.bridge_request_contract
+    # .field() is the reference for every case.
+    from waggledance.core import bridge_request_contract as contract
+    for key in ("request_id", "in_reply_to_request_id"):
+        row = event()
+        if top is not _MISSING:
+            row[key] = top
+        if nested is not _MISSING:
+            row["payload"] = {key: nested}
+        item = compact_view([row])["events"][0]
+        expected = contract.field(row, key)
+        if expected is contract._CONFLICT:
+            assert item[key] == {"top_level": top, "payload": nested}
+            assert item["request_binding_conflicts"] == [key]
+        else:
+            assert item["request_binding_conflicts"] == []
+            if expected is not None:
+                assert item[key] == expected
+            else:
+                assert item[key] == ("" if top is _MISSING else top)
+
+
+def test_a_payload_only_reply_binding_is_shown_and_a_conflict_flags_only_its_own_field():
+    row = dict(event(in_reply_to_request_id="r1"), payload={"request_id": "c1", "in_reply_to_request_id": "r9"})
+    item = compact_view([row])["events"][0]
+    assert item["request_id"] == "c1"
+    assert item["in_reply_to_request_id"] == {"top_level": "r1", "payload": "r9"}
+    assert item["request_binding_conflicts"] == ["in_reply_to_request_id"]
+
+
 def test_reference_is_key_order_independent():
     row = event()
     assert event_id(row) == event_id(dict(reversed(list(row.items()))))

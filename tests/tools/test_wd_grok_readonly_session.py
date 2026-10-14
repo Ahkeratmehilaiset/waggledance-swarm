@@ -438,3 +438,58 @@ def test_rs_f5_r1_ordinary_unicode_and_control_characters_are_kept_unchanged(iso
     assert result.returncode == 0 and summary["outcome"] == "final"
     assert result.stdout.startswith(answer)                       # byte-for-byte the model's final text
     assert _written_as_the_helper_writes(result.stdout, tmp_path).startswith(answer)
+
+
+def test_plugin_depth_boundary_has_a_positive_twin_and_deeper_sources_refuse(iso):
+    # c0528: MUTANT_DROP_PLUGIN_DEPTH_PROBLEM must not hide a deeper plugin;
+    # MUTANT_ACCEPT_UNREADABLE_PLUGIN must not accept its acknowledged digest.
+    _, cwd = iso
+    root = cwd / ".grok" / "plugins"
+    boundary = root
+    for _ in range(session.WALK_DEPTH_LIMIT):
+        boundary /= "d"
+    boundary.mkdir(parents=True)
+    mcp = boundary / ".mcp.json"
+    mcp.write_text(json.dumps({"mcpServers": {"inert": {"command": "never-run"}}}), encoding="utf-8")
+    visible = session.inherited_surface(cwd)
+    assert not visible["problems"] and visible["components"] > 0
+    assert session.surface_gate(cwd, visible["digest"])["read_only_guarantee"] is False
+
+    # One level beyond the actual depth bound, without a junction or real profile.
+    deeper = boundary / "d"
+    deeper.mkdir()
+    mcp.rename(deeper / mcp.name)
+    hidden = session.inherited_surface(cwd)
+    assert any(problem["error"] == "DepthLimitExceeded" for problem in hidden["problems"])
+    with pytest.raises(ValueError, match="inventory has unreadable sources"):
+        session.surface_gate(cwd, hidden["digest"])
+
+
+@pytest.mark.parametrize("bound", ["files", "bytes"])
+def test_plugin_tree_hash_bounds_refuse_one_over_but_allow_the_exact_limit(iso, monkeypatch, bound):
+    # c0528: MUTANT_DROP_PLUGIN_TREE_BOUNDS survives old tests; <= boundary
+    # control also kills MUTANT_REJECT_EXACT_PLUGIN_TREE_LIMIT (> changed to >=).
+    _, cwd = iso
+    root = cwd / ".grok" / "plugins" / "inert"
+    root.mkdir(parents=True)
+    (root / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"inert": {"command": "never-run"}}}), encoding="utf-8")
+    payload = root / "payload.txt"
+    payload.write_bytes(b"0")
+    files = list(root.iterdir())
+    if bound == "files":
+        monkeypatch.setattr(session, "TREE_FILE_LIMIT", len(files))
+    else:
+        monkeypatch.setattr(session, "TREE_BYTE_LIMIT", sum(path.stat().st_size for path in files))
+    visible = session.inherited_surface(cwd)
+    assert not visible["problems"] and visible["components"] > 0
+    assert session.surface_gate(cwd, visible["digest"])["read_only_guarantee"] is False
+
+    if bound == "files":
+        (root / "extra.txt").write_bytes(b"0")
+    else:
+        payload.write_bytes(b"00")
+    with pytest.raises(ValueError, match="Plugin tree exceeds inventory hash bounds"):
+        session._tree_sha256(root)
+    with pytest.raises(ValueError, match="Plugin tree exceeds inventory hash bounds"):
+        session.surface_gate(cwd, visible["digest"])

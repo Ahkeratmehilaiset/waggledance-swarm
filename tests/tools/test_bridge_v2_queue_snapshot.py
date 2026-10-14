@@ -339,13 +339,19 @@ def test_distinct_keys_that_only_look_alike_stay_readable(root):
 @pytest.mark.parametrize("shell", ["pwsh", "powershell"])
 def test_powershell_itself_refuses_case_variant_duplicate_keys(shell):
     # The parity this repair mirrors, measured on the host: ConvertFrom-Json refuses {"agent": .., "Agent": ..}.
+    # A control parse must succeed first, and the refusal must be an error the same cmdlet raises (caught under
+    # ErrorActionPreference Stop), so an unrelated failure or a warning that still parses cannot pass (c0175).
     exe = shutil.which(shell)
     if exe is None:
         pytest.skip(shell + " is not available on this host")
     result = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command",
-                             "'{\"agent\": \"a\", \"Agent\": \"b\"}' | ConvertFrom-Json | Out-Null"],
+                             "$ErrorActionPreference = 'Stop'; "
+                             "$null = '{\"agent\": \"a\"}' | ConvertFrom-Json; 'CONTROL_PARSED'; "
+                             "try { $null = '{\"agent\": \"a\", \"Agent\": \"b\"}' | ConvertFrom-Json; 'DUPLICATE_PARSED' } "
+                             "catch { 'DUPLICATE_REFUSED' }"],
                             capture_output=True, text=True, timeout=60)
-    assert result.returncode != 0 or result.stderr.strip()
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["CONTROL_PARSED", "DUPLICATE_REFUSED"], (result.stdout, result.stderr)
 
 
 @pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(5, "io")], ids=["permission", "io"])

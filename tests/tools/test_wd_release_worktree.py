@@ -80,11 +80,15 @@ def planned_path() -> str:
     return r"C:\Python\wd-release-plan-fixture-" + uuid.uuid4().hex  # never created
 
 
-def run(shell: str, **params) -> tuple[int, dict]:
+def run(shell: str, *, volatile_root: Path | None = None, **params) -> tuple[int, dict]:
     argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPT)]
     for name, value in params.items():
         argv += ["-" + name] if value is True else ["-" + name, str(value)]
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    # tmp_path may use a persistent --basetemp; declare volatility only to this child.
+    child_env = os.environ.copy()
+    if volatile_root is not None:
+        child_env.update(TEMP=str(volatile_root), TMP=str(volatile_root))
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120, env=child_env)
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert lines, result.stderr
     return result.returncode, json.loads(lines[-1])
@@ -143,7 +147,8 @@ def test_invalid_inputs_are_refused_with_their_reasons(repo, shell, tmp_path):
         ({"Remote": "nowhere"}, "remote_unreachable"),
     ]
     for change, reason in cases:
-        code, plan = run(shell, **{**good, **change})
+        code, plan = run(shell, volatile_root=tmp_path if reason == "path_volatile" else None,
+                         **{**good, **change})
         assert code == 2 and plan["verdict"] == "refuse" and reason in plan["reasons"], (change, plan)
 
 
@@ -154,7 +159,8 @@ def test_invalid_inputs_are_refused_with_their_reasons(repo, shell, tmp_path):
 def test_a_source_repository_under_temp_is_refused(tmp_path, shell):
     volatile = make_repo(tmp_path)
     path, branch = planned_path(), "claude-rco-2/release-fixture"
-    code, plan = run(shell, RepositoryPath=volatile["work"], Branch=branch, Commit=volatile["commit"], WorktreePath=path)
+    code, plan = run(shell, volatile_root=tmp_path, RepositoryPath=volatile["work"], Branch=branch,
+                     Commit=volatile["commit"], WorktreePath=path)
     assert code == 2 and plan["reasons"] == ["repository_volatile"], plan
     assert_untouched(volatile, branch, path)
 
@@ -197,7 +203,8 @@ def test_a_c_worktree_whose_git_common_dir_is_in_temp_is_refused(cdir, tmp_path,
     volatile = make_repo(tmp_path)                       # objects and refs live under TEMP
     worktree = linked_worktree(volatile, root / "linked-worktree")   # top level is persistent C:
     path, branch = planned_path(), "claude-rco-2/release-fixture"
-    code, plan = run(shell, RepositoryPath=worktree, Branch=branch, Commit=volatile["commit"], WorktreePath=path)
+    code, plan = run(shell, volatile_root=tmp_path, RepositoryPath=worktree, Branch=branch,
+                     Commit=volatile["commit"], WorktreePath=path)
     assert code == 2 and plan["reasons"] == ["repository_volatile"], plan
     assert_untouched(volatile, branch, path)
 

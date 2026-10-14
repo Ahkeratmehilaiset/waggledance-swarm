@@ -46,6 +46,39 @@ def event_id(event: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json(event).encode("utf-8")).hexdigest()
 
 
+def _request_binding(row: Mapping[str, Any], payload: Mapping[str, Any], key: str) -> tuple[Any, bool]:
+    """A request binding as the request contract's ``field()`` reads it, and whether it conflicts.
+
+    Display only. The top-level value wins, a payload-only value is used when the top level has none,
+    and two different values are shown both, never one of them: ``{"top_level": .., "payload": ..}``
+    with the conflict flag set. Absent in both places stays "", an explicit top-level null stays null.
+    """
+    direct, nested = row.get(key), payload.get(key)
+    if direct is not None and nested is not None and direct != nested:
+        return {"top_level": direct, "payload": nested}, True
+    if direct is None and nested is not None:
+        return nested, False
+    return row.get(key, ""), False
+
+
+def _recipient_list(value: Any) -> list[str] | None:
+    """The recipients of ``to`` as a list; None when its shape is unknown.
+
+    A display aid only: it never decides who must answer (the full event and
+    the pinned reply binding do). A comma-joined string and a list of strings
+    are split and trimmed; any other shape stays unknown instead of guessed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split(",")
+    elif isinstance(value, (list, tuple)) and all(isinstance(part, str) for part in value):
+        parts = list(value)
+    else:
+        return None
+    return [part.strip() for part in parts if part.strip()]
+
+
 def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dict:
     """Preserve chronology; deduplicate ONLY byte-equivalent canonical JSON.
 
@@ -85,7 +118,15 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
             "task": row.get("task_id", ""), "head": head,
             "type": kind, "status": row.get("status", ""),
             "to": row.get("to", ""),
+            # Display only, as received; the full event stays authoritative.
+            "to_list": _recipient_list(row.get("to", "")),
         }
+        conflicts = []
+        for name in ("request_id", "in_reply_to_request_id"):
+            item[name], conflict = _request_binding(row, payload, name)
+            if conflict:
+                conflicts.append(name)
+        item["request_binding_conflicts"] = conflicts
         item["head_bindings"] = bindings
         item["head_conflict"] = len({_json(value) for value in bindings.values()}) > 1
         message = str(row.get("message", ""))

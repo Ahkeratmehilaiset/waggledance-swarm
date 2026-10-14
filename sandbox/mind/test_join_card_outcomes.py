@@ -184,6 +184,18 @@ CONTROLS = {
     # The exact shape of Lead's audit 8A9D94EE case 3: a wrong-PR vote first, then a valid one (v1.1 said 1/1).
     "wrong_pr_then_valid": (lambda: base(events=[pair(vote(ts="2026-10-14T10:15:00Z", pr=PR2)), pair(vote())]),
                             ("TAKEN_WRONG", "pr_mismatch")),
+    # RCO1 probe FL1: a second row for the SAME event naming another agent is a conflict, never verified.
+    "identity_conflicting_rows": (lambda: base(identity=lambda i: verified(i["events"]) + [
+        dict(row, agent="codex-lead-1") for row in verified(i["events"])]), ("UNKNOWN", "identity_unverified")),
+    "identity_verified_conflict": (lambda: base(identity=lambda i: verified(i["events"]) + [
+        dict(row, verified=False) for row in verified(i["events"])]), ("UNKNOWN", "identity_unverified")),
+    # RCO1 probe FL2: a vote before the view's as_of (10:00) needs coverage from the vote up to as_of.
+    "pre_read_before_as_of_no_coverage": (lambda: base(events=[pair(vote(ts="2026-10-14T09:58:00Z"))], coverage=[]),
+                                          ("UNKNOWN", "coverage_incomplete_before_action")),
+    "pre_read_before_as_of_covered": (lambda: base(events=[pair(vote(ts="2026-10-14T09:58:00Z"))],
+                                                   coverage=lambda i: [dict(i["coverage"][0],
+                                                                            from_utc="2026-10-14T09:50:00Z")]),
+                                      ("PRE_READ", "valid_vote_before_read")),
     # Coverage starts at 10:12, so an earlier action between 10:00 and 10:12 could be missing.
     "coverage_missing_earlier": (lambda: base(coverage=lambda i: [dict(i["coverage"][0],
                                                                        from_utc="2026-10-14T10:12:00Z")]),
@@ -348,6 +360,28 @@ def _samples_verified(*args):
     return "CURRENT" if verdict == "SAMPLED_CONSISTENT" else verdict
 
 
+def _identity_any_row(identity, event):
+    """v1.2 before RCO1 FL1: ANY matching row verified the event."""
+    return any(isinstance(item, dict) and item.get("event_ref") == event["ref"]
+               and item.get("agent") == event["body"].get("agent") and item.get("verified") is True
+               for item in identity)
+
+
+def _old_covers(coverage, start, end):
+    """v1.2 before RCO1 FL2: an empty list covered every span with start >= end."""
+    spans = sorted((jco._time(i["from_utc"]), jco._time(i["to_utc"])) for i in coverage if i.get("complete") is True)
+    reach = start
+    for low, high in spans:
+        if low > reach:
+            break
+        reach = max(reach, high)
+    return reach >= end
+
+
+def _collapsed_span(coverage, as_of, read, moment):
+    return as_of is not None and _old_covers(coverage, min(as_of, read, moment), moment)
+
+
 def _first_valid_wins(inside):
     valid = [item for item in inside if item[1] == "VALID"]
     first = valid[0] if valid else (inside[0] if inside else None)
@@ -379,6 +413,8 @@ MUTANTS = {
     "M_first_valid_wins": ("wrong_then_valid", "deciding_action", _first_valid_wins),
     "M_first_valid_wins_pr": ("wrong_pr_then_valid", "deciding_action", _first_valid_wins),
     "M_coverage_for_timing_only": ("coverage_missing_earlier", "positive_coverage", lambda *a: True),
+    "M_identity_any_row": ("identity_conflicting_rows", "identity_ok", _identity_any_row),
+    "M_collapsed_span": ("pre_read_before_as_of_no_coverage", "positive_coverage", _collapsed_span),
 }
 
 
@@ -407,8 +443,47 @@ def test_every_control_is_killed_or_listed():
     covered = {control for control, _, _ in MUTANTS.values()}
     truth_only = {"duplicate_events", "other_action", "no_action", "ref_mismatch_dropped", "line_record_mismatch",
                   "nearer_conflicting_observation", "truth_gap_too_wide", "single_sample_at_vote",
-                  "identity_agent_mismatch", "valid_then_wrong"}  # asserted by their own tests above
+                  "identity_agent_mismatch", "valid_then_wrong", "identity_verified_conflict",
+                  "pre_read_before_as_of_covered"}  # asserted by their own tests above
     assert set(CONTROLS) - truth_only <= covered
+
+
+def test_covers_needs_a_span_that_contains_the_start():
+    at = jco._time("2026-10-14T10:00:00Z")
+    span = [{"from_utc": "2026-10-14T09:00:00Z", "to_utc": "2026-10-14T11:00:00Z", "complete": True, **SOURCE}]
+    assert jco.covers([], at, at) is False  # RCO1 FL2: no span is never coverage, not even for an instant
+    assert jco.covers(span, at, at) is True
+    later = [{"from_utc": "2026-10-14T10:00:01Z", "to_utc": "2026-10-14T11:00:00Z", "complete": True, **SOURCE}]
+    assert jco.covers(later, at, at) is False
+    split = span[:1] + [dict(span[0], from_utc="2026-10-14T11:00:01Z", to_utc="2026-10-14T12:00:00Z")]
+    assert jco.covers(split, at, jco._time("2026-10-14T11:30:00Z")) is False  # a 1 s gap is a gap
+
+
+def _second_card(identity=None):
+    """The same card issued again with another nonce and read at 10:06; the lane's one vote at 10:20 is in both."""
+    change = {"issue": lambda i: dict(i["issue"], nonce="nonce-0002", issued_utc="2026-10-14T10:05:30Z"),
+              "receipts": lambda i: [dict(i["receipts"][0], nonce="nonce-0002", read_utc="2026-10-14T10:06:00Z")]}
+    if identity is not None:
+        change["identity"] = identity
+    return run(base(**change))
+
+
+def test_aggregate_counts_each_event_once_across_cards():
+    first, second = run(base()), _second_card()
+    assert first["rows"][0]["event_ref"] == second["rows"][0]["event_ref"]
+    merged = jco.aggregate([first, second])
+    assert merged["cards"] == 2 and merged["rows_merged_by_event"] == 1
+    assert merged["counts"]["follow_through"] == {"numerator": 1, "denominator": 1}
+    naive_taken = sum(result["counts"]["follow_through"]["numerator"] for result in (first, second))
+    assert naive_taken == 2  # the naive sum a per-card reader would report: the twin tells the two apart
+    assert jco.aggregate([first, first])["duplicate_results"] == 1
+    assert jco.aggregate([second, first]) == merged  # order free
+
+
+def test_aggregate_conflicting_rows_are_unknown():
+    conflict = jco.aggregate([run(base()), _second_card(identity=[])])
+    assert conflict["counts"]["outcomes"]["UNKNOWN"] == 1
+    assert conflict["counts"]["unknown_reasons"] == {"aggregate_conflict": 1}
 
 
 def test_mutant_dedupe_without_counting_is_caught(monkeypatch):

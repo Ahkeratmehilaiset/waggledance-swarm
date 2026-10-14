@@ -231,21 +231,27 @@ def dedupe(pairs: Sequence[tuple[str, Any]]) -> tuple[dict[str, dict[str, Any]],
 
 
 def covers(coverage: Sequence[Any], start: datetime, end: datetime) -> bool:
-    """True only when complete coverage spans, merged, contain every moment from start to end."""
+    """True only when complete coverage spans, merged, contain every moment from start to end. A span must contain
+    ``start`` itself, also when start == end: no span is never coverage (RCO1 FL2: v1.2 returned True for an empty
+    list when start >= end)."""
     spans = []
     for item in coverage:
         if isinstance(item, Mapping) and item.get("complete") is True:
             low, high = _time(item.get("from_utc")), _time(item.get("to_utc"))
             if low is not None and high is not None and low <= high:
                 spans.append((low, high))
-    reach = start
+    reach = None
     for low, high in sorted(spans):
+        if reach is None:
+            if low > start:
+                return False  # sorted by start: no later span can contain ``start``
+            if high >= start:
+                reach = high
+            continue
         if low > reach:
             break
         reach = max(reach, high)
-        if reach >= end:
-            return True
-    return reach >= end
+    return reach is not None and reach >= end
 
 
 def _head_rows(head_truth: Sequence[Any], pr: int, kind: str) -> list[Mapping[str, Any]]:
@@ -287,13 +293,15 @@ def currency(head_truth: Sequence[Any], pr: int, head: str, moment: datetime) ->
 
 
 def identity_ok(identity: Sequence[Any], event: Mapping[str, Any]) -> bool:
-    """Contract v1.2 C2: an independent verifier row bound to this exact event ref and its agent. An agent label, a
-    self-hashed body or an eligibility row is never an identity."""
-    return any(isinstance(item, Mapping) and item.get("event_ref") == event["ref"]
-               and item.get("agent") == event["body"].get("agent") and item.get("verified") is True
-               and isinstance(item.get("method"), str) and bool(item["method"])
-               and isinstance(item.get("source"), str) and isinstance(item.get("source_sha256"), str)
-               for item in identity)
+    """Contract v1.2 C2: independent verifier rows bound to this exact event ref, ALL naming the event's agent and
+    ALL verified with a method and a source. An agent label, a self-hashed body or an eligibility row is never an
+    identity, and conflicting attestations never resolve to verified (RCO1 FL1: v1.2 accepted ANY matching row)."""
+    rows = [item for item in identity if isinstance(item, Mapping) and item.get("event_ref") == event["ref"]]
+    return bool(rows) and all(
+        item.get("agent") == event["body"].get("agent") and item.get("verified") is True
+        and isinstance(item.get("method"), str) and bool(item["method"])
+        and isinstance(item.get("source"), str) and isinstance(item.get("source_sha256"), str)
+        for item in rows)
 
 
 def eligible(rows: Sequence[Any], pr: int, head: str, slot: str, lane: str, moment: datetime) -> bool | None:
@@ -364,9 +372,13 @@ def before_read(moment: datetime, read: datetime, issued: datetime | None) -> bo
 
 
 def positive_coverage(coverage: Sequence[Any], as_of: datetime | None, read: datetime, moment: datetime) -> bool:
-    """Contract v1.2 C4: a positive claim needs complete coverage from the view's time (or the read or the action,
-    whichever is first) through the deciding action, because a gap can hide an EARLIER action."""
-    return as_of is not None and covers(coverage, min(as_of, read, moment), moment)
+    """Contract v1.2 C4: a positive claim needs complete coverage from min(as_of, read) through the deciding action,
+    because a gap can hide an EARLIER action. An action before that point must be covered from the action up to it
+    (RCO1 FL2: v1.2 collapsed that span to the action instant)."""
+    if as_of is None:
+        return False
+    anchor = min(as_of, read)
+    return covers(coverage, min(anchor, moment), max(anchor, moment))
 
 
 def deciding_action(inside: Sequence[tuple[Mapping[str, Any], str]]) -> tuple[Any, list]:
@@ -499,6 +511,33 @@ def outcomes(view_bytes: bytes, card_bytes: bytes, lane: str, issue: Any, receip
 
 def result_bytes(result: Mapping[str, Any]) -> bytes:
     return (canonical(result) + "\n").encode("ascii")
+
+
+def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Contract v1.1 (g) across cards: each event counts once. Identical card results count once; rows of different
+    cards that name the same ``event_ref`` collapse into one row, which is UNKNOWN(aggregate_conflict) when their
+    outcomes disagree; rows without an event (UNKNOWN before any action, NONE, OTHER) stay one per card line.
+    Pure and deterministic in any input order."""
+    unique = {result_bytes(result): result for result in results}
+    by_event: dict[str, list[Mapping[str, Any]]] = {}
+    rows: list[Mapping[str, Any]] = []
+    for key in sorted(unique):
+        for row in unique[key]["rows"]:
+            if row.get("event_ref"):
+                by_event.setdefault(row["event_ref"], []).append(row)
+            else:
+                rows.append(row)
+    for ref in sorted(by_event):
+        group = sorted(by_event[ref], key=canonical)
+        if len({(row["outcome"], row["reason"]) for row in group}) == 1:
+            rows.append(group[0])
+        else:
+            rows.append(dict(group[0], outcome=UNKNOWN, reason="aggregate_conflict"))
+    merged = {"schema": SCHEMA + ".aggregate", "authority": "none", "scope": SCOPE, "cards": len(unique),
+              "duplicate_results": len(results) - len(unique),
+              "rows_merged_by_event": sum(len(group) - 1 for group in by_event.values()), "counts": counts(rows)}
+    ws.guard_object(merged)
+    return merged
 
 
 # --- Command line (reads files, writes one new file; the function above stays pure) ---------------------------------

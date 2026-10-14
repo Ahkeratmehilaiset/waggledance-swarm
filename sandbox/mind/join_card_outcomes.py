@@ -6,14 +6,16 @@ was delivered or read, so that night cannot tell anything about read-to-action. 
 inputs prove and says UNKNOWN for everything else.
 
 Row contract: claude-rco-2 ``ROW_CONTRACT_RCO2.v1.md`` (``CONTRACT_V1_SHA256``), frozen before this code, for the
-request codex-lead-1/join-card-outcomes-20261014 (proposal 72823BAF, v0.1 DB362695 as reviewed by Lead), and its
-delta ``ROW_CONTRACT_RCO2.v1_1.md`` (``CONTRACT_SHA256``): (a) RCO2's own finding, (b)-(g) a direct Grok xhigh
-consultation, both before any acceptance run. No weights, no ranking, no learning step: this slice records outcome
-rows and counts, nothing else.
+request codex-lead-1/join-card-outcomes-20261014 (proposal 72823BAF, v0.1 DB362695 as reviewed by Lead); delta
+``v1_1`` (``CONTRACT_V1_1_SHA256``: RCO2's finding (a) and a direct Grok xhigh consultation); and the corrected
+``v1_2`` (``CONTRACT_SHA256``), registered before its semantics were implemented, which applies codex-lead-1's four
+corrections (ABA currency, verified identity, first relevant action, coverage before any positive claim). No weights,
+no ranking, no learning step: this slice records outcome rows and counts, nothing else. Its read receipts and the
+delivery receipts of sandbox/mind/join_card_delivery.py are different contracts; no adapter is promised.
 
-``outcomes(view_bytes, card_bytes, lane, issue, receipts, events, coverage, head_truth, eligibility)`` is pure: no
-clock, file, network, process or bridge write, and the same inputs in any order give the same ``result_bytes``.
-Inputs (explicit and immutable; a missing one is UNKNOWN, never a default):
+``outcomes(view_bytes, card_bytes, lane, issue, receipts, events, coverage, head_truth, eligibility, identity)`` is
+pure: no clock, file, network, process or bridge write, and the same inputs in any order give the same
+``result_bytes``. Inputs (explicit and immutable; a missing one is UNKNOWN, never a default):
 
 * ``view_bytes``: one lane view (``wd.mind-lane-view.v1a``, sandbox/mind/step1/lane_view.py).
 * ``card_bytes``: the card the lane was shown; it must be ``lane_view.render_text(view, lane)`` byte for byte.
@@ -21,20 +23,26 @@ Inputs (explicit and immutable; a missing one is UNKNOWN, never a default):
   ``{schema, lane, card_sha256, nonce, read_utc, reader}``.
 * ``events``: ``{ref: body}`` or a list of ``{ref, body}``; a body counts only when ``event_id(body) == ref``.
 * ``coverage``: ``[{from_utc, to_utc, complete, source, source_sha256}]``, the spans in which every event of the lane
-  is claimed present; ``head_truth``: ``[{pr, head, observed_utc, source, source_sha256}]``, independent GitHub head
-  observations; ``eligibility``: ``[{pr, head, slot, lane, eligible, observed_utc, source, source_sha256}]``,
-  independent gate truth.
+  is claimed present.
+* ``head_truth``: ``{kind: "interval", pr, head, from_utc, to_utc, complete, source, source_sha256}`` rows (the head
+  was that SHA the whole time) and ``{kind: "sample", pr, head, observed_utc, source, source_sha256}`` point samples.
+* ``eligibility``: ``[{pr, head, slot, lane, eligible, observed_utc, source, source_sha256}]``, independent gate truth.
+* ``identity``: ``[{event_ref, agent, verified, method, source, source_sha256}]`` from an independent verifier.
 
 Outcomes per ACTION line (first rule wins): UNKNOWN(receipt or issue reason); PRE_READ (any valid vote before the
-read: reported, outside every denominator); for the FIRST valid vote in the window: TAKEN_STALE when the nearest
-independent head observations around its time agree on another head, UNKNOWN(head_truth_unknown) when they cannot
-tell, else TAKEN_CORRECT or TAKEN_WRONG from independent eligibility, UNKNOWN(eligibility_unknown) without it; a pass
-vote on the task with another PR number is TAKEN_WRONG(pr_mismatch); one bound to another head is OTHER
-(vote_at_live_head) when that head was live at the vote, TAKEN_WRONG(wrong_binding) when it was not, UNKNOWN when the
-truth cannot tell; OTHER or NONE only when coverage holds every moment from the view's time to the window's end, else
+read: reported, outside every denominator). Else the FIRST relevant action in the window decides, whether a valid
+vote, a vote with another PR number or a vote bound to another head; later ones are listed and counted, never hidden
+and never a rescue. Every claim from an action needs coverage from the view's time through it
+(UNKNOWN(coverage_incomplete_before_action)) and a verified identity for its exact ref (UNKNOWN(identity_unverified)).
+A valid vote is TAKEN_STALE or TAKEN_CORRECT/TAKEN_WRONG (independent eligibility) only when a complete head INTERVAL
+proves the head at its time; point samples never verify (ABA) and give UNKNOWN(head_currency_unverified) with
+``head_sampled``. A vote with another PR number is TAKEN_WRONG(pr_mismatch); one bound to another head is OTHER
+(vote_at_live_head) when an interval proves that head live, TAKEN_WRONG(wrong_binding) when it proves another one.
+OTHER or NONE only when coverage holds every moment from the view's time to the window's end, else
 UNKNOWN(coverage_incomplete). Counts: ``follow_through`` = taken/known, ``correct_of_taken`` and ``harm_of_taken``
-over taken, each as a numerator and a denominator, never a bare ratio. An aggregate over several cards must count
-each ``event_ref`` once. Times are UTC instants (``ws.parse_time``); durations are whole milliseconds, cut.
+over taken, each as a numerator and a denominator, never a bare ratio, plus ``corrected_after_wrong`` and
+``attempts_after_first``. An aggregate over several cards must count each ``event_ref`` once. Times are UTC instants
+(``ws.parse_time``); durations are whole milliseconds, cut. OTHER and NONE still rest on agent labels (stated limit).
 """
 
 from __future__ import annotations
@@ -58,7 +66,8 @@ from tools.bridge_compact_view import event_id  # noqa: E402
 SCHEMA = "wd.mind-join-card-outcomes.v1"
 SCOPE = "offline_outcome_rows_not_gate"
 CONTRACT_V1_SHA256 = "c645ef27642b88ba750a3f0e055cbb0ad6b8c88580bb3a9188fe96f0362b7019"
-CONTRACT_SHA256 = "0cc935fbb9f476f1df3d9a08e74abe04bc8e78c8bd4f97febb0640cce3863b9c"  # v1.1
+CONTRACT_V1_1_SHA256 = "0cc935fbb9f476f1df3d9a08e74abe04bc8e78c8bd4f97febb0640cce3863b9c"
+CONTRACT_SHA256 = "96223ad35f1a9e17787fe361ba5773c9d73af80d6301e56a7df2b6344cd401fa"  # v1.2, registered 19:15:29Z
 ISSUE_SCHEMA = "wd.mind-card-issue.v1"
 RECEIPT_SCHEMA = "wd.mind-card-read-receipt.v1"
 UNKNOWN = ws.UNKNOWN
@@ -239,13 +248,17 @@ def covers(coverage: Sequence[Any], start: datetime, end: datetime) -> bool:
     return reach >= end
 
 
-def currency(head_truth: Sequence[Any], pr: int, head: str, moment: datetime) -> str:
-    """CURRENT, STALE or UNKNOWN: the head GitHub had at ``moment``, from bracketing independent observations."""
-    seen = []
-    for item in head_truth:
-        if (isinstance(item, Mapping) and item.get("pr") == pr and isinstance(item.get("head"), str)
-                and ws.HEAD.fullmatch(item["head"]) and _time(item.get("observed_utc")) is not None):
-            seen.append((_time(item["observed_utc"]), item["head"]))
+def _head_rows(head_truth: Sequence[Any], pr: int, kind: str) -> list[Mapping[str, Any]]:
+    return [item for item in head_truth
+            if isinstance(item, Mapping) and item.get("kind") == kind and item.get("pr") == pr
+            and isinstance(item.get("head"), str) and ws.HEAD.fullmatch(item["head"])]
+
+
+def sampled(head_truth: Sequence[Any], pr: int, head: str, moment: datetime) -> str:
+    """SAMPLED_CONSISTENT when the nearest point samples around ``moment``, at most MAX_TRUTH_GAP apart, both name
+    ``head``; else UNKNOWN. A sample never proves currency: the head can change and change back in between (ABA)."""
+    seen = [(_time(item.get("observed_utc")), item["head"]) for item in _head_rows(head_truth, pr, "sample")
+            if _time(item.get("observed_utc")) is not None]
     before = [row for row in seen if row[0] <= moment]
     after = [row for row in seen if row[0] >= moment]
     if not before or not after:
@@ -253,9 +266,34 @@ def currency(head_truth: Sequence[Any], pr: int, head: str, moment: datetime) ->
     low_time, high_time = max(row[0] for row in before), min(row[0] for row in after)
     low = {row[1] for row in before if row[0] == low_time}
     high = {row[1] for row in after if row[0] == high_time}
-    if high_time - low_time > MAX_TRUTH_GAP or len(low) != 1 or low != high:
+    if high_time - low_time > MAX_TRUTH_GAP or low != high or low != {head}:
         return UNKNOWN
-    return "CURRENT" if low == {head} else "STALE"
+    return "SAMPLED_CONSISTENT"
+
+
+def currency(head_truth: Sequence[Any], pr: int, head: str, moment: datetime) -> str:
+    """Contract v1.2 C1: CURRENT or STALE only from a complete interval row that contains ``moment``. Disagreeing
+    intervals give UNKNOWN; with no interval, the sample verdict (SAMPLED_CONSISTENT or UNKNOWN), never verified."""
+    heads = set()
+    for item in _head_rows(head_truth, pr, "interval"):
+        low, high = _time(item.get("from_utc")), _time(item.get("to_utc"))
+        if item.get("complete") is True and low is not None and high is not None and low <= moment <= high:
+            heads.add(item["head"])
+    if len(heads) == 1:
+        return "CURRENT" if heads == {head} else "STALE"
+    if heads:
+        return UNKNOWN
+    return sampled(head_truth, pr, head, moment)
+
+
+def identity_ok(identity: Sequence[Any], event: Mapping[str, Any]) -> bool:
+    """Contract v1.2 C2: an independent verifier row bound to this exact event ref and its agent. An agent label, a
+    self-hashed body or an eligibility row is never an identity."""
+    return any(isinstance(item, Mapping) and item.get("event_ref") == event["ref"]
+               and item.get("agent") == event["body"].get("agent") and item.get("verified") is True
+               and isinstance(item.get("method"), str) and bool(item["method"])
+               and isinstance(item.get("source"), str) and isinstance(item.get("source_sha256"), str)
+               for item in identity)
 
 
 def eligible(rows: Sequence[Any], pr: int, head: str, slot: str, lane: str, moment: datetime) -> bool | None:
@@ -306,7 +344,7 @@ def judge_wrong(kind: str, event: Mapping[str, Any], line: Mapping[str, Any],
         return "OTHER", "vote_at_live_head"
     if state == "STALE":
         return "TAKEN_WRONG", "wrong_binding"
-    return UNKNOWN, "head_truth_unknown"
+    return UNKNOWN, "head_currency_unverified"
 
 
 def timed(coverage: Sequence[Any], read: datetime, moment: datetime) -> int | None:
@@ -325,11 +363,24 @@ def before_read(moment: datetime, read: datetime, issued: datetime | None) -> bo
     return moment < read
 
 
+def positive_coverage(coverage: Sequence[Any], as_of: datetime | None, read: datetime, moment: datetime) -> bool:
+    """Contract v1.2 C4: a positive claim needs complete coverage from the view's time (or the read or the action,
+    whichever is first) through the deciding action, because a gap can hide an EARLIER action."""
+    return as_of is not None and covers(coverage, min(as_of, read, moment), moment)
+
+
+def deciding_action(inside: Sequence[tuple[Mapping[str, Any], str]]) -> tuple[Any, list]:
+    """Contract v1.2 C3: the FIRST relevant action in time (ties by ref) decides; the later ones are listed."""
+    return (inside[0], list(inside[1:])) if inside else (None, [])
+
+
 def outcome_row(line: Mapping[str, Any], lane: str, read: datetime | None, read_reason: str | None,
                 issued: datetime | None, as_of: datetime | None, lane_events: Sequence[Mapping[str, Any]],
-                coverage: Sequence[Any], head_truth: Sequence[Any], eligibility: Sequence[Any]) -> dict[str, Any]:
+                coverage: Sequence[Any], head_truth: Sequence[Any], eligibility: Sequence[Any],
+                identity: Sequence[Any]) -> dict[str, Any]:
     row = {key: line[key] for key in ("line", "pr", "slot", "head", "task", "text_sha256")}
-    row.update(read_utc=stamp(read), event_ref=None, event_utc=None, read_to_action_ms=None)
+    row.update(read_utc=stamp(read), event_ref=None, event_utc=None, read_to_action_ms=None, head_sampled=None,
+               later_actions=[], corrected_after_wrong=False)
     if line["reason"]:
         return dict(row, outcome=UNKNOWN, reason=line["reason"])
     if read is None:
@@ -337,29 +388,38 @@ def outcome_row(line: Mapping[str, Any], lane: str, read: datetime | None, read_
     bindings = [(event, vote_binding(event, lane, line)) for event in lane_events]
     pre = [event for event, kind in bindings if kind == "VALID" and before_read(event["ts"], read, issued)]
     if pre:
-        return dict(row, outcome="PRE_READ", reason="valid_vote_before_read", event_ref=pre[0]["ref"],
-                    event_utc=stamp(pre[0]["ts"]))
-    inside = [(event, kind) for event, kind in bindings if read <= event["ts"] <= read + WINDOW]
-    # Contract v1.1 (g): the FIRST valid vote in the window is the action; a later re-vote never rescues it.
-    first = next((event for event, kind in inside if kind == "VALID"), None)
-    wrong = next(((event, kind) for event, kind in inside if kind in ("WRONG_PR", "WRONG_HEAD")), None)
-    chosen = first if first is not None else (wrong[0] if wrong is not None else None)
-    if chosen is not None:
-        row.update(event_ref=chosen["ref"], event_utc=stamp(chosen["ts"]),
-                   read_to_action_ms=timed(coverage, read, chosen["ts"]))
+        row.update(event_ref=pre[0]["ref"], event_utc=stamp(pre[0]["ts"]))
+        if not positive_coverage(coverage, as_of, read, pre[0]["ts"]):
+            return dict(row, outcome=UNKNOWN, reason="coverage_incomplete_before_action")
+        if not identity_ok(identity, pre[0]):  # stricter than C2's TAKEN-only wording: every event-decided outcome
+            return dict(row, outcome=UNKNOWN, reason="identity_unverified")
+        return dict(row, outcome="PRE_READ", reason="valid_vote_before_read")
+    inside = [(event, kind) for event, kind in bindings if kind is not None and read <= event["ts"] <= read + WINDOW]
+    first, later = deciding_action(inside)
     if first is not None:
-        state = currency(head_truth, line["pr"], line["head"], first["ts"])
-        if state == "STALE":
-            return dict(row, outcome="TAKEN_STALE", reason="head_moved_before_vote")
-        if state != "CURRENT":
-            return dict(row, outcome=UNKNOWN, reason="head_truth_unknown")
-        verdict = eligible(eligibility, line["pr"], line["head"], line["slot"], lane, first["ts"])
-        if verdict is None:
-            return dict(row, outcome=UNKNOWN, reason="eligibility_unknown")
-        return dict(row, outcome="TAKEN_CORRECT" if verdict else "TAKEN_WRONG",
-                    reason=None if verdict else "not_eligible")
-    if wrong is not None:
-        outcome, reason = judge_wrong(wrong[1], wrong[0], line, head_truth)
+        event, kind = first
+        row.update(event_ref=event["ref"], event_utc=stamp(event["ts"]),
+                   later_actions=[{"ref": item["ref"], "kind": what, "utc": stamp(item["ts"])} for item, what in later],
+                   corrected_after_wrong=kind != "VALID" and any(what == "VALID" for _, what in later))
+        if not positive_coverage(coverage, as_of, read, event["ts"]):
+            return dict(row, outcome=UNKNOWN, reason="coverage_incomplete_before_action")
+        if not identity_ok(identity, event):
+            return dict(row, outcome=UNKNOWN, reason="identity_unverified")
+        if kind == "VALID":
+            state = currency(head_truth, line["pr"], line["head"], event["ts"])
+            if state == "STALE":
+                outcome, reason = "TAKEN_STALE", "head_moved_before_vote"
+            elif state != "CURRENT":
+                return dict(row, outcome=UNKNOWN, reason="head_currency_unverified", head_sampled=state)
+            else:
+                verdict = eligible(eligibility, line["pr"], line["head"], line["slot"], lane, event["ts"])
+                if verdict is None:
+                    return dict(row, outcome=UNKNOWN, reason="eligibility_unknown")
+                outcome, reason = ("TAKEN_CORRECT", None) if verdict else ("TAKEN_WRONG", "not_eligible")
+        else:
+            outcome, reason = judge_wrong(kind, event, line, head_truth)
+        if outcome != UNKNOWN:
+            row["read_to_action_ms"] = timed(coverage, read, event["ts"])
         return dict(row, outcome=outcome, reason=reason)
     # Contract v1.1 (a): a negative claim (OTHER or NONE) needs coverage from the view's own time, so that no vote
     # before the read can be missing, through the end of the window.
@@ -377,17 +437,20 @@ def counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for row in rows:
         if row["outcome"] == UNKNOWN:
             unknown_reasons[row["reason"]] = unknown_reasons.get(row["reason"], 0) + 1
-    timed = sorted(row["read_to_action_ms"] for row in rows
-                   if row["outcome"] == "TAKEN_CORRECT" and row["read_to_action_ms"] is not None)
+    timed_ms = sorted(row["read_to_action_ms"] for row in rows
+                      if row["outcome"] == "TAKEN_CORRECT" and row["read_to_action_ms"] is not None)
     return {"outcomes": tally, "unknown_reasons": unknown_reasons,
             "follow_through": {"numerator": taken, "denominator": known},
             "correct_of_taken": {"numerator": tally["TAKEN_CORRECT"], "denominator": taken},
             "harm_of_taken": {"numerator": tally["TAKEN_STALE"] + tally["TAKEN_WRONG"], "denominator": taken},
-            "read_to_action_ms_taken_correct": timed}
+            "corrected_after_wrong": sum(bool(row.get("corrected_after_wrong")) for row in rows),
+            "attempts_after_first": sum(len(row.get("later_actions") or ()) for row in rows),
+            "read_to_action_ms_taken_correct": timed_ms}
 
 
 def outcomes(view_bytes: bytes, card_bytes: bytes, lane: str, issue: Any, receipts: Sequence[Any], events: Any,
-             coverage: Sequence[Any], head_truth: Sequence[Any], eligibility: Sequence[Any]) -> dict[str, Any]:
+             coverage: Sequence[Any], head_truth: Sequence[Any], eligibility: Sequence[Any],
+             identity: Sequence[Any] = ()) -> dict[str, Any]:
     """The outcome rows and counts of one card. Pure and deterministic."""
     if lane not in lane_view.LANES:
         raise OutcomeError("unknown lane")
@@ -405,7 +468,8 @@ def outcomes(view_bytes: bytes, card_bytes: bytes, lane: str, issue: Any, receip
         "inputs": {"view_sha256": view_sha256, "card_sha256": card_sha256,
                    "issue_sha256": digest_set([issue]) if issue is not None else None,
                    "receipts_sha256": digest_set(receipts), "coverage_sha256": digest_set(coverage),
-                   "head_truth_sha256": digest_set(head_truth), "eligibility_sha256": digest_set(eligibility)},
+                   "head_truth_sha256": digest_set(head_truth), "eligibility_sha256": digest_set(eligibility),
+                   "identity_sha256": digest_set(identity)},
         "card": "accepted", "rows": [], "gap": None,
     }
     kept, event_counts = dedupe(event_pairs(events))
@@ -424,8 +488,8 @@ def outcomes(view_bytes: bytes, card_bytes: bytes, lane: str, issue: Any, receip
     lane_events = sorted((event for event in kept.values() if event["body"].get("agent") == lane),
                          key=lambda event: (event["ts"], event["ref"]))
     as_of = _time(view.get("as_of_utc"))
-    rows = [outcome_row(line, lane, read, reason, issued, as_of, lane_events, coverage, head_truth, eligibility)
-            for line in card_lines(view, lane)]
+    rows = [outcome_row(line, lane, read, reason, issued, as_of, lane_events, coverage, head_truth, eligibility,
+                        identity) for line in card_lines(view, lane)]
     result.update(rows=rows, receipt_reasons_seen=receipt_reasons, counts=counts(rows))
     if rows and all(row["reason"] == "receipt_missing" for row in rows) and issue is None:
         result["gap"] = HISTORICAL_GAP
@@ -455,6 +519,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--coverage")
     parser.add_argument("--head-truth")
     parser.add_argument("--eligibility")
+    parser.add_argument("--identity")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     out = Path(args.out)
@@ -471,7 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--card is required unless --replay")
     result = outcomes(view_bytes, card_bytes, args.lane, _load(args.issue, None), _load(args.receipts, []),
                       _load(args.events, {}), _load(args.coverage, []), _load(args.head_truth, []),
-                      _load(args.eligibility, []))
+                      _load(args.eligibility, []), _load(args.identity, []))
     data = result_bytes(result)
     with open(out, "xb") as stream:
         stream.write(data)

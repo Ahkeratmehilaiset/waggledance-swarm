@@ -132,6 +132,17 @@ def _split_by_gate_task(capture: "Capture", votes: list[Mapping[str, Any]], bran
     return bound, unbound
 
 
+def _slot_next(top: Mapping[str, Any], lane: str) -> str:
+    """NEXT for an empty own slot. If this lane's vote exists at the head but on another task, the gate may or may not
+    see it (its alias rules are wider than branch-or-slash/hyphen, PR1873), so the action is to check, not to re-vote."""
+    mine = [v for v in top.get("unbound_votes", []) if v.get("agent") == lane]
+    if mine:
+        return (f"PR{top['pr']} at {top['github_head'][:12]}: my vote sits on task {mine[0]['task']}, not this PR's branch; check "
+                "the gate (check_rco_pass_present) and re-post it on the branch task only if the gate does not see it")
+    return (f"{'last missing ' if top['last_missing'] else ''}vote on PR{top['pr']} at {top['github_head'][:12]} (CI reported green); "
+            "verify with gh checks, veto scan and gate read first")
+
+
 def _ci_shown(item: Mapping[str, Any]) -> str:
     """The CI word on ACT/WAIT/OWN lines: GitHub's observed green at the GitHub head wins over a missing bridge report."""
     return "github_green" if (item.get("github") or {}).get("ci_observed_green") is True else str(item["ci"])
@@ -479,7 +490,7 @@ def build_inbox_direct(snapshot: Mapping[str, Any], context: Mapping[str, Any], 
     if act:
         top = act[0]
         if top["role"] == "my_slot_missing":
-            nxt = f"{'last missing ' if top['last_missing'] else ''}vote on PR{top['pr']} at {top['github_head'][:12]} (CI reported green); verify with gh checks, veto scan and gate read first"
+            nxt = _slot_next(top, lane)
         elif top["role"] == "my_slot_due_check_ci":
             nxt = f"PR{top['pr']} at {top['github_head'][:12]}: my vote is due ({'last missing' if top['last_missing'] else 'every eligible RCO passed'}); check CI with gh first, then vote"
         elif top["role"] == "request_with_slot_filled":
@@ -873,7 +884,7 @@ def _finish(lane, now, first_utc, identity, act, wait, own, done, stale, dormant
     if act:
         top = act[0]
         if top["role"] == "my_slot_missing":
-            nxt = f"{'last missing ' if top['last_missing'] else ''}vote on PR{top['pr']} at {top['github_head'][:12]} (CI reported green); verify with gh checks, veto scan and gate read first"
+            nxt = _slot_next(top, lane)
         elif top["role"] == "my_slot_due_check_ci":
             nxt = f"PR{top['pr']} at {top['github_head'][:12]}: my vote is due ({'last missing' if top['last_missing'] else 'every eligible RCO passed'}); check CI with gh first, then vote"
         elif top["role"] == "request_with_slot_filled":
@@ -1011,7 +1022,7 @@ def render_text(inbox: Mapping[str, Any]) -> str:
             if item.get("unbound_votes"):
                 tasks = sorted({str(v["task"]) for v in item["unbound_votes"]})
                 out.append(f"BIND PR{item['pr']} {item['github_head'][:12]}: {len(item['unbound_votes'])} vote(s) on task "
-                           f"{', '.join(tasks)}, not this PR's branch; the gate (task == branch) does not count them")
+                           f"{', '.join(tasks)}, not this PR's branch; the gate binds task == branch, so check it before any re-post")
     for item in inbox["act"]:
         if "pr" in item:
             out.append(f"ACT  PR{item['pr']} {item['github_head'][:12]} {item['role']} ci={_ci_shown(item)} missing={'+'.join(item['missing']) or 'none'} class={item['class'].split(' ')[0]}"

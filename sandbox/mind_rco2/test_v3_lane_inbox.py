@@ -311,3 +311,16 @@ def test_own_line_shows_github_green_ci_at_the_github_head():
                 "prs": {"100": {"head": HEAD, "merge_state": "CLEAN", "all_required_success": True}}}
     text = v3.render_text(v3.lens(v3.attach_github(fold, observed), LANE))
     assert "OWN  PR100 " in text and "ci=github_green" in text
+
+
+def test_my_own_vote_on_another_task_asks_for_a_gate_check_not_a_new_review():
+    event, vote = cast(LANE, "rco_pass", task="lead/some-other-task")
+    snapshot = {"prs": {"100": {"head": HEAD, "votes": [vote], "stale_votes": [], "veto_observations": [],
+                                "reported_ci": {"status": "reported_green", "head": HEAD}, "source_refs": []}},
+                "lanes": {}, "tensions": []}
+    context = {"charter_ok": True, "prs": {100: {"state": "OPEN", "head": HEAD, "branch": "lead/branch-100",
+                                                "authors": ["codex-lead-1"], "path_class": None}}}
+    result = v3.build_inbox(snapshot, context, v3.Capture([event]), LANE, NOW)
+    assert result["act"][0]["role"] == "my_slot_missing"
+    assert result["next_action"].startswith("PR100 at " + HEAD[:12] + ": my vote sits on task lead/some-other-task")
+    assert "re-post it on the branch task only if the gate does not see it" in result["next_action"]

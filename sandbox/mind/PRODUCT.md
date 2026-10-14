@@ -60,7 +60,10 @@ LEARN v0 records nothing from this card; LEARN contract rco2-learn:f80a92c2
 * Live input: the sandbox producer has not written since 2026-10-13. Restarting it needs the operator, and its
   read-only GitHub calls are a carve-out that Lead decides.
 
-## Proposed landing bar (for Lead to amend, then freeze)
+## Landing checklist (draft)
+
+Lead's disposition at 21:01Z: these items are a draft checklist. They are NOT frozen and NOT a landing authorization,
+and nothing here carries gate authority.
 
 1. Every section has measured evidence on frozen inputs and an RCO probe result at the landing head: the JOIN card
    (EC030DEF with an envelope adapter, on v0.1 or later), delivery v1.1 (done, 53/0) and LEARN at f80a92c2 (done,
@@ -69,9 +72,17 @@ LEARN v0 records nothing from this card; LEARN contract rco2-learn:f80a92c2
 3. Benefit: either RCO2's unit plan is frozen and measured on frozen captures, or the landing claims no benefit.
 4. REMEMBER reaches a card only through the joiner protocol (v2ca or v2a); a v2c result is never shown as an answer.
 5. A cross-family joiner check (Lead's and Tools' lane), or the limit stays stated.
-6. Governance is settled before the PR. `sandbox/mind` classified as (a) via unrecognized (RCO2, classify_ab on a
-   full main 227aa862 archive; recompute it on the landing diff), so the landing needs the operator's explicit
-   signature and both RCOs. LEARN was authored by RCO2, so Lead decides how the RCO slots are filled for a landing
-   that contains it.
-7. The whole `sandbox/mind` suite is green, nothing imports gate code, no sandbox data is in git, and the decoded
-   guard runs on every output.
+6. Governance is settled before the PR. Lead's static policy audit (E8AA7A3A) records these facts:
+   * `sandbox/mind` is presently (a), off the allowlist. RCO2's classify_ab on a full main 227aa862 archive agrees;
+     recompute it on the landing diff.
+   * RCO2 cannot review LEARN, which it authored.
+   * The pool is not a replacement for the second RCO.
+   * Mixed-family authors can leave the installed opposite-family slot unavailable.
+
+   No review exception will be invented. The route is a truthful deferral or split rather than hiding a contributor,
+   and an exact operator decision may be needed.
+7. The exact final membership, head and source provenance are frozen before the expensive CI and review.
+8. The side-effect and input-currentness boundaries are stated honestly: frozen cycles are not live input, and a
+   cited situation is not a verified one.
+9. The whole required test scope is green. A green `sandbox/mind` suite is not full CI. Nothing imports gate code,
+   no sandbox data is in git, and the decoded guard runs on every output.

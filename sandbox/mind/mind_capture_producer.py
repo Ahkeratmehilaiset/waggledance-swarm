@@ -13,6 +13,9 @@ Every cycle:
      window slides; it is persisted under <live-dir>/state so a restart continues from the cursor. A cursor the
      reader refuses reseeds. The capture's reader_stdout_sha256 is the sha256 of the manifest (ref, canonical row
      sha256, source) in window order, kept next to the capture.
+     Each cycle's capture-provenance.json binds that capture and manifest by sha256 and retains the exact prior
+     and end reader cursors, reader scope/stats and bounded-window loss. It is evidence for later coverage
+     analysis, not full history or a full-log hash; historical captures cannot acquire missing provenance.
   2. PR CONTEXT (observational, authority none; the only network touch, read-only GitHub metadata): one
      ``gh pr list`` (state, head, branch); for OPEN PRs ``gh pr view --json files,headRefOid,commits`` cached per
      PR and head: the changed paths classified with the code tree's own charter (evaluate_paths) and classifier
@@ -26,6 +29,7 @@ an error. Old cycle captures beyond --keep are pruned (their run outputs and dig
 """
 
 import argparse
+import base64
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -108,11 +112,44 @@ def reader(*options):
 
 
 def compact_list(*options):
+    # Match the compact reader's input alphabet before interpolating a persisted token into its shell call.
+    if options and options[0] == "-AfterEvent" and (len(options[1]) > 2048
+                                                  or not re.fullmatch(r"bc1\.[A-Za-z0-9_-]+", options[1])):
+        raise CaptureRefused("compact_cursor_invalid")
     data = reader(*options)
     view = json.loads(data.decode("utf-8"))
     if view.get("schema") != "wd.bridge.compact-view.v1" or not isinstance(view.get("cursor"), str):
         raise CaptureRefused("compact_view_shape")
-    return [item["ref"] for item in view["events"]], view["cursor"], view.get("stats", {})
+    return ([item["ref"] for item in view["events"]], view["cursor"], view.get("stats", {}),
+            {"scope": view.get("scope"), "reader": view.get("reader")})
+
+
+def cursor_position(token):
+    """Extract only the current compact reader's canonical bc1 cursor; otherwise UNKNOWN (None).
+
+    tools/bridge_compact_view.py::_read_view_rows encodes sorted compact UTF-8 JSON of BridgeCursor, unpadded
+    base64url. bridge_log_reader._file_identity uses an open-handle Windows volume/file-index or POSIX dev/inode,
+    never a pathname, row hash or log hash. Generation is an optional external sidecar token: null stays unknown.
+    Extraction never replaces the opaque token we retain and send back to the reader.
+    """
+    if not isinstance(token, str) or len(token) > 2048 or not re.fullmatch(r"bc1\.[A-Za-z0-9_-]+", token):
+        return None
+    encoded = token[4:]
+    try:
+        value = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8"))
+        if not isinstance(value, dict) or set(value) != {"offset", "file_identity", "generation"}:
+            return None
+        identity, generation, offset = value["file_identity"], value["generation"], value["offset"]
+        if (type(offset) is not int or offset < 0 or not isinstance(identity, str)
+                or not re.fullmatch(r"windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+", identity)
+                or (generation is not None and (not isinstance(generation, str)
+                                               or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", generation)))):
+            return None
+        body = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        canonical_token = "bc1." + base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
+        return value if token == canonical_token else None
+    except (ValueError, RecursionError):
+        return None
 
 
 def row_digest(event):
@@ -149,37 +186,70 @@ def seed_rows():
 
 
 def advance(state_dir):
-    """The sliding window after one fence-free read: (rows, cursor, stats)."""
+    """The sliding window and retained read metadata after one fence-free read."""
     window_file, cursor_file = state_dir / "window.jsonl", state_dir / "cursor.txt"
     rows = []
+    prior = cursor_file.read_bytes().decode("ascii") if cursor_file.exists() else None
+    mode = "reseed" if window_file.exists() or cursor_file.exists() else "seed"
+    reseed_reason = "state_incomplete" if mode == "reseed" else None
     if window_file.exists() and cursor_file.exists():
         rows = [json.loads(line) for line in window_file.read_text(encoding="utf-8").splitlines() if line]
         try:
-            refs, cursor, stats = compact_list("-AfterEvent", cursor_file.read_text(encoding="ascii").strip())
+            refs, cursor, stats, context = compact_list("-AfterEvent", prior)
             mode = "delta"
-        except CaptureRefused:
+            reseed_reason = None
+        except CaptureRefused as exc:
             rows = []
-    if not rows:
-        refs, cursor, stats = compact_list("-ContinuityTail", str(args.window))
-        mode = "seed"
+            reseed_reason = "cursor_invalid" if str(exc) == "compact_cursor_invalid" else "compact_reader_refused"
+    if mode != "delta":
+        refs, cursor, stats, context = compact_list("-ContinuityTail", str(args.window))
     known = {row["ref"] for row in rows}
     fresh = [ref for ref in refs if ref not in known]
-    fetched = details(fresh, args.window + 500 if mode == "seed" else DETAIL_TAIL, seed_rows() if mode == "seed" else None)
+    fetched = details(fresh, args.window + 500 if mode != "delta" else DETAIL_TAIL,
+                      seed_rows() if mode != "delta" else None)
+    dropped = max(0, len(rows) + len(fetched) - args.window)
     rows = (rows + fetched)[-args.window:]
+    start, end = cursor_position(prior), cursor_position(cursor)
+    identity_change = None
+    if start is not None and end is not None:
+        if start["file_identity"] != end["file_identity"]:
+            identity_change = "file_identity_changed"
+        elif start["generation"] != end["generation"]:
+            identity_change = ("generation_configuration_changed" if None in (start["generation"], end["generation"])
+                               else "generation_changed")
+    provenance = {"cursor_prior": prior, "cursor_start": prior if mode == "delta" else None,
+                  "cursor_end": cursor, "position_prior": start,
+                  "position_start": start if mode == "delta" else None, "position_end": end,
+                  "file_identity_status": "KNOWN" if end is not None else "UNKNOWN",
+                  "generation_status": "KNOWN" if end is not None and end["generation"] is not None else "UNKNOWN",
+                  "identity_change": identity_change, "reseed_reason": reseed_reason,
+                  "reader_scope": context["scope"], "reader_stats": context["reader"], "listed_refs": refs,
+                  "coverage": "PARTIAL", "window_scope": "sliding_window_not_complete_history",
+                  "window_limit": args.window, "retained_rows": len(rows), "dropped_rows": dropped,
+                  "manifest_digest_scope": "retained_ref_row_digest_source_manifest"}
     atomic_write(window_file, "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
                                       for row in rows).encode("utf-8"))
     atomic_write(cursor_file, cursor.encode("ascii"))
     return rows, {"mode": mode, "new_rows": len(fresh), "stats": stats,
-                  "detail_calls": sum(1 for row in fetched if row["source"] == "detail")}
+                  "detail_calls": sum(1 for row in fetched if row["source"] == "detail"), "provenance": provenance}
 
 
-def write_capture(cycle_dir, rows):
+def write_capture(cycle_dir, rows, read_metadata):
+    # capture v1 has strict consumers: keep its exact schema and bind the additive evidence in a sidecar.
+    provenance_path = cycle_dir / "capture-provenance.json"
+    if provenance_path.exists():
+        raise CaptureRefused("capture_provenance_exists")
     manifest = "\n".join(f"{row['ref']} {row['row_sha256']} {row['source']}" for row in rows).encode("ascii")
     capture = {"schema": "wd.bridge-mind-capture.v1", "reader": READER, "reader_stdout_sha256": sha(manifest),
                "observed_utc": utc_now(seconds=True), "events": [row["event"] for row in rows]}
     path = cycle_dir / "capture.json"
     path.write_text(json.dumps(capture, ensure_ascii=False), encoding="utf-8")
     (cycle_dir / "detail-manifest.txt").write_bytes(manifest)
+    provenance = {"schema": "wd.bridge-mind-capture-provenance.v1", "authority": "none",
+                  "capture_sha256": sha(path.read_bytes()), "detail_manifest_sha256": sha(manifest),
+                  "read": read_metadata}
+    with provenance_path.open("xb") as handle:
+        handle.write(canonical(provenance))
     return path
 
 
@@ -291,7 +361,7 @@ for cycle in range(1, args.cycles + 1):
     try:
         started = time.perf_counter()
         rows, rec["read"] = advance(live / "state")
-        capture_path = write_capture(cycle_dir, rows)
+        capture_path = write_capture(cycle_dir, rows, rec["read"])
         rec["capture"] = {"ms": round((time.perf_counter() - started) * 1000), "events": len(rows),
                           "capture_bytes": capture_path.stat().st_size}
         context_path, rec["context"] = pr_context(cycle_dir, live / "files-cache", charter, loaded)

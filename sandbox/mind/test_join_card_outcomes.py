@@ -181,6 +181,9 @@ CONTROLS = {
                          ("TAKEN_WRONG", "wrong_binding")),
     "valid_then_wrong": (lambda: base(events=[pair(vote(ts="2026-10-14T10:15:00Z")),
                                               pair(vote(head=HEAD_A_TWIN))]), ("TAKEN_CORRECT", None)),
+    # The exact shape of Lead's audit 8A9D94EE case 3: a wrong-PR vote first, then a valid one (v1.1 said 1/1).
+    "wrong_pr_then_valid": (lambda: base(events=[pair(vote(ts="2026-10-14T10:15:00Z", pr=PR2)), pair(vote())]),
+                            ("TAKEN_WRONG", "pr_mismatch")),
     # Coverage starts at 10:12, so an earlier action between 10:00 and 10:12 could be missing.
     "coverage_missing_earlier": (lambda: base(coverage=lambda i: [dict(i["coverage"][0],
                                                                        from_utc="2026-10-14T10:12:00Z")]),
@@ -220,6 +223,9 @@ def test_first_relevant_action_keeps_the_later_ones():
     assert [a["kind"] for a in valid_first["later_actions"]] == ["WRONG_HEAD"]
     counts = run(CONTROLS["wrong_then_valid"][0]())["counts"]
     assert counts["corrected_after_wrong"] == 1 and counts["attempts_after_first"] == 1
+    audited = run(CONTROLS["wrong_pr_then_valid"][0]())["counts"]  # v1.1 gave correct 1/1 and harm 0/1 here
+    assert audited["correct_of_taken"] == {"numerator": 0, "denominator": 1}
+    assert audited["harm_of_taken"] == {"numerator": 1, "denominator": 1} and audited["corrected_after_wrong"] == 1
 
 
 def test_duplicates_are_counted_once_and_reported():
@@ -371,6 +377,7 @@ MUTANTS = {
     "M_samples_verified": ("aba_samples", "currency", _samples_verified),
     "M_label_trusted": ("identity_missing", "identity_ok", lambda *a: True),
     "M_first_valid_wins": ("wrong_then_valid", "deciding_action", _first_valid_wins),
+    "M_first_valid_wins_pr": ("wrong_pr_then_valid", "deciding_action", _first_valid_wins),
     "M_coverage_for_timing_only": ("coverage_missing_earlier", "positive_coverage", lambda *a: True),
 }
 

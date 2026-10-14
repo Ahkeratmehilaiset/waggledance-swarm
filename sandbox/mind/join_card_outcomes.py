@@ -514,34 +514,62 @@ def result_bytes(result: Mapping[str, Any]) -> bytes:
 
 
 def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Contract v1.1 (g) across cards: each event and each card line counts once. Identical results count once.
-    Rows that name the same ``event_ref`` collapse into one row; rows without an event (UNKNOWN before any action,
-    NONE, OTHER) collapse per card line, keyed by (card_sha256, lane, line), so the same card bytes read twice
-    count once (RCO1 observation on c4486586). A collapsed group whose outcomes disagree is one
-    UNKNOWN(aggregate_conflict). Stated limit: an event row and a no-event row of the same card line stay apart.
-    Pure and deterministic in any input order."""
+    """Contract v1.1 (g) with delta v1.2.1 across cards: identical results count once; rows linked by a shared
+    ``event_ref`` or by the same card line (card_sha256, lane, line), transitively, form one component that counts
+    ONCE. Agreeing rows keep their outcome. A mix of event-bound and no-event rows (the same line read once without
+    and once with its action) is UNKNOWN(mixed_history): a BOUND, not a resolution, because rows alone cannot rule
+    out a wrong vote or a head change between the reads (the v1.3 action horizon would). Any other disagreement is
+    UNKNOWN(aggregate_conflict). Pure and deterministic in any input order."""
     unique = {result_bytes(result): result for result in results}
-    by_event: dict[str, list[Mapping[str, Any]]] = {}
-    by_line: dict[tuple[str, str, int], list[Mapping[str, Any]]] = {}
+    rows: list[tuple[Mapping[str, Any], tuple[str, str, int]]] = []
     for key in sorted(unique):
         result = unique[key]
-        for row in result["rows"]:
-            if row.get("event_ref"):
-                by_event.setdefault(row["event_ref"], []).append(row)
+        rows.extend((row, (result["inputs"]["card_sha256"], result["lane"], row["line"])) for row in result["rows"])
+    # Delta v1.2.1 (24F508BD): rows linked by a shared event_ref or by the same card line, transitively, form one
+    # component, and each component counts ONCE (RCO1 measured follow_through 1/2 for one taken line on f80a92c2).
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    first_seen: dict[tuple, int] = {}
+    for index, (row, line_key) in enumerate(rows):
+        keys = [("line",) + line_key] + ([("event", row["event_ref"])] if row.get("event_ref") else [])
+        for link in keys:
+            if link in first_seen:
+                low, high = sorted((find(index), find(first_seen[link])))
+                parent[high] = low
             else:
-                by_line.setdefault((result["inputs"]["card_sha256"], result["lane"], row["line"]), []).append(row)
-    rows: list[Mapping[str, Any]] = []
-    for groups in (by_event, by_line):
-        for group_key in sorted(groups):
-            group = sorted(groups[group_key], key=canonical)
-            if len({(row["outcome"], row["reason"]) for row in group}) == 1:
-                rows.append(group[0])
-            else:
-                rows.append(dict(group[0], outcome=UNKNOWN, reason="aggregate_conflict"))
+                first_seen[link] = index
+    components: dict[int, list[Mapping[str, Any]]] = {}
+    for index, (row, _) in enumerate(rows):
+        components.setdefault(find(index), []).append(row)
+    merged_rows: list[Mapping[str, Any]] = []
+    mixed = 0
+    for root in sorted(components):
+        group = sorted(components[root], key=canonical)
+        if len({(row["outcome"], row["reason"]) for row in group}) == 1:
+            merged_rows.append(group[0])
+        elif any(row.get("event_ref") for row in group) and any(not row.get("event_ref") for row in group):
+            mixed += 1  # a BOUND, not a resolution: rows alone cannot rule out an action between the reads
+            merged_rows.append(dict(group[0], outcome=UNKNOWN, reason="mixed_history"))
+        else:
+            merged_rows.append(dict(group[0], outcome=UNKNOWN, reason="aggregate_conflict"))
+    by_event: dict[str, int] = {}
+    by_line: dict[tuple[str, str, int], int] = {}
+    for row, line_key in rows:
+        if row.get("event_ref"):
+            by_event[row["event_ref"]] = by_event.get(row["event_ref"], 0) + 1
+        else:
+            by_line[line_key] = by_line.get(line_key, 0) + 1
     merged = {"schema": SCHEMA + ".aggregate", "authority": "none", "scope": SCOPE, "cards": len(unique),
-              "duplicate_results": len(results) - len(unique),
-              "rows_merged_by_event": sum(len(group) - 1 for group in by_event.values()),
-              "rows_merged_by_card_line": sum(len(group) - 1 for group in by_line.values()), "counts": counts(rows)}
+              "duplicate_results": len(results) - len(unique), "components": len(components),
+              "rows_merged": len(rows) - len(components), "mixed_history_components": mixed,
+              "rows_merged_by_event": sum(count - 1 for count in by_event.values()),
+              "rows_merged_by_card_line": sum(count - 1 for count in by_line.values()), "counts": counts(merged_rows)}
     ws.guard_object(merged)
     return merged
 

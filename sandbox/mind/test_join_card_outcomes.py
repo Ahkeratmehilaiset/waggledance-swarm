@@ -505,6 +505,73 @@ def test_aggregate_counts_a_card_line_once_without_events():
     assert jco.aggregate([first, blind])["counts"]["unknown_reasons"] == {"aggregate_conflict": 1}
 
 
+LATE = {"events": [pair(vote(ts="2026-10-14T12:40:00Z"))],
+        "coverage": [{"from_utc": "2026-10-14T10:00:00Z", "to_utc": "2026-10-14T16:00:00Z", "complete": True,
+                      **SOURCE}],
+        "head_truth": [interval(HEAD_A, "2026-10-14T10:00:00Z", "2026-10-14T16:00:00Z")],
+        "eligibility": [{"pr": PR, "head": HEAD_A, "slot": "build_tools", "lane": LANE, "eligible": True,
+                         "observed_utc": "2026-10-14T12:40:00Z", **SOURCE}]}
+
+
+def _read_again(nonce, issued, read, **change):
+    return run(base(**dict(LATE, issue=lambda i: dict(i["issue"], nonce=nonce, issued_utc=issued),
+                           receipts=lambda i: [dict(i["receipts"][0], nonce=nonce, read_utc=read)], **change)))
+
+
+def _separate_keys(results):
+    """Mutant M_separate_keys: the f80a92c2 aggregate (event rows by event_ref, no-event rows by card line)."""
+    unique = {jco.result_bytes(result): result for result in results}
+    by_event, by_line = {}, {}
+    for key in sorted(unique):
+        result = unique[key]
+        for row in result["rows"]:
+            target = by_event.setdefault(row["event_ref"], []) if row.get("event_ref") else \
+                by_line.setdefault((result["inputs"]["card_sha256"], result["lane"], row["line"]), [])
+            target.append(row)
+    rows = [sorted(group, key=jco.canonical)[0] for groups in (by_event, by_line) for group in groups.values()]
+    return {"counts": jco.counts(rows)}
+
+
+def test_tm1_mixed_history_counts_one_line_once_and_bounded(monkeypatch):
+    first = run(base(**LATE))  # read 10:05, the vote at 12:40 is outside its window: NONE
+    second = _read_again("nonce-0002", "2026-10-14T12:29:30Z", "2026-10-14T12:30:00Z")  # read 12:30: TAKEN_CORRECT
+    assert [first["rows"][0]["outcome"], second["rows"][0]["outcome"]] == ["NONE", "TAKEN_CORRECT"]
+    merged = jco.aggregate([first, second])
+    assert merged["components"] == 1 and merged["mixed_history_components"] == 1
+    assert merged["counts"]["unknown_reasons"] == {"mixed_history": 1}
+    assert merged["counts"]["follow_through"] == {"numerator": 0, "denominator": 0}  # f80a92c2: 1/2
+    monkeypatch.setattr(jco, "aggregate", _separate_keys)  # M_separate_keys must flip it
+    assert jco.aggregate([first, second])["counts"]["follow_through"] == {"numerator": 1, "denominator": 2}
+
+
+def test_tm3_tm4_one_event_on_two_renders_and_the_transitive_mix():
+    other_view = json.loads(make_view())
+    other_view["as_of_utc"] = "2026-10-14T10:01:00Z"  # another render of the same line: other card bytes
+    render_y = run(base(**dict(LATE, view=json.dumps(other_view, sort_keys=True).encode("utf-8"),
+                               issue=lambda i: dict(i["issue"], nonce="nonce-0003", issued_utc="2026-10-14T12:29:00Z"),
+                               receipts=lambda i: [dict(i["receipts"][0], nonce="nonce-0003",
+                                                        read_utc="2026-10-14T12:31:00Z")])))
+    second = _read_again("nonce-0002", "2026-10-14T12:29:30Z", "2026-10-14T12:30:00Z")
+    assert render_y["rows"][0]["outcome"] == "TAKEN_CORRECT"
+    tm3 = jco.aggregate([second, render_y])  # one event on two renders: one component, taken once
+    assert tm3["components"] == 1 and tm3["counts"]["follow_through"] == {"numerator": 1, "denominator": 1}
+    tm4 = jco.aggregate([run(base(**LATE)), second, render_y])  # X NONE + X TAKEN(E) + Y TAKEN(E): one mixed component
+    assert tm4["components"] == 1 and tm4["counts"]["unknown_reasons"] == {"mixed_history": 1}
+
+
+def test_tm5_two_events_on_one_line_conflict():
+    early_wrong = dict(LATE, events=[pair(vote(ts="2026-10-14T10:15:00Z", head=HEAD_A_TWIN)),
+                                     pair(vote(ts="2026-10-14T12:40:00Z"))])
+    first = run(base(**early_wrong))  # read 10:05: the 10:15 wrong-head vote decides
+    second = run(base(**dict(early_wrong, issue=lambda i: dict(i["issue"], nonce="nonce-0002",
+                                                              issued_utc="2026-10-14T12:29:30Z"),
+                             receipts=lambda i: [dict(i["receipts"][0], nonce="nonce-0002",
+                                                      read_utc="2026-10-14T12:30:00Z")])))
+    assert [first["rows"][0]["outcome"], second["rows"][0]["outcome"]] == ["TAKEN_WRONG", "TAKEN_CORRECT"]
+    merged = jco.aggregate([first, second])
+    assert merged["components"] == 1 and merged["counts"]["unknown_reasons"] == {"aggregate_conflict": 1}
+
+
 def test_aggregate_conflicting_rows_are_unknown():
     conflict = jco.aggregate([run(base()), _second_card(identity=[])])
     assert conflict["counts"]["outcomes"]["UNKNOWN"] == 1

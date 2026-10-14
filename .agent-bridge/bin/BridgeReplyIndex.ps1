@@ -189,9 +189,14 @@ function Read-BridgeReplyIndex {
         $parsedRows=0
         if ($null -ne $cache) {
             foreach ($row in @($cache.rows)) { $rows.Add($row) }
+            # As in the cold path, hash what exists before paging, so a byte rewritten
+            # in the delta after its page was parsed is never cached as complete.
+            $length=(Get-Item -LiteralPath $Path).Length
+            $beforeHash=Get-BridgeReplyPrefixHash $Path $length
             $snapshot=Read-BridgeReplyIndexPages -Path $Path -Cursor $cache.cursor
             # Rotation/truncation/generation changes invalidate the derived index.
             if ($snapshot.status -cin @('BLOCKED','RETRY')) { $cache=$null; $rows.Clear(); $cacheStatus='rebuilt' }
+            elseif ((Get-BridgeReplyPrefixHash $Path $length) -cne $beforeHash) { throw 'Canonical prefix changed while reading the reply delta' }
         }
         if ($null -eq $cache) {
             $length=(Get-Item -LiteralPath $Path).Length

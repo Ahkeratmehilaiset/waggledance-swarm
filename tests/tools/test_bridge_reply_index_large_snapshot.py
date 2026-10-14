@@ -326,6 +326,14 @@ function Get-FixtureCacheFiles {
     $directory=Split-Path -Parent $CachePath
     @(if (Test-Path -LiteralPath $directory) { Get-ChildItem -LiteralPath $directory -File | ForEach-Object { $_.Name } })
 }
+function Get-FixtureCacheHashes {
+    param([string]$CachePath)
+    $directory=Split-Path -Parent $CachePath
+    @(if (Test-Path -LiteralPath $directory) {
+        Get-ChildItem -LiteralPath $directory -File -Filter '*.json' | Sort-Object Name |
+            ForEach-Object { $_.Name + ' ' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    })
+}
 """
 
 # Wraps the canonical page reader inside one case scope: $FixtureHook.after runs right after page number
@@ -494,6 +502,23 @@ $third=Invoke-FixtureIndex { Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CA
 $reference=Read-BridgeReplyIndex -Path %%LOG%% -NoCache
 [ordered]@{second=$second;second_calls=$secondCalls;third=$third;reference=(ConvertTo-FixtureSummary $reference)}
 """,
+    # RCO2 early read of PR1908: one byte rewritten inside the warm delta after its page was parsed.
+    'rewrite_delta_between_warm_pages': r"""
+$first=Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CACHE%%
+Add-FixtureText %%LOG%% %%DELTA%%
+$cacheBefore=Get-FixtureCacheHashes %%CACHE%%
+$FixtureHook=@{calls=0;after_call=1;after={ Set-FixtureBytes %%LOG%% %%DELTA_AT%% 'sigma' }}
+%%DELTA_WRAPPER%%
+%%PAGES2%%
+$second=Invoke-FixtureIndex { Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CACHE%% }
+$secondCalls=$FixtureHook.calls
+$cacheAfter=Get-FixtureCacheHashes %%CACHE%%
+$FixtureHook.Remove('after')
+$third=Invoke-FixtureIndex { Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CACHE%% }
+$reference=Read-BridgeReplyIndex -Path %%LOG%% -NoCache
+[ordered]@{first=(ConvertTo-FixtureSummary $first);second=$second;second_calls=$secondCalls;cache_before=$cacheBefore;
+    cache_after=$cacheAfter;third=$third;reference=(ConvertTo-FixtureSummary $reference)}
+""",
     'truncate_within_frozen_window': r"""
 $FixtureHook=@{calls=0;after_call=1;after={ Set-FixtureLength %%LOG%% %%CUT%% }}
 %%DELTA_WRAPPER%%
@@ -632,6 +657,8 @@ def small(ps, tmp_path_factory):
         'rewrite_between_index_calls': (base, 1, None, {}),
         'rewrite_between_cold_pages': (base, 1, None, {}),
         'rewrite_cached_prefix_between_warm_pages': (base, 1, None, {}),
+        'rewrite_delta_between_warm_pages': (
+            base, 1, None, {'DELTA_AT': len(base) + delta.index(marker + b'delta"') + len(marker)}),
         'truncate_within_frozen_window': (base, 2, None, {'CUT': ends[4]}),
         'truncate_below_first_page_cursor': (base, 2, None, {'CUT': ends[1]}),
         'rotate_same_prefix_between_index_calls': (base, 1, None, {'ROTATED': (base + append).decode('ascii')}),
@@ -798,6 +825,21 @@ def test_same_length_prefix_rewrite_never_returns_stale_rows_as_complete(small, 
         assert 'prefix changed' in value['second']['error']
         third = _completed(value['third'])
         assert third['cache_status'] == 'rebuilt' and _keys(third) == _keys(reference)
+
+
+def test_rewrite_inside_the_warm_delta_after_its_page_is_refused_and_keeps_the_cache(small):
+    # RCO2 early read of PR1908: the warm path hashes what exists before paging, as the cold path does, so a byte
+    # rewritten in the delta after its page was parsed is refused and never cached as complete.
+    value = _value(small, 'rewrite_delta_between_warm_pages')
+    assert value['first']['cache_status'] == 'rebuilt' and _keys(value['first']) == BASE
+    second = value['second']
+    assert value['second_calls'] >= 2 and second['threw'], second
+    assert 'Canonical prefix changed while reading the reply delta' in second['error']
+    assert value['cache_before'] and value['cache_after'] == value['cache_before']  # no cache file changed
+    reference = value['reference']
+    assert ('sigma', None) in _keys(reference) and ('delta', None) not in _keys(reference)
+    third = _completed(value['third'])
+    assert third['cache_status'] == 'incremental' and _keys(third) == _keys(reference)
 
 
 @pytest.mark.parametrize('case', ['truncate_within_frozen_window', 'truncate_below_first_page_cursor'])

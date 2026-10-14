@@ -673,23 +673,29 @@ def test_harness_exposes_no_bypass_or_stamp_flags(tmp_path, argv) -> None:
     assert not (tmp_path / "never").exists()
 
 
-def test_clone_depth_overflow_refuses_precisely_before_git(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "ambient_root",
+    [Path("C:/wd-depth-unit"), Path("C:/wd-depth-unit") / ("d" * (CLONE_ROOT_BUDGET + 1))],
+    ids=["ordinary-root", "deep-ambient-root"],
+)
+def test_clone_depth_overflow_refuses_precisely_before_git(ambient_root, monkeypatch) -> None:
     """Depth budgets are decided before git runs, with an actionable reason."""
 
     def _no_git(*args, **kwargs):
         raise AssertionError("git must not run before the depth check")
 
     monkeypatch.setattr(subprocess, "run", _no_git)
-    short_clone = tmp_path / "clone"
+    # Pure path checks must not inherit the caller's potentially deep pytest base.
+    short_clone = Path("C:/wd-depth-unit/clone")
     assert clone_depth_overflow(short_clone, 10) is None
 
     huge = clone_depth_overflow(short_clone, CLONE_PATH_BUDGET)
     assert huge is not None and "long-path budget" in huge
-    with pytest.raises(pytest.fail.Exception, match="refused before clone"):
-        _prepare_isolated_clone(tmp_path, FAKE_SHA, longest_tracked=CLONE_PATH_BUDGET)
+    with pytest.raises(pytest.fail.Exception, match="long-path budget"):
+        _prepare_isolated_clone(short_clone.parent, FAKE_SHA, longest_tracked=CLONE_PATH_BUDGET)
 
     if os.name == "nt":
-        deep_root = Path(str(tmp_path) + os.sep + ("d" * (CLONE_ROOT_BUDGET + 1)))
+        deep_root = ambient_root / ("d" * (CLONE_ROOT_BUDGET + 1))
         deep = clone_depth_overflow(deep_root / "clone", 10)
         assert deep is not None and "working-directory budget" in deep
         with pytest.raises(pytest.fail.Exception, match="working-directory budget"):

@@ -12,9 +12,10 @@ missing element:
 * ``veto`` / ``block``: an unretracted block on the canonical task, from a recognized RCO or from
   another lane.
 * ``build_lead`` / ``build_tools`` / ``rco``: no head-bound approval in that consensus slot.
-* ``signature``: the charter path gate refuses an off-allowlist path, or the diff gate refuses a code
-  pattern, so the operator's explicit per-PR signature is needed after consensus.
-* ``path_denylist``: the charter path gate refuses a denylisted path. The dry-run gate never admits one
+* ``signature``: the charter path gate refuses an off-allowlist path, so the operator's explicit per-PR
+  signature is needed after consensus.
+* ``path_denylist``: the path gate refuses a denylisted path, or the diff gate refuses a code pattern.
+  The dry-run gate never admits one
   (the board passes no ``--standing-consensus-sign``, and that admission drops only an off-allowlist
   blocker), so no signature clears it: the row names the paths and the real remediation instead.
 * ``accepted_queue``: the gate cannot see the whole accepted bridge queue in canonical history. This
@@ -117,8 +118,9 @@ RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
 # so the cost follows the real open count, not this number.
 LIST_LIMIT = 1000
 DENYLIST_BLOCKER = "path gate failed: denylist hit"
-DENYLIST_REMEDIATION = ("the gate never admits a denylisted path, so no signature clears it in this run; remove the "
-                        "path from the PR, or route it to an operator-explicit merge outside the autonomous gate")
+DIFF_DENYLIST_BLOCKER = "diff gate failed: code pattern denylist hit"
+DENYLIST_REMEDIATION = ("the gate never admits denylisted paths or code patterns, so no signature clears them in this "
+                        "run; remove the refused content, or route to an operator-explicit merge outside the autonomous gate")
 PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CONSENSUS_PREFIX = "bridge consensus incomplete: "
 DECISION_NAME = re.compile(r"[a-z0-9_]{1,64}")
@@ -249,7 +251,10 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             merge_time.append(blocker)
             continue
         if blocker.startswith("status checks not green: "):
-            for name in [part.strip() for part in blocker.split(": ", 1)[1].split(",") if part.strip()]:
+            names = [part.strip() for part in blocker.split(": ", 1)[1].split(",") if part.strip()]
+            if not names:
+                add("ci_pending", blocker)
+            for name in names:
                 add("ci_failed" if checks.get(name) == "failed" else "ci_pending", name)
             continue
         element = _element_of(blocker)
@@ -267,6 +272,9 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             add("build_lead", blocker, ["codex-lead-1"])
         elif element == "build_tools":
             add("build_tools", blocker, ["codex-tools-1"])
+        elif blocker == DIFF_DENYLIST_BLOCKER:
+            add("path_denylist", blocker)
+            add("path_denylist", DENYLIST_REMEDIATION)
         elif element == "signature" and blocker.startswith("path gate failed: "):
             path_gate = gate.get("path_gate") or {}
             denied = list(path_gate.get("blocked_paths") or [])
@@ -358,7 +366,8 @@ def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path
     row["base_sha"] = snapshot.get("base_sha")
     gate_run = run(gate_command(python, snapshot_path, head, task_id, repo, bridge_root))
     gate = _read_json_object(gate_run.stdout)
-    if gate is None or "decision" not in gate or not isinstance(gate.get("reasons", []), list):
+    if (gate_run.returncode != 0 or gate is None or "decision" not in gate
+            or not isinstance(gate.get("reasons"), list)):
         row["error"] = "gate output unreadable: " + (gate_run.stderr or gate_run.stdout or "no output").strip()[-400:]
         return row
     row.update(classify(gate, snapshot, holds))
@@ -453,6 +462,8 @@ CI_STATUSES = (UNKNOWN, "reported_green", "reported_not_green")
 VOTE_KEYS = frozenset({"agent", "agent_uuid", "head", "status", "source_refs", "verification"})
 VETO_KEYS = VOTE_KEYS | {"activity"}
 ATTENTION_KEYS = frozenset({"kind", "subject", "actors", "detail", "refs", "rank", "suggestion_only"})
+ATTENTION_OPTIONAL_KEYS = frozenset({"identity_basis"})
+IDENTITY_BASIS_KEYS = frozenset({"mode", "consistency", "source_ref", "source_sha256", "origin", "gate_eligibility"})
 QUESTION_KEYS = frozenset({"question", "attention_rank", "refs"})
 SOURCE_FIELDS = ("log_identity", "generation", "cursor_start", "cursor_end", "coverage", "event_count", "as_of_utc",
                  "last_event_ref")
@@ -653,13 +664,32 @@ def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
     return view
 
 
+def _identity_basis_view(value: Any, refs: Sequence[str]) -> dict[str, str]:
+    """Optional caller declarations, never an authenticated identity or a gate decision."""
+    if not isinstance(value, dict) or set(value) != IDENTITY_BASIS_KEYS:
+        raise MindRefused("an identity basis does not match the reflected interface")
+    basis = {key: _text(value[key]) for key in IDENTITY_BASIS_KEYS}
+    if (basis["mode"] != "caller_supplied" or basis["origin"] != "origin_not_authenticated"
+            or basis["gate_eligibility"] != UNKNOWN
+            or basis["consistency"] not in (UNKNOWN, "registry_consistent_declarations")):
+        raise MindRefused("an identity basis does not match the reflected interface")
+    source_ref, digest = basis["source_ref"], basis["source_sha256"]
+    unknown = source_ref == UNKNOWN and digest == UNKNOWN
+    known = bool(_REF.fullmatch(source_ref) and _REF.fullmatch(digest))
+    if (not (unknown or known) or (unknown and basis["consistency"] != UNKNOWN)
+            or (known and source_ref not in refs)):
+        raise MindRefused("an identity basis is not bound to its declared source")
+    return basis
+
+
 def _attention_view(items: Any) -> list[dict[str, Any]]:
     """The reflected attention items as they are: ranked 1..n, refs bound, each one a suggestion only."""
     if not isinstance(items, list):
         raise MindRefused("the attention list does not match the reflected interface")
     view = []
     for rank, item in enumerate(items, 1):
-        if not isinstance(item, dict) or set(item) != ATTENTION_KEYS:
+        if (not isinstance(item, dict)
+                or not ATTENTION_KEYS <= set(item) <= ATTENTION_KEYS | ATTENTION_OPTIONAL_KEYS):
             raise MindRefused("an attention item does not match the reflected interface")
         if item["suggestion_only"] is not True:
             raise MindRefused("an attention item is not marked as a suggestion only")
@@ -672,8 +702,11 @@ def _attention_view(items: Any) -> list[dict[str, Any]]:
             raise MindRefused("an attention item does not match the reflected interface")
         # A PR suggestion must name the events it comes from; only a tension may say its refs are UNKNOWN.
         refs = _refs(item["refs"], unknown_ok=subject.startswith("tension:"))
-        view.append({"rank": rank, "kind": kind, "subject": subject, "actors": list(actors),
-                     "detail": _text(item["detail"]), "refs": refs, "suggestion_only": True})
+        entry = {"rank": rank, "kind": kind, "subject": subject, "actors": list(actors),
+                 "detail": _text(item["detail"]), "refs": refs, "suggestion_only": True}
+        if "identity_basis" in item:
+            entry["identity_basis"] = _identity_basis_view(item["identity_basis"], refs)
+        view.append(entry)
     return view
 
 
@@ -793,6 +826,11 @@ def render_mind_text(view: Mapping[str, Any]) -> str:
     for item in view["attention"]:
         lines.append(f"attention {item['rank']} {item['kind']} {item['subject']} [{', '.join(item['actors'])}]: "
                      f"{item['detail']} {_refs_text(item['refs'])}")
+        if "identity_basis" in item:
+            basis = item["identity_basis"]
+            lines.append(f"  identity basis {basis['mode']}: consistency {basis['consistency']}; "
+                         f"source_ref={basis['source_ref']}; source_sha256={basis['source_sha256']}; "
+                         f"origin_not_authenticated; gate eligibility UNKNOWN {_refs_text(item['refs'])}")
     hidden = view["suppressed_by_block"]["attention_ranks"]
     if hidden:
         lines.append("suppressed, the source is blocked: attention ranks " + ", ".join(str(rank) for rank in hidden))

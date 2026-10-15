@@ -2108,3 +2108,287 @@ def test_a_stale_vote_never_asks_an_identity_that_already_voted_at_a_current_hea
     if not asked:
         question = fields["next_question"]["lanes"].get("claude-rco-1", {"question": "UNKNOWN"})["question"]
         assert "stale_vote" not in question
+
+
+# Tools contextual port of its original public D603 G-K cases. Expected assertions are retained.
+# Caller fixtures adapt to this contextual base: protected PR context for signature-only,
+# and an ALMOST-voted CLI fixture that needs no charter evidence or third input file.
+def _gk_pr_context():
+    return _context({17: ("OPEN", HEAD, copy.deepcopy(PROTECTED))})
+
+
+# G-K opt-in consistency, NOT origin authentication. These use only public synthetic values.
+GK_ROLE_SLOT = {"codex-lead-1": ("lead-impl", "build_lead"),
+                "codex-tools-1": ("tools-tests", "build_tools"),
+                "claude-rco-1": ("rco-security", "claude-rco-1"),
+                "claude-rco-2": ("rco-security", "claude-rco-2")}
+
+
+def _gk_context(**changes):
+    value = {"schema": "wd.bridge-mind.identity-context.v1", "coverage": "complete",
+             "source_ref": ref("synthetic-registry-projection"),
+             "identities": [{"agent": agent, "agent_uuid": UUIDS[agent], "role": role, "slot": slot}
+                            for agent, (role, slot) in sorted(GK_ROLE_SLOT.items())]}
+    value.update(changes)
+    value["source_sha256"] = hashlib.sha256(mind.canonical_json(value).encode("utf-8")).hexdigest()
+    return value
+
+
+def _gk_snapshot():
+    return _snapshot(prs=[_pr(17, klass="a", votes=EVERY)])
+
+
+def _gk_pr_items(value):
+    return [item for item in value["attention"] if item["subject"] == "pr:17"]
+
+
+def test_gk00_matching_positive_twin_and_gk09_no_origin_authentication():
+    """GK00 RejectMatchingPositiveTwin; GK09 RegistryMatchAuthenticatesOrigin."""
+    original = _gk_snapshot()
+    context = _gk_context()
+    frozen = copy.deepcopy((original, context))
+    out = mind.reflect(original, context=_gk_pr_context(), identity_context=context)
+    item, = _gk_pr_items(out)
+    assert item["kind"] == "signature_only"
+    assert item["identity_basis"] == {
+        "mode": "caller_supplied", "consistency": "registry_consistent_declarations",
+        "source_ref": context["source_ref"], "source_sha256": context["source_sha256"],
+        "origin": "origin_not_authenticated", "gate_eligibility": "UNKNOWN"}
+    assert context["source_ref"] in item["refs"]
+    assert out["authority"] == "none" and out["scope"] == "bounded_projection_not_gate"
+    assert out["prs"] == original["prs"]  # raw UUIDs, verification and event refs are unchanged
+    assert (original, context) == frozen
+
+
+@pytest.mark.parametrize("mutant", ["GK01", "GK02", "GK03", "GK04", "GK06", "GK07", "GK10", "GK12"])
+def test_gk_mismatched_tuple_does_not_fill_the_fourth_slot(mutant):
+    """Named mutants match unchanged4D2590E8: syntax, borrowed UUID/role, stale, malformed, unknown label, bad4th."""
+    snap, context = _gk_snapshot(), _gk_context()
+    target = "claude-rco-1" if mutant == "GK03" else "codex-tools-1"
+    vote = next(v for v in snap["prs"]["17"]["votes"] if v["agent"] == target)
+    if mutant == "GK01":
+        vote["agent_uuid"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    elif mutant in {"GK02", "GK12"}:
+        vote["agent_uuid"] = UUIDS["claude-rco-1"]
+    elif mutant == "GK03":
+        vote["agent_uuid"] = UUIDS["claude-rco-2"]
+    elif mutant == "GK04":
+        vote["status"] = "rco_pass"
+    elif mutant == "GK06":
+        vote["head"] = OLD
+    elif mutant == "GK07":
+        vote["agent_uuid"] = "not-a-uuid"
+    elif mutant == "GK10":
+        vote["agent"] = "unknown-lane"
+    original = copy.deepcopy(snap)
+    out = mind.reflect(snap, context=_gk_pr_context(), identity_context=context)
+    assert not any(item["kind"] == "signature_only" for item in _gk_pr_items(out))
+    missing, = _gk_pr_items(out)
+    assert missing["kind"] == "last_missing_vote" and missing["actors"] == [target]
+    assert out["prs"] == original["prs"]  # no re-keying, dropping or rewriting raw observations
+    if mutant == "GK06":
+        assert "stale_vote" in _rules(out)
+    if mutant == "GK07":
+        assert "refused_input" in _rules(out)
+
+
+@pytest.mark.parametrize("context_kind", [
+    pytest.param("missing", id="GK05_MissingRegistryIsComplete"),
+    pytest.param("partial", id="GK08_PartialRegistryAsComplete"),
+    pytest.param("hash_mismatch", id="MUTANT_CONTEXT_DIGEST_MISMATCH"),
+    pytest.param("duplicate", id="MUTANT_CONTEXT_DUPLICATE_LABEL"),
+    pytest.param("role_mismatch", id="MUTANT_CONTEXT_ROLE_SLOT_MISMATCH"),
+])
+def test_gk05_gk08_missing_partial_or_ambiguous_context_stays_unknown(context_kind):
+    """GK05 MissingRegistryIsComplete; GK08 PartialRegistryAsComplete; no digest-as-auth promotion."""
+    context = _gk_context()
+    if context_kind == "missing":
+        context = None
+    elif context_kind == "partial":
+        context = _gk_context(coverage="partial", identities=context["identities"][:-1])
+    elif context_kind == "hash_mismatch":
+        context["source_sha256"] = "0" * 64
+    elif context_kind == "duplicate":
+        context = _gk_context(identities=context["identities"][:-1] + context["identities"][:1])
+    elif context_kind == "role_mismatch":
+        rows = copy.deepcopy(context["identities"])
+        rows[0]["role"] = "tools-tests"
+        context = _gk_context(identities=rows)
+    item, = _gk_pr_items(mind.reflect(_gk_snapshot(), context=_gk_pr_context(), identity_context=context))
+    assert item["kind"] == "votes_missing"
+    assert item["actors"] == sorted(EVERY)
+    assert item["identity_basis"]["consistency"] == "UNKNOWN"
+    assert item["identity_basis"]["origin"] == "origin_not_authenticated"
+    assert item["identity_basis"]["gate_eligibility"] == "UNKNOWN"
+
+
+def test_gk11_duplicate_and_order_do_not_change_slots_or_raw_refs():
+    """GK11 DuplicateOrOrderChangesSlots: vote order/duplicates change neither reflected fields nor slot count."""
+    snap = _gk_snapshot()
+    other = copy.deepcopy(snap)
+    other["prs"]["17"]["votes"] = list(reversed(other["prs"]["17"]["votes"])) * 2
+    context = _gk_context()
+    assert mind.reflection(snap, context=_gk_pr_context(), identity_context=context) == mind.reflection(other, context=_gk_pr_context(), identity_context=context)
+    assert mind.reflect(other, context=_gk_pr_context(), identity_context=context)["prs"] == other["prs"]
+
+
+@pytest.mark.parametrize("control", ["veto", "source_block"])
+def test_gk13_identity_consistency_never_clears_veto_or_source_block(control):
+    """GK13 IdentityFixClearsVeto: existing veto/source controls outrank positive matching context."""
+    snap = _gk_snapshot()
+    if control == "veto":
+        snap["prs"]["17"]["veto_observations"] = [_veto("claude-rco-1", 17, HEAD)]
+    else:
+        snap["source"]["blocked"] = {"active": True, "reason": "invalid_json", "offset": 17}
+    out = mind.reflect(snap, context=_gk_pr_context(), identity_context=_gk_context())
+    assert _gk_pr_items(out) == []
+    assert ("veto_observed" if control == "veto" else "input_blocked") in _rules(out)
+    assert out["prs"] == snap["prs"]
+
+
+def test_gk_legacy_is_declared_only_not_silently_registry_checked():
+    """MUTANT_LEGACY_CALLER_SILENT_CONTEXT: no opt-in retains the exact legacy reflection shape."""
+    item, = _gk_pr_items(mind.reflect(_gk_snapshot(), context=_gk_pr_context()))
+    assert item["kind"] == "signature_only" and "identity_basis" not in item
+    assert "reported vote" in item["detail"]  # never authenticated or gate-approved
+
+
+def test_gk_context_does_not_invent_event_role_or_mutate_input():
+    """MUTANT_CONTEXT_INVENTS_EVENT_ROLE: core votes contain no role; context validates only its own static map."""
+    snap = _gk_snapshot()
+    out = mind.reflect(snap, context=_gk_pr_context(), identity_context=_gk_context())
+    assert all("role" not in vote for vote in out["prs"]["17"]["votes"])
+    assert out["prs"] == snap["prs"]
+
+
+def test_gk_opt_in_cli_serializes_basis_and_rejects_private_context(tmp_path, capsys):
+    """MUTANT_CLI_IGNORES_CONTEXT / MUTANT_CONTEXT_BYPASSES_GUARD: emitted JSON, not only an internal helper."""
+    snapshot_path, context_path = tmp_path / "snapshot.json", tmp_path / "context.json"
+    # Charter context is not invented: this CLI control deliberately has one missing slot.
+    cli_snapshot = _snapshot(prs=[_pr(17, klass="a", votes=ALMOST)])
+    snapshot_path.write_text(mind.canonical_json(cli_snapshot), encoding="utf-8")
+    context_path.write_text(mind.canonical_json(_gk_context()), encoding="utf-8")
+    assert mind.main(["--snapshot", str(snapshot_path), "--identity-context", str(context_path), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    item, = _gk_pr_items(out)
+    assert item["identity_basis"]["consistency"] == "registry_consistent_declarations"
+    assert item["identity_basis"]["origin"] == "origin_not_authenticated"
+    bad = _gk_context()
+    bad["identities"][0]["role"] = GUARD_WORDS[0]
+    context_path.write_text(mind.canonical_json(bad), encoding="utf-8")
+    assert mind.main(["--snapshot", str(snapshot_path), "--identity-context", str(context_path), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and GUARD_WORDS[0] not in captured.err
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["context.json", "snapshot.json"]
+
+
+def test_gk_contextual_third_positional_and_helpers_remain_real_pr_context():
+    """MUTANT_CONTEXT_POSITION3_REPURPOSED / MUTANT_CONTEXT_HELPERS_REMOVED: no older-module transplant."""
+    import inspect
+
+    snapshot, pr_context = _gk_snapshot(), _gk_pr_context()
+    original = copy.deepcopy((snapshot, pr_context))
+    assert mind.CONTEXT_MAX_AGE.total_seconds() == 15 * 60
+    parsed, reason = mind.read_context(pr_context, _time(AS_OF))
+    assert reason is None and parsed["capture"] == CAPTURE and parsed["charter_ok"] is True
+    for function in (mind.reflection, mind.reflect):
+        signature = inspect.signature(function)
+        assert list(signature.parameters)[:3] == ["snapshot", "previous", "context"]
+        assert signature.parameters["context"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        assert signature.parameters["identity_context"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert function(snapshot, None, pr_context) == function(snapshot, context=pr_context)
+    result = mind.reflect(snapshot, None, pr_context, identity_context=_gk_context())
+    item, = _gk_pr_items(result)
+    assert item["kind"] == "signature_only"
+    assert item["identity_basis"]["origin"] == "origin_not_authenticated"
+    assert "context_applied" in _rules(result)
+    assert result["prs"] == snapshot["prs"] and (snapshot, pr_context) == original
+
+
+@pytest.mark.parametrize("mode", ["omitted", "matching", "explicit_none"])
+def test_gk_contextual_legacy_private_verified_key_is_declaration_only(mode):
+    """MUTANT_PRIVATE_VERIFIED_ROW_REMOVED / MUTANT_VERIFIED_AS_AUTH: existing consumers keep their key."""
+    snapshot = _gk_snapshot()
+    raw = next(vote for vote in snapshot["prs"]["17"]["votes"] if vote["agent"] == "codex-tools-1")
+    raw["agent_uuid"] = UUIDS["claude-rco-1"]  # syntactically declared, not a matching Tools tuple
+    options = {} if mode == "omitted" else {"identity_context": _gk_context() if mode == "matching" else None}
+    inputs = mind._Inputs(snapshot, _gk_pr_context(), **options)
+    row = next(vote for vote in inputs.prs[0]["votes"] if vote["agent"] == "codex-tools-1")
+    assert row["verified"] is True  # historical private spelling, not authenticated or tuple-consistent
+    assert row["refs"] == raw["source_refs"]
+    expected_keys = {"agent", "head", "status", "refs", "verified"}
+    assert set(row) == (expected_keys if mode == "omitted" else expected_keys | {"agent_uuid"})
+    if mode == "omitted":
+        assert mind._empty_slots(inputs.prs[0]) == []
+    else:
+        assert inputs.identity_context.accepts(row) is False
+        assert "build_tools" in mind._empty_slots(inputs.prs[0], identity_context=inputs.identity_context)
+    assert snapshot["prs"]["17"]["votes"][EVERY.index("codex-tools-1")]["agent_uuid"] == raw["agent_uuid"]
+
+
+def test_gk_contextual_omitted_identity_policy_is_not_silently_hardened():
+    """MUTANT_OMITTED_CONTEXT_ACTIVATES_IDENTITY: the explicit compatibility exception remains visible."""
+    snapshot, pr_context = _gk_snapshot(), _gk_pr_context()
+    target = next(vote for vote in snapshot["prs"]["17"]["votes"] if vote["agent"] == "codex-tools-1")
+    target["agent_uuid"] = UUIDS["claude-rco-1"]
+    legacy = mind.reflect(snapshot, None, pr_context)
+    legacy_item, = _gk_pr_items(legacy)
+    assert legacy_item["kind"] == "signature_only" and "identity_basis" not in legacy_item
+    checked = mind.reflect(snapshot, None, pr_context, identity_context=_gk_context())
+    checked_item, = _gk_pr_items(checked)
+    assert checked_item["kind"] == "last_missing_vote" and checked_item["actors"] == ["codex-tools-1"]
+    assert legacy["prs"] == checked["prs"] == snapshot["prs"]
+    without_pr_context = mind.reflect(_gk_snapshot())
+    assert _gk_pr_items(without_pr_context) == []
+    assert "class_unverified" in _rules(without_pr_context)  # no invented charter/protected evidence
+
+
+@pytest.mark.parametrize("state, head, rule", [
+    ("MERGED", HEAD, "context_applied"),
+    ("CLOSED", HEAD, "context_applied"),
+    ("OPEN", OLD, "context_head_mismatch"),
+])
+def test_gk_contextual_identity_never_bypasses_pr_suppression(state, head, rule):
+    """MUTANT_IDENTITY_BYPASSES_PR_CONTEXT: matching identities never revive a closed or moved PR."""
+    snapshot = _gk_snapshot()
+    result = mind.reflect(snapshot, None, _context({17: (state, head, copy.deepcopy(PROTECTED))}),
+                          identity_context=_gk_context())
+    assert _gk_pr_items(result) == [] and rule in _rules(result)
+    assert result["prs"] == snapshot["prs"]
+
+
+@pytest.mark.parametrize("excusal", ["declared_author", "declared_recusal"])
+def test_gk_contextual_author_recusal_policy_stays_separate_and_declared(excusal):
+    """MUTANT_IDENTITY_REWRITES_RECUSAL_POLICY: context-based author/recusal handling is not redefined."""
+    key, pr = _pr(17, votes=ALMOST)
+    pr_context = _context_v2({17: ("OPEN", HEAD, copy.deepcopy(NOT_PROTECTED),
+                                  ["claude-rco-2"] if excusal == "declared_author" else None)})
+    if excusal == "declared_recusal":
+        pr["recusals"] = [_recusal("claude-rco-2", 17, HEAD)]
+    snapshot = _snapshot(prs=[(key, pr)])
+    original = copy.deepcopy((snapshot, pr_context))
+    for options in ({}, {"identity_context": _gk_context()}):
+        result = mind.reflect(snapshot, None, pr_context, **options)
+        assert _gk_pr_items(result) == []  # no protected class, and no eligible slot remains missing
+        assert all("claude-rco-2" not in item["actors"] for item in result["attention"])
+        assert result["prs"] == snapshot["prs"]
+    assert (snapshot, pr_context) == original
+
+
+def test_gk_contextual_cli_keeps_context_and_identity_context_distinct(tmp_path, capsys):
+    """MUTANT_CLI_CONTEXT_COLLISION: both real input files reach their own API, no alias or stub injection."""
+    snapshot = _gk_snapshot()
+    paths = {name: tmp_path / (name + ".json") for name in ("snapshot", "pr-context", "identity-context")}
+    values = {"snapshot": snapshot, "pr-context": _gk_pr_context(), "identity-context": _gk_context()}
+    for name, path in paths.items():
+        path.write_text(mind.canonical_json(values[name]), encoding="utf-8")
+    assert mind.main(["--snapshot", str(paths["snapshot"]), "--context", str(paths["pr-context"]),
+                      "--identity-context", str(paths["identity-context"]), "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    item, = _gk_pr_items(output)
+    assert item["kind"] == "signature_only" and "context_applied" in _rules(output)
+    assert item["identity_basis"]["source_ref"] == values["identity-context"]["source_ref"]
+    assert item["identity_basis"]["origin"] == "origin_not_authenticated"
+    assert output["prs"] == snapshot["prs"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "identity-context.json", "pr-context.json", "snapshot.json"]

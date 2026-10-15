@@ -102,6 +102,17 @@ Rules of the derivation:
   unescape. A hit refuses the whole snapshot with exit 2 and prints nothing; nothing is stripped.
 * ``authority`` must be ``none`` and ``scope`` must be ``bounded_projection_not_gate``; neither is set here.
 
+Optional G-K identity consistency is a separate keyword-only ``identity_context=`` (CLI ``--identity-context``).
+It never reinterprets the third positional PR ``context``, its age/class/author policy, or ``--context``. The
+versioned caller data must name exactly the four fixed label/role/slot/UUID tuples and bind its canonical bytes
+with a digest and source ref. Matching is only caller-supplied tuple consistency, not origin authentication or
+gate eligibility. Missing, partial, malformed, ambiguous or digest-mismatched opt-in context fills no vote slot.
+Omitting the identity keyword deliberately preserves the contextual product's declared-only behavior: this is
+not universal GK05 closure. Legacy private vote rows keep ``verified`` as their historical key, meaning ONLY
+that the core fields declare a syntactically usable identity; it is never an authentication claim. UUID is
+retained privately only in the new opt-in mode. Existing author/recusal declarations remain separate unchanged
+PR-context policy, not facts authenticated by the tuple comparison. No registry, live discovery or clock read.
+
 Observe-only: not on the gate verdict path, reads only its input files, writes only stdout, and posts no
 bridge event. Publishing a reflected snapshot to a file is left to the core's owned, atomic publication.
 """
@@ -147,6 +158,12 @@ _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:0
 BUILD_SLOT = {"codex-lead-1": "build_lead", "codex-tools-1": "build_tools"}
 RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
 VOTE_SLOTS = ("build_lead", "build_tools") + RECOGNIZED_RCOS
+IDENTITY_CONTEXT_SCHEMA = "wd.bridge-mind.identity-context.v1"
+_IDENTITY_UNSET = object()
+_IDENTITY_ROLE_SLOT = {"codex-lead-1": ("lead-impl", "build_lead"),
+                       "codex-tools-1": ("tools-tests", "build_tools"),
+                       "claude-rco-1": ("rco-security", "claude-rco-1"),
+                       "claude-rco-2": ("rco-security", "claude-rco-2")}
 COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
@@ -392,10 +409,71 @@ def vote_slot(agent: str, status: str) -> str | None:
     return None
 
 
+class _IdentityContext:
+    """Caller tuple consistency only: no authentication, discovery, clock or gate eligibility."""
+
+    def __init__(self, value: Any):
+        self.enabled = value is not _IDENTITY_UNSET
+        self.state = UNKNOWN
+        self.by_agent: dict[str, str] = {}
+        self.source_ref = UNKNOWN
+        self.source_sha256 = UNKNOWN
+        if not self.enabled:
+            return
+        guard_object(value)
+        keys = {"schema", "coverage", "source_ref", "source_sha256", "identities"}
+        if not isinstance(value, Mapping) or set(value) != keys:
+            return
+        if (value.get("schema") != IDENTITY_CONTEXT_SCHEMA or value.get("coverage") != "complete"
+                or _match(REF, value.get("source_ref")) is None
+                or _match(REF, value.get("source_sha256")) is None):
+            return
+        rows = value.get("identities")
+        if not isinstance(rows, list) or len(rows) != len(_IDENTITY_ROLE_SLOT):
+            return
+        identities: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, Mapping) or set(row) != {"agent", "agent_uuid", "role", "slot"}:
+                return
+            agent, uuid = row.get("agent"), _match(UUID, row.get("agent_uuid"))
+            if (not isinstance(agent, str) or agent not in _IDENTITY_ROLE_SLOT or agent in identities
+                    or uuid is None or (row.get("role"), row.get("slot")) != _IDENTITY_ROLE_SLOT[agent]):
+                return
+            identities[agent] = uuid.lower()
+        if set(identities) != set(_IDENTITY_ROLE_SLOT) or len(set(identities.values())) != len(identities):
+            return
+        supplied = {key: item for key, item in value.items() if key != "source_sha256"}
+        try:
+            digest = hashlib.sha256(canonical_json(supplied).encode("utf-8")).hexdigest()
+        except (TypeError, ValueError, RecursionError):
+            return
+        if digest != value["source_sha256"]:
+            return
+        self.by_agent = identities
+        self.source_ref = value["source_ref"]
+        self.source_sha256 = digest
+        self.state = "complete"
+
+    def accepts(self, vote: Mapping[str, Any]) -> bool:
+        # Compatibility name only: verified means declared, never authenticated origin.
+        if not self.enabled:
+            return vote["verified"]
+        return (self.state == "complete" and vote["verified"]
+                and self.by_agent.get(vote["agent"]) == vote["agent_uuid"].lower())
+
+    def basis(self, votes: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+        return {"mode": "caller_supplied",
+                "consistency": ("registry_consistent_declarations" if self.state == "complete"
+                                and all(self.accepts(vote) for vote in votes) else UNKNOWN),
+                "source_ref": self.source_ref, "source_sha256": self.source_sha256,
+                "origin": "origin_not_authenticated", "gate_eligibility": UNKNOWN}
+
+
 class _Inputs:
     """The usable rows of one core snapshot. A row that fails the allowlist is refused by position only."""
 
-    def __init__(self, snapshot: Mapping[str, Any], context: Any = None):
+    def __init__(self, snapshot: Mapping[str, Any], context: Any = None, *,
+                 identity_context: Any = _IDENTITY_UNSET):
         if snapshot.get("schema") != SNAPSHOT_SCHEMA:
             raise WorkspaceError("snapshot schema is not wd.bridge-mind.v1")
         if snapshot.get("authority") != "none" or snapshot.get("scope") != SNAPSHOT_SCOPE:
@@ -417,6 +495,7 @@ class _Inputs:
         elif blocked is not None:
             self.blocked = {"reason": "unrecognized", "offset": None}
         self.refused: list[dict[str, str]] = []
+        self.identity_context = _IdentityContext(identity_context)
         self.prs = self._table(snapshot, "prs", self._pr)
         self.lanes = self._table(snapshot, "lanes", self._lane)
         self.commands = self._facts(snapshot)
@@ -489,7 +568,8 @@ class _Inputs:
     def _votes(self, rows: list[Any], where: str, *, veto: bool = False) -> tuple[list[dict[str, Any]], int]:
         """Vote-shaped rows and how many were refused.
 
-        Only a declared identity (a valid ``agent_uuid`` with ``verification`` ``declared``) is ``verified``; the
+        ``verified`` is a legacy PRIVATE key for a declared identity, NOT authenticated origin. Only a valid
+        ``agent_uuid`` with ``verification`` ``declared`` sets it; the
         core marks an undeclared one ``UNKNOWN`` and ``unverified``, and a row whose two fields disagree is refused.
         A veto may name no head, and its status is any safe token, ``UNKNOWN`` included (the core keeps the sent one).
         """
@@ -507,6 +587,9 @@ class _Inputs:
                              "agent_uuid that agrees with its verification")
                 refused += 1
                 continue
+            if self.identity_context.enabled:
+                # Leave the omitted-mode private row shape byte-for-byte compatible with its callers.
+                item["agent_uuid"] = uuid
             out.append(item)
         return out, refused
 
@@ -642,11 +725,15 @@ def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iter
             "actors": sorted({actor for actor in actors if actor and actor != UNKNOWN}), "refs": sorted(set(refs))}
 
 
-def _empty_slots(pr: Mapping[str, Any], authors: frozenset[str] = frozenset()) -> list[str]:
-    """Vote slots with no verified current vote. A recognized RCO who is a declared commit author of the PR, or who
+def _empty_slots(pr: Mapping[str, Any], authors: frozenset[str] = frozenset(),
+                 identity_context: _IdentityContext | None = None) -> list[str]:
+    """Slots with no usable declared vote (the private ``verified`` flag is NOT authentication).
+
+    A recognized RCO who is a declared commit author of the PR, or who
     declared ``rco_recused`` at the PR head, fills no RCO slot (author is not reviewer), so that slot is not missing
     and that RCO is never asked for it."""
-    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
+    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"]
+              if vote["verified"] and (identity_context is None or identity_context.accepts(vote))} - {None}
     excused = set(authors) | set(pr.get("recused", ()))
     return [slot for slot in VOTE_SLOTS if slot not in filled and slot not in excused]
 
@@ -712,7 +799,8 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     for pr in inputs.prs:
         # Every reported vote, a declared (a) class, but no computed protected hit: the signature need is UNKNOWN.
         # A blocked source is not current, so it gives no such head-bound observation.
-        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr, inputs.authors(pr)) \
+        if inputs.blocked is None and _suggestable(pr) \
+                and not _empty_slots(pr, inputs.authors(pr), inputs.identity_context) \
                 and pr["class"] == "a" \
                 and inputs.suppressed(pr) is None and inputs.computed_class(pr) != "protected":
             out.append(_tension("class_unverified", f"pr:{pr['pr']}:class",
@@ -831,8 +919,16 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     # A context that says the PR is not open, or saw another head, leaves it without a suggestion.
     if not _suggestable(pr) or inputs.suppressed(pr) is not None:
         return None
-    empty = _empty_slots(pr, inputs.authors(pr))
+    empty = _empty_slots(pr, inputs.authors(pr), inputs.identity_context)
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]] + pr["recusal_refs"]
+    extra = {}
+    note = ""
+    if inputs.identity_context.enabled:
+        extra = {"identity_basis": inputs.identity_context.basis(pr["votes"])}
+        if inputs.identity_context.source_ref != UNKNOWN:
+            refs.append(inputs.identity_context.source_ref)
+        note = "; caller-context consistency " + extra["identity_basis"]["consistency"] \
+            + "; origin_not_authenticated; gate eligibility UNKNOWN"
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
         # Only a computed protected hit from loaded charter evidence; a declared class never suffices.
@@ -843,12 +939,12 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
                 "detail": f"PR{pr['pr']} at {head} has every reported vote and a computed protected path hit "
                           f"({len(path_class['a_hits'])} a_hits, {len(path_class['denylist_hits'])} denylist, "
                           f"capture {inputs.context['capture'][:16]}): only the operator signature is left"
-                          + _author_note(inputs, pr)}
+                          + _author_note(inputs, pr) + note, **extra}
     actors = sorted({agent for slot in empty for agent in
                      ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
             "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"
-                                    + _author_note(inputs, pr)}
+                                    + _author_note(inputs, pr) + note, **extra}
 
 
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -940,9 +1036,10 @@ def _check_output(fields: Mapping[str, Any]) -> None:
 
 
 def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
-               context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               context: Mapping[str, Any] | None = None, *,
+               identity_context: Any = _IDENTITY_UNSET) -> dict[str, Any]:
     """The three reflection fields for one snapshot and an optional PR context. Pure: no clock, no file, no network."""
-    inputs = _Inputs(snapshot, context)
+    inputs = _Inputs(snapshot, context, identity_context=identity_context)
     tensions = derive_tensions(inputs)
     previous_ids = {str(item.get("tension_id")) for item in (previous or {}).get("tensions") or []
                     if isinstance(item, Mapping)}
@@ -955,7 +1052,8 @@ def reflection(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None =
 
 
 def reflect(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
-            context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+            context: Mapping[str, Any] | None = None, *,
+            identity_context: Any = _IDENTITY_UNSET) -> dict[str, Any]:
     """A copy of the snapshot with only its reflection fields filled; every other field is unchanged.
 
     The complete copy, every key and value and not only the reflection fields, is guarded before it is
@@ -963,7 +1061,7 @@ def reflect(snapshot: Mapping[str, Any], previous: Mapping[str, Any] | None = No
     changes only the reflection fields; it is never copied into the snapshot.
     """
     out = copy.deepcopy(dict(snapshot))
-    out.update(reflection(snapshot, previous, context))
+    out.update(reflection(snapshot, previous, context, identity_context=identity_context))
     guard_object(out)
     return out
 
@@ -1010,12 +1108,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--previous", type=Path, default=None, help="The previous reflected snapshot, for lifecycle.")
     parser.add_argument("--context", type=Path, default=None,
                         help="An optional caller-supplied wd.bridge-mind-pr-context.v1 capture (observational only).")
+    parser.add_argument("--identity-context", type=Path, default=None,
+                        help="Opt-in caller tuple consistency; separate from PR --context, not authentication.")
     parser.add_argument("--json", action="store_true", help="Print the reflected snapshot JSON instead of text.")
     args = parser.parse_args(argv)
     try:
         previous = _read_object(args.previous) if args.previous is not None else None
         context = _read_object(args.context) if args.context is not None else None
-        text = serialize(reflect(_read_object(args.snapshot), previous, context), as_json=args.json)
+        identity = _read_object(args.identity_context) if args.identity_context is not None else _IDENTITY_UNSET
+        text = serialize(reflect(_read_object(args.snapshot), previous, context, identity_context=identity),
+                         as_json=args.json)
     except WorkspaceError as exc:
         sys.stderr.write(f"bridge mind workspace refused: {exc}\n")
         return 2

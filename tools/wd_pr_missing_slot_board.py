@@ -12,9 +12,10 @@ missing element:
 * ``veto`` / ``block``: an unretracted block on the canonical task, from a recognized RCO or from
   another lane.
 * ``build_lead`` / ``build_tools`` / ``rco``: no head-bound approval in that consensus slot.
-* ``signature``: the charter path gate refuses an off-allowlist path, or the diff gate refuses a code
-  pattern, so the operator's explicit per-PR signature is needed after consensus.
-* ``path_denylist``: the charter path gate refuses a denylisted path. The dry-run gate never admits one
+* ``signature``: the charter path gate refuses an off-allowlist path, so the operator's explicit per-PR
+  signature is needed after consensus.
+* ``path_denylist``: the path gate refuses a denylisted path, or the diff gate refuses a code pattern.
+  The dry-run gate never admits one
   (the board passes no ``--standing-consensus-sign``, and that admission drops only an off-allowlist
   blocker), so no signature clears it: the row names the paths and the real remediation instead.
 * ``accepted_queue``: the gate cannot see the whole accepted bridge queue in canonical history. This
@@ -117,8 +118,9 @@ RECEIPT_BLOCKERS = ("receipt_bundle_path is required before merge",)
 # so the cost follows the real open count, not this number.
 LIST_LIMIT = 1000
 DENYLIST_BLOCKER = "path gate failed: denylist hit"
-DENYLIST_REMEDIATION = ("the gate never admits a denylisted path, so no signature clears it in this run; remove the "
-                        "path from the PR, or route it to an operator-explicit merge outside the autonomous gate")
+DIFF_DENYLIST_BLOCKER = "diff gate failed: code pattern denylist hit"
+DENYLIST_REMEDIATION = ("the gate never admits denylisted paths or code patterns, so no signature clears them in this "
+                        "run; remove the refused content, or route to an operator-explicit merge outside the autonomous gate")
 PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CONSENSUS_PREFIX = "bridge consensus incomplete: "
 DECISION_NAME = re.compile(r"[a-z0-9_]{1,64}")
@@ -249,7 +251,10 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             merge_time.append(blocker)
             continue
         if blocker.startswith("status checks not green: "):
-            for name in [part.strip() for part in blocker.split(": ", 1)[1].split(",") if part.strip()]:
+            names = [part.strip() for part in blocker.split(": ", 1)[1].split(",") if part.strip()]
+            if not names:
+                add("ci_pending", blocker)
+            for name in names:
                 add("ci_failed" if checks.get(name) == "failed" else "ci_pending", name)
             continue
         element = _element_of(blocker)
@@ -267,6 +272,9 @@ def classify(gate: Mapping[str, Any], snapshot: Mapping[str, Any], holds: Sequen
             add("build_lead", blocker, ["codex-lead-1"])
         elif element == "build_tools":
             add("build_tools", blocker, ["codex-tools-1"])
+        elif blocker == DIFF_DENYLIST_BLOCKER:
+            add("path_denylist", blocker)
+            add("path_denylist", DENYLIST_REMEDIATION)
         elif element == "signature" and blocker.startswith("path gate failed: "):
             path_gate = gate.get("path_gate") or {}
             denied = list(path_gate.get("blocked_paths") or [])
@@ -358,7 +366,8 @@ def board_row(pr: Mapping[str, Any], repo: str, workdir: Path, bridge_root: Path
     row["base_sha"] = snapshot.get("base_sha")
     gate_run = run(gate_command(python, snapshot_path, head, task_id, repo, bridge_root))
     gate = _read_json_object(gate_run.stdout)
-    if gate is None or "decision" not in gate or not isinstance(gate.get("reasons", []), list):
+    if (gate_run.returncode != 0 or gate is None or "decision" not in gate
+            or not isinstance(gate.get("reasons"), list)):
         row["error"] = "gate output unreadable: " + (gate_run.stderr or gate_run.stdout or "no output").strip()[-400:]
         return row
     row.update(classify(gate, snapshot, holds))

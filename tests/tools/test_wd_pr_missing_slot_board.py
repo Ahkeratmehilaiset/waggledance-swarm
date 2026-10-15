@@ -128,12 +128,13 @@ class _FakeGitHub:
     """Answers gh pr list, the snapshot tool and the gate; records every command."""
 
     def __init__(self, prs, gates, snapshots=None, gate_stdout=None, refusals=None, list_run=None,
-                 snapshot_errors=None):
+                 snapshot_errors=None, gate_exit_codes=None):
         self.prs, self.gates, self.snapshots = prs, gates, snapshots or {}
         self.gate_stdout = gate_stdout or {}
         self.refusals = refusals or {}
         self.list_run = list_run
         self.snapshot_errors = snapshot_errors or {}
+        self.gate_exit_codes = gate_exit_codes or {}
         self.gate_runs: list[int] = []
         self.commands: list[list[str]] = []
         self.snapshot_dirs: list[Path] = []
@@ -161,7 +162,8 @@ class _FakeGitHub:
                 stdout, stderr = (self.gate_stdout[number] if isinstance(self.gate_stdout[number], tuple)
                                   else (self.gate_stdout[number], "boom"))
                 return SimpleNamespace(returncode=2, stdout=stdout, stderr=stderr)
-            return SimpleNamespace(returncode=0, stdout=json.dumps(self.gates[number]), stderr="")
+            return SimpleNamespace(returncode=self.gate_exit_codes.get(number, 0),
+                                   stdout=json.dumps(self.gates[number]), stderr="")
         raise AssertionError(f"unexpected command {command}")
 
 
@@ -287,6 +289,119 @@ def test_an_unreadable_gate_output_is_a_row_error_and_exit_one(tmp_path, monkeyp
     assert rows[32]["state"] == "merge_ready" and result["errors"] == [31]
 
 
+# PR1909 repair regressions authored by codex-lead-1's implementation helper.
+@pytest.mark.parametrize("exit_code", [1, 2])
+def test_pr1909_a_nonzero_gate_exit_with_structured_reasons_is_a_row_error(tmp_path, monkeypatch, exit_code):
+    gate = _gate([RECEIPT])
+    gate["ok"] = False
+    fake = _FakeGitHub([_pr(31)], {31: gate}, gate_exit_codes={31: exit_code})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 1
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["errors"] == [31] and result["merge_ready"] == [] and result["signature_list"] == []
+    assert "error" in result["rows"][0] and "state" not in result["rows"][0]
+    assert fake.gate_runs == [31]
+
+
+@pytest.mark.parametrize("reason_fields", [{}, {"reasons": None}, {"reasons": RECEIPT},
+                                           {"reasons": {}}, {"reasons": True}],
+                         ids=["missing", "null", "string", "object", "boolean"])
+def test_pr1909_a_gate_without_an_explicit_reasons_list_is_a_row_error(tmp_path, monkeypatch, reason_fields):
+    gate = _gate([])
+    del gate["reasons"]
+    gate.update(reason_fields)
+    fake = _FakeGitHub([_pr(31)], {31: gate})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 1
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["errors"] == [31] and result["merge_ready"] == [] and result["signature_list"] == []
+    assert "error" in result["rows"][0] and "state" not in result["rows"][0]
+
+
+@pytest.mark.parametrize("reasons,state", [([], "merge_ready"), ([RECEIPT], "merge_ready"),
+                                          (["PR must not be a draft", RECEIPT], "in_progress")],
+                         ids=["empty", "receipt_only", "draft"])
+def test_pr1909_a_zero_exit_gate_with_ok_false_and_explicit_reasons_classifies(tmp_path, monkeypatch,
+                                                                           reasons, state):
+    gate = _gate(reasons)
+    gate["ok"] = False
+    fake = _FakeGitHub([_pr(31)], {31: gate})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["errors"] == [] and result["rows"][0]["state"] == state
+    assert result["rows"][0]["merge_time"] == ([RECEIPT] if RECEIPT in reasons else [])
+    assert set(_elements(result["rows"][0])) == ({"draft"} if state == "in_progress" else set())
+
+
+@pytest.mark.parametrize("names,element", [(" ", None), (",", None), ("\t", None), (" , \t, ", None),
+                                          ("unified", "ci_pending"), ("test (3.11)", "ci_failed")],
+                         ids=["spaces", "commas", "tab", "mixed", "named_pending", "named_failed"])
+@pytest.mark.parametrize("with_receipt", [False, True], ids=["alone", "with_receipt"])
+def test_pr1909_ci_blockers_with_empty_names_stay_blocking(tmp_path, monkeypatch, names, element, with_receipt):
+    blocker = "status checks not green: " + names
+    gate = _gate([blocker] + ([RECEIPT] if with_receipt else []))
+    snapshot = _snapshot(unified=("IN_PROGRESS", ""), **{"test_(3.11)": ("COMPLETED", "FAILURE")})
+    fake = _FakeGitHub([_pr(31)], {31: gate}, snapshots={31: snapshot})
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    row = result["rows"][0]
+    assert row["state"] == "in_progress" and row["missing"]
+    assert result["merge_ready"] == [] and result["signature_list"] == [] and result["errors"] == []
+    assert row["merge_time"] == ([RECEIPT] if with_receipt else [])
+    if element is None:
+        assert blocker in [detail for entry in row["missing"] for detail in entry["details"]]
+    else:
+        assert set(_elements(row)) == {element} and _elements(row)[element]["details"] == [names]
+
+
+@pytest.mark.parametrize("companion", ["none", "receipt", "path_denylist", "off_allowlist"])
+def test_pr1909_a_code_pattern_denylist_never_enters_the_signature_list(tmp_path, monkeypatch, companion):
+    blocker = "diff gate failed: code pattern denylist hit"
+    reasons = [blocker]
+    path_gate = None
+    expected_elements = {"path_denylist"}
+    if companion == "receipt":
+        reasons.append(RECEIPT)
+    elif companion == "path_denylist":
+        reasons.append("path gate failed: denylist hit")
+        path_gate = {"allowed": False, "blocked_paths": [".agent-bridge/bin/X.ps1"], "unmatched_paths": [],
+                     "reason": "denylist hit"}
+    elif companion == "off_allowlist":
+        reasons.append("path gate failed: paths not on allowlist")
+        expected_elements.add("signature")
+    off_allowlist = {"allowed": False, "blocked_paths": [], "unmatched_paths": ["ops/windows/reboot/X.ps1"],
+                     "reason": "paths not on allowlist"}
+    if companion == "off_allowlist":
+        path_gate = off_allowlist
+    all_slots = ("build_lead", "build_tools", "claude-rco-2")
+    gates = {81: _gate(reasons, approved=all_slots, path_gate=path_gate),
+             82: _gate(["path gate failed: paths not on allowlist", RECEIPT], approved=all_slots,
+                       path_gate=off_allowlist)}
+    fake = _FakeGitHub([_pr(81), _pr(82)], gates)
+    monkeypatch.setattr(board, "_run", fake)
+    out = tmp_path / "board.json"
+    assert board.main(["--repo", "o/r", "--out", str(out)]) == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    rows = {row["pr"]: row for row in result["rows"]}
+    elements = _elements(rows[81])
+    assert set(elements) == expected_elements
+    assert blocker in elements["path_denylist"]["details"]
+    assert board.DENYLIST_REMEDIATION in elements["path_denylist"]["details"]
+    assert elements["path_denylist"]["actors"] == []
+    assert rows[81]["state"] == ("signature_after_consensus" if companion == "off_allowlist" else "path_denylisted")
+    assert result["path_denylisted"] == ([] if companion == "off_allowlist" else [81])
+    assert rows[82]["state"] == "signature_only" and set(_elements(rows[82])) == {"signature"}
+    assert _elements(rows[82])["signature"]["actors"] == ["operator"]
+    assert [item["pr"] for item in result["signature_list"]] == [82]
+    assert result["merge_ready"] == [] and result["errors"] == []
+
+
 # Built from parts, as the repo's other guard tests do, so this file never carries the literal tokens.
 GUARD_WORDS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
 
@@ -321,14 +436,16 @@ def test_a_refusal_without_a_plain_decision_name_is_a_row_error(tmp_path, monkey
     assert json.loads(out.read_text(encoding="utf-8"))["errors"] == [44]
 
 
-def test_queue_and_diff_gate_blockers_classify_and_a_code_pattern_needs_the_signature():
+def test_pr1909_queue_and_diff_gate_blockers_classify_a_code_pattern_as_denylisted():
     reasons = ["accepted bridge queue is not fully visible in canonical history: accepted_queue_incomplete",
                "diff gate failed: code pattern denylist hit", RECEIPT]
     row = board.classify(_gate(reasons, approved=("build_lead", "build_tools", "claude-rco-1")), _snapshot())
     elements = _elements(row)
-    assert set(elements) == {"accepted_queue", "signature"}
-    assert elements["signature"]["details"] == ["diff gate failed: code pattern denylist hit"]
-    assert row["state"] == "signature_after_consensus"
+    assert set(elements) == {"accepted_queue", "path_denylist"}
+    assert elements["path_denylist"]["details"] == ["diff gate failed: code pattern denylist hit",
+                                                     board.DENYLIST_REMEDIATION]
+    assert elements["path_denylist"]["actors"] == []
+    assert row["state"] == "in_progress"
 
 
 def test_a_lead_hold_keeps_a_gate_ready_pr_off_the_merge_ready_list(tmp_path, monkeypatch):

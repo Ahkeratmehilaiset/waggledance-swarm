@@ -21,6 +21,9 @@ param(
     [switch] $SkipGrokResolve,
     # Optional offline wheel directory; every wheel is still hash-verified.
     [string] $WheelSource = '',
+    # Explicit operator-approved cold-manifest input, never an activation sidecar.
+    # Omission preserves the default (manual execution disabled) manifest.
+    [string] $ManualExecutionApprovalRecordPath = '',
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
@@ -158,6 +161,152 @@ function Read-Utf8DeploymentSnapshot {
         $text = $text.Substring(1)
     }
     return [pscustomobject]@{ Hash = $hash; Text = $text }
+}
+
+function Read-WdManualExecutionApprovalText {
+    param([Parameter(Mandatory)] [string] $Path)
+    if ($Path -cnotmatch '^[Cc]:[\\/]') {
+        throw 'manual execution approval record must use an absolute persistent C: path'
+    }
+    $full = Assert-WdPathWithoutReparse -Path $Path -TrustedRoot 'C:\' -ExpectedType Leaf
+    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        # Bind the read to the opened file, not a separately checked path that
+        # an ancestor rename/junction can redirect before File.Open.
+        if (-not ('WaggleDance.WdManualApprovalFileV1' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace WaggleDance {
+    public static class WdManualApprovalFileV1 {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandleW(
+            SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+        public static string FinalPath(SafeFileHandle handle) {
+            var path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity)
+                throw new IOException("manual execution approval handle path is unavailable");
+            return path.ToString();
+        }
+    }
+}
+'@
+        }
+        $openedPath = [WaggleDance.WdManualApprovalFileV1]::FinalPath($stream.SafeFileHandle)
+        if (-not $openedPath.StartsWith('\\?\', [StringComparison]::Ordinal) -or
+            -not $openedPath.Substring(4).Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'manual execution approval opened handle differs from its checked path'
+        }
+        # Bound the actual read, not just a racy pre-read file length.
+        $bytes = New-Object byte[] 16385
+        $count = 0
+        while ($count -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $count, $bytes.Length - $count)
+            if ($read -eq 0) { break }
+            $count += $read
+        }
+        if ($count -eq 0 -or $count -gt 16384) {
+            throw 'manual execution approval record must contain 1 to 16384 UTF-8 bytes'
+        }
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        $text = $utf8.GetString($bytes, 0, $count)
+        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+        return $text
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function ConvertFrom-WdManualExecutionApprovalRecord {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text,
+        [Parameter(Mandatory)] [string] $SourceCommit,
+        [Parameter(Mandatory)] [string] $DefinitionHash,
+        [Parameter(Mandatory)] $Definition,
+        [Parameter(Mandatory)] [string[]] $FleetAgentNames
+    )
+    # Reuse the exact archived reader's strict duplicate/ASCII JSON contract;
+    # ConvertFrom-Json alone loses duplicate keys and permits type coercion.
+    if (-not ('WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator' -as [type]) -or
+        $Text.Length -gt 16384 -or -not $Text.TrimStart().StartsWith('{') -or
+        -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($Text)) {
+        throw 'manual execution approval record violates the strict JSON contract'
+    }
+    $record = ConvertFrom-Json -InputObject $Text -ErrorAction Stop
+    $names = @($record.PSObject.Properties.Name | Sort-Object)
+    if ($record -isnot [pscustomobject] -or
+        ($names -join ',') -cne 'agent,approval_reference_sha256,definition_sha256,enabled,schema,source_commit,tools') {
+        throw 'manual execution approval record must have exactly the seven canonical fields'
+    }
+    foreach ($name in @('schema', 'agent', 'source_commit', 'definition_sha256', 'approval_reference_sha256')) {
+        if ($record.$name -isnot [string]) { throw 'manual execution approval string field has the wrong type' }
+    }
+    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+    $manualPaths = @('tools/merge_with_bridge_receipt.py', 'tools/write_bridge_consensus_merge_receipt.py')
+    if ($record.schema -cne 'wd.bridge-manual-execution-activation.v1' -or
+        $record.enabled -isnot [bool] -or $record.enabled -ne $true -or
+        $SourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $record.source_commit -cne $SourceCommit -or
+        $DefinitionHash -cnotmatch '^[0-9A-F]{64}$' -or $record.definition_sha256 -cne $DefinitionHash -or
+        $record.approval_reference_sha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+        $record.agent -cnotin $agents -or $record.agent -cnotin $FleetAgentNames -or
+        $record.tools -isnot [Array] -or $record.tools.Count -ne 2) {
+        throw 'manual execution approval binding or field type is invalid'
+    }
+    foreach ($tool in $record.tools) {
+        if ($tool -isnot [string]) { throw 'manual execution approval tool has the wrong type' }
+    }
+    if ((@($record.tools | Sort-Object) -join ',') -cne ($manualPaths -join ',')) {
+        throw 'manual execution approval must name exactly the two fixed tools'
+    }
+    foreach ($tool in $manualPaths) {
+        if ($tool -cnotin @($Definition.python_files)) {
+            throw 'manual execution approval driver is absent from the selected pinned package'
+        }
+    }
+    $capability = $Definition.PSObject.Properties['manual_execution_capability']
+    if ($null -eq $capability -or
+        [string]$capability.Value.schema -cne 'wd.bridge-manual-execution.v1' -or
+        [string]$capability.Value.invocation_marker -cne '--wd-manual-execution' -or
+        [string]$capability.Value.entrypoints.merge -cne $manualPaths[0] -or
+        [string]$capability.Value.entrypoints.receipt -cne $manualPaths[1]) {
+        throw 'manual execution approval does not match the selected package capability'
+    }
+    # Derive these bindings from the selected package; a hash is not a signature.
+    return [ordered]@{
+        schema = 'wd.bridge-manual-execution-activation.v1'
+        enabled = $true
+        agent = $record.agent
+        source_commit = $SourceCommit
+        definition_sha256 = $DefinitionHash
+        approval_reference_sha256 = $record.approval_reference_sha256
+        tools = $manualPaths
+    }
+}
+
+function Assert-WdManualExecutionManifestBinding {
+    param(
+        [Parameter(Mandatory)] $Deployment,
+        [AllowNull()] $ExpectedActivation,
+        [Parameter(Mandatory)] [string] $SourceCommit,
+        [Parameter(Mandatory)] [string] $DefinitionHash,
+        [Parameter(Mandatory)] $Definition,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $FleetAgentNames
+    )
+    $property = $Deployment.PSObject.Properties['manual_execution']
+    if ($null -eq $ExpectedActivation) {
+        if ($null -ne $property) { throw 'existing manifest has an unrequested manual execution activation' }
+        return
+    }
+    if ($null -eq $property) { throw 'existing manifest is missing the requested manual execution activation' }
+    $actual = ConvertFrom-WdManualExecutionApprovalRecord -Text ($property.Value | ConvertTo-Json -Depth 8 -Compress) `
+        -SourceCommit $SourceCommit -DefinitionHash $DefinitionHash -Definition $Definition -FleetAgentNames $FleetAgentNames
+    if (($actual | ConvertTo-Json -Depth 8 -Compress) -cne ($ExpectedActivation | ConvertTo-Json -Depth 8 -Compress)) {
+        throw 'existing manifest manual execution activation differs from the explicit approval record'
+    }
 }
 
 function Get-RelativeFileHashMap {
@@ -714,6 +863,11 @@ if ($upstreamHeadProbe.ExitCode -ne 0 -or $upstreamHead -cne $head) {
     throw "reboot-bundle commit is not pushed to its upstream ($upstream)"
 }
 
+$manualApprovalText = $null
+if ($ManualExecutionApprovalRecordPath -cne '') {
+    $manualApprovalText = Read-WdManualExecutionApprovalText -Path $ManualExecutionApprovalRecordPath
+}
+
 $temporaryParent = Resolve-FullPath ([IO.Path]::GetTempPath())
 $materializationRoot = Assert-ChildPath `
     -Parent $temporaryParent `
@@ -812,6 +966,14 @@ foreach ($relativeCodeFile in @($bridgeCodeDefinition.python_files | ForEach-Obj
 $materializedFleet = Get-Content -LiteralPath (
     Join-Path $materializedRebootRoot 'wd-fleet.json'
 ) -Raw | ConvertFrom-Json -ErrorAction Stop
+$manualFleetAgents = @()
+$manualActivation = $null
+if ($null -ne $manualApprovalText) {
+    $manualFleetAgents = @($materializedFleet.lanes | ForEach-Object { [string]$_.agent }) + @([string]$materializedFleet.tools_supervisor.agent)
+    . (Join-Path $toolsBootstrapSource 'BridgeLogReader.ps1')
+    $manualActivation = ConvertFrom-WdManualExecutionApprovalRecord -Text $manualApprovalText `
+        -SourceCommit $head -DefinitionHash $bridgeCodePackage.Hash -Definition $bridgeCodeDefinition -FleetAgentNames $manualFleetAgents
+}
 $bridgePythonProperty = $materializedFleet.PSObject.Properties['bridge_python']
 if (
     $null -eq $bridgePythonProperty -or
@@ -913,6 +1075,9 @@ $manifestObject = [ordered]@{
         isolation_scope = 'per_tool_call_only'
     }
     files = $sourceHashes
+}
+if ($null -ne $manualActivation) {
+    $manifestObject['manual_execution'] = $manualActivation
 }
 
 Write-Host "WD reboot bundle source: $branch@$head"
@@ -1047,6 +1212,10 @@ $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
     -ExpectedType Leaf)
 $installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
     -Path $installedManifestPath
+if ($null -ne $manualActivation -and
+    -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid([string]$installedManifestSnapshot.Text)) {
+    throw 'installed manual execution manifest violates the strict JSON contract'
+}
 $installedManifest = [string]$installedManifestSnapshot.Text |
     ConvertFrom-Json -ErrorAction Stop
 $installedManifestHash = ([string]$installedManifestSnapshot.Hash).ToUpperInvariant()
@@ -1056,6 +1225,8 @@ if (
 ) {
     throw "installed reboot bundle manifest does not match commit $head"
 }
+Assert-WdManualExecutionManifestBinding -Deployment $installedManifest -ExpectedActivation $manualActivation `
+    -SourceCommit $head -DefinitionHash $bridgeCodePackage.Hash -Definition $bridgeCodeDefinition -FleetAgentNames $manualFleetAgents
 $installedHashProperties = @($installedManifest.files.PSObject.Properties)
 if ($installedHashProperties.Count -ne $sourceHashes.Count) {
     throw "installed reboot bundle file set does not match commit $head"

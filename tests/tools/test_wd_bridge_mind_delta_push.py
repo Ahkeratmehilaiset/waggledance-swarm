@@ -322,6 +322,37 @@ def _with_signal(number, field, agent, status):
 
 @pytest.mark.parametrize("field, name", [("votes", "votes"), ("stale_votes", "stale_votes"),
                                          ("veto_observations", "vetoes")])
+@pytest.mark.parametrize("verification", ["unverified", None, "missing"])
+def test_signal_verification_change_is_visible_with_the_same_valid_uuid(tmp_path, capsys, field, name,
+                                                                     verification):
+    """Regression twin for the UUID-only declaration mutant (PR1905 discussion 4266509454)."""
+    previous = _snapshot(prs=[_with_signal(7, field, "claude-rco-1", "rco_pass")])
+    signal = previous["prs"]["7"][field][0]
+    if verification == "missing":
+        signal.pop("verification")
+    else:
+        signal["verification"] = verification
+    current = copy.deepcopy(previous)
+    current["prs"]["7"][field][0]["verification"] = "declared"
+    declared = "claude-rco-1:rco_pass" + (":aaaaaaaaaaaa" if field != "votes" else "")
+    assert push.view(previous)["prs"]["7"][name] == [declared + ":undeclared"]
+    assert push.view(current)["prs"]["7"][name] == [declared]
+    changes = push.delta(previous, current)
+    assert len(changes) == 2
+    assert changes[1]["type"] == "changed" and changes[1]["section"] == "prs" and changes[1]["key"] == "7"
+    assert changes[1]["value"][name] == [declared]
+    assert push.apply_delta(push.view(previous), changes) == push.view(current)
+    old_path, new_path = tmp_path / "previous.json", tmp_path / "current.json"
+    old_path.write_text(json.dumps(previous), encoding="utf-8")
+    new_path.write_text(json.dumps(current), encoding="utf-8")
+    assert push.main(["--previous", str(old_path), "--current", str(new_path)]) == 0
+    captured = capsys.readouterr()
+    printed = [json.loads(line) for line in captured.out.splitlines()]
+    assert captured.err == "" and printed == changes
+
+
+@pytest.mark.parametrize("field, name", [("votes", "votes"), ("stale_votes", "stale_votes"),
+                                         ("veto_observations", "vetoes")])
 def test_signal_fields_that_hold_the_separator_never_collide_and_the_replacement_is_pushed(field, name):
     """PR1901 Codex P2 thread PRRT_kwDORYf3RM6rxSIA: ``agent:a`` with ``hold`` and ``agent`` with ``a:hold`` at one
     head are two observations. Each field's ``%`` and ``:`` are percent-encoded, so ``:`` only separates fields and

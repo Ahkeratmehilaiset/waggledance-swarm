@@ -79,6 +79,63 @@ function ConvertFrom-BridgeReplyCacheJson {
     $Text | ConvertFrom-Json @arguments
 }
 
+function Read-BridgeReplyIndexPages {
+    # Reads one snapshot as bounded canonical pages up to the EOF observed by the
+    # first page, so the per-call row bound of the reader does not cap the index.
+    # Every page keeps the reader's identity, generation and JSON checks; any
+    # refusal, truncation below the frozen EOF or missing progress fails the
+    # whole snapshot. Only request and reply rows are retained.
+    param([string]$Path,$Cursor=$null,[int64]$MaxBytes=268435456,
+        [ValidateRange(1,67108864)][int]$PageBytes=67108864,[ValidateRange(1,100000)][int]$PageRows=100000)
+    $rows=[Collections.Generic.List[object]]::new()
+    $parsedRows=0
+    $pages=0
+    $snapshotLength=-1L
+    while ($true) {
+        $offset=if ($null -eq $Cursor) { 0L } else { [int64]$Cursor.offset }
+        $limit=if ($snapshotLength -lt 0) { [int64]$PageBytes } else { [Math]::Min([int64]$PageBytes,$snapshotLength-$offset) }
+        $page=Read-BridgeEventDelta -Path $Path -Cursor $Cursor -MaxBytes $limit -MaxRows $PageRows
+        $pages++
+        if ($page.status -cin @('BLOCKED','RETRY')) {
+            if ($page.reason -ceq 'record_exceeds_max_bytes' -and $limit -lt $PageBytes) {
+                # The frozen EOF, not the page size, cut an unfinished final append.
+                return New-BridgeLogReadResult -Status 'IDLE' -Reason 'partial_record' -RequestedOffset $offset -CandidateCursor $Cursor -SnapshotLength $snapshotLength
+            }
+            return $page
+        }
+        if ($snapshotLength -lt 0) {
+            $snapshotLength=[int64]$page.snapshot_length
+            if ($snapshotLength -gt $MaxBytes) {
+                return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'snapshot_exceeds_bounds' -RequestedOffset $offset -SnapshotLength $snapshotLength
+            }
+        } elseif ([int64]$page.snapshot_length -lt $snapshotLength) {
+            return New-BridgeLogReadResult -Status 'RETRY' -Reason 'log_truncated' -RequestedOffset $offset -SnapshotLength $page.snapshot_length
+        }
+        if ($null -eq $page.candidate_cursor) {
+            if ($pages -eq 1) { return $page }
+            return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'snapshot_incomplete' -RequestedOffset $offset -SnapshotLength $snapshotLength
+        }
+        foreach ($row in @($page.rows)) {
+            $parsedRows++
+            if ((Get-BridgeContractField $row 'request_id') -or (Get-BridgeContractField $row 'in_reply_to_request_id')) {
+                $rows.Add($row)
+            }
+        }
+        $next=[int64]$page.candidate_cursor.offset
+        $Cursor=$page.candidate_cursor
+        if ($next -ge $snapshotLength) { break }
+        if ($next -le $offset) {
+            # All remaining bytes read without a complete row is an unfinished
+            # final append: stop before it and let the caller report incomplete.
+            $validationBytes=if ($offset -gt 0) { 1L } else { 0L }
+            if ($page.bytes_read - $validationBytes -ge $snapshotLength - $offset) { break }
+            return New-BridgeLogReadResult -Status 'BLOCKED' -Reason 'snapshot_no_progress' -RequestedOffset $offset -SnapshotLength $snapshotLength
+        }
+    }
+    [pscustomobject]@{status=$page.status;reason=$page.reason;rows=$rows.ToArray();parsed_rows=$parsedRows;pages=$pages;
+        candidate_cursor=$Cursor;snapshot_length=$snapshotLength}
+}
+
 function Read-BridgeReplyIndex {
     param([string]$Path,[string]$CachePath,[switch]$NoCache)
     # Validate the canonical source before creating any derived cache artifact.
@@ -132,26 +189,27 @@ function Read-BridgeReplyIndex {
         $parsedRows=0
         if ($null -ne $cache) {
             foreach ($row in @($cache.rows)) { $rows.Add($row) }
-            $snapshot=Read-BridgeEventDelta -Path $Path -Cursor $cache.cursor -MaxBytes 67108864 -MaxRows 100000
+            # As in the cold path, hash what exists before paging, so a byte rewritten
+            # in the delta after its page was parsed is never cached as complete.
+            $length=(Get-Item -LiteralPath $Path).Length
+            $beforeHash=Get-BridgeReplyPrefixHash $Path $length
+            $snapshot=Read-BridgeReplyIndexPages -Path $Path -Cursor $cache.cursor
             # Rotation/truncation/generation changes invalidate the derived index.
             if ($snapshot.status -cin @('BLOCKED','RETRY')) { $cache=$null; $rows.Clear(); $cacheStatus='rebuilt' }
+            elseif ((Get-BridgeReplyPrefixHash $Path $length) -cne $beforeHash) { throw 'Canonical prefix changed while reading the reply delta' }
         }
         if ($null -eq $cache) {
             $length=(Get-Item -LiteralPath $Path).Length
             $beforeHash=Get-BridgeReplyPrefixHash $Path $length
-            $snapshot=Read-BridgeEventSnapshot -Path $Path -MaxBytes 268435456
+            $snapshot=Read-BridgeReplyIndexPages -Path $Path
             if ((Get-BridgeReplyPrefixHash $Path $length) -cne $beforeHash) { throw 'Canonical prefix changed while rebuilding reply index' }
         }
         if ($snapshot.status -cin @('BLOCKED','RETRY') -or $null -eq $snapshot.candidate_cursor -or
             $snapshot.candidate_cursor.offset -ne $snapshot.snapshot_length) {
             throw ('Reply snapshot is incomplete; pending/answered cannot be inferred: '+$snapshot.reason)
         }
-        foreach ($row in @($snapshot.rows)) {
-            $parsedRows++
-            if ((Get-BridgeContractField $row 'request_id') -or (Get-BridgeContractField $row 'in_reply_to_request_id')) {
-                $rows.Add($row)
-            }
-        }
+        foreach ($row in @($snapshot.rows)) { $rows.Add($row) }
+        $parsedRows=[int]$snapshot.parsed_rows
         $verifiedOldHash=$null
         if ($null -ne $cache) {
             $verifiedOldHash=Get-BridgeReplyPrefixHash $Path $cache.snapshot_length

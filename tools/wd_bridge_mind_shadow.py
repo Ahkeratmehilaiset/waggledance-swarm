@@ -7,6 +7,11 @@ Inputs are files a caller already wrote under one ``.codex-audit`` root:
   returned (``reader``, ``reader_stdout_sha256`` of that run's exact output, ``observed_utc``, ``events``);
 * ``--context`` (optional): one ``wd.bridge-mind-pr-context.v1`` PR context (see ``tools/bridge_mind_workspace.py``),
   observational data only;
+* ``--identity-context`` (optional, the G-K opt-in): one ``wd.bridge-mind.identity-context.v1`` object, or a file
+  that is exactly JSON ``null`` (an explicit UNKNOWN context). Only a given file reaches the workspace's
+  keyword-only ``identity_context``; an omitted one is never passed as ``None``, so a run without it is the
+  legacy run, byte for byte. It is caller tuple consistency, never origin authentication or gate eligibility,
+  and the receipt names its path and digest (``identity_context``);
 * ``--previous`` (optional): the previous run's ``reflected.publication.json``.
 
 This module never reads the bridge log, never calls the bridge, GitHub, a provider or a gate, never starts a
@@ -17,7 +22,8 @@ process and never writes a bridge event. One run is a pure function of its input
    row the reader truncated has a ref that is not the log's own, so the capture digest travels with every output.
 2. ``tools/wd_bridge_mind.py`` ``full_rebuild`` over the capture window, declared as its own complete log
    (``log_identity`` names the capture digest). Nothing before the window is seen; it is never whole-log coverage.
-3. ``tools/bridge_mind_workspace.py`` ``reflect`` with the previous reflected snapshot and the context.
+3. ``tools/bridge_mind_workspace.py`` ``reflect`` with the previous reflected snapshot and the context, and the
+   identity context only when a file is given.
 4. The reflected snapshot is published with the core's ``write_snapshot`` and read back with its
    ``read_snapshot``, so the envelope digest, the audit root and the path guards are verified. The previous
    publication is read the same way. An envelope is never stripped by hand.
@@ -97,8 +103,12 @@ def _owned(path: Path, root: Path, *, new: bool = False) -> Path:
     return target
 
 
-def _read_object(path: Path) -> tuple[dict[str, Any], str]:
-    """One canonical JSON object (the bridge reader: no duplicate key, no NaN) and the sha256 of its bytes."""
+def _read_object(path: Path, *, null: bool = False) -> tuple[dict[str, Any] | None, str]:
+    """One canonical JSON object (the bridge reader: no duplicate key, no NaN) and the sha256 of its bytes.
+
+    With ``null``, a file that is exactly JSON ``null`` (JSON whitespace around it allowed) reads as ``None``: the
+    identity context's explicit UNKNOWN, never the same as an omitted file. Any other value is still refused.
+    """
     try:
         with open(path, "rb") as handle:
             data = handle.read(INPUT_LIMIT + 1)
@@ -107,9 +117,11 @@ def _read_object(path: Path) -> tuple[dict[str, Any], str]:
     if len(data) > INPUT_LIMIT:
         raise ShadowRefused("an input file is larger than the shadow run reads")
     try:
-        value = parse_bridge_json_object(data.decode("utf-8"))
+        text = data.decode("utf-8")
+        value = None if null and text.strip(" \t\n\r") == "null" else parse_bridge_json_object(text)
     except (UnicodeDecodeError, ValueError, RecursionError):
-        raise ShadowRefused("an input file is not one canonical JSON object") from None
+        raise ShadowRefused("an input file is not one canonical JSON object"
+                            + (" or JSON null" if null else "")) from None
     return value, hashlib.sha256(data).hexdigest()
 
 
@@ -131,7 +143,7 @@ def _write_new(path: Path, data: bytes) -> str:
 
 
 def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Path | None = None,
-        previous_path: Path | None = None) -> dict[str, Any]:
+        previous_path: Path | None = None, identity_context_path: Path | None = None) -> dict[str, Any]:
     core = _module("tools.wd_bridge_mind")
     board = _module("tools.wd_pr_missing_slot_board")
     from tools.bridge_compact_view import event_id
@@ -142,6 +154,14 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
     context, context_sha = (None, None)
     if context_path is not None:
         context, context_sha = _read_object(_owned(context_path, audit_root))
+    # G-K opt-in: the identity keyword reaches the workspace only when a file is given (a JSON null file is the
+    # explicit UNKNOWN context); an omitted file is never passed as None, so the legacy call is unchanged.
+    identity_options: dict[str, Any] = {}
+    identity_file, identity_sha = None, None
+    if identity_context_path is not None:
+        identity_file = _owned(identity_context_path, audit_root)
+        identity, identity_sha = _read_object(identity_file, null=True)
+        identity_options = {"identity_context": identity}
     out = _owned(out_dir, audit_root, new=True)
     events = capture["events"]
     as_of = capture["observed_utc"]
@@ -158,7 +178,7 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
                                                                    "snapshot_content_mismatch"} else "projection_refused"
         raise ShadowRefused("the core refused: " + reason) from None
     try:
-        reflected = workspace.reflect(snapshot, previous, context)
+        reflected = workspace.reflect(snapshot, previous, context, **identity_options)
     except workspace.WorkspaceError:
         raise ShadowRefused("the workspace refused the snapshot") from None
     out.mkdir()
@@ -200,6 +220,8 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
         "global_question": verified["next_question"]["global"],
         "limits": list(LIMITS),
     }
+    if identity_file is not None:  # an omitted identity file adds no key: the legacy receipt bytes are unchanged
+        receipt["identity_context"] = {"path": str(identity_file), "sha256": identity_sha}
     encoded = json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     workspace.guard_object(receipt)
     _write_new(out / "receipt.json", encoded.encode("ascii"))
@@ -212,11 +234,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--audit-root", type=Path, required=True, help="The owned .codex-audit directory.")
     parser.add_argument("--out-dir", type=Path, required=True, help="A new directory inside the audit root.")
     parser.add_argument("--context", type=Path, default=None, help="An optional wd.bridge-mind-pr-context.v1 file.")
+    parser.add_argument("--identity-context", type=Path, default=None,
+                        help="An optional wd.bridge-mind.identity-context.v1 file, or JSON null for an explicit "
+                             "UNKNOWN context (G-K opt-in, never authentication).")
     parser.add_argument("--previous", type=Path, default=None, help="The previous reflected.publication.json.")
     args = parser.parse_args(argv)
     try:
         receipt = run(args.capture, args.audit_root, args.out_dir, context_path=args.context,
-                      previous_path=args.previous)
+                      previous_path=args.previous, identity_context_path=args.identity_context)
     except (ShadowRefused, workspace.WorkspaceError) as exc:
         sys.stderr.write(f"bridge mind shadow refused: {exc}\n")
         return 2

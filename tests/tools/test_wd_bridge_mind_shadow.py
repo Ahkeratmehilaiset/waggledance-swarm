@@ -195,3 +195,94 @@ def test_the_shadow_pipeline_reads_no_log_and_imports_no_gate_bridge_writer_or_p
                  "check_rco_pass_present", "idle_consensus_auto_merge", "merge_with_bridge_receipt", "urllib",
                  "socket", '"gh"', "'gh'", "datetime.now", "time.time"):
         assert word not in source
+
+GKC_LEGACY_PUBLICATION_SHA = "7b2d79e237b2be2322c366f376642992e30e2a63d1a4554b1e7e8a81fc28e0a7"
+GKC_LEGACY_BOARD_SHA = "cec6861825914f08b339768ac0814e57ddbcaadc2dc2907c64487e4f78318a34"
+
+
+# C901 GK, Tools involved-author tests. Exact producer combinations: Fable6670064F.
+def _gkc_identity():
+    from tools import bridge_mind_workspace as workspace
+    slots = {"codex-lead-1": ("lead-impl", "build_lead"), "codex-tools-1": ("tools-tests", "build_tools"),
+             "claude-rco-1": ("rco-security", "claude-rco-1"), "claude-rco-2": ("rco-security", "claude-rco-2")}
+    value = {"schema": "wd.bridge-mind.identity-context.v1", "coverage": "complete", "source_ref": "1" * 64,
+             "identities": [{"agent": a, "agent_uuid": UUIDS[a], "role": role, "slot": slot}
+                            for a, (role, slot) in sorted(slots.items())]}
+    value["source_sha256"] = hashlib.sha256(workspace.canonical_json(value).encode()).hexdigest()
+    return value
+
+
+@pytest.mark.parametrize("context_kind", ["matching", "mismatch", "explicit_null", "wrong_digest"],
+                         ids=["MUTANT_GKC_SHADOW_DROP_MATCH", "MUTANT_GKC_SHADOW_UPGRADE_MISMATCH",
+                              "MUTANT_GKC_SHADOW_NULL_AS_OMITTED", "MUTANT_GKC_SHADOW_TRUST_DIGEST"])
+def test_gkc_identity_survives_real_shadow_chain_and_receipt(audit, context_kind):
+    core, board = _chain()
+    from tools import bridge_mind_workspace as workspace
+    context = _gkc_identity()
+    if context_kind == "mismatch":
+        context["identities"][0]["agent_uuid"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        context["source_sha256"] = hashlib.sha256(workspace.canonical_json(
+            {k: v for k, v in context.items() if k != "source_sha256"}).encode()).hexdigest()
+    elif context_kind == "explicit_null":
+        context = None
+    elif context_kind == "wrong_digest":
+        context["source_sha256"] = "0" * 64
+    capture = _write(audit / "capture.json", _capture())
+    identity = _write(audit / "identity.json", context)
+    receipt = shadow.run(capture, audit, audit / "run", identity_context_path=identity)
+    assert receipt["identity_context"] == {"path": str(identity.resolve()),
+                                            "sha256": hashlib.sha256(identity.read_bytes()).hexdigest()}
+    verified = core.read_snapshot(audit / "run" / "reflected.publication.json", audit_root=audit)
+    source = {"log_identity": "capture-window:" + hashlib.sha256(capture.read_bytes()).hexdigest(),
+              "generation": None, "cursor_start": 0, "cursor_end": len(EVENTS), "event_count": len(EVENTS),
+              "coverage": "complete"}
+    from tools.bridge_compact_view import event_id
+    snap = core.snapshot(core.full_rebuild([{"ref": event_id(e), "event": e} for e in EVENTS], source=source,
+                                          as_of_utc=AS_OF), as_of_utc=AS_OF)
+    expected = workspace.reflect(snap, identity_context=context)
+    assert verified == expected  # real publication round trip, no mocked producer or stripped metadata
+    items = [item for item in verified["attention"] if item["subject"] == "pr:7"]
+    assert items
+    for item in items:
+        basis = item["identity_basis"]
+        assert basis["consistency"] == ("registry_consistent_declarations" if context_kind == "matching" else "UNKNOWN")
+        assert basis["origin"] == "origin_not_authenticated" and basis["gate_eligibility"] == "UNKNOWN"
+        assert set(basis) == {"mode", "consistency", "source_ref", "source_sha256", "origin", "gate_eligibility"}
+        assert basis["source_ref"] == ("1" * 64 if context_kind in {"matching", "mismatch"} else "UNKNOWN")
+        if basis["source_ref"] != "UNKNOWN":
+            assert basis["source_ref"] in item["refs"]
+    view = board.build_mind_view(verified, receipt["publication"]["snapshot_sha256"])
+    assert view["attention"] == verified["attention"]
+    text = (audit / "run" / "board.txt").read_text(encoding="utf-8")
+    assert "origin_not_authenticated" in text and "gate eligibility UNKNOWN" in text
+    assert json.loads((audit / "run" / "receipt.json").read_text(encoding="ascii")) == receipt
+
+
+def test_gkc_omitted_identity_is_not_forwarded_and_preserves_legacy_bytes(audit, monkeypatch):
+    """MUTANT_GKC_FORWARD_NONE: omission must not enable an UNKNOWN identity context."""
+    core, _ = _chain()
+    capture = _write(audit / "capture.json", _capture())
+    real, seen = shadow.workspace.reflect, []
+    def observe(*args, **kwargs):
+        seen.append(kwargs.copy())
+        return real(*args, **kwargs)
+    monkeypatch.setattr(shadow.workspace, "reflect", observe)
+    receipt = shadow.run(capture, audit, audit / "run")
+    assert seen == [{}] and "identity_context" not in receipt
+    assert hashlib.sha256((audit / "run" / "reflected.publication.json").read_bytes()).hexdigest() == GKC_LEGACY_PUBLICATION_SHA
+    assert hashlib.sha256((audit / "run" / "board.txt").read_bytes()).hexdigest() == GKC_LEGACY_BOARD_SHA
+
+
+def test_gkc_identity_cli_and_owned_path_refusal(audit, tmp_path, capsys):
+    """MUTANT_GKC_IGNORE_CLI_OR_ALLOW_OUTSIDE: opt-in CLI reaches the real chain; outside input is refused."""
+    _chain()
+    capture = _write(audit / "capture.json", _capture())
+    identity = _write(audit / "identity.json", _gkc_identity())
+    args = ["--capture", str(capture), "--audit-root", str(audit), "--identity-context", str(identity)]
+    assert shadow.main([*args, "--out-dir", str(audit / "run")]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["identity_context"]["sha256"] == hashlib.sha256(identity.read_bytes()).hexdigest()
+    outside = _write(tmp_path / "identity.json", _gkc_identity())
+    with pytest.raises(shadow.ShadowRefused, match="not inside the audit root"):
+        shadow.run(capture, audit, audit / "outside-run", identity_context_path=outside)
+    assert not (audit / "outside-run").exists()

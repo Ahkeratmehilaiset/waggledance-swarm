@@ -22,6 +22,15 @@ Nothing in remember_v2.py, prompts.py or step2 is edited: ``RememberV3`` subclas
 * WHEN view (``when`` vectors), part of Grok's GREEN. A lesson whose stored text has a ``How to apply`` section gets
   one more e5 vector of that section (``when_section``). Its ``d`` score is the larger of the summary cosine and the
   WHEN cosine, so the extra vector adds no slot.
+* BRD (arm ``v3brd``): best-rank displacement, from Grok round 2 (answer 5a4c3701), under spec addendum v1.1
+  (sha256 0cbcce8e...). Its tests were written before this code.
+  - The base is the v3t card. Each situation view nominates its first ``BRD_DEPTH`` topic heads.
+  - A topic absent from the card is admitted only when its best situation-view rank is strictly better than the
+    worst primary line's.
+  - It may only take the place of an extra line (the 2nd or 3rd line of a shown topic), last extra first.
+  - It never removes a primary, never adds a line, and never breaks the byte cap.
+  - Caution: those extras are the earliest and latest lines v2 shows for RCO1's conflict-probe defense, so any BRD
+    build needs that probe rerun.
 
 usage: python -B remember_v3.py build-when --memory <memory dir> --out <dir>
 """
@@ -47,7 +56,10 @@ import remember_v2 as v2  # noqa: E402  (it loads step 2's corpus, memory and q4
 
 q4_mod = v2.q4_mod
 VERSION = "remember-v3-dev.0"
-ARMS = {"v3t": (False, False), "v3h": (True, False), "v3w": (False, True), "v3hw": (True, True)}  # arm: (hop, when)
+ARMS = {"v3t": (False, False, False), "v3h": (True, False, False), "v3w": (False, True, False),
+        "v3hw": (True, True, False), "v3brd": (False, False, True)}  # arm: (hop, when, brd)
+BRD_DEPTH = 8
+BRD_KEYS = ("primary", "best_rank", "views", "rewrite_top")
 HOP_TERMS = 8
 HOP_IDF_TOP = 0.05
 HOP_DEGREE = (2, 4)
@@ -85,6 +97,48 @@ def when_section(text: str) -> str | None:
     end = _SECTION_END.search(rest)
     section = (rest[:end.start()] if end else rest)[:WHEN_CHARS].strip()
     return section or None
+
+
+def topic_heads(rank: np.ndarray, vectors: np.ndarray, depth: int) -> list[int]:
+    """One view's walk in rank order: the first record of each new topic, until ``depth`` topics are counted. A rank
+    past the candidates (no lexical evidence) ends it, as in v2's ``top_topics``."""
+    counted: list[int] = []
+    for i in np.argsort(rank, kind="stable"):
+        if rank[i] > len(rank):
+            break
+        if counted and float(np.max(vectors[counted] @ vectors[i])) >= v2.TOPIC_COSINE:
+            continue
+        if len(counted) == depth:
+            break
+        counted.append(int(i))
+    return counted
+
+
+def brd_order(nominees: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Grok's frozen order: best rank, then more nominating views, then the rewrite's top 8, then the record id."""
+    return sorted(nominees, key=lambda n: (n["best_rank"], -n["views"], not n["rewrite_top"], n["doc_id"]))
+
+
+def brd_apply(lines: Sequence[Mapping[str, Any]], nominees: Sequence[Mapping[str, Any]], fits) -> tuple[list, int, int]:
+    """Best-rank displacement over one card: (new lines, swaps, admitted). A nominee is admitted when its best rank is
+    strictly better than the worst primary's. Each admitted nominee, in ``brd_order``, takes the place of the LAST extra
+    line and is appended as a primary, if ``fits`` accepts the trial card. Primaries are never removed, nothing is added
+    without a removal, and a nominee that does not fit is skipped."""
+    out = [dict(line) for line in lines]
+    primaries = [line["best_rank"] for line in out if line["primary"]]
+    if not primaries:
+        return out, 0, 0
+    worst = max(primaries)
+    admitted = brd_order([n for n in nominees if n["best_rank"] < worst])
+    swaps = 0
+    for nominee in admitted:
+        extras = [i for i, line in enumerate(out) if not line["primary"]]
+        if not extras:
+            break
+        trial = out[:extras[-1]] + out[extras[-1] + 1:] + [dict(nominee, primary=True)]
+        if fits(trial):
+            out, swaps = trial, swaps + 1
+    return out, swaps, len(admitted)
 
 
 class SituationLexical:
@@ -126,6 +180,7 @@ class RememberV3(v2.RememberV2):
     def __init__(self, q4: Any, hop: bool = False, when: tuple[np.ndarray, np.ndarray] | None = None):
         super().__init__(q4)
         self.hop = bool(hop)
+        self.brd = False
         self.when_vectors, self.when_mask = when if when is not None else (None, None)
         if self.when_vectors is not None and (self.when_vectors.shape != q4.d.shape
                                               or self.when_mask.shape != (len(q4.ids),)):
@@ -140,10 +195,10 @@ class RememberV3(v2.RememberV2):
         """Switch to a registered arm on the same loaded memory (the lexical cache is keyed by the hop flag)."""
         if arm not in ARMS:
             raise RememberV3Error("unknown arm")
-        hop, uses_when = ARMS[arm]
+        hop, uses_when, brd = ARMS[arm]
         if uses_when and when is None and self.when_vectors is None:
             raise RememberV3Error("this arm needs when vectors")
-        self.hop = hop
+        self.hop, self.brd = hop, brd
         if not uses_when:
             self.when_vectors, self.when_mask = None, None
         elif when is not None:
@@ -206,6 +261,91 @@ class RememberV3(v2.RememberV2):
             out[name] = rank
         out["_w_cosine"] = views["w"]
         return out
+
+    def shortlist_arm(self, situation: str, situation_time_utc: str, queries: Sequence[str]) -> dict[str, Any]:
+        """The current arm's card: BRD over the v3t card, or the shortlist itself."""
+        if self.brd:
+            return self.shortlist_brd(situation, situation_time_utc, queries)
+        return self.shortlist(situation, situation_time_utc, queries)
+
+    def shortlist_brd(self, situation: str, situation_time_utc: str, queries: Sequence[str]) -> dict[str, Any]:
+        """Addendum v1.1, choices C1-C9: the v3t card, then best-rank displacement from the SITUATION views only."""
+        listed = self.shortlist(situation, situation_time_utc, queries)  # C1: the v3t card
+        if listed["status"] != "LISTED":
+            return listed  # C8
+        index, _ = self.applicable(situation, situation_time_utc)
+        local = {int(p): i for i, p in enumerate(index)}
+        vectors = self.q4.d[index]
+        ranks = self.ranks(situation, index)
+        best = np.minimum(np.minimum(ranks["w"], ranks["d"]), ranks["b"])  # C2
+        lines = [dict(line) for line in listed["lines"]]
+        heads = {line["topic"]["group"] for line in lines if line["topic"]["head"]}
+        seen: set[int] = set()
+        for line in lines:  # C3: the head is the primary; without a shown head, the group's first shown line
+            group = line["topic"]["group"]
+            line["primary"] = bool(line["topic"]["head"]) or (group not in heads and group not in seen)
+            seen.add(group)
+            line["best_rank"] = int(best[local[line["position"]]])
+        topics: list[dict[str, Any]] = []
+        for view in ("w", "d", "b"):  # C4: nominated topic heads, merged across views
+            for head in topic_heads(ranks[view], vectors, BRD_DEPTH):
+                same = next((t for t in topics if float(vectors[t["member"]] @ vectors[head]) >= v2.TOPIC_COSINE), None)
+                if same is None:
+                    topics.append({"member": head, "views": {view}})
+                    continue
+                same["views"].add(view)
+                if (best[head], self.q4.ids[index[head]]) < (best[same["member"]], self.q4.ids[index[same["member"]]]):
+                    same["member"] = head
+        rewrite_heads: list[int] = []
+        for text in list(queries)[1:]:
+            rewrite_ranks = self.ranks(text, index)
+            for view in ("w", "d", "b"):
+                rewrite_heads += topic_heads(rewrite_ranks[view], vectors, BRD_DEPTH)
+        on_card = [local[line["position"]] for line in lines]
+        worst = max(line["best_rank"] for line in lines if line["primary"])
+        fused = sum(1.0 / (self.q4.rule["rrf_k"] + ranks[view]) for view in ("w", "d", "b"))
+        nominees = []
+        for topic in topics:
+            member = topic["member"]
+            if member in on_card or float(np.max(vectors[on_card] @ vectors[member])) >= v2.TOPIC_COSINE:
+                continue  # C5: present on the card
+            if best[member] >= worst:
+                continue  # never admitted, so no line is built for it
+            line = self._result(int(index[member]), float(fused[member]),
+                                {f"{view}0": int(ranks[view][member]) for view in ("w", "d", "b")})
+            members = np.flatnonzero(vectors @ vectors[member] >= v2.TOPIC_COSINE)
+            when = sorted((self._when(int(index[j])), int(j)) for j in members)
+            line["topic"] = {"group": 0, "records": int(len(members)),
+                             "first_day": self.q4.entries[index[when[0][1]]]["row"]["time_utc"][:10],
+                             "last_day": self.q4.entries[index[when[-1][1]]]["row"]["time_utc"][:10], "head": True}
+            line["superseded_by"] = self._superseded_by(line)
+            if v2.guarded(line) or v2.corpus_mod.ws._has_marker(v2.line_text(1, line)):
+                continue  # C7: the guard runs on the new line as v2 runs it on its own
+            line.update(best_rank=int(best[member]), views=len(topic["views"]),
+                        rewrite_top=any(float(vectors[h] @ vectors[member]) >= v2.TOPIC_COSINE
+                                        for h in rewrite_heads))
+            nominees.append(line)
+
+        def clean(card: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+            top = max(line["topic"]["group"] for line in lines)
+            out = []
+            for line in card:
+                line = {key: value for key, value in line.items() if key not in BRD_KEYS}
+                if line["topic"]["group"] == 0:  # C6: an inserted line is its own group, numbered after the rest
+                    top += 1
+                    line["topic"] = dict(line["topic"], group=top)
+                out.append(line)
+            return self._marked(out)
+
+        def fits(card: Sequence[Mapping[str, Any]]) -> bool:  # C7
+            marked = clean(card)
+            return len(marked) <= v2.CAP and v2.rendered_bytes(marked) <= v2.CASE_BYTES
+
+        chosen, swaps, admitted = brd_apply(lines, nominees, fits)
+        final = clean(chosen)
+        telemetry = dict(listed.get("telemetry") or {}, brd_admitted=admitted, brd_swaps=swaps,
+                         line_bytes=v2.rendered_bytes(final))  # C9
+        return {"status": "LISTED", "reason": None, "lines": final, "telemetry": telemetry}
 
 
 # --- WHEN vectors: built once, retained, verified on load ---------------------------------------------------------

@@ -198,3 +198,80 @@ def test_set_arm_switches_and_refuses_an_unknown_arm_or_missing_vectors(tmp_path
         engine.set_arm("v3w")
     with pytest.raises(r3.RememberV3Error):
         engine.set_arm("v9")
+
+
+# --- BRD, best-rank displacement (addendum v1.1 0cbcce8e; these tests were written before brd_apply existed) --------
+
+def card_line(ref, primary, rank):
+    return {"ref": ref, "primary": primary, "best_rank": rank}
+
+
+def nominee(ref, rank, views=1, rewrite_top=False, doc_id=None):
+    return {"ref": ref, "best_rank": rank, "views": views, "rewrite_top": rewrite_top, "doc_id": doc_id or ref,
+            "primary": True}
+
+
+def refs(lines):
+    return [line["ref"] for line in lines]
+
+
+BASE_CARD = [card_line("p1", True, 3), card_line("e1", False, 9), card_line("p2", True, 20), card_line("e2", False, 30)]
+
+
+def test_brd_swaps_the_last_extra_for_a_sharper_absent_topic():
+    lines, swaps, admitted = r3.brd_apply(BASE_CARD, [nominee("n5", 5)], lambda trial: True)
+    assert refs(lines) == ["p1", "e1", "p2", "n5"] and swaps == 1 and admitted == 1
+    assert len(lines) == len(BASE_CARD)
+
+
+@pytest.mark.parametrize("rank", [20, 41])
+def test_brd_never_admits_a_topic_not_strictly_sharper_than_the_worst_primary(rank):
+    lines, swaps, admitted = r3.brd_apply(BASE_CARD, [nominee("n", rank)], lambda trial: True)
+    assert refs(lines) == refs(BASE_CARD) and swaps == 0 and admitted == 0
+
+
+def test_brd_never_removes_a_primary_and_never_appends():
+    primaries = [card_line("p1", True, 3), card_line("p2", True, 20)]
+    lines, swaps, admitted = r3.brd_apply(primaries, [nominee("n5", 5)], lambda trial: True)
+    assert refs(lines) == ["p1", "p2"] and swaps == 0 and admitted == 1
+
+
+def test_brd_skips_a_nominee_that_does_not_fit_and_tries_the_next():
+    fits = lambda trial: "n4" not in refs(trial)  # noqa: E731  (n4's line would break the byte cap)
+    lines, swaps, _ = r3.brd_apply(BASE_CARD, [nominee("n4", 4), nominee("n6", 6)], fits)
+    assert refs(lines) == ["p1", "e1", "p2", "n6"] and swaps == 1
+
+
+def test_brd_two_swaps_displace_extras_from_the_end_of_the_card():
+    lines, swaps, _ = r3.brd_apply(BASE_CARD, [nominee("n7", 7), nominee("n4", 4)], lambda trial: True)
+    assert refs(lines) == ["p1", "p2", "n4", "n7"] and swaps == 2  # n4 first: the better rank goes first
+
+
+def test_brd_tie_break_views_then_rewrite_then_record_id():
+    nominees = [nominee("a", 5, views=1, doc_id="a"), nominee("b", 5, views=1, rewrite_top=True, doc_id="b"),
+                nominee("c", 5, views=2, doc_id="c"), nominee("d", 5, views=1, doc_id="0d")]
+    assert refs(r3.brd_order(nominees)) == ["c", "b", "d", "a"]
+
+
+def test_topic_heads_counts_topics_skips_same_topic_records_and_stops_without_lexical_evidence():
+    vectors = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.6, 0.8]], dtype=np.float32)
+    rank = np.array([1, 2, 3, 4])
+    assert r3.topic_heads(rank, vectors, depth=8) == [0, 2, 3]  # record 1 shares record 0's topic
+    assert r3.topic_heads(rank, vectors, depth=2) == [0, 2]
+    assert r3.topic_heads(np.array([1, 5, 5, 5]), vectors, depth=8) == [0]  # ranks past n carry no evidence
+
+
+def test_the_brd_arm_keeps_every_card_invariant_on_a_built_memory(tmp_path):
+    engine = r3.RememberV3(q4_of(build(tmp_path, linked_rows())))
+    for situation in ("which lane lost its marker after a cold reboot", "quantum chromodynamics lattice"):
+        engine.set_arm("v3t")
+        base = engine.shortlist_arm(situation, SITUATION_TIME, [situation])
+        engine.set_arm("v3brd")
+        card = engine.shortlist_arm(situation, SITUATION_TIME, [situation])
+        if base["status"] != "LISTED":
+            assert card == base
+            continue
+        assert len(card["lines"]) <= len(base["lines"]) and rv.rendered_bytes(card["lines"]) <= rv.CASE_BYTES
+        assert len({line["ref"] for line in card["lines"]}) == len(card["lines"])
+        assert {"brd_admitted", "brd_swaps"} <= set(card["telemetry"])
+        assert not any(key in line for line in card["lines"] for key in ("primary", "best_rank"))

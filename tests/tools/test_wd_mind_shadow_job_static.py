@@ -228,8 +228,21 @@ def test_child_command_carries_the_run_id_as_metadata_and_refuses_an_inherited_o
     check = re.search(r"if \(\$null -ne \[Environment\]::GetEnvironmentVariable\('WD_MIND_SHADOW_RUN_ID', "
                       r"'Process'\)\) \{\s*throw '", adapter)
     assert check
-    assert "SetEnvironmentVariable" not in adapter
+    # cp5 hardening (holes named by one Grok advisory, candidates and GO by Lead; each form was first shown by a named
+    # mutant passing the old checks): one prefix assignment in any letter case or scope, no SetEnvironmentVariable or
+    # Set-Item env: in any letter case, and the parent check a top-level statement (column 0, outside every column-0
+    # function span, not opened by the code line before it). A finite grammar of this file's layout, not an AST or
+    # security proof.
+    assert len(re.findall(r"(?i)\$(?:script:|global:|local:|private:)?RootRunIdPrefix\s*[-+*/%]?=", adapter)) == 1
+    assert not re.search(r"(?i)SetEnvironmentVariable|\bSet-Item\b[^\n]*\benv:", adapter)
     assert not re.search(r"(?m)^\s*\$env:\w+\s*=", adapter)
+    top = re.search(r"(?m)^if \(\$null -ne \[Environment\]::GetEnvironmentVariable\('WD_MIND_SHADOW_RUN_ID', "
+                    r"'Process'\)\) \{\n    throw '[^'\n]+'\n\}$", adapter)
+    assert top and top.start() == check.start()
+    for function in re.finditer(r"(?m)^function [\w-]+ \{$", adapter):
+        end = re.search(r"\n\}(?:\n|\Z)", adapter[function.start():])
+        assert end and not function.start() < top.start() < function.start() + end.end()
+    assert not [line for line in adapter[:top.start()].split("\n") if line.strip()][-1].rstrip().endswith("{")
     assert adapter.count("WD_MIND_SHADOW_RUN_ID") == 3
     launch = adapter.index("$launchId = [guid]::NewGuid().ToString('D')")
     command = adapter.index("$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId)")

@@ -565,8 +565,8 @@ def test_a_cli_file_nested_too_deeply_is_a_fixed_refusal_never_a_raw_error(monke
 
 def test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_refusal(monkeypatch, sandbox_root,
                                                                                        capsys):
-    """Residual of v1.2: around this interpreter's JSON nesting limit (found here, never assumed) a turn either writes
-    all four files, bound to the envelope's digest, or refuses with a fixed reason and writes nothing."""
+    """At the measured reader limit a turn writes all four bound files or gives one documented fixed refusal.
+    A shallow positive control is separate: deeper canonicalization may exhaust its budget before the reader."""
     args = _frozen_cli(monkeypatch)
 
     def loads(depth):
@@ -581,13 +581,15 @@ def test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_re
         middle = (low + high + 1) // 2
         low, high = (middle, high) if loads(middle) else (low, middle - 1)
     outcomes = set()
-    for depth in range(low - 2, low + 3):
+    for depth in sorted({1, *range(max(1, low - 2), low + 3)}):
         text = _deep_envelope_text(depth)
         path = sandbox_root / f"envelope-{depth}.json"
         path.write_text(text, encoding="utf-8")
         out = sandbox_root / f"turn-{depth}"
         code = jt.main(args + ["--remember", str(path), "--out", str(out)])
-        printed = capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        printed = captured.out
         outcomes.add(code)
         if code == 0:
             assert sorted(item.name for item in out.iterdir()) == sorted(FOUR)
@@ -595,9 +597,54 @@ def test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_re
             assert manifest["remember_envelope_sha256"] == lv.sha256_text(text)
             assert (out / "card.txt").read_text(encoding="utf-8") == printed
         else:
-            assert code == 2 and printed.splitlines() == ["refused: a file could not be read or written"]
+            assert code == 2
+            assert printed.splitlines() in (["refused: a file could not be read or written"],
+                                            ["refused: the REMEMBER answer is not canonical JSON"])
             assert not out.exists()
-    assert outcomes == {0, 2}  # the window spans the limit: both sides ran
+    assert outcomes == {0, 2}  # the shallow success and boundary refusal must both run
+
+
+def test_reader_boundary_with_a_lower_canonical_budget_preserves_the_whole_or_refused_contract(
+        monkeypatch, sandbox_root, capsys):
+    """The reader and deeper canonicalizer need not have the same recursion budget (3.11 CI regression)."""
+    canonical = lv.canonical
+
+    def lower_budget(value):
+        deep = value.get("telemetry", {}).get("deep") if isinstance(value, dict) else None
+        if isinstance(deep, list) and deep:
+            raise RecursionError("synthetic canonicalization budget")
+        return canonical(value)
+
+    monkeypatch.setattr(lv, "canonical", lower_budget)
+    test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_refusal(
+        monkeypatch, sandbox_root, capsys)
+
+
+@pytest.mark.parametrize("mutation", ["MUTANT_EXTRA_REFUSAL_DETAIL", "MUTANT_PARTIAL_OUTPUT"])
+def test_reader_boundary_rejects_an_extra_refusal_line_or_partial_output(monkeypatch, sandbox_root, capsys,
+                                                                       mutation):
+    control = sandbox_root / "control"
+    control.mkdir()
+    test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_refusal(monkeypatch, control, capsys)
+    main, hits = jt.main, []
+
+    def mutant(argv):
+        code = main(argv)
+        if code == 2:
+            hits.append(mutation)
+            if mutation == "MUTANT_EXTRA_REFUSAL_DETAIL":
+                print("synthetic extra refusal detail")
+            else:
+                Path(argv[argv.index("--out") + 1]).mkdir()
+        return code
+
+    monkeypatch.setattr(jt, "main", mutant)
+    target = sandbox_root / "mutant"
+    target.mkdir()
+    with pytest.raises(AssertionError):
+        test_an_envelope_nested_at_the_reader_limit_gives_a_whole_turn_or_a_fixed_refusal(
+            monkeypatch, target, capsys)
+    assert hits == [mutation]
 
 
 def test_synthetic_frozen_cycles_give_the_acceptance_1a_view_and_bounded_cards_for_every_lane(tmp_path):

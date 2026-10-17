@@ -365,9 +365,9 @@ def test_executable_mutant_skipping_source_digest_is_killed(driver, finished):
 def test_executable_mutant_putting_text_back_in_consumer_manifest_is_killed(driver, finished):
     source = Path(driver.__file__).read_text(encoding="utf-8")
     anchor = "if name in FROZEN_JSON_FILES}"
-    assert source.count(anchor) == 1
+    assert source.count(anchor) == 2  # Producer manifest and consumer's expected manifest.
     mutant = types.ModuleType("s1_text_manifest_mutant")
-    exec(compile(source.replace(anchor, "if True}"), "<MUTANT_TEXT_IN_JSON_MANIFEST>", "exec"),
+    exec(compile(source.replace(anchor, "if True}", 1), "<MUTANT_TEXT_IN_JSON_MANIFEST>", "exec"),
          mutant.__dict__)
     def contract(module, target):
         module.freeze_committed_cycle(finished["live"], target)
@@ -378,3 +378,76 @@ def test_executable_mutant_putting_text_back_in_consumer_manifest_is_killed(driv
     contract(driver, finished["audit"] / "control")
     with pytest.raises(AssertionError, match="MUTANT_TEXT_IN_JSON_MANIFEST survived"):
         contract(mutant, finished["audit"] / "mutant")
+
+
+def fake_join(case, *, change=None):
+    """Unit seam only: never actual frozen/core/JOIN semantic evidence."""
+    calls = []
+    def load(root):
+        calls.append(("load", root))
+        return {"cycles": [{"cycle": case["cycle"]}]}
+    def turn(lane, loaded, **kwargs):
+        calls.append((lane, kwargs))
+        if change is not None:
+            change()
+        return {"card": "synthetic unit card", "as_of_utc": "2026-10-17T08:00:00Z",
+                "view": {"coverage": "UNKNOWN", "authority": "none", "github": {"usable": False}}}
+    return types.SimpleNamespace(fz=types.SimpleNamespace(load_frozen=load), turn_case=turn), calls
+
+
+def test_chain_freezes_then_calls_pure_join_without_receipts_or_memory(driver, finished, monkeypatch):
+    joiner, calls = fake_join(finished)
+    monkeypatch.setattr(driver, "_join_module", lambda: joiner, raising=False)
+    result = driver.run_committed_chain(finished["live"], finished["out"], lanes=("codex-lead-1",))
+    assert calls[0] == ("load", finished["out"])
+    assert calls[1] == ("codex-lead-1", {"learn_ref": "synthetic:not-executed", "envelope": None, "receipts": None})
+    assert result["authority"] == "none" and result["join_calls_completed"] == 1
+    assert result["state_window_semantics"] == "NOT_VERIFIED_NOT_A_JOIN_INPUT"
+    assert result["cards"][0]["coverage"] == "UNKNOWN"
+    assert result["cards"][0]["bytes"] == len(b"synthetic unit card")
+
+
+def test_join_refuses_wrong_binding_pin_before_import(driver, finished, monkeypatch):
+    driver.freeze_committed_cycle(finished["live"], finished["out"])
+    def must_not_import(): raise AssertionError("no import before admission")
+    monkeypatch.setattr(driver, "_join_module", must_not_import, raising=False)
+    with pytest.raises(driver.ChainRefusal, match="^binding_digest$"):
+        driver.join_frozen_cycle(finished["out"], expected_binding_sha256="0" * 64,
+                                 lanes=("codex-lead-1",))
+
+
+def test_join_rechecks_frozen_bytes_after_pure_calls(driver, finished, monkeypatch):
+    def change():
+        (finished["out"] / finished["cycle"] / "capture.json").write_bytes(b'{"changed":true}')
+    joiner, _ = fake_join(finished, change=change)
+    monkeypatch.setattr(driver, "_join_module", lambda: joiner, raising=False)
+    with pytest.raises(driver.ChainRefusal, match="^frozen_changed$"):
+        driver.run_committed_chain(finished["live"], finished["out"], lanes=("codex-lead-1",))
+
+
+def test_join_semantic_failure_has_fixed_reason_not_exception_text(driver, finished, monkeypatch):
+    def fail(_): raise ValueError("synthetic sensitive exception text")
+    joiner = types.SimpleNamespace(fz=types.SimpleNamespace(load_frozen=fail))
+    monkeypatch.setattr(driver, "_join_module", lambda: joiner, raising=False)
+    with pytest.raises(driver.ChainRefusal, match="^join_refused$"):
+        driver.run_committed_chain(finished["live"], finished["out"], lanes=("codex-lead-1",))
+    # A valid transport freeze remains evidence, never a completed JOIN result.
+    binding = json.loads((finished["out"] / "source-binding.json").read_bytes())
+    assert binding["join_validated"] is False
+
+
+@pytest.mark.parametrize("fault", ["coverage", "authority", "size", "github"])
+def test_join_card_invariants_cannot_turn_unknown_into_authority(driver, finished, monkeypatch, fault):
+    joiner, _ = fake_join(finished)
+    original = joiner.turn_case
+    def altered(*args, **kwargs):
+        turn = original(*args, **kwargs)
+        if fault == "coverage": turn["view"]["coverage"] = "complete"
+        elif fault == "authority": turn["view"]["authority"] = "gate"
+        elif fault == "size": turn["card"] = "x" * 2049
+        else: turn["view"]["github"]["usable"] = True
+        return turn
+    joiner.turn_case = altered
+    monkeypatch.setattr(driver, "_join_module", lambda: joiner, raising=False)
+    with pytest.raises(driver.ChainRefusal, match="^join_invariant$"):
+        driver.run_committed_chain(finished["live"], finished["out"], lanes=("codex-lead-1",))

@@ -1,10 +1,10 @@
 """S1 transport slice: freeze ONE explicitly supplied committed shadow cycle.
 
 Library only; no live reader, bridge write, network, clock, CLI, gate or launch.
-The producer latest-v2 interface is provisional until its tested Source freeze.
-This function proves local transport seals, not core/JOIN semantic validity,
+freeze_committed_cycle proves local transport seals, not core/JOIN validity,
 actor authenticity, complete coverage, utility or production acceptance. The
-actual load_frozen/JOIN chain and independent scoring remain separate stages.
+separate join_frozen_cycle calls the actual frozen loader and pure JOIN APIs,
+with no receipts or memory. Independent scoring remains a separate stage.
 Manifest hashes seal the OBSERVED COPY. Only the explicitly listed raw files
 and canonical snapshot digest are bound to the producer's committed pointer;
 receipt and detail-manifest bytes are observations, never committed evidence.
@@ -41,6 +41,7 @@ FIXED_FILES = ("capture.json", "state.json", "detail-manifest.txt",
                "run/reflected.publication.json", "run/board.txt", "run/receipt.json")
 GITHUB_FILES = ("context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json")
 FROZEN_JSON_FILES = ("capture.json", "run/reflected.publication.json", "context.json")
+LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 
 
 class ChainRefusal(ValueError):
@@ -255,6 +256,7 @@ def freeze_committed_cycle(live_root, frozen_root):
                "cursor": state["cursor"], "manifest_sha256": _sha(_canonical(manifest)),
                "file_seals_scope": "observed_copy_hashes_not_uniform_pointer_bindings",
                "observed_file_sha256": {name: _sha(raw) for name, raw in files.items()},
+               "state_window_semantics": "NOT_VERIFIED_NOT_A_JOIN_INPUT",
                "pointer_bound_raw_files": {name: _sha(files[name]) for name in bound_names if name in files},
                "pointer_bound_snapshot_sha256": latest["last_ok"]["snapshot_sha256"],
                "publication_binding": "canonical_snapshot_only_not_envelope_raw_bytes",
@@ -315,3 +317,93 @@ def freeze_committed_cycle(live_root, frozen_root):
             raise ChainRefusal("output_unavailable") from None
         raise
     return binding
+
+
+def _join_module():
+    # Lazy normal filesystem import from this Source tree, never Git/blob exec,
+    # an installed-pointer substitution, a producer import or a product CLI.
+    from sandbox.mind import join_turn
+    return join_turn
+
+
+def join_frozen_cycle(frozen_root, *, expected_binding_sha256, lanes=LANES):
+    """Pure JOIN over one caller-pinned transport freeze, returning cards only.
+
+    The supplied digest is correlation, not authentication or task authority.
+    The actual loader validates the core publication and capture event bodies.
+    State/window/receipt/detail are observed transport bytes, never JOIN inputs.
+    No F: default, write_turn, bridge write, clock, producer or memory call.
+    """
+    root = _root(frozen_root, exists=True)
+    if not isinstance(expected_binding_sha256, str) or not HEX.fullmatch(expected_binding_sha256):
+        raise ChainRefusal("binding_digest")
+    binding_raw = _read(root / "source-binding.json")
+    if _sha(binding_raw) != expected_binding_sha256:
+        raise ChainRefusal("binding_digest")
+    binding = _json(binding_raw)
+    if not isinstance(binding, dict) or binding.get("schema") != "wd.mind-chain-transport.v1" \
+            or binding.get("authority") != "none" or binding.get("join_validated") is not False:
+        raise ChainRefusal("binding_schema")
+    cycle = binding.get("cycle")
+    if not isinstance(cycle, str) or not CYCLE.fullmatch(cycle):
+        raise ChainRefusal("cycle_name")
+    if not isinstance(lanes, (list, tuple)) or not 1 <= len(lanes) <= len(LANES) \
+            or any(not isinstance(lane, str) or lane not in LANES for lane in lanes) \
+            or len(set(lanes)) != len(lanes):
+        raise ChainRefusal("lanes")
+    observed = binding.get("observed_file_sha256")
+    if not isinstance(observed, dict) or set(observed) not in (
+            set(FIXED_FILES), set(FIXED_FILES) | {"context.json"}):
+        raise ChainRefusal("observation_seals")
+    before = {name: _read(root / cycle / name) for name in observed}
+    if any(_sha(raw) != observed[name] for name, raw in before.items()):
+        raise ChainRefusal("frozen_changed")
+    manifest_raw = _read(root / "manifest.json")
+    if _sha(manifest_raw) != binding.get("manifest_sha256"):
+        raise ChainRefusal("manifest_digest")
+    expected_files = {name.replace("/", "\\"): _sha(raw) for name, raw in before.items()
+                      if name in FROZEN_JSON_FILES}
+    for name in GITHUB_FILES:
+        expected_files.setdefault(name, None)
+    if _json(manifest_raw) != {"schema": "wd.mind-frozen-cycles.v1",
+                               "cycles": [{"cycle": cycle, "files": expected_files}]}:
+        raise ChainRefusal("consumer_manifest")
+    _privacy([binding_raw, manifest_raw, *before.values()])
+    try:
+        joiner = _join_module()
+        loaded = joiner.fz.load_frozen(root)  # Explicit root; never a legacy data default.
+        if len(loaded["cycles"]) != 1 or loaded["cycles"][0]["cycle"] != cycle:
+            raise ChainRefusal("loaded_cycle")
+        cards = []
+        for lane in lanes:
+            turn = joiner.turn_case(lane, loaded["cycles"][0], learn_ref="synthetic:not-executed",
+                                    envelope=None, receipts=None)
+            raw = turn["card"].encode("utf-8")
+            view = turn["view"]
+            if len(raw) > 2048 or view["authority"] != "none" or view["coverage"] != "UNKNOWN" \
+                    or view["github"].get("usable") is not False:
+                raise ChainRefusal("join_invariant")
+            _privacy([raw])
+            cards.append({"lane": lane, "text": turn["card"], "bytes": len(raw), "sha256": _sha(raw),
+                          "coverage": view["coverage"], "github_usable": False, "as_of_utc": turn["as_of_utc"]})
+    except ChainRefusal:
+        raise
+    except Exception:
+        raise ChainRefusal("join_refused") from None
+    if _read(root / "source-binding.json") != binding_raw or _read(root / "manifest.json") != manifest_raw \
+            or any(_read(root / cycle / name) != raw for name, raw in before.items()):
+        raise ChainRefusal("frozen_changed")
+    return {"schema": "wd.mind-chain-result.v1", "authority": "none", "scope": "frozen_observation_not_gate",
+            "cycle": cycle, "transport_binding_sha256": expected_binding_sha256,
+            "state_window_semantics": "NOT_VERIFIED_NOT_A_JOIN_INPUT", "join_calls_completed": len(cards),
+            "cards": cards}
+
+
+def run_committed_chain(live_root, frozen_root, *, lanes=LANES):
+    """Freeze a finished cycle, then pure JOIN. A JOIN refusal keeps the freeze.
+
+    A retained source-binding.json still says join_validated=false; no partial
+    or failed JOIN result is published. No running producer is started/stopped.
+    """
+    binding = freeze_committed_cycle(live_root, frozen_root)
+    return join_frozen_cycle(frozen_root, expected_binding_sha256=_sha(_canonical(binding)), lanes=lanes)

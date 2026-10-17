@@ -128,6 +128,24 @@ def _rules(fields):
     return {tension["rule"]: tension for tension in fields["tensions"]}
 
 
+CAPTURE = ref("pr-context-capture")
+# A computed protected hit (an a_hits path) and a computed class without one, as a caller's charter run gives them.
+PROTECTED = {"charter_allowed": False, "denylist_hits": [], "a_hits": [".agent-bridge/bin/Write-AgentEvent.ps1"],
+             "unrecognized": []}
+NOT_PROTECTED = {"charter_allowed": True, "denylist_hits": [], "a_hits": [], "unrecognized": ["tools/x.py"]}
+
+
+def _context(rows, *, loaded=True, observed=AS_OF, capture=CAPTURE, charter_blob="c" * 40,
+             classifier_blob="d" * 40):
+    """One caller-supplied PR context: ``rows`` maps a PR number to (state, head, path_class)."""
+    return {"schema": "wd.bridge-mind-pr-context.v1", "authority": "none", "capture_sha256": capture,
+            "observed_utc": observed,
+            "charter": {"loaded": loaded, "charter_blob": charter_blob, "classifier_blob": classifier_blob},
+            "prs": {str(number): {"state": state, "head": head, "head_ref_name": f"lane/pr-{number}",
+                                  "path_class": path_class}
+                    for number, (state, head, path_class) in rows.items()}}
+
+
 def test_each_tension_rule_is_derived_with_its_refs():
     """P6 stale vote, P7 expired claim is not done, claim overlap, veto observed, unacknowledged command, R5 blocked."""
     rco2_claim = _claim(["tools\\Board.py"], "2026-01-01T01:00:00Z", "rco2")
@@ -217,12 +235,13 @@ def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_sugge
         _pr(10, votes=ALMOST),
         _pr(50, head="UNKNOWN"),  # the core puts every vote of a PR with an unknown head into stale_votes
     ]
-    fields = mind.reflection(_snapshot(prs=prs))
+    # PR20's protected class is computed from the context; a declared (a) alone is never signature_only.
+    fields = mind.reflection(_snapshot(prs=prs), context=_context({20: ("OPEN", HEAD, PROTECTED)}))
     order = [(item["kind"], item["subject"]) for item in fields["attention"]]
     assert order[:3] == [("last_missing_vote", "pr:10"), ("signature_only", "pr:20"), ("votes_missing", "pr:30")]
     assert [kind for kind, _ in order[3:]] == ["tension_high", "tension_high"]
     assert sorted(tension["subject"] for tension in fields["tensions"]) == [
-        f"pr:45:veto:claude-rco-1:{HEAD[:12]}", f"pr:46:veto:claude-rco-1:{HEAD[:12]}"]
+        f"context:{CAPTURE[:16]}", f"pr:45:veto:claude-rco-1:{HEAD[:12]}", f"pr:46:veto:claude-rco-1:{HEAD[:12]}"]
     assert [item["rank"] for item in fields["attention"]] == [1, 2, 3, 4, 5]
     first = fields["attention"][0]
     assert first["actors"] == ["claude-rco-2"]
@@ -260,15 +279,18 @@ def test_ci_counts_as_green_only_when_reported_green_at_the_exact_head(reported,
 def test_a_blocked_source_makes_no_head_bound_suggestion(blocked):
     """P6c: blocked input (or a blocked field that is not the core shape) is not current, even with complete coverage."""
     prs = [_pr(10, votes=ALMOST), _pr(20, klass="a", votes=EVERY)]
-    fields = mind.reflection(_snapshot(blocked=blocked, prs=prs))
+    context = _context({20: ("OPEN", HEAD, PROTECTED)})
+    fields = mind.reflection(_snapshot(blocked=blocked, prs=prs), context=context)
     assert [item["kind"] for item in fields["attention"]] == ["tension_high"]
-    assert [tension["rule"] for tension in fields["tensions"]] == ["input_blocked"]
+    # A blocked source makes no head-bound observation either: no class_unverified, only the context record.
+    assert sorted(tension["rule"] for tension in fields["tensions"]) == ["context_applied", "input_blocked"]
     assert fields["next_question"]["global"]["question"].startswith("How can the fleet resolve input_blocked:")
     assert "exact head" not in mind.canonical_json(fields["next_question"])
+    assert [t["rule"] for t in mind.reflection(_snapshot(blocked=blocked, prs=prs))["tensions"]] == ["input_blocked"]
     # The unblocked and the unknown-coverage controls keep their suggestions, and stay distinct.
-    unblocked = mind.reflection(_snapshot(prs=prs))
+    unblocked = mind.reflection(_snapshot(prs=prs), context=context)
     assert [item["kind"] for item in unblocked["attention"]] == ["last_missing_vote", "signature_only"]
-    partial = mind.reflection(_snapshot(coverage="unknown", prs=prs))
+    partial = mind.reflection(_snapshot(coverage="unknown", prs=prs), context=context)
     assert [item["kind"] for item in partial["attention"]][:2] == ["last_missing_vote", "signature_only"]
     assert partial["next_question"]["global"]["question"].endswith("check the exact head first.")
 
@@ -324,15 +346,17 @@ def test_one_rco_pass_never_completes_the_rco_requirement(klass):
         attention = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=voters)]))["attention"]
         assert [(item["kind"], item["actors"]) for item in attention] == [("last_missing_vote", [missing])]
         assert attention[0]["detail"].endswith("missing: " + missing)
-    every = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=EVERY)]))["attention"]
-    assert [item["kind"] for item in every] == (["signature_only"] if klass == "a" else [])
+    every = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=EVERY)]),
+                            context=_context({10: ("OPEN", HEAD, PROTECTED if klass == "a" else NOT_PROTECTED)}))
+    assert [item["kind"] for item in every["attention"]] == (["signature_only"] if klass == "a" else [])
 
 
 def test_a_question_per_lane_plus_one_global_and_unknown_where_unsupported():
     """P7: a lane without an item is UNKNOWN, never idle."""
     prs = [_pr(10, votes=ALMOST), _pr(20, klass="a", votes=EVERY)]
     lanes = [_lane("claude-rco-2"), _lane("codex-tools-1")]
-    question = mind.reflection(_snapshot(prs=prs, lanes=lanes))["next_question"]
+    question = mind.reflection(_snapshot(prs=prs, lanes=lanes),
+                               context=_context({20: ("OPEN", HEAD, PROTECTED)}))["next_question"]
     assert question["global"]["attention_rank"] == 1
     assert question["global"]["question"] == ("PR10 at aaaaaaaaaaaa is reported CI-green; missing: claude-rco-2. "
                                               "Can claude-rco-2 give it at this exact head?")
@@ -530,8 +554,9 @@ def test_a_vote_the_core_retired_at_the_pr_head_is_stale_and_fills_no_slot():
     fields = mind.reflection(_snapshot(prs=[(key, pr)]))
     assert [(item["kind"], item["actors"]) for item in fields["attention"]][0] == ("last_missing_vote", ["claude-rco-2"])
     stale = _rules(fields)["stale_vote"]
-    assert stale["observation"] == "the core retired it at the PR head; a stale vote cannot approve it"
-    assert stale["subject"] == f"pr:10:claude-rco-2:{HEAD[:12]}"
+    assert stale["observation"] == (f"claude-rco-2 rco_pass@{HEAD[:12]} retired at the PR head; "
+                                    "a stale vote cannot approve it")
+    assert stale["subject"] == "pr:10:stale_votes"
 
 
 def test_an_invalid_calendar_time_is_a_fixed_refusal_not_a_traceback(tmp_path, capsys):
@@ -812,10 +837,185 @@ def test_claim_scopes_overlap_the_way_windows_compares_paths_whichever_side_is_w
     assert mind.scopes_overlap(left, right) == hit
 
 
+@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+def test_a_merged_or_closed_context_state_suppresses_only_attention_and_questions(state):
+    """Shadow S2: an OPEN context keeps the suggestion; a merged or closed one leaves only the facts and tensions."""
+    key, pr = _pr(10, votes=ALMOST, stale=[("claude-rco-1", OLD)], vetoes=())
+    snapshot = _snapshot(prs=[(key, pr)], lanes=[_lane("claude-rco-2")])
+    opened = mind.reflect(snapshot, context=_context({10: ("OPEN", HEAD, None)}))
+    assert [item["kind"] for item in opened["attention"]][0] == "last_missing_vote"
+    assert opened["next_question"]["lanes"]["claude-rco-2"]["attention_rank"] == 1
+    closed = mind.reflect(snapshot, context=_context({10: (state, HEAD, None)}))
+    assert closed["attention"] == []
+    assert closed["next_question"]["global"] == {"question": "UNKNOWN", "attention_rank": None, "refs": ["UNKNOWN"]}
+    assert closed["next_question"]["lanes"]["claude-rco-2"]["question"] == "UNKNOWN"
+    rules = _rules(closed)
+    # The facts stay: the PR row, its votes and the stale-vote tension with its refs are unchanged.
+    assert closed["prs"] == snapshot["prs"] and rules["stale_vote"] == _rules(opened)["stale_vote"]
+    assert f"no suggestion for: PR10 {state};" in rules["context_applied"]["observation"]
+    assert CAPTURE in rules["context_applied"]["claim"]
+    # A veto stays a veto: the context never clears it, it only leaves the attention list.
+    vetoed = _snapshot(prs=[_pr(10, votes=EVERY, vetoes=["claude-rco-1"])])
+    assert "veto_observed" in _rules(mind.reflect(vetoed, context=_context({10: (state, HEAD, None)})))
+
+
+def test_a_context_head_other_than_the_snapshot_head_suppresses_the_old_head_suggestion():
+    """A context that saw another head: no suggestion for the bridge head, and a tension naming both heads."""
+    snapshot = _snapshot(prs=[_pr(10, votes=ALMOST)])
+    matching = mind.reflection(snapshot, context=_context({10: ("OPEN", HEAD, None)}))
+    assert [item["kind"] for item in matching["attention"]] == ["last_missing_vote"]
+    assert "context_head_mismatch" not in _rules(matching)
+    moved = mind.reflection(snapshot, context=_context({10: ("OPEN", OLD, None)}))
+    rules = _rules(moved)
+    assert [item["kind"] for item in moved["attention"]] == ["tension"]
+    assert rules["context_head_mismatch"]["subject"] == "pr:10:context_head"
+    assert OLD[:12] in rules["context_head_mismatch"]["observation"] and HEAD[:12] in rules["context_head_mismatch"]["claim"]
+    assert rules["context_head_mismatch"]["refs"] == [ref("pr:10")]
+    # A PR the context does not name keeps its bridge suggestion; its class stays UNKNOWN.
+    absent = mind.reflection(snapshot, context=_context({99: ("OPEN", HEAD, None)}))
+    assert [item["kind"] for item in absent["attention"]] == ["last_missing_vote"]
+
+
+@pytest.mark.parametrize("loaded, charter_blob, classifier_blob, used", [
+    (True, "c" * 40, "d" * 40, True),
+    (True, "c" * 64, "d" * 64, True),
+    (False, "c" * 40, "d" * 40, False),
+    (True, "UNKNOWN", "d" * 40, False),
+    (True, "c" * 40, "D" * 40, False),
+    (True, "c" * 39, "d" * 40, False),
+])
+def test_a_class_is_computed_only_with_the_charter_loaded_exactly_true_and_both_identities(
+        loaded, charter_blob, classifier_blob, used):
+    """RCO1 S3: classify_ab marks every path an a_hit when the charter cannot be read, so evidence must be loaded."""
+    context = _context({10: ("OPEN", HEAD, PROTECTED)}, loaded=loaded, charter_blob=charter_blob,
+                       classifier_blob=classifier_blob)
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY)]), context=context)
+    kinds = [item["kind"] for item in fields["attention"]]
+    assert kinds == (["signature_only"] if used else ["tension"])
+    assert ("class_unverified" in _rules(fields)) is not used
+    assert ("charter loaded" in _rules(fields)["context_applied"]["claim"]) is used
+
+
+@pytest.mark.parametrize("loaded", ["true", 1, None])
+def test_a_charter_flag_that_is_not_an_exact_boolean_refuses_the_whole_context(loaded):
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY)]),
+                             context=_context({10: ("OPEN", HEAD, PROTECTED)}, loaded=loaded))
+    rules = _rules(fields)
+    assert "context_charter_invalid" in rules["context_refused"]["observation"]
+    assert "context_applied" not in rules and "class_unverified" in rules
+    assert [item["kind"] for item in fields["attention"]] == ["tension", "tension"]
+
+
+@pytest.mark.parametrize("klass, path_class, expected", [
+    ("a", "none", ["class_unverified"]),               # declared only, no context
+    ("a", NOT_PROTECTED, ["class_unverified"]),        # declared a, computed no protected hit: they disagree
+    ("a", None, ["class_unverified"]),                 # the context could not list the files
+    ("UNKNOWN", PROTECTED, ["signature_only"]),        # computed protected hit, whatever the declared class
+    ("b", {**NOT_PROTECTED, "denylist_hits": ["CLAUDE.md"]}, ["signature_only"]),  # a denylist hit is protected
+    ("b", NOT_PROTECTED, []),                          # every vote, nothing protected: no suggestion at all
+    # Off-allowlist (the charter does not allow the set, no a or denylist hit) needs the operator signature too:
+    # RCO2 11:11Z listed PR1875 (.github/workflows) as off-allowlist while the class said not_protected.
+    ("a", {**NOT_PROTECTED, "charter_allowed": False, "unrecognized": ["new/x.py"]}, ["signature_only"]),
+    ("b", {**NOT_PROTECTED, "charter_allowed": False, "unrecognized": [".github/workflows/ci.yml"]},
+     ["signature_only"]),
+])
+def test_a_declared_or_fallback_class_is_never_signature_only_but_a_computed_protected_hit_is(klass, path_class, expected):
+    """Shadow S3: PR1900 showed signature_only from a declared class whose computed a_hits were empty."""
+    context = None if path_class == "none" else _context({10: ("OPEN", HEAD, path_class)})
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass=klass, votes=EVERY)]), context=context)
+    found = [item["kind"] for item in fields["attention"] if item["kind"] == "signature_only"] + \
+        [rule for rule in _rules(fields) if rule == "class_unverified"]
+    assert found == expected
+    text = mind.canonical_json(fields)
+    assert ("only the operator signature is left" in text) is (expected == ["signature_only"])
+    if "class_unverified" in expected:
+        assert _rules(fields)["class_unverified"]["refs"] == sorted(
+            [ref("pr:10")] + [ref(f"vote:10:{agent}:{'rco_pass' if agent in RCOS else 'build_consensus_pass'}:{HEAD}")
+                              for agent in EVERY])
+
+
+def test_stale_votes_fold_into_one_tension_per_pr_and_keep_every_ref():
+    """Shadow S4: 46 stale_vote tensions on the live window; one per PR now, with every contributing ref."""
+    stale = [("claude-rco-1", OLD), ("claude-rco-2", OLD), ("codex-lead-1", "e" * 40)]
+    key, pr = _pr(10, votes=ALMOST, stale=stale)
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]))
+    tensions = [tension for tension in fields["tensions"] if tension["rule"] == "stale_vote"]
+    assert len(tensions) == 1
+    assert tensions[0]["refs"] == sorted([ref("pr:10")] + [ref(f"vote:10:{agent}:{'rco_pass' if agent in RCOS else 'build_consensus_pass'}:{head}")
+                                                         for agent, head in stale])
+    # claude-rco-1 and codex-lead-1 already voted at the head: named, not asked (live lens 10:38Z, RCO1).
+    assert tensions[0]["actors"] == ["claude-rco-2"]
+    assert tensions[0]["observation"].endswith("already voted at a current head: claude-rco-1, codex-lead-1")
+    assert tensions[0]["claim"] == f"PR10 at {HEAD[:12]} has 3 stale vote(s)"
+    reordered = dict(pr, stale_votes=list(reversed(pr["stale_votes"])))
+    assert mind.reflection(_snapshot(prs=[(key, reordered)]))["tensions"] == fields["tensions"]
+
+
+def test_a_pseudo_lane_keeps_its_facts_but_gets_no_question():
+    """Shadow S4: system|uuid rows are not fleet lanes; their claims still count, nobody asks them anything."""
+    uuid = UUIDS["fable-5"]
+    system = _lane("system", _claim(["tools/x.py"], "UNKNOWN", "system"), uuid=uuid)
+    fable = _lane("fable-5", _claim(["tools/x.py"], "UNKNOWN", "fable"))
+    fields = mind.reflection(_snapshot(lanes=[system, fable]))
+    assert _rules(fields)["claim_overlap"]["actors"] == ["fable-5", "system"]
+    assert fields["next_question"]["lanes"]["system"] == {"question": "UNKNOWN", "attention_rank": None,
+                                                          "refs": ["UNKNOWN"]}
+    assert fields["next_question"]["lanes"]["fable-5"]["attention_rank"] == 1
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda c: c.pop("authority"), "context_shape_invalid"),
+    (lambda c: c.update(extra=1), "context_shape_invalid"),
+    (lambda c: c.update(authority="merge"), "context_schema_invalid"),
+    (lambda c: c.update(schema="wd.bridge-mind-pr-context.v3"), "context_schema_invalid"),
+    (lambda c: c.update(schema="wd.bridge-mind-pr-context.v2"), "context_pr_invalid"),  # v1 rows
+    (lambda c: c.update(capture_sha256="ab" * 31), "context_identity_invalid"),
+    (lambda c: c.update(observed_utc="2026-01-01T00:30:00"), "context_identity_invalid"),
+    (lambda c: c.update(observed_utc="2026-01-01T00:14:59Z"), "context_stale"),
+    (lambda c: c.update(observed_utc="2026-01-01T00:45:01Z"), "context_stale"),
+    (lambda c: c["prs"]["10"].update(state="open"), "context_pr_invalid"),
+    (lambda c: c["prs"].update({"010": c["prs"]["10"]}), "context_pr_invalid"),
+    (lambda c: c["prs"]["10"].update(head="UNKNOWN"), "context_pr_invalid"),
+    (lambda c: c["prs"]["10"]["path_class"].update(a_hits=".agent-bridge/bin"), "context_path_class_invalid"),
+    (lambda c: c["prs"]["10"]["path_class"].update(charter_allowed="false"), "context_path_class_invalid"),
+    (lambda c: c["prs"]["10"]["path_class"].update(a_hits=["../../x"]), None),
+])
+def test_a_malformed_or_stale_context_is_not_used_at_all(change, reason):
+    """Fail closed: one bad field refuses the whole context; the result is what no context gives, plus the refusal."""
+    context = copy.deepcopy(_context({10: ("MERGED", HEAD, copy.deepcopy(PROTECTED))}))
+    change(context)
+    snapshot = _snapshot(prs=[_pr(10, klass="a", votes=EVERY)])
+    fields = mind.reflection(snapshot, context=context)
+    rules = _rules(fields)
+    if reason is None:  # a claim-style path is only text here: never resolved, the context is still used
+        assert "context_refused" not in rules and rules["context_applied"]
+        return
+    assert reason in rules["context_refused"]["observation"] and "context_applied" not in rules
+    without = mind.reflection(snapshot)
+    assert [item["kind"] for item in fields["attention"]] == [item["kind"] for item in without["attention"]] + \
+        ["tension"]
+    assert rules["context_refused"]["refs"] == [ref("source")]
+
+
+def test_the_cli_reads_an_optional_context_file(tmp_path, capsys):
+    snapshot, context = tmp_path / "snapshot.json", tmp_path / "context.json"
+    snapshot.write_text(json.dumps(_snapshot(prs=[_pr(10, votes=ALMOST)])), encoding="utf-8")
+    context.write_text(json.dumps(_context({10: ("MERGED", HEAD, None)})), encoding="utf-8")
+    assert mind.main(["--snapshot", str(snapshot), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["attention"][0]["kind"] == "last_missing_vote"
+    assert mind.main(["--snapshot", str(snapshot), "--context", str(context), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["attention"] == []
+    context.write_text('{"schema": 1, "schema": 2}', encoding="utf-8")
+    assert mind.main(["--snapshot", str(snapshot), "--context", str(context)]) == 2
+    assert "not one canonical JSON object" in capsys.readouterr().err
+
+
 def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
-    """M1 / P9: nothing in tools, the bridge bin or waggledance reads the workspace."""
+    """M1 / P9: nothing in tools, the bridge bin or waggledance reads the workspace, except the one named dormant
+    shadow pipeline, which nothing reads in turn (tests/tools/test_wd_bridge_mind_shadow.py)."""
     root = Path(mind.__file__).resolve().parents[1]
-    readers = [path for path in (root / "tools").glob("*.py") if path.name != "bridge_mind_workspace.py"]
+    readers = [path for path in (root / "tools").glob("*.py")
+               if path.name not in ("bridge_mind_workspace.py", "wd_bridge_mind_shadow.py")]
     readers += list((root / ".agent-bridge" / "bin").glob("*.ps1"))
     readers += list((root / "waggledance").rglob("*.py"))
     assert len(readers) > 100
@@ -1657,15 +1857,23 @@ def test_an_actual_core_output_flows_through_the_workspace():
         ("claude-rco-1", "changes_requested"), ("codex-tools-1", "blocked")]
     lead = twin["lanes"]["codex-lead-1|" + _event("00:00:00", "codex-lead-1", "", "", "", {})["agent_uuid"]]
     assert [row["task_id"] for row in lead["claims"]["by_task"]] == ["codex-lead-1/plan-notes"]
-    reflected = mind.reflect(twin)
+    # PR1893's protected class comes from a caller context at its exact head; the bridge's declared class alone
+    # would leave it class_unverified (the control below).
+    context = _context({1893: ("OPEN", twin["prs"]["1893"]["head"], PROTECTED)},
+                       observed=twin["source"]["as_of_utc"])
+    control = _rules(mind.reflect(twin))
+    assert control["class_unverified"]["subject"] == "pr:1893:class"
+    reflected = mind.reflect(twin, context=context)
     by_subject = {tension["subject"]: tension for tension in reflected["tensions"]}
+    applied = by_subject.pop(f"context:{CAPTURE[:16]}")
+    assert applied["rule"] == "context_applied" and CAPTURE in applied["claim"]
     uuid = {agent: _event("00:00:00", agent, "", "", "", {})["agent_uuid"] for agent in _TWIN_UUID}
     overlap_new = f"claims:claude-rco-1|{uuid['claude-rco-1']}|codex-lead-1|{uuid['codex-lead-1']}"
     overlap_old = f"claims:claude-rco-2|{uuid['claude-rco-2']}|fable-5|{uuid['fable-5']}"
     expired = f"claim:codex-tools-1|{uuid['codex-tools-1']}:codex-tools-1/mind-20261013"
     veto_1895, veto_1890 = f"pr:1895:veto:claude-rco-2:{H_1895[:12]}", f"pr:1890:veto:claude-rco-1:{H_1890[:12]}"
     blocked_1890 = f"pr:1890:veto:codex-tools-1:{H_1890[:12]}"
-    stale_1899, stale_1895 = f"pr:1899:claude-rco-1:{H_OLD[:12]}", f"pr:1895:claude-rco-2:{H_1895[:12]}"
+    stale_1899, stale_1895 = "pr:1899:stale_votes", "pr:1895:stale_votes"
     assert sorted(by_subject) == sorted([overlap_new, overlap_old, expired, veto_1895, veto_1890, blocked_1890,
                                          stale_1899, stale_1895])
     named = {"tension:" + tension["tension_id"]: subject for subject, tension in by_subject.items()}
@@ -1679,14 +1887,16 @@ def test_an_actual_core_output_flows_through_the_workspace():
                                              ("tension_high", veto_1895, ["claude-rco-2"]),
                                              ("tension_high", veto_1890, ["claude-rco-1"]),
                                              ("tension_high", blocked_1890, ["codex-tools-1"])])
-    assert sorted(attention[8:]) == sorted([("tension", stale_1899, ["claude-rco-1"]),
+    assert sorted(attention[8:]) == sorted([("tension", stale_1899, []),
                                             ("tension", stale_1895, ["claude-rco-2"]),
                                             ("tension", expired, ["codex-tools-1"])])
     assert by_subject[overlap_new]["observation"] == "overlapping paths: docs/my notes ~ docs/my notes/plan.md, " \
                                                      "resource:grok-lock"
     assert by_subject[overlap_new]["refs"] == sorted([refs["03:31:00"], refs["03:32:00"]])
     assert by_subject[overlap_old]["refs"] == sorted([refs["03:40:00"], refs["03:41:00"]])
-    assert by_subject[stale_1895]["observation"] == "the core retired it at the PR head; a stale vote cannot approve it"
+    retired = twin["prs"]["1895"]["stale_votes"][0]
+    assert by_subject[stale_1895]["observation"] == (f"claude-rco-2 {retired['status']}@{H_1895[:12]} retired at the "
+                                                     "PR head; a stale vote cannot approve it")
     assert by_subject[veto_1890]["refs"] == sorted({refs["03:06:00"]} | set(twin["prs"]["1890"]["source_refs"]))
     assert by_subject[blocked_1890]["refs"] == sorted({refs["03:08:00"]} | set(twin["prs"]["1890"]["source_refs"]))
     assert by_subject[blocked_1890]["observation"] == "the veto is observed; whether it is still active is UNKNOWN, " \
@@ -1753,3 +1963,148 @@ def test_the_twin_is_what_the_core_emits_once_the_core_is_on_this_tree():
     assert core.snapshot(state, as_of_utc=CORE_TWIN_AS_OF) == _core_twin()
     assert core.blocked_snapshot(state, as_of_utc=CORE_TWIN_AS_OF, offset=1500,
                                  reason="canonical_event_invalid") == _core_blocked_twin()
+
+
+def _context_v2(rows, **options):
+    """A v2 context: ``rows`` maps a PR number to (state, head, path_class, commit_authors)."""
+    value = _context({number: row[:3] for number, row in rows.items()}, **options)
+    value["schema"] = "wd.bridge-mind-pr-context.v2"
+    for number, row in rows.items():
+        value["prs"][str(number)]["commit_authors"] = row[3]
+    return value
+
+
+@pytest.mark.parametrize("authors, kinds, detail", [
+    (["claude-rco-2"], [], None),                                  # the author fills no slot: nothing is missing
+    (["fable-5"], ["last_missing_vote"], "missing: claude-rco-2"),  # another author changes nothing
+    (None, ["last_missing_vote"], "missing: claude-rco-2"),         # authors unknown: as before
+])
+def test_a_declared_commit_author_rco_is_never_asked_for_its_own_pr(authors, kinds, detail):
+    """Sandbox round 1 (RCO1 W3, RCO2 W1): PR1898 asked its author claude-rco-2 for the last missing vote."""
+    fields = mind.reflection(_snapshot(prs=[_pr(10, votes=ALMOST)]),
+                             context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, authors)}))
+    assert [item["kind"] for item in fields["attention"] if item["kind"] != "tension"] == kinds
+    if detail:
+        assert fields["attention"][0]["detail"].endswith(detail)
+    both = mind.reflection(_snapshot(prs=[_pr(10, votes=["codex-lead-1", "codex-tools-1"])]),
+                           context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, ["claude-rco-2"])}))
+    assert both["attention"][0]["actors"] == ["claude-rco-1"]
+    assert both["attention"][0]["detail"].endswith("claude-rco-2 is a declared commit author of this PR and fills "
+                                                   "no RCO slot")
+
+
+@pytest.mark.parametrize("authors", [["Claude Opus 5.5"], "claude-rco-2", [1]])
+def test_a_malformed_commit_author_list_refuses_the_whole_context(authors):
+    fields = mind.reflection(_snapshot(prs=[_pr(10, votes=ALMOST)]),
+                             context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, authors)}))
+    assert "context_pr_invalid" in mind.canonical_json(_rules(fields)["context_refused"])
+
+
+@pytest.mark.parametrize("pass_head, context_head, rule", [
+    (HEAD, HEAD, "veto_own_later_pass"),       # own pass at the PR head after a veto at an older head
+    (OLD, HEAD, "veto_observed"),               # the pass is at the veto head: nothing later is known
+    ("e" * 40, "e" * 40, "veto_own_later_pass"),  # the pass is at the head the context capture names
+    ("e" * 40, HEAD, "veto_observed"),          # a pass at a head that is not current
+])
+def test_an_own_later_pass_labels_the_older_own_veto_but_never_clears_it(pass_head, context_head, rule):
+    """Sandbox round 1 (RCO1 W4): the lane question pointed at an own veto that the own later pass superseded."""
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    pr["veto_observations"] = [_veto("claude-rco-1", 10, OLD)]
+    target = pr["votes"] if pass_head == HEAD else pr["stale_votes"]
+    target.append(_vote("claude-rco-1", 10, pass_head))
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]),
+                             context=_context({10: ("OPEN", context_head, NOT_PROTECTED)}))
+    rules = _rules(fields)
+    assert rule in rules and ({"veto_observed", "veto_own_later_pass"} - {rule}).isdisjoint(rules)
+    assert rules[rule]["subject"] == f"pr:10:veto:claude-rco-1:{OLD[:12]}"
+    # Never cleared: the PR still gets no vote or signature suggestion while any veto is observed.
+    assert all(item["kind"] not in ("last_missing_vote", "votes_missing", "signature_only")
+               for item in fields["attention"])
+    if rule == "veto_own_later_pass":
+        assert rules[rule]["severity"] == "low"
+        # Ranked low: a plain tension item, never tension_high.
+        kinds = {item["kind"] for item in fields["attention"] if "veto_own_later_pass" in item["detail"]}
+        assert kinds == {"tension"}
+
+
+@pytest.mark.parametrize("state, context_head, moved", [
+    ("OPEN", OLD, True),       # the context saw OLD: the vote at OLD is named by the head mismatch
+    ("OPEN", HEAD, False),     # the context agrees with the bridge head: OLD is just stale
+    ("MERGED", OLD, False),    # a merged PR has no current context head
+    (None, None, False),       # no context at all: as before
+])
+def test_stale_votes_at_the_context_head_are_named_by_the_head_mismatch_and_never_count(state, context_head, moved):
+    """Sandbox round 1 (F2): PR1873 votes at the head GitHub reported were folded into stale-vote noise."""
+    other = "e" * 40
+    snapshot = _snapshot(prs=[_pr(10, votes=["codex-lead-1"], stale=[("claude-rco-1", OLD), ("claude-rco-2", other)])])
+    context = None if state is None else _context({10: (state, context_head, NOT_PROTECTED)})
+    fields = mind.reflection(snapshot, context=context)
+    rules = _rules(fields)
+    stale = rules["stale_vote"]
+    rco1_ref = ref(f"vote:10:claude-rco-1:rco_pass:{OLD}")
+    if moved:
+        assert stale["actors"] == ["claude-rco-2"] and "claude-rco-1" not in stale["observation"]
+        assert rco1_ref not in stale["refs"]
+        mismatch = rules["context_head_mismatch"]
+        assert mismatch["observation"].endswith("1 vote(s) in the bridge view are bound to that head and are not "
+                                                "counted here: claude-rco-1 rco_pass")
+        assert mismatch["actors"] == [] and mismatch["refs"] == sorted([rco1_ref, ref("pr:10")])
+        # Never counted: the moved PR gets no vote suggestion at either head.
+        assert all(item["kind"] not in ("last_missing_vote", "votes_missing", "signature_only")
+                   for item in fields["attention"])
+    else:
+        assert stale["actors"] == ["claude-rco-1", "claude-rco-2"] and rco1_ref in stale["refs"]
+        assert "bound to that head" not in rules.get("context_head_mismatch", {}).get("observation", "")
+    # The votes themselves are unchanged in the reflected snapshot.
+    assert mind.reflect(snapshot, context=context)["prs"] == snapshot["prs"]
+
+
+def _recusal(agent, number, head, uuid=None):
+    return {"agent": agent, "agent_uuid": uuid or UUIDS[agent], "head": head, "status": "rco_recused",
+            "source_refs": [ref(f"recusal:{number}:{agent}:{head}")],
+            "verification": "unverified" if uuid == "UNKNOWN" else "declared"}
+
+
+@pytest.mark.parametrize("recusal, kinds", [
+    (_recusal("claude-rco-2", 10, HEAD), []),                                # recused at the head: nothing missing
+    (_recusal("claude-rco-2", 10, OLD), ["last_missing_vote"]),              # another head changes nothing
+    (_recusal("claude-rco-2", 10, HEAD, "UNKNOWN"), ["last_missing_vote"]),  # an undeclared identity excuses nothing
+])
+def test_an_rco_recused_at_the_head_fills_no_slot_and_is_never_asked(recusal, kinds):
+    """Sandbox round 2 (fable-5): PR1878 asked claude-rco-2 for the last missing vote after its rco_recused there."""
+    key, pr = _pr(10, votes=ALMOST)
+    pr["recusals"] = [recusal]
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
+    assert [item["kind"] for item in fields["attention"] if item["kind"] != "tension"] == kinds
+    if kinds:
+        assert fields["attention"][0]["detail"].endswith("missing: claude-rco-2")
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
+    pr["recusals"] = [_recusal("claude-rco-2", 10, HEAD)]
+    both = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
+    assert both["attention"][0]["actors"] == ["claude-rco-1"]
+    assert both["attention"][0]["detail"].endswith("claude-rco-2 declared rco_recused at this head and fills no RCO "
+                                                   "slot")
+    assert pr["recusals"][0]["source_refs"][0] in both["attention"][0]["refs"]
+
+
+@pytest.mark.parametrize("current_head, asked", [
+    ("context", []),                 # the same identity passed at the head the context saw: nothing to do
+    ("snapshot", []),                # the same identity passed at the PR head: nothing to do
+    (None, ["claude-rco-1"]),        # only the old vote: the lane is asked as before
+])
+def test_a_stale_vote_never_asks_an_identity_that_already_voted_at_a_current_head(current_head, asked):
+    """Live lens 10:38Z (RCO1): 'resolve stale_vote PR1861' although its rco_pass is at the GitHub head."""
+    context_head = "e" * 40
+    key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"], stale=[("claude-rco-1", OLD)])
+    if current_head == "context":
+        pr["stale_votes"].append(_vote("claude-rco-1", 10, context_head))
+    elif current_head == "snapshot":
+        pr["votes"].append(_vote("claude-rco-1", 10, HEAD))
+    fields = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context(
+        {10: ("OPEN", context_head if current_head == "context" else HEAD, NOT_PROTECTED)}))
+    stale = [t for t in fields["tensions"] if t["rule"] == "stale_vote"]
+    assert len(stale) == 1 and stale[0]["actors"] == asked
+    assert ("already voted at a current head: claude-rco-1" in stale[0]["observation"]) == (not asked)
+    if not asked:
+        question = fields["next_question"]["lanes"].get("claude-rco-1", {"question": "UNKNOWN"})["question"]
+        assert "stale_vote" not in question

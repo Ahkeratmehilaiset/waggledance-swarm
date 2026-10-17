@@ -455,6 +455,8 @@ UNKNOWN = "UNKNOWN"
 UNESCAPE_ROUNDS = 4
 PR_KEYS = frozenset({"pr", "head", "base", "reported_ci", "source_refs", "class", "votes", "stale_votes",
                      "veto_observations", "missing"})
+# Present only when the core saw a recognized RCO's own declared rco_recused for that PR.
+PR_OPTIONAL_KEYS = frozenset({"recusals"})
 CI_KEYS = frozenset({"status", "head", "source_refs", "verification"})
 CI_STATUSES = (UNKNOWN, "reported_green", "reported_not_green")
 VOTE_KEYS = frozenset({"agent", "agent_uuid", "head", "status", "source_refs", "verification"})
@@ -609,7 +611,7 @@ def _signal(row: Any, keys: frozenset[str]) -> dict[str, Any]:
 
 def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
     """One PR as the snapshot reports it. Whether CI and votes are at the PR head is compared, never assumed."""
-    if not isinstance(record, dict) or set(record) != PR_KEYS:
+    if not isinstance(record, dict) or not PR_KEYS <= set(record) <= PR_KEYS | PR_OPTIONAL_KEYS:
         raise MindRefused("a PR observation does not match the reflected interface")
     number, head = record["pr"], _text(record["head"])
     if type(number) is not int or number <= 0 or str(number) != key or not (head == UNKNOWN or _HEAD.fullmatch(head)):
@@ -641,6 +643,13 @@ def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
         veto = _signal(row, VETO_KEYS)
         veto["activity"] = UNKNOWN  # an observed veto is never cleared here, whatever the snapshot says
         vetoes.append(veto)
+    recusals = []
+    rows = record.get("recusals", [])
+    for row in rows if isinstance(rows, list) else [None]:
+        recusal = _signal(row, VOTE_KEYS)
+        recusal["at_head"] = UNKNOWN if blocked else (at_head and recusal["head"] == head
+                                                      and recusal["verification"] == "declared")
+        recusals.append(recusal)
     missing = record["missing"]
     if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
         raise MindRefused("a PR observation does not match the reflected interface")
@@ -648,7 +657,7 @@ def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
             "snapshot_missing": list(missing), "source_refs": _refs(record["source_refs"]),
             "ci": {"status": ci["status"], "head": ci_head, "verification": ci_verification, "source_refs": ci_refs,
                    "green_at_head": green},
-            "votes": votes, "stale_votes": stale, "veto_observations": vetoes}
+            "votes": votes, "stale_votes": stale, "veto_observations": vetoes, "declared_recusals": recusals}
     view.update({name: UNKNOWN for name in NOT_IN_SNAPSHOT})
     return view
 
@@ -787,6 +796,9 @@ def render_mind_text(view: Mapping[str, Any]) -> str:
         for veto in pr["veto_observations"]:
             lines.append(f"  veto {veto['agent']} {veto['status']}@{veto['head'][:12]} activity UNKNOWN "
                          f"{_refs_text(veto['source_refs'])}")
+        for recusal in pr["declared_recusals"]:
+            lines.append(f"  declared recusal {recusal['agent']} {recusal['status']}@{recusal['head'][:12]} at head "
+                         f"{recusal['at_head']} {_refs_text(recusal['source_refs'])}")
     for item in view["attention"]:
         lines.append(f"attention {item['rank']} {item['kind']} {item['subject']} [{', '.join(item['actors'])}]: "
                      f"{item['detail']} {_refs_text(item['refs'])}")

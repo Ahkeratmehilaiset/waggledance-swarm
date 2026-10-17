@@ -2,13 +2,17 @@
 """Disk-budget regressions: parse Deploy, execute ONLY its extracted pure helper.
 
 No installer entrypoint, DriveInfo probe, archive, task or machine write is run.
-The fake probe is the only measurement source. Cases name the mutant they kill.
+The helper uses only its fake probe; pytest startup retains the real disk guard.
+Cases name the mutant they kill. Strict CI binds each actual helper child.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import hashlib
+import ntpath
+import re
 import os
 from pathlib import Path
 import shutil
@@ -24,8 +28,80 @@ FLOOR = 3 * 1024**3
 MAX_LONG = 2**63 - 1
 
 
+_PARITY_FUNCTIONS = (
+    "test_budget_parameter_is_long_and_unknown_by_default",
+    "test_three_checks_precede_each_write_boundary_including_dry_run",
+    "test_temp_path_and_probe_require_nonredirected_fixed_storage",
+    "test_extracted_helper_budget_matrix_and_distinct_volumes",
+)
+
+
+class _ParityHost(str):
+    def __new__(cls, path, binding, raw, node, label):
+        value = str.__new__(cls, path)
+        value.binding, value.raw, value.node, value.label = binding, raw, node, label
+        return value
+
+
+def _case_directory(binding):
+    token = binding["token"]
+    expected = ROOT / ".codex-audit" / "windows-disk-parity" / token
+    if ntpath.normcase(ntpath.normpath(binding["output"])) != ntpath.normcase(ntpath.normpath(str(expected))):
+        raise ValueError("parity output root mismatch")
+    folder = expected / "cases"
+    cursor = folder
+    while True:
+        info = cursor.lstat()
+        if cursor.is_symlink() or getattr(info, "st_file_attributes", 0) & 1024:
+            raise ValueError("redirected parity output")
+        if cursor == ROOT:
+            break
+        if cursor.parent == cursor:
+            raise ValueError("parity output escape")
+        cursor = cursor.parent
+    return folder
+
+
+def _binding(raw):
+    if len(raw.encode("utf-8")) > 32768:
+        raise ValueError("oversized parity binding")
+    value = json.loads(raw)
+    head, run, attempt = (os.environ.get(k, "") for k in
+                          ("WD_PARITY_EXPECTED_HEAD", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+    if (not re.fullmatch(r"[0-9a-f]{40}", head) or not re.fullmatch(r"[1-9][0-9]{0,19}", run)
+            or not re.fullmatch(r"[1-9][0-9]{0,8}", attempt)
+            or value.get("schema") != "wd.windows-disk-binding.v1"
+            or value.get("head") != head or value.get("run_id") != run or value.get("run_attempt") != attempt
+            or value.get("token") != f"wd-disk-{head}-{run}-{attempt}"
+            or set(value.get("hosts", {})) != {"ps5", "ps7"}
+            or set(value.get("inputs", {})) != {"tests/tools/test_wd_reboot_deploy_disk_floor.py",
+                                               "ops/windows/reboot/Deploy-WdRebootBundle.ps1"}):
+        raise ValueError("invalid parity context")
+    for label, host in value["hosts"].items():
+        path = host.get("path", "")
+        if (not re.match(r"^[A-Za-z]:[\\/]", path) or not ntpath.isabs(path)
+                or not re.fullmatch(r"[0-9a-f]{64}", host.get("sha256", ""))
+                or type(host.get("major")) is not int or type(host.get("minor")) is not int
+                or (label == "ps5" and (host["major"], host["minor"], host.get("edition")) != (5, 1, "Desktop"))
+                or (label == "ps7" and (host["major"] != 7 or host.get("edition") != "Core"))):
+            raise ValueError("invalid bound host")
+    _case_directory(value)
+    return value
+
+
 @pytest.fixture(params=("powershell", "pwsh"), ids=("ps5", "ps7"))
 def host(request: pytest.FixtureRequest) -> str:
+    strict = os.environ.get("WD_PARITY_STRICT")
+    raw = os.environ.get("WD_PARITY_BINDING_JSON")
+    if strict is not None or raw is not None:
+        if strict != "1" or not raw:
+            raise ValueError("incomplete strict parity binding")
+        binding = _binding(raw)
+        label = {"powershell": "ps5", "pwsh": "ps7"}[request.param]
+        node = request.node.name
+        if node not in {f"{name}[{label}]" for name in _PARITY_FUNCTIONS}:
+            raise ValueError("unexpected strict parity node")
+        return _ParityHost(binding["hosts"][label]["path"], binding, raw, node, label)
     executable = shutil.which(request.param)
     if executable is None:
         pytest.skip(f"{request.param} is not available; parity NOT_RUN")
@@ -46,19 +122,77 @@ $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens
 if (@($parseErrors).Count) { throw 'Deploy parse errors' }
 $functions = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]}, $true))
 """
-    encoded = base64.b64encode((prefix + body).encode("utf-16-le")).decode("ascii")
-    result = subprocess.run(
-        [host, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-        input=json.dumps({"source": DEPLOY_SOURCE, "cases": cases or []}),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=ROOT,
-        timeout=30,
-        check=False,
+    packet = json.dumps({"source": DEPLOY_SOURCE, "cases": cases or []})
+    if not isinstance(host, _ParityHost):
+        encoded = base64.b64encode((prefix + body).encode("utf-16-le")).decode("ascii")
+        result = subprocess.run(
+            [host, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            input=packet, capture_output=True, text=True, encoding="utf-8",
+            cwd=ROOT, timeout=30, check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout.strip().lstrip("\ufeff"))
+    expected = host.binding["hosts"][host.label]
+    before = hashlib.sha256(Path(str(host)).read_bytes()).hexdigest()
+    if before != expected["sha256"]:
+        raise ValueError("fixture host bytes differ from parent probe")
+    text_sha = hashlib.sha256(DEPLOY_SOURCE.encode("utf-8")).hexdigest()
+    if text_sha != host.binding["inputs"]["ops/windows/reboot/Deploy-WdRebootBundle.ps1"]["text_sha256"]:
+        raise ValueError("loaded Deploy Source differs from binding")
+    envelope = r"""
+# strict-parity-envelope
+$values = @(& {
+""" + body + r"""
+})
+if ($values.Count -ne 1) { throw 'one helper JSON result required' }
+$data = [string]$values[0] | ConvertFrom-Json
+$p = [Diagnostics.Process]::GetCurrentProcess()
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $digest = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($source))).Replace('-','').ToLowerInvariant() }
+finally { $sha.Dispose() }
+@{identity=@{platform=[Environment]::OSVersion.Platform.ToString(); executable=$p.MainModule.FileName;
+ major=$PSVersionTable.PSVersion.Major; minor=$PSVersionTable.PSVersion.Minor;
+ edition=$PSVersionTable.PSEdition; pid=$PID; source_text_sha256=$digest}; data=$data} | ConvertTo-Json -Depth 16 -Compress
+"""
+    encoded = base64.b64encode((prefix + envelope).encode("utf-16-le")).decode("ascii")
+    child = subprocess.Popen(
+        [str(host), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", cwd=ROOT,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return json.loads(result.stdout.strip().lstrip("\ufeff"))
+    try:
+        stdout, stderr = child.communicate(packet, timeout=30)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.communicate()
+        raise
+    assert child.returncode == 0, stdout + stderr
+    result = json.loads(stdout.strip().lstrip("\ufeff"))
+    identity = result["identity"]
+    if (type(identity.get("pid")) is not int or identity["pid"] != child.pid
+            or identity.get("platform") != "Win32NT"
+            or ntpath.normcase(ntpath.normpath(identity.get("executable", ""))) != ntpath.normcase(ntpath.normpath(str(host)))
+            or any(type(identity.get(k)) is not int or identity[k] != expected[k] for k in ("major", "minor"))
+            or identity.get("edition") != expected["edition"]
+            or identity.get("source_text_sha256") != text_sha):
+        raise ValueError("fixture child identity mismatch")
+    after = hashlib.sha256(Path(str(host)).read_bytes()).hexdigest()
+    if after != before:
+        raise ValueError("fixture host changed")
+    record = dict(schema="wd.windows-disk-case.v1", token=host.binding["token"],
+                  binding_sha256=hashlib.sha256(host.raw.encode("utf-8")).hexdigest(),
+                  node=host.node, label=host.label, path=expected["path"], before_sha256=before, after_sha256=after,
+                  launched_pid=child.pid, observed_pid=identity["pid"], platform=identity["platform"],
+                  major=identity["major"], minor=identity["minor"], edition=identity["edition"],
+                  source_text_sha256=text_sha, exit=child.returncode)
+    data = json.dumps(record, sort_keys=True)
+    if len(data.encode("utf-8")) > 65536:
+        raise ValueError("oversized case receipt")
+    filename = host.node.removesuffix(f"[{host.label}]") + f"__{host.label}.json"
+    destination = _case_directory(host.binding) / filename
+    with destination.open("x", encoding="utf-8") as stream:
+        stream.write(data)
+    return result["data"]
 
 
 def test_budget_parameter_is_long_and_unknown_by_default(host: str) -> None:

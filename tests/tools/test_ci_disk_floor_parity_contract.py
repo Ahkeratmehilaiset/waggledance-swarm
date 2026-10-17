@@ -245,3 +245,275 @@ def test_host_refuses_unc_and_device_path_aliases(path):
     assert check("ps7", local, observed) == observed
     with pytest.raises(ValueError, match="local drive-absolute"):
         check("ps7", path, dict(observed, executable=path))
+
+
+# TESTS-FIRST HB R1-R6. Run these six against the unchanged base first.
+# Execute the real inline main/fixture/_ps with stdlib doubles, never a process,
+# installer or volume measurement. Missing new symbols are not RED evidence.
+class _BindingPath:
+    def __init__(self, owner, path):
+        self.owner, self.path = owner, ntpath.normpath(str(path))
+    def __str__(self):
+        return self.path
+    def __fspath__(self):
+        return self.path
+    def __truediv__(self, other):
+        return _BindingPath(self.owner, ntpath.join(self.path, str(other)))
+    def __eq__(self, other):
+        return isinstance(other, _BindingPath) and self.path.casefold() == other.path.casefold()
+    @property
+    def parent(self):
+        return _BindingPath(self.owner, ntpath.dirname(self.path))
+    @property
+    def name(self):
+        return ntpath.basename(self.path)
+    def relative_to(self, root):
+        if ntpath.commonpath([self.path, str(root)]).casefold() != str(root).casefold():
+            raise ValueError("test path escape")
+        return ntpath.relpath(self.path, str(root))
+    def resolve(self):
+        return self
+    def lstat(self):
+        from types import SimpleNamespace
+        key = self.path.casefold()
+        if key not in self.owner.files and key not in self.owner.dirs:
+            raise FileNotFoundError(self.path)
+        return SimpleNamespace(st_file_attributes=0, st_size=len(self.owner.files.get(key, b"")))
+    stat = lstat
+    def is_symlink(self):
+        return False
+    def is_file(self):
+        return self.path.casefold() in self.owner.files
+    def read_bytes(self):
+        return self.owner.files[self.path.casefold()]
+    def mkdir(self, parents=False, exist_ok=False):
+        key = self.path.casefold()
+        if key in self.owner.dirs and not exist_ok:
+            raise FileExistsError(self.path)
+        self.owner.dirs.add(key)
+        if parents and self.parent != self:
+            self.parent.mkdir(parents=True, exist_ok=True)
+    def iterdir(self):
+        prefix = self.path.casefold() + "\\"
+        for key in sorted(set(self.owner.files) | self.owner.dirs):
+            if key.startswith(prefix) and "\\" not in key[len(prefix):]:
+                yield _BindingPath(self.owner, key)
+    def open(self, mode, encoding="utf-8"):
+        import io
+        assert mode == "x"
+        key, owner = self.path.casefold(), self.owner
+        if key in owner.files:
+            raise FileExistsError(self.path)
+        owner.files[key] = b""
+        class Sink(io.StringIO):
+            def __exit__(self, *args):
+                owner.files[key] = self.getvalue().encode(encoding)
+                return super().__exit__(*args)
+        return Sink()
+
+
+class _BindingDoubles:
+    def __init__(self, *, bad_pid=False, dirty_target=False, drift_deploy=False, stale_case=False, eol_crlf=False):
+        import hashlib
+        import json
+        import base64
+        import io
+        from types import SimpleNamespace
+        self.hashlib, self.json, self.base64 = hashlib, json, base64
+        self.bad_pid, self.drift_deploy, self.stale_case = bad_pid, drift_deploy, stale_case
+        self.repo = _BindingPath(self, r"C:\repo")
+        self.token = f"wd-disk-{HEAD}-123-2"
+        self.output = self.repo / ".codex-audit" / "windows-disk-parity" / self.token
+        self.target = "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+        self.deploy = "ops/windows/reboot/Deploy-WdRebootBundle.ps1"
+        self.blobs = {self.target: b"fixture\n", self.deploy: b"deploy\n"}
+        self.env = {"WD_PARITY_EXPECTED_HEAD": HEAD, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        self.paths = {"powershell": r"C:\verified\powershell.exe", "pwsh": r"C:\verified\pwsh.exe",
+                      "git": r"C:\runner\git.exe"}
+        self.files = {(self.repo / name).path.casefold(): data for name, data in self.blobs.items()}
+        self.files.update({path.casefold(): label.encode() for label, path in self.paths.items()})
+        self.dirty_target = dirty_target
+        if eol_crlf:
+            for name, blob in self.blobs.items():
+                self.files[(self.repo / name).path.casefold()] = blob.replace(b"\n", b"\r\n")
+        if dirty_target:
+            self.files[(self.repo / self.target).path.casefold()] = b"not the expected fixture\n"
+        self.dirs = {r"c:\repo", "c:\\"}
+        self.launches, self.pytest_calls, self.pytest_env = [], 0, None
+        owner = self
+        class Child:
+            def __init__(self, argv, **kwargs):
+                self.argv, self.pid, self.returncode = list(argv), 500 + len(owner.launches), 0
+                owner.launches.append(self.argv)
+            def communicate(self, input=None, timeout=None):
+                actual = self.argv[0]
+                ps7 = actual.lower().endswith("pwsh.exe")
+                identity = dict(platform="Win32NT", executable=actual, major=7 if ps7 else 5,
+                                minor=6 if ps7 else 1, edition="Core" if ps7 else "Desktop",
+                                pid=self.pid + int(owner.bad_pid))
+                script = base64.b64decode(self.argv[-1]).decode("utf-16-le")
+                if "# strict-parity-envelope" in script:
+                    identity["source_text_sha256"] = hashlib.sha256(b"deploy\n").hexdigest()
+                    return json.dumps(dict(identity=identity, data={"ok": True})), ""
+                return json.dumps(identity), ""
+            def kill(self):
+                self.returncode = -9
+        def run(argv, **kwargs):
+            if "pytest" not in argv:
+                if "input" in kwargs:
+                    owner.launches.append(list(argv))
+                    return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+                child = Child(argv)
+                stdout, stderr = child.communicate()
+                return SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr)
+            owner.pytest_calls += 1
+            owner.pytest_env = kwargs.get("env")
+            binding = json.loads((owner.pytest_env or {}).get("WD_PARITY_BINDING_JSON", "{}")) or owner.binding()
+            raw = (owner.pytest_env or {}).get("WD_PARITY_BINDING_JSON") or json.dumps(binding, sort_keys=True, separators=(",", ":"))
+            binding_sha = hashlib.sha256(raw.encode()).hexdigest()
+            folder = owner.output / "cases"
+            folder.mkdir(parents=True, exist_ok=True)
+            for function in FUNCTIONS:
+                for label in ("ps5", "ps7"):
+                    host = binding["hosts"][label]
+                    record = dict(schema="wd.windows-disk-case.v1", token=owner.token, binding_sha256=binding_sha,
+                                  node=f"{function}[{label}]", label=label, path=host["path"],
+                                  before_sha256=host["sha256"], after_sha256=host["sha256"],
+                                  launched_pid=700, observed_pid=700, platform="Win32NT", major=host["major"],
+                                  minor=host["minor"], edition=host["edition"],
+                                  source_text_sha256=hashlib.sha256(b"deploy\n").hexdigest(), exit=0)
+                    if owner.stale_case and function == FUNCTIONS[-1] and label == "ps7":
+                        record["token"] = owner.token.rsplit("-", 1)[0] + "-999"
+                    owner.files[(folder / f"{function}__{label}.json").path.casefold()] = json.dumps(record).encode()
+            report = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--junitxml="))
+            owner.files[ntpath.normpath(report).casefold()] = ET.tostring(_xml(owner.token))
+            if owner.dirty_target:
+                owner.files[(owner.repo / owner.target).path.casefold()] = owner.blobs[owner.target]
+            if owner.drift_deploy:
+                owner.files[(owner.repo / owner.deploy).path.casefold()] = b"changed Deploy\n"
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        def check_output(argv, **kwargs):
+            if "show" in argv:
+                return owner.blobs[argv[-1].split(":", 1)[1]]
+            return HEAD if kwargs.get("text") else HEAD.encode()
+        def path(value):
+            return value if isinstance(value, _BindingPath) else _BindingPath(owner, value)
+        path.cwd = lambda: owner.repo
+        self.scope = dict(base64=base64, hashlib=hashlib, json=json, ntpath=ntpath, re=re, ET=ET, Path=path,
+                          os=SimpleNamespace(name="nt", environ=self.env, path=ntpath),
+                          sys=SimpleNamespace(executable=r"C:\runner\python.exe", stderr=io.StringIO()),
+                          shutil=SimpleNamespace(which=lambda name: self.paths.get(name)),
+                          subprocess=SimpleNamespace(Popen=Child, run=run, check_output=check_output,
+                                                     PIPE=-1, TimeoutExpired=subprocess.TimeoutExpired))
+    def binding(self):
+        identities = {}
+        for name, blob in self.blobs.items():
+            raw = self.files[(self.repo / name).path.casefold()]
+            identities[name] = dict(blob=self.hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest(),
+                                    raw_sha256=self.hashlib.sha256(raw).hexdigest(),
+                                    text_sha256=self.hashlib.sha256(blob).hexdigest(), eol="exact" if raw == blob else "lf_to_crlf")
+        hosts = {}
+        for label, executable in (("ps5", "powershell"), ("ps7", "pwsh")):
+            hosts[label] = dict(path=self.paths[executable],
+                               sha256=self.hashlib.sha256(self.files[self.paths[executable].casefold()]).hexdigest(),
+                               major=5 if label == "ps5" else 7, minor=1 if label == "ps5" else 6,
+                               edition="Desktop" if label == "ps5" else "Core")
+        return dict(schema="wd.windows-disk-binding.v1", head=HEAD, run_id="123", run_attempt="2",
+                    token=self.token, output=str(self.output), hosts=hosts, inputs=identities)
+    def main(self):
+        tree = ast.parse(_source(_workflow()))
+        allowed = {"CASE_FUNCTIONS", "CASE_CLASS"}
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) or
+                 isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+                 and n.targets[0].id in allowed]
+        scope = dict(self.scope)
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "<actual-parity-main-with-doubles>", "exec"), scope)
+        scope["main"]()
+    def fixture(self, *, strict, replacement=None, param="powershell"):
+        from types import SimpleNamespace
+        # Read Source as data only. No imports/top-level target code is executed.
+        source = (ROOT / self.target).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        nodes = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                if isinstance(node, ast.FunctionDef):
+                    node.decorator_list = []
+                nodes.append(node)
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "_PARITY_FUNCTIONS":
+                nodes.append(node)
+        env = dict(self.env) if strict else {}
+        if strict:
+            self.output.mkdir(parents=True, exist_ok=True)
+            (self.output / "cases").mkdir(exist_ok=True)
+            env.update(WD_PARITY_STRICT="1", WD_PARITY_BINDING_JSON=self.json.dumps(self.binding(), sort_keys=True, separators=(",", ":")))
+        paths = dict(self.paths)
+        if replacement is not None:
+            paths[param] = replacement
+        scope = dict(self.scope, ROOT=self.repo, DEPLOY_SOURCE="deploy\n", pytest=pytest,
+                     os=SimpleNamespace(name="nt", environ=env, path=ntpath),
+                     shutil=SimpleNamespace(which=lambda name: paths.get(name)))
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "<actual-host-fixture-with-doubles>", "exec"), scope)
+        label = {"powershell": "ps5", "pwsh": "ps7"}[param]
+        request = SimpleNamespace(param=param, node=SimpleNamespace(name=f"{FUNCTIONS[0]}[{label}]"))
+        host = scope["host"](request)
+        assert scope["_ps"](host, "'fixed test result'") == {"ok": True}
+        return host
+
+
+def test_binding_r1_parent_transports_strict_context():
+    # MUTANT_HOST_BINDING_NOT_TRANSPORTED: baseline runs and succeeds; assertion is RED.
+    run = _BindingDoubles()
+    run.main()
+    assert run.pytest_calls == 1
+    env = run.pytest_env or {}
+    assert env.get("WD_PARITY_STRICT") == "1" and env.get("WD_PARITY_BINDING_JSON"), "R1 missing transport"
+    assert run.json.loads(env["WD_PARITY_BINDING_JSON"]) == run.binding()
+
+
+def test_binding_r2_actual_fixture_uses_pinned_host_not_path():
+    # MUTANT_FIXTURE_RERESOLVES_DIFFERENT_HOST: positive local and strict controls first.
+    ordinary = _BindingDoubles()
+    assert str(ordinary.fixture(strict=False)) == ordinary.paths["powershell"]
+    missing = _BindingDoubles()
+    missing.paths.pop("powershell")
+    with pytest.raises(pytest.skip.Exception):
+        missing.fixture(strict=False)
+    positive = _BindingDoubles()
+    assert str(positive.fixture(strict=True)) == positive.paths["powershell"]
+    ps7 = _BindingDoubles()
+    assert str(ps7.fixture(strict=True, param="pwsh")) == ps7.paths["pwsh"]
+    negative = _BindingDoubles()
+    negative.fixture(strict=True, replacement=r"C:\other\powershell.exe")
+    assert negative.launches[-1][0] == negative.paths["powershell"], "R2 fixture launched PATH replacement"
+
+
+def test_binding_r3_reported_pid_must_equal_this_probe_child():
+    # MUTANT_SELF_REPORTED_PID_ACCEPTED: no new symbol required on baseline.
+    _BindingDoubles().main()
+    with pytest.raises((ValueError, RuntimeError, AssertionError), match="PID|identity"):
+        _BindingDoubles(bad_pid=True).main()
+
+
+def test_binding_r4_rejects_dirty_target_before_launch_not_post_only():
+    # MUTANT_TARGET_POST_ONLY_HASH: fake pytest restores dirty bytes; must never launch.
+    _BindingDoubles().main()
+    _BindingDoubles(eol_crlf=True).main()  # Explicit supported EOL control, not whitespace stripping.
+    run = _BindingDoubles(dirty_target=True)
+    with pytest.raises((ValueError, RuntimeError, AssertionError), match="Source"):
+        run.main()
+    assert run.pytest_calls == 0
+
+
+def test_binding_r5_rejects_consumed_deploy_post_drift():
+    # MUTANT_CONSUMED_DEPLOY_DRIFT_UNCHECKED: test file/JUnit remain correct.
+    _BindingDoubles().main()
+    with pytest.raises((ValueError, RuntimeError, AssertionError), match="Source"):
+        _BindingDoubles(drift_deploy=True).main()
+
+
+def test_binding_r6_rejects_stale_case_even_with_current_eight_junit():
+    # MUTANT_STALE_CASE_RECEIPT_ACCEPTED: same eight case names, wrong run attempt.
+    _BindingDoubles().main()
+    with pytest.raises((ValueError, RuntimeError, AssertionError), match="case receipt"):
+        _BindingDoubles(stale_case=True).main()

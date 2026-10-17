@@ -228,6 +228,77 @@ jobs:
                   raise ValueError("unexpected testcase status attributes")
               return pairs
 
+
+          def no_links(path, root):
+              path.relative_to(root)
+              cursor = path
+              while True:
+                  try:
+                      info = cursor.lstat()
+                  except FileNotFoundError:
+                      info = None
+                  if info is not None and (cursor.is_symlink() or getattr(info, "st_file_attributes", 0) & 1024):
+                      raise ValueError("redirected parity audit path")
+                  if cursor == root:
+                      return
+                  if cursor.parent == cursor:
+                      raise ValueError("parity audit path escape")
+                  cursor = cursor.parent
+
+          def source_input(git, head, repo, relative):
+              blob = subprocess.check_output([git, "show", f"{head}:{relative}"], cwd=repo, timeout=10)
+              raw = (repo / relative).read_bytes()
+              eol = "exact"
+              if raw != blob:
+                  if b"\r" in blob or raw != blob.replace(b"\n", b"\r\n"):
+                      raise ValueError("Source input differs from expected head")
+                  eol = "lf_to_crlf"
+              text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+              return {"blob": hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\0" + blob).hexdigest(),
+                      "raw_sha256": hashlib.sha256(raw).hexdigest(),
+                      "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "eol": eol}
+
+          def case_receipts(repo, output, binding, binding_sha, pairs):
+              folder = output / "cases"
+              no_links(folder, repo)
+              entries = []
+              for entry in folder.iterdir():
+                  entries.append(entry)
+                  if len(entries) > 8:
+                      raise ValueError("extra case receipt")
+              wanted = {f"{name}__{label}.json" for name in CASE_FUNCTIONS for label in ("ps5", "ps7")}
+              if {p.name for p in entries} != wanted or len(entries) != 8:
+                  raise ValueError("missing/extra case receipt")
+              records = []
+              for entry in entries:
+                  no_links(entry, repo)
+                  if not entry.is_file() or entry.stat().st_size > 65536:
+                      raise ValueError("invalid case receipt")
+                  record = json.loads(entry.read_bytes())
+                  label = record.get("label")
+                  if label not in ("ps5", "ps7"):
+                      raise ValueError("wrong case host")
+                  host = binding["hosts"][label]
+                  node = record.get("node")
+                  expected_name = entry.name.removesuffix(f"__{label}.json") + f"[{label}]"
+                  if (record.get("schema") != "wd.windows-disk-case.v1" or record.get("token") != binding["token"]
+                          or record.get("binding_sha256") != binding_sha or node != expected_name
+                          or (CASE_CLASS, node) not in pairs
+                          or record.get("path") != host["path"]
+                          or record.get("before_sha256") != host["sha256"]
+                          or record.get("after_sha256") != host["sha256"]
+                          or record.get("source_text_sha256") != binding["inputs"]["ops/windows/reboot/Deploy-WdRebootBundle.ps1"]["text_sha256"]
+                          or type(record.get("launched_pid")) is not int or record["launched_pid"] <= 0
+                          or type(record.get("observed_pid")) is not int
+                          or record["observed_pid"] != record["launched_pid"]
+                          or record.get("platform") != "Win32NT"
+                          or any(type(record.get(k)) is not int or record[k] != host[k] for k in ("major", "minor"))
+                          or record.get("edition") != host["edition"] or type(record.get("exit")) is not int
+                          or record["exit"] != 0):
+                      raise ValueError("unbound case receipt")
+                  records.append(record)
+              return sorted(records, key=lambda r: r["node"])
+
           def main():
               if os.name != "nt":
                   raise RuntimeError("Windows execution required")
@@ -235,11 +306,28 @@ jobs:
                   raise RuntimeError("inherited pytest overrides refused")
               head, run, attempt, token = parity_context(os.environ)
               repo = Path.cwd()
-              checked = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=10).strip()
+              git = shutil.which("git")
+              if not git:
+                  raise ValueError("runner Git missing")
+              git = os.path.abspath(git)
+              if not re.match(r"^[A-Za-z]:[\\/]", git):
+                  raise ValueError("Git must be an absolute runner application")
+              try:
+                  inside = ntpath.commonpath([git, str(repo)]).casefold() == str(repo).casefold()
+              except ValueError:  # Different local drives are outside one another.
+                  inside = False
+              if inside:
+                  raise ValueError("Git must be outside checkout")
+              checked = subprocess.check_output([git, "rev-parse", "HEAD"], text=True, timeout=10).strip()
               if checked != head:
                   raise RuntimeError("checkout is not the expected exact head")
+              target = "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+              deploy = "ops/windows/reboot/Deploy-WdRebootBundle.ps1"
+              inputs = {name: source_input(git, head, repo, name) for name in (target, deploy)}
               output = repo / ".codex-audit" / "windows-disk-parity" / token
+              no_links(output, repo)
               output.mkdir(parents=True, exist_ok=False)
+              (output / "cases").mkdir(exist_ok=False)
               report = output / f"{token}.xml"
               probe = r"""
           $ErrorActionPreference = 'Stop'
@@ -256,38 +344,63 @@ jobs:
                   if not found:
                       raise RuntimeError(f"{label} executable missing; parity cannot skip")
                   found = os.path.abspath(found)
-                  done = subprocess.run([found, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                                        capture_output=True, text=True, encoding="utf-8", timeout=15, check=False)
-                  if done.returncode != 0 or done.stderr.strip():
+                  child = subprocess.Popen([found, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                  try:
+                      stdout, stderr = child.communicate(timeout=15)
+                  except subprocess.TimeoutExpired:
+                      child.kill()
+                      child.communicate()
+                      raise
+                  if child.returncode != 0 or stderr.strip():
                       raise RuntimeError(f"{label} identity probe failed")
-                  observed = json.loads(done.stdout.strip().lstrip("\ufeff"))
+                  observed = json.loads(stdout.strip().lstrip("\ufeff"))
                   hosts[label] = validate_host(label, found, observed)
+                  if observed["pid"] != child.pid:
+                      raise ValueError("probe child PID mismatch")
                   paths[executable] = found
                   hashes[label] = hashlib.sha256(Path(found).read_bytes()).hexdigest()
-              target = "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+              bound_hosts = {label: dict(path=hosts[label]["executable"], sha256=hashes[label],
+                                         major=hosts[label]["major"], minor=hosts[label]["minor"], edition=hosts[label]["edition"])
+                             for label in ("ps5", "ps7")}
+              binding = {"schema": "wd.windows-disk-binding.v1", "head": head, "run_id": run,
+                         "run_attempt": attempt, "token": token, "output": str(output),
+                         "hosts": bound_hosts, "inputs": inputs}
+              raw_binding = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+              if len(raw_binding.encode("utf-8")) > 32768:
+                  raise ValueError("oversized parity binding")
+              binding_sha = hashlib.sha256(raw_binding.encode("utf-8")).hexdigest()
+              child_env = dict(os.environ, WD_PARITY_STRICT="1", WD_PARITY_BINDING_JSON=raw_binding)
               command = [sys.executable, "-m", "pytest", target, "-q", "--tb=short",
                          f"--junitxml={report}", "-o", f"junit_suite_name={token}"]
               tested = subprocess.run(command, cwd=repo, capture_output=True, text=True,
-                                      encoding="utf-8", timeout=300, check=False)
+                                      encoding="utf-8", timeout=300, check=False, env=child_env)
               print(tested.stdout)
               print(tested.stderr, file=sys.stderr)
               if tested.returncode != 0:
                   raise RuntimeError(f"pytest failed: {tested.returncode}")
+              for name, identity in inputs.items():
+                  if hashlib.sha256((repo / name).read_bytes()).hexdigest() != identity["raw_sha256"]:
+                      raise ValueError("Source input changed during parity")
               for label, executable in (("ps5", "powershell"), ("ps7", "pwsh")):
                   if shutil.which(executable) is None or os.path.abspath(shutil.which(executable)) != paths[executable]:
                       raise RuntimeError("host resolution changed")
                   if hashlib.sha256(Path(paths[executable]).read_bytes()).hexdigest() != hashes[label]:
                       raise RuntimeError("host executable changed")
+              no_links(report, repo)
               if not report.is_file() or report.stat().st_size > 2 * 1024 * 1024:
                   raise RuntimeError("fresh bounded JUnit missing")
               xml = report.read_bytes()
               pairs = validate_junit(xml, token)
-              receipt = {"schema": "wd.windows-disk-parity.v1", "head": head, "run_id": run,
+              cases = case_receipts(repo, output, binding, binding_sha, pairs)
+              receipt = {"schema": "wd.windows-disk-parity.v2", "head": head, "run_id": run,
                          "run_attempt": attempt, "suite": token, "junit_file": report.name,
                          "junit_sha256": hashlib.sha256(xml).hexdigest(), "hosts": hosts,
                          "host_sha256": hashes, "command": command, "pytest_exit": tested.returncode,
-                         "cases": pairs, "target_sha256": hashlib.sha256((repo / target).read_bytes()).hexdigest(),
-                         "scope": "Synthetic extracted-helper/AST parity, not real disk/deploy/production"}
+                         "cases": pairs, "case_receipts": cases, "binding_sha256": binding_sha, "inputs": inputs,
+                         "target_sha256": inputs[target]["raw_sha256"],
+                         "scope": "Reviewed-tree synthetic helper/AST parity; real pytest startup disk guard; not hostile-code/native/deploy/production attestation"}
+              no_links(output / "receipt.json", repo)
               with (output / "receipt.json").open("x", encoding="utf-8") as stream:
                   json.dump(receipt, stream, indent=2)
               print(json.dumps(receipt, sort_keys=True))

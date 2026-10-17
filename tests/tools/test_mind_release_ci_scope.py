@@ -55,9 +55,9 @@ def _assert_collection(workflow):
     match = re.search(r'if ! OUT=\$\((pytest [^\n]+) 2>/dev/null\); then', text)
     assert match, "failed collection must still refuse"
     assert shlex.split(match.group(1)) == ["pytest", "tests/", "--collect-only", "-q"]
-    mind = re.search(r'if ! MIND_OUT=\$\((pytest [^\n]+) 2>/dev/null\); then', text)
+    mind = re.search(r'if ! MIND_OUT=\$\((python -m pytest [^\n]+) 2>/dev/null\); then', text)
     assert mind, "the separate Mind collection must also refuse failure"
-    assert shlex.split(mind.group(1)) == ["pytest", *MIND_TESTS, "--collect-only", "-q"]
+    assert shlex.split(mind.group(1)) == ["python", "-m", "pytest", *MIND_TESTS, "--collect-only", "-q"]
     assert '"$COUNT" -ge 4200' in text, "never lower the existing full-suite floor"
     assert '"$SUMMARIES" != "1"' in text, "retain the exact-one-summary guard"
 
@@ -65,7 +65,7 @@ def _assert_collection(workflow):
 def test_matrix_executes_the_existing_full_suite_then_exact_finite_mind_scope():
     _assert_runs(_workflow("ci.yml"), "test", "Run tests",
                  "pytest tests/ -x -q --tb=short -p no:warnings",
-                 ["pytest"], ["-x", "-q", "--tb=short", "-p", "no:warnings"])
+                 ["python", "-m", "pytest"], ["-x", "-q", "--tb=short", "-p", "no:warnings"])
 
 
 def test_unified_executes_the_existing_full_suite_then_exact_finite_mind_scope():
@@ -78,9 +78,41 @@ def test_collection_covers_the_same_finite_scope_and_preserves_count_guards():
     _assert_collection(_workflow("ci.yml"))
 
 
+def _assert_mind_entrypoint(workflow, step_name):
+    # CI ffa21 passed tests/ but the separate console pytest could not import tools.
+    # Both execution and collection must keep the repository on sys.path without a global env override.
+    text = _step(workflow, "test", step_name)["run"]
+    if step_name == "Run tests":
+        command = text.strip().splitlines()[1]
+    else:
+        match = re.search(r'if ! MIND_OUT=\$\(([^;\n]+) 2>/dev/null\); then', text)
+        assert match
+        command = match.group(1)
+    assert shlex.split(command)[:3] == ["python", "-m", "pytest"], "console entrypoint loses repo imports"
+
+
+@pytest.mark.parametrize("step_name", ["Run tests", "Check test count"])
+def test_matrix_mind_uses_repository_aware_module_entrypoint(step_name):
+    _assert_mind_entrypoint(_workflow("ci.yml"), step_name)
+
+
+@pytest.mark.parametrize("step_name", ["Run tests", "Check test count"])
+def test_mutant_console_mind_entrypoint_is_killed_with_positive_control(step_name):
+    workflow = _workflow("ci.yml")
+    _assert_mind_entrypoint(workflow, step_name)
+    mutant = deepcopy(workflow)
+    step = _step(mutant, "test", step_name)
+    original = step["run"]
+    step["run"] = original.replace("python -m pytest sandbox/mind/", "pytest sandbox/mind/")
+    assert step["run"] != original
+    # MUTANT_CONSOLE_MIND_RUN and MUTANT_CONSOLE_MIND_COLLECTION keep all paths/options, lose repo imports.
+    with pytest.raises(AssertionError, match="console entrypoint"):
+        _assert_mind_entrypoint(mutant, step_name)
+
+
 @pytest.mark.parametrize("filename,job,name,full,prefix,options", [
     ("ci.yml", "test", "Run tests", "pytest tests/ -x -q --tb=short -p no:warnings",
-     ["pytest"], ["-x", "-q", "--tb=short", "-p", "no:warnings"]),
+     ["python", "-m", "pytest"], ["-x", "-q", "--tb=short", "-p", "no:warnings"]),
     ("tests.yml", "unified", "Run pytest", "python -m pytest tests/ -v --tb=short",
      ["python", "-m", "pytest"], ["-v", "--tb=short"]),
 ])
@@ -167,26 +199,27 @@ def _run_block(tmp_path, text, exit_code=0, full_count=4200, mind_count=10,
     return done, calls
 
 
-@pytest.mark.parametrize("filename,job,name,prefix", [
-    ("ci.yml", "test", "Run tests", []),
-    ("tests.yml", "unified", "Run pytest", ["-m", "pytest"]),
+@pytest.mark.parametrize("filename,job,name,prefix,mind_prefix", [
+    ("ci.yml", "test", "Run tests", [], ["-m", "pytest"]),
+    ("tests.yml", "unified", "Run pytest", ["-m", "pytest"], ["-m", "pytest"]),
 ])
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_native_bash_runs_both_scopes_and_stops_on_full_suite_failure(
-        tmp_path, filename, job, name, prefix, exit_code):
+        tmp_path, filename, job, name, prefix, mind_prefix, exit_code):
     step = _step(_workflow(filename), job, name)
     done, calls = _run_block(tmp_path, step["run"], exit_code)
     assert done.returncode == exit_code, done.stdout + done.stderr
     assert calls[0][:len(prefix) + 1] == [*prefix, "tests/"]
     assert len(calls) == (2 if exit_code == 0 else 1)
     if exit_code == 0:
-        assert calls[1][len(prefix):len(prefix) + len(MIND_TESTS)] == list(MIND_TESTS)
+        assert calls[1][:len(mind_prefix)] == mind_prefix
+        assert calls[1][len(mind_prefix):len(mind_prefix) + len(MIND_TESTS)] == list(MIND_TESTS)
 
 
 def test_native_bash_collection_passes_the_same_ten_paths(tmp_path):
     done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"])
     assert done.returncode == 0, done.stdout + done.stderr
-    assert calls == [["tests/", "--collect-only", "-q"], [*MIND_TESTS, "--collect-only", "-q"]]
+    assert calls == [["tests/", "--collect-only", "-q"], ["-m", "pytest", *MIND_TESTS, "--collect-only", "-q"]]
 
 
 def test_mind_count_cannot_mask_a_full_suite_drop_below_the_existing_floor(tmp_path):

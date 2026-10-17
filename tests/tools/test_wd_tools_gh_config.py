@@ -22,7 +22,7 @@ def test_launcher_selects_operator_directory_before_children():
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize("case", ["present", "absent", "file", "reparse_refusal", "mutant"])
+@pytest.mark.parametrize("case", ["present", "absent", "empty_directory", "hosts_directory", "file", "reparse_refusal", "mutant"])
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only launcher directory policy")
 def test_process_config_selection_preserves_credentials(tmp_path, ps, case):
     config = tmp_path / "gh-dir"
@@ -31,9 +31,13 @@ def test_process_config_selection_preserves_credentials(tmp_path, ps, case):
     elif case != "absent":
         config.mkdir()
         (config / "ordinary.txt").write_text("no credentials")
+        if case in {"present", "mutant"}:
+            (config / "hosts.yml").write_text("{}")  # synthetic fixture, never a real auth file
+        elif case == "hosts_directory":
+            (config / "hosts.yml").mkdir()
     before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n"
-    for name in ["Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse", "Set-WdToolsGitHubConfigDirectory"]:
+    for name in ["Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse", "Assert-FilePathWithoutReparse", "Set-WdToolsGitHubConfigDirectory"]:
         script += load(TOOLS, name)
     if case == "reparse_refusal":
         script += "function Assert-DirectoryPathWithoutReparse {param($Candidate,$Root,[switch]$AllowMissing) throw 'reparse refused'}\n"
@@ -79,6 +83,7 @@ def test_named_mutant_guard_on_invocation_order(tmp_path, ps, mutant):
         startup = "# MUTANT_SKIP_GH_CONFIG_INHERITANCE"
     config = tmp_path / "inert-gh"
     config.mkdir()
+    (config / "hosts.yml").write_text("{}")
     output = tmp_path / "child.json"
     capture = tmp_path / "capture.py"
     capture.write_text("import json,os,pathlib,sys\n"
@@ -86,7 +91,7 @@ def test_named_mutant_guard_on_invocation_order(tmp_path, ps, mutant):
                        "'selected':os.environ.get('GH_CONFIG_DIR')==sys.argv[2],"
                        "'token_unchanged':os.environ.get('GH_TOKEN')=='inert-test-value'}))\n")
     script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n"
-    for name in ["Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse",
+    for name in ["Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse", "Assert-FilePathWithoutReparse",
                  "Set-WdToolsGitHubConfigDirectory", "ConvertTo-WdToolsNativeArgument", "Start-WdToolsNativeProcess"]:
         script += load(TOOLS, name)
     script += f"""

@@ -2131,7 +2131,7 @@ function Set-WdToolsGitHubConfigDirectory {
 
     # Operator-provisioned directory selection only. Never read/copy credentials,
     # run gh login, create config files, or change GH_TOKEN/GITHUB_TOKEN. A missing
-    # directory preserves inherited configuration; malformed/reparse paths fail
+    # directory or hosts.yml preserves inherited configuration; malformed/reparse paths fail
     # closed before changing the process environment. Children inherit this value.
     if (-not [IO.Path]::IsPathRooted($ConfigDirectory)) {
         throw 'Tools GitHub config directory must be absolute'
@@ -2144,6 +2144,11 @@ function Set-WdToolsGitHubConfigDirectory {
     if (-not (Test-Path -LiteralPath $candidate -PathType Container -ErrorAction Stop)) {
         return $false
     }
+    $configHostsPath = Join-Path $candidate 'hosts.yml'
+    if (-not (Test-Path -LiteralPath $configHostsPath -PathType Leaf -ErrorAction Stop)) {
+        return $false
+    }
+    Assert-FilePathWithoutReparse -Candidate $configHostsPath -Root 'C:\'
     [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', $candidate, 'Process')
     return $true
 }

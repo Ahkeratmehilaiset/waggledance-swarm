@@ -5,6 +5,8 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -815,3 +817,89 @@ def test_a_recusal_row_with_any_other_verification_is_refused(verification):
     bad["prs"]["1900"]["recusals"][0]["verification"] = verification
     with pytest.raises(mind.ProjectionError):
         mind._validate_snapshot(bad)
+
+
+# -- Production no-gate closure (Lead 06:19Z disposition: no waiver for transitive gate imports) -----------------------
+
+# The verdict-computing and governance modules the merge gate reads or executes, named explicitly (RCO1 06:23Z: the
+# guard needs an explicit list). The observe-only core must load none of them, not even transitively.
+GATE_MODULES = (
+    "tools.bridge_event_taxonomy",
+    "tools.bridge_rule12_review_eligibility",
+    "tools.check_bridge_changes_requested",
+    "tools.check_proven_safe_autosign_class",
+    "tools.check_rco_pass_present",
+    "tools.check_standing_consensus_sign_class",
+    "tools.idle_consensus_auto_merge",
+    "tools.rule12_grok_ledger_adapter",
+    "tools.write_bridge_consensus_merge_receipt",
+    "waggledance.core.idle_consensus_charter",
+    "waggledance.core.magma.consensus_receipt",
+)
+# Run in a fresh interpreter, so no module the test process already loaded hides an edge. The finder refuses a listed
+# module by name before any of its code runs; the child then names every listed module that is loaded anyway.
+GUARD_CHILD = """
+import importlib
+import sys
+
+root, target, gates = sys.argv[1], sys.argv[2], frozenset(sys.argv[3:])
+sys.path.insert(0, root)
+
+
+class RefuseGateModules:
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name in gates:
+            raise ImportError("gate module refused before execution: " + name)
+        return None
+
+
+sys.meta_path.insert(0, RefuseGateModules)
+try:
+    importlib.import_module(target)
+except ImportError as exc:
+    print("refused", exc)
+    raise SystemExit(3)
+loaded = sorted(name for name in gates if name in sys.modules)
+print("loaded", " ".join(loaded) if loaded else "none")
+raise SystemExit(4 if loaded else 0)
+"""
+
+
+def _guarded_import(tmp_path, target):
+    root = Path(__file__).resolve().parents[2]
+    child = tmp_path / "gate_guard_child.py"
+    child.write_text(GUARD_CHILD, encoding="utf-8")
+    return subprocess.run([sys.executable, "-I", "-B", str(child), str(root), target, *GATE_MODULES],
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_the_core_loads_no_gate_module_under_a_guard_that_refuses_one_before_it_runs(tmp_path):
+    """Lead 06:19Z: the core imported BLOCK_BY_TYPE and RCO_GATED_TYPES from the verdict-computing taxonomy, a static
+    breach of the production no-gate-import contract even without a classify call."""
+    root = Path(__file__).resolve().parents[2]
+    for name in GATE_MODULES:  # every listed module exists, so a rename cannot empty the guard silently
+        assert (root / (name.replace(".", "/") + ".py")).is_file(), name
+    run = _guarded_import(tmp_path, "tools.wd_bridge_mind")
+    assert (run.returncode, run.stdout.strip()) == (0, "loaded none"), (run.stdout, run.stderr[-2000:])
+    # The guard itself refuses: a listed module imported directly never runs.
+    run = _guarded_import(tmp_path, "tools.bridge_event_taxonomy")
+    assert run.returncode == 3 and "gate module refused before execution: tools.bridge_event_taxonomy" in run.stdout
+
+
+def test_the_core_keeps_the_taxonomy_constant_values_read_without_importing_it():
+    """Lead 06:19Z: the exact existing constant values stay. They are read from the taxonomy's syntax tree, never
+    imported, so a change there fails here instead of drifting; the core imports no listed module statically."""
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "tools" / "bridge_event_taxonomy.py").read_text(encoding="utf-8-sig"))
+    values = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("BLOCK_BY_TYPE", "RCO_GATED_TYPES"):
+            assert isinstance(node.value, ast.Call) and getattr(node.value.func, "id", None) == "frozenset"
+            values[node.targets[0].id] = frozenset(ast.literal_eval(node.value.args[0]))
+    assert values == {"BLOCK_BY_TYPE": mind.BLOCK_BY_TYPE, "RCO_GATED_TYPES": mind.RCO_GATED_TYPES}
+    core = ast.parse((root / "tools" / "wd_bridge_mind.py").read_text(encoding="utf-8-sig"))
+    imported = [node.module or "" for node in ast.walk(core) if isinstance(node, ast.ImportFrom)]
+    imported += [alias.name for node in ast.walk(core) if isinstance(node, ast.Import) for alias in node.names]
+    assert not set(imported) & set(GATE_MODULES)

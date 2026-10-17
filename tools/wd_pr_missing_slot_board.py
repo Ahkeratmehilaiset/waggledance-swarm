@@ -64,7 +64,9 @@ shows that snapshot's PR observations, attention and next question with their re
 It never imports, runs or reads the merge gate or the snapshot tool. It never calls GitHub or a provider,
 never reads the canonical bridge log and never writes a bridge event. The legacy imports
 (``subprocess``, ``tempfile``) do not run on this path. It infers no ready or merge state and no
-gate slot. Author, recusal and RCO presence are not in the snapshot, so they stay ``UNKNOWN``.
+gate slot. Author, recusal and RCO presence are not in the snapshot, so they stay ``UNKNOWN``. A PR's
+``declared_recusals`` appear only when the core's explicit recusal extension reported one: declared
+``rco_recused`` signals shown as data, never a gate recusal.
 
 * **Input checks.** Schema, ``authority: none`` and the bounded scope are checked. The whole input is read
   with the canonical bridge JSON reader (no duplicate keys, no NaN). Any guarded word anywhere refuses the
@@ -657,7 +659,9 @@ def _pr_view(key: str, record: Any, blocked: bool) -> dict[str, Any]:
             "snapshot_missing": list(missing), "source_refs": _refs(record["source_refs"]),
             "ci": {"status": ci["status"], "head": ci_head, "verification": ci_verification, "source_refs": ci_refs,
                    "green_at_head": green},
-            "votes": votes, "stale_votes": stale, "veto_observations": vetoes, "declared_recusals": recusals}
+            "votes": votes, "stale_votes": stale, "veto_observations": vetoes}
+    if "recusals" in record:  # the core's explicit recusal extension; without it the view keeps main's keys
+        view["declared_recusals"] = recusals
     view.update({name: UNKNOWN for name in NOT_IN_SNAPSHOT})
     return view
 
@@ -796,7 +800,7 @@ def render_mind_text(view: Mapping[str, Any]) -> str:
         for veto in pr["veto_observations"]:
             lines.append(f"  veto {veto['agent']} {veto['status']}@{veto['head'][:12]} activity UNKNOWN "
                          f"{_refs_text(veto['source_refs'])}")
-        for recusal in pr["declared_recusals"]:
+        for recusal in pr.get("declared_recusals", []):
             lines.append(f"  declared recusal {recusal['agent']} {recusal['status']}@{recusal['head'][:12]} at head "
                          f"{recusal['at_head']} {_refs_text(recusal['source_refs'])}")
     for item in view["attention"]:

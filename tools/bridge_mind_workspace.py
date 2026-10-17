@@ -18,17 +18,23 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
     climbs above its root refuses its task claim. No path is ever opened. A lane-level ``write_scope``, lease or
     ``expired`` that disagrees with its rows refuses every claim of the lane; one unusable row refuses only
     itself, and the lane's other task claims still count.
-  - ``stale_vote``: the votes in ``stale_votes`` of one PR (bound to a head that is not the PR head, or retired
-    by the core at the PR head after a later blocking signal of the same identity), folded into one tension per
-    PR that names each of them and keeps every contributing ref. A stale vote never counts. A stale vote bound to
-    the other head that an open PR's context saw is named by ``context_head_mismatch`` instead (it still never
-    counts). An identity that also sent the same verified vote at a current head (the PR head, or that context
-    head) is named in the observation but is not an actor: it has nothing to do.
+  - ``stale_vote``: a vote in ``stale_votes`` (bound to a head that is not the PR head, or retired by the core
+    at the PR head after a later blocking signal of the same identity). It never counts. Without a context (the
+    omitted interface) each stale vote is its own tension, as on main. With one (the explicit interface, see
+    below) the stale votes of one PR fold into one tension that names each of them and keeps every contributing
+    ref; a stale vote bound to the other head that an open PR's context saw is named by ``context_head_mismatch``
+    instead (it still never counts), and an identity that also sent the same verified vote at a current head (the
+    PR head, or that context head) is named in the observation but is not an actor: it has nothing to do.
   - ``veto_observed``: a veto observation on the PR. Its activity stays UNKNOWN; it is never read as cleared.
     Its status is any safe token, ``UNKNOWN`` included.
-  - ``veto_own_later_pass``: in place of ``veto_observed`` for a veto with a known head when the same verified
-    identity later sent ``rco_pass`` at a current head (the snapshot head, or the head an open PR's context saw).
-    The veto stays observed and is never cleared; it only ranks low so questions point at live work.
+  - ``veto_own_later_pass`` (explicit interface only): in place of ``veto_observed`` for a veto with a known head
+    when the same declared identity (agent and ``agent_uuid``) has a current ``rco_pass`` at the PR head, which
+    is not the veto's head. The core retires every earlier vote of an identity when that identity sends a
+    blocking signal, so only a current pass is later than the veto; a pass in ``stale_votes`` may be one the veto
+    retired, so it is no ordering evidence and the veto stays ``veto_observed``. The veto stays observed and is
+    never cleared; the label only ranks it low so questions point at live work.
+  - A recognized RCO that declared ``rco_recused`` at the PR head is never an actor of that PR's tensions, and a
+    declared commit author RCO is never an actor of its own stale votes: the observation names it as not asked.
   - ``expired_claim``: a task claim whose lease ended at or before ``as_of``. An expired claim is not
     completed work. A claim with an UNKNOWN lease is never expired here.
   - ``unacknowledged_command``: an expected responder of an exact request (a ``command`` fact) has no bound
@@ -46,8 +52,11 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   ``{state, head, head_ref_name, path_class}``, where ``path_class`` is null or
   ``{charter_allowed, denylist_hits, a_hits, unrecognized}``. It is observational data, never authentication or
   task authority: a digest proves bytes, not truth. A context of any other shape, or observed more than
-  ``CONTEXT_MAX_AGE`` away from ``as_of``, is not used at all (``context_refused``, with its fixed reason), and
-  everything stays as without one. A used context gives one ``context_applied`` tension naming its full capture
+  ``CONTEXT_MAX_AGE`` away from ``as_of``, is not used at all (``context_refused``, with its fixed reason): no PR
+  state, head, class or author is read from it. Supplying a context, used or refused, selects the explicit
+  interface, so a refused context is never less conservative than a used one; omitting it keeps main's omitted
+  interface (for a snapshot without ``recusals``, main's reflection). A used context gives one
+  ``context_applied`` tension naming its full capture
   digest (a capture digest, not an event ref), observation time and charter evidence; it is a record, never an
   attention item. With it, a PR whose
   context state is not ``OPEN`` gets no suggestion, and the attention items of its tensions are left out
@@ -57,18 +66,25 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   they are, and nothing clears a veto.
 * A ``wd.bridge-mind-pr-context.v2`` capture adds per PR ``commit_authors``: null (the list may be incomplete)
   or the lane-shaped git author names of the PR's commits; any other value refuses the whole context. A
-  recognized RCO among them fills no RCO slot of that PR (author is not reviewer) and is never asked for it.
-  A recognized RCO's own ``rco_recused`` at the exact PR head (core ``recusals``, a declared identity) does the
-  same. These are the only recusal reads here; a declared author or recusal is data, not authentication.
+  recognized RCO among them is excused from that PR: it fills no RCO slot (author is not reviewer), not even
+  with its own vote, and is never asked for it. A recognized RCO's own ``rco_recused`` at the exact PR head (core
+  ``recusals``, the core's explicit recusal extension, a declared identity) excuses it the same way, with or
+  without a context. An excused RCO's slot stays empty: the attention item names it as missing and gives it to
+  the operator's missing-slot decision (RCO1 A1). It is never ``signature_only``, an (a) signature is not a
+  slot waiver, and no excused RCO is asked. These are the only recusal reads here; a declared author or recusal
+  is data, not authentication.
 * A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
   artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
   protected hit (an ``a_hits`` or ``denylist_hits`` entry) or a path set the charter does not allow
   (``charter_allowed`` false: off-allowlist, which needs an explicit operator signature while the standing sign
   is dormant) is ``protected``; an allowed set with no protected hit is ``not_protected``. Anything
-  else leaves the class UNKNOWN. A declared class from the bridge is never enough for ``signature_only``: a PR
-  with every reported vote, a declared ``a`` and no computed protected hit is a ``class_unverified`` tension,
-  and empty ``a_hits`` never waive a signature while the charter or denylist evidence is unknown.
-* Pseudo-lanes (``PSEUDO_AGENTS``, such as ``system``) keep their sourced facts but get no action question.
+  else leaves the class UNKNOWN. In the explicit interface a declared class from the bridge is never enough
+  for ``signature_only``: a PR with every reported vote, a declared ``a`` and no computed protected hit is a
+  ``class_unverified`` tension, and empty ``a_hits`` never waive a signature while the charter or denylist
+  evidence is unknown. The omitted interface keeps main's declared-class ``signature_only`` (omitted
+  compatibility; a caller that needs the computed class supplies a context).
+* In the explicit interface pseudo-lanes (``PSEUDO_AGENTS``, such as ``system``) keep their sourced facts but get
+  no action question; the omitted interface asks them as main does.
 
 * ``attention``: one ordered, bounded list of suggestions. For each PR with a known head, reported CI
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
@@ -78,8 +94,8 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
   presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
   slot comes first (the last missing vote goes first), then PRs with every slot filled and a computed
-  protected class (only the operator signature is left), then PRs missing several votes, then high and other
-  tensions. A
+  protected class (only the operator signature is left; without a context, main's declared (a) class), then PRs
+  missing several votes, then high and other tensions. A
   blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
   gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
 * ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
@@ -191,6 +207,8 @@ _PR_SUBJECT = re.compile(r"pr:([1-9][0-9]{0,8})(?::.*)?")
 _PR_KEY = re.compile(r"[1-9][0-9]{0,8}")
 ATTENTION_RANK = {"last_missing_vote": 0, "signature_only": 1, "votes_missing": 2, "tension_high": 3,
                   "tension": 4}
+# RCO1 A1 (Lead 06:16Z): an excused RCO's slot stays empty; the operator decides it, and a signature never waives it.
+SLOT_DECISION = "an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver"
 
 
 class WorkspaceError(ValueError):
@@ -424,6 +442,8 @@ class _Inputs:
         self.lanes = self._table(snapshot, "lanes", self._lane)
         self.commands = self._facts(snapshot)
         self.context, self.context_reason = read_context(context, self.now)
+        # Supplying a context, used or refused, selects the explicit interface; omitting it keeps main's (B1).
+        self.explicit = context is not None
 
     def context_row(self, pr: Mapping[str, Any]) -> dict[str, Any] | None:
         return None if self.context is None else self.context["prs"].get(pr["pr"])
@@ -510,6 +530,7 @@ class _Inputs:
                              "agent_uuid that agrees with its verification")
                 refused += 1
                 continue
+            item["uuid"] = uuid  # the identity key: the core retires votes per (agent, agent_uuid)
             out.append(item)
         return out, refused
 
@@ -645,13 +666,37 @@ def _tension(rule: str, subject: str, claim: str, observation: str, actors: Iter
             "actors": sorted({actor for actor in actors if actor and actor != UNKNOWN}), "refs": sorted(set(refs))}
 
 
-def _empty_slots(pr: Mapping[str, Any], authors: frozenset[str] = frozenset()) -> list[str]:
-    """Vote slots with no verified current vote. A recognized RCO who is a declared commit author of the PR, or who
-    declared ``rco_recused`` at the PR head, fills no RCO slot (author is not reviewer), so that slot is not missing
-    and that RCO is never asked for it."""
-    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
-    excused = set(authors) | set(pr.get("recused", ()))
-    return [slot for slot in VOTE_SLOTS if slot not in filled and slot not in excused]
+def _authors(inputs: "_Inputs", pr: Mapping[str, Any]) -> frozenset[str]:
+    """The recognized RCOs that are declared commit authors of this PR (a used v2 context only)."""
+    return frozenset(set(RECOGNIZED_RCOS) & inputs.authors(pr))
+
+
+def _excused(inputs: "_Inputs", pr: Mapping[str, Any]) -> frozenset[str]:
+    """The recognized RCOs excused from this PR: its declared commit authors and its declared recusals."""
+    return _authors(inputs, pr) | frozenset(pr["recused"])
+
+
+def _empty_slots(pr: Mapping[str, Any], excused: frozenset[str] = frozenset()) -> list[str]:
+    """Vote slots with no verified current vote. An excused RCO fills no slot, not even with its own vote (author is
+    not reviewer), so its slot stays empty: it is never asked for it, and only the operator's missing-slot decision
+    can settle that slot (RCO1 A1)."""
+    filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"]
+              if vote["verified"] and vote["agent"] not in excused} - {None}
+    return [slot for slot in VOTE_SLOTS if slot not in filled]
+
+
+def _not_asked(pr: Mapping[str, Any], agents: Iterable[str],
+               authors: frozenset[str]) -> tuple[list[str], str, list[str]]:
+    """The agents a tension of this PR may ask, a note naming the excused RCOs among them that it does not ask, and
+    the refs it adds. An RCO that declared ``rco_recused`` at the PR head is never asked about the PR (B1 (2)); a
+    declared commit author RCO in ``authors`` is never asked for its own vote (RCO1 A1). A veto passes no authors:
+    retracting it is the vetoing identity's own act."""
+    agents = sorted(set(agents))
+    named = [agent for agent in agents if agent in authors or agent in pr["recused"]]
+    note = "".join(f"; {agent} " + ("is a declared commit author of this PR" if agent in authors else
+                                     "declared rco_recused at this head") + " and is not asked" for agent in named)
+    refs = pr["recusal_refs"] if any(agent not in authors for agent in named) else []
+    return [agent for agent in agents if agent not in named], note, refs
 
 
 def _author_note(inputs: "_Inputs", pr: Mapping[str, Any]) -> str:
@@ -712,10 +757,11 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                             f"{len(context['prs'])} PRs in context; no suggestion for: {_listed(closed)}; head "
                             f"mismatch: {_listed(moved)}; computed class for {computed} PRs; tensions, votes and "
                             "vetoes stay as observed", [], [inputs.source_ref]))
-    for pr in inputs.prs:
+    for pr in inputs.prs if inputs.explicit else ():
         # Every reported vote, a declared (a) class, but no computed protected hit: the signature need is UNKNOWN.
-        # A blocked source is not current, so it gives no such head-bound observation.
-        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr, inputs.authors(pr)) \
+        # A blocked source is not current, so it gives no such head-bound observation. The explicit interface only:
+        # the omitted one keeps main's declared-class suggestion.
+        if inputs.blocked is None and _suggestable(pr) and not _empty_slots(pr, _excused(inputs, pr)) \
                 and pr["class"] == "a" \
                 and inputs.suppressed(pr) is None and inputs.computed_class(pr) != "protected":
             out.append(_tension("class_unverified", f"pr:{pr['pr']}:class",
@@ -774,6 +820,25 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
                                          "overlapping paths: " + ", ".join(sorted(hits)),
                                          [lane_a["agent"], lane_b["agent"]], refs))
     for pr in inputs.prs:
+        authors = _authors(inputs, pr)
+        if not inputs.explicit:
+            # The omitted interface keeps main's tensions: one per stale vote and one per veto observation.
+            for vote in pr["stale_votes"]:
+                # The core also retires a vote at the PR head when the same identity later sends a blocking signal.
+                seen = "the core retired it at the PR head" if vote["head"] == pr["head"] else \
+                    "the PR head is " + (pr["head"][:12] if pr["head"] else UNKNOWN)
+                claim = f"{vote['agent']} sent {vote['status']} on PR{pr['pr']} at {vote['head'][:12]}"
+                asked, note, extra = _not_asked(pr, [vote["agent"]], authors)
+                tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:{vote['agent']}:{vote['head'][:12]}", claim,
+                                         seen + "; a stale vote cannot approve it" + note, asked,
+                                         vote["refs"] + pr["refs"] + extra))
+            for veto in pr["vetoes"]:
+                claim = f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}"
+                asked, note, extra = _not_asked(pr, [veto["agent"]], frozenset())
+                tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
+                                         claim, "the veto is observed; whether it is still active is UNKNOWN, never "
+                                         "cleared here" + note, asked, veto["refs"] + pr["refs"] + extra))
+            continue
         # A vote bound to the head an open PR's context saw is not stale noise: context_head_mismatch names it.
         stale = [vote for vote in pr["stale_votes"] if vote not in inputs.context_head_votes(pr)]
         if stale:
@@ -787,33 +852,35 @@ def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
             current = {(vote["agent"], vote["status"]) for vote in pr["votes"] + inputs.context_head_votes(pr)
                        if vote["verified"]}
             done = sorted({vote["agent"] for vote in stale if (vote["agent"], vote["status"]) in current})
+            asked, note, extra = _not_asked(pr, {vote["agent"] for vote in stale} - set(done), authors)
             tensions.append(_tension("stale_vote", f"pr:{pr['pr']}:stale_votes",
                                      f"PR{pr['pr']} at {pr['head'][:12] if pr['head'] else UNKNOWN} has "
                                      f"{len(named)} stale vote(s)",
                                      "; ".join(named) + "; a stale vote cannot approve it"
-                                     + (f"; already voted at a current head: {', '.join(done)}" if done else ""),
-                                     sorted({vote["agent"] for vote in stale} - set(done)),
-                                     [ref for vote in stale for ref in vote["refs"]] + pr["refs"]))
-        heads = inputs.current_heads(pr)
+                                     + (f"; already voted at a current head: {', '.join(done)}" if done else "")
+                                     + note, asked,
+                                     [ref for vote in stale for ref in vote["refs"]] + pr["refs"] + extra))
         for veto in pr["vetoes"]:
-            # The same verified identity passed later at a current head: the older veto stays observed and is
-            # never cleared, but it is labelled and ranked low so questions point at live work.
-            later = sorted({(vote["head"], tuple(vote["refs"])) for vote in pr["votes"] + pr["stale_votes"]
-                            if vote["agent"] == veto["agent"] and vote["status"] == "rco_pass" and vote["verified"]
-                            and vote["head"] in heads and vote["head"] != veto["head"]})
+            asked, note, extra = _not_asked(pr, [veto["agent"]], frozenset())
+            # Only a current pass of the same declared identity is later than the veto: the core retires every
+            # earlier vote of an identity at its blocking signal, so a pass in stale_votes may be one this veto
+            # retired and is no ordering evidence (B1 (3)). The older veto stays observed and is never cleared; the
+            # label only ranks it low so questions point at live work.
+            later = sorted({tuple(vote["refs"]) for vote in pr["votes"]
+                            if vote["agent"] == veto["agent"] and vote["uuid"] == veto["uuid"] and vote["verified"]
+                            and vote["status"] == "rco_pass" and vote["head"] != veto["head"]})
             if later and veto["head"] != UNKNOWN:  # a veto without a head may be newer than any pass
-                head, refs = later[0]
                 tensions.append(_tension(
                     "veto_own_later_pass", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
                     f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}, then rco_pass at "
-                    f"{head[:12]}" + (" (the head from the PR context capture)" if heads[head] == "context" else ""),
-                    "the veto stays observed and is never cleared here; the same identity passed at a current head",
-                    [veto["agent"]], veto["refs"] + list(refs) + pr["refs"]))
+                    f"{pr['head'][:12]}",
+                    "the veto stays observed and is never cleared here; the same identity passed at a current head"
+                    + note, asked, veto["refs"] + list(later[0]) + pr["refs"] + extra))
                 continue
             tensions.append(_tension("veto_observed", f"pr:{pr['pr']}:veto:{veto['agent']}:{veto['head'][:12]}",
                                      f"{veto['agent']} sent {veto['status']} on PR{pr['pr']} at {veto['head'][:12]}",
-                                     "the veto is observed; whether it is still active is UNKNOWN, never cleared here",
-                                     [veto["agent"]], veto["refs"] + pr["refs"]))
+                                     "the veto is observed; whether it is still active is UNKNOWN, never cleared here"
+                                     + note, asked, veto["refs"] + pr["refs"] + extra))
     tensions.extend(_context_tensions(inputs))
     for command in inputs.commands:
         if command["unanswered"] and inputs.now - command["at"] >= COMMAND_GRACE:
@@ -834,10 +901,19 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     # A context that says the PR is not open, or saw another head, leaves it without a suggestion.
     if not _suggestable(pr) or inputs.suppressed(pr) is not None:
         return None
-    empty = _empty_slots(pr, inputs.authors(pr))
+    excused = _excused(inputs, pr)
+    empty = _empty_slots(pr, excused)
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]] + pr["recusal_refs"]
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
+        # Every slot is filled, so no RCO is excused here: an excused RCO's slot is always empty.
+        if not inputs.explicit:
+            # The omitted interface keeps main's suggestion from the declared class.
+            if pr["class"] != "a":
+                return None
+            return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
+                    "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
+                              "signature is left"}
         # Only a computed protected hit from loaded charter evidence; a declared class never suffices.
         if inputs.computed_class(pr) != "protected":
             return None
@@ -845,13 +921,14 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
         return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
                 "detail": f"PR{pr['pr']} at {head} has every reported vote and a computed protected path hit "
                           f"({len(path_class['a_hits'])} a_hits, {len(path_class['denylist_hits'])} denylist, "
-                          f"capture {inputs.context['capture'][:16]}): only the operator signature is left"
-                          + _author_note(inputs, pr)}
-    actors = sorted({agent for slot in empty for agent in
-                     ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
+                          f"capture {inputs.context['capture'][:16]}): only the operator signature is left"}
+    # An excused RCO is never asked for its own slot; the operator takes the missing-slot decision (RCO1 A1).
+    actors = sorted({agent for slot in empty if slot not in excused for agent in
+                     ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])}
+                    | ({"operator"} if excused else set()))
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
             "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"
-                                    + _author_note(inputs, pr)}
+                                    + _author_note(inputs, pr) + (f"; {SLOT_DECISION}" if excused else "")}
 
 
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -877,6 +954,15 @@ def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> 
 
 
 def _question(item: Mapping[str, Any], who: str) -> str:
+    if item["kind"] in ("last_missing_vote", "votes_missing") and item["detail"].endswith(SLOT_DECISION):
+        # RCO1 A1: the operator gives no vote here but takes the missing-slot decision; no excused RCO is asked.
+        names = who.split(", ")
+        voters = [name for name in names if name != "operator"]
+        noun = "its own missing vote" if len(voters) == 1 else "their own missing votes"
+        asks = [f"Can {', '.join(voters)} give {noun} at this exact head?"] if voters else []
+        if "operator" in names:
+            asks.append("What is the operator's missing-slot decision for this exact head?")
+        return f"{item['detail']}. {' '.join(asks)}"
     if item["kind"] == "last_missing_vote":
         return f"{item['detail']}. Can {who} give it at this exact head?"
     if item["kind"] == "votes_missing":
@@ -900,8 +986,9 @@ def _entry(item: Mapping[str, Any] | None, who: str, partial: bool) -> dict[str,
 def derive_next_question(inputs: _Inputs, attention: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     partial = inputs.coverage != "complete"
     agents = ({lane["agent"] for lane in inputs.lanes} | {actor for item in attention for actor in item["actors"]}) - {UNKNOWN}
-    # A pseudo-lane keeps its entry, UNKNOWN: its facts stay visible but it is asked nothing.
-    lanes = {agent: _entry(None if agent in PSEUDO_AGENTS else
+    # In the explicit interface a pseudo-lane keeps its entry, UNKNOWN: its facts stay visible but it is asked
+    # nothing. The omitted interface asks it as main does.
+    lanes = {agent: _entry(None if inputs.explicit and agent in PSEUDO_AGENTS else
                            next((item for item in attention if agent in item["actors"]), None), agent, partial)
              for agent in sorted(agents)}
     first = attention[0] if attention else None

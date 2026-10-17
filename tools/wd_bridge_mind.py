@@ -5,7 +5,8 @@ Envelopes are complete ``{ref,event}`` pinned-reader observations. Hashes bind
 content, NOT actor origin or semantic truth. Source coverage/cursors are caller
 declarations. MindState retains the reducer and exact-duplicate index separately
 from TTL/capacity-bounded display facts. No clock read, network, provider or bridge
-write is used. Publication is opt-in to an explicit existing .codex-audit root.
+write is used, and no gate module is loaded: the block-by-type display vocabulary is
+kept here as data. Publication is opt-in to an explicit existing .codex-audit root.
 On Windows a replace or read can meet a reader's or writer's open handle (a sharing
 window, PermissionError): the publication replace and the publication read retry that
 one error a bounded number of times with a short backoff, never any other error.
@@ -29,8 +30,13 @@ import time
 from typing import Any
 
 from tools.bridge_compact_view import event_id
-from tools.bridge_event_taxonomy import BLOCK_BY_TYPE, RCO_GATED_TYPES
 from waggledance.core.bridge_log_reader import parse_bridge_json_object
+
+# The bridge's block-by-type vocabulary as data, so this observe-only core loads no gate module (Lead 06:19Z: no waiver
+# for transitive gate imports). The values are those of tools/bridge_event_taxonomy.py; a test reads that file's syntax
+# tree, never imports it, and fails if they differ. Display only: no verdict is computed from them here.
+BLOCK_BY_TYPE = frozenset({"finding", "blocked"})
+RCO_GATED_TYPES = frozenset({"finding"})
 
 UNKNOWN = "UNKNOWN"
 _REF = re.compile(r"[0-9a-f]{64}\Z")

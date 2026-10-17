@@ -13,9 +13,12 @@ separate probe, as the old blob admits an output only under its data-disk consta
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_card_delivery.py -q
 """
 
+import contextlib
 import copy
 import hashlib
+import io
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -317,6 +320,43 @@ def test_refusals_are_loud_and_fixed():
             call()
 
 
+def outside(tmp_path, *parts):
+    """A path with no .codex-audit ancestor whatever the basetemp (Lead 10:18Z: a basetemp may itself lie inside an
+    outer audit root, so no path under tmp_path is outside every one): under the filesystem anchor. It is never
+    created: each refusal comes before any write, and writes_only_in_audit fails a write outside an audit directory."""
+    return Path(tmp_path.anchor, "wd-no-audit-root", tmp_path.name, *parts)
+
+
+@contextlib.contextmanager
+def writes_only_in_audit(monkeypatch):
+    """A scoped filesystem spy (Lead 10:18Z): while it is active, a directory made, a file opened for writing or a
+    rename outside every .codex-audit directory fails before anything is created there."""
+
+    def inside(path):
+        return ".codex-audit" in Path(os.path.abspath(os.fspath(path))).parts
+
+    real_mkdir, real_open, real_rename = os.mkdir, io.open, os.rename
+
+    def mkdir(path, *args, **kwargs):
+        assert inside(path), f"a directory outside .codex-audit: {path}"
+        return real_mkdir(path, *args, **kwargs)
+
+    def open_(file, mode="r", *args, **kwargs):
+        if not isinstance(file, int) and set(mode) & set("wax+"):
+            assert inside(file), f"a file written outside .codex-audit: {file}"
+        return real_open(file, mode, *args, **kwargs)
+
+    def rename(source, target, *args, **kwargs):
+        assert inside(source) and inside(target), f"a rename outside .codex-audit: {target}"
+        return real_rename(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "mkdir", mkdir)
+        patch.setattr(io, "open", open_)
+        patch.setattr(os, "rename", rename)
+        yield
+
+
 OUTSIDE = "the output path is not inside a .codex-audit directory"  # literal: a test never trusts the module's text
 NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
 EXISTING = "the output file already exists; nothing is replaced"
@@ -330,23 +370,28 @@ def cli_files(tmp_path, as_of):
     return ["--view", str(view_path), "--receipts", str(receipts_path), "--now", as_of]
 
 
-def test_cli_refuses_an_output_outside_an_existing_codex_audit_directory_before_any_read(tmp_path, capsys):
+def test_cli_refuses_an_output_outside_an_existing_codex_audit_directory_before_any_read(tmp_path, capsys, monkeypatch):
     # F-2 and RCO2 DLV2 (Lead 09:34Z): the output root is admitted by its name and place, never by patching a module
     # constant; there is no default root and no F: fallback. The view file is missing in these calls, so a refusal
-    # that came after a read would name the view instead.
+    # that came after a read would name the view instead. Every file this test makes is inside an audit directory and
+    # the outside paths are outside every one, also under a basetemp inside an outer audit root (Lead 10:18Z).
     assert not hasattr(jcd, "SANDBOX_ROOT")
     as_of = shift(SINCE, minutes=586)
-    argv = cli_files(tmp_path, as_of)
-    missing = ["--view", str(tmp_path / "missing.json")] + argv[2:]
-    (tmp_path / "file").mkdir()
-    (tmp_path / "file" / ".codex-audit").write_bytes(b"")
-    for out_path, reason in ((tmp_path / "out.json", OUTSIDE), (tmp_path / ".codex-audit", OUTSIDE),
-                             (tmp_path / "absent" / ".codex-audit" / "out.json", NOT_A_ROOT),
-                             (tmp_path / "file" / ".codex-audit" / "out.json", NOT_A_ROOT)):
-        assert jcd.main(missing + ["--out", str(out_path)]) == 2
-        assert capsys.readouterr() == ("", f"refused: {reason}\n")
-        assert not out_path.exists()
-    assert jcd.main(argv) == 0  # without --out the preview is printed and nothing is written
+    work = tmp_path / ".codex-audit"
+    work.mkdir()
+    argv = cli_files(work, as_of)
+    missing = ["--view", str(work / "missing.json")] + argv[2:]
+    (work / "file").mkdir()
+    (work / "file" / ".codex-audit").write_bytes(b"")
+    with writes_only_in_audit(monkeypatch):
+        for out_path, reason in ((outside(tmp_path, "out.json"), OUTSIDE), (outside(tmp_path, ".codex-audit"), OUTSIDE),
+                                 (work / "absent" / ".codex-audit" / "out.json", NOT_A_ROOT),
+                                 (work / "file" / ".codex-audit" / "out.json", NOT_A_ROOT)):
+            assert jcd.main(missing + ["--out", str(out_path)]) == 2
+            assert capsys.readouterr() == ("", f"refused: {reason}\n")
+            assert not out_path.exists()
+        assert not outside(tmp_path).exists()
+        assert jcd.main(argv) == 0  # without --out the preview is printed and nothing is written
     printed = capsys.readouterr().out
     assert "last_open_slot=yes" in printed and "nothing was sent" in printed
 

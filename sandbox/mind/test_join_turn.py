@@ -405,38 +405,49 @@ def test_the_join_cli_has_no_default_root_and_refuses_before_any_read(monkeypatc
     with pytest.raises(SystemExit) as stopped:
         jt.main(base)
     assert (stopped.value.code, calls) == (2, []) and "--frozen-root" in capsys.readouterr().err
-    assert jt.main(base + ["--frozen-root", "frozen", "--out", str(tmp_path / "plain" / "turn")]) == 2
+    with tjd.writes_only_in_audit(monkeypatch):  # outside every audit root whatever the basetemp (Lead 10:18Z)
+        assert jt.main(base + ["--frozen-root", "frozen", "--out", str(tjd.outside(tmp_path, "plain", "turn"))]) == 2
     assert (calls, capsys.readouterr().out.splitlines()) == ([], ["refused: " + OUTSIDE])
-    assert not (tmp_path / "plain").exists() and not hasattr(jt, "SANDBOX_ROOT")
+    assert not tjd.outside(tmp_path).exists() and not hasattr(jt, "SANDBOX_ROOT")
     for function in (fz.load_manifest, fz.load_frozen, jt.turn):
         assert inspect.signature(function).parameters["root"].default is inspect.Parameter.empty
 
 
-def test_an_output_goes_only_into_an_existing_codex_audit_directory_and_a_refusal_writes_nothing(tmp_path):
+def test_an_output_goes_only_into_an_existing_codex_audit_directory_and_a_refusal_writes_nothing(tmp_path, monkeypatch):
     assert not hasattr(jt, "SANDBOX_ROOT")  # first: the old data-disk root is never resolved here
     result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)
-    (tmp_path / "file").mkdir()
-    (tmp_path / "file" / ".codex-audit").write_bytes(b"")
-    for out, reason in ((tmp_path / "plain" / "turn", OUTSIDE), (tmp_path / ".codex-audit", OUTSIDE),
-                        (tmp_path / "absent" / ".codex-audit" / "turn", NOT_A_ROOT),
-                        (tmp_path / "file" / ".codex-audit" / "turn", NOT_A_ROOT)):
-        with pytest.raises(jt.JoinTurnError) as refused:
-            jt.write_turn(out, result)
-        assert str(refused.value) == reason
-    listed = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    work = tmp_path / ".codex-audit"  # every path this test makes is inside an audit directory (Lead 10:18Z)
+    (work / "file").mkdir(parents=True)
+    (work / "file" / ".codex-audit").write_bytes(b"")
+    with tjd.writes_only_in_audit(monkeypatch):
+        for out, reason in ((tjd.outside(tmp_path, "plain", "turn"), OUTSIDE),
+                            (tjd.outside(tmp_path, ".codex-audit"), OUTSIDE),
+                            (work / "absent" / ".codex-audit" / "turn", NOT_A_ROOT),
+                            (work / "file" / ".codex-audit" / "turn", NOT_A_ROOT)):
+            with pytest.raises(jt.JoinTurnError) as refused:
+                jt.write_turn(out, result)
+            assert str(refused.value) == reason
+    listed = sorted(path.relative_to(work).as_posix() for path in work.rglob("*"))
     assert listed == ["file", "file/.codex-audit"]  # a refusal creates nothing, not even a parent
-    audit = tmp_path / "ok" / ".codex-audit"
+    assert not tjd.outside(tmp_path).exists()
+    audit = work / "ok" / ".codex-audit"
     audit.mkdir(parents=True)
-    jt.write_turn(audit / "deeper" / "turn", result)
+    with tjd.writes_only_in_audit(monkeypatch):
+        jt.write_turn(audit / "deeper" / "turn", result)
     assert sorted(path.name for path in (audit / "deeper" / "turn").iterdir()) == sorted(FOUR)
 
 
-def test_out_outside_the_sandbox_root_writes_nothing(sandbox_root, tmp_path):
+def test_out_outside_the_sandbox_root_writes_nothing(sandbox_root, tmp_path, monkeypatch):
+    # outside every audit root whatever the basetemp (Lead 10:18Z): an audit-named directory with no audit ancestor,
+    # and a dot-dot path that climbs from the audit root to the filesystem anchor, past any outer audit root too
     result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)
-    for out in (tmp_path / "elsewhere", sandbox_root, sandbox_root / ".." / "escape"):
-        with pytest.raises(jt.JoinTurnError):
-            jt.write_turn(out, result)
-    assert not (tmp_path / "elsewhere").exists() and not (tmp_path / "escape").exists()
+    climb = sandbox_root.joinpath(*[".."] * (len(sandbox_root.parts) - 1), *tjd.outside(tmp_path, "escape").parts[1:])
+    assert climb.resolve() == tjd.outside(tmp_path, "escape").resolve()
+    with tjd.writes_only_in_audit(monkeypatch):
+        for out in (tjd.outside(tmp_path, "elsewhere"), tjd.outside(tmp_path, ".codex-audit"), climb):
+            with pytest.raises(jt.JoinTurnError):
+                jt.write_turn(out, result)
+    assert not tjd.outside(tmp_path).exists()
 
 
 def test_an_earlier_turn_is_never_overwritten(sandbox_root):
@@ -470,16 +481,19 @@ def test_cli_prints_the_card_and_refuses_with_fixed_reasons(monkeypatch, sandbox
     inputs = json.loads((sandbox_root / "cli" / "turn.json").read_text(encoding="utf-8"))["inputs"]
     assert inputs == {"frozen_root": "synthetic-frozen", "manifest_sha256": "c" * 64, "cycle_files": files,
                       "cycle_nulls": ["capture.json"]}
-    for bad, reason in ((args[:3] + ["other"] + args[4:], "the cycle is not exactly once"),
-                        (["--lane", "nobody"] + args[2:], "the lane is not a fleet"),
-                        (args + ["--now", "yesterday"], "an explicit now_utc is required"),
-                        (args + ["--out", str(sandbox_root / "cli")], "the output directory already holds a turn"),
-                        (args + ["--out", str(sandbox_root / "empty")], "the output directory already exists"),
-                        (args + ["--out", str(sandbox_root.parent / "outside")], "the output path is not inside"),
-                        (args + ["--receipts", str(sandbox_root / "missing.json")], "a file could not be read"),
-                        (args + ["--remember", str(strict)], "a file could not be read")):
-        assert jt.main(bad) == 2
-        assert capsys.readouterr().out.startswith(f"refused: {reason}")
+    elsewhere = tjd.outside(sandbox_root.parent, "outside")  # outside every audit root whatever the basetemp
+    with tjd.writes_only_in_audit(monkeypatch):
+        for bad, reason in ((args[:3] + ["other"] + args[4:], "the cycle is not exactly once"),
+                            (["--lane", "nobody"] + args[2:], "the lane is not a fleet"),
+                            (args + ["--now", "yesterday"], "an explicit now_utc is required"),
+                            (args + ["--out", str(sandbox_root / "cli")], "the output directory already holds a turn"),
+                            (args + ["--out", str(sandbox_root / "empty")], "the output directory already exists"),
+                            (args + ["--out", str(elsewhere)], "the output path is not inside"),
+                            (args + ["--receipts", str(sandbox_root / "missing.json")], "a file could not be read"),
+                            (args + ["--remember", str(strict)], "a file could not be read")):
+            assert jt.main(bad) == 2
+            assert capsys.readouterr().out.startswith(f"refused: {reason}")
+    assert not tjd.outside(sandbox_root.parent).exists()
 
 
 def test_a_cycle_named_twice_in_the_manifest_is_refused(monkeypatch, capsys):

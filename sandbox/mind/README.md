@@ -202,6 +202,8 @@ run read-only local `git` commands.
   `gh pr view` of the same four fields, within the same bounds; a PR still missing, or a snapshot the core refuses,
   leaves the whole context UNKNOWN, which suppresses nothing (the board then reads bridge facts only and can still
   suggest a vote for a PR merged outside the bridge view): a bounded backfill, not a fail-closed suppression.
+  A shorter list holds every PR, so a PR of that snapshot it leaves out (a row of another shape, such as a branch
+  outside the task grammar, or a PR not on GitHub) also leaves the context UNKNOWN (`needed_pr_missing`).
 * **Import.** The program runs only as a script (`__main__`): importing the module (the package's import smoke)
   defines its constants, classes and functions and runs, imports, writes and starts nothing. A fresh-interpreter
   test checks this, and a guarded run of the script refuses every gate, classifier, charter and taxonomy module

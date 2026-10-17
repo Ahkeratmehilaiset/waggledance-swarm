@@ -55,14 +55,16 @@ jobs:
           "
 
       - name: Run tests
-        run: pytest tests/ -x -q --tb=short -p no:warnings
+        run: |
+          pytest tests/ -x -q --tb=short -p no:warnings
+          pytest sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py -x -q --tb=short -p no:warnings
 
       - name: Check test count
         run: |
           # Fail closed: a failed collection, or a summary that is not exactly one
           # "<N> tests collected in <T>s" line, must not pass (K 011920df job
           # 113510581050 read "28144 13 80" from the duration and still passed).
-          if ! OUT=$(pytest tests/ --collect-only -q 2>/dev/null); then
+          if ! OUT=$(pytest tests/ sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py --collect-only -q 2>/dev/null); then
             echo "Test collection failed"
             exit 1
           fi

@@ -849,8 +849,10 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
     """
     denied = {path[:-3].replace("/", ".") for path in (*GATE_EXECUTORS, *RCO_CHECKERS)} | {
         "tools.bridge_event_taxonomy",
+        "tools.check_proven_safe_autosign_class",
         "tools.check_standing_consensus_sign_class",
         "waggledance.core.idle_consensus_charter",
+        "waggledance.core.magma.consensus_receipt",
     }
     script = (
         "import importlib, importlib.abc, json, pathlib, runpy, sys\n"
@@ -893,6 +895,33 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         assert set(observed["loaded"]) == set(SHADOW_RELEASE_MODULES)
     else:
         assert "usage:" in result.stdout.lower() and "--help" in result.stdout
+
+
+@pytest.mark.parametrize("removed", [
+    None, "tools.check_proven_safe_autosign_class",
+    "waggledance.core.magma.consensus_receipt",
+])
+def test_shadow_guard_denies_core_governance_and_named_mutants(removed):
+    """Inspect the actual child caller deny set without importing any gate."""
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "test_staged_shadow_import_and_help_refuse_gate_modules")
+    assignment = next(node for node in function.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "denied"
+                              for target in node.targets))
+    denied = eval(compile(ast.Expression(assignment.value), "<actual-shadow-deny-set>", "eval"),
+                  {"GATE_EXECUTORS": GATE_EXECUTORS, "RCO_CHECKERS": RCO_CHECKERS})
+    required = {
+        "tools.check_proven_safe_autosign_class",
+        "waggledance.core.magma.consensus_receipt",
+        "tools.merge_with_bridge_receipt",
+        "tools.bridge_v2_identity_registry",
+    }
+    assert required <= denied, "shadow_governance_guard_incomplete"
+    if removed is not None:
+        mutant = denied - {removed}
+        with pytest.raises(AssertionError, match="shadow_governance_guard_incomplete"):
+            assert required <= mutant, "shadow_governance_guard_incomplete"
 
 
 def test_shadow_finder_positive_control_kills_noop_mutant(tmp_path):

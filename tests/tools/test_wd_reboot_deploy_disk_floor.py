@@ -112,6 +112,7 @@ def _ps(host: str, body: str, cases: list[dict] | None = None) -> dict:
     # Source is DATA on stdin, never -File/dot-sourced as an installer.
     prefix = r"""
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)

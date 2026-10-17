@@ -601,3 +601,52 @@ def test_binding_r9_parent_accepts_normalized_observed_path_not_different_host()
     with_case_path(lambda value: value.swapcase().replace("\\", "/")).main()
     with pytest.raises(ValueError, match="unbound case receipt"):
         with_case_path(lambda value: r"C:\different\powershell.exe").main()
+
+
+def test_binding_r10_shared_fixture_prefix_suppresses_progress():
+    # MUTANT_FIXTURE_PROGRESS_FALSE_FAILURE: a legacy stream decode risk,
+    # simulated here, not a claim the real eight-case fixture failed this way.
+    _BindingDoubles().fixture(strict=True)
+    _BindingDoubles().fixture(strict=False)
+    strict = _BindingDoubles()
+    base = strict.scope["subprocess"].Popen
+
+    class ProgressChild(base):
+        def communicate(self, input=None, timeout=None):
+            script = strict.base64.b64decode(self.argv[-1]).decode("utf-16-le")
+            if "$ProgressPreference = 'SilentlyContinue'" not in script:
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "synthetic legacy progress stream")
+            return super().communicate(input=input, timeout=timeout)
+
+    strict.scope["subprocess"].Popen = ProgressChild
+    strict.fixture(strict=True)
+    local = _BindingDoubles()
+    plain_run = local.scope["subprocess"].run
+
+    def progress_run(argv, **kwargs):
+        script = local.base64.b64decode(argv[-1]).decode("utf-16-le")
+        assert "$ProgressPreference = 'SilentlyContinue'" in script
+        return plain_run(argv, **kwargs)
+
+    local.scope["subprocess"].run = progress_run
+    local.fixture(strict=False)
+
+
+def test_binding_r11_optional_local_success_cannot_fill_missing_strict_receipt():
+    # MUTANT_OPTIONAL_LOCAL_RESULT_ACCEPTED_AS_BOUND_GATE.
+    # Coverage of an existing correct guard, not an original product RED.
+    _BindingDoubles().fixture(strict=False)
+    _BindingDoubles().main()
+    run = _BindingDoubles()
+    base = run.scope["subprocess"].run
+
+    def without_receipt(argv, **kwargs):
+        result = base(argv, **kwargs)
+        if "pytest" in argv:
+            name = next(key for key in run.files if "\\cases\\" in key)
+            del run.files[name]
+        return result
+
+    run.scope["subprocess"].run = without_receipt
+    with pytest.raises(ValueError, match="missing/extra case receipt"):
+        run.main()

@@ -790,12 +790,18 @@ def _assert_shadow_release_delivery(definition):
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     assert sandbox_files <= required, "deferred_sandbox_file_published"
+    sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
+    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
+    sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
+                     if name.startswith("sandbox.")}
+    assert sandbox_smoke <= set(SHADOW_RELEASE_MODULES), "deferred_shadow_smoke"
     assert "enabled" not in definition["manual_execution_capability"]
 
 
 @pytest.mark.parametrize("mutation", [
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
+    "deferred_shadow_entrypoint", "deferred_shadow_smoke",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -811,6 +817,10 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_entrypoints"].pop("mind_join_turn")
     elif mutation == "shadow_library_published":
         mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
+    elif mutation == "deferred_shadow_entrypoint":
+        mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
+    elif mutation == "deferred_shadow_smoke":
+        mutant["import_smoke"]["package_modules"].append("sandbox.mind.deferred_memory")
     else:
         mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
     with pytest.raises(AssertionError, match=mutation):
@@ -852,7 +862,16 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         " def find_spec(self, fullname, path=None, target=None):\n"
         "  if any(fullname == name or fullname.startswith(name + '.') for name in denied):\n"
         "   raise RuntimeError('shadow_gate_import_refused:' + fullname)\n"
-        "sys.meta_path.insert(0, NoGate())\n"
+        "guard = NoGate()\n"
+        "sys.meta_path.insert(0, guard)\n"
+        "assert sys.meta_path[0] is guard, 'shadow_gate_guard_control_failed'\n"
+        "for candidate in sorted(denied):\n"
+        " try:\n"
+        "  guard.find_spec(candidate)\n"
+        " except RuntimeError as error:\n"
+        "  assert str(error) == 'shadow_gate_import_refused:' + candidate, 'shadow_gate_guard_control_failed'\n"
+        " else:\n"
+        "  raise AssertionError('shadow_gate_guard_control_failed')\n"
         "sys.path.insert(0, str(root))\n"
         "if cli is not None:\n"
         " sys.argv = [cli, '--help']\n"
@@ -874,3 +893,30 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         assert set(observed["loaded"]) == set(SHADOW_RELEASE_MODULES)
     else:
         assert "usage:" in result.stdout.lower() and "--help" in result.stdout
+
+
+def test_shadow_finder_positive_control_kills_noop_mutant(tmp_path):
+    """Exercise the ACTUAL child code, with empty imports and a nonexistent toy gate.
+
+    No product/gate source is imported. The empty import list alone must not
+    allow a disabled finder to masquerade as a checked denial mechanism.
+    """
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "test_staged_shadow_import_and_help_refuse_gate_modules")
+    assignment = next(node for node in function.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "script"
+                              for target in node.targets))
+    script = ast.literal_eval(assignment.value)
+    anchor = "raise RuntimeError('shadow_gate_import_refused:' + fullname)"
+    assert script.count(anchor) == 1
+    commands = [sys.executable, "-I", "-S", "-B", "-c"]
+    arguments = [str(tmp_path), json.dumps(["nonexistent_synthetic_gate"]), "[]", "null"]
+    control = subprocess.run(commands + [script] + arguments, cwd=tmp_path,
+                             capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert control.returncode == 0, control.stderr
+    assert json.loads(control.stdout)["loaded"] == {}
+    mutant = subprocess.run(commands + [script.replace(anchor, "return None")] + arguments,
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert mutant.returncode != 0, "MUTANT_NOOP_GATE_FINDER survived"
+    assert "shadow_gate_guard_control_failed" in mutant.stderr

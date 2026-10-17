@@ -975,6 +975,11 @@ def test_a_pseudo_lane_keeps_its_facts_but_gets_no_question():
     (lambda c: c.update(observed_utc="2026-01-01T00:45:01Z"), "context_stale"),
     (lambda c: c["prs"]["10"].update(state="open"), "context_pr_invalid"),
     (lambda c: c["prs"].update({"010": c["prs"]["10"]}), "context_pr_invalid"),
+    # PR keys are refused before int(): one over the int digit limit (int() raises ValueError past 4300 digits), a
+    # superscript digit that str.isdigit() accepts and int() refuses, and ten digits, beyond a PR subject's nine
+    (lambda c: c["prs"].update({"1" * 4301: c["prs"]["10"]}), "context_pr_invalid"),
+    (lambda c: c["prs"].update({"\u00b2": c["prs"]["10"]}), "context_pr_invalid"),
+    (lambda c: c["prs"].update({"1" * 10: c["prs"]["10"]}), "context_pr_invalid"),
     (lambda c: c["prs"]["10"].update(head="UNKNOWN"), "context_pr_invalid"),
     (lambda c: c["prs"]["10"]["path_class"].update(a_hits=".agent-bridge/bin"), "context_path_class_invalid"),
     (lambda c: c["prs"]["10"]["path_class"].update(charter_allowed="false"), "context_path_class_invalid"),

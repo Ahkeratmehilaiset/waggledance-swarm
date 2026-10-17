@@ -186,6 +186,9 @@ CONTEXT_LIST_LIMIT = 40
 # Not fleet lanes: their sourced facts stay visible, but they get no action question.
 PSEUDO_AGENTS = frozenset({"system"})
 _PR_SUBJECT = re.compile(r"pr:([1-9][0-9]{0,8})(?::.*)?")
+# A context PR key: a PR subject's number, matched before int() so no key reaches the int digit limit or a digit
+# str.isdigit() accepts and int() refuses.
+_PR_KEY = re.compile(r"[1-9][0-9]{0,8}")
 ATTENTION_RANK = {"last_missing_vote": 0, "signature_only": 1, "votes_missing": 2, "tension_high": 3,
                   "tension": 4}
 
@@ -357,7 +360,7 @@ def read_context(value: Any, now: datetime) -> tuple[dict[str, Any] | None, str 
         return None, "context_prs_invalid"
     prs: dict[int, dict[str, Any]] = {}
     for key, row in rows.items():
-        number = int(key) if isinstance(key, str) and key.isdigit() and key == str(int(key)) and int(key) > 0 else None
+        number = int(key) if _match(_PR_KEY, key) else None
         keys = CONTEXT_PR_KEYS_V2 if value["schema"] == CONTEXT_SCHEMA_V2 else CONTEXT_PR_KEYS
         if number is None or not isinstance(row, Mapping) or set(row) != keys \
                 or row["state"] not in PR_STATES or _match(HEAD, row["head"]) is None \

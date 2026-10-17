@@ -856,6 +856,8 @@ def test_checkpoint_only_no_wake_statuses_never_dispatch(status):
                                     "r2_pushed_awaiting_", "In_Progress", "audit_replied_x"])
 def test_checkpoint_only_unrecognised_status_is_unknown(status):
     d = evaluate(cponly(checkpoint=cp(status=status)), NOW)
+    # The conservative no-wake substring policy catches "replied" even in
+    # an otherwise unrecognised status; this is not an exact allowlist oracle.
     if "replied" in status:
         assert d["verdict"] == "hold"
     else:
@@ -939,6 +941,8 @@ def test_fresh_checkpoint_only_status_gates_defer(status, deferred):
 @pytest.mark.parametrize("with_token", [False, True])
 def test_fresh_never_defers_rco2_fm3_waiting_without_structured_predicate(with_token):
     c = cp(status="waiting_on_rco", updated="2026-09-28T23:50:00Z")
+    # Both variants stay unknown. The control-token reason takes precedence
+    # over the unstructured-wait reason; this oracle does not require both.
     if with_token:  # the token gate must not become a back door around FM3
         c["blockers"] = ["HOLD 1549 preserved"]
     d = evaluate(snap(checkpoint=c), NOW)
@@ -969,9 +973,14 @@ def test_explicit_holds_are_never_deferred_by_freshness(scope_snap):
 def test_freshness_never_changes_clean_checkpoint_outcomes(scope_snap):
     recent = evaluate(scope_snap(checkpoint=cp(updated="2026-09-28T23:55:00Z")), NOW)
     assert only(recent, "checkpoint")["reasons"] == ["checkpoint_recent"]
+    # MUTANT_FRESH_TOP_HOLD / MUTANT_FRESH_ITEM_HOLD keep the reason unchanged.
+    assert recent["verdict"] == "wait"
+    assert only(recent, "checkpoint")["verdict"] == "wait"
     due = evaluate(scope_snap(checkpoint=cp(updated="2026-09-28T23:55:00Z",
                                             next_wakeup="2026-09-28T23:59:00Z")), NOW)
     assert due["verdict"] == "dispatch"
+    # MUTANT_DUE_ITEM_WAIT leaves the top-level verdict untouched.
+    assert only(due, "checkpoint")["verdict"] == "dispatch"
 
 
 def test_done_and_cancelled_precede_freshness():
@@ -990,7 +999,10 @@ def test_malformed_checkpoint_timestamp_still_fails_closed(updated):
 @pytest.mark.parametrize("blockers", ["HOLD", [1], None, {"a": 1}])
 def test_malformed_blockers_are_unknown(blockers):
     c = dict(cp(), blockers=blockers)
-    assert evaluate(snap(checkpoint=c), NOW)["reasons"] == ["bad_list:checkpoint.blockers"]
+    d = evaluate(snap(checkpoint=c), NOW)
+    assert d["reasons"] == ["bad_list:checkpoint.blockers"]
+    # MUTANT_MALFORMED_DISPATCH preserves the validation reason.
+    assert d["verdict"] == "unknown"
 
 
 # --- base64 snapshot transport (PS5 strips quotes from native argv) ------------------------

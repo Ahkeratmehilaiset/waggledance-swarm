@@ -163,7 +163,6 @@ def test_identity_is_bound_to_the_integrity_label_and_an_explicit_user_sid(adapt
         assert word not in adapter, word
     assert not re.search(r"\$Approved(UserSid|IntegrityLevel)\s*=", adapter)
     assert "-Name 'ApprovedUserSid' -Value $ApprovedUserSid -Pattern '^S-1-5-21-\\d+-\\d+-\\d+-\\d+$'" in adapter
-    assert "$whoami = Join-Path $env:SystemRoot 'System32\\whoami.exe'" in adapter
     assert "& $whoami '/groups' '/fo' 'csv' '/nh'" in adapter
     assert "Where-Object { [string]$_.sid -cmatch '^S-1-16-(\\d+)$' }" in adapter
     assert "$levels = @{ '8192' = 'medium'; '12288' = 'high' }" in adapter
@@ -174,6 +173,30 @@ def test_identity_is_bound_to_the_integrity_label_and_an_explicit_user_sid(adapt
     assert "$actualUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value" in adapter
     checked = adapter.index("$actualUserSid -cne $ApprovedUserSid")
     assert checked < adapter.index("ReadAllBytes(") and checked < adapter.index("'run_intent'")
+
+
+def test_whoami_path_comes_from_the_os_system_directory_never_the_environment(adapter):
+    # T1 trust path (cp3, RCO1 finding): an environment variable such as SystemRoot can point whoami.exe at another
+    # file that fakes the label, so the path comes from the OS system directory and is verified before it runs.
+    for word in ("systemroot", "windir", "$env:path", "get-command whoami"):
+        assert word not in adapter.lower(), word
+    assert adapter.count("[Environment]::SystemDirectory") == 1
+    assert adapter.count("$whoami = ") == 1
+    for text in ("$systemDir = [Environment]::SystemDirectory",
+                 "[IO.Path]::GetFullPath($systemDir) -cne $systemDir",
+                 "$whoami = [IO.Path]::Combine($systemDir, 'whoami.exe')",
+                 "$whoamiInfo = New-Object IO.FileInfo($whoami)"):
+        assert adapter.count(text) == 1, text
+    assert re.search(r"\$systemDir -cnotmatch '\^\[A-Za-z\]:\\\\", adapter)
+    assert re.search(r"\[IO\.Path\]::GetFullPath\(\$systemDir\) -cne \$systemDir\) \{\s*throw", adapter)
+    assert re.search(r"if \(-not \$whoamiInfo\.Exists -or\s+\(\(\$whoamiInfo\.Attributes -band "
+                     r"\[IO\.FileAttributes\]::ReparsePoint\) -ne 0\)\) \{\s*throw", adapter)
+    assert re.search(r"for \(\$dir = \$whoamiInfo\.Directory; \$null -ne \$dir; \$dir = \$dir\.Parent\) \{\s*"
+                     r"if \(\(\$dir\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint\) -ne 0\) \{\s*throw",
+                     adapter)
+    source = adapter.index("$systemDir = [Environment]::SystemDirectory")
+    chain = adapter.index("for ($dir = $whoamiInfo.Directory;")
+    assert source < chain < adapter.index("& $whoami '/groups'")
 
 
 def test_records_are_published_once_without_overwrite(adapter):

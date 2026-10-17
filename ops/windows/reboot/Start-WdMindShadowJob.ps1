@@ -27,14 +27,17 @@
 
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
-    membership is never used, and nothing is defaulted from the caller.
+    membership is never used, and nothing is defaulted from the caller. whoami.exe comes from the OS system directory
+    ([Environment]::SystemDirectory), never from an environment variable, and must be an absolute regular file with no
+    reparse point on it or on any parent directory; anything else is refused.
 
     Source-preparation limits (Lead D8 decision): L1, the type resumes the root inside its constructor, so run_start
     follows the resume; this does not meet a before-resume native-evidence need and waives nothing. L2, a root that
     exits before its creation time is read leaves that identity UNKNOWN; the observation time is never used instead.
 
-    Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit), RCO2 (G1-G4 and the
-    member witness), Lead (route, deadline, records, launch id, time, binding and cp2 decisions); fable-5 wrote this
+    Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
+    RCO2 (G1-G4 and the member witness), Lead (route, deadline, records, launch id, time, binding, cp2 and cp3
+    decisions); fable-5 wrote this
     file. There is no process kill by PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -176,7 +179,25 @@ Assert-WdShadowValue -Name 'ApprovedUserSid' -Value $ApprovedUserSid -Pattern '^
 
 # T1: classify by the actual mandatory integrity label (its S-1-16 SID, language independent) and bind the token user
 # to the explicitly approved user SID; group membership is never used and nothing is defaulted from the caller.
-$whoami = Join-Path $env:SystemRoot 'System32\whoami.exe'
+# Trust path (cp3, RCO1): an environment variable can point whoami.exe at another file that fakes the label, so the path
+# comes from the OS system directory ([Environment]::SystemDirectory, GetSystemDirectory) and must be an absolute
+# regular file with no reparse point on the file or on any parent directory before it runs.
+$systemDir = [Environment]::SystemDirectory
+if (-not $systemDir -or $systemDir -cnotmatch '^[A-Za-z]:\\[^<>:"/|?*]+$' -or
+    [IO.Path]::GetFullPath($systemDir) -cne $systemDir) {
+    throw 'refused: the OS system directory is not an absolute local path'
+}
+$whoami = [IO.Path]::Combine($systemDir, 'whoami.exe')
+$whoamiInfo = New-Object IO.FileInfo($whoami)
+if (-not $whoamiInfo.Exists -or
+    (($whoamiInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw 'refused: whoami.exe in the OS system directory is not a regular file without a reparse point'
+}
+for ($dir = $whoamiInfo.Directory; $null -ne $dir; $dir = $dir.Parent) {
+    if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "refused: $($dir.FullName) on the whoami.exe path is a reparse point"
+    }
+}
 $global:LASTEXITCODE = 0
 $groupRows = @(& $whoami '/groups' '/fo' 'csv' '/nh')
 if ($LASTEXITCODE -ne 0) { throw 'refused: the token groups could not be read' }

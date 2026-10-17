@@ -77,19 +77,46 @@ def test_pure_broker_rejects_symlink_and_large_blob(tmp_path):
 
 
 def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypatch):
+    fixture_env = {k: v for k, v in os.environ.items()
+                   if not k.upper().startswith("GIT_")}
+
+    def git(path, *args, env=None):
+        return subprocess.run(["git", "-C", str(path), *args], check=True,
+                              capture_output=True,
+                              env=fixture_env if env is None else env).stdout.decode().strip()
+
     repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    foreign = tmp_path / "foreign"
+    for path in (repo, foreign):
+        path.mkdir()
+        git(path, "init", "-q")
+        git(path, "config", "user.email", "test@example.invalid")
+        git(path, "config", "user.name", "Test")
+    (foreign / "outside.txt").write_text("outside object store\n", encoding="utf-8")
+    git(foreign, "add", "outside.txt")
+    git(foreign, "commit", "-qm", "foreign fixture")
+    foreign_sha = git(foreign, "rev-parse", "HEAD")
+    object_dir = foreign / ".git" / "objects"
+    git_exe = Path(shutil.which("git")).resolve()
+
     with pytest.raises(ValueError, match="Full commit SHA"):
-        GitBlobBroker(repo, "abcdef", Path(shutil.which("git")).resolve())
-    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "missing"))
+        GitBlobBroker(repo, "abcdef", git_exe)
+    # Prove the exact foreign commit is absent locally, but becomes readable
+    # if Git inherits the attacker's object store. A fabricated SHA is vacuous.
+    missing = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", foreign_sha],
+                             env=fixture_env, capture_output=True)
+    assert missing.returncode != 0
+    assert git(repo, "show", f"{foreign_sha}:outside.txt",
+               env={**fixture_env, "GIT_OBJECT_DIRECTORY": str(object_dir)}) == "outside object store"
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(object_dir))
+    with pytest.raises(ValueError, match="Git plumbing"):
+        GitBlobBroker(repo, foreign_sha, git_exe)
+    # Keep config injection separate so it cannot mask the object-store mutant.
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(tmp_path / "missing"))
-    # There is no commit, but caller-controlled Git overrides cannot turn
-    # this into an object-store read outside the selected repository.
     with pytest.raises(ValueError, match="Git plumbing"):
-        GitBlobBroker(repo, "a" * 40, Path(shutil.which("git")).resolve())
+        GitBlobBroker(repo, foreign_sha, git_exe)
 
 
 def test_broker_rejects_relative_git_executable_and_deep_json():

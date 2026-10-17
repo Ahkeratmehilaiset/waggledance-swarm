@@ -877,6 +877,7 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         "  raise AssertionError('shadow_gate_guard_control_failed')\n"
         "sys.path.insert(0, str(root))\n"
         "def source_path_owned(value):\n"
+        " assert pathlib.Path(value).is_absolute(), 'shadow_source_origin_not_absolute'\n"
         " assert pathlib.Path(value).resolve().is_relative_to(root), 'shadow_source_origin_outside_staged_root'\n"
         "if cli is not None:\n"
         " sys.argv = [cli, '--help']\n"
@@ -889,7 +890,7 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}\n"
         " assert all(pathlib.Path(path).is_relative_to(root) for path in loaded.values())\n"
         "for name, module in list(sys.modules.items()):\n"
-        " if name.partition('.')[0] in {'tools', 'waggledance', 'sandbox', 'step1', 'join_card', 'join_card_delivery'}:\n"
+        " if name.partition('.')[0] in {'tools', 'waggledance', 'sandbox', 'step1', 'join_card', 'join_card_delivery', 'lane_view', 'lane_view_frozen'}:\n"
         "  origin = getattr(module, '__file__', None)\n"
         "  if origin is not None:\n"
         "   source_path_owned(origin)\n"
@@ -974,6 +975,7 @@ def test_shadow_finder_positive_control_kills_noop_mutant(tmp_path):
 @pytest.mark.parametrize("name", [
     "tools.synthetic_unlisted", "waggledance.synthetic_unlisted",
     "sandbox.synthetic_unlisted", "step1.synthetic_unlisted", "join_card",
+    "lane_view", "lane_view_frozen",
 ])
 @pytest.mark.parametrize("namespace", [False, True])
 def test_shadow_source_origin_covers_unlisted_internal_modules_and_namespaces(tmp_path, name, namespace):
@@ -1019,4 +1021,38 @@ def test_shadow_source_origin_covers_unlisted_internal_modules_and_namespaces(tm
     )
     assert script.count(guard_anchor) == 1
     mutant = run(script.replace(guard_anchor, " pass  # MUTANT_NOOP_SOURCE_ORIGIN"), True)
+    assert mutant.returncode == 0, mutant.stderr
+
+
+@pytest.mark.parametrize("origin", ["synthetic.py", ".", ""])
+@pytest.mark.parametrize("namespace", [False, True])
+def test_shadow_source_origin_refuses_relative_file_and_namespace_origins(tmp_path, origin, namespace):
+    """A relative metadata path must not be credited to the staged cwd."""
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "test_staged_shadow_import_and_help_refuse_gate_modules")
+    assignment = next(node for node in function.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "script"
+                              for target in node.targets))
+    script = ast.literal_eval(assignment.value)
+    anchor = " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}"
+    assert script.count(anchor) == 1
+    injected = (
+        " import types\n"
+        " synthetic = types.ModuleType('sandbox.synthetic_relative')\n"
+        f" synthetic.__file__ = {None if namespace else origin!r}\n"
+        + (f" synthetic.__path__ = {[origin]!r}\n" if namespace else "")
+        + " sys.modules['sandbox.synthetic_relative'] = synthetic\n"
+    )
+    command = [sys.executable, "-I", "-S", "-B", "-c"]
+    arguments = [str(tmp_path), "[]", "[]", "null"]
+    candidate = script.replace(anchor, injected + anchor)
+    refused = subprocess.run(command + [candidate] + arguments, cwd=tmp_path,
+                             capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert refused.returncode != 0, "RELATIVE_SOURCE_ORIGIN was credited to cwd"
+    assert "shadow_source_origin_not_absolute" in refused.stderr
+    guard = " assert pathlib.Path(value).is_absolute(), 'shadow_source_origin_not_absolute'"
+    assert candidate.count(guard) == 1
+    mutant = subprocess.run(command + [candidate.replace(guard, " pass  # MUTANT_RELATIVE_SOURCE_ORIGIN")] + arguments,
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert mutant.returncode == 0, mutant.stderr

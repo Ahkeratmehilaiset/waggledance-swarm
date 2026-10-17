@@ -219,3 +219,29 @@ def test_exact_eight_case_junit_and_named_mutants(mutant):
     data = b"" if mutant == "empty" else ET.tostring(root)
     with pytest.raises((ValueError, ET.ParseError)):
         check(data, token)
+
+
+@pytest.mark.parametrize("tag", [
+    "rerunFailure", "rerunError", "flakyFailure", "flakyError", "unknown-result"
+])
+def test_junit_refuses_nonstandard_case_result_children(tag):
+    check = _helpers()["validate_junit"]
+    token = _context()[3]
+    root = _xml(token)
+    assert len(check(ET.tostring(root), token)) == 8
+    ET.SubElement(root[0][0], tag)
+    with pytest.raises(ValueError, match="unsupported testcase child"):
+        check(ET.tostring(root), token)
+
+
+@pytest.mark.parametrize("path", [
+    r"\\server\share\pwsh.exe", r"\\?\C:\verified\pwsh.exe"
+])
+def test_host_refuses_unc_and_device_path_aliases(path):
+    check = _helpers()["validate_host"]
+    local = r"C:\verified\pwsh.exe"
+    observed = dict(platform="Win32NT", executable=local, major=7,
+                    minor=6, edition="Core", pid=123)
+    assert check("ps7", local, observed) == observed
+    with pytest.raises(ValueError, match="local drive-absolute"):
+        check("ps7", path, dict(observed, executable=path))

@@ -180,6 +180,8 @@ jobs:
           def validate_host(label, resolved, observed):
               if label not in ("ps5", "ps7") or not ntpath.isabs(resolved):
                   raise ValueError("invalid host label/path")
+              if not re.match(r"^[A-Za-z]:[\\/]", resolved):
+                  raise ValueError("local drive-absolute host path required")
               if observed.get("platform") != "Win32NT":
                   raise ValueError("non-Windows host")
               actual = observed.get("executable", "")
@@ -216,6 +218,8 @@ jobs:
               cases = list(suite.findall("testcase"))
               if len(cases) != 8 or len(list(root.iter("testcase"))) != 8:
                   raise ValueError("eight direct cases required")
+              if any(child.tag not in {"system-out", "system-err"} for case in cases for child in case):
+                  raise ValueError("unsupported testcase child")
               pairs = [(c.get("classname"), c.get("name")) for c in cases]
               wanted = {(CASE_CLASS, f"{name}[{host}]") for name in CASE_FUNCTIONS for host in ("ps5", "ps7")}
               if len(set(pairs)) != 8 or set(pairs) != wanted:

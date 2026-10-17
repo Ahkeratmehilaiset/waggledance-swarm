@@ -54,7 +54,7 @@ PRODUCER = Path(__file__).resolve().parent / "mind_capture_producer.py"
 CONSTANTS = ("READER", "READER_OPTION", "DETAIL_TAIL", "TAIL_CAP", "SEED_MARGIN", "COUNT", "EVENT_REF", "CURSOR",
              "REPORT_TASK", "LANE", "LATEST_SCHEMA", "STATE_SCHEMA", "STATE_KEYS", "ROW_KEYS", "VIEW_SCHEMA",
              "VIEW_KEYS", "LIST_FIELDS", "REFUSAL_SCHEMA", "VIEW_CAP", "GH_TIMEOUT", "GH_BUDGET", "PRUNED",
-             "STOP_EXIT", "CYCLE_DIR", "CYCLE_TIME", "LOCK_BYTE")
+             "STOP_EXIT", "CYCLE_DIR", "CYCLE_TIME", "LOCK_BYTE", "LIST_LIMIT")
 MARKER = "PRIVATE" + "_MARKER"  # a guarded word, composed so that this file holds no marker literal
 WINDOW = 4
 EVENTS = [{"agent": "lane-a", "type": "message", "task_id": "lane-a/state-case",
@@ -1490,6 +1490,94 @@ def test_without_a_usable_gh_list_the_context_is_unknown_and_never_refuses_the_c
         cache.rmdir()
 
 
+def test_a_gh_list_that_reaches_its_limit_leaves_the_context_unknown_before_any_view(tmp_path):
+    # PR1910 bot finding (truncated PR context): gh pr list stops at --limit, so a list that reaches it may leave out
+    # a PR the bridge snapshot names (an old open PR, an older PR merged lately), and the workspace reads an absent
+    # row as no suppression. Without the snapshot's PR numbers coverage is unknown, so the context is UNKNOWN
+    # (which suppresses nothing; the end-to-end test below covers the board); a skipped row counts too.
+    head = "a" * 40
+    full = [(n, "OPEN", head, f"lane-a/x{n}") for n in (1, 2, 3)]
+    views = {str(n): pr_view(head, "lane-a") for n in (1, 2, 3)}
+    for rows in (full, full[:2] + [(4, "DRAFT", head, "lane-a/x4")]):
+        gh = FakeGh(pr_list(*rows), views)
+        space, cache = gh_space(tmp_path, gh)
+        space["LIST_LIMIT"] = 3
+        context, record = space["pr_context"](cache)
+        assert context is None and (record["status"], record["reason"]) == ("UNKNOWN", "gh_list_truncated")
+        listed = gh.calls[0]
+        assert listed[:2] == ["pr", "list"] and listed[listed.index("--limit") + 1] == "3"
+        assert gh.view_calls() == [] and list(cache.iterdir()) == []
+        cache.rmdir()
+    gh = FakeGh(pr_list(*full[:2]), views)
+    space, cache = gh_space(tmp_path, gh)
+    space["LIST_LIMIT"] = 3
+    context, record = space["pr_context"](cache)
+    assert record["status"] == "observed" and sorted(context["prs"]) == ["1", "2"] and gh.view_calls() == ["1", "2"]
+
+
+class PrBridge(FakeBridge):
+    """A fake bridge whose seed listing and details are the given events only."""
+
+    def __init__(self, events):
+        super().__init__()
+        self.events = {event_id(event): event for event in events}
+
+    def __call__(self, argv, **kwargs):
+        options = argv[3].split("Read-AgentBridge.ps1' -Compact ", 1)[1].split(" ")
+        self.calls.append(options)
+        if options[2:3] == ["-EventId"]:
+            report = {"schema": "wd.bridge.event-detail.v1", "ref": options[3], "event": self.events[options[3]]}
+            return answer(0, json.dumps(report).encode("utf-8"))
+        return answer(0, view(list(self.events), SEEDED))
+
+
+PR_HEAD, MOVED_HEAD = "5" * 40, "6" * 40
+PR_EVENT = {"ts_utc": "2026-10-16T00:00:50Z", "agent": "codex-lead-1",
+            "agent_uuid": "00000000-0000-4000-8000-000000000003", "type": "decision",
+            "status": "build_consensus_pass", "task_id": "codex-lead-1/task", "session_id": "s-lead",
+            "run_id": "r-lead", "message": "pr fixture",
+            "payload": {"pr": 5, "head": PR_HEAD, "required_checks_green": True}}
+
+
+@pytest.mark.parametrize("state, head", [("MERGED", PR_HEAD), ("OPEN", MOVED_HEAD), (None, None)])
+def test_a_snapshot_pr_a_full_gh_list_leaves_out_gets_its_own_row_or_the_context_stays_unknown(tmp_path, state, head):
+    # End to end through the real core, shadow and workspace (Lead 09:05Z): PR 5 is in the bridge view, reported
+    # green with one build vote, so the bridge-only board suggests its missing votes. The gh list reaches its limit
+    # without PR 5. Its own gh pr view row enters the context, so a merged PR 5, or one whose head moved, gets no
+    # suggestion. Without that row the context is UNKNOWN, which suppresses nothing: the board is then the
+    # bridge-only one and still suggests PR 5 (the disclosed fallback, not a fail-closed result).
+    live = tmp_path / ".codex-audit" / "live"
+    for name in ("cycles", "files-cache"):
+        (live / name).mkdir(parents=True)
+    space, bridge = load(bridge=PrBridge([PR_EVENT]), live=live)
+    row = {"number": 5, "state": state, "headRefOid": head, "headRefName": "codex-lead-1/task"}
+    gh = FakeGh(pr_list(*[(n, "MERGED", "a" * 40, f"lane-a/x{n}") for n in (1, 2, 3)]),
+                {} if state is None else {"5": json.dumps(row).encode("utf-8")})
+    space["subprocess"] = types.SimpleNamespace(run=lambda argv, **kwargs: (gh if argv[0] == "gh" else bridge)(
+        argv, **kwargs), TimeoutExpired=subprocess.TimeoutExpired)
+    space["LIST_LIMIT"] = 3
+    rec = {"cycle": 1, "started_utc": "s", "reader": space["READER"]}
+    last_ok = space["candidate_cycle"](rec, None, {})
+    snapshot = core.read_snapshot(live / last_ok["publication_file"], audit_root=live.parent)
+    subjects = [item["subject"] for item in snapshot["attention"]]
+    rules = [tension["rule"] for tension in snapshot["tensions"]]
+    assert "5" in snapshot["prs"]
+    if state is None:
+        assert "pr:5" in subjects and "context_applied" not in rules
+        assert (last_ok["context_file"], rec["context"]["reason"]) == (None, "gh_list_truncated")
+        assert gh.view_calls() == ["5"]
+        return
+    assert "pr:5" not in subjects  # the omitted merged PR, or the one whose head moved, gets no suggestion
+    context = json.loads((live / last_ok["context_file"]).read_bytes().decode("utf-8"))
+    assert (context["prs"]["5"]["state"], context["prs"]["5"]["head"]) == (state, head)
+    assert context["capture_sha256"] == hashlib.sha256(b"\n".join([gh.listing, gh.views["5"]])).hexdigest()
+    assert rec["context"]["rows_added"] == 1 and gh.view_calls()[:1] == ["5"]
+    if state == "MERGED":
+        assert "PR5 MERGED" in json.dumps(snapshot["tensions"])
+    else:
+        assert "context_head_mismatch" in rules
+
+
 def test_an_open_pr_view_is_kept_as_typed_metadata_only_and_every_class_stays_unknown(tmp_path):
     head, other = "a" * 40, "b" * 40
     gh = FakeGh(pr_list((7, "OPEN", head, "lane-a/x"), (8, "MERGED", other, "lane-b/y")),
@@ -1728,8 +1816,8 @@ def candidate_space(tmp_path, after=()):
     for name in ("cycles", "files-cache"):
         (live / name).mkdir(parents=True)
     space, bridge = load(after=after, live=live)
-    space["pr_context"] = lambda cache_dir: (None, {"charter_loaded": False, "status": "UNKNOWN",
-                                                    "reason": "gh_list_unavailable", "ms": 0})
+    space["pr_context"] = lambda cache_dir, needed=None: (None, {"charter_loaded": False, "status": "UNKNOWN",
+                                                                 "reason": "gh_list_unavailable", "ms": 0})
     return space, bridge, live
 
 

@@ -9,6 +9,8 @@ on:
 
 jobs:
   test:
+    needs: [disk-floor-windows-parity]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -16,6 +18,16 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
+      - name: Require Windows disk-floor parity
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PARITY_RESULT: ${{ needs.disk-floor-windows-parity.result }}
+        run: |
+          if [[ "$PARITY_RESULT" != "success" ]]; then
+            printf '%s\n' 'Mandatory Windows disk-floor parity did not succeed' >&2
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history needed by tests/phase10/test_truth_regression.py (merge-base --is-ancestor against squash-merge SHAs)
@@ -103,6 +115,191 @@ jobs:
             exit 1
           fi
           echo "Mind test count: ${BASH_REMATCH[1]}"
+
+  disk-floor-windows-parity:
+    name: disk-floor-windows-parity
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      WD_PARITY_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install existing CI dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install -r requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run verified disk-floor parity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          # parity-python-begin
+          import base64
+          import hashlib
+          import json
+          import ntpath
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+
+          CASE_FUNCTIONS = (
+              "test_budget_parameter_is_long_and_unknown_by_default",
+              "test_three_checks_precede_each_write_boundary_including_dry_run",
+              "test_temp_path_and_probe_require_nonredirected_fixed_storage",
+              "test_extracted_helper_budget_matrix_and_distinct_volumes",
+          )
+          CASE_CLASS = "tests.tools.test_wd_reboot_deploy_disk_floor"
+
+          def parity_context(env):
+              head = env.get("WD_PARITY_EXPECTED_HEAD", "")
+              run = env.get("GITHUB_RUN_ID", "")
+              attempt = env.get("GITHUB_RUN_ATTEMPT", "")
+              if not re.fullmatch(r"[0-9a-f]{40}", head):
+                  raise ValueError("invalid expected head")
+              if not re.fullmatch(r"[1-9][0-9]{0,19}", run):
+                  raise ValueError("invalid run id")
+              if not re.fullmatch(r"[1-9][0-9]{0,8}", attempt):
+                  raise ValueError("invalid run attempt")
+              return head, run, attempt, f"wd-disk-{head}-{run}-{attempt}"
+
+          def validate_host(label, resolved, observed):
+              if label not in ("ps5", "ps7") or not ntpath.isabs(resolved):
+                  raise ValueError("invalid host label/path")
+              if observed.get("platform") != "Win32NT":
+                  raise ValueError("non-Windows host")
+              actual = observed.get("executable", "")
+              if not ntpath.isabs(actual) or ntpath.normcase(ntpath.normpath(actual)) != ntpath.normcase(ntpath.normpath(resolved)):
+                  raise ValueError("resolved executable is not the actual host")
+              major, minor = observed.get("major"), observed.get("minor")
+              if type(major) is not int or type(minor) is not int:
+                  raise ValueError("untyped host version")
+              if label == "ps5" and (major, minor, observed.get("edition")) != (5, 1, "Desktop"):
+                  raise ValueError("PS5.1/Desktop required")
+              if label == "ps7" and (major != 7 or observed.get("edition") != "Core"):
+                  raise ValueError("PS7/Core required")
+              if type(observed.get("pid")) is not int or observed["pid"] <= 0:
+                  raise ValueError("missing actual host pid")
+              return observed
+
+          def validate_junit(data, token):
+              if not data or len(data) > 2 * 1024 * 1024:
+                  raise ValueError("missing/oversized JUnit")
+              if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+                  raise ValueError("DTD/entity JUnit refused")
+              root = ET.fromstring(data)
+              if root.tag != "testsuites" or len(root) != 1 or root[0].tag != "testsuite":
+                  raise ValueError("exactly one JUnit suite required")
+              suite = root[0]
+              if suite.get("name") != token:
+                  raise ValueError("wrong head/run/attempt suite identity")
+              if any(suite.get(k) != v for k, v in (("tests", "8"), ("failures", "0"), ("errors", "0"), ("skipped", "0"))):
+                  raise ValueError("eight successful cases, no skips/errors/failures required")
+              if len(list(root.iter("testsuite"))) != 1:
+                  raise ValueError("nested/extra suite refused")
+              if any(node.tag in ("skipped", "failure", "error") for node in root.iter()):
+                  raise ValueError("non-success case refused")
+              cases = list(suite.findall("testcase"))
+              if len(cases) != 8 or len(list(root.iter("testcase"))) != 8:
+                  raise ValueError("eight direct cases required")
+              pairs = [(c.get("classname"), c.get("name")) for c in cases]
+              wanted = {(CASE_CLASS, f"{name}[{host}]") for name in CASE_FUNCTIONS for host in ("ps5", "ps7")}
+              if len(set(pairs)) != 8 or set(pairs) != wanted:
+                  raise ValueError("missing/duplicate/extra/wrong-class case")
+              if any(set(c.attrib) - {"classname", "name", "time"} for c in cases):
+                  raise ValueError("unexpected testcase status attributes")
+              return pairs
+
+          def main():
+              if os.name != "nt":
+                  raise RuntimeError("Windows execution required")
+              if os.environ.get("PYTEST_ADDOPTS") or os.environ.get("PYTEST_PLUGINS"):
+                  raise RuntimeError("inherited pytest overrides refused")
+              head, run, attempt, token = parity_context(os.environ)
+              repo = Path.cwd()
+              checked = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=10).strip()
+              if checked != head:
+                  raise RuntimeError("checkout is not the expected exact head")
+              output = repo / ".codex-audit" / "windows-disk-parity" / token
+              output.mkdir(parents=True, exist_ok=False)
+              report = output / f"{token}.xml"
+              probe = r"""
+          $ErrorActionPreference = 'Stop'
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $p = [Diagnostics.Process]::GetCurrentProcess()
+          @{platform=[Environment]::OSVersion.Platform.ToString(); executable=$p.MainModule.FileName;
+            major=$PSVersionTable.PSVersion.Major; minor=$PSVersionTable.PSVersion.Minor;
+            edition=$PSVersionTable.PSEdition; pid=$PID} | ConvertTo-Json -Compress
+          """
+              encoded = base64.b64encode(probe.encode("utf-16-le")).decode("ascii")
+              hosts, paths, hashes = {}, {}, {}
+              for label, executable in (("ps5", "powershell"), ("ps7", "pwsh")):
+                  found = shutil.which(executable)
+                  if not found:
+                      raise RuntimeError(f"{label} executable missing; parity cannot skip")
+                  found = os.path.abspath(found)
+                  done = subprocess.run([found, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                        capture_output=True, text=True, encoding="utf-8", timeout=15, check=False)
+                  if done.returncode != 0 or done.stderr.strip():
+                      raise RuntimeError(f"{label} identity probe failed")
+                  observed = json.loads(done.stdout.strip().lstrip("\ufeff"))
+                  hosts[label] = validate_host(label, found, observed)
+                  paths[executable] = found
+                  hashes[label] = hashlib.sha256(Path(found).read_bytes()).hexdigest()
+              target = "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+              command = [sys.executable, "-m", "pytest", target, "-q", "--tb=short",
+                         f"--junitxml={report}", "-o", f"junit_suite_name={token}"]
+              tested = subprocess.run(command, cwd=repo, capture_output=True, text=True,
+                                      encoding="utf-8", timeout=300, check=False)
+              print(tested.stdout)
+              print(tested.stderr, file=sys.stderr)
+              if tested.returncode != 0:
+                  raise RuntimeError(f"pytest failed: {tested.returncode}")
+              for label, executable in (("ps5", "powershell"), ("ps7", "pwsh")):
+                  if shutil.which(executable) is None or os.path.abspath(shutil.which(executable)) != paths[executable]:
+                      raise RuntimeError("host resolution changed")
+                  if hashlib.sha256(Path(paths[executable]).read_bytes()).hexdigest() != hashes[label]:
+                      raise RuntimeError("host executable changed")
+              if not report.is_file() or report.stat().st_size > 2 * 1024 * 1024:
+                  raise RuntimeError("fresh bounded JUnit missing")
+              xml = report.read_bytes()
+              pairs = validate_junit(xml, token)
+              receipt = {"schema": "wd.windows-disk-parity.v1", "head": head, "run_id": run,
+                         "run_attempt": attempt, "suite": token, "junit_file": report.name,
+                         "junit_sha256": hashlib.sha256(xml).hexdigest(), "hosts": hosts,
+                         "host_sha256": hashes, "command": command, "pytest_exit": tested.returncode,
+                         "cases": pairs, "target_sha256": hashlib.sha256((repo / target).read_bytes()).hexdigest(),
+                         "scope": "Synthetic extracted-helper/AST parity, not real disk/deploy/production"}
+              with (output / "receipt.json").open("x", encoding="utf-8") as stream:
+                  json.dump(receipt, stream, indent=2)
+              print(json.dumps(receipt, sort_keys=True))
+
+          if __name__ == "__main__":
+              main()
+          # parity-python-end
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain exact parity evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: disk-floor-parity-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .codex-audit/windows-disk-parity/
+          if-no-files-found: error
 
   security-scan:
     runs-on: ubuntu-latest

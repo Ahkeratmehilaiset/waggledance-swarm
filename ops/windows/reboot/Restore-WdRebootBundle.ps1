@@ -261,6 +261,6 @@ $plan['actions'] = @(
     'Obtain the operator signature for the exact pair (target commit, target manifest sha256); an approval of another pair never carries over.',
     'Fence every lane (cold switch): no lane may keep running with the current generation pins while the pointer changes.',
     ('Reinstall from a worktree at ' + $TargetCommit + ' with Deploy-WdRebootBundle.ps1 -ExpectedFinalCommit ' + $TargetCommit + ' -ExpectedFinalManifestHash ' + $plan['target_manifest_sha256'] + ' (machine wrappers and the state pointer only).'),
-    'Verify the pointer and every wrapper pin, then use only the separately operator-approved individual lane restart procedure; never launch the fleet automatically; any failure is a HOLD, never a retry loop.'
+    'Verify the pointer and every wrapper pin, then use only the separately operator-approved individual lane restart procedure from a non-elevated shell; never launch the fleet automatically; any failure is a HOLD, never a retry loop.'
 )
 Write-Plan $plan 0

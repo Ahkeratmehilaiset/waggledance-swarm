@@ -24,7 +24,8 @@ OLD_RESTART = (
 )
 SAFE_RESTART = (
     "Verify the pointer and every wrapper pin, then use only the separately "
-    "operator-approved individual lane restart procedure; never launch the "
+    "operator-approved individual lane restart procedure from a non-elevated "
+    "shell; never launch the "
     "fleet automatically; any failure is a HOLD, never a retry loop."
 )
 
@@ -43,6 +44,13 @@ def assert_scoped_restart_handoff(source: str) -> None:
 
 def test_restore_actions_require_separately_approved_individual_lane_restart():
     assert_scoped_restart_handoff(RESTORE.read_text(encoding="utf-8-sig"))
+
+
+def test_restore_restart_action_preserves_non_elevated_shell_requirement():
+    source = RESTORE.read_text(encoding="utf-8-sig")
+    block = list(ACTION_BLOCK.finditer(source))
+    assert len(block) == 1
+    assert "from a non-elevated shell" in block[0].group("body")
 
 
 def safe_control() -> str:
@@ -69,6 +77,12 @@ def test_mutant_auto_hidden_in_earlier_action_is_rejected():
 
 def test_mutant_separate_approval_removed_is_rejected():
     mutant = safe_control().replace("separately operator-approved", "default")
+    with pytest.raises(AssertionError, match="restart handoff must preserve"):
+        assert_scoped_restart_handoff(mutant)
+
+
+def test_mutant_non_elevated_requirement_removed_is_rejected():
+    mutant = safe_control().replace(" from a non-elevated shell", "")
     with pytest.raises(AssertionError, match="restart handoff must preserve"):
         assert_scoped_restart_handoff(mutant)
 

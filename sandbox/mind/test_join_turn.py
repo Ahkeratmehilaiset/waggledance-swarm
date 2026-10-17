@@ -396,6 +396,40 @@ def test_a_manifest_entry_of_another_shape_or_an_unsafe_name_is_refused_before_a
     assert (outcome(lambda: fz.load_frozen(root)), reads) == (refused, [root / "manifest.json"])
 
 
+@pytest.mark.parametrize("listed", ["missing", "null"])
+def test_a_cycle_without_its_publication_is_refused_before_any_cycle_file_is_read(tmp_path, monkeypatch, capsys,
+                                                                                  listed):
+    # Bot finding 4302420548 (PR1910 at 7623, Lead 10:58Z; the cause of RCO2's FZ2 P4): a manifest cycle whose
+    # publication is missing or listed as null raised a raw KeyError in load_frozen, so the JOIN turn ended with a
+    # traceback (exit 1) instead of the fixed refusal 2. Positive control first: the exact v1 backslash key loads.
+    root = tlv.write_frozen_root(tmp_path / "frozen", tlv.synthetic_cycles(count=2, captured=1))
+    assert fz.PUBLICATION == "run\\reflected.publication.json"
+    assert [fz.PUBLICATION in case["files"] for case in fz.load_frozen(root)["cycles"]] == [True, True]
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    files = manifest["cycles"][-1]["files"]  # the first cycle stays valid, so a late check would read its files
+    if listed == "missing":
+        del files[fz.PUBLICATION]
+    else:
+        files[fz.PUBLICATION] = None
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    reads, real = [], Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self) or real(self))
+
+    def outcome(call):
+        try:
+            return "returned", call()
+        except Exception as error:  # noqa: BLE001 - the exact type is asserted below
+            return type(error).__name__, str(error)
+
+    loaded = outcome(lambda: fz.load_frozen(root))
+    read_by_load = list(reads)
+    args = ["--lane", TOOLS, "--cycle", "synthetic-0", "--learn-ref", LEARN, "--frozen-root", str(root)]
+    joined = outcome(lambda: jt.main(args))
+    reason = "a manifest cycle has no publication digest"
+    assert (loaded, read_by_load, joined, capsys.readouterr().out) == (
+        ("FrozenInputError", reason), [root / "manifest.json"], ("returned", 2), f"refused: {reason}\n")
+
+
 def test_the_join_cli_has_no_default_root_and_refuses_before_any_read(monkeypatch, tmp_path, capsys):
     # F-2 (RCO2 D/E, Lead 08:59Z and 09:21Z): the packaged CLI and the library defaulted to private F: frozen data
     # and an F: output sandbox. The recorder stands in for load_frozen, so no data disk path is opened here.

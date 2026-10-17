@@ -95,6 +95,16 @@ def test_freeze_preserves_bytes_cursor_identity_and_unknown(driver, finished):
     assert (finished["live"] / "latest.json").read_bytes() == encoded(finished["latest"])
 
 
+def test_observation_hashes_do_not_claim_uniform_committed_pointer_binding(driver, finished):
+    binding = driver.freeze_committed_cycle(finished["live"], finished["out"])
+    manifest = json.loads((finished["out"] / "manifest.json").read_bytes())
+    assert manifest["file_seals_scope"] == "observed_copy_hashes_not_uniform_pointer_bindings"
+    assert binding["not_pointer_bound"] == ["detail-manifest.txt", "run/receipt.json"]
+    assert set(binding["pointer_bound_raw_files"]) == {"capture.json", "state.json", "run/board.txt"}
+    assert binding["publication_binding"] == "canonical_snapshot_only_not_envelope_raw_bytes"
+    assert binding["pointer_bound_snapshot_sha256"] == finished["latest"]["last_ok"]["snapshot_sha256"]
+
+
 @pytest.mark.parametrize("change,reason", [
     ("v1", "latest_schema"), ("authority", "authority"), ("escape", "cycle_name"),
     ("path", "cycle_path"), ("context_pair", "context_binding"),

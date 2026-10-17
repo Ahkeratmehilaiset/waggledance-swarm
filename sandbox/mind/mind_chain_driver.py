@@ -5,6 +5,9 @@ The producer latest-v2 interface is provisional until its tested Source freeze.
 This function proves local transport seals, not core/JOIN semantic validity,
 actor authenticity, complete coverage, utility or production acceptance. The
 actual load_frozen/JOIN chain and independent scoring remain separate stages.
+Manifest hashes seal the OBSERVED COPY. Only the explicitly listed raw files
+and canonical snapshot digest are bound to the producer's committed pointer;
+receipt and detail-manifest bytes are observations, never committed evidence.
 
 Only new directories under explicit local .codex-audit roots are written. The
 latest pointer and every source byte are rechecked before publication. This
@@ -235,12 +238,18 @@ def freeze_committed_cycle(live_root, frozen_root):
     for name in GITHUB_FILES:
         manifest_files.setdefault(name, None)
     manifest = {"schema": "wd.mind-frozen-cycles.v1", "authority": "none",
+                "file_seals_scope": "observed_copy_hashes_not_uniform_pointer_bindings",
                 "cycles": [{"cycle": cycle, "files": manifest_files}]}
+    bound_names = ("capture.json", "state.json", "run/board.txt", "context.json")
     binding = {"schema": "wd.mind-chain-transport.v1", "authority": "none",
                "scope": "transport_seals_not_join_validation", "join_validated": False,
                "latest_sha256": _sha(pointer), "cycle": cycle,
                "producer_generation": state["generation"], "source": state["source"],
                "cursor": state["cursor"], "manifest_sha256": _sha(_canonical(manifest)),
+               "pointer_bound_raw_files": {name: _sha(files[name]) for name in bound_names if name in files},
+               "pointer_bound_snapshot_sha256": latest["last_ok"]["snapshot_sha256"],
+               "publication_binding": "canonical_snapshot_only_not_envelope_raw_bytes",
+               "not_pointer_bound": ["detail-manifest.txt", "run/receipt.json"],
                "coverage": "UNKNOWN", "github_complete": False}
     output = {f"{cycle}/{name}": raw for name, raw in files.items()}
     output.update({"manifest.json": _canonical(manifest), "source-binding.json": _canonical(binding)})

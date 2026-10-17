@@ -517,3 +517,32 @@ def test_binding_r6_rejects_stale_case_even_with_current_eight_junit():
     _BindingDoubles().main()
     with pytest.raises((ValueError, RuntimeError, AssertionError), match="case receipt"):
         _BindingDoubles(stale_case=True).main()
+
+
+def test_binding_r7_progress_is_suppressed_but_real_probe_errors_still_fail():
+    # MUTANT_PS51_PROGRESS_FALSE_FAILURE / MUTANT_REAL_PROBE_STDERR_ACCEPTED.
+    _BindingDoubles().main()
+    progress = _BindingDoubles()
+    progress_base = progress.scope["subprocess"].Popen
+
+    class ProgressChild(progress_base):
+        def communicate(self, input=None, timeout=None):
+            stdout, stderr = super().communicate(input=input, timeout=timeout)
+            script = progress.base64.b64decode(self.argv[-1]).decode("utf-16-le")
+            if "$ProgressPreference = 'SilentlyContinue'" not in script:
+                stderr += "#< CLIXML\n<Obj S='progress'>Preparing modules for first use.</Obj>"
+            return stdout, stderr
+
+    progress.scope["subprocess"].Popen = ProgressChild
+    progress.main()
+    real_error = _BindingDoubles()
+    error_base = real_error.scope["subprocess"].Popen
+
+    class ErrorChild(error_base):
+        def communicate(self, input=None, timeout=None):
+            stdout, stderr = super().communicate(input=input, timeout=timeout)
+            return stdout, stderr + "synthetic actual error stream"
+
+    real_error.scope["subprocess"].Popen = ErrorChild
+    with pytest.raises(RuntimeError, match="identity probe failed"):
+        real_error.main()

@@ -331,6 +331,7 @@ jobs:
               report = output / f"{token}.xml"
               probe = r"""
           $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
           [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
           $p = [Diagnostics.Process]::GetCurrentProcess()
           @{platform=[Environment]::OSVersion.Platform.ToString(); executable=$p.MainModule.FileName;

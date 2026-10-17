@@ -251,7 +251,7 @@ PARSE_QUIET_CALLS = {"argparse.ArgumentParser", "__doc__.splitlines", "parser.ad
                      "frozenset"}
 
 
-def parsed(monkeypatch, *options):
+def parsed(monkeypatch, *options, invoked="mind_capture_producer.py"):
     """The program's own statements up to and including its parse-time count check, executed with a fake command
     line: the parsed options, or SystemExit. Before parse_args there are only the docstring, imports, definitions,
     constants and the parser's own statements, and every call they make when executed is one of PARSE_QUIET_CALLS
@@ -263,8 +263,7 @@ def parsed(monkeypatch, *options):
         text = ast.unparse(node)
         assert isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef, ast.Assign, ast.Expr)), text
         assert calls_made(node) <= PARSE_QUIET_CALLS, (text, calls_made(node) - PARSE_QUIET_CALLS)
-    monkeypatch.setattr(sys, "argv", ["mind_capture_producer.py", "--src", "src", "--live-dir", "live", "--bin",
-                                      "bin", *options])
+    monkeypatch.setattr(sys, "argv", [invoked, "--src", "src", "--live-dir", "live", "--bin", "bin", *options])
     space = {}
     exec(compile(ast.Module(body=statements[:at + 3], type_ignores=[]), str(PRODUCER), "exec"), space)
     return space["args"]
@@ -288,6 +287,19 @@ def test_a_count_option_outside_its_bound_is_refused_at_parse_time(monkeypatch, 
         parsed(monkeypatch, *options)
     err = capsys.readouterr().err  # argparse: the usage, then "<prog>: error: <message>" as the last line
     assert raised.value.code == 2 and err.endswith(f"\nmind_capture_producer.py: error: {reason}\n"), err[-160:]
+
+
+@pytest.mark.parametrize("invoked", ["mind_capture_producer.py", "__main__.py", "pytest"])
+def test_the_error_line_names_the_program_however_the_interpreter_was_invoked(monkeypatch, capsys, invoked):
+    # Bot finding 4302420552 (PR1910 at 7623, Lead 10:58Z): from Python 3.14 the default argparse prog follows how the
+    # interpreter ran __main__ (under pytest it is not this file name), so the error lines asserted with the file
+    # name were not portable. Python 3.14 is not installed here (native run NOT_RUN); this synthetic control varies
+    # sys.argv[0], the input of the default up to 3.13, so the lines keep the file name only with an explicit prog.
+    with pytest.raises(SystemExit) as raised:
+        parsed(monkeypatch, "--keep", "0", invoked=invoked)
+    err = capsys.readouterr().err
+    assert (raised.value.code, err.split(" ", 2)[:2], err.splitlines()[-1]) == (
+        2, ["usage:", "mind_capture_producer.py"], "mind_capture_producer.py: error: --keep must be at least 1")
 
 
 COUNTS_ACCEPTED = {  # -> (window, keep) as parsed

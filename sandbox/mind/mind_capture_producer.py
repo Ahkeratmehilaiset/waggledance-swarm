@@ -105,7 +105,8 @@ def count_problem(options):
     return None
 
 
-parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+# an explicit prog: from Python 3.14 the default follows how the interpreter ran __main__
+parser = argparse.ArgumentParser(prog="mind_capture_producer.py", description=__doc__.splitlines()[0])
 parser.add_argument("--src", type=Path, required=True)
 parser.add_argument("--live-dir", type=Path, required=True)
 parser.add_argument("--bin", type=Path, required=True)

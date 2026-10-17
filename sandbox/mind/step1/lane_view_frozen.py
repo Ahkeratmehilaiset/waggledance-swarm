@@ -150,6 +150,8 @@ def load_frozen(root: Path) -> dict[str, Any]:
     manifest, manifest_sha = load_manifest(root)
     for entry in manifest["cycles"]:  # every entry is checked before the first file of any is read (FZ-1)
         _entry(entry)
+    if any(not isinstance(entry["files"].get(PUBLICATION), str) for entry in manifest["cycles"]):
+        raise FrozenInputError("a manifest cycle has no publication digest")  # missing or null: no raw KeyError
     cycles, captures, bodies = [], [], {}
     for entry in manifest["cycles"]:
         files, nulls, digests = read_verified(root, entry)

@@ -22,7 +22,9 @@ def test_launcher_selects_operator_directory_before_children():
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize("case", ["present", "absent", "empty_directory", "hosts_directory", "file", "reparse_refusal", "mutant"])
+@pytest.mark.parametrize("case", ["present", "absent", "empty_directory", "hosts_directory",
+                                 "hosts_junction", "hosts_dangling_link", "hosts_file_link",
+                                 "hosts_directory_mutant", "file", "reparse_refusal", "mutant"])
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only launcher directory policy")
 def test_process_config_selection_preserves_credentials(tmp_path, ps, case):
     config = tmp_path / "gh-dir"
@@ -33,14 +35,39 @@ def test_process_config_selection_preserves_credentials(tmp_path, ps, case):
         (config / "ordinary.txt").write_text("no credentials")
         if case in {"present", "mutant"}:
             (config / "hosts.yml").write_text("{}")  # synthetic fixture, never a real auth file
-        elif case == "hosts_directory":
+        elif case in {"hosts_directory", "hosts_directory_mutant"}:
             (config / "hosts.yml").mkdir()
+        elif case == "hosts_junction":
+            target = tmp_path / "inert-junction-target"
+            target.mkdir()
+            _run_powershell(
+                f"New-Item -ItemType Junction -Path {q(config / 'hosts.yml')} "
+                f"-Target {q(target)} -ErrorAction Stop | Out-Null", executable=ps)
+        elif case in {"hosts_dangling_link", "hosts_file_link"}:
+            target = tmp_path / "inert-link-target"
+            if case == "hosts_file_link":
+                target.write_text("{}")
+            try:
+                (config / "hosts.yml").symlink_to(target)
+            except OSError as exc:
+                if exc.winerror == 1314:
+                    pytest.skip("NOT_RUN: symbolic-link privilege unavailable; no elevation attempted")
+                raise
     before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n"
     for name in ["Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse", "Assert-FilePathWithoutReparse", "Set-WdToolsGitHubConfigDirectory"]:
         script += load(TOOLS, name)
     if case == "reparse_refusal":
         script += "function Assert-DirectoryPathWithoutReparse {param($Candidate,$Root,[switch]$AllowMissing) throw 'reparse refused'}\n"
+    if case == "hosts_directory_mutant":
+        # MUTANT_NONLEAF_HOSTS_FALLBACK: restore the silent non-file fallback.
+        script += r"""
+$fn = (Get-Item Function:Set-WdToolsGitHubConfigDirectory).ScriptBlock.ToString()
+$needle = 'Assert-FilePathWithoutReparse -Candidate $configHostsPath -Root ''C:\'''
+if($fn.Split(@($needle),[StringSplitOptions]::None).Length -ne 2){throw 'mutant anchor missing'}
+$fn = $fn.Replace($needle,'if (-not (Test-Path -LiteralPath $configHostsPath -PathType Leaf)) { return $false }')
+Set-Item Function:Set-WdToolsGitHubConfigDirectory ([scriptblock]::Create($fn))
+"""
     if case == "mutant":
         # Executable in-memory mutant: remove the actual process env selection.
         script += """
@@ -64,7 +91,8 @@ catch {{ $result=$null; $ok=$false }}
     r = json.loads(_run_powershell(script, executable=ps).stdout)
     assert r["major"] >= 5
     assert r["token_unchanged"] is True
-    assert r["ok"] is (case not in {"file", "reparse_refusal"})
+    assert r["ok"] is (case not in {"file", "reparse_refusal", "hosts_directory", "hosts_junction",
+                                      "hosts_dangling_link", "hosts_file_link"})
     assert r["selected"] is (case == "present")
     assert r["preserved"] is (case != "present")
     assert {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

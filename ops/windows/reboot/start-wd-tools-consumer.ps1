@@ -2131,8 +2131,8 @@ function Set-WdToolsGitHubConfigDirectory {
 
     # Operator-provisioned directory selection only. Never read/copy credentials,
     # run gh login, create config files, or change GH_TOKEN/GITHUB_TOKEN. A missing
-    # directory or hosts.yml preserves inherited configuration; malformed/reparse paths fail
-    # closed before changing the process environment. Children inherit this value.
+    # directory or hosts.yml preserves inherited configuration. An existing hosts.yml
+    # entry must be a regular non-reparse file. Children inherit this value.
     if (-not [IO.Path]::IsPathRooted($ConfigDirectory)) {
         throw 'Tools GitHub config directory must be absolute'
     }
@@ -2144,10 +2144,17 @@ function Set-WdToolsGitHubConfigDirectory {
     if (-not (Test-Path -LiteralPath $candidate -PathType Container -ErrorAction Stop)) {
         return $false
     }
-    $configHostsPath = Join-Path $candidate 'hosts.yml'
-    if (-not (Test-Path -LiteralPath $configHostsPath -PathType Leaf -ErrorAction Stop)) {
+    # Enumerate the directory entry without following its target: a non-file or
+    # dangling link is not absence and must reach the trusted-file refusal below.
+    $configHostsEntries = @(Get-ChildItem -LiteralPath $candidate -Force -ErrorAction Stop |
+        Where-Object { $_.Name.Equals('hosts.yml', [StringComparison]::OrdinalIgnoreCase) })
+    if ($configHostsEntries.Count -eq 0) {
         return $false
     }
+    if ($configHostsEntries.Count -ne 1) {
+        throw 'Tools GitHub hosts.yml entry is ambiguous'
+    }
+    $configHostsPath = [string]$configHostsEntries[0].FullName
     Assert-FilePathWithoutReparse -Candidate $configHostsPath -Root 'C:\'
     [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', $candidate, 'Process')
     return $true

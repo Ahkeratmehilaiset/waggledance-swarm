@@ -54,7 +54,10 @@ def _assert_collection(workflow):
     text = _step(workflow, "test", "Check test count")["run"]
     match = re.search(r'if ! OUT=\$\((pytest [^\n]+) 2>/dev/null\); then', text)
     assert match, "failed collection must still refuse"
-    assert shlex.split(match.group(1)) == ["pytest", "tests/", *MIND_TESTS, "--collect-only", "-q"]
+    assert shlex.split(match.group(1)) == ["pytest", "tests/", "--collect-only", "-q"]
+    mind = re.search(r'if ! MIND_OUT=\$\((pytest [^\n]+) 2>/dev/null\); then', text)
+    assert mind, "the separate Mind collection must also refuse failure"
+    assert shlex.split(mind.group(1)) == ["pytest", *MIND_TESTS, "--collect-only", "-q"]
     assert '"$COUNT" -ge 4200' in text, "never lower the existing full-suite floor"
     assert '"$SUMMARIES" != "1"' in text, "retain the exact-one-summary guard"
 
@@ -91,7 +94,7 @@ def test_mutant_drop_mind_run_is_killed(filename, job, name, full, prefix, optio
 def test_mutant_drop_mind_collection_is_killed():
     mutant = deepcopy(_workflow("ci.yml"))
     step = _step(mutant, "test", "Check test count")
-    step["run"] = step["run"].replace("tests/ " + " ".join(MIND_TESTS), "tests/")
+    step["run"] = step["run"].replace("pytest " + " ".join(MIND_TESTS), "pytest tests/")
     # MUTANT_DROP_MIND_COLLECTION: all existing tests remain, only Mind disappears.
     with pytest.raises(AssertionError):
         _assert_collection(mutant)
@@ -125,12 +128,21 @@ def _bash():
     return path
 
 
-def _run_block(tmp_path, text, exit_code=0):
+def _run_block(tmp_path, text, exit_code=0, full_count=4200, mind_count=10,
+               mind_exit_code=None, mind_summary=None):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     # Synthetic argv recorder only: no Python/Mind module is executed or imported.
     fake = ('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$MIND_CI_TEST_TRACE"\n'
-            'printf "4200 tests collected in 1.00s\\n"\nexit "$MIND_CI_TEST_EXIT"\n')
+            'COUNT=0; HAS_MIND=0\nfor ARG in "$@"; do\n'
+            '  case "$ARG" in tests/) COUNT=$((COUNT + MIND_CI_TEST_FULL_COUNT));; '
+            'sandbox/mind/*) HAS_MIND=1;; esac\ndone\n'
+            'if [ "$HAS_MIND" = 1 ]; then COUNT=$((COUNT + MIND_CI_TEST_MIND_COUNT)); fi\n'
+            'if [ "$HAS_MIND" = 1 ] && [ "$MIND_CI_TEST_CUSTOM_OUT" = 1 ]; then\n'
+            '  printf "%s" "$MIND_CI_TEST_MIND_OUT"\n'
+            'else printf "%s tests collected in 1.00s\\n" "$COUNT"; fi\n'
+            'if [ "$HAS_MIND" = 1 ]; then exit "$MIND_CI_TEST_MIND_EXIT"; fi\n'
+            'exit "$MIND_CI_TEST_EXIT"\n')
     for name in ("pytest", "python"):
         tool = fake_bin / name
         tool.write_bytes(fake.encode("utf-8"))
@@ -144,6 +156,11 @@ def _run_block(tmp_path, text, exit_code=0):
     env["PATH"] = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
     env["MIND_CI_TEST_TRACE"] = str(trace)
     env["MIND_CI_TEST_EXIT"] = str(exit_code)
+    env["MIND_CI_TEST_FULL_COUNT"] = str(full_count)
+    env["MIND_CI_TEST_MIND_COUNT"] = str(mind_count)
+    env["MIND_CI_TEST_MIND_EXIT"] = str(exit_code if mind_exit_code is None else mind_exit_code)
+    env["MIND_CI_TEST_CUSTOM_OUT"] = "0" if mind_summary is None else "1"
+    env["MIND_CI_TEST_MIND_OUT"] = "" if mind_summary is None else mind_summary
     done = subprocess.run([_bash(), "-e", script.name], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=30)
     calls = [shlex.split(line) for line in trace.read_text(encoding="utf-8").splitlines()]
@@ -169,4 +186,41 @@ def test_native_bash_runs_both_scopes_and_stops_on_full_suite_failure(
 def test_native_bash_collection_passes_the_same_ten_paths(tmp_path):
     done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"])
     assert done.returncode == 0, done.stdout + done.stderr
-    assert calls == [["tests/", *MIND_TESTS, "--collect-only", "-q"]]
+    assert calls == [["tests/", "--collect-only", "-q"], [*MIND_TESTS, "--collect-only", "-q"]]
+
+
+def test_mind_count_cannot_mask_a_full_suite_drop_below_the_existing_floor(tmp_path):
+    done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"],
+                             full_count=4199, mind_count=1000)
+    assert done.returncode != 0, "Mind tests must not inflate the original tests/ floor"
+    assert "dropped below 4200" in done.stdout
+    assert calls == [["tests/", "--collect-only", "-q"]]
+
+
+def test_native_mind_collection_failure_is_not_swallowed(tmp_path):
+    done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"],
+                             mind_exit_code=7)
+    assert done.returncode != 0
+    assert "Mind test collection failed" in done.stdout
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("summary", ["", "no tests collected\n", "0 tests collected in 1.00s\n",
+    "10 tests collected in 1.00s trailing\n", "10 tests collected in 1.00s\n20 tests collected in 1.00s\n"])
+def test_native_mind_collection_requires_one_positive_unambiguous_summary(tmp_path, summary):
+    done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"],
+                             mind_summary=summary)
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert len(calls) == 2
+
+
+def test_mutant_combined_collection_can_mask_the_old_floor_and_is_killed(tmp_path):
+    mutant = deepcopy(_workflow("ci.yml"))
+    step = _step(mutant, "test", "Check test count")
+    step["run"] = step["run"].replace("pytest tests/ --collect-only",
+        "pytest tests/ " + " ".join(MIND_TESTS) + " --collect-only")
+    # MUTANT_COMBINED_COLLECTION_FLOOR: 4199 full + 1000 Mind looks like 5199.
+    done, _ = _run_block(tmp_path, step["run"], full_count=4199, mind_count=1000)
+    assert done.returncode == 0 and "Test count: 5199" in done.stdout
+    with pytest.raises(AssertionError):
+        _assert_collection(mutant)

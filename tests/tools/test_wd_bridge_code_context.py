@@ -92,6 +92,72 @@ def test_discovery_environment_does_not_change_task_python():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+DEFINITION_SHELLS = list(dict.fromkeys(filter(None, (shutil.which("powershell.exe"), shutil.which("pwsh")))))
+
+
+def _definition_only_result(tmp_path, shell, definition):
+    """Exercise the actual validator, not imports, deployment or a running bridge."""
+    path = tmp_path / "definition.json"
+    path.write_text(json.dumps(definition), encoding="utf-8")
+    context = str(REBOOT / "BridgeCodeContext.ps1").replace("'", "''")
+    checked = str(path).replace("'", "''")
+    script = f"""
+    $ErrorActionPreference = 'Stop'
+    . '{context}'
+    try {{
+        $null = Get-WdBridgeCodePackageDefinition -Path '{checked}'
+        'ACCEPT'
+    }} catch {{
+        $_.Exception.Message
+        exit 2
+    }}
+    """
+    return subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("shell", DEFINITION_SHELLS)
+@pytest.mark.parametrize("module, declared, reason", [
+    ("tools.agent_next_task", False, None),
+    ("waggledance.core.bridge_log_reader", False, None),
+    ("sandbox.mind.capture.capacity_lens", False, None),
+    ("sandbox.mind.join_turn", False, None),
+    ("sandbox.other.example", True, "unsafe bridge code package smoke module"),
+    ("sandbox.mindevil.example", True, "unsafe bridge code package smoke module"),
+    ("sandbox.mind.not_packaged", False, "bridge code package smoke module is not packaged"),
+    ("sandbox.mind.join_turn;Write-Host injected", False, "unsafe bridge code package smoke module"),
+])
+def test_native_smoke_namespace_is_narrow_and_still_requires_packaged_membership(tmp_path, shell, module,
+                                                                              declared, reason):
+    # CI555e failed on3.11/12/13 before discovery because the actual validator rejected the newly shipped Mind
+    # modules. Legacy roots stay accepted; packaged foreign/sibling namespaces and an unshipped Mind module do not.
+    # Named mutants: M1 legacy-only prefix; M2 broad sandbox prefix; M3 omitted packaged-membership check.
+    data = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    data["import_smoke"]["package_modules"] = [module]
+    if declared:
+        data["python_files"].append(module.replace(".", "/") + ".py")
+    result = _definition_only_result(tmp_path, shell, data)
+    if reason is None:
+        assert result.returncode == 0 and result.stdout.strip() == "ACCEPT", result.stdout + result.stderr
+    else:
+        assert result.returncode == 2 and result.stdout.startswith(reason + ":"), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("shell", DEFINITION_SHELLS)
+@pytest.mark.parametrize("field", ["wheel_store_relative", "python_site_relative"])
+@pytest.mark.parametrize("directory", ["sandbox", "SANDBOX", "Sandbox"])
+def test_native_smoke_namespace_cannot_be_a_dependency_directory(tmp_path, shell, field, directory):
+    # M4: adding the namespace but not reserving its root allows dependency/code directory collisions.
+    data = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    data["import_smoke"]["package_modules"] = ["tools.agent_next_task"]
+    control = _definition_only_result(tmp_path, shell, data)
+    assert control.returncode == 0 and control.stdout.strip() == "ACCEPT", control.stdout + control.stderr
+    data[field] = directory
+    refused = _definition_only_result(tmp_path, shell, data)
+    assert refused.returncode == 2 and refused.stdout.startswith(
+        "bridge code package directory name is reserved: " + directory), refused.stdout + refused.stderr
+
+
 def test_stage_only_returns_before_machine_wrappers():
     source = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text()
     stage = source.index("STAGE ONLY: commit-addressed bundle verified")
@@ -154,9 +220,13 @@ BRIDGE_PYTHON = FLEET["bridge_python"]["executable"]
 HAS_BRIDGE_PYTHON = Path(BRIDGE_PYTHON).is_file()
 
 
+def _is_repo_module(module: str) -> bool:
+    return (module.split(".")[0] in {"tools", "waggledance"}
+            or module == "sandbox.mind" or module.startswith("sandbox.mind."))
+
+
 def _module_relative(module: str) -> str | None:
-    top = module.split(".")[0]
-    if top not in {"tools", "waggledance"}:
+    if not _is_repo_module(module):
         return None
     parts = module.split(".")
     for candidate in (
@@ -199,11 +269,18 @@ def _intra_repo_closure(entrypoints):
             if not module:
                 continue
             top = module.split(".")[0]
-            if top not in {"tools", "waggledance"} and (ROOT / "tools" / f"{top}.py").is_file():
+            if relative.startswith("sandbox/mind/") and top in {
+                "join_card", "join_card_delivery", "lane_view", "lane_view_frozen",
+            }:
+                # These declared shadow modules also support their documented script-style imports.
+                prefix = "sandbox.mind.step1" if top.startswith("lane_view") else "sandbox.mind"
+                module = f"{prefix}.{module}"
+                top = "sandbox"
+            if not _is_repo_module(module) and (ROOT / "tools" / f"{top}.py").is_file():
                 # A flat-layout fallback ("from bridge_capacity_advisor import ...") names a sibling
                 # tools module: it is intra-repo code and must be packaged, never a third-party name.
                 module, top = f"tools.{module}", "tools"
-            if top in {"tools", "waggledance"}:
+            if _is_repo_module(module):
                 target = _module_relative(module)
                 if target and target not in seen:
                     queue.append(target)
@@ -215,6 +292,30 @@ def _intra_repo_closure(entrypoints):
             elif top not in sys.stdlib_module_names:
                 third_party.add(top)
     return seen, third_party
+
+
+def test_mind_smoke_closure_follows_unlisted_transitive_and_flat_imports(tmp_path, monkeypatch):
+    # M5: dropping sandbox/flat imports instead of traversing them hides missing package files.
+    sources = {
+        "tools/seed.py": "from sandbox.mind import join_turn\n",
+        "sandbox/mind/join_turn.py": "import join_card\n",
+        "sandbox/mind/join_card.py": "import lane_view\n",
+        "sandbox/mind/step1/lane_view.py": "import jsonschema\nfrom tools import unlisted\n",
+        "tools/unlisted.py": "import json\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["tools/seed.py"])
+    assert closure == set(sources)
+    assert third_party == {"jsonschema"}
+    assert _module_relative("sandbox.mind.join_turn") == "sandbox/mind/join_turn.py"
+    foreign = tmp_path / "sandbox/other/example.py"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("", encoding="utf-8")
+    assert _module_relative("sandbox.other.example") is None
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():

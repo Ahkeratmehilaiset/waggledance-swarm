@@ -36,6 +36,15 @@
     transport, not authentication: anything in the job can read or change it, and it proves no member identity or
     lifetime. This process's environment is only read (an existing value is refused before run_intent), never set.
 
+    Root witness (Lead decision v1): after the run id assignment and before the unchanged wrapper, the root's own fixed
+    prologue opens root.token in the fresh run directory (CreateNew, FileShare.None, not inheritable), writes and
+    flushes a run-bound token, then marks its SafeFileHandle invalid so the raw handle is released only by OS process
+    teardown. Only then does it publish one no-overwrite root_member_start record (run id, source commit, manifest
+    sha256, authority none); any error exits 253 before the wrapper. This witnesses the job root only, never members,
+    death or PASS, and it is not the first instruction of the root. Framework internals stay UNKNOWN from source;
+    native parity on PS 5.1 and 7 is NOT_RUN. A missing, partial or foreign record is UNKNOWN or FAIL, never proof
+    that no process ran.
+
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
     membership is never used, and nothing is defaulted from the caller. whoami.exe comes from the OS system directory
@@ -48,9 +57,9 @@
 
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
-    the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions and the
-    cp5 child run id transport and command prefix design); fable-5 wrote this file. There is no process kill by
-    PID, and producer.lock is only opened here, never created or removed.
+    the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
+    cp5 child run id transport and command prefix design and the root witness contract); fable-5 wrote this file.
+    There is no process kill by PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -89,6 +98,18 @@ $Schema = 'wd.mind-shadow-run-outcome.v2'
 $RootExitShim = '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 255'
 # cp5 (Lead): the child's own command refuses an inherited run id variable, then sets it from the actual launch id.
 $RootRunIdPrefix = 'if ($null -ne $env:WD_MIND_SHADOW_RUN_ID) { exit 254 }; $env:WD_MIND_SHADOW_RUN_ID = '
+# Root witness (Lead decision v1): the child's own fixed prologue; data arrive only as escaped $wdRoot* literals.
+$RootWitnessPrologue = '; try { $wdRootTokenStream = [IO.FileStream]::new($wdRootTokenPath, ' +
+    '[IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None); ' +
+    '$wdRootBytes = [Convert]::FromBase64String($wdRootTokenData); ' +
+    '$wdRootTokenStream.Write($wdRootBytes, 0, $wdRootBytes.Length); $wdRootTokenStream.Flush($true); ' +
+    '$wdRootTokenStream.SafeFileHandle.SetHandleAsInvalid(); ' +
+    '$wdRootStartStream = [IO.FileStream]::new($wdRootStartTemporary, ' +
+    '[IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None); ' +
+    'try { $wdRootBytes = [Convert]::FromBase64String($wdRootStartData); ' +
+    '$wdRootStartStream.Write($wdRootBytes, 0, $wdRootBytes.Length); $wdRootStartStream.Flush($true) } ' +
+    'finally { $wdRootStartStream.Dispose() }; [IO.File]::Move($wdRootStartTemporary, $wdRootStartPath) } ' +
+    'catch { exit 253 }'
 
 function Assert-WdShadowValue {
     param([string] $Name, [string] $Value, [string] $Pattern)
@@ -106,6 +127,15 @@ function ConvertTo-WdShadowCommandLiteral {
         throw 'refused: a root command argument holds a double quote or a control character'
     }
     return "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value) + "'"
+}
+
+function ConvertTo-WdShadowBase64Json {
+    # Root witness data (Lead decision v1): compressed JSON of fixed ASCII keys and checked printable ASCII values,
+    # then Base64, so the child receives data only, never code.
+    param($Record)
+    $json = $Record | ConvertTo-Json -Compress -Depth 4
+    if ($json -cnotmatch '^[\x20-\x7E]+$') { throw 'refused: root witness data must be printable ASCII' }
+    return [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($json + "`n"))
 }
 
 function Read-WdShadowFileSnapshot {
@@ -343,7 +373,27 @@ $runDir = Join-Path $runRootFull $launchId
 $inputPath = Join-Path $runDir 'root.stdin.empty'
 (New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew)).Dispose()
 $hostExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + '; & ' + ((@(
+# Root witness (Lead decision v1): fixed names under the fresh validated run directory, never caller-selected; the
+# data are built here before run_intent (D2) and reach the child only as escaped literals.
+$rootTokenPath = Join-Path $runDir 'root.token'
+$rootStartPath = Join-Path $runDir 'root_member_start.json'
+$rootStartTemporary = Join-Path $runDir '.root_member_start.json.tmp'
+$rootTokenData = ConvertTo-WdShadowBase64Json -Record ([ordered]@{
+    schema = 'wd.mind-shadow-root-token.v1'; run_id = $launchId; authority = 'none'
+})
+$rootStartData = ConvertTo-WdShadowBase64Json -Record ([ordered]@{
+    schema = 'wd.mind-shadow-root-member-start.v1'; record = 'root_member_start'; authority = 'none'
+    binding = [ordered]@{
+        run_id = $launchId; source_commit = $ExpectedSourceCommit; manifest_sha256 = $ExpectedManifestSha256
+    }
+    token = 'root.token'
+})
+$rootWitness = '; $wdRootTokenPath = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootTokenPath) +
+    '; $wdRootTokenData = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootTokenData) +
+    '; $wdRootStartTemporary = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartTemporary) +
+    '; $wdRootStartPath = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartPath) +
+    '; $wdRootStartData = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartData) + $RootWitnessPrologue
+$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + $rootWitness + '; & ' + ((@(
     $env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src', $env:WD_BRIDGE_CODE_ROOT,
     '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull) |
     ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim

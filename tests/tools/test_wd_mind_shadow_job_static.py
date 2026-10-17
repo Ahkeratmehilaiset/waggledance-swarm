@@ -211,7 +211,7 @@ def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argum
     assert re.search(r"if \(\$Value -match '\[\"\\x00-\\x1F\]'\) \{\s*throw", body)
     assert "return \"'\" + " in body
     assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
-                     r"\+ '; & ' \+ \(\(@\(\s*\$env:WD_BRIDGE_PYTHON_WRAPPER, "
+                     r"\+ \$rootWitness \+ '; & ' \+ \(\(@\(\s*\$env:WD_BRIDGE_PYTHON_WRAPPER, "
                      r"'sandbox/mind/mind_capture_producer\.py', '--src', \$env:WD_BRIDGE_CODE_ROOT,\s*'--bin', "
                      r"\$env:WD_BRIDGE_BIN, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
                      r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
@@ -230,9 +230,9 @@ def test_child_command_carries_the_run_id_as_metadata_and_refuses_an_inherited_o
     assert check
     # cp5 hardening (holes named by one Grok advisory, candidates and GO by Lead; each form was first shown by a named
     # mutant passing the old checks): one prefix assignment in any letter case or scope, no SetEnvironmentVariable or
-    # Set-Item env: in any letter case, and the parent check a top-level statement (column 0, outside every column-0
-    # function span, not opened by the code line before it). A finite grammar of this file's layout, not an AST or
-    # security proof.
+    # one-line Set-Item env: in any letter case, and the parent check at column 0 outside every column-0 function
+    # span and not under a line ending in '{'. A finite grammar of this file's layout only: braced, indirect,
+    # continued or commented variants are declared limits, not an AST or security proof.
     assert len(re.findall(r"(?i)\$(?:script:|global:|local:|private:)?RootRunIdPrefix\s*[-+*/%]?=", adapter)) == 1
     assert not re.search(r"(?i)SetEnvironmentVariable|\bSet-Item\b[^\n]*\benv:", adapter)
     assert not re.search(r"(?m)^\s*\$env:\w+\s*=", adapter)
@@ -249,6 +249,79 @@ def test_child_command_carries_the_run_id_as_metadata_and_refuses_an_inherited_o
     intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
     assert check.start() < launch < command < intent
     assert "job_drained = [ordered]@{" in adapter and "=[ordered]" not in adapter
+
+
+def _joined_literal(text, name):
+    """The value of a constant built only from single-quoted pieces joined by + (no code, no expansion)."""
+    start = text.index("$" + name + " = ")
+    lines = []
+    for line in text[start:].split("\n"):
+        lines.append(line)
+        if not line.rstrip().endswith("+"):
+            break
+    body = "\n".join(lines)[len("$" + name + " = "):]
+    assert re.fullmatch(r"'(?:[^']|'')*'(?:\s*\+\s*'(?:[^']|'')*')*\s*", body), name
+    return "".join(piece.replace("''", "'") for piece in re.findall(r"'((?:[^']|'')*)'", body))
+
+
+def test_root_witness_prologue_holds_a_detached_exclusive_token_then_publishes_one_start_record(adapter):
+    # Shadow root witness (Lead decision v1): after the run id assignment and before the unchanged wrapper, the root's
+    # own fixed prologue opens a fixed token under the fresh run directory (CreateNew, FileShare.None, never
+    # inheritable), writes and flushes it, marks its SafeFileHandle invalid so only OS teardown releases the raw handle
+    # (no later stream call), and only then publishes one no-overwrite root_member_start record; any error exits 253
+    # before the wrapper. A job root witness only (never members, death or PASS); text checks, not native evidence.
+    assert len(re.findall(r"(?i)\$(?:script:|global:|local:|private:)?RootWitnessPrologue\s*[-+*/%]?=", adapter)) == 1
+    prologue = _joined_literal(adapter, "RootWitnessPrologue")
+    assert prologue.startswith("; try { ") and prologue.endswith(" } catch { exit 253 }")
+    token = prologue.index("$wdRootTokenStream = [IO.FileStream]::new($wdRootTokenPath, [IO.FileMode]::CreateNew, "
+                           "[IO.FileAccess]::Write, [IO.FileShare]::None); ")
+    data = prologue.index("$wdRootBytes = [Convert]::FromBase64String($wdRootTokenData); ")
+    write = prologue.index("$wdRootTokenStream.Write($wdRootBytes, 0, $wdRootBytes.Length); ")
+    flush = prologue.index("$wdRootTokenStream.Flush($true); ")
+    detach = prologue.index("$wdRootTokenStream.SafeFileHandle.SetHandleAsInvalid(); ")
+    start = prologue.index("$wdRootStartStream = [IO.FileStream]::new($wdRootStartTemporary, [IO.FileMode]::CreateNew, "
+                           "[IO.FileAccess]::Write, [IO.FileShare]::None); try { "
+                           "$wdRootBytes = [Convert]::FromBase64String($wdRootStartData); "
+                           "$wdRootStartStream.Write($wdRootBytes, 0, $wdRootBytes.Length); "
+                           "$wdRootStartStream.Flush($true) } finally { $wdRootStartStream.Dispose() }; ")
+    move = prologue.index("[IO.File]::Move($wdRootStartTemporary, $wdRootStartPath) } catch { exit 253 }")
+    assert token < data < write < flush < detach < start < move
+    assert "$wdRootTokenStream" not in prologue[detach + len("$wdRootTokenStream.SafeFileHandle.SetHandleAsInvalid()"):]
+    assert prologue.count("$wdRootTokenStream") == 4 and prologue.count("exit ") == 1
+    assert not re.search(r"(?i)Inheritable|Duplicate|Close\(|Delete|Remove-Item|Copy\(|Open\(|OpenOrCreate", prologue)
+    assert adapter.count("SetHandleAsInvalid") == 1
+    assert not re.search(r"(?i)OpenProcess|OpenJobObject|DuplicateHandle|Inheritable", adapter)
+    for name, leaf in (("rootTokenPath", "root.token"), ("rootStartPath", "root_member_start.json"),
+                       ("rootStartTemporary", ".root_member_start.json.tmp")):
+        assert adapter.count("$" + name + " = ") == 1
+        assert ("$" + name + " = Join-Path $runDir '" + leaf + "'") in adapter
+    assert adapter.count("$rootTokenPath") == 2
+    assert adapter.count("root.token") == 2  # the token name only in its fixed path and start record (no parent use)
+    assert re.search(r"\$rootTokenData = ConvertTo-WdShadowBase64Json -Record \(\[ordered\]@\{\s*schema = "
+                     r"'wd\.mind-shadow-root-token\.v1'; run_id = \$launchId; authority = 'none'\s*\}\)", adapter)
+    assert re.search(r"\$rootStartData = ConvertTo-WdShadowBase64Json -Record \(\[ordered\]@\{\s*schema = "
+                     r"'wd\.mind-shadow-root-member-start\.v1'; record = 'root_member_start'; authority = 'none'\s*"
+                     r"binding = \[ordered\]@\{\s*run_id = \$launchId; source_commit = \$ExpectedSourceCommit; "
+                     r"manifest_sha256 = \$ExpectedManifestSha256\s*\}\s*token = 'root\.token'\s*\}\)", adapter)
+    body = _function(adapter, "ConvertTo-WdShadowBase64Json")
+    assert "$json = $Record | ConvertTo-Json -Compress -Depth 4" in body
+    assert re.search(r"if \(\$json -cnotmatch '\^\[\\x20-\\x7E\]\+\$'\) \{\s*throw", body)
+    assert "[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($json + \"`n\"))" in body
+    witness = re.search(r"\$rootWitness = '; \$wdRootTokenPath = ' \+ \(ConvertTo-WdShadowCommandLiteral -Value "
+                        r"\$rootTokenPath\) \+\s*'; \$wdRootTokenData = ' \+ \(ConvertTo-WdShadowCommandLiteral -Value "
+                        r"\$rootTokenData\) \+\s*'; \$wdRootStartTemporary = ' \+ \(ConvertTo-WdShadowCommandLiteral "
+                        r"-Value \$rootStartTemporary\) \+\s*'; \$wdRootStartPath = ' \+ "
+                        r"\(ConvertTo-WdShadowCommandLiteral -Value \$rootStartPath\) \+\s*'; \$wdRootStartData = ' \+ "
+                        r"\(ConvertTo-WdShadowCommandLiteral -Value \$rootStartData\) \+ \$RootWitnessPrologue\n",
+                        adapter)
+    assert witness and adapter.count("$rootWitness = ") == 1
+    assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
+                     r"\+ \$rootWitness \+ '; & '", adapter)
+    run_dir = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
+    intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
+    for name in ("$rootTokenPath = ", "$rootTokenData = ", "$rootStartData = ", "$rootWitness = ", "$rootCommand = "):
+        assert run_dir < adapter.index(name) < intent
+    assert adapter.count("expected_members") == adapter.count("expected_members = @()") == 1
 
 
 def test_root_exit_code_is_raw_evidence_read_after_an_observed_exit_before_dispose(adapter):

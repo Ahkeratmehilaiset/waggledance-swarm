@@ -28,9 +28,13 @@ Every cycle builds one immutable candidate dir under <live-dir>/cycles and then 
      ``gh pr list`` (state, head, branch) and, for OPEN PRs, ``gh pr view --json headRefOid,commits``, kept in
      <live-dir>/files-cache per PR and head as typed metadata only (the head and the lane-shaped commit author names;
      no message, body or path). No classifier, charter or gate code is imported or run: every path_class is null and
-     the charter is not loaded, so a computed class stays UNKNOWN. gh failing, timing out or not starting, an output
-     of another shape, or a view past the cycle's VIEW_CAP calls or GH_BUDGET seconds, leaves the context, or that
-     PR's authors, UNKNOWN; it never refuses the cycle. A cached view that does not validate leaves the whole context
+     the charter is not loaded, so a computed class stays UNKNOWN. A list of LIST_LIMIT rows or more may leave out
+     a PR the snapshot names (gh stops there): each such PR, by the core's own snapshot of the capture, is read with
+     one gh pr view of the list's four fields, and one still missing leaves the context UNKNOWN. gh failing, timing
+     out or not starting, an output of another shape, or a view past the cycle's VIEW_CAP calls or GH_BUDGET
+     seconds, leaves the context, or that PR's authors, UNKNOWN; it never refuses the cycle. An UNKNOWN context
+     suppresses nothing: the shadow then runs the bridge-only interface, which can still suggest a vote for a PR
+     that merged outside the bridge view. A cached view that does not validate leaves the whole context
      UNKNOWN (no partial reuse); the context is written only when the workspace's own read_context accepts it.
   3. tools/wd_bridge_mind_shadow.py run() over those files, with the previous publication only when its snapshot,
      verified by the core's read_snapshot, hashes to last_ok.snapshot_sha256 (else none, recorded
@@ -135,6 +139,7 @@ REFUSAL_SCHEMA = "wd.bridge-mind-shadow-refusal.v1"
 VIEW_CAP = 40  # gh pr view calls in one cycle at most; a cached view needs none
 GH_TIMEOUT = 60  # seconds for one gh call
 GH_BUDGET = 150  # seconds for all gh calls of one cycle
+LIST_LIMIT = 400  # gh pr list rows at most: a list that reaches it may leave a PR out (context UNKNOWN)
 PRUNED = ("capture.json", "state.json", "detail-manifest.txt")  # what retention removes from an old cycle dir
 STOP_EXIT = 3
 CYCLE_DIR = re.compile(r"[0-9]{8}T[0-9]{6}Z")  # a cycle_name(): ASCII digits only (\d matches other scripts' too)
@@ -656,12 +661,40 @@ def fetch_view(number, head, timeout):
     return view_object(number, head, commit_authors(raw))
 
 
-def pr_context(cache_dir):
+def snapshot_prs(capture):
+    """The PR numbers the shadow's snapshot of this capture names: the core's full_rebuild and snapshot over its
+    events at its observed_utc, made as tools/wd_bridge_mind_shadow.py run() makes them; None when the core
+    refuses them (the shadow run then refuses the cycle too)."""
+    events = capture["events"]
+    source = {"log_identity": "capture-window:" + sha(json.dumps(capture, ensure_ascii=False).encode("utf-8")),
+              "generation": None, "cursor_start": 0, "cursor_end": len(events), "event_count": len(events),
+              "coverage": "complete"}
+    try:
+        state = core.full_rebuild([{"ref": event_id(event), "event": event} for event in events], source=source,
+                                  as_of_utc=capture["observed_utc"])
+        return {row["pr"] for row in core.snapshot(state, as_of_utc=capture["observed_utc"])["prs"].values()}
+    except core.ProjectionError:
+        return None
+
+
+def fetch_row(number, timeout):
+    """One PR's list row from gh pr view (the list's four fields) and gh's output bytes, or None when gh fails or
+    its output is not one object of the list's shapes naming that number."""
+    data = gh(timeout, "pr", "view", str(number), "--repo", args.repo, "--json", "number,state,headRefOid,headRefName")
+    parsed = None if data is None else pr_rows(b"[" + data + b"]")
+    if parsed is None or str(number) not in parsed[0]:
+        return None
+    return parsed[0][str(number)], data
+
+
+def pr_context(cache_dir, needed=None):
     """The cycle's PR context and its record; the context is None (UNKNOWN) when gh gives no usable list, when a
-    cached view does not validate, or when the workspace's read_context refuses it. See the module docstring (2.)."""
+    list that reaches LIST_LIMIT leaves out a PR of ``needed`` (the PR numbers of the cycle's snapshot; None: not
+    known) that one gh pr view does not add, when a cached view does not validate, or when the workspace's
+    read_context refuses it. See the module docstring (2.)."""
     started, deadline = time.perf_counter(), time.monotonic() + GH_BUDGET
-    data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", "400", "--json",
-              "number,state,headRefOid,headRefName")
+    data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", str(LIST_LIMIT),
+              "--json", "number,state,headRefOid,headRefName")
     observed = utc_now(seconds=True)
     parsed = None if data is None else pr_rows(data)
     record = {"charter_loaded": False, "observed_utc": observed}
@@ -669,6 +702,20 @@ def pr_context(cache_dir):
         reason = "gh_list_unavailable" if data is None else "gh_list_unexpected"
         return None, dict(record, status="UNKNOWN", reason=reason, ms=round((time.perf_counter() - started) * 1000))
     rows, skipped = parsed
+    calls, added = 0, []
+    if len(rows) + skipped >= LIST_LIMIT:  # gh stops at --limit, so a PR the snapshot names may be missing
+        for number in [] if needed is None else sorted(set(needed) - {int(key) for key in rows}):
+            remaining = deadline - time.monotonic()
+            if calls >= VIEW_CAP or remaining <= 0:
+                break
+            calls += 1
+            fetched = fetch_row(number, min(GH_TIMEOUT, remaining))
+            if fetched is not None:
+                rows[str(number)] = fetched[0]
+                added.append(fetched[1])
+        if needed is None or set(needed) - {int(key) for key in rows}:
+            return None, dict(record, status="UNKNOWN", reason="gh_list_truncated", rows_added=len(added),
+                              ms=round((time.perf_counter() - started) * 1000))
     open_prs = [(int(number), head) for number, (state, head, _) in rows.items() if state == "OPEN"]
     views = {}
     for number, head in open_prs:  # reuse: every cached view this cycle needs is validated before any is used
@@ -678,7 +725,6 @@ def pr_context(cache_dir):
                               ms=round((time.perf_counter() - started) * 1000))
         if view is not None:
             views[number] = view
-    calls = 0
     for number, head in open_prs:
         remaining = deadline - time.monotonic()
         if number in views or calls >= VIEW_CAP or remaining <= 0:
@@ -696,10 +742,11 @@ def pr_context(cache_dir):
     prs = {number: {"state": state, "head": head, "head_ref_name": branch, "path_class": None,
                     "commit_authors": views[int(number)]["commit_authors"] if int(number) in views else None}
            for number, (state, head, branch) in rows.items()}
-    context = {"schema": ws.CONTEXT_SCHEMA_V2, "authority": "none", "capture_sha256": sha(data),
+    # the identity covers the list and every row read on its own, in that order
+    context = {"schema": ws.CONTEXT_SCHEMA_V2, "authority": "none", "capture_sha256": sha(b"\n".join([data, *added])),
                "observed_utc": observed, "charter": {"loaded": False, "charter_blob": None, "classifier_blob": None},
                "prs": prs}
-    record.update(prs=len(prs), skipped=skipped, views_fetched=calls,
+    record.update(prs=len(prs), skipped=skipped, views_fetched=calls, rows_added=len(added),
                   views_unknown=sum(1 for number, _ in open_prs if number not in views),
                   ms=round((time.perf_counter() - started) * 1000))
     reason = ws.read_context(context, ws.parse_time(observed))[1]
@@ -858,7 +905,7 @@ def candidate_cycle(rec, last_ok, seeded):
     next_state = state_envelope(1 if state is None else state["generation"] + 1, cursor, source, rows)
     capture, manifest = capture_object(rows)
     capture_ms = round((time.perf_counter() - started) * 1000)
-    context, rec["context"] = pr_context(live / "files-cache")
+    context, rec["context"] = pr_context(live / "files-cache", snapshot_prs(capture))
     payloads = prewrite(capture, manifest, context, next_state)
     try:
         digests = {name: write_new(cycle_dir / name, data) for name, data in payloads.items()}

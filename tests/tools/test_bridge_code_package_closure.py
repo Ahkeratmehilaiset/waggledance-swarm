@@ -876,12 +876,29 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         " else:\n"
         "  raise AssertionError('shadow_gate_guard_control_failed')\n"
         "sys.path.insert(0, str(root))\n"
+        "def source_path_owned(value):\n"
+        " assert pathlib.Path(value).resolve().is_relative_to(root), 'shadow_source_origin_outside_staged_root'\n"
         "if cli is not None:\n"
         " sys.argv = [cli, '--help']\n"
-        " runpy.run_module(cli, run_name='__main__')\n"
+        " try:\n"
+        "  runpy.run_module(cli, run_name='__main__')\n"
+        " except SystemExit as error:\n"
+        "  if error.code not in (None, 0):\n"
+        "   raise\n"
         "else:\n"
         " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}\n"
         " assert all(pathlib.Path(path).is_relative_to(root) for path in loaded.values())\n"
+        "for name, module in list(sys.modules.items()):\n"
+        " if name.partition('.')[0] in {'tools', 'waggledance', 'sandbox', 'step1', 'join_card', 'join_card_delivery'}:\n"
+        "  origin = getattr(module, '__file__', None)\n"
+        "  if origin is not None:\n"
+        "   source_path_owned(origin)\n"
+        "  else:\n"
+        "   locations = list(getattr(module, '__path__', ()))\n"
+        "   assert locations, 'shadow_source_origin_missing'\n"
+        "   for location in locations:\n"
+        "    source_path_owned(location)\n"
+        "if cli is None:\n"
         " print(json.dumps(dict(loaded=loaded, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
     )
     result = subprocess.run(
@@ -952,3 +969,54 @@ def test_shadow_finder_positive_control_kills_noop_mutant(tmp_path):
                             cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert mutant.returncode != 0, "MUTANT_NOOP_GATE_FINDER survived"
     assert "shadow_gate_guard_control_failed" in mutant.stderr
+
+
+@pytest.mark.parametrize("name", [
+    "tools.synthetic_unlisted", "waggledance.synthetic_unlisted",
+    "sandbox.synthetic_unlisted", "step1.synthetic_unlisted", "join_card",
+])
+@pytest.mark.parametrize("namespace", [False, True])
+def test_shadow_source_origin_covers_unlisted_internal_modules_and_namespaces(tmp_path, name, namespace):
+    """REGRESSION_TWIN_UNLISTED_MODULE_ORIGIN uses the actual staged child.
+
+    Only synthetic sys.modules entries are injected, never foreign Source or
+    a product import. An in-root entry controls an identical out-of-root one.
+    """
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "test_staged_shadow_import_and_help_refuse_gate_modules")
+    assignment = next(node for node in function.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "script"
+                              for target in node.targets))
+    script = ast.literal_eval(assignment.value)
+    injection_anchor = " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}"
+    assert script.count(injection_anchor) == 1
+    commands = [sys.executable, "-I", "-S", "-B", "-c"]
+    arguments = [str(tmp_path), "[]", "[]", "null"]
+
+    def run(candidate, foreign):
+        origin = str((tmp_path.parent if foreign else tmp_path) / "synthetic.py")
+        injected = (
+            " import types\n"
+            f" synthetic = types.ModuleType({name!r})\n"
+            f" synthetic.__file__ = {None if namespace else origin!r}\n"
+            + (f" synthetic.__path__ = {[str(Path(origin).parent)]!r}\n" if namespace else "")
+            + f" sys.modules[{name!r}] = synthetic\n"
+        )
+        return subprocess.run(
+            commands + [candidate.replace(injection_anchor, injected + injection_anchor)] + arguments,
+            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=10,
+        )
+
+    control = run(script, False)
+    assert control.returncode == 0, control.stderr
+    refused = run(script, True)
+    assert refused.returncode != 0, "REGRESSION_TWIN_UNLISTED_MODULE_ORIGIN accepted a foreign origin"
+    assert "shadow_source_origin_outside_staged_root" in refused.stderr
+    guard_anchor = (
+        " assert pathlib.Path(value).resolve().is_relative_to(root), "
+        "'shadow_source_origin_outside_staged_root'"
+    )
+    assert script.count(guard_anchor) == 1
+    mutant = run(script.replace(guard_anchor, " pass  # MUTANT_NOOP_SOURCE_ORIGIN"), True)
+    assert mutant.returncode == 0, mutant.stderr

@@ -137,6 +137,11 @@ if ($ReadyPath) {
 $iteration = 0
 $seenWakeEvents=New-Object 'Collections.Generic.HashSet[string]'
 $seenWakeOrder=New-Object 'Collections.Generic.Queue[string]'
+# A failed wake publication must not end the watcher (operator 2026-10-12): the targeted events stay
+# pending in memory and are published again on every later poll, also one that reads no new rows,
+# until a publication succeeds. One warning per failure streak, one line when it recovers.
+$pendingWake=[Collections.Generic.List[object]]::new()
+$publicationFailures = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $PollIntervalMs
@@ -148,36 +153,43 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     if ($result.status -ceq 'BLOCKED') {
         throw "Watch-Bridge: bridge read blocked: $($result.reason)"
     }
-    if ($result.status -ne 'OK') {
-        if ($null -eq $cursor -and $null -ne $result.candidate_cursor) {
-            $cursor = $result.candidate_cursor
+    if ($result.status -ceq 'OK') {
+        foreach ($ev in @($result.rows)) {
+            if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
+                # Dedupe only an identical immutable event, not task IDs or payload
+                # similarity. A new revision, late answer or correction still wakes.
+                $hasher=[Security.Cryptography.SHA256]::Create()
+                try { $eventKey=[BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes((ConvertTo-BridgeContractJson $ev)))) }
+                finally { $hasher.Dispose() }
+                if (-not $seenWakeEvents.Add($eventKey)) { continue }
+                $seenWakeOrder.Enqueue($eventKey)
+                if ($seenWakeOrder.Count -gt 4096) { [void]$seenWakeEvents.Remove($seenWakeOrder.Dequeue()) }
+                $pendingWake.Add($ev)
+                try { Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage watcher_seen -Request $ev -Target $Agent }
+                catch { Write-Warning ('Watcher latency observation unavailable: ' + $_.Exception.Message) }
+            }
+        }
+        # The cursor is in memory only; the pending events, not a re-read, carry a failed wake forward.
+        $cursor = $result.candidate_cursor
+    } elseif ($null -eq $cursor -and $null -ne $result.candidate_cursor) {
+        $cursor = $result.candidate_cursor
+    }
+    if ($pendingWake.Count -eq 0) { continue }
+    # Memory bound only: the wake writer keeps the last 256 bindings and marks a longer batch incomplete.
+    if ($pendingWake.Count -gt 4096) { $pendingWake.RemoveRange(0, $pendingWake.Count - 4096) }
+    try {
+        Write-BridgeWakeObservation -Path $wakePath -Events @($pendingWake)
+    } catch {
+        $publicationFailures++
+        if ($publicationFailures -eq 1) {
+            Write-Warning ('Watch-Bridge: wake publication failed; the wake stays pending and is retried on every poll: ' + $_.Exception.Message)
         }
         continue
     }
-
-    $shouldWake = $false
-    $wakeEvents=[Collections.Generic.List[object]]::new()
-    foreach ($ev in @($result.rows)) {
-        if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
-            # Dedupe only an identical immutable event, not task IDs or payload
-            # similarity. A new revision, late answer or correction still wakes.
-            $hasher=[Security.Cryptography.SHA256]::Create()
-            try { $eventKey=[BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes((ConvertTo-BridgeContractJson $ev)))) }
-            finally { $hasher.Dispose() }
-            if (-not $seenWakeEvents.Add($eventKey)) { continue }
-            $seenWakeOrder.Enqueue($eventKey)
-            if ($seenWakeOrder.Count -gt 4096) { [void]$seenWakeEvents.Remove($seenWakeOrder.Dequeue()) }
-            $shouldWake = $true
-            $wakeEvents.Add($ev)
-            try { Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage watcher_seen -Request $ev -Target $Agent }
-            catch { Write-Warning ('Watcher latency observation unavailable: ' + $_.Exception.Message) }
-        }
+    if ($publicationFailures -gt 0) {
+        Write-Output ('Watch-Bridge: wake published after {0} failed attempt(s).' -f $publicationFailures)
+        $publicationFailures = 0
     }
-    if ($shouldWake) {
-        Write-BridgeWakeObservation -Path $wakePath -Events @($wakeEvents)
-        $cursor = $result.candidate_cursor
-        Start-Sleep -Milliseconds $DebounceMs
-    } else {
-        $cursor = $result.candidate_cursor
-    }
+    $pendingWake.Clear()
+    Start-Sleep -Milliseconds $DebounceMs
 }

@@ -883,6 +883,104 @@ def test_clean_blockers_do_not_block_recovery():
     assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "dispatch"
 
 
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("text", ["CI stablecancelgroup sixnamesunchanged",
+                                 "Use workflow+PR cancelgroup while preserving checks"])
+def test_compound_cancelgroup_identifier_is_not_a_work_cancellation(scope_snap, text):
+    """MUTANT_CANCEL_SUBSTRING_IS_A_WORK_CONTROL."""
+    c = dict(cp(), next_action=text)
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "dispatch", d
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_declared_release_policy_unchanged_is_not_an_extra_work_hold(scope_snap):
+    """MUTANT_UNCHANGED_RELEASE_POLICY_IS_WORK_HOLD."""
+    c = dict(cp(), work_held=False, release_held=True,
+             blockers=["One-RCO rule12 notimplemented peractualgate; retainboth eligibleRCOs. "
+                       "Stage2 and(a)-signature unchanged."])
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "dispatch", d
+    assert "release_held_preparation_only" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("text", ["cancel task", "CANCELLED until checked", "cancellation pending",
+    "cancellations pending", "cancelations pending", "cancelrequested", "iscancelled", "tocancel",
+    "cancelgroup_requested",
+    "cancel_requested", "Pause work; signature unchanged.", "signature unchanged until confirmed",
+    "STOP: signature unchanged.", "do not continue; signature unchanged.",
+    "ONE final exact-package signature HOLD"])
+def test_real_controls_are_not_exempted_by_release_policy_or_cancel_identifiers(scope_snap, text):
+    """MUTANT_RELEASE_DECLARATION_BLANKET_EXEMPTS_CONTROL_TOKENS.
+
+    MUTANT_CANCEL_MORPHOLOGY_ALLOWLIST_LOSES_PLURAL_OR_GLUED_CONTROL.
+    """
+    c = dict(cp(), work_held=False, release_held=True, next_action=text)
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", d
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+
+
+@pytest.mark.parametrize("fields", [{}, {"work_held": False, "release_held": False}])
+def test_unchanged_signature_without_structured_release_hold_stays_unknown(fields):
+    c = dict(cp(), blockers=["signature unchanged."], **fields)
+    assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "unknown"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("text", [
+    "do-not-cancelgroup", "dont-cancelgroup", "no-cancelgroup",
+    "stable-cancelgroup", "do-not-stablecancelgroup",
+    "cancelgroup-requested", "stablecancelgroup-requested",
+    "(cancelgroup)", "[stablecancelgroup]", "cancelgroup.",
+    "cancelgroup;", "stablecancelgroup,", "x/cancelgroup",
+    "cancelgroup/x", "do-not-cancelgroup signature unchanged.",
+])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+def test_punctuation_attached_ci_names_preserve_possible_controls(scope_snap, text, field):
+    """MUTANT_NONWORD_BOUNDARY_ERASES_PUNCTUATED_CANCEL_CONTROL."""
+    c = dict(cp(), work_held=False, release_held=True)
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", d
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("text", ["cancelgroup", "stablecancelgroup",
+                                 "CI\tcancelgroup\tchecks", "CI stablecancelgroup checks"])
+def test_only_whitespace_delimited_observed_ci_names_are_exempt(text):
+    """MUTANT_REMOVE_OBSERVED_CI_IDENTIFIER_EXCEPTION."""
+    c = dict(cp(), next_action=text)
+    assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "dispatch"
+
+
+def test_tools_20261012_checkpoint_false_control_incident_replay():
+    """MUTANT_CANCEL_SUBSTRING_IS_A_WORK_CONTROL / MUTANT_RELEASE_POLICY_WORK_HOLD."""
+    now = "2026-10-12T08:13:47.3341374+00:00"
+    c = dict(cp(task="codex-tools-1/operator-parallel-queue-20261012",
+                updated="2026-10-12T08:08:41.3487236+00:00",
+                next_wakeup="2026-10-12T08:13:40.9954780+00:00"),
+             work_held=False, release_held=True,
+             next_action="Continue file-disjoint CIworkflow+PR stablecancelgroup sixnamesunchanged.",
+             blockers=["Stage2 and(a)-signature unchanged."])
+    d = evaluate(cponly(agent=TOOLS, collected=now, checkpoint=c), now)
+    assert d["verdict"] == "dispatch", d
+    assert "checkpoint_wakeup_due" in only(d, "checkpoint")["reasons"]
+    assert "release_held_preparation_only" in only(d, "checkpoint")["reasons"]
+    assert "request_completeness_not_evaluated" in d["reasons"]
+    assert d["authority"] == "none"
+
+
+def test_structured_work_hold_still_wins_over_both_benign_token_references():
+    c = dict(cp(), work_held=True, release_held=True,
+             next_action="stablecancelgroup; signature unchanged.")
+    assert evaluate(cponly(checkpoint=c), NOW)["verdict"] == "hold"
+
+
 def test_done_checkpoint_ignores_control_tokens():
     c = dict(cp(status="done"), blockers=["HOLD 1549 preserved"])
     assert evaluate(snap(checkpoint=c), NOW)["verdict"] == "idle_ok"

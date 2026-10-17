@@ -23,9 +23,10 @@ OLD_RESTART = (
     "start-wd-all.ps1 -Auto; any failure is a HOLD, never a retry loop."
 )
 SAFE_RESTART = (
-    "Verify the pointer and every wrapper pin, then use only the separately "
-    "operator-approved individual lane restart procedure from a non-elevated "
-    "shell; never launch the "
+    "Verify the pointer and every wrapper pin. This plan authorizes no lane "
+    "restart: HOLD until an exact individual lane restart procedure and its "
+    "token checks are separately operator-approved; execute that procedure "
+    "only from a non-elevated shell. Never launch the "
     "fleet automatically; any failure is a HOLD, never a retry loop."
 )
 
@@ -35,6 +36,7 @@ def assert_scoped_restart_handoff(source: str) -> None:
     assert len(blocks) == 1, "expected exactly one emitted plan actions block"
     body = blocks[0].group("body")
     assert "-auto" not in body.casefold(), "plan action must not propose -Auto"
+    assert "start-wd-all.ps1" not in body.casefold(), "plan action must not name the fleet launcher"
     last_action = body.strip().splitlines()[-1].strip()
     assert last_action == f"'{SAFE_RESTART}'", (
         "restart handoff must preserve separate approval, individual lanes, "
@@ -51,6 +53,13 @@ def test_restore_restart_action_preserves_non_elevated_shell_requirement():
     block = list(ACTION_BLOCK.finditer(source))
     assert len(block) == 1
     assert "from a non-elevated shell" in block[0].group("body")
+
+
+def test_restore_plan_does_not_imply_an_approved_restart_procedure_exists():
+    source = RESTORE.read_text(encoding="utf-8-sig")
+    block = list(ACTION_BLOCK.finditer(source))
+    assert len(block) == 1
+    assert "This plan authorizes no lane restart: HOLD until" in block[0].group("body")
 
 
 def safe_control() -> str:
@@ -72,6 +81,22 @@ def test_mutant_auto_hidden_in_earlier_action_is_rejected():
         "Keep all existing gates.", "Run start-wd-all.ps1 -aUtO first."
     )
     with pytest.raises(AssertionError, match="must not propose -Auto"):
+        assert_scoped_restart_handoff(mutant)
+
+
+def test_mutant_fleet_launcher_without_auto_is_rejected():
+    mutant = safe_control().replace(
+        "Keep all existing gates.", "Run START-WD-ALL.PS1 first."
+    )
+    with pytest.raises(AssertionError, match="must not name the fleet launcher"):
+        assert_scoped_restart_handoff(mutant)
+
+
+def test_mutant_existing_restart_authority_is_rejected():
+    mutant = safe_control().replace(
+        "This plan authorizes no lane restart: HOLD until", "Use the approved"
+    )
+    with pytest.raises(AssertionError, match="restart handoff must preserve"):
         assert_scoped_restart_handoff(mutant)
 
 

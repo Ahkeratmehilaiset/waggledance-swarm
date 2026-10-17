@@ -105,6 +105,17 @@ def test_outcome_rules_completed_needs_drain_lock_and_no_unknown(adapter):
     assert body.rstrip().endswith("return 'stop_unconfirmed'\n}")
 
 
+def test_drain_stop_and_lock_flags_come_from_their_own_checks(adapter):
+    drain = r"if \(\$null -ne \$rootExitAt -and \$managed\.ActiveProcesses -eq 0\) \{\s*\$drained = \$true"
+    assert re.search(drain, adapter) and adapter.count("$drained = $true") == 1
+    confirm = r"if \(\$managed\.ActiveProcesses -eq 0\) \{ \$stopConfirmed = \$true; break \}"
+    assert re.search(confirm, adapter) and adapter.count("$stopConfirmed = $true") == 1
+    assert re.search(r"try \{\s*\$managed\.Stop\(\)\s*\$stopOk = \$true\s*\} catch", adapter)
+    assert adapter.count("$stopOk = $true") == 1
+    assert "$lockOk = [bool]$lock.acquired -and [bool]$lock.released" in adapter
+    assert adapter.count("$lockOk = ") == 1 and "-LockAcquired $lockOk" in adapter
+
+
 def test_records_are_published_once_without_overwrite(adapter):
     body = _function(adapter, "Publish-WdShadowRecord")
     assert "[IO.FileMode]::CreateNew" in body and "[IO.File]::Move(" in body
@@ -134,7 +145,7 @@ def test_harness_witness_is_fail_closed_and_no_case_passes_yet(harness):
     body = _function(harness, "Test-WdShadowMemberWitness")
     assert body.count("return 'PASS'") == 1
     passed = body[:body.index("return 'PASS'")]
-    for need in ("$Expected.Count -eq 0", "start_witness", "released"):
+    for need in ("$Expected.Count -eq 0", "start_witness", "released", "[string]$seen.launch_id -cne $LaunchId"):
         assert need in passed, need
     cases = re.findall(r"'(A[1-7])' = 'UNKNOWN'", harness)
     assert sorted(cases) == [f"A{i}" for i in range(1, 8)]

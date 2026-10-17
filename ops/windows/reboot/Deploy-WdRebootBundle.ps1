@@ -1365,6 +1365,9 @@ if ($StageOnly) {
     Write-Host ('  final pair to pin (an operator input, not a signature): -ExpectedFinalCommit {0} -ExpectedFinalManifestHash {1}' -f $head, $installedManifestHash)
     Write-Host '  untouched: machine wrappers, data copies, reboot state pointers, integrity files, Grok resolution, scheduled tasks, live supervisor, watchers and sessions.'
     Write-Host '  activation is a separate cold switch: run this installer without -StageOnly only after the supervisor task is disabled and its invocation has exited.'
+    Write-Host '  activation also needs -ExpectedPeakAdditionalBytes <reviewed positive bound>, taken from the'
+    Write-Host '  operator-signed cold plan record for this deployment; unknown until measured and reviewed.'
+    Write-Host '  Never pass 0, a default, an invented or a reused bound. This hint grants no install or activation.'
     return
 }
 

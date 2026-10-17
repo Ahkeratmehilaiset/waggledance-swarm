@@ -562,8 +562,28 @@ worktree as their cwd; the pinned code root is never a task repository.
 Staging a new generation without touching the live fleet:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File ops\windows\reboot\Deploy-WdRebootBundle.ps1 -StageOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File ops\windows\reboot\Deploy-WdRebootBundle.ps1 -StageOnly `
+  -ExpectedPeakAdditionalBytes <reviewed positive bound>
 ```
+
+`-ExpectedPeakAdditionalBytes` is mandatory for `-StageOnly`, `-DryRun` and
+the activation run alike. Name the positive, conservative total
+additional-write bound from the reviewed, operator-signed cold plan record for
+this exact deployment, and run `-StageOnly` only after that record exists. The
+bound is unknown until the deployment has actually been measured and reviewed:
+never invent one, never pass 0 or a negative number or rely on the default (0
+refuses before materialization), and never reuse a bound from another
+deployment or generation. It is caller input, not a measured footprint, a
+signature or a space reservation. The installer checks it only at the write
+boundaries a run reaches: before materialization (every mode), before stage
+(`-StageOnly` and activation) and before activation (activation only). At each
+one it samples the available free space reported for every involved local
+drive, C: always included, and refuses unless at least 3 GiB plus the bound is
+free at that moment. It does not keep or reserve that space across later
+writes or races and gives no continuous guarantee; it may over-refuse. Neither
+the record, the bound nor the installer's printed hint grants install or
+activation: activation keeps its own separate cold authority, the
+operator-pinned final pair and every step below.
 
 `-StageOnly` materializes the pushed commit, downloads the pinned wheels with
 `pip download --require-hashes` (or reads them from `-WheelSource <dir>` with

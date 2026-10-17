@@ -260,7 +260,7 @@ $plan['verdict'] = 'plan'
 $plan['actions'] = @(
     'Obtain the operator signature for the exact pair (target commit, target manifest sha256); an approval of another pair never carries over.',
     'Fence every lane (cold switch): no lane may keep running with the current generation pins while the pointer changes.',
-    ('Reinstall from a worktree at ' + $TargetCommit + ' with Deploy-WdRebootBundle.ps1 -ExpectedFinalCommit ' + $TargetCommit + ' -ExpectedFinalManifestHash ' + $plan['target_manifest_sha256'] + ' (machine wrappers and the state pointer only).'),
-    'Verify the pointer and every wrapper pin, then a non-elevated start-wd-all.ps1 -Auto; any failure is a HOLD, never a retry loop.'
+    ('HOLD until a positive ExpectedPeakAdditionalBytes bound has been measured, reviewed and separately approved for this exact cold installation; this plan supplies no bound. With that reviewed bound, reinstall from a worktree at ' + $TargetCommit + ' with Deploy-WdRebootBundle.ps1 -ExpectedFinalCommit ' + $TargetCommit + ' -ExpectedFinalManifestHash ' + $plan['target_manifest_sha256'] + ' -ExpectedPeakAdditionalBytes <reviewed-positive-bytes> (machine wrappers and the state pointer only; this guidance grants no installation authority).'),
+    'Verify the pointer and every wrapper pin. This plan authorizes no lane restart: HOLD until an exact individual lane restart procedure and its token checks are separately operator-approved; execute that procedure only from a non-elevated shell. Never launch the fleet automatically; any failure is a HOLD, never a retry loop.'
 )
 Write-Plan $plan 0

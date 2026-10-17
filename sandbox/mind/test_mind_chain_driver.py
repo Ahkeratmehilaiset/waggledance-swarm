@@ -385,7 +385,8 @@ def fake_join(case, *, change=None):
     calls = []
     def load(root):
         calls.append(("load", root))
-        return {"cycles": [{"cycle": case["cycle"]}]}
+        return {"cycles": [{"cycle": case["cycle"]}],
+                "manifest_sha256": digest((root / "manifest.json").read_bytes())}
     def turn(lane, loaded, **kwargs):
         calls.append((lane, kwargs))
         if change is not None:
@@ -414,6 +415,20 @@ def test_join_refuses_wrong_binding_pin_before_import(driver, finished, monkeypa
     with pytest.raises(driver.ChainRefusal, match="^binding_digest$"):
         driver.join_frozen_cycle(finished["out"], expected_binding_sha256="0" * 64,
                                  lanes=("codex-lead-1",))
+
+
+def test_loader_observed_manifest_digest_must_match_the_pinned_binding(driver, finished, monkeypatch):
+    joiner, calls = fake_join(finished)
+    original = joiner.fz.load_frozen
+    def swapped_manifest(root):
+        loaded = original(root)
+        loaded["manifest_sha256"] = "0" * 64
+        return loaded
+    joiner.fz.load_frozen = swapped_manifest
+    monkeypatch.setattr(driver, "_join_module", lambda: joiner, raising=False)
+    with pytest.raises(driver.ChainRefusal, match="^manifest_digest$"):
+        driver.run_committed_chain(finished["live"], finished["out"], lanes=("codex-lead-1",))
+    assert len(calls) == 1  # Reject before the first card, not after publishing a result.
 
 
 def test_join_rechecks_frozen_bytes_after_pure_calls(driver, finished, monkeypatch):

@@ -851,6 +851,7 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         "tools.bridge_event_taxonomy",
         "tools.check_proven_safe_autosign_class",
         "tools.check_standing_consensus_sign_class",
+        "tools.classify_bridge_ci_scope",
         "waggledance.core.idle_consensus_charter",
         "waggledance.core.magma.consensus_receipt",
     }
@@ -900,6 +901,7 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
 @pytest.mark.parametrize("removed", [
     None, "tools.check_proven_safe_autosign_class",
     "waggledance.core.magma.consensus_receipt",
+    "tools.classify_bridge_ci_scope",
 ])
 def test_shadow_guard_denies_core_governance_and_named_mutants(removed):
     """Inspect the actual child caller deny set without importing any gate."""
@@ -916,6 +918,7 @@ def test_shadow_guard_denies_core_governance_and_named_mutants(removed):
         "waggledance.core.magma.consensus_receipt",
         "tools.merge_with_bridge_receipt",
         "tools.bridge_v2_identity_registry",
+        "tools.classify_bridge_ci_scope",
     }
     assert required <= denied, "shadow_governance_guard_incomplete"
     if removed is not None:

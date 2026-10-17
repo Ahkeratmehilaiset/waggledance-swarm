@@ -372,6 +372,8 @@ def join_frozen_cycle(frozen_root, *, expected_binding_sha256, lanes=LANES):
     try:
         joiner = _join_module()
         loaded = joiner.fz.load_frozen(root)  # Explicit root; never a legacy data default.
+        if loaded.get("manifest_sha256") != binding["manifest_sha256"]:
+            raise ChainRefusal("manifest_digest")
         if len(loaded["cycles"]) != 1 or loaded["cycles"][0]["cycle"] != cycle:
             raise ChainRefusal("loaded_cycle")
         cards = []

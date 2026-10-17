@@ -73,6 +73,10 @@ from tools.pr_status_snapshot import (  # noqa: E402
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
 )
+from tools.bridge_carry_forward_proof import (  # noqa: E402
+    evaluate_carry_forward,
+    first_parent,
+)
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
     evaluate_diff_content,
@@ -357,13 +361,28 @@ def evaluate_auto_merge_gate(
     now_utc: datetime | None = None,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    carry_forward: bool = False,
+    _carry_forward_repo: Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate.
 
     ``grok_fallback`` (rule12 only, default off) lets a bound Grok answer from
     ``GROK_REPORTS_ROOT`` hold a vacant RCO slot. ``_grok_reports_root`` is a
     test seam for that fixed root, never a caller-selected authority.
+
+    ``carry_forward`` (default off, evaluation only) lets the direct approvals
+    of the reviewed old head (the new head's first parent) stand in for the
+    new head's missing RCO_PASS and bridge consensus when
+    tools/bridge_carry_forward_proof.py proves a content-identical base
+    update. Nothing else is lifted, and ``apply`` refuses it until the merge
+    receipt records the carry-forward receipt. ``_carry_forward_repo`` is a
+    test seam for the git repository the proof reads.
     """
+    _validate_carry_forward_inputs(
+        carry_forward=carry_forward,
+        carry_forward_repo=_carry_forward_repo,
+        apply=apply,
+    )
     _validate_grok_fallback_inputs(
         review_policy=review_policy,
         grok_fallback=grok_fallback,
@@ -656,6 +675,36 @@ def evaluate_auto_merge_gate(
             for reason in reasons:
                 blockers.append(f"bridge consensus incomplete: {reason}")
 
+    # Content-identical base update (DEFAULT-OFF, evaluation only): the old
+    # head's direct approvals may lift ONLY the two approval blockers above.
+    carry_forward_report: dict[str, Any] | None = None
+    if carry_forward:
+        carry_forward_report = _carry_forward_gate(
+            repo_path=ROOT if _carry_forward_repo is None else _carry_forward_repo,
+            blockers=blockers,
+            pr_status=pr_status,
+            events=events,
+            events_path=events_path,
+            task_id=bridge_gate_task_id,
+            pr_number=pr_number,
+            new_head=head_sha,
+            main_head=expected_base_sha,
+            author_agent=author_agent,
+            author_resolution=author_resolution,
+            review_policy=review_policy,
+            gate_now=gate_now,
+            bridge_peer_gate=bridge_peer_gate,
+            charter_ok=bool(path_gate.allowed) and bool(diff_gate.allowed),
+            new_head_ci_all_green=bool(checks) and not failing_checks,
+            new_head_checks=checks,
+            charter_path=charter_path,
+            changed_paths=changed_paths,
+            diff_text=diff_text,
+        )
+        if carry_forward_report["applied"] is True:
+            lifted = set(carry_forward_report["lifted_blockers"])
+            blockers = [b for b in blockers if b not in lifted]
+
     # 9b standing-consensus-sign admission (DEFAULT-OFF; never self-activating).
     # When enabled, a (b)-class OFF-ALLOWLIST PR whose best-possible-consensus holds
     # has the operator's per-PR signature satisfied by the STANDING signature, so we
@@ -728,6 +777,9 @@ def evaluate_auto_merge_gate(
                 GROK_REPORTS_ROOT if _grok_reports_root is None else _grok_reports_root
             ),
         )
+    if carry_forward_report is not None:
+        # Only present when the switch is on, so other reports stay unchanged.
+        base["carry_forward"] = carry_forward_report
     if blockers:
         return {
             **base,
@@ -2641,6 +2693,255 @@ def _validate_grok_fallback_inputs(
             "invalid_input",
             "_grok_reports_root is a test seam for grok_fallback and must be a Path",
         )
+
+
+_CARRY_FORWARD_RCO_BLOCKER = "missing exact-head RCO_PASS from recognized non-author RCO"
+_CARRY_FORWARD_CONSENSUS_PREFIX = "bridge consensus incomplete: "
+
+
+def _validate_carry_forward_inputs(
+    *,
+    carry_forward: object,
+    carry_forward_repo: object,
+    apply: object,
+) -> None:
+    if type(carry_forward) is not bool:
+        raise _invalid("invalid_input", "carry_forward must be a boolean")
+    if carry_forward and apply is not False:
+        raise _invalid(
+            "invalid_input",
+            "carry_forward is evaluation-only until the merge receipt records "
+            "the carry-forward receipt",
+        )
+    if carry_forward_repo is not None and (
+        not carry_forward or not isinstance(carry_forward_repo, Path)
+    ):
+        raise _invalid(
+            "invalid_input",
+            "_carry_forward_repo is a test seam for carry_forward and must be a Path",
+        )
+
+
+def _carry_forward_old_head_checks(
+    pr_status: Mapping[str, Any],
+) -> tuple[str | None, list[Mapping[str, Any]]]:
+    """The old head's CI snapshot as (bound head, checks); a missing one is never green.
+
+    The snapshot is ``{"head_sha": <old head>, "checks": [...]}``, so checks of
+    any other commit can never stand in for the old head's CI (Grok 2a680241).
+    """
+    snapshot = pr_status.get("carry_forward_old_head_checks")
+    if snapshot is None:
+        return None, []
+    if not isinstance(snapshot, Mapping):
+        raise _invalid(
+            "invalid_pr_status",
+            "carry_forward_old_head_checks must be an object with head_sha and checks",
+        )
+    head = snapshot.get("head_sha")
+    if type(head) is not str:
+        raise _invalid(
+            "invalid_pr_status", "carry_forward_old_head_checks.head_sha must be a string"
+        )
+    checks = snapshot.get("checks")
+    if not isinstance(checks, list):
+        raise _invalid(
+            "invalid_pr_status", "carry_forward_old_head_checks.checks must be a list"
+        )
+    normalized: list[Mapping[str, Any]] = []
+    for check in checks:
+        if not isinstance(check, Mapping):
+            raise _invalid(
+                "invalid_pr_status",
+                "carry_forward_old_head_checks.checks entries must be objects",
+            )
+        normalized.append(check)
+    return head, normalized
+
+
+def _check_name(check: Mapping[str, Any]) -> object:
+    # A check run carries "name", a commit status "context".
+    return check.get("name") if check.get("name") is not None else check.get("context")
+
+
+def _carry_forward_old_ci_coverage(
+    old_checks: Sequence[Mapping[str, Any]],
+    new_checks: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Why the old head's CI does not cover every check of the new head ([] when it does).
+
+    The required checks are the distinct names of the new head's snapshot. The
+    old head must report each of them once; missing, repeated or unnamed checks
+    refuse, and so does a new-head snapshot whose names are unnamed or repeated,
+    because its required set is then unknown (Lead finding 622a49ff: a non-empty
+    all-green snapshot is not complete CI).
+    """
+    def named(name: object) -> bool:
+        return type(name) is str and bool(name.strip())
+
+    required = [_check_name(check) for check in new_checks]
+    if not required or not all(named(name) for name in required) or len(set(required)) != len(required):
+        return ["carry-forward cannot tell the new head's required checks (none, unnamed or repeated names)"]
+    reasons: list[str] = []
+    old = [_check_name(check) for check in old_checks]
+    if not all(named(name) for name in old):
+        reasons.append("carry_forward_old_head_checks has a check without a name")
+    repeated = sorted({name for name in old if named(name) and old.count(name) > 1})
+    if repeated:
+        reasons.append("carry_forward_old_head_checks repeats checks: " + ", ".join(repeated))
+    missing = sorted(set(required) - {name for name in old if named(name)})
+    if missing:
+        reasons.append("carry_forward_old_head_checks miss required checks: " + ", ".join(missing))
+    return reasons
+
+
+def _carry_forward_gate(
+    *,
+    repo_path: Path,
+    blockers: Sequence[str],
+    pr_status: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+    events_path: Path | None,
+    task_id: str,
+    pr_number: int,
+    new_head: str,
+    main_head: str,
+    author_agent: str,
+    author_resolution: Mapping[str, Any],
+    review_policy: str,
+    gate_now: datetime | None,
+    bridge_peer_gate: Mapping[str, Any],
+    charter_ok: bool,
+    new_head_ci_all_green: bool,
+    new_head_checks: Sequence[Mapping[str, Any]],
+    charter_path: Path,
+    changed_paths: Sequence[str],
+    diff_text: str,
+) -> dict[str, Any]:
+    """Whether the old head's direct approvals lift the new head's approval blockers.
+
+    The old head is the new head's first parent. Its RCO_PASS and consensus
+    are evaluated at the old head with the same functions as at the new head
+    (direct approvals only: no Grok, pool or lead-stall lift), its CI comes
+    from ``carry_forward_old_head_checks``, and the veto check runs again for
+    the task. tools/bridge_carry_forward_proof.py decides; only the head-exact
+    RCO_PASS blocker and the bridge-consensus blockers are ever lifted.
+    """
+    approval_blockers = [
+        b
+        for b in blockers
+        if b == _CARRY_FORWARD_RCO_BLOCKER or b.startswith(_CARRY_FORWARD_CONSENSUS_PREFIX)
+    ]
+    report: dict[str, Any] = {
+        "enabled": True,
+        "needed": bool(approval_blockers),
+        "applied": False,
+        "old_head": None,
+        "lifted_blockers": [],
+        "reasons": [],
+        "receipt": None,
+        "old_head_rco_pass_gate": None,
+        "old_head_consensus": None,
+        "old_head_checks": None,
+    }
+    if not approval_blockers:
+        return report
+    reasons: list[str] = report["reasons"]
+    old_checks_head, old_checks = _carry_forward_old_head_checks(pr_status)
+    if old_checks_head is not None:
+        report["old_head_checks"] = {
+            "head_sha": old_checks_head,
+            "checks": [dict(check) for check in old_checks],
+        }
+    if events_path is None:
+        reasons.append("carry-forward needs the bridge events")
+    if not main_head:
+        reasons.append("carry-forward needs expected_base_sha (current main)")
+    if not author_agent:
+        reasons.append("carry-forward needs a resolved PR author")
+    old_head = first_parent(repo=str(repo_path), head=new_head)
+    report["old_head"] = old_head
+    if old_head is None:
+        reasons.append("carry-forward needs a readable first parent of the new head")
+    if reasons:
+        return report
+    assert old_head is not None
+    old_checks_bound = old_checks_head == old_head
+    if old_checks_head is not None and not old_checks_bound:
+        reasons.append("carry_forward_old_head_checks are not bound to the old head")
+    coverage_reasons = _carry_forward_old_ci_coverage(old_checks, new_head_checks)
+    reasons.extend(coverage_reasons)
+    old_rco_gate = _bridge_rco_pass_gate(
+        events=events,
+        task_id=task_id,
+        pr_number=pr_number,
+        head_sha=old_head,
+        author_agent=author_agent,
+        checked=True,
+    )
+    if review_policy == REVIEW_POLICY_RULE12:
+        assert gate_now is not None
+        old_consensus = _evaluate_rule12_review(
+            events=events,
+            events_path=events_path,
+            task_id=task_id,
+            head_sha=old_head,
+            author_resolution=author_resolution,
+            now=gate_now,
+            grok_reports_root=None,
+            changed_paths=changed_paths,
+            diff_text=diff_text,
+        )
+    else:
+        old_consensus = _evaluate_bridge_consensus(
+            require=True,
+            events=events,
+            events_path=events_path,
+            task_id=task_id,
+            head_sha=old_head,
+            pr_number=pr_number,
+            author_agent=author_agent,
+            charter_path=charter_path,
+            changed_paths=changed_paths,
+            diff_text=diff_text,
+            allow_lead_stall_failover=False,
+            lead_stall_failover_threshold_seconds=LEAD_STALL_FAILOVER_THRESHOLD_SECONDS,
+        )
+    report["old_head_rco_pass_gate"] = old_rco_gate
+    report["old_head_consensus"] = old_consensus
+    veto_scan = scan_recognized_rco_vetoes(
+        events=list(events),
+        task_id=task_id,
+        author_agent=author_agent,
+        rco_agent=BRIDGE_CONSENSUS_RCO_AGENTS,
+    )
+    verdict = {
+        "head": old_head,
+        "consensus_ok": old_rco_gate.get("ok") is True and old_consensus.get("ok") is True,
+        "ci_all_green": old_checks_bound
+        and bool(old_checks)
+        and not coverage_reasons
+        and all(_check_passed(c) for c in old_checks),
+        "charter_ok": charter_ok is True,
+        "veto_clear": bridge_peer_gate.get("clear_to_merge") is True
+        and veto_scan.get("ok") is True,
+        "approvals_carried": False,
+    }
+    result = evaluate_carry_forward(
+        repo=str(repo_path),
+        old_head=old_head,
+        new_head=new_head,
+        main_head=main_head,
+        old_head_verdict=verdict,
+        new_head_ci_all_green=new_head_ci_all_green is True,
+        new_head_veto_clear=verdict["veto_clear"],
+    )
+    report["receipt"] = result["receipt"]
+    reasons.extend(str(reason) for reason in result["reasons"])
+    if result["carried"] is True and not reasons:
+        report["applied"] = True
+        report["lifted_blockers"] = list(approval_blockers)
+    return report
 
 
 def _grok_rco_slot_lift(

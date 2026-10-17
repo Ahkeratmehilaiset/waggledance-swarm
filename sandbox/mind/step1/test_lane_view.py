@@ -337,6 +337,38 @@ def test_lane_view_author_rco_fills_no_slot_and_is_never_asked():
     assert refs_of(events)[1][:16] not in line and refs_of(events)[3][:16] in line
 
 
+def test_pool_empty_regression_twin_both_rco_authors_cannot_mean_votes_complete():
+    """REGRESSION_TWIN_EMPTY_RCO_POOL: builds alone cannot fill RCO coverage."""
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
+    control = view_of(make_case(events, github_of(authors=["claude-rco-2"])))
+    assert control["prs"][str(NUMBER)]["state"] == "votes_complete"
+    view = view_of(make_case(events, github_of(authors=["claude-rco-1", "claude-rco-2"])))
+    assert_abstains(view, "independent_rco_unavailable")
+    assert view["counts"]["votes_complete"] == 0
+    assert "operator" in view["abstained"][0]["detail"]
+
+
+def test_both_declared_recusals_do_not_credit_an_existing_rco_vote():
+    recusal1 = event("2026-10-13T17:42:00Z", "claude-rco-1", "message", "rco_recused",
+                     {"pr": NUMBER, "head": NEW})
+    recusal2 = event("2026-10-13T17:42:01Z", "claude-rco-2", "message", "rco_recused",
+                     {"pr": NUMBER, "head": NEW})
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1"), recusal1, recusal2]
+    view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
+    assert_abstains(view, "independent_rco_unavailable")
+    record = view["prs"][str(NUMBER)]
+    assert any(row["agent"] == "claude-rco-1" and row["reason"] == "rco_recused"
+               for row in record["not_credited"])
+
+
+def test_unfilled_rco_line_does_not_invent_required_policy_from_unknown_class():
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
+    view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
+    line, = view["lanes"]["claude-rco-2"]["actions"]
+    assert "required RCO coverage is UNKNOWN" in line
+    assert "the vote is still required" not in line
+
+
 def test_lane_view_unknown_commit_authors_abstains():
     assert_abstains(view_of(make_case(github=github_of(authors=None))), "commit_authors_unknown")
 

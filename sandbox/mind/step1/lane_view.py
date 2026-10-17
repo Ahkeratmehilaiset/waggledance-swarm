@@ -83,6 +83,7 @@ REASON_TEXT = {
     "vote_body_disagrees": "a vote row and its event body disagree",
     "recusal_unverified": "a recusal at this head cannot be verified",
     "commit_authors_unknown": "the commit authors are not known, so RCO eligibility is UNKNOWN",
+    "independent_rco_unavailable": "no independent RCO slot is available; an operator missing-slot decision is needed",
     "github_older_than_bridge_head": "the GitHub capture is older than bridge evidence of a different head",
 }
 
@@ -326,6 +327,7 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                "other_task" if any(event.get("task_id") != branch for event, _ in events) else
                "no_slot" if slot is None else
                "commit_author" if slot in ws.RECOGNIZED_RCOS and vote["agent"] in (authors or ()) else
+               "rco_recused" if slot in ws.RECOGNIZED_RCOS and vote["agent"] in excused else
                None)
         entry = {"agent": vote["agent"], "status": vote["status"], "head": vote["head"], "ref": vote["refs"][0],
                  "ts_utc": stamp(max(when for _, when in events))}
@@ -334,6 +336,10 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                                  at=max(when for _, when in events)))
         else:
             not_credited.append(dict(entry, reason=why))
+    # Removing every excused slot must never turn two builds into RCO coverage.
+    # This is a bounded observational abstention, not a waiver or gate verdict.
+    if set(ws.RECOGNIZED_RCOS) <= set(excused):
+        reasons.append("independent_rco_unavailable")
     reasons = sorted(set(reasons), key=list(REASON_TEXT).index)
     record.update(not_credited=not_credited, excused=[{"agent": agent, "why": why} for agent, why in sorted(excused.items())])
     if reasons:
@@ -360,8 +366,10 @@ def action_line(record: Mapping[str, Any], slot: str, lane: str, bounded: bool) 
     text = (f"{what} is the only empty slot ({slot}, task {record['branch']})" if not others else
             f"{what} is empty ({slot}, task {record['branch']}); also empty: {', '.join(others)}")
     filled = ", ".join(f"{vote['slot']} {vote['ref'][:16]}" for vote in record["credited"])
+    requirement = ("the reported RCO slot is unfilled; required RCO coverage is UNKNOWN"
+                   if slot in ws.RECOGNIZED_RCOS else "the vote is still required")
     text += (f"; filled at this head: {filled}; GitHub {record['checks']} at {head}; waiting since "
-             f"{record['waiting_since_utc']}; route {record['route']}; the vote is still required")
+             f"{record['waiting_since_utc']}; route {record['route']}; {requirement}")
     own = [row for row in record["not_credited"] if row["agent"] == lane and row["head"] == record["github_head"]]
     if own:
         text += f"; your vote row at this head is not credited ({own[0]['reason']}, ref {own[0]['ref'][:16]})"

@@ -400,6 +400,7 @@ def test_the_join_cli_has_no_default_root_and_refuses_before_any_read(monkeypatc
     # F-2 (RCO2 D/E, Lead 08:59Z and 09:21Z): the packaged CLI and the library defaulted to private F: frozen data
     # and an F: output sandbox. The recorder stands in for load_frozen, so no data disk path is opened here.
     calls = []
+    real_load_frozen = fz.load_frozen  # kept before the recorder replaces it, for the signature check below
     monkeypatch.setattr(jt.fz, "load_frozen", lambda root: calls.append(root) or {"cycles": [], "manifest_sha256": ""})
     base = ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN]
     with pytest.raises(SystemExit) as stopped:
@@ -409,7 +410,7 @@ def test_the_join_cli_has_no_default_root_and_refuses_before_any_read(monkeypatc
         assert jt.main(base + ["--frozen-root", "frozen", "--out", str(tjd.outside(tmp_path, "plain", "turn"))]) == 2
     assert (calls, capsys.readouterr().out.splitlines()) == ([], ["refused: " + OUTSIDE])
     assert not tjd.outside(tmp_path).exists() and not hasattr(jt, "SANDBOX_ROOT")
-    for function in (fz.load_manifest, fz.load_frozen, jt.turn):
+    for function in (fz.load_manifest, real_load_frozen, jt.turn):
         assert inspect.signature(function).parameters["root"].default is inspect.Parameter.empty
 
 

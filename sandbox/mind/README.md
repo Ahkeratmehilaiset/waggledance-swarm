@@ -215,7 +215,8 @@ run read-only local `git` commands.
 The operator preview of the JOIN card delivery covers only new waits on a PR with exactly one reported empty
 identity slot: an abstained or refused PR is outside its ledger and one with two or more empty slots gives no line
 either, so a preview without lines is no proof that all work is complete. The lane view gives each recognized RCO
-its own slot and each empty slot a line that says "the vote is still required", but a PR's class stays UNKNOWN here
-(no classifier or charter runs) and an UNKNOWN class does not establish that a second RCO slot is required: such a
-line for the fourth identity slot (the second RCO) is an observation, not a required gate slot. Nothing in the view,
-the card, the delivery or the preview is a required-policy, last-required-vote or utility claim.
+its own slot. An empty build slot's line says "the vote is still required"; an empty RCO slot's line says "the
+reported RCO slot is unfilled; required RCO coverage is UNKNOWN", since a PR's class stays UNKNOWN here (no
+classifier or charter runs) and an UNKNOWN class does not establish that a second RCO slot is required: the line for
+the fourth identity slot (the second RCO) is an observation, not a required gate slot. Nothing in the view, the card,
+the delivery or the preview is a required-policy, last-required-vote or utility claim.

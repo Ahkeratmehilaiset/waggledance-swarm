@@ -546,3 +546,58 @@ def test_binding_r7_progress_is_suppressed_but_real_probe_errors_still_fail():
     real_error.scope["subprocess"].Popen = ErrorChild
     with pytest.raises(RuntimeError, match="identity probe failed"):
         real_error.main()
+
+
+def test_binding_r8_receipt_keeps_child_observed_values():
+    # MUTANT_COPIED_BINDING_PATH_IN_RECEIPT / MUTANT_COPIED_LOCAL_DIGEST.
+    ordinary = _BindingDoubles()
+    ordinary.fixture(strict=True)
+    observed = _BindingDoubles()
+    base = observed.scope["subprocess"].Popen
+
+    class MixedCaseChild(base):
+        def communicate(self, input=None, timeout=None):
+            stdout, stderr = super().communicate(input=input, timeout=timeout)
+            envelope = observed.json.loads(stdout)
+            envelope["identity"]["executable"] = self.argv[0].swapcase()
+            return observed.json.dumps(envelope), stderr
+
+    observed.scope["subprocess"].Popen = MixedCaseChild
+    observed.fixture(strict=True)
+    receipts = [observed.json.loads(raw) for name, raw in observed.files.items()
+                if "\\cases\\" in name]
+    assert len(receipts) == 1
+    assert receipts[0]["path"] == observed.paths["powershell"].swapcase()
+    # Values are equal only AFTER the child's digest check; hand off that observed field.
+    fixture = ast.parse((ROOT / observed.target).read_text(encoding="utf-8"))
+    ps = next(n for n in fixture.body if isinstance(n, ast.FunctionDef) and n.name == "_ps")
+    record = next(n.value for n in ps.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "record" for t in n.targets))
+    digest = next(k.value for k in record.keywords if k.arg == "source_text_sha256")
+    assert ast.unparse(digest) == "identity['source_text_sha256']"
+
+
+def test_binding_r9_parent_accepts_normalized_observed_path_not_different_host():
+    # MUTANT_PARENT_COMPARES_COPIED_PATH_EXACTLY / MUTANT_OTHER_HOST_ACCEPTED.
+    _BindingDoubles().main()
+
+    def with_case_path(path):
+        run = _BindingDoubles()
+        base = run.scope["subprocess"].run
+
+        def altered(argv, **kwargs):
+            result = base(argv, **kwargs)
+            if "pytest" in argv:
+                for name, raw in list(run.files.items()):
+                    if "\\cases\\" in name:
+                        record = run.json.loads(raw)
+                        record["path"] = path(record["path"])
+                        run.files[name] = run.json.dumps(record).encode()
+            return result
+
+        run.scope["subprocess"].run = altered
+        return run
+
+    with_case_path(lambda value: value.swapcase().replace("\\", "/")).main()
+    with pytest.raises(ValueError, match="unbound case receipt"):
+        with_case_path(lambda value: r"C:\different\powershell.exe").main()

@@ -284,7 +284,7 @@ jobs:
                   if (record.get("schema") != "wd.windows-disk-case.v1" or record.get("token") != binding["token"]
                           or record.get("binding_sha256") != binding_sha or node != expected_name
                           or (CASE_CLASS, node) not in pairs
-                          or record.get("path") != host["path"]
+                          or ntpath.normcase(ntpath.normpath(record.get("path", ""))) != ntpath.normcase(ntpath.normpath(host["path"]))
                           or record.get("before_sha256") != host["sha256"]
                           or record.get("after_sha256") != host["sha256"]
                           or record.get("source_text_sha256") != binding["inputs"]["ops/windows/reboot/Deploy-WdRebootBundle.ps1"]["text_sha256"]

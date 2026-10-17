@@ -181,10 +181,10 @@ finally { $sha.Dispose() }
         raise ValueError("fixture host changed")
     record = dict(schema="wd.windows-disk-case.v1", token=host.binding["token"],
                   binding_sha256=hashlib.sha256(host.raw.encode("utf-8")).hexdigest(),
-                  node=host.node, label=host.label, path=expected["path"], before_sha256=before, after_sha256=after,
+                  node=host.node, label=host.label, path=identity["executable"], before_sha256=before, after_sha256=after,
                   launched_pid=child.pid, observed_pid=identity["pid"], platform=identity["platform"],
                   major=identity["major"], minor=identity["minor"], edition=identity["edition"],
-                  source_text_sha256=text_sha, exit=child.returncode)
+                  source_text_sha256=identity["source_text_sha256"], exit=child.returncode)
     data = json.dumps(record, sort_keys=True)
     if len(data.encode("utf-8")) > 65536:
         raise ValueError("oversized case receipt")

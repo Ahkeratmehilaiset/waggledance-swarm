@@ -114,8 +114,12 @@ makes a document of G1, G2 or G3 unreadable, and a NONE states its absence throu
 complete through a time after the view's as_of (a collector that ran later), never after the turn's clock.
 
 usage: python -B sandbox/mind/join_card_delivery.py --view <lane-view.json> --receipts <receipts.json> --now <UTC>
-       [--notified <json list>] [--out <path under F:\\waggledance_memory\\sandbox>]
-The operator preview goes to stdout. ``--out`` writes the full output JSON and only under the sandbox data root.
+       [--notified <json list>] [--out <new file inside an existing .codex-audit directory>]
+The operator preview goes to stdout, read-only. ``--out`` also writes the full output JSON, only as a new file
+inside an existing ``.codex-audit`` directory, the nearest such ancestor of the path being its output root:
+there is no default root and no F: fallback, and a path outside one, a root that is not an existing directory
+and an existing file are refused before any read; the file is created exclusively, so nothing is ever replaced
+(F-2, RCO2 DLV2).
 """
 
 from __future__ import annotations
@@ -151,7 +155,10 @@ CHECKS = re.compile(r"([1-9][0-9]{0,2})/\1")  # S1 (v1.3): the lane view's f"{co
 ROW_KEYS = frozenset({"kind", "lane", "pr", "head", "ref", "at_utc"})
 UNCHANGED_LIMIT = 8
 UNKNOWN_LIMIT = 5
-SANDBOX_ROOT = Path(r"F:\waggledance_memory\sandbox")
+AUDIT_DIR = ".codex-audit"  # an output only inside an existing directory of this name (F-2, DLV2)
+OUTSIDE = "the output path is not inside a .codex-audit directory"
+NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
+EXISTING = "the output file already exists; nothing is replaced"
 
 
 class DeliveryError(ValueError):
@@ -492,6 +499,19 @@ def _load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object, parse_constant=_no_constant)
 
 
+def output_refusal(out: Path) -> str | None:
+    """Why ``out`` is refused as an output path, or None (F-2, RCO2 DLV2; ``join_turn`` uses this same check): the
+    nearest ancestor of its resolved path named ``.codex-audit`` is the output root and must be an existing directory.
+    There is no default root and no F: fallback; the check reads no file and runs before any read or write."""
+    target = Path(out).resolve()
+    roots = [parent for parent in target.parents if parent.name == AUDIT_DIR]
+    if not roots:
+        return OUTSIDE
+    if not roots[0].is_dir():
+        return NOT_A_ROOT
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--view", type=Path, required=True)
@@ -500,10 +520,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notified", type=Path)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
-    if args.out is not None:
-        resolved = args.out.resolve()
-        if SANDBOX_ROOT.resolve() not in resolved.parents:
-            print("refused: --out must be under the sandbox data root", file=sys.stderr)
+    if args.out is not None:  # admitted before any read, and an existing file is never replaced (F-2, DLV2)
+        refusal = output_refusal(args.out) or (EXISTING if args.out.exists() else None)
+        if refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
             return 2
     try:
         view, notified = _load(args.view), (_load(args.notified) if args.notified else ())
@@ -522,7 +542,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        try:
+            with args.out.open("x", encoding="utf-8") as handle:  # exclusive: a file made meanwhile stays
+                handle.write(json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n")
+        except FileExistsError:
+            print(f"refused: {EXISTING}", file=sys.stderr)
+            return 2
     sys.stdout.write(preview)
     return 0
 

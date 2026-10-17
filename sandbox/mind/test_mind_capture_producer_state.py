@@ -1578,6 +1578,38 @@ def test_a_snapshot_pr_a_full_gh_list_leaves_out_gets_its_own_row_or_the_context
         assert "context_head_mismatch" in rules
 
 
+@pytest.mark.parametrize("branch", ["feature/\u00e4", None, "codex-lead-1/task"])
+def test_a_snapshot_pr_a_shorter_gh_list_leaves_out_keeps_the_context_unknown(tmp_path, branch):
+    # Tools static witness (Lead 09:53Z): the list holds two rows, far below LIST_LIMIT, and PR 5 of the bridge
+    # snapshot is MERGED on a Git-valid branch outside the task grammar, so pr_rows skips its row (the grammar stays
+    # as it is). Coverage was checked only at the limit, so the context said observed without PR 5 and the board
+    # applied it. A shorter list holds every PR, so a snapshot PR it leaves out (skipped, or not on GitHub: None)
+    # keeps the context UNKNOWN before any view, which suppresses nothing (the bridge-only board, the disclosed
+    # fallback); the control's ASCII branch keeps PR 5 in the observed context.
+    live = tmp_path / ".codex-audit" / "live"
+    for name in ("cycles", "files-cache"):
+        (live / name).mkdir(parents=True)
+    space, bridge = load(bridge=PrBridge([PR_EVENT]), live=live)
+    rows = [(1, "MERGED", "a" * 40, "lane-a/x1")] + ([] if branch is None else [(5, "MERGED", PR_HEAD, branch)])
+    gh = FakeGh(pr_list(*rows))
+    space["subprocess"] = types.SimpleNamespace(run=lambda argv, **kwargs: (gh if argv[0] == "gh" else bridge)(
+        argv, **kwargs), TimeoutExpired=subprocess.TimeoutExpired)
+    assert len(rows) < space["LIST_LIMIT"]
+    rec = {"cycle": 1, "started_utc": "s", "reader": space["READER"]}
+    last_ok = space["candidate_cycle"](rec, None, {})
+    snapshot = core.read_snapshot(live / last_ok["publication_file"], audit_root=live.parent)
+    subjects = [item["subject"] for item in snapshot["attention"]]
+    rules = [tension["rule"] for tension in snapshot["tensions"]]
+    assert "5" in snapshot["prs"] and gh.view_calls() == []
+    if branch != "codex-lead-1/task":
+        outcome = (last_ok["context_file"], rec["context"]["status"], rec["context"].get("reason"))
+        assert outcome == (None, "UNKNOWN", "needed_pr_missing")
+        assert "pr:5" in subjects and "context_applied" not in rules
+        return
+    assert rec["context"]["status"] == "observed" and last_ok["context_file"] is not None
+    assert "pr:5" not in subjects and "PR5 MERGED" in json.dumps(snapshot["tensions"])
+
+
 def test_an_open_pr_view_is_kept_as_typed_metadata_only_and_every_class_stays_unknown(tmp_path):
     head, other = "a" * 40, "b" * 40
     gh = FakeGh(pr_list((7, "OPEN", head, "lane-a/x"), (8, "MERGED", other, "lane-b/y")),

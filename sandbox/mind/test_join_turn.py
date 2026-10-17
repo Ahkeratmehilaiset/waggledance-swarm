@@ -1,6 +1,8 @@
 """Tests of the JOIN turn v0.2: one command from a frozen cycle to one lane's card. Synthetic cycles are built from the
-step-1 fixtures (the real core writes the snapshot rows); the frozen P1 cycles are used when the sandbox data disk is
-present, and there the turn's view must equal the view acceptance 1a wrote for the same cycle. The ordinary error paths
+step-1 fixtures (the real core writes the snapshot rows); a synthetic frozen root goes through the real loader
+in place of the P1 copy, and each cycle's turn view must equal the acceptance-1a view of that cycle (no data
+disk is read: F-2 removed every default root, and an output goes only into an existing .codex-audit
+directory). The ordinary error paths
 that the Tools static audit of v0.1 (2026-10-16) found untested (G1-G7) are injected at the end, followed by the v0.2
 repairs after RCO1's fault probe v2 (P14, P15).
 
@@ -9,6 +11,7 @@ run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/min
 
 import errno
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -56,7 +59,6 @@ here, root = Path(sys.argv[1]), Path(sys.argv[2])
 sys.path[:0] = [str(here), str(here / "step1")]
 import join_turn as jt
 import test_join_turn as t
-jt.SANDBOX_ROOT = root.parent
 jt.write_turn(root / "turn", jt.turn_case(t.TOOLS, t.synthetic_case(), learn_ref=t.LEARN, envelope=t.envelope()))
 """
 CRASH = """
@@ -67,7 +69,6 @@ here, root, flushed = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 sys.path[:0] = [str(here), str(here / "step1")]
 import join_turn as jt
 import test_join_turn as t
-jt.SANDBOX_ROOT = root
 real_fsync, calls = os.fsync, []
 
 def fsync_then_crash(fd):
@@ -99,10 +100,11 @@ def envelope(as_of=AS_OF, lane=TOOLS):
 
 
 @pytest.fixture
-def sandbox_root(tmp_path, monkeypatch):
-    root = tmp_path / "sandbox"
+def sandbox_root(tmp_path):
+    # F-2: an output root is admitted by its name and place (an existing .codex-audit directory), never by
+    # patching a module constant
+    root = tmp_path / ".codex-audit"
     root.mkdir()
-    monkeypatch.setattr(jt, "SANDBOX_ROOT", root)
     return root
 
 
@@ -349,12 +351,103 @@ def test_a_real_open_file_in_the_staging_directory_delays_the_rename_until_it_is
     assert sorted(path.name for path in (sandbox_root / "held").iterdir()) == sorted(FOUR)
 
 
-def test_out_outside_the_sandbox_root_writes_nothing(sandbox_root, tmp_path):
+OUTSIDE = "the output path is not inside a .codex-audit directory"  # literal: a test never trusts the module's text
+NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
+SECRET = b"{}"  # the bytes of a file outside the frozen root that a crafted manifest names
+SHAPE = "a manifest cycle entry is not a cycle name and a files map"
+CYCLE_NAME = "a manifest cycle name is not one plain path component"
+FILE_NAME = "a manifest file name is not plain path components"
+MANIFEST_CASES = [
+    ("an entry", SHAPE), ({"cycle": "c"}, SHAPE), ({"files": {}}, SHAPE), ({"cycle": "c", "files": ["x.json"]}, SHAPE),
+    ({"cycle": 5, "files": {}}, CYCLE_NAME), ({"cycle": "..", "files": {"secret.json": "@sha"}}, CYCLE_NAME),
+    ({"cycle": "nul", "files": {}}, CYCLE_NAME), ({"cycle": "c", "files": {"..\\..\\secret.json": "@sha"}}, FILE_NAME),
+    ({"cycle": "c", "files": {"../../secret.json": "@sha"}}, FILE_NAME),
+    ({"cycle": "c", "files": {"@abs": "@sha"}}, FILE_NAME), ({"cycle": "c", "files": {"run\\NUL": None}}, FILE_NAME),
+    ({"cycle": "c", "files": {"x.json": 5}}, "a manifest file digest is not a sha256 or null"),
+]
+
+
+@pytest.mark.parametrize("entry, reason", MANIFEST_CASES)
+def test_a_manifest_entry_of_another_shape_or_an_unsafe_name_is_refused_before_any_file_is_read(tmp_path, monkeypatch,
+                                                                                                entry, reason):
+    # FZ-1 (RCO2's semantic review, Lead 09:21Z): a crafted frozen manifest must never lead a read outside the frozen
+    # root, and an entry of another shape is a fixed refusal, never a raw error. In the manifest a valid entry comes
+    # first, so every entry must be checked before the first file of any cycle is read. Synthetic files only.
+    root = tmp_path / "frozen"
+    (root / "ok").mkdir(parents=True)
+    (root / "ok" / "ok.json").write_bytes(SECRET)
+    (tmp_path / "secret.json").write_bytes(SECRET)
+    text = json.dumps({"schema": fz.MANIFEST_SCHEMA, "cycles": [{"cycle": "ok", "files": {"ok.json": "@sha"}}, entry]})
+    text = text.replace('"@sha"', json.dumps(hashlib.sha256(SECRET).hexdigest()))
+    text = text.replace('"@abs"', json.dumps((tmp_path / "secret.json").as_posix()))
+    (root / "manifest.json").write_text(text, encoding="utf-8")
+    reads, real = [], Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self) or real(self))
+
+    def outcome(load):
+        try:
+            load()
+        except Exception as error:  # noqa: BLE001 - the exact type is asserted below
+            return type(error).__name__, str(error)
+        return "no refusal", ""
+
+    refused = ("FrozenInputError", reason)
+    assert (outcome(lambda: fz.read_verified(root, json.loads(text)["cycles"][1])), reads) == (refused, [])
+    assert (outcome(lambda: fz.load_frozen(root)), reads) == (refused, [root / "manifest.json"])
+
+
+def test_the_join_cli_has_no_default_root_and_refuses_before_any_read(monkeypatch, tmp_path, capsys):
+    # F-2 (RCO2 D/E, Lead 08:59Z and 09:21Z): the packaged CLI and the library defaulted to private F: frozen data
+    # and an F: output sandbox. The recorder stands in for load_frozen, so no data disk path is opened here.
+    calls = []
+    monkeypatch.setattr(jt.fz, "load_frozen", lambda root: calls.append(root) or {"cycles": [], "manifest_sha256": ""})
+    base = ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN]
+    with pytest.raises(SystemExit) as stopped:
+        jt.main(base)
+    assert (stopped.value.code, calls) == (2, []) and "--frozen-root" in capsys.readouterr().err
+    with tjd.writes_only_in_audit(monkeypatch):  # outside every audit root whatever the basetemp (Lead 10:18Z)
+        assert jt.main(base + ["--frozen-root", "frozen", "--out", str(tjd.outside(tmp_path, "plain", "turn"))]) == 2
+    assert (calls, capsys.readouterr().out.splitlines()) == ([], ["refused: " + OUTSIDE])
+    assert not tjd.outside(tmp_path).exists() and not hasattr(jt, "SANDBOX_ROOT")
+    for function in (fz.load_manifest, fz.load_frozen, jt.turn):
+        assert inspect.signature(function).parameters["root"].default is inspect.Parameter.empty
+
+
+def test_an_output_goes_only_into_an_existing_codex_audit_directory_and_a_refusal_writes_nothing(tmp_path, monkeypatch):
+    assert not hasattr(jt, "SANDBOX_ROOT")  # first: the old data-disk root is never resolved here
     result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)
-    for out in (tmp_path / "elsewhere", sandbox_root, sandbox_root / ".." / "escape"):
-        with pytest.raises(jt.JoinTurnError):
-            jt.write_turn(out, result)
-    assert not (tmp_path / "elsewhere").exists() and not (tmp_path / "escape").exists()
+    work = tmp_path / ".codex-audit"  # every path this test makes is inside an audit directory (Lead 10:18Z)
+    (work / "file").mkdir(parents=True)
+    (work / "file" / ".codex-audit").write_bytes(b"")
+    with tjd.writes_only_in_audit(monkeypatch):
+        for out, reason in ((tjd.outside(tmp_path, "plain", "turn"), OUTSIDE),
+                            (tjd.outside(tmp_path, ".codex-audit"), OUTSIDE),
+                            (work / "absent" / ".codex-audit" / "turn", NOT_A_ROOT),
+                            (work / "file" / ".codex-audit" / "turn", NOT_A_ROOT)):
+            with pytest.raises(jt.JoinTurnError) as refused:
+                jt.write_turn(out, result)
+            assert str(refused.value) == reason
+    listed = sorted(path.relative_to(work).as_posix() for path in work.rglob("*"))
+    assert listed == ["file", "file/.codex-audit"]  # a refusal creates nothing, not even a parent
+    assert not tjd.outside(tmp_path).exists()
+    audit = work / "ok" / ".codex-audit"
+    audit.mkdir(parents=True)
+    with tjd.writes_only_in_audit(monkeypatch):
+        jt.write_turn(audit / "deeper" / "turn", result)
+    assert sorted(path.name for path in (audit / "deeper" / "turn").iterdir()) == sorted(FOUR)
+
+
+def test_out_outside_the_sandbox_root_writes_nothing(sandbox_root, tmp_path, monkeypatch):
+    # outside every audit root whatever the basetemp (Lead 10:18Z): an audit-named directory with no audit ancestor,
+    # and a dot-dot path that climbs from the audit root to the filesystem anchor, past any outer audit root too
+    result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)
+    climb = sandbox_root.joinpath(*[".."] * (len(sandbox_root.parts) - 1), *tjd.outside(tmp_path, "escape").parts[1:])
+    assert climb.resolve() == tjd.outside(tmp_path, "escape").resolve()
+    with tjd.writes_only_in_audit(monkeypatch):
+        for out in (tjd.outside(tmp_path, "elsewhere"), tjd.outside(tmp_path, ".codex-audit"), climb):
+            with pytest.raises(jt.JoinTurnError):
+                jt.write_turn(out, result)
+    assert not tjd.outside(tmp_path).exists()
 
 
 def test_an_earlier_turn_is_never_overwritten(sandbox_root):
@@ -377,7 +470,7 @@ def test_cli_prints_the_card_and_refuses_with_fixed_reasons(monkeypatch, sandbox
     files = {"publication.json": "a" * 64, "context.json": "b" * 64}
     frozen = {"cycles": [dict(synthetic_case(), files=files, nulls=["capture.json"])], "manifest_sha256": "c" * 64}
     monkeypatch.setattr(jt.fz, "load_frozen", lambda root: frozen)
-    args = ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN]
+    args = ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN, "--frozen-root", "synthetic-frozen"]
     strict = sandbox_root / "duplicate-key.json"
     strict.write_bytes(b'{"schema": 1, "schema": 2}')  # strict JSON refuses a duplicate key
     (sandbox_root / "empty").mkdir()
@@ -386,31 +479,34 @@ def test_cli_prints_the_card_and_refuses_with_fixed_reasons(monkeypatch, sandbox
     assert printed == jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)["card"]
     assert (sandbox_root / "cli" / "card.txt").read_text(encoding="utf-8") == printed
     inputs = json.loads((sandbox_root / "cli" / "turn.json").read_text(encoding="utf-8"))["inputs"]
-    assert inputs == {"frozen_root": str(fz.FROZEN_ROOT), "manifest_sha256": "c" * 64, "cycle_files": files,
+    assert inputs == {"frozen_root": "synthetic-frozen", "manifest_sha256": "c" * 64, "cycle_files": files,
                       "cycle_nulls": ["capture.json"]}
-    for bad, reason in ((["--lane", TOOLS, "--cycle", "other", "--learn-ref", LEARN], "the cycle is not exactly once"),
-                        (["--lane", "nobody", "--cycle", "synthetic", "--learn-ref", LEARN], "the lane is not a fleet"),
-                        (args + ["--now", "yesterday"], "an explicit now_utc is required"),
-                        (args + ["--out", str(sandbox_root / "cli")], "the output directory already holds a turn"),
-                        (args + ["--out", str(sandbox_root / "empty")], "the output directory already exists"),
-                        (args + ["--out", str(sandbox_root.parent / "outside")], "the output directory is not under"),
-                        (args + ["--receipts", str(sandbox_root / "missing.json")], "a file could not be read"),
-                        (args + ["--remember", str(strict)], "a file could not be read")):
-        assert jt.main(bad) == 2
-        assert capsys.readouterr().out.startswith(f"refused: {reason}")
+    elsewhere = tjd.outside(sandbox_root.parent, "outside")  # outside every audit root whatever the basetemp
+    with tjd.writes_only_in_audit(monkeypatch):
+        for bad, reason in ((args[:3] + ["other"] + args[4:], "the cycle is not exactly once"),
+                            (["--lane", "nobody"] + args[2:], "the lane is not a fleet"),
+                            (args + ["--now", "yesterday"], "an explicit now_utc is required"),
+                            (args + ["--out", str(sandbox_root / "cli")], "the output directory already holds a turn"),
+                            (args + ["--out", str(sandbox_root / "empty")], "the output directory already exists"),
+                            (args + ["--out", str(elsewhere)], "the output path is not inside"),
+                            (args + ["--receipts", str(sandbox_root / "missing.json")], "a file could not be read"),
+                            (args + ["--remember", str(strict)], "a file could not be read")):
+            assert jt.main(bad) == 2
+            assert capsys.readouterr().out.startswith(f"refused: {reason}")
+    assert not tjd.outside(sandbox_root.parent).exists()
 
 
 def test_a_cycle_named_twice_in_the_manifest_is_refused(monkeypatch, capsys):
     twice = dict(synthetic_case(), files={}, nulls=[])
     monkeypatch.setattr(jt.fz, "load_frozen", lambda root: {"cycles": [twice, twice], "manifest_sha256": "c" * 64})
-    assert jt.main(["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN]) == 2
+    assert jt.main(["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN, "--frozen-root", "frozen"]) == 2
     assert capsys.readouterr().out.splitlines() == ["refused: the cycle is not exactly once in the frozen manifest"]
 
 
 def _frozen_cli(monkeypatch):
     frozen = {"cycles": [dict(synthetic_case(), files={}, nulls=[])], "manifest_sha256": "c" * 64}
     monkeypatch.setattr(jt.fz, "load_frozen", lambda root: frozen)
-    return ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN]
+    return ["--lane", TOOLS, "--cycle", "synthetic", "--learn-ref", LEARN, "--frozen-root", "synthetic-frozen"]
 
 
 def _deep_envelope_text(depth):

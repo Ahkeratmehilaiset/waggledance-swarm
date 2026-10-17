@@ -249,6 +249,55 @@ def test_write_failure_leaves_no_published_freeze(driver, finished, monkeypatch)
     assert not list(finished["audit"].glob(".frozen.staging-*"))
 
 
+def test_foreign_output_and_failed_cleanup_both_remain_visible(driver, finished, monkeypatch):
+    original = driver._read
+    inserted = False
+    def inject(path):
+        nonlocal inserted
+        staging = next((p for p in path.parents if p.name.startswith(".frozen.staging-")), None)
+        if staging is not None and not inserted:
+            (staging / "foreign.txt").write_bytes(b"foreign-owned-evidence")
+            inserted = True
+        return original(path)
+    monkeypatch.setattr(driver, "_read", inject)
+    with pytest.raises(driver.ChainRefusal, match="^foreign_output;staging_cleanup_failed$") as caught:
+        driver.freeze_committed_cycle(finished["live"], finished["out"])
+    assert caught.value.primary_reason == "foreign_output" and caught.value.cleanup_failed
+    assert not finished["out"].exists()
+    foreign, = finished["audit"].glob(".frozen.staging-*/foreign.txt")
+    assert foreign.read_bytes() == b"foreign-owned-evidence"
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_primary_refusal_or_interrupt_survives_failed_cleanup(driver, finished, monkeypatch, interrupt):
+    original_read, original_unlink = driver._read, Path.unlink
+    def refuse_unlink(path, *args, **kwargs):
+        if path.name == "capture.json" and any(p.name.startswith(".frozen.staging-") for p in path.parents):
+            raise PermissionError("synthetic held-file fault, not native sharing evidence")
+        return original_unlink(path, *args, **kwargs)
+    reads = 0
+    def source_changed(path):
+        nonlocal reads
+        if path.name == "latest.json":
+            reads += 1
+            if reads == 2:
+                return encoded({"changed": True})
+        return original_read(path)
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    if interrupt:
+        def stop(_): raise KeyboardInterrupt()
+        monkeypatch.setattr(driver.os, "fsync", stop)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            driver.freeze_committed_cycle(finished["live"], finished["out"])
+        assert "staging_cleanup_failed" in caught.value.__notes__
+    else:
+        monkeypatch.setattr(driver, "_read", source_changed)
+        with pytest.raises(driver.ChainRefusal, match="^source_changed;staging_cleanup_failed$") as caught:
+            driver.freeze_committed_cycle(finished["live"], finished["out"])
+        assert caught.value.primary_reason == "source_changed" and caught.value.cleanup_failed
+    assert not finished["out"].exists()
+
+
 def test_executable_mutant_skipping_source_digest_is_killed(driver, finished):
     """MUTANT_SKIP_SOURCE_DIGEST executes the changed implementation, not a label."""
     source = Path(driver.__file__).read_text(encoding="utf-8")

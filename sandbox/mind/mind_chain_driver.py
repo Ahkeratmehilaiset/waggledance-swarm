@@ -43,6 +43,11 @@ GITHUB_FILES = ("context.json", "observed-status.json", "gh-pr-list.json", "gh-o
 class ChainRefusal(ValueError):
     """Fixed codes only; input text, host paths and secrets are never echoed."""
 
+    def __init__(self, primary_reason, *, cleanup_failed=False):
+        self.primary_reason = primary_reason
+        self.cleanup_failed = cleanup_failed
+        super().__init__(primary_reason + (";staging_cleanup_failed" if cleanup_failed else ""))
+
 
 def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
@@ -293,7 +298,13 @@ def freeze_committed_cycle(live_root, frozen_root):
             try: path.rmdir()
             except OSError: cleanup_failed = True
         if cleanup_failed:
-            raise ChainRefusal("staging_cleanup_failed") from None
+            if isinstance(error, ChainRefusal):
+                raise ChainRefusal(error.primary_reason, cleanup_failed=True) from None
+            if not isinstance(error, Exception):
+                error.add_note("staging_cleanup_failed")
+                raise
+            reason = "output_unavailable" if isinstance(error, OSError) else "output_failed"
+            raise ChainRefusal(reason, cleanup_failed=True) from None
         if isinstance(error, ChainRefusal):
             raise
         if isinstance(error, OSError):

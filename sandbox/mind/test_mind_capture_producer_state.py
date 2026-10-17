@@ -1708,6 +1708,47 @@ def test_when_neither_can_be_written_the_producer_stops_with_one_fixed_line(tmp_
     assert sorted(p.name for p in tmp_path.iterdir()) == ["last-refusal.json", "live-log.jsonl"]  # no temporary file
 
 
+@pytest.mark.parametrize("cut", [False, True])
+def test_a_refusal_after_an_append_cut_part_way_is_still_one_whole_parseable_line(tmp_path, cut):
+    # Root build audit (Lead 11:33Z, B2/B3 observability): a journal append that wrote 17 bytes and then failed left a
+    # cut line, and the next refusal was appended to it: the only line did not parse, and record_refusal returned
+    # without its fallback. The real journal and record_refusal run; only the cut write is synthetic (a stream that
+    # writes the first 17 bytes, then raises the no-space error). cut=False is the positive control.
+    space, _ = load(live=tmp_path)
+    log = tmp_path / "live-log.jsonl"
+    if cut:
+        real_open = open
+
+        class CutStream:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def write(self, data):
+                self.handle.write(data[:17])
+                self.handle.flush()
+                raise no_space(space)
+
+        prepared = dict(rec_of(), status="prepared")
+        space["open"] = lambda path, mode: CutStream(real_open(path, mode))  # only the producer's own open
+        with pytest.raises(OSError):
+            space["journal"](prepared)
+        del space["open"]
+        assert log.read_bytes() == (json.dumps(prepared, sort_keys=True) + "\n").encode("ascii")[:17]
+    space["record_refusal"](rec_of(2))
+    lines = log.read_bytes().split(b"\n")
+    assert (len(lines), lines[-1], json.loads(lines[-2])) == (2 + cut, b"", rec_of(2))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["live-log.jsonl"]  # the log took it: no fallback needed
+
+
 def test_a_refusal_record_the_guard_refuses_is_cut_to_its_fixed_fields(tmp_path, capsys):
     space, _ = load(live=tmp_path)
     rec = {"cycle": 2, "started_utc": "s", "reader": "r", "cycle_dir": CYCLE, "read": {"note": MARKER}}

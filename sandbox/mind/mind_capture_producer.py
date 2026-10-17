@@ -848,9 +848,16 @@ def prune(cycles_dir, keep, protected):
 
 
 def journal(rec):
-    """Append one cycle record to <live-dir>/live-log.jsonl, flushed and synced; an OSError reaches the caller."""
+    """Append one cycle record to <live-dir>/live-log.jsonl, flushed and synced; an OSError reaches the caller. When an
+    earlier append failed part way and left a cut last line, the record starts with a line end, so it is still one
+    whole line of its own and a refusal stays observable (the cut line is left as it is)."""
     line = (json.dumps(rec, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
-    with open(live / "live-log.jsonl", "ab") as handle:
+    with open(live / "live-log.jsonl", "a+b") as handle:
+        end = handle.seek(0, os.SEEK_END)
+        if end:
+            handle.seek(end - 1)
+            if handle.read(1) != b"\n":  # a cut last line: end it first
+                line = b"\n" + line
         handle.write(line)
         handle.flush()
         os.fsync(handle.fileno())

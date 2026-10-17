@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OPS_ROOT = REPO_ROOT / "ops" / "windows" / "reboot"
 DEFINITION = OPS_ROOT / "bridge-code-files.json"
 OBSERVER_INSTALLER = OPS_ROOT / "Install-WdCapacityObserver.ps1"
-INTERNAL_ROOTS = ("tools", "waggledance")
+INTERNAL_ROOTS = ("tools", "waggledance", "sandbox")
 
 
 # --- manifest ------------------------------------------------------------------
@@ -187,6 +187,10 @@ def _classify(dotted: str) -> tuple[str, str | None]:
     path = _module_path(dotted)
     if path is not None:
         return "module", path
+    # The admitted shadow files use real PEP 420 packages, not generated __init__ files.
+    # A real namespace parent never makes a missing child module into a symbol.
+    if dotted.split(".")[0] == "sandbox" and (REPO_ROOT / dotted.replace(".", "/")).is_dir():
+        return "namespace", None
     if "." in dotted:
         parent_dotted, leaf = dotted.rsplit(".", 1)
         parent = _module_path(parent_dotted)
@@ -212,7 +216,7 @@ def _closure(seeds: list[str]) -> tuple[dict[str, set[str]], dict[str, set[str]]
             if kind == "unresolved":
                 unresolved.setdefault(dotted, set()).add(relative)
                 continue
-            if kind == "symbol":
+            if kind in ("symbol", "namespace"):
                 continue
             if target in packaged:
                 continue
@@ -753,3 +757,120 @@ def test_every_module_an_ops_script_invokes_is_delivered_by_some_installer():
                    if module not in delivered and (REPO_ROOT / module).is_file()}
     assert not undelivered, (
         "ops scripts invoke modules no installer delivers: " + repr(undelivered))
+
+
+# Bounded shadow release: delivery declarations are not runtime authorization.
+SHADOW_RELEASE_MODULES = (
+    "tools.wd_bridge_mind_shadow",
+    "sandbox.mind.mind_capture_producer",
+    "sandbox.mind.mind_chain_driver",
+    "sandbox.mind.join_turn",
+    "sandbox.mind.join_card",
+    "sandbox.mind.join_card_delivery",
+    "sandbox.mind.step1.lane_view",
+    "sandbox.mind.step1.lane_view_frozen",
+    "sandbox.mind.capture.capacity_lens",
+    "sandbox.mind.capture.overlap_lens",
+)
+SHADOW_RELEASE_CLI = {
+    "mind_shadow_producer": "sandbox/mind/mind_capture_producer.py",
+    "mind_join_turn": "sandbox/mind/join_turn.py",
+}
+
+
+def _assert_shadow_release_delivery(definition):
+    _assert_mind_delivery(definition)  # Existing gates and manual capability stay unchanged.
+    required = {name.replace(".", "/") + ".py" for name in SHADOW_RELEASE_MODULES}
+    assert required <= set(definition["python_files"]), "shadow_file_drop"
+    assert set(SHADOW_RELEASE_MODULES) <= set(
+        definition["import_smoke"]["package_modules"]), "shadow_smoke_drop"
+    for name, path in SHADOW_RELEASE_CLI.items():
+        assert definition["python_entrypoints"].get(name) == path, "shadow_entrypoint_drop"
+    published = set(definition["python_entrypoints"].values())
+    assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
+    sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
+    assert sandbox_files <= required, "deferred_sandbox_file_published"
+    assert "enabled" not in definition["manual_execution_capability"]
+
+
+@pytest.mark.parametrize("mutation", [
+    None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
+    "shadow_library_published", "deferred_sandbox_file_published",
+])
+def test_shadow_release_delivery_contract_and_named_mutants(mutation):
+    definition = _definition()
+    _assert_shadow_release_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "shadow_file_drop":
+        mutant["python_files"].remove("sandbox/mind/mind_capture_producer.py")
+    elif mutation == "shadow_smoke_drop":
+        mutant["import_smoke"]["package_modules"].remove("sandbox.mind.join_card")
+    elif mutation == "shadow_entrypoint_drop":
+        mutant["python_entrypoints"].pop("mind_join_turn")
+    elif mutation == "shadow_library_published":
+        mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
+    else:
+        mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
+    with pytest.raises(AssertionError, match=mutation):
+        _assert_shadow_release_delivery(mutant)
+    _assert_shadow_release_delivery(definition)
+
+
+def test_shadow_namespace_imports_are_traced_not_silently_ignored():
+    found = _internal_imports("from sandbox.mind import join_turn\n", "tools")
+    assert {"sandbox.mind", "sandbox.mind.join_turn"} <= found
+
+
+def test_shadow_namespace_does_not_hide_a_missing_module(tmp_path, monkeypatch):
+    (tmp_path / "sandbox" / "mind").mkdir(parents=True)
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    assert _classify("sandbox.mind") == ("namespace", None)
+    assert _classify("sandbox.mind.no_such_module") == ("unresolved", None)
+
+
+@pytest.mark.parametrize("cli_module", [None, "sandbox.mind.mind_capture_producer", "sandbox.mind.join_turn"])
+def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, cli_module):
+    """Run only after final-source admission: isolated staged bytes, no gate execution.
+
+    This checks import/help paths, not a producer cycle, native deployment or
+    arbitrary dynamic imports. Merely shipping a gate file is not importing it.
+    """
+    denied = {path[:-3].replace("/", ".") for path in (*GATE_EXECUTORS, *RCO_CHECKERS)} | {
+        "tools.bridge_event_taxonomy",
+        "tools.check_standing_consensus_sign_class",
+        "waggledance.core.idle_consensus_charter",
+    }
+    script = (
+        "import importlib, importlib.abc, json, pathlib, runpy, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "denied = set(json.loads(sys.argv[2]))\n"
+        "names = json.loads(sys.argv[3])\n"
+        "cli = json.loads(sys.argv[4])\n"
+        "class NoGate(importlib.abc.MetaPathFinder):\n"
+        " def find_spec(self, fullname, path=None, target=None):\n"
+        "  if any(fullname == name or fullname.startswith(name + '.') for name in denied):\n"
+        "   raise RuntimeError('shadow_gate_import_refused:' + fullname)\n"
+        "sys.meta_path.insert(0, NoGate())\n"
+        "sys.path.insert(0, str(root))\n"
+        "if cli is not None:\n"
+        " sys.argv = [cli, '--help']\n"
+        " runpy.run_module(cli, run_name='__main__')\n"
+        "else:\n"
+        " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}\n"
+        " assert all(pathlib.Path(path).is_relative_to(root) for path in loaded.values())\n"
+        " print(json.dumps(dict(loaded=loaded, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source),
+         json.dumps(sorted(denied)), json.dumps(SHADOW_RELEASE_MODULES), json.dumps(cli_module)],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    if cli_module is None:
+        observed = json.loads(result.stdout)
+        assert observed["isolated"] == observed["no_site"] == 1
+        assert set(observed["loaded"]) == set(SHADOW_RELEASE_MODULES)
+    else:
+        assert "usage:" in result.stdout.lower() and "--help" in result.stdout

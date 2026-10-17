@@ -86,10 +86,13 @@ def _is_reparse(path):
 
 def _guard_path(path):
     # lstat every existing component: resolve() alone would hide junctions.
-    for part in reversed((path, *path.parents)):
-        if part.exists() or part.is_symlink():
-            if _is_reparse(part):
-                raise ChainRefusal("reparse_path")
+    try:
+        for part in reversed((path, *path.parents)):
+            if part.exists() or part.is_symlink():
+                if _is_reparse(part):
+                    raise ChainRefusal("reparse_path")
+    except OSError:
+        raise ChainRefusal("source_unavailable") from None
 
 
 def _root(path, *, exists):

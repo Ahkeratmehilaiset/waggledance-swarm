@@ -181,6 +181,18 @@ def test_reparse_flag_is_refused_without_link_privilege(driver, finished, monkey
     assert not finished["out"].exists()
 
 
+def test_unreadable_component_has_fixed_refusal_without_host_path(driver, finished, monkeypatch):
+    original = driver._is_reparse
+    def denied(path):
+        if path.name == "capture.json":
+            raise PermissionError("synthetic sensitive host detail must not escape")
+        return original(path)
+    monkeypatch.setattr(driver, "_is_reparse", denied)
+    with pytest.raises(driver.ChainRefusal, match="^source_unavailable$"):
+        driver.freeze_committed_cycle(finished["live"], finished["out"])
+    assert not finished["out"].exists()
+
+
 def test_privacy_guard_refuses_before_any_output(driver, finished):
     raw = encoded({"events": [{"text": "PRIVATE" + "_MARKER"}]})
     (finished["folder"] / "capture.json").write_bytes(raw)

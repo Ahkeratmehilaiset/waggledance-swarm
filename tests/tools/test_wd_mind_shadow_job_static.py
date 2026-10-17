@@ -210,12 +210,32 @@ def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argum
     assert "[Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value)" in body
     assert re.search(r"if \(\$Value -match '\[\"\\x00-\\x1F\]'\) \{\s*throw", body)
     assert "return \"'\" + " in body
-    assert re.search(r"\$rootCommand = '& ' \+ \(\(@\(\$env:WD_BRIDGE_PYTHON_WRAPPER, "
-                     r"'sandbox/mind/mind_capture_producer\.py', '--src',\s*\$env:WD_BRIDGE_CODE_ROOT, '--bin', "
+    assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
+                     r"\+ '; & ' \+ \(\(@\(\s*\$env:WD_BRIDGE_PYTHON_WRAPPER, "
+                     r"'sandbox/mind/mind_capture_producer\.py', '--src', \$env:WD_BRIDGE_CODE_ROOT,\s*'--bin', "
                      r"\$env:WD_BRIDGE_BIN, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
                      r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
     intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
     assert adapter.index("$rootCommand = ") < intent
+
+
+def test_child_command_carries_the_run_id_as_metadata_and_refuses_an_inherited_one(adapter):
+    # cp5 (Lead): the actual launch id reaches the root only through its own command as WD_MIND_SHADOW_RUN_ID; an
+    # inherited value is refused before run_intent here and with exit 254 in the child, never reused. This process's
+    # environment is only read.
+    assert adapter.count("$RootRunIdPrefix = 'if ($null -ne $env:WD_MIND_SHADOW_RUN_ID) { exit 254 }; "
+                         "$env:WD_MIND_SHADOW_RUN_ID = '") == 1
+    check = re.search(r"if \(\$null -ne \[Environment\]::GetEnvironmentVariable\('WD_MIND_SHADOW_RUN_ID', "
+                      r"'Process'\)\) \{\s*throw '", adapter)
+    assert check
+    assert "SetEnvironmentVariable" not in adapter
+    assert not re.search(r"(?m)^\s*\$env:\w+\s*=", adapter)
+    assert adapter.count("WD_MIND_SHADOW_RUN_ID") == 3
+    launch = adapter.index("$launchId = [guid]::NewGuid().ToString('D')")
+    command = adapter.index("$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId)")
+    intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
+    assert check.start() < launch < command < intent
+    assert "job_drained = [ordered]@{" in adapter and "=[ordered]" not in adapter
 
 
 def test_root_exit_code_is_raw_evidence_read_after_an_observed_exit_before_dispose(adapter):

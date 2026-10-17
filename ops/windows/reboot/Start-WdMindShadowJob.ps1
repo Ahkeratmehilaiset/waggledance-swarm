@@ -31,6 +31,11 @@
     before Dispose, else UNKNOWN (never 0). It is raw evidence only: the outcome stays a containment result and never
     means that the producer succeeded.
 
+    Run id metadata (cp5): the root's own command first refuses an inherited WD_MIND_SHADOW_RUN_ID (exit 254, never
+    reused), then sets it to the actual launch id as an escaped literal before the wrapper runs. It is metadata
+    transport, not authentication: anything in the job can read or change it, and it proves no member identity or
+    lifetime. This process's environment is only read (an existing value is refused before run_intent), never set.
+
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
     membership is never used, and nothing is defaulted from the caller. whoami.exe comes from the OS system directory
@@ -43,9 +48,9 @@
 
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
-    the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2, cp3 and cp4 decisions);
-    fable-5 wrote this file. There is no process kill by PID, and producer.lock is only opened here, never created or
-    removed.
+    the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions and the
+    cp5 child run id transport and command prefix design); fable-5 wrote this file. There is no process kill by
+    PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -82,6 +87,8 @@ $Schema = 'wd.mind-shadow-run-outcome.v2'
 # cp4 (Tools PS5 and Root PS7 finding): -File turns the wrapper's published exit code into 0, so the root runs the
 # wrapper through -Command and this literal shim (never expanded here) forwards it; no published code exits 255.
 $RootExitShim = '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 255'
+# cp5 (Lead): the child's own command refuses an inherited run id variable, then sets it from the actual launch id.
+$RootRunIdPrefix = 'if ($null -ne $env:WD_MIND_SHADOW_RUN_ID) { exit 254 }; $env:WD_MIND_SHADOW_RUN_ID = '
 
 function Assert-WdShadowValue {
     param([string] $Name, [string] $Value, [string] $Pattern)
@@ -321,6 +328,12 @@ if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -cne 'NTFS
     throw 'refused: the live dir is not on a local NTFS disk'
 }
 
+# cp5: the root inherits this process's environment (Root's static reading of the type), so a run id variable here
+# would conflict with the launch id; it is refused, never reused, and this environment is never changed.
+if ($null -ne [Environment]::GetEnvironmentVariable('WD_MIND_SHADOW_RUN_ID', 'Process')) {
+    throw 'refused: the run id variable already exists in the environment the root inherits; it is never reused'
+}
+
 # A fresh launch id chosen before the create: a future launch id, never a claimed native conversation id.
 $launchId = [guid]::NewGuid().ToString('D')
 $runDir = Join-Path $runRootFull $launchId
@@ -330,8 +343,9 @@ $runDir = Join-Path $runRootFull $launchId
 $inputPath = Join-Path $runDir 'root.stdin.empty'
 (New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew)).Dispose()
 $hostExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$rootCommand = '& ' + ((@($env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src',
-    $env:WD_BRIDGE_CODE_ROOT, '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull) |
+$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + '; & ' + ((@(
+    $env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src', $env:WD_BRIDGE_CODE_ROOT,
+    '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull) |
     ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim
 $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $rootCommand)
 Initialize-WdNativeTurnType
@@ -502,7 +516,7 @@ Publish-WdShadowRecord -Directory $runDir -Name 'controller_outcome' -Record ([o
     schema = $Schema; record = 'controller_outcome'; binding = $binding; outcome = $outcome
     root_exit_utc = $rootExitUtc
     root_exit_code = $rootExitCode
-    job_drained =[ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed
+    job_drained = [ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed
         active_processes_zero_utc = $drainUtc }
     stop = [ordered]@{ called = $stopCalled; called_utc = $stopUtc; returned_ok = $stopOk; error = $stopError
         confirmed = $stopConfirmed }

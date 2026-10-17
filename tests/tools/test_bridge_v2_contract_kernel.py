@@ -397,20 +397,28 @@ def test_the_clear_set_literals_are_exact_and_classify_alike_today():
 
 @pytest.mark.parametrize("retired", CLEAR_STATUS_LITERALS)
 def test_a_clear_status_the_gate_retires_is_caught_by_the_drift_guards(monkeypatch, retired):
-    """RCO1 18ea SF-1 twin: the gate retires ONE clear status; the kernel keeps its own frozen copy. The equality
-    guard reports every retirement. Where the gate's own rules then call the status a block, the behavioural guard
-    reports it too, and the floor would refuse exactly that headless veto: the fail-open these guards prevent."""
+    """Retiring one gate clear changes the drift guards, not the frozen kernel.
+
+    The kernel still floors ALL five clear literals, including the two the
+    patched gate does not call blocks. These are write-boundary assertions,
+    not a claim that the kernel follows the gate monkeypatch dynamically.
+    """
     schema, changes = _kernel("bridge_v2_event_schema"), _gates()[1]
     for name in ("NO_CHANGES_REQUESTED_CLEAR_STATUSES", "NO_BLOCK_CLEAR_STATUSES"):
-        monkeypatch.setattr(changes, name, frozenset(getattr(changes, name)) - {retired})   # read at call time
+        monkeypatch.setattr(changes, name, frozenset(getattr(changes, name)) - {retired})
     assert _clear_set_drift(changes, schema) == {retired}
     becomes_block = retired in RETIRED_CLEAR_BECOMES_BLOCK
     assert changes._is_blocking_status(retired, event_type="decision") is becomes_block
     assert (retired in _classifier_drift(changes, schema, CLEAR_STATUS_LITERALS)) is becomes_block
-    if becomes_block:
-        veto = _event(type="decision", status=retired, agent=PEER, message="a block in the gate now", payload={})
-        with pytest.raises(ValueError, match="lowercase 40-hex"):
-            schema.validate_event_for_write(veto)
+    clear = _event(type="decision", status=retired, agent=PEER, message="frozen kernel clear", payload={})
+    # MUTANT_ALLOW_HEADLESS_CLEAR: do not let an unrelated gate classifier
+    # decide whether the kernel's actual write boundary is exercised.
+    with pytest.raises(ValueError, match="lowercase 40-hex"):
+        schema.validate_event_for_write(clear)
+    # MUTANT_CORRUPT_FULL_HEAD_CLEAR: a refusal-only oracle is insufficient.
+    good = dict(clear, message="at " + HEAD, payload={"head": HEAD})
+    accepted = schema.validate_event_for_write(good)
+    assert accepted.payload["head"] == HEAD
 
 
 def test_the_ported_blocking_classifier_equals_the_gates_own():
@@ -596,17 +604,20 @@ def test_f12_a_status_the_changes_gate_calls_a_block_is_never_floored(status):
 
 
 def test_idle_counting_of_a_canonical_rco_finding_is_a_disclosed_gate_residual():
-    """Pinned, not hidden: idle_consensus_auto_merge counts a clear (and an rco_pass) on a canonical RCO's
-    finding before any type latch, while the changes gate vetoes it by type. The floor follows the veto
-    channel and never refuses it; the idle ordering needs its own operator-explicit gate change.
-    Scope, stated truthfully (RCO1 18ea N1): this pins only idle's CLASSIFIER (_is_consensus_clear) and the
-    floor. It does NOT observe idle's loop ORDER, and the rco_pass counting is described, not asserted. A
-    loop-order fix that adds a type latch leaves these assertions unchanged, so whoever lands it must replace
-    this pin with a loop-level fixture deliberately."""
+    """Pin idle's classifier and the kernel's real headless veto write.
+
+    This does NOT observe idle's loop order or assert rco_pass counting. A
+    loop-order correction needs its own loop-level fixture; this test changes
+    no gate policy and never turns an RCO finding into approval authority.
+    """
     schema, idle = _kernel("bridge_v2_event_schema"), _gates()[2]
     assert idle._is_consensus_clear("changes_requested_concurrence", event_type="finding")
     veto = _event(type="finding", status="changes_requested_concurrence", agent=RCO, payload={})
     assert schema.approval_shape(schema.validate_event(veto)) is None
+    # MUTANT_REJECT_HEADLESS_RCO_CONCURRENCE: the write must remain possible.
+    accepted = schema.validate_event_for_write(veto)
+    # MUTANT_REWRITE_RCO_CONCURRENCE: successful write must preserve the veto.
+    assert accepted.status == "changes_requested_concurrence"
 
 
 def test_f12_write_guard_composes_with_the_reserved_provenance_gate():

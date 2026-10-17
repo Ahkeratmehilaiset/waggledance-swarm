@@ -590,6 +590,24 @@ def test_an_unbound_newest_series_never_hides_the_own_series():
     assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
 
 
+# Same newest used_percent and reset as CODEX_WINDOWS, another first sample: another rate, so another forecast.
+SAME_LAST_WINDOWS = (("primary", 10.0, 31.0, RESET_PRIMARY, 300), ("secondary", 5.0, 20.1, RESET_SECONDARY, 10080))
+
+
+@pytest.mark.parametrize("identity", [OTHER_ID, (None, None)], ids=["foreign", "unbound"])
+def test_a_newer_same_reset_same_used_series_never_lends_its_forecast_to_the_own_series(identity):
+    newer = samples(windows=SAME_LAST_WINDOWS, identity=identity, ages=(30, 0))
+    paced = pace_windows(samples() + newer, now=NOW)
+    for key, top in paced.items():
+        own = [s for s in top["identities"] if (s.get("subject"), s.get("account_pool")) == (SUBJECT, "codex-pro-a")]
+        assert (top.get("subject"), top.get("account_pool")) == identity and len(own) == 1, key
+        assert (top["resets_at"], top["used_percent"]) == (own[0]["resets_at"], own[0]["used_percent"]), key
+        assert top["forecast_percent_at_reset"] != own[0]["forecast_percent_at_reset"], key
+    record = evidence(paced=paced)
+    assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"] == evidence()["capacity"]
+
+
 def test_an_old_pool_series_of_the_same_subject_is_not_the_new_pools_series():
     old_pool = samples(identity=(SUBJECT, "codex-pro-b"), ages=(30, 0))
     record = evidence(paced=pace_windows(samples(identity=(SUBJECT, "codex-pro-b")) + old_pool, now=NOW))

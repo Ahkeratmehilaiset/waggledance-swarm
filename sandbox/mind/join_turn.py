@@ -16,8 +16,11 @@ body store is shared by every frozen cycle; ``lane_view.body`` uses a body only 
 only when the body's own canonical ref is that ref, and only when its ``ts_utc`` is not after the cycle's as_of.
 ``--out DIR`` writes view.json, delivery.json, card.txt and turn.json: the cycle, lane, as_of and now, the sha256 of the
 frozen manifest, of every cycle file and of every output, and the sha256 of every repo file the turn imports (``CODE``;
-a test keeps it equal to the import closure). DIR must be a new directory under the sandbox data root; an existing one
-is refused, so an earlier turn is never overwritten. Every text passes the decoded guard before any byte is written.
+a test keeps it equal to the import closure). DIR must be a new directory inside an existing ``.codex-audit``
+directory, the nearest such ancestor being the output root: there is no default root and no F: fallback, and
+a path outside one or a root that is not an existing directory is refused before any read or write (F-2, the
+check of ``join_card_delivery.output_refusal``). An existing DIR is refused, so an earlier turn is never
+overwritten. Every text passes the decoded guard before any byte is written.
 v0.1 writes the files into a fresh sibling directory ``.<DIR name>.staging-<16 hex>``: each is created exclusively,
 flushed to disk and read back, and one rename then moves the whole turn into place. So DIR either holds the complete
 turn or does not exist. (v0.2) Just before the rename the staging directory must hold exactly the four files, so a
@@ -34,11 +37,12 @@ rename count and a failing cleanup) are tested by injection, after the Tools sta
 is a tested design property, not a crash-safety claim: no power-loss test was run and no directory is flushed, so
 a successful return does not make the rename durable (after a power loss DIR may be absent and the staging
 directory complete), and an actor that finds the random staging name could swap a file in it (Grok f36aaa4b; like
-a junction race, out of scope). Without ``--out`` nothing is written. Exit 0 prints the card; exit 2 prints
+a junction race, out of scope). Without ``--out`` nothing is written. ``--frozen-root`` has no default: without
+it the command exits 2 with its usage before any read. Exit 0 prints the card; exit 2 prints
 ``refused: <fixed reason>``; a file nested too deeply to read, or to write as an output, is refused like an
 unreadable one, before any byte is written.
 
-usage: python -B sandbox/mind/join_turn.py --lane <lane> --cycle <cycle> --learn-ref <ref> [--frozen-root DIR]
+usage: python -B sandbox/mind/join_turn.py --lane <lane> --cycle <cycle> --learn-ref <ref> --frozen-root DIR
        [--receipts FILE] [--now UTC] [--notified FILE] [--remember ENVELOPE] [--out DIR]
 """
 
@@ -67,7 +71,6 @@ import lane_view_frozen as fz  # noqa: E402
 
 VERSION = "join-turn-v0.2"
 TURN_SCHEMA = "wd.mind-join-turn.v0"
-SANDBOX_ROOT = Path(r"F:\waggledance_memory\sandbox")
 NO_RECEIPTS = {"schema": jcd.RECEIPTS_SCHEMA, "sources": {}, "rows": []}
 CASE_KEYS = ("snapshot", "github", "bodies", "as_of_utc")
 OUTPUTS = ("view.json", "delivery.json", "card.txt", "turn.json")
@@ -100,8 +103,9 @@ def turn_case(lane: str, case: Mapping[str, Any], *, learn_ref: str, receipts: A
             "envelope": envelope, "inputs": None}
 
 
-def turn(lane: str, cycle: str, *, root: Path = fz.FROZEN_ROOT, **options: Any) -> dict[str, Any]:
-    """``turn_case`` over the one cycle of the verified frozen manifest at ``root`` named ``cycle``."""
+def turn(lane: str, cycle: str, *, root: Path, **options: Any) -> dict[str, Any]:
+    """``turn_case`` over the one cycle of the verified frozen manifest at ``root`` (no default root, F-2) named
+    ``cycle``."""
     frozen = fz.load_frozen(root)
     matches = [case for case in frozen["cycles"] if case["cycle"] == cycle]
     if len(matches) != 1:
@@ -124,9 +128,10 @@ def write_turn(out: Path, result: Mapping[str, Any]) -> dict[str, Any]:
     """The four outputs in the new directory ``out`` (module docstring); returns the turn manifest. On a refusal or an
     error ``out`` is not created and the caller gets that refusal or error; the files this turn wrote and its staging
     directory are removed, best effort (``_discard``). Missing parents of ``out`` are created first and stay."""
-    root, target = SANDBOX_ROOT.resolve(), Path(out).resolve()
-    if target == root or root not in target.parents:
-        raise JoinTurnError("the output directory is not under the sandbox data root")
+    target = Path(out).resolve()
+    refusal = jcd.output_refusal(target)
+    if refusal:
+        raise JoinTurnError(refusal)
     if any((target / name).exists() for name in OUTPUTS):
         raise JoinTurnError("the output directory already holds a turn")
     if target.exists():
@@ -206,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane", required=True)
     parser.add_argument("--cycle", required=True)
     parser.add_argument("--learn-ref", required=True)
-    parser.add_argument("--frozen-root", type=Path, default=fz.FROZEN_ROOT)
+    parser.add_argument("--frozen-root", type=Path, required=True)  # no default frozen root (F-2)
     parser.add_argument("--receipts", type=Path)
     parser.add_argument("--now")
     parser.add_argument("--notified", type=Path)
@@ -214,6 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     try:
+        refusal = jcd.output_refusal(args.out) if args.out else None
+        if refusal:  # an output root is admitted before any read (F-2)
+            raise JoinTurnError(refusal)
         receipts = jcd._load(args.receipts) if args.receipts else None
         notified = jcd._load(args.notified) if args.notified else ()
         envelope = jcd._load(args.remember) if args.remember else None

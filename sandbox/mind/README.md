@@ -197,9 +197,23 @@ run read-only local `git` commands.
   the cycle. A cached view that does not validate leaves the whole context UNKNOWN (no partial reuse), and the
   context is written only when the workspace's own `read_context` accepts it. No classifier, charter or gate code
   is imported or run: every `path_class` is null and the charter is not loaded, so a computed class stays
-  UNKNOWN. A view cache write that fails refuses the cycle (`view_cache_unwritable`).
+  UNKNOWN. A view cache write that fails refuses the cycle (`view_cache_unwritable`). `gh pr list` stops at 400
+  rows, so when it reaches them each PR of the cycle's own bridge snapshot that it left out is read with one
+  `gh pr view` of the same four fields, within the same bounds; a PR still missing, or a snapshot the core refuses,
+  leaves the whole context UNKNOWN, which suppresses nothing (the board then reads bridge facts only and can still
+  suggest a vote for a PR merged outside the bridge view): a bounded backfill, not a fail-closed suppression.
 * **Import.** The program runs only as a script (`__main__`): importing the module (the package's import smoke)
   defines its constants, classes and functions and runs, imports, writes and starts nothing. A fresh-interpreter
   test checks this, and a guarded run of the script refuses every gate, classifier, charter and taxonomy module
   by name and by gate word.
 * **Experiment code.** Experiment code stays offline and reads only the copied capture files.
+
+## JOIN card limits (RCO2 R1 and R2, disclosed for this release)
+
+The operator preview of the JOIN card delivery covers only new waits on a PR with exactly one reported empty
+identity slot: an abstained or refused PR is outside its ledger and one with two or more empty slots gives no line
+either, so a preview without lines is no proof that all work is complete. The lane view gives each recognized RCO
+its own slot and each empty slot a line that says "the vote is still required", but a PR's class stays UNKNOWN here
+(no classifier or charter runs) and an UNKNOWN class does not establish that a second RCO slot is required: such a
+line for the fourth identity slot (the second RCO) is an observation, not a required gate slot. Nothing in the view,
+the card, the delivery or the preview is a required-policy, last-required-vote or utility claim.

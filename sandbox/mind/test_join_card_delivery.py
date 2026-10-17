@@ -5,7 +5,10 @@ is what the lane view really writes. The named mutants are applied with monkeypa
 repairs after RCO1's probes of 2302ee59 (result 1185E841) follow; each was red on 2302ee59 first. The v1.2 repairs
 after the 10-15 evening audit, the v1.3 repair after my own probe of the JOIN card (10-16), the v1.4 repair after RCO1's
 design observation (10-16) and the v1.5 repair after RCO1's static review (10-16) are at the end; each was red on the
-prior branch head first (v1.5 changed three older tests on purpose; see its section).
+prior branch head first (v1.5 changed three older tests on purpose; see its section). The CLI output repair (F-2
+and RCO2 DLV2, 10-17: no default root, only a new file inside an existing .codex-audit directory, never a
+replaced one) stands in place of the old sandbox-root CLI test; its overwrite was red on cp8b first in a
+separate probe, as the old blob admits an output only under its data-disk constant.
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_card_delivery.py -q
 """
@@ -314,21 +317,71 @@ def test_refusals_are_loud_and_fixed():
             call()
 
 
-def test_cli_refuses_an_output_path_outside_the_sandbox_root_and_prints_the_preview(tmp_path, capsys, monkeypatch):
-    # The sandbox root is a temporary directory here: the module default names the data disk, which no test resolves.
-    monkeypatch.setattr(jcd, "SANDBOX_ROOT", tmp_path / "sandbox")
-    (tmp_path / "sandbox").mkdir()
-    as_of = shift(SINCE, minutes=586)
+OUTSIDE = "the output path is not inside a .codex-audit directory"  # literal: a test never trusts the module's text
+NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
+EXISTING = "the output file already exists; nothing is replaced"
+
+
+def cli_files(tmp_path, as_of):
+    """A view and an empty receipts document written for the CLI, and its arguments without --out."""
     view_path, receipts_path = tmp_path / "view.json", tmp_path / "receipts.json"
     view_path.write_text(json.dumps(case(as_of)), encoding="utf-8")
     receipts_path.write_text(json.dumps(receipts()), encoding="utf-8")
-    out_path = tmp_path / "out.json"
-    assert jcd.main(["--view", str(view_path), "--receipts", str(receipts_path), "--now", as_of,
-                     "--out", str(out_path)]) == 2
-    assert not out_path.exists()
-    assert jcd.main(["--view", str(view_path), "--receipts", str(receipts_path), "--now", as_of]) == 0
+    return ["--view", str(view_path), "--receipts", str(receipts_path), "--now", as_of]
+
+
+def test_cli_refuses_an_output_outside_an_existing_codex_audit_directory_before_any_read(tmp_path, capsys):
+    # F-2 and RCO2 DLV2 (Lead 09:34Z): the output root is admitted by its name and place, never by patching a module
+    # constant; there is no default root and no F: fallback. The view file is missing in these calls, so a refusal
+    # that came after a read would name the view instead.
+    assert not hasattr(jcd, "SANDBOX_ROOT")
+    as_of = shift(SINCE, minutes=586)
+    argv = cli_files(tmp_path, as_of)
+    missing = ["--view", str(tmp_path / "missing.json")] + argv[2:]
+    (tmp_path / "file").mkdir()
+    (tmp_path / "file" / ".codex-audit").write_bytes(b"")
+    for out_path, reason in ((tmp_path / "out.json", OUTSIDE), (tmp_path / ".codex-audit", OUTSIDE),
+                             (tmp_path / "absent" / ".codex-audit" / "out.json", NOT_A_ROOT),
+                             (tmp_path / "file" / ".codex-audit" / "out.json", NOT_A_ROOT)):
+        assert jcd.main(missing + ["--out", str(out_path)]) == 2
+        assert capsys.readouterr() == ("", f"refused: {reason}\n")
+        assert not out_path.exists()
+    assert jcd.main(argv) == 0  # without --out the preview is printed and nothing is written
     printed = capsys.readouterr().out
     assert "last_open_slot=yes" in printed and "nothing was sent" in printed
+
+
+def test_cli_out_writes_one_new_file_and_never_replaces_an_existing_one(tmp_path, capsys, monkeypatch):
+    # RCO2 DLV2 (Lead 09:34Z): the CLI replaced an existing --out file. An existing path is refused before any read
+    # (the view file is missing in those calls), and the file is created exclusively, so a file made after that check
+    # stays as it is. The overwrite was red on cp8b first in a separate probe.
+    assert not hasattr(jcd, "SANDBOX_ROOT")
+    as_of = shift(SINCE, minutes=586)
+    argv = cli_files(tmp_path, as_of)
+    missing = ["--view", str(tmp_path / "missing.json")] + argv[2:]
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    out_path = audit / "deeper" / "delivery.json"
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0
+    expected = jcd.deliver(json.loads(json.dumps(case(as_of))), json.loads(json.dumps(receipts())), now_utc=as_of)
+    assert capsys.readouterr() == (jcd.operator_preview(expected), "")
+    assert json.loads(out_path.read_text(encoding="utf-8")) == json.loads(json.dumps(expected))
+    before = out_path.read_bytes()
+    (audit / "earlier.json").write_bytes(b"earlier")
+    for taken in (out_path, audit / "earlier.json", audit / "deeper"):
+        assert jcd.main(missing + ["--out", str(taken)]) == 2
+        assert capsys.readouterr() == ("", f"refused: {EXISTING}\n")
+    real = jcd.deliver
+
+    def deliver_then_race(*args, **kwargs):  # another writer makes the output after the CLI's own check
+        (audit / "raced.json").write_bytes(b"raced")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(jcd, "deliver", deliver_then_race)
+    assert jcd.main(argv + ["--out", str(audit / "raced.json")]) == 2
+    assert capsys.readouterr() == ("", f"refused: {EXISTING}\n")
+    assert out_path.read_bytes() == before and (audit / "earlier.json").read_bytes() == b"earlier"
+    assert (audit / "raced.json").read_bytes() == b"raced"
 
 
 def night_views():

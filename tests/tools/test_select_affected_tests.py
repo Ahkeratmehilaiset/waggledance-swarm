@@ -247,6 +247,34 @@ def _bridge_candidate_fixture(tmp_path):
     return root
 
 
+def test_deploy_only_change_selects_disk_floor_regression(tmp_path):
+    root = _bridge_candidate_fixture(tmp_path)
+    regression = "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+    (root / regression).write_text("def test_disk_floor(): pass\n", encoding="utf-8")
+
+    result = select_affected_tests(
+        ["ops/windows/reboot/Deploy-WdRebootBundle.ps1"], root
+    )
+
+    assert result["full_suite"] is False, result
+    assert regression in result["tests"], result
+
+
+def test_deploy_missing_disk_floor_regression_fails_closed(tmp_path):
+    root = _bridge_candidate_fixture(tmp_path)
+    regression = root / "tests/tools/test_wd_reboot_deploy_disk_floor.py"
+    regression.write_text("def test_disk_floor(): pass\n", encoding="utf-8")
+    regression.unlink()
+
+    result = select_affected_tests(
+        ["ops/windows/reboot/Deploy-WdRebootBundle.ps1"], root
+    )
+
+    assert result["full_suite"] is True, result
+    assert "missing" in result["reason"], result
+    assert regression.name in result["reason"], result
+
+
 def test_actual_eight_integration_paths_narrow_to_reviewed_bridge_tests(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
     result = select_affected_tests(ACTUAL_EIGHT, root)

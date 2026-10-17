@@ -190,6 +190,7 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
         "tests/tools/test_wd_dynamic_model_startup.py",
         "tests/tools/test_wd_grok_helper.py",
         "tests/tools/test_wd_reboot_bundle.py",
+        "tests/tools/test_wd_reboot_deploy_disk_floor.py",
     }),
     "ops/windows/reboot/Get-WdNativeWakePrompt.ps1": frozenset({
         "tests/tools/test_wd_native_wake_prompt.py",

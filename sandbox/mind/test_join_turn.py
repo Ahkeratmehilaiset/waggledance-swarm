@@ -36,7 +36,8 @@ TOOLS = "codex-tools-1"
 FOUR = ("view.json", "delivery.json", "card.txt", "turn.json")  # literal: a test never trusts the module's own list
 SITUATION = hashlib.sha256(b"a synthetic turn situation").hexdigest()
 FORBIDDEN = re.compile(r"(?i)approv|merg")
-GATE = re.compile(r"(?i)consensus|changes_requested|rco_pass|auto_merge|rule12|autosign|receipt|merg")
+# bridge_event_taxonomy computes gate verdicts (Lead 06:19Z disposition), so it is gate code here too.
+GATE = re.compile(r"(?i)consensus|changes_requested|rco_pass|auto_merge|rule12|autosign|receipt|merg|event_taxonomy")
 CLOSURE = """
 import sys
 from pathlib import Path

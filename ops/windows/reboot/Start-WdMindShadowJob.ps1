@@ -25,6 +25,12 @@
     or stopped; no directory or crash durability is claimed. After a controller death nothing more is written here;
     native A5 needs the independent observer witnesses.
 
+    Root exit code (cp4, record schema v2): the root runs the wrapper through -Command with every data argument as a
+    single-quoted literal and a literal exit-forwarding shim, because -File turns the wrapper's published code into
+    0. controller_outcome.root_exit_code is the managed ExitCode read after a positively observed root exit and
+    before Dispose, else UNKNOWN (never 0). It is raw evidence only: the outcome stays a containment result and never
+    means that the producer succeeded.
+
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
     membership is never used, and nothing is defaulted from the caller. whoami.exe comes from the OS system directory
@@ -36,9 +42,10 @@
     exits before its creation time is read leaves that identity UNKNOWN; the observation time is never used instead.
 
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
-    RCO2 (G1-G4 and the member witness), Lead (route, deadline, records, launch id, time, binding, cp2 and cp3
-    decisions); fable-5 wrote this
-    file. There is no process kill by PID, and producer.lock is only opened here, never created or removed.
+    RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
+    the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2, cp3 and cp4 decisions);
+    fable-5 wrote this file. There is no process kill by PID, and producer.lock is only opened here, never created or
+    removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -71,7 +78,10 @@ $LockByte = 1073741824
 $StatePath = 'C:\Python\WD_REBOOT_STATE_CURRENT.json'
 $BundleStore = 'C:\Python\wd-reboot-bundles'
 $WrapperName = 'Invoke-WdBridgePython.ps1'
-$Schema = 'wd.mind-shadow-run-outcome.v1'
+$Schema = 'wd.mind-shadow-run-outcome.v2'
+# cp4 (Tools PS5 and Root PS7 finding): -File turns the wrapper's published exit code into 0, so the root runs the
+# wrapper through -Command and this literal shim (never expanded here) forwards it; no published code exits 255.
+$RootExitShim = '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 255'
 
 function Assert-WdShadowValue {
     param([string] $Name, [string] $Value, [string] $Pattern)
@@ -79,6 +89,16 @@ function Assert-WdShadowValue {
         throw "refused: $Name is a synthetic placeholder, never a runtime input"
     }
     if ($Value -cnotmatch $Pattern) { throw "refused: $Name does not match $Pattern" }
+}
+
+function ConvertTo-WdShadowCommandLiteral {
+    # One data argument as a PowerShell single-quoted literal for the root -Command text: the engine's own escaper
+    # doubles every single-quote form; a double quote or a control character (never in a Windows path) is refused.
+    param([string] $Value)
+    if ($Value -match '["\x00-\x1F]') {
+        throw 'refused: a root command argument holds a double quote or a control character'
+    }
+    return "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value) + "'"
 }
 
 function Read-WdShadowFileSnapshot {
@@ -310,15 +330,16 @@ $runDir = Join-Path $runRootFull $launchId
 $inputPath = Join-Path $runDir 'root.stdin.empty'
 (New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew)).Dispose()
 $hostExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
-    $env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src', $env:WD_BRIDGE_CODE_ROOT,
-    '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull)
+$rootCommand = '& ' + ((@($env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src',
+    $env:WD_BRIDGE_CODE_ROOT, '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull) |
+    ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim
+$arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $rootCommand)
 Initialize-WdNativeTurnType
 $managedType = 'WdManagedTurnProcess' -as [type]
 $constructorTypes = [type[]]@([string], [string[]], [string], [string], [string], [string])
 if ($null -eq $managedType -or $null -eq $managedType.GetConstructor($constructorTypes) -or
     $null -eq $managedType.GetMethod('Stop') -or $null -eq $managedType.GetMethod('Wait') -or
-    $null -eq $managedType.GetProperty('ActiveProcesses')) {
+    $null -eq $managedType.GetProperty('ActiveProcesses') -or $null -eq $managedType.GetProperty('ExitCode')) {
     throw 'refused: the verified lane loop did not initialize the expected WdManagedTurnProcess type'
 }
 $unknown = New-Object System.Collections.ArrayList
@@ -330,6 +351,7 @@ $stopConfirmed = $false
 $stopError = $null
 $stopAt = $null
 $rootExitAt = $null
+$rootExitCode = 'UNKNOWN'
 $drainAt = $null
 $before = 'UNKNOWN'
 $after = 'UNKNOWN'
@@ -448,6 +470,15 @@ try {
         } else {
             Add-WdShadowUnknown $unknown 'lock_reacquire' 'not attempted without a positively observed job drain'
         }
+        # cp4: the raw root exit code, read only after a positively observed root exit and before Dispose. A failed
+        # query stays UNKNOWN (never 0); the containment outcome never reads it and it never means producer success.
+        if ($null -ne $rootExitAt) {
+            try {
+                $rootExitCode = $managed.ExitCode
+            } catch {
+                Add-WdShadowUnknown $unknown 'root_exit_code' $_.Exception.GetType().FullName
+            }
+        }
     }
 } finally {
     if ($null -ne $managed) { $managed.Dispose() }
@@ -470,7 +501,8 @@ if ($null -ne $stopAt) { $stopUtc = Get-WdShadowUtc -ElapsedSeconds $stopAt }
 Publish-WdShadowRecord -Directory $runDir -Name 'controller_outcome' -Record ([ordered]@{
     schema = $Schema; record = 'controller_outcome'; binding = $binding; outcome = $outcome
     root_exit_utc = $rootExitUtc
-    job_drained = [ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed
+    root_exit_code = $rootExitCode
+    job_drained =[ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed
         active_processes_zero_utc = $drainUtc }
     stop = [ordered]@{ called = $stopCalled; called_utc = $stopUtc; returned_ok = $stopOk; error = $stopError
         confirmed = $stopConfirmed }

@@ -199,6 +199,41 @@ def test_whoami_path_comes_from_the_os_system_directory_never_the_environment(ad
     assert source < chain < adapter.index("& $whoami '/groups'")
 
 
+def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argument(adapter):
+    # cp4 (Tools PS5 and Root PS7 finding): -File turns the wrapper's published exit code into 0, so the caller runs
+    # the wrapper through -Command with a literal exit-forwarding shim, as the wrapper's own help asks.
+    assert "'-File'" not in adapter
+    assert ("$arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', "
+            "$rootCommand)") in adapter
+    assert "$RootExitShim = '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 255'" in adapter
+    body = _function(adapter, "ConvertTo-WdShadowCommandLiteral")
+    assert "[Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value)" in body
+    assert re.search(r"if \(\$Value -match '\[\"\\x00-\\x1F\]'\) \{\s*throw", body)
+    assert "return \"'\" + " in body
+    assert re.search(r"\$rootCommand = '& ' \+ \(\(@\(\$env:WD_BRIDGE_PYTHON_WRAPPER, "
+                     r"'sandbox/mind/mind_capture_producer\.py', '--src',\s*\$env:WD_BRIDGE_CODE_ROOT, '--bin', "
+                     r"\$env:WD_BRIDGE_BIN, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
+                     r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
+    intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
+    assert adapter.index("$rootCommand = ") < intent
+
+
+def test_root_exit_code_is_raw_evidence_read_after_an_observed_exit_before_dispose(adapter):
+    # cp4: the true managed ExitCode after a positive root-exit observation and before Dispose; a failed query stays
+    # UNKNOWN (never 0); the containment outcome never reads it and nothing infers producer success.
+    assert "$Schema = 'wd.mind-shadow-run-outcome.v2'" in adapter
+    assert adapter.count("$managed.ExitCode") == 1 and adapter.count("$rootExitCode = 'UNKNOWN'") == 1
+    assert re.search(r"if \(\$null -ne \$rootExitAt\) \{\s*try \{\s*\$rootExitCode = \$managed\.ExitCode\s*\} "
+                     r"catch \{\s*Add-WdShadowUnknown \$unknown 'root_exit_code'", adapter)
+    assert adapter.index("$rootExitCode = $managed.ExitCode") < adapter.index("$managed.Dispose()")
+    assert adapter.index("$rootExitCode = 'UNKNOWN'") < adapter.index("[WdManagedTurnProcess]::new(")
+    assert "root_exit_code = $rootExitCode" in adapter and "$null -eq $managedType.GetProperty('ExitCode')" in adapter
+    rule = _function(adapter, "Resolve-WdShadowOutcome")
+    assert "xitCode" not in rule and "exit_code" not in rule
+    for word in ("success", "succeeded", "'PASS'", "pass ="):
+        assert word not in adapter.lower(), word
+
+
 def test_records_are_published_once_without_overwrite(adapter):
     body = _function(adapter, "Publish-WdShadowRecord")
     assert "[IO.FileMode]::CreateNew" in body and "[IO.File]::Move(" in body

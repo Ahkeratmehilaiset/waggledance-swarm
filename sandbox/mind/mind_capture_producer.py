@@ -30,7 +30,9 @@ Every cycle builds one immutable candidate dir under <live-dir>/cycles and then 
      no message, body or path). No classifier, charter or gate code is imported or run: every path_class is null and
      the charter is not loaded, so a computed class stays UNKNOWN. A list of LIST_LIMIT rows or more may leave out
      a PR the snapshot names (gh stops there): each such PR, by the core's own snapshot of the capture, is read with
-     one gh pr view of the list's four fields, and one still missing leaves the context UNKNOWN. gh failing, timing
+     one gh pr view of the list's four fields, and one still missing leaves the context UNKNOWN. A shorter list
+     holds every PR, so a PR of the snapshot it leaves out (a row of another shape, such as a branch outside the
+     task grammar, or a PR not on GitHub) leaves the context UNKNOWN too, with no view. gh failing, timing
      out or not starting, an output of another shape, or a view past the cycle's VIEW_CAP calls or GH_BUDGET
      seconds, leaves the context, or that PR's authors, UNKNOWN; it never refuses the cycle. An UNKNOWN context
      suppresses nothing: the shadow then runs the bridge-only interface, which can still suggest a vote for a PR
@@ -690,8 +692,8 @@ def fetch_row(number, timeout):
 def pr_context(cache_dir, needed=None):
     """The cycle's PR context and its record; the context is None (UNKNOWN) when gh gives no usable list, when a
     list that reaches LIST_LIMIT leaves out a PR of ``needed`` (the PR numbers of the cycle's snapshot; None: not
-    known) that one gh pr view does not add, when a cached view does not validate, or when the workspace's
-    read_context refuses it. See the module docstring (2.)."""
+    known) that one gh pr view does not add, when a shorter list leaves out a PR of ``needed``, when a cached view
+    does not validate, or when the workspace's read_context refuses it. See the module docstring (2.)."""
     started, deadline = time.perf_counter(), time.monotonic() + GH_BUDGET
     data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", str(LIST_LIMIT),
               "--json", "number,state,headRefOid,headRefName")
@@ -716,6 +718,11 @@ def pr_context(cache_dir, needed=None):
         if needed is None or set(needed) - {int(key) for key in rows}:
             return None, dict(record, status="UNKNOWN", reason="gh_list_truncated", rows_added=len(added),
                               ms=round((time.perf_counter() - started) * 1000))
+    elif needed is not None and set(needed) - {int(key) for key in rows}:
+        # a shorter list holds every PR, so a PR of the snapshot it leaves out had a row pr_rows skips (such as a
+        # branch outside the task grammar; gh pr view would give that same row) or is not on GitHub: UNKNOWN
+        return None, dict(record, status="UNKNOWN", reason="needed_pr_missing", rows_added=0,
+                          ms=round((time.perf_counter() - started) * 1000))
     open_prs = [(int(number), head) for number, (state, head, _) in rows.items() if state == "OPEN"]
     views = {}
     for number, head in open_prs:  # reuse: every cached view this cycle needs is validated before any is used

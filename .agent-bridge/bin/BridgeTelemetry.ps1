@@ -135,43 +135,67 @@ function Get-BridgeStageObservationProblem {
     return ''
 }
 
+function Publish-BridgeWakeSnapshot {
+    # The one step that makes a staged wake visible; named so a test can put a second writer exactly here.
+    param([string]$Temp,[string]$Path)
+    if([IO.File]::Exists($Path)){
+        try{[IO.File]::Replace($Temp,$Path,[NullString]::Value)}
+        catch [IO.FileNotFoundException]{[IO.File]::Move($Temp,$Path)}
+    }else{[IO.File]::Move($Temp,$Path)}
+}
+
 function Write-BridgeWakeObservation {
     param([string]$Path,[object[]]$Events,
           [string]$Reason='',[Nullable[long]]$Watermark=$null,[Nullable[double]]$LatencyMs=$null,[string]$LatencyBasis='')
     # Validated before any read or write; $null when no metadata was supplied.
     $metadata=ConvertTo-BridgeObservationMetadata -Reason $Reason -Watermark $Watermark -LatencyMs $LatencyMs -LatencyBasis $LatencyBasis
-    $bindings=[Collections.Generic.List[object]]::new()
-    $complete=$true
-    if([IO.File]::Exists($Path)){
-        try{
-            if((Get-Item -LiteralPath $Path).Length -gt 131072){throw 'Oversized previous wake'}
-            $jsonArgs=@{ErrorAction='Stop'}
-            if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
-            $previous=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json @jsonArgs
-            if($previous.schema -cne 'wd.bridge-wake-observation.v1'){throw 'Legacy wake'}
-            foreach($item in @($previous.requests)){$bindings.Add($item)}
-            $complete=[bool]$previous.correlation_complete
-        }catch{$complete=$false}
-    }
-    foreach($event in $Events){
-        $bound=Get-BridgeStageBinding $event
-        if($null -eq $bound){$complete=$false;continue}
-        $bindings.Add([pscustomobject]@{request_id=[string]$bound.request_id;agent=[string]$bound.agent;
-            session_id=[string]$bound.session_id;reply_ts_utc=$(if($bound.PSObject.Properties['reply_ts_utc']){[string]$bound.reply_ts_utc}else{''})})
-    }
-    if($bindings.Count -gt 256){$complete=$false}
-    $value=[ordered]@{schema='wd.bridge-wake-observation.v1';observed_at_utc=[datetime]::UtcNow.ToString('o');
-        requests=@($bindings|Select-Object -Last 256);correlation_complete=$complete;authority_effect='none'}
-    # Describes this wake only: never carried forward from the previous snapshot.
-    if($null -ne $metadata){$value['metadata']=$metadata}
-    $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
-    try{
-        [IO.File]::WriteAllText($temp,($value|ConvertTo-Json -Depth 8 -Compress),(New-Object Text.UTF8Encoding($false)))
+    # A second watcher of the same agent, or the consumer, can replace, hold, create or move the sentinel between
+    # the read below and the publication (reproduced 2026-10-12: Win32 1175/1176/1177/32/183 in a third of the
+    # calls of two concurrent writers). Such an IOException is retried from a fresh read, so the other writer's
+    # bindings are merged rather than lost. It counts as success only when this writer's own staged bytes are at
+    # $Path; a lasting IOException is thrown after the fifth attempt, and any other exception at once.
+    for($attempt=1;;$attempt++){
+        $bindings=[Collections.Generic.List[object]]::new()
+        $complete=$true
         if([IO.File]::Exists($Path)){
-            try{[IO.File]::Replace($temp,$Path,[NullString]::Value)}
-            catch [IO.FileNotFoundException]{[IO.File]::Move($temp,$Path)}
-        }else{[IO.File]::Move($temp,$Path)}
-    }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+            try{
+                if((Get-Item -LiteralPath $Path).Length -gt 131072){throw 'Oversized previous wake'}
+                $jsonArgs=@{ErrorAction='Stop'}
+                if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
+                $previous=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json @jsonArgs
+                if($previous.schema -cne 'wd.bridge-wake-observation.v1'){throw 'Legacy wake'}
+                foreach($item in @($previous.requests)){$bindings.Add($item)}
+                $complete=[bool]$previous.correlation_complete
+            }catch{$complete=$false}
+        }
+        foreach($event in $Events){
+            $bound=Get-BridgeStageBinding $event
+            if($null -eq $bound){$complete=$false;continue}
+            $bindings.Add([pscustomobject]@{request_id=[string]$bound.request_id;agent=[string]$bound.agent;
+                session_id=[string]$bound.session_id;reply_ts_utc=$(if($bound.PSObject.Properties['reply_ts_utc']){[string]$bound.reply_ts_utc}else{''})})
+        }
+        if($bindings.Count -gt 256){$complete=$false}
+        $value=[ordered]@{schema='wd.bridge-wake-observation.v1';observed_at_utc=[datetime]::UtcNow.ToString('o');
+            requests=@($bindings|Select-Object -Last 256);correlation_complete=$complete;authority_effect='none'}
+        # Describes this wake only: never carried forward from the previous snapshot.
+        if($null -ne $metadata){$value['metadata']=$metadata}
+        $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+        $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($value|ConvertTo-Json -Depth 8 -Compress))
+        try{
+            [IO.File]::WriteAllBytes($temp,$bytes)
+            try{Publish-BridgeWakeSnapshot -Temp $temp -Path $Path;return}
+            catch [IO.IOException]{
+                # This writer's exact staged bytes at $Path are the only success witness after an error.
+                $published=$false
+                try{$published=[Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -ceq [Convert]::ToBase64String($bytes)}
+                catch [IO.IOException]{$published=$false}
+                if($published){return}
+                if($attempt -ge 5){throw}
+            }
+        }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+        # Random, growing backoff: two watchers that saw the same event must not retry in lockstep.
+        Start-Sleep -Milliseconds (Get-Random -Minimum 1 -Maximum (50*$attempt))
+    }
 }
 
 function Test-BridgeObservationRoot {

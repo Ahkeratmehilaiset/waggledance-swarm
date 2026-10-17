@@ -96,10 +96,10 @@ def test_outcome_rules_completed_needs_drain_lock_and_no_unknown(adapter):
     body = _function(adapter, "Resolve-WdShadowOutcome")
     assert set(re.findall(r"return '([a-z_]+)'", body)) == {"completed", "stopped_at_deadline", "stop_unconfirmed"}
     completed = body[:body.index("return 'completed'")].rsplit("if (", 1)[1]
-    for need in ("$Drained", "$LockAcquired", "$Unknown.Count -eq 0", "-not $StopCalled"):
+    for need in ("$Drained", "$RootExited", "$LockAcquired", "$Unknown.Count -eq 0", "-not $StopCalled"):
         assert need in completed, need
     stopped = body[:body.index("return 'stopped_at_deadline'")].rsplit("if (", 1)[1]
-    for need in ("$StopCalled", "$StopOk", "$StopConfirmed", "$LockAcquired", "$Unknown.Count -eq 0"):
+    for need in ("$StopCalled", "$StopOk", "$StopConfirmed", "$RootExited", "$LockAcquired", "$Unknown.Count -eq 0"):
         assert need in stopped, need
     assert " -or " not in completed and " -or " not in stopped
     assert body.rstrip().endswith("return 'stop_unconfirmed'\n}")
@@ -114,6 +114,66 @@ def test_drain_stop_and_lock_flags_come_from_their_own_checks(adapter):
     assert adapter.count("$stopOk = $true") == 1
     assert "$lockOk = [bool]$lock.acquired -and [bool]$lock.released" in adapter
     assert adapter.count("$lockOk = ") == 1 and "-LockAcquired $lockOk" in adapter
+
+
+def test_stop_path_reobserves_the_root_and_records_match_the_outcome_inputs(adapter):
+    # D1 (cp2): every root-exit time comes from a Wait on the managed handle; after a returned Stop and a confirmed
+    # drain the root is observed again before the lock; the recorded fields use the same variables as the outcome.
+    sets = [line.strip() for line in adapter.splitlines() if "$rootExitAt = $clock" in line]
+    assert sets == ["if ($managed.Wait($slice)) { $rootExitAt = $clock.Elapsed.TotalSeconds }",
+                    "if ($rootGone -eq $true -and $null -eq $rootExitAt) { $rootExitAt = $clock.Elapsed.TotalSeconds }"]
+    assert adapter.count("$rootGone = $managed.Wait(0)") == 1
+    assert (adapter.index("$stopConfirmed = $true") < adapter.index("if ($stopConfirmed) {")
+            < adapter.index("$rootGone = $managed.Wait(0)") < adapter.index("$lock = Test-WdShadowLiveDirLock"))
+    assert re.search(r"if \(\$stopConfirmed\) \{\s*\$drainAt = \$clock\.Elapsed\.TotalSeconds", adapter)
+    assert re.search(r"\$rootGone = \$managed\.Wait\(0\)\s*\} catch \{\s*\$rootGone = \$null\s*"
+                     r"Add-WdShadowUnknown \$unknown 'root_exit_utc'", adapter)
+    assert re.search(r"if \(\$rootGone -eq \$false\) \{\s*Add-WdShadowUnknown \$unknown 'root_exit_utc'", adapter)
+    assert re.search(r"if \(\$drained -or \$stopConfirmed\) \{\s*\$lock = Test-WdShadowLiveDirLock", adapter)
+    for text in ("$rootExited = $null -ne $rootExitAt", "-RootExited $rootExited", "-Drained $drained",
+                 "$jobDrained = $drained -or $stopConfirmed", "drained = $jobDrained;", "-StopConfirmed $stopConfirmed",
+                 "lock_reacquire = $lock",
+                 "if ($rootExited) { $rootExitUtc = Get-WdShadowUtc -ElapsedSeconds $rootExitAt }"):
+        assert adapter.count(text) == 1, text
+
+
+def test_intent_follows_input_and_type_preparation_right_before_the_create(adapter):
+    # D2 (cp2): fallible input and type preparation first, then run_intent, then at once the single constructor.
+    stdin = adapter.index("(New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew)).Dispose()")
+    init = re.search(r"^Initialize-WdNativeTurnType$", adapter, flags=re.M).start()
+    verify = adapter.index("$managedType = 'WdManagedTurnProcess' -as [type]")
+    intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent' -Record $intent")
+    assert stdin < init < verify < intent < adapter.index("[WdManagedTurnProcess]::new(")
+    assert adapter.count("-Name 'run_intent'") == 1
+    assert re.search(r"-Name 'run_intent' -Record \$intent\n\s*try \{\n\s*\$managed = \[WdManagedTurnProcess\]::new\(",
+                     adapter)
+    shape = adapter[verify:intent]
+    for need in ("GetConstructor(", "GetMethod('Stop')", "GetMethod('Wait')", "GetProperty('ActiveProcesses')",
+                 "throw"):
+        assert need in shape, need
+
+
+def test_identity_is_bound_to_the_integrity_label_and_an_explicit_user_sid(adapter):
+    # T1 (cp2): the actual mandatory integrity label and an explicitly supplied approved user SID; never group
+    # membership, never a default taken from the caller.
+    assert re.search(r"\[Parameter\(Mandatory\)\] \[string\] \$ApprovedUserSid\b", adapter)
+    assert re.search(r"\[Parameter\(Mandatory\)\] \[ValidateSet\('medium', 'high', IgnoreCase = \$false\)\] "
+                     r"\[string\] \$ApprovedIntegrityLevel\b", adapter)
+    for word in ("IsInRole", "WindowsBuiltInRole", "Administrator", "ApprovedTokenClass", ".Groups"):
+        assert word not in adapter, word
+    assert not re.search(r"\$Approved(UserSid|IntegrityLevel)\s*=", adapter)
+    assert "-Name 'ApprovedUserSid' -Value $ApprovedUserSid -Pattern '^S-1-5-21-\\d+-\\d+-\\d+-\\d+$'" in adapter
+    assert "$whoami = Join-Path $env:SystemRoot 'System32\\whoami.exe'" in adapter
+    assert "& $whoami '/groups' '/fo' 'csv' '/nh'" in adapter
+    assert "Where-Object { [string]$_.sid -cmatch '^S-1-16-(\\d+)$' }" in adapter
+    assert "$levels = @{ '8192' = 'medium'; '12288' = 'high' }" in adapter
+    for check in (r"if \(\$labels\.Count -ne 1\) \{ throw", r"if \(-not \$integrity\) \{ throw",
+                  r"if \(\$integrity -cne \$ApprovedIntegrityLevel\) \{\s*throw",
+                  r"if \(\$actualUserSid -cne \$ApprovedUserSid\) \{ throw"):
+        assert re.search(check, adapter), check
+    assert "$actualUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value" in adapter
+    checked = adapter.index("$actualUserSid -cne $ApprovedUserSid")
+    assert checked < adapter.index("ReadAllBytes(") and checked < adapter.index("'run_intent'")
 
 
 def test_records_are_published_once_without_overwrite(adapter):

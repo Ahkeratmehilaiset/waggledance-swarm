@@ -13,19 +13,29 @@
     Time: one Stopwatch is the enforcement clock, started once and never reset; UTC is read once at launch and every
     *_utc value is that launch time plus the monotonic elapsed time. Stop() (TerminateJobObject) runs only at the
     1800 s deadline, after an unreadable job state or after a failed start record, followed by at most 30 s for the
-    job to drain. completed needs a full drain before the deadline (root exit alone never counts), a positive
-    exclusive reacquire and release of the live-dir lock, and no unknown value; stopped_at_deadline needs a Stop that
-    returned, a confirmed drain and the lock reacquire; everything else is stop_unconfirmed.
+    job to drain. completed needs a full drain before the deadline (root exit alone never counts), an observed root
+    exit, a positive exclusive reacquire and release of the live-dir lock, and no unknown value; stopped_at_deadline
+    needs a Stop that returned, a confirmed drain, the root observed exited on the managed handle after that drain
+    and the lock reacquire (D1); everything else is stop_unconfirmed.
 
     Records (D8 baseline) live in a new per-launch directory under the approved run root, outside the live dir, and
-    each is published once (CreateNew, then a rename that never overwrites). The type creates the job, assigns the
-    suspended root and resumes it inside its own constructor, so no record can sit between assignment and resume:
-    run_intent is published before the create, run_start right after the constructor, controller_outcome at the end.
-    After a controller death nothing more is written here; native A5 needs the independent observer witnesses.
+    each is published once (CreateNew, then a rename that never overwrites). The input file and the verified type are
+    prepared first; run_intent is published immediately before the single constructor call, run_start right after
+    it, controller_outcome at the end (D2). A missing later record is UNKNOWN and never proves that execution began
+    or stopped; no directory or crash durability is claimed. After a controller death nothing more is written here;
+    native A5 needs the independent observer witnesses.
 
-    Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule), RCO2 (G1-G4 and the member witness), Lead
-    (route, deadline, records, launch id, time and binding decisions); fable-5 wrote this file. There is no process
-    kill by PID, and producer.lock is only opened here, never created or removed.
+    Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
+    equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
+    membership is never used, and nothing is defaulted from the caller.
+
+    Source-preparation limits (Lead D8 decision): L1, the type resumes the root inside its constructor, so run_start
+    follows the resume; this does not meet a before-resume native-evidence need and waives nothing. L2, a root that
+    exits before its creation time is read leaves that identity UNKNOWN; the observation time is never used instead.
+
+    Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit), RCO2 (G1-G4 and the
+    member witness), Lead (route, deadline, records, launch id, time, binding and cp2 decisions); fable-5 wrote this
+    file. There is no process kill by PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -34,7 +44,8 @@ param(
     [Parameter(Mandatory)] [string] $ExpectedAdapterSha256,
     [Parameter(Mandatory)] [string] $ApprovedRunRoot,
     [Parameter(Mandatory)] [string] $LiveDir,
-    [Parameter(Mandatory)] [ValidateSet('limited', 'elevated', IgnoreCase = $false)] [string] $ApprovedTokenClass
+    [Parameter(Mandatory)] [string] $ApprovedUserSid,
+    [Parameter(Mandatory)] [ValidateSet('medium', 'high', IgnoreCase = $false)] [string] $ApprovedIntegrityLevel
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,13 +154,14 @@ function Get-WdShadowDescendants {
 }
 
 function Resolve-WdShadowOutcome {
-    # G3: root exit alone never completes; G2: the lock must be reacquired; G4: any unknown value is never positive.
-    param([bool] $Drained, [bool] $StopCalled, [bool] $StopOk, [bool] $StopConfirmed, [bool] $LockAcquired,
-        [System.Collections.IList] $Unknown)
-    if ($Unknown.Count -eq 0 -and $Drained -and -not $StopCalled -and $LockAcquired) {
+    # G3: root exit alone never completes, and a drain needs an observed root exit as well (D1); G2: the lock must be
+    # reacquired; G4: any unknown value is never positive.
+    param([bool] $Drained, [bool] $RootExited, [bool] $StopCalled, [bool] $StopOk, [bool] $StopConfirmed,
+        [bool] $LockAcquired, [System.Collections.IList] $Unknown)
+    if ($Unknown.Count -eq 0 -and $Drained -and $RootExited -and -not $StopCalled -and $LockAcquired) {
         return 'completed'
     }
-    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $LockAcquired) {
+    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $RootExited -and $LockAcquired) {
         return 'stopped_at_deadline'
     }
     return 'stop_unconfirmed'
@@ -160,14 +172,27 @@ Assert-WdShadowValue -Name 'ExpectedManifestSha256' -Value $ExpectedManifestSha2
 Assert-WdShadowValue -Name 'ExpectedAdapterSha256' -Value $ExpectedAdapterSha256 -Pattern '^[0-9A-F]{64}$'
 Assert-WdShadowValue -Name 'ApprovedRunRoot' -Value $ApprovedRunRoot -Pattern '^[A-Za-z]:\\'
 Assert-WdShadowValue -Name 'LiveDir' -Value $LiveDir -Pattern '^[A-Za-z]:\\'
+Assert-WdShadowValue -Name 'ApprovedUserSid' -Value $ApprovedUserSid -Pattern '^S-1-5-21-\d+-\d+-\d+-\d+$'
 
-# D5: the token class is an explicit approved input; the actual token must match it, nothing is inferred.
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$tokenClass = 'limited'
-if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $tokenClass = 'elevated' }
-if ($tokenClass -cne $ApprovedTokenClass) {
-    throw "refused: the actual token class $tokenClass is not the approved $ApprovedTokenClass"
+# T1: classify by the actual mandatory integrity label (its S-1-16 SID, language independent) and bind the token user
+# to the explicitly approved user SID; group membership is never used and nothing is defaulted from the caller.
+$whoami = Join-Path $env:SystemRoot 'System32\whoami.exe'
+$global:LASTEXITCODE = 0
+$groupRows = @(& $whoami '/groups' '/fo' 'csv' '/nh')
+if ($LASTEXITCODE -ne 0) { throw 'refused: the token groups could not be read' }
+$labels = @($groupRows | ConvertFrom-Csv -Header 'name', 'type', 'sid', 'attributes' |
+    Where-Object { [string]$_.sid -cmatch '^S-1-16-(\d+)$' })
+if ($labels.Count -ne 1) { throw "refused: expected one mandatory integrity label, found $($labels.Count)" }
+$rid = ''
+if ([string]$labels[0].sid -cmatch '^S-1-16-(\d+)$') { $rid = $Matches[1] }
+$levels = @{ '8192' = 'medium'; '12288' = 'high' }
+$integrity = $levels[$rid]
+if (-not $integrity) { throw "refused: the mandatory integrity level S-1-16-$rid is not supported" }
+if ($integrity -cne $ApprovedIntegrityLevel) {
+    throw "refused: the actual integrity level $integrity is not the approved $ApprovedIntegrityLevel"
 }
+$actualUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($actualUserSid -cne $ApprovedUserSid) { throw 'refused: the token user SID is not the approved user SID' }
 
 $adapterPath = $PSCommandPath
 $adapterHash = (Read-WdShadowFileSnapshot -Path $adapterPath).Hash
@@ -259,36 +284,23 @@ if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -cne 'NTFS
 $launchId = [guid]::NewGuid().ToString('D')
 $runDir = Join-Path $runRootFull $launchId
 [void](New-Item -ItemType Directory -Path $runDir)
-$clock = [Diagnostics.Stopwatch]::StartNew()
-$script:LaunchUtc = [DateTime]::UtcNow
-$binding = [ordered]@{
-    run_id = $launchId
-    source_commit = $ExpectedSourceCommit
-    manifest_sha256 = $ExpectedManifestSha256
-    adapter = [ordered]@{ path = $adapterPath; sha256 = $adapterHash }
-    token_class = $tokenClass
-    root = [ordered]@{ pid = 'UNKNOWN'; creation_time_utc = 'UNKNOWN' }
-    deadline = [ordered]@{
-        duration_s = $DeadlineSeconds
-        absolute_utc = Get-WdShadowUtc -ElapsedSeconds $DeadlineSeconds
-        launch_utc = Get-WdShadowUtc -ElapsedSeconds 0
-        clock = 'Stopwatch (monotonic); every *_utc value is launch_utc plus elapsed seconds'
-    }
-}
-Publish-WdShadowRecord -Directory $runDir -Name 'run_intent' -Record ([ordered]@{
-    schema = $Schema; record = 'run_intent'; binding = $binding; live_dir = $liveFull
-    monotonic_elapsed_s = $clock.Elapsed.TotalSeconds
-    written_utc = Get-WdShadowUtc -ElapsedSeconds $clock.Elapsed.TotalSeconds
-})
 
+# D2: every fallible preparation (input file, host, arguments, verified type) comes before run_intent.
 $inputPath = Join-Path $runDir 'root.stdin.empty'
 (New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew)).Dispose()
 $hostExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
     $env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src', $env:WD_BRIDGE_CODE_ROOT,
     '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull)
-$unknown = New-Object System.Collections.ArrayList
 Initialize-WdNativeTurnType
+$managedType = 'WdManagedTurnProcess' -as [type]
+$constructorTypes = [type[]]@([string], [string[]], [string], [string], [string], [string])
+if ($null -eq $managedType -or $null -eq $managedType.GetConstructor($constructorTypes) -or
+    $null -eq $managedType.GetMethod('Stop') -or $null -eq $managedType.GetMethod('Wait') -or
+    $null -eq $managedType.GetProperty('ActiveProcesses')) {
+    throw 'refused: the verified lane loop did not initialize the expected WdManagedTurnProcess type'
+}
+$unknown = New-Object System.Collections.ArrayList
 $managed = $null
 $drained = $false
 $stopCalled = $false
@@ -301,7 +313,29 @@ $drainAt = $null
 $before = 'UNKNOWN'
 $after = 'UNKNOWN'
 $lock = [ordered]@{ attempted = $false; acquired = $false; released = $false; error = $null }
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$script:LaunchUtc = [DateTime]::UtcNow
+$binding = [ordered]@{
+    run_id = $launchId
+    source_commit = $ExpectedSourceCommit
+    manifest_sha256 = $ExpectedManifestSha256
+    adapter = [ordered]@{ path = $adapterPath; sha256 = $adapterHash }
+    identity = [ordered]@{ integrity_level = $integrity; user_sid_bound = $true }
+    root = [ordered]@{ pid = 'UNKNOWN'; creation_time_utc = 'UNKNOWN' }
+    deadline = [ordered]@{
+        duration_s = $DeadlineSeconds
+        absolute_utc = Get-WdShadowUtc -ElapsedSeconds $DeadlineSeconds
+        launch_utc = Get-WdShadowUtc -ElapsedSeconds 0
+        clock = 'Stopwatch (monotonic); every *_utc value is launch_utc plus elapsed seconds'
+    }
+}
+$intent = [ordered]@{
+    schema = $Schema; record = 'run_intent'; binding = $binding; live_dir = $liveFull
+    monotonic_elapsed_s = $clock.Elapsed.TotalSeconds
+    written_utc = Get-WdShadowUtc -ElapsedSeconds $clock.Elapsed.TotalSeconds
+}
 try {
+    Publish-WdShadowRecord -Directory $runDir -Name 'run_intent' -Record $intent
     try {
         $managed = [WdManagedTurnProcess]::new($hostExe, $arguments, $env:WD_BRIDGE_CODE_ROOT, $inputPath,
             (Join-Path $runDir 'root.stdout.log'), (Join-Path $runDir 'root.stderr.log'))
@@ -369,23 +403,45 @@ try {
                 }
                 Start-Sleep -Milliseconds 250
             }
+            if ($stopConfirmed) {
+                $drainAt = $clock.Elapsed.TotalSeconds
+                # D1: the confirmed drain must agree with an actual root-exit observation on the same managed handle.
+                try {
+                    $rootGone = $managed.Wait(0)
+                } catch {
+                    $rootGone = $null
+                    Add-WdShadowUnknown $unknown 'root_exit_utc' $_.Exception.GetType().FullName
+                }
+                if ($rootGone -eq $true -and $null -eq $rootExitAt) { $rootExitAt = $clock.Elapsed.TotalSeconds }
+                if ($rootGone -eq $false) {
+                    Add-WdShadowUnknown $unknown 'root_exit_utc' 'the root has not exited after a confirmed job drain'
+                }
+            }
             $after = Get-WdShadowDescendants -Managed $managed -Unknown $unknown -Field 'live_descendants_after_stop'
         } else {
             $before = @()
             $after = @()
         }
-        $lock = Test-WdShadowLiveDirLock -Path (Join-Path $liveFull 'producer.lock')
+        if ($drained -or $stopConfirmed) {
+            $lock = Test-WdShadowLiveDirLock -Path (Join-Path $liveFull 'producer.lock')
+        } else {
+            Add-WdShadowUnknown $unknown 'lock_reacquire' 'not attempted without a positively observed job drain'
+        }
     }
 } finally {
     if ($null -ne $managed) { $managed.Dispose() }
 }
-if ($null -eq $rootExitAt) { Add-WdShadowUnknown $unknown 'root_exit_utc' 'root exit not observed' }
-if (-not $stopConfirmed -and -not $drained) { Add-WdShadowUnknown $unknown 'job_drained' 'drain not confirmed' }
+$rootExited = $null -ne $rootExitAt
+$jobDrained = $drained -or $stopConfirmed
+if (-not $rootExited -and -not @($unknown | Where-Object { $_['field'] -ceq 'root_exit_utc' }).Count) {
+    Add-WdShadowUnknown $unknown 'root_exit_utc' 'root exit not observed'
+}
+if (-not $jobDrained) { Add-WdShadowUnknown $unknown 'job_drained' 'drain not confirmed' }
 $lockOk = [bool]$lock.acquired -and [bool]$lock.released
-$outcome = Resolve-WdShadowOutcome -Drained $drained -StopCalled $stopCalled -StopOk $stopOk `
-    -StopConfirmed $stopConfirmed -LockAcquired $lockOk -Unknown $unknown
+$outcome = Resolve-WdShadowOutcome -Drained $drained -RootExited $rootExited -StopCalled $stopCalled `
+    -StopOk $stopOk -StopConfirmed $stopConfirmed -LockAcquired $lockOk -Unknown $unknown
 $rootExitUtc = 'UNKNOWN'
-if ($null -ne $rootExitAt) { $rootExitUtc = Get-WdShadowUtc -ElapsedSeconds $rootExitAt }
+if ($rootExited) { $rootExitUtc = Get-WdShadowUtc -ElapsedSeconds $rootExitAt }
 $drainUtc = 'UNKNOWN'
 if ($null -ne $drainAt) { $drainUtc = Get-WdShadowUtc -ElapsedSeconds $drainAt }
 $stopUtc = $null
@@ -393,7 +449,8 @@ if ($null -ne $stopAt) { $stopUtc = Get-WdShadowUtc -ElapsedSeconds $stopAt }
 Publish-WdShadowRecord -Directory $runDir -Name 'controller_outcome' -Record ([ordered]@{
     schema = $Schema; record = 'controller_outcome'; binding = $binding; outcome = $outcome
     root_exit_utc = $rootExitUtc
-    job_drained = [ordered]@{ drained = $drained; active_processes_zero_utc = $drainUtc }
+    job_drained = [ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed
+        active_processes_zero_utc = $drainUtc }
     stop = [ordered]@{ called = $stopCalled; called_utc = $stopUtc; returned_ok = $stopOk; error = $stopError
         confirmed = $stopConfirmed }
     stop_confirmation_wait_s = $StopConfirmationWaitSeconds

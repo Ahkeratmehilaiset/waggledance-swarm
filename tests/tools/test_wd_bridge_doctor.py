@@ -109,12 +109,18 @@ def test_non_absolute_path_is_unknown_and_refuses(tmp_path, value, monkeypatch):
     paths = _paths(tmp_path)
     paths["paths"]["git_executable"] = value
     real_stat = doctor.os.stat
+    real_lstat = doctor.os.lstat
+    refused_paths = {value, os.fspath(Path(value))}
 
-    def guarded_stat(path, *args, **kwargs):
-        assert path != value, "a refused path must never be stat'ed"
-        return real_stat(path, *args, **kwargs)
+    def guard(real_call):
+        def guarded(path, *args, **kwargs):
+            # MUTANT_PRETOUCH_REFUSED_PATH_OBJECT / MUTANT_PRETOUCH_REFUSED_PATH_LSTAT.
+            assert os.fsdecode(path) not in refused_paths, "a refused path must never be touched"
+            return real_call(path, *args, **kwargs)
+        return guarded
 
-    monkeypatch.setattr(doctor.os, "stat", guarded_stat)
+    monkeypatch.setattr(doctor.os, "stat", guard(real_stat))
+    monkeypatch.setattr(doctor.os, "lstat", guard(real_lstat))
     code, report = _run(tmp_path, "claude-rco-2", paths, _fresh())
     assert code == 2
     git = next(c for c in report["components"] if c["id"] == "git")

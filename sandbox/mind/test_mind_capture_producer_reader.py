@@ -1,13 +1,17 @@
-"""Offline cases for the capture producer's bridge reader boundary and its count options.
+"""Offline cases for the capture producer's bridge reader boundary, its count options, its start and its imports.
 
-The producer parses its arguments and runs its cycles at import, so these cases execute its own reader constants,
-classes and functions, taken from the module file, with a fake process runner as ``subprocess``: nothing starts.
-The count options are checked by executing the module's own statements up to its parse-time check with a fake
+The producer's functions read the module globals its script program sets, so these cases execute its own reader
+constants, classes and functions, taken from the module file, with a fake process runner as ``subprocess``: nothing
+starts. The program runs only as a script, under the module's one ``if __name__ == "__main__":`` block (``program``).
+The count options are checked by executing the program's own statements up to its parse-time check with a fake
 command line: none of the statements before the check writes or starts a process (asserted), and none after it runs.
 The --seed-from read is checked the same way, up to and including that read, the code tree being this one: none
-of the statements between the count check and the read writes or starts a process (asserted). So is the
-latest.json read, right after the seed read in the same statement, and the live dir's lock, the statement right
-after the live dir is made (two starts on one live dir run in this process: its lock is per descriptor).
+of the statements between the count check and the read writes or starts a process (asserted). So are the
+latest.json read and the fresh-state check, in the same statement as the seed read, and the live dir's lock, the
+statement right after the live dir is made (two starts on one live dir run in this process: its lock is per
+descriptor). Two cases run a fresh interpreter: an import of the module, which must run, import, write and start
+nothing, and a run of the program past the code tree's imports under an import finder that refuses every gate,
+classifier, charter and taxonomy module (Lead's delivery rule: no such import in the production shadow path).
 Each refusal is compared by its exception's arguments: exactly the fixed reason, no added text (``refused``).
 """
 
@@ -26,6 +30,7 @@ import pytest
 import tools.bridge_compact_view as compact_view
 
 PRODUCER = Path(__file__).resolve().parent / "mind_capture_producer.py"
+ROOT = PRODUCER.parents[2]
 # the producer's reader constants; READER_OPTION is the per-token check the slot grammar replaced, listed so that
 # these cases also run over a producer from before that change
 CONSTANTS = ("READER_OPTION", "DETAIL_TAIL", "TAIL_CAP", "SEED_MARGIN", "COUNT", "EVENT_REF", "CURSOR")
@@ -143,7 +148,7 @@ SLOT_REFUSED = {  # options outside the three calls the producer makes, slot by 
     "a_count_above_the_tool_bound": ("-ContinuityTail", str(TOOL_TAIL + 1)),
     "the_widest_count_of_the_token_check": ("-ContinuityTail", "9" * 9),
     "a_leading_zero": ("-ContinuityTail", "0600"),
-    "non_ascii_digits": ("-ContinuityTail", "\u0663\u0660\u0660"),
+    "non_ascii_digits": ("-ContinuityTail", "٣٠٠"),
     "a_count_beyond_the_default_int_digit_limit": ("-ContinuityTail", "1" * 4301),
     "a_ref_slot_with_a_count": ("-ContinuityTail", "600", "-EventId", "600"),
     "a_ref_slot_with_a_flag": ("-ContinuityTail", "600", "-EventId", "-AfterEvent"),
@@ -191,7 +196,8 @@ def test_the_reader_count_bound_is_the_compact_tool_bound():
 
 
 def test_every_count_the_producer_passes_is_within_that_bound():
-    # a seed reads with --window + SEED_MARGIN lines, a delta with DETAIL_TAIL; --window is held to the rest
+    # a seed reads with --window + SEED_MARGIN lines, a delta with DETAIL_TAIL plus the rows listed after its cursor,
+    # held to TAIL_CAP; --window is held to the rest
     space, _ = producer_reader()
     assert space.get("SEED_MARGIN") == MARGIN and 1 <= space["DETAIL_TAIL"] <= TOOL_TAIL
 
@@ -212,22 +218,55 @@ def test_a_reader_that_times_out_or_cannot_start_is_a_fixed_refusal_of_the_cycle
     assert type(raised.value) is space.get("CycleRefused") and len(run.calls) == 1
 
 
+def program(tree):
+    """The producer's statements in the order a script run executes them: the module's own, then the body of its one
+    ``if __name__ == "__main__":`` block, which is its last statement (asserted)."""
+    body = tree.body
+    guards = [i for i, node in enumerate(body)
+              if isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"]
+    assert guards == [len(body) - 1], guards
+    return body[:-1] + body[-1].body
+
+
+def run_when_defined(node):
+    """The parts of a module statement that run when it is executed: a whole statement, but of a definition only
+    its decorators and defaults, and of a class its bases and keywords and its body (its methods so far as their own
+    decorators and defaults)."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return [*node.decorator_list, *node.args.defaults, *(value for value in node.args.kw_defaults if value)]
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *node.keywords,
+                *(part for statement in node.body for part in run_when_defined(statement))]
+    return [node]
+
+
+def calls_made(node):
+    return {ast.unparse(call.func) for part in run_when_defined(node) for call in ast.walk(part)
+            if isinstance(call, ast.Call)}
+
+
+# The calls the statements before the parse may make: the parser's construction, the constants' regexes and key
+# sets. None of them writes or starts a process.
+PARSE_QUIET_CALLS = {"argparse.ArgumentParser", "__doc__.splitlines", "parser.add_argument", "re.compile",
+                     "frozenset"}
+
+
 def parsed(monkeypatch, *options):
-    """The producer's own statements up to and including its parse-time count check, executed with a fake command
-    line: the parsed options, or SystemExit. Before parse_args there are only the docstring, imports, literal
-    constants, definitions and the parser's own statements: nothing writes or starts a process."""
-    body = ast.parse(PRODUCER.read_text(encoding="utf-8")).body
-    [at] = [i for i, node in enumerate(body) if ast.unparse(node) == "args = parser.parse_args()"]
-    assert ast.unparse(body[at + 1]) == "problem = count_problem(args)" and isinstance(body[at + 2], ast.If)
-    for node in body[:at]:
+    """The program's own statements up to and including its parse-time count check, executed with a fake command
+    line: the parsed options, or SystemExit. Before parse_args there are only the docstring, imports, definitions,
+    constants and the parser's own statements, and every call they make when executed is one of PARSE_QUIET_CALLS
+    (asserted): nothing writes or starts a process."""
+    statements = program(ast.parse(PRODUCER.read_text(encoding="utf-8")))
+    [at] = [i for i, node in enumerate(statements) if ast.unparse(node) == "args = parser.parse_args()"]
+    assert ast.unparse(statements[at + 1]) == "problem = count_problem(args)" and isinstance(statements[at + 2], ast.If)
+    for node in statements[:at]:
         text = ast.unparse(node)
-        assert (isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))
-                or (isinstance(node, (ast.Expr, ast.Assign)) and isinstance(node.value, ast.Constant))
-                or text.startswith(("parser = argparse.ArgumentParser(", "parser.add_argument("))), text
+        assert isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef, ast.Assign, ast.Expr)), text
+        assert calls_made(node) <= PARSE_QUIET_CALLS, (text, calls_made(node) - PARSE_QUIET_CALLS)
     monkeypatch.setattr(sys, "argv", ["mind_capture_producer.py", "--src", "src", "--live-dir", "live", "--bin",
                                       "bin", *options])
     space = {}
-    exec(compile(ast.Module(body=body[:at + 3], type_ignores=[]), str(PRODUCER), "exec"), space)
+    exec(compile(ast.Module(body=statements[:at + 3], type_ignores=[]), str(PRODUCER), "exec"), space)
     return space["args"]
 
 
@@ -266,71 +305,61 @@ def test_a_count_option_within_its_bound_parses(monkeypatch, case):
     assert (args.window, args.keep) == expected
 
 
-# The calls the statements between the count check and the --seed-from read may make: the paths, the code tree's
-# sys.path entry, the reader regexes and the charter check. None of them writes or starts a process.
-QUIET_CALLS = {"args.src.resolve", "Path", "os.path.abspath", "next", "sys.path.insert", "str", "re.compile",
-               "CHARTER_FILE.resolve", "CHARTER_FILE.resolve().is_relative_to"}
-
-
-def run_when_defined(node):
-    """The parts of a module statement that run when it is executed: a whole statement, but of a definition only
-    its decorators and defaults, and of a class its bases and keywords and its body (its methods so far as their own
-    decorators and defaults)."""
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return [*node.decorator_list, *node.args.defaults, *(value for value in node.args.kw_defaults if value)]
-    if isinstance(node, ast.ClassDef):
-        return [*node.decorator_list, *node.bases, *node.keywords,
-                *(part for statement in node.body for part in run_when_defined(statement))]
-    return [node]
+# The calls the statements between the count check and the start reads may make: the paths and the code tree's
+# sys.path entry. None of them writes or starts a process.
+QUIET_CALLS = {"args.src.resolve", "Path", "os.path.abspath", "next", "sys.path.insert", "str"}
+START_READS = ["seeded = {} if args.seed_from is None else read_seed(args.seed_from)",
+               "last_ok = read_latest(latest_file)", "refuse_legacy(live)"]
+START_REFUSALS = [("SeedRefused", ["parser.error(f'--seed-from refused: {exc}')"]),
+                  ("LatestRefused", ["parser.error(f'latest.json refused: {exc}')"]),
+                  ("LiveDirRefused", ["parser.error(f'live dir refused: {exc}')"])]
 
 
 def started(monkeypatch, tmp_path, run, *options, through="read_seed", lock=False):
-    """The producer's own statements up to and including its start reads, executed with a fake command line, ``run``
+    """The program's own statements up to and including its start reads, executed with a fake command line, ``run``
     as the process runner, a copy of sys.path and this code tree as --src: the namespace, or SystemExit. The reads
-    are one statement right before the live directory is made: the module's one read_seed call and (asserted for
-    ``through="read_latest"``) its one read_latest call, of the latest.json path assigned in the statement before;
-    between the count check and the reads there are only imports, definitions, assignments, the charter assert and
-    the sys.path entry, and every call they make when executed is one of QUIET_CALLS (asserted); the statements
-    before the count check are those ``parsed`` checks, and no statement after the reads runs. With ``lock`` the
-    live dir's mkdir and its lock run too: the module's one lock_live_dir call, of <live-dir>/producer.lock, is the
-    statement right after the mkdir and right before the cycles, files-cache and state dirs (asserted); the caller
-    closes the namespace's lock."""
+    are one statement right before the live directory is made: the seed read, the read of the latest.json path
+    assigned in the statement before and the fresh-state check, each refusal a parser error (asserted); between the
+    count check and the reads there are only the code tree's imports, assignments and the sys.path entry, and every
+    call they make when executed is one of QUIET_CALLS (asserted); the statements before the count check are those
+    ``parsed`` checks, and no statement after the reads runs. With ``lock`` the live dir's mkdir and its lock run
+    too: the program's one lock_live_dir call, of <live-dir>/producer.lock, is the statement right after the mkdir
+    and right before the cycles and files-cache dirs (asserted); the caller closes the namespace's lock."""
     tree = ast.parse(PRODUCER.read_text(encoding="utf-8"))
-    body = tree.body
-    [check] = [i for i, node in enumerate(body) if ast.unparse(node) == "problem = count_problem(args)"]
-    [at] = [i for i, node in enumerate(body) if isinstance(node, ast.Try) and "read_seed(" in ast.unparse(node)]
-    assert ast.unparse(body[at + 1]) == "live.mkdir(parents=True, exist_ok=True)"
-    for node in body[check + 2:at]:
+    statements = program(tree)
+    [check] = [i for i, node in enumerate(statements) if ast.unparse(node) == "problem = count_problem(args)"]
+    [at] = [i for i, node in enumerate(statements) if isinstance(node, ast.Try) and "read_seed(" in ast.unparse(node)]
+    reads = statements[at]
+    assert [ast.unparse(s) for s in reads.body] == START_READS and not reads.orelse and not reads.finalbody
+    assert [(ast.unparse(h.type), [ast.unparse(s) for s in h.body]) for h in reads.handlers] == START_REFUSALS
+    assert ast.unparse(statements[at + 1]) == "live.mkdir(parents=True, exist_ok=True)"
+    for node in statements[check + 2:at]:
         text = ast.unparse(node)
-        assert isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef, ast.Assign,
-                                 ast.Assert)) or text == "sys.path.insert(0, str(src))", text
-        calls = {ast.unparse(call.func) for part in run_when_defined(node) for call in ast.walk(part)
-                 if isinstance(call, ast.Call)}
-        assert calls <= QUIET_CALLS, (text, calls - QUIET_CALLS)
+        assert isinstance(node, (ast.ImportFrom, ast.Assign)) or text == "sys.path.insert(0, str(src))", text
+        assert calls_made(node) <= QUIET_CALLS, (text, calls_made(node) - QUIET_CALLS)
     for name in {"read_seed", through}:
-        reads = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == name]
-        assert len(reads) == 1 and any(node is reads[0] for node in ast.walk(body[at])), (name, len(reads))
+        found = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == name]
+        assert len(found) == 1 and any(node is found[0] for node in ast.walk(reads)), (name, len(found))
         if name == "read_latest":
-            assert ast.unparse(reads[0]) == "read_latest(latest_file)"
-            assert ast.unparse(body[at - 1]) == "latest_file = live / 'latest.json'"
+            assert ast.unparse(statements[at - 1]) == "latest_file = live / 'latest.json'"
     end = at + 1
     if lock:
-        held = body[at + 2]
+        held = statements[at + 2]
         assert isinstance(held, ast.Try) and not held.orelse and not held.finalbody and [
             ast.unparse(s) for s in held.body] == ["lock = lock_live_dir(live / 'producer.lock')"], ast.unparse(held)
         assert [(ast.unparse(h.type), [ast.unparse(s) for s in h.body]) for h in held.handlers] == [
             ("LiveDirRefused", ["parser.error(f'live dir refused: {exc}')"])]
-        assert ast.unparse(body[at + 3]).startswith("for name in ('cycles', 'files-cache', 'state'):")
+        assert ast.unparse(statements[at + 3]).startswith("try:\n    for name in ('cycles', 'files-cache'):")
         locks = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
                  and ast.unparse(node.func) == "lock_live_dir"]
         assert len(locks) == 1 and any(node is locks[0] for node in ast.walk(held))
         end = at + 3
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.setattr(sys, "argv", ["mind_capture_producer.py", "--src", str(PRODUCER.parents[2]), "--live-dir",
+    monkeypatch.setattr(sys, "argv", ["mind_capture_producer.py", "--src", str(ROOT), "--live-dir",
                                       str(tmp_path / ".codex-audit" / "live"), "--bin", "bin", *options])
     space = {}
-    exec(compile(ast.Module(body=body[:end], type_ignores=[]), str(PRODUCER), "exec"), space)
+    exec(compile(ast.Module(body=statements[:end], type_ignores=[]), str(PRODUCER), "exec"), space)
     return space
 
 
@@ -376,20 +405,35 @@ def test_without_a_seed_no_row_is_held_and_nothing_is_read(monkeypatch, tmp_path
     assert space["seeded"] == {} and run.calls == [] and list(tmp_path.iterdir()) == []
 
 
-def test_every_cycle_hands_the_one_seed_read_to_its_window_read():
+def test_every_cycle_hands_the_one_seed_read_to_its_window_read_from_the_committed_state():
+    # the seed rows reach the window read through one_cycle and candidate_cycle, and the window read continues from
+    # the state latest.json's last_ok names and hashes (read_state), never from a mutable state file
     tree = ast.parse(PRODUCER.read_text(encoding="utf-8"))
-    calls = [ast.unparse(node) for node in ast.walk(tree)
-             if isinstance(node, ast.Call) and ast.unparse(node.func) == "advance"]
-    assert calls == ["advance(live / 'state', seeded)"]
+    calls = {name: sorted(ast.unparse(node) for node in ast.walk(tree)
+                          if isinstance(node, ast.Call) and ast.unparse(node.func) == name)
+             for name in ("advance", "candidate_cycle", "one_cycle", "read_state")}
+    assert calls == {"advance": ["advance(state, seeded)"],
+                     "candidate_cycle": ["candidate_cycle(rec, last_ok, seeded)"],
+                     "one_cycle": ["one_cycle(cycle, last_ok, seeded)"],
+                     "read_state": ["read_state(live / last_ok['state_file'], last_ok['state_sha256'], "
+                                    "last_ok['generation'])"]}
 
 
-LAST_OK = {"cycle_dir": "20261016T000000Z", "capture_file": "cycles/20261016T000000Z/capture.json"}
+CYCLE = "20261016T000000Z"
+LAST_OK = {"cycle_dir": CYCLE, "generation": 1, "capture_file": f"cycles/{CYCLE}/capture.json",
+           "capture_sha256": "a" * 64, "state_file": f"cycles/{CYCLE}/state.json", "state_sha256": "e" * 64,
+           "publication_file": f"cycles/{CYCLE}/run/reflected.publication.json",
+           "board_file": f"cycles/{CYCLE}/run/board.txt", "receipt_file": f"cycles/{CYCLE}/run/receipt.json",
+           "snapshot_sha256": "c" * 64}
 LATEST_REFUSED_AT_START = {  # one latest.json per fixed reason -> the reason; None: a directory in its place
     "a_directory": (None, "latest_unreadable"),
     "not_json": (b"{", "latest_unparseable"),
     # live_mind's schema: its live dir is not this producer's to write or prune in
     "another_tools_latest_json": (json.dumps({"schema": "wd.bridge-mind-live-latest.v1", "cycle": 1}).encode(
         "ascii"), "latest_shape_unexpected"),
+    # the earlier window/cursor producer's: fresh production state only, nothing migrated
+    "the_earlier_producers_latest_json": (json.dumps({"schema": "wd.fable5.mind-shadow-live-latest.v1",
+                                                      "last_ok": LAST_OK}).encode("ascii"), "latest_shape_unexpected"),
 }
 
 
@@ -421,7 +465,7 @@ def test_a_latest_json_the_producer_cannot_read_whole_exits_2_before_any_write_o
 
 
 def test_a_latest_json_read_whole_holds_its_last_ok_before_any_write_or_start(monkeypatch, tmp_path):
-    put_latest(tmp_path, json.dumps({"schema": "wd.fable5.mind-shadow-live-latest.v1", "last_ok": LAST_OK}).encode(
+    put_latest(tmp_path, json.dumps({"schema": "wd.bridge-mind-shadow-latest.v2", "last_ok": LAST_OK}).encode(
         "ascii"))
     before, run = tree_of(tmp_path), FakeRun()
     space = started(monkeypatch, tmp_path, run, through="read_latest")
@@ -434,21 +478,42 @@ def test_without_a_latest_json_a_first_start_holds_no_last_ok_and_writes_nothing
     assert space["last_ok"] is None and run.calls == [] and list(tmp_path.iterdir()) == []
 
 
-def test_every_cycle_names_its_dir_and_writes_its_latest_json_through_the_functions_the_start_read_checks():
-    # the state cases read the writer's own forms back (new_cycle_dir, latest_object); here the loop is held to them
+def test_a_live_dir_holding_the_earlier_producers_state_exits_2_before_any_write_or_start(monkeypatch, capsys,
+                                                                                         tmp_path):
+    state = tmp_path / ".codex-audit" / "live" / "state"
+    state.mkdir(parents=True)
+    (state / "cursor.txt").write_bytes(b"not read")
+    before, run = tree_of(tmp_path), FakeRun()
+    with pytest.raises(SystemExit) as raised:
+        started(monkeypatch, tmp_path, run, through="read_latest")
+    err = capsys.readouterr().err
+    assert raised.value.code == 2 and err.endswith(
+        "\nmind_capture_producer.py: error: live dir refused: live_dir_legacy_state\n"), err[-160:]
+    assert run.calls == [] and tree_of(tmp_path) == before
+
+
+def test_every_cycle_names_its_dir_and_commits_through_the_one_latest_json_write_the_start_read_checks():
+    # the state cases read the writer's own forms back (new_cycle_dir, latest_object, read_latest); here the program
+    # is held to them: one cycle dir maker, and latest.json replaced only by one_cycle with latest_object's object
     tree = ast.parse(PRODUCER.read_text(encoding="utf-8"))
-    loop = [node for statement in tree.body if not isinstance(statement, (ast.FunctionDef, ast.ClassDef))
-            for node in ast.walk(statement)]  # the module's own statements, the cycle loop among them
-    assigned = sorted(ast.unparse(node) for node in loop if isinstance(node, ast.Assign)
-                      and ast.unparse(node.targets[0]) in ("latest", "cycle_dir"))
-    assert assigned == ["cycle_dir = new_cycle_dir(live / 'cycles')", "latest = latest_object(cycle, None, None)",
-                        "latest = latest_object(cycle, rec, last_ok)"]
-    made = sorted(ast.unparse(node) for node in loop if isinstance(node, ast.Call)
-                  and ast.unparse(node.func).endswith(".mkdir"))  # no cycle dir made there but by new_cycle_dir
-    assert made == ["(live / name).mkdir(exist_ok=True)", "live.mkdir(parents=True, exist_ok=True)"], made
-    uses = sorted(ast.unparse(node) for node in ast.walk(tree)
-                  if isinstance(node, ast.Call) and "latest_file" in ast.unparse(node))
-    assert uses == ["atomic_write(latest_file, canonical(latest))", "read_latest(latest_file)"], uses
+    every = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    made = sorted(ast.unparse(node) for node in every if ast.unparse(node.func).endswith(".mkdir"))
+    assert made == ["(live / name).mkdir(exist_ok=True)", "live.mkdir(parents=True, exist_ok=True)",
+                    "path.mkdir()"], made
+    assert [ast.unparse(node) for node in every if ast.unparse(node.func) == "new_cycle_dir"] == [
+        "new_cycle_dir(live / 'cycles')"]
+    replaced = sorted(ast.unparse(node) for node in every if ast.unparse(node.func) == "atomic_write")
+    assert replaced == ["atomic_write(cache_dir / f'{number}-{head}.view.v1.json', compact(view))",
+                        "atomic_write(live / 'last-refusal.json', canonical(fallback))",
+                        "atomic_write(live / 'latest.json', canonical(latest))"], replaced
+    [one_cycle] = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "one_cycle"]
+    assigned = [ast.unparse(node) for node in ast.walk(one_cycle) if isinstance(node, ast.Assign)
+                and ast.unparse(node.targets[0]) == "latest"]
+    assert assigned == ["latest = latest_object(committed)"]
+    assert [ast.unparse(node) for node in ast.walk(one_cycle) if isinstance(node, ast.Call)
+            and ast.unparse(node.func) == "atomic_write"] == ["atomic_write(live / 'latest.json', canonical(latest))"]
+    uses = sorted(ast.unparse(node) for node in every if "latest_file" in ast.unparse(node))
+    assert uses == ["read_latest(latest_file)"], uses
 
 
 LOCKED = [".codex-audit", ".codex-audit/live", ".codex-audit/live/producer.lock"]  # a start through its lock
@@ -488,3 +553,119 @@ def test_a_lock_file_the_producer_cannot_open_exits_2_before_any_other_write_or_
     assert raised.value.code == 2 and err.endswith(
         "\nmind_capture_producer.py: error: live dir refused: live_dir_unlockable\n"), err[-160:]
     assert run.calls == [] and tree_of(tmp_path) == before
+
+
+def fresh(script, *arguments, cwd):
+    """``script`` in a fresh isolated interpreter (-I -B) with ``arguments``: the completed process."""
+    return subprocess.run([sys.executable, "-I", "-B", "-c", script, *map(str, arguments)], cwd=cwd,
+                          capture_output=True, text=True, encoding="utf-8", timeout=180)
+
+
+IMPORT_CHILD = """\
+import importlib, json, sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["-c"]
+before = set(sys.modules)
+module = importlib.import_module("sandbox.mind.mind_capture_producer")
+print(json.dumps({"file": module.__file__,
+                  "loaded": sorted(name for name in set(sys.modules) - before
+                                   if name.split(".")[0] in ("tools", "waggledance")),
+                  "program_names": sorted(name for name in ("args", "live", "core", "shadow", "ws", "lock", "last_ok")
+                                          if hasattr(module, name))}))
+"""
+
+
+def test_importing_the_producer_defines_it_and_runs_imports_writes_and_starts_nothing(tmp_path):
+    # the package's import smoke imports it: with the child's own argv (no --src) a parse at import would exit 2,
+    # and with a valid one it would run cycles
+    done = fresh(IMPORT_CHILD, ROOT, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr[-2000:]
+    observed = json.loads(done.stdout)
+    assert Path(observed["file"]).resolve() == PRODUCER
+    assert observed["loaded"] == [] and observed["program_names"] == [] and list(tmp_path.iterdir()) == []
+
+
+# Lead's delivery rule: no gate, classifier, charter or taxonomy module in the production shadow path. Each name is
+# a module of this code tree (asserted, so a misspelt name cannot leave the guard empty); the finder also refuses
+# any tools. or waggledance. module whose last name holds one of GATE_WORDS. The core's no-gate closure test names
+# the same modules (aligned 07:53Z: the consensus receipt is named here too, not left to the word match).
+GATE_MODULES = ("tools.check_bridge_changes_requested", "tools.check_rco_pass_present",
+                "tools.idle_consensus_auto_merge", "tools.merge_with_bridge_receipt",
+                "tools.write_bridge_consensus_merge_receipt", "tools.bridge_rule12_review_eligibility",
+                "tools.bridge_v2_identity_registry", "tools.rule12_grok_ledger_adapter",
+                "tools.check_proven_safe_autosign_class", "tools.check_standing_consensus_sign_class",
+                "tools.classify_bridge_ci_scope", "tools.bridge_event_taxonomy",
+                "waggledance.core.idle_consensus_charter", "waggledance.core.magma.consensus_receipt")
+GATE_WORDS = ("consensus", "rco_pass", "changes_requested", "rule12", "merge", "receipt", "autosign", "classif",
+              "charter", "standing", "taxonomy")
+GUARD_CHILD = """\
+import importlib, importlib.abc, json, runpy, sys
+root, producer, live, seed = sys.argv[1:5]
+denied, words = set(json.loads(sys.argv[5])), tuple(json.loads(sys.argv[6]))
+
+
+def gate(name):
+    return any(name == item or name.startswith(item + ".") for item in denied) or (
+        name.split(".")[0] in ("tools", "waggledance") and any(word in name.rsplit(".", 1)[-1] for word in words))
+
+
+class NoGate(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if gate(fullname):
+            raise RuntimeError("producer_gate_import_refused:" + fullname)
+
+
+sys.meta_path.insert(0, NoGate())
+sys.path.insert(0, root)
+try:  # the control: the finder refuses a gate module that exists in this code tree
+    importlib.import_module("tools.check_rco_pass_present")
+except RuntimeError as error:
+    assert str(error) == "producer_gate_import_refused:tools.check_rco_pass_present", error
+else:
+    raise AssertionError("producer_gate_guard_control_failed")
+sys.argv = [producer, "--src", root, "--live-dir", live, "--bin", "bin", "--seed-from", seed]
+try:
+    runpy.run_path(producer, run_name="__main__")
+    code = None
+except SystemExit as stop:
+    code = stop.code
+loaded = sorted(name for name in sys.modules if name.split(".")[0] in ("tools", "waggledance"))
+print(json.dumps({"code": code, "loaded": loaded, "gate_loaded": [name for name in loaded if gate(name)]}))
+"""
+
+
+def run_guarded(producer, tmp_path):
+    """The program of ``producer`` run as a script under the gate-refusing finder, this code tree as --src and a
+    --seed-from that does not exist: it parses, imports the code tree's modules, then exits 2 at the seed read,
+    before any write or process start."""
+    return fresh(GUARD_CHILD, ROOT, producer, tmp_path / ".codex-audit" / "live", tmp_path / "missing-seed.json",
+                 json.dumps(GATE_MODULES), json.dumps(GATE_WORDS), cwd=tmp_path)
+
+
+def test_the_gate_modules_named_are_modules_of_this_code_tree():
+    assert [name for name in GATE_MODULES if not (ROOT / (name.replace(".", "/") + ".py")).is_file()] == []
+
+
+def test_the_producer_run_as_a_script_imports_no_gate_classifier_charter_or_taxonomy_module(tmp_path):
+    done = run_guarded(PRODUCER, tmp_path)
+    assert done.returncode == 0, done.stderr[-2000:]
+    observed = json.loads(done.stdout.splitlines()[-1])
+    assert observed["code"] == 2 and done.stderr.endswith(
+        "\nmind_capture_producer.py: error: --seed-from refused: seed_unreadable\n"), done.stderr[-300:]
+    assert {"tools.wd_bridge_mind", "tools.wd_bridge_mind_shadow", "tools.bridge_mind_workspace",
+            "tools.bridge_compact_view", "waggledance.core.bridge_log_reader"} <= set(observed["loaded"])
+    assert observed["gate_loaded"] == [] and list(tmp_path.iterdir()) == []
+
+
+def test_a_producer_that_imports_the_classifier_again_is_refused_by_that_guard(tmp_path):
+    # a named mutant: the cp5 producer's classifier import, put back after the code tree's imports
+    source = PRODUCER.read_text(encoding="utf-8")
+    anchor = "    from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa: E402\n"
+    assert source.count(anchor) == 1
+    mutant = tmp_path / "mutant" / "mind_capture_producer.py"
+    mutant.parent.mkdir()
+    mutant.write_text(source.replace(anchor, anchor + "    from tools.check_standing_consensus_sign_class import "
+                                                      "classify_ab  # noqa: E402\n"), encoding="utf-8")
+    done = run_guarded(mutant, tmp_path)
+    assert done.returncode != 0
+    assert "RuntimeError: producer_gate_import_refused:tools.check_standing_consensus_sign_class" in done.stderr

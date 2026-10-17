@@ -315,12 +315,8 @@ def test_snapshot_writer_refuses_fact_without_refs_and_no_gate_imports_mind(tmp_
     with pytest.raises(mind.ProjectionError):
         mind.write_snapshot(bad, audit / "bad.json", audit_root=audit)
     root = Path(__file__).resolve().parents[2]
-    gates = ["check_bridge_changes_requested", "check_rco_pass_present", "idle_consensus_auto_merge",
-             "bridge_rule12_review_eligibility", "rule12_grok_ledger_adapter",
-             "write_bridge_consensus_merge_receipt", "check_proven_safe_autosign_class",
-             "check_standing_consensus_sign_class"]
-    for gate in gates:
-        tree = ast.parse((root / "tools" / (gate + ".py")).read_text(encoding="utf-8-sig"))
+    for gate in GATE_MODULES:  # the one explicit list of the no-gate closure below, read as source, never imported
+        tree = ast.parse((root / (gate.replace(".", "/") + ".py")).read_text(encoding="utf-8-sig"))
         names = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         names += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
         assert not any("wd_bridge_mind" in name for name in names)
@@ -822,15 +818,20 @@ def test_a_recusal_row_with_any_other_verification_is_refused(verification):
 # -- Production no-gate closure (Lead 06:19Z disposition: no waiver for transitive gate imports) -----------------------
 
 # The verdict-computing and governance modules the merge gate reads or executes, named explicitly (RCO1 06:23Z: the
-# guard needs an explicit list). The observe-only core must load none of them, not even transitively.
+# guard needs an explicit list). The observe-only core must load none of them, not even transitively. Lead 07:53Z,
+# from an RCO2 record: the list lacked the merge executor and the identity registry; the CI-scope classifier is
+# added with them, so this list and the capture producer's guard name the same modules.
 GATE_MODULES = (
     "tools.bridge_event_taxonomy",
     "tools.bridge_rule12_review_eligibility",
+    "tools.bridge_v2_identity_registry",
     "tools.check_bridge_changes_requested",
     "tools.check_proven_safe_autosign_class",
     "tools.check_rco_pass_present",
     "tools.check_standing_consensus_sign_class",
+    "tools.classify_bridge_ci_scope",
     "tools.idle_consensus_auto_merge",
+    "tools.merge_with_bridge_receipt",
     "tools.rule12_grok_ledger_adapter",
     "tools.write_bridge_consensus_merge_receipt",
     "waggledance.core.idle_consensus_charter",

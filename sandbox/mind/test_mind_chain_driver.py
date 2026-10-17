@@ -98,11 +98,53 @@ def test_freeze_preserves_bytes_cursor_identity_and_unknown(driver, finished):
 def test_observation_hashes_do_not_claim_uniform_committed_pointer_binding(driver, finished):
     binding = driver.freeze_committed_cycle(finished["live"], finished["out"])
     manifest = json.loads((finished["out"] / "manifest.json").read_bytes())
-    assert manifest["file_seals_scope"] == "observed_copy_hashes_not_uniform_pointer_bindings"
+    assert binding["file_seals_scope"] == "observed_copy_hashes_not_uniform_pointer_bindings"
     assert binding["not_pointer_bound"] == ["detail-manifest.txt", "run/receipt.json"]
     assert set(binding["pointer_bound_raw_files"]) == {"capture.json", "state.json", "run/board.txt"}
     assert binding["publication_binding"] == "canonical_snapshot_only_not_envelope_raw_bytes"
     assert binding["pointer_bound_snapshot_sha256"] == finished["latest"]["last_ok"]["snapshot_sha256"]
+
+
+def test_frozen_consumer_manifest_lists_json_inputs_not_transport_auxiliaries(driver, finished):
+    """The actual read_verified consumer parses EVERY non-null manifest file.
+
+    This wire-contract regression is not a full load_frozen/JOIN run: that
+    requires the admitted composed Source and a semantically valid snapshot.
+    """
+    binding = driver.freeze_committed_cycle(finished["live"], finished["out"])
+    manifest = json.loads((finished["out"] / "manifest.json").read_bytes())
+    files = manifest["cycles"][0]["files"]
+    expected = {"capture.json", "run\\reflected.publication.json",
+                "context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json"}
+    assert set(files) == expected
+    for name, sha in files.items():
+        if sha is not None:
+            raw = finished["out"].joinpath(finished["cycle"], *name.split("\\")).read_bytes()
+            assert digest(raw) == sha
+            json.loads(raw)  # In particular, board/detail text must not reach this parser.
+    assert set(manifest) == {"schema", "cycles"}
+    assert binding["file_seals_scope"] == "observed_copy_hashes_not_uniform_pointer_bindings"
+    assert binding["observed_file_sha256"] == {
+        name: digest(raw) for name, raw in finished["payloads"].items()}
+
+
+@pytest.mark.parametrize("field", ["file_identity", "log_generation", "producer_generation"])
+def test_same_typed_identity_disagreement_is_refused_before_output(driver, finished, field):
+    state = json.loads(finished["payloads"]["state.json"])
+    if field == "producer_generation":
+        state["generation"] = 2
+        reason = "state_generation"
+    else:
+        state["source"][field] = "synthetic-other-identity"
+        reason = "source_identity"
+    raw = encoded(state)
+    (finished["folder"] / "state.json").write_bytes(raw)
+    latest = copy.deepcopy(finished["latest"])
+    latest["last_ok"]["state_sha256"] = digest(raw)
+    put_latest(finished, latest)
+    with pytest.raises(driver.ChainRefusal, match="^" + reason + "$"):
+        driver.freeze_committed_cycle(finished["live"], finished["out"])
+    assert not finished["out"].exists()
 
 
 @pytest.mark.parametrize("change,reason", [
@@ -317,4 +359,22 @@ def test_executable_mutant_skipping_source_digest_is_killed(driver, finished):
         assert refused, "MUTANT_SKIP_SOURCE_DIGEST survived"
     contract(driver, finished["audit"] / "control")
     with pytest.raises(AssertionError, match="MUTANT_SKIP_SOURCE_DIGEST survived"):
+        contract(mutant, finished["audit"] / "mutant")
+
+
+def test_executable_mutant_putting_text_back_in_consumer_manifest_is_killed(driver, finished):
+    source = Path(driver.__file__).read_text(encoding="utf-8")
+    anchor = "if name in FROZEN_JSON_FILES}"
+    assert source.count(anchor) == 1
+    mutant = types.ModuleType("s1_text_manifest_mutant")
+    exec(compile(source.replace(anchor, "if True}"), "<MUTANT_TEXT_IN_JSON_MANIFEST>", "exec"),
+         mutant.__dict__)
+    def contract(module, target):
+        module.freeze_committed_cycle(finished["live"], target)
+        manifest = json.loads((target / "manifest.json").read_bytes())
+        names = manifest["cycles"][0]["files"]
+        assert "detail-manifest.txt" not in names and "run\\board.txt" not in names, \
+            "MUTANT_TEXT_IN_JSON_MANIFEST survived"
+    contract(driver, finished["audit"] / "control")
+    with pytest.raises(AssertionError, match="MUTANT_TEXT_IN_JSON_MANIFEST survived"):
         contract(mutant, finished["audit"] / "mutant")

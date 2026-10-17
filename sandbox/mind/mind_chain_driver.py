@@ -8,6 +8,8 @@ actual load_frozen/JOIN chain and independent scoring remain separate stages.
 Manifest hashes seal the OBSERVED COPY. Only the explicitly listed raw files
 and canonical snapshot digest are bound to the producer's committed pointer;
 receipt and detail-manifest bytes are observations, never committed evidence.
+The consumer manifest lists JSON inputs only; auxiliary transport files keep
+separate observation seals in source-binding.json, never JSON-input entries.
 
 Only new directories under explicit local .codex-audit roots are written. The
 latest pointer and every source byte are rechecked before publication. This
@@ -38,6 +40,7 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 FIXED_FILES = ("capture.json", "state.json", "detail-manifest.txt",
                "run/reflected.publication.json", "run/board.txt", "run/receipt.json")
 GITHUB_FILES = ("context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json")
+FROZEN_JSON_FILES = ("capture.json", "run/reflected.publication.json", "context.json")
 
 
 class ChainRefusal(ValueError):
@@ -239,18 +242,19 @@ def freeze_committed_cycle(live_root, frozen_root):
         raise ChainRefusal("local_volume")
     pointer, latest, files, state = _gather(live)
     cycle = latest["last_ok"]["cycle_dir"]
-    manifest_files = {name.replace("/", "\\"): _sha(raw) for name, raw in files.items()}
+    manifest_files = {name.replace("/", "\\"): _sha(raw) for name, raw in files.items()
+                      if name in FROZEN_JSON_FILES}
     for name in GITHUB_FILES:
         manifest_files.setdefault(name, None)
-    manifest = {"schema": "wd.mind-frozen-cycles.v1", "authority": "none",
-                "file_seals_scope": "observed_copy_hashes_not_uniform_pointer_bindings",
-                "cycles": [{"cycle": cycle, "files": manifest_files}]}
+    manifest = {"schema": "wd.mind-frozen-cycles.v1", "cycles": [{"cycle": cycle, "files": manifest_files}]}
     bound_names = ("capture.json", "state.json", "run/board.txt", "context.json")
     binding = {"schema": "wd.mind-chain-transport.v1", "authority": "none",
                "scope": "transport_seals_not_join_validation", "join_validated": False,
                "latest_sha256": _sha(pointer), "cycle": cycle,
                "producer_generation": state["generation"], "source": state["source"],
                "cursor": state["cursor"], "manifest_sha256": _sha(_canonical(manifest)),
+               "file_seals_scope": "observed_copy_hashes_not_uniform_pointer_bindings",
+               "observed_file_sha256": {name: _sha(raw) for name, raw in files.items()},
                "pointer_bound_raw_files": {name: _sha(files[name]) for name in bound_names if name in files},
                "pointer_bound_snapshot_sha256": latest["last_ok"]["snapshot_sha256"],
                "publication_binding": "canonical_snapshot_only_not_envelope_raw_bytes",

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import types
 
 import pytest
 
@@ -189,3 +190,60 @@ def test_privacy_guard_refuses_before_any_output(driver, finished):
     with pytest.raises(driver.ChainRefusal, match="^privacy_guard$"):
         driver.freeze_committed_cycle(finished["live"], finished["out"])
     assert not finished["out"].exists()
+
+
+def test_unknown_github_files_stay_null_even_with_context(driver, finished):
+    raw = encoded({"observed_utc": "2026-10-17T08:00:00Z", "prs": {}})
+    (finished["folder"] / "context.json").write_bytes(raw)
+    latest = copy.deepcopy(finished["latest"])
+    latest["last_ok"].update(context_file=f"cycles/{finished['cycle']}/context.json", context_sha256=digest(raw))
+    put_latest(finished, latest)
+    driver.freeze_committed_cycle(finished["live"], finished["out"])
+    manifest = json.loads((finished["out"] / "manifest.json").read_bytes())
+    files = manifest["cycles"][0]["files"]
+    assert files["context.json"] == digest(raw)
+    assert all(files[name] is None for name in ("observed-status.json", "gh-pr-list.json", "gh-open-status.json"))
+
+
+def test_byte_bound_refuses_before_output(driver, finished, monkeypatch):
+    monkeypatch.setattr(driver, "MAX_FILE_BYTES", 32)
+    with pytest.raises(driver.ChainRefusal, match="^file_bound$"):
+        driver.freeze_committed_cycle(finished["live"], finished["out"])
+    assert not finished["out"].exists()
+
+
+def test_nonfinite_numeric_literal_is_fixed_refusal(driver):
+    with pytest.raises(driver.ChainRefusal, match="^json_invalid$"):
+        driver._json(b'{"overflow": 1e999}')
+
+
+def test_write_failure_leaves_no_published_freeze(driver, finished, monkeypatch):
+    def refuse_sync(_):
+        raise PermissionError("synthetic, not a native sharing-window claim")
+    monkeypatch.setattr(driver.os, "fsync", refuse_sync)
+    with pytest.raises(driver.ChainRefusal, match="^output_unavailable$"):
+        driver.freeze_committed_cycle(finished["live"], finished["out"])
+    assert not finished["out"].exists()
+    assert not list(finished["audit"].glob(".frozen.staging-*"))
+
+
+def test_executable_mutant_skipping_source_digest_is_killed(driver, finished):
+    """MUTANT_SKIP_SOURCE_DIGEST executes the changed implementation, not a label."""
+    source = Path(driver.__file__).read_text(encoding="utf-8")
+    anchor = "if name in files and _sha(files[name]) != ok.get(key):"
+    assert source.count(anchor) == 1
+    mutant = types.ModuleType("s1_skip_digest_mutant")
+    exec(compile(source.replace(anchor, "if False:"), "<MUTANT_SKIP_SOURCE_DIGEST>", "exec"), mutant.__dict__)
+    latest = copy.deepcopy(finished["latest"])
+    latest["last_ok"]["capture_sha256"] = "a" * 64
+    put_latest(finished, latest)
+    def contract(module, target):
+        refused = False
+        try:
+            module.freeze_committed_cycle(finished["live"], target)
+        except module.ChainRefusal as error:
+            refused = str(error) == "capture_digest"
+        assert refused, "MUTANT_SKIP_SOURCE_DIGEST survived"
+    contract(driver, finished["audit"] / "control")
+    with pytest.raises(AssertionError, match="MUTANT_SKIP_SOURCE_DIGEST survived"):
+        contract(mutant, finished["audit"] / "mutant")

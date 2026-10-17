@@ -20,6 +20,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -71,6 +72,8 @@ def _json(raw):
                 raise ValueError
             if isinstance(item, dict): pending.extend((v, depth + 1) for v in item.values())
             elif isinstance(item, list): pending.extend((v, depth + 1) for v in item)
+            elif isinstance(item, float) and not math.isfinite(item):
+                raise ValueError
         return value
     except (UnicodeError, ValueError, RecursionError):
         raise ChainRefusal("json_invalid") from None

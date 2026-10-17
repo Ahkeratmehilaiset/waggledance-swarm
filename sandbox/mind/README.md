@@ -15,11 +15,13 @@ sandbox data disk and never goes to git. The repository is public.
 * `sandbox/mind-<lane>-*`: one branch family per lane, stacked on `sandbox/mind-main`.
 * Data root: `<sandbox root>/<lane>/`. Each lane writes only its own directory. The live outputs of fable-5's
   producer are under `<sandbox root>/fable-5/.codex-audit/mind-live/`, and `latest.json` is the one standard
-  path, written last and atomically.
+  path: the commit pointer, replaced last and atomically, whose `last_ok` names the committed cycle's files under
+  `cycles/<cycle dir>/` and binds the capture, context, state and board text by sha256 and the publication by its
+  snapshot sha256 (the receipt is named, not hashed).
 
 ## The loop
 
-1. Read `latest.json`, `latest-board.txt` and your own lane and PR lines.
+1. Read `latest.json`, the board its `last_ok.board_file` names, and your own lane and PR lines.
 2. Report wrong, missing or stale facts as `type=message` on `fable-5/bridge-mind-shadow-live-20261013`, with the
    ref and the capture sha. No request id is needed.
 3. Fix on your sandbox branch. Copy that cycle's `capture.json` and `context.json` into your own data dir, then
@@ -53,21 +55,22 @@ stores as read. The rows come from Tools' static map of the writers (10-16: capt
 workspace, shadow run) and from my own reading of the producer, the board and the delta, which that map did not
 cover. Everything stays under the sandbox data root, where the callers place it.
 
-* **No content guard:** the producer's `state/window.jsonl` and `state/cursor.txt`; `capture.json`,
-  `detail-manifest.txt`, `gh-pr-list.json`, the files cache and `context.json` (producer and capture round); the
-  capacity lens's raw `capacity-status.json`.
+* **No content guard:** the capture round's `capture.json`, `detail-manifest.txt`, `gh-pr-list.json`, files cache
+  and `context.json`; the producer's `detail-manifest.txt` (a ref, a row sha256 and a source word per row, built
+  from the guarded capture's verified rows); the capacity lens's raw `capacity-status.json`.
 * **Only a derived object:** the capture round writes `gh-open-status.json` after the guard of the status object
   derived from it, which does not cover the response's unprojected fields.
 * **Copies without a guard of their own:** the capture round's `--reuse-context` copies `gh-pr-list.json`,
   `context.json`, `gh-open-status.json` and `observed-status.json` from an earlier capture as they are (whether
-  that capture guarded them is not checked); the producer copies this cycle's guarded `board.txt`,
-  `reflected.publication.json` and `receipt.json` of the shadow run to `latest-board.txt`,
-  `latest.publication.json` and `latest-receipt.json` byte for byte.
+  that capture guarded them is not checked). The producer copies nothing: `latest.json` names the shadow run's
+  files in the committed cycle's dir.
 * **Guarded whole before the write:** `observed-status.json` and `capture-record.json` (its keys and strings, not
   the files it lists) of the capture round; the lens views and texts (`capacity-lens.json`, `lens-limits.txt`,
   `overlap-lens.json`, `lens-overlap.<lane>.txt`); the shadow run's `reflected.publication.json`, `delta.jsonl`,
-  `board.txt` and `receipt.json` (the receipt after the other three are written); the producer's `live-log.jsonl`
-  line and `latest.json`. The lane view writes no file; it returns a guarded view and a guarded text.
+  `board.txt` and `receipt.json` (the receipt after the other three are written); the producer's `capture.json`,
+  `state.json` and `context.json` (each also read back the way its consumer reads it before the first write), its
+  files-cache views, its `live-log.jsonl` records, `last-refusal.json` (fixed fields of a guarded record) and
+  `latest.json`. The lane view writes no file; it returns a guarded view and a guarded text.
 * **A later refusal removes nothing:** the workspace's context read refuses a context whose branch name, declared
   class-hit paths or commit authors hold a guarded word, but the stored `context.json` stays (the overlap lens
   reads it with its own shape check, refusing before any write a context it cannot read whole, and guards only
@@ -87,29 +90,34 @@ run read-only local `git` commands.
   producer never uses one. The reader options must be one of the three calls it makes, slot by slot
   (`-AfterEvent` and a bc1 position cursor of at most 2048 characters, or `-ContinuityTail` and a count within the
   compact tool's own tail bound, 1 to 100000 lines, then optionally `-EventId` and a 64-hex ref), or no process
-  starts; `--window` is held to 1 to 99500 lines (a seed reads each listed row from the last `--window` + 500
-  lines) and `--keep` to at least 1, both at parse time, before the code tree's imports and any write or process
-  start (a window above the bound is refused also when every listed row would be reused: fail closed).
-  `capture/capture_round.py` holds its reader the same way for the two calls it makes. A `--seed-from` file is
-  read whole once, after the code tree's imports and before any write or process start, and refused whole with a
-  fixed reason and exit 2 with the usage when it cannot be read (`seed_unreadable`), is not UTF-8 JSON (a leading
-  BOM, nesting beyond the parser's depth and an int literal beyond the int digit limit included:
-  `seed_unparseable`), is not an object whose events are a list of objects (`seed_shape_unexpected`) or holds a
-  row whose canonical ref cannot be built (`seed_ref_unverifiable`); `capture/capture_round.py` refuses it the
-  same way after its count check, with its own refusal. A seed row is reused only when its own canonical ref
-  equals a listed ref, so the file's schema and other keys are not read, and a seed file changed after the start
-  is not read again.
+  starts; `--window` is held to 1 to 99500 lines and `--keep` to at least 1, both at parse time, before the code
+  tree's imports and any write or process start. A delta reads each fresh row from the last 600 lines plus the
+  rows its listing read after the cursor (the listing's `snapshot_events`), so every listed row lies within the
+  read (RCO1's L1: a cursor that has fallen further behind is read, not refused); a delta needing more than 100000
+  lines refuses the cycle (`delta_beyond_tail_cap`). The delta's detail reads run in a pool of `--workers`: when
+  the first refused one in listed order is taken up, the reads not yet started are cancelled and the running ones
+  finish. Only a fresh start (no `latest.json`) seeds: it lists the last `--window` lines with `-ContinuityTail`
+  and reads each listed row from the last `--window` + 500 lines. `capture/capture_round.py` holds its reader the
+  same way for the two calls it makes. A `--seed-from` file is read whole once, after the code tree's imports and
+  before any write or process start, and refused whole with a fixed reason and exit 2 with the usage when it
+  cannot be read (`seed_unreadable`), is not UTF-8 JSON (a leading BOM, nesting beyond the parser's depth and an
+  int literal beyond the int digit limit included: `seed_unparseable`), is not an object whose events are a list
+  of objects (`seed_shape_unexpected`) or holds a row whose canonical ref cannot be built
+  (`seed_ref_unverifiable`); `capture/capture_round.py` refuses it the same way after its count check, with its
+  own refusal. At a fresh start a seed row is reused only when its own canonical ref equals a listed ref, so the
+  file's schema and other keys are not read, and a seed file changed after the start is not read again.
 * **Restart.** At start the producer reads `<live-dir>/latest.json` whole once, right after the `--seed-from`
-  file and before any write or process start. A missing file is a first start. A file it cannot read
+  file and before any write or process start. A missing file is a fresh start. A file it cannot read
   (`latest_unreadable`), one that is not ASCII JSON of the kind it writes (a BOM, nesting beyond the parser's
   depth, an int literal beyond the int digit limit, a NaN or an infinite number: `latest_unparseable`) and one
-  that is not an object of its own schema whose `last_ok` is null or an object naming one cycle dir
-  (`latest_shape_unexpected`) are refused whole, with exit 2 and the usage. A `latest.json` of another tool is
-  refused this way (live_mind's included), so the producer neither writes nor prunes in that tool's live dir;
-  a live dir of another tool without a `latest.json` is not recognized. The `last_ok` names the previous
-  publication for the next shadow run (none when that cycle's `run/reflected.publication.json` is gone), and its
-  other keys are not checked; each later `latest.json` names it as read until a cycle succeeds, except the privacy
-  guard's refusal form, which names none, so a start after that form has no previous publication.
+  that is not an object of its own schema (`wd.bridge-mind-shadow-latest.v2`) whose `last_ok` is one it commits
+  (one cycle dir, the generation of its state, that cycle's capture, state, publication, board and receipt files
+  under their own names, and the capture, state and snapshot sha256: `latest_shape_unexpected`) are refused
+  whole, with exit 2 and the usage. A `latest.json` of another tool or of the earlier window/cursor producer is
+  refused this way, so the producer neither writes nor prunes in that live dir, and so is a live dir holding an
+  entry named `state`, the earlier producer's state dir (`live_dir_legacy_state`): fresh production state only,
+  nothing read or migrated. A live dir of another tool without a `latest.json` or a `state` entry is not
+  recognized.
 * **One producer per live dir.** Right after the live dir is made and before any other write or process start,
   the producer locks `<live-dir>/producer.lock` without waiting and holds the lock for its life: on Windows one
   byte at 1 GiB, past the end of the empty file (Windows locks are mandatory, so a lock of the first byte would
@@ -123,53 +131,75 @@ run read-only local `git` commands.
 * **Cycle dirs.** Each cycle's dir under `<live-dir>/cycles` is named by the UTC second its cycle starts
   (`YYYYMMDDTHHMMSSZ`). When that name is not after the newest name there that reads as a UTC second (the clock
   set back, or a restart within the second of the last cycle), the dir is named by the second after that newest
-  name instead, so a name never repeats and the names sort in the order the dirs were made: old captures beyond
-  `--keep` are pruned in that order. Such a name runs ahead of the clock until the clock passes it; the cycle's
-  `started_utc` in the log keeps the clock's time. Measured with a stand-in clock. An entry whose name does not
-  read as a UTC second is not counted, and an entry another tool makes in `cycles` is outside this (on a
-  case-insensitive file system, a name that differs from the new one only in case still fails its mkdir). A
-  refused cycle's dir counts toward `--keep` like any other, so `--keep` refused cycles in a row prune the capture
-  that `latest.json`'s `last_ok` names.
-* **State.** The window and its cursor persist under `<live-dir>/state`. A cycle continues after the cursor only
-  when every persisted row still verifies against its own canonical ref and row sha256 and no ref repeats (the order
-  of the rows is not verified). A missing, undecodable (a line nested beyond the parser's depth included) or
-  unverified state, an empty window or a delta the reader refuses reseeds from `-Compact -ContinuityTail`. The
-  reader refuses the delta's listing when the cursor is outside the reader calls, the compact tool exits non-zero,
-  or its output is an object without the view schema or a string cursor, and one of its detail reads when the
-  listed ref is outside the reader calls, the tool exits non-zero, or the report is an object that is not the
-  detail of that ref. A detail read of the delta takes only the last 600
-  lines of the log, so a listed ref none of whose rows lies in those lines is refused (RCO1's L1: a cursor that has
-  fallen further behind); the reseed's detail reads take the last `--window` + 500 lines. Only a cursor outside the
-  reader calls is refused before a process starts; any other refused listing has already run one reader process.
-  The delta's detail reads run in a pool of `--workers`: when the first refused one in listed order is taken up, the
-  reads not yet started are cancelled and the running ones finish. The reseed is one list read and then one
-  `-EventId` read for each distinct listed ref that is not reused (a verified persisted row after a refused delta,
-  or a `--seed-from` row), and the read record's `reseed_after` names the refused read (`listing` or `detail`) and
-  its fixed reason; it names no ref, and it records neither a gap nor that the reseed covered the earlier history.
-  The read record counts the final mode only: `new_rows` the distinct listed refs not already in the window (after
-  a reseed every distinct listed ref, the reused rows included), `detail_calls` its `-EventId` reads and `stats`
-  its listing's; the reads of an abandoned delta are neither counted nor reused. Nothing of an unverified state is
-  reused. A reader that times out or raises OSError (`compact_reader_timed_out`, `compact_reader_not_started`:
-  mostly its start failing, but an OSError later in the run is named so too), an output that is not UTF-8, not
-  JSON (nesting beyond the parser's depth included) or not one object (`compact_output_unparseable`), a view whose
-  events are not a list of objects each with a scalar ref (`compact_events_shape`) and a detail event whose
-  canonical ref cannot be built, for a non-finite number or a lone surrogate (`detail_ref_unverifiable`), refuse
-  the cycle with that fixed reason and no reseed, in a delta as in a seed; any other error refuses it under its
-  type name, also without a reseed (a read error of a state file, for example), and so does a refused reseed.
-  Measured with a fake reader. Whether any of these should reseed instead is the stall-or-reseed choice, which
-  the producer does not make; an empty object or string as events is refused like any other events that are not
-  a list. Each of these is a read before the window and cursor writes, so those two files are left as they were
-  and the
-  next cycle starts from the same state; but the cycle directory has been made before the read, and after the
-  refusal old cycle captures beyond `--keep` are pruned and the cycle's log line and `latest.json` are written. A
-  failed window or cursor write, and an error in a later step of the cycle, are outside this. Events that are an
-  empty list read as no new rows, and a listed ref that is a number, null, a boolean or a string not of the ref
-  shape is refused by the detail read's option check before a process starts, which reseeds. So an event the
-  reader refuses in every read (RCO1's L2) refuses each cycle until
-  it is no longer among the last `--window` lines (3000 by default) that the reseed lists. Its aging out is not a
-  recovery: those refused cycles and their reseeds never capture the event, and no record of the producer names
-  it (an earlier capture or a `--seed-from` row is outside this statement); whether such an event should stall
-  the capture or be recorded as a gap is Lead's decision.
-* **GitHub reads.** Its read-only GitHub metadata calls (`gh pr list` and `gh pr view` for files and commits)
-  are the only network touch. Whether they are allowed is a carve-out that Lead decides.
+  name instead, so a name never repeats and the names sort in the order the dirs were made. Such a name runs ahead
+  of the clock until the clock passes it; the cycle's `started_utc` in the log keeps the clock's time. Measured
+  with a stand-in clock. An entry whose name does not read as a UTC second is not counted, and an entry another
+  tool makes in `cycles` is outside this (on a case-insensitive file system, a name that differs from the new one
+  only in case still fails its mkdir). A dir that cannot be made refuses the cycle (`cycle_dir_unavailable`).
+* **State.** The committed state is one versioned envelope, `cycles/<cycle dir>/state.json`: the window rows, the
+  sha256 of their bytes, the cursor, the bridge log identity the cursor names (file identity and log generation)
+  and the generation (1 after a fresh start, one more per commit). `latest.json`'s `last_ok` names it with its
+  sha256 and generation, so the state a cycle consumes is the one the last committed pointer binds (one success
+  epoch). A cycle reads it whole once, through the core's sharing retry, before any write: bytes that do not hash
+  to the named sha256, do not parse as one strict JSON object, or do not verify (another generation, a cursor
+  that does not name the identity the state holds, a row not of the producer's row shape or not its own event's,
+  a repeated ref, another window sha256) refuse the cycle with `committed_state_unverified`, and nothing of it is
+  reused. The order of the rows is not verified.
+* **No reseed (B3).** A reader refusal of the listing or of a detail read, a new cursor that names no bridge log
+  identity (`compact_cursor_invalid`) or, in a delta, another one than the committed state's
+  (`state_source_changed`: a rotated or replaced log), and any read the producer cannot verify refuse the cycle
+  with a fixed reason: there is no reseed and no skip, and the next cycle starts from the same committed state.
+  The reader's refusals: a reader that times out or raises OSError (`compact_reader_timed_out`,
+  `compact_reader_not_started`), exits non-zero (`compact_reader_failed`) or prints output that is not UTF-8, not
+  JSON or not one object (`compact_output_unparseable`); a view without its schema, a string cursor or, in a
+  delta, its row count (`compact_view_shape`); events that are not a list of objects each with a scalar ref
+  (`compact_events_shape`); a listed ref outside the reader calls (`reader_option_invalid`, before a process
+  starts); and a detail report that is not the detail of that ref (`detail_ref_mismatch`) or whose canonical ref
+  cannot be built (`detail_ref_unverifiable`). Any other error refuses the cycle under its type name. A cycle
+  refused after its dir is made leaves that dir, which `latest.json` never names. So an event the reader refuses
+  in every read (RCO1's L2) now holds the producer at the committed state: every later cycle refuses with the
+  same fixed reason, visibly in the log, and recovering from such a stall is an explicit operator step, not code
+  here (B3's liveness limit: fresh state and an initial 30-minute canary only). Measured with a fake reader.
+* **Commit (B2).** Each cycle builds one candidate dir. Every payload (capture, detail manifest, context, state)
+  is guarded and read back the way its consumer reads it before the first write (the capture by the shadow's
+  `read_capture`, the state by the producer's own check, the context by the workspace's `read_context`; a
+  guarded word refuses with `output_guard`, anything else with `candidate_invalid`), and each is created
+  exclusively (`candidate_unwritable`). The shadow run must have read the very capture and context written
+  (`candidate_changed`); it gets the previous publication only when that snapshot, verified by the core's
+  `read_snapshot`, hashes to `last_ok.snapshot_sha256` (else none, recorded `previous_identity_mismatch`; B4).
+  Then retention runs, the cycle's record with status `prepared` (no success claim) is appended to
+  `live-log.jsonl`, flushed and synced, and `latest.json` is replaced LAST: a unique temporary file in the same
+  dir, flushed and synced, then `os.replace` through the core's sharing retry (only the Windows sharing window, a
+  PermissionError, with a bounded backoff), the own temporary removed when the replace did not happen.
+  `latest.json` changes only on a commit, so a refused or interrupted cycle never advances the consumed state or
+  loses a row, and a log record never commits a cycle: a process ended between the record and the pointer leaves
+  the prepared record as that cycle's last, with `latest.json` still naming the earlier epoch.
+* **Retention (B4).** After a candidate is complete and before its record and pointer, the capture, state and
+  detail manifest of each cycle dir older than the last `--keep` names are removed, never those of `last_ok`'s
+  cycle or of the candidate (the prior recoverable epoch and the one about to be committed). Only the producer's
+  own paths are touched: a name that reads as a cycle dir and is a real directory, each file a regular file; a
+  link or other reparse point, at either level, is never followed or removed and is counted as skipped. A listing
+  or removal that fails refuses the cycle before its commit (`prune_failed`), so `latest.json` and `last_ok`
+  stay. Each cycle's `context.json`, the shadow run's files under its `run/` and the cycle dirs themselves are not
+  removed; a refused candidate's dir is pruned like any old one.
+* **Refusals.** A refused cycle's record (its fixed reason, no success field) is appended to `live-log.jsonl`;
+  when the log cannot be written, that record's fixed fields replace `<live-dir>/last-refusal.json` atomically;
+  when neither can be written, the producer writes one fixed STOP line to stderr and exits 3, committing nothing
+  further. A log or pointer write that fails after the prepared record appends a refused record after it
+  (`log_unwritable`, `latest_unwritable`). A record whose own fields the privacy guard refuses is replaced by its
+  fixed fields with the reason `output_guard`.
+* **GitHub reads.** Its read-only GitHub metadata calls are the only network touch (Lead's B6: bounded read-only
+  metadata, a failure is UNKNOWN): one `gh pr list` (number, state, head, branch) and, for open PRs,
+  `gh pr view --json headRefOid,commits`, at most 40 views and 150 seconds per cycle and 60 seconds per call. A
+  view is kept in `<live-dir>/files-cache` per PR and head as typed metadata only (the head and the lane-shaped
+  commit author names; no message, body or path). gh failing, timing out or not starting, an output of another
+  shape, or a view past the cycle's bounds leaves the context, or that PR's authors, UNKNOWN; it never refuses
+  the cycle. A cached view that does not validate leaves the whole context UNKNOWN (no partial reuse), and the
+  context is written only when the workspace's own `read_context` accepts it. No classifier, charter or gate code
+  is imported or run: every `path_class` is null and the charter is not loaded, so a computed class stays
+  UNKNOWN. A view cache write that fails refuses the cycle (`view_cache_unwritable`).
+* **Import.** The program runs only as a script (`__main__`): importing the module (the package's import smoke)
+  defines its constants, classes and functions and runs, imports, writes and starts nothing. A fresh-interpreter
+  test checks this, and a guarded run of the script refuses every gate, classifier, charter and taxonomy module
+  by name and by gate word.
 * **Experiment code.** Experiment code stays offline and reads only the copied capture files.

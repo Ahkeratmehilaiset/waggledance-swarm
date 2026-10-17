@@ -3,7 +3,10 @@
 import ast
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -312,12 +315,8 @@ def test_snapshot_writer_refuses_fact_without_refs_and_no_gate_imports_mind(tmp_
     with pytest.raises(mind.ProjectionError):
         mind.write_snapshot(bad, audit / "bad.json", audit_root=audit)
     root = Path(__file__).resolve().parents[2]
-    gates = ["check_bridge_changes_requested", "check_rco_pass_present", "idle_consensus_auto_merge",
-             "bridge_rule12_review_eligibility", "rule12_grok_ledger_adapter",
-             "write_bridge_consensus_merge_receipt", "check_proven_safe_autosign_class",
-             "check_standing_consensus_sign_class"]
-    for gate in gates:
-        tree = ast.parse((root / "tools" / (gate + ".py")).read_text(encoding="utf-8-sig"))
+    for gate in GATE_MODULES:  # the one explicit list of the no-gate closure below, read as source, never imported
+        tree = ast.parse((root / (gate.replace(".", "/") + ".py")).read_text(encoding="utf-8-sig"))
         names = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         names += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
         assert not any("wd_bridge_mind" in name for name in names)
@@ -607,9 +606,11 @@ def test_public_writers_refuse_double_cleanup_failure_after_positive(api, tmp_pa
     with monkeypatch.context() as faults:
         faults.setattr(mind.os, 'replace', denied_replace)
         faults.setattr(mind.os, 'unlink', denied_cleanup)
+        faults.setattr(mind, '_sleep', lambda seconds: None)
         with pytest.raises(mind.ProjectionError) as caught:
             publish()
-    assert attempted == ['replace', 'cleanup']
+    # A denied replace is retried within the sharing-window bound, then the cleanup failure stays a failure.
+    assert attempted == ['replace'] * mind._SHARING_TRIES + ['cleanup']
     assert str(caught.value) == 'snapshot_cleanup_failed'
     assert caught.value.__cause__ is None and caught.value.__suppress_context__ is True
     assert getattr(caught.value, 'filename', None) is None
@@ -688,3 +689,218 @@ def test_case_variants_keep_canonical_blocks_pass_identity_and_claim_lifecycle()
     claims=snap['lanes']['codex-tools-1|'+UUID]['claims']
     assert [r['task_id'] for r in claims['by_task']]==['task/b']
     assert claims['lease_expires_utc']==claims['expired']=='UNKNOWN'
+
+
+@pytest.mark.parametrize("agent, kind, status, recused, kept", [
+    ("claude-rco-2", "message", "rco_recused", True, True),
+    ("claude-rco-2", "decision", "rco_recused", None, True),      # no recused field: the exact status suffices
+    ("claude-rco-2", "message", "rco_recused", False, False),     # recused false is no recusal
+    ("codex-tools-1", "message", "rco_recused", True, False),     # only a recognized RCO recuses
+    ("claude-rco-2", "message", "recused", True, False),          # only the exact status token
+    ("claude-rco-2", "rco_review", "rco_recused", True, False),   # not a message or decision
+])
+def test_rco_recusal_is_recorded_head_bound_never_a_vote_and_survives_checkpoints(agent, kind, status, recused,
+                                                                                  kept, tmp_path):
+    """Sandbox round 2 (fable-5): PR1878 still asked claude-rco-2 after its rco_recused at that exact head."""
+    payload = dict(pr=1900, head=HEAD)
+    if recused is not None:
+        payload["recused"] = recused
+    rows = [envelope(), envelope(agent=agent, type=kind, status=status, payload=payload)]
+    state = build(rows)
+    view = mind.snapshot(state, as_of_utc=AS_OF)
+    pr = view["prs"]["1900"]
+    assert pr["votes"] == [] and pr["stale_votes"] == []
+    if kept:
+        assert [(row["agent"], row["head"], row["status"], row["verification"], row["source_refs"])
+                for row in pr["recusals"]] == [(agent, HEAD, "rco_recused", "declared", [rows[1]["ref"]])]
+    else:
+        assert "recusals" not in pr
+    incremental = mind.apply_incremental(mind.full_rebuild(rows[:1], source=source(0, 1), as_of_utc=AS_OF),
+                                         rows[1:], source=source(1, 2), as_of_utc=AS_OF)
+    assert mind.state_bytes(incremental) == mind.state_bytes(state)
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "recusal.json"
+    mind.write_checkpoint(state, path, as_of_utc=AS_OF, audit_root=audit)
+    assert mind.state_bytes(mind.read_checkpoint(path, audit_root=audit)) == mind.state_bytes(state)
+    if kept:
+        for change in ({"agent": "codex-tools-1"}, {"status": "rco_pass"}, {"head": "UNKNOWN"}, None):
+            bad = deepcopy(view)
+            if change is None:
+                bad["prs"]["1900"]["recusals"] = []
+            else:
+                bad["prs"]["1900"]["recusals"][0].update(change)
+            with pytest.raises(mind.ProjectionError):
+                mind._validate_snapshot(bad)
+
+
+@pytest.mark.parametrize("failures, error, published", [
+    (0, PermissionError, True),
+    (2, PermissionError, True),                 # a short Windows sharing window: retried, then published
+    (11, PermissionError, True),                # the last allowed try still publishes
+    (12, PermissionError, False),               # bounded: never more than _SHARING_TRIES attempts
+    (1, FileNotFoundError, False),              # any other error is never retried
+])
+def test_publication_replace_retries_only_the_sharing_window_and_is_bounded(failures, error, published, tmp_path,
+                                                                            monkeypatch):
+    """Sandbox 10:30Z: 1 writer + 5 readers on Windows failed 15 of 313 publishes without a retry (RCO1/RCO2)."""
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "shared.json"
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    real_replace, calls, delays = os.replace, [], []
+
+    def flaky_replace(temporary, target):
+        calls.append(target)
+        if len(calls) <= failures:
+            raise error(32, "synthetic sharing violation", str(target))
+        return real_replace(temporary, target)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(mind.os, "replace", flaky_replace)
+        faults.setattr(mind, "_sleep", delays.append)
+        if published:
+            mind.write_snapshot(snap, path, audit_root=audit)
+        else:
+            with pytest.raises(mind.ProjectionError) as caught:
+                mind.write_snapshot(snap, path, audit_root=audit)
+            assert str(caught.value) == "snapshot_publication_failed" and "synthetic" not in str(caught.value)
+    expected = min(failures + 1, mind._SHARING_TRIES) if error is PermissionError else 1
+    assert len(calls) == expected and len(delays) == expected - 1
+    assert all(delay <= mind._SHARING_MAX_DELAY for delay in delays) and sum(delays) < 1.0
+    assert list(audit.glob(".mind-*.tmp")) == []
+    if published:
+        assert mind.read_snapshot(path, audit_root=audit) == snap
+    else:
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("failures, readable", [(0, True), (3, True), (12, False)])
+def test_publication_read_retries_only_the_sharing_window(failures, readable, tmp_path, monkeypatch):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    path = audit / "shared.json"
+    snap = mind.snapshot(build([envelope()]), as_of_utc=AS_OF)
+    mind.write_snapshot(snap, path, audit_root=audit)
+    real_read, calls = Path.read_bytes, []
+
+    def flaky_read(self):
+        calls.append(self)
+        if len(calls) <= failures:
+            raise PermissionError(32, "synthetic sharing violation", str(self))
+        return real_read(self)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(mind.Path, "read_bytes", flaky_read)
+        faults.setattr(mind, "_sleep", lambda seconds: None)
+        if readable:
+            assert mind.read_snapshot(path, audit_root=audit) == snap
+        else:
+            with pytest.raises(mind.ProjectionError) as caught:
+                mind.read_snapshot(path, audit_root=audit)
+            assert str(caught.value) == "snapshot_read_refused"
+    assert len(calls) == min(failures + 1, mind._SHARING_TRIES)
+
+
+@pytest.mark.parametrize("verification", ["trusted", "", None, "UNKNOWN"])
+def test_a_recusal_row_with_any_other_verification_is_refused(verification):
+    """Release reconciliation: a recusal row keeps the vote rows' declared/unverified vocabulary, nothing else."""
+    rows = [envelope(), envelope(agent="claude-rco-2", type="message", status="rco_recused",
+                                 payload=dict(pr=1900, head=HEAD))]
+    view = mind.snapshot(build(rows), as_of_utc=AS_OF)
+    mind._validate_snapshot(view)
+    bad = deepcopy(view)
+    bad["prs"]["1900"]["recusals"][0]["verification"] = verification
+    with pytest.raises(mind.ProjectionError):
+        mind._validate_snapshot(bad)
+
+
+# -- Production no-gate closure (Lead 06:19Z disposition: no waiver for transitive gate imports) -----------------------
+
+# The verdict-computing and governance modules the merge gate reads or executes, named explicitly (RCO1 06:23Z: the
+# guard needs an explicit list). The observe-only core must load none of them, not even transitively. Lead 07:53Z,
+# from an RCO2 record: the list lacked the merge executor and the identity registry; the CI-scope classifier is
+# added with them, so this list and the capture producer's guard name the same modules.
+GATE_MODULES = (
+    "tools.bridge_event_taxonomy",
+    "tools.bridge_rule12_review_eligibility",
+    "tools.bridge_v2_identity_registry",
+    "tools.check_bridge_changes_requested",
+    "tools.check_proven_safe_autosign_class",
+    "tools.check_rco_pass_present",
+    "tools.check_standing_consensus_sign_class",
+    "tools.classify_bridge_ci_scope",
+    "tools.idle_consensus_auto_merge",
+    "tools.merge_with_bridge_receipt",
+    "tools.rule12_grok_ledger_adapter",
+    "tools.write_bridge_consensus_merge_receipt",
+    "waggledance.core.idle_consensus_charter",
+    "waggledance.core.magma.consensus_receipt",
+)
+# Run in a fresh interpreter, so no module the test process already loaded hides an edge. The finder refuses a listed
+# module by name before any of its code runs; the child then names every listed module that is loaded anyway.
+GUARD_CHILD = """
+import importlib
+import sys
+
+root, target, gates = sys.argv[1], sys.argv[2], frozenset(sys.argv[3:])
+sys.path.insert(0, root)
+
+
+class RefuseGateModules:
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name in gates:
+            raise ImportError("gate module refused before execution: " + name)
+        return None
+
+
+sys.meta_path.insert(0, RefuseGateModules)
+try:
+    importlib.import_module(target)
+except ImportError as exc:
+    print("refused", exc)
+    raise SystemExit(3)
+loaded = sorted(name for name in gates if name in sys.modules)
+print("loaded", " ".join(loaded) if loaded else "none")
+raise SystemExit(4 if loaded else 0)
+"""
+
+
+def _guarded_import(tmp_path, target):
+    root = Path(__file__).resolve().parents[2]
+    child = tmp_path / "gate_guard_child.py"
+    child.write_text(GUARD_CHILD, encoding="utf-8")
+    return subprocess.run([sys.executable, "-I", "-B", str(child), str(root), target, *GATE_MODULES],
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_the_core_loads_no_gate_module_under_a_guard_that_refuses_one_before_it_runs(tmp_path):
+    """Lead 06:19Z: the core imported BLOCK_BY_TYPE and RCO_GATED_TYPES from the verdict-computing taxonomy, a static
+    breach of the production no-gate-import contract even without a classify call."""
+    root = Path(__file__).resolve().parents[2]
+    for name in GATE_MODULES:  # every listed module exists, so a rename cannot empty the guard silently
+        assert (root / (name.replace(".", "/") + ".py")).is_file(), name
+    run = _guarded_import(tmp_path, "tools.wd_bridge_mind")
+    assert (run.returncode, run.stdout.strip()) == (0, "loaded none"), (run.stdout, run.stderr[-2000:])
+    # The guard itself refuses: a listed module imported directly never runs.
+    run = _guarded_import(tmp_path, "tools.bridge_event_taxonomy")
+    assert run.returncode == 3 and "gate module refused before execution: tools.bridge_event_taxonomy" in run.stdout
+
+
+def test_the_core_keeps_the_taxonomy_constant_values_read_without_importing_it():
+    """Lead 06:19Z: the exact existing constant values stay. They are read from the taxonomy's syntax tree, never
+    imported, so a change there fails here instead of drifting; the core imports no listed module statically."""
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "tools" / "bridge_event_taxonomy.py").read_text(encoding="utf-8-sig"))
+    values = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("BLOCK_BY_TYPE", "RCO_GATED_TYPES"):
+            assert isinstance(node.value, ast.Call) and getattr(node.value.func, "id", None) == "frozenset"
+            values[node.targets[0].id] = frozenset(ast.literal_eval(node.value.args[0]))
+    assert values == {"BLOCK_BY_TYPE": mind.BLOCK_BY_TYPE, "RCO_GATED_TYPES": mind.RCO_GATED_TYPES}
+    core = ast.parse((root / "tools" / "wd_bridge_mind.py").read_text(encoding="utf-8-sig"))
+    imported = [node.module or "" for node in ast.walk(core) if isinstance(node, ast.ImportFrom)]
+    imported += [alias.name for node in ast.walk(core) if isinstance(node, ast.Import) for alias in node.names]
+    assert not set(imported) & set(GATE_MODULES)

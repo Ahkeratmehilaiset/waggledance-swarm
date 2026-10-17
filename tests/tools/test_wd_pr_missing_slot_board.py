@@ -2054,3 +2054,21 @@ def test_the_mind_mode_needs_both_of_its_flags(tmp_path, capsys):
 
 def test_the_gate_audit_process_runner_still_runs_a_command():
     assert board._run([sys.executable, "-c", "print(7)"]).stdout.strip() == "7"
+
+def test_declared_recusals_appear_only_when_the_reflected_snapshot_reports_them():
+    """B1 (1), Root 05:59Z: a reflected snapshot without recusals keeps main's mind view (no declared_recusals key,
+    no recusal line); the core's optional recusals key is the only way in."""
+    plain = board.build_mind_view(_mind_r(), MIND_R_SHA256)
+    assert all("declared_recusals" not in pr for pr in plain["prs"])
+    assert "declared recusal" not in board.render_mind_text(plain)
+    reported = _mind_r()
+    record = reported["prs"]["2001"]
+    vote = next(row for row in record["votes"] if row["agent"] == "claude-rco-1")
+    record["recusals"] = [dict(vote, status="rco_recused")]
+    view = board.build_mind_view(reported, MIND_R_SHA256)
+    prs = {pr["pr"]: pr for pr in view["prs"]}
+    assert [(row["agent"], row["status"], row["at_head"]) for row in prs[2001]["declared_recusals"]] == [
+        ("claude-rco-1", "rco_recused", True)]
+    assert all("declared_recusals" not in prs[number] for number in (2002, 2003))
+    assert f"  declared recusal claude-rco-1 rco_recused@{record['head'][:12]} at head True" in \
+        board.render_mind_text(view)

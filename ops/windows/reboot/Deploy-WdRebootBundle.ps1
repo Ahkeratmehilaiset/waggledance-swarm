@@ -31,7 +31,11 @@ param(
     # The ONE final operator signature stays out of band. An actual install (neither -StageOnly nor -DryRun)
     # must be given the exact pair that -StageOnly printed; otherwise it refuses before any machine file changes.
     [string] $ExpectedFinalCommit = '',
-    [string] $ExpectedFinalManifestHash = ''
+    [string] $ExpectedFinalManifestHash = '',
+    # Conservative total additional-write bound, supplied with the reviewed cold plan.
+    # Unknown (0) refuses even DryRun: materialization happens before its return.
+    # This is caller input, not a measured footprint, signature or space reservation.
+    [long] $ExpectedPeakAdditionalBytes = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +44,61 @@ Set-StrictMode -Version Latest
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
     return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Get-WdDeploymentFreeBytes {
+    param([Parameter(Mandatory)] [string] $Root)
+    $drive = New-Object System.IO.DriveInfo($Root)
+    if (-not $drive.IsReady) {
+        throw "deployment disk measurement unavailable: $Root"
+    }
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) {
+        throw "deployment disk must be fixed local storage: $Root"
+    }
+    return [long]$drive.AvailableFreeSpace
+}
+
+function Assert-WdDeploymentDiskBudget {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Paths,
+        [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes,
+        [Parameter(Mandatory)]
+        [ValidateSet('before_materialization', 'before_stage', 'before_activation')]
+        [string] $Phase
+    )
+    if ($ExpectedPeakAdditionalBytes -le 0) {
+        throw "deployment disk budget is unknown or invalid ($Phase); supply a reviewed positive ExpectedPeakAdditionalBytes bound"
+    }
+    # Never lower or omit the C: floor. Apply the same conservative total bound
+    # on every involved local volume and at every write boundary. This may
+    # over-refuse; it is not a reservation or a guarantee against other writers.
+    $floorBytes = [long]3221225472
+    $seen = @{}
+    foreach ($path in @('C:\') + @($Paths)) {
+        if ([string]::IsNullOrWhiteSpace($path) -or $path -cnotmatch '^[A-Za-z]:[\\/]') {
+            throw "deployment disk path is unknown or not absolute ($Phase)"
+        }
+        $root = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($path))
+        if ($root -cnotmatch '^[A-Za-z]:\\$') {
+            throw "deployment disk path must name a local drive ($Phase): $path"
+        }
+        if ($seen.ContainsKey($root)) { continue }
+        $seen[$root] = $true
+        $measurement = @(Get-WdDeploymentFreeBytes -Root $root)
+        if ($measurement.Count -ne 1 -or
+            ($measurement[0] -isnot [long] -and $measurement[0] -isnot [int]) -or
+            [long]$measurement[0] -lt 0) {
+            throw "deployment disk measurement is invalid ($Phase): $root"
+        }
+        $freeBytes = [long]$measurement[0]
+        # Subtraction after the floor check avoids overflow for Int64.MaxValue
+        # budgets. Exactly floor + budget is permitted; one byte less refuses.
+        if ($freeBytes -lt $floorBytes -or
+            $ExpectedPeakAdditionalBytes -gt ($freeBytes - $floorBytes)) {
+            throw ("deployment disk budget refused ({0}): {1} free={2}, expected additional={3}, required remaining floor={4}" -f
+                $Phase, $root, $freeBytes, $ExpectedPeakAdditionalBytes, $floorBytes)
+        }
+    }
 }
 
 function Assert-WdPathWithoutReparse {
@@ -779,6 +838,22 @@ $persistentDriveRoot = [IO.Path]::GetPathRoot($machineFull)
     -ExpectedType Directory `
     -AllowMissing)
 
+# Check before Git's optional index refresh and before approval-file Add-Type
+# can use the temp volume on Windows PowerShell 5.1, not merely before archive.
+$temporaryParent = Resolve-FullPath ([IO.Path]::GetTempPath())
+$temporaryDriveRoot = [IO.Path]::GetPathRoot($temporaryParent)
+if ($temporaryDriveRoot -cnotmatch '^[A-Za-z]:\\$') {
+    throw 'deployment temp path must name a local drive'
+}
+[void](Assert-WdPathWithoutReparse `
+    -Path $temporaryParent `
+    -TrustedRoot $temporaryDriveRoot `
+    -ExpectedType Directory)
+Assert-WdDeploymentDiskBudget `
+    -Paths @($temporaryParent, $storeFull, $machineFull) `
+    -ExpectedPeakAdditionalBytes $ExpectedPeakAdditionalBytes `
+    -Phase 'before_materialization'
+
 $gitRootProbe = Invoke-GitCapture `
     -Worktree $sourceRoot `
     -ArgumentList @('rev-parse', '--show-toplevel')
@@ -820,6 +895,7 @@ if ($bridgeCodeSourceFiles.Count -lt 1) {
 $statusProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
     -ArgumentList (@(
+        '--no-optional-locks',
         'status',
         '--porcelain',
         '--',
@@ -868,7 +944,6 @@ if ($ManualExecutionApprovalRecordPath -cne '') {
     $manualApprovalText = Read-WdManualExecutionApprovalText -Path $ManualExecutionApprovalRecordPath
 }
 
-$temporaryParent = Resolve-FullPath ([IO.Path]::GetTempPath())
 $materializationRoot = Assert-ChildPath `
     -Parent $temporaryParent `
     -Child (Join-Path $temporaryParent (
@@ -1145,6 +1220,10 @@ if ($DryRun) {
     return
 }
 
+Assert-WdDeploymentDiskBudget `
+    -Paths @($temporaryParent, $storeFull, $machineFull) `
+    -ExpectedPeakAdditionalBytes $ExpectedPeakAdditionalBytes `
+    -Phase 'before_stage'
 if (-not (Test-Path -LiteralPath $storeFull -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $storeFull -Force)
 }
@@ -1303,6 +1382,10 @@ if (
         'match this install (commit {2}, manifest sha256 {3}); nothing on the machine was changed'
     ) -f $ExpectedFinalCommit, $ExpectedFinalManifestHash, $head, $installedManifestHash)
 }
+Assert-WdDeploymentDiskBudget `
+    -Paths @($temporaryParent, $storeFull, $machineFull) `
+    -ExpectedPeakAdditionalBytes $ExpectedPeakAdditionalBytes `
+    -Phase 'before_activation'
 # Migration is explicit and must finish before changing the fleet's pointers.
 & (Join-Path $targetRoot 'Initialize-WdGrokRecovery.ps1') | Out-Host
 $wrapperSpecs = @(

@@ -225,3 +225,14 @@ def test_restore_hold_after_the_command_is_refused():
         "(this guidance grants", RESTORE_HOLD + " (this guidance grants")
     with pytest.raises(AssertionError, match="HOLD precedes"):
         check_restore_actions(mutant)
+
+
+def test_restore_numeric_budget_on_a_second_action_is_refused():
+    check_restore_actions(RESTORE_CONTROL)
+    anchor = "    'Verify the pointer."
+    assert RESTORE_CONTROL.count(anchor) == 1, "the replacement anchor must occur exactly once in the control"
+    second = "    'Repeat the bound in the audit note: -ExpectedPeakAdditionalBytes 67108864.',\n"
+    altered = RESTORE_CONTROL.replace(anchor, second + anchor)
+    assert altered != RESTORE_CONTROL and altered.count(second) == 1, "the second action is added once"
+    with pytest.raises(AssertionError, match=r"^no numeric, default or reused argument(?:\n|$)"):
+        check_restore_actions(altered)

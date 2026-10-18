@@ -60,9 +60,12 @@ LEARN v0 records nothing from this card; LEARN contract rco2-learn:f80a92c2
   look-alike letter; a soft hyphen was refused where it is rendered but reached view.json from a field that is not
   rendered. The 2026-10-18 sandbox patch (fable-5, unreleased) widens the shared guard (`_has_marker` in
   `tools/bridge_mind_workspace.py`): it also decodes HTML character references and percent encoding, in any order
-  and mix with backslash-u, and checks each form again with format characters (Cf) and combining marks removed and
-  Cyrillic or Greek look-alike letters read as Latin. Unit tests cover each of those forms and 10 named mutants are
-  killed; RCO1's injection probe was NOT re-run. A text that still yields new forms after 3 decodings or past 64
+  and mix with backslash-u, and adds each form's skeleton to the decoded forms: the compatibility decomposition
+  with format characters (Cf) and every combining mark (Mn, Mc, Me) removed and Cyrillic or Greek look-alike letters
+  read as Latin. So a decoding behind a fullwidth percent sign or ampersand, or a zero-width character inside an
+  escape, is decoded too (Lead's review of the first patch found those two gaps, F1 and F2). Unit tests cover each
+  of those forms and 13 named mutants are killed; RCO1's injection probe was NOT re-run. A text that still yields
+  new forms after 3 decodings or past 64
   forms is refused (an accepted over-refusal). Still outside the claim: look-alikes outside the mapped letters,
   other invisible letters (such as a Hangul filler), other encodings (base64, MIME, punycode), a word split by a
   space or punctuation, and the separate copy of the old guard in `tools/wd_bridge_mind_delta_push.py`. There is

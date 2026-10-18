@@ -779,10 +779,19 @@ HIDDEN_FORMS = {
     "cyrillic_lower": GUARD_WORDS[0].lower().replace("a", "\u0430").replace("e", "\u0435"),
     "greek_upper": GUARD_WORDS[0].replace("A", "\u0391"),
     "second_word_cyrillic_o": GUARD_WORDS[1].replace("O", "\u041e"),
+    # Lead review of 57aaad97 (F1): a decoding behind a compatibility form; NFKC alone reveals the escape.
+    "fullwidth_percent_escape": GUARD_WORDS[0].replace("_", "\uff05" + "5F"),
+    "fullwidth_percent_and_digits": GUARD_WORDS[0].replace("_", "\uff05\uff15\uff26"),
+    "fullwidth_ampersand_reference": GUARD_WORDS[0].replace("_", "\uff06" + "#95;"),
+    "zero_width_space_inside_escape": GUARD_WORDS[0].replace("_", "%5" + "\u200b" + "F"),
+    # Lead review of 57aaad97 (F2): a spacing combining mark (Mc) inside the word.
+    "spacing_mark_inside": GUARD_WORDS[0][:3] + "\u0903" + GUARD_WORDS[0][3:],
+    "enclosing_mark_inside": GUARD_WORDS[0][:3] + "\u20dd" + GUARD_WORDS[0][3:],
 }
 # Clean text a decoder changes or that holds non-Latin letters: none of it is a guarded word after decoding.
 CLEAN_FORMS = ("docs\\u0041.md", "50% done", "a &amp; b", "%41%42", "R&amp;D 100%25", "caf\u00e9",
-               "\u043f\u0440\u0438\u0432\u0435\u0442", "x\\ud800y %41 &#xD800;", "PRIVATE", "MARKER")
+               "\u043f\u0440\u0438\u0432\u0435\u0442", "x\\ud800y %41 &#xD800;", "PRIVATE", "MARKER",
+               "\uff05 done", "\uff06 co", "\u0915\u093e\u0903", "caf\u00e9 %252541")
 
 
 @pytest.mark.parametrize("name", sorted(HIDDEN_FORMS))

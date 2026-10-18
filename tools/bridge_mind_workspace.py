@@ -173,6 +173,8 @@ QUESTION_LIMIT = 400
 UNESCAPE_ROUNDS = 4
 # The most distinct decoded forms of one text the guard checks; a text with more is refused, never passed unchecked.
 FORM_LIMIT = 64
+# What a renderer may not show, removed for the skeleton: format characters and every combining mark (Mn, Mc, Me).
+SKELETON_DROPPED = frozenset({"Cf", "Mn", "Mc", "Me"})
 # Cyrillic and Greek letters a renderer shows like a Latin letter (RCO1's JOIN injection probe passed a Cyrillic one).
 # Only letters whose usual glyph matches; a look-alike outside this map is a known limit.
 _LOOKALIKE = str.maketrans(
@@ -244,32 +246,43 @@ def parse_time(value: Any) -> datetime | None:
     return base + timedelta(microseconds=int((match.group(2) or "").ljust(6, "0")[:6]))
 
 
-def _decodings(form: str) -> tuple[str, str, str]:
-    """What a reader may decode the text to: each ``\\uXXXX`` unescape, HTML character references, percent decoding."""
-    return (_ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form), html.unescape(form),
-            unquote(form, errors="replace"))
+def _skeleton(form: str) -> str:
+    """The text as a renderer shows it: format characters (Cf: ZWJ, ZWNJ, soft hyphen) and combining marks (Mn, Mc,
+    Me) removed after compatibility decomposition, and look-alike letters read as Latin. ASCII is its own skeleton."""
+    if form.isascii():  # no format character, mark or look-alike in it
+        return form
+    return "".join(char for char in unicodedata.normalize("NFKD", form)
+                   if unicodedata.category(char) not in SKELETON_DROPPED).translate(_LOOKALIKE)
+
+
+def _decodings(form: str) -> list[str]:
+    """The next forms of the closure: the text's skeleton, and what a reader may decode the text and its skeleton to
+    (each ``\\uXXXX`` unescape, HTML character references, percent decoding). The skeleton starts from the
+    compatibility decomposition, so a decoding hidden behind a compatibility or invisible character (a fullwidth
+    percent sign, a zero-width space inside an escape) is decoded in the same round (Lead review of 57aaad97, F1)."""
+    forms = []
+    for base in dict.fromkeys((form, _skeleton(form))):
+        forms += [base, _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), base), html.unescape(base),
+                  unquote(base, errors="replace")]
+    return forms
 
 
 def _found(form: str) -> bool:
-    """The shared check on the form and on its skeleton: format characters (Cf: ZWJ, ZWNJ, soft hyphen) and combining
-    marks removed after compatibility decomposition, and look-alike letters read as Latin, as a renderer shows them."""
-    if form.isascii():  # an ASCII text is its own skeleton: no format character, mark or look-alike in it
-        return _guarded_word(form.upper()) is not None
-    skeleton = "".join(char for char in unicodedata.normalize("NFKD", form)
-                       if unicodedata.category(char) not in ("Cf", "Mn", "Me")).translate(_LOOKALIKE)
-    return any(_guarded_word(unicodedata.normalize("NFKC", candidate).casefold().upper()) is not None
-               for candidate in (form, skeleton))
+    """The shared check on one form, case-folded first. Compatibility forms (fullwidth letters) are found through the
+    skeleton, which starts from the compatibility decomposition and is a form of the closure itself."""
+    return _guarded_word(form.casefold().upper()) is not None
 
 
 def _has_marker(text: str) -> bool:
     """A guarded word in the text in any letter case or compatibility form, before or after each decoding a reader
-    may apply (``\\uXXXX`` unescape, HTML character reference, percent decoding), in any order and mix.
+    may apply (``\\uXXXX`` unescape, HTML character reference, percent decoding), in any order and mix, also when a
+    decoding shows only in the skeleton.
 
-    The shared check is case-sensitive, so each form is NFKC-normalized, case-folded and upper-cased first, and each
-    form is checked again as its skeleton (``_found``). Decoding repeats until no new form appears (at most
-    ``UNESCAPE_ROUNDS`` rounds and ``FORM_LIMIT`` forms), so a word encoded twice, which a reader would reveal by
-    decoding twice, is found too; a text still yielding new forms past either bound is refused. JSON inside the text
-    is never parsed.
+    The shared check is case-sensitive, so each form is case-folded and upper-cased first, and each form's skeleton
+    (``_skeleton``, from the compatibility decomposition) is a form of the closure too. Decoding repeats until no new
+    form appears (at most ``UNESCAPE_ROUNDS`` rounds and ``FORM_LIMIT`` forms), so a word encoded twice, which a
+    reader would reveal by decoding twice, is found too; a text still yielding new forms past either bound is
+    refused. JSON inside the text is never parsed.
     """
     seen = {text}
     forms = [text]

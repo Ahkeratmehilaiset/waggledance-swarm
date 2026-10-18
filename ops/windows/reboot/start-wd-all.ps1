@@ -15,7 +15,8 @@
   Supervisor OFF is the standing operator state: restore never registers,
   enables, starts or one-shot bootstraps WD-Supervisor, and it refuses unless
   that task is exactly Disabled. The five bridge watchers and Tools start
-  afterwards from the non-elevated -Auto fleet wrapper (WdBridgeLimitedBootstrap.ps1).
+  afterwards from the same Medium-token -Auto fleet wrapper
+  (WdBridgeLimitedBootstrap.ps1). The wrapper never elevates the fleet Apply.
   -SupervisorOff is still accepted and changes nothing.
 #>
 [CmdletBinding()]
@@ -4276,7 +4277,7 @@ try {
       -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
     Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
   } else {
-    Write-Host ("Elevated fleet restore complete; run_id={0}; Supervisor OFF: WD-Supervisor untouched (Disabled). The five bridge watchers and Tools are NOT verified here; the non-elevated -Auto wrapper starts and verifies them next." -f $RunId) -ForegroundColor Yellow
+    Write-Host ("Native fleet restore complete; run_id={0}; Supervisor OFF: WD-Supervisor untouched (Disabled). The external bridge watchers and Tools are NOT verified here; the Medium-token -Auto wrapper starts and verifies them next." -f $RunId) -ForegroundColor Yellow
   }
   if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
     Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'

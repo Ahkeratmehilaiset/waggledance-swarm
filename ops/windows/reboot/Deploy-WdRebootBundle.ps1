@@ -470,15 +470,48 @@ function Test-WdWrapperAdministrator {
         $identity.Dispose()
     }
 }
-function ConvertTo-WdSingleQuotedLiteral {
-    param([AllowEmptyString()] [string] $Value)
-    return "'" + $Value.Replace("'", "''") + "'"
+function Get-WdWrapperIntegritySid {
+    # Administrator membership alone does not distinguish Low from Medium.
+    # Query this process's actual mandatory integrity label; failure is not a fallback.
+    if (-not ('WdFleetTokenProbeV1' -as [type])) {
+        Add-Type -TypeDefinition '
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+public static class WdFleetTokenProbeV1 {
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(IntPtr token, int kind,
+        IntPtr data, uint length, out uint needed);
+    public static string Read() {
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) {
+            uint needed;
+            bool first = GetTokenInformation(identity.Token, 25, IntPtr.Zero, 0, out needed);
+            int error = Marshal.GetLastWin32Error();
+            if (first || error != 122 || needed < (uint)IntPtr.Size || needed > 65536)
+                throw new Win32Exception(error, "Cannot size TokenIntegrityLevel");
+            IntPtr data = Marshal.AllocHGlobal((int)needed);
+            try {
+                if (!GetTokenInformation(identity.Token, 25, data, needed, out needed))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                return new SecurityIdentifier(Marshal.ReadIntPtr(data)).Value;
+            } finally { Marshal.FreeHGlobal(data); }
+        }
+    }
+}'
+    }
+    return [WdFleetTokenProbeV1]::Read()
 }
-if ($Auto -and -not (Test-WdWrapperAdministrator)) {
-    # Supervisor OFF is standing: WD-Supervisor stays exactly Disabled, so after the one elevated
-    # restore below, this non-elevated process starts four supervised watchers and Tools through
-    # one run of the installed wd_supervisor.ps1 (WdBridgeLimitedBootstrap.ps1). Verify and load
-    # that helper first, so a bad bundle refuses before any elevation.
+if ($Auto -or $Apply) {
+    if ((Get-WdWrapperIntegritySid) -cne 'S-1-16-8192') {
+        throw 'Fleet start requires an exact Medium integrity token; use a normal, non-elevated PowerShell. Nothing was started.'
+    }
+}
+if ($Auto) {
+    # Supervisor OFF makes every Scheduler mutation in the fleet target unreachable.
+    # Keep the entire DryRun -> Apply -> Limited bootstrap in this verified Medium
+    # caller. Never elevate a child that would also launch the interactive lanes.
     $wdBridgeBundleRoot = Split-Path -Parent $manifestPath
     $wdBridgeHelper = Join-Path $wdBridgeBundleRoot 'WdBridgeLimitedBootstrap.ps1'
     $wdBridgeManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -490,132 +523,21 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         throw "WD reboot bundle integrity mismatch for $wdBridgeHelper"
     }
     . $wdBridgeHelper
-    $elevationHost = [IO.Path]::Combine(
+    $wdBridgeHost = [IO.Path]::Combine(
         [Environment]::SystemDirectory,
         'WindowsPowerShell',
         'v1.0',
         'powershell.exe'
     )
-    if (-not (Test-Path -LiteralPath $elevationHost -PathType Leaf)) {
-        throw "stable Windows PowerShell elevation host is missing: $elevationHost"
+    if (-not (Test-Path -LiteralPath $wdBridgeHost -PathType Leaf)) {
+        throw "stable Windows PowerShell host is missing: $wdBridgeHost"
     }
-    $commandParts = New-Object 'System.Collections.Generic.List[string]'
-    [void]$commandParts.Add('&')
-    [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
-        if ($targetParameters.ContainsKey($name)) {
-            [void]$commandParts.Add("-$name")
-            [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
-        }
-    }
-    if ($targetParameters.ContainsKey('HandshakeTimeoutSeconds')) {
-        [void]$commandParts.Add('-HandshakeTimeoutSeconds')
-        [void]$commandParts.Add(([int]$targetParameters['HandshakeTimeoutSeconds']).ToString(
-            [Globalization.CultureInfo]::InvariantCulture
-        ))
-    }
-    if ([bool]$targetParameters['SkipCliUpdate']) {
-        [void]$commandParts.Add('-SkipCliUpdate')
-    }
-    if ([bool]$targetParameters['NoBridgeConversation']) {
-        [void]$commandParts.Add('-NoBridgeConversation')
-    }
-    if ([bool]$targetParameters['SupervisorOff']) {
-        [void]$commandParts.Add('-SupervisorOff')
-    }
-    $elevationLogRoot = Join-Path (
-        Split-Path -Parent $PSCommandPath
-    ) 'wd-reboot-runtime\elevated-auto'
-    if (-not (Test-Path -LiteralPath $elevationLogRoot)) {
-        [void](New-Item -ItemType Directory -Path $elevationLogRoot -Force)
-    }
-    $elevationLogRootItem = Get-Item -LiteralPath $elevationLogRoot -Force
-    if (
-        -not $elevationLogRootItem.PSIsContainer -or
-        ($elevationLogRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
-    ) {
-        throw "automatic restore log root is not a trusted directory: $elevationLogRoot"
-    }
-    $elevationLogPath = Join-Path $elevationLogRoot (
-        'auto-{0}-{1}-{2}.log' -f
-            [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'),
-            $PID,
-            [Guid]::NewGuid().ToString('N')
-    )
-    $restoreCommand = $commandParts -join ' '
-    $loggedCommand = @(
-        '$ErrorActionPreference = ''Stop''',
-        '$restoreExitCode = 0',
-        '$transcriptStarted = $false',
-        'try {',
-        ("  Start-Transcript -LiteralPath {0} -Force | Out-Null" -f
-            (ConvertTo-WdSingleQuotedLiteral -Value $elevationLogPath)),
-        '  $transcriptStarted = $true',
-        "  Write-Host 'Running byte-inert fleet preflight before automatic restore...'",
-        ("  {0} -DryRun" -f $restoreCommand),
-        "  Write-Host 'Preflight passed; applying the verified fleet restore...'",
-        ("  {0} -Apply" -f $restoreCommand),
-        '}',
-        'catch {',
-        '  $restoreExitCode = 1',
-        '  [Console]::Error.WriteLine(($_ | Out-String))',
-        '}',
-        'finally {',
-        '  if ($transcriptStarted) { Stop-Transcript | Out-Null }',
-        '}',
-        'exit $restoreExitCode'
-    ) -join [Environment]::NewLine
-    $encodedCommand = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($loggedCommand)
-    )
-    Write-Host 'Automatic restore needs Administrator rights for Task Scheduler; requesting one UAC elevation...' -ForegroundColor Yellow
-    try {
-        $elevated = Start-Process `
-            -FilePath $elevationHost `
-            -Verb RunAs `
-            -ArgumentList @(
-                '-NoLogo',
-                '-NoProfile',
-                '-ExecutionPolicy', 'Bypass',
-                '-EncodedCommand', $encodedCommand
-            ) `
-            -WindowStyle Hidden `
-            -PassThru `
-            -ErrorAction Stop
-        # Wait for restore itself, not its long-lived conversation-viewer child.
-        # Retain a process handle so exit status remains available after exit.
-        $null = $elevated.Handle
-        Write-Host "Administrator restore started; progress log: $elevationLogPath"
-        $restoreWatch = [Diagnostics.Stopwatch]::StartNew()
-        while (-not $elevated.WaitForExit(30000)) {
-            Write-Host ("Restore still running; elapsed={0}s; log={1}" -f
-                [int]$restoreWatch.Elapsed.TotalSeconds, $elevationLogPath)
-            $lastProgress = @(Get-Content -LiteralPath $elevationLogPath -Tail 8 -ErrorAction SilentlyContinue |
-                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)
-            if ($lastProgress.Count) {
-                $line = [string]$lastProgress[0]
-                Write-Host ('  ' + $line.Substring(0, [Math]::Min(500, $line.Length)))
-            }
-        }
-        $elevated.WaitForExit()
-        $elevated.Refresh()
-    }
-    catch {
-        throw "automatic Administrator elevation was declined or failed: $($_.Exception.Message)"
-    }
-    if ([int]$elevated.ExitCode -ne 0) {
-        Write-Host "Elevated restore failure log: $elevationLogPath" -ForegroundColor Yellow
-        if (Test-Path -LiteralPath $elevationLogPath -PathType Leaf) {
-            Get-Content -LiteralPath $elevationLogPath -Tail 120 |
-                ForEach-Object { Write-Host ([string]$_) }
-        }
-        throw (
-            "elevated automatic restore failed with exit code {0}; log={1}" -f
-                [int]$elevated.ExitCode,
-                $elevationLogPath
-        )
-    }
-    Write-Host "Elevated restore log: $elevationLogPath"
+    Write-Host 'Running byte-inert fleet preflight in this Medium-token shell...' -ForegroundColor Cyan
+    & $target @targetParameters -DryRun
+    if (-not $?) { throw 'Medium fleet preflight failed; nothing was launched' }
+    Write-Host 'Preflight passed; starting the verified fleet without elevation...' -ForegroundColor Cyan
+    & $target @targetParameters -Apply
+    if (-not $?) { throw 'Medium fleet Apply failed; bridge bootstrap not attempted' }
     $wdBridgeFleetManifest = if ([string]$targetParameters['ManifestPath']) {
         [string]$targetParameters['ManifestPath']
     } else {
@@ -626,7 +548,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         -BundleRoot $wdBridgeBundleRoot `
         -FleetManifestPath $wdBridgeFleetManifest `
         -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
-        -HostPath $elevationHost
+        -HostPath $wdBridgeHost
     Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
     if (-not [bool]$wdBridgeResult.ok) {
         throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f
@@ -634,13 +556,6 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     }
     Write-Host 'Fleet restore complete: four supervised watchers and Tools are process-current (native Lead producer and responsiveness not certified); WD-Supervisor untouched (Disabled).' -ForegroundColor Green
     return
-}
-if ($Auto) {
-    # Supervisor OFF is standing: an elevated -Auto has no Limited context in which to start the
-    # four supervised watchers and Tools, and it never starts WD-Supervisor for them.
-    throw ('Supervisor OFF: an elevated -Auto cannot start the four supervised watchers and Tools. Run -Auto ' +
-        'from a non-elevated PowerShell: it elevates once for the fleet restore, then starts them from ' +
-        'that Limited wrapper. Nothing was changed.')
 }
 else {
     if ($Apply) { $targetParameters['Apply'] = $true }

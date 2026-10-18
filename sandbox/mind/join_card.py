@@ -1,4 +1,4 @@
-"""JOIN card v0.3: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
+"""JOIN card v0.4: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
 
 The operator's frame (2026-10-14 ~18:28Z): "minä kuulen, minä näen, minä ymmärrän, minä muistan - ja maind oppii"
 (I hear, I see, I understand, I remember, and the Mind learns). ``card(lane, delivery, view, remember, learn_ref=...)``
@@ -21,8 +21,9 @@ outputs do not state:
               outcome of a vote or of the gate; the canonical tools decide.
 * REMEMBER    a REMEMBER v2 answer (frozen 2699c0fe; the PRIMARY arm is v2ca) inside a turn-bound envelope
               (``remember_envelope``): the joiner's picks with their TOPIC, SUPERSEDED and CONTESTED marks, or that
-              nothing applies, or the refusal reason, and one citation ``answer=<12> situation=<12>``. The envelope
-              must name this lane and the view's as_of, and its answer must hash (``lane_view.canonical``) to its
+              nothing applies, or the refusal reason, and one citation ``<version> <arm> answer=<12>
+              situation=<12>``. The envelope must name this lane, the view's as_of and a shown arm (``SHOWN_ARMS``:
+              the joined v2a or v2ca, never v2c), and its answer must hash (``lane_view.canonical``) to its
               ``answer_sha256``; otherwise the card is refused (RCO1 probe P4b). That digest is self-consistency, not
               origin, and ``situation_sha256`` is cited, not verified: the card cannot see the situation text. With no
               envelope there is no REMEMBER line at all (P2b: an absence is omitted, never an uncited line).
@@ -59,6 +60,14 @@ now refuses an answer with no canonical digest with the card's fixed message. Ea
 type check (the view's coverage, an observed receipt's ref, the answer's version and reason, a topic's count and
 days) must now have the type the card prints, or the card is refused.
 
+v0.4 (2026-10-18, operator direct "polish the Mind in the sandbox, fix defects and missing code"): PRODUCT.md held
+"a v2c result is never shown as an answer" as a process rule only, because the card could not see which REMEMBER arm
+produced an answer (REMEMBER v2's answer carries the same version in every arm). The envelope
+(``join-card-remember-v2``) now carries the arm, ``remember_envelope`` takes it as a required keyword, and the card
+renders only the joined arms in ``SHOWN_ARMS`` and prints the arm in the citation. Any other arm, v2c included, is
+refused with a fixed message, at the envelope and again at the card. The arm is declared by the turn runner, like
+``situation_sha256``: the card checks the declaration, not which code produced the answer.
+
 usage: python -B sandbox/mind/join_card.py --lane <lane> --view <lane-view.json> --delivery <delivery.json>
        [--remember <envelope.json>] --learn-ref <ref>
 """
@@ -81,9 +90,13 @@ from tools import bridge_mind_workspace as ws  # noqa: E402
 import join_card_delivery as jcd  # noqa: E402
 import lane_view as lv  # noqa: E402
 
-VERSION = "join-card-v0.3"
-ENVELOPE_SCHEMA = "join-card-remember-v1"
-ENVELOPE_KEYS = frozenset({"schema", "lane", "as_of_utc", "situation_sha256", "answer_sha256", "answer"})
+VERSION = "join-card-v0.4"
+ENVELOPE_SCHEMA = "join-card-remember-v2"
+ENVELOPE_KEYS = frozenset({"schema", "lane", "as_of_utc", "arm", "situation_sha256", "answer_sha256", "answer"})
+# v0.4: the joined REMEMBER v2 arms (the joiner judges a shortlist). v2c (code only, no joiner) is NOT YET and is
+# never shown as an answer (PRODUCT.md).
+SHOWN_ARMS = ("v2a", "v2ca")
+ARM_REFUSAL = "the REMEMBER answer is not from a shown arm (v2a or v2ca); a v2c result is never shown as an answer"
 HEX64 = re.compile(r"[0-9a-f]{64}")
 CARD_BYTES = 2048
 SEE_LIMIT = 3
@@ -177,22 +190,26 @@ def _same_view(delivery: Mapping[str, Any], view: Mapping[str, Any]) -> bool:
         and card.get("as_of_utc") == view["as_of_utc"] and card.get("view_canonical_sha256") == digest
 
 
-def remember_envelope(lane: str, as_of_utc: str, situation_sha256: str, answer: Any) -> dict[str, Any]:
+def remember_envelope(lane: str, as_of_utc: str, situation_sha256: str, answer: Any, *, arm: str) -> dict[str, Any]:
     """The turn-bound envelope a turn runner puts around one REMEMBER v2 answer for one lane's card. v0.3: an answer
     with no canonical digest (a lone surrogate, NaN, a set, bytes, deep nesting) is refused with the card's fixed
-    message, never a raw error."""
+    message, never a raw error. v0.4: the runner names the arm that produced the answer; only ``SHOWN_ARMS``."""
+    if not (isinstance(arm, str) and arm in SHOWN_ARMS):
+        raise JoinCardError(ARM_REFUSAL)
     try:
         digest = lv.sha256_text(lv.canonical(answer))
     except (TypeError, ValueError, RecursionError):
         raise JoinCardError("the REMEMBER answer is not canonical JSON") from None
-    return {"schema": ENVELOPE_SCHEMA, "lane": lane, "as_of_utc": as_of_utc, "situation_sha256": situation_sha256,
-            "answer_sha256": digest, "answer": answer}
+    return {"schema": ENVELOPE_SCHEMA, "lane": lane, "as_of_utc": as_of_utc, "arm": arm,
+            "situation_sha256": situation_sha256, "answer_sha256": digest, "answer": answer}
 
 
 def _check_envelope(envelope: Any, lane: str, as_of_utc: str) -> None:
     """RCO1 P4b: only an answer made for this lane at this view's as_of renders; the digest is self-consistency."""
     if not isinstance(envelope, Mapping) or set(envelope) != ENVELOPE_KEYS or envelope.get("schema") != ENVELOPE_SCHEMA:
         raise JoinCardError("the REMEMBER input is not a turn-bound REMEMBER envelope")
+    if not (isinstance(envelope["arm"], str) and envelope["arm"] in SHOWN_ARMS):
+        raise JoinCardError(ARM_REFUSAL)
     if envelope["lane"] != lane:
         raise JoinCardError("the REMEMBER answer was made for another lane")
     if envelope["as_of_utc"] != as_of_utc:
@@ -327,7 +344,7 @@ def remember_lines(envelope: Mapping[str, Any] | None, limit: int) -> list[str]:
     if envelope is None:
         return []  # P2b: no REMEMBER input, no line
     remember = envelope["answer"]
-    cite = (f"[{remember.get('version', UNKNOWN)} answer={envelope['answer_sha256'][:12]} "
+    cite = (f"[{remember.get('version', UNKNOWN)} {envelope['arm']} answer={envelope['answer_sha256'][:12]} "
             f"situation={envelope['situation_sha256'][:12]}]")
     status, reason, results = remember["status"], remember.get("reason"), remember["results"]
     if status == "REFUSED":

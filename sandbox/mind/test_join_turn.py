@@ -96,7 +96,7 @@ def envelope(as_of=AS_OF, lane=TOOLS):
               "results": [{"ref": "lesson_a.md", "kind": "lesson", "time_utc": "2026-10-12T00:00:00.000000Z",
                            "summary": "watcher retry reasons narrowed", "contested_with": [], "pair_with": [],
                            "superseded_by": None}], "version": "remember-v2.0", "telemetry": {}}
-    return jc.remember_envelope(lane, as_of, SITUATION, answer)
+    return jc.remember_envelope(lane, as_of, SITUATION, answer, arm="v2ca")
 
 
 @pytest.fixture
@@ -152,7 +152,7 @@ def test_a_later_now_makes_the_card_stale_and_derives_no_step():
 
 def test_a_bound_envelope_renders_and_a_stale_one_is_refused():
     result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=envelope())
-    assert "REMEMBER [1] lesson_a.md" in result["card"] and "REMEMBER picks [remember-v2.0 answer=" in result["card"]
+    assert "REMEMBER [1] lesson_a.md" in result["card"] and "REMEMBER picks [remember-v2.0 v2ca answer=" in result["card"]
     with pytest.raises(jc.JoinCardError):
         jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=envelope(as_of="2026-10-13T18:00:00Z"))
 

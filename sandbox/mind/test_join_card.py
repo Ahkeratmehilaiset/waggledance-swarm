@@ -49,9 +49,9 @@ def answer(*results, status="ANSWER", reason=None):
             "degraded_cells": [], "results": list(results), "version": "remember-v2.0", "telemetry": {}}
 
 
-def bound(value, lane=TOOLS, as_of=AS_OF, situation=SITUATION):
-    """The turn-bound envelope a turn runner makes around one REMEMBER v2 answer."""
-    return jc.remember_envelope(lane, as_of, situation, value)
+def bound(value, lane=TOOLS, as_of=AS_OF, situation=SITUATION, arm="v2ca"):
+    """The turn-bound envelope a turn runner makes around one REMEMBER v2 answer of one shown arm."""
+    return jc.remember_envelope(lane, as_of, situation, value, arm=arm)
 
 
 def pick(ref, summary="watcher retry reasons narrowed", day="2026-10-12", **extra):
@@ -60,7 +60,8 @@ def pick(ref, summary="watcher retry reasons narrowed", day="2026-10-12", **extr
 
 
 def cite(envelope):
-    return f"[remember-v2.0 answer={envelope['answer_sha256'][:12]} situation={envelope['situation_sha256'][:12]}]"
+    return (f"[remember-v2.0 {envelope['arm']} answer={envelope['answer_sha256'][:12]} "
+            f"situation={envelope['situation_sha256'][:12]}]")
 
 
 def derived(text):
@@ -91,7 +92,7 @@ def test_pr1905_tools_lane_reads_the_whole_conjunction_in_one_card():
     [row] = [row for row in delivery["ledger"] if row["lane"] == TOOLS]
     hear = line(text, "HEAR")
     assert "new 1," in hear and f"id={row['identity'][:12]}" in hear and f"wait_min={row['wait_seconds'] // 60}" in hear
-    assert line(text, "LEARN").endswith(LEARN) and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.3;")
+    assert line(text, "LEARN").endswith(LEARN) and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.4;")
     assert not any(FORBIDDEN.search(row) for row in derived(text))
 
 
@@ -226,6 +227,12 @@ def _edited(**change):
     (lambda: _edited(extra=1), "not a turn-bound REMEMBER envelope"),
     (lambda: {k: v for k, v in bound(answer()).items() if k != "situation_sha256"}, "not a turn-bound REMEMBER envelope"),
     (lambda: answer(pick("lesson_a.md")), "not a turn-bound REMEMBER envelope"),
+    (lambda: _edited(schema="join-card-remember-v1"), "not a turn-bound REMEMBER envelope"),
+    (lambda: {k: v for k, v in bound(answer()).items() if k != "arm"}, "not a turn-bound REMEMBER envelope"),
+    (lambda: _edited(arm="v2c"), "a v2c result is never shown as an answer"),
+    (lambda: _edited(arm="V2CA"), "a v2c result is never shown as an answer"),
+    (lambda: _edited(arm=None), "a v2c result is never shown as an answer"),
+    (lambda: _edited(arm=["v2ca"]), "a v2c result is never shown as an answer"),
 ])
 def test_a_remember_answer_not_bound_to_this_turn_and_lane_is_refused(make, message):
     """P4b: a stale or foreign answer never renders as this turn's memory."""
@@ -233,6 +240,32 @@ def test_a_remember_answer_not_bound_to_this_turn_and_lane_is_refused(make, mess
     with pytest.raises(jc.JoinCardError) as caught:
         jc.card(TOOLS, delivery, view, make(), learn_ref=LEARN)
     assert message in str(caught.value) and "lesson" not in str(caught.value)
+
+
+def test_v04_only_the_joined_arms_render_and_the_card_cites_the_arm():
+    """PRODUCT.md: a v2c result (code only, no joiner; NOT YET) must never be shown as an answer. v0.3 could not see
+    the arm; v0.4 makes the turn runner declare it and renders only v2a and v2ca, with the arm in the citation."""
+    view, delivery = turn()
+    for arm in jc.SHOWN_ARMS:
+        envelope = bound(answer(pick("lesson_a.md")), arm=arm)
+        assert envelope["arm"] == arm
+        text = jc.card(TOOLS, delivery, view, envelope, learn_ref=LEARN)
+        assert f"REMEMBER picks [remember-v2.0 {arm} answer=" in text and text.count("answer=") == 1
+    assert jc.SHOWN_ARMS == ("v2a", "v2ca")
+
+
+@pytest.mark.parametrize("arm", ["v2c", "", "v2ca ", "V2A", None, 1, ("v2ca",)])
+def test_v04_remember_envelope_refuses_an_arm_that_is_not_shown_with_a_fixed_message(arm):
+    with pytest.raises(jc.JoinCardError) as caught:
+        bound(answer(pick("lesson_a.md")), arm=arm)
+    assert str(caught.value) == jc.ARM_REFUSAL and "lesson" not in str(caught.value)
+
+
+def test_v04_the_arm_is_a_required_keyword():
+    with pytest.raises(TypeError):
+        jc.remember_envelope(TOOLS, AS_OF, SITUATION, answer())  # pylint: disable=missing-kwoa
+    with pytest.raises(TypeError):
+        jc.remember_envelope(TOOLS, AS_OF, SITUATION, answer(), "v2ca")  # pylint: disable=too-many-function-args
 
 
 def test_size_bound_drops_picks_then_prs_whole_and_counts_them():
@@ -713,7 +746,7 @@ def test_v03_the_typed_fields_take_every_form_upstream_writes():
     assert f" requested={'a' * 12} " in jc.card(TOOLS, *_typed_receipt_ref("a" * 64), learn_ref=LEARN)
     unversioned = _typed_answer(lambda value: {key: item for key, item in answer(pick(value)).items()
                                                if key != "version"})
-    assert "REMEMBER picks [UNKNOWN answer=" in jc.card(TOOLS, *unversioned("lesson_a.md"), learn_ref=LEARN)
+    assert "REMEMBER picks [UNKNOWN v2ca answer=" in jc.card(TOOLS, *unversioned("lesson_a.md"), learn_ref=LEARN)
     refused = _typed_answer(lambda value: answer(status="REFUSED", reason=value))
     for reason in (None, "picks_unreadable"):
         assert f"REMEMBER refused ({reason}) [" in jc.card(TOOLS, *refused(reason), learn_ref=LEARN)

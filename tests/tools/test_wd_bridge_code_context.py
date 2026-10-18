@@ -270,7 +270,7 @@ def _intra_repo_closure(entrypoints):
                 continue
             top = module.split(".")[0]
             if relative.startswith("sandbox/mind/") and top in {
-                "join_card", "join_card_delivery", "lane_view", "lane_view_frozen",
+                "join_card", "join_card_delivery", "learn_step", "lane_view", "lane_view_frozen",
             }:
                 # These declared shadow modules also support their documented script-style imports.
                 prefix = "sandbox.mind.step1" if top.startswith("lane_view") else "sandbox.mind"
@@ -316,6 +316,34 @@ def test_mind_smoke_closure_follows_unlisted_transitive_and_flat_imports(tmp_pat
     foreign.parent.mkdir(parents=True)
     foreign.write_text("", encoding="utf-8")
     assert _module_relative("sandbox.other.example") is None
+
+
+def test_mind_smoke_closure_follows_the_flat_learn_step_import_as_a_library(tmp_path, monkeypatch):
+    # join_card imports learn_step script-style: the closure must package it, never name it third-party.
+    sources = {
+        "tools/seed.py": "from sandbox.mind import join_card\n",
+        "sandbox/mind/join_card.py": "import learn_step as ls\n",
+        "sandbox/mind/learn_step.py": "from tools import bridge_mind_workspace as ws\n",
+        "tools/bridge_mind_workspace.py": "import json\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["tools/seed.py"])
+    assert closure == set(sources)
+    assert third_party == set()
+
+
+def test_the_join_card_closure_packages_the_existing_learn_step_library():
+    packaged = set(DEFINITION["python_files"])
+    for seed in ("sandbox/mind/join_card.py", "sandbox/mind/join_turn.py"):
+        closure, third_party = _intra_repo_closure([seed])
+        assert "sandbox/mind/learn_step.py" in closure, seed
+        assert "learn_step" not in third_party, seed
+        assert closure <= packaged, sorted(closure - packaged)
+    assert "sandbox/mind/learn_step.py" not in DEFINITION["python_entrypoints"].values()
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():

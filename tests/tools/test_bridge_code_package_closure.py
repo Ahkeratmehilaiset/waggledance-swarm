@@ -767,6 +767,7 @@ SHADOW_RELEASE_MODULES = (
     "sandbox.mind.join_turn",
     "sandbox.mind.join_card",
     "sandbox.mind.join_card_delivery",
+    "sandbox.mind.learn_step",
     "sandbox.mind.step1.lane_view",
     "sandbox.mind.step1.lane_view_frozen",
     "sandbox.mind.capture.capacity_lens",
@@ -823,6 +824,28 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["import_smoke"]["package_modules"].append("sandbox.mind.deferred_memory")
     else:
         mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
+    with pytest.raises(AssertionError, match=mutation):
+        _assert_shadow_release_delivery(mutant)
+    _assert_shadow_release_delivery(definition)
+
+
+@pytest.mark.parametrize("mutation", [None, "shadow_file_drop", "shadow_smoke_drop", "shadow_library_published"])
+def test_learn_step_ships_only_as_a_library_of_the_join_card(mutation):
+    # join_card and join_turn import learn_step unconditionally: it is staged and smoke-imported, never published.
+    definition = _definition()
+    path = "sandbox/mind/learn_step.py"
+    assert path in definition["python_files"]
+    assert "sandbox.mind.learn_step" in definition["import_smoke"]["package_modules"]
+    assert path not in definition["python_entrypoints"].values()
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "shadow_file_drop":
+        mutant["python_files"].remove(path)
+    elif mutation == "shadow_smoke_drop":
+        mutant["import_smoke"]["package_modules"].remove("sandbox.mind.learn_step")
+    else:
+        mutant["python_entrypoints"]["mind_learn_step"] = path
     with pytest.raises(AssertionError, match=mutation):
         _assert_shadow_release_delivery(mutant)
     _assert_shadow_release_delivery(definition)
@@ -890,7 +913,7 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         " loaded = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}\n"
         " assert all(pathlib.Path(path).is_relative_to(root) for path in loaded.values())\n"
         "for name, module in list(sys.modules.items()):\n"
-        " if name.partition('.')[0] in {'tools', 'waggledance', 'sandbox', 'step1', 'join_card', 'join_card_delivery', 'lane_view', 'lane_view_frozen'}:\n"
+        " if name.partition('.')[0] in {'tools', 'waggledance', 'sandbox', 'step1', 'join_card', 'join_card_delivery', 'learn_step', 'lane_view', 'lane_view_frozen'}:\n"
         "  origin = getattr(module, '__file__', None)\n"
         "  if origin is not None:\n"
         "   source_path_owned(origin)\n"
@@ -900,7 +923,9 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         "   for location in locations:\n"
         "    source_path_owned(location)\n"
         "if cli is None:\n"
-        " print(json.dumps(dict(loaded=loaded, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
+        " flat = getattr(sys.modules.get('learn_step'), '__file__', None)\n"
+        " print(json.dumps(dict(loaded=loaded, isolated=sys.flags.isolated, no_site=sys.flags.no_site,\n"
+        "                       flat_learn_step=flat and str(pathlib.Path(flat).resolve()))))\n"
     )
     result = subprocess.run(
         [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source),
@@ -912,6 +937,11 @@ def test_staged_shadow_import_and_help_refuse_gate_modules(staged_mind_source, c
         observed = json.loads(result.stdout)
         assert observed["isolated"] == observed["no_site"] == 1
         assert set(observed["loaded"]) == set(SHADOW_RELEASE_MODULES)
+        # join_card imports learn_step script-style: that flat alias must be the staged library itself.
+        staged_learn_step = staged_mind_source / "sandbox" / "mind" / "learn_step.py"
+        assert observed["loaded"]["sandbox.mind.learn_step"] == observed["flat_learn_step"] == str(
+            staged_learn_step.resolve())
+        assert staged_learn_step.read_bytes() == (REPO_ROOT / "sandbox" / "mind" / "learn_step.py").read_bytes()
     else:
         assert "usage:" in result.stdout.lower() and "--help" in result.stdout
 
@@ -974,7 +1004,7 @@ def test_shadow_finder_positive_control_kills_noop_mutant(tmp_path):
 
 @pytest.mark.parametrize("name", [
     "tools.synthetic_unlisted", "waggledance.synthetic_unlisted",
-    "sandbox.synthetic_unlisted", "step1.synthetic_unlisted", "join_card",
+    "sandbox.synthetic_unlisted", "step1.synthetic_unlisted", "join_card", "learn_step",
     "lane_view", "lane_view_frozen",
 ])
 @pytest.mark.parametrize("namespace", [False, True])

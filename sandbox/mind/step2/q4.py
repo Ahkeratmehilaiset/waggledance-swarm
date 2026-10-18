@@ -11,7 +11,9 @@ Rule v1 (frozen before any fresh blinded case is opened; chosen on the used 10-1
      shingles (the whole situation when it is shorter) is ever shown.
 3. Three independent views rank every candidate: ``w`` e5 cosine to the record text, ``d`` e5 cosine to the record
    summary (a lesson's own description line), ``b`` BM25 (k1 1.2, b 0.75) over the stored text. A record that shares
-   no token with the situation has no lexical rank at all (zero BM25 is no evidence, never a tie-break).
+   no token with the situation has no lexical rank at all (zero BM25 is no evidence, never a tie-break). A record's
+   BM25 is the exactly rounded sum of its word contributions, the same in every process (D9; before, the sum followed
+   the per-process hash order of a set of words, and so did its last bits and any near-tie).
 4. A record is AGREED when all three views rank it within the top 3. No agreed record: ABSTAIN
    (``no_view_consensus``); no candidate at all: ABSTAIN (``empty_cell``). Otherwise ANSWER with the agreed
    records, at most 3, ordered by reciprocal-rank fusion (k 60). One view alone is never enough: on the used sets every
@@ -56,8 +58,35 @@ def shingles(words, size):
     return {" ".join(words[i:i + size]) for i in range(len(words) - size + 1)}
 
 
+def bm25_scores(text, n, postings, lengths, average, k1, b):
+    """BM25 of ``n`` records for ``text`` from an inverted index (token -> record positions and counts). A record's
+    score is the exactly rounded sum of its word contributions (``exact_sums``). A set of words iterates in a
+    per-process hash order and float addition is not associative, so a running sum let the hash seed set the last bits
+    of a score and with them any near-tie (D9, Tools R03). Now no order can change a bit, and records whose
+    contributions are the same numbers tie exactly, so a stable rank lists them in record order."""
+    parts = defaultdict(list)
+    for token in set(tokens(text)):
+        if token not in postings:
+            continue
+        index, count = postings[token]
+        idf = math.log(1.0 + (n - len(index) + 0.5) / (len(index) + 0.5))
+        norm = count + k1 * (1.0 - b + b * lengths[index] / average)
+        for position, value in zip(index.tolist(), (idf * count * (k1 + 1.0) / norm).tolist()):
+            parts[position].append(value)
+    return exact_sums(n, parts)
+
+
+def exact_sums(n, parts):
+    """``n`` sums: at each position of ``parts`` (position -> values) the exactly rounded sum (math.fsum) of its values,
+    which no order of them can change; 0.0 elsewhere."""
+    result = np.zeros(n)
+    for position, values in parts.items():
+        result[position] = math.fsum(values)
+    return result
+
+
 class Lexical:
-    """BM25 over the stored text of one record list, with an inverted index."""
+    """BM25 over the stored text of one record list, with an inverted index (``bm25_scores``)."""
 
     def __init__(self, texts, k1, b):
         self.n, self.k1, self.b = len(texts), k1, b
@@ -71,15 +100,7 @@ class Lexical:
                          for token, rows in postings.items()}
 
     def scores(self, text):
-        result = np.zeros(self.n)
-        for token in set(tokens(text)):
-            if token not in self.postings:
-                continue
-            index, count = self.postings[token]
-            idf = math.log(1.0 + (self.n - len(index) + 0.5) / (len(index) + 0.5))
-            norm = count + self.k1 * (1.0 - self.b + self.b * self.lengths[index] / self.average)
-            result[index] += idf * count * (self.k1 + 1.0) / norm
-        return result
+        return bm25_scores(text, self.n, self.postings, self.lengths, self.average, self.k1, self.b)
 
 
 class Q4:

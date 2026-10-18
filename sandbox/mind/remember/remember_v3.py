@@ -143,7 +143,8 @@ def brd_apply(lines: Sequence[Mapping[str, Any]], nominees: Sequence[Mapping[str
 
 class SituationLexical:
     """BM25 over one applicable index (step 2's tokens, k1 and b), from per-record token counts made once.
-    ``extra`` maps a record position to borrowed tokens; each counts once and adds to that record's length."""
+    ``extra`` maps a record position to borrowed tokens; each counts once and adds to that record's length.
+    Scores come from step 2's ``bm25_scores``: each record's exactly rounded sum, the same in every process (D9)."""
 
     def __init__(self, counts: Sequence[Counter], index: np.ndarray, k1: float, b: float,
                  extra: Mapping[int, Sequence[str]] | None = None):
@@ -163,15 +164,7 @@ class SituationLexical:
                          for token, found in rows.items()}
 
     def scores(self, text: str) -> np.ndarray:
-        result = np.zeros(self.n)
-        for token in set(q4_mod.tokens(text)):
-            if token not in self.postings:
-                continue
-            where, count = self.postings[token]
-            idf = math.log(1.0 + (self.n - len(where) + 0.5) / (len(where) + 0.5))
-            norm = count + self.k1 * (1.0 - self.b + self.b * self.lengths[where] / self.average)
-            result[where] += idf * count * (self.k1 + 1.0) / norm
-        return result
+        return q4_mod.bm25_scores(text, self.n, self.postings, self.lengths, self.average, self.k1, self.b)
 
 
 class RememberV3(v2.RememberV2):

@@ -1,9 +1,9 @@
-"""JOIN card v0.4: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
+"""JOIN card v0.5: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
 
 The operator's frame (2026-10-14 ~18:28Z): "minä kuulen, minä näen, minä ymmärrän, minä muistan - ja maind oppii"
-(I hear, I see, I understand, I remember, and the Mind learns). ``card(lane, delivery, view, remember, learn_ref=...)``
-renders one lane's card from outputs that are already verified and guarded upstream. It derives nothing those
-outputs do not state:
+(I hear, I see, I understand, I remember, and the Mind learns). ``card(lane, delivery, view, remember, learn_ref=...,
+learn=...)`` renders one lane's card from outputs that are already verified and guarded upstream. It derives nothing
+those outputs do not state:
 
 * HEAR        ``join_card_delivery.deliver`` (semantics v1.5): this lane's waits over 30 min on a slot it owns, new,
               unchanged, carried, unknown and below the threshold, with the first new wait's receipts and identity.
@@ -27,11 +27,16 @@ outputs do not state:
               ``answer_sha256``; otherwise the card is refused (RCO1 probe P4b). That digest is self-consistency, not
               origin, and ``situation_sha256`` is cited, not verified: the card cannot see the situation text. With no
               envelope there is no REMEMBER line at all (P2b: an absence is omitted, never an uncited line).
-* LEARN       v0 learns and records nothing; the line names the LEARN contract (``learn_ref``) the next step uses.
+* LEARN       (v0.5) with a turn-bound LEARN envelope (``learn_envelope``): the LEARN v1 notes for this lane as
+              ``learn_step.notes`` writes them, a warning line under each shown REMEMBER pick that
+              ``learn_step.lesson_order`` warns, and one citation ``LEARN v1 [state=<12> params=<12> learn=<12>]
+              notes <k> of <n>, warnings <k> of <n>`` with the LEARN contract (``learn_ref``). Without an envelope
+              the v0 line stays: the card records nothing and names the LEARN contract.
 
 Every line carries refs: identities, SHAs, vote and event refs, lesson files, or the semantics and contract names
-it comes from. The card is at most ``CARD_BYTES`` UTF-8 bytes: when it would not fit, REMEMBER picks after the first
-and then SEE PRs after the first are dropped whole, and each dropped count is printed. The whole text passes the
+it comes from. The card is at most ``CARD_BYTES`` UTF-8 bytes: when it would not fit, LEARN notes (v0.5; praise before
+harm), then REMEMBER picks after the first and then SEE PRs after the first are dropped whole, and each dropped count
+is printed (the notes by ``notes <k> of <n>``). The whole text passes the
 workspace's decoded guard; a hit refuses the card and nothing is returned. Pure: no clock, file, network, process or
 bridge write; the same inputs give the same bytes.
 
@@ -68,8 +73,25 @@ renders only the joined arms in ``SHOWN_ARMS`` and prints the arm in the citatio
 refused with a fixed message, at the envelope and again at the card. The arm is declared by the turn runner, like
 ``situation_sha256``: the card checks the declaration, not which code produced the answer.
 
+v0.5 (2026-10-18, operator direct "polish the diamond"): LEARN v1 (``learn_step.py``, a pure re-fold of RCO2's card
+outcome results) reaches the card. The turn runner verifies the state and puts LEARN's own notes and warnings for this
+lane into an envelope (``join-card-learn-v1``) whose ``learn_sha256`` covers every other field; the notes are seeded by
+this view's canonical digest, so their kind order is bound to this exact view. The card refuses the envelope unless it
+names this lane, this view's as_of and this view's digest, and its digest matches; then every note and warning must be
+one LEARN v1 writes: its exact form, LEARN's own thresholds (``learn_step``'s constants), the arithmetic each holds
+(the reasons sum to the wrong count, no count above its denominator, the cited rows), harm before praise within a
+kind, each kind's notes together and in the order the seed gives, and a warning only for one of the first three
+REMEMBER picks. The card cannot check the counts against the state, and ``state_sha256`` and ``params_sha256`` are
+cited, not verified (the runner verifies them); ``learn_sha256`` is self-consistency, not origin. From Grok
+7534c72f's review of the design (advisory; each point was checked against the source before it was taken): the digest
+covers the whole envelope, the hashed REMEMBER order is never changed (LEARN's reorder of a warned lesson is not
+applied here: the answer digest would then name an order the card does not show, and a warning would choose which pick
+the size bound keeps), so a warning is its own line under its pick and goes with it, and LEARN notes are the first thing
+the size bound drops, praise before harm: no LEARN count is calibrated or a benefit claim, so none displaces a lesson
+or a PR. With an envelope, the citation line is always printed, also when every note was dropped.
+
 usage: python -B sandbox/mind/join_card.py --lane <lane> --view <lane-view.json> --delivery <delivery.json>
-       [--remember <envelope.json>] --learn-ref <ref>
+       [--remember <envelope.json>] [--learn <learn-envelope.json>] --learn-ref <ref>
 """
 
 from __future__ import annotations
@@ -89,8 +111,9 @@ for _path in (str(SRC), str(HERE), str(HERE / "step1")):
 from tools import bridge_mind_workspace as ws  # noqa: E402
 import join_card_delivery as jcd  # noqa: E402
 import lane_view as lv  # noqa: E402
+import learn_step as ls  # noqa: E402  (v0.5: LEARN's own constants and kind rotation, never its state)
 
-VERSION = "join-card-v0.4"
+VERSION = "join-card-v0.5"
 ENVELOPE_SCHEMA = "join-card-remember-v2"
 ENVELOPE_KEYS = frozenset({"schema", "lane", "as_of_utc", "arm", "situation_sha256", "answer_sha256", "answer"})
 # v0.4: the joined REMEMBER v2 arms (the joiner judges a shortlist). v2c (code only, no joiner) is NOT YET and is
@@ -118,6 +141,28 @@ UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 JOINERS = frozenset({chr(0x200C), chr(0x200D)})  # ZWNJ and ZWJ
 LINE_REFUSAL = "a card line holds a control, format, line-break or surrogate character; nothing is returned"
 RECEIPT_STATES = ("OBSERVED", "NONE", UNKNOWN)
+# v0.5: the LEARN envelope and the notes and warnings LEARN v1 writes (learn_step.notes and learn_step.lesson_order)
+LEARN_SCHEMA = "join-card-learn-v1"
+LEARN_KEYS = frozenset({"schema", "lane", "as_of_utc", "seed", "state_sha256", "params_sha256", "notes", "warnings",
+                        "learn_sha256"})
+LEARN_DIGESTS = ("seed", "state_sha256", "params_sha256", "learn_sha256")
+LEARN_REFUSAL = "the LEARN input is not a turn-bound LEARN envelope"
+NOTE_REFUSAL = "a LEARN note is not a note LEARN v1 writes"
+WARNING_REFUSAL = "a LEARN warning is not one LEARN v1 writes for one of the first three REMEMBER picks"
+LEARN_KINDS = tuple(sorted({ls.action_kind(slot) for slot in ls.BUILD_SLOTS + ls.RCO_SLOTS}))
+LEARN_REASONS = ls.WRONG_REASONS + ("other",)  # learn_step.summarize writes the reasons in this order
+NOTE_LIMIT = 2 * len(LEARN_KINDS)  # at most one harm and one praise note per kind
+NOTE_CHARS = 240  # more than any note or warning LEARN v1 writes; checked before a pattern is tried
+_COUNT = r"(0|[1-9][0-9]{0,5})"
+_ROWS = r"rows ([0-9a-f, ]{8,40})"
+WRONG_NOTE = re.compile(rf"LEARN: similar ([a-z_]{{1,20}}) wrong {_COUNT} of taken {_COUNT} \(([0-9a-z_, ]{{1,99}}); "
+                        rf"{_ROWS}\)")
+CORRECT_NOTE = re.compile(rf"LEARN: similar ([a-z_]{{1,20}}) correct {_COUNT} of taken {_COUNT} \({_ROWS}\)"
+                          rf"(?:; median read-to-action {_COUNT} min over {_COUNT})?")
+LESSON_WARNING = re.compile(rf"LEARN: after you picked this, the card was wrong {_COUNT} of support {_COUNT} \({_ROWS}\); "
+                            "association only")
+REASON = re.compile(r"([1-9][0-9]{0,5}) ([a-z_]{1,20})")
+ROW = re.compile(r"[0-9a-f]{8}")
 
 
 class JoinCardError(ValueError):
@@ -126,7 +171,7 @@ class JoinCardError(ValueError):
 
 # --- inputs -----------------------------------------------------------------------------------------------------------
 
-def _check_inputs(lane: Any, delivery: Any, view: Any, remember: Any, learn_ref: Any) -> None:
+def _check_inputs(lane: Any, delivery: Any, view: Any, remember: Any, learn_ref: Any, learn: Any = None) -> None:
     if lane not in lv.LANES:
         raise JoinCardError("the lane is not a fleet lane")
     if not isinstance(view, Mapping) or view.get("schema") != lv.SCHEMA or not isinstance(view.get("prs"), Mapping) \
@@ -145,6 +190,8 @@ def _check_inputs(lane: Any, delivery: Any, view: Any, remember: Any, learn_ref:
         _check_envelope(remember, lane, view["as_of_utc"])
     if not isinstance(learn_ref, str) or not LEARN_REF.fullmatch(learn_ref):
         raise JoinCardError("the LEARN contract ref is invalid")
+    if learn is not None:
+        _check_learn(learn, lane, view, remember)
 
 
 def _check_view_records(view: Mapping[str, Any]) -> None:
@@ -249,6 +296,116 @@ def _result_ok(result: Any) -> bool:
         and (summary is None or (isinstance(summary, str) and len(summary) <= SUMMARY_CHARS))
 
 
+def learn_envelope(lane: str, as_of_utc: str, seed: str, notes: Any, warnings: Any, *, state_sha256: str,
+                   params_sha256: str) -> dict[str, Any]:
+    """v0.5: the turn-bound envelope a turn runner puts around LEARN v1's notes (``learn_step.notes(state, lane,
+    seed)``) and warnings (``learn_step.lesson_order(state, lane, refs)[1]``) for one lane's card; ``seed`` is the
+    view's canonical digest. ``learn_sha256`` covers every other field. A value with no canonical digest is refused
+    with a fixed message, never a raw error."""
+    envelope = {"schema": LEARN_SCHEMA, "lane": lane, "as_of_utc": as_of_utc, "seed": seed,
+                "state_sha256": state_sha256, "params_sha256": params_sha256, "notes": notes, "warnings": warnings}
+    try:
+        digest = lv.sha256_text(lv.canonical(envelope))
+    except (TypeError, ValueError, RecursionError):
+        raise JoinCardError("the LEARN envelope is not canonical JSON") from None
+    return dict(envelope, learn_sha256=digest)
+
+
+def _check_learn(envelope: Any, lane: str, view: Mapping[str, Any], remember: Mapping[str, Any] | None) -> None:
+    """v0.5: only LEARN v1's notes for this lane, this view's as_of and this view's digest render (module docstring)."""
+    if not isinstance(envelope, Mapping) or set(envelope) != LEARN_KEYS or envelope.get("schema") != LEARN_SCHEMA:
+        raise JoinCardError(LEARN_REFUSAL)
+    if envelope["lane"] != lane:
+        raise JoinCardError("the LEARN envelope was made for another lane")
+    if envelope["as_of_utc"] != view["as_of_utc"]:
+        raise JoinCardError("the LEARN envelope was made for another turn")
+    if not all(isinstance(envelope[key], str) and HEX64.fullmatch(envelope[key]) for key in LEARN_DIGESTS):
+        raise JoinCardError("a LEARN digest is not 64 lowercase hex")
+    try:
+        digest = lv.sha256_text(lv.canonical({key: value for key, value in envelope.items() if key != "learn_sha256"}))
+    except (TypeError, ValueError, RecursionError):
+        raise JoinCardError("the LEARN envelope is not canonical JSON") from None
+    if digest != envelope["learn_sha256"]:
+        raise JoinCardError("the LEARN envelope does not match its digest")
+    if envelope["seed"] != jcd.view_digest(view):
+        raise JoinCardError("the LEARN envelope was made for another view")
+    if not _notes_ok(envelope["notes"], lane, envelope["seed"]):
+        raise JoinCardError(NOTE_REFUSAL)
+    warnings = envelope["warnings"]
+    top = _warnable_refs(remember)
+    if not isinstance(warnings, Mapping) or not all(isinstance(ref, str) and ref in top and _warning_ok(text)
+                                                    for ref, text in warnings.items()):
+        raise JoinCardError(WARNING_REFUSAL)
+
+
+def _rows_ok(rows: str, count: int) -> bool:
+    """The cited row hashes: as many as LEARN cites (its newest two), each 8 lowercase hex."""
+    cited = rows.split(", ")
+    return len(cited) == min(2, count) and all(ROW.fullmatch(row) for row in cited)
+
+
+def _note(note: Any) -> tuple[str, str] | None:
+    """The kind and sense ("wrong" or "correct") of a note LEARN v1 writes, else None: its exact form, LEARN's own
+    thresholds and the arithmetic every such note holds. The counts themselves cannot be checked here."""
+    if not isinstance(note, str) or len(note) > NOTE_CHARS:
+        return None
+    match = WRONG_NOTE.fullmatch(note)
+    if match:
+        kind, wrong, taken, reasons, rows = match.groups()
+        wrong, taken = int(wrong), int(taken)
+        parts = [REASON.fullmatch(part) for part in reasons.split(", ")]
+        if not all(parts):
+            return None
+        names = [part.group(2) for part in parts]
+        ok = (names == [name for name in LEARN_REASONS if name in names]
+              and sum(int(part.group(1)) for part in parts) == wrong
+              and ls.MIN_WRONG <= wrong <= taken and taken >= ls.MIN_TAKEN and _rows_ok(rows, wrong))
+        return (kind, "wrong") if ok and kind in LEARN_KINDS else None
+    match = CORRECT_NOTE.fullmatch(note)
+    if match:
+        kind, correct, taken, rows, _median, timed = match.groups()
+        correct, taken = int(correct), int(taken)
+        ok = (ls.MIN_CORRECT <= correct <= taken and taken >= ls.MIN_TAKEN and _rows_ok(rows, correct)
+              and (timed is None or ls.MIN_TIMED <= int(timed) <= correct))
+        return (kind, "correct") if ok and kind in LEARN_KINDS else None
+    return None
+
+
+def _notes_ok(notes: Any, lane: str, seed: str) -> bool:
+    """Notes in the shape ``learn_step.notes`` writes: per kind a harm note, a praise note or both in that order, each
+    kind's notes together, and the kinds in the order this seed rotates them to when both have notes."""
+    if not isinstance(notes, list) or len(notes) > NOTE_LIMIT:
+        return False
+    parsed = [_note(note) for note in notes]
+    if not all(parsed):
+        return False
+    kinds = [kind for kind, _ in parsed]
+    order = list(dict.fromkeys(kinds))
+    if kinds != sorted(kinds, key=order.index):
+        return False
+    if not all([sense for each, sense in parsed if each == kind] in (["wrong"], ["correct"], ["wrong", "correct"])
+               for kind in order):
+        return False
+    return len(order) < len(LEARN_KINDS) or order == ls.rotate(list(LEARN_KINDS), seed, lane)
+
+
+def _warning_ok(text: Any) -> bool:
+    """A warning ``learn_step.lesson_order`` writes: its form, LEARN's own warning rule and the cited rows."""
+    match = LESSON_WARNING.fullmatch(text) if isinstance(text, str) and len(text) <= NOTE_CHARS else None
+    if match is None:
+        return False
+    wrong, support, rows = int(match.group(1)), int(match.group(2)), match.group(3)
+    return ls.LESSON_WRONG <= wrong <= support and support >= ls.LESSON_SUPPORT and 2 * wrong >= support \
+        and _rows_ok(rows, wrong)
+
+
+def _warnable_refs(remember: Mapping[str, Any] | None) -> list[str]:
+    """The refs LEARN may warn: the first ``learn_step.LESSON_TOP`` picks the card shows; none for a refusal."""
+    if remember is None or remember["answer"]["status"] == "REFUSED":
+        return []
+    return [result["ref"] for result in remember["answer"]["results"][:ls.LESSON_TOP]]
+
+
 def lane_records(view: Mapping[str, Any], lane: str) -> tuple[str | None, list[Mapping[str, Any]]]:
     """The lane's slot and the action records where it is empty, in the lane view's own line order."""
     slot = SLOT_OF.get(lane)
@@ -340,7 +497,11 @@ def understand_line(fields: Mapping[str, Any] | None) -> str:
             f"{', '.join(fields['others'])}; the canonical tools decide what follows")
 
 
-def remember_lines(envelope: Mapping[str, Any] | None, limit: int) -> list[str]:
+def remember_lines(envelope: Mapping[str, Any] | None, limit: int,
+                   warnings: Mapping[str, str] | None = None) -> list[str]:
+    """The REMEMBER lines in the answer's own (hashed) order; v0.5: a LEARN warning for a shown pick is its own line
+    right under that pick, never a reorder."""
+    warnings = warnings or {}
     if envelope is None:
         return []  # P2b: no REMEMBER input, no line
     remember = envelope["answer"]
@@ -366,9 +527,32 @@ def remember_lines(envelope: Mapping[str, Any] | None, limit: int) -> list[str]:
         summary = f": {result['summary']}" if isinstance(result.get("summary"), str) and result["summary"] else ""
         lines.append(f"REMEMBER{degraded if number == 1 else ''} [{number}] {result['ref']} ({result['kind']}, "
                      f"{result['time_utc'][:10]}){marks}{summary}")
+        if number <= ls.LESSON_TOP and result["ref"] in warnings:
+            lines.append(f"LEARN on REMEMBER [{number}]: {warnings[result['ref']][len('LEARN: '):]}")
     more = f"; +{len(results) - limit} more picks not shown" if len(results) > limit else ""
     lines.append(f"REMEMBER picks {cite}{more}")
     return lines
+
+
+def learn_lines(learn: Mapping[str, Any] | None, keep: int, warned: int, learn_ref: str) -> list[str]:
+    """v0.5: the ``keep`` LEARN notes with the highest priority (harm notes first, then praise notes) in LEARN's own
+    order, then the citation; without an envelope the v0 line."""
+    if learn is None:
+        return [f"LEARN v0 records nothing from this card; LEARN contract {learn_ref}"]
+    notes = learn["notes"]
+    senses = [(_note(note) or ("", ""))[1] for note in notes]
+    priority = [i for i, sense in enumerate(senses) if sense == "wrong"] + \
+        [i for i, sense in enumerate(senses) if sense != "wrong"]
+    kept = sorted(priority[:keep])
+    return [notes[i] for i in kept] + [
+        f"LEARN v1 [state={learn['state_sha256'][:12]} params={learn['params_sha256'][:12]} "
+        f"learn={learn['learn_sha256'][:12]}] notes {len(kept)} of {len(notes)}, warnings {warned} of "
+        f"{len(learn['warnings'])}; LEARN contract {learn_ref}"]
+
+
+def _warned(remember: Mapping[str, Any] | None, limit: int, warnings: Mapping[str, str]) -> int:
+    """How many warned refs are among the picks a budget shows (each warning is for one of the first three)."""
+    return len(set(_warnable_refs(remember)[:limit]) & set(warnings))
 
 
 # --- the card ---------------------------------------------------------------------------------------------------------
@@ -379,24 +563,28 @@ def _line_unsafe(char: str) -> bool:
 
 
 def card(lane: str, delivery: Mapping[str, Any], view: Mapping[str, Any], remember: Mapping[str, Any] | None = None,
-         *, learn_ref: str) -> str:
+         *, learn_ref: str, learn: Mapping[str, Any] | None = None) -> str:
     """One lane's JOIN card text (module docstring). Raises JoinCardError, never returns a partial card."""
-    _check_inputs(lane, delivery, view, remember, learn_ref)
+    _check_inputs(lane, delivery, view, remember, learn_ref, learn)
     slot, records = lane_records(view, lane)
     fields = slot_fields(view, delivery, slot, records[0]) if records else None
     header = (f"JOIN {lane} as_of={view['as_of_utc']} now={delivery.get('now_utc', UNKNOWN)} {VERSION}; advisory, "
               "not a gate; check the canonical tools before any vote")
-    learn = f"LEARN v0 records nothing from this card; LEARN contract {learn_ref}"
+    warnings = learn["warnings"] if learn is not None else {}
+    notes = len(learn["notes"]) if learn is not None else 0
 
-    def lines_within(see_limit: int, pick_limit: int) -> list[str]:
+    def lines_within(see_limit: int, pick_limit: int, keep: int) -> list[str]:
         return [header, hear_line(delivery, lane), see_line(view, slot, records, see_limit), slot_line(fields),
-                understand_line(fields), *remember_lines(remember, pick_limit), learn]
+                understand_line(fields), *remember_lines(remember, pick_limit, warnings),
+                *learn_lines(learn, keep, _warned(remember, pick_limit, warnings), learn_ref)]
 
+    # v0.5: LEARN notes go first (praise before harm, learn_lines), then the v0.4 budgets with no note
+    budgets = [(*BUDGETS[0], keep) for keep in range(notes, -1, -1)] + [(*budget, 0) for budget in BUDGETS[1:]]
     # v0.3: the first budget renders every line the card can show; a smaller one only drops or counts whole items
-    if any(_line_unsafe(char) for line in lines_within(*BUDGETS[0]) for char in line):
+    if any(_line_unsafe(char) for line in lines_within(*budgets[0]) for char in line):
         raise JoinCardError(LINE_REFUSAL)
-    for see_limit, pick_limit in BUDGETS:
-        lines = lines_within(see_limit, pick_limit)
+    for see_limit, pick_limit, keep in budgets:
+        lines = lines_within(see_limit, pick_limit, keep)
         text = "\n".join(lines) + "\n"
         if len(text.encode("utf-8")) <= CARD_BYTES:
             break
@@ -413,11 +601,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--view", type=Path, required=True)
     parser.add_argument("--delivery", type=Path, required=True)
     parser.add_argument("--remember", type=Path)
+    parser.add_argument("--learn", type=Path)
     parser.add_argument("--learn-ref", required=True)
     args = parser.parse_args(argv)
     try:
         remember = jcd._load(args.remember) if args.remember else None
-        text = card(args.lane, jcd._load(args.delivery), jcd._load(args.view), remember, learn_ref=args.learn_ref)
+        learn = jcd._load(args.learn) if args.learn else None
+        text = card(args.lane, jcd._load(args.delivery), jcd._load(args.view), remember, learn_ref=args.learn_ref,
+                    learn=learn)
     except (JoinCardError, jcd.DeliveryError, ValueError, OSError, RecursionError) as error:
         print(f"refused: {error if isinstance(error, (JoinCardError, jcd.DeliveryError)) else 'an input is unreadable'}")
         return 2

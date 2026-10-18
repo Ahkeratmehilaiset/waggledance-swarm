@@ -1,4 +1,4 @@
-"""JOIN turn v0.2: one command from a verified frozen capture cycle to one lane's JOIN card. Sandbox, advisory, never a
+"""JOIN turn v0.3: one command from a verified frozen capture cycle to one lane's JOIN card. Sandbox, advisory, never a
 gate.
 
 The chain reuses each verified stage as it is; nothing is re-implemented here:
@@ -8,8 +8,16 @@ The chain reuses each verified stage as it is; nothing is re-implemented here:
    ``run_acceptance_1a`` makes.
 3. ``join_card_delivery.deliver(view, receipts, now_utc=..., notified=...)``: HEAR. Without a receipts document the
    turn passes one with no sources, so every receipt is UNKNOWN (no_source), never NONE.
-4. ``join_card.card(lane, delivery, view, envelope, learn_ref=...)``: the card. A REMEMBER envelope is passed through
-   as it is; the card checks its lane, turn and digest (the situation is cited, not verified).
+4. ``join_card.card(lane, delivery, view, envelope, learn_ref=..., learn=...)``: the card. A REMEMBER envelope is
+   passed through as it is; the card checks its lane, turn and digest (the situation is cited, not verified).
+
+(v0.3) With a LEARN v1 state (``learn_step.learn``'s output, ``--learn-state``) the turn makes the card's LEARN envelope
+(``learn_envelope``): the state must match its own hash (``learn_step.verify``) and have been folded with this
+``learn_step``'s parameters (``PARAMS`` and its digest), else the turn is refused; the REMEMBER envelope, when given, is
+checked first with the card's own check; then ``learn_step.notes(state, lane, <the view's canonical digest>)`` and the
+warnings of ``learn_step.lesson_order`` for the first three REMEMBER picks go into ``join_card.learn_envelope``. A state
+whose hash matches but whose content LEARN cannot read is refused with a fixed reason, never a raw error. turn.json
+records the state's ``state_hash`` and the envelope's sha256 (both null without a state).
 
 ``now`` defaults to the cycle's as_of: a frozen cycle has no later clock, and a frozen cycle is never live input. The
 body store is shared by every frozen cycle; ``lane_view.body`` uses a body only for a ref the cycle's snapshot names,
@@ -43,7 +51,7 @@ it the command exits 2 with its usage before any read. Exit 0 prints the card; e
 unreadable one, before any byte is written.
 
 usage: python -B sandbox/mind/join_turn.py --lane <lane> --cycle <cycle> --learn-ref <ref> --frozen-root DIR
-       [--receipts FILE] [--now UTC] [--notified FILE] [--remember ENVELOPE] [--out DIR]
+       [--receipts FILE] [--now UTC] [--notified FILE] [--remember ENVELOPE] [--learn-state FILE] [--out DIR]
 """
 
 from __future__ import annotations
@@ -68,15 +76,16 @@ import join_card as jc  # noqa: E402
 import join_card_delivery as jcd  # noqa: E402
 import lane_view as lv  # noqa: E402
 import lane_view_frozen as fz  # noqa: E402
+import learn_step as ls  # noqa: E402
 
-VERSION = "join-turn-v0.2"
+VERSION = "join-turn-v0.3"
 TURN_SCHEMA = "wd.mind-join-turn.v0"
 NO_RECEIPTS = {"schema": jcd.RECEIPTS_SCHEMA, "sources": {}, "rows": []}
 CASE_KEYS = ("snapshot", "github", "bodies", "as_of_utc")
 OUTPUTS = ("view.json", "delivery.json", "card.txt", "turn.json")
 REPO = HERE.parents[1]
 CODE = ("sandbox/mind/join_card.py", "sandbox/mind/join_card_delivery.py", "sandbox/mind/join_turn.py",
-        "sandbox/mind/step1/lane_view.py", "sandbox/mind/step1/lane_view_frozen.py", "tools/__init__.py",
+        "sandbox/mind/learn_step.py", "sandbox/mind/step1/lane_view.py", "sandbox/mind/step1/lane_view_frozen.py", "tools/__init__.py",
         "tools/bridge_compact_view.py", "tools/bridge_diff_privacy.py", "tools/bridge_mind_workspace.py",
         "tools/wd_bridge_mind.py", "waggledance/__init__.py",
         "waggledance/core/__init__.py", "waggledance/core/bridge_log_reader.py")  # the repo import closure, tested
@@ -90,17 +99,41 @@ class JoinTurnError(ValueError):
 
 
 def turn_case(lane: str, case: Mapping[str, Any], *, learn_ref: str, receipts: Any = None, now_utc: str | None = None,
-              notified: Any = (), envelope: Any = None) -> dict[str, Any]:
+              notified: Any = (), envelope: Any = None, learn_state: Any = None) -> dict[str, Any]:
     """One lane's turn over one loaded cycle: its view, delivery and card (the module docstring)."""
     if not isinstance(case, Mapping) or not all(key in case for key in CASE_KEYS):
         raise JoinTurnError("the cycle is not a loaded frozen cycle")
     view = lv.lane_view(case["snapshot"], case["github"], case["bodies"], as_of_utc=case["as_of_utc"])
     now = case["as_of_utc"] if now_utc is None else now_utc
     delivery = jcd.deliver(view, NO_RECEIPTS if receipts is None else receipts, now_utc=now, notified=notified)
-    text = jc.card(lane, delivery, view, envelope, learn_ref=learn_ref)
+    learn = None if learn_state is None else learn_envelope(lane, view, envelope, learn_state)
+    text = jc.card(lane, delivery, view, envelope, learn_ref=learn_ref, learn=learn)
     return {"cycle": case.get("cycle"), "lane": lane, "as_of_utc": view["as_of_utc"], "now_utc": delivery["now_utc"],
             "view": view, "delivery": delivery, "card": text, "receipts_given": receipts is not None,
-            "envelope": envelope, "inputs": None}
+            "envelope": envelope, "learn": learn, "learn_state_sha256": None if learn is None else learn["state_sha256"],
+            "inputs": None}
+
+
+def learn_envelope(lane: str, view: Mapping[str, Any], envelope: Any, state: Any) -> dict[str, Any]:
+    """v0.3: the card's LEARN envelope of one LEARN v1 state for this lane and view (module docstring)."""
+    try:
+        verified = ls.verify(state)
+    except RecursionError:  # too deep to have a canonical hash
+        verified = False
+    if not verified:
+        raise JoinTurnError("the LEARN state does not match its own hash")
+    if state.get("params") != ls.PARAMS or state.get("params_sha256") != ls.sha256_text(ls.canonical(ls.PARAMS)):
+        raise JoinTurnError("the LEARN state was folded with other parameters")
+    if envelope is not None:
+        jc._check_envelope(envelope, lane, view["as_of_utc"])  # the card's own refusal, before LEARN reads its refs
+    seed = jcd.view_digest(view)
+    try:
+        notes = ls.notes(state, lane, seed)
+        warnings = ls.lesson_order(state, lane, jc._warnable_refs(envelope))[1]
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, RecursionError):
+        raise JoinTurnError("the LEARN state is not a LEARN v1 state") from None
+    return jc.learn_envelope(lane, view["as_of_utc"], seed, notes, warnings, state_sha256=state["state_hash"],
+                             params_sha256=state["params_sha256"])
 
 
 def turn(lane: str, cycle: str, *, root: Path, **options: Any) -> dict[str, Any]:
@@ -144,6 +177,9 @@ def write_turn(out: Path, result: Mapping[str, Any]) -> dict[str, Any]:
                 "now_utc": result["now_utc"], "inputs": result.get("inputs"),
                 "receipts_given": result["receipts_given"],
                 "remember_envelope_sha256": None if envelope is None else lv.sha256_text(lv.canonical(envelope)),
+                "learn_state_sha256": result.get("learn_state_sha256"),
+                "learn_envelope_sha256": None if result.get("learn") is None
+                else lv.sha256_text(lv.canonical(result["learn"])),
                 "outputs": {name: lv.sha256_text(text) for name, text in files.items()}, "code_sha256": code_sha256()}
     files["turn.json"] = _json_text(manifest)
     if any(ws._has_marker(text) for text in files.values()):
@@ -216,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--now")
     parser.add_argument("--notified", type=Path)
     parser.add_argument("--remember", type=Path)
+    parser.add_argument("--learn-state", type=Path)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -225,8 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         receipts = jcd._load(args.receipts) if args.receipts else None
         notified = jcd._load(args.notified) if args.notified else ()
         envelope = jcd._load(args.remember) if args.remember else None
+        learn_state = jcd._load(args.learn_state) if args.learn_state else None
         result = turn(args.lane, args.cycle, root=args.frozen_root, learn_ref=args.learn_ref, receipts=receipts,
-                      now_utc=args.now, notified=notified, envelope=envelope)
+                      now_utc=args.now, notified=notified, envelope=envelope, learn_state=learn_state)
         if args.out:
             write_turn(args.out, result)
     except (JoinTurnError, jc.JoinCardError, jcd.DeliveryError, lv.LaneViewError, fz.FrozenInputError) as error:

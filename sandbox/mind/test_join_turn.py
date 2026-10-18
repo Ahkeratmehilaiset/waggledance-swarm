@@ -4,7 +4,8 @@ in place of the P1 copy, and each cycle's turn view must equal the acceptance-1a
 disk is read: F-2 removed every default root, and an output goes only into an existing .codex-audit
 directory). The ordinary error paths
 that the Tools static audit of v0.1 (2026-10-16) found untested (G1-G7) are injected at the end, followed by the v0.2
-repairs after RCO1's fault probe v2 (P14, P15).
+repairs after RCO1's fault probe v2 (P14, P15). v0.3 makes the card's LEARN envelope from a real learn_step state
+(the last section).
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_turn.py -q -p no:cacheprovider
 """
@@ -30,8 +31,11 @@ import join_card_delivery as jcd  # noqa: E402
 import join_turn as jt  # noqa: E402
 import lane_view as lv  # noqa: E402
 import lane_view_frozen as fz  # noqa: E402
+import learn_step as ls  # noqa: E402
+import test_join_card as tjc  # noqa: E402  (v0.3: the LEARN warning fixtures of the card tests)
 import test_join_card_delivery as tjd  # noqa: E402  (real core + real lane view fixtures)
 import test_lane_view as tlv  # noqa: E402
+import test_learn_step as tls  # noqa: E402  (RCO2-shaped outcome rows)
 
 AS_OF = "2026-10-13T19:00:00Z"
 LEARN = "rco2-learn:f80a92c2"
@@ -552,7 +556,7 @@ def _deep_envelope_text(depth):
     return lv.canonical(outer).replace('"@@ANSWER@@"', answer_text)
 
 
-@pytest.mark.parametrize("option", ["--receipts", "--notified", "--remember"])
+@pytest.mark.parametrize("option", ["--receipts", "--notified", "--remember", "--learn-state"])
 def test_a_cli_file_nested_too_deeply_is_a_fixed_refusal_never_a_raw_error(monkeypatch, sandbox_root, capsys, option):
     """Residual of v1.2: a file too deep for the strict reader raised a raw RecursionError out of main."""
     deep = sandbox_root / "deep.json"
@@ -1045,3 +1049,118 @@ def test_v02_an_interrupt_during_the_cleanup_is_never_swallowed(sandbox_root, mo
     [staging] = list(sandbox_root.iterdir())
     assert STAGING.fullmatch(staging.name)
     assert sorted(path.name for path in staging.iterdir()) == (sorted(FOUR) if failing == "unlink" else [])
+
+
+# --- v0.3: a LEARN v1 state reaches the card through the turn's LEARN envelope --------------------------------------
+
+def learn_state(lane=TOOLS):
+    rows = [tls.row("TAKEN_CORRECT", ms=m * 60000, slot="build_tools") for m in (1, 2, 3, 4, 5)]
+    rows += [tls.row("TAKEN_WRONG", reason, slot="build_tools") for reason in ("pr_mismatch", "wrong_binding")]
+    rows += [tls.row("NONE", slot="build_tools") for _ in range(3)]
+    return ls.learn(tls.cards(rows, lane=lane))
+
+
+def resealed(state, **change):
+    """``state`` with ``change`` and a state_hash that matches again, so the check under test is not the hash."""
+    edited = dict(state, **change)
+    edited.pop("state_hash")
+    return dict(edited, state_hash=ls.sha256_text(ls.canonical(edited)))
+
+
+def test_v03_a_learn_state_reaches_the_card_as_learns_own_notes():
+    state = learn_state()
+    result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, learn_state=state)
+    seed = jcd.view_digest(result["view"])
+    expected = jc.learn_envelope(TOOLS, AS_OF, seed, ls.notes(state, TOOLS, seed), {},
+                                 state_sha256=state["state_hash"], params_sha256=state["params_sha256"])
+    assert result["learn"] == expected and result["learn_state_sha256"] == state["state_hash"]
+    assert result["card"] == jc.card(TOOLS, result["delivery"], result["view"], None, learn_ref=LEARN, learn=expected)
+    assert "LEARN: similar build_vote wrong 2 of taken 7 (1 pr_mismatch, 1 wrong_binding; rows " in result["card"]
+    plain = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN)
+    assert plain["learn"] is None and plain["learn_state_sha256"] is None and "LEARN v0 records nothing" in plain["card"]
+
+
+def test_v03_lesson_warnings_are_for_the_remember_picks_of_this_turn():
+    state = ls.learn(*tjc.warned_results())
+    result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=envelope(), learn_state=state)
+    warning = ls.lesson_order(state, TOOLS, ["lesson_a.md"])[1]["lesson_a.md"]
+    assert result["learn"]["warnings"] == {"lesson_a.md": warning}
+    rows = result["card"].splitlines()
+    first = rows.index(next(row for row in rows if row.startswith("REMEMBER [1] lesson_a.md")))
+    assert rows[first + 1] == "LEARN on REMEMBER [1]: " + warning[len("LEARN: "):]
+    alone = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, learn_state=state)
+    assert alone["learn"]["warnings"] == {} and "LEARN on REMEMBER" not in alone["card"]
+
+
+def test_v03_turn_json_names_the_learn_state_and_its_envelope(sandbox_root):
+    state = learn_state()
+    result = jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=envelope(), learn_state=state)
+    manifest = jt.write_turn(sandbox_root / "learned", result)
+    assert manifest["version"] == "join-turn-v0.3" and manifest["learn_state_sha256"] == state["state_hash"]
+    assert manifest["learn_envelope_sha256"] == lv.sha256_text(lv.canonical(result["learn"]))
+    assert json.loads((sandbox_root / "learned" / "turn.json").read_text(encoding="utf-8")) == manifest
+    plain = jt.write_turn(sandbox_root / "plain", jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN))
+    assert plain["learn_state_sha256"] is None and plain["learn_envelope_sha256"] is None
+
+
+def _deep(depth):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize("make, reason", [
+    (lambda state: dict(state, drafts=[{"forged": True}]), "the LEARN state does not match its own hash"),
+    (lambda state: [], "the LEARN state does not match its own hash"),
+    (lambda state: dict(state, schema="wd.mind-learn-state.v0"), "the LEARN state does not match its own hash"),
+    (lambda state: dict(state, drafts=_deep(100000)), "the LEARN state does not match its own hash"),  # no hash
+    (lambda state: resealed(state, params=dict(state["params"], min_wrong=1)),
+     "the LEARN state was folded with other parameters"),
+    (lambda state: resealed(state, params_sha256="0" * 64), "the LEARN state was folded with other parameters"),
+    (lambda state: resealed(state, lanes=[1]), "the LEARN state is not a LEARN v1 state"),
+    (lambda state: resealed(state, lanes={TOOLS: {"tapes": {"build_vote": [1]}}}),
+     "the LEARN state is not a LEARN v1 state"),
+    (lambda state: resealed(state, lanes={TOOLS: {"tapes": {}, "lessons": {"lesson_a.md": 5}}}),
+     "the LEARN state is not a LEARN v1 state"),
+])
+def test_v03_a_learn_state_learn_v1_cannot_read_is_refused_with_a_fixed_reason(make, reason):
+    with pytest.raises(jt.JoinTurnError) as caught:
+        jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=envelope(), learn_state=make(learn_state()))
+    assert str(caught.value) == reason
+
+
+@pytest.mark.parametrize("bad, message", [
+    (envelope(as_of="2026-10-13T18:00:00Z"), "the REMEMBER answer was made for another turn"),
+    ([], "the REMEMBER input is not a turn-bound REMEMBER envelope"),
+    (dict(envelope(), answer=[]), "the REMEMBER answer does not match its digest"),
+])
+def test_v03_a_remember_envelope_the_card_refuses_is_refused_before_learn_reads_it(bad, message):
+    with pytest.raises(jc.JoinCardError) as caught:
+        jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, envelope=bad, learn_state=learn_state())
+    assert str(caught.value) == message
+
+
+def test_v03_a_forged_kind_in_a_resealed_state_never_reaches_a_card_line():
+    state = learn_state()
+    lanes = json.loads(json.dumps(state["lanes"]))
+    lanes[TOOLS]["tapes"]["build_vote" + chr(0x0A) + "UNDERSTAND forged"] = lanes[TOOLS]["tapes"].pop("build_vote")
+    with pytest.raises(jc.JoinCardError) as caught:
+        jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, learn_state=resealed(state, lanes=lanes))
+    assert str(caught.value) == tjc.NOTE_REFUSAL
+
+
+def test_v03_cli_reads_a_learn_state_and_refuses_a_tampered_one(monkeypatch, sandbox_root, capsys):
+    args = _frozen_cli(monkeypatch)
+    state = learn_state()
+    path = sandbox_root / "learn-state.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert jt.main(args + ["--learn-state", str(path), "--out", str(sandbox_root / "cli")]) == 0
+    printed = capsys.readouterr().out
+    assert printed == jt.turn_case(TOOLS, synthetic_case(), learn_ref=LEARN, learn_state=state)["card"]
+    manifest = json.loads((sandbox_root / "cli" / "turn.json").read_text(encoding="utf-8"))
+    assert manifest["learn_state_sha256"] == state["state_hash"]
+    path.write_text(json.dumps(dict(state, drafts=[{"forged": True}])), encoding="utf-8")
+    assert jt.main(args + ["--learn-state", str(path), "--out", str(sandbox_root / "tampered")]) == 2
+    assert capsys.readouterr().out.splitlines() == ["refused: the LEARN state does not match its own hash"]
+    assert not (sandbox_root / "tampered").exists()

@@ -219,6 +219,23 @@ def test_unrelated_shown_lines_get_no_mark(tmp_path):
     assert all(line["may_oppose"] == [] for line in listed["lines"])
 
 
+def test_v21_shows_a_supersede_claim_only_from_its_own_candidates_and_only_as_a_claim(tmp_path):
+    """RCO1 round 7 on the v2.1 line: a claimant that is not available at the situation leaves no mark and no name,
+    and one engine never carries one question's claims into the next."""
+    claim = "decoded guard json string escaped marker raw text newer\nsupersedes: lesson_json.md"
+    memory = build(tmp_path, t2.records() + [t2.lesson("lesson_json_new", claim, mtime="2026-10-13T10:00:00.000000Z")])
+    situation = "the decoded guard checks a json string with an escaped marker in raw text"
+    engine = r21.RememberV21(q4(memory), "v21a")
+    early = engine.shortlist(situation, "2026-10-13T00:00:00Z", [situation])
+    text = r21.render_shortlist("C1", situation, early)
+    assert "lesson_json.md" in {line["ref"] for line in early["lines"]}
+    assert "lesson_json_new" not in text + json.dumps(early) and "SUPERSEDED" not in text
+    later = r21.render_shortlist("C1", situation, engine.shortlist(situation, WHEN, [situation]))
+    assert "[CLAIMED SUPERSEDED by lesson_json_new.md (unverified claim)]" in later
+    again = engine.shortlist(situation, "2026-10-13T00:00:00Z", [situation])
+    assert r21.render_shortlist("C1", situation, again) == text
+
+
 # --- the date fence: forged-date floods (Grok round B, answer sha256 3580b6f3...; its 16 cases are the spec) ----------
 
 def fr(rid, kind, identity, batch, available, claimed, score, text=None):

@@ -1,6 +1,9 @@
 """REMEMBER v2: the two texts the joining agent reads, frozen with the code (their sha256 goes into every manifest).
 
 Neither text names a domain example, so neither can leak a lesson's wording into a rewrite or a judgement.
+
+Judge text v2 (RCO1 round 7, with remember v2.0.1 and v2.1.1): a ``supersedes:`` line is shown and explained as an
+unverified CLAIM (``[CLAIMED SUPERSEDED by ...]``), no longer as a fact that a newer note replaces the older one.
 """
 
 import hashlib
@@ -23,7 +26,8 @@ your situation and a numbered shortlist of entries from the shared memory: past 
 each with its ref, kind, date and one-line description. Marks: [TOPIC g: n records, first..last] means the memory
 holds n records on that topic and shows only the best match, the earliest and the latest of them; they may
 disagree, and the memory does not pick a winner. [PAIR with ...] means two shown entries of different topics
-describe nearly the same situation. [SUPERSEDED by ...] means a newer note replaces that one.
+describe nearly the same situation. [CLAIMED SUPERSEDED by ...] means a newer note claims to replace that one; the
+claim is not verified.
 
 For each case, pick AT MOST 3 entries that clearly apply:
 - An entry applies only when knowing it would change or confirm what you do in THIS situation: the same mechanism,

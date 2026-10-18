@@ -37,15 +37,22 @@ Two records are on the same topic when their summary vectors are at least ``TOPI
   records may disagree, and the memory never picks a winner. Groups are listed whole or not at all.
 
 Marks, in every arm. Two shown records of DIFFERENT groups whose summary vectors are at least ``PAIR_COSINE`` alike
-are a same-situation PAIR. A lesson whose text has a line ``supersedes: <file>`` marks that file SUPERSEDED wherever
-it is shown. The joining agent may call any two picks CONTESTED. A memory line never decides a vote, veto or merge;
-live gate truth does.
+are a same-situation PAIR. The joining agent may call any two picks CONTESTED. A memory line never decides a vote,
+veto or merge; live gate truth does.
+
+Supersede claims (RCO1 round 7; v2.0 leaked the future here). A lesson's line ``supersedes: <file>`` is a CLAIM, never
+a verified fact. It counts for one question only when the claiming lesson and the claimed file are both CANDIDATES of
+that question (available before the situation and not its self-match) and the claimant became available strictly
+later (``supersede_claims``). v2.0 read every lesson once, so a lesson written after the situation still marked an
+older shown note and put its file name into the shortlist, the judge text and the answer. Every line and result now
+carries ``supersede_claims`` (all valid claimants, in the order they became available, the newest last) and
+``superseded_by`` (the newest of them, or None); the line shows ``[CLAIMED SUPERSEDED by a, b (unverified claim)]``.
 
 Output surface (RCO1 review 19:10Z, probe plan V1x 28C85C83). ``v2c`` answers carry no memory text at all (refs,
 scores and dates only, as in v1). ``v2a`` and ``v2ca`` show memory text: per line the ref, kind, date (day), marks
-(TOPIC, PAIR, SUPERSEDED) and the record's one-line summary cut at ``SUMMARY_CHARS``; at most ``CAP`` lines and
+(TOPIC, PAIR, CLAIMED SUPERSEDED) and the record's one-line summary cut at ``SUMMARY_CHARS``; at most ``CAP`` lines and
 ``CASE_BYTES`` UTF-8 bytes of lines per case (the lowest groups are dropped whole). The workspace's decoded guard
-(NFKC, case-folded, ``\\uXXXX`` unescaped until stable) runs on every line as rendered, its SUPERSEDED mark included,
+(NFKC, case-folded, ``\\uXXXX`` unescaped until stable) runs on every line as rendered, its claim mark included,
 and on every field of it; a line that trips it is withheld and counted, never shown, and the case's other lines
 stay. A situation or query that trips it refuses that case in every arm (``situation_guarded``, ``query_guarded``) and
 is never shown; an answer that would trip it is refused (``output_guarded``), never raised. Every file the runner
@@ -88,7 +95,7 @@ import run_q4  # noqa: E402
 if Path(memory_mod.__file__).resolve().parent != STEP2.resolve() or q4_mod.memory_mod is not memory_mod:
     raise ImportError("step-2 memory module not loaded")
 
-VERSION = "remember-v2.0"
+VERSION = "remember-v2.0.1"  # v2.0.1: supersede claims only among the question's own candidates (RCO1 round 7)
 ARMS = ("v2c", "v2a", "v2ca")
 PRIMARY = "v2ca"
 SITUATION_CONTRACT = "wd.remember-v2-situation-run.v1"  # --arms situation: v2a alone, no rewrite, its own manifests
@@ -155,19 +162,20 @@ class RememberV2:
                 if row["provenance"]["view"] == "d":
                     summaries[row["provenance"]["record"]] = view.collection._texts[position]
         self.summary = [summaries.get(record_id, "") for record_id in q4.ids]
-        self.supersedes: dict[str, str] = {}
-        for entry in q4.entries:
-            if entry["row"]["kind"] != "lesson":
-                continue
-            for older in SUPERSEDES.findall(entry["text"]):
-                newer = entry["row"]["provenance"]["file"]
-                if older != newer:
-                    self.supersedes.setdefault(older, newer)
+        # (position, file, claimed files) of every lesson with a ``supersedes:`` line: what each one CLAIMS, read once.
+        # No claim counts until a question checks it against its own candidates (``supersede_claims``).
+        self.claimants = [(i, entry["row"]["provenance"]["file"], sorted(set(SUPERSEDES.findall(entry["text"]))))
+                          for i, entry in enumerate(q4.entries)
+                          if entry["row"]["kind"] == "lesson" and SUPERSEDES.search(entry["text"])]
+        self._candidates: frozenset[int] = frozenset()
+        self._claims: dict[str, list[str]] = {}
 
     # --- the shared steps ------------------------------------------------------------------------------------------
 
     def applicable(self, situation: str, situation_time_utc: str):
-        """(candidate positions, telemetry), or (None, reason) for a refused question. Rule v1, unchanged."""
+        """(candidate positions, telemetry), or (None, reason) for a refused question. Rule v1, unchanged. It also
+        sets the question's supersede claims, which every line built after it carries (``_result``)."""
+        self._candidates, self._claims = frozenset(), {}
         when = corpus_mod.parse_utc(situation_time_utc) if isinstance(situation_time_utc, str) else None
         if not isinstance(situation, str) or not situation.strip():
             return None, "situation_empty"
@@ -183,7 +191,38 @@ class RememberV2:
         telemetry = {"records": len(self.q4.entries), "candidates": int(candidate.sum()),
                      "excluded_not_before_situation": int((~fresh).sum()),
                      "excluded_self_match": int((fresh & self_match).sum())}
-        return np.flatnonzero(candidate), telemetry
+        index = np.flatnonzero(candidate)
+        self._candidates, self._claims = frozenset(int(i) for i in index), self.supersede_claims(index)
+        return index, telemetry
+
+    def supersede_claims(self, index: np.ndarray) -> dict[str, list[str]]:
+        """{claimed file: claimant files} among the candidates ``index`` only (RCO1 round 7). A claim counts when the
+        claimant and the claimed file are both candidate lessons and the claimant became available strictly later
+        than every candidate holding that file (so a lesson never claims itself); a time that does not parse proves
+        nothing, so it counts no claim. Claimants are listed in the order they became available (then by file), the
+        newest last, so neither the order of ``index`` nor the order of the entries can change a byte."""
+        candidates = {int(i) for i in index}
+        claimed = {older for i, _, olders in self.claimants if i in candidates for older in olders}
+        held: dict[str, list] = {}
+        for i in candidates:
+            row = self.q4.entries[i]["row"]
+            if row["kind"] == "lesson" and row["provenance"]["file"] in claimed:
+                held.setdefault(row["provenance"]["file"], []).append(self._available(i))
+        latest = {file: max(times) for file, times in held.items() if None not in times}
+        out: dict[str, dict] = {}
+        for i, newer, olders in self.claimants:
+            when = self._available(i) if i in candidates else None
+            if when is None:
+                continue
+            for older in olders:
+                if older in latest and when > latest[older]:
+                    names = out.setdefault(older, {})
+                    names[newer] = max(names.get(newer, when), when)
+        return {older: sorted(names, key=lambda name: (names[name], name)) for older, names in sorted(out.items())}
+
+    def _available(self, position: int):
+        """A record's ``available_utc`` as a UTC datetime, or None when it does not parse."""
+        return corpus_mod.parse_utc(self.q4.entries[position]["row"]["provenance"]["available_utc"])
 
     def ranks(self, text: str, index: np.ndarray) -> dict[str, np.ndarray]:
         """Rank 1..n of every candidate in each view for ``text``; no shared token is no lexical evidence."""
@@ -284,8 +323,7 @@ class RememberV2:
                                     {f"{name}{qn}": int(ranks[name][i]) for qn, ranks in enumerate(all_ranks)
                                      for name in ("w", "d", "b")})
                 line["topic"] = {"group": number, "records": len(members), "first_day": days[0],
-                                 "last_day": days[1], "head": i == group["head"]}
-                line["superseded_by"] = self._superseded_by(line)  # its mark is part of the guarded line
+                                 "last_day": days[1], "head": i == group["head"]}  # its claim mark is already on it
                 if guarded(line) or corpus_mod.ws._has_marker(line_text(1, line)):
                     withheld += 1  # the decoded guard runs on the rendered line itself, before anyone sees it
                     continue
@@ -338,22 +376,32 @@ class RememberV2:
     # --- output ----------------------------------------------------------------------------------------------------
 
     def _result(self, position: int, fused: float, ranks: Mapping[str, int], summary: bool = True) -> dict[str, Any]:
+        """One line or result, born with the supersede claims of its own question: every caller builds it from the
+        candidates of the ``applicable`` call just before (gate, shortlist, v3's BRD); any other position is refused."""
+        if position not in self._candidates:
+            raise RememberError("a line is not a candidate of its question")
         base = self.q4._result(position, 0.0, fused, {})
         base["score"] = round(fused, 6)
         base["view_ranks"] = dict(ranks)
         if summary:
             base["summary"] = one_line(self.summary[position])
         base["position"] = position
+        base["supersede_claims"] = list(self._claims.get(base["ref"], ())) if base["kind"] == "lesson" else []
+        base["superseded_by"] = self._superseded_by(base)
         return base
 
-    def _superseded_by(self, result: Mapping[str, Any]) -> str | None:
-        return self.supersedes.get(result["ref"]) if result["kind"] == "lesson" else None
+    @staticmethod
+    def _superseded_by(result: Mapping[str, Any]) -> str | None:
+        """The newest claimant on a line or result, read from its own claims (never from another question)."""
+        claims = result.get("supersede_claims") or []
+        return claims[-1] if claims else None
 
     def _marked(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """PAIR marks between shown records and SUPERSEDED marks from ``supersedes:`` lines."""
+        """PAIR marks between shown records; each keeps the supersede claims it was built and guarded with."""
         for result in results:
             result.setdefault("contested_with", [])
             result["pair_with"] = []
+            result.setdefault("supersede_claims", [])
             result["superseded_by"] = self._superseded_by(result)
         for a in range(len(results)):
             for b in range(a + 1, len(results)):
@@ -393,9 +441,14 @@ def line_text(n: int, line: Mapping[str, Any]) -> str:
         marks += f" [TOPIC {topic['group']}: {topic['records']} records, {topic['first_day']}..{topic['last_day']}]"
     if line.get("pair_with"):
         marks += f" [PAIR with {', '.join(line['pair_with'])}]"
-    if line.get("superseded_by"):
-        marks += f" [SUPERSEDED by {line['superseded_by']}]"
+    marks += claim_mark(line)
     return f"[{n}] {line['ref']} ({line['kind']}, {line['time_utc'][:10]}){marks}: {line['summary']}"
+
+
+def claim_mark(line: Mapping[str, Any]) -> str:
+    """`` [CLAIMED SUPERSEDED by a, b (unverified claim)]`` from the line's own claims, or nothing (RCO1 round 7)."""
+    claims = line.get("supersede_claims") or []
+    return f" [CLAIMED SUPERSEDED by {', '.join(claims)} (unverified claim)]" if claims else ""
 
 
 def rendered_bytes(lines: Sequence[Mapping[str, Any]]) -> int:

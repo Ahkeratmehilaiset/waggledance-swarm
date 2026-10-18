@@ -44,6 +44,34 @@ queries. A state file is never overwritten and every read checks its `state_hash
   coverage, pick conflicts, the guard, the runner.
 * Mutants: 18 LEARN and 11 fence mutants in memory, all killed by these tests (one test was strengthened after a
   survivor; harness and outputs in fable-5's audit folder, `finish/mind_mutants*.out.txt`).
+* `sandbox/mind/remember/test_remember_v2.py` and one v2.1 test (supersede claims, below): 18 mutants of the fix, all
+  killed by the claim tests alone, with a passing control (`fable-5-supersede-claims-20261018/mutants_r2.out.txt`).
+
+## Supersede claims (v2.1.1 and v2.0.1, RCO1 round 7)
+
+RCO1's round 7 found, and fable-5 confirmed by reading its own candidate code at 61044a85, that a `supersedes: <file>`
+line leaked the future. v2.0 built ONE map from every lesson, with no availability filter, while applicability
+filters the candidates separately. So a lesson written after the situation still marked an older shown note
+`[SUPERSEDED by <its file>]`, and its file name went into the shortlist, the judge text and the answer field
+`superseded_by` (in v2c, v2a, v2ca, v21a and v21ca). An older note could also mark a newer one, the first claimant in
+entry order won, and the judge text called the claim a fact. The Q4 grader reads returned refs only, so it cannot see
+this. A toy memory reproduced it before the fix (8 tests RED).
+
+Now (`remember_v2.py` v2.0.1, `remember_v21.py` v2.1.1, judge text v2 in `prompts.py`):
+
+* A claim counts for one question only when the claimant and the claimed note are both candidates of that question
+  (the v1 applicability: available before the situation minus the guard band, and not its self-match) and the
+  claimant became available strictly later than every candidate holding the claimed file. A time that does not parse
+  counts no claim.
+* Every valid claimant is listed in the order it became available, the newest last:
+  `[CLAIMED SUPERSEDED by a, b (unverified claim)]`. `superseded_by` stays one string (the newest claimant) for its
+  existing readers.
+* A line is born with its own question's claims, and an answer keeps the claims its shortlist showed, so one engine
+  never carries one question's claims into the next. A line for a record outside the question's candidates is refused.
+* The judge text says that the mark is a claim and is not verified.
+
+RCO2's `remember_v3.py` is not edited; it inherits the fix because it builds its lines through v2 after `applicable`.
+Its version string is RCO2's to change.
 
 ## Review after the first push (bee845a6)
 
@@ -74,3 +102,8 @@ queries. A state file is never overwritten and every read checks its `state_hash
   outcomes. Drafts never enter memory without a review record.
 * Not wired into the join card: the card frame belongs to its owners; LEARN notes and lesson order are offered as a
   pure interface (`notes`, `lesson_order`) for that later change.
+* Supersede claims: availability is the file mtime, which a writer controls, so a writer who forges a claimant's
+  mtime can still make a claim count; it is still shown only as an unverified claim. The frozen Q4 candidate 61044a85
+  is unchanged and still carries the leak; whether Q4 re-registers on a fixed revision is Lead's decision (fable-5
+  authored the candidate and does not choose). The join card (a separate sandbox lineage) still renders
+  `superseded_by` as `[SUPERSEDED by X]`; its claim wording is a later round.

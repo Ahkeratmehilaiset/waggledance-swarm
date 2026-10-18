@@ -65,7 +65,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-VERSION = "remember-v2.1-dev"
+VERSION = "remember-v2.1.1-dev"  # v2.1.1: v2.0.1's supersede claims, never from outside the question (RCO1 round 7)
 CLAUSE_CAP = 3
 T_OV = 0.40
 MIN_SHARED = 2
@@ -510,8 +510,8 @@ class RememberV21Error(ValueError):
 
 
 def line_text(n: int, line: Mapping[str, Any]) -> str:
-    """v2's line with the fence's TOPIC text in place of v2's, the line's date marks, v2's PAIR and SUPERSEDED marks
-    and the MAY_OPPOSE marks, before the summary."""
+    """v2's line with the fence's TOPIC text in place of v2's, the line's date marks, v2's PAIR and CLAIMED SUPERSEDED
+    marks (the claims of the line's own question, RCO1 round 7) and the MAY_OPPOSE marks, before the summary."""
     marks = ""
     topic = line.get("topic")
     if topic and topic.get("header"):
@@ -520,8 +520,7 @@ def line_text(n: int, line: Mapping[str, Any]) -> str:
         marks += f" [{' '.join(line['date_marks'])}]"
     if line.get("pair_with"):
         marks += f" [PAIR with {', '.join(line['pair_with'])}]"
-    if line.get("superseded_by"):
-        marks += f" [SUPERSEDED by {line['superseded_by']}]"
+    marks += v2.claim_mark(line)
     marks += "".join(" " + mark_text(mark["ref"], mark) for mark in line.get("may_oppose") or ())
     return f"[{n}] {line['ref']} ({line['kind']}, {line['time_utc'][:10]}){marks}: {line['summary']}"
 

@@ -6,6 +6,7 @@ run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/min
 
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -133,25 +134,169 @@ def test_decoded_guard_withholds_a_line_before_anyone_sees_it(tmp_path):
     assert "RIVATE" not in text
 
 
+CLAIM_BODY = "decoded guard json string escaped marker raw text newer\nsupersedes: {older}"
+NEWER = "2026-10-13T10:00:00.000000Z"  # the default lesson mtime is 2026-10-12T10:00; WHEN is after both
+
+
+def claimant(name, mtime, older="lesson_json.md"):
+    """A lesson whose text claims, in a ``supersedes:`` line, to replace ``older``; available at ``mtime``."""
+    return t2.lesson(name, CLAIM_BODY.format(older=older), mtime=mtime)
+
+
 def test_topic_superseded_and_pair_marks(tmp_path):
     rows = t2.records() + [
         dict(t2.lesson("lesson_json_copy", t2.TOPICS["json"]), time_utc="2026-10-13T00:00:00.000000Z"),
-        t2.lesson("lesson_json_new", "decoded guard json string escaped marker raw text newer\nsupersedes: lesson_json.md")]
+        claimant("lesson_json_new", NEWER)]
     e = engine(build(tmp_path, rows))
-    assert e.supersedes == {"lesson_json.md": "lesson_json_new.md"}
+    assert e.supersede_claims(e.applicable(JSON_SITUATION, WHEN)[0]) == {"lesson_json.md": ["lesson_json_new.md"]}
     listed = e.shortlist(JSON_SITUATION, WHEN, [JSON_SITUATION])
     by_ref = {line["ref"]: line for line in listed["lines"]}
     # an exact copy is on the same topic: one group, the copy is the latest, and no PAIR inside a group
     assert by_ref["lesson_json.md"]["topic"]["group"] == by_ref["lesson_json_copy.md"]["topic"]["group"]
     assert by_ref["lesson_json.md"]["pair_with"] == [] and by_ref["lesson_json_copy.md"]["pair_with"] == []
     assert by_ref["lesson_json.md"]["superseded_by"] == "lesson_json_new.md"
+    assert by_ref["lesson_json.md"]["supersede_claims"] == ["lesson_json_new.md"]
     text = rv.render_shortlist("C1", JSON_SITUATION, listed)
-    assert "[SUPERSEDED by lesson_json_new.md]" in text and f"[TOPIC {by_ref['lesson_json.md']['topic']['group']}: " in text
+    assert "[CLAIMED SUPERSEDED by lesson_json_new.md (unverified claim)]" in text
+    assert f"[TOPIC {by_ref['lesson_json.md']['topic']['group']}: " in text
     # the gate arm has no groups: there the copy is a PAIR
     gate = e.gate(JSON_SITUATION, WHEN, JSON_SITUATION)
     gate_refs = {result["ref"]: result for result in gate["results"]}
     if {"lesson_json.md", "lesson_json_copy.md"} <= set(gate_refs):
         assert "lesson_json_copy.md" in gate_refs["lesson_json.md"]["pair_with"]
+
+
+# --- supersede claims (RCO1 round 7): a claim counts only among the question's own candidates ----------------------
+
+EARLY = "2026-10-13T00:00:00Z"  # after lesson_json became available (2026-10-12T10:00), before a NEWER claimant
+
+
+def surfaces(e, situation, when, pick="lesson_json.md"):
+    """What a joiner or a grader can read for one question: the shortlist, its judge text, the gate answer and the
+    answer to a pick of ``pick``."""
+    listed = e.shortlist(situation, when, [situation])
+    refs = [line["ref"] for line in listed["lines"]]
+    answer = e.apply_picks(listed, {"picks": [refs.index(pick) + 1], "contested": [], "nothing_applies": False})
+    return listed, rv.render_shortlist("C1", situation, listed), e.gate(situation, when, situation), answer
+
+
+def test_a_claimant_not_yet_available_at_the_situation_marks_nothing_and_its_name_is_never_shown(tmp_path):
+    e = engine(build(tmp_path, t2.records() + [claimant("lesson_json_new", NEWER)]))
+    listed, text, gate, answer = surfaces(e, JSON_SITUATION, EARLY)
+    line = {line["ref"]: line for line in listed["lines"]}["lesson_json.md"]
+    assert line["superseded_by"] is None and line["supersede_claims"] == []
+    assert answer["status"] == "ANSWER" and answer["results"][0]["superseded_by"] is None
+    for surface in (text, json.dumps(listed), json.dumps(gate), json.dumps(answer)):
+        assert "lesson_json_new" not in surface and "SUPERSEDED" not in surface
+    # the same memory once the claimant is available: the claim is shown, as a claim
+    later, text, _, answer = surfaces(e, JSON_SITUATION, WHEN)
+    assert "[CLAIMED SUPERSEDED by lesson_json_new.md (unverified claim)]" in text
+    assert answer["results"][0]["superseded_by"] == "lesson_json_new.md"
+    # a later question never inherits the claims of an earlier one, and an answer keeps the claims its listing showed
+    again = surfaces(e, JSON_SITUATION, EARLY)
+    assert "lesson_json_new" not in again[1] + json.dumps(again[0]) + json.dumps(again[2]) + json.dumps(again[3])
+    number = [line["ref"] for line in later["lines"]].index("lesson_json.md") + 1
+    kept = e.apply_picks(later, {"picks": [number], "contested": [], "nothing_applies": False})
+    assert kept["results"][0]["superseded_by"] == "lesson_json_new.md"
+    # and no line is ever built for a record outside the question's candidates
+    index, _ = e.applicable(JSON_SITUATION, EARLY)
+    future = [i for i, entry in enumerate(e.q4.entries)
+              if entry["row"]["provenance"].get("file") == "lesson_json_new.md"]
+    assert len(future) == 1 and future[0] not in set(index.tolist())
+    with pytest.raises(rv.RememberError):
+        e._result(future[0], 0.0, {})
+
+
+def lesson_files(e, index):
+    return {e.q4.entries[i]["row"]["provenance"].get("file") for i in index}
+
+
+def test_a_claim_on_a_note_that_is_not_a_candidate_of_the_question_counts_nothing(tmp_path):
+    target = "alpha bravo charlie delta echo foxtrot golf hotel india juliet"
+    rows = t2.records() + [t2.lesson("lesson_target", target),
+                           t2.lesson("lesson_claim", "kilo lima mike november\nsupersedes: lesson_target.md",
+                                     mtime=NEWER)]
+    e = engine(build(tmp_path, rows))
+    index, _ = e.applicable(target, WHEN)  # the situation is the target's own text: its self-match
+    assert "lesson_target.md" not in lesson_files(e, index) and "lesson_claim.md" in lesson_files(e, index)
+    assert e.supersede_claims(index) == {}
+    assert e.supersede_claims(e.applicable(JSON_SITUATION, WHEN)[0]) == {"lesson_target.md": ["lesson_claim.md"]}
+
+
+def test_a_claim_must_be_newer_than_every_candidate_holding_the_claimed_file(tmp_path):
+    edited = t2.lesson("lesson_json", t2.TOPICS["json"] + " edited", mtime="2026-10-13T12:00:00.000000Z")
+    e = engine(build(tmp_path, t2.records() + [edited, claimant("lesson_json_new", NEWER)]))
+    assert e.supersede_claims(e.applicable(JSON_SITUATION, WHEN)[0]) == {}  # the edited copy is newer than the claim
+    before = e.applicable(JSON_SITUATION, "2026-10-13T11:00:00Z")[0]  # the edited copy is not available yet
+    assert e.supersede_claims(before) == {"lesson_json.md": ["lesson_json_new.md"]}
+
+
+def test_a_time_that_does_not_parse_counts_no_claim(tmp_path):
+    rows = t2.records() + [claimant("lesson_json_untimed", ""),
+                           t2.lesson("lesson_untimed", "kilo lima mike november oscar papa quebec", mtime=""),
+                           claimant("lesson_untimed_claim", NEWER, older="lesson_untimed.md")]
+    e = engine(build(tmp_path, rows))
+    index, _ = e.applicable(JSON_SITUATION, WHEN)
+    assert {"lesson_json_untimed.md", "lesson_untimed.md", "lesson_untimed_claim.md"} <= lesson_files(e, index)
+    assert e.supersede_claims(index) == {}
+
+
+def test_an_older_equally_old_self_or_unmatched_claim_marks_nothing(tmp_path):
+    rows = t2.records() + [claimant("lesson_json_older", "2026-10-11T10:00:00.000000Z"),
+                           claimant("lesson_json_same", "2026-10-12T10:00:00.000000Z"),
+                           claimant("lesson_json_self", NEWER, older="lesson_json_self.md"),
+                           claimant("lesson_json_ghost", NEWER, older="lesson_ghost.md")]
+    e = engine(build(tmp_path, rows))
+    available = {entry["row"]["provenance"].get("file"): str(when) for entry, when in zip(e.q4.entries, e.q4.available)}
+    assert available["lesson_json_same.md"] == available["lesson_json.md"] > available["lesson_json_older.md"]
+    assert e.supersede_claims(e.applicable(JSON_SITUATION, WHEN)[0]) == {}
+    listed, text, gate, answer = surfaces(e, JSON_SITUATION, WHEN)
+    assert all(line["superseded_by"] is None and line["supersede_claims"] == [] for line in listed["lines"])
+    assert "SUPERSEDED" not in text and answer["results"][0]["superseded_by"] is None
+
+
+def test_every_valid_claimant_is_listed_newest_last_whatever_the_candidate_order(tmp_path):
+    rows = t2.records() + [claimant("lesson_json_b", NEWER), claimant("lesson_json_a", "2026-10-13T11:00:00.000000Z")]
+    e = engine(build(tmp_path, rows))
+    index, _ = e.applicable(JSON_SITUATION, WHEN)
+    claims = e.supersede_claims(index)
+    assert claims == {"lesson_json.md": ["lesson_json_b.md", "lesson_json_a.md"]}  # by availability, not by name
+    for order in (index[::-1], np.random.default_rng(7).permutation(index)):
+        assert json.dumps(e.supersede_claims(order)) == json.dumps(claims)
+    e.claimants.reverse()  # the claimants read in the opposite entry order
+    assert json.dumps(e.supersede_claims(index)) == json.dumps(claims)
+    e.claimants.reverse()
+    listed, text, gate, answer = surfaces(e, JSON_SITUATION, WHEN)
+    line = {line["ref"]: line for line in listed["lines"]}["lesson_json.md"]
+    assert line["supersede_claims"] == ["lesson_json_b.md", "lesson_json_a.md"]
+    assert line["superseded_by"] == answer["results"][0]["superseded_by"] == "lesson_json_a.md"
+    assert "[CLAIMED SUPERSEDED by lesson_json_b.md, lesson_json_a.md (unverified claim)]" in text
+
+
+def test_no_judge_text_or_claim_names_a_file_that_is_not_a_candidate_of_its_own_question(tmp_path):
+    rows = t2.records() + [claimant("lesson_json_new", NEWER),
+                           claimant("lesson_json_later", "2026-10-13T20:00:00.000000Z"),
+                           claimant("lesson_retry_new", NEWER, older="lesson_retry.md")]
+    e = engine(build(tmp_path, rows))
+    claims = {}
+    for when in ("2026-10-12T12:00:00Z", EARLY, "2026-10-13T15:00:00Z", WHEN):
+        for situation in (JSON_SITUATION, "a watcher narrowed its retry reasons and now refuses fatal startups"):
+            index, _ = e.applicable(situation, when)
+            files = {e.q4.entries[i]["row"]["provenance"].get("file") for i in index}
+            listed = e.shortlist(situation, when, [situation])
+            text = rv.render_shortlist("C1", situation, listed)
+            assert set(re.findall(r"[A-Za-z0-9._-]+\.md", text)) <= files, (when, situation)
+            claims[when, situation] = {line["ref"]: line["supersede_claims"] for line in listed["lines"]
+                                       if line["supersede_claims"]}
+    assert claims["2026-10-13T15:00:00Z", JSON_SITUATION]["lesson_json.md"] == ["lesson_json_new.md"]
+    assert claims[WHEN, JSON_SITUATION]["lesson_json.md"] == ["lesson_json_new.md", "lesson_json_later.md"]
+    assert claims[EARLY, JSON_SITUATION] == claims["2026-10-12T12:00:00Z", JSON_SITUATION] == {}
+
+
+def test_the_judge_reads_a_supersedes_line_as_an_unverified_claim():
+    judge = " ".join(prompts.JUDGE.split())
+    claim = "[CLAIMED SUPERSEDED by ...] means a newer note claims to replace that one; the claim is not verified."
+    assert claim in judge and "[SUPERSEDED by" not in judge and "replaces that one" not in judge
 
 
 def test_apply_picks_answers_abstains_or_refuses(memory_dir):
@@ -374,10 +519,10 @@ def test_a_guarded_word_beyond_the_cut_is_never_shown_and_keeps_its_line(tmp_pat
 
 def test_a_superseded_mark_naming_a_guarded_file_withholds_its_line_instead_of_failing_the_case(tmp_path):
     newer = "lesson-" + GUARDED.lower()
-    rows = t2.records() + [t2.lesson(newer, "decoded guard json string escaped marker raw text newer\n"
-                                            "supersedes: lesson_json.md")]
+    rows = t2.records() + [claimant(newer, NEWER)]
     e = engine(build(tmp_path, rows))
-    assert e.supersedes == {"lesson_json.md": f"{newer}.md"} and rv.guarded(f"{newer}.md")
+    assert e.supersede_claims(e.applicable(JSON_SITUATION, WHEN)[0]) == {"lesson_json.md": [f"{newer}.md"]}
+    assert rv.guarded(f"{newer}.md")
     listed = e.shortlist(JSON_SITUATION, WHEN, [JSON_SITUATION])
     refs = {line["ref"] for line in listed["lines"]}
     assert listed["status"] == "LISTED" and not {"lesson_json.md", f"{newer}.md"} & refs

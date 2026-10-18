@@ -1,10 +1,12 @@
 # JOIN_OUTCOME_ADAPTER v0.1: outcome rows for the JOIN card a lane actually read (contract, sandbox)
 
-Status: FROZEN design contract, version marker `v0.1-r2` (revision 2 of v0.1), written by fable-5 for Lead's
-request `lead-fable-join-outcome-contract-preparation-20261018-v1` and its revision request
-`lead-fable-join-outcome-contract-revision-bc050b9c-20261018-v2` (task
-`codex-lead-1/join-outcome-contract-preparation-20261018`). The first freeze (`v0.1`, commit bc050b9c, blob
-1d124b44, sha256 2cb5f06c...) is historical and superseded by this text; section 12 lists the delta. Sandbox only,
+Status: FROZEN design contract, version marker `v0.1-r3` (revision 3 of v0.1), written by fable-5 for Lead's
+request `lead-fable-join-outcome-contract-preparation-20261018-v1` and its revision requests
+`lead-fable-join-outcome-contract-revision-bc050b9c-20261018-v2` and
+`lead-fable-join-outcome-contract-source-alignment-2178da51-20261018-v3` (task
+`codex-lead-1/join-outcome-contract-preparation-20261018`). The earlier freezes (`v0.1`, commit bc050b9c, blob
+1d124b44, sha256 2cb5f06c...; `v0.1-r2`, commit 2178da51, blob 2e542882, sha256 1db6de56...) are historical and
+superseded by this text; sections 12 and 13 list the deltas. Sandbox only,
 advisory, never a gate. No code GO: implementation stays held until Lead checks this frozen text and issues a
 separately bounded code GO. No PR, no runtime, no real, frozen or sealed input.
 
@@ -31,7 +33,8 @@ author credit.
   its constants (`SCHEMA` is not reused; `CONTRACT_SHA256`, `HISTORICAL_GAP`) are called, never copied or edited.
   fable-5's composition probe ran its `outcomes` on this lineage once (one fixture view): the import closure loads
   there; that is not general parity. It imports `step1/lane_view.py`, `tools/bridge_mind_workspace.py` and
-  `tools/bridge_compact_view.py` (already members). It then runs against this lineage's `lane_view.py`, not its own branch's (stated limit).
+  `tools/bridge_compact_view.py` (already members). It then runs against this lineage's `lane_view.py`, not its
+  own branch's (stated limit).
 * Imported from the card lineage: `join_card.py` (v0.5: `card`, `lane_records`, `see_line`, `_check_envelope`),
   `join_card_delivery.py` (`_load` style reads only), `join_turn.py` (`TURN_SCHEMA`, `OUTPUTS`).
 * LEARN dependency (a separate later slice, LEARN v1.1): `learn_step._check_result` accepts only
@@ -148,10 +151,15 @@ adapter beyond what RCO2's rules already require from their own inputs.
 ## 7. Rows and result
 
 * `read, reason, receipt_reasons = read_time(issue, receipts, lane, card_sha256, view_sha256)`: RCO2's function
-  returns THREE values (read time or None, the reason or None, the sorted set of reasons of receipts that failed;
-  lines 185-204 of its source). `receipt_reasons` is kept in the result as `receipt_reasons_seen`, exactly as RCO2's
-  `outcomes` keeps it. `issued = _time(issue["issued_utc"])` when the issue is a mapping, else None, and `as_of =
-  _time(view["as_of_utc"])`, as RCO2 computes them.
+  returns THREE values (read time or None, the reason or None, the sorted set of reasons of the related receipts that
+  failed; lines 185-204 of its source). The triple is kept exactly: `reason` goes into the rows (via
+  `outcome_row`), and `receipt_reasons` is kept in the result as `receipt_reasons_seen`, exactly as RCO2's `outcomes`
+  keeps it. That list is legitimately EMPTY when no receipt is related (`receipt_missing`) or the issue itself fails
+  (`issue_missing`, `issue_invalid`): an issue-level reason appears only in the rows, never appended to the list.
+* `issued = _time(issue.get("issued_utc")) if isinstance(issue, Mapping) else None` and `as_of =
+  _time(view.get("as_of_utc"))`, exactly RCO2's `.get` forms (its lines 499 and 502), so a missing key is the
+  helpers' fixed UNKNOWN path, never a raw KeyError. (A JOIN card re-rendered byte-equal from the view implies a
+  view as_of, so `as_of` is not None on an accepted card.)
 * `lane_events` exactly as RCO2 builds them: `kept, event_counts = dedupe(event_pairs(events))`, then the lane's
   own events of `kept` sorted by (ts, ref). ALL of them go to every shown line's `outcome_row`; no event is dropped
   because it concerns a hidden line or another PR.
@@ -188,8 +196,12 @@ adapter beyond what RCO2's rules already require from their own inputs.
 ## 9. Bounded synthetic acceptance plan (all fixtures built in-test from the card tests' helpers)
 
 Positive:
-* A1 k = 3 shown, a valid build vote by the lane on line 1 inside the read window with complete coverage, a head
-  interval, eligibility and verified identity: line 1 TAKEN_CORRECT, lines 2 and 3 NONE; `not_shown` empty.
+* A0 (control) k = 3 shown, three PRs with three different canonical tasks, complete coverage from the view's
+  time through the window's end, a valid issue and read receipt, and ZERO lane events: lines 1, 2 and 3 NONE.
+* A1 the same three PRs and tasks, and one valid build pass vote by the lane on line 1's task inside the read window
+  with complete coverage, a head interval, eligibility and verified identity: line 1 TAKEN_CORRECT, lines 2 and 3
+  OTHER (no relevant action for their tasks, but a lane event inside the window: RCO2's lines 440-441);
+  `not_shown` empty.
 * A2 the size bound forces k = 1 (long REMEMBER and LEARN content): exactly one row (line 1); line 2 gets NO row
   and is listed in `not_shown`; `hidden_prs == len(records) - 1`. The lane's pass vote on the line-2 PR (its own
   task) is NOT removed from `lane_events`: under the unchanged rules it is not a relevant action for line 1 (another
@@ -211,8 +223,11 @@ Negative (each a fixed refusal, never a raw error):
   another schema, version, authority or scope, a null cycle or inputs, `learn_state_sha256` and
   `learn_envelope_sha256` disagreeing in nullness, an `outputs` or `code_sha256` key set that differs, duplicate
   JSON keys; N6 an output digest mismatch; N7 an envelope missing for a non-null digest, or given for a null one;
-  N8 a view of another schema; N9 an ambiguous k; N10 a receipt or issue naming the step-1 card's hash applied to
-  the JOIN card (UNKNOWN by RCO2's own receipt rules, its reason kept in `receipt_reasons_seen`); N11 too-deep or
+  N8 a view of another schema; N9 an ambiguous k; N10a an ISSUE naming the step-1 card's hash (receipt related by
+  lane): every shown row UNKNOWN(issue_invalid) and `receipt_reasons_seen == []`; N10b a valid JOIN issue and a
+  related RECEIPT naming the step-1 card's hash: every shown row UNKNOWN(receipt_digest_mismatch) and
+  `receipt_reasons_seen == ["receipt_digest_mismatch"]`; N10c an issue without `issued_utc`: rows
+  UNKNOWN(issue_invalid), no raw error; N11 too-deep or
   non-JSON input; N12 each artifact absent in turn (turn.json, view.json, delivery.json, card.txt, a needed
   envelope): a refusal result with `exposure == "UNKNOWN"`, never an empty or missing result.
 * Mutants to kill: derive k from the manifest; accept a partial SEE match; count `not_shown` in `counts`; use
@@ -264,3 +279,24 @@ Unchanged and kept: the two cardinalities of section 5 (Lead's counterexample), 
 k, rows only for displayed SEE actions, RCO2's source byte-identical, no outcome v1.3 label, no code GO. Open
 limits stay in section 11. Ledger addition: Lead's frozen-contract check (finding on this task) is review input
 for r2, not authored text.
+
+## 13. Revision v0.1-r3 delta (from the r2 freeze at 2178da51): Source and test-oracle alignment
+
+All three are oracle or wording errors of the contract against RCO2's unchanged helpers (Lead's static check on
+this task); none changes RCO2's semantics, and none is an observed product defect:
+* A1 expected NONE for lines 2 and 3 although a lane event lies inside the window; RCO2's `outcome_row` gives OTHER
+  there (lines 440-441). A1 now expects TAKEN_CORRECT, OTHER, OTHER with three different canonical tasks, and the
+  new control A0 (zero lane events) expects NONE, NONE, NONE.
+* Section 7 indexed `issue["issued_utc"]`; RCO2's `outcomes` uses `issue.get("issued_utc")` (and
+  `view.get("as_of_utc")`). r3 uses the `.get` forms, so a missing key stays the fixed UNKNOWN path (new N10c).
+* N10 conflated the row reason with `receipt_reasons_seen`. `read_time` returns an empty list for
+  `receipt_missing` and issue-level failures and fills it only for failed related receipts; r3 keeps the triple
+  exactly and splits N10 into an issue-level case (N10a, empty list) and a receipt-level case (N10b).
+
+Closed by this text: the read_time arity and triple use, the .get forms, the A0/A1/A2 oracles, the complete
+manifest key set, the observable refusal boundary, the two cardinalities. Needing later execution (code slice,
+after a code GO): every acceptance case of section 9 against the real helpers, the JSON round trip of view.json and
+delivery.json reproducing card.txt byte for byte, the order check of records against action texts on hand-made
+views, and RCO2's import closure on this lineage beyond the one composition-probe fixture. Tools' separate
+feasibility slice on bc050b9c had sent fable-5 no finding at this freeze; any material result is reconciled only
+by a later request.

@@ -114,8 +114,10 @@ Rules of the derivation:
   holds a guarded private-marker word makes its row a refused input. JSON inside strings is never parsed.
 * The output boundary: ``reflect`` guards the complete reflected object (every key and value, including
   fields copied unchanged from the snapshot), and the CLI guards the exact text it prints as well, JSON or
-  plain. The check is in any letter case and compatibility form, and before and after each backslash-u
-  unescape. A hit refuses the whole snapshot with exit 2 and prints nothing; nothing is stripped.
+  plain. The check is in any letter case and compatibility form, before and after each backslash-u unescape,
+  HTML character reference and percent decoding, and again with format characters and combining marks removed and
+  Cyrillic or Greek look-alike letters read as Latin. A hit refuses the whole snapshot with exit 2 and prints
+  nothing; nothing is stripped.
 * ``authority`` must be ``none`` and ``scope`` must be ``bounded_projection_not_gate``; neither is set here.
 
 Observe-only: not on the gate verdict path, reads only its input files, writes only stdout, and posts no
@@ -127,12 +129,14 @@ import argparse
 import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import html
 import json
 from pathlib import Path
 import re
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 import unicodedata
+from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -167,6 +171,19 @@ COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
 UNESCAPE_ROUNDS = 4
+# The most distinct decoded forms of one text the guard checks; a text with more is refused, never passed unchecked.
+FORM_LIMIT = 64
+# Cyrillic and Greek letters a renderer shows like a Latin letter (RCO1's JOIN injection probe passed a Cyrillic one).
+# Only letters whose usual glyph matches; a look-alike outside this map is a known limit.
+_LOOKALIKE = str.maketrans(
+    "\u0410\u0412\u0415\u041a\u041c\u041d\u041e\u0420\u0421\u0422\u0425\u0423\u0406\u0408\u0405"
+    "\u0430\u0435\u043e\u0440\u0441\u0443\u0445\u0456\u0458\u0455\u04cf\u0501\u051b\u051d"
+    "\u0391\u0392\u0395\u0396\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a5\u03a7"
+    "\u03bf\u03b9\u03ba\u03c1\u03bd",
+    "ABEKMHOPCTXYIJS"
+    "aeopcyxijsldqw"
+    "ABEZHIKMNOPTYX"
+    "oikpv")
 KEY_LIMIT = 200
 UNKNOWN_REF_RULES = ("refused_input", "coverage_unknown", "input_blocked", "context_applied", "context_refused")
 RULE_SEVERITY = {
@@ -227,21 +244,44 @@ def parse_time(value: Any) -> datetime | None:
     return base + timedelta(microseconds=int((match.group(2) or "").ljust(6, "0")[:6]))
 
 
-def _has_marker(text: str) -> bool:
-    """A guarded word in the text in any letter case or compatibility form, before or after each ``\\uXXXX`` unescape.
+def _decodings(form: str) -> tuple[str, str, str]:
+    """What a reader may decode the text to: each ``\\uXXXX`` unescape, HTML character references, percent decoding."""
+    return (_ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form), html.unescape(form),
+            unquote(form, errors="replace"))
 
-    The shared check is case-sensitive, so each form is NFKC-normalized, case-folded and upper-cased first. The
-    unescape repeats until nothing changes (at most ``UNESCAPE_ROUNDS`` times), so a word escaped twice, which a
-    reader would reveal by decoding twice, is found too. JSON inside the text is never parsed.
+
+def _found(form: str) -> bool:
+    """The shared check on the form and on its skeleton: format characters (Cf: ZWJ, ZWNJ, soft hyphen) and combining
+    marks removed after compatibility decomposition, and look-alike letters read as Latin, as a renderer shows them."""
+    if form.isascii():  # an ASCII text is its own skeleton: no format character, mark or look-alike in it
+        return _guarded_word(form.upper()) is not None
+    skeleton = "".join(char for char in unicodedata.normalize("NFKD", form)
+                       if unicodedata.category(char) not in ("Cf", "Mn", "Me")).translate(_LOOKALIKE)
+    return any(_guarded_word(unicodedata.normalize("NFKC", candidate).casefold().upper()) is not None
+               for candidate in (form, skeleton))
+
+
+def _has_marker(text: str) -> bool:
+    """A guarded word in the text in any letter case or compatibility form, before or after each decoding a reader
+    may apply (``\\uXXXX`` unescape, HTML character reference, percent decoding), in any order and mix.
+
+    The shared check is case-sensitive, so each form is NFKC-normalized, case-folded and upper-cased first, and each
+    form is checked again as its skeleton (``_found``). Decoding repeats until no new form appears (at most
+    ``UNESCAPE_ROUNDS`` rounds and ``FORM_LIMIT`` forms), so a word encoded twice, which a reader would reveal by
+    decoding twice, is found too; a text still yielding new forms past either bound is refused. JSON inside the text
+    is never parsed.
     """
-    form = text
+    seen = {text}
+    forms = [text]
     for _ in range(UNESCAPE_ROUNDS):
-        if _guarded_word(unicodedata.normalize("NFKC", form).casefold().upper()) is not None:
+        if any(_found(form) for form in forms):
             return True
-        unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form)
-        if unescaped == form:
+        forms = list(dict.fromkeys(decoded for form in forms for decoded in _decodings(form) if decoded not in seen))
+        if not forms:
             return False
-        form = unescaped
+        seen.update(forms)
+        if len(seen) > FORM_LIMIT:
+            return True
     return True
 
 

@@ -757,6 +757,56 @@ def test_the_serializer_guards_the_object_and_its_own_text_and_deep_escapes_fail
     assert mind._has_marker(nested) and not mind._has_marker("docs\\u0041.md")
 
 
+# Forms a reader decodes or a renderer hides, each holding a guarded word (PRODUCT.md known limits: RCO1's JOIN
+# injection probe at adb8949f passed an HTML entity, percent encoding, ZWJ or ZWNJ inside a word, a Cyrillic look-alike
+# letter and a soft hyphen). Built from GUARD_WORDS with escapes, so this file carries no literal word or hidden char.
+HIDDEN_FORMS = {
+    "html_decimal": "&#%d;" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "html_decimal_no_semicolon": "&#%d" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "html_hex_underscore": GUARD_WORDS[0].replace("_", "&#x5F;"),
+    "html_named_underscore": GUARD_WORDS[0].replace("_", "&lowbar;"),
+    "percent_underscore": GUARD_WORDS[0].replace("_", "%5F"),
+    "percent_lower_case": GUARD_WORDS[0].lower().replace("_", "%5f"),
+    "percent_twice": GUARD_WORDS[0].replace("_", "%255F"),
+    "percent_then_html": "%26%23" + str(ord(GUARD_WORDS[0][0])) + "%3B" + GUARD_WORDS[0][1:],
+    "zwj_inside": GUARD_WORDS[0][:3] + "\u200d" + GUARD_WORDS[0][3:],
+    "zwnj_inside": GUARD_WORDS[0][:3] + "\u200c" + GUARD_WORDS[0][3:],
+    "soft_hyphen_inside": GUARD_WORDS[0][:3] + "\u00ad" + GUARD_WORDS[0][3:],
+    "word_joiner_inside": GUARD_WORDS[0][:3] + "\u2060" + GUARD_WORDS[0][3:],
+    "escaped_zwj_inside": GUARD_WORDS[0][:3] + "\\u200d" + GUARD_WORDS[0][3:],
+    "combining_mark": GUARD_WORDS[0][0] + "\u0301" + GUARD_WORDS[0][1:],
+    "cyrillic_upper": GUARD_WORDS[0].replace("A", "\u0410").replace("E", "\u0415"),
+    "cyrillic_lower": GUARD_WORDS[0].lower().replace("a", "\u0430").replace("e", "\u0435"),
+    "greek_upper": GUARD_WORDS[0].replace("A", "\u0391"),
+    "second_word_cyrillic_o": GUARD_WORDS[1].replace("O", "\u041e"),
+}
+# Clean text a decoder changes or that holds non-Latin letters: none of it is a guarded word after decoding.
+CLEAN_FORMS = ("docs\\u0041.md", "50% done", "a &amp; b", "%41%42", "R&amp;D 100%25", "caf\u00e9",
+               "\u043f\u0440\u0438\u0432\u0435\u0442", "x\\ud800y %41 &#xD800;", "PRIVATE", "MARKER")
+
+
+@pytest.mark.parametrize("name", sorted(HIDDEN_FORMS))
+def test_the_guard_finds_a_word_a_reader_decodes_or_a_renderer_hides(name):
+    assert mind._has_marker(HIDDEN_FORMS[name])
+    for value in ({"note": HIDDEN_FORMS[name]}, {HIDDEN_FORMS[name]: 1}, [["x", HIDDEN_FORMS[name]]]):
+        with pytest.raises(mind.WorkspaceError):
+            mind.guard_object(value)
+
+
+@pytest.mark.parametrize("text", CLEAN_FORMS)
+def test_decoding_refuses_no_clean_text(text):
+    assert not mind._has_marker(text)
+    mind.guard_object({"note": text, text: [text]})
+
+
+def test_decoding_deeper_than_the_rounds_or_wider_than_the_form_limit_fails_closed(monkeypatch):
+    """Clean text whose decodings outrun the bounds is refused, never passed unchecked (an accepted over-refusal)."""
+    assert mind._has_marker("%" + "25" * mind.UNESCAPE_ROUNDS + "41")
+    assert not mind._has_marker("%" + "25" * (mind.UNESCAPE_ROUNDS - 2) + "41")
+    monkeypatch.setattr(mind, "FORM_LIMIT", 1)
+    assert mind._has_marker("a &amp; b") and not mind._has_marker("a b")
+
+
 @pytest.mark.parametrize("as_json", [True, False])
 def test_safe_extra_fields_are_kept_unchanged_in_the_output(tmp_path, capsys, as_json):
     """The positive control: nothing is stripped, rewritten or added outside the reflection fields."""

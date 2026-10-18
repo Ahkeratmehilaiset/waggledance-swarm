@@ -33,7 +33,7 @@ the fixed code alone.
 
 | Code | Refused when |
 |---|---|
-| `graph_invalid` | a key, version or type is wrong, or a name is unknown; two writers write one artifact; a step produces an external; an input has no producer; the graph has a cycle |
+| `graph_invalid` | a key, version or type is wrong, or a name is unknown; two writers write one artifact; two written outputs, or a written output and an external, have one resolved path (two writers by alias); a step produces an external; an input has no producer; the graph has a cycle |
 | `binding_unresolved` | an identity differs from the obligations' pin; a placeholder is unbound; a binding value holds a placeholder; an actor is empty |
 | `adapter_unavailable` | the adapter is missing; a function is given argv, or argv is given no adapter; the argv leaves the adapter's prefix, uses a flag the adapter does not offer, or is not flag-value pairs |
 | `capture_contract_missing` | a process step does not capture stdout, stderr and exit as three of its own outputs; a function step carries a capture record |
@@ -65,6 +65,17 @@ the fixed code alone.
    - **So:** obligations are keyed on step ids. Flipping a hash in both tables never clears a missing edge (test 1).
 5. **Exposure is an obligation.** A role is a resolved actor name. The inputs the role may see form an allow-list
    (`exposure`), so a fresh joiner that is shown more than its judge input refuses.
+6. **Two writers by alias (Lead round 10 slice A, a fixed defect).**
+   - **The defect:** at 56b59f2a, producer uniqueness held per artifact id only. Every artifact path was resolved and
+     the result discarded, so `short_a` and `short_b` could name one file and both compile.
+   - **Evidence:** Lead's counter-test, written RED first. Three cases failed before the fix: two ids in one step,
+     two ids in two steps (also through two placeholders bound to one value), and a written output at an external's
+     path.
+   - **The rule now:** the resolved paths of all written outputs (outputs minus captures) are distinct, and none is
+     the path of an external. Otherwise the plan is `graph_invalid`.
+   - **Still allowed:** two external ids may name one read-only file, on purpose.
+   - **Outside the rule:** capture streams. v1 has no artifact kind that says a stream's path is a file, so no file
+     kind is guessed (see the limits below).
 
 ## What this does NOT prove
 
@@ -76,6 +87,14 @@ the fixed code alone.
   - Any real Q4 table is written and reviewed by non-authors of the Q4 candidate.
   - fable-5 wrote that candidate, so this branch ships the mechanism and public toys only, and NO Q4 obligations
     table.
+- **Path identity:** the alias rule compares resolved path STRINGS only. It does not detect two spellings of one
+  file: case, separators, `..`, an NTFS junction, a symlink, a hard link or a disk-level identity. Proving file
+  identity would need the filesystem, which this pure checker never touches.
+- **Streams:** two capture streams may share a path string. Nothing in v1 says whether a stream path is a file. A
+  rule for streams needs an artifact-kind contract, which would be a new descriptor version.
+- **Plan identity:** `descriptor_sha256` and `obligations_sha256` do not identify the whole resolved plan, because
+  the adapter catalog, the bindings and the resolved paths are not inside the pair. This is documented, not fixed: a
+  stronger binding waits for a consumer that needs it.
 - **Everything else stays separate:** full memory, encoder and import identity, the Medium token, technical runner
   isolation, cases and the pre-registered run lock remain separate requirements.
 
@@ -84,4 +103,5 @@ the fixed code alone.
 - **Command:**
   `C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_run_contract.py -q -p no:cacheprovider`
 - **What they use:** public toys only. Every refusal test breaks exactly one rule.
-- **Mutant check:** fable-5's audit folder holds a mutant check of 20 mutants with a passing unmutated control.
+- **Mutant check:** fable-5's audit folders hold the mutant checks, each with a passing unmutated control: 20 mutants
+  for v1, then 25 after the alias fix (the 20 again plus five of the new rule).

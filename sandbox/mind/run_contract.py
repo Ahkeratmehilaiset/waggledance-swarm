@@ -30,8 +30,9 @@ Checks run in this order and the first failure raises ``RunContractRefused(code)
 A shape error is ``graph_invalid``; an identity that differs from the obligations' pin, a missing or nested binding
 or an empty actor is ``binding_unresolved``; an adapter that is absent, a function given argv, an argv that leaves the
 adapter's prefix or uses a flag the adapter does not offer is ``adapter_unavailable``; a process step without its own
-stdout, stderr and exit outputs is ``capture_contract_missing``; two writers, a produced external, an input nobody
-produces or a cycle is ``graph_invalid``; then ``output_membership_incomplete``, ``input_membership_incomplete``,
+stdout, stderr and exit outputs is ``capture_contract_missing``; two writers (also two written outputs, or a written
+output and an external, whose resolved paths are one string), a produced external, an input nobody produces or a
+cycle is ``graph_invalid``; then ``output_membership_incomplete``, ``input_membership_incomplete``,
 ``role_binding_incompatible``, ``required_validation_unreached`` and ``semantic_contract_missing``. The plan lists the
 steps in topological order, ties by step id, so list and key order never change it. No file, process, clock or
 network is touched; what this does not prove is in ``RUN_CONTRACT.md``.
@@ -248,8 +249,7 @@ def compile_contract(descriptor: Mapping[str, Any], *, bindings: Mapping[str, st
     for sid, step in steps.items():
         actor = resolve(step["actor"]) if step["actor"] else _refuse("binding_unresolved")
         resolved[sid] = (tuple(resolve(token) for token in step["argv"]), actor)
-    for entry in artifacts.values():
-        resolve(entry["path"])
+    paths = {name: resolve(entry["path"]) for name, entry in artifacts.items()}  # kept for the written-path rule
     adapters = adapter_catalog["adapters"]
     for sid, step in steps.items():
         adapter = adapters.get(step["adapter"])
@@ -280,6 +280,11 @@ def compile_contract(descriptor: Mapping[str, Any], *, bindings: Mapping[str, st
             if name in producer or name in externals:
                 _refuse("graph_invalid")
             producer[name] = sid
+    # two writers by alias (Lead round 10 slice A): two written outputs, or a written output and an external, at one
+    # resolved path; literal strings only, and capture streams stay outside (RUN_CONTRACT.md); externals may alias
+    written = [paths[name] for sid, step in steps.items() for name in step["outputs"] if name not in captures[sid]]
+    if len(set(written)) != len(written) or set(written) & {paths[name] for name in externals}:
+        _refuse("graph_invalid")
     if any(name not in producer and name not in externals for step in steps.values() for name in step["inputs"]):
         _refuse("graph_invalid")
     order = _order(steps, producer)

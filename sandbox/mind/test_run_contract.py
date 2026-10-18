@@ -256,6 +256,56 @@ def test_7_a_cycle_a_duplicate_or_an_unproduced_input_refuses_without_guessing_a
     refused("graph_invalid", orphan)
 
 
+# --- Lead round 10 slice A: one resolved path under two artifact ids -------------------------------------------------
+# Written from Lead's counter-test (R10_UNCONSULTED_PROPOSAL.v1.md, slice A) BEFORE the fix: producer uniqueness held
+# per artifact id only, and every artifact path was resolved and then discarded, so two ids could name one file.
+
+def test_two_written_outputs_with_different_ids_at_one_literal_path_are_two_writers():
+    same_step = toy()
+    same_step[0]["artifacts"]["short_b"]["path"] = same_step[0]["artifacts"]["short_a"]["path"]
+    refused("graph_invalid", same_step)
+    two_steps = toy()
+    two_steps[0]["artifacts"]["t1"]["path"] = two_steps[0]["artifacts"]["observation"]["path"]
+    refused("graph_invalid", two_steps)
+
+
+def test_two_placeholders_bound_to_one_value_name_the_same_path():
+    parts = toy()
+    parts[3]["<OUT2>"] = parts[3]["<RUN>"]
+    parts[0]["artifacts"]["t1"]["path"] = "<OUT2>/observation"
+    refused("graph_invalid", parts)
+
+
+def test_a_written_output_at_the_path_of_an_external_writes_a_read_only_input():
+    parts = toy()
+    parts[0]["artifacts"]["t1"]["path"] = parts[0]["artifacts"]["status"]["path"]
+    refused("graph_invalid", parts)
+
+
+def test_two_external_ids_may_name_one_read_only_file():
+    parts = toy()
+    parts[0]["artifacts"]["status_again"] = {"path": parts[0]["artifacts"]["status"]["path"]}
+    parts[0]["externals"].append("status_again")
+    step(parts, "observe")["inputs"].append("status_again")
+    plan = compile_toy(*parts)
+    assert next(s for s in plan.steps if s.id == "observe").inputs == ("memory", "status", "status_again")
+
+
+def test_a_stream_another_step_also_writes_is_still_two_writers_by_id():
+    # the id rule is not redundant beside the path rule: observe's stdout stays outside the path rule as a capture
+    parts = toy()
+    step(parts, "t1")["outputs"].append("observe_out")
+    refused("graph_invalid", parts)
+
+
+def test_capture_streams_stay_outside_the_written_path_rule():
+    # v1 does not say whether a stream's path is a file (RUN_CONTRACT.md, limits): this pins that boundary, it is no
+    # claim that two streams may share a file
+    parts = toy()
+    parts[0]["artifacts"]["t1_out"]["path"] = parts[0]["artifacts"]["observe_out"]["path"]
+    assert compile_toy(*parts).executable is False
+
+
 # --- capture, roles and shape ------------------------------------------------------------------------------------------
 
 def test_every_process_step_captures_stdout_stderr_and_exit_as_its_own_outputs():

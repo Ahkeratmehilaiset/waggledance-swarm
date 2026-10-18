@@ -20,11 +20,16 @@ Per lesson L, in ref order (``audit``):
    span of L, and rule v1's self-match removes L from its own question (measured on the fixtures). When the cut L
    still self-matches the probe (it says the same thing elsewhere), no such question can reach L: ``probe_not_clean``.
 4. The arm's own engine, built over that view, answers the probe as the situation at the time, with the probe as its
-   one query. L is ``reachable`` when it is a line of the card, else ``unreachable``.
+   one query. A card that lists nothing is ``card_empty`` (status EMPTY) or ``card_refused`` (REFUSED), never
+   ``unreachable``; any other card status is refused. On a listed card, L is ``reachable`` when it is one of its
+   lines, else ``unreachable``.
 
 An audited row carries: the probe as its sha256, word count and qualifying count, never its text; the card's status,
-line count, and L's line, head flag and score (the engine's own fused score; None off the card); L's rank in each
-view (w, d, b); ``fused``, L's reciprocal-rank fusion (k 60) of the three views, as the engines fuse, and
+reason (the engine's own; None on a listed card), line count, L's line, head flag and score (the engine's own fused
+score; None off the card), and ``packing``, the engine's own telemetry ``stopped_by``, ``skipped_groups`` and
+``withheld_by_guard`` (None where the engine has no such key: v2 and v2.1 skip no group, v2.2 and v2.3 skip groups
+instead of stopping, a refused card carries no telemetry; v2 and v2.1 also say None when nothing stopped); L's rank in
+each view (w, d, b); ``fused``, L's reciprocal-rank fusion (k 60) of the three views, as the engines fuse, and
 ``fused_rank``, L's place among every candidate by it, ties by id; ``crowding``, how many records, lessons and events
 fuse before L, and ``crowders``, the first ``CROWDERS_SHOWN`` of them (a file, or an event_ref); ``topic_on_card``,
 whether a shown line other than L is on L's topic (summary cosine >= the engines' ``TOPIC_COSINE``).
@@ -37,8 +42,15 @@ the code blobs, writes one new file (never overwrites) and prints the counts.
 Limits, measured on synthetic memories only; no precision or recall of this audit is known:
 
 * One probe per lesson, in the lesson's own words; a real situation words it otherwise (R4's vocabulary gap is not
-  measured here). A How-to-apply past the stored text (the corpus keeps 4000 characters) is ``no_probe``.
+  measured here). A How-to-apply past the stored text (the corpus keeps 4000 characters) is ``no_probe``. This is
+  own-word, masked-probe reachability: not a blind Q4 recall, not parity with the real e5 encoder (the tests use a
+  synthetic one) and not utility.
+* ``crowding`` and ``crowders`` are the records fused before L, not a cause: the card's packing (its cap, its
+  card-line bytes, a skipped group), the topic-group show and the guard can each keep L off a card, so an
+  ``unreachable`` row is read with its ``fused_rank`` and ``packing``; counts alone do not establish a retrieval loss.
 * Records that hold the probe verbatim are excluded by rule v1 for that question, so they never count as crowders.
+* A report names lessons by file and events by event_ref, never by text; these refs are still identifying metadata,
+  so a report of a real memory is not public-safe.
 * One engine is built per lesson over the whole memory (slow on the real memory), and the encoder re-encodes each cut
   lesson unless ``window`` shows that it reads the same text.
 * Run on the real memory only by a Medium non-author (round 10). fable-5 wrote REMEMBER v2.1-v2.3 and this audit; it
@@ -72,8 +84,10 @@ q4_mod, corpus_mod, cell_mod = v2.q4_mod, v2.corpus_mod, v2.memory_mod.cell_mod
 SCHEMA = "fable5.remember-reach-audit.v0"
 MIN_PROBE_WORDS = 4
 CROWDERS_SHOWN = 10
-STATUSES = ("not_available", "stored_text_cut", "no_probe", "probe_guarded", "probe_not_clean", "reachable",
-            "unreachable")
+STATUSES = ("not_available", "stored_text_cut", "no_probe", "probe_guarded", "probe_not_clean", "card_refused",
+            "card_empty", "reachable", "unreachable")
+CARD_STATUSES = {"REFUSED": "card_refused", "EMPTY": "card_empty"}  # a card that lists nothing has its own status
+PACKING = ("stopped_by", "skipped_groups", "withheld_by_guard")  # card telemetry; None where an engine has no such key
 ENGINES = {"v2a": (lambda q: v2.RememberV2(q), v2.VERSION), "v21a": (lambda q: v21.RememberV21(q, "v21a"), v21.VERSION),
            "v22a": (lambda q: v22.RememberV22(q, "v22a"), v22.VERSION),
            "v23a": (lambda q: v23.RememberV23(q, "v23a"), v23.VERSION)}  # one-query arms: the probe is the situation
@@ -241,13 +255,18 @@ def lesson_row(q4: Any, ref: str, position: int, make: Callable, when: str, limi
     before = [int(index[k]) for k in order[:order.index(local[position])]]
     kinds = [q4.entries[p]["row"]["kind"] for p in before]
     listed = engine.shortlist(question, when, [question])
-    lines = listed.get("lines") or []
+    if listed.get("status") not in ("LISTED", *CARD_STATUSES):
+        raise ReachAuditError("an engine returned an unknown card status")
+    lines, telemetry = listed.get("lines") or [], listed.get("telemetry") or {}
     mine = [n for n, line in enumerate(lines, 1) if line["doc_id"] == q4.ids[position]]
     shown = lines[mine[0] - 1] if mine else None
-    return {"ref": ref, "status": "reachable" if mine else "unreachable", "probe": facts,
-            "card": {"status": listed["status"], "lines": len(lines), "line": mine[0] if mine else None,
+    status = CARD_STATUSES.get(listed["status"]) or ("reachable" if mine else "unreachable")
+    return {"ref": ref, "status": status, "probe": facts,
+            "card": {"status": listed["status"], "reason": listed.get("reason"), "lines": len(lines),
+                     "line": mine[0] if mine else None,
                      "head": bool((shown.get("topic") or {}).get("head")) if shown else None,
-                     "score": shown.get("score") if shown else None},
+                     "score": shown.get("score") if shown else None,
+                     "packing": {key: telemetry.get(key) for key in PACKING}},
             "views": {name: int(ranks[name][local[position]]) for name in ("w", "d", "b")},
             "fused": round(float(fused[local[position]]), 6), "fused_rank": len(before) + 1, "candidates": len(index),
             "crowding": {"records": len(before), "lessons": kinds.count("lesson"), "events": kinds.count("event")},

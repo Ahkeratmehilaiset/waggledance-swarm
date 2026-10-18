@@ -16,6 +16,10 @@ run 1, every line marked "added after GREEN 1" (or 2) was written to tell apart 
 (rounds x4 and x5 measured their fixtures; x4's first x_text design left queue_drain first on w, so x5 measured a
 second).
 
+D8.1 (Lead's D8 reconciliation: a card that lists nothing was counted as unreachable): every line marked "D8.1" was
+written before the code change and ran RED against the D8 code; its fixtures were measured first (round x2 of the D8.1
+audit folder; its round x1 measured nothing).
+
 run:C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/remember -q -p no:cacheprovider
 """
 
@@ -325,6 +329,8 @@ def test_a_lesson_its_probe_reaches_is_on_the_card_as_its_topics_head(memory, ar
     assert row["views"] == {"w": 1, "d": 1, "b": 1} and row["fused_rank"] == 1
     assert row["fused"] == row["card"]["score"]  # added after GREEN 1: the audit fuses as the arm's own engine scores
     assert row["topic_on_card"] is False  # added after GREEN 2: L's own line is not another line on its topic
+    packing = {"stopped_by": None, "skipped_groups": [] if arm in ("v22a", "v23a") else None, "withheld_by_guard": 0}
+    assert row["card"]["reason"] is None and row["card"]["packing"] == packing  # D8.1
     assert row["crowding"] == {"records": 0, "lessons": 0, "events": 0} and row["crowders"] == []
     assert report["arm"] == arm and report["version"] == ra.ENGINES[arm][1]
 
@@ -397,8 +403,67 @@ def test_every_other_status_is_named_and_counted(memory):
                       "cut_note.md": "stored_text_cut", "plain_note.md": "no_probe", "late_note.md": "not_available",
                       "queue_drain.md": "reachable", **{f"filler_{k}.md": "no_probe" for k in range(4)}}
     assert report["counts"] == {"not_available": 1, "stored_text_cut": 1, "no_probe": 5, "probe_guarded": 1,
-                                "probe_not_clean": 1, "reachable": 1, "unreachable": 0}
+                                "probe_not_clean": 1, "card_refused": 0, "card_empty": 0,  # D8.1: two statuses
+                                "reachable": 1, "unreachable": 0}
     assert tuple(report["counts"]) == ra.STATUSES and report["lessons"] == len(report["rows"]) == 10
+
+
+@pytest.mark.parametrize("arm", sorted(ra.ENGINES))
+def test_a_card_that_lists_nothing_is_card_empty_with_its_reason_never_unreachable(memory, arm):
+    """D8.1: queue_drain's summary alone carries the guarded word (synthetic: the corpus would cut such a text), so
+    every arm withholds its line; with no other candidate at the time, the card lists nothing (measured)."""
+    late = lesson("late_note", "a late note on colours", how="Rotate the shard map before the next deploy.", day=13)
+    report = run(memory, [dict(drain(), summary=f"{DRAIN} {GUARDED}"), late], arm, when="2026-10-12T12:00:00Z")
+    row = row_of(report, "queue_drain.md")
+    assert row["status"] == "card_empty" and row["fused_rank"] == 1 and row["crowding"]["records"] == 0
+    assert row["card"]["status"] == "EMPTY" and row["card"]["reason"] == "nothing_listable"
+    assert row["card"]["lines"] == 0 and row["card"]["line"] is None
+    assert row["card"]["packing"]["withheld_by_guard"] == 1
+    assert report["counts"]["card_empty"] == 1 and report["counts"]["unreachable"] == 0 and report["unreachable"] == []
+
+
+@pytest.mark.parametrize("arm", sorted(ra.ENGINES))
+def test_a_lesson_whose_line_the_guard_withholds_is_unreachable_with_no_crowding_and_its_packing_says_so(memory, arm):
+    """D8.1: the same lesson beside the fillers and the event fuses first, yet the card shows only the others
+    (measured): unreachable is not crowding, and the card's packing counts the withheld line."""
+    row = row_of(run(memory, reachable_rows()[:-1] + [dict(drain(), summary=f"{DRAIN} {GUARDED}")], arm),
+                 "queue_drain.md")
+    assert row["status"] == "unreachable" and row["card"]["status"] == "LISTED" and row["card"]["reason"] is None
+    assert row["fused_rank"] == 1 and row["crowding"]["records"] == 0 and row["crowders"] == []
+    assert row["card"]["packing"]["withheld_by_guard"] == 1
+
+
+class FixedCard:
+    """An arm's own engine whose card is replaced by a fixed one; applicable and ranks stay the engine's (D8.1)."""
+
+    def __init__(self, engine, listed):
+        self.engine, self.listed = engine, listed
+
+    def applicable(self, situation, when):
+        return self.engine.applicable(situation, when)
+
+    def ranks(self, situation, index):
+        return self.engine.ranks(situation, index)
+
+    def shortlist(self, situation, when, queries):
+        return dict(self.listed)
+
+
+def test_a_refused_card_is_card_refused_with_its_reason_and_an_unknown_card_status_is_refused(memory, monkeypatch):
+    """D8.1: no fixture makes a real engine refuse after rule v1 admitted the probe (the guard runs first, and v2.1 to
+    v2.3 never expect output_guarded), so the refused card is a fixed one."""
+    make, version = ra.ENGINES["v21a"]
+    refused = {"status": "REFUSED", "reason": "output_guarded", "lines": []}
+    monkeypatch.setitem(ra.ENGINES, "v21a", (lambda q: FixedCard(make(q), refused), version))
+    report = run(memory, reachable_rows())
+    row = row_of(report, "queue_drain.md")
+    assert row["status"] == "card_refused" and row["card"]["status"] == "REFUSED"
+    assert row["card"]["reason"] == "output_guarded" and row["card"]["lines"] == 0
+    assert row["card"]["packing"] == {"stopped_by": None, "skipped_groups": None, "withheld_by_guard": None}
+    assert report["counts"]["card_refused"] == 1 and report["unreachable"] == []
+    monkeypatch.setitem(ra.ENGINES, "v21a", (lambda q: FixedCard(make(q), {"status": "LATER", "lines": []}), version))
+    with pytest.raises(ra.ReachAuditError):
+        run(memory, reachable_rows())
 
 
 def test_a_report_has_one_row_per_lesson_in_ref_order_and_never_record_text(memory):

@@ -409,3 +409,135 @@ def test_two_forged_notes_below_the_flood_size_are_marked_and_cannot_take_the_ea
     backdated = [ref for ref, line in lines.items() if "BACKDATED" in line["date_marks"]]
     assert backdated == ["lesson_forged_0.md"]
     assert "FLOOD" not in lines["lesson_alpha.md"]["topic"]["header"]
+
+
+# --- --arms situation (Lead round 4/10 calls it primary): the situation-only arm needs no rewrite input ------------
+
+SITUATION_SHORTLISTS = {"v21a/shortlists.jsonl", "v21a/judge-input.md", "shortlists-v21-situation-manifest.json"}
+SITUATION_COMPOSE = {"v21a/outputs.jsonl", "v21a/diagnostics.jsonl", "compose-v21-situation-manifest.json"}
+
+
+def blind_run(tmp_path, name):
+    out = tmp_path / name
+    out.mkdir()
+    (out / "blind.jsonl").write_text(json.dumps({"id": "C1", "situation": SITUATION, "time": WHEN}) + "\n",
+                                     encoding="utf-8")
+    return out
+
+
+def files_in(out):
+    return {path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file()}
+
+
+def load_fake(memory_dir, arm):
+    return r21.RememberV21(q4(memory_dir), arm)
+
+
+def untimed(path):
+    """The shortlist rows without telemetry.ms, the wall-clock field in which two identical runs may differ."""
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["listed"]["telemetry"].pop("ms")
+    return rows
+
+
+def test_v21_situation_loads_only_the_situation_arm_and_writes_three_files(pair_memory, tmp_path):
+    out = blind_run(tmp_path, "situation")
+    loaded = []
+
+    def load(memory_dir, arm):
+        loaded.append(arm)
+        return load_fake(memory_dir, arm)
+    assert r21.cmd_shortlists(argparse.Namespace(memory=pair_memory, rewrites=None, arms="situation", out=out),
+                              load=load) == 0
+    assert loaded == ["v21a"] and files_in(out) - {"blind.jsonl"} == SITUATION_SHORTLISTS
+    manifest = json.loads((out / "shortlists-v21-situation-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contract"] == r21.SITUATION_CONTRACT and manifest["selected_arms"] == ["v21a"]
+    assert manifest["rewrites_sha256"] is None and manifest["blind_sha256"] == rv.sha256_file(out / "blind.jsonl")
+    assert manifest["constants"] == r21.CONSTANTS
+    assert set(manifest["outputs"]) == {"v21a/shortlists.jsonl", "v21a/judge-input.md"}
+    assert all(rv.sha256_file(out / name) == digest for name, digest in manifest["outputs"].items())
+    full = blind_run(tmp_path, "full")  # the same algorithm as the v21a arm of the default run
+    rewrites = tmp_path / "rewrites.json"
+    rewrites.write_text(json.dumps({"rewrites": [{"id": "C1", "line": "retry the whole call on transient errors"}]}),
+                        encoding="utf-8")
+    assert r21.cmd_shortlists(argparse.Namespace(memory=pair_memory, rewrites=rewrites, out=full), load=load) == 0
+    assert untimed(out / "v21a" / "shortlists.jsonl") == untimed(full / "v21a" / "shortlists.jsonl")
+    assert (out / "v21a" / "judge-input.md").read_bytes() == (full / "v21a" / "judge-input.md").read_bytes()
+
+
+def test_v21_mode_errors_come_before_any_read_or_load(tmp_path):
+    def load(memory_dir, arm):
+        raise AssertionError("the engine was loaded")
+    empty = tmp_path / "empty"  # no blind.jsonl: the mode error must come first, not a missing file later
+    empty.mkdir()
+    with pytest.raises(r21.RememberV21Error, match="rewrites"):
+        r21.cmd_shortlists(argparse.Namespace(memory=tmp_path, rewrites=None, arms="all", out=empty), load=load)
+    with pytest.raises(r21.RememberV21Error, match="situation"):
+        r21.cmd_shortlists(argparse.Namespace(memory=tmp_path, rewrites=tmp_path / "rewrites.json", arms="situation",
+                                              out=empty), load=load)
+    with pytest.raises(SystemExit):
+        r21.main(["shortlists", "--memory", str(tmp_path), "--arms", "v21a", "--out", str(empty)])
+    assert list(empty.iterdir()) == []
+
+
+def v21_situation_run(pair_memory, tmp_path):
+    out = blind_run(tmp_path, "run")
+    args = argparse.Namespace(memory=pair_memory, rewrites=None, arms="situation", out=out)
+    assert r21.cmd_shortlists(args, load=load_fake) == 0
+    listed = json.loads((out / "v21a" / "shortlists.jsonl").read_text(encoding="utf-8").splitlines()[0])["listed"]
+    number = 1 + [line["ref"] for line in listed["lines"]].index("lesson_retry_true.md")
+    picks = tmp_path / "picks.json"
+    picks.write_text(json.dumps({"cases": [{"id": "C1", "picks": [number], "nothing_applies": False}]}),
+                     encoding="utf-8")
+    return out, picks
+
+
+def test_v21_situation_compose_writes_three_files_bound_to_the_situation_shortlists(pair_memory, tmp_path):
+    out, picks = v21_situation_run(pair_memory, tmp_path)
+    before = files_in(out)
+    args = argparse.Namespace(memory=pair_memory, picks_v21a=picks, picks_v21ca=None, arms="situation", out=out)
+    assert r21.cmd_compose(args, load=load_fake) == 0
+    assert files_in(out) - before == SITUATION_COMPOSE
+    manifest = json.loads((out / "compose-v21-situation-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contract"] == r21.SITUATION_CONTRACT and manifest["selected_arms"] == ["v21a"]
+    assert manifest["shortlists_manifest_sha256"] == rv.sha256_file(out / "shortlists-v21-situation-manifest.json")
+    assert manifest["outputs"]["v21a/picks_sha256"] == rv.sha256_file(picks)
+    row = json.loads((out / "v21a" / "outputs.jsonl").read_text(encoding="utf-8"))
+    assert row["status"] == "ANSWER" and row["results"][0]["ref"] == "lesson_retry_true.md"
+
+
+@pytest.mark.parametrize("trap", ["side_picks", "no_situation_picks", "no_situation_manifest", "edited_shortlists",
+                                  "edited_blind", "other_memory", "other_contract"])
+def test_v21_situation_compose_refuses_side_picks_and_unbound_shortlists(pair_memory, tmp_path, trap):
+    out, picks = v21_situation_run(pair_memory, tmp_path)
+    args = argparse.Namespace(memory=pair_memory, picks_v21a=None if trap == "no_situation_picks" else picks,
+                              picks_v21ca=picks if trap == "side_picks" else None, arms="situation", out=out)
+    if trap == "no_situation_manifest":
+        (out / "shortlists-v21-situation-manifest.json").unlink()
+    if trap == "edited_shortlists":
+        path = out / "v21a" / "shortlists.jsonl"
+        path.write_bytes(path.read_bytes() + b"\n")
+    if trap in ("edited_blind", "other_memory"):
+        path = out / "blind.jsonl" if trap == "edited_blind" else pair_memory / "memory.json"
+        path.write_bytes(path.read_bytes() + b" ")
+    if trap == "other_contract":  # every hash still matches; only the contract differs
+        path = out / "shortlists-v21-situation-manifest.json"
+        path.write_bytes(path.read_bytes().replace(r21.SITUATION_CONTRACT.encode(), b"wd.other-run.v1"))
+    before = files_in(out)
+    with pytest.raises(r21.RememberV21Error):
+        r21.cmd_compose(args, load=load_fake)
+    assert files_in(out) == before
+
+
+def test_v21_default_run_keeps_its_files_and_manifest_schema(pair_memory, tmp_path):
+    out = blind_run(tmp_path, "run")
+    rewrites = tmp_path / "rewrites.json"
+    rewrites.write_text(json.dumps({"rewrites": [{"id": "C1", "line": "retry the whole call on transient errors"}]}),
+                        encoding="utf-8")
+    assert r21.cmd_shortlists(argparse.Namespace(memory=pair_memory, rewrites=rewrites, out=out), load=load_fake) == 0
+    assert files_in(out) - {"blind.jsonl"} == {"v21a/shortlists.jsonl", "v21a/judge-input.md", "v21ca/shortlists.jsonl",
+                                               "v21ca/judge-input.md", "shortlists-v21-manifest.json"}
+    manifest = json.loads((out / "shortlists-v21-manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest) == {"version", "memory_sha256", "rewrites_sha256", "outputs", "code_git_blobs", "prompts",
+                             "constants"}

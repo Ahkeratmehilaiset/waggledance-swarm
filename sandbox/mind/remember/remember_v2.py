@@ -18,6 +18,10 @@ Arms, all frozen before any new blinded case is opened (``ARMS``):
 * ``v2ca`` (the pre-registered PRIMARY product candidate): as ``v2a``, over the union for BOTH the original situation
   and the rewrite.
 
+``--arms situation`` (Lead round 4/10, which calls it primary; named for its arm because ``PRIMARY`` below is the
+historical ``v2ca``) runs ``v2a`` alone: no gate, no rewrite input, its own manifests under ``SITUATION_CONTRACT``.
+The default ``--arms all`` is the frozen run, unchanged (``PRIMARY_ONLY.md``).
+
 Topic groups against flooding (v2a and v2ca; RCO1's conflict probe v1.1, result 1E908C97: three differently worded
 opposite lessons filled every top 3, so the true lesson was hidden while an opposite was shown in 5/20 answers).
 Two records are on the same topic when their summary vectors are at least ``TOPIC_COSINE`` alike.
@@ -87,6 +91,7 @@ if Path(memory_mod.__file__).resolve().parent != STEP2.resolve() or q4_mod.memor
 VERSION = "remember-v2.0"
 ARMS = ("v2c", "v2a", "v2ca")
 PRIMARY = "v2ca"
+SITUATION_CONTRACT = "wd.remember-v2-situation-run.v1"  # --arms situation: v2a alone, no rewrite, its own manifests
 DEPTH = 3
 CAP = 8
 SHOWN_MAX = 3
@@ -509,7 +514,43 @@ def _load_engine(memory_dir: Path):
     return RememberV2(q4_mod.Q4(memory_mod.Memory(memory_dir), encode_mod.E5()))
 
 
+def run_arms(args, error: type[ValueError] = RememberError) -> str:
+    """The run's arm set, checked before anything is read or loaded: ``all`` (the default, the frozen run) needs the
+    rewrites; ``situation`` runs only the situation-only arm and refuses a rewrite file rather than ignore it."""
+    arms, rewrites = getattr(args, "arms", "all"), getattr(args, "rewrites", None)
+    if arms not in ("all", "situation"):
+        raise error("unknown arm set")
+    if arms == "all" and rewrites is None:
+        raise error("--arms all needs --rewrites")
+    if arms == "situation" and rewrites is not None:
+        raise error("--arms situation refuses --rewrites")
+    return arms
+
+
+def situation_run_bound(out: Path, manifest_name: str, arm: str, contract: str, memory_dir: Path,
+                        error: type[ValueError] = RememberError) -> str:
+    """The sha256 of a situation run's shortlists manifest, or a fixed refusal: the manifest must be ``contract``'s and
+    must name the exact bytes of the blind cases, the memory and the arm's shortlists now on disk, so a missing,
+    edited or full-run shortlist is never composed."""
+    paths = (out / manifest_name, out / "blind.jsonl", out / arm / "shortlists.jsonl", memory_dir / "memory.json")
+    if not all(path.is_file() for path in paths):
+        raise error("no situation shortlists to compose")
+    try:
+        manifest = json.loads(paths[0].read_text(encoding="utf-8"))
+    except ValueError:
+        raise error("the shortlists are not the situation run's") from None
+    outputs = manifest.get("outputs") if isinstance(manifest, dict) else None
+    if not isinstance(outputs, dict) or manifest.get("contract") != contract or \
+            manifest.get("blind_sha256") != sha256_file(paths[1]) or \
+            outputs.get(f"{arm}/shortlists.jsonl") != sha256_file(paths[2]) or \
+            manifest.get("memory_sha256") != sha256_file(paths[3]):
+        raise error("the shortlists are not the situation run's")
+    return sha256_file(paths[0])
+
+
 def cmd_shortlists(args) -> int:
+    if run_arms(args) == "situation":
+        return situation_shortlists(args)
     out = args.out
     blind = [json.loads(line) for line in (out / "blind.jsonl").read_text(encoding="utf-8").splitlines()]
     ids = [row["id"] for row in blind]
@@ -541,7 +582,64 @@ def cmd_shortlists(args) -> int:
     return 0
 
 
+def situation_shortlists(args) -> int:
+    """``v2a`` alone: the situation as its only query, no gate, no rewrite; three files."""
+    out = args.out
+    data = (out / "blind.jsonl").read_bytes()
+    blind = [json.loads(line) for line in data.decode("utf-8").splitlines()]
+    engine = _load_engine(args.memory)
+    lists, judge = [], [prompts.JUDGE, ""]
+    for row in blind:
+        listed = engine.shortlist(row["situation"], row["time"], [row["situation"]])
+        lists.append({"id": row["id"], "listed": listed})
+        judge.append(render_shortlist(row["id"], row["situation"], listed))
+    files = {"v2a/shortlists.jsonl": jsonl_text(lists), "v2a/judge-input.md": "\n".join(judge)}
+    hashes = {name: text_sha256(text) for name, text in files.items()}
+    manifest = {"contract": SITUATION_CONTRACT, "version": VERSION, "selected_arms": ["v2a"],
+                "blind_sha256": hashlib.sha256(data).hexdigest(), "rewrites_sha256": None,
+                "memory_sha256": sha256_file(args.memory / "memory.json"), "outputs": hashes,
+                "code_git_blobs": source_blobs(), "prompts": prompts.hashes(), "depth": DEPTH, "cap": CAP,
+                "pair_cosine": PAIR_COSINE, "topic_cosine": TOPIC_COSINE, "group_lines": GROUP_LINES,
+                "case_bytes": CASE_BYTES}
+    files["shortlists-situation-manifest.json"] = json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    write_outputs({out / name: text for name, text in files.items()})
+    print(json.dumps({"cases": len(blind), "outputs": hashes}, indent=1))
+    return 0
+
+
+def situation_compose(args) -> int:
+    """``v2a`` answers of a situation run: only v2a picks, and only over the shortlists its manifest binds."""
+    if args.picks_v2a is None or args.picks_v2ca is not None:
+        raise RememberError("--arms situation composes v2a picks only")
+    out = args.out
+    bound = situation_run_bound(out, "shortlists-situation-manifest.json", "v2a", SITUATION_CONTRACT, args.memory)
+    ids = [json.loads(line)["id"] for line in (out / "blind.jsonl").read_text(encoding="utf-8").splitlines()]
+    picks = read_picks(json.loads(args.picks_v2a.read_text(encoding="utf-8")), ids)
+    listed = {json.loads(line)["id"]: json.loads(line)["listed"]
+              for line in (out / "v2a" / "shortlists.jsonl").read_text(encoding="utf-8").splitlines()}
+    engine = _load_engine(args.memory)
+    rows, diag = [], []
+    for case_id in ids:
+        answer = engine.apply_picks(listed[case_id], picks[case_id])
+        rows.append(contract(case_id, answer))
+        diag.append({"id": case_id, "answer": answer, "picks": picks[case_id]})
+    files = {"v2a/outputs.jsonl": jsonl_text(rows), "v2a/diagnostics.jsonl": jsonl_text(diag)}
+    hashes = {"v2a/picks_sha256": sha256_file(args.picks_v2a)}
+    hashes.update({name: text_sha256(text) for name, text in files.items()})
+    manifest = {"contract": SITUATION_CONTRACT, "version": VERSION, "selected_arms": ["v2a"],
+                "shortlists_manifest_sha256": bound, "memory_sha256": sha256_file(args.memory / "memory.json"),
+                "outputs": hashes, "code_git_blobs": source_blobs(), "prompts": prompts.hashes()}
+    files["compose-situation-manifest.json"] = json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    write_outputs({out / name: text for name, text in files.items()})
+    print(json.dumps(hashes, indent=1))
+    return 0
+
+
 def cmd_compose(args) -> int:
+    if getattr(args, "arms", "all") == "situation":
+        return situation_compose(args)
+    if getattr(args, "arms", "all") != "all":
+        raise RememberError("unknown arm set")
     out = args.out
     blind = [json.loads(line) for line in (out / "blind.jsonl").read_text(encoding="utf-8").splitlines()]
     ids = [row["id"] for row in blind]
@@ -579,12 +677,14 @@ def main(argv: list[str] | None = None) -> int:
     prep.add_argument("--out", type=Path, required=True)
     short = sub.add_parser("shortlists")
     short.add_argument("--memory", type=Path, required=True)
-    short.add_argument("--rewrites", type=Path, required=True)
+    short.add_argument("--rewrites", type=Path)  # required by --arms all, refused by --arms situation (run_arms)
+    short.add_argument("--arms", choices=("all", "situation"), default="all")
     short.add_argument("--out", type=Path, required=True)
     comp = sub.add_parser("compose")
     comp.add_argument("--memory", type=Path, required=True)
     comp.add_argument("--picks-v2a", type=Path)
     comp.add_argument("--picks-v2ca", type=Path)
+    comp.add_argument("--arms", choices=("all", "situation"), default="all")
     comp.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     return {"prepare": cmd_prepare, "shortlists": cmd_shortlists, "compose": cmd_compose}[args.command](args)

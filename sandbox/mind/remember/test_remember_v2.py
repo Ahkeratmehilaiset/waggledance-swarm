@@ -491,3 +491,176 @@ def test_cli_end_to_end_refuses_only_the_case_with_a_guarded_rewrite(tmp_path, m
                 assert rv.sha256_file(out / output) == digest
     assert all(not rv.corpus_mod.ws._has_marker(path.read_text(encoding="utf-8"))
                for path in out.rglob("*") if path.is_file())
+
+
+# --- --arms situation (Lead round 4/10 calls it primary): the situation-only arm needs no rewrite input ------------
+
+SITUATION_SHORTLISTS = {"v2a/shortlists.jsonl", "v2a/judge-input.md", "shortlists-situation-manifest.json"}
+SITUATION_COMPOSE = {"v2a/outputs.jsonl", "v2a/diagnostics.jsonl", "compose-situation-manifest.json"}
+
+
+class Spy:
+    """The real engine, recording what it is asked: no gate in a situation run, no query but the situation."""
+
+    def __init__(self, inner):
+        self.inner, self.queries, self.gates = inner, [], 0
+
+    def gate(self, *args):
+        self.gates += 1
+        return self.inner.gate(*args)
+
+    def shortlist(self, situation, when, queries):
+        self.queries.append(list(queries))
+        return self.inner.shortlist(situation, when, queries)
+
+    def apply_picks(self, listed, picks):
+        return self.inner.apply_picks(listed, picks)
+
+
+def prepared(tmp_path, name):
+    cases, out = tmp_path / f"{name}-cases.json", tmp_path / name
+    cases.write_text(json.dumps({"cases": [
+        {"id": "A", "situation": JSON_SITUATION, "situation_time_utc": WHEN},
+        {"id": "B", "situation": "quantum chromodynamics lattice gauge symmetry", "situation_time_utc": WHEN}]}),
+        encoding="utf-8")
+    assert rv.main(["prepare", "--cases", str(cases), "--out", str(out)]) == 0
+    return out
+
+
+def files_in(out):
+    return {path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file()}
+
+
+def untimed(path):
+    """The shortlist rows without telemetry.ms, the wall-clock field in which two identical runs may differ."""
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["listed"]["telemetry"].pop("ms")
+    return rows
+
+
+def test_situation_writes_three_files_and_never_runs_the_gate_or_a_rewrite(tmp_path, monkeypatch):
+    memory = build(tmp_path / "m", t2.records())
+    spies = []
+
+    def load(memory_dir):
+        spies.append(Spy(engine(memory_dir)))
+        return spies[-1]
+    monkeypatch.setattr(rv, "_load_engine", load)
+    out = prepared(tmp_path, "situation")
+    before = files_in(out)
+    assert rv.main(["shortlists", "--memory", str(memory), "--arms", "situation", "--out", str(out)]) == 0
+    assert files_in(out) - before == SITUATION_SHORTLISTS
+    blind = [json.loads(line) for line in (out / "blind.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(spies) == 1 and spies[0].gates == 0
+    assert spies[0].queries == [[row["situation"]] for row in blind]
+    manifest = json.loads((out / "shortlists-situation-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contract"] == rv.SITUATION_CONTRACT and manifest["selected_arms"] == ["v2a"]
+    assert manifest["rewrites_sha256"] is None and manifest["blind_sha256"] == rv.sha256_file(out / "blind.jsonl")
+    assert manifest["memory_sha256"] == rv.sha256_file(memory / "memory.json")
+    assert set(manifest["outputs"]) == {"v2a/shortlists.jsonl", "v2a/judge-input.md"}
+    assert all(rv.sha256_file(out / name) == digest for name, digest in manifest["outputs"].items())
+    full = prepared(tmp_path, "full")  # the same algorithm as the v2a arm of the default run
+    rewrites = tmp_path / "rewrites.json"
+    rewrites.write_text(json.dumps({"rewrites": [{"id": "A", "line": "json escaped marker decoded"},
+                                                 {"id": "B", "line": "lattice gauge"}]}), encoding="utf-8")
+    assert rv.main(["shortlists", "--memory", str(memory), "--rewrites", str(rewrites), "--out", str(full)]) == 0
+    assert untimed(out / "v2a" / "shortlists.jsonl") == untimed(full / "v2a" / "shortlists.jsonl")
+    assert (out / "v2a" / "judge-input.md").read_bytes() == (full / "v2a" / "judge-input.md").read_bytes()
+
+
+def test_the_default_run_without_rewrites_refuses_before_reading_or_loading(tmp_path, monkeypatch):
+    def load(memory_dir):
+        raise AssertionError("the engine was loaded")
+    monkeypatch.setattr(rv, "_load_engine", load)
+    empty = tmp_path / "empty"  # no blind.jsonl: the mode error must come first, not a missing file later
+    empty.mkdir()
+    with pytest.raises(rv.RememberError, match="rewrites"):
+        rv.main(["shortlists", "--memory", str(tmp_path / "m"), "--out", str(empty)])
+    assert list(empty.iterdir()) == []
+
+
+def test_situation_refuses_a_rewrite_file_and_an_unknown_arm_set(tmp_path, monkeypatch):
+    def load(memory_dir):
+        raise AssertionError("the engine was loaded")
+    monkeypatch.setattr(rv, "_load_engine", load)
+    out = prepared(tmp_path, "run")
+    rewrites = tmp_path / "rewrites.json"
+    rewrites.write_text("{}", encoding="utf-8")
+    before = files_in(out)
+    with pytest.raises(rv.RememberError, match="situation"):
+        rv.main(["shortlists", "--memory", str(tmp_path / "m"), "--arms", "situation", "--rewrites", str(rewrites),
+                 "--out", str(out)])
+    with pytest.raises(SystemExit):
+        rv.main(["shortlists", "--memory", str(tmp_path / "m"), "--arms", "v2a", "--out", str(out)])
+    assert files_in(out) == before
+
+
+def situation_run(tmp_path, monkeypatch):
+    memory = build(tmp_path / "m", t2.records())
+    monkeypatch.setattr(rv, "_load_engine", engine)
+    out = prepared(tmp_path, "run")
+    assert rv.main(["shortlists", "--memory", str(memory), "--arms", "situation", "--out", str(out)]) == 0
+    picks = tmp_path / "picks.json"
+    picks.write_text(json.dumps({"cases": [{"id": "A", "picks": [1], "contested": [], "nothing_applies": False},
+                                           {"id": "B", "picks": [], "contested": [], "nothing_applies": True}]}),
+                     encoding="utf-8")
+    return memory, out, picks
+
+
+def test_situation_compose_writes_three_files_bound_to_the_situation_shortlists(tmp_path, monkeypatch):
+    memory, out, picks = situation_run(tmp_path, monkeypatch)
+    before = files_in(out)
+    assert rv.main(["compose", "--memory", str(memory), "--arms", "situation", "--picks-v2a", str(picks),
+                    "--out", str(out)]) == 0
+    assert files_in(out) - before == SITUATION_COMPOSE
+    manifest = json.loads((out / "compose-situation-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contract"] == rv.SITUATION_CONTRACT and manifest["selected_arms"] == ["v2a"]
+    assert manifest["shortlists_manifest_sha256"] == rv.sha256_file(out / "shortlists-situation-manifest.json")
+    assert manifest["outputs"]["v2a/picks_sha256"] == rv.sha256_file(picks)
+    assert all(rv.sha256_file(out / name) == manifest["outputs"][name]
+               for name in ("v2a/outputs.jsonl", "v2a/diagnostics.jsonl"))
+    assert jsonl_by_id(out / "v2a" / "outputs.jsonl")["A"]["status"] == "ANSWER"
+
+
+@pytest.mark.parametrize("trap", ["side_picks", "no_situation_picks", "no_situation_manifest", "edited_shortlists",
+                                  "edited_blind", "other_memory", "other_contract"])
+def test_situation_compose_refuses_side_picks_and_unbound_shortlists(tmp_path, monkeypatch, trap):
+    memory, out, picks = situation_run(tmp_path, monkeypatch)
+    argv = ["compose", "--memory", str(memory), "--arms", "situation", "--out", str(out)]
+    if trap != "no_situation_picks":
+        argv += ["--picks-v2a", str(picks)]
+    if trap == "side_picks":
+        argv += ["--picks-v2ca", str(picks)]
+    if trap == "no_situation_manifest":
+        (out / "shortlists-situation-manifest.json").unlink()
+    if trap == "edited_shortlists":
+        path = out / "v2a" / "shortlists.jsonl"
+        path.write_bytes(path.read_bytes() + b"\n")
+    if trap in ("edited_blind", "other_memory"):
+        path = out / "blind.jsonl" if trap == "edited_blind" else memory / "memory.json"
+        path.write_bytes(path.read_bytes() + b" ")
+    if trap == "other_contract":  # every hash still matches; only the contract differs
+        path = out / "shortlists-situation-manifest.json"
+        path.write_bytes(path.read_bytes().replace(rv.SITUATION_CONTRACT.encode(), b"wd.other-run.v1"))
+    before = files_in(out)
+    with pytest.raises(rv.RememberError):
+        rv.main(argv)
+    assert files_in(out) == before
+
+
+def test_the_default_run_keeps_its_files_and_manifest_schema(tmp_path, monkeypatch):
+    memory = build(tmp_path / "m", t2.records())
+    monkeypatch.setattr(rv, "_load_engine", engine)
+    out = prepared(tmp_path, "run")
+    rewrites = tmp_path / "rewrites.json"
+    rewrites.write_text(json.dumps({"rewrites": [{"id": "A", "line": "json escaped marker decoded"},
+                                                 {"id": "B", "line": "lattice gauge"}]}), encoding="utf-8")
+    before = files_in(out)
+    assert rv.main(["shortlists", "--memory", str(memory), "--rewrites", str(rewrites), "--out", str(out)]) == 0
+    assert files_in(out) - before == {"v2c/outputs.jsonl", "v2c/diagnostics.jsonl", "v2a/shortlists.jsonl",
+                                      "v2a/judge-input.md", "v2ca/shortlists.jsonl", "v2ca/judge-input.md",
+                                      "shortlists-manifest.json"}
+    manifest = json.loads((out / "shortlists-manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest) == {"version", "memory_sha256", "rewrites_sha256", "outputs", "code_git_blobs", "prompts",
+                             "depth", "cap", "pair_cosine", "topic_cosine", "group_lines", "case_bytes"}

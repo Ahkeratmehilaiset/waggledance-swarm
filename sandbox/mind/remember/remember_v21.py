@@ -693,7 +693,66 @@ def _blind(out: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in (out / "blind.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
+SITUATION_CONTRACT = "wd.remember-v21-situation-run.v1"  # --arms situation: v21a alone, no rewrite, its own manifests
+
+
+def situation_shortlists(args, load=load_engine) -> int:
+    """``v21a`` alone (Lead round 4/10, which calls it primary): the situation as its only query, no rewrite input,
+    one engine load; three files. The default ``--arms all`` below is the frozen run, unchanged."""
+    out = args.out
+    data = (out / "blind.jsonl").read_bytes()
+    blind = [json.loads(line) for line in data.decode("utf-8").splitlines()]
+    engine = load(args.memory, "v21a")
+    lists, judge = [], [v2.prompts.JUDGE, ""]
+    for row in blind:
+        listed = engine.shortlist(row["situation"], row["time"], [row["situation"]])
+        lists.append({"id": row["id"], "listed": listed})
+        judge.append(render_shortlist(row["id"], row["situation"], listed))
+    files = {"v21a/shortlists.jsonl": v2.jsonl_text(lists), "v21a/judge-input.md": "\n".join(judge)}
+    hashes = {name: v2.text_sha256(text) for name, text in files.items()}
+    manifest = {"contract": SITUATION_CONTRACT, "version": VERSION, "selected_arms": ["v21a"],
+                "blind_sha256": hashlib.sha256(data).hexdigest(), "rewrites_sha256": None,
+                "memory_sha256": v2.sha256_file(args.memory / "memory.json"), "outputs": hashes,
+                "code_git_blobs": v2.source_blobs(), "prompts": v2.prompts.hashes(), "constants": CONSTANTS}
+    files["shortlists-v21-situation-manifest.json"] = json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    v2.write_outputs({out / name: text for name, text in files.items()})
+    print(json.dumps({"cases": len(blind), "outputs": hashes}, indent=1))
+    return 0
+
+
+def situation_compose(args, load=load_engine) -> int:
+    """``v21a`` answers of a situation run: only v21a picks, and only over the shortlists its manifest binds."""
+    if args.picks_v21a is None or args.picks_v21ca is not None:
+        raise RememberV21Error("--arms situation composes v21a picks only")
+    out = args.out
+    bound = v2.situation_run_bound(out, "shortlists-v21-situation-manifest.json", "v21a", SITUATION_CONTRACT,
+                                   args.memory, RememberV21Error)
+    ids = [row["id"] for row in _blind(out)]
+    picks = v2.read_picks(json.loads(args.picks_v21a.read_text(encoding="utf-8")), ids)
+    listed = {json.loads(line)["id"]: json.loads(line)["listed"]
+              for line in (out / "v21a" / "shortlists.jsonl").read_text(encoding="utf-8").splitlines()}
+    engine = load(args.memory, "v21a")
+    rows, diag = [], []
+    for case_id in ids:
+        answer = engine.apply_picks(listed[case_id], picks[case_id])
+        rows.append(v2.contract(case_id, answer))
+        diag.append({"id": case_id, "answer": answer, "picks": picks[case_id]})
+    files = {"v21a/outputs.jsonl": v2.jsonl_text(rows), "v21a/diagnostics.jsonl": v2.jsonl_text(diag)}
+    hashes = {"v21a/picks_sha256": v2.sha256_file(args.picks_v21a)}
+    hashes.update({name: v2.text_sha256(text) for name, text in files.items()})
+    manifest = {"contract": SITUATION_CONTRACT, "version": VERSION, "selected_arms": ["v21a"],
+                "shortlists_manifest_sha256": bound, "memory_sha256": v2.sha256_file(args.memory / "memory.json"),
+                "outputs": hashes, "code_git_blobs": v2.source_blobs(), "prompts": v2.prompts.hashes(),
+                "constants": CONSTANTS}
+    files["compose-v21-situation-manifest.json"] = json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    v2.write_outputs({out / name: text for name, text in files.items()})
+    print(json.dumps(hashes, indent=1))
+    return 0
+
+
 def cmd_shortlists(args, load=load_engine) -> int:
+    if v2.run_arms(args, RememberV21Error) == "situation":
+        return situation_shortlists(args, load)
     out = args.out
     blind = _blind(out)
     ids = [row["id"] for row in blind]
@@ -720,6 +779,10 @@ def cmd_shortlists(args, load=load_engine) -> int:
 
 
 def cmd_compose(args, load=load_engine) -> int:
+    if getattr(args, "arms", "all") == "situation":
+        return situation_compose(args, load)
+    if getattr(args, "arms", "all") != "all":
+        raise RememberV21Error("unknown arm set")
     out = args.out
     ids = [row["id"] for row in _blind(out)]
     files, hashes = {}, {}
@@ -752,12 +815,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     short = sub.add_parser("shortlists")
     short.add_argument("--memory", type=Path, required=True)
-    short.add_argument("--rewrites", type=Path, required=True)
+    short.add_argument("--rewrites", type=Path)  # required by --arms all, refused by --arms situation (v2.run_arms)
+    short.add_argument("--arms", choices=("all", "situation"), default="all")
     short.add_argument("--out", type=Path, required=True)
     comp = sub.add_parser("compose")
     comp.add_argument("--memory", type=Path, required=True)
     comp.add_argument("--picks-v21a", type=Path)
     comp.add_argument("--picks-v21ca", type=Path)
+    comp.add_argument("--arms", choices=("all", "situation"), default="all")
     comp.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     return {"shortlists": cmd_shortlists, "compose": cmd_compose}[args.command](args)

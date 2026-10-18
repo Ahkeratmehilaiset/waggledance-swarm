@@ -33,7 +33,7 @@ PUBLICATION = "run\\reflected.publication.json"
 SEAMS = ["pins", "fixture", "load", "turn", "write_turn", "judge"]
 FIXTURE_FILES = {"capture.json", "context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json",
                  PUBLICATION}
-PINS = {"join_turn": "join-turn-v0.3", "join_card": "join-card-v0.5",
+PINS = {"join_turn": "join-turn-v0.3", "join_card": "join-card-v0.6",
         "outcome_adapter": "wd.mind-join-outcome-adapter.v0.1", "adapter_turn": "join-turn-v0.3",
         "frozen_manifest": "wd.mind-frozen-cycles.v1", "turn_schema": "wd.mind-join-turn.v0"}
 UNKNOWN_RECEIPTS = "requested=UNKNOWN delivered=UNKNOWN read=UNKNOWN answered=UNKNOWN"
@@ -140,7 +140,7 @@ def test_the_real_chain_shows_one_source_referenced_action_line(audit):
         f"build vote on PR1 at {head12} is the only empty slot (build_tools, task {BRANCH}); filled at this head: "
         f"build_lead {lead[:16]}, claude-rco-1 {rco[:16]}; GitHub 2/2 at {head12}; waiting since "
         "2026-10-18T11:00:01Z; route operator manual merge; the vote is still required"]
-    assert card.startswith(f"JOIN {LANE} as_of={AS_OF} now={AS_OF} join-card-v0.5; advisory, not a gate")
+    assert card.startswith(f"JOIN {LANE} as_of={AS_OF} now={AS_OF} join-card-v0.6; advisory, not a gate")
     assert report == report_of(out)
     assert seams(report) == [(name, "ok") for name in SEAMS]
     assert report["outcome"] == "ACCEPTED_CARD_UTILITY_UNKNOWN" and report["utility"] == "UNKNOWN"

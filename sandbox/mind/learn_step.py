@@ -1,4 +1,4 @@
-"""LEARN step v1: a learned state re-folded from RCO2's card outcome results. Sandbox, advisory, never a gate.
+"""LEARN step v1.1: a learned state re-folded from RCO2's card outcome results. Sandbox, advisory, never a gate.
 
 Why. The Mind sees, hears, joins and remembers, but nothing it does changes with what happened after a card was read:
 REMEMBER v2 ranks the same way after a wrong vote as after a right one, and a card never says that a similar action
@@ -26,9 +26,12 @@ give the same canonical bytes and ``state_hash``; rollback is a re-fold of a pre
   correct <c> of taken <t> (rows ...)`` when correct >= MIN_CORRECT, with ``; median read-to-action <m> min over
   <n>`` when n >= MIN_TIMED timed correct rows. Every number is a numerator AND a denominator, the rows are cited
   (the 8-hex prefix of their row hash) and a card hash rotates the kind order, so no kind owns the first line.
-* Lesson warnings. A picked REMEMBER lesson is associated with the cards it was picked for, only for cards whose
-  every row is evidence still in the window (a PRE_READ row neither counts nor voids the card; UNKNOWN voids it). Support >= 5, wrong >= 2 and 2 * wrong >= support moves the lesson to
-  the end of the top three with a warning ending ``association only``; LEARN never promotes a lesson.
+* Lesson warnings (v1.1). A picked REMEMBER lesson is associated with the cards it was picked for, only for cards
+  whose every row is evidence still in the window (a PRE_READ row neither counts nor voids the card; UNKNOWN voids
+  it), and with the distinct actions those cards hold: an action that several cards hold counts once, by its kept
+  tape row, as in the tapes. At least ``LESSON_SUPPORT`` cards, at least ``LESSON_WRONG`` wrong actions on at least
+  ``LESSON_PRS`` different card-line PRs, and 2 * wrong >= taken actions move the lesson to the end of the top three
+  with a warning ending ``association only``; LEARN never promotes a lesson.
 * Drafts. Two or more wrong rows with one reason in one lane and kind give a CANDIDATE lesson from a fixed template
   (no PR number, head or free text). A draft never enters memory without a review record.
 
@@ -37,6 +40,16 @@ LEARN_PARAMS_RETURN_ALIAS, which Lead reconciled; fixed: the state is a fresh ob
 Grok review (consultation 2af02293) proposed six changes, two adopted after checking RCO2's source (the read
 window, PRE_READ), one not adopted because RCO2's aggregate rules otherwise (one event judged two ways stays no
 evidence).
+
+v1.1 (2026-10-18, D11; claude-rco-1's round 9 finding, checked against this code): v1 counted a lesson's evidence in
+cards. So one wrong vote that three consecutive cards held read "wrong 3 of support 5" (RCO2's own aggregate counts
+each event once), a card with one wrong line of three blamed every lesson picked for it in full, and a cited row
+could be a duplicate that the tape had dropped. Now the taken and wrong counts are distinct actions (the kept row of
+each event), the wrong ones must lie on two or more card-line PRs (a row whose ``pr`` is not an int proves none),
+and the two newest wrong actions are cited by their tape rows; the card count stays the support floor. RCO1 proposed
+a per-card fractional wrong mass over a card-counted support; fable-5 counts distinct actions for both, so the rule
+reads as the notes do (wrong <w> of taken <t>). The schema moves to v1.1 and ``PARAMS`` gains ``lesson_prs``, so a
+v1 state is refused.
 
 Known limits: LEARN trusts RCO2's proofs (it cannot re-verify an identity or a head); OTHER and NONE still rest on
 agent labels (RCO2's stated limit); an association is not a cause; the thresholds are a consultation's, not
@@ -62,13 +75,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from tools import bridge_mind_workspace as ws  # noqa: E402  (the shared decoded privacy guard)
 
-SCHEMA = "wd.mind-learn-state.v1"
+SCHEMA = "wd.mind-learn-state.v1.1"
 RESULT_SCHEMA = "wd.mind-join-card-outcomes.v1"
 WINDOW_N = 200
 CAP_PER_LANE_DAY = 32
 READ_WINDOW_S = 7200  # RCO2 contract v1.2 WINDOW: a line is decided by an action in [read, read + 7200 s]
 MIN_KNOWN, MIN_TAKEN, MIN_WRONG, MIN_CORRECT, MIN_TIMED = 8, 5, 2, 5, 5
-LESSON_SUPPORT, LESSON_WRONG, LESSON_TOP = 5, 2, 3
+LESSON_SUPPORT, LESSON_WRONG, LESSON_TOP, LESSON_PRS = 5, 2, 3, 2  # v1.1: cards, distinct wrong actions, PRs
 DRAFT_MIN, DRAFTS_PER_LANE = 2, 8
 TAKEN = ("TAKEN_CORRECT", "TAKEN_STALE", "TAKEN_WRONG")
 KNOWN = TAKEN + ("OTHER", "NONE")
@@ -80,6 +93,7 @@ PARAMS = {"window_n": WINDOW_N, "cap_per_lane_day": CAP_PER_LANE_DAY, "read_wind
           "min_known": MIN_KNOWN, "min_taken": MIN_TAKEN,
           "min_wrong": MIN_WRONG, "min_correct": MIN_CORRECT, "min_timed": MIN_TIMED,
           "lesson_support": LESSON_SUPPORT, "lesson_wrong": LESSON_WRONG, "lesson_top": LESSON_TOP,
+          "lesson_prs": LESSON_PRS,
           "draft_min": DRAFT_MIN, "drafts_per_lane": DRAFTS_PER_LANE, "rotation": "rot-v1"}
 TEMPLATES = {
     "recheck_head_v1": "CANDIDATE, not a lesson until reviewed: before a {kind}, re-read the PR number and the live "
@@ -195,7 +209,8 @@ def _entry(card: str, lane: str, row: Mapping[str, Any]) -> dict[str, Any] | Non
             "reason": (reason if reason in WRONG_REASONS else "other") if outcome == "TAKEN_WRONG" else None,
             "utc": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "event_ref": event if taken else None,
             "ms": ms if outcome == "TAKEN_CORRECT" and isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0
-            else None, "corrected": row.get("corrected_after_wrong") is True, "card": card}
+            else None, "corrected": row.get("corrected_after_wrong") is True, "card": card,
+            "pr": row["pr"] if type(row.get("pr")) is int else None}  # v1.1: the card line's PR, lessons only
 
 
 def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
@@ -280,10 +295,11 @@ def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
         lanes[lane]["tapes"][kind] = [{key: e[key] for key in ("row_hash", "outcome", "reason", "utc", "ms",
                                                                "corrected")} for e in tape]
 
+    kept_rows = {e["row_hash"]: e for e in entries}  # v1.1: one kept row per event, the duplicates dropped above
     records: dict[tuple, set] = defaultdict(set)
     for pick in picks:
         records[pick["card_sha256"], pick["lane"]].add(canonical({"shown": pick["shown"], "picked": pick["picked"]}))
-    lessons: dict[tuple, dict] = defaultdict(lambda: {"support": 0, "wrong": 0, "wrong_rows": []})
+    lessons: dict[tuple, dict] = defaultdict(lambda: {"cards": 0, "taken": set(), "wrong": set()})
     for (card, lane), texts in sorted(records.items()):
         if len(texts) > 1:
             rejected["pick_mismatch"] += 1
@@ -294,19 +310,19 @@ def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
         rows = card_rows[card, lane]
         if any(e is None or alias.get(e["row_hash"], e["row_hash"]) not in kept for e in rows):
             continue  # a card with a non-evidence row or a row outside the window says nothing about a pick
-        taken = [e for e in rows if e["outcome"] in TAKEN]
+        taken = {alias.get(e["row_hash"], e["row_hash"]) for e in rows if e["outcome"] in TAKEN}  # distinct actions
         if not taken:
             continue
-        wrong = sorted((e for e in taken if e["outcome"] == "TAKEN_WRONG"), key=lambda e: (e["utc"], e["row_hash"]))
+        wrong = {h for h in taken if kept_rows[h]["outcome"] == "TAKEN_WRONG"}
         for ref in sorted(set(json.loads(next(iter(texts)))["picked"])):
             stats = lessons[lane, ref]
-            stats["support"] += 1
-            if wrong:
-                stats["wrong"] += 1
-                stats["wrong_rows"].append([wrong[-1]["utc"], wrong[-1]["row_hash"]])
+            stats["cards"] += 1
+            stats["taken"] |= taken
+            stats["wrong"] |= wrong
     for (lane, ref), stats in sorted(lessons.items()):
-        lane_state(lane)["lessons"][ref] = {"support": stats["support"], "wrong": stats["wrong"],
-                                            "cite": [h for _, h in sorted(stats["wrong_rows"], reverse=True)[:2]]}
+        wrong = sorted(stats["wrong"], key=lambda h: (kept_rows[h]["utc"], h), reverse=True)
+        lane_state(lane)["lessons"][ref] = {"cards": stats["cards"], "taken": len(stats["taken"]), "wrong": len(wrong),
+                                            "prs": len({kept_rows[h]["pr"] for h in wrong} - {None}), "cite": wrong[:2]}
 
     drafts = []
     for lane in sorted(lanes):
@@ -407,10 +423,11 @@ def lesson_order(state: Mapping[str, Any], lane: str, shown: Sequence[str]) -> t
     warnings = {}
     for ref in shown[:LESSON_TOP]:
         stats = lessons.get(ref)
-        if stats and stats["support"] >= LESSON_SUPPORT and stats["wrong"] >= LESSON_WRONG \
-                and 2 * stats["wrong"] >= stats["support"]:
-            warnings[ref] = (f"LEARN: after you picked this, the card was wrong {stats['wrong']} of support "
-                             f"{stats['support']} (rows {_cite(stats['cite'])}); association only")
+        if stats and stats["cards"] >= LESSON_SUPPORT and stats["wrong"] >= LESSON_WRONG \
+                and stats["prs"] >= LESSON_PRS and 2 * stats["wrong"] >= stats["taken"]:
+            warnings[ref] = (f"LEARN: on {stats['cards']} cards where you picked this, wrong {stats['wrong']} of taken "
+                             f"{stats['taken']} actions, on {stats['prs']} PRs (rows {_cite(stats['cite'])}); "
+                             "association only")
     top = shown[:LESSON_TOP]
     order = [ref for ref in top if ref not in warnings] + [ref for ref in top if ref in warnings] + shown[LESSON_TOP:]
     return order, warnings

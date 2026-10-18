@@ -1,4 +1,4 @@
-"""JOIN card v0.5: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
+"""JOIN card v0.6: the one text a joining agent reads first, at most 2 KB. Sandbox, advisory, never a gate.
 
 The operator's frame (2026-10-14 ~18:28Z): "minä kuulen, minä näen, minä ymmärrän, minä muistan - ja maind oppii"
 (I hear, I see, I understand, I remember, and the Mind learns). ``card(lane, delivery, view, remember, learn_ref=...,
@@ -20,18 +20,18 @@ those outputs do not state:
 * UNDERSTAND  derived from SLOT alone: the last open slot, an open slot among others, or UNKNOWN. It never names an
               outcome of a vote or of the gate; the canonical tools decide.
 * REMEMBER    a REMEMBER v2 answer (frozen 2699c0fe; the PRIMARY arm is v2ca) inside a turn-bound envelope
-              (``remember_envelope``): the joiner's picks with their TOPIC, SUPERSEDED and CONTESTED marks, or that
-              nothing applies, or the refusal reason, and one citation ``<version> <arm> answer=<12>
+              (``remember_envelope``): the joiner's picks with their TOPIC, CLAIMED SUPERSEDED and CONTESTED marks, or
+              that nothing applies, or the refusal reason, and one citation ``<version> <arm> answer=<12>
               situation=<12>``. The envelope must name this lane, the view's as_of and a shown arm (``SHOWN_ARMS``:
               the joined v2a or v2ca, never v2c), and its answer must hash (``lane_view.canonical``) to its
               ``answer_sha256``; otherwise the card is refused (RCO1 probe P4b). That digest is self-consistency, not
               origin, and ``situation_sha256`` is cited, not verified: the card cannot see the situation text. With no
               envelope there is no REMEMBER line at all (P2b: an absence is omitted, never an uncited line).
-* LEARN       (v0.5) with a turn-bound LEARN envelope (``learn_envelope``): the LEARN v1 notes for this lane as
+* LEARN       (v0.5) with a turn-bound LEARN envelope (``learn_envelope``): the LEARN notes for this lane as
               ``learn_step.notes`` writes them, a warning line under each shown REMEMBER pick that
-              ``learn_step.lesson_order`` warns, and one citation ``LEARN v1 [state=<12> params=<12> learn=<12>]
-              notes <k> of <n>, warnings <k> of <n>`` with the LEARN contract (``learn_ref``). Without an envelope
-              the v0 line stays: the card records nothing and names the LEARN contract.
+              ``learn_step.lesson_order`` warns, and one citation ``LEARN v1.1 [state=<12> params=<12> learn=<12>]
+              notes <k> of <n>, warnings <k> of <n>`` (v0.6) with the LEARN contract (``learn_ref``). Without an
+              envelope the v0 line stays: the card records nothing and names the LEARN contract.
 
 Every line carries refs: identities, SHAs, vote and event refs, lesson files, or the semantics and contract names
 it comes from. The card is at most ``CARD_BYTES`` UTF-8 bytes: when it would not fit, LEARN notes (v0.5; praise before
@@ -90,6 +90,17 @@ the size bound keeps), so a warning is its own line under its pick and goes with
 the size bound drops, praise before harm: no LEARN count is calibrated or a benefit claim, so none displaces a lesson
 or a PR. With an envelope, the citation line is always printed, also when every note was dropped.
 
+v0.6 (2026-10-18, D11, operator direct "polish the Mind in the sandbox, fix defects and missing code"): a supersede is
+a claim. A lesson's ``supersedes:`` line is text its writer controls and nothing verifies, and REMEMBER already prints
+it as ``[CLAIMED SUPERSEDED by <file> (unverified claim)]`` (claude-rco-1 round 7, fixed as D5 on the REMEMBER
+branch), while the card still printed ``[SUPERSEDED by <file>]``, which states the claim as a fact. The card now
+prints REMEMBER's mark. It cannot check the claim; it only stops wording it as a fact. LEARN v1.1 (D11, from
+claude-rco-1's round 9 finding) counts a lesson's evidence in distinct actions on two or more PRs, so a warning is now
+``LEARN: on <c> cards where you picked this, wrong <w> of taken <t> actions, on <p> PRs (rows <h1>, <h2>); association
+only``, and the card checks LEARN v1.1's rule: c >= LESSON_SUPPORT, LESSON_WRONG <= w <= t, 2w >= t, LESSON_PRS <= p
+<= w and two cited rows. v0.5's card-counted form is refused. The citation names LEARN v1.1; the fixed refusal texts
+keep their v0.5 words.
+
 usage: python -B sandbox/mind/join_card.py --lane <lane> --view <lane-view.json> --delivery <delivery.json>
        [--remember <envelope.json>] [--learn <learn-envelope.json>] --learn-ref <ref>
 """
@@ -113,7 +124,7 @@ import join_card_delivery as jcd  # noqa: E402
 import lane_view as lv  # noqa: E402
 import learn_step as ls  # noqa: E402  (v0.5: LEARN's own constants and kind rotation, never its state)
 
-VERSION = "join-card-v0.5"
+VERSION = "join-card-v0.6"
 ENVELOPE_SCHEMA = "join-card-remember-v2"
 ENVELOPE_KEYS = frozenset({"schema", "lane", "as_of_utc", "arm", "situation_sha256", "answer_sha256", "answer"})
 # v0.4: the joined REMEMBER v2 arms (the joiner judges a shortlist). v2c (code only, no joiner) is NOT YET and is
@@ -152,15 +163,15 @@ WARNING_REFUSAL = "a LEARN warning is not one LEARN v1 writes for one of the fir
 LEARN_KINDS = tuple(sorted({ls.action_kind(slot) for slot in ls.BUILD_SLOTS + ls.RCO_SLOTS}))
 LEARN_REASONS = ls.WRONG_REASONS + ("other",)  # learn_step.summarize writes the reasons in this order
 NOTE_LIMIT = 2 * len(LEARN_KINDS)  # at most one harm and one praise note per kind
-NOTE_CHARS = 240  # more than any note or warning LEARN v1 writes; checked before a pattern is tried
+NOTE_CHARS = 240  # more than any note or warning LEARN v1.1 writes; checked before a pattern is tried
 _COUNT = r"(0|[1-9][0-9]{0,5})"
 _ROWS = r"rows ([0-9a-f, ]{8,40})"
 WRONG_NOTE = re.compile(rf"LEARN: similar ([a-z_]{{1,20}}) wrong {_COUNT} of taken {_COUNT} \(([0-9a-z_, ]{{1,99}}); "
                         rf"{_ROWS}\)")
 CORRECT_NOTE = re.compile(rf"LEARN: similar ([a-z_]{{1,20}}) correct {_COUNT} of taken {_COUNT} \({_ROWS}\)"
                           rf"(?:; median read-to-action {_COUNT} min over {_COUNT})?")
-LESSON_WARNING = re.compile(rf"LEARN: after you picked this, the card was wrong {_COUNT} of support {_COUNT} \({_ROWS}\); "
-                            "association only")
+LESSON_WARNING = re.compile(rf"LEARN: on {_COUNT} cards where you picked this, wrong {_COUNT} of taken {_COUNT} "
+                            rf"actions, on {_COUNT} PRs \({_ROWS}\); association only")  # v0.6: LEARN v1.1's form
 REASON = re.compile(r"([1-9][0-9]{0,5}) ([a-z_]{1,20})")
 ROW = re.compile(r"[0-9a-f]{8}")
 
@@ -390,13 +401,13 @@ def _notes_ok(notes: Any, lane: str, seed: str) -> bool:
 
 
 def _warning_ok(text: Any) -> bool:
-    """A warning ``learn_step.lesson_order`` writes: its form, LEARN's own warning rule and the cited rows."""
+    """A warning ``learn_step.lesson_order`` writes: its form, LEARN v1.1's own warning rule and the cited rows."""
     match = LESSON_WARNING.fullmatch(text) if isinstance(text, str) and len(text) <= NOTE_CHARS else None
     if match is None:
         return False
-    wrong, support, rows = int(match.group(1)), int(match.group(2)), match.group(3)
-    return ls.LESSON_WRONG <= wrong <= support and support >= ls.LESSON_SUPPORT and 2 * wrong >= support \
-        and _rows_ok(rows, wrong)
+    cards, wrong, taken, prs = (int(match.group(number)) for number in range(1, 5))
+    return cards >= ls.LESSON_SUPPORT and ls.LESSON_WRONG <= wrong <= taken and 2 * wrong >= taken \
+        and ls.LESSON_PRS <= prs <= wrong and _rows_ok(match.group(5), wrong)
 
 
 def _warnable_refs(remember: Mapping[str, Any] | None) -> list[str]:
@@ -520,8 +531,8 @@ def remember_lines(envelope: Mapping[str, Any] | None, limit: int,
         if isinstance(topic, Mapping) and isinstance(topic.get("records"), int) and topic["records"] > 1:
             marks += (f" [TOPIC {topic['records']} records {topic.get('first_day')}..{topic.get('last_day')}, may "
                       f"disagree; also shown: {', '.join(result.get('topic_others') or []) or 'none'}]")
-        if result.get("superseded_by"):
-            marks += f" [SUPERSEDED by {result['superseded_by']}]"
+        if result.get("superseded_by"):  # v0.6: a claim nothing verifies, worded as REMEMBER words it (D5)
+            marks += f" [CLAIMED SUPERSEDED by {result['superseded_by']} (unverified claim)]"
         if result.get("contested_with"):
             marks += f" [CONTESTED with {', '.join(result['contested_with'])}]"
         summary = f": {result['summary']}" if isinstance(result.get("summary"), str) and result["summary"] else ""
@@ -545,7 +556,7 @@ def learn_lines(learn: Mapping[str, Any] | None, keep: int, warned: int, learn_r
         [i for i, sense in enumerate(senses) if sense != "wrong"]
     kept = sorted(priority[:keep])
     return [notes[i] for i in kept] + [
-        f"LEARN v1 [state={learn['state_sha256'][:12]} params={learn['params_sha256'][:12]} "
+        f"LEARN v1.1 [state={learn['state_sha256'][:12]} params={learn['params_sha256'][:12]} "
         f"learn={learn['learn_sha256'][:12]}] notes {len(kept)} of {len(notes)}, warnings {warned} of "
         f"{len(learn['warnings'])}; LEARN contract {learn_ref}"]
 

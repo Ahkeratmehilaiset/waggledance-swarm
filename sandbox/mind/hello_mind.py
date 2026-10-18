@@ -5,7 +5,9 @@ Lead round 9/10 (proposal R09_PROPOSAL.v1.md, Grok 3d7b96b4), decided by fable-5
 the existing code, called as its own CLI calls it; nothing is re-implemented and no stage is stubbed:
 
 1. ``pins``: the live component versions must be exactly ``PINS``, the pair this module was written for (JOIN turn
-   v0.3, card v0.5, outcome adapter v0.1 reading turn v0.3, frozen manifest v1, turn schema v0). Any other pair is
+   v0.3, card v0.6 (D11: this module was first written for card v0.5; Hello Mind passes no REMEMBER or LEARN input,
+   so in the card it renders v0.6 changes only the version in the header), outcome adapter v0.1 reading turn v0.3,
+   frozen manifest v1, turn schema v0). Any other pair is
    refused before any output.
 2. ``fixture``: ``write_fixture`` writes one public synthetic cycle (``CYCLE``) with the six files a frozen cycle has
    and its ``wd.mind-frozen-cycles.v1`` manifest. The snapshot is the real core's (``tools.wd_bridge_mind``
@@ -63,7 +65,7 @@ import lane_view_frozen as fz  # noqa: E402
 VERSION = "hello-mind-v0.1"
 REPORT_SCHEMA = "wd.mind-hello-report.v0"
 SCOPE = "public synthetic fixture integration; not Q4, not a gate, not a utility measurement"
-PINS = {"join_turn": "join-turn-v0.3", "join_card": "join-card-v0.5",
+PINS = {"join_turn": "join-turn-v0.3", "join_card": "join-card-v0.6",
         "outcome_adapter": "wd.mind-join-outcome-adapter.v0.1", "adapter_turn": "join-turn-v0.3",
         "frozen_manifest": "wd.mind-frozen-cycles.v1", "turn_schema": "wd.mind-join-turn.v0"}
 HELLO_CODE = tuple(sorted({*jt.CODE, "sandbox/mind/hello_mind.py", "sandbox/mind/join_outcome_adapter.py",

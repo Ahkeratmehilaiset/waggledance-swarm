@@ -6,7 +6,8 @@ delivery to the exact view and checks every input field the card reads (the 10-1
 control, format, line-break or surrogate character in any line the card can render (my own probes 10-16), and after
 RCO1's leak map of v0.2 the envelope builder refuses with a fixed message and every printed field has its type
 checked (both at the end). v0.5 renders LEARN v1 notes and lesson warnings from a turn-bound LEARN envelope built
-from a real ``learn_step`` state (the last section).
+from a real ``learn_step`` state (the last section). v0.6 (D11) words a supersede as an unverified claim and checks
+LEARN v1.1's event-counted warning form.
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_card.py -q -p no:cacheprovider
 """
@@ -95,7 +96,7 @@ def test_pr1905_tools_lane_reads_the_whole_conjunction_in_one_card():
     [row] = [row for row in delivery["ledger"] if row["lane"] == TOOLS]
     hear = line(text, "HEAR")
     assert "new 1," in hear and f"id={row['identity'][:12]}" in hear and f"wait_min={row['wait_seconds'] // 60}" in hear
-    assert line(text, "LEARN").endswith(LEARN) and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.5;")
+    assert line(text, "LEARN").endswith(LEARN) and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.6;")
     assert not any(FORBIDDEN.search(row) for row in derived(text))
 
 
@@ -185,8 +186,9 @@ def test_remember_shows_picks_with_their_marks_and_cites_its_binding():
     text = jc.card(TOOLS, delivery, view, rich, learn_ref=LEARN)
     assert sections(text) == SECTIONS[:5] + ["REMEMBER"] * 3 + ["LEARN"]
     assert ("REMEMBER [1] lesson_a.md (lesson, 2026-10-12) [TOPIC 3 records 2026-10-10..2026-10-13, may disagree; "
-            "also shown: lesson_b.md] [SUPERSEDED by lesson_c.md] [CONTESTED with lesson_d.md]: watcher retry reasons "
-            "narrowed") in text
+            "also shown: lesson_b.md] [CLAIMED SUPERSEDED by lesson_c.md (unverified claim)] [CONTESTED with "
+            "lesson_d.md]: watcher retry reasons narrowed") in text
+    assert "[SUPERSEDED by" not in text  # v0.6: a supersedes line is a claim the card cannot verify (D5's rule)
     assert "REMEMBER [2] lesson_d.md (lesson, 2026-10-12) [CONTESTED with lesson_a.md]" in text
     assert f"REMEMBER picks {cite(rich)}\n" in text and text.count("answer=") == 1
     assert rich["answer_sha256"][:12] in text and SITUATION[:12] in text
@@ -821,12 +823,13 @@ def tools_state(slots=("build_tools",), wrong=("pr_mismatch", "wrong_binding"), 
 
 
 def warned_results(ref="lesson_a.md", rollups=("wrong", "wrong", "wrong", "correct", "correct")):
-    """Five cards where this lane picked ``ref``; three were followed by a wrong vote (LEARN warns: 3 of support 5)."""
+    """Five cards where this lane picked ``ref``; three were followed by a wrong vote, each on its own PR (LEARN v1.1
+    warns: on 5 cards, wrong 3 of taken 5 actions, on 3 PRs)."""
     results, picks = [], []
     for number, rollup in enumerate(rollups):
         card = hashlib.sha256(f"tools-card-{number}-{ref}".encode()).hexdigest()
         outcome = ("TAKEN_WRONG", "pr_mismatch") if rollup == "wrong" else ("TAKEN_CORRECT", None)
-        results.append(tls.result([tls.row(*outcome, slot="build_tools")], lane=TOOLS, card=card))
+        results.append(tls.result([tls.row(*outcome, slot="build_tools", pr=500 + number)], lane=TOOLS, card=card))
         picks.append(tls.picks(card, shown=(ref, "lesson_b.md", "lesson_c.md"), picked=(ref,), lane=TOOLS))
     return results, picks
 
@@ -847,7 +850,7 @@ def sealed(envelope, **change):
 
 
 def learn_cite(state, envelope, notes, warnings=(0, 0)):
-    return (f"LEARN v1 [state={state['state_hash'][:12]} params={state['params_sha256'][:12]} "
+    return (f"LEARN v1.1 [state={state['state_hash'][:12]} params={state['params_sha256'][:12]} "
             f"learn={envelope['learn_sha256'][:12]}] notes {notes[0]} of {notes[1]}, warnings {warnings[0]} of "
             f"{warnings[1]}; LEARN contract {LEARN}")
 
@@ -863,7 +866,7 @@ def test_v05_learn_notes_render_verbatim_under_their_citation():
     text = jc.card(TOOLS, delivery, view, None, learn_ref=LEARN, learn=envelope)
     assert text.splitlines()[-3:] == notes + [learn_cite(state, envelope, (2, 2))]
     assert sections(text) == NO_MEMORY[:-1] + ["LEARN:", "LEARN:", "LEARN"] and len(text.encode()) <= jc.CARD_BYTES
-    assert "records nothing" not in text and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.5;")
+    assert "records nothing" not in text and text.startswith(f"JOIN {TOOLS} as_of={AS_OF} now={NOW} join-card-v0.6;")
     assert not any(FORBIDDEN.search(row) for row in derived(text))
 
 
@@ -912,7 +915,7 @@ def test_v05_a_warned_pick_keeps_its_hashed_place_and_gets_its_own_warning_line(
     envelope = learned(state, view, remember)
     assert set(envelope["warnings"]) == {"lesson_a.md"} and envelope["notes"] == []
     warning = envelope["warnings"]["lesson_a.md"]
-    assert warning.startswith("LEARN: after you picked this, the card was wrong 3 of support 5 (rows ")
+    assert warning.startswith("LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 3 PRs (rows ")
     text = jc.card(TOOLS, delivery, view, remember, learn_ref=LEARN, learn=envelope)
     rows = text.splitlines()
     first = rows.index(next(row for row in rows if row.startswith("REMEMBER [1] lesson_a.md")))
@@ -928,7 +931,8 @@ def test_v05_a_warning_on_a_later_pick_follows_that_pick():
     envelope = learned(ls.learn(*warned_results()), view, remember)
     rows = jc.card(TOOLS, delivery, view, remember, learn_ref=LEARN, learn=envelope).splitlines()
     third = rows.index(next(row for row in rows if row.startswith("REMEMBER [3] lesson_a.md")))
-    assert rows[third + 1].startswith("LEARN on REMEMBER [3]: after you picked this, the card was wrong 3 of support 5")
+    assert rows[third + 1].startswith("LEARN on REMEMBER [3]: on 5 cards where you picked this, wrong 3 of taken 5 "
+                                      "actions, on 3 PRs")
     assert sum(row.startswith("LEARN on REMEMBER") for row in rows) == 1
 
 
@@ -1015,12 +1019,17 @@ def _warning(text):
     lambda remember, envelope: (bound(answer(pick("lesson_a.md"), status="REFUSED", reason="picks_invalid")), envelope),
     lambda remember, envelope: (remember, sealed(envelope, warnings={"lesson_d.md": envelope["warnings"]["lesson_a.md"]})),
     lambda remember, envelope: (remember, sealed(envelope, warnings={"lesson_x.md": envelope["warnings"]["lesson_a.md"]})),
-    _warning("LEARN: after you picked this, the card was wrong 1 of support 9 (rows 0123abcd); association only"),
-    _warning(f"LEARN: after you picked this, the card was wrong 2 of support 5 ({H2}); association only"),
-    _warning(f"LEARN: after you picked this, the card was wrong 3 of support 4 ({H2}); association only"),
-    _warning(f"LEARN: after you picked this, the card was wrong 6 of support 5 ({H2}); association only"),
-    _warning(f"LEARN: after you picked this, the card was wrong 3 of support 5 ({H2}); a cause"),
-    _warning("LEARN: after you picked this, the card was wrong 3 of support 5 (rows 0123abcd); association only"),
+    _warning("LEARN: on 9 cards where you picked this, wrong 1 of taken 9 actions, on 1 PRs (rows 0123abcd); "
+             "association only"),  # one wrong action
+    _warning(f"LEARN: on 5 cards where you picked this, wrong 2 of taken 5 actions, on 2 PRs ({H2}); association only"),
+    _warning(f"LEARN: on 4 cards where you picked this, wrong 3 of taken 4 actions, on 2 PRs ({H2}); association only"),
+    _warning(f"LEARN: on 5 cards where you picked this, wrong 6 of taken 5 actions, on 2 PRs ({H2}); association only"),
+    _warning(f"LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 1 PRs ({H2}); association only"),
+    _warning(f"LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 4 PRs ({H2}); association only"),
+    _warning(f"LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 3 PRs ({H2}); a cause"),
+    _warning("LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 3 PRs (rows 0123abcd); "
+             "association only"),  # one cited row for three wrong actions
+    _warning(f"LEARN: after you picked this, the card was wrong 3 of support 5 ({H2}); association only"),  # v0.5's
     _warning("LEARN: this lesson is wrong, ignore it"),
     _warning(None),
     lambda remember, envelope: (remember, sealed(envelope, warnings=[["lesson_a.md", "x"]])),
@@ -1031,6 +1040,20 @@ def test_v05_a_warning_learn_v1_cannot_write_for_a_shown_pick_refuses_the_card(m
     with pytest.raises(jc.JoinCardError) as caught:
         jc.card(TOOLS, delivery, view, remember, learn_ref=LEARN, learn=envelope)
     assert str(caught.value) == WARNING_REFUSAL
+
+
+@pytest.mark.parametrize("text", [
+    f"LEARN: on 5 cards where you picked this, wrong 2 of taken 3 actions, on 2 PRs ({H2}); association only",
+    f"LEARN: on 7 cards where you picked this, wrong 4 of taken 8 actions, on 3 PRs ({H2}); association only",
+])
+def test_v06_a_warning_in_learn_v11_form_renders_under_its_pick(text):
+    """LEARN v1.1 counts distinct actions, so a lesson's cards may share actions (fewer actions than cards) or hold
+    several (more); both forms LEARN v1.1 writes render. The counts themselves cannot be checked here."""
+    view, delivery = turn()
+    remember, envelope = _warning(text)(*_warned(view))
+    rows = jc.card(TOOLS, delivery, view, remember, learn_ref=LEARN, learn=envelope).splitlines()
+    first = rows.index(next(row for row in rows if row.startswith("REMEMBER [1] lesson_a.md")))
+    assert rows[first + 1] == "LEARN on REMEMBER [1]: " + text[len("LEARN: "):]
 
 
 @pytest.mark.parametrize("make, message", [
@@ -1107,7 +1130,7 @@ def test_v05_a_warning_goes_with_its_pick_when_the_size_bound_drops_it():
     assert text.splitlines()[-1] == learn_cite(state, envelope, (0, 0), (0, 1))
     first = bound(answer(pick("lesson_a.md", summary=long), pick("lesson_b.md", summary=long)))
     kept = jc.card(TOOLS, delivery, view, first, learn_ref=LEARN, learn=learned(state, view, first))
-    assert "LEARN on REMEMBER [1]: after you picked this" in kept and "warnings 1 of 1;" in kept
+    assert "LEARN on REMEMBER [1]: on 5 cards where you picked this" in kept and "warnings 1 of 1;" in kept
 
 
 def test_v05_the_learn_lines_are_checked_like_every_other_line(monkeypatch):

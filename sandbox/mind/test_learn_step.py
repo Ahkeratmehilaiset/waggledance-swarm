@@ -259,7 +259,7 @@ def lesson_cards(rollups):
     for i, rollup in enumerate(rollups):
         card = hashlib.sha256(f"card{i}{rollup}".encode()).hexdigest()
         outcome = {"wrong": ("TAKEN_WRONG", "pr_mismatch"), "correct": ("TAKEN_CORRECT", None)}[rollup]
-        results.append(result([row(*outcome)], card=card))
+        results.append(result([row(*outcome, pr=100 + i)], card=card))  # v1.1: each card acts on its own PR
         remember.append(picks(card))
     return results, remember
 
@@ -269,7 +269,8 @@ def test_a_lesson_followed_by_wrong_actions_is_warned_and_moved_last_never_promo
     state = ls.learn(results, remember)
     order, warnings = ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"])
     assert order == ["B.md", "C.md", "A.md"]
-    assert warnings["A.md"].startswith("LEARN: after you picked this, the card was wrong 3 of support 5 (rows ")
+    assert warnings["A.md"].startswith("LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 3 PRs "
+                                       "(rows ")
     assert warnings["A.md"].endswith("; association only")
     results, remember = lesson_cards(["wrong", "wrong", "correct", "correct", "correct"])
     state = ls.learn(results, remember)
@@ -297,7 +298,7 @@ def test_mismatched_pick_records_for_one_card_are_rejected():
     state = ls.learn(results, remember)
     assert state["rejected"]["pick_mismatch"] == 1  # both records of that card are dropped, the other five count
     assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"])[1]["A.md"].startswith(
-        "LEARN: after you picked this, the card was wrong 5 of support 5")
+        "LEARN: on 5 cards where you picked this, wrong 5 of taken 5 actions, on 5 PRs (rows ")
 
 
 def test_a_pick_outside_the_shown_lines_or_a_guarded_word_refuses_the_whole_state():
@@ -356,10 +357,10 @@ def test_a_pre_read_line_does_not_void_a_card_for_lesson_evidence():
     for i in range(5):
         card = hashlib.sha256(f"preread{i}".encode()).hexdigest()
         results.append(result([row("PRE_READ", "valid_vote_before_read", line=1),
-                               row("TAKEN_WRONG", "pr_mismatch", line=2)], card=card))
+                               row("TAKEN_WRONG", "pr_mismatch", line=2, pr=200 + i)], card=card))
         remember.append(picks(card, picked=("Lx.md",), shown=("Lx.md", "B.md", "C.md")))
     order, warnings = ls.lesson_order(ls.learn(results, remember), LANE, ["Lx.md", "B.md", "C.md"])
-    assert order == ["B.md", "C.md", "Lx.md"] and "wrong 5 of support 5" in warnings["Lx.md"]
+    assert order == ["B.md", "C.md", "Lx.md"] and "wrong 5 of taken 5 actions, on 5 PRs" in warnings["Lx.md"]
     only_pre = hashlib.sha256(b"only-pre").hexdigest()
     state = ls.learn([result([row("PRE_READ", "valid_vote_before_read")], card=only_pre)], [picks(only_pre)])
     assert state["rejected"]["pick_without_card"] == 0 and state["lanes"][LANE]["lessons"] == {}
@@ -382,3 +383,174 @@ def test_slots_map_to_two_action_kinds_and_kinds_never_mix():
     assert notes(state)[0].startswith("LEARN: similar build_vote wrong 5 of taken 5")
     rotated = ls.notes(state, LANE, card="d" * 64)
     assert sorted(rotated) == sorted(notes(state))
+
+
+# 16 LEARN v1.1: a lesson's evidence is counted in distinct events, never in cards (RCO1 round 9) --------------------
+
+def acted(outcome, reason, event, read_utc, event_utc, pr, line=1):
+    """A taken row of a card read at ``read_utc`` whose line the action ``event`` decided at ``event_utc``: several
+    cards hold the same event, as consecutive cards do inside RCO2's read window."""
+    item = row(outcome, reason, event=event, line=line, pr=pr)
+    item.update(read_utc=read_utc, event_utc=event_utc)
+    return item
+
+
+def picked_cards(rowsets, picked=("A.md",)):
+    """One card per row list, each with this lane's pick record."""
+    results, remember = [], []
+    for i, rows in enumerate(rowsets):
+        card = hashlib.sha256(f"v11-card{i}-{json.dumps(rows, sort_keys=True)}".encode()).hexdigest()
+        results.append(result(rows, card=card))
+        remember.append(picks(card, picked=picked))
+    return results, remember
+
+
+def counts(lesson):
+    return {key: lesson[key] for key in ("cards", "taken", "wrong", "prs")}
+
+
+def test_one_wrong_vote_held_by_three_cards_is_one_wrong_action_and_warns_nothing():
+    """v1 counted cards, so one wrong vote that three consecutive cards held gave 'wrong 3 of support 5' and demoted
+    the lesson; an event is one action however many cards hold it (RCO2's own aggregate rule)."""
+    wrong = "1" * 64
+    rowsets = [[acted("TAKEN_WRONG", "pr_mismatch", wrong, f"{DAY0}10:{10 * k:02d}:00Z", f"{DAY0}10:40:00Z", pr=301)]
+               for k in range(3)]
+    rowsets += [[acted("TAKEN_CORRECT", None, str(k) * 64, f"{DAY0}11:00:00Z", f"{DAY0}11:0{k}:00Z", pr=300 + k)]
+                for k in (2, 3)]
+    state = ls.learn(*picked_cards(rowsets))
+    lesson = state["lanes"][LANE]["lessons"]["A.md"]
+    assert counts(lesson) == {"cards": 5, "taken": 3, "wrong": 1, "prs": 1}
+    assert len(lesson["cite"]) == 1
+    assert set(lesson["cite"]) <= {entry["row_hash"] for entry in state["lanes"][LANE]["tapes"]["rco_vote"]}
+    assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+
+
+def test_a_busy_card_adds_each_of_its_actions_so_one_wrong_of_three_is_one_of_three():
+    """v1 called a card wrong when any of its lines went wrong, so a lesson picked for busy cards took the blame for
+    every line; now a card adds its distinct actions to each lesson picked for it."""
+    rowsets = []
+    for card in range(5):
+        pr = 400 + 3 * card
+        read = f"{DAY0}12:00:00Z"
+        rowsets.append([acted("TAKEN_WRONG", "pr_mismatch", f"{pr:064d}", read, f"{DAY0}12:01:00Z", pr=pr)]
+                       + [acted("TAKEN_CORRECT", None, f"{pr + k:064d}", read, f"{DAY0}12:0{1 + k}:00Z", pr=pr + k,
+                                line=1 + k) for k in (1, 2)])
+    state = ls.learn(*picked_cards(rowsets))
+    assert counts(state["lanes"][LANE]["lessons"]["A.md"]) == {"cards": 5, "taken": 15, "wrong": 5, "prs": 5}
+    assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+    lessons = ls.learn(*picked_cards(rowsets[:1], picked=("A.md", "B.md", "C.md")))["lanes"][LANE]["lessons"]
+    assert {ref: (lesson["cards"], lesson["taken"], lesson["wrong"]) for ref, lesson in lessons.items()} == \
+        {ref: (1, 3, 1) for ref in ("A.md", "B.md", "C.md")}
+
+
+def test_wrong_votes_on_one_pr_are_one_episode_and_warn_nothing():
+    """The wrong actions must lie on at least LESSON_PRS different card-line PRs, so one bad episode on one PR cannot
+    demote a lesson alone."""
+    def rowsets(wrong_prs):
+        return [[row("TAKEN_WRONG", "pr_mismatch", pr=pr)] for pr in wrong_prs] + \
+            [[row("TAKEN_CORRECT", pr=600 + k)] for k in range(2)]
+    state = ls.learn(*picked_cards(rowsets([7, 7, 7])))
+    assert counts(state["lanes"][LANE]["lessons"]["A.md"]) == {"cards": 5, "taken": 5, "wrong": 3, "prs": 1}
+    assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+    order, warnings = ls.lesson_order(ls.learn(*picked_cards(rowsets([7, 7, 8]))), LANE, ["A.md", "B.md", "C.md"])
+    assert order == ["B.md", "C.md", "A.md"]
+    assert warnings["A.md"].startswith("LEARN: on 5 cards where you picked this, wrong 3 of taken 5 actions, on 2 PRs "
+                                       "(rows ")
+
+
+def two_wrong_votes_each_held_by_two_cards():
+    first, second, right = "a1" * 32, "b2" * 32, "c3" * 32
+    rowsets = [[acted("TAKEN_WRONG", "pr_mismatch", first, f"{DAY0}13:0{k}:00Z", f"{DAY0}13:30:00Z", pr=701)]
+               for k in (0, 1)]
+    rowsets += [[acted("TAKEN_WRONG", "wrong_binding", second, f"{DAY0}14:0{k}:00Z", f"{DAY0}14:30:00Z", pr=702)]
+                for k in (0, 1)]
+    return rowsets + [[acted("TAKEN_CORRECT", None, right, f"{DAY0}15:00:00Z", f"{DAY0}15:10:00Z", pr=703)]]
+
+
+def test_two_wrong_votes_each_held_by_two_cards_warn_and_cite_two_events_of_the_tape():
+    """Two wrong votes on two PRs, each held by two cards, and one right vote still warn (as in v1), now as wrong 2 of
+    taken 3 actions; the two cited rows are two different events, each a row of the tape (v1 cited one row per card,
+    so it cited one event twice, once by a row the tape dropped as a duplicate)."""
+    state = ls.learn(*picked_cards(two_wrong_votes_each_held_by_two_cards()))
+    taped = {entry["row_hash"]: entry for entry in state["lanes"][LANE]["tapes"]["rco_vote"]}
+    lesson = state["lanes"][LANE]["lessons"]["A.md"]
+    assert counts(lesson) == {"cards": 5, "taken": 3, "wrong": 2, "prs": 2}
+    assert len(set(lesson["cite"])) == 2 and set(lesson["cite"]) <= set(taped)
+    assert [taped[h]["utc"][:16] for h in lesson["cite"]] == [f"{DAY0}14:30", f"{DAY0}13:30"]  # the newest first
+    order, warnings = ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"])
+    assert order == ["B.md", "C.md", "A.md"]
+    assert warnings == {"A.md": f"LEARN: on 5 cards where you picked this, wrong 2 of taken 3 actions, on 2 PRs (rows "
+                                f"{lesson['cite'][0][:8]}, {lesson['cite'][1][:8]}); association only"}
+
+
+def test_lesson_counts_are_order_free():
+    results, remember = picked_cards(two_wrong_votes_each_held_by_two_cards())
+    one = ls.learn(results, remember)
+    random.Random(11).shuffle(results)
+    random.Random(12).shuffle(remember)
+    assert ls.canonical(ls.learn(results, remember)) == ls.canonical(one)
+
+
+def test_half_of_the_actions_wrong_warns_and_four_cards_never_do():
+    """2 * wrong >= taken holds at equality (wrong 2 of taken 4 warns), and fewer than LESSON_SUPPORT cards never warn
+    however their actions stand: the cards after the third hold one right vote, so they add cards and no action."""
+    def rowsets(cards):
+        rows = [[acted("TAKEN_WRONG", "pr_mismatch", "f6" * 32, f"{DAY0}19:00:00Z", f"{DAY0}19:10:00Z", pr=811)],
+                [acted("TAKEN_WRONG", "wrong_binding", "a7" * 32, f"{DAY0}19:20:00Z", f"{DAY0}19:30:00Z", pr=812)],
+                [acted("TAKEN_CORRECT", None, "b8" * 32, f"{DAY0}19:40:00Z", f"{DAY0}19:50:00Z", pr=813)]]
+        return rows + [[acted("TAKEN_CORRECT", None, "c9" * 32, f"{DAY0}20:0{k}:00Z", f"{DAY0}20:30:00Z", pr=814)]
+                       for k in range(cards - 3)]
+    five = ls.learn(*picked_cards(rowsets(5)))
+    assert counts(five["lanes"][LANE]["lessons"]["A.md"]) == {"cards": 5, "taken": 4, "wrong": 2, "prs": 2}
+    order, warnings = ls.lesson_order(five, LANE, ["A.md", "B.md", "C.md"])
+    assert order == ["B.md", "C.md", "A.md"]
+    assert warnings["A.md"].startswith("LEARN: on 5 cards where you picked this, wrong 2 of taken 4 actions, on 2 PRs "
+                                       "(rows ")
+    four = ls.learn(*picked_cards(rowsets(4)))
+    assert counts(four["lanes"][LANE]["lessons"]["A.md"]) == {"cards": 4, "taken": 4, "wrong": 2, "prs": 2}
+    assert ls.lesson_order(four, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+
+
+def test_a_stale_action_is_taken_and_never_wrong():
+    """TAKEN_STALE is a taken action (it counts in taken) and never a wrong one: two stale votes and one right vote
+    under two wrong ones on two PRs stay below half."""
+    rowsets = [[row("TAKEN_WRONG", "pr_mismatch", pr=821)], [row("TAKEN_WRONG", "wrong_binding", pr=822)],
+               [row("TAKEN_STALE", pr=823)], [row("TAKEN_STALE", pr=824)], [row("TAKEN_CORRECT", pr=825)]]
+    state = ls.learn(*picked_cards(rowsets))
+    assert counts(state["lanes"][LANE]["lessons"]["A.md"]) == {"cards": 5, "taken": 5, "wrong": 2, "prs": 2}
+    assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+
+
+def test_the_cite_is_the_newest_wrong_actions_by_time_when_their_row_hashes_sort_the_other_way():
+    """The cite orders the wrong actions by tape time, the newest first, never by row hash: the older wrong action
+    moves minute by minute until its row hash sorts above the newer one's, where a hash order would cite it first."""
+    def rowsets(minute):
+        return [[acted("TAKEN_WRONG", "pr_mismatch", "d4" * 32, f"{DAY0}16:00:00Z", f"{DAY0}16:{minute:02d}:00Z",
+                       pr=801)],
+                [acted("TAKEN_WRONG", "wrong_binding", "e5" * 32, f"{DAY0}17:00:00Z", f"{DAY0}17:30:00Z", pr=802)]] + \
+            [[acted("TAKEN_CORRECT", None, str(k) * 64, f"{DAY0}18:00:00Z", f"{DAY0}18:0{k}:00Z", pr=810 + k)]
+             for k in (1, 2, 3)]
+    for minute in range(1, 60):
+        state = ls.learn(*picked_cards(rowsets(minute)))
+        cite = state["lanes"][LANE]["lessons"]["A.md"]["cite"]
+        if cite != sorted(cite, reverse=True):
+            break
+    else:
+        pytest.fail("no minute put the row hashes against the times")
+    taped = {entry["row_hash"]: entry for entry in state["lanes"][LANE]["tapes"]["rco_vote"]}
+    assert [taped[h]["utc"][:16] for h in cite] == [f"{DAY0}17:30", f"{DAY0}16:{minute:02d}"]
+
+
+def test_a_pr_that_is_not_an_int_proves_no_independence():
+    rowsets = [[row("TAKEN_WRONG", "pr_mismatch", pr=pr)] for pr in (None, True, "8")] + \
+        [[row("TAKEN_CORRECT", pr=900 + k)] for k in range(2)]
+    state = ls.learn(*picked_cards(rowsets))
+    assert tape(state)["wrong"] == 3 and state["lanes"][LANE]["lessons"]["A.md"]["prs"] == 0
+    assert ls.lesson_order(state, LANE, ["A.md", "B.md", "C.md"]) == (["A.md", "B.md", "C.md"], {})
+
+
+def test_v11_names_its_pr_rule_and_refuses_a_v1_state():
+    assert ls.SCHEMA == "wd.mind-learn-state.v1.1" and ls.PARAMS["lesson_prs"] == ls.LESSON_PRS == 2
+    old = {key: value for key, value in ls.learn([]).items() if key != "state_hash"}
+    old["schema"] = "wd.mind-learn-state.v1"
+    assert not ls.verify(dict(old, state_hash=ls.sha256_text(ls.canonical(old))))

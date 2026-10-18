@@ -11,9 +11,10 @@ same inputs in any order give the same canonical bytes and ``state_hash``; rollb
 
 * Evidence. Only rows with a known outcome (TAKEN_CORRECT, TAKEN_STALE, TAKEN_WRONG, OTHER, NONE) are evidence. RCO2's
   tool already turns every failed proof (coverage, verified identity, head interval, read receipt) into UNKNOWN, so
-  UNKNOWN and PRE_READ are counted as non-evidence and never move a note. One card line seen with two different
-  histories is no evidence (RCO2's aggregate calls that a bound, not a resolution); an event cited by several cards
-  counts once, and an event whose rows disagree counts never.
+  UNKNOWN and PRE_READ are counted as non-evidence and never move a note. A taken row whose action lies outside
+  RCO2's window [read, read + 7200 s] is not a row RCO2 can make, so it is no evidence. One card line seen with two
+  different histories is no evidence (RCO2's aggregate calls that a bound, not a resolution); an event cited by
+  several cards counts once, and an event whose rows disagree counts never (RCO2's aggregate_conflict).
 * Tapes. Per lane and action kind (a build slot is ``build_vote``, a recognized RCO slot ``rco_vote``) the newest
   ``WINDOW_N`` rows by their time (the action's, or the read's for OTHER and NONE), at most ``CAP_PER_LANE_DAY``
   rows per lane per UTC day. Old evidence leaves the window; that is the decay. One lane never moves another lane.
@@ -23,10 +24,15 @@ same inputs in any order give the same canonical bytes and ``state_hash``; rollb
   <n>`` when n >= MIN_TIMED timed correct rows. Every number is a numerator AND a denominator, the rows are cited
   (the 8-hex prefix of their row hash) and a card hash rotates the kind order, so no kind owns the first line.
 * Lesson warnings. A picked REMEMBER lesson is associated with the cards it was picked for, only for cards whose
-  every row is evidence still in the window. Support >= 5, wrong >= 2 and 2 * wrong >= support moves the lesson to
+  every row is evidence still in the window (a PRE_READ row neither counts nor voids the card; UNKNOWN voids it). Support >= 5, wrong >= 2 and 2 * wrong >= support moves the lesson to
   the end of the top three with a warning ending ``association only``; LEARN never promotes a lesson.
 * Drafts. Two or more wrong rows with one reason in one lane and kind give a CANDIDATE lesson from a fixed template
   (no PR number, head or free text). A draft never enters memory without a review record.
+
+Review after the first push: Lead found that a returned state shared the module's PARAMS (fixed: the state is a
+fresh object tree); a controlled-helper Grok review (consultation 2af02293) proposed six changes, two adopted after
+checking RCO2's source (the read window, PRE_READ), one not adopted because RCO2's aggregate rules otherwise (one
+event judged two ways stays no evidence).
 
 Known limits: LEARN trusts RCO2's proofs (it cannot re-verify an identity or a head); OTHER and NONE still rest on
 agent labels (RCO2's stated limit); an association is not a cause; the thresholds are a consultation's, not
@@ -56,6 +62,7 @@ SCHEMA = "wd.mind-learn-state.v1"
 RESULT_SCHEMA = "wd.mind-join-card-outcomes.v1"
 WINDOW_N = 200
 CAP_PER_LANE_DAY = 32
+READ_WINDOW_S = 7200  # RCO2 contract v1.2 WINDOW: a line is decided by an action in [read, read + 7200 s]
 MIN_KNOWN, MIN_TAKEN, MIN_WRONG, MIN_CORRECT, MIN_TIMED = 8, 5, 2, 5, 5
 LESSON_SUPPORT, LESSON_WRONG, LESSON_TOP = 5, 2, 3
 DRAFT_MIN, DRAFTS_PER_LANE = 2, 8
@@ -65,7 +72,8 @@ OUTCOMES = KNOWN + ("PRE_READ", "UNKNOWN")
 WRONG_REASONS = ("pr_mismatch", "wrong_binding", "not_eligible")
 RCO_SLOTS = tuple(ws.RECOGNIZED_RCOS)
 BUILD_SLOTS = ("build_lead", "build_tools")
-PARAMS = {"window_n": WINDOW_N, "cap_per_lane_day": CAP_PER_LANE_DAY, "min_known": MIN_KNOWN, "min_taken": MIN_TAKEN,
+PARAMS = {"window_n": WINDOW_N, "cap_per_lane_day": CAP_PER_LANE_DAY, "read_window_s": READ_WINDOW_S,
+          "min_known": MIN_KNOWN, "min_taken": MIN_TAKEN,
           "min_wrong": MIN_WRONG, "min_correct": MIN_CORRECT, "min_timed": MIN_TIMED,
           "lesson_support": LESSON_SUPPORT, "lesson_wrong": LESSON_WRONG, "lesson_top": LESSON_TOP,
           "draft_min": DRAFT_MIN, "drafts_per_lane": DRAFTS_PER_LANE, "rotation": "rot-v1"}
@@ -134,6 +142,10 @@ def _check_result(result: Any) -> None:
             or not isinstance(result["inputs"].get("card_sha256"), str)
             or not HEX64.fullmatch(result["inputs"]["card_sha256"]) or not isinstance(result.get("rows"), list)):
         raise LearnError("an input is not a card outcome result")
+    try:
+        canonical(result)  # every value must be plain JSON: no NaN, infinity, set or bytes
+    except (TypeError, ValueError):
+        raise LearnError("an input holds a value JSON cannot hold") from None
     for row in result["rows"]:
         if (not isinstance(row, Mapping) or not isinstance(row.get("line"), int) or isinstance(row.get("line"), bool)
                 or row.get("outcome") not in OUTCOMES):
@@ -148,6 +160,10 @@ def _check_pick(pick: Any) -> None:
             or any(not isinstance(ref, str) or not REF.fullmatch(ref) for ref in pick["shown"] + pick["picked"])
             or not set(pick["picked"]) <= set(pick["shown"])):
         raise LearnError("a pick record is malformed or picks a line it did not show")
+    try:
+        canonical(pick)
+    except (TypeError, ValueError):
+        raise LearnError("a pick record holds a value JSON cannot hold") from None
 
 
 def action_kind(slot: Any) -> str | None:
@@ -162,10 +178,13 @@ def _entry(card: str, lane: str, row: Mapping[str, Any]) -> dict[str, Any] | Non
     """One evidence row as a tape entry, or None when a field the outcome needs is missing."""
     kind, outcome = action_kind(row.get("slot")), row["outcome"]
     taken = outcome in TAKEN
-    when = _utc(row.get("event_utc") if taken else row.get("read_utc"))
+    read = _utc(row.get("read_utc"))
+    when = _utc(row.get("event_utc")) if taken else read
     event = row.get("event_ref")
     if kind is None or when is None or (taken and (not isinstance(event, str) or not REF.fullmatch(event))):
         return None
+    if taken and (read is None or not 0 <= (when - read).total_seconds() <= READ_WINDOW_S):
+        return None  # RCO2 decides a line only by an action in [read, read + window]; anything else is not its row
     ms = row.get("read_to_action_ms")
     reason = row.get("reason") if outcome == "TAKEN_WRONG" else None
     return {"row_hash": row_hash(card, lane, row), "kind": kind, "outcome": outcome,
@@ -203,8 +222,12 @@ def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
             card_rows[card, lane].append(None)
             continue
         row = json.loads(next(iter(texts)))
-        if row["outcome"] in ("UNKNOWN", "PRE_READ"):
-            lanes[lane]["non_evidence"]["unknown" if row["outcome"] == "UNKNOWN" else "pre_read"] += 1
+        if row["outcome"] == "PRE_READ":  # known and outside every denominator: it neither counts nor voids the card
+            lanes[lane]["non_evidence"]["pre_read"] += 1
+            card_rows.setdefault((card, lane), [])  # the card was seen
+            continue
+        if row["outcome"] == "UNKNOWN":
+            lanes[lane]["non_evidence"]["unknown"] += 1
             card_rows[card, lane].append(None)
             continue
         entry = _entry(card, lane, row)
@@ -261,10 +284,10 @@ def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
         if len(texts) > 1:
             rejected["pick_mismatch"] += 1
             continue
-        rows = card_rows.get((card, lane))
-        if not rows:
+        if (card, lane) not in card_rows:
             rejected["pick_without_card"] += 1
             continue
+        rows = card_rows[card, lane]
         if any(e is None or alias.get(e["row_hash"], e["row_hash"]) not in kept for e in rows):
             continue  # a card with a non-evidence row or a row outside the window says nothing about a pick
         taken = [e for e in rows if e["outcome"] in TAKEN]
@@ -308,6 +331,7 @@ def learn(results: Sequence[Any], picks: Sequence[Any] = ()) -> dict[str, Any]:
              "inputs": {"results_sha256": sha256_text(canonical(sorted({sha256_text(canonical(r)) for r in results}))),
                         "picks_sha256": sha256_text(canonical(sorted({sha256_text(canonical(p)) for p in picks})))},
              "lanes": lanes, "drafts": drafts, "rejected": dict(sorted(rejected.items()))}
+    state = json.loads(canonical(state))  # a fresh object tree: nothing is shared with the module or another state
     state["state_hash"] = sha256_text(canonical(state))
     _guarded(state)
     return state

@@ -317,6 +317,23 @@ def test_date_fence_pinned_residual_is_stated_not_hidden():
     assert "T" not in out["show"] and out["n"] == 3 and out["u"] == 0
 
 
+def test_date_fence_stated_tradeoffs_from_review_d_are_pinned():
+    """Grok review D #1 and #3 are real false positives of this memory's weak clocks; their proposed fixes would
+    reopen the measured flood (#1: distinct-wording near-duplicates) or drop BACKDATED for every far forgery (#3, it
+    breaks cases 7, 8 and 15). Pinned as stated limits, like case 16; real-data rates are UNKNOWN until measured."""
+    same_hour = [fr("id1", "lesson", "(memory dir)", "2026-04-01T10", "2026-04-01T10:05:00Z", "2026-04-01T09:00:00Z",
+                    100, "always run tests"),
+                 fr("id2", "lesson", "(memory dir)", "2026-04-01T10", "2026-04-01T10:10:00Z", "2026-04-01", 0, "a"),
+                 fr("id3", "lesson", "(memory dir)", "2026-04-01T10", "2026-04-01T10:20:00Z", "2026-04-01", 0, "b"),
+                 fr("id4", "event", "bridge", "2026-04-01T11", "2026-04-01T11:00:00Z", "2026-04-01T11:00:00Z", 1)]
+    out = r21.fence(same_hour, group="g")
+    assert out["show"] == ["id4"] and out["header"].endswith("FLOOD 3 from path (memory dir)")
+    edited = [fr("id2", "event", "bridge", "B0", "2026-01-15", "2026-01-15", 1),
+              fr("id1", "lesson", "(memory dir)", "B1", "2026-03-01", "2026-01-01", 100, "ship the check")]
+    out = r21.fence(edited, group="g")
+    assert out["show"] == ["id2", "id1"] and out["marks"]["id1"] == ["BACKDATED"] and out["n"] == 1
+
+
 def test_date_fence_counts_never_inflate():
     out = r21.fence(FENCE_CASES[5][0], group="g")
     assert (out["n"], out["u"], out["flood"]) == (1, 1, 3)
@@ -333,6 +350,21 @@ def test_date_fence_refuses_a_malformed_row():
         r21.fence([good, dict(good)], group="g")  # a duplicate id
     with pytest.raises(r21.RememberV21Error):
         r21.fence([], group="g")
+    for key in ("available", "claimed", "id", "kind", "identity", "batch", "score", "text"):  # Lead probe 07:29Z
+        with pytest.raises(r21.RememberV21Error):
+            r21.fence([{k: v for k, v in good.items() if k != key}], group="g")
+    with pytest.raises(r21.RememberV21Error):
+        r21.fence(["not a row"], group="g")
+
+
+def test_date_fence_survives_the_calendar_edges():
+    """Lead probe 07:29Z: 9999-12-31 overflowed the far check (claimed + 14 days); 0001-01-01 must work too."""
+    last = r21.fence([fr("T", "lesson", "p/t", "B0", "9999-12-31", "9999-12-31", 0.5)], group="g")
+    assert (last["show"], last["marks"]["T"], last["header"]) == (["T"], [], "[TOPIC g: 1 trusted, 9999-12-31..9999-12-31]")
+    first = r21.fence([fr("T", "lesson", "p/t", "B0", "9999-12-31", "0001-01-01", 0.5)], group="g")
+    assert first["marks"]["T"] == ["DATE_UNVERIFIED"]
+    late = r21.fence([fr("T", "lesson", "p/t", "B0", "0001-01-01", "9999-12-31", 0.5)], group="g")
+    assert late["marks"]["T"] == ["CLAIMED_AFTER_AVAILABLE"] and late["n"] == 0
 
 
 TRUE_SUMMARY = "decoded guard json string escaped marker raw text regex"

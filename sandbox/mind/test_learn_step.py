@@ -195,11 +195,34 @@ def test_replay_is_order_free_and_fails_closed():
     assert ls.notes(tampered, LANE) == [] and ls.verify(one) and not ls.verify(tampered)
 
 
+def test_a_returned_state_shares_nothing_with_another_or_with_the_module():
+    """Lead 07:41Z (LEARN_PARAMS_RETURN_ALIAS): the state exposed the module's PARAMS dict, so editing one returned
+    state changed another snapshot, the next re-fold hash and the declared window."""
+    results = cards(harm_rows())
+    one, two = ls.learn(results), ls.learn(results)
+    one["params"]["window_n"] = 1
+    one["lanes"][LANE]["tapes"]["rco_vote"].clear()
+    one["rejected"]["cap"] = 99
+    assert ls.verify(two) and ls.learn(results)["state_hash"] == two["state_hash"]
+    assert ls.PARAMS["window_n"] == ls.WINDOW_N == two["params"]["window_n"]
+    assert tape(two)["known"] == 8 and two["rejected"]["cap"] == 0
+
+
 def test_a_result_that_is_not_an_outcome_result_is_refused():
     bad = result([row("TAKEN_CORRECT")])
-    for change in ({"schema": "x"}, {"authority": "gate"}, {"lane": "Not A Lane!"}, {"inputs": {"card_sha256": "z"}}):
+    for change in ({"schema": "x"}, {"authority": "gate"}, {"lane": "Not A Lane!"}, {"inputs": {"card_sha256": "z"}},
+                   {"rows": "x"}, {"rows": ["x"]}):
         with pytest.raises(ls.LearnError):
             ls.learn([dict(bad, **change)])
+    for value in (float("nan"), float("inf"), {1, 2}, b"x"):  # a value JSON cannot hold is refused, never a crash
+        with pytest.raises(ls.LearnError):
+            ls.learn([result([dict(row("TAKEN_CORRECT"), read_to_action_ms=value)], card="a" * 64)])
+    for key in ("line", "outcome"):
+        with pytest.raises(ls.LearnError):
+            ls.learn([result([{k: v for k, v in row("TAKEN_CORRECT").items() if k != key}])])
+    edge = row("TAKEN_CORRECT")
+    edge.update(read_utc="9999-12-31T23:59:59Z", event_utc="9999-12-31T23:59:59Z")
+    assert tape(ls.learn(cards([edge])))["correct"] == 1
 
 
 # 12, 13 drafts and decay --------------------------------------------------------------------------------------------
@@ -308,6 +331,47 @@ def test_the_runner_folds_once_and_reads_notes_and_order(tmp_path, capsys):
     state_path.write_text(state_path.read_text(encoding="ascii").replace('"NONE"', '"OTHER"', 1), encoding="ascii")
     assert ls.main(["notes", "--state", str(state_path), "--lane", LANE]) == 2
     assert "fails its own hash" in capsys.readouterr().err
+
+
+def test_an_action_time_outside_its_read_window_is_no_evidence():
+    """Grok review D #4: 200 correct rows dated 2099 must not push two real wrongs out of the window."""
+    wrongs = [row("TAKEN_WRONG", "pr_mismatch") for _ in range(2)]
+    future = []
+    for i in range(200):
+        item = row("TAKEN_CORRECT", day=0)
+        item["event_utc"] = f"2099-01-{1 + i // 32:02d}T00:00:{i % 32:02d}Z"
+        future.append(item)
+    before = row("TAKEN_CORRECT")
+    before["event_utc"] = "2026-10-17T00:00:00Z"  # an action before its read is not a taken row here
+    state = ls.learn(cards(wrongs + future + [before]))
+    assert tape(state)["wrong"] == 2 and tape(state)["correct"] == 0 and state["rejected"]["malformed"] == 201
+    inside = row("TAKEN_CORRECT")
+    inside["event_utc"] = inside["read_utc"][:-1] + "Z"
+    assert tape(ls.learn(cards([inside])))["correct"] == 1
+
+
+def test_a_pre_read_line_does_not_void_a_card_for_lesson_evidence():
+    """Grok review D #5: PRE_READ is known and outside every denominator; only UNKNOWN voids a card."""
+    results, remember = [], []
+    for i in range(5):
+        card = hashlib.sha256(f"preread{i}".encode()).hexdigest()
+        results.append(result([row("PRE_READ", "valid_vote_before_read", line=1),
+                               row("TAKEN_WRONG", "pr_mismatch", line=2)], card=card))
+        remember.append(picks(card, picked=("Lx.md",), shown=("Lx.md", "B.md", "C.md")))
+    order, warnings = ls.lesson_order(ls.learn(results, remember), LANE, ["Lx.md", "B.md", "C.md"])
+    assert order == ["B.md", "C.md", "Lx.md"] and "wrong 5 of support 5" in warnings["Lx.md"]
+    only_pre = hashlib.sha256(b"only-pre").hexdigest()
+    state = ls.learn([result([row("PRE_READ", "valid_vote_before_read")], card=only_pre)], [picks(only_pre)])
+    assert state["rejected"]["pick_without_card"] == 0 and state["lanes"][LANE]["lessons"] == {}
+
+
+def test_one_event_judged_two_ways_stays_no_evidence_as_in_rcos_aggregate():
+    """Grok review D #6 is NOT adopted: RCO2's aggregate makes any disagreement on one event_ref
+    UNKNOWN(aggregate_conflict); LEARN keeps the same rule so it never counts what the source calls a conflict."""
+    a = row("TAKEN_WRONG", "pr_mismatch", event="9" * 64, line=10)
+    b = row("TAKEN_WRONG", "wrong_binding", event="9" * 64, line=11)
+    state = ls.learn([result([a, b])])
+    assert tape(state)["wrong"] == 0 and state["rejected"]["event_conflict"] == 2
 
 
 def test_slots_map_to_two_action_kinds_and_kinds_never_mix():

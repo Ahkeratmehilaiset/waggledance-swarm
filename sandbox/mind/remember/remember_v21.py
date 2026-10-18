@@ -44,7 +44,14 @@ weaker than the consultation assumed (its prompt overstated the verification, so
 * an event's identity is the agent in its bridge ``event_ref`` and its claimed time is its ``available_utc``, so an
   event day is never forged; a burst of three events by one agent on one topic in one hour is still a FLOOD;
 * a writer who forges mtimes AND stays under ``FLOOD_MIN`` can still bracket a note (the consultation's pinned
-  residual, case 16); the fence makes that visible in the marks only when the days are impossible or backdated.
+  residual, case 16); the fence makes that visible in the marks only when the days are impossible or backdated;
+* because a lesson's mtime is its LAST EDIT, an old lesson edited after a newer record on its topic arrives in a
+  later wave and is BACKDATED (a spare line at most). A controlled-helper Grok review (2af02293) found this and the
+  same-hour lesson flood; both fixes it proposed would reopen the measured flood or drop BACKDATED for far
+  forgeries, so both are pinned as stated trade-offs (a test each). Their real-data rates are UNKNOWN until measured.
+
+Lead's boundary probe after the first push: a missing time field raised KeyError and 9999-12-31 overflowed the far
+check; both now go through the fixed error boundary or plain day differences (regression tests).
 """
 
 from __future__ import annotations
@@ -365,6 +372,8 @@ def _utc(value: Any) -> datetime.datetime:
 
 
 def _fence_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(row, Mapping):
+        raise RememberV21Error("a fence row is malformed")
     score = row.get("score")
     if (not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score)
             or row.get("kind") not in FENCE_KINDS
@@ -373,7 +382,7 @@ def _fence_row(row: Mapping[str, Any]) -> dict[str, Any]:
         raise RememberV21Error("a fence row is malformed")
     folded = " ".join(unicodedata.normalize("NFKC", row["text"]).casefold().split())
     return {"id": row["id"], "kind": row["kind"], "identity": row["identity"], "batch": row["batch"],
-            "available": _utc(row["available"]), "claimed": _utc(row["claimed"]), "score": float(score),
+            "available": _utc(row.get("available")), "claimed": _utc(row.get("claimed")), "score": float(score),
             "key": hashlib.sha256(folded.encode("utf-8")).hexdigest()}
 
 
@@ -430,7 +439,7 @@ def fence(members: Sequence[Mapping[str, Any]], group: Any) -> dict[str, Any]:
 
     for row in survivors:
         row["eligible"] = not (row["flood"] or row["impossible"] or row["backdated"])
-        row["far"] = row["claimed"].date() + datetime.timedelta(days=FAR_GAP_DAYS) < row["available"].date()
+        row["far"] = (row["available"].date() - row["claimed"].date()).days > FAR_GAP_DAYS  # no calendar overflow
         row["trusted"] = row["claimed"] if row["eligible"] else row["available"]
         found = {"FLOOD": row["flood"], "CLAIMED_AFTER_AVAILABLE": row["impossible"], "BACKDATED": row["backdated"],
                  "DATE_UNVERIFIED": row["flood"] or (row["eligible"] and row["far"])}

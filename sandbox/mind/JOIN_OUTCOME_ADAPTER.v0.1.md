@@ -1,10 +1,12 @@
 # JOIN_OUTCOME_ADAPTER v0.1: outcome rows for the JOIN card a lane actually read (contract, sandbox)
 
-Status: FROZEN design contract v0.1, written by fable-5 for Lead's request
-`lead-fable-join-outcome-contract-preparation-20261018-v1` (routing decision on task
-`codex-lead-1/join-outcome-contract-preparation-20261018`). Sandbox only, advisory, never a gate. No code GO:
-implementation stays held until Lead checks this frozen text and issues a separately bounded code GO. No PR, no
-runtime, no real, frozen or sealed input.
+Status: FROZEN design contract, version marker `v0.1-r2` (revision 2 of v0.1), written by fable-5 for Lead's
+request `lead-fable-join-outcome-contract-preparation-20261018-v1` and its revision request
+`lead-fable-join-outcome-contract-revision-bc050b9c-20261018-v2` (task
+`codex-lead-1/join-outcome-contract-preparation-20261018`). The first freeze (`v0.1`, commit bc050b9c, blob
+1d124b44, sha256 2cb5f06c...) is historical and superseded by this text; section 12 lists the delta. Sandbox only,
+advisory, never a gate. No code GO: implementation stays held until Lead checks this frozen text and issues a
+separately bounded code GO. No PR, no runtime, no real, frozen or sealed input.
 
 ## 1. Why
 
@@ -25,9 +27,11 @@ author credit.
   `sandbox/mind/test_join_outcome_adapter.py`, author fable-5.
 * Imported unchanged: `sandbox/mind/join_card_outcomes.py` (author claude-rco-2; blob 09987531 carried
   byte-identical onto the card lineage: an added member and import); its functions `card_lines`, `read_time`,
-  `outcome_row`, `counts`, `dedupe`, `event_pairs`, `sha256_bytes` and its constants are called, never copied or
-  edited. It imports `step1/lane_view.py`, `tools/bridge_mind_workspace.py` and `tools/bridge_compact_view.py`
-  (already members). It then runs against this lineage's `lane_view.py`, not its own branch's (stated limit).
+  `outcome_row`, `counts`, `dedupe`, `event_pairs`, `sha256_bytes`, `digest_set`, `stamp`, the private `_time` and
+  its constants (`SCHEMA` is not reused; `CONTRACT_SHA256`, `HISTORICAL_GAP`) are called, never copied or edited.
+  fable-5's composition probe ran its `outcomes` on this lineage once (one fixture view): the import closure loads
+  there; that is not general parity. It imports `step1/lane_view.py`, `tools/bridge_mind_workspace.py` and
+  `tools/bridge_compact_view.py` (already members). It then runs against this lineage's `lane_view.py`, not its own branch's (stated limit).
 * Imported from the card lineage: `join_card.py` (v0.5: `card`, `lane_records`, `see_line`, `_check_envelope`),
   `join_card_delivery.py` (`_load` style reads only), `join_turn.py` (`TURN_SCHEMA`, `OUTPUTS`).
 * LEARN dependency (a separate later slice, LEARN v1.1): `learn_step._check_result` accepts only
@@ -44,10 +48,18 @@ author credit.
 
 One adapter call judges one JOIN turn directory for one lane:
 
-* `turn.json` with `schema == join_turn.TURN_SCHEMA` (`wd.mind-join-turn.v0`), `version == "join-turn-v0.3"`,
-  `authority == "none"`, a `lane`, `cycle`, `as_of_utc`, `now_utc`, `outputs` holding exactly the sha256 of
-  `view.json`, `delivery.json` and `card.txt`, `remember_envelope_sha256`, `learn_envelope_sha256` and
-  `learn_state_sha256` (each a 64-hex string or null). Any missing, extra-typed or ambiguous field refuses.
+* `turn.json` as the CURRENT writer makes it (`join_turn.write_turn`, the manifest dict at lines 175-183 of
+  join_turn.py on this lineage; no writer edit is implied), a JSON object with EXACTLY these 15 keys and types:
+  `schema` == "wd.mind-join-turn.v0" (`TURN_SCHEMA`); `version` == "join-turn-v0.3"; `authority` == "none";
+  `scope` == "sandbox turn, not a gate"; `cycle`: string (the CLI always passes `--cycle`; the library may write
+  null, which the adapter refuses); `lane`: string; `as_of_utc`: string; `now_utc`: string; `inputs`: object with
+  exactly `frozen_root` (string), `manifest_sha256` (64-hex), `cycle_files` (object) and `cycle_nulls` (array), or
+  null (library path, refused); `receipts_given`: boolean; `remember_envelope_sha256`, `learn_state_sha256` and
+  `learn_envelope_sha256`: each a 64-hex string or null, with `learn_state_sha256` null exactly when
+  `learn_envelope_sha256` is null; `outputs`: object with exactly `view.json`, `delivery.json` and `card.txt`, each
+  64-hex; `code_sha256`: object with exactly the `join_turn.CODE` names, each 64-hex (cited, never trusted). A
+  missing key, an extra key, a wrong type or value, a bool where a string is due, or duplicate JSON keys refuse
+  (`turn_manifest_invalid`).
 * The three output files, read as bytes; each sha256 must equal its `outputs` entry.
 * The REMEMBER envelope and the LEARN envelope the turn used, given explicitly when (and only when) the manifest's
   digest is non-null; each must hash (`lane_view.sha256_text(lane_view.canonical(x))`, the turn's own rule) to that
@@ -86,6 +98,13 @@ adapter beyond what RCO2's rules already require from their own inputs.
   `github_head` of the record against the candidate row's `head` (RCO2's row holds the full head it verified against
   the record), the slot, and the candidate's `reason is None` (no `line_record_mismatch`); `candidates[i-1]["line"]
   == i`. Any disagreement refuses the card (no partial scoring).
+* What is discriminating (r2): both sides come from the SAME view, and RCO2's row copies the head of
+  `view["prs"][<its PR>]`, so once the PR numbers agree the full-head and slot equalities are implied (kept as
+  assertions, not claimed as separate protection). The checks that can fail on a self-consistent but hand-made view
+  are: (1) the PR order of `records` against the action texts' order (the two sorts differ in form: lane_view sorts
+  by ((one-slot, waiting_since, pr), text), lane_records by (one-slot, str(waiting_since), pr)); (2) an action text
+  whose head12, branch, slot or RCO/build word disagrees with its record (`line_record_mismatch`); (3) fewer action
+  texts than shown items.
 * HEAR, SLOT, UNDERSTAND, REMEMBER and LEARN lines give no rows. SLOT and UNDERSTAND speak about `records[0]`, which
   is SEE item 1 when k >= 1; HEAR may name a PR outside SEE and scores nothing.
 
@@ -101,31 +120,58 @@ adapter beyond what RCO2's rules already require from their own inputs.
 
 ## 6. Refusals, absent cards and malformed input
 
-* Absent card (no turn directory, a refused turn, no `card.txt`): no result. Nothing was shown, so nothing is scored.
-* Refused card (any check of sections 3 and 4 fails, or an input is unreadable, too deep or not plain JSON): a
-  result with `card = "refused: <fixed reason>"` and, as RCO2's tool does for a refused card, every candidate row
-  as `UNKNOWN` with that reason, so a refused card never vanishes; `not_shown` is empty (what was shown is unknown).
-  Fixed reasons: `turn_manifest_invalid`, `turn_output_digest_mismatch`, `envelope_binding_mismatch`,
-  `card_not_rendered_from_turn`, `card_lane_or_as_of_mismatch`, `see_items_ambiguous`, `see_item_mismatch`,
-  `view_schema_invalid`, `input_unreadable`. Messages never echo input content; every output passes the decoded
-  guard (`ws.guard_object`).
+* Observable refusal boundary: every adapter call ends in exactly one of two observable results, never in silence
+  or "no result": an accepted result (`card == "accepted"`, `exposure == "SHOWN_LINES_KNOWN"`) or a refusal result
+  (`card == "refused: <fixed reason>"`, `exposure == "UNKNOWN"`). The CLI prints `refused: <fixed reason>` and exits
+  2 on a refusal, as join_card and join_turn do.
+* Absent or unreadable artifacts (no turn directory, no `turn.json`, `view.json`, `delivery.json` or `card.txt`, a
+  file that cannot be read, is too deep or is not plain JSON, or an envelope that is needed but missing): a
+  refusal result with reason `turn_artifact_unavailable` (or `input_unreadable` for a present but unreadable file).
+  This states that exposure cannot be established. It is NOT proof that no card was shown or read: a missing record
+  is UNKNOWN, never a negative.
+* Refused card (any check of sections 3 and 4 fails): a refusal result with that fixed reason.
+* Rows of a refusal result: when `view.json` is present, readable, matches the manifest's `outputs` digest and has
+  the lane-view schema, every candidate row is listed as `UNKNOWN` with the refusal reason (as RCO2's tool does for
+  a refused card, so a refused card's lines never vanish) and `not_shown` is empty (what was shown is unknown);
+  otherwise `rows` is empty and `rows_unavailable == "view_unverified"`. A verified view with no action text for
+  the lane gives `rows` empty and `rows_unavailable` null. UNKNOWN rows stay non-evidence in LEARN.
+* Every JSON input (turn.json, view.json, delivery.json, the envelopes and RCO2's inputs) is parsed with a
+  duplicate-key refusal; digests are taken over the exact file bytes. An unknown lane (not in `lane_view.LANES`)
+  refuses, as RCO2's `outcomes` does.
+* Fixed reasons: `turn_artifact_unavailable`, `input_unreadable`, `turn_manifest_invalid`,
+  `turn_output_digest_mismatch`, `envelope_binding_mismatch`, `card_not_rendered_from_turn`,
+  `card_lane_or_as_of_mismatch`, `see_items_ambiguous`, `see_item_mismatch`, `view_schema_invalid`. Messages never
+  echo input content; every output passes the decoded guard (`ws.guard_object`).
 * A card is never accepted by substituting the step-1 render for the JOIN card, and the step-1 path of RCO2's tool
   stays byte for byte as it is.
 
 ## 7. Rows and result
 
+* `read, reason, receipt_reasons = read_time(issue, receipts, lane, card_sha256, view_sha256)`: RCO2's function
+  returns THREE values (read time or None, the reason or None, the sorted set of reasons of receipts that failed;
+  lines 185-204 of its source). `receipt_reasons` is kept in the result as `receipt_reasons_seen`, exactly as RCO2's
+  `outcomes` keeps it. `issued = _time(issue["issued_utc"])` when the issue is a mapping, else None, and `as_of =
+  _time(view["as_of_utc"])`, as RCO2 computes them.
+* `lane_events` exactly as RCO2 builds them: `kept, event_counts = dedupe(event_pairs(events))`, then the lane's
+  own events of `kept` sorted by (ts, ref). ALL of them go to every shown line's `outcome_row`; no event is dropped
+  because it concerns a hidden line or another PR.
 * For each shown line i (1..k): exactly RCO2's `outcome_row(candidates[i-1], lane, read, reason, issued, as_of,
-  lane_events, coverage, head_truth, eligibility, identity)` with `read, reason = read_time(issue, receipts, lane,
-  card_sha256, view_sha256)` and `lane_events` built as RCO2 builds them (`dedupe(event_pairs(events))`, the lane's
-  own events, sorted). So UNKNOWN (receipt or issue reasons), PRE_READ, the first relevant action, coverage before
-  any positive claim, head intervals versus samples (ABA), verified identity and the read window are unchanged.
+  lane_events, coverage, head_truth, eligibility, identity)`. So UNKNOWN (receipt or issue reasons), PRE_READ, the
+  first relevant action in the window (including a wrong-PR pass vote on the line's task, lines 400-418), coverage
+  before any positive claim, head intervals versus samples (ABA), verified identity, OTHER versus NONE (any lane
+  event in the window) and the read window are unchanged.
+* `gap` as RCO2 sets it: HISTORICAL_GAP when there are rows, every row's reason is `receipt_missing` and there is
+  no issue; else null.
 * Result: `{schema: "wd.mind-join-outcome-adapter.v0.1", authority: "none", scope:
   "offline_outcome_rows_not_gate", adapter_contract_sha256, base_contract_sha256: <RCO2's CONTRACT_SHA256>, lane,
   inputs: {view_sha256, card_sha256, turn_manifest_sha256, issue_sha256, receipts_sha256, coverage_sha256,
   head_truth_sha256, eligibility_sha256, identity_sha256, events, turn_inputs, turn_code_sha256}, card: "accepted" |
-  "refused: <reason>", shown_k, join_records, hidden_prs, rows, not_shown, elided_by_view_cap, counts, gap}`.
-  `counts` is RCO2's `counts(rows)`: numerators and denominators over shown rows only.
-* `adapter_contract_sha256` is the sha256 of this file's committed blob bytes (the freeze hash Lead receives).
+  "refused: <reason>", exposure: "SHOWN_LINES_KNOWN" | "UNKNOWN", shown_k, join_records, hidden_prs, rows,
+  rows_unavailable, not_shown, elided_by_view_cap, receipt_reasons_seen, counts, gap}`. On a refusal, `shown_k`,
+  `join_records` and `hidden_prs` are null. `counts` is RCO2's `counts(rows)`: numerators and denominators over the
+  rows only.
+* `adapter_contract_sha256` is the sha256 of this file's committed blob bytes at the `v0.1-r2` freeze (the hash
+  Lead receives with this revision).
 
 ## 8. Identity through issue, read, pick and outcome; denominators and duplicates
 
@@ -144,8 +190,12 @@ adapter beyond what RCO2's rules already require from their own inputs.
 Positive:
 * A1 k = 3 shown, a valid build vote by the lane on line 1 inside the read window with complete coverage, a head
   interval, eligibility and verified identity: line 1 TAKEN_CORRECT, lines 2 and 3 NONE; `not_shown` empty.
-* A2 the size bound forces k = 1 (long REMEMBER and LEARN content): rows only for line 1; a vote on the line-2 PR
-  is not scored and line 2 is in `not_shown`; `hidden_prs == len(records) - 1`.
+* A2 the size bound forces k = 1 (long REMEMBER and LEARN content): exactly one row (line 1); line 2 gets NO row
+  and is listed in `not_shown`; `hidden_prs == len(records) - 1`. The lane's pass vote on the line-2 PR (its own
+  task) is NOT removed from `lane_events`: under the unchanged rules it is not a relevant action for line 1 (another
+  task), but as a lane event inside the window it makes line 1 OTHER instead of NONE when coverage is complete. A
+  second fixture puts a pass vote on line 1's task that declares the line-2 PR number first in the window, with
+  complete coverage and a verified identity: line 1 is TAKEN_WRONG(pr_mismatch), as RCO2's tool would judge it.
 * A3 4 records (Lead's counterexample): `join_records = 4`, `hidden_prs = 4 - k`, `len(rows) = k`,
   `elided_by_view_cap = 1`.
 * A4 unchanged semantics on shown lines: a vote before the read gives PRE_READ; head samples only give
@@ -153,13 +203,22 @@ Positive:
 * A5 the same view's step-1 render through RCO2's tool gives byte-identical result bytes before and after the
   adapter module is imported.
 Negative (each a fixed refusal, never a raw error):
-* N1 one byte of card.txt changed; N2 SEE items reordered; N3 a record head that differs only after 12 hex; N4 a
-  card of another lane or as_of; N5 a manifest with a missing, extra or wrongly typed key, another schema or
-  version; N6 an output digest mismatch; N7 an envelope missing for a non-null digest, or given for a null one;
+* N1 one byte of card.txt changed; N2 SEE items reordered; N3 (r2, non-vacuous) a hand-made view, digests
+  recomputed and card re-rendered from it, whose line-1 action text names another head12 than its record (or whose
+  action texts are in another PR order than `records`): refused `see_item_mismatch`; N4 a
+  card of another lane or as_of; N5 a manifest made by the real `write_turn` and then changed: each of the 15 keys
+  removed, one extra key, each key with a wrong type (including bool for string and null where not allowed),
+  another schema, version, authority or scope, a null cycle or inputs, `learn_state_sha256` and
+  `learn_envelope_sha256` disagreeing in nullness, an `outputs` or `code_sha256` key set that differs, duplicate
+  JSON keys; N6 an output digest mismatch; N7 an envelope missing for a non-null digest, or given for a null one;
   N8 a view of another schema; N9 an ambiguous k; N10 a receipt or issue naming the step-1 card's hash applied to
-  the JOIN card (UNKNOWN by RCO2's own receipt rules); N11 too-deep or non-JSON input.
+  the JOIN card (UNKNOWN by RCO2's own receipt rules, its reason kept in `receipt_reasons_seen`); N11 too-deep or
+  non-JSON input; N12 each artifact absent in turn (turn.json, view.json, delivery.json, card.txt, a needed
+  envelope): a refusal result with `exposure == "UNKNOWN"`, never an empty or missing result.
 * Mutants to kill: derive k from the manifest; accept a partial SEE match; count `not_shown` in `counts`; use
-  `len(candidates) - k` for hidden PRs; compare only head12; score the SLOT line; skip the envelope digests.
+  `len(candidates) - k` for hidden PRs; compare only head12; score the SLOT line; skip the envelope digests; drop
+  the events of hidden lines before `outcome_row`; discard `receipt_reasons`; accept an extra manifest key; return
+  no result for an absent artifact.
 
 ## 10. Tiny authoring and eligibility ledger
 
@@ -179,3 +238,29 @@ Hash consistency is not authentication; the adapter trusts RCO2's proofs and LEA
 and NONE still rest on agent labels (RCO2's limit); the adapter runs RCO2's code against this lineage's
 `lane_view.py`; no utility or benefit is claimed; the item order of JOIN records and view candidates is checked per
 card, not proven in general (Lead's probe found no mismatch in its fixture).
+
+## 12. Revision v0.1-r2 delta (from the v0.1 freeze at bc050b9c)
+
+Confirmed interface mismatch, fixed: section 7 of v0.1 unpacked `read_time` into two values; RCO2's immutable source
+returns three (read, reason, receipt_reasons). r2 unpacks three and keeps `receipt_reasons_seen` as RCO2 does
+(Lead's frozen-contract check).
+
+Clarifications (the v0.1 text was ambiguous, not an interface mismatch):
+* A2: "a vote on the line-2 PR is not scored" now means only that the hidden line gets no row; every lane event
+  still reaches `outcome_row` for the shown lines, so the first relevant action (also a wrong-PR vote on the
+  shown line's task) and OTHER versus NONE stay exactly RCO2's.
+* Section 3 and N5: the complete current `write_turn` key set and types (15 keys, including `scope`, `inputs`,
+  `receipts_given` and `code_sha256`), so an extra key can be refused; no writer edit.
+* Section 6: an absent or unreadable artifact gives an observable refusal result with `exposure == "UNKNOWN"`
+  (`turn_artifact_unavailable`), never "no result", and it never claims that nothing was shown.
+
+Own refinements in r2 (not raised by Lead's check; written before Tools' parallel feasibility result, which had not
+arrived at this freeze): the full-head and slot equalities of section 4 are implied by the shared view record and
+no longer counted as separate protection; N3 is replaced by a non-vacuous hand-made-view case; empty candidates
+are accounted; JSON duplicate keys and unknown lanes refuse; the imported RCO2 names include `digest_set`, `stamp`
+and the private `_time`.
+
+Unchanged and kept: the two cardinalities of section 5 (Lead's counterexample), the re-render binding, the derived
+k, rows only for displayed SEE actions, RCO2's source byte-identical, no outcome v1.3 label, no code GO. Open
+limits stay in section 11. Ledger addition: Lead's frozen-contract check (finding on this task) is review input
+for r2, not authored text.

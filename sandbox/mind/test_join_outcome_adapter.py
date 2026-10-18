@@ -659,6 +659,40 @@ def test_r2_the_cli_prints_the_fixed_refusal_for_a_guarded_manifest_field_and_wr
     assert written["card"] == "refused: input_unreadable" and written["inputs"]["turn_inputs"] is None
 
 
+GUARDED_LANES = pytest.mark.parametrize("lane", [TOOLS + " " + MARKER, ESCAPED], ids=["plain", "escaped"])
+
+
+@GUARDED_LANES
+def test_r3_a_guarded_caller_lane_is_a_fixed_refusal_never_a_raw_error(sandbox_root, lane):
+    turn, _ = write(sandbox_root)
+    result = refused(judge(turn, lane=lane, **evidence(turn)), "card_lane_or_as_of_mismatch")
+    assert result["lane"] is None and result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+    ad.ws.guard_object(result)
+    assert "RIVATE" not in jco.canonical(result)
+
+
+@pytest.mark.parametrize("lane", ["codex-lead-9", TOOLS + "\n", "\ud800"], ids=["unknown", "newline", "surrogate"])
+def test_r3_an_unknown_caller_lane_is_refused_without_echoing_it(sandbox_root, lane):
+    turn, _ = write(sandbox_root)
+    assert judge(turn, **evidence(turn))["lane"] == TOOLS  # a known lane is still named
+    result = refused(judge(turn, lane=lane, **evidence(turn)), "card_lane_or_as_of_mismatch")
+    assert result["lane"] is None
+
+
+@GUARDED_LANES
+def test_r3_the_cli_prints_the_fixed_refusal_for_a_guarded_lane_and_writes_it_guard_clean(sandbox_root, capsys, lane):
+    turn, _ = write(sandbox_root)
+    out = sandbox_root / "result.json"
+    assert ad.main(["--turn", str(turn), "--lane", lane, "--learn-ref", LEARN, "--out", str(out)]) == 2
+    printed = capsys.readouterr()
+    assert printed.out == "refused: card_lane_or_as_of_mismatch\n" and printed.err == ""
+    data = out.read_bytes()
+    assert b"RIVATE" not in data
+    written = json.loads(data)
+    ad.ws.guard_object(written)
+    assert written["card"] == "refused: card_lane_or_as_of_mismatch" and written["lane"] is None
+
+
 def test_n9_an_ambiguous_k_is_refused(sandbox_root, monkeypatch):
     """Inert substitute, disclosed: the real see_line never renders two budgets alike, so N9 cannot be reached with
     real inputs. ``see_line`` is patched to render limit 2 as limit 3; the card (k = 3) re-renders unchanged, and two

@@ -227,7 +227,8 @@ def judge(turn_dir: Path | str, lane: str, *, learn_ref: str, remember: Any = No
     state: dict[str, Any] = {"view": None, "manifest": None, "files": {}}
     result: dict[str, Any] = {
         "schema": SCHEMA, "authority": "none", "scope": jco.SCOPE, "adapter_contract_sha256": ADAPTER_CONTRACT_SHA256,
-        "base_contract_sha256": jco.CONTRACT_SHA256, "lane": lane,
+        "base_contract_sha256": jco.CONTRACT_SHA256,
+        "lane": lane if lane in lv.LANES else None,  # an unknown lane refuses below and is never echoed (section 6)
         "inputs": {"view_sha256": None, "card_sha256": None, "turn_manifest_sha256": None, "issue_sha256": None,
                    "receipts_sha256": None, "coverage_sha256": None, "head_truth_sha256": None,
                    "eligibility_sha256": None, "identity_sha256": None, "events": None, "turn_inputs": None,

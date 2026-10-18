@@ -5,9 +5,12 @@ REMEMBER v2 ranks the same way after a wrong vote as after a right one, and a ca
 went wrong before. LEARN v1 closes that loop on evidence only, and only in words an agent can check.
 
 Design: one direct Grok xhigh consultation (answer sha256 acc2c4ae..., round C, fable-5's audit folder), mapped by
-fable-5 onto RCO2's real result shape ``wd.mind-join-card-outcomes.v1`` (``sandbox/mind/join_card_outcomes.py``,
-contract v1.2). The state is a PURE re-fold ``learn(results, picks) -> state``: no clock, no file, no network, the
-same inputs in any order give the same canonical bytes and ``state_hash``; rollback is a re-fold of a prefix.
+fable-5 onto RCO2's real result shape ``wd.mind-join-card-outcomes.v1`` (contract v1.2): RCO2's
+``sandbox/mind/join_card_outcomes.py`` at commit b708a8325148c8ccfd19bf1f13b429b4f6287d2f
+(blob 099875315df54839d6aed56003325512cededbcc) on ``sandbox/mind-learn-rco2-20261014``, a commit
+outside this branch's history; parity with it is a reading of that source, never executed against it. The state
+is a PURE re-fold ``learn(results, picks) -> state``: no clock, no file, no network, the same inputs in any order
+give the same canonical bytes and ``state_hash``; rollback is a re-fold of a prefix.
 
 * Evidence. Only rows with a known outcome (TAKEN_CORRECT, TAKEN_STALE, TAKEN_WRONG, OTHER, NONE) are evidence. RCO2's
   tool already turns every failed proof (coverage, verified identity, head interval, read receipt) into UNKNOWN, so
@@ -29,10 +32,11 @@ same inputs in any order give the same canonical bytes and ``state_hash``; rollb
 * Drafts. Two or more wrong rows with one reason in one lane and kind give a CANDIDATE lesson from a fixed template
   (no PR number, head or free text). A draft never enters memory without a review record.
 
-Review after the first push: Lead found that a returned state shared the module's PARAMS (fixed: the state is a
-fresh object tree); a controlled-helper Grok review (consultation 2af02293) proposed six changes, two adopted after
-checking RCO2's source (the read window, PRE_READ), one not adopted because RCO2's aggregate rules otherwise (one
-event judged two ways stays no evidence).
+Review after the first push: Tools' peer probe found that a returned state shared the module's PARAMS (finding
+LEARN_PARAMS_RETURN_ALIAS, which Lead reconciled; fixed: the state is a fresh object tree); a controlled-helper
+Grok review (consultation 2af02293) proposed six changes, two adopted after checking RCO2's source (the read
+window, PRE_READ), one not adopted because RCO2's aggregate rules otherwise (one event judged two ways stays no
+evidence).
 
 Known limits: LEARN trusts RCO2's proofs (it cannot re-verify an identity or a head); OTHER and NONE still rest on
 agent labels (RCO2's stated limit); an association is not a cause; the thresholds are a consultation's, not

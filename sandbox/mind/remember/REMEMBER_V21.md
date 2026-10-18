@@ -49,8 +49,9 @@ queries. A state file is never overwritten and every read checks its `state_hash
 
 * Lead boundary probe: a fence row without `available` or `claimed` raised KeyError, and 9999-12-31 overflowed the
   far check. Fixed, with regression tests.
-* Lead and Tools peer probe: a returned LEARN state shared the module's PARAMS dict. Fixed: every state is a fresh
-  object tree; regression test.
+* Tools' peer probe (finding LEARN_PARAMS_RETURN_ALIAS, which Lead reconciled): a returned LEARN state shared the
+  module's PARAMS dict. Fixed: every state is a fresh object tree; regression test. (The first wording here
+  credited Lead and Tools; Lead's correction: the finding is Tools'.)
 * Controlled-helper Grok review (consultation 2af02293, six proposals, advisory). Each premise was checked against
   RCO2's source and the date-fence spec first. Adopted: a taken row outside RCO2's `[read, read + 7200 s]` window is
   no evidence, and a PRE_READ line no longer voids a card for lesson evidence. Not adopted: rewind-inside-a-wave as

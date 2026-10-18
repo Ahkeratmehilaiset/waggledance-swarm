@@ -330,7 +330,12 @@ def apply_delta(previous_view: Mapping[str, Mapping[str, Any]], changes: Sequenc
 
 
 def render_lines(changes: Sequence[Mapping[str, Any]]) -> str:
-    """The exact printed lines, guarded as a whole before they are returned."""
+    """The exact printed lines. Every string in the changes is guarded before serialization, because JSON doubles a
+    backslash and the printed text may then no longer decode to the word (Tools DV1); the printed lines are still
+    guarded as a whole before they are returned."""
+    changes = list(changes)
+    if any(_has_marker(text) for text in _strings(changes)):
+        raise DeltaError("a guarded word is in the output; nothing is printed")
     text = "".join(json.dumps(change, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
                    for change in changes)
     if _has_marker(text):

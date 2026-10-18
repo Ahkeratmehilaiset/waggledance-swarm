@@ -511,6 +511,63 @@ def test_render_lines_refuses_composed_guard_forms(name):
                                                    separators=(",", ":")) + "\n"
 
 
+# Tools DV1 (frozen S1 case unicode_then_html): JSON serialization doubles the backslash, so the printed text decodes
+# to a backslash inside the word and the serialized-text guard alone missed it; the raw value is refused.
+DV1_UNICODE_THEN_HTML = "PRIVATE" + "\\u0026#95;" + "MARKER"
+
+
+def _question(value):
+    return {"schema": "wd.bridge-mind.delta.v0", "type": "changed", "section": "next_question", "key": "global",
+            "value": {"question": value, "refs": ["UNKNOWN"]}}
+
+
+def test_render_lines_refuses_frozen_unicode_then_html_value():
+    assert push._has_marker(DV1_UNICODE_THEN_HTML)
+    serialized = json.dumps(_question(DV1_UNICODE_THEN_HTML), sort_keys=True, ensure_ascii=False,
+                            separators=(",", ":"))
+    assert json.loads(serialized)["value"]["question"] == DV1_UNICODE_THEN_HTML
+    with pytest.raises(push.DeltaError):
+        push.render_lines([_question(DV1_UNICODE_THEN_HTML)])
+
+
+@pytest.mark.parametrize("name", sorted(NORMALIZED_ESCAPES) + sorted(WORKSPACE_MATRIX) + ["dv1_unicode_then_html"])
+@pytest.mark.parametrize("shape", ["list", "tuple", "one_pass"])
+def test_render_lines_guards_every_input_string_before_serialization(name, shape):
+    """Each string in the changes (keys and nested values) is guarded before serialization, for a list, a tuple and
+    a one-pass iterator alike; nothing is printed."""
+    value = {**NORMALIZED_ESCAPES, **WORKSPACE_MATRIX, "dv1_unicode_then_html": DV1_UNICODE_THEN_HTML}[name]
+    rows = [_question("clean"), _question(value)]
+    changes = {"list": rows, "tuple": tuple(rows), "one_pass": iter(rows)}[shape]
+    with pytest.raises(push.DeltaError):
+        push.render_lines(changes)
+
+
+@pytest.mark.parametrize("shape", ["list", "tuple", "one_pass"])
+def test_render_lines_keeps_clean_bytes_for_every_input_shape(shape):
+    rows = [_question(text) for text in CLEAN_TWINS]
+    expected = "".join(json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n"
+                       for row in rows)
+    changes = {"list": rows, "tuple": tuple(rows), "one_pass": iter(rows)}[shape]
+    assert push.render_lines(changes) == expected
+    assert push.render_lines([]) == push.render_lines(()) == push.render_lines(iter(())) == ""
+
+
+def test_render_lines_still_guards_the_serialized_text_as_a_whole(monkeypatch):
+    """The input boundary is added, never swapped in: the exact printed text is still checked before it is returned."""
+    row = _question("clean")
+    printed = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n"
+    seen = []
+
+    def spy(text):
+        seen.append(text)
+        return text == printed
+
+    monkeypatch.setattr(push, "_has_marker", spy)
+    with pytest.raises(push.DeltaError):
+        push.render_lines([row])
+    assert seen[-1] == printed
+
+
 def test_delta_guard_bounds_fail_closed_as_the_workspace_does(monkeypatch):
     assert (push.UNESCAPE_ROUNDS, push.FORM_LIMIT) == (4, 64)
     assert push._has_marker("%" + "25" * push.UNESCAPE_ROUNDS + "41")

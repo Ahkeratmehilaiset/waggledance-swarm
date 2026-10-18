@@ -138,8 +138,14 @@ def view_ok(view: Any, lane: str) -> bool:
     if not isinstance(lanes, Mapping):
         return False
     entry = lanes.get(lane, {"actions": [], "more": 0})
-    return (isinstance(entry, Mapping) and isinstance(entry.get("actions"), list)
-            and type(entry.get("more")) is int and entry["more"] >= 0)
+    if not (isinstance(entry, Mapping) and isinstance(entry.get("actions"), list)
+            and type(entry.get("more")) is int and entry["more"] >= 0):
+        return False
+    try:  # a view whose texts or records card_lines cannot read is never verified, so no refusal re-enters it
+        jco.card_lines(view, lane)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return True
 
 
 def envelope_digest(envelope: Any) -> str:
@@ -234,6 +240,11 @@ def judge(turn_dir: Path | str, lane: str, *, learn_ref: str, remember: Any = No
                 eligibility, identity, state, result)
     except Refused as refusal:
         _refuse(result, refusal.reason, state, lane)
+    if _guarded(result):  # copied turn content trips the decoded guard: refuse without showing any of it (section 6)
+        result["inputs"].update(turn_inputs=None, turn_code_sha256=None)
+        _refuse(result, "input_unreadable", state, lane)
+        if _guarded(result):  # a view text in a row: the view cannot be shown, so it counts as unverified
+            _refuse(result, "input_unreadable", {"view": None, "manifest": None, "files": {}}, lane)
     ws.guard_object(result)
     return result
 
@@ -337,6 +348,14 @@ def _refuse(result: dict[str, Any], reason: str, state: Mapping[str, Any], lane:
                   rows=rows, rows_unavailable=None if view is not None else "view_unverified", not_shown=[],
                   elided_by_view_cap=_elided(view, lane) if view is not None else None, receipt_reasons_seen=[],
                   counts=jco.counts(rows), gap=None)
+
+
+def _guarded(value: Any) -> bool:
+    try:
+        ws.guard_object(value)
+    except ws.WorkspaceError:
+        return True
+    return False
 
 
 def result_bytes(result: Mapping[str, Any]) -> bytes:

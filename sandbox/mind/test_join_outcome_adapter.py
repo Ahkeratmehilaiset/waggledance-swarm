@@ -571,6 +571,94 @@ def test_n8_a_view_without_lane_texts_is_refused_never_a_raw_error(sandbox_root)
     refused(judge(turn, **evidence(turn)), "view_schema_invalid")
 
 
+# --- repair after the 20746232 freeze: Tools REPORT F98B145E and RCO1's bound I/O result (both reproduced here) ------
+
+MARKER = chr(80) + "RIVATE" + "_MARKER"  # a guarded word, built at run time
+ESCAPED = "\\u0050" + "RIVATE" + "_MARKER"  # escaped; the decoded guard reveals it
+
+
+def edit_view(turn, edit):
+    """Edit the written view, keep its manifest digest right (ASCII JSON, so a lone surrogate escape survives)."""
+    view = json.loads((turn / "view.json").read_bytes())
+    edit(view)
+    rewrite(turn, "view.json", json.dumps(view, indent=1, sort_keys=True).encode("ascii"))
+
+
+@pytest.mark.parametrize("action", [None, 7, ["a list"], "\ud800"], ids=["null", "int", "list", "lone_surrogate"])
+def test_r1_an_action_text_rco2s_card_lines_cannot_read_is_view_schema_invalid_never_a_raw_error(sandbox_root,
+                                                                                                    action):
+    # Tools F98B145E: actions [null] passed view_ok, the card was refused and the refusal's card_lines raised
+    turn, _ = write(sandbox_root)
+    edit_view(turn, lambda view: view["lanes"][TOOLS]["actions"].__setitem__(0, action))
+    result = refused(judge(turn, **evidence(turn)), "view_schema_invalid")
+    assert result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+
+
+def test_r1_a_pr_record_whose_empty_slots_card_lines_cannot_read_is_view_schema_invalid(sandbox_root):
+    turn, _ = write(sandbox_root)
+    edit_view(turn, lambda view: [record.update(empty_slots=None) for record in view["prs"].values()])
+    result = refused(judge(turn, **evidence(turn)), "view_schema_invalid")
+    assert result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+
+
+def test_r1_a_malformed_view_with_a_pending_rco2_input_refusal_is_view_schema_invalid(sandbox_root):
+    turn, _ = write(sandbox_root)
+    edit_view(turn, lambda view: view["lanes"][TOOLS]["actions"].__setitem__(0, None))
+    result = refused(judge(turn, **evidence(turn, receipts="not a list")), "view_schema_invalid")
+    assert result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+
+
+def test_r1_a_refusal_raised_before_view_ok_does_not_re_enter_a_malformed_view(sandbox_root):
+    turn, _ = write(sandbox_root)
+    edit_view(turn, lambda view: view["lanes"][TOOLS]["actions"].__setitem__(0, None))
+    found = evidence(turn)
+    (turn / "card.txt").unlink()  # refused after view.json was read, before view_ok: the refusal re-reads the view
+    result = refused(judge(turn, **found), "turn_artifact_unavailable")
+    assert result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+
+
+@pytest.mark.parametrize("word", [MARKER, ESCAPED], ids=["plain", "escaped"])
+def test_r2_a_guarded_word_in_a_copied_manifest_field_is_input_unreadable_never_a_workspace_error(sandbox_root, word):
+    # RCO1 lead-rco1-join-adapter-io-safety-20746232-20261018-v1, check C2: inputs.frozen_root copied into the result
+    turn, _ = write(sandbox_root)
+    manifest = manifest_of(turn)
+    manifest["inputs"]["frozen_root"] += " " + word
+    put_manifest(turn, manifest)
+    result = refused(judge(turn, **evidence(turn)), "input_unreadable")
+    ad.ws.guard_object(result)
+    assert result["inputs"]["turn_inputs"] is None and result["inputs"]["turn_code_sha256"] is None
+    assert result["rows_unavailable"] is None and len(result["rows"]) == 3
+    assert {(row["outcome"], row["reason"]) for row in result["rows"]} == {(jco.UNKNOWN, "input_unreadable")}
+    more = json.loads((turn / "view.json").read_bytes())["lanes"][TOOLS]["more"]
+    assert result["counts"] == jco.counts(result["rows"]) and result["elided_by_view_cap"] == more
+
+
+def test_r2_a_guarded_word_in_a_view_text_a_row_would_copy_withholds_the_rows_too(sandbox_root):
+    turn, _ = write(sandbox_root)
+    _, branch, _ = record(0)
+    data = (turn / "view.json").read_text(encoding="utf-8").replace(branch, branch + MARKER)
+    rewrite(turn, "view.json", data.encode("utf-8"))
+    result = refused(judge(turn, **evidence(turn)), "input_unreadable")
+    ad.ws.guard_object(result)
+    assert result["rows"] == [] and result["rows_unavailable"] == "view_unverified"
+    assert result["inputs"]["turn_inputs"] is None and result["elided_by_view_cap"] is None
+
+
+def test_r2_the_cli_prints_the_fixed_refusal_for_a_guarded_manifest_field_and_writes_it_guard_clean(sandbox_root,
+                                                                                                      capsys):
+    turn, _ = write(sandbox_root)
+    manifest = manifest_of(turn)
+    manifest["inputs"]["frozen_root"] += " " + MARKER
+    put_manifest(turn, manifest)
+    out = sandbox_root / "result.json"
+    assert _cli(turn, out) == 2
+    printed = capsys.readouterr()
+    assert printed.out.strip() == "refused: input_unreadable" and MARKER not in printed.out + printed.err
+    written = json.loads(out.read_bytes())
+    ad.ws.guard_object(written)
+    assert written["card"] == "refused: input_unreadable" and written["inputs"]["turn_inputs"] is None
+
+
 def test_n9_an_ambiguous_k_is_refused(sandbox_root, monkeypatch):
     """Inert substitute, disclosed: the real see_line never renders two budgets alike, so N9 cannot be reached with
     real inputs. ``see_line`` is patched to render limit 2 as limit 3; the card (k = 3) re-renders unchanged, and two

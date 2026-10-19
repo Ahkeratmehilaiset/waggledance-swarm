@@ -6,6 +6,7 @@ dictionaries, ``reported_ci``, votes, stale votes and veto observations) with th
 """
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import json
@@ -408,6 +409,208 @@ def test_free_text_outside_the_view_is_never_printed_and_the_printed_lines_are_g
     with pytest.raises(push.DeltaError):
         push.render_lines([{"schema": "wd.bridge-mind.delta.v0", "type": "added", "section": "tensions",
                             "key": "x" + GUARD_WORDS[1].lower(), "value": {}}])
+
+
+# Guard parity with the frozen workspace guard (tools/bridge_mind_workspace.py at 39f6e822, blob afa3c450; Lead
+# SOURCE-GO lead-fable-delta-privacy-source-39f6e822-20261018-v1, Tools report BBDD8B6C). The delta keeps its own copy
+# (a dormant tool may not import another), so these cases and the text check below keep the two from drifting.
+# Built from GUARD_WORDS with escapes: this file carries no literal word and no hidden character.
+NORMALIZED_ESCAPES = {
+    "fullwidth_backslash_u": "\uff3c" + "u%04x" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "fullwidth_u": "\\" + "\uff55" + "%04x" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "fullwidth_hex_digits": "\\u" + "\uff10\uff10\uff15\uff10" + GUARD_WORDS[0][1:],
+    "fullwidth_percent_escape": GUARD_WORDS[0].replace("_", "\uff05" + "5F"),
+    "fullwidth_ampersand_reference": GUARD_WORDS[0].replace("_", "\uff06" + "#95;"),
+    "zero_width_space_inside_escape": "\\u00" + "\u200b" + "%02x" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+}
+WORKSPACE_MATRIX = {
+    "html_decimal": "&#%d;" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "html_hex_underscore": GUARD_WORDS[0].replace("_", "&#x5F;"),
+    "html_named_underscore": GUARD_WORDS[0].replace("_", "&lowbar;"),
+    "percent_underscore": GUARD_WORDS[0].replace("_", "%5F"),
+    "percent_twice": GUARD_WORDS[0].replace("_", "%255F"),
+    "percent_then_html": "%26%23" + str(ord(GUARD_WORDS[0][0])) + "%3B" + GUARD_WORDS[0][1:],
+    "zwj_inside": GUARD_WORDS[0][:3] + "\u200d" + GUARD_WORDS[0][3:],
+    "soft_hyphen_inside": GUARD_WORDS[0][:3] + "\u00ad" + GUARD_WORDS[0][3:],
+    "combining_mark": GUARD_WORDS[0][0] + "\u0301" + GUARD_WORDS[0][1:],
+    "spacing_mark_inside": GUARD_WORDS[0][:3] + "\u0903" + GUARD_WORDS[0][3:],
+    "enclosing_mark_inside": GUARD_WORDS[0][:3] + "\u20dd" + GUARD_WORDS[0][3:],
+    "cyrillic_upper": GUARD_WORDS[0].replace("A", "\u0410").replace("E", "\u0415"),
+    "greek_upper": GUARD_WORDS[0].replace("A", "\u0391"),
+    "second_word_cyrillic_o": GUARD_WORDS[1].replace("O", "\u041e"),
+}
+CLEAN_TWINS = ("docs\\u0041.md", "50% done", "a &amp; b", "%41%42", "R&amp;D 100%25", "caf\u00e9",
+               "\u043f\u0440\u0438\u0432\u0435\u0442", "\uff05 done", "\uff06 co", "\u0915\u093e\u0903", "PRIVATE",
+               "MARKER")
+
+
+@pytest.mark.parametrize("name", sorted(NORMALIZED_ESCAPES))
+def test_delta_guard_normalizes_before_each_decoder(name):
+    """Tools DP1: the old copy checked the NFKC form but decoded only the original, so an escape that shows only after
+    normalization was never decoded. The view refuses it in any field and the printed lines refuse it."""
+    value = NORMALIZED_ESCAPES[name]
+    assert push._has_marker(value)
+    current = _snapshot(as_of="2026-01-01T00:31:00Z", tensions=[_tension("t1", subject="x" + value)])
+    with pytest.raises(push.DeltaError):
+        push.view(current)
+
+
+@pytest.mark.parametrize("name", sorted(WORKSPACE_MATRIX))
+def test_delta_guard_matches_frozen_workspace_encoding_matrix(name):
+    """Tools DP2: HTML references, percent encoding, format characters, combining marks and mapped look-alikes, as the
+    frozen workspace guard refuses them."""
+    assert push._has_marker(WORKSPACE_MATRIX[name])
+
+
+@pytest.mark.parametrize("text", CLEAN_TWINS)
+def test_delta_guard_keeps_its_clean_twins(text):
+    assert not push._has_marker(text)
+
+
+@pytest.mark.parametrize("name", sorted(NORMALIZED_ESCAPES) + sorted(WORKSPACE_MATRIX))
+def test_render_lines_refuses_composed_guard_forms(name):
+    """The printed lines are guarded as a whole, with the same closure; a clean twin renders its exact bytes."""
+    value = {**NORMALIZED_ESCAPES, **WORKSPACE_MATRIX}[name]
+    change = {"schema": "wd.bridge-mind.delta.v0", "type": "added", "section": "tensions", "key": "x" + value,
+              "value": {}}
+    with pytest.raises(push.DeltaError):
+        push.render_lines([change])
+    twin = dict(change, key="x" + CLEAN_TWINS[2])
+    assert push.render_lines([twin]) == json.dumps(twin, sort_keys=True, ensure_ascii=False,
+                                                   separators=(",", ":")) + "\n"
+
+
+# Tools DV1 (frozen S1 case unicode_then_html): JSON serialization doubles the backslash, so the printed text decodes
+# to a backslash inside the word and the serialized-text guard alone missed it; the raw value is refused.
+DV1_UNICODE_THEN_HTML = "PRIVATE" + "\\u0026#95;" + "MARKER"
+
+
+def _question(value):
+    return {"schema": "wd.bridge-mind.delta.v0", "type": "changed", "section": "next_question", "key": "global",
+            "value": {"question": value, "refs": ["UNKNOWN"]}}
+
+
+def test_render_lines_refuses_frozen_unicode_then_html_value():
+    assert push._has_marker(DV1_UNICODE_THEN_HTML)
+    serialized = json.dumps(_question(DV1_UNICODE_THEN_HTML), sort_keys=True, ensure_ascii=False,
+                            separators=(",", ":"))
+    assert json.loads(serialized)["value"]["question"] == DV1_UNICODE_THEN_HTML
+    with pytest.raises(push.DeltaError):
+        push.render_lines([_question(DV1_UNICODE_THEN_HTML)])
+
+
+@pytest.mark.parametrize("name", sorted(NORMALIZED_ESCAPES) + sorted(WORKSPACE_MATRIX) + ["dv1_unicode_then_html"])
+@pytest.mark.parametrize("shape", ["list", "tuple", "one_pass"])
+def test_render_lines_guards_every_input_string_before_serialization(name, shape):
+    """Each string in the changes (keys and nested values) is guarded before serialization, for a list, a tuple and
+    a one-pass iterator alike; nothing is printed."""
+    value = {**NORMALIZED_ESCAPES, **WORKSPACE_MATRIX, "dv1_unicode_then_html": DV1_UNICODE_THEN_HTML}[name]
+    rows = [_question("clean"), _question(value)]
+    changes = {"list": rows, "tuple": tuple(rows), "one_pass": iter(rows)}[shape]
+    with pytest.raises(push.DeltaError):
+        push.render_lines(changes)
+
+
+@pytest.mark.parametrize("shape", ["list", "tuple", "one_pass"])
+def test_render_lines_keeps_clean_bytes_for_every_input_shape(shape):
+    rows = [_question(text) for text in CLEAN_TWINS]
+    expected = "".join(json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n"
+                       for row in rows)
+    changes = {"list": rows, "tuple": tuple(rows), "one_pass": iter(rows)}[shape]
+    assert push.render_lines(changes) == expected
+    assert push.render_lines([]) == push.render_lines(()) == push.render_lines(iter(())) == ""
+
+
+def test_render_lines_still_guards_the_serialized_text_as_a_whole(monkeypatch):
+    """The input boundary is added, never swapped in: the exact printed text is still checked before it is returned."""
+    row = _question("clean")
+    printed = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n"
+    seen = []
+
+    def spy(text):
+        seen.append(text)
+        return text == printed
+
+    monkeypatch.setattr(push, "_has_marker", spy)
+    with pytest.raises(push.DeltaError):
+        push.render_lines([row])
+    assert seen[-1] == printed
+
+
+def test_delta_guard_bounds_fail_closed_as_the_workspace_does(monkeypatch):
+    assert (push.UNESCAPE_ROUNDS, push.FORM_LIMIT) == (4, 64)
+    assert push._has_marker("%" + "25" * push.UNESCAPE_ROUNDS + "41")
+    assert not push._has_marker("%" + "25" * (push.UNESCAPE_ROUNDS - 2) + "41")
+    monkeypatch.setattr(push, "FORM_LIMIT", 1)
+    assert push._has_marker("a &amp; b") and not push._has_marker("a b")
+
+
+GUARD_PARTS = ("UNESCAPE_ROUNDS", "FORM_LIMIT", "SKELETON_DROPPED", "_LOOKALIKE", "_ESCAPED", "_skeleton",
+               "_decodings", "_found", "_has_marker")
+
+
+def _guard_parts(path: Path) -> dict[str, str]:
+    """The guard's constants and functions as AST dumps without docstrings, read as text (never imported)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    parts = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in GUARD_PARTS:
+                parts[name] = ast.dump(node.value)
+        elif isinstance(node, ast.FunctionDef) and node.name in GUARD_PARTS:
+            body = node.body[1:] if (node.body and isinstance(node.body[0], ast.Expr)
+                                     and isinstance(node.body[0].value, ast.Constant)) else node.body
+            parts[node.name] = ast.dump(ast.Module(body=body, type_ignores=[])) + ast.dump(node.args)
+    return parts
+
+
+def test_the_delta_guard_is_the_workspace_guard_line_for_line():
+    """Tools DP2 root cause: the copy did not evolve with the workspace. Every guard constant and function body must
+    equal the workspace's (docstrings aside); change both or neither."""
+    tools = Path(push.__file__).resolve().parent
+    delta = _guard_parts(tools / "wd_bridge_mind_delta_push.py")
+    workspace = _guard_parts(tools / "bridge_mind_workspace.py")
+    assert sorted(delta) == sorted(GUARD_PARTS) and delta == workspace
+
+
+# D16 (REMEMBER lineage, fable-5): pinned after the D16 mutant run, where one decoding round more, an inclusive form
+# limit, a strict percent decoder and a delta guard without the Cyrillic small look-alikes survived every delta test.
+# The eight hidden forms of the workspace test (HIDDEN_FORMS) this file lacked, built the same way, with escapes (its
+# zero-width space inside a percent escape is not the same-named form in NORMALIZED_ESCAPES above).
+D16_WORKSPACE_FORMS = {
+    "html_decimal_no_semicolon": "&#%d" % ord(GUARD_WORDS[0][0]) + GUARD_WORDS[0][1:],
+    "percent_lower_case": GUARD_WORDS[0].lower().replace("_", "%5f"),
+    "zwnj_inside": GUARD_WORDS[0][:3] + "\u200c" + GUARD_WORDS[0][3:],
+    "word_joiner_inside": GUARD_WORDS[0][:3] + "\u2060" + GUARD_WORDS[0][3:],
+    "escaped_zwj_inside": GUARD_WORDS[0][:3] + "\\u200d" + GUARD_WORDS[0][3:],
+    "cyrillic_lower": GUARD_WORDS[0].lower().replace("a", "\u0430").replace("e", "\u0435"),
+    "fullwidth_percent_and_digits": GUARD_WORDS[0].replace("_", "\uff05\uff15\uff26"),
+    "zero_width_space_inside_percent_escape": GUARD_WORDS[0].replace("_", "%5" + "\u200b" + "F"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(D16_WORKSPACE_FORMS))
+def test_delta_guard_finds_the_workspace_forms_this_file_lacked(name):
+    value = D16_WORKSPACE_FORMS[name]
+    assert push._has_marker(value)
+    with pytest.raises(push.DeltaError):
+        push.render_lines([_question(value)])
+
+
+def test_delta_guard_bounds_are_exact(monkeypatch):
+    """A text needing exactly UNESCAPE_ROUNDS decodings is refused; exactly FORM_LIMIT forms are checked."""
+    assert push._has_marker("%" + "25" * (push.UNESCAPE_ROUNDS - 1) + "41")
+    monkeypatch.setattr(push, "FORM_LIMIT", 2)
+    assert not push._has_marker("a &amp; b")
+
+
+@pytest.mark.parametrize("text", ["100%ff", "%C3%28 ok", "50%e2%82 done"])
+def test_delta_an_invalid_percent_byte_is_replaced_never_a_traceback(text):
+    assert not push._has_marker(text)
+    assert push.render_lines([_question(text)]) == json.dumps(_question(text), sort_keys=True, ensure_ascii=False,
+                                                              separators=(",", ":")) + "\n"
+    assert push._has_marker(GUARD_WORDS[0].replace("_", "%5F") + " " + text)
 
 
 def test_main_prints_only_to_stdout_reads_canonical_json_and_has_no_file_writer(tmp_path, capsys):

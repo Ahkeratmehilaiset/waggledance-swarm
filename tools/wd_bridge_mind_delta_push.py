@@ -34,25 +34,31 @@ Refusals, all fail-closed with a fixed message and nothing printed:
   and ``attention`` lists), or a tension, attention or question row that cannot be keyed or whose key is not
   unique: a row is never dropped, so a missing row cannot read as ``removed``;
 * a guarded private-marker word in either view or in the printed lines, in any letter case or
-  compatibility form, before or after each backslash-u unescape. JSON inside strings is never parsed.
+  compatibility form, before or after each backslash-u unescape, HTML character reference and percent
+  decoding, in any order and mix, and in each form's skeleton (format characters and combining marks removed,
+  Cyrillic or Greek look-alike letters read as Latin), within the same bounded, fail-closed closure as the
+  workspace guard. JSON inside strings is never parsed.
 
 When the log identity or generation differs between the two snapshots, or either side's is not a known
 identity (missing, not a string, not the core's token, or ``UNKNOWN``; a null generation is known), the only
 change is ``rebuild_required`` with a fixed reason: the previous view cannot be updated across a replaced or
 unidentified log, and the rejected value is never printed. The reconstruction contract is at the level of
-this identifier view, not the full snapshot. Not on the gate verdict path. The guard is a copy of the workspace's (a dormant tool may not import another dormant tool, so
-neither becomes wired by the other).
+this identifier view, not the full snapshot. Not on the gate verdict path. The guard is a copy of the
+workspace's at 39f6e822 (a dormant tool may not import another dormant tool, so neither becomes wired by the
+other); a test keeps every guard constant and function body equal to the workspace's.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import html
 import json
 from pathlib import Path
 import re
 import sys
 from typing import Any, Mapping, Sequence
 import unicodedata
+from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -69,6 +75,21 @@ DELTA_SCHEMA = "wd.bridge-mind.delta.v0"
 SECTIONS = ("source", "prs", "tensions", "attention", "next_question")
 UNKNOWN = "UNKNOWN"
 UNESCAPE_ROUNDS = 4
+# The most distinct decoded forms of one text the guard checks; a text with more is refused, never passed unchecked.
+FORM_LIMIT = 64
+# What a renderer may not show, removed for the skeleton: format characters and every combining mark (Mn, Mc, Me).
+SKELETON_DROPPED = frozenset({"Cf", "Mn", "Mc", "Me"})
+# Cyrillic and Greek letters a renderer shows like a Latin letter (RCO1's JOIN injection probe passed a Cyrillic one).
+# Only letters whose usual glyph matches; a look-alike outside this map is a known limit.
+_LOOKALIKE = str.maketrans(
+    "\u0410\u0412\u0415\u041a\u041c\u041d\u041e\u0420\u0421\u0422\u0425\u0423\u0406\u0408\u0405"
+    "\u0430\u0435\u043e\u0440\u0441\u0443\u0445\u0456\u0458\u0455\u04cf\u0501\u051b\u051d"
+    "\u0391\u0392\u0395\u0396\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a5\u03a7"
+    "\u03bf\u03b9\u03ba\u03c1\u03bd",
+    "ABEKMHOPCTXYIJS"
+    "aeopcyxijsldqw"
+    "ABEZHIKMNOPTYX"
+    "oikpv")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
 _PR_KEY = re.compile(r"[1-9][0-9]{0,9}")
@@ -82,16 +103,55 @@ class DeltaError(ValueError):
     """Fixed messages that never echo input content."""
 
 
+def _skeleton(form: str) -> str:
+    """The text as a renderer shows it: format characters (Cf: ZWJ, ZWNJ, soft hyphen) and combining marks (Mn, Mc,
+    Me) removed after compatibility decomposition, and look-alike letters read as Latin. ASCII is its own skeleton."""
+    if form.isascii():  # no format character, mark or look-alike in it
+        return form
+    return "".join(char for char in unicodedata.normalize("NFKD", form)
+                   if unicodedata.category(char) not in SKELETON_DROPPED).translate(_LOOKALIKE)
+
+
+def _decodings(form: str) -> list[str]:
+    """The next forms of the closure: the text's skeleton, and what a reader may decode the text and its skeleton to
+    (each ``\\uXXXX`` unescape, HTML character references, percent decoding). The skeleton starts from the
+    compatibility decomposition, so a decoding hidden behind a compatibility or invisible character (a fullwidth
+    percent sign, a zero-width space inside an escape) is decoded in the same round (Lead review of 57aaad97, F1)."""
+    forms = []
+    for base in dict.fromkeys((form, _skeleton(form))):
+        forms += [base, _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), base), html.unescape(base),
+                  unquote(base, errors="replace")]
+    return forms
+
+
+def _found(form: str) -> bool:
+    """The shared check on one form, case-folded first. Compatibility forms (fullwidth letters) are found through the
+    skeleton, which starts from the compatibility decomposition and is a form of the closure itself."""
+    return _guarded_word(form.casefold().upper()) is not None
+
+
 def _has_marker(text: str) -> bool:
-    """A guarded word in any letter case or compatibility form, before or after each backslash-u unescape."""
-    form = text
+    """A guarded word in the text in any letter case or compatibility form, before or after each decoding a reader
+    may apply (``\\uXXXX`` unescape, HTML character reference, percent decoding), in any order and mix, also when a
+    decoding shows only in the skeleton.
+
+    The shared check is case-sensitive, so each form is case-folded and upper-cased first, and each form's skeleton
+    (``_skeleton``, from the compatibility decomposition) is a form of the closure too. Decoding repeats until no new
+    form appears (at most ``UNESCAPE_ROUNDS`` rounds and ``FORM_LIMIT`` forms), so a word encoded twice, which a
+    reader would reveal by decoding twice, is found too; a text still yielding new forms past either bound is
+    refused. JSON inside the text is never parsed.
+    """
+    seen = {text}
+    forms = [text]
     for _ in range(UNESCAPE_ROUNDS):
-        if _guarded_word(unicodedata.normalize("NFKC", form).casefold().upper()) is not None:
+        if any(_found(form) for form in forms):
             return True
-        unescaped = _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), form)
-        if unescaped == form:
+        forms = list(dict.fromkeys(decoded for form in forms for decoded in _decodings(form) if decoded not in seen))
+        if not forms:
             return False
-        form = unescaped
+        seen.update(forms)
+        if len(seen) > FORM_LIMIT:
+            return True
     return True
 
 
@@ -269,7 +329,12 @@ def apply_delta(previous_view: Mapping[str, Mapping[str, Any]], changes: Sequenc
 
 
 def render_lines(changes: Sequence[Mapping[str, Any]]) -> str:
-    """The exact printed lines, guarded as a whole before they are returned."""
+    """The exact printed lines. Every string in the changes is guarded before serialization, because JSON doubles a
+    backslash and the printed text may then no longer decode to the word (Tools DV1); the printed lines are still
+    guarded as a whole before they are returned."""
+    changes = list(changes)
+    if any(_has_marker(text) for text in _strings(changes)):
+        raise DeltaError("a guarded word is in the output; nothing is printed")
     text = "".join(json.dumps(change, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
                    for change in changes)
     if _has_marker(text):

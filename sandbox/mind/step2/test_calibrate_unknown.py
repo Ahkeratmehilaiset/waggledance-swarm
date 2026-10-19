@@ -3,8 +3,9 @@ before it is an explicit UNKNOWN row (every statistic None, ``unknown`` says why
 encoded, no score made up), and ``--out`` is written new: an existing output is refused before any input is read, and
 the result is published whole as LF bytes, or nothing at that path. D23 (Lead's 09:03Z slice): a case whose before
 time is missing, malformed, timezone-less or out of range is an UNKNOWN row too (never a made-up time), and the encoder
-is built only at the first case that has an applicable record. Synthetic notes, captures and a fake encoder only (no
-e5, no F: data, no network).
+is built only at the first case that has an applicable record. D24 (Lead's 09:31Z slice): a negative case without a
+usable before time is such a row too (no default time). Synthetic notes, captures and a fake encoder only (no e5, no F:
+data, no network).
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
      sandbox/mind/step2/test_calibrate_unknown.py
@@ -491,3 +492,29 @@ def test_d23_the_encoder_is_built_once_at_the_first_applicable_case(tmp_path, bu
     out = tmp_path / "calibration.json"
     assert calibrate_mod.main(argv(built, sets, out)) == 0
     assert check_result(out)["unknown_rows"] == 1 and FakeE5.made == 1 and len(FakeE5.queries) == 2
+
+
+# D24: a negative case without a usable before time --------------------------------------------------------------------
+
+NEGATIVE_BEFORE = {"null": None, "empty": "", "zero": 0}
+
+
+@pytest.mark.parametrize("label", ["missing", "null", "empty", "zero"])
+def test_d24_a_negative_case_without_a_usable_before_time_is_an_unknown_row(tmp_path, built, capsys, label):
+    negative = {"id": "neg", "situation": "a quiet start", "before": NEGATIVE_BEFORE.get(label)}
+    if label == "missing":
+        del negative["before"]
+    control = {"id": "control", "situation": "a later quiet start", "before": LATE}
+    sets = [case_set(tmp_path / "set.json", [], [negative, control])]
+    out = tmp_path / "calibration.json"
+    assert calibrate_mod.main(argv(built, sets, out)) == 0
+    result = check_result(out)
+    rows = {row["id"]: row for row in result["rows"]}
+    assert sorted(rows) == ["control", "neg"] and result["unknown_rows"] == 1
+    row = rows["neg"]
+    assert row["kind"] == "negative" and row["applicable"] is None and row["unknown"] == "before_time_invalid"
+    assert {key: row[key] for key in STATISTICS} == dict.fromkeys(STATISTICS) and row["top3"] == []
+    assert rows["control"]["applicable"] == 4 and "unknown" not in rows["control"]
+    assert FakeE5.queries == ["a later quiet start"]  # never a made-up time: the case is not scored
+    lines = {line.split()[1]: line for line in capsys.readouterr().out.splitlines()}
+    assert lines["neg"].split()[2:] == ["UNKNOWN", "before_time_invalid"]

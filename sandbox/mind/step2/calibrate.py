@@ -20,6 +20,7 @@ NEW file whole or not at all (``write_new``; an existing one is refused before a
 record available before it is an UNKNOWN row (D22): every statistic is None and ``unknown`` says why; no query is
 encoded for it and no score is made up. So is a case whose before time is missing, malformed, timezone-less or out of
 range (D23; no time is made up), and the encoder is built only at the first case with an applicable record (D23).
+A negative case without a usable before time gets no default time either: it is such an UNKNOWN row (D24).
 """
 
 import argparse
@@ -134,9 +135,9 @@ def load_cases(paths):
                 continue
             cases.append({"id": case["id"], "set": path.name, "kind": "positive", "situation": case["situation"],
                           "before": case.get("before"), "lessons": lessons, "events": events})
-        for case in data.get("negative") or []:
+        for case in data.get("negative") or []:  # D24: no default before time; an unusable one is an UNKNOWN row
             cases.append({"id": case["id"], "set": path.name, "kind": "negative", "situation": case["situation"],
-                          "before": case.get("before") or "2026-10-13T18:00:00Z", "lessons": [], "events": []})
+                          "before": case.get("before"), "lessons": [], "events": []})
     return cases
 
 

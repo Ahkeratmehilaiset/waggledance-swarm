@@ -174,10 +174,13 @@ def _later(space, gh):
     (Gh(open_status=gh_bytes([{"headRefOid": tlv.OLD, "mergeStateStatus": "CLEAN", "number": tlv.NUMBER,
                                 "statusCheckRollup": ROLLUP}])), None, "head_conflict"),
     (Gh(open_status=gh_bytes([])), None, "head_conflict"),
-    (Gh(listing=gh_bytes([{"headRefName": "lane-a/other-1", "headRefOid": "1" * 40, "number": 7, "state": "MERGED"}]),
+    # two merged rows reach the patched limit of 2, so PR1905 is read on its own; the open list (one row) stays
+    # below it, so a backfilled list handed on as raw would reach the link check, not the open-list limit
+    (Gh(listing=gh_bytes([{"headRefName": f"lane-a/other-{n}", "headRefOid": str(n) * 40, "number": n,
+                           "state": "MERGED"} for n in (7, 8)]),
         rows={str(tlv.NUMBER): json.dumps({"headRefName": tlv.BRANCH, "headRefOid": tlv.NEW, "number": tlv.NUMBER,
                                             "state": "OPEN"}).encode("utf-8")}),
-     lambda space, gh: space.update(LIST_LIMIT=1), "list_backfilled"),
+     lambda space, gh: space.update(LIST_LIMIT=2), "list_backfilled"),
     (Gh(), _later, "status_not_current"),
 ], ids=["status_read_fails", "status_not_json", "required_unreadable", "required_empty", "head_conflict",
         "open_pr_missing", "list_backfilled", "status_stale"])
@@ -196,6 +199,25 @@ def test_a_status_that_is_missing_failing_stale_or_in_conflict_leaves_the_github
     assert cycle["github"] is None and all(card["github_usable"] is False for card in result["cards"])
     view = jt.turn_case("codex-tools-1", cycle, learn_ref=LEARN_REF, envelope=None, receipts=None)["view"]
     assert not any(tlv.lines_for(view).values())
+
+
+def test_prewrite_refuses_a_github_status_whose_raw_lists_do_not_link_before_any_write(tmp_path):
+    space, live = producer(tmp_path, Gh())
+    last_ok, _ = commit(space, live)
+    folder = live / "cycles" / last_ok["cycle_dir"]
+    capture = json.loads((folder / "capture.json").read_bytes())
+    manifest = (folder / "detail-manifest.txt").read_bytes()
+    context = json.loads((folder / "context.json").read_bytes())
+    state = json.loads((folder / "state.json").read_bytes())
+    status = json.loads((folder / "observed-status.json").read_bytes())
+    payloads = space["prewrite"](capture, manifest, context, state, (status, LISTING, OPEN))
+    assert (payloads["gh-pr-list.json"], payloads["gh-open-status.json"]) == (LISTING, OPEN)
+    assert payloads["observed-status.json"] == (folder / "observed-status.json").read_bytes()
+    for github in ((status, LISTING + b" ", OPEN), (status, LISTING, OPEN + b" ")):
+        before = sorted(path.name for path in folder.iterdir())
+        with tps.refused(space["CaptureRefused"], "candidate_invalid"):
+            space["prewrite"](capture, manifest, context, state, github)
+        assert sorted(path.name for path in folder.iterdir()) == before  # nothing is written
 
 
 def test_a_github_file_write_that_fails_refuses_the_cycle_before_any_pointer(tmp_path):

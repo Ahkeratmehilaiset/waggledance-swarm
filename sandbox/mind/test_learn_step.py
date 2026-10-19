@@ -554,3 +554,128 @@ def test_v11_names_its_pr_rule_and_refuses_a_v1_state():
     old = {key: value for key, value in ls.learn([]).items() if key != "state_hash"}
     old["schema"] = "wd.mind-learn-state.v1"
     assert not ls.verify(dict(old, state_hash=ls.sha256_text(ls.canonical(old))))
+
+
+# D20: the runner's input files (fold results and picks, notes and order state) ---------------------------------------
+
+def _fold_inputs(tmp_path):
+    results, remember = lesson_cards(["wrong", "wrong", "wrong", "correct", "correct"])
+    paths = []
+    for i, item in enumerate(results):
+        paths.append(tmp_path / f"r{i}.json")
+        paths[-1].write_text(json.dumps(item), encoding="utf-8")
+    picks = tmp_path / "picks.json"
+    picks.write_text(json.dumps({"picks": remember}), encoding="utf-8")
+    return results, remember, paths, picks
+
+
+def _fold_argv(paths, picks, state_path):
+    return ["fold", "--results", *map(str, paths), "--picks", str(picks), "--out", str(state_path)]
+
+
+@pytest.mark.parametrize("where", ["result_top", "result_row", "picks"])
+def test_d20_a_fold_input_with_a_duplicate_key_is_refused_and_nothing_is_written(tmp_path, capsys, where):
+    """R1: json.loads keeps the last of two equal keys, so the value a reader of the file sees first is not the one
+    LEARN would fold. A runner input holding a duplicate key at any depth is refused with a fixed message."""
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    if where == "picks":
+        picks.write_text('{"picks": [], "picks": ' + json.dumps(remember) + "}", encoding="utf-8")
+    else:
+        text = json.dumps(results[0])
+        old, new = (("{", '{"schema": "other", ') if where == "result_top" else
+                    ('"outcome": ', '"outcome": "TAKEN_CORRECT", "outcome": '))
+        assert old in text
+        paths[0].write_text(text.replace(old, new, 1), encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    assert ls.main(_fold_argv(paths, picks, state_path)) == 2
+    assert capsys.readouterr().err == "REFUSED: an input file has a duplicate key\n"
+    assert not state_path.exists()
+
+
+def test_d20_a_state_file_with_a_duplicate_key_is_refused_by_notes_and_order(tmp_path, capsys):
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    state_path = tmp_path / "state.json"
+    assert ls.main(_fold_argv(paths, picks, state_path)) == 0
+    capsys.readouterr()
+    text = state_path.read_text(encoding="ascii")
+    state_path.write_text('{"schema": "other", ' + text[1:], encoding="ascii")  # the real schema comes later and wins
+    for argv in (["notes", "--state", str(state_path), "--lane", LANE],
+                 ["order", "--state", str(state_path), "--lane", LANE, "--shown", "A.md", "B.md", "C.md"]):
+        assert ls.main(argv) == 2
+        assert capsys.readouterr().err == "REFUSED: an input file has a duplicate key\n"
+
+
+@pytest.mark.parametrize("which", ["result", "picks", "state"])
+def test_d20_a_runner_file_nested_too_deeply_is_a_fixed_refusal_never_a_raw_error(tmp_path, capsys, which):
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    deep = "[" * 200000 + "]" * 200000
+    state_path = tmp_path / "state.json"
+    if which == "state":
+        state_path.write_text(deep, encoding="ascii")
+        argv = ["notes", "--state", str(state_path), "--lane", LANE]
+    else:
+        (paths[0] if which == "result" else picks).write_text(deep, encoding="ascii")
+        argv = _fold_argv(paths, picks, state_path)
+    assert ls.main(argv) == 2
+    assert capsys.readouterr().err == "REFUSED: an input file is unreadable\n"
+    assert which == "state" or not state_path.exists()
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", '"picks"', "7"])
+def test_d20_a_picks_file_that_is_not_an_object_is_a_fixed_refusal(tmp_path, capsys, payload):
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    picks.write_text(payload, encoding="ascii")
+    state_path = tmp_path / "state.json"
+    assert ls.main(_fold_argv(paths, picks, state_path)) == 2
+    assert capsys.readouterr().err == "REFUSED: the picks file has no picks list\n"
+    assert not state_path.exists()
+
+
+def test_d20_fold_without_a_picks_file_folds_with_no_picks(tmp_path, capsys):
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    state_path = tmp_path / "state.json"
+    assert ls.main(["fold", "--results", *map(str, paths), "--out", str(state_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["state_hash"] == ls.learn(results)["state_hash"]
+    assert ls.learn(results)["state_hash"] != ls.learn(results, remember)["state_hash"]
+
+
+STATE_PAYLOADS = {"list": "[]", "null": "null", "int": "7", "string": '"x"', "nan": "NaN", "overflow": "1e309",
+                  "nan_inside": '{"schema": "@S", "state_hash": "@H", "x": NaN}',
+                  "overflow_inside": '{"schema": "@S", "state_hash": "@H", "x": 1e309}'}
+
+
+@pytest.mark.parametrize("name", sorted(STATE_PAYLOADS))
+def test_d20_a_state_that_is_no_object_or_holds_a_non_finite_number_is_refused(tmp_path, capsys, name):
+    """Grok's D20 challenge (advisory) named these two; verify already refused both. Pinned, not RED."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text(STATE_PAYLOADS[name].replace("@S", ls.SCHEMA).replace("@H", "0" * 64), encoding="ascii")
+    for argv in (["notes", "--state", str(state_path), "--lane", LANE],
+                 ["order", "--state", str(state_path), "--lane", LANE, "--shown", "A.md", "B.md", "C.md"]):
+        assert ls.main(argv) == 2
+        assert capsys.readouterr().err == "REFUSED: the state file fails its own hash\n"
+
+
+@pytest.mark.parametrize("how, message", [("list", "an input is not a card outcome result"),
+                                          ("nan_inside", "an input holds a value JSON cannot hold")])
+def test_d20_a_result_that_is_no_object_or_holds_nan_is_refused(tmp_path, capsys, how, message):
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    text = json.dumps(results[0])
+    assert text.count('"gap": null') == 1
+    paths[0].write_text("[]" if how == "list" else text.replace('"gap": null', '"gap": NaN'), encoding="utf-8")
+    state_path = tmp_path / "state.json"
+    assert ls.main(_fold_argv(paths, picks, state_path)) == 2
+    assert capsys.readouterr().err == f"REFUSED: {message}\n"
+    assert not state_path.exists()
+
+@pytest.mark.parametrize("how", ["missing", "not_utf8", "not_json"])
+def test_d20_a_runner_file_that_is_missing_not_utf8_or_not_json_is_a_fixed_refusal(tmp_path, capsys, how):
+    """Pinned, not RED: _load refused these three before D20 too, but no test held them."""
+    results, remember, paths, picks = _fold_inputs(tmp_path)
+    if how == "missing":
+        paths[0] = tmp_path / "absent.json"
+    else:
+        paths[0].write_bytes(b"\xff{}" if how == "not_utf8" else b'{"schema": ')
+    state_path = tmp_path / "state.json"
+    assert ls.main(_fold_argv(paths, picks, state_path)) == 2
+    assert capsys.readouterr().err == "REFUSED: an input file is unreadable\n"
+    assert not state_path.exists()

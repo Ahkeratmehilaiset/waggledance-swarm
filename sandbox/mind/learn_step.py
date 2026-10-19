@@ -51,6 +51,12 @@ a per-card fractional wrong mass over a card-counted support; fable-5 counts dis
 reads as the notes do (wrong <w> of taken <t>). The schema moves to v1.1 and ``PARAMS`` gains ``lesson_prs``, so a
 v1 state is refused.
 
+Runner inputs (2026-10-19, D20; fable-5, read in the code and then reproduced by RED tests): ``json.loads`` kept the
+last of two equal keys, so a result, picks or state file could fold a value other than the one a reader sees first; a
+file nested too deeply raised a raw RecursionError; a picks file that was not an object raised a raw AttributeError.
+Every runner input is now read with a duplicate key refused, and both cases end in a fixed refusal. The pure
+``learn`` is unchanged (its inputs are objects, not text), and so is every state it folds.
+
 Known limits: LEARN trusts RCO2's proofs (it cannot re-verify an identity or a head); OTHER and NONE still rest on
 agent labels (RCO2's stated limit); an association is not a cause; the thresholds are a consultation's, not
 calibrated on real outcomes (no sealed or real data was used).
@@ -435,10 +441,18 @@ def lesson_order(state: Mapping[str, Any], lane: str, shown: Sequence[str]) -> t
 
 # --- runner: fold result files into one state file (never overwritten), then read notes or a lesson order from it ----
 
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise LearnError("an input file has a duplicate key")
+    return dict(pairs)
+
+
 def _load(path: Path) -> Any:
     try:
-        return json.loads(path.read_bytes().decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError):
+        return json.loads(path.read_bytes().decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except LearnError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         raise LearnError("an input file is unreadable") from None
 
 
@@ -450,7 +464,8 @@ def _state(path: Path) -> Mapping[str, Any]:
 
 
 def cmd_fold(args) -> int:
-    picks = _load(args.picks).get("picks") if args.picks else []
+    loaded = _load(args.picks) if args.picks else {"picks": []}
+    picks = loaded.get("picks") if isinstance(loaded, dict) else None
     if not isinstance(picks, list):
         raise LearnError("the picks file has no picks list")
     state = learn([_load(path) for path in args.results], picks)

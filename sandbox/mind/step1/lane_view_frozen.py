@@ -1,8 +1,12 @@
 """Frozen inputs of hex-Mind step 1a: the P1 cycle copies, verified against their manifest before any use.
 
-Reads only the frozen directory. ``manifest.json`` lists, per cycle, the sha256 of each file the copy holds; one
-file whose bytes do not match aborts the whole load. A null entry (a capture the live producer had already pruned
-before the copy) is reported and never read.
+Reads only the frozen directory, whose root the caller names (there is no default root, F-2). ``manifest.json``
+lists, per cycle, the sha256 of each file the copy holds; one file whose bytes do not match aborts the whole load.
+A null entry (a capture the live producer had already pruned before the copy) is reported and never read. Every
+entry is checked before the first file of any cycle is read (FZ-1): a cycle name is one plain path component, a
+file name plain components joined by a backslash (letters, digits and ``._-``, not starting with a dot, not a
+Windows device name) and a digest a sha256 or null; anything else is a fixed refusal, so no listed name leads a
+read outside the root (a link inside the root is not checked).
 
 Event bodies: a vote row of the core snapshot names its event only by its content ref (the sha256 of the canonical
 event, ``tools.bridge_compact_view.event_id``). The cycles whose capture was pruned keep the snapshot but not the
@@ -20,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -31,11 +36,15 @@ from tools import wd_bridge_mind as core  # noqa: E402
 from tools.bridge_compact_view import event_id  # noqa: E402
 from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa: E402
 
+# the acceptance-1a CLI's own default only: load_manifest and load_frozen take the root from their caller
 FROZEN_ROOT = Path(r"F:\waggledance_memory\sandbox\fable-5\hexmind\frozen\p1-cycles-20261014")
 MANIFEST_SCHEMA = "wd.mind-frozen-cycles.v1"
 PUBLICATION = "run\\reflected.publication.json"
 GITHUB_FILES = ("context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json")
 OBJECT_FILES = frozenset({"capture.json", "context.json", "observed-status.json", PUBLICATION})
+# one plain path component: letters, digits and ._- , not starting with a dot, not a Windows device name
+PLAIN = re.compile(r"(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|\Z))[A-Za-z0-9][A-Za-z0-9._-]*\Z", re.IGNORECASE)
+DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class FrozenInputError(RuntimeError):
@@ -72,7 +81,7 @@ def _path(root: Path, cycle: str, name: str) -> Path:
     return root.joinpath(cycle, *name.split("\\"))
 
 
-def load_manifest(root: Path = FROZEN_ROOT) -> tuple[dict[str, Any], str]:
+def load_manifest(root: Path) -> tuple[dict[str, Any], str]:
     data = (root / "manifest.json").read_bytes()
     manifest = parse_bridge_json_object(data.decode("utf-8"))
     if manifest.get("schema") != MANIFEST_SCHEMA or not isinstance(manifest.get("cycles"), list):
@@ -80,8 +89,24 @@ def load_manifest(root: Path = FROZEN_ROOT) -> tuple[dict[str, Any], str]:
     return manifest, sha256_bytes(data)
 
 
+def _entry(entry: Any) -> None:
+    """One manifest cycle entry, checked before any file of it is read (FZ-1): an object with a cycle name and a files
+    map, the cycle one plain path component, each file name plain components joined by a backslash, each digest a
+    sha256 or null. Anything else is a fixed refusal, so no listed name can lead a read outside the frozen root."""
+    if not isinstance(entry, dict) or "cycle" not in entry or not isinstance(entry.get("files"), dict):
+        raise FrozenInputError("a manifest cycle entry is not a cycle name and a files map")
+    if not isinstance(entry["cycle"], str) or not PLAIN.fullmatch(entry["cycle"]):
+        raise FrozenInputError("a manifest cycle name is not one plain path component")
+    for name, digest in entry["files"].items():
+        if not all(PLAIN.fullmatch(part) for part in name.split("\\")):
+            raise FrozenInputError("a manifest file name is not plain path components")
+        if digest is not None and not (isinstance(digest, str) and DIGEST.fullmatch(digest)):
+            raise FrozenInputError("a manifest file digest is not a sha256 or null")
+
+
 def read_verified(root: Path, entry: dict[str, Any]) -> tuple[dict[str, Any], list[str], dict[str, str]]:
     """The parsed files of one cycle whose bytes match the manifest, the names listed as null, and their sha256."""
+    _entry(entry)
     files, nulls, digests = {}, [], {}
     for name, digest in sorted(entry["files"].items()):
         if digest is None:
@@ -120,9 +145,13 @@ def cycle_as_of(snapshot: dict[str, Any], github: dict[str, Any] | None) -> str:
     return max(parsed).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def load_frozen(root: Path = FROZEN_ROOT) -> dict[str, Any]:
+def load_frozen(root: Path) -> dict[str, Any]:
     """Every cycle of the manifest, verified, with the shared body store built from the verified captures."""
     manifest, manifest_sha = load_manifest(root)
+    for entry in manifest["cycles"]:  # every entry is checked before the first file of any is read (FZ-1)
+        _entry(entry)
+    if any(not isinstance(entry["files"].get(PUBLICATION), str) for entry in manifest["cycles"]):
+        raise FrozenInputError("a manifest cycle has no publication digest")  # missing or null: no raw KeyError
     cycles, captures, bodies = [], [], {}
     for entry in manifest["cycles"]:
         files, nulls, digests = read_verified(root, entry)

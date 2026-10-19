@@ -16,8 +16,10 @@ the only empty slot.
    looked up by its content ref, must be a ``decision`` on this PR bound to exactly the GitHub head (full SHA), its
    task must be the PR branch (GitHub ``headRefName``), and its identity must fill a slot: ``build_lead``
    codex-lead-1, ``build_tools`` codex-tools-1, one slot per recognized RCO. An RCO that is a commit author of the
-   PR, or that declared ``rco_recused`` at this head on this task, fills no slot and is never asked. Anything else
-   is listed as not credited, never counted.
+   PR, or that declared ``rco_recused`` at this head on this task, fills no slot and is never asked; every event
+   body of that recusal row must say what the row says, as for a vote, and be a recusal the way the core reads one
+   (a ``decision`` or ``message``, ``recused`` not false), else ``recusal_unverified``. Anything else is listed as
+   not credited, never counted.
 3. CI: green only when the required set is non-empty without duplicates, every required check is present exactly
    once in the rollup at that head and SUCCESS, and the derived status file says the same.
 4. Abstain (no action line; an ``UNKNOWN`` reason in ``abstained``) when GitHub is missing, stale or ambiguous, or
@@ -60,6 +62,7 @@ GITHUB_MAX_AGE = ws.CONTEXT_MAX_AGE
 HEAD_KEYS = ("exact_head", "head_sha", "head")  # the core's head binding keys, all must agree
 TASK_KEYS = ("task_id", "canonical_task_id", "canonical_task")  # declared task fields that must agree with task_id
 VOTE_TYPE = "decision"
+RECUSAL_TYPES = ("decision", "message")  # the core's recusal kinds (tools/wd_bridge_mind.py _RECUSAL_KINDS)
 ROUTE_OWNER = "operator"
 # The capture step's own check-name alphabet (sandbox/mind/capture/capture_round.py CHECK_NAME).
 CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()/:+-]{0,99}")
@@ -80,6 +83,7 @@ REASON_TEXT = {
     "vote_body_disagrees": "a vote row and its event body disagree",
     "recusal_unverified": "a recusal at this head cannot be verified",
     "commit_authors_unknown": "the commit authors are not known, so RCO eligibility is UNKNOWN",
+    "independent_rco_unavailable": "no independent RCO slot is available; an operator missing-slot decision is needed",
     "github_older_than_bridge_head": "the GitHub capture is older than bridge evidence of a different head",
 }
 
@@ -233,6 +237,13 @@ def _matches_row(vote: Mapping[str, Any], event: Mapping[str, Any], number: int)
         and (not vote["verified"] or (isinstance(uuid, str) and bool(ws.UUID.fullmatch(uuid))))
 
 
+def _supports_recusal(row: Mapping[str, Any], event: Mapping[str, Any], number: int, branch: str) -> bool:
+    """The event body says what the recusal row says (the vote comparator above) and is a recusal the way the core
+    reads one: a decision or message on the PR branch task, every declared task field agreeing, recused not false."""
+    return _matches_row(row, event, number) and str(event.get("type", "")).lower() in RECUSAL_TYPES \
+        and _payload(event).get("recused", True) is not False and event.get("task_id") == branch and _task_ok(event)
+
+
 def _route(events: Sequence[Mapping[str, Any]]) -> str:
     """The merge route declared by the credited votes: an operator manual train or merge, else UNKNOWN."""
     owners = {value if isinstance(value, str) else UNKNOWN
@@ -297,7 +308,7 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                 or not row["verified"]:
             continue
         events = [seen.get(ref) for ref in row["refs"]]
-        if None in events or not all(event.get("task_id") == branch and _task_ok(event) for event, _ in events):
+        if None in events or not all(_supports_recusal(row, event, number, branch) for event, _ in events):
             reasons.append("recusal_unverified")
             continue
         excused.setdefault(row["agent"], "rco_recused")
@@ -316,6 +327,7 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                "other_task" if any(event.get("task_id") != branch for event, _ in events) else
                "no_slot" if slot is None else
                "commit_author" if slot in ws.RECOGNIZED_RCOS and vote["agent"] in (authors or ()) else
+               "rco_recused" if slot in ws.RECOGNIZED_RCOS and vote["agent"] in excused else
                None)
         entry = {"agent": vote["agent"], "status": vote["status"], "head": vote["head"], "ref": vote["refs"][0],
                  "ts_utc": stamp(max(when for _, when in events))}
@@ -324,6 +336,10 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                                  at=max(when for _, when in events)))
         else:
             not_credited.append(dict(entry, reason=why))
+    # Removing every excused slot must never turn two builds into RCO coverage.
+    # This is a bounded observational abstention, not a waiver or gate verdict.
+    if set(ws.RECOGNIZED_RCOS) <= set(excused):
+        reasons.append("independent_rco_unavailable")
     reasons = sorted(set(reasons), key=list(REASON_TEXT).index)
     record.update(not_credited=not_credited, excused=[{"agent": agent, "why": why} for agent, why in sorted(excused.items())])
     if reasons:
@@ -350,8 +366,10 @@ def action_line(record: Mapping[str, Any], slot: str, lane: str, bounded: bool) 
     text = (f"{what} is the only empty slot ({slot}, task {record['branch']})" if not others else
             f"{what} is empty ({slot}, task {record['branch']}); also empty: {', '.join(others)}")
     filled = ", ".join(f"{vote['slot']} {vote['ref'][:16]}" for vote in record["credited"])
+    requirement = ("the reported RCO slot is unfilled; required RCO coverage is UNKNOWN"
+                   if slot in ws.RECOGNIZED_RCOS else "the vote is still required")
     text += (f"; filled at this head: {filled}; GitHub {record['checks']} at {head}; waiting since "
-             f"{record['waiting_since_utc']}; route {record['route']}; the vote is still required")
+             f"{record['waiting_since_utc']}; route {record['route']}; {requirement}")
     own = [row for row in record["not_credited"] if row["agent"] == lane and row["head"] == record["github_head"]]
     if own:
         text += f"; your vote row at this head is not credited ({own[0]['reason']}, ref {own[0]['ref'][:16]})"

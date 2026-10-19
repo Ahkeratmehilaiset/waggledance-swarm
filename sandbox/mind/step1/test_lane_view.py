@@ -337,6 +337,38 @@ def test_lane_view_author_rco_fills_no_slot_and_is_never_asked():
     assert refs_of(events)[1][:16] not in line and refs_of(events)[3][:16] in line
 
 
+def test_pool_empty_regression_twin_both_rco_authors_cannot_mean_votes_complete():
+    """REGRESSION_TWIN_EMPTY_RCO_POOL: builds alone cannot fill RCO coverage."""
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
+    control = view_of(make_case(events, github_of(authors=["claude-rco-2"])))
+    assert control["prs"][str(NUMBER)]["state"] == "votes_complete"
+    view = view_of(make_case(events, github_of(authors=["claude-rco-1", "claude-rco-2"])))
+    assert_abstains(view, "independent_rco_unavailable")
+    assert view["counts"]["votes_complete"] == 0
+    assert "operator" in view["abstained"][0]["detail"]
+
+
+def test_both_declared_recusals_do_not_credit_an_existing_rco_vote():
+    recusal1 = event("2026-10-13T17:42:00Z", "claude-rco-1", "message", "rco_recused",
+                     {"pr": NUMBER, "head": NEW})
+    recusal2 = event("2026-10-13T17:42:01Z", "claude-rco-2", "message", "rco_recused",
+                     {"pr": NUMBER, "head": NEW})
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1"), recusal1, recusal2]
+    view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
+    assert_abstains(view, "independent_rco_unavailable")
+    record = view["prs"][str(NUMBER)]
+    assert any(row["agent"] == "claude-rco-1" and row["reason"] == "rco_recused"
+               for row in record["not_credited"])
+
+
+def test_unfilled_rco_line_does_not_invent_required_policy_from_unknown_class():
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
+    view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
+    line, = view["lanes"]["claude-rco-2"]["actions"]
+    assert "required RCO coverage is UNKNOWN" in line
+    assert "the vote is still required" not in line
+
+
 def test_lane_view_unknown_commit_authors_abstains():
     assert_abstains(view_of(make_case(github=github_of(authors=None))), "commit_authors_unknown")
 
@@ -362,6 +394,57 @@ def test_lane_view_recusal_on_another_task_or_refused_abstains():
     case = make_case(base_events() + [_recusal(NEW)], github_of(authors=["codex-lead-1"]))
     case["snapshot"]["prs"][str(NUMBER)]["recusals"][0]["verification"] = "unverified"
     assert_abstains(view_of(case), "vote_row_refused")
+
+
+def _recusal_row_case(change):
+    """claude-rco-2's genuine recusal at the GitHub head, then its snapshot ROW made to disagree with what its event
+    body says (Lead's W1, 10-16): ``change`` changes the row, or is another canonical event that the row then names."""
+    case = make_case(base_events() + [_recusal(NEW)], github_of(authors=["codex-lead-1"]))
+    [row] = case["snapshot"]["prs"][str(NUMBER)]["recusals"]
+    if callable(change):
+        change(row)
+    else:
+        case["bodies"][event_id(change)] = change
+        row["source_refs"] = [event_id(change)]
+    return case
+
+
+def _rco2_body(kind="message", status="rco_recused", declared=True, **payload):
+    return event("2026-10-13T17:31:00Z", "claude-rco-2", kind, status, {"pr": NUMBER, "head": NEW, **payload},
+                 declared=declared)
+
+
+def _row_names_rco1(row):
+    row["agent"], row["agent_uuid"] = "claude-rco-1", UUIDS["claude-rco-1"]
+
+
+@pytest.mark.parametrize("change", [
+    _row_names_rco1,  # the row names another RCO than its body
+    _rco2_body(status="acknowledged"),  # the body is no recusal
+    _rco2_body(head=OLD),  # the body binds another head
+    _rco2_body(pr=SECOND),  # the body is on another PR
+    _rco2_body(kind="handoff"),  # not a kind the core reads as a recusal
+    _rco2_body(recused=False),
+    _rco2_body(canonical_task_id=BRANCH + "-other"),  # a declared task field disagrees with the task
+    _rco2_body(declared=False),  # the row is declared, its body declares no identity
+], ids=["agent", "status", "head", "pr", "type", "recused_false", "task_field", "undeclared_body"])
+def test_lane_view_recusal_row_its_body_does_not_support_abstains(change):
+    view = view_of(_recusal_row_case(change))
+    assert_abstains(view, "recusal_unverified")
+    assert view["prs"][str(NUMBER)]["excused"] == []
+
+
+def test_lane_view_recusal_kinds_and_case_are_read_as_the_core_reads_them():
+    recusal = event("2026-10-13T17:30:00Z", "claude-rco-2", "Message", "RCO_Recused", {"pr": NUMBER, "head": NEW})
+    record = view_of(make_case(base_events() + [recusal], github_of(authors=["codex-lead-1"])))["prs"][str(NUMBER)]
+    assert record["empty_slots"] == ["build_tools"] and {"agent": "claude-rco-2", "why": "rco_recused"} in record["excused"]
+    # A decision is a recusal kind of the core too, so a row whose body is one is supported ...
+    record = view_of(_recusal_row_case(_rco2_body(kind="decision")))["prs"][str(NUMBER)]
+    assert record["empty_slots"] == ["build_tools"] and {"agent": "claude-rco-2", "why": "rco_recused"} in record["excused"]
+    # ... but through the real core an RCO's decision rco_recused is also a veto observation (its conservative block
+    # path), so that PR abstains anyway.
+    decision = event("2026-10-13T17:30:00Z", "claude-rco-2", "decision", "rco_recused", {"pr": NUMBER, "head": NEW})
+    assert_abstains(view_of(make_case(base_events() + [decision], github_of(authors=["codex-lead-1"]))), "veto_observed")
 
 
 def test_lane_view_veto_observation_abstains():

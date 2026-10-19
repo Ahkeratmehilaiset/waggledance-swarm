@@ -10,9 +10,11 @@ bit-reproducible across different batch compositions (2026-10-13 bake-off: 36 of
 to 7.45e-8), which is why rebuilds use the retained vectors and never re-encode.
 
 Two views per record, encoded in two fixed passes: ``w`` = the record ``text`` and ``d`` = its ``summary`` (a lesson's
-own description line). Writes only under ``--out``: ``vectors.f32`` (row-major, little-endian float32, 2 x count rows:
-every ``w`` vector in record order, then every ``d`` vector in record order) and ``vectors-manifest.json`` (record
-ids sha256, corpus sha256, vectors sha256, encoder identity). No network, no bridge event, no gate code.
+own description line). Writes only a NEW ``--out`` directory, whole or not at all (``corpus.publish_new``; an existing
+one is refused before the corpus is read or the encoder loads): ``vectors.f32`` (row-major, little-endian float32,
+2 x count rows: every ``w`` vector in record order, then every ``d`` vector in record order) and
+``vectors-manifest.json`` (record ids sha256, corpus sha256, vectors sha256, encoder identity). No network, no bridge
+event, no gate code.
 """
 
 import argparse
@@ -82,6 +84,8 @@ class E5:
 
 
 def build(corpus_dir, out_dir):
+    if os.path.lexists(out_dir):
+        raise EncodeError("output_exists")  # before the corpus is read or the encoder loads: never replaced
     corpus_manifest, records = corpus_mod.read_corpus(corpus_dir)
     started = time.perf_counter()
     encoder = E5()
@@ -89,9 +93,7 @@ def build(corpus_dir, out_dir):
     encode_s = round(time.perf_counter() - started, 1)
     if vectors.shape != (len(VIEWS) * len(records), DIM) or not np.isfinite(vectors).all():
         raise EncodeError("vector_shape_or_value")
-    out_dir.mkdir(parents=True, exist_ok=True)
     body = vectors.tobytes()
-    (out_dir / "vectors.f32").write_bytes(body)
     manifest = {
         "schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate", "views": list(VIEWS),
         "view_fields": VIEW_FIELD, "count": len(records), "rows": len(VIEWS) * len(records), "dim": DIM,
@@ -99,7 +101,8 @@ def build(corpus_dir, out_dir):
         "record_ids_sha256": corpus_manifest["record_ids_sha256"], "vectors_sha256": hashlib.sha256(body).hexdigest(),
         "encoder": dict(model_identity(), **encoder.policy), "encode_seconds": encode_s,
     }
-    (out_dir / "vectors-manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
+    text = json.dumps(manifest, indent=1, sort_keys=True)
+    corpus_mod.publish_new(out_dir, {"vectors.f32": body, "vectors-manifest.json": text.encode("utf-8")}, EncodeError)
     return manifest
 
 

@@ -20,16 +20,19 @@ sha256 of the bytes actually used, the transform if any, and for events the Comp
 Text per record: ``text`` (the first 4000 characters, what is embedded and searched), ``summary`` (a second, short
 view: a lesson's own frontmatter ``description``, an event's first 600 characters) and ``stored_text`` (``text``, or
 its longest whole-line prefix that passes the decoded privacy guard of the workspace; such a cut is flagged). Every
-stored field passes that guard; a refused record is counted, never stored. Writes only under ``--out``. No network,
-no bridge event, no gate code.
+stored field passes that guard; a refused record is counted, never stored. Writes only a NEW ``--out`` directory,
+whole or not at all (``publish_new``; an existing one is refused before any input is read). No network, no bridge
+event, no gate code.
 """
 
 import argparse
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import sys
 from collections import Counter
 from pathlib import Path
@@ -213,9 +216,59 @@ def load_captures(paths):
     return [(path, digest, capture) for path, digest, capture, _ in captures]
 
 
+def publish_new(out_dir, files, error):
+    """D21 (RCO1's R5 class, write-new): publish ``files`` ({name: bytes}, written in that order) as the NEW directory
+    ``out_dir``, whole, or nothing at that path; corpus.build and encode.build both publish with it. An existing
+    ``out_dir`` raises ``error("output_exists")`` and is never replaced or written into; any other OS failure raises
+    ``error("output_unwritten")``. Each file is created exclusively in a fresh sibling staging directory
+    ``.<name>.staging-<16 random hex>``, written, flushed, synced, closed and read back, and only then is the staging
+    directory renamed onto ``out_dir``. That rename refuses an existing directory on Windows and a non-empty one on
+    POSIX; on POSIX it replaces an EMPTY directory made after the check (a stated limit), and the directories
+    themselves are not synced. After a failure the staging directory this call made is removed, best effort; one
+    already at the staging name fails its create and is never used or removed, and a hard crash leaves its staging
+    directory behind, never published and never touched by a later build."""
+    out_dir = Path(out_dir)
+    if os.path.lexists(out_dir):
+        raise error("output_exists")
+    staging = out_dir.parent / f".{out_dir.name}.staging-{secrets.token_hex(8)}"
+    try:
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+        staging.mkdir()
+    except OSError:
+        raise error("output_unwritten") from None
+    reason = "output_unwritten"
+    try:
+        for name, data in files.items():
+            with (staging / name).open("xb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if (staging / name).read_bytes() != data:  # a short or altered write is never published
+                raise OSError(errno.EIO, "read-back differs")
+        try:
+            os.rename(staging, out_dir)
+        except OSError as failure:
+            if isinstance(failure, FileExistsError) or failure.errno == errno.ENOTEMPTY:
+                reason = "output_exists"  # another writer's output: kept as it is
+            raise
+    except OSError:
+        for name in files:
+            try:
+                (staging / name).unlink()
+            except OSError:
+                pass
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+        raise error(reason) from None
+
+
 def build(lessons_dir, capture_paths, cutoff, out_dir):
     if cutoff is None:
         raise CorpusError("cutoff_required")
+    if os.path.lexists(out_dir):
+        raise CorpusError("output_exists")  # before any input is read: a previous build is never replaced
     captures = load_captures(capture_paths)
     records, excluded, refused = [], [], Counter()
     for record, skip in lesson_records(lessons_dir, cutoff):
@@ -236,9 +289,7 @@ def build(lessons_dir, capture_paths, cutoff, out_dir):
     kept.sort(key=lambda record: record["record_id"])
     if len({record["record_id"] for record in kept}) != len(kept):
         raise CorpusError("duplicate_record_id")
-    out_dir.mkdir(parents=True, exist_ok=True)
     body = "".join(canonical(record) + "\n" for record in kept).encode("utf-8")
-    (out_dir / "corpus.jsonl").write_bytes(body)
     manifest = {
         "schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate",
         "cutoff_utc": utc_text(cutoff), "lessons_dir": str(lessons_dir),
@@ -256,7 +307,8 @@ def build(lessons_dir, capture_paths, cutoff, out_dir):
         "corpus_sha256": sha256(body),
     }
     ws.guard_object(manifest)
-    (out_dir / "corpus-manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
+    text = json.dumps(manifest, indent=1, sort_keys=True)
+    publish_new(out_dir, {"corpus.jsonl": body, "corpus-manifest.json": text.encode("utf-8")}, CorpusError)
     return manifest
 
 

@@ -121,6 +121,20 @@ deepest view that the strict reader and the delivery accept left an EMPTY output
 before the output's directory or file exists; an output that cannot be made that way is refused with a fixed message
 (``UNWRITABLE``), and nothing is made. An OS error while the file is written can still leave a cut file, as before.
 
+D17 (2026-10-19, fable-5; RCO1's R5 class, a crash or an OS error leaves a cut file under the real name; Lead's D14
+and D15 reconciliations: OS errors and partial writes unproved, no R5 guarantee): one more CLI change and no semantics
+change (``SEMANTICS`` stays v1.5), ``write_new``. The bytes go to a fresh sibling ``.<name>.staging-<16 hex>``,
+created exclusively, written whole, flushed, synced and read back; one hard link then publishes them at the output
+path, and the staging name is removed. A link never replaces anything: an existing file refuses it on every platform,
+where a rename would replace one on POSIX. An OS error at any step (the parent, the open, the write, the flush, the
+sync, the close, the read-back or the link) is refused with a fixed message (``UNWRITTEN``), and the staging file is
+removed, best effort; a file that another writer made at the output path meanwhile is kept, and the turn is refused as
+existing. A crash can leave the staging file behind, never a cut file at the output path. The file holds exactly the
+UTF-8 bytes of the text, with LF line ends on every platform (Windows text mode wrote CRLF before). Missing parents of
+the output are created first and stay. Tested by injection and with a child process that dies just before or just
+after its sync; no power-loss test was run and no directory is flushed, so a successful return does not make the link
+durable, and a file system without hard links refuses every output.
+
 usage: python -B sandbox/mind/join_card_delivery.py --view <lane-view.json> --receipts <receipts.json> --now <UTC>
        [--notified <json list>] [--out <new file inside an existing .codex-audit directory>]
 The operator preview goes to stdout, read-only. ``--out`` also writes the full output JSON, only as a new file
@@ -128,14 +142,17 @@ inside an existing ``.codex-audit`` directory, the nearest such ancestor of the 
 there is no default root and no F: fallback, and a path outside one, a root that is not an existing directory
 and an existing file are refused before any read; the file is created exclusively, so nothing is ever replaced
 (F-2, RCO2 DLV2). Its whole text is made, and encoded as UTF-8, before its directory or file; an output that
-cannot be made that way is refused, and nothing is made (D14).
+cannot be made that way is refused, and nothing is made (D14). It is staged beside the output and published by one
+hard link, so the path holds the whole file or nothing (D17).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import secrets
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -169,6 +186,7 @@ OUTSIDE = "the output path is not inside a .codex-audit directory"
 NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
 EXISTING = "the output file already exists; nothing is replaced"
 UNWRITABLE = "the output cannot be written as UTF-8 JSON; nothing is written"  # D14: before any directory or file
+UNWRITTEN = "the output file could not be written; nothing is published at its path"  # D17 (R5 write-new)
 
 
 class DeliveryError(ValueError):
@@ -522,6 +540,39 @@ def output_refusal(out: Path) -> str | None:
     return None
 
 
+def write_new(out: Path, data: bytes) -> str | None:
+    """D17 (R5 write-new): publish ``data`` as the new file ``out``, whole, or nothing at that path (module
+    docstring). Returns None once published, else the fixed refusal (``EXISTING`` or ``UNWRITTEN``). The staging name is
+    removed in every case after its exclusive create, best effort, and a failure to remove it never changes the
+    outcome; a file already at the staging name fails that create and is never used or removed."""
+    target = Path(out)
+    staging = target.parent / f".{target.name}.staging-{secrets.token_hex(8)}"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handle = staging.open("xb")
+    except OSError:
+        return UNWRITTEN
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if staging.read_bytes() != data:  # a short or altered write is never published
+            return UNWRITTEN
+        try:
+            os.link(staging, target)  # never replaces: an existing target refuses the link on every platform
+        except FileExistsError:
+            return EXISTING
+        return None
+    except OSError:
+        return UNWRITTEN
+    finally:
+        try:
+            staging.unlink()  # only the staging name: a published output keeps its bytes under its own name
+        except OSError:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--view", type=Path, required=True)
@@ -552,17 +603,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.out is not None:
         try:  # D14: the whole text exists, and encodes as UTF-8, before the output's directory or file does
-            text = json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
-            text.encode("utf-8")
+            data = (json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
         except (RecursionError, ValueError):  # nested too deeply to write, or text that is not UTF-8
             print(f"refused: {UNWRITABLE}", file=sys.stderr)
             return 2
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with args.out.open("x", encoding="utf-8") as handle:  # exclusive: a file made meanwhile stays
-                handle.write(text)
-        except FileExistsError:
-            print(f"refused: {EXISTING}", file=sys.stderr)
+        refusal = write_new(args.out, data)  # D17 (R5): the whole file at its path, or nothing there
+        if refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
             return 2
     sys.stdout.write(preview)
     return 0

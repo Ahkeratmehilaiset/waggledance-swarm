@@ -14,17 +14,22 @@ D14 (2026-10-19, the REMEMBER lineage): this is the card lineage's test file (bl
 place of v1.1's file here, whose CLI sandbox-root test and frozen night-view test (it read the stored views from
 the data disk whenever they were present) it supersedes as described above; the D14 output tests at the end
 were red on this lineage's v1.1 module first.
+D17 (2026-10-19): the R5 write-new tests after them were red on the D16 module first, and the write spy now
+also fails a hard link outside an audit directory.
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/test_join_card_delivery.py -q
 """
 
 import contextlib
 import copy
+import errno
 import hashlib
 import io
 import json
 import os
 import re
+import secrets
+import subprocess
 import sys
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -334,13 +339,13 @@ def outside(tmp_path, *parts):
 
 @contextlib.contextmanager
 def writes_only_in_audit(monkeypatch):
-    """A scoped filesystem spy (Lead 10:18Z): while it is active, a directory made, a file opened for writing or a
-    rename outside every .codex-audit directory fails before anything is created there."""
+    """A scoped filesystem spy (Lead 10:18Z): while it is active, a directory made, a file opened for writing, a
+    rename or (D17) a hard link outside every .codex-audit directory fails before anything is created there."""
 
     def inside(path):
         return ".codex-audit" in Path(os.path.abspath(os.fspath(path))).parts
 
-    real_mkdir, real_open, real_rename = os.mkdir, io.open, os.rename
+    real_mkdir, real_open, real_rename, real_link = os.mkdir, io.open, os.rename, os.link
 
     def mkdir(path, *args, **kwargs):
         assert inside(path), f"a directory outside .codex-audit: {path}"
@@ -355,10 +360,15 @@ def writes_only_in_audit(monkeypatch):
         assert inside(source) and inside(target), f"a rename outside .codex-audit: {target}"
         return real_rename(source, target, *args, **kwargs)
 
+    def link(source, target, *args, **kwargs):
+        assert inside(source) and inside(target), f"a link outside .codex-audit: {target}"
+        return real_link(source, target, *args, **kwargs)
+
     with monkeypatch.context() as patch:
         patch.setattr(os, "mkdir", mkdir)
         patch.setattr(io, "open", open_)
         patch.setattr(os, "rename", rename)
+        patch.setattr(os, "link", link)
         yield
 
 
@@ -1099,3 +1109,283 @@ def test_d14_an_output_that_cannot_be_made_whole_refuses_before_any_file_or_dire
     expected = jcd.deliver(json.loads(json.dumps(case(as_of))), json.loads(json.dumps(receipts())), now_utc=as_of)
     whole = json.dumps(expected, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
     assert out_path.read_text(encoding="utf-8") == whole  # the whole text, its last line end included
+
+
+# --- D17 (2026-10-19, fable-5): R5 write-new for --out ---------------------------------------------------------------
+# RCO1's R5 class (a crash or an OS error leaves a cut file under the real name) and Lead's D14 and D15
+# reconciliations (OS errors and partial writes unproved, no R5 guarantee). Each test here was red on the D16 module
+# first. The failures are injected: no disk is filled and no power is cut.
+
+UNWRITTEN = "the output file could not be written; nothing is published at its path"  # literal, as above
+STAGING_D17 = re.compile(r"\.delivery\.json\.staging-[0-9a-f]{16}")
+D17_SITES = ("mkdir", "open", "write", "flush", "fsync", "close", "readback", "link")
+
+
+def d17_setup(tmp_path):
+    """The CLI arguments without --out, the output path (its parent does not exist yet) and the output's whole text."""
+    as_of = shift(SINCE, minutes=586)
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    argv = cli_files(audit, as_of)
+    expected = jcd.deliver(json.loads(json.dumps(case(as_of))), json.loads(json.dumps(receipts())), now_utc=as_of)
+    whole = json.dumps(expected, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+    return argv, audit / "deeper" / "delivery.json", whole
+
+
+def d17_listing(out_path):
+    """The names in the output's parent, sorted; none when that parent does not exist."""
+    return sorted(os.listdir(out_path.parent)) if out_path.parent.is_dir() else []
+
+
+class D17FailingFile:
+    """A write handle whose ``site`` step fails with ``error``: a write stores half of its bytes first (a cut write),
+    a close fails after the real close, and ``readback`` silently stores one byte less than it reports (a lying
+    device)."""
+
+    def __init__(self, handle, site, error):
+        self.handle, self.site, self.error = handle, site, error
+
+    def write(self, data):
+        if self.site == "write":
+            self.handle.write(data[:len(data) // 2])
+            self.handle.flush()
+            raise self.error
+        if self.site == "readback":
+            self.handle.write(data[:-1])
+            return len(data)
+        return self.handle.write(data)
+
+    def flush(self):
+        if self.site == "flush":
+            raise self.error
+        return self.handle.flush()
+
+    def close(self):
+        self.handle.close()
+        if self.site == "close":
+            raise self.error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self.handle, name)
+
+
+def d17_inject(patch, out_path, site, error):
+    """``site`` fails once with ``error``: creating the output's parent (Path.mkdir), a write open of any file in that
+    parent (Path.open; the handle's write, flush, close or byte count for the later sites), os.fsync or os.link.
+    Returns the sites reached, in order."""
+    reached = []
+    real_mkdir, real_open, real_fsync, real_link = Path.mkdir, Path.open, os.fsync, os.link
+
+    def mkdir(self, *args, **kwargs):
+        if site == "mkdir" and Path(self) == out_path.parent:
+            reached.append(site)
+            raise error
+        return real_mkdir(self, *args, **kwargs)
+
+    def open_(self, mode="r", *args, **kwargs):
+        if Path(self).parent != out_path.parent or not set(mode) & set("wax+"):
+            return real_open(self, mode, *args, **kwargs)
+        if site == "open":
+            reached.append(site)
+            raise error
+        handle = real_open(self, mode, *args, **kwargs)
+        if site in ("write", "flush", "close", "readback"):
+            reached.append(site)
+            return D17FailingFile(handle, site, error)
+        return handle
+
+    def fsync(fd):
+        if site == "fsync":
+            reached.append(site)
+            raise error
+        return real_fsync(fd)
+
+    def link(source, target, *args, **kwargs):
+        if site == "link":
+            reached.append(site)
+            raise error
+        return real_link(source, target, *args, **kwargs)
+
+    patch.setattr(Path, "mkdir", mkdir)
+    patch.setattr(Path, "open", open_)
+    patch.setattr(os, "fsync", fsync)
+    patch.setattr(os, "link", link)
+    return reached
+
+
+@pytest.mark.parametrize("site", D17_SITES)
+def test_d17_an_error_at_any_write_step_publishes_nothing_and_leaves_no_staging_file(tmp_path, capsys, monkeypatch,
+                                                                                    site):
+    argv, out_path, whole = d17_setup(tmp_path)
+    with monkeypatch.context() as patch:
+        reached = d17_inject(patch, out_path, site, OSError(errno.EIO, f"injected {site} failure"))
+        code = jcd.main(argv + ["--out", str(out_path)])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err, reached) == (2, "", f"refused: {UNWRITTEN}\n", [site])
+    assert not out_path.exists() and d17_listing(out_path) == []  # no output and no staging file
+    assert out_path.parent.is_dir() == (site != "mkdir")  # a parent made before the failure stays, empty
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0  # control: the same call publishes once nothing fails
+    assert out_path.read_bytes() == whole.encode("utf-8") and d17_listing(out_path) == ["delivery.json"]
+
+
+D17_CRASH = """
+import os
+import sys
+from pathlib import Path
+here, when = Path(sys.argv[1]), sys.argv[2]
+sys.path[:0] = [str(here), str(here / "step1")]
+import join_card_delivery as jcd
+real_fsync = os.fsync
+
+def fsync_then_crash(fd):
+    if when == "after":
+        real_fsync(fd)
+    os._exit(17)  # a hard crash: no except, no finally, no cleanup
+
+os.fsync = fsync_then_crash
+jcd.main(sys.argv[3:])
+"""
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_d17_a_hard_crash_at_the_sync_leaves_a_staging_file_never_a_cut_output(tmp_path, capsys, when):
+    """The process dies just before or just after its sync, after the write and flush: the output path stays empty,
+    the staging file holds the whole text (the process died, the machine did not), and a later turn publishes without
+    touching that leftover."""
+    argv, out_path, whole = d17_setup(tmp_path)
+    run = subprocess.run([sys.executable, "-B", "-c", D17_CRASH, str(HERE), when] + argv + ["--out", str(out_path)],
+                         capture_output=True, text=True)
+    assert run.returncode == 17, run.stderr[-2000:]
+    assert not out_path.exists()
+    [staged] = d17_listing(out_path)
+    assert STAGING_D17.fullmatch(staged)
+    leftover = (out_path.parent / staged).read_bytes()
+    assert leftover == whole.encode("utf-8")
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0
+    assert out_path.read_bytes() == whole.encode("utf-8")
+    assert d17_listing(out_path) == sorted(["delivery.json", staged])
+    assert (out_path.parent / staged).read_bytes() == leftover  # a leftover is never touched
+
+
+def test_d17_the_published_file_holds_exactly_the_utf8_bytes_and_no_staging_file_stays(tmp_path, capsys):
+    argv, out_path, whole = d17_setup(tmp_path)
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0
+    assert out_path.read_bytes() == whole.encode("utf-8")  # LF line ends on every platform (text mode wrote CRLF)
+    assert d17_listing(out_path) == ["delivery.json"]
+
+
+def test_d17_the_bytes_are_staged_beside_the_output_and_synced_before_the_output_exists(tmp_path, capsys, monkeypatch):
+    argv, out_path, whole = d17_setup(tmp_path)
+    real_fsync, seen = os.fsync, []
+
+    def fsync_and_look(fd):
+        real_fsync(fd)
+        names = d17_listing(out_path)
+        seen.append((out_path.exists(), names, [(out_path.parent / name).read_bytes() for name in names]))
+
+    monkeypatch.setattr(os, "fsync", fsync_and_look)
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0
+    [(published, names, contents)] = seen
+    assert not published and len(names) == 1 and STAGING_D17.fullmatch(names[0])
+    assert contents == [whole.encode("utf-8")]  # the whole text, staged and synced before the output exists
+    assert out_path.read_bytes() == whole.encode("utf-8") and d17_listing(out_path) == ["delivery.json"]
+
+
+@pytest.mark.parametrize("rename", ["native", "replacing"])
+def test_d17_an_output_another_writer_makes_before_publication_is_kept_and_the_turn_refused(tmp_path, capsys,
+                                                                                           monkeypatch, rename):
+    """Another writer makes the output after the staged bytes are synced. Publication never replaces it, also where a
+    rename would: ``replacing`` gives os.rename and os.replace the POSIX semantics that replace an existing file."""
+    argv, out_path, whole = d17_setup(tmp_path)
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync_then_race(fd):
+        real_fsync(fd)
+        out_path.write_bytes(b"another writer's delivery")
+
+    def replacing(source, target, *args, **kwargs):
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "fsync", fsync_then_race)
+    if rename == "replacing":
+        monkeypatch.setattr(os, "rename", replacing)
+        monkeypatch.setattr(os, "replace", replacing)
+    code = jcd.main(argv + ["--out", str(out_path)])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (2, "", f"refused: {EXISTING}\n")
+    assert out_path.read_bytes() == b"another writer's delivery" and d17_listing(out_path) == ["delivery.json"]
+
+
+def test_d17_a_file_at_the_staging_name_is_never_used_overwritten_or_removed(tmp_path, capsys, monkeypatch):
+    """A staging-name collision (forced here; 16 random hex digits in practice) fails at the exclusive create: the
+    file there keeps its bytes, nothing is published and the CLI refuses with its fixed reason."""
+    argv, out_path, whole = d17_setup(tmp_path)
+    monkeypatch.setattr(secrets, "token_hex", lambda size: "0" * 2 * size)
+    out_path.parent.mkdir()
+    taken = out_path.parent / (".delivery.json.staging-" + "0" * 16)
+    taken.write_bytes(b"another writer's staging")
+    code = jcd.main(argv + ["--out", str(out_path)])
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (2, "", f"refused: {UNWRITTEN}\n")
+    assert d17_listing(out_path) == [taken.name] and taken.read_bytes() == b"another writer's staging"
+
+
+@pytest.mark.parametrize("site", ["none", "link"])
+def test_d17_a_failing_staging_cleanup_never_changes_the_outcome(tmp_path, capsys, monkeypatch, site):
+    """The staging name cannot be removed (a scanner holds it open, say): a published output stays published, and a
+    refused turn keeps its own fixed reason; the cleanup error is never raised or printed."""
+    argv, out_path, whole = d17_setup(tmp_path)
+    real_unlink, tried = Path.unlink, []
+
+    def unlink(self, *args, **kwargs):
+        if STAGING_D17.fullmatch(self.name):
+            tried.append(self.name)
+            raise PermissionError(errno.EACCES, "the staging file is held open")
+        return real_unlink(self, *args, **kwargs)
+
+    def no_link(source, target, *args, **kwargs):
+        raise OSError(errno.EPERM, "this file system has no hard links")
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    if site == "link":
+        monkeypatch.setattr(os, "link", no_link)
+    code = jcd.main(argv + ["--out", str(out_path)])
+    captured = capsys.readouterr()
+    assert len(tried) == 1  # the cleanup was tried once, and failed
+    if site == "none":
+        assert (code, captured.err) == (0, "") and out_path.read_bytes() == whole.encode("utf-8")
+    else:
+        assert (code, captured.out, captured.err) == (2, "", f"refused: {UNWRITTEN}\n") and not out_path.exists()
+
+
+def test_d17_each_turn_stages_under_a_fresh_random_token_so_a_leftover_never_blocks_a_later_turn(tmp_path, capsys,
+                                                                                                 monkeypatch):
+    """A crash leftover (here at the all-zero staging token) stays as it is, and two later turns publish beside it,
+    each staged under its own fresh 16-hex token (added after the first green run: the crash test's child imports the
+    module from disk, so an in-memory mutant with a fixed staging token never reaches it)."""
+    argv, out_path, whole = d17_setup(tmp_path)
+    out_path.parent.mkdir()
+    leftover = out_path.parent / (".delivery.json.staging-" + "0" * 16)
+    leftover.write_bytes(b"an earlier turn's staged bytes")
+    second = out_path.parent / "second.json"
+    real_fsync, tokens = os.fsync, []
+
+    def fsync_and_look(fd):
+        real_fsync(fd)
+        staged = [name for name in d17_listing(out_path) if ".staging-" in name and name != leftover.name]
+        tokens.extend(name.rsplit("-", 1)[1] for name in staged)
+
+    monkeypatch.setattr(os, "fsync", fsync_and_look)
+    assert jcd.main(argv + ["--out", str(out_path)]) == 0
+    assert jcd.main(argv + ["--out", str(second)]) == 0
+    assert len(tokens) == 2 and len(set(tokens)) == 2 and all(re.fullmatch(r"[0-9a-f]{16}", t) for t in tokens)
+    assert out_path.read_bytes() == second.read_bytes() == whole.encode("utf-8")
+    assert d17_listing(out_path) == sorted(["delivery.json", "second.json", leftover.name])
+    assert leftover.read_bytes() == b"an earlier turn's staged bytes"  # a leftover is never touched

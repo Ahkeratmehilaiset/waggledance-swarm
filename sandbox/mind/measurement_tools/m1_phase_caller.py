@@ -9,6 +9,16 @@ The synthetic tests mock Popen and all measured code. They do not establish
 native execution, package closure, OS containment, hard disk quotas or utility.
 The live budget monitor is cooperative, not an OS write quota; a future native
 GO must accept that limitation or supply an approved hard containment layer.
+
+Parent execute startup policy (before importing this file):
+  <pinned python> -I -B -S -X pycache_prefix=<root>/.phases/<phase>/parent-pycache
+  <this file> execute --design <NEW DESIGN> --design-sha256 <SHA>
+  --go <exact GO file> --go-sha256 <SHA> --phase <phase>
+parent_argv() emits that exact argument vector. No real DESIGN/GO is supplied.
+Both cache paths must be new. -B alone does NOT prevent reading old pyc.
+The worker uses the same flags and a separate worker-pycache, explicitly
+appending only DESIGN-bound package roots after validation, never site or pth.
+Pinned subsets are not a complete import/OS-loader/write-containment proof.
 """
 import argparse
 import contextlib
@@ -47,7 +57,7 @@ MAX_BUDGET = 64 * 1024**2
 FLOOR = 3 * 1024**3
 FIXED_REASONS = {"refused", "stage_failed", "timeout", "cleanup_failed", "budget",
                  "disk_floor", "consumed", "outputs", "pins", "go", "prior",
-                 "publication", "path", "design", "worker_exit", "worker_intent"}
+                 "publication", "path", "design", "worker_exit", "worker_intent", "startup"}
 
 
 class Refused(ValueError):
@@ -187,7 +197,82 @@ def validate_design(path, expected):
         need(type(binding["rule"].get(key)) in (int, float) and binding["rule"][key] == value, "pins")
     need(all(c["environment"].get(k) == v for k, v in REQUIRED_ENV.items()), "design")
     need(set(c["environment"]) <= set(REQUIRED_ENV) | {"USERPROFILE", "SystemRoot", "HF_HOME"}, "design")
+    package_roots(c)
     return c
+
+
+def package_roots(c):
+    """Validate explicit root/config identity using pinned files, without a scan.
+
+    Rehash selected files, not a closure assertion: unlisted imports and native
+    loaders/external writes remain UNKNOWN. Do not run pth/sitecustomize code.
+    """
+    policy = c.get("startup")
+    need(isinstance(policy, dict) and set(policy) == {"schema", "package_roots"}
+         and policy["schema"] == "wd.m1-p2-startup.v1", "startup")
+    rows = policy["package_roots"]
+    need(isinstance(rows, list) and 0 < len(rows) <= 64, "startup")
+    roots, seen = [], set()
+    for row in rows:
+        need(isinstance(row, dict) and set(row) == {"path", "runtime_subset_sha256"}
+             and isinstance(row["path"], str) and Path(row["path"]).is_absolute(), "startup")
+        root = safe_path(row["path"])
+        need(root.is_dir() and str(root) == row["path"]
+             and str(root).casefold() not in seen
+             and not root.is_relative_to(Path(c["root"])), "startup")
+        selected = {name: sha for name, sha in c["runtime_files"].items()
+                    if Path(name).is_relative_to(root)}
+        need(bool(selected) and hex64(row["runtime_subset_sha256"])
+             and digest(selected) == row["runtime_subset_sha256"], "startup")
+        for name, sha in selected.items():
+            need(hex64(sha) and file_hash(safe_path(name)) == sha, "pins")
+        roots.append(str(root))
+        seen.add(str(root).casefold())
+    return roots
+
+
+def activate_package_roots(c):
+    # append preserves stdlib precedence. No site.addsitedir/PYTHONPATH probing.
+    for root in package_roots(c):
+        if root not in sys.path:
+            sys.path.append(root)
+
+
+def pycache_path(c, phase, role):
+    need(phase in PHASES and role in ("parent", "worker"), "startup")
+    return local(Path(c["root"]), f".phases/{phase}/{role}-pycache")
+
+
+def startup_record(c, phase, design_sha):
+    return {"schema": "wd.m1-p2-startup-receipt.v1",
+            "design_sha256": design_sha, "startup_sha256": digest(c["startup"]),
+            "phase": phase, "prefixes": {role: str(pycache_path(c, phase, role))
+                                        for role in ("parent", "worker")}}
+
+
+def startup_context(c, phase, role, design_sha):
+    prefix = pycache_path(c, phase, role)
+    need(sys.flags.isolated == 1 and sys.flags.no_site == 1
+         and sys.flags.dont_write_bytecode == 1 and sys.dont_write_bytecode is True
+         and sys.pycache_prefix == str(prefix)
+         and sys._xoptions.get("pycache_prefix") == str(prefix), "startup")
+    if role == "parent":
+        need(not prefix.exists(), "consumed")
+    else:
+        need(prefix.is_dir() and not any(prefix.iterdir()), "startup")
+        record = load_json(prefix.parent / "STARTUP.json")
+        need(record == startup_record(c, phase, design_sha), "startup")
+
+
+def reserve_startup(c, stage, design_sha):
+    need(stage == Path(c["root"]) / ".phases" / stage.name
+         and stage.name in PHASES, "startup")
+    prefixes = [pycache_path(c, stage.name, role) for role in ("parent", "worker")]
+    # No adoption/deletion, even if empty; preflight all before creating one.
+    need(all(not prefix.exists() for prefix in prefixes), "consumed")
+    for prefix in prefixes:
+        prefix.mkdir(exist_ok=False)
+    write_new(stage / "STARTUP.json", startup_record(c, stage.name, design_sha), c)
 
 
 def validate_go(c, design_sha, go, expected):
@@ -260,12 +345,22 @@ def validate_publication(root, go, reader=load_json):
     need(manifest.get("arm_files") == {p: pub[p] for p in required[:2]}, "publication")
 
 
-def phase_argv(design, design_sha, go_path, go_sha, phase):
+def startup_argv(design, design_sha, go_path, go_sha, phase, role):
     need(phase in PHASES, "go")
     c = load_json(design)
-    return [c["python"], "-I", "-B", str(Path(__file__).absolute()), "worker",
+    return [c["python"], "-I", "-B", "-S", "-X",
+            "pycache_prefix=" + str(pycache_path(c, phase, role)),
+            str(Path(__file__).absolute()), "execute" if role == "parent" else "worker",
             "--design", str(Path(design).absolute()), "--design-sha256", design_sha,
             "--go", str(Path(go_path).absolute()), "--go-sha256", go_sha, "--phase", phase]
+
+
+def phase_argv(design, design_sha, go_path, go_sha, phase):
+    return startup_argv(design, design_sha, go_path, go_sha, phase, "worker")
+
+
+def parent_argv(design, design_sha, go_path, go_sha, phase):
+    return startup_argv(design, design_sha, go_path, go_sha, phase, "parent")
 
 
 def launch(argv, c, stage):
@@ -338,6 +433,7 @@ def _execute(design, design_sha, go, expected_go_sha, *, launcher=None, go_path=
     validate_prior(c, go, design_sha)
     validate_native_config(c, go["phase"])
     root, phase = Path(c["root"]), go["phase"]
+    startup_context(c, phase, "parent", design_sha)
     if phase == "grade":
         validate_publication(root, go)
     budget(c)
@@ -363,6 +459,7 @@ def _execute(design, design_sha, go, expected_go_sha, *, launcher=None, go_path=
         # Canonical copy, bound to the exact typed input, never source text.
         retained_go = stage / "GO.json"
         write_new(retained_go, go, c)
+        reserve_startup(c, stage, design_sha)
         argv = phase_argv(design, design_sha, retained_go, expected_go_sha, phase)
         write_new(stage / "ARGV.json", argv, c)
         # Frozen helpers contain ordinary writes; do not let them adopt old
@@ -514,6 +611,7 @@ def worker(design, design_sha, go, go_sha, phase):
     validate_go(c, design_sha, go, go_sha)
     need(go["phase"] == phase, "worker_intent")
     root = Path(c["root"])
+    startup_context(c, phase, "worker", design_sha)
     intent = load_json(root / ".phases" / phase / "INTENT.json")
     need(intent == {"phase": phase, "design_sha256": design_sha, "go_sha256": go_sha,
                     "run_id": c["run_id"], "prior_receipts": go["prior_receipts"]}, "worker_intent")
@@ -525,6 +623,7 @@ def worker(design, design_sha, go, go_sha, phase):
     budget(c)
     # Exclusive worker start prevents replay of a retained ARGV/GO after a crash.
     write_new(root / ".phases" / phase / "WORKER_CONSUMED.json", {"go_sha256": go_sha}, c)
+    activate_package_roots(c)
     sys.path.insert(0, str(Path(c["helpers"]["comparator"]["path"]).parent))
     stage = root / ".phases" / phase
     with (stage / "helper.stdout.log").open("x", encoding="utf-8") as out:

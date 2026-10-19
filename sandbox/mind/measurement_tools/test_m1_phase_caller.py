@@ -1,13 +1,20 @@
 """AUTHOR synthetic controller tests. Never import Mind, goldset or a model.
 
-All child creation is mocked. Fixture files stay in this owned audit folder.
-This is not a native process, OS-isolation or actual-measurement test.
+Controller child creation and positive startup context are synthetic. Tests
+install a caller-local sys view; no host/global sys flags or options change.
+Runtime refusals are tested with explicitly invalid flags. The real toy child
+asserts its OWN flags unmocked. One bounded stdlib-only toy subprocess
+checks startup policy; it never runs the M1 worker or imports measured code,
+installed packages, models or private data. This is not OS containment or M1.
 """
 import copy
+import os
+import py_compile
 import contextlib
 import datetime as dt
 import hashlib
 import importlib.util
+import importlib.machinery
 import io
 import json
 from pathlib import Path
@@ -18,7 +25,7 @@ from unittest.mock import Mock, patch
 import uuid
 
 HERE = Path(__file__).absolute().parent
-AUDIT = Path.cwd() / ".codex-audit/m1-p2-phase-caller-tools-20261019"
+AUDIT = Path.cwd() / ".codex-audit/m1-caller-pytest-portability-20261019"
 CANDIDATE = HERE / "m1_phase_caller.py"
 if CANDIDATE.exists():
     spec = importlib.util.spec_from_file_location("phase_caller_candidate", CANDIDATE)
@@ -27,6 +34,31 @@ if CANDIDATE.exists():
 else:
     caller = None
 FROZEN_PINS = dict(caller.PINS) if caller else {}
+FROZEN_NATIVE_RUNNER = "def native_runner(c, design_sha):\n    root = Path(c[\"root\"])\n    comp = module_from(c[\"helpers\"][\"comparator\"][\"path\"], \"bm25_comparator\")\n    blind = module_from(c[\"helpers\"][\"blind\"][\"path\"], \"m1_blind_runner\")\n    need(sys.modules[\"bm25_comparator\"] is comp, \"pins\")\n    v21 = source_module(c, \"sandbox/mind/remember/remember_v21.py\", \"m1_p2_v21\")\n    items = [blind.BlindCase(row[\"id\"], row[\"situation\"], row[\"time\"],\n                            file_hash(root / \"caseset/snapshots\" / (\"snap-\" + row[\"id\"] + \".json\")))\n             for row in cases(c)]\n    prepared = load_json(root / \"PREPARED.json\")\n    factory = blind.prepared_native_factory(v21, c[\"binding\"], prepared)\n    return blind.BlindRunner(c[\"binding\"], factory, blind.FileJournal(root / \"journal\", c[\"budget_bytes\"]),\n                             design_sha), items\n"
+
+
+class SyntheticStartupFlags:
+    def __init__(self, original):
+        self.original = original
+        self.isolated = 1
+        self.no_site = 1
+        self.dont_write_bytecode = 1
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+
+class SyntheticStartupSys:
+    """Only caller.sys is replaced; delegate non-startup attributes unchanged."""
+    def __init__(self, original, prefix):
+        self.original = original
+        self.flags = SyntheticStartupFlags(original.flags)
+        self.pycache_prefix = prefix
+        self.dont_write_bytecode = True
+        self._xoptions = dict(original._xoptions, pycache_prefix=prefix)
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
 
 
 def body(value):
@@ -64,6 +96,17 @@ class PhaseCaller(unittest.TestCase):
             "environment": dict(caller.REQUIRED_ENV), "timeout_s": 30,
             "budget_bytes": 1024 * 1024, "case_limit": 1000,
         }
+        self.package_root = self.folder / "toy-packages"
+        self.package_root.mkdir()
+        self.toy = self.package_root / "startup_toy.py"
+        self.toy.write_bytes(b"VALUE = 'FRESH'\n")
+        self.config["runtime_files"][str(self.toy)] = caller.file_hash(self.toy)
+        self.config["startup"] = {
+            "schema": "wd.m1-p2-startup.v1",
+            "package_roots": [{"path": str(self.package_root),
+                               "runtime_subset_sha256": caller.digest(
+                                   {str(self.toy): caller.file_hash(self.toy)})}],
+        }
         self.design = self.folder / "DESIGN.json"
         self.design.write_bytes(body(self.config))
         self.design_sha = caller.file_hash(self.design)
@@ -87,9 +130,20 @@ class PhaseCaller(unittest.TestCase):
 
     def invoke(self, go=None, worker=None):
         go = self.go() if go is None else go
-        return caller.execute(self.design, self.design_sha, go,
-                              expected_go_sha=caller.digest(go),
-                              launcher=worker or Mock())
+        with self.startup_context("parent", go["phase"] if go else "history"):
+            return caller.execute(self.design, self.design_sha, go,
+                                  expected_go_sha=caller.digest(go),
+                                  launcher=worker or Mock())
+
+    @contextlib.contextmanager
+    def startup_context(self, role, phase):
+        prefix = str(self.root / ".phases" / phase / (role + "-pycache"))
+        with patch.object(caller, "sys", SyntheticStartupSys(caller.sys, prefix)):
+            yield
+
+    def save_design(self):
+        self.design.write_bytes(body(self.config))
+        self.design_sha = caller.file_hash(self.design)
 
     def success(self, argv, config, stage):
         # No subprocess: simulate the two exact declared history files only.
@@ -383,7 +437,7 @@ class PhaseCaller(unittest.TestCase):
             self.success(None, config, None)
         def launch(argv, config, stage):
             go = caller.load_json(stage / "GO.json")
-            with patch.object(caller, "dispatch", side_effect=dispatch):
+            with self.startup_context("worker", "history"), patch.object(caller, "dispatch", side_effect=dispatch):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     caller.worker(self.design, self.design_sha, go, caller.digest(go), "history")
@@ -464,6 +518,218 @@ class PhaseCaller(unittest.TestCase):
         self.assertNotIn(str(self.folder), stream.getvalue())
 
 
+    def test_MUTANT_WORKER_SITE_STARTUP_FLAGS_all_phases(self):
+        for phase in caller.PHASES:
+            with self.subTest(phase=phase):
+                args = caller.phase_argv(self.design, self.design_sha, self.folder / "GO.json", "a"*64, phase)
+                self.assertEqual(args[1:5], ["-I", "-B", "-S", "-X"])
+                self.assertEqual(args[5], "pycache_prefix=" + str(
+                    self.root / ".phases" / phase / "worker-pycache"))
+
+    def test_MUTANT_PARENT_STARTUP_UNSPECIFIED_exact_argv(self):
+        args = caller.parent_argv(self.design, self.design_sha, self.folder / "GO.json", "a"*64, "history")
+        self.assertEqual(args[:6], [sys.executable, "-I", "-B", "-S", "-X",
+                         "pycache_prefix=" + str(self.root / ".phases/history/parent-pycache")])
+        self.assertEqual(args[6:8], [str(CANDIDATE), "execute"])
+
+    def test_MUTANT_UNPINNED_PACKAGE_ROOT_matrix(self):
+        good = copy.deepcopy(self.config["startup"])
+        for roots in [[], [{"path": "relative", "runtime_subset_sha256": "a"*64}],
+                      [{"path": str(self.package_root), "runtime_subset_sha256": "a"*64}],
+                      good["package_roots"] * 2,
+                      [{"path": str(self.folder), "runtime_subset_sha256": "a"*64}]]:
+            with self.subTest(roots=roots):
+                self.config["startup"]["package_roots"] = roots
+                self.save_design()
+                with self.assertRaises(caller.Refused):
+                    caller.validate_design(self.design, self.design_sha)
+        self.config["startup"] = good
+
+    def test_MUTANT_PACKAGE_ROOT_CONFIG_not_optional(self):
+        for change in ({}, {"schema": "wrong", "package_roots": []}):
+            self.config["startup"] = change
+            self.save_design()
+            with self.subTest(change=change), self.assertRaises(caller.Refused):
+                caller.validate_design(self.design, self.design_sha)
+
+    def test_MUTANT_PARENT_PYCACHE_IDENTITY_rejected_before_latch(self):
+        go = self.go()
+        with patch.object(caller.sys, "pycache_prefix", str(self.folder / "foreign")):
+            with self.assertRaises(caller.Refused):
+                caller.execute(self.design, self.design_sha, go, caller.digest(go), launcher=Mock())
+        self.assertFalse(self.root.exists())
+
+    def test_MUTANT_STARTUP_POLICY_NOT_BOUND_receipt_and_new_empty_caches(self):
+        def fake(argv, config, stage):
+            for role in ("parent", "worker"):
+                prefix = stage / (role + "-pycache")
+                self.assertTrue(prefix.is_dir())
+                self.assertEqual(list(prefix.iterdir()), [])
+            receipt = caller.load_json(stage / "STARTUP.json")
+            self.assertEqual(receipt["startup_sha256"], caller.digest(self.config["startup"]))
+            self.assertEqual(receipt["design_sha256"], self.design_sha)
+            self.success(argv, config, stage)
+        self.invoke(worker=fake)
+
+    def test_MUTANT_PREEXISTING_PYCACHE_never_adopted_or_deleted(self):
+        self.root.mkdir()
+        stage = self.root / ".phases/history"
+        stage.mkdir(parents=True)
+        prefix = stage / "worker-pycache"
+        prefix.mkdir()
+        sentinel = prefix / "retained.bin"
+        sentinel.write_bytes(b"RETAINED")
+        with self.assertRaises(caller.Refused):
+            caller.reserve_startup(self.config, stage, self.design_sha)
+        self.assertEqual(sentinel.read_bytes(), b"RETAINED")
+
+    def test_MUTANT_ADDSITEDIR_OR_PYTHONPATH_NOT_ALLOWED(self):
+        self.config["environment"]["PYTHONPATH"] = str(self.package_root)
+        self.save_design()
+        with self.assertRaises(caller.Refused):
+            caller.validate_design(self.design, self.design_sha)
+        self.config["environment"].pop("PYTHONPATH")
+        before = sys.path[:]
+        try:
+            caller.activate_package_roots(self.config)
+            self.assertEqual(sys.path[:len(before)], before)
+            self.assertEqual(sys.path[len(before):], [str(self.package_root)])
+            caller.activate_package_roots(self.config)
+            self.assertEqual(sys.path.count(str(self.package_root)), 1)
+        finally:
+            sys.path[:] = before
+
+    def test_MUTANT_ROOT_DRIFT_after_design_validation_refuses(self):
+        self.toy.write_bytes(b"VALUE = 'DRIFT'\n")
+        with self.assertRaises(caller.Refused):
+            caller.activate_package_roots(self.config)
+
+    def test_MUTANT_PTH_EXECUTION_AND_STALE_SOURCE_PYC_toy_subprocess(self):
+        # A deliberately timestamp-valid stale TOY pyc, never measured Source.
+        stale = b"VALUE = 'STALE'\n"
+        fresh = b"VALUE = 'FRESH'\n"
+        self.assertEqual(len(stale), len(fresh))
+        self.toy.write_bytes(stale)
+        os.utime(self.toy, (1700000000, 1700000000))
+        cache = Path(importlib.util.cache_from_source(str(self.toy)))
+        py_compile.compile(str(self.toy), doraise=True)
+        stale_hash = caller.file_hash(cache)
+        self.toy.write_bytes(fresh)
+        os.utime(self.toy, (1700000000, 1700000000))
+        # Prove the retained pyc's payload is stale, without a second child.
+        stale_mod = importlib.machinery.SourcelessFileLoader("stale_toy_evidence", str(cache)).load_module()
+        self.assertEqual(stale_mod.VALUE, "STALE")
+        marker = self.folder / "PTH_MUST_NOT_EXECUTE.txt"
+        pth = self.package_root / "evil.pth"
+        pth.write_text("import pathlib; pathlib.Path(" + repr(str(marker)) + ").write_text('BAD')\n")
+        (self.package_root / "sitecustomize.py").write_text(
+            "raise RuntimeError('MUTANT_GLOBAL_SITE_STARTUP')\n")
+        injected = self.folder / "unverified-PYTHONPATH"
+        injected.mkdir()
+        (injected / "startup_toy.py").write_text("VALUE = 'INJECTED'\n")
+        # The .pth bytes are present; pin the toy root's explicitly selected files.
+        selected = {str(p): caller.file_hash(p) for p in
+                    (self.toy, pth, self.package_root / "sitecustomize.py", cache)}
+        self.config["runtime_files"] = dict(selected)
+        self.config["startup"]["package_roots"][0]["runtime_subset_sha256"] = caller.digest(selected)
+        self.save_design()
+        args = caller.phase_argv(self.design, self.design_sha, self.folder / "GO.json", "a"*64, "history")
+        # RED stops HERE on the old argv: never launch an unsafe global-site child.
+        self.assertIn("-S", args)
+        self.assertIn("-X", args)
+        self.root.mkdir()
+        stage = self.root / ".phases/history"
+        stage.mkdir(parents=True)
+        caller.reserve_startup(self.config, stage, self.design_sha)
+        code = (
+            "import json,runpy,sys; "
+            "m=runpy.run_path(sys.argv[1],run_name='startup_toy_caller'); "
+            "c=json.load(open(sys.argv[2])); m['activate_package_roots'](c); "
+            "import startup_toy; "
+            "print(json.dumps({'value':startup_toy.VALUE,'cached':startup_toy.__cached__,"
+            "'no_site':sys.flags.no_site,'isolated':sys.flags.isolated,"
+            "'bytecode_disabled':sys.dont_write_bytecode,'site_loaded':'site' in sys.modules}))")
+        toy_argv = args[:args.index(str(CANDIDATE))] + ["-c", code, str(CANDIDATE), str(self.design)]
+        env = {"SystemRoot": os.environ.get("SystemRoot", r"C:\Windows"),
+               "PYTHONPATH": str(injected), "PYTHONSTARTUP": str(pth)}
+        child = subprocess.run(toy_argv, cwd=Path.cwd(), env=env, capture_output=True,
+                               timeout=20, check=False, stdin=subprocess.DEVNULL)
+        (self.folder / "TOY_ARGV.json").write_bytes(body(toy_argv))
+        (self.folder / "TOY_STDOUT.log").write_bytes(child.stdout)
+        (self.folder / "TOY_STDERR.log").write_bytes(child.stderr)
+        self.assertEqual(child.returncode, 0, "stdlib toy subprocess failed; inspect retained log")
+        result = json.loads(child.stdout)
+        self.assertEqual(result["value"], "FRESH")
+        self.assertEqual(result["no_site"], 1)
+        self.assertEqual(result["isolated"], 1)
+        self.assertTrue(result["bytecode_disabled"])
+        self.assertFalse(result["site_loaded"])
+        self.assertTrue(Path(result["cached"]).is_relative_to(stage / "worker-pycache"))
+        self.assertFalse(marker.exists())
+        self.assertEqual(caller.file_hash(cache), stale_hash)
+        self.assertEqual(list((stage / "worker-pycache").iterdir()), [])
+
+
+
+    def test_MUTANT_WORKER_STARTUP_CONTEXT_checked_before_dispatch(self):
+        before = sys.path[:]
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), before))
+        def fake(argv, config, stage):
+            go = caller.load_json(stage / "GO.json")
+            dispatch = Mock()
+            # invoke() has parent prefix, deliberately wrong for the worker.
+            with patch.object(caller, "dispatch", dispatch):
+                with self.assertRaises(caller.Refused):
+                    caller.worker(self.design, self.design_sha, go, caller.digest(go), "history")
+            dispatch.assert_not_called()
+            self.assertFalse((stage / "WORKER_CONSUMED.json").exists())
+            self.success(argv, config, stage)
+        self.invoke(worker=fake)
+
+    def test_MUTANT_STARTUP_CHECK_IN_NATIVE_RUNNER_no_unrelated_dispatch_edit(self):
+        import ast
+        frozen = FROZEN_NATIVE_RUNNER
+        actual = next(node for node in ast.parse(CANDIDATE.read_text()).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "native_runner")
+        expected = ast.parse(frozen).body[0]
+        self.assertEqual(ast.dump(actual, include_attributes=False),
+                         ast.dump(expected, include_attributes=False))
+
+
+
+    def test_MUTANT_FIXTURE_PATCHES_GLOBAL_SYS_instead_of_caller_local(self):
+        original_caller_sys = caller.sys
+        flags, prefix = sys.flags, sys.pycache_prefix
+        options, bytecode = dict(sys._xoptions), sys.dont_write_bytecode
+        with self.startup_context("parent", "history"):
+            self.assertIsNot(caller.sys, original_caller_sys)
+            self.assertEqual(caller.sys.flags.no_site, 1)
+            self.assertEqual(caller.sys.flags.isolated, 1)
+            self.assertTrue(caller.sys.dont_write_bytecode)
+            self.assertIs(sys.flags, flags)
+            self.assertEqual(sys.pycache_prefix, prefix)
+            self.assertEqual(sys._xoptions, options)
+            self.assertEqual(sys.dont_write_bytecode, bytecode)
+        self.assertIs(caller.sys, original_caller_sys)
+        self.assertIs(sys.flags, flags)
+        self.assertEqual(sys.pycache_prefix, prefix)
+        self.assertEqual(sys._xoptions, options)
+
+    def test_MUTANT_RUNTIME_FLAGS_WEAKENED_fixture_must_not_disable_guard(self):
+        for target, field, bad in [("flags", "isolated", 0), ("flags", "no_site", 0),
+                                    ("flags", "dont_write_bytecode", 0),
+                                    ("sys", "dont_write_bytecode", False),
+                                    ("sys", "pycache_prefix", "FOREIGN")]:
+            with self.subTest(target=target, field=field), self.startup_context("parent", "history"):
+                obj = caller.sys.flags if target == "flags" else caller.sys
+                go = self.go()
+                child = Mock()
+                with patch.object(obj, field, bad), self.assertRaises(caller.Refused):
+                    caller.execute(self.design, self.design_sha, go, caller.digest(go), launcher=child)
+                child.assert_not_called()
+                self.assertFalse(self.root.exists())
+
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(PhaseCaller)
     # Evidence write-new; no raw synthetic traceback needs to enter tool output.
@@ -473,5 +739,5 @@ if __name__ == "__main__":
         result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
     print(json.dumps({"tests": result.testsRun, "failures": len(result.failures),
                       "errors": len(result.errors), "status": "PASS" if result.wasSuccessful() else "FAIL",
-                      "log": str(log), "evidence_class": "AUTHOR_SYNTHETIC_MOCK_ONLY"}))
+                      "log": str(log), "evidence_class": "AUTHOR_SYNTHETIC_CONTROLLER_PLUS_STDLIB_TOY_NOT_M1_NATIVE"}))
     sys.exit(0 if result.wasSuccessful() else 1)

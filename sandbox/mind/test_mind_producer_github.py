@@ -154,16 +154,60 @@ def test_the_producer_cycle_reaches_the_real_join_with_usable_github_and_one_owe
     assert f"build vote on PR{tlv.NUMBER} at {tlv.NEW[:12]} is the only empty slot" in owed["codex-tools-1"][0]
 
 
-def _later(space, gh):
-    real = space["utc_now"]
+def _moved(minutes):
+    def setup(space, gh):
+        real = space["utc_now"]
 
-    def clock(seconds=False):
-        now = real(seconds)
-        if not gh.open_read():
-            return now
-        moved = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=20)
-        return moved.strftime("%Y-%m-%dT%H:%M:%SZ") if seconds else moved.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    space["utc_now"] = clock
+        def clock(seconds=False):
+            now = real(seconds)
+            if not gh.open_read():
+                return now
+            moved = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+            return moved.strftime("%Y-%m-%dT%H:%M:%SZ") if seconds else moved.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        space["utc_now"] = clock
+    return setup
+
+
+_later = _moved(20)
+
+
+def open_row(head=tlv.NEW, number=tlv.NUMBER, rollup=None, **extra):
+    return dict({"headRefOid": head, "mergeStateStatus": "CLEAN", "number": number,
+                 "statusCheckRollup": ROLLUP if rollup is None else rollup}, **extra)
+
+
+def check(name, conclusion):
+    return {"__typename": "CheckRun", "completedAt": "2026-10-13T17:39:09Z", "conclusion": conclusion, "name": name,
+            "status": "COMPLETED", "detailsUrl": "https://example.invalid/run"}
+
+
+SECOND_LISTED = [{"headRefName": tlv.BRANCH, "headRefOid": tlv.NEW, "number": tlv.NUMBER, "state": "OPEN"},
+                 {"headRefName": tlv.SECOND_BRANCH, "headRefOid": tlv.SECOND_HEAD, "number": tlv.SECOND,
+                  "state": "MERGED"}]
+
+
+@pytest.mark.parametrize("rollup, reason, results, missing", [
+    ([check(tlv.REQUIRED[0], "FAILURE")] + ROLLUP[2:], "required_check_missing",
+     {tlv.REQUIRED[0]: ["FAILURE"], **{name: ["SUCCESS"] for name in tlv.REQUIRED[2:]}}, [tlv.REQUIRED[1]]),
+    ([check(tlv.REQUIRED[0], "FAILURE")] + ROLLUP[1:], "required_check_not_success",
+     {tlv.REQUIRED[0]: ["FAILURE"], **{name: ["SUCCESS"] for name in tlv.REQUIRED[1:]}}, []),
+    ([check(tlv.REQUIRED[0], "FAILURE")] + ROLLUP, "required_check_duplicate",
+     {tlv.REQUIRED[0]: ["FAILURE", "SUCCESS"], **{name: ["SUCCESS"] for name in tlv.REQUIRED[1:]}}, []),
+], ids=["failed_and_missing", "failed", "rerun_mixed"])
+def test_a_required_check_that_failed_or_is_missing_is_reported_so_and_owes_no_vote(
+        tmp_path, rollup, reason, results, missing):
+    # RCO2 14:57 T1: every other fixture is all-green, so the derived all_required_success and missing_required were
+    # pinned only for success; here the status says what GitHub said, and the lane view still abstains on the PR
+    space, live = producer(tmp_path, Gh(open_status=gh_bytes([open_row(rollup=rollup)])))
+    last_ok, rec = commit(space, live)
+    assert rec["github_status"]["status"] == "observed"
+    status = json.loads((live / last_ok["status_file"]).read_bytes())
+    assert status["prs"] == {str(tlv.NUMBER): {"head": tlv.NEW, "merge_state": "CLEAN", "required_results": results,
+                                                "missing_required": missing, "all_required_success": False}}
+    result, cycle, _ = chain(tmp_path, live)
+    assert cycle["github"] is not None and all(card["github_usable"] is True for card in result["cards"])
+    tlv.assert_abstains(jt.turn_case("codex-tools-1", cycle, learn_ref=LEARN_REF, envelope=None, receipts=None)["view"],
+                        reason)
 
 
 @pytest.mark.parametrize("gh, setup, reason", [
@@ -182,8 +226,17 @@ def _later(space, gh):
                                             "state": "OPEN"}).encode("utf-8")}),
      lambda space, gh: space.update(LIST_LIMIT=2), "list_backfilled"),
     (Gh(), _later, "status_not_current"),
+    (Gh(), _moved(-20), "status_not_current"),
+    (Gh(listing=None), None, "context_unknown"),
+    (Gh(), lambda space, gh: space.update(GH_BUDGET=0), "gh_budget_spent"),
+    (Gh(), lambda space, gh: space.update(LIST_LIMIT=1), "gh_status_truncated"),
+    (Gh(open_status=gh_bytes([open_row(labels=[])])), None, "gh_status_unexpected"),
+    (Gh(open_status=gh_bytes([open_row(), open_row()])), None, "gh_status_unexpected"),
+    (Gh(listing=gh_bytes(SECOND_LISTED),
+        open_status=gh_bytes([open_row(), open_row(tlv.SECOND_HEAD, tlv.SECOND)])), None, "head_conflict"),
 ], ids=["status_read_fails", "status_not_json", "required_unreadable", "required_empty", "head_conflict",
-        "open_pr_missing", "list_backfilled", "status_stale"])
+        "open_pr_missing", "list_backfilled", "status_stale", "status_before_context", "context_unknown",
+        "budget_spent", "open_list_at_limit", "open_row_other_fields", "open_row_repeated", "merged_pr_open_again"])
 def test_a_status_that_is_missing_failing_stale_or_in_conflict_leaves_the_github_files_unbound(
         tmp_path, gh, setup, reason):
     space, live = producer(tmp_path, gh)

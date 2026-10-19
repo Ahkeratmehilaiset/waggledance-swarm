@@ -15,14 +15,20 @@ rank and score of the best expected record and a set of candidate abstain statis
 * ``lex``: the IDF-weighted share of the query's rare tokens that also occur in the top record.
 
 ``--background`` adds unlabeled post-cutoff bridge events as situations; only the share of them each rule would
-answer is reported, never a correctness number. No network, no bridge event, no gate code; writes only ``--out``.
+answer is reported, never a correctness number. No network, no bridge event, no gate code; writes only ``--out``, as a
+NEW file whole or not at all (``write_new``; an existing one is refused before any input is read). A case with no
+record available before it is an UNKNOWN row (D22): every statistic is None and ``unknown`` says why; no query is
+encoded for it and no score is made up.
 """
 
 import argparse
 import datetime as dt
+import errno
 import json
 import math
+import os
 import re
+import secrets
 import sys
 from collections import Counter
 from pathlib import Path
@@ -37,6 +43,48 @@ import memory as memory_mod  # noqa: E402
 
 WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
 HUB_K = 10
+STATISTICS = ("s1", "gap2", "gap5", "gap10", "z", "hub", "lex")
+
+
+class CalibrateError(ValueError):
+    """A calibration output that cannot be published as given."""
+
+
+def write_new(out, data):
+    """D22 (RCO1's R5 class, write-new; the D17 ``join_card_delivery.write_new`` shape): publish ``data`` as the NEW
+    file ``out``, whole, or nothing at that path. A sibling staging file is created exclusively, written, flushed,
+    fsynced, closed and read back, then hard-linked to ``out``: a link never replaces, so a failed link while the name
+    is taken is ``output_exists`` whatever errno the platform gives (D21.1), and any other OS failure is
+    ``output_unwritten``. The staging name is removed after its exclusive create in every case, best effort; a file
+    already at that name fails the create and is never used or removed. Directories are not synced."""
+    out = Path(out)
+    staging = out.parent / f".{out.name}.staging-{secrets.token_hex(8)}"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        handle = staging.open("xb")
+    except OSError:
+        raise CalibrateError("output_unwritten") from None
+    reason = "output_unwritten"
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if staging.read_bytes() != data:  # a short or altered write is never published
+            raise OSError(errno.EIO, "read-back differs")
+        try:
+            os.link(staging, out)  # never replaces: an existing output refuses the link on every platform
+        except OSError:
+            if os.path.lexists(out):  # the name is taken: another writer's output, kept
+                reason = "output_exists"
+            raise
+    except OSError:
+        raise CalibrateError(reason) from None
+    finally:
+        try:
+            staging.unlink()  # only the staging name: a published output keeps its bytes under its own name
+        except OSError:
+            pass
 
 
 def words(text):
@@ -60,6 +108,8 @@ def lexical_share(query_words, record_words, idf, ceiling, floor):
 
 
 def statistics(scores, order, hubness, query_words, record_words, idf, ceiling, floor):
+    if len(order) == 0:  # D22: no applicable record: every statistic is UNKNOWN, never an IndexError or a made-up score
+        return dict.fromkeys(STATISTICS)
     top = order[0]
     s = scores[order]
 
@@ -98,6 +148,8 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--lex-floor", type=float, default=4.0)
     args = parser.parse_args(argv)
+    if os.path.lexists(args.out):
+        raise CalibrateError("output_exists")  # before any input is read: a previous result is never replaced
     corpus_manifest, records = corpus_mod.read_corpus(args.corpus)
     _, views = encode_mod.read_vectors(args.vectors, corpus_manifest)
     vectors = views["w"]
@@ -128,12 +180,15 @@ def main(argv=None):
     for case in cases:
         before = corpus_mod.utc_text(corpus_mod.parse_utc(case["before"]))
         mask = available < before
-        query = encoder.query(case["situation"])
-        scores = np.where(mask, vectors @ query, -np.inf)
-        order = np.argsort(-scores, kind="stable")[:int(mask.sum())]
-        live = scores[mask]
         row = {key: case[key] for key in ("id", "set", "kind")}
         row["applicable"] = int(mask.sum())
+        if row["applicable"]:
+            scores = np.where(mask, vectors @ encoder.query(case["situation"]), -np.inf)
+        else:  # D22: no record is available before the case: nothing to score, so no query is encoded
+            scores = np.full(len(records), -np.inf)
+            row["unknown"] = "no_applicable_records"
+        order = np.argsort(-scores, kind="stable")[:row["applicable"]]
+        live = scores[mask]
         stats = statistics(np.asarray(live), np.argsort(-live, kind="stable"), hubness[mask], words(case["situation"]),
                            [record_words[i] for i in np.flatnonzero(mask)], idf, ceiling, args.lex_floor)
         row.update(stats)
@@ -150,11 +205,15 @@ def main(argv=None):
         rows.append(row)
     result = {"schema": "wd.bridge-mind-hex-step2-calibration.v1", "authority": "none", "evidence": "smoke_only",
               "corpus_sha256": corpus_manifest["corpus_sha256"], "lex_floor": args.lex_floor, "hub_k": HUB_K,
-              "sets": [str(path) for path in args.set], "rows": rows}
+              "sets": [str(path) for path in args.set], "rows": rows,
+              "unknown_rows": sum(1 for row in rows if "unknown" in row)}
     corpus_mod.ws.guard_object(result)
-    args.out.write_text(json.dumps(result, indent=1), encoding="utf-8")
+    write_new(args.out, json.dumps(result, indent=1).encode("utf-8"))
     for row in rows:
         if row["kind"] == "background":
+            continue
+        if "unknown" in row:
+            print(f"{row['kind'][:3]} {row['id']:<14} UNKNOWN {row['unknown']}")
             continue
         print(f"{row['kind'][:3]} {row['id']:<14} rank={str(row.get('best_rank')):<5} s1={row['s1']:.4f} "
               f"g2={row['gap2']:.4f} g5={row['gap5']:.4f} g10={row['gap10']:.4f} z={row['z']:.2f} "

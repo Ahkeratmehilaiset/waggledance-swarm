@@ -44,7 +44,7 @@ ALLOWED: dict[str, dict[str, int]] = {
     "step1/adapter.py": {"json": 2},
     "step1/run_acceptance_1a.py": {"json": 3, "write": 1},
     "step1/run_parity_1b.py": {"json": 14, "write": 14},
-    "step2/calibrate.py": {"json": 2, "write": 1},
+    "step2/calibrate.py": {"json": 2},
     "step2/cell.py": {"json": 6, "write": 4},
     "step2/corpus.py": {"json": 3},
     "step2/encode.py": {"json": 1},

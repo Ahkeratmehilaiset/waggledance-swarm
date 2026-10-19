@@ -55,3 +55,13 @@ facts per hour, rebuild and query speed.
 * **GitHub reads.** Its read-only GitHub metadata calls (`gh pr list` and `gh pr view` for files and commits)
   are the only network touch. Whether they are allowed is a carve-out that Lead decides.
 * **Experiment code.** Experiment code stays offline and reads only the copied capture files.
+
+## The integrity ratchet
+
+`test_integrity_ratchet.py` (RCO1's R8 proposal, built by fable-5) counts five known bug classes in every non-test
+module here, by AST only, with no import and no execution: `json` (a JSON read without `object_pairs_hook`),
+`dollar` (a pattern ending in `$` used with `match` or `search`), `prefix` (a pattern with no end anchor used with
+`match`), `int` (`isinstance(x, int)` with no bool exclusion beside it) and `write` (an overwriting write). A file
+that gains an instance fails the test. A file that loses one fails it too, until `ALLOWED` is lowered in the same
+change, so the numbers only go down. `python -B -I sandbox/mind/integrity_ratchet.py` prints the current numbers,
+and `--hits` prints the line of each instance.

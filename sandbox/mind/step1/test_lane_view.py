@@ -1,5 +1,6 @@
 """Tests of hex-Mind step 1a (lane_view). Synthetic cases go through the real core (``tools.wd_bridge_mind``), so the
-snapshot rows are what the core writes; the frozen P1 cycles are tested when the sandbox data disk is present.
+snapshot rows are what the core writes; the frozen-cycle checks run on a synthetic frozen root built in a
+temporary directory (no data disk is read).
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest sandbox/mind/step1 -q -k lane_view
 """
@@ -512,24 +513,89 @@ def test_lane_view_needs_an_explicit_as_of_not_older_than_the_snapshot():
         lv.lane_view(case["snapshot"], case["github"], case["bodies"], as_of_utc="2026-10-13T17:59:59Z")
 
 
-# --- The frozen P1 cycles (skipped when the sandbox data disk is absent) -------------------------------------------
+# --- Frozen cycles, synthetic (no data disk) ------------------------------------------------------------------------
+# The reference tests here loaded the frozen P1 copies from the sandbox data disk when present. The release suite
+# reads no real data: the same two checks run on a synthetic wd.mind-frozen-cycles.v1 root built in a temporary
+# directory and read through the real loader (manifest verification, null reporting, the shared body store), with a
+# synthetic labelled case of the PR1905 shape. This proves the code on synthetic input only; it claims nothing about
+# the historical cycles.
 
-def _frozen_available():
-    try:
-        import lane_view_frozen as fz
-        return (fz.FROZEN_ROOT / "manifest.json").is_file()
-    except OSError:
-        return False
+def frozen_cycle_bytes(events, github, as_of):
+    """The six files of one synthetic frozen cycle: objects canonical through the core, the two raw gh lists in the
+    canonical form their links are computed from, the core snapshot in its publication envelope."""
+    snapshot = snapshot_of(events, as_of)
+    publication = {"schema": "wd.bridge-mind-publication.v1", "snapshot": snapshot,
+                   "snapshot_sha256": hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest()}
+    return {"capture.json": core.canonical_bytes({"events": events}),
+            "context.json": core.canonical_bytes(github["context"]),
+            "observed-status.json": core.canonical_bytes(github["status"]),
+            "gh-pr-list.json": lv.canonical(github["pr_list"]).encode("utf-8"),
+            "gh-open-status.json": lv.canonical(github["open_status"]).encode("utf-8"),
+            "run\\reflected.publication.json": core.canonical_bytes(publication)}
+
+
+def write_frozen_root(root, cycles):
+    """A synthetic frozen root at ``root``; ``cycles`` holds (name, events, github, as_of, keep_capture) tuples. A cycle
+    without its capture gets a null manifest entry, as a capture pruned before the copy."""
+    entries = []
+    for name, events, github, as_of, keep_capture in cycles:
+        files = {}
+        for file_name, data in frozen_cycle_bytes(events, github, as_of).items():
+            if file_name == "capture.json" and not keep_capture:
+                files[file_name] = None
+                continue
+            path = root.joinpath(name, *file_name.split("\\"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            files[file_name] = hashlib.sha256(data).hexdigest()
+        entries.append({"cycle": name, "files": files})
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_bytes(core.canonical_bytes({"schema": "wd.mind-frozen-cycles.v1",
+                                                               "cycles": entries}))
+    return root
+
+
+def synthetic_cycles(events=None, count=8, captured=2):
+    """``count`` cycles five minutes apart from 18:00Z, GitHub observed five minutes before each; only the last
+    ``captured`` cycles keep their capture."""
+    events = base_events() if events is None else events
+    cycles = []
+    for index in range(count):
+        as_of = f"2026-10-13T18:{5 * index:02d}:00Z"
+        observed = "2026-10-13T17:55:00Z" if index == 0 else f"2026-10-13T18:{5 * (index - 1):02d}:00Z"
+        keep = index >= count - captured
+        cycles.append((f"synthetic-{index}", events, github_of(observed=observed), as_of, keep))
+    return cycles
+
+
+def frozen_events():
+    """The synthetic PR1905 events plus one ordinary Tools message on its own task, so the owning lane is a lane of
+    the snapshot (the acceptance controls look its uuid up); the PR rows are those of ``base_events``."""
+    return base_events() + [event("2026-10-13T17:30:00Z", "codex-tools-1", "message", "in_progress", {},
+                                  task="codex-tools-1/lane-work-20261013")]
+
+
+def synthetic_labels(events):
+    """A labelled case of the PR1905 shape for the synthetic events: what acceptance 1a reads, nothing more."""
+    refs = refs_of(events)
+    return {"facts_in_input": {"github_head": NEW, "bridge_view_head": OLD, "older_request": {"ref": refs[0]},
+                               "votes_at_github_head": [{"agent": "claude-rco-1", "ref": refs[1]},
+                                                        {"agent": "codex-lead-1", "ref": refs[2]}],
+                               "commit_authors": list(AUTHORS)},
+            "expected": {"top_action": f"build vote on PR{NUMBER} at {NEW[:12]} is the only empty slot",
+                         "owning_lane": "codex-tools-1",
+                         "must_cite": [refs[2][:16], refs[1][:16], f"GitHub 6/6 at {NEW[:12]}"],
+                         "waiting_since_utc": "2026-10-13T17:40:44Z",
+                         "coverage_wording_if_request_inventory_bounded": "coverage UNKNOWN"}}
 
 
 @pytest.fixture(scope="module")
-def frozen():
-    if not _frozen_available():
-        pytest.skip("the frozen P1 cycles are not on this machine")
+def frozen(tmp_path_factory):
     import lane_view_frozen as fz
     import run_acceptance_1a as acc
-    data = fz.load_frozen()
-    labels = acc.Labels(json.loads((fz.FROZEN_ROOT / acc.CASE_FILE).read_text(encoding="utf-8")))
+    events = frozen_events()
+    data = fz.load_frozen(write_frozen_root(tmp_path_factory.mktemp("frozen") / "cycles", synthetic_cycles(events)))
+    labels = acc.Labels(synthetic_labels(events))
     return data, labels, acc
 
 

@@ -18,6 +18,14 @@ S1 Condition. A wait condition is a view PR record with state ``action`` and exa
    fill no slot) all come from the lane view's own verified reading; nothing here re-derives or infers them. The
    owning lane is the slot's owner. Two or more empty slots, a full slot set (``votes_complete``), or an abstained
    or refused PR is no condition.
+   (v1.2) Every PR record must be a mapping, and an action record must hold the lane view's empty slots, credited
+   votes (slot and ref), PR number (equal to its key), full head, branch and checks, each of the type the lane view
+   writes; otherwise the turn is refused with a fixed message, never a raw error. A record in any other state is
+   not read beyond its state. Keys of any text are ordered without raising.
+   (v1.3) An action record's checks must also be the lane view's own ``n/n`` form (every required check SUCCESS at
+   that head; n from 1 to 999, so the echoed field stays short). With that, every field a HEAR text line echoes is
+   a validated identifier or ref, a stamped time, a count or fixed wording, so no input can add, split or reorder a
+   line.
 S2 Wait. ``wait = observed - since``. ``observed`` is the view's ``as_of_utc``; ``since`` is its
    ``waiting_since_utc``, the later of the last credited vote and the CI completion at that head. Both are whole
    seconds, cut and never rounded up. The wait is never extrapolated to ``now``. When since is UNKNOWN or after
@@ -30,6 +38,11 @@ S4 Card trust. The view must report coverage ``complete`` and be at most 15 min 
    context max age), and ``now`` must not be before it. Otherwise every condition is ``unknown``
    (``card_coverage_not_complete``, ``card_stale``, ``card_from_future``). An unknown condition is never shown as a
    wait. It is listed in one UNKNOWN line with its PR, head and reason, and never notified.
+   (v1.2) Every lane card names the card trust, and a card that is not current states no absence: a lane without a
+   condition then says that no wait is stated, and so does the operator preview when it has no alert line.
+   (v1.4) A current operator preview without an alert line states its absence ("no new wait over 30 min on a last
+   open slot") only when no condition is unknown and no new wait was carried; otherwise its UNKNOWN line and its
+   counts stand alone, as a lane card states its own absence only when it has no other line.
 S5 Receipts. For the condition's lane, PR and exact head, each of requested, delivered, read and answered has one
    of three states:
    * OBSERVED: the earliest matching row at or before ``observed``, with its ref and time;
@@ -42,7 +55,15 @@ S5 Receipts. For the condition's lane, PR and exact head, each of requested, del
    (v1.1) Reading receipts never raises: a value of an unexpected type at any depth makes the document unreadable.
    The CLI reads each file as strict JSON (a duplicate key, NaN or Infinity, or bytes that are not plain UTF-8 JSON
    are refused). A receipts file that cannot be read that way is an unreadable document; a view or notified file
-   that cannot be read that way refuses the turn.
+   that cannot be read that way refuses the turn. (v1.2) A file nested too deeply to parse is not readable that way.
+   (v1.5) The document must also agree with the turn's clock and with itself: no source is complete through a time after
+   ``now``, every row's kind has a source, and no row is after its kind's complete-through time. A NONE then never rests
+   on coverage claimed for a time not yet reached, and every row lies inside its kind's declared complete coverage.
+   These are internal checks only: that a source really holds every matching row up to its complete-through time is
+   the source's own claim, trusted and never checked here, so a NONE is only as true as that claim. A document that
+   breaks any of these checks is unreadable as a whole. A NONE states its absence through ``observed``, the time it was
+   checked for, never through its source's later complete-through time: a matching row after ``observed`` is not used,
+   so that later time could state an absence that the document contradicts.
 S6 Identity and dedupe. identity = sha256 of the canonical {kind, pr, full head, slot, lane, since}; since is the S2
    value written as whole UTC seconds with ``Z`` (v1.1), never the view's own spelling. An alert whose
    identity is in ``notified`` is not shown again. It is counted in one line of unchanged waits with its PR and
@@ -58,15 +79,56 @@ S8 Lines. Each alert line uses fixed ``key=value`` fields, so any model family r
    hit refuses the whole output. Known limitation, kept on purpose: one guarded word in one PR's echoed field
    therefore withholds every lane's card in that turn; refusing only that row needs a separately registered
    semantics change.
+S9 View binding (v1.2). The output's card names ``view_canonical_sha256``, the sha256 of the view's canonical JSON
+   (``lane_view.canonical``), so a reader can bind the delivery to the exact view it read; a JSON copy of a lane
+   view (string keys only) has the same digest. A view without canonical JSON (NaN or Infinity, a set, bytes, mixed
+   key types, nesting too deep) refuses the turn.
 
 v1.1 (2026-10-14, after RCO1's probes of 2302ee59, plan 4FEAA88E, result 1185E841): F1 a sources entry that was not
 a mapping made reading raise, so one malformed receipts document dropped every lane's alert; F2 the CLI kept the
 last of two duplicate keys, which turned an observed receipt into an affirmative NONE; F3 sub-second times were
 compared uncut.
 
+v1.2 (2026-10-15, the evening audit): R1 a malformed view PR record raised a raw TypeError or KeyError (RCO2's
+public G-L result of 19:02:55Z, processed by Lead at 19:13:18Z; the type sweeps that now test S1 are mine); R2 a
+lane card did not name the card trust, so a stale, future or partial card of a lane without a condition said "no
+wait over 30 min" (my static G-L map and my registered lane-card age observation of 19:35:33Z); R3 nothing bound a
+delivery to the exact view it read (S9). The JOIN card v0.2 checks that binding.
+
+v1.3 (2026-10-16, fable-5's own probe): an action record's checks was read as any text and echoed as ``ci_at_head``
+in the alert line, so a view record whose checks held a line break could add a forged line to a lane card and to the
+operator preview. S1 now requires the lane view's ``n/n`` form.
+
+v1.4 (2026-10-16, a design observation in RCO1's rerun of its line-safety harness on JOIN card v0.3): with one
+condition unknown on a current card (``wait_start_unknown``), the operator preview still printed "no new wait over 30
+min on a last open slot" before its UNKNOWN line, which could read as an all-clear. S4 now states that absence only
+when no condition is unknown and no new wait was carried; the lane cards already stated none then.
+
+v1.5 (2026-10-16, RCO1's static review of 650e8870 for Lead, answered 06:35:29Z; Lead record 3AFDDC5F): G1 a source
+complete through a time after now (even 2099) gave an affirmative NONE through that time; G2 the rows of a kind without
+a source gave OBSERVED, although S5 calls a kind without a source UNKNOWN; G3 a row after its own kind's
+complete-through time was accepted. N1 (my own, found while changing the S5 states test for G3): a NONE stated its
+absence through its source's complete-through time, although only rows at or before observed are checked, so with a
+matching row between the two it stated an absence that the document contradicts. None could change an alert. S5 now
+makes a document of G1, G2 or G3 unreadable, and a NONE states its absence through observed. A source may still be
+complete through a time after the view's as_of (a collector that ran later), never after the turn's clock.
+
+D14 (2026-10-19, fable-5, the REMEMBER lineage, which had v1.1 here): the card lineage's v1.5 (blob 9d459aeb70cd)
+with one CLI change and no semantics change (``SEMANTICS`` stays v1.5). v1.5 made the output's JSON text inside the
+exclusive open (F-2, DLV2), and the output holds the view's snapshot one level deeper than the view does, so the
+deepest view that the strict reader and the delivery accept left an EMPTY output file and a raw RecursionError
+(observed on synthetic views only, D14 red2; never on a real view). The whole text is now made, and encoded as UTF-8,
+before the output's directory or file exists; an output that cannot be made that way is refused with a fixed message
+(``UNWRITABLE``), and nothing is made. An OS error while the file is written can still leave a cut file, as before.
+
 usage: python -B sandbox/mind/join_card_delivery.py --view <lane-view.json> --receipts <receipts.json> --now <UTC>
-       [--notified <json list>] [--out <path under F:\\waggledance_memory\\sandbox>]
-The operator preview goes to stdout. ``--out`` writes the full output JSON and only under the sandbox data root.
+       [--notified <json list>] [--out <new file inside an existing .codex-audit directory>]
+The operator preview goes to stdout, read-only. ``--out`` also writes the full output JSON, only as a new file
+inside an existing ``.codex-audit`` directory, the nearest such ancestor of the path being its output root:
+there is no default root and no F: fallback, and a path outside one, a root that is not an existing directory
+and an existing file are refused before any read; the file is created exclusively, so nothing is ever replaced
+(F-2, RCO2 DLV2). Its whole text is made, and encoded as UTF-8, before its directory or file; an output that
+cannot be made that way is refused, and nothing is made (D14).
 """
 
 from __future__ import annotations
@@ -89,7 +151,7 @@ import lane_view as lv  # noqa: E402
 
 SCHEMA = "wd.mind-join-card-delivery.v1"
 RECEIPTS_SCHEMA = "wd.mind-delivery-receipts.v1"
-SEMANTICS = "join-card-delivery-semantics-v1.1"
+SEMANTICS = "join-card-delivery-semantics-v1.5"
 UNKNOWN = ws.UNKNOWN
 THRESHOLD = timedelta(minutes=30)
 CARD_MAX_AGE = ws.CONTEXT_MAX_AGE
@@ -98,10 +160,15 @@ KINDS = ("requested", "delivered", "read", "answered")
 HEAD = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[0-9A-Za-z:_-]{8,128}")
 IDENTITY = re.compile(r"[0-9a-f]{64}")
+CHECKS = re.compile(r"([1-9][0-9]{0,2})/\1")  # S1 (v1.3): the lane view's f"{count}/{count}" of an action record
 ROW_KEYS = frozenset({"kind", "lane", "pr", "head", "ref", "at_utc"})
 UNCHANGED_LIMIT = 8
 UNKNOWN_LIMIT = 5
-SANDBOX_ROOT = Path(r"F:\waggledance_memory\sandbox")
+AUDIT_DIR = ".codex-audit"  # an output only inside an existing directory of this name (F-2, DLV2)
+OUTSIDE = "the output path is not inside a .codex-audit directory"
+NOT_A_ROOT = "the output root is not an existing .codex-audit directory"
+EXISTING = "the output file already exists; nothing is replaced"
+UNWRITABLE = "the output cannot be written as UTF-8 JSON; nothing is written"  # D14: before any directory or file
 
 
 class DeliveryError(ValueError):
@@ -119,19 +186,20 @@ def _time(value: Any) -> datetime | None:
     return None if moment is None else moment.replace(microsecond=0)
 
 
-def read_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
+def read_receipts(receipts: Any, now: datetime) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
     """(rows, complete-through time per kind), or (None, None) when the document is unreadable as a whole.
 
     It never raises (S5): a value of an unexpected type anywhere makes the document unreadable, so a receipts
-    document can never remove an alert.
+    document can never remove an alert. ``now`` is the turn's clock, cut to whole seconds (S2); the document must
+    agree with it (S5 v1.5).
     """
     try:
-        return _parse_receipts(receipts)
+        return _parse_receipts(receipts, now)
     except (TypeError, ValueError, KeyError, AttributeError):
         return None, None
 
 
-def _parse_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
+def _parse_receipts(receipts: Any, now: datetime) -> tuple[list[dict[str, Any]] | None, dict[str, datetime] | None]:
     if not isinstance(receipts, Mapping) or set(receipts) != {"schema", "sources", "rows"} \
             or receipts["schema"] != RECEIPTS_SCHEMA:
         return None, None
@@ -160,7 +228,16 @@ def _parse_receipts(receipts: Any) -> tuple[list[dict[str, Any]] | None, dict[st
                 or not isinstance(row["ref"], str) or not REF.fullmatch(row["ref"]) or when is None:
             return None, None
         parsed.append(dict(row, at=when))
+    if not _consistent(parsed, through, now):
+        return None, None
     return parsed, through
+
+
+def _consistent(rows: list[dict[str, Any]], through: Mapping[str, datetime], now: datetime) -> bool:
+    """S5 (v1.5): no source is complete through a time after now, every row's kind has a source, and no row is after
+    its kind's complete-through time."""
+    return all(when <= now for when in through.values()) \
+        and all(row["kind"] in through and row["at"] <= through[row["kind"]] for row in rows)
 
 
 def receipt_states(rows: list[dict[str, Any]] | None, through: Mapping[str, datetime] | None, lane: str, pr: int,
@@ -179,8 +256,8 @@ def receipt_states(rows: list[dict[str, Any]] | None, through: Mapping[str, date
             states[kind] = {"state": UNKNOWN, "reason": "no_source"}
         elif through[kind] < observed:
             states[kind] = {"state": UNKNOWN, "reason": "source_coverage_short"}
-        else:
-            states[kind] = {"state": "NONE", "through_utc": lv.stamp(through[kind])}
+        else:  # S5 (v1.5): the absence is stated through observed, the time it was checked for
+            states[kind] = {"state": "NONE", "through_utc": lv.stamp(observed)}
     return states
 
 
@@ -195,27 +272,57 @@ def _card_trust(view: Mapping[str, Any], observed: datetime, now: datetime) -> s
     return None
 
 
+def view_digest(view: Any) -> str | None:
+    """S9 (v1.2): the sha256 of the view's canonical JSON (``lane_view.canonical``), or None when it has none."""
+    try:
+        return lv.sha256_text(lv.canonical(view))
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+def _pr_order(key: Any) -> tuple[int, str]:
+    """The PR order of a view key: ASCII digits by number, any other key first; it never raises (v1.2)."""
+    if isinstance(key, str) and key.isascii() and key.isdigit() and len(key) <= 18:
+        return int(key), key
+    return -1, str(key)
+
+
+def _condition(key: Any, record: Any) -> str | None:
+    """S1: the one empty slot of a wait condition, or None; a record that is not the lane view's refuses (v1.2)."""
+    if not isinstance(record, Mapping):
+        raise DeliveryError("a card record is not a lane view v1a record")
+    if record.get("state") != "action":
+        return None
+    slots, credited, pr, head = (record.get(name) for name in ("empty_slots", "credited", "pr", "github_head"))
+    if not isinstance(slots, list) or not slots \
+            or not all(isinstance(slot, str) and slot in lv.SLOT_OWNER for slot in slots) \
+            or not isinstance(credited, list) \
+            or not all(isinstance(vote, Mapping) and isinstance(vote.get("slot"), str) and vote["slot"] in lv.SLOT_OWNER
+                       and isinstance(vote.get("ref"), str) and REF.fullmatch(vote["ref"]) for vote in credited) \
+            or type(pr) is not int or str(pr) != key or not isinstance(head, str) or not HEAD.fullmatch(head) \
+            or not isinstance(record.get("branch"), str) or not isinstance(record.get("checks"), str) \
+            or not CHECKS.fullmatch(record["checks"]):
+        raise DeliveryError("a card record is not a lane view v1a action record")
+    return slots[0] if len(slots) == 1 else None
+
+
 def ledger_rows(view: Mapping[str, Any], receipts: Any, observed: datetime, now: datetime) -> list[dict[str, Any]]:
     """S1-S6: one ledger row per wait condition, in PR order."""
     trust = _card_trust(view, observed, now)
-    rows, through = read_receipts(receipts)
+    rows, through = read_receipts(receipts, now)
     ledger = []
-    for key in sorted(view["prs"], key=lambda text: int(text) if str(text).isdigit() else -1):
+    for key in sorted(view["prs"], key=_pr_order):
         record = view["prs"][key]
-        if not isinstance(record, Mapping) or record.get("state") != "action" \
-                or len(record.get("empty_slots") or []) != 1:
+        slot = _condition(key, record)
+        if slot is None:
             continue
-        slot = record["empty_slots"][0]
-        lane, pr, head = lv.SLOT_OWNER.get(slot), record.get("pr"), record.get("github_head")
-        if lane is None or type(pr) is not int or str(pr) != key or not isinstance(head, str) \
-                or not HEAD.fullmatch(head):
-            raise DeliveryError("a card record is not a lane view v1a action record")
+        lane, pr, head = lv.SLOT_OWNER[slot], record["pr"], record["github_head"]
         since = _time(record.get("waiting_since_utc"))
         row: dict[str, Any] = {
             "identity": identity(pr, head, slot, lane, lv.stamp(since)),
-            "pr": pr, "head": head, "slot": slot, "lane": lane, "branch": record.get("branch"),
-            "checks": record.get("checks"), "waiting_since_utc": lv.stamp(since), "observed_utc": lv.stamp(observed),
-            "credited": [{"slot": vote["slot"], "ref": vote["ref"]} for vote in record.get("credited") or []],
+            "pr": pr, "head": head, "slot": slot, "lane": lane, "branch": record["branch"],
+            "checks": record["checks"], "waiting_since_utc": lv.stamp(since), "observed_utc": lv.stamp(observed),
+            "credited": [{"slot": vote["slot"], "ref": vote["ref"]} for vote in record["credited"]],
         }
         if trust is not None:
             row.update(state="unknown", reason=trust)
@@ -259,11 +366,11 @@ def _size(lines: list[str]) -> int:
     return len(("\n".join(lines) + "\n").encode("utf-8"))
 
 
-def _card(lane: str, observed: str, coverage: str, fresh: list[dict[str, Any]], repeated: list[dict[str, Any]],
-          unknown: list[dict[str, Any]]) -> tuple[str, list[str], list[str]]:
+def _card(lane: str, observed: str, coverage: str, trust: str | None, fresh: list[dict[str, Any]],
+          repeated: list[dict[str, Any]], unknown: list[dict[str, Any]]) -> tuple[str, list[str], list[str]]:
     """One lane card within CARD_BYTES: (text, identities shown, identities carried to the next turn)."""
-    head = [f"HEAR {lane} as_of={observed} card_coverage={coverage}; observe-only, not a gate; check the canonical "
-            "tools before any vote"]
+    head = [f"HEAR {lane} as_of={observed} card_coverage={coverage} card_trust={trust or 'current'}; observe-only, "
+            "not a gate; check the canonical tools before any vote"]
     tail = []
     if repeated:
         cited = ",".join(f"pr{row['pr']}:{row['identity'][:12]}" for row in repeated[:UNCHANGED_LIMIT])
@@ -286,8 +393,9 @@ def _card(lane: str, observed: str, coverage: str, fresh: list[dict[str, Any]], 
     if carried:
         first = next(row for row in fresh if row["identity"] == carried[0])
         tail.append(f"CARRIED to next turn: {len(carried)} waits, first pr{first['pr']}:{first['identity'][:12]}")
-    if not body and not tail:
-        body.append("no wait over 30 min on a slot this lane owns")
+    if not body and not tail:  # S4 (v1.2): a card that is not current states no absence
+        body.append("no wait over 30 min on a slot this lane owns" if trust is None
+                    else f"no wait is stated for this lane: card_trust={trust}")
     text = "\n".join(head + body + tail) + "\n"
     if len(text.encode("utf-8")) > CARD_BYTES:
         raise DeliveryError("a lane card exceeds its size bound")
@@ -299,7 +407,9 @@ def deliver(view: Any, receipts: Any, *, now_utc: str, notified: Iterable[str] =
     now = _time(now_utc)
     if now is None:
         raise DeliveryError("an explicit now_utc is required")
-    if not isinstance(view, Mapping) or view.get("schema") != lv.SCHEMA or not isinstance(view.get("prs"), Mapping):
+    digest = view_digest(view)
+    if digest is None or not isinstance(view, Mapping) or view.get("schema") != lv.SCHEMA \
+            or not isinstance(view.get("prs"), Mapping):
         raise DeliveryError("the card is not a lane view v1a")
     observed = _time(view.get("as_of_utc"))
     if observed is None:
@@ -320,7 +430,7 @@ def deliver(view: Any, receipts: Any, *, now_utc: str, notified: Iterable[str] =
         fresh = [row for row in mine if row["state"] == "alert" and row["identity"] not in prior_set]
         repeated = [row for row in mine if row["state"] == "alert" and row["identity"] in prior_set]
         unknown = [row for row in mine if row["state"] == "unknown"]
-        text, lane_shown, lane_carried = _card(lane, lv.stamp(observed), coverage, fresh, repeated, unknown)
+        text, lane_shown, lane_carried = _card(lane, lv.stamp(observed), coverage, trust, fresh, repeated, unknown)
         lanes[lane] = text
         shown += lane_shown
         carried += lane_carried
@@ -338,8 +448,8 @@ def deliver(view: Any, receipts: Any, *, now_utc: str, notified: Iterable[str] =
         "schema": SCHEMA, "semantics": SEMANTICS, "authority": "none", "scope": "observe_only_not_gate",
         "observed_utc": lv.stamp(observed), "now_utc": lv.stamp(now), "card_trust": trust or "current",
         "card": {"schema": view.get("schema"), "as_of_utc": view.get("as_of_utc"), "coverage": coverage,
-                 "snapshot": view.get("snapshot")},
-        "receipts_readable": read_receipts(receipts)[0] is not None,
+                 "snapshot": view.get("snapshot"), "view_canonical_sha256": digest},
+        "receipts_readable": read_receipts(receipts, now)[0] is not None,
         "ledger": ledger, "operator_lines": operator, "lanes": lanes,
         "notified": notified_after(prior_set, shown, [row["identity"] for row in ledger if row["state"] == "alert"]),
         "counts": counts,
@@ -351,12 +461,22 @@ def deliver(view: Any, receipts: Any, *, now_utc: str, notified: Iterable[str] =
     return out
 
 
+def _preview_absence(out: Mapping[str, Any], unknown: list[Mapping[str, Any]]) -> list[str]:
+    """S4: what a preview without an alert line states. A card that is not current states no absence (v1.2); a
+    current one states it only when no condition is unknown and no new wait was carried (v1.4)."""
+    if out["card_trust"] != "current":
+        return [f"no wait is stated: card_trust={out['card_trust']}"]
+    if unknown or out["counts"]["carried"]:
+        return []
+    return ["no new wait over 30 min on a last open slot"]
+
+
 def operator_preview(out: Mapping[str, Any]) -> str:
     counts = out["counts"]
     lines = [f"JOIN-card delivery preview as_of={out['observed_utc']} now={out['now_utc']} "
              f"card_trust={out['card_trust']}; observe-only, nothing was sent"]
-    lines += out["operator_lines"] or ["no new wait over 30 min on a last open slot"]
     unknown = [row for row in out["ledger"] if row["state"] == "unknown"]
+    lines += out["operator_lines"] or _preview_absence(out, unknown)
     if unknown:
         cited = ";".join(f"pr{row['pr']} head={row['head'][:12]} slot={row['slot']} lane={row['lane']} "
                          f"reason={row['reason']}" for row in unknown[:UNKNOWN_LIMIT])
@@ -384,8 +504,22 @@ def _no_constant(name: str) -> Any:
 
 
 def _load(path: Path) -> Any:
-    """Strict JSON (F2): a duplicate key, NaN or Infinity, a byte order mark or bytes that are not UTF-8 raise."""
+    """Strict JSON (F2): a duplicate key, NaN or Infinity, a byte order mark, bytes that are not UTF-8 or (v1.2)
+    nesting too deep to parse (RecursionError) raise."""
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object, parse_constant=_no_constant)
+
+
+def output_refusal(out: Path) -> str | None:
+    """Why ``out`` is refused as an output path, or None (F-2, RCO2 DLV2; ``join_turn`` uses this same check): the
+    nearest ancestor of its resolved path named ``.codex-audit`` is the output root and must be an existing directory.
+    There is no default root and no F: fallback; the check reads no file and runs before any read or write."""
+    target = Path(out).resolve()
+    roots = [parent for parent in target.parents if parent.name == AUDIT_DIR]
+    if not roots:
+        return OUTSIDE
+    if not roots[0].is_dir():
+        return NOT_A_ROOT
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -396,19 +530,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notified", type=Path)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
-    if args.out is not None:
-        resolved = args.out.resolve()
-        if SANDBOX_ROOT.resolve() not in resolved.parents:
-            print("refused: --out must be under the sandbox data root", file=sys.stderr)
+    if args.out is not None:  # admitted before any read, and an existing file is never replaced (F-2, DLV2)
+        refusal = output_refusal(args.out) or (EXISTING if args.out.exists() else None)
+        if refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
             return 2
     try:
         view, notified = _load(args.view), (_load(args.notified) if args.notified else ())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         print("refused: the view or notified file is not strict UTF-8 JSON", file=sys.stderr)
         return 2
     try:
         receipts = _load(args.receipts)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         receipts = None  # S5: an unreadable receipts document describes nothing and never removes an alert
     try:
         out = deliver(view, receipts, now_utc=args.now, notified=notified)
@@ -417,8 +551,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refused: {error}", file=sys.stderr)
         return 2
     if args.out is not None:
+        try:  # D14: the whole text exists, and encodes as UTF-8, before the output's directory or file does
+            text = json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+            text.encode("utf-8")
+        except (RecursionError, ValueError):  # nested too deeply to write, or text that is not UTF-8
+            print(f"refused: {UNWRITABLE}", file=sys.stderr)
+            return 2
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        try:
+            with args.out.open("x", encoding="utf-8") as handle:  # exclusive: a file made meanwhile stays
+                handle.write(text)
+        except FileExistsError:
+            print(f"refused: {EXISTING}", file=sys.stderr)
+            return 2
     sys.stdout.write(preview)
     return 0
 

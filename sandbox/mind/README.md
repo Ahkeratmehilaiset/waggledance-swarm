@@ -63,5 +63,7 @@ module here, by AST only, with no import and no execution: `json` (a JSON read w
 `dollar` (a pattern ending in `$` used with `match` or `search`), `prefix` (a pattern with no end anchor used with
 `match`), `int` (`isinstance(x, int)` with no bool exclusion beside it) and `write` (an overwriting write). A file
 that gains an instance fails the test. A file that loses one fails it too, until `ALLOWED` is lowered in the same
-change, so the numbers only go down. `python -B -I sandbox/mind/integrity_ratchet.py` prints the current numbers,
-and `--hits` prints the line of each instance.
+change. The test compares a tree only with its own `ALLOWED`, so a change that raises a count and `ALLOWED` together
+passes it: that the numbers only go down over the history is a review rule for every change to `ALLOWED`, not
+something the test proves (Lead's D13 reconciliation). `python -B -I sandbox/mind/integrity_ratchet.py` prints the
+current numbers, and `--hits` prints the line of each instance.

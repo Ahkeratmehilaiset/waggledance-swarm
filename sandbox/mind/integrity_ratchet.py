@@ -2,8 +2,10 @@
 not independent for it). It counts five known bug classes in every non-test module under sandbox/mind, by AST only:
 each file is parsed, never imported or run, and only the standard library is used. ``test_integrity_ratchet.py``
 holds this tree's counts in ``ALLOWED``. A file that gains an instance fails that test (a new bug of a known kind),
-and so does a file that loses one (``ALLOWED`` is lowered in the same change), so the numbers only go down while the
-classes are fixed one change at a time.
+and so does a file that loses one (``ALLOWED`` is lowered in the same change). The test compares a tree only with
+its own ``ALLOWED``, so a change that raises a count and ``ALLOWED`` together passes it: that the numbers only go
+down over the history is a review rule for every change to ``ALLOWED`` (Lead's D13 reconciliation), not a property
+of this test.
 
 The classes come from RCO1's rounds R1, R2 and R5 (see ``CLASSES``). Unlike RCO1's draft, a bool exclusion of the
 same subject in the same and/or chain is seen (four of the seven int checks in this tree have one), a pattern ending

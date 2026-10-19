@@ -1,7 +1,9 @@
 """Tests for the integrity ratchet (RCO1's R8 proposal; fable-5 adopted, built and decided it, so RCO1 is not
 independent for it), written BEFORE the code. ``integrity_ratchet.py`` counts five known bug classes in the non-test
 modules of sandbox/mind by AST only. The cases pin each class's own shapes and its look-alikes; the last test holds
-this tree's counts in ALLOWED, and a count may only go down.
+this tree's counts in ALLOWED. It compares the tree only with this ALLOWED, so a raised count passes with a raised
+ALLOWED in the same change: keeping the counts going down is a review rule for every change to ALLOWED, not
+something this test can see (Lead's D13 reconciliation).
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
      sandbox/mind/test_integrity_ratchet.py
@@ -29,7 +31,6 @@ ALLOWED: dict[str, dict[str, int]] = {
     "hexmind/bakeoff_v2.py": {"json": 2, "write": 1},
     "hexmind/capacity_axis.py": {"json": 1, "write": 1},
     "hexmind/hex_memory.py": {"json": 2, "write": 2},
-    "join_card_delivery.py": {"write": 1},
     "learn_step.py": {"json": 4},
     "lesson_cards.py": {"dollar": 1},
     "measure_answers.py": {"json": 2, "write": 1},

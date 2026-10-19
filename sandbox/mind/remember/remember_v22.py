@@ -56,7 +56,6 @@ first.
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -139,7 +138,6 @@ class RememberV22(v21.RememberV21):
     def _listed(self, situation: str, situation_time_utc: str, queries: Sequence[str]) -> dict[str, Any]:
         """v2's pool and v2.1's fenced groups (``remember_v2.py`` ``shortlist`` up to ``topic_groups``, verbatim), then
         the topics, skip not break, then their hidden opponents."""
-        started = time.perf_counter()
         index, telemetry = self.applicable(situation, situation_time_utc)
         if index is None:
             return {"status": "REFUSED", "reason": telemetry, "lines": []}
@@ -179,7 +177,7 @@ class RememberV22(v21.RememberV21):
         telemetry = dict(telemetry, union=int(member.sum()), groups=len(groups),
                          grouped_records=int(sum(len(group["members"]) for group in groups)),
                          withheld_by_guard=withheld, skipped_groups=skipped, **counts, may_oppose_pairs=pairs,
-                         line_bytes=rendered_bytes(card), ms=round((time.perf_counter() - started) * 1000, 1))
+                         line_bytes=rendered_bytes(card))  # D12: no clock reading
         return {"status": "LISTED" if card else "EMPTY", "reason": None if card else "nothing_listable",
                 "lines": card, "telemetry": telemetry}
 
@@ -294,7 +292,7 @@ class RememberV22(v21.RememberV21):
         trusted = not UNTRUSTED & set(self._fence_groups[number - 1]["marks"][row["id"]])
         return (v21._utc(row["claimed"]) if trusted else available), available, row["id"]
 
-    def _answer(self, status, reason, results, telemetry, started) -> dict[str, Any]:
-        out = super()._answer(status, reason, results, telemetry, started)
+    def _answer(self, status, reason, results, telemetry) -> dict[str, Any]:
+        out = super()._answer(status, reason, results, telemetry)
         out["version"] = VERSION
         return out

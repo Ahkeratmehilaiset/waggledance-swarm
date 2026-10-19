@@ -65,10 +65,14 @@ evaluated. It loads one engine.
 
 ## Finding while testing
 
-- **Shortlist rows carry wall-clock telemetry:** each row holds `telemetry.ms`, in the frozen code too.
-- **So bytes are not reproducible:** two otherwise identical runs differ in bytes.
-- **What the equality tests do:** they drop exactly that field, and they compare the judge input byte for byte.
-- **Why it matters:** any run-reproducibility check of the shortlist file must allow for this field.
+- **Shortlist rows carried wall-clock telemetry:** each row held `telemetry.ms`, and so did every answer.
+- **So bytes were not reproducible:** two otherwise identical runs differed in bytes.
+- **What the equality tests did:** they dropped exactly that field, and they compared the judge input byte for byte.
+- **Fixed in D12** (`sandbox/mind-remember-no-clock-fable5-20261019`): no shortlist or answer holds a clock reading
+  any more, and the equality tests compare the shortlist files byte for byte. `test_no_clock.py` holds every engine
+  (v2, v3, v2.1, v2.2, v2.3) to the same bytes whatever the clocks read.
+- **Why it still matters:** revisions before D12, among them the frozen run's and the selected Q4 revision, still
+  write `telemetry.ms`, so a run-reproducibility check of their files must still allow for this field.
 
 ## What this does NOT do
 
@@ -93,7 +97,7 @@ evaluated. It loads one engine.
   - the refusal order (mode before any read or load);
   - one engine load;
   - no gate and no rewrite query;
-  - equality with the default run's situation arm, without `telemetry.ms`;
+  - byte equality with the default run's situation arm (before D12: equality without `telemetry.ms`);
   - compose binding traps: side picks, no picks, no manifest, edited shortlists, edited blind, other memory and
     other contract;
   - the default run's file set and manifest keys.

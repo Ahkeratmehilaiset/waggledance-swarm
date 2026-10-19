@@ -8,7 +8,6 @@ import hashlib
 import json
 import re
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -574,7 +573,7 @@ def test_a_guarded_case_id_is_refused_before_anything_is_rendered(memory_dir):
 
 def test_an_answer_that_would_hold_a_guarded_word_is_refused_not_raised(memory_dir):
     e = engine(memory_dir)
-    out = e._answer("ANSWER", None, [{"ref": f"x-{GUARDED.lower()}.md"}], {}, time.perf_counter())
+    out = e._answer("ANSWER", None, [{"ref": f"x-{GUARDED.lower()}.md"}], {})
     assert out["status"] == "REFUSED" and out["reason"] == "output_guarded" and out["results"] == []
     assert out["abstain"] is False and no_guarded_word(out)
 
@@ -676,14 +675,6 @@ def files_in(out):
     return {path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file()}
 
 
-def untimed(path):
-    """The shortlist rows without telemetry.ms, the wall-clock field in which two identical runs may differ."""
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    for row in rows:
-        row["listed"]["telemetry"].pop("ms")
-    return rows
-
-
 def test_situation_writes_three_files_and_never_runs_the_gate_or_a_rewrite(tmp_path, monkeypatch):
     memory = build(tmp_path / "m", t2.records())
     spies = []
@@ -710,7 +701,7 @@ def test_situation_writes_three_files_and_never_runs_the_gate_or_a_rewrite(tmp_p
     rewrites.write_text(json.dumps({"rewrites": [{"id": "A", "line": "json escaped marker decoded"},
                                                  {"id": "B", "line": "lattice gauge"}]}), encoding="utf-8")
     assert rv.main(["shortlists", "--memory", str(memory), "--rewrites", str(rewrites), "--out", str(full)]) == 0
-    assert untimed(out / "v2a" / "shortlists.jsonl") == untimed(full / "v2a" / "shortlists.jsonl")
+    assert (out / "v2a" / "shortlists.jsonl").read_bytes() == (full / "v2a" / "shortlists.jsonl").read_bytes()  # D12
     assert (out / "v2a" / "judge-input.md").read_bytes() == (full / "v2a" / "judge-input.md").read_bytes()
 
 

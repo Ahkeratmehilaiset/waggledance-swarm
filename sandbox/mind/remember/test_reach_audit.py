@@ -195,10 +195,6 @@ def row_of(report, ref):
     return next(row for row in report["rows"] if row["ref"] == ref)
 
 
-def without_ms(listed):
-    return dict(listed, telemetry={key: value for key, value in (listed.get("telemetry") or {}).items() if key != "ms"})
-
-
 # --- the probe -----------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
@@ -280,8 +276,7 @@ def test_the_masked_view_equals_a_memory_rebuilt_without_the_probe(memory, arm):
         assert np.array_equal(view.lexical.scores(situation), other.lexical.scores(situation))
         assert np.array_equal(view._self_matches(situation), other._self_matches(situation))
     make = ra.ENGINES[arm][0]
-    assert without_ms(make(view).shortlist(PROBE, WHEN, [PROBE])) == without_ms(make(other).shortlist(PROBE, WHEN,
-                                                                                                    [PROBE]))
+    assert make(view).shortlist(PROBE, WHEN, [PROBE]) == make(other).shortlist(PROBE, WHEN, [PROBE])  # D12: no clock
 
 
 def test_the_retained_w_row_is_kept_when_the_window_sees_the_same_text(memory):

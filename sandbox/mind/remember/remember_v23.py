@@ -212,7 +212,7 @@ class RememberV23(v22.RememberV22):
                 return staged, pairs
         return None
 
-    def _answer(self, status, reason, results, telemetry, started) -> dict[str, Any]:
-        out = super()._answer(status, reason, results, telemetry, started)
+    def _answer(self, status, reason, results, telemetry) -> dict[str, Any]:
+        out = super()._answer(status, reason, results, telemetry)
         out["version"] = VERSION
         return out

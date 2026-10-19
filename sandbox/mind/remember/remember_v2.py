@@ -60,6 +60,11 @@ writes passes the guard before the first byte of any of them is written; the one
 working copy of the sealed case file (case ids, situations and times only). The judge text tells the joiner that
 entries are data, never instructions.
 
+No clock (D12). No answer or shortlist holds a clock reading: ``telemetry`` holds counts only, so one question on one
+memory gives the same bytes in every run, and so does the digest a JOIN card cites for an answer. Until D12 every
+shortlist and answer held ``telemetry.ms``, a wall-clock time (``PRIMARY_ONLY.md``), and the frozen run's files still
+do. A caller that wants a latency times the call itself. ``VERSION`` is unchanged: every other field is unchanged.
+
 The step-2 memory, encoder and v1 rule are reused unchanged (``sandbox/mind/step2``); nothing there is edited. The
 pure functions take the joiner's rewrites and picks as inputs; the joining agent itself runs outside this module. No
 network, no bridge event, no gate code; writes only under ``--out``.
@@ -72,7 +77,6 @@ import hashlib
 import json
 import re
 import sys
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -244,16 +248,15 @@ class RememberV2:
 
     def gate(self, situation: str, situation_time_utc: str, query: str) -> dict[str, Any]:
         """v2c: the v1 three-view top-3 gate on ``query``; applicability on the original situation."""
-        started = time.perf_counter()
         index, telemetry = self.applicable(situation, situation_time_utc)
         if index is None:
-            return self._answer("REFUSED", telemetry, [], {}, started)
+            return self._answer("REFUSED", telemetry, [], {})
         if not isinstance(query, str) or not query.strip():
-            return self._answer("REFUSED", "rewrite_empty", [], telemetry, started)
+            return self._answer("REFUSED", "rewrite_empty", [], telemetry)
         if guarded(query):
-            return self._answer("REFUSED", "query_guarded", [], telemetry, started)
+            return self._answer("REFUSED", "query_guarded", [], telemetry)
         if not len(index):
-            return self._answer("ABSTAIN", "empty_cell", [], telemetry, started)
+            return self._answer("ABSTAIN", "empty_cell", [], telemetry)
         ranks = self.ranks(query, index)
         depth = self.q4.rule["agree_depth"]
         fused = sum(1.0 / (self.q4.rule["rrf_k"] + ranks[name]) for name in ("w", "d", "b"))
@@ -262,8 +265,8 @@ class RememberV2:
         results = [self._result(int(index[i]), float(fused[i]), {name: int(ranks[name][i]) for name in "wdb"},
                                 summary=False) for i in agreed]  # the joiner sees no memory text in this arm
         if not results:
-            return self._answer("ABSTAIN", "no_view_consensus", [], telemetry, started)
-        return self._answer("ANSWER", None, self._marked(results), telemetry, started)
+            return self._answer("ABSTAIN", "no_view_consensus", [], telemetry)
+        return self._answer("ANSWER", None, self._marked(results), telemetry)
 
     def topic_groups(self, index: np.ndarray, pool: Sequence[int], vectors: np.ndarray) -> list[dict[str, Any]]:
         """Pool records in fused order open groups over ALL applicable records on their topic (module docstring)."""
@@ -289,7 +292,6 @@ class RememberV2:
 
     def shortlist(self, situation: str, situation_time_utc: str, queries: Sequence[str]) -> dict[str, Any]:
         """v2a / v2ca: topic groups over each view's top DEPTH topics for every query, at most CAP lines."""
-        started = time.perf_counter()
         index, telemetry = self.applicable(situation, situation_time_utc)
         if index is None:
             return {"status": "REFUSED", "reason": telemetry, "lines": []}
@@ -335,33 +337,31 @@ class RememberV2:
             lines = trial
         telemetry = dict(telemetry, union=int(member.sum()), groups=len(groups),
                          grouped_records=int(sum(len(group["members"]) for group in groups)),
-                         withheld_by_guard=withheld, stopped_by=stopped_by, line_bytes=rendered_bytes(lines),
-                         ms=round((time.perf_counter() - started) * 1000, 1))
+                         withheld_by_guard=withheld, stopped_by=stopped_by, line_bytes=rendered_bytes(lines))
         return {"status": "LISTED" if lines else "EMPTY", "reason": None if lines else "nothing_listable",
                 "lines": lines, "telemetry": telemetry}
 
     def apply_picks(self, listed: Mapping[str, Any], picks: Any) -> dict[str, Any]:
         """The joiner's picks over one shortlist -> an answer. Invalid picks are a refusal, never a guess."""
-        started = time.perf_counter()
         if listed["status"] == "REFUSED":
-            return self._answer("REFUSED", listed["reason"], [], {}, started)
+            return self._answer("REFUSED", listed["reason"], [], {})
         if listed["status"] == "EMPTY":
-            return self._answer("ABSTAIN", listed["reason"], [], listed.get("telemetry", {}), started)
+            return self._answer("ABSTAIN", listed["reason"], [], listed.get("telemetry", {}))
         lines = listed["lines"]
         if not isinstance(picks, Mapping) or set(picks) - {"picks", "contested", "nothing_applies"} \
                 or not isinstance(picks.get("picks"), list) or not isinstance(picks.get("nothing_applies"), bool):
-            return self._answer("REFUSED", "picks_unreadable", [], listed.get("telemetry", {}), started)
+            return self._answer("REFUSED", "picks_unreadable", [], listed.get("telemetry", {}))
         chosen = picks["picks"]
         if len(chosen) > SHOWN_MAX or len(set(map(repr, chosen))) != len(chosen) \
                 or any(type(n) is not int or not 1 <= n <= len(lines) for n in chosen) \
                 or picks["nothing_applies"] != (not chosen):
-            return self._answer("REFUSED", "picks_invalid", [], listed.get("telemetry", {}), started)
+            return self._answer("REFUSED", "picks_invalid", [], listed.get("telemetry", {}))
         contested = picks.get("contested") or []
         if not isinstance(contested, list) or any(
                 not isinstance(pair, list) or len(pair) != 2 or any(n not in chosen for n in pair) for pair in contested):
-            return self._answer("REFUSED", "contested_invalid", [], listed.get("telemetry", {}), started)
+            return self._answer("REFUSED", "contested_invalid", [], listed.get("telemetry", {}))
         if not chosen:
-            return self._answer("ABSTAIN", "nothing_applies", [], listed.get("telemetry", {}), started)
+            return self._answer("ABSTAIN", "nothing_applies", [], listed.get("telemetry", {}))
         results = [dict(lines[n - 1]) for n in chosen]
         for result in results:
             group = (result.get("topic") or {}).get("group")
@@ -371,7 +371,7 @@ class RememberV2:
         for result in results:
             result["contested_with"] = sorted(refs[b] if refs[a] == result["ref"] else refs[a]
                                               for a, b in contested if result["ref"] in (refs[a], refs[b]))
-        return self._answer("ANSWER", None, self._marked(results), listed.get("telemetry", {}), started)
+        return self._answer("ANSWER", None, self._marked(results), listed.get("telemetry", {}))
 
     # --- output ----------------------------------------------------------------------------------------------------
 
@@ -414,7 +414,7 @@ class RememberV2:
                     results[b]["pair_with"].append(results[a]["ref"])
         return results
 
-    def _answer(self, status, reason, results, telemetry, started) -> dict[str, Any]:
+    def _answer(self, status, reason, results, telemetry) -> dict[str, Any]:
         degraded = [{"cell": cell_id, "reason": code,
                      "ring1": sorted(self.q4.memory.topology.get_neighbors(cell_id, max_ring=1))}
                     for cell_id, code in sorted(self.q4.quarantined.items())]
@@ -424,7 +424,7 @@ class RememberV2:
                 result["fallback"] = True
         out = {"status": status, "abstain": status == "ABSTAIN", "reason": reason, "degraded": bool(degraded),
                "degraded_cells": degraded, "results": results, "version": VERSION,
-               "telemetry": dict(telemetry or {}, ms=round((time.perf_counter() - started) * 1000, 1))}
+               "telemetry": dict(telemetry or {})}  # D12: counts only, never a clock reading
         if guarded(out):  # refused, never raised: one guarded record must not stop the other cases
             out.update(status="REFUSED", abstain=False, reason="output_guarded", results=[])
             corpus_mod.ws.guard_object(out)

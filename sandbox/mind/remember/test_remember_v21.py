@@ -450,14 +450,6 @@ def load_fake(memory_dir, arm):
     return r21.RememberV21(q4(memory_dir), arm)
 
 
-def untimed(path):
-    """The shortlist rows without telemetry.ms, the wall-clock field in which two identical runs may differ."""
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    for row in rows:
-        row["listed"]["telemetry"].pop("ms")
-    return rows
-
-
 def test_v21_situation_loads_only_the_situation_arm_and_writes_three_files(pair_memory, tmp_path):
     out = blind_run(tmp_path, "situation")
     loaded = []
@@ -479,7 +471,7 @@ def test_v21_situation_loads_only_the_situation_arm_and_writes_three_files(pair_
     rewrites.write_text(json.dumps({"rewrites": [{"id": "C1", "line": "retry the whole call on transient errors"}]}),
                         encoding="utf-8")
     assert r21.cmd_shortlists(argparse.Namespace(memory=pair_memory, rewrites=rewrites, out=full), load=load) == 0
-    assert untimed(out / "v21a" / "shortlists.jsonl") == untimed(full / "v21a" / "shortlists.jsonl")
+    assert (out / "v21a" / "shortlists.jsonl").read_bytes() == (full / "v21a" / "shortlists.jsonl").read_bytes()  # D12
     assert (out / "v21a" / "judge-input.md").read_bytes() == (full / "v21a" / "judge-input.md").read_bytes()
 
 

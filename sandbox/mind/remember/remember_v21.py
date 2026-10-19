@@ -668,8 +668,8 @@ class RememberV21(v3.RememberV3):
                 out.update(status="REFUSED", abstain=False, reason="output_guarded", results=[])
         return out
 
-    def _answer(self, status, reason, results, telemetry, started) -> dict[str, Any]:
-        out = super()._answer(status, reason, results, telemetry, started)
+    def _answer(self, status, reason, results, telemetry) -> dict[str, Any]:
+        out = super()._answer(status, reason, results, telemetry)
         out["version"], out["arm"] = VERSION, self.arm
         return out
 

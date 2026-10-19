@@ -40,7 +40,12 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 FIXED_FILES = ("capture.json", "state.json", "detail-manifest.txt",
                "run/reflected.publication.json", "run/board.txt", "run/receipt.json")
 GITHUB_FILES = ("context.json", "observed-status.json", "gh-pr-list.json", "gh-open-status.json")
-FROZEN_JSON_FILES = ("capture.json", "run/reflected.publication.json", "context.json")
+# The committed pointer names each GitHub file by a (file, sha256) key pair, both null or both set.
+GITHUB_POINTER = {"context.json": ("context_file", "context_sha256"),
+                  "observed-status.json": ("status_file", "status_sha256"),
+                  "gh-pr-list.json": ("pr_list_file", "pr_list_sha256"),
+                  "gh-open-status.json": ("open_status_file", "open_status_sha256")}
+FROZEN_JSON_FILES = ("capture.json", "run/reflected.publication.json", *GITHUB_FILES)
 LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 
 
@@ -194,19 +199,22 @@ def _gather(live):
         if ok.get(key) != f"cycles/{cycle}/{name}":
             raise ChainRefusal("cycle_path")
     names = list(FIXED_FILES)
-    if ok.get("context_file") is None:
-        if ok.get("context_sha256") is not None:
-            raise ChainRefusal("context_binding")
-    else:
-        if ok["context_file"] != f"cycles/{cycle}/context.json" or not isinstance(ok.get("context_sha256"), str):
-            raise ChainRefusal("context_binding")
-        names.append("context.json")
+    for name, (file_key, sha_key) in GITHUB_POINTER.items():
+        reason = "context_binding" if name == "context.json" else "github_binding"
+        if ok.get(file_key) is None:
+            if ok.get(sha_key) is not None:
+                raise ChainRefusal(reason)
+        else:
+            if ok[file_key] != f"cycles/{cycle}/{name}" or not isinstance(ok.get(sha_key), str):
+                raise ChainRefusal(reason)
+            names.append(name)
     folder = live / "cycles" / cycle
     files = {name: _read(folder / name) for name in names}
     for name, key, reason in (("capture.json", "capture_sha256", "capture_digest"),
                               ("state.json", "state_sha256", "state_digest"),
                               ("run/board.txt", "board_text_sha256", "board_digest"),
-                              ("context.json", "context_sha256", "context_digest")):
+                              *((name, sha_key, "context_digest" if name == "context.json" else "github_digest")
+                                for name, (_, sha_key) in GITHUB_POINTER.items())):
         if name in files and _sha(files[name]) != ok.get(key):
             raise ChainRefusal(reason)
     parsed = {name: _json(raw) for name, raw in files.items() if name.endswith(".json")}
@@ -229,8 +237,11 @@ def _gather(live):
 def freeze_committed_cycle(live_root, frozen_root):
     """Transport-only immutable copy, rechecked against the committed pointer.
 
-    Each JSON object uses ASCII keys and strict JSON. Missing GitHub raw files
-    remain explicit nulls; context alone never becomes complete GitHub evidence.
+    Each JSON object uses ASCII keys and strict JSON. Each GitHub file the
+    pointer binds is copied byte-exact (the lane view links the raw gh list
+    digests) and listed for the loader; an unbound one stays an explicit null,
+    so a partial capture loads as no GitHub. github_complete stays false: the
+    transport never certifies GitHub completeness or currency; the view does.
     Nothing imports the core gate/classifier or runs a producer or JOIN here.
     """
     live = _root(live_root, exists=True)
@@ -248,7 +259,7 @@ def freeze_committed_cycle(live_root, frozen_root):
     for name in GITHUB_FILES:
         manifest_files.setdefault(name, None)
     manifest = {"schema": "wd.mind-frozen-cycles.v1", "cycles": [{"cycle": cycle, "files": manifest_files}]}
-    bound_names = ("capture.json", "state.json", "run/board.txt", "context.json")
+    bound_names = ("capture.json", "state.json", "run/board.txt", *GITHUB_FILES)
     binding = {"schema": "wd.mind-chain-transport.v1", "authority": "none",
                "scope": "transport_seals_not_join_validation", "join_validated": False,
                "latest_sha256": _sha(pointer), "cycle": cycle,
@@ -331,6 +342,7 @@ def join_frozen_cycle(frozen_root, *, expected_binding_sha256, lanes=LANES):
 
     The supplied digest is correlation, not authentication or task authority.
     The actual loader validates the core publication and capture event bodies.
+    A usable GitHub view needs all four pointer-bound GitHub files frozen.
     State/window/receipt/detail are observed transport bytes, never JOIN inputs.
     No F: default, write_turn, bridge write, clock, producer or memory call.
     """
@@ -352,9 +364,10 @@ def join_frozen_cycle(frozen_root, *, expected_binding_sha256, lanes=LANES):
             or len(set(lanes)) != len(lanes):
         raise ChainRefusal("lanes")
     observed = binding.get("observed_file_sha256")
-    if not isinstance(observed, dict) or set(observed) not in (
-            set(FIXED_FILES), set(FIXED_FILES) | {"context.json"}):
+    if not isinstance(observed, dict) or not set(FIXED_FILES) <= set(observed) \
+            or not set(observed) - set(FIXED_FILES) <= set(GITHUB_FILES):
         raise ChainRefusal("observation_seals")
+    github_frozen = set(GITHUB_FILES) <= set(observed)  # only then may the view use GitHub
     before = {name: _read(root / cycle / name) for name in observed}
     if any(_sha(raw) != observed[name] for name, raw in before.items()):
         raise ChainRefusal("frozen_changed")
@@ -382,12 +395,13 @@ def join_frozen_cycle(frozen_root, *, expected_binding_sha256, lanes=LANES):
                                     envelope=None, receipts=None)
             raw = turn["card"].encode("utf-8")
             view = turn["view"]
+            usable = view["github"].get("usable")
             if len(raw) > 2048 or view["authority"] != "none" or view["coverage"] != "UNKNOWN" \
-                    or view["github"].get("usable") is not False:
+                    or type(usable) is not bool or (usable and not github_frozen):
                 raise ChainRefusal("join_invariant")
             _privacy([raw])
             cards.append({"lane": lane, "text": turn["card"], "bytes": len(raw), "sha256": _sha(raw),
-                          "coverage": view["coverage"], "github_usable": False, "as_of_utc": turn["as_of_utc"]})
+                          "coverage": view["coverage"], "github_usable": usable, "as_of_utc": turn["as_of_utc"]})
     except ChainRefusal:
         raise
     except Exception:

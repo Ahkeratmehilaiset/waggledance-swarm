@@ -315,6 +315,35 @@ def test_d21_corpus_an_output_another_writer_makes_before_the_rename_is_kept_and
     assert tree(out_dir) == {"theirs.txt": b"another writer's build"} and listing(out_dir.parent) == ["corpus"]
 
 
+@pytest.mark.parametrize("rename", ["native", "posix_enotdir"])
+def test_d21_corpus_a_file_another_writer_makes_before_the_rename_is_kept_and_the_build_refused(tmp_path, monkeypatch,
+                                                                                                rename):
+    """D21.1: a FILE at the output name before the rename. Windows refuses the directory rename with FileExistsError;
+    Linux rename(2) refuses a directory onto an existing non-directory with ENOTDIR, simulated here on every platform.
+    Both are output_exists, and the file is kept."""
+    lessons, capture = inputs(tmp_path)
+    out_dir = tmp_path / "deeper" / "corpus"
+    real_fsync, real_rename, synced = os.fsync, os.rename, []
+
+    def fsync_then_race(fd):
+        real_fsync(fd)
+        synced.append(fd)
+        if len(synced) == 2:
+            out_dir.write_bytes(b"another writer's file")
+
+    def posix_rename(source, target, *args, **kwargs):
+        if os.path.isdir(source) and os.path.lexists(target) and not os.path.isdir(target):
+            raise NotADirectoryError(errno.ENOTDIR, "simulated POSIX rename of a directory onto a non-directory")
+        return real_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", fsync_then_race)
+    if rename == "posix_enotdir":
+        monkeypatch.setattr(os, "rename", posix_rename)
+    with pytest.raises(corpus_mod.CorpusError, match=r"\Aoutput_exists\Z"):
+        build_corpus(lessons, capture, out_dir)
+    assert out_dir.read_bytes() == b"another writer's file" and listing(out_dir.parent) == ["corpus"]
+
+
 def test_d21_corpus_a_staging_name_collision_is_never_used_or_removed(tmp_path, monkeypatch):
     lessons, capture = inputs(tmp_path)
     out_dir = tmp_path / "deeper" / "corpus"

@@ -222,11 +222,13 @@ def publish_new(out_dir, files, error):
     ``out_dir`` raises ``error("output_exists")`` and is never replaced or written into; any other OS failure raises
     ``error("output_unwritten")``. Each file is created exclusively in a fresh sibling staging directory
     ``.<name>.staging-<16 random hex>``, written, flushed, synced, closed and read back, and only then is the staging
-    directory renamed onto ``out_dir``. That rename refuses an existing directory on Windows and a non-empty one on
-    POSIX; on POSIX it replaces an EMPTY directory made after the check (a stated limit), and the directories
-    themselves are not synced. After a failure the staging directory this call made is removed, best effort; one
-    already at the staging name fails its create and is never used or removed, and a hard crash leaves its staging
-    directory behind, never published and never touched by a later build."""
+    directory renamed onto ``out_dir``. That rename refuses an existing file, link or directory on Windows and an
+    existing file, link or non-empty directory on POSIX, and a failed rename while the name is taken is
+    ``output_exists``; on POSIX it replaces an EMPTY directory made after the check (a stated limit), and the
+    directories themselves are not synced. After a failure the staging directory this call made is removed, best
+    effort; one already at the staging name fails its create and is never used or removed, and a hard crash leaves its
+    staging directory behind, never published and never touched by a later build. Not defended: another process of
+    the same user that changes the staging directory or a parent directory while this call runs."""
     out_dir = Path(out_dir)
     if os.path.lexists(out_dir):
         raise error("output_exists")
@@ -247,9 +249,9 @@ def publish_new(out_dir, files, error):
                 raise OSError(errno.EIO, "read-back differs")
         try:
             os.rename(staging, out_dir)
-        except OSError as failure:
-            if isinstance(failure, FileExistsError) or failure.errno == errno.ENOTEMPTY:
-                reason = "output_exists"  # another writer's output: kept as it is
+        except OSError:
+            if os.path.lexists(out_dir):  # D21.1: the name is taken (Windows FileExistsError, POSIX ENOTEMPTY,
+                reason = "output_exists"  # EEXIST or ENOTDIR for a file or link): another writer's output, kept
             raise
     except OSError:
         for name in files:

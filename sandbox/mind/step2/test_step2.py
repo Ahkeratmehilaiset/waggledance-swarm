@@ -1,8 +1,10 @@
 """Tests for HEX MEMORY STEP 2 on synthetic data: cells, memory binding and the Q4 rule (no e5, no F: data)."""
 
+import errno
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -213,3 +215,140 @@ def test_publish_refuses_vectors_that_cannot_be_trusted(tmp_path):
                              encoder={}, corpus_sha256="0" * 64)
         assert error.value.code == code
     shutil.rmtree(tmp_path / "c", ignore_errors=True)
+
+
+# --- D18 (2026-10-19, fable-5): an orphan generation never blocks a later publish ------------------------------------
+# From code, not observed: publish renames the staged generation to gen-NNNNNN BEFORE it appends the log line, and
+# the append sits outside the staging cleanup. An error there (a full disk, say) or a crash leaves a directory the
+# log never names, and every later publish computed the same generation from the log and was refused as
+# generation_exists, so the cell never took a new generation again while load still reported the old one HEALTHY.
+# Each test here was red on the D17 module first, except the last, a guard that passes on both.
+
+
+class D18Crash(BaseException):
+    """A crash stand-in that no ``except Exception`` catches."""
+
+
+def d18_rows(start, stop):
+    rows = records()[start:stop]
+    return rows, np.vstack([FakeEncoder().vector(row["text"]) for row in rows])
+
+
+def d18_publish(cell_dir, rows, vectors):
+    return cell_mod.publish(cell_dir, "learning", rows, vectors, dim=DIM, cutoff_utc=CUTOFF, encoder={},
+                            corpus_sha256="0" * 64)
+
+
+def d18_tree(path):
+    """Every file under ``path`` with its bytes, so an untouched directory compares equal."""
+    return {str(item.relative_to(path)): item.read_bytes() for item in sorted(path.rglob("*")) if item.is_file()}
+
+
+def test_d18_a_failed_log_append_after_the_rename_never_blocks_a_later_publish(tmp_path, monkeypatch):
+    """The log append fails after generation 2 was renamed into place: that publish fails and releases its lock, the
+    published memory stays generation 1, and the orphan gen-000002 stays as it is; the next publish takes generation
+    3, never adopting, changing or removing the orphan."""
+    cell_dir = tmp_path / "c"
+    d18_publish(cell_dir, *d18_rows(0, 2))
+    real_open = open
+
+    def open_(path, mode="r", *args, **kwargs):
+        if Path(path).name == "LOG.jsonl" and "a" in mode:
+            raise OSError(errno.ENOSPC, "injected: no space left for the log line")
+        return real_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cell_mod, "open", open_, raising=False)
+        with pytest.raises(OSError):
+            d18_publish(cell_dir, *d18_rows(2, 4))
+    orphan = cell_dir / "gen-000002"
+    assert orphan.is_dir() and not (cell_dir / "writer.lock").exists() and len(cell_mod.read_log(cell_dir)) == 1
+    view = cell_mod.load(cell_dir, "learning")
+    assert view.healthy and view.pointer["generation"] == 1  # the failure left the published memory as it was
+    untouched = d18_tree(orphan)
+    rows, vectors = d18_rows(4, 7)
+    pointer = d18_publish(cell_dir, rows, vectors)
+    assert pointer["generation"] == 3 and pointer["seq"] == 2  # one past the orphan; the log stays a gapless chain
+    view = cell_mod.load(cell_dir, "learning")
+    assert view.healthy and view.pointer == pointer
+    assert [row["record_id"] for row in view.rows] == [row["record_id"] for row in rows]  # never the orphan's records
+    assert [line["generation"] for line in cell_mod.read_log(cell_dir)] == [1, 3]
+    assert d18_tree(orphan) == untouched
+
+
+D18_CRASH = """
+import json
+import os
+import sys
+from pathlib import Path
+import numpy as np
+here, cell_dir, inputs = Path(sys.argv[1]), Path(sys.argv[2]), json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+sys.path.insert(0, str(here))
+import cell
+real_rename = os.rename
+
+def rename_then_crash(source, target):
+    real_rename(source, target)
+    if Path(target).name.startswith("gen-"):
+        os._exit(17)  # a hard crash: no except, no finally, no lock release
+
+os.rename = rename_then_crash
+cell.publish(cell_dir, "learning", inputs["rows"], np.array(inputs["vectors"], dtype="<f4"), dim=inputs["dim"],
+             cutoff_utc=inputs["cutoff"], encoder={}, corpus_sha256="0" * 64)
+"""
+
+
+def test_d18_after_a_hard_crash_right_after_the_rename_removing_the_stale_lock_is_enough(tmp_path):
+    """A child process publishing generation 2 dies right after the rename: no except and no finally, so its writer
+    lock stays beside the orphan (a stale lock is never broken automatically). Removing that lock, the manual step
+    for a stale lock, must be enough for the next publish; before D18 the orphan refused it forever."""
+    cell_dir = tmp_path / "c"
+    d18_publish(cell_dir, *d18_rows(0, 2))
+    rows, vectors = d18_rows(2, 4)
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text(json.dumps({"rows": rows, "vectors": vectors.tolist(), "dim": DIM, "cutoff": CUTOFF}),
+                      encoding="utf-8")
+    run = subprocess.run([sys.executable, "-B", "-c", D18_CRASH, str(HERE), str(cell_dir), str(inputs)],
+                         capture_output=True, text=True)
+    assert run.returncode == 17, run.stderr[-2000:]
+    orphan = cell_dir / "gen-000002"
+    assert orphan.is_dir() and (cell_dir / "writer.lock").exists() and len(cell_mod.read_log(cell_dir)) == 1
+    assert cell_mod.load(cell_dir, "learning").pointer["generation"] == 1
+    untouched = d18_tree(orphan)
+    (cell_dir / "writer.lock").unlink()  # the manual step for a stale lock
+    pointer = d18_publish(cell_dir, *d18_rows(4, 7))
+    assert pointer["generation"] == 3 and cell_mod.load(cell_dir, "learning").healthy
+    assert d18_tree(orphan) == untouched
+
+
+def test_d18_the_next_generation_is_one_past_every_canonical_generation_entry(tmp_path):
+    """A file at a generation name blocks that name as surely as a directory; names that publish never makes
+    (other widths, other characters, a suffix) never move the count."""
+    cell_dir = tmp_path / "c"
+    d18_publish(cell_dir, *d18_rows(0, 2))
+    (cell_dir / "gen-000005").write_bytes(b"a stray file at a generation name")
+    for name in ("gen-5", "gen-0000009", "gen-00000x", "gen-000007.tmp"):
+        (cell_dir / name).mkdir()
+    pointer = d18_publish(cell_dir, *d18_rows(2, 4))
+    assert pointer["generation"] == 6 and cell_mod.load(cell_dir, "learning").healthy
+    assert (cell_dir / "gen-000005").read_bytes() == b"a stray file at a generation name"
+
+
+def test_d18_generation_names_past_six_digits_count_too(tmp_path):
+    cell_dir = tmp_path / "c"
+    d18_publish(cell_dir, *d18_rows(0, 2))
+    (cell_dir / "gen-1000000").mkdir()
+    pointer = d18_publish(cell_dir, *d18_rows(2, 4))
+    assert pointer["generation"] == 1000001 and cell_mod.load(cell_dir, "learning").healthy
+
+
+def test_d18_a_logged_generation_is_never_numbered_again_even_when_its_directory_is_gone(tmp_path):
+    """A guard (it passes on the D17 module too): the log, not the directory listing alone, names what was
+    published, so a generation whose directory went missing is skipped as well."""
+    cell_dir = tmp_path / "c"
+    d18_publish(cell_dir, *d18_rows(0, 2))
+    d18_publish(cell_dir, *d18_rows(2, 4))
+    (cell_dir / "gen-000002").rename(tmp_path / "moved-gen-000002")
+    assert cell_mod.load(cell_dir, "learning").reason == "generation_missing"
+    pointer = d18_publish(cell_dir, *d18_rows(4, 7))
+    assert pointer["generation"] == 3 and cell_mod.load(cell_dir, "learning").healthy

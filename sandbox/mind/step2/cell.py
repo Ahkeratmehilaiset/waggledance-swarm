@@ -14,6 +14,13 @@ append-only hash chain with one line per published generation. The receipt's own
 the receipt. Publishing stages the generation in a temporary directory, verifies it from disk, renames it, appends
 the log line and only then swaps the pointer with ``os.replace``. A second writer is refused by an exclusive lock.
 
+D18 (2026-10-19, fable-5): a new generation is numbered one past both the last logged generation and every
+canonical ``gen-NNNNNN`` entry in the cell directory (``next_generation``). The rename comes before the log line, so
+an error at the append (a full disk, say) or a crash leaves an orphan directory the log never names; it is skipped,
+never adopted, verified, changed or removed, and it no longer refuses every later publish as ``generation_exists``.
+After a hard crash the writer lock also stays, as before, until it is removed by hand. A torn last log line (a crash
+inside the append) still quarantines the cell and refuses publishing until it is repaired by hand.
+
 Loading verifies the pointer, the log chain, the receipt and every file BEFORE ``FaissCollection`` reads anything:
 ``FaissCollection._try_load`` turns a missing or corrupt file into an empty index with only a warning. Any failure
 QUARANTINES the cell with a fixed reason code. A quarantined cell never answers and never abstains; the query layer
@@ -28,6 +35,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -44,6 +52,7 @@ LOG_SCHEMA = "wd.bridge-mind-hex-cell-log.v1"
 ZERO = "0" * 64
 FILES = ("index", "meta", "vectors", "provenance")
 PROVENANCE_KEYS = ("record_id", "kind", "time_utc", "cell_id", "provenance")
+GEN_NAME = re.compile(r"gen-([0-9]{6,})")  # D18: f"gen-{generation:06d}" names, at least six digits
 
 
 class CellError(Exception):
@@ -191,12 +200,20 @@ def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, enc
     return receipt
 
 
+def next_generation(cell_dir, log):
+    """D18: one past the last logged generation and every canonical ``gen-NNNNNN`` entry (a file or a directory) in
+    ``cell_dir``, so an orphan left between the rename and the log line never blocks a publish (module docstring)."""
+    present = [int(match.group(1)) for match in map(GEN_NAME.fullmatch, os.listdir(cell_dir))
+               if match and match.group(0) == f"gen-{int(match.group(1)):06d}"]
+    return max([log[-1]["generation"] if log else 0] + present) + 1
+
+
 def publish(cell_dir, cell_id, records, vectors, *, dim, cutoff_utc, encoder, corpus_sha256, source="encode"):
     """Stage, verify, rename, log, then swap the pointer. Returns the new pointer."""
     cell_dir.mkdir(parents=True, exist_ok=True)
     with Lock(cell_dir):
         log = read_log(cell_dir)
-        generation = (log[-1]["generation"] + 1) if log else 1
+        generation = next_generation(cell_dir, log)  # D18: never a name an orphan already holds
         staging = cell_dir / f".staging-{generation:06d}-{uuid.uuid4().hex}"
         staging.mkdir()
         try:

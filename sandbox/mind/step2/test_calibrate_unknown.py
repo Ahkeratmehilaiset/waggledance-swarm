@@ -1,8 +1,10 @@
 """D22 for step-2 calibrate (Root's 08:33Z finding plus RCO1's R5 class, write-new): a case with no record available
 before it is an explicit UNKNOWN row (every statistic None, ``unknown`` says why, the case kept and counted, no query
 encoded, no score made up), and ``--out`` is written new: an existing output is refused before any input is read, and
-the result is published whole as LF bytes, or nothing at that path. Synthetic notes, captures and a fake encoder only
-(no e5, no F: data, no network).
+the result is published whole as LF bytes, or nothing at that path. D23 (Lead's 09:03Z slice): a case whose before
+time is missing, malformed, timezone-less or out of range is an UNKNOWN row too (never a made-up time), and the encoder
+is built only at the first case that has an applicable record. Synthetic notes, captures and a fake encoder only (no
+e5, no F: data, no network).
 
 run: C:/Python/project2-master/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
      sandbox/mind/step2/test_calibrate_unknown.py
@@ -52,10 +54,15 @@ def unit(text):
 
 
 class FakeE5:
-    """Deterministic unit vectors per text; every encoded query is recorded in ``queries``."""
+    """Deterministic unit vectors per text; every encoded query is recorded in ``queries``, every construction counted
+    in ``made``."""
     policy = {"prefix_passage": "passage: ", "normalize": True, "dtype": "float32", "dim": encode_mod.DIM,
               "device": "fake"}
     queries = []
+    made = 0
+
+    def __init__(self):
+        FakeE5.made += 1
 
     def passages(self, texts):
         return np.ascontiguousarray(np.vstack([unit("passage: " + text) for text in texts]), dtype="<f4")
@@ -82,6 +89,7 @@ def built(tmp_path, monkeypatch):
     corpus_dir, vectors_dir = tmp_path / "in" / "corpus", tmp_path / "in" / "vectors"
     corpus_mod.build(lessons, [capture], corpus_mod.parse_utc(CUTOFF), corpus_dir)
     encode_mod.build(corpus_dir, vectors_dir)
+    monkeypatch.setattr(FakeE5, "made", 0)  # the builds above made their own encoder
     return corpus_dir, vectors_dir
 
 
@@ -170,7 +178,7 @@ def test_d22_statistics_of_one_applicable_record_keep_their_values():
     assert stats == {"s1": 0.5, "gap2": 0.0, "gap5": 0.0, "gap10": 0.0, "z": 0.0, "hub": 0.25, "lex": 1.0}
 
 
-# --out write-new --------------------------------------------------------------------------------------------------------
+# --out write-new ------------------------------------------------------------------------------------------------------
 
 def test_d22_the_result_is_published_new_as_lf_bytes_and_no_staging_stays(tmp_path, built):
     sets = [case_set(tmp_path / "set.json", [positive("late", LATE)])]
@@ -425,3 +433,61 @@ def test_d22_a_hard_crash_never_leaves_a_cut_result_under_the_output_name(tmp_pa
     assert not os.path.lexists(out)
     calibrate_mod.write_new(out, b"later")
     assert out.read_bytes() == b"later" and listing(out.parent) == sorted(["calibration.json", staged])
+
+
+# D23: an unusable before time -----------------------------------------------------------------------------------------
+
+BAD_BEFORE = {"missing": None, "malformed": "not a time", "timezone_less": "2026-10-13T12:00:00",
+              "date_only": "2026-10-13", "number": 20261013, "out_of_range": "0001-01-01T00:00:00+01:00"}
+POSITIVE_FIELDS = ("expected_in_corpus", "missing_expected", "best_rank", "best_expected_score")
+
+
+@pytest.mark.parametrize("label", list(BAD_BEFORE))
+def test_d23_a_positive_case_with_an_unusable_before_time_is_an_unknown_row(tmp_path, built, capsys, label):
+    bad = positive("bad", BAD_BEFORE[label])
+    if label == "missing":
+        del bad["before"]
+    sets = [case_set(tmp_path / "set.json", [positive("late", LATE), bad])]
+    out = tmp_path / "calibration.json"
+    assert calibrate_mod.main(argv(built, sets, out)) == 0
+    result = check_result(out)
+    rows = {row["id"]: row for row in result["rows"]}
+    assert sorted(rows) == ["bad", "late"] and result["unknown_rows"] == 1
+    row = rows["bad"]
+    assert row["applicable"] is None and row["unknown"] == "before_time_invalid" and row["top3"] == []
+    assert {key: row[key] for key in STATISTICS} == dict.fromkeys(STATISTICS)
+    assert [row[key] for key in POSITIVE_FIELDS] == [None] * 4  # never a made-up time, rank or count
+    assert rows["late"]["applicable"] == 4 and FakeE5.queries == [positive("late", LATE)["situation"]]
+    lines = {line.split()[1]: line for line in capsys.readouterr().out.splitlines()}
+    assert lines["bad"].split()[2:] == ["UNKNOWN", "before_time_invalid"]
+
+
+def test_d23_a_negative_case_and_a_background_event_with_an_unusable_time_are_unknown_rows(tmp_path, built):
+    negative = {"id": "neg", "situation": "a quiet start", "before": "2026-10-13T12:00:00"}
+    sets = [case_set(tmp_path / "set.json", [positive("late", LATE)], [negative])]
+    background = tmp_path / "background.json"
+    background.write_bytes(json.dumps({"events": [
+        {"ts_utc": "late-but-not-a-time", "type": "message", "message": "a background situation"},
+        {"ts_utc": "2026-10-14T06:00:00Z", "type": "message", "message": "a later background situation"}]}).encode())
+    out = tmp_path / "calibration.json"
+    assert calibrate_mod.main(argv(built, sets, out) + ["--background", str(background)]) == 0
+    result = check_result(out)
+    rows = {row["id"]: row for row in result["rows"]}
+    assert result["unknown_rows"] == 2 and rows["neg"]["applicable"] is None
+    assert rows["neg"]["unknown"] == rows["bg:late-but-not-a-time"]["unknown"] == "before_time_invalid"
+    assert rows["bg:2026-10-14T06:00:00Z"]["applicable"] == 4 and "unknown" not in rows["bg:2026-10-14T06:00:00Z"]
+
+
+def test_d23_no_encoder_is_built_when_no_case_has_an_applicable_record(tmp_path, built):
+    sets = [case_set(tmp_path / "set.json", [positive("early", EARLY), positive("earlier", "2025-09-01T00:00:00Z")])]
+    out = tmp_path / "calibration.json"
+    assert calibrate_mod.main(argv(built, sets, out)) == 0
+    assert check_result(out)["unknown_rows"] == 2 and FakeE5.made == 0 and FakeE5.queries == []
+
+
+def test_d23_the_encoder_is_built_once_at_the_first_applicable_case(tmp_path, built):
+    sets = [case_set(tmp_path / "set.json", [positive("early", EARLY), positive("late", LATE),
+                                             positive("later", "2026-10-13T13:00:00Z")])]
+    out = tmp_path / "calibration.json"
+    assert calibrate_mod.main(argv(built, sets, out)) == 0
+    assert check_result(out)["unknown_rows"] == 1 and FakeE5.made == 1 and len(FakeE5.queries) == 2

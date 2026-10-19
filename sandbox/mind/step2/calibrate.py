@@ -18,7 +18,8 @@ rank and score of the best expected record and a set of candidate abstain statis
 answer is reported, never a correctness number. No network, no bridge event, no gate code; writes only ``--out``, as a
 NEW file whole or not at all (``write_new``; an existing one is refused before any input is read). A case with no
 record available before it is an UNKNOWN row (D22): every statistic is None and ``unknown`` says why; no query is
-encoded for it and no score is made up.
+encoded for it and no score is made up. So is a case whose before time is missing, malformed, timezone-less or out of
+range (D23; no time is made up), and the encoder is built only at the first case with an applicable record (D23).
 """
 
 import argparse
@@ -175,14 +176,26 @@ def main(argv=None):
             cases.append({"id": "bg:" + str(event.get("ts_utc")), "set": "background", "kind": "background",
                           "situation": str(event["message"])[:2000], "before": event.get("ts_utc"),
                           "lessons": [], "events": []})
-    encoder = encode_mod.E5()
+    encoder = None  # D23: built at the first case with an applicable record, never for UNKNOWN rows alone
     rows = []
     for case in cases:
-        before = corpus_mod.utc_text(corpus_mod.parse_utc(case["before"]))
-        mask = available < before
         row = {key: case[key] for key in ("id", "set", "kind")}
+        try:
+            parsed = corpus_mod.parse_utc(case["before"])
+        except OverflowError:  # an offset that moves the time out of the datetime range
+            parsed = None
+        if parsed is None:  # D23: missing, malformed, timezone-less or out-of-range before time; no time made up
+            row.update(dict.fromkeys(("applicable", *STATISTICS)), unknown="before_time_invalid", top3=[])
+            if case["kind"] == "positive":
+                row.update(dict.fromkeys(("expected_in_corpus", "missing_expected", "best_rank",
+                                          "best_expected_score")))
+            rows.append(row)
+            continue
+        mask = available < corpus_mod.utc_text(parsed)
         row["applicable"] = int(mask.sum())
         if row["applicable"]:
+            if encoder is None:
+                encoder = encode_mod.E5()
             scores = np.where(mask, vectors @ encoder.query(case["situation"]), -np.inf)
         else:  # D22: no record is available before the case: nothing to score, so no query is encoded
             scores = np.full(len(records), -np.inf)

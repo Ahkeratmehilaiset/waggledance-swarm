@@ -54,7 +54,8 @@ PRODUCER = Path(__file__).resolve().parent / "mind_capture_producer.py"
 CONSTANTS = ("READER", "READER_OPTION", "DETAIL_TAIL", "TAIL_CAP", "SEED_MARGIN", "COUNT", "EVENT_REF", "CURSOR",
              "REPORT_TASK", "LANE", "LATEST_SCHEMA", "STATE_SCHEMA", "STATE_KEYS", "ROW_KEYS", "VIEW_SCHEMA",
              "VIEW_KEYS", "LIST_FIELDS", "REFUSAL_SCHEMA", "VIEW_CAP", "GH_TIMEOUT", "GH_BUDGET", "PRUNED",
-             "STOP_EXIT", "CYCLE_DIR", "CYCLE_TIME", "LOCK_BYTE", "LIST_LIMIT")
+             "STOP_EXIT", "CYCLE_DIR", "CYCLE_TIME", "LOCK_BYTE", "LIST_LIMIT", "STATUS_SCHEMA", "OPEN_FIELDS",
+             "CHECK_NAME", "MERGE_STATES", "CHECK_RESULTS")
 MARKER = "PRIVATE" + "_MARKER"  # a guarded word, composed so that this file holds no marker literal
 WINDOW = 4
 EVENTS = [{"agent": "lane-a", "type": "message", "task_id": "lane-a/state-case",
@@ -1889,8 +1890,9 @@ def candidate_space(tmp_path, after=()):
     for name in ("cycles", "files-cache"):
         (live / name).mkdir(parents=True)
     space, bridge = load(after=after, live=live)
-    space["pr_context"] = lambda cache_dir, needed=None: (None, {"charter_loaded": False, "status": "UNKNOWN",
-                                                                 "reason": "gh_list_unavailable", "ms": 0})
+    space["pr_context"] = lambda cache_dir, needed=None, raw=None: (None, {"charter_loaded": False,
+                                                                           "status": "UNKNOWN",
+                                                                           "reason": "gh_list_unavailable", "ms": 0})
     return space, bridge, live
 
 

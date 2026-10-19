@@ -38,10 +38,22 @@ Every cycle builds one immutable candidate dir under <live-dir>/cycles and then 
      suppresses nothing: the shadow then runs the bridge-only interface, which can still suggest a vote for a PR
      that merged outside the bridge view. A cached view that does not validate leaves the whole context
      UNKNOWN (no partial reuse); the context is written only when the workspace's own read_context accepts it.
+  GITHUB STATUS (``gh_status``, ported from capture/capture_round.py's github_status without its bot-thread and
+  mention reads): with a usable context whose gh pr list was read whole (no row read on its own, so its raw bytes
+  hash to context.capture_sha256), one ``gh api`` read of main's required checks and one ``gh pr list --state open``
+  of heads, merge states and check rollups, within the cycle's GH_BUDGET seconds. The status is bound only as one
+  whole: observed-status.json (the derived status; its list_sha256 is the open list's sha256), gh-pr-list.json and
+  gh-open-status.json (gh's raw output bytes, never re-serialized), each named with its sha256 in last_ok. A context
+  that is UNKNOWN or whose list was backfilled, a gh call that fails or a spent budget, an output of another shape,
+  a required set that is not a non-empty list of check names, an open list that reaches LIST_LIMIT, an open PR of
+  the context missing from the open list or a PR of both at another head, or a status observed before the context
+  or more than ws.CONTEXT_MAX_AGE after it, leaves all three unbound (UNKNOWN, recorded with a fixed reason); it never
+  refuses the cycle, makes up no owed work and claims no all-PR completeness.
   3. tools/wd_bridge_mind_shadow.py run() over those files, with the previous publication only when its snapshot,
      verified by the core's read_snapshot, hashes to last_ok.snapshot_sha256 (else none, recorded
      previous_identity_mismatch).
-  4. COMMIT: every payload (capture, detail manifest, context, state) is guarded and read back the way its consumer
+  4. COMMIT: every payload (capture, detail manifest, context, state, and a bound GitHub status with its two raw
+     lists) is guarded and read back the way its consumer
      reads it before the first write (``prewrite``), and created exclusively in the candidate dir; the captures and
      states of old cycle dirs beyond --keep are pruned, never those of last_ok's cycle or of the candidate
      (``prune``); the cycle's record, status prepared (no success claim), is appended to live-log.jsonl; then
@@ -143,6 +155,12 @@ VIEW_CAP = 40  # gh pr view calls in one cycle at most; a cached view needs none
 GH_TIMEOUT = 60  # seconds for one gh call
 GH_BUDGET = 150  # seconds for all gh calls of one cycle
 LIST_LIMIT = 400  # gh pr list rows at most: a list that reaches it may leave a PR out (context UNKNOWN)
+STATUS_SCHEMA = "wd.bridge-mind-gh-status.v1"  # the derived GitHub status (capture/capture_round.py's)
+OPEN_FIELDS = frozenset({"number", "headRefOid", "mergeStateStatus", "statusCheckRollup"})
+CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()/:+-]{0,99}")  # a required check name (the lane view's)
+MERGE_STATES = frozenset({"CLEAN", "BLOCKED", "BEHIND", "DIRTY", "UNSTABLE", "HAS_HOOKS", "DRAFT", "UNKNOWN"})
+CHECK_RESULTS = frozenset({"SUCCESS", "FAILURE", "PENDING", "NEUTRAL", "CANCELLED", "SKIPPED", "TIMED_OUT",
+                           "ACTION_REQUIRED", "ERROR", "EXPECTED", "STALE", "STARTUP_FAILURE"})
 PRUNED = ("capture.json", "state.json", "detail-manifest.txt")  # what retention removes from an old cycle dir
 STOP_EXIT = 3
 CYCLE_DIR = re.compile(r"[0-9]{8}T[0-9]{6}Z")  # a cycle_name(): ASCII digits only (\d matches other scripts' too)
@@ -690,11 +708,13 @@ def fetch_row(number, timeout):
     return parsed[0][str(number)], data
 
 
-def pr_context(cache_dir, needed=None):
+def pr_context(cache_dir, needed=None, raw=None):
     """The cycle's PR context and its record; the context is None (UNKNOWN) when gh gives no usable list, when a
     list that reaches LIST_LIMIT leaves out a PR of ``needed`` (the PR numbers of the cycle's snapshot; None: not
     known) that one gh pr view does not add, when a shorter list leaves out a PR of ``needed``, when a cached view
-    does not validate, or when the workspace's read_context refuses it. See the module docstring (2.)."""
+    does not validate, or when the workspace's read_context refuses it. See the module docstring (2.). With a usable
+    context made from the list alone (no row read on its own), ``raw`` (a dict) gets gh's list bytes under
+    "gh-pr-list.json": the bytes whose sha256 is context.capture_sha256."""
     started, deadline = time.perf_counter(), time.monotonic() + GH_BUDGET
     data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", str(LIST_LIMIT),
               "--json", "number,state,headRefOid,headRefName")
@@ -760,27 +780,120 @@ def pr_context(cache_dir, needed=None):
     reason = ws.read_context(context, ws.parse_time(observed))[1]
     if reason is not None:
         return None, dict(record, status="UNKNOWN", reason=reason)
+    if raw is not None and not added:  # only a list read whole links: a row read on its own is hashed in too
+        raw["gh-pr-list.json"] = data
     return context, dict(record, status="observed")
 
 
-def prewrite(capture, manifest, context, state):
+def gh_status(context, listed, spent):
+    """The cycle's GitHub status, gh's raw open-list bytes it is derived from, and its record, for this cycle's PR
+    context and ``listed``, the raw gh pr list bytes the context was made from (None: the context is UNKNOWN or a row
+    was read on its own, so no raw list links to it), within GH_BUDGET seconds less the ``spent`` ones. The required
+    checks per open PR head and the merge state as GitHub reports them (capture/capture_round.py's github_status:
+    observed, never a verdict; no bot-thread or mention read, so mentions_captured is false). (None, None, record)
+    with a fixed reason, UNKNOWN, for each case the module docstring (2.) names; it never refuses the cycle."""
+    started, deadline = time.perf_counter(), time.monotonic() + GH_BUDGET - spent
+    record = {"observed_utc": None}
+
+    def unknown(reason):
+        return None, None, dict(record, status="UNKNOWN", reason=reason,
+                                ms=round((time.perf_counter() - started) * 1000))
+
+    if context is None:
+        return unknown("context_unknown")
+    if listed is None:
+        return unknown("list_backfilled")
+    outputs = []
+    for options in (("api", f"repos/{args.repo}/branches/main", "--jq", ".protection.required_status_checks.contexts"),
+                    ("pr", "list", "--repo", args.repo, "--state", "open", "--limit", str(LIST_LIMIT), "--json",
+                     "number,headRefOid,mergeStateStatus,statusCheckRollup")):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return unknown("gh_budget_spent")
+        outputs.append(gh(min(GH_TIMEOUT, remaining), *options))
+    observed = record["observed_utc"] = utc_now(seconds=True)
+    found, data = outputs
+    if data is None:
+        return unknown("gh_status_unavailable")
+    try:
+        items = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        items = None
+    if type(items) is not list or not all(type(item) is dict and set(item) == OPEN_FIELDS for item in items):
+        return unknown("gh_status_unexpected")
+    try:
+        required = None if found is None else json.loads(found.decode("utf-8"))
+    except (ValueError, RecursionError):
+        required = None
+    if type(required) is not list or not required \
+            or not all(type(name) is str and CHECK_NAME.fullmatch(name) for name in required):
+        return unknown("required_set_unknown")
+    if len(items) >= LIST_LIMIT:  # gh stops at --limit, so an open PR may be missing
+        return unknown("gh_status_truncated")
+    rows = {}
+    for item in items:
+        number, head, state = item["number"], item["headRefOid"], item["mergeStateStatus"]
+        if type(number) is not int or not 0 < number < 10 ** 9 or type(head) is not str or not ws.HEAD.fullmatch(head):
+            continue
+        if str(number) in rows:
+            return unknown("gh_status_unexpected")
+        seen = {}
+        for check in item["statusCheckRollup"] if type(item["statusCheckRollup"]) is list else []:
+            name = (check.get("name") or check.get("context")) if type(check) is dict else None
+            if type(name) is str and name in required:
+                result = check.get("conclusion") or check.get("state") or "PENDING"
+                seen.setdefault(name, set()).add(result if type(result) is str and result in CHECK_RESULTS
+                                                 else "UNKNOWN")
+        missing = [name for name in required if name not in seen]
+        rows[str(number)] = {
+            "head": head, "merge_state": state if type(state) is str and state in MERGE_STATES else "UNKNOWN",
+            "required_results": {name: sorted(results) for name, results in sorted(seen.items())},
+            "missing_required": missing,
+            "all_required_success": not missing and all(results == {"SUCCESS"} for results in seen.values())}
+    prs = context["prs"]
+    if any(pr["state"] == "OPEN" and rows.get(number, {}).get("head") != pr["head"] for number, pr in prs.items()) \
+            or any(number in prs and (prs[number]["state"] != "OPEN" or prs[number]["head"] != row["head"])
+                   for number, row in rows.items()):
+        return unknown("head_conflict")
+    moments = [ws.parse_time(context["observed_utc"]), ws.parse_time(observed)]
+    if None in moments or not dt.timedelta(0) <= moments[1] - moments[0] <= ws.CONTEXT_MAX_AGE:
+        return unknown("status_not_current")
+    status = {"schema": STATUS_SCHEMA, "authority": "none", "observed_utc": observed, "required_contexts": required,
+              "list_sha256": sha(data), "prs": rows, "mentions_captured": False}
+    return status, data, dict(record, status="observed", open_prs=len(rows),
+                              ms=round((time.perf_counter() - started) * 1000))
+
+
+def prewrite(capture, manifest, context, state, github=None):
     """B6, file-specific: every payload of the candidate as bytes, each object guarded whole with the workspace's
     guard and read back the way its consumer reads it, before the first write: the capture by the shadow's
-    read_capture, the state by ``verify_state``, the context by the workspace's read_context. A guarded word refuses
-    the cycle through the guard's own error (output_guard); any other failure refuses it with candidate_invalid.
-    Nothing is written here."""
+    read_capture, the state by ``verify_state``, the context by the workspace's read_context; a bound GitHub status
+    (``github``: the status, the raw gh pr list bytes and the raw open-list bytes) is guarded with both parsed raw
+    lists and read back equal, and both raw lists must still hash to the digests the context and the status name. A
+    guarded word refuses the cycle through the guard's own error (output_guard); any other failure refuses it with
+    candidate_invalid. Nothing is written here."""
     for value in (capture, state, context):
         ws.guard_object(value)
+    if github is not None:
+        ws.guard_object(github[0])
+        ws.guard_object([json.loads(data.decode("utf-8")) for data in github[1:]])
     payloads = {"capture.json": json.dumps(capture, ensure_ascii=False).encode("utf-8"),
                 "detail-manifest.txt": manifest, "state.json": compact(state)}
     if context is not None:
         payloads["context.json"] = canonical(context)
+    if github is not None:
+        payloads.update({"observed-status.json": canonical(github[0]), "gh-pr-list.json": github[1],
+                         "gh-open-status.json": github[2]})
     try:
         shadow.read_capture(parse_bridge_json_object(payloads["capture.json"].decode("utf-8")))
         ok = verify_state(parse_bridge_json_object(payloads["state.json"].decode("ascii")), state["generation"])
         if context is not None:
             ok = ok and ws.read_context(parse_bridge_json_object(payloads["context.json"].decode("ascii")),
                                         ws.parse_time(context["observed_utc"]))[1] is None
+        if github is not None:
+            back = parse_bridge_json_object(payloads["observed-status.json"].decode("ascii"))
+            ok = ok and context is not None and back == github[0] and back["list_sha256"] == sha(github[2]) \
+                and context["capture_sha256"] == sha(github[1])
     except (shadow.ShadowRefused, ValueError, RecursionError):
         ok = False
     if not ok:
@@ -889,7 +1002,7 @@ def refused(rec, reason, tick, last_ok):
     """Refuse the cycle of ``rec`` with a fixed ``reason``: its record, without any success field, made observable
     (``record_refusal``), and the last_ok it was given returned unchanged."""
     rec = {key: rec[key] for key in ("cycle", "started_utc", "reader", "cycle_dir", "read", "capture", "context",
-                                     "previous", "prune") if key in rec}
+                                     "github_status", "previous", "prune") if key in rec}
     rec.update(status="refused", reason=reason, cycle_ms=round((time.perf_counter() - tick) * 1000),
                finished_utc=utc_now())
     try:  # the privacy guard on every output this producer writes itself
@@ -920,8 +1033,11 @@ def candidate_cycle(rec, last_ok, seeded):
     next_state = state_envelope(1 if state is None else state["generation"] + 1, cursor, source, rows)
     capture, manifest = capture_object(rows)
     capture_ms = round((time.perf_counter() - started) * 1000)
-    context, rec["context"] = pr_context(live / "files-cache", snapshot_prs(capture))
-    payloads = prewrite(capture, manifest, context, next_state)
+    raw = {}
+    context, rec["context"] = pr_context(live / "files-cache", snapshot_prs(capture), raw=raw)
+    status, opened, rec["github_status"] = gh_status(context, raw.get("gh-pr-list.json"), rec["context"]["ms"] / 1000)
+    payloads = prewrite(capture, manifest, context, next_state,
+                        None if status is None else (status, raw["gh-pr-list.json"], opened))
     try:
         digests = {name: write_new(cycle_dir / name, data) for name, data in payloads.items()}
     except OSError:
@@ -941,6 +1057,12 @@ def candidate_cycle(rec, last_ok, seeded):
         "capture_file": f"cycles/{name}/capture.json", "capture_sha256": digests["capture.json"],
         "context_file": None if context is None else f"cycles/{name}/context.json",
         "context_sha256": digests.get("context.json"),
+        "status_file": None if status is None else f"cycles/{name}/observed-status.json",
+        "status_sha256": digests.get("observed-status.json"),
+        "pr_list_file": None if status is None else f"cycles/{name}/gh-pr-list.json",
+        "pr_list_sha256": digests.get("gh-pr-list.json"),
+        "open_status_file": None if status is None else f"cycles/{name}/gh-open-status.json",
+        "open_status_sha256": digests.get("gh-open-status.json"),
         "state_file": f"cycles/{name}/state.json", "state_sha256": digests["state.json"],
         "publication_file": f"cycles/{name}/run/reflected.publication.json",
         "board_file": f"cycles/{name}/run/board.txt", "receipt_file": f"cycles/{name}/run/receipt.json",

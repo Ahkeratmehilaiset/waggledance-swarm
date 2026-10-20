@@ -142,6 +142,36 @@ class RecorderTests(unittest.TestCase):
         result = r.enroll(*self.record(kind="near_miss"))
         self.assertEqual((result["primary_candidates"], result["near_miss"]), (0, 1))
 
+    def test_uppercase_bridge_uuid_is_preserved_when_exactly_bound(self):
+        reporter = dict(IDENTITY, agent_uuid="ABCDEFAB-1234-4ABC-8DEF-ABCDEF123456")
+        protocol = json.loads(self.p)
+        protocol["allowed_reporters"] = [reporter]
+        protocol_bytes = encoded(protocol)
+        bound = bindings(protocol_bytes, self.b, digest(protocol_bytes), digest(self.b))
+        value, action_bytes = self.record()
+        action = json.loads(action_bytes)
+        value["reporter"] = action["reporter"] = reporter
+        action_bytes = encoded(action)
+        value["action_receipt_sha256"] = digest(action_bytes)
+        bound.validate_record(value, action_bytes, self.host.now)
+        self.assertEqual(bound.reporters[0][1], reporter["agent_uuid"])
+
+    def test_uppercase_bridge_uuid_case_mutation_is_not_equivalent(self):
+        reporter = dict(IDENTITY, agent_uuid="ABCDEFAB-1234-4ABC-8DEF-ABCDEF123456")
+        protocol = json.loads(self.p)
+        protocol["allowed_reporters"] = [reporter]
+        protocol_bytes = encoded(protocol)
+        bound = bindings(protocol_bytes, self.b, digest(protocol_bytes), digest(self.b))
+        value, action_bytes = self.record()
+        action = json.loads(action_bytes)
+        changed = dict(reporter, agent_uuid=reporter["agent_uuid"].lower())
+        value["reporter"] = action["reporter"] = changed
+        action_bytes = encoded(action)
+        value["action_receipt_sha256"] = digest(action_bytes)
+        with self.assertRaises(rec.Refusal) as caught:
+            bound.validate_record(value, action_bytes, self.host.now)
+        self.assertEqual(str(caught.exception), "identity")
+
     def test_duplicate_action_ref_with_changed_id_is_refused(self):
         r = self.recorder(); r.initialize()
         first, action = self.record()

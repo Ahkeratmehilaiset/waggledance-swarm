@@ -37,9 +37,11 @@ class LaneCurrentStateAtomicity(unittest.TestCase):
     def run_case(self, shell, *, previous=True, fault=""):
         # Every fixture remains on persistent C: and is separate from lane state.
         worktree = AUDIT / ("lane-atomicity-" + uuid.uuid4().hex)
-        directory = worktree / ".codex-audit"
-        directory.mkdir(parents=True)
         self.assertEqual(worktree.resolve().drive.upper(), "C:")
+        worktree.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, worktree)
+        directory = worktree / ".codex-audit"
+        directory.mkdir()
         target = directory / "wd-current-state.json"
         if previous:
             target.write_bytes(OLD)
@@ -95,6 +97,16 @@ if ($failed) {{ exit 1 }}
         self.assertIs(candidate["release_held"], True)
         self.assertIn(str(candidates[0]), receipt["message"])
         return candidates[0]
+
+    def test_case_cleanup_removes_its_synthetic_fixture(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                target, directory, result, receipt = self.run_case(shell)
+                self.assertEqual(result.returncode, 0, receipt)
+                fixture = target.parent.parent
+                self.assertTrue(fixture.is_dir())
+                self.assertTrue(self.doCleanups())
+                self.assertFalse(fixture.exists(), f"case cleanup must remove its own synthetic fixture: {fixture}")
 
     def test_absent_target_publishes_without_backup(self):
         for shell in SHELLS:

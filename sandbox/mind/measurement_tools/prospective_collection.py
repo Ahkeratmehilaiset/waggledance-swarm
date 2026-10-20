@@ -6,8 +6,8 @@ grant study authority. The study controller/caller must obey a STOP, including
 pre-admission STOPs where no authorized destination could safely be consumed.
 An existing output directory consumes the attempt; no resume/adopt/repair API.
 
-Protocol schema wd.m1-p3-protocol-lock.v1 must have status LOCKED, study_id and
-an exact collection_controller object (see CONFIG_FIELDS), and reporter_sources
+Protocol schema wd.m1-p3-protocol-lock.v1 must have status LOCKED, study_id,
+study_root, an exact collection_controller object (see CONFIG_FIELDS), and reporter_sources
 entries with exact reporter tuples and observed canonical native UUIDs covering
 allowed_reporters exactly. Bridge session labels are not native UUIDs. No
 identity normalization, inference or cross-reporter fallback is performed. Other scientific
@@ -22,7 +22,10 @@ protocol/baseline digests stay distinct. The capture adapter's exact full-record
 hash, supplied-prefix hash and the recorder tuple-receipt hash also stay distinct.
 
 One writer lifetime, two flat owned output roots, one shared monotonic 64 MiB
-budget, exclusive files and retained intent/partials/refusal journals. Private
+budget over the disjoint original-protocol forest [study_root, control_root,
+ledger_root]. The study root includes baseline, inbox, blind and score trees;
+future absent forest roots cost zero. Exclusive files and retained
+intent/partials/refusal journals. Private
 gold mapping and references stay in nomination storage. Public results contain
 only aggregate counts and hash receipts. No directory atomicity, OS isolation,
 ACL confidentiality, independent source-authenticity or scientific utility claim.
@@ -217,6 +220,64 @@ def load_dependencies():
         raise Stop("dependencies") from None
 
 
+def budget_forest(protocol, cfg):
+    """Only the original LOCKED protocol fixes the three budget roots."""
+    value = protocol.get("study_root")
+    require(type(value) is str and 0 < len(value) <= 4096, "paths")
+    audit, study = Path(cfg["audit_root"]), Path(value)
+    roots = [study, Path(cfg["control_root"]), Path(cfg["ledger_root"])]
+    require(all(path.is_absolute() and path.parent == audit for path in roots), "paths")
+    for i, left in enumerate(roots):
+        for right in roots[i + 1:]:
+            require(left != right and left not in right.parents and right not in left.parents, "paths")
+    for name in ("baseline_root", "inbox", "blind_root", "score_root"):
+        path = Path(cfg[name])
+        require(study in path.parents and ".." not in path.parts, "paths")
+    return roots
+
+
+def forest_sizes(roots):
+    """Metadata-only, no-follow traversal. File bytes are counted once.
+
+    This is a cooperative file-level check, not an atomic filesystem snapshot.
+    Hardlinks, reparses, nonregular leaves and changed directory identities stop.
+    Missing future roots are allowed; their existing ancestors are still checked.
+    """
+    files = {}
+    identities = set()
+
+    def checked(path):
+        item = path.lstat()
+        require(not stat.S_ISLNK(item.st_mode)
+                and not (getattr(item, "st_file_attributes", 0) & 0x400), "paths")
+        return item
+
+    def walk(path):
+        item = checked(path)
+        if stat.S_ISDIR(item.st_mode):
+            for child in path.iterdir():
+                require(child.parent == path, "paths")
+                walk(child)
+            after = checked(path)
+            require((item.st_dev, item.st_ino) == (after.st_dev, after.st_ino)
+                    and stat.S_ISDIR(after.st_mode), "paths")
+        else:
+            require(stat.S_ISREG(item.st_mode) and item.st_nlink == 1, "paths")
+            identity = (item.st_dev, item.st_ino)
+            require(identity not in identities, "paths")
+            identities.add(identity)
+            files[path] = item.st_size
+
+    for root in roots:
+        for ancestor in reversed(root.parents):
+            item = checked(ancestor)
+            require(stat.S_ISDIR(item.st_mode), "paths")
+        if os.path.lexists(root):
+            require(stat.S_ISDIR(checked(root).st_mode), "paths")
+            walk(root)
+    return files
+
+
 class Runtime:
     """Real local C/NTFS checks. Nothing is started by constructing this object."""
     def __init__(self, recorder, capture):
@@ -233,18 +294,20 @@ class Runtime:
     def sleep(self, seconds):
         time.sleep(seconds)
 
-    def validate(self, cfg):
+    def validate(self, cfg, study_root):
         audit = Path(cfg["audit_root"])
         require(audit == self.cap.AUDIT_ROOT, "paths")
         self.cap._volume_check(audit)
         for name in ("control_root", "ledger_root"):
             self.host.validate_destination(audit, Path(cfg[name]))
+        self.host.validate_destination(audit, study_root)
+        self.cap._path(study_root, audit=True)
         trees = [Path(cfg[key]) for key in ("control_root", "ledger_root", "inbox", "baseline_root", "blind_root", "score_root")]
         for path in trees:
             self.cap._path(path, audit=True)
         self.cap._disjoint(trees)
         require(Path(cfg["stop_signal"]) == Path(cfg["inbox"]) / "STOP.json", "paths")
-        for path in (audit, Path(cfg["inbox"]), Path(cfg["baseline_root"])):
+        for path in (audit, study_root, Path(cfg["inbox"]), Path(cfg["baseline_root"])):
             self.cap._pin_chain(self.stack, path)
         for source in cfg["sources"]:
             path = self.cap._path(source["evidence_path"])
@@ -290,11 +353,24 @@ class Runtime:
 
 class BudgetHost:
     """Real production host composition; explicit fake runtime only in tests."""
-    def __init__(self, runtime):
+    def __init__(self, runtime, roots):
         self.runtime, self.base = runtime, runtime.host
+        self.roots = roots
         self.total = 0
         self.files = {}
+        self.reservations = {}
         self.last_failure = None
+
+    def check_budget(self, extra=0, *, terminal=False):
+        sizes = forest_sizes(self.roots)
+        # A failed/partial write keeps its unmaterialized reservation. Actual
+        # files, including baseline/inbox/other phases, are counted only once.
+        pending = sum(max(0, length - sizes.get(path, 0))
+                      for path, length in self.reservations.items())
+        self.total = max(self.total, sum(sizes.values()) + pending)
+        limit = BUDGET if terminal else BUDGET - TERMINAL_RESERVE
+        require(self.total + extra <= limit, "budget")
+        require(self.free_bytes(self.roots[0].parent) >= FREE_RESERVE + BUDGET, "disk")
 
     def utc_now(self):
         return self.runtime.now()
@@ -316,11 +392,11 @@ class BudgetHost:
 
     def write_new(self, path, data):
         terminal = path.name in ("STOP_NOT_READY.json", "HALTED", "RESULT.json")
-        limit = BUDGET if terminal else BUDGET - TERMINAL_RESERVE
         try:
-            require(self.total + len(data) <= limit, "budget")
-            require(self.free_bytes(path.parent) >= FREE_RESERVE + BUDGET, "disk")
+            require(".." not in path.parts and any(root in path.parents for root in self.roots), "paths")
+            self.check_budget(len(data), terminal=terminal)
             self.total += len(data)  # Failed/partial IO consumes its entire reservation.
+            self.reservations[path] = len(data)
             self.base.write_new(path, data)
             require(self.base.read(path, len(data)) == data, "journal_uncertain")
             item = path.stat()
@@ -330,6 +406,7 @@ class BudgetHost:
             raise
 
     def verify(self, roots):
+        self.check_budget()
         seen = set()
         for root in roots:
             self.base.validate_tree(root)
@@ -645,9 +722,11 @@ class Controller:
             self.rec, self.cap = load_dependencies()
             self.p, self.g, self.cfg, self.start, self.end = configuration(
                 self.protocol, self.go, self.protocol_sha256, self.go_sha256, self.rec)
+            self.budget_roots = budget_forest(self.p, self.cfg)
             self.runtime = self.test_runtime or Runtime(self.rec, self.cap)
-            self.runtime.validate(self.cfg)
-            self.host = BudgetHost(self.runtime)
+            self.runtime.validate(self.cfg, self.budget_roots[0])
+            self.host = BudgetHost(self.runtime, self.budget_roots)
+            self.host.check_budget()
             now, self.start_mono = self.clock()
             require(self.start < now < self.end, "clock")
             self.control = Path(self.cfg["control_root"])

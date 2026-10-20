@@ -8,6 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 import sys
+import types
 import unittest
 from unittest import mock
 import uuid
@@ -75,10 +76,12 @@ class FakeRuntime:
         self.utc += timedelta(seconds=seconds)
         self.mono += seconds
 
-    def validate(self, cfg):
+    def validate(self, cfg, study_root):
         if Path(cfg["audit_root"]) != self.root: raise m.Stop("paths")
         trees = [Path(cfg[key]) for key in ("control_root", "ledger_root", "inbox", "baseline_root", "blind_root", "score_root")]
-        if any(path.parent != self.root for path in trees): raise m.Stop("paths")
+        if study_root.parent != self.root: raise m.Stop("paths")
+        if any(path.parent != self.root for path in trees[:2]): raise m.Stop("paths")
+        if any(study_root not in path.parents for path in trees[2:]): raise m.Stop("paths")
         try: CAP._disjoint(trees)
         except CAP.CaptureError: raise m.Stop("paths") from None
         if Path(cfg["stop_signal"]) != Path(cfg["inbox"]) / "STOP.json": raise m.Stop("paths")
@@ -118,15 +121,18 @@ class Fixture:
         self.root = AUDIT / uuid.uuid4().hex
         self.root.mkdir()
         self.runtime = FakeRuntime(self.root)
-        for name in ("inbox", "baseline", "evidence"): (self.root / name).mkdir()
+        self.study = self.root / "study"
+        self.study.mkdir()
+        for name in ("inbox", "baseline"): (self.study / name).mkdir()
+        (self.root / "evidence").mkdir()
         self.source_path = self.root / "evidence" / ("9" * 32 + ".jsonl")
         self.source_path.write_bytes(b"")
         info = self.source_path.stat()
         self.cfg = {"audit_root": str(self.root),
-                    **{key: str(self.root / leaf) for key, leaf in
+                    **{key: str((self.root if key in ("control_root", "ledger_root") else self.study) / leaf) for key, leaf in
                        (("control_root", "control"), ("ledger_root", "ledger"), ("inbox", "inbox"),
                         ("baseline_root", "baseline"), ("blind_root", "blind"), ("score_root", "score"))},
-                    "stop_signal": str(self.root / "inbox" / "STOP.json"),
+                    "stop_signal": str(self.study / "inbox" / "STOP.json"),
                     "collection_start_utc": "2035-04-05T06:00:00Z",
                     "collection_end_utc": "2035-04-05T06:01:02Z",
                     "baseline_resolution_us": 1000000,
@@ -143,7 +149,7 @@ class Fixture:
 
     def bind(self, status="LOCKED", go_status="LOCKED_COLLECTION_GO"):
         self.p = {"schema": "wd.m1-p3-protocol-lock.v1", "status": status, "study_id": "3" * 32,
-                  "reporter_sources": copy.deepcopy(self.reporter_sources),
+                  "study_root": str(self.study), "reporter_sources": copy.deepcopy(self.reporter_sources),
                   "collection_controller": self.cfg, "scientific_fields_untouched": {"minimum_n": 40, "cap_n": 60, "seed": 20261019}}
         self.pb = m.canon(self.p); self.ph = m.sha(self.pb)
         self.manifest = {"schema": "wd.m1-p3-baseline.v1", "identity": {"study_id": "3" * 32, "protocol_sha256": self.ph},
@@ -152,8 +158,8 @@ class Fixture:
         self.mb = m.canon(self.manifest); self.mh = m.sha(self.mb)
         self.seal = {"schema": "wd.m1-p3-baseline-seal.v1", "status": "SEALED", "manifest_sha256": self.mh,
                      "sealed_utc": "2035-04-05T05:59:58.000000Z"}
-        (self.root / "baseline" / "manifest.json").write_bytes(self.mb)
-        (self.root / "baseline" / "SEALED.json").write_bytes(m.canon(self.seal))
+        (self.study / "baseline" / "manifest.json").write_bytes(self.mb)
+        (self.study / "baseline" / "SEALED.json").write_bytes(m.canon(self.seal))
         self.g = {"schema": "wd.m1-p3-collection-go.v1", "status": go_status, "study_id": "3" * 32,
                   "protocol_sha256": self.ph, "baseline_manifest_sha256": self.mh}
         self.gb = m.canon(self.g); self.gh = m.sha(self.gb)
@@ -181,7 +187,7 @@ class Fixture:
         return n
 
     def save(self, n):
-        path = self.root / "inbox" / (n["incident_id"] + ".json")
+        path = self.study / "inbox" / (n["incident_id"] + ".json")
         path.write_bytes(m.canon(n)); return path
 
     def controller(self, **kwargs):
@@ -193,6 +199,17 @@ class Fixture:
 
 
 class ControllerTests(unittest.TestCase):
+    def test_preexisting_shared_study_bytes_stop_before_attempt_outputs(self):
+        f = Fixture()
+        # Synthetic regression: the old controller counted only its own two
+        # output directories and ignored the other shared-study outputs.
+        with (f.study / "baseline" / "synthetic-padding").open("wb") as stream:
+            stream.truncate(8193)
+        with mock.patch.object(m, "BUDGET", 8192):
+            result = f.controller().run(execute=True)
+        self.assertEqual((result["status"], result["reason"]), ("STOP_NOT_READY", "budget"), result)
+        self.assertFalse((f.root / "control").exists())
+
     def test_verified_lookback_keeps_cursor_monotonic_and_context_available(self):
         # MUTANT_CONTEXT_LOST_AT_CURSOR / MUTANT_UNRECORDED_CURSOR_REWIND.
         f=Fixture(); first=f.nomination(identity="1"*32)
@@ -379,7 +396,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len({proof["record_sha256"], proof["supplied_jsonl_sha256"], proof["action_receipt_sha256"]}), 3)
         self.assertNotIn("situation", json.dumps(event))
         self.assertNotIn("synthetic-lesson", json.dumps(result))
-        total = sum(p.stat().st_size for root in ("control", "ledger") for p in (f.root / root).iterdir())
+        total = sum(m.forest_sizes(c.budget_roots).values())
         self.assertEqual(result["controlled_output_bytes"], total)
         self.assertTrue(f.runtime.closed)
 
@@ -496,12 +513,90 @@ class ControllerTests(unittest.TestCase):
         f = Fixture()
         for i in range(20):
             n = f.nomination(identity="%032x" % (i+1)); n["story"] = "synthetic"; f.save(n)
-        with mock.patch.object(m, "BUDGET", 8192):
+        with mock.patch.object(m, "BUDGET", 32768):
             c = f.controller(); result = c.run(execute=True)
         self.assertEqual(result["status"], "STOP_NOT_READY", result)
         self.assertEqual(result["reason"], "budget")
-        self.assertLessEqual(c.host.total, 8192)
+        self.assertLessEqual(c.host.total, 32768)
         self.assertGreater(len(c.host.files), 5)
+
+    def test_original_protocol_requires_disjoint_study_forest(self):
+        for variant in ("missing", "overlap", "escaped_child", "parent_traversal"):
+            f = Fixture()
+            if variant == "missing": del f.p["study_root"]
+            elif variant == "overlap": f.p["study_root"] = f.cfg["control_root"]
+            elif variant == "escaped_child": f.cfg["blind_root"] = str(f.root / "escaped-blind")
+            else: f.cfg["blind_root"] = str(f.study / ".." / "escaped-blind")
+            f.pb = m.canon(f.p); f.ph = m.sha(f.pb)
+            f.g["protocol_sha256"] = f.ph; f.gb = m.canon(f.g); f.gh = m.sha(f.gb)
+            result = f.controller().run(execute=True)
+            self.assertEqual((result["status"], result["reason"]), ("STOP_NOT_READY", "paths"), result)
+            self.assertFalse((f.root / "control").exists())
+
+    def test_nested_shared_outputs_count_once_and_absent_future_roots_cost_zero(self):
+        f = Fixture()
+        nested = f.study / "blind" / "nested"
+        nested.mkdir(parents=True)
+        (nested / "synthetic.bin").write_bytes(b"x" * 123)
+        roots = m.budget_forest(f.p, f.cfg)
+        sizes = m.forest_sizes(roots)
+        self.assertEqual(sizes[nested / "synthetic.bin"], 123)
+        self.assertEqual(len(sizes), 3)
+        self.assertFalse(roots[1].exists()); self.assertFalse(roots[2].exists())
+        c = f.controller(); result = c.run(execute=True)
+        self.assertEqual(result["status"], "CLOSED", result)
+        self.assertEqual(result["controlled_output_bytes"], sum(m.forest_sizes(roots).values()))
+
+    def test_shared_blind_tree_growth_stops_on_next_poll(self):
+        f = Fixture()
+        def grow():
+            root = f.study / "blind" / "nested"; root.mkdir(parents=True)
+            with (root / "synthetic.bin").open("wb") as stream: stream.truncate(32769)
+        f.runtime.on_sleep = grow
+        with mock.patch.object(m, "BUDGET", 32768):
+            result = f.controller().run(execute=True)
+        self.assertEqual((result["status"], result["reason"]), ("STOP_NOT_READY", "budget"), result)
+        self.assertTrue((f.root / "control" / "intent.json").exists())
+
+    def test_shared_forest_rejects_hardlinks_and_reparse_before_intent(self):
+        for variant in ("hardlink", "reparse"):
+            f = Fixture()
+            directory = f.study / "score"; directory.mkdir()
+            target = directory / "synthetic.bin"; target.write_bytes(b"synthetic")
+            if variant == "hardlink":
+                os.link(target, directory / "alias.bin")
+                result = f.controller().run(execute=True)
+            else:
+                original = Path.lstat
+                def marked(path, *args, **kwargs):
+                    item = original(path, *args, **kwargs)
+                    if path == directory:
+                        return types.SimpleNamespace(st_mode=item.st_mode, st_file_attributes=0x400)
+                    return item
+                with mock.patch.object(Path, "lstat", marked):
+                    result = f.controller().run(execute=True)
+            self.assertEqual((result["status"], result["reason"]), ("STOP_NOT_READY", "paths"), result)
+            self.assertFalse((f.root / "control").exists())
+
+    def test_failed_reservation_and_other_phase_growth_are_not_double_counted(self):
+        f = Fixture(); roots = m.budget_forest(f.p, f.cfg)
+        initial = sum(m.forest_sizes(roots).values())
+        control = Path(f.cfg["control_root"]); control.mkdir()
+        host = m.BudgetHost(f.runtime, roots)
+        f.runtime.host.partial = True
+        with self.assertRaises(OSError): host.write_new(control / "event-synthetic.json", b"x" * 100)
+        self.assertEqual(host.total, initial + 100)
+        score = f.study / "score"; score.mkdir()
+        (score / "synthetic.bin").write_bytes(b"x" * 50)
+        host.check_budget()
+        self.assertEqual(host.total, initial + 150)
+        self.assertEqual(sum(m.forest_sizes(roots).values()), initial + 19 + 50)
+
+    def test_budget_host_refuses_writes_outside_original_forest(self):
+        f = Fixture(); host = m.BudgetHost(f.runtime, m.budget_forest(f.p, f.cfg))
+        for escaped in (f.root / "synthetic-escape.json", f.study / ".." / "synthetic-escape.json"):
+            with self.assertRaisesRegex(m.Stop, "paths"): host.write_new(escaped, b"synthetic")
+            self.assertFalse(escaped.exists())
 
     def test_disk_floor_is_admission_stop_without_baseline_read(self):
         f = Fixture(); f.runtime.host.free -= 1; c = f.controller()
@@ -556,7 +651,7 @@ sys.exit(0)
         self.assertEqual(observations, [23])
 
     def test_inbox_mutation_after_processing_stops_not_relabels(self):
-        f = Fixture(); n = f.nomination(); path = f.root / "inbox" / (n["incident_id"]+".json")
+        f = Fixture(); n = f.nomination(); path = f.study / "inbox" / (n["incident_id"]+".json")
         f.runtime.on_sleep = lambda: path.write_bytes(b"{}")
         self.assertEqual(f.controller().run(execute=True)["reason"], "input_changed")
 
@@ -568,7 +663,7 @@ sys.exit(0)
         self.assertEqual(c.run(execute=True)["reason"], "already_attempted")
 
     def test_manual_stop_and_fixed_walltime(self):
-        f = Fixture(); (f.root / "inbox" / "STOP.json").write_bytes(m.canon({"schema":"wd.m1-p3-manual-stop.v1","study_id":"3"*32,"protocol_sha256":f.ph}))
+        f = Fixture(); (f.study / "inbox" / "STOP.json").write_bytes(m.canon({"schema":"wd.m1-p3-manual-stop.v1","study_id":"3"*32,"protocol_sha256":f.ph}))
         result = f.controller().run(execute=True)
         self.assertEqual((result["status"], result["reason"]), ("CLOSED", "manual_stop"))
         self.assertEqual(f.runtime.baseline_reads, 0)
@@ -577,7 +672,7 @@ sys.exit(0)
 
     def test_baseline_or_seal_corruption_stops_after_consumed_intent(self):
         for file in ("manifest.json", "SEALED.json"):
-            f = Fixture(); (f.root / "baseline" / file).write_bytes(b"{}")
+            f = Fixture(); (f.study / "baseline" / file).write_bytes(b"{}")
             result = f.controller().run(execute=True)
             self.assertEqual(result["status"], "STOP_NOT_READY")
             self.assertTrue((f.root / "control" / "intent.json").exists())

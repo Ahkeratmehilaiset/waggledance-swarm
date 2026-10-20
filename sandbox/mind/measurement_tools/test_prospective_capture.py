@@ -419,3 +419,223 @@ def test_invalid_identity_and_extreme_bounds_use_closed_refusals(synthetic, mode
         rows[-1]["timestamp"] = "9999-12-31T23:59:59.999999Z"
         with pytest.raises(pc.CaptureError):
             adapt(rows, collection_end_utc="9999-12-31T23:59:59.999999Z")
+
+
+def native_records():
+    """Only supplied structural metadata; every body/value is synthetic."""
+    rows = records()
+    for row, stamp in zip(rows, ("2026-10-20T10:00:02.000Z", "2026-10-20T10:00:04.000Z", "2026-10-20T10:00:06.123Z")):
+        row["timestamp"] = stamp
+    return rows
+
+
+def native_adapt(rows=None, **overrides):
+    kwargs = {"timestamp_resolution_us": 1000, "baseline_utc": "2026-10-20T10:00:00Z", "collection_start_utc": "2026-10-20T10:00:02Z", "collection_end_utc": "2026-10-20T11:00:00Z"}
+    kwargs.update(overrides)
+    return adapt(native_records() if rows is None else rows, **kwargs)
+
+
+def test_native_structural_metadata_thinking_caller_are_supported():
+    rows = native_records()
+    common = ("parentUuid", "cwd", "gitBranch", "isSidechain", "version", "entrypoint", "slug", "session_id")
+    assistant = ("requestId", "apiBlockIndex", "effort", "perTurnEffort", "advisorModel", "thinkingDurationMs", "wireToolInputs")
+    user = ("promptId", "sourceToolAssistantUUID", "toolUseResult", "permissionDecision", "origin", "turnOrigin")
+    for row in rows:
+        for key in common + (assistant if row["type"] == "assistant" else user):
+            row[key] = "SYNTHETIC_OPAQUE_METADATA"
+    rows[1]["message"]["content"].insert(0, {"type": "thinking", "thinking": "SYNTHETIC_THINKING", "signature": "SYNTHETIC_SIGNATURE"})
+    rows[1]["message"]["content"].append({"type": "tool_addition", "tool": {"name": "SYNTHETIC_TOOL_DEFINITION"}})
+    rows[-1]["message"]["content"][-1]["caller"] = {"type": "SYNTHETIC_CALLER"}
+    result = native_adapt(rows)
+    assert set(result) == {"schema", "session_id", "uuid", "tool_use_id", "record_sha256", "action_utc", "action_latest_utc", "timestamp_resolution_us", "supplied_jsonl_sha256", "preaction_record_sha256", "situation", "situation_sha256"}
+    assert result["session_id"] == SESSION
+    assert result["action_utc"] == "2026-10-20T10:00:06.123Z"
+    assert result["action_latest_utc"] == "2026-10-20T10:00:06.124000Z"
+    assert "SYNTHETIC_" not in result["situation"]
+    assert result["record_sha256"] == sha(raw(rows[-1]))
+
+
+def test_unused_thinking_record_cannot_create_context_time_rejection():
+    rows = native_records()
+    rows.insert(-1, {"type": "assistant", "sessionId": SESSION, "uuid": "00000000-0000-4000-8000-000000000004", "timestamp": "2026-10-20T10:00:06.123Z", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "SYNTHETIC_EXCLUDED_THINKING", "signature": "SYNTHETIC_EXCLUDED_SIGNATURE"}]}})
+    assert native_adapt(rows)["situation"] == "Check the synthetic operation carefully. | I will inspect the synthetic state first."
+
+
+def test_native_milliseconds_accept_independent_whole_second_boundaries():
+    assert native_adapt()["timestamp_resolution_us"] == 1000
+
+
+def test_prior_tool_input_description_never_enters_context():
+    rows = records()
+    rows[1]["message"]["content"].append({"type": "tool_use", "id": "toolu_synthetic_prior", "name": "Bash", "input": {"description": "SYNTHETIC_EXCLUDED_PRIOR_DESCRIPTION", "command": "SYNTHETIC_EXCLUDED_PRIOR_INPUT"}})
+    result = adapt(rows)
+    assert "SYNTHETIC_EXCLUDED" not in result["situation"]
+
+
+OPAQUE_TYPES = (
+    "attachment", "queue-operation", "system", "last-prompt", "custom-title",
+    "agent-name", "mode", "permission-mode", "atis-latch", "api-request-blob",
+    "file-history-delta", "api-request", "file-history-snapshot", "cost-state",
+    "api-request-shape", "pr-link",
+)
+
+
+@pytest.mark.parametrize("kind", OPAQUE_TYPES)
+def test_named_opaque_records_are_counted_without_identity_clock_or_context(kind):
+    rows = native_records()
+    opaque = {"type": kind, "timestamp": "opaque-not-a-clock", "sessionId": "opaque-not-a-session", "payload": "SYNTHETIC_OPAQUE_LEAK", "message": {"role": "user", "content": "SYNTHETIC_OPAQUE_LEAK"}}
+    rows.insert(0, opaque)
+    data = b"\n".join(raw(row) for row in rows) + b"\n"
+    result = native_adapt(rows)
+    assert result["situation"] == "Check the synthetic operation carefully. | I will inspect the synthetic state first."
+    assert result["preaction_record_sha256"][0] == sha(raw(opaque))
+    receipt = pc.native_record_dispositions(data)
+    assert receipt == {
+        "schema": "wd.m1-p3-native-record-dispositions.v1", "supplied_jsonl_sha256": sha(data),
+        "supplied_bytes": len(data), "records_total": 4, "native_records": 3,
+        "opaque_records": 1, "opaque_by_type": {kind: 1}, "context_candidate_records": 3,
+        "native_without_context_records": 0,
+        "excluded_blocks": {"thinking": 0, "tool_use": 1, "tool_result": 0, "tool_addition": 0},
+    }
+    assert "SYNTHETIC_OPAQUE_LEAK" not in json.dumps(receipt)
+
+
+def test_disposition_counts_include_excluded_native_blocks_not_payloads():
+    rows = native_records()
+    rows[1]["message"]["content"] = [
+        {"type": "thinking", "thinking": "SYNTHETIC_THINKING", "signature": "SYNTHETIC_SIGNATURE"},
+        {"type": "tool_use", "id": "toolu_synthetic_prior", "name": "Read", "input": {"description": "SYNTHETIC_INPUT"}, "caller": "SYNTHETIC_CALLER"},
+        {"type": "tool_addition", "tool": {"description": "SYNTHETIC_TOOL"}},
+    ]
+    rows.insert(-1, {"type": "user", "sessionId": SESSION, "uuid": "00000000-0000-4000-8000-000000000005", "timestamp": "2026-10-20T10:00:06.123Z", "message": {"role": "user", "content": [{"type": "text", "text": "SYNTHETIC_RESULT_NEIGHBOUR"}, {"type": "tool_result", "tool_use_id": "toolu_synthetic_prior", "content": [{"type": "text", "text": "SYNTHETIC_RESULT"}]}]}})
+    data = b"\n".join(raw(row) for row in rows) + b"\n"
+    assert native_adapt(rows)["situation"] == "Check the synthetic operation carefully."
+    receipt = pc.native_record_dispositions(data)
+    assert receipt["native_records"] == 4
+    assert receipt["context_candidate_records"] == 2  # Includes final action text, never admitted as context.
+    assert receipt["native_without_context_records"] == 2
+    assert receipt["excluded_blocks"] == {"thinking": 1, "tool_use": 2, "tool_result": 1, "tool_addition": 1}
+    assert "SYNTHETIC_" not in json.dumps(receipt)
+
+
+def test_original_noncanonical_raw_record_and_crlf_prefix_hashes_are_preserved():
+    rows = native_records()
+    rows.insert(0, {"type": "system", "payload": "SYNTHETIC_OPAQUE"})
+    lines = [json.dumps(row, sort_keys=False, separators=(", ", ": ")).encode() for row in rows]
+    data = b"\r\n".join(lines) + b"\r\n"
+    reference = {"session_id": SESSION, "uuid": IDS[2], "tool_use_id": "toolu_synthetic1", "record_sha256": sha(lines[-1]), "action_utc": rows[-1]["timestamp"]}
+    result = pc.extract_action_evidence(data, reference=reference, baseline_utc="2026-10-20T10:00:00Z", collection_start_utc="2026-10-20T10:00:02Z", collection_end_utc="2026-10-20T11:00:00Z", timestamp_resolution_us=1000)
+    assert result["record_sha256"] == sha(lines[-1]) != sha(raw(rows[-1]))
+    assert result["preaction_record_sha256"] == [sha(line) for line in lines[:-1]]
+    assert result["supplied_jsonl_sha256"] == pc.native_record_dispositions(data)["supplied_jsonl_sha256"] == sha(data)
+
+
+@pytest.mark.parametrize("mode", ["unknown_record", "unknown_field", "thinking_extra", "thinking_type", "tool_addition_extra", "caller_neighbour", "bad_meta", "bad_result"])
+def test_native_unknown_or_malformed_shapes_refuse_without_payload_leak(mode):
+    rows = native_records()
+    secret = "SYNTHETIC_MALFORMED_PAYLOAD"
+    if mode == "unknown_record":
+        rows.insert(0, {"type": "undeclared-native-kind", "payload": secret})
+    elif mode == "unknown_field":
+        rows[1]["undeclared_native_metadata"] = secret
+    elif mode.startswith("thinking"):
+        block = {"type": "thinking", "thinking": secret, "signature": secret}
+        if mode == "thinking_extra":
+            block["extra"] = secret
+        else:
+            block["signature"] = {"not": "a signature string"}
+        rows[1]["message"]["content"].append(block)
+    elif mode == "tool_addition_extra":
+        rows[1]["message"]["content"].append({"type": "tool_addition", "tool": {}, "extra": secret})
+    elif mode == "caller_neighbour":
+        rows[-1]["message"]["content"][-1]["undeclared_caller_field"] = secret
+    elif mode == "bad_meta":
+        rows[0]["isMeta"] = "not-a-boolean"
+    else:
+        rows[0]["message"]["content"] = [{"type": "tool_result", "tool_use_id": "toolu_prior", "content": secret, "is_error": "not-a-boolean"}]
+    with pytest.raises(pc.CaptureError) as error:
+        native_adapt(rows)
+    assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize("bad", [b'{"type":"system",broken}\n', b'{"type":"system","type":"attachment"}\n', b'{"type":["system"]}\n', b'null\n'])
+def test_opaque_labels_do_not_hide_malformed_json_or_duplicate_keys(bad):
+    with pytest.raises(pc.CaptureError):
+        pc.native_record_dispositions(bad)
+
+
+def test_opaque_uuid_collision_and_trailing_records_cannot_hide_action_identity():
+    rows = native_records()
+    rows.insert(0, {"type": "system", "uuid": IDS[2], "payload": "SYNTHETIC_OPAQUE"})
+    with pytest.raises(pc.CaptureError, match="duplicate_uuid"):
+        native_adapt(rows)
+    rows = native_records()
+    data = b"\n".join(raw(row) for row in rows) + b'\n{"type":"system"}\n'
+    reference = {"session_id": SESSION, "uuid": IDS[2], "tool_use_id": "toolu_synthetic1", "record_sha256": sha(raw(rows[-1])), "action_utc": rows[-1]["timestamp"]}
+    with pytest.raises(pc.CaptureError, match="exact_action_not_final"):
+        pc.extract_action_evidence(data, reference=reference, baseline_utc="2026-10-20T10:00:00Z", collection_start_utc="2026-10-20T10:00:02Z", collection_end_utc="2026-10-20T11:00:00Z", timestamp_resolution_us=1000)
+
+
+def test_opaque_session_alias_cannot_replace_native_session_binding():
+    rows = native_records()
+    for row in rows:
+        row["session_id"] = "SYNTHETIC_ALIAS_NOT_NATIVE_ID"
+    assert native_adapt(rows)["session_id"] == SESSION
+    reference = {"session_id": "SYNTHETIC_ALIAS_NOT_NATIVE_ID", "uuid": IDS[2], "tool_use_id": "toolu_synthetic1", "record_sha256": sha(raw(rows[-1])), "action_utc": rows[-1]["timestamp"]}
+    with pytest.raises(pc.CaptureError, match="session_identity_mismatch"):
+        native_adapt(rows, reference=reference)
+
+
+@pytest.mark.parametrize("gap_ms,allowed", [(0, False), (1, False), (2, True)])
+def test_relevant_context_native_uncertainty_stays_strict(gap_ms, allowed):
+    rows = native_records()
+    rows[1]["timestamp"] = f"2026-10-20T10:00:06.{123-gap_ms:03d}Z"
+    if allowed:
+        assert native_adapt(rows)["situation"]
+    else:
+        with pytest.raises(pc.CaptureError, match="preaction_time_uncertain"):
+            native_adapt(rows)
+
+
+def test_unused_old_text_notification_and_thinking_clocks_do_not_enter_cut():
+    rows = native_records()
+    old = {"type": "assistant", "sessionId": SESSION, "uuid": "00000000-0000-4000-8000-000000000006", "timestamp": "2026-10-20T10:00:59Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "SYNTHETIC_UNSELECTED_OLD_TEXT"}]}}
+    notice = {"type": "user", "sessionId": SESSION, "uuid": "00000000-0000-4000-8000-000000000007", "timestamp": "2026-10-20T10:00:59Z", "message": {"role": "user", "content": "<task-notification>SYNTHETIC_EXCLUDED_NOTICE</task-notification>"}}
+    thinking = {"type": "assistant", "sessionId": SESSION, "uuid": "00000000-0000-4000-8000-000000000008", "timestamp": "2026-10-20T10:00:59Z", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "SYNTHETIC_EXCLUDED_THINKING", "signature": "SYNTHETIC_SIGNATURE"}]}}
+    rows.insert(0, old)
+    rows.insert(-1, notice)
+    rows.insert(-1, thinking)
+    assert native_adapt(rows)["situation"] == "Check the synthetic operation carefully. | I will inspect the synthetic state first."
+
+
+@pytest.mark.parametrize("milliseconds,allowed", [(0, False), (1, True)])
+def test_baseline_has_independent_one_second_bound_plus_strict_guard(milliseconds, allowed):
+    rows = native_records()
+    rows[0]["timestamp"] = "2026-10-20T10:00:00.500Z"
+    rows[1]["timestamp"] = "2026-10-20T10:00:01.000Z"
+    rows[-1]["timestamp"] = f"2026-10-20T10:00:02.{milliseconds:03d}Z"
+    if allowed:
+        assert native_adapt(rows, collection_start_utc="2026-10-20T10:00:01.001Z")["situation"]
+    else:
+        with pytest.raises(pc.CaptureError, match="strict_window"):
+            native_adapt(rows, collection_start_utc="2026-10-20T10:00:01.001Z")
+
+
+def test_start_and_close_use_own_conservative_precision_bounds():
+    rows = native_records()
+    rows[0]["timestamp"] = "2026-10-20T10:00:00.500Z"
+    rows[1]["timestamp"] = "2026-10-20T10:00:01.500Z"
+    rows[-1]["timestamp"] = "2026-10-20T10:00:02.500Z"
+    with pytest.raises(pc.CaptureError, match="strict_window"):
+        native_adapt(rows)  # Whole-second start02Z may be as late as03Z.
+    rows[-1]["timestamp"] = "2026-10-20T10:00:02.999Z"
+    assert native_adapt(rows, collection_start_utc="2026-10-20T10:00:01.001Z", collection_end_utc="2026-10-20T10:00:03Z")["action_latest_utc"] == "2026-10-20T10:00:03.000000Z"
+    rows[-1]["timestamp"] = "2026-10-20T10:00:03.000Z"
+    with pytest.raises(pc.CaptureError, match="strict_window"):
+        native_adapt(rows, collection_start_utc="2026-10-20T10:00:01.001Z", collection_end_utc="2026-10-20T10:00:03Z")
+
+
+def test_disposition_api_stays_bounded_and_payload_free(monkeypatch):
+    monkeypatch.setattr(pc, "BUDGET_BYTES", 8)
+    with pytest.raises(pc.CaptureError, match="evidence_bytes_invalid"):
+        pc.native_record_dispositions(b'{"type":"system","secret":"SYNTHETIC"}\n')

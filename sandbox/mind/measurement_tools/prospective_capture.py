@@ -393,7 +393,34 @@ def verify_baseline(destination, *, expected_manifest_sha256):
         return receipt
 
 
+_OPAQUE_NATIVE_RECORD_TYPES = frozenset({
+    "attachment", "queue-operation", "system", "last-prompt", "custom-title",
+    "agent-name", "mode", "permission-mode", "atis-latch", "api-request-blob",
+    "file-history-delta", "api-request", "file-history-snapshot", "cost-state",
+    "api-request-shape", "pr-link",
+})
+_NATIVE_COMMON_METADATA = frozenset({
+    "parentUuid", "cwd", "gitBranch", "isSidechain", "version", "entrypoint",
+    "slug", "session_id", "userType", "agentId", "permissionMode", "isMeta",
+})
+_NATIVE_ASSISTANT_METADATA = frozenset({
+    "requestId", "apiBlockIndex", "effort", "perTurnEffort", "advisorModel",
+    "thinkingDurationMs", "wireToolInputs",
+})
+_NATIVE_USER_METADATA = frozenset({
+    "promptId", "sourceToolAssistantUUID", "toolUseResult", "permissionDecision",
+    "origin", "turnOrigin",
+})
+
+
 def _content(record):
+    """Validate declared native shapes; opaque fields never supply context.
+
+    sessionId is the native UUID. Optional session_id is an opaque alias and is
+    neither normalized nor equated with sessionId/reference.session_id.
+    """
+    if not isinstance(record, dict) or record.get("type") not in ("user", "assistant"):
+        _fail("unsupported_record_type")
     if not isinstance(record, dict) or not isinstance(record.get("sessionId"), str):
         _fail("session_identity_missing")
     try:
@@ -401,9 +428,10 @@ def _content(record):
             _fail("session_identity_invalid")
     except (ValueError, AttributeError, TypeError):
         _fail("session_identity_invalid")
-    _keys(record, ("type", "uuid", "timestamp", "message", "sessionId"), ("parentUuid", "cwd", "isSidechain", "userType", "version", "requestId", "agentId", "slug", "gitBranch", "permissionMode", "isMeta"))
-    if record["type"] not in ("user", "assistant"):
-        _fail("unsupported_record_type")
+    metadata = _NATIVE_COMMON_METADATA | (_NATIVE_ASSISTANT_METADATA if record["type"] == "assistant" else _NATIVE_USER_METADATA)
+    _keys(record, ("type", "uuid", "timestamp", "message", "sessionId"), metadata)
+    if "isMeta" in record and type(record["isMeta"]) is not bool:
+        _fail("meta_flag_invalid")
     try:
         if str(uuid.UUID(record["uuid"])) != record["uuid"]:
             _fail("uuid_invalid")
@@ -429,7 +457,7 @@ def _content(record):
             if not isinstance(item["text"], str):
                 _fail("text_invalid")
         elif kind == "tool_use" and record["type"] == "assistant":
-            _keys(item, ("type", "id", "name", "input"))
+            _keys(item, ("type", "id", "name", "input"), ("caller",))
             if not isinstance(item["input"], dict) or not isinstance(item["name"], str) or not item["name"] or not isinstance(item["id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item["id"]) or item["id"] in tool_ids:
                 _fail("tool_identity_invalid")
             tool_ids.add(item["id"])
@@ -437,11 +465,19 @@ def _content(record):
             _keys(item, ("type", "tool_use_id", "content"), ("is_error",))
             if not isinstance(item["tool_use_id"], str) or not isinstance(item["content"], (str, list)):
                 _fail("tool_result_invalid")
+            if "is_error" in item and type(item["is_error"]) is not bool:
+                _fail("tool_result_invalid")
             if isinstance(item["content"], list):
                 for block in item["content"]:
                     _keys(block, ("type", "text"))
                     if block["type"] != "text" or not isinstance(block["text"], str):
                         _fail("tool_result_invalid")
+        elif kind == "thinking" and record["type"] == "assistant":
+            _keys(item, ("type", "thinking", "signature"))
+            if not isinstance(item["thinking"], str) or not isinstance(item["signature"], str):
+                _fail("thinking_shape_invalid")
+        elif kind == "tool_addition":
+            _keys(item, ("type", "tool"))  # Tool definition itself is opaque.
         else:
             _fail("unsupported_content_type")
     return content
@@ -451,45 +487,117 @@ def _collapse(text):
     return " ".join(text.split())
 
 
-def extract_action_evidence(jsonl, *, reference, baseline_utc, collection_start_utc, collection_end_utc, timestamp_resolution_us):
-    """Pure adapter. All supplied records must precede the exact final action.
+def _context_candidate(record, content):
+    """Literal predicate; only these candidates can become timed context.
 
-    timestamp_resolution_us must conservatively bound every supplied native
-    timestamp's resolution (1..1,000,000us). Whole seconds require 1,000,000us.
-    Pre-action latest possible UTC must be strictly before action earliest UTC.
-    Baseline+one second uses the same conservative forward uncertainty bound.
+    Non-meta assistant text, or non-meta user text without tool_result blocks,
+    after paired reminder removal and the fixed notification exclusions. No
+    thinking/signature, tool input/result, tool definition, caller, attachment,
+    optional metadata, or action-record text is a source of situation text.
+    """
+    if content is None or record.get("isMeta", False):
+        return None
+    text = " ".join(item["text"] for item in content if item["type"] == "text")
+    if record["type"] == "user":
+        if any(item["type"] == "tool_result" for item in content):
+            return None
+        text = _REMINDER.sub(" ", text).strip()
+        if any(tag in text[:200] for tag in _NOT_GENUINE):
+            return None
+    text = _collapse(text)
+    return (record["type"], text) if text else None
 
-    NEW strict pre-action recipe, not byte-identical DAAE: last genuine user
-    text (collapse whitespace; over244 chars -> first120 + ' .. ' + last120),
-    subsequent earlier assistant owntext tail250, last earlier tool description
-    head100, joined with ' | ', capped600. Notifications/reminders/tool results
-    are excluded. All text and inputs in the action record are excluded.
+
+def _native_prefix(jsonl):
+    """Parse all supplied bounded bytes, including explicitly opaque records.
+
+    Opaque types require only an object with an explicitly named type; all
+    remaining fields have no context/time/session semantics. String UUIDs are
+    still checked for collisions across the entire prefix, including opaque
+    records, so an opaque record cannot hide a second action identity.
     """
     if not isinstance(jsonl, bytes) or not jsonl or len(jsonl) > BUDGET_BYTES:
         _fail("evidence_bytes_invalid")
-    rows, contents, hashes, seen = [], [], [], set()
+    rows, contents, hashes, contexts, seen = [], [], [], [], set()
+    counts = {"native_records": 0, "opaque_records": 0, "context_candidate_records": 0,
+              "native_without_context_records": 0, "opaque_by_type": {},
+              "excluded_blocks": {"thinking": 0, "tool_use": 0, "tool_result": 0, "tool_addition": 0}}
     for line in jsonl.splitlines():
         record = _json(line)
-        content = _content(record)
-        if record["uuid"] in seen:
-            _fail("duplicate_uuid")
-        seen.add(record["uuid"])
+        if not isinstance(record, dict) or not isinstance(record.get("type"), str):
+            _fail("record_shape_invalid")
+        kind = record["type"]
+        if kind in _OPAQUE_NATIVE_RECORD_TYPES:
+            content = context = None
+            counts["opaque_records"] += 1
+            counts["opaque_by_type"][kind] = counts["opaque_by_type"].get(kind, 0) + 1
+        else:
+            content = _content(record)  # Unknown types/shapes refuse, never skip.
+            context = _context_candidate(record, content)
+            counts["native_records"] += 1
+            counts["context_candidate_records" if context else "native_without_context_records"] += 1
+            for block in content:
+                if block["type"] in counts["excluded_blocks"]:
+                    counts["excluded_blocks"][block["type"]] += 1
+        identity = record.get("uuid")
+        if isinstance(identity, str):
+            if identity in seen:
+                _fail("duplicate_uuid")
+            seen.add(identity)
         rows.append(record)
         contents.append(content)
         hashes.append(_sha(line))
+        contexts.append(context)
+    counts["opaque_by_type"] = dict(sorted(counts["opaque_by_type"].items()))
+    return rows, contents, hashes, contexts, counts
+
+
+def native_record_dispositions(jsonl):
+    """Pure counted disposition of original bounded bytes, never a data reader.
+
+    Candidate counts precede anchor selection and are NOT admitted-context or
+    incident counts. The final action's text can be a candidate here, but is
+    always excluded by extract_action_evidence. Payloads are never returned.
+    """
+    rows, _, _, _, counts = _native_prefix(jsonl)
+    return {"schema": "wd.m1-p3-native-record-dispositions.v1",
+            "supplied_jsonl_sha256": _sha(jsonl), "supplied_bytes": len(jsonl),
+            "records_total": len(rows), **counts}
+
+
+def _represented_resolution_us(stamp):
+    parse_utc(stamp)
+    digits = len(stamp.split(".")[1][:-1]) if "." in stamp else 0
+    return 10 ** (6 - digits)
+
+
+def extract_action_evidence(jsonl, *, reference, baseline_utc, collection_start_utc, collection_end_utc, timestamp_resolution_us):
+    """Pure adapter; exact action must be the final original supplied record.
+
+    Native resolution (1..1,000,000us) applies to the action and selected literal
+    context only; .mmmZ requires at least1000us. Baseline availability always has
+    a separate1second forward bound, then a strict additional1second guard.
+    Start uses its represented precision's forward upper bound; close uses its
+    earliest represented UTC. Whole-second boundaries do not change native
+    resolution. Opaque/unused native records never enter context clock checks.
+
+    NEW strict pre-action recipe, not byte-identical DAAE: select the last genuine
+    user candidate, plus subsequent pre-action assistant text candidates. Collapse
+    whitespace; user over244 -> first120+' .. '+last120; owntext tail250; join
+    with ' | '; cap600. No tool description/input, thinking, result or action
+    text. Older unselected candidates have no context-time role. Every selected
+    candidate's latest possible UTC must be strictly before action earliest UTC;
+    no fallback to an older candidate on uncertainty.
+    """
+    rows, contents, hashes, contexts, _ = _native_prefix(jsonl)
     _keys(reference, ("session_id", "uuid", "tool_use_id", "record_sha256", "action_utc"))
-    sessions = {r["sessionId"] for r in rows}
+    sessions = {row["sessionId"] for row, content in zip(rows, contents) if content is not None}
     if not isinstance(reference["session_id"], str) or len(sessions) != 1 or reference["session_id"] not in sessions:
         _fail("session_identity_mismatch")
     if type(timestamp_resolution_us) is not int or not 1 <= timestamp_resolution_us <= 1_000_000:
         _fail("timestamp_resolution_unknown")
     delta = dt.timedelta(microseconds=timestamp_resolution_us)
-    for stamp in [r["timestamp"] for r in rows] + [baseline_utc, collection_start_utc, collection_end_utc]:
-        parse_utc(stamp)
-        digits = len(stamp.split(".")[1][:-1]) if "." in stamp else 0
-        if 10 ** (6 - digits) > timestamp_resolution_us:
-            _fail("timestamp_resolution_understated")
-    matches = [i for i, row in enumerate(rows) if row["uuid"] == reference["uuid"]]
+    matches = [i for i, row in enumerate(rows) if row.get("uuid") == reference["uuid"]]
     if len(matches) != 1 or matches[0] != len(rows) - 1:
         _fail("exact_action_not_final")
     index = matches[0]
@@ -503,35 +611,35 @@ def extract_action_evidence(jsonl, *, reference, baseline_utc, collection_start_
     selected = [item for item in tools if item["id"] == reference["tool_use_id"]] if reference["tool_use_id"] is not None else tools
     if len(selected) != 1:
         _fail("tool_identity_mismatch")
+    chosen = []
+    for i in range(index - 1, -1, -1):
+        if contexts[i] is not None:
+            chosen.append(i)
+            if contexts[i][0] == "user":
+                break
+    chosen.reverse()
+    for i in [*chosen, index]:
+        if _represented_resolution_us(rows[i]["timestamp"]) > timestamp_resolution_us:
+            _fail("timestamp_resolution_understated")
     baseline, start, end = map(parse_utc, (baseline_utc, collection_start_utc, collection_end_utc))
     try:
-        outside = not baseline + delta < start or not start < end or not when > baseline + delta + dt.timedelta(seconds=1) or not when >= start + delta or not when + delta <= end
+        baseline_upper = baseline + dt.timedelta(seconds=1)
+        start_upper = start + dt.timedelta(microseconds=_represented_resolution_us(collection_start_utc))
+        action_upper = when + delta
+        outside = not baseline_upper < start or not start < end or not when > baseline_upper + dt.timedelta(seconds=1) or not when >= start_upper or not action_upper <= end
+        times = [parse_utc(rows[i]["timestamp"]) for i in chosen]
+        uncertain = any(t + delta >= when for t in times) or times != sorted(times)
     except OverflowError:
         _fail("timestamp_bounds_overflow")
     if outside:
         _fail("action_time_outside_strict_window")
-    times = [parse_utc(row["timestamp"]) for row in rows[:index]]
-    if any(t + delta >= when for t in times) or times != sorted(times):
+    if uncertain:
         _fail("preaction_time_uncertain")
-    user, own, description = "", [], ""
-    for i in range(index - 1, -1, -1):
-        content = contents[i]
-        text = " ".join(item["text"] for item in content if item["type"] == "text")
-        if rows[i]["type"] == "user" and not rows[i].get("isMeta", False) and not any(item["type"] == "tool_result" for item in content):
-            text = _REMINDER.sub(" ", text).strip()
-            if text and not any(tag in text[:200] for tag in _NOT_GENUINE):
-                user = _collapse(text)
-                break
-        if rows[i]["type"] == "assistant":
-            own.append(text)
-            if not description:
-                for item in reversed(content):
-                    if item["type"] == "tool_use" and isinstance(item["input"].get("description"), str):
-                        description = _collapse(item["input"]["description"])[:100]
-                        break
+    user = next((contexts[i][1] for i in chosen if contexts[i][0] == "user"), "")
+    own = [contexts[i][1] for i in chosen if contexts[i][0] == "assistant"]
     if len(user) > 244:
         user = user[:120] + " .. " + user[-120:]
-    parts = [user, _collapse(" ".join(reversed(own)))[-250:], description]
+    parts = [user, _collapse(" ".join(own))[-250:]]
     situation = " | ".join(part for part in parts if part)[:600]
     if not situation:
         _fail("situation_empty")

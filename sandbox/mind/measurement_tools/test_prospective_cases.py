@@ -67,7 +67,7 @@ def synthetic(n=1, *, names=None, situations=None, kinds=None, times=None, capsu
     capsule = {"schema": "wd.m1-p3-case-bindings.v1", "study_id": study, "protocol_sha256": sha(protocol),
                "baseline_manifest_sha256": sha(manifest), "baseline_seal_sha256": sha(seal),
                "capture_identity_sha256": sha(raw(identity)), "collection_start_utc": "2035-04-05T06:00:00Z",
-               "collection_end_utc": "2035-04-06T06:00:00Z", "timestamp_resolution_us": 1_000_000,
+               "collection_end_utc": "2035-04-06T06:00:00Z", "timestamp_resolution_us": 1000,
                "baseline_resolution_us": 1_000_000, "max_record_delay_seconds": 120,
                "allowed_reporters": [reporter], "privacy_source_sha256": "4" * 64,
                "evidence_source_sha256": cases.EVIDENCE_SOURCE_SHA256, "source_commit": cases.MEASURED_SOURCE,
@@ -84,20 +84,22 @@ def synthetic(n=1, *, names=None, situations=None, kinds=None, times=None, capsu
         action_uuid = str(uuid.UUID(int=i + 1000))
         stamp = (times or ["2035-04-05T06:01:00Z"] * n)[i]
         when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        native_stamp = when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        action_second = when.replace(microsecond=0)
         context = (situations or ["Inspect the synthetic service settings before applying changes."] * n)[i]
         user = {"type": "user", "sessionId": native_session, "uuid": str(uuid.UUID(int=i + 10000)),
-                "timestamp": (when - dt.timedelta(seconds=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": (when - dt.timedelta(seconds=3)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "message": {"role": "user", "content": context or "A temporary fabricated preaction context"}}
         action = {"type": "assistant", "sessionId": native_session, "uuid": action_uuid,
-                  "timestamp": stamp, "message": {"role": "assistant", "content": [
+                  "timestamp": native_stamp, "message": {"role": "assistant", "content": [
                       {"type": "tool_use", "id": f"synthetic_tool_{i}", "name": "Edit",
                        "input": {"description": "ACTION INPUT MUST NOT ENTER SITUATION"}}]}}
         source = raw(user) + b"\n" + raw(action) + b"\n"
         evidence = capture.extract_action_evidence(source,
             reference={"session_id": native_session, "uuid": action_uuid,
-                       "tool_use_id": f"synthetic_tool_{i}", "record_sha256": sha(raw(action)), "action_utc": stamp},
+                       "tool_use_id": f"synthetic_tool_{i}", "record_sha256": sha(raw(action)), "action_utc": native_stamp},
             baseline_utc=json.loads(seal)["sealed_utc"], collection_start_utc=capsule["collection_start_utc"],
-            collection_end_utc=capsule["collection_end_utc"], timestamp_resolution_us=1_000_000)
+            collection_end_utc=capsule["collection_end_utc"], timestamp_resolution_us=1000)
         if not context:
             # Explicit malformed/empty upstream seam used only for exclusion tests.
             evidence["situation"] = ""
@@ -105,7 +107,8 @@ def synthetic(n=1, *, names=None, situations=None, kinds=None, times=None, capsu
         incident = {"schema": "wd.prospective-incident.v1", "study_id": study, "protocol_sha256": sha(protocol),
                     "baseline_sha256": sha(manifest), "incident_id": cid,
                     "incident_kind": (kinds or ["recurred"] * n)[i], "reporter": copy.deepcopy(reporter),
-                    "action_time_utc": stamp, "recorded_at_utc": (when + dt.timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "action_time_utc": action_second.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "recorded_at_utc": (action_second + dt.timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "action_ref": f"{i + 5000:032x}", "action_time_resolution_seconds": 1,
                     "action_sha256": evidence["record_sha256"], "action_receipt_sha256": "5" * 64,
                     "lesson_ref": cases.lesson_ref(name), "baseline_blob_sha256": sha(bodies[name])}
@@ -163,6 +166,53 @@ def test_roundtrip_fixed_snapshot_commitment_and_strict_projection():
     assert counts["kept"] == 2 and counts["dropped"] == 0
     assert set(counts["drops_by_grader_reason"]) == cases.GRADER_REASONS
     assert all(not row["kept"] and row["drop_reason"] is None for row in json.loads(result.cases_pre_json))
+
+
+def test_native_millisecond_instant_binds_within_recorder_whole_second():
+    bundle = synthetic(times=["2035-04-05T06:01:00.123Z"])
+    incident = json.loads(bundle["entries"][0].incident_json)
+    evidence = json.loads(bundle["entries"][0].evidence_json)
+    row = json.loads(construct(bundle).cases_json)[0]
+    assert row["kept"] is True
+    assert row["time"] == incident["action_time_utc"] == "2035-04-05T06:01:00Z"
+    assert row["native_action_utc"] == evidence["action_utc"] == "2035-04-05T06:01:00.123Z"
+    assert row["native_action_latest_utc"] == "2035-04-05T06:01:00.124000Z"
+    assert row["native_action_record_sha256"] == evidence["record_sha256"] == incident["action_sha256"]
+
+
+def test_native_last_millisecond_fits_recorder_interval_without_rounding():
+    bundle = synthetic(times=["2035-04-05T06:01:00.999Z"])
+    row = json.loads(construct(bundle).cases_json)[0]
+    assert row["native_action_utc"] == "2035-04-05T06:01:00.999Z"
+    assert row["native_action_latest_utc"] == "2035-04-05T06:01:01.000000Z"
+    assert row["time"] == "2035-04-05T06:01:00Z" and row["kept"] is True
+
+
+@pytest.mark.parametrize("recorder_stamp", ["2035-04-05T06:00:59Z", "2035-04-05T06:01:01Z"])
+def test_native_instant_cannot_bind_to_adjacent_recorder_second(recorder_stamp):
+    bundle = synthetic(times=["2035-04-05T06:01:00.123Z"])
+    incident = json.loads(bundle["entries"][0].incident_json)
+    incident["action_time_utc"] = recorder_stamp
+    replace_entry(bundle, 0, incident=incident)
+    with pytest.raises(cases.NotReady, match="clock"):
+        construct(bundle)
+
+
+def test_native_interval_crossing_recorder_boundary_is_fatal():
+    bundle = synthetic(times=["2035-04-05T06:01:00.999Z"])
+    evidence = json.loads(bundle["entries"][0].evidence_json)
+    evidence.update(action_utc="2035-04-05T06:01:00.999500Z", action_latest_utc="2035-04-05T06:01:01.000500Z")
+    replace_entry(bundle, 0, evidence=evidence)
+    with pytest.raises(cases.NotReady, match="clock"):
+        construct(bundle)
+
+
+def test_native_precision_cannot_admit_recorder_collection_close_tie():
+    bundle = synthetic(times=["2035-04-06T05:59:59.123Z"])
+    # Native upper bound is before close, but the recorder's full 1s interval
+    # touches close and remains invalid under the frozen recorder predicate.
+    with pytest.raises(cases.NotReady, match="clock"):
+        construct(bundle)
 
 
 def test_exact_case_sensitive_lesson_reference():
@@ -225,7 +275,8 @@ def test_lesson_reference_refuses_non_ascii_paths_and_non_lessons(name):
     {"minimum_n": 39}, {"cap_n": 61}, {"seed": 1}, {"arm_a_version": "v22"},
     {"source_commit": "0" * 40}, {"arm_b_sha256": "0" * 64}, {"grader_sha256": "0" * 64},
     {"evidence_source_sha256": "0" * 64}, {"baseline_resolution_us": 0},
-    {"timestamp_resolution_us": True}, {"collection_end_utc": "UNKNOWN"},
+    {"timestamp_resolution_us": True}, {"timestamp_resolution_us": 1_000_000},
+    {"baseline_resolution_us": 1000}, {"collection_end_utc": "UNKNOWN"},
     {"allowed_reporters": []}, {"unknown": "not allowed"},
 ])
 def test_unknown_or_changed_pins_are_fatal(patch):
@@ -372,6 +423,14 @@ def test_dedupe_earliest_action_then_id_before_fixed_sampling():
     assert counts["eligible_before_gold_dedupe"] == 3
     assert counts["eligible_distinct_gold"] == counts["kept"] == 1
     assert counts["drops_by_grader_reason"]["duplicate_gold"] == 2
+
+
+def test_dedupe_uses_exact_native_instant_before_opaque_id_for_same_floorsecond():
+    bundle = synthetic(3, names=["lesson.md"] * 3,
+                       times=["2035-04-05T06:01:00.900Z", "2035-04-05T06:01:00.123Z", "2035-04-05T06:01:00.123Z"])
+    rows = json.loads(construct(bundle).cases_json)
+    assert {row["time"] for row in rows} == {"2035-04-05T06:01:00Z"}
+    assert [row["id"] for row in rows if row["kept"]] == [f"{2:032x}"]
 
 
 def test_sample_is_exact_frozen_rng_over_sorted_ids_and_order_independent():

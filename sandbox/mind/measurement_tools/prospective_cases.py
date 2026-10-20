@@ -19,6 +19,10 @@ native-record authenticity. Opaque action_ref is NEVER interpreted as a UUID.
 Bridge reporter session labels are distinct from native transcript UUIDs: the
 original LOCKED protocol must contain reporter_sources, an exact-cover list of
 {reporter: {agent, agent_uuid, session_id}, native_session_id} mappings.
+Native action precision is pinned to 1,000us independently of the baseline's
+1,000,000us bound and recorder's one-second interval. The exact native instant
+and raw record hash are retained; the entire native interval must fit inside
+the recorder's same floorsecond interval. No guessed clock or normalization.
 
 construct_cases returns immutable PRIVATE bytes: cases.pre.json, cases.json,
 commitments.json, strict blind JSONL, one fixed snapshot, and aggregate counts.
@@ -51,7 +55,7 @@ MIN_N, CAP_KEPT, SEED = 40, 60, 20261019
 MEASURED_SOURCE = "6cf81dbbefe2b0e19a4c8306100beb30784ac4e4"
 BM25_SHA256 = "a1667a27da015dcaed0f97960bbede3281dab3540018106d2458879db213579a"
 GRADER_SHA256 = "074b443657daf72797b66994fd6afa5f2f4dd9384c26d3b955e429f451740117"
-EVIDENCE_SOURCE_SHA256 = "fff3e98dad89408344601d1e8415ef1ce75d49d3f83a91a868db6fc1c483b43d"
+EVIDENCE_SOURCE_SHA256 = "4203b3215c446020b57940b69deccbf3694af4b936af468685a439867a300b12"
 GRADER_REASONS = frozenset({
     "near_miss", "mark_ambiguous", "instance_time_unstated", "instance_time_ambiguous",
     "no_prior_lesson", "multiple_golds", "duplicate_incident", "anchor_not_found",
@@ -188,7 +192,7 @@ class Bindings:
                value["grader_sha256"], value["evidence_source_sha256"])
               == (MEASURED_SOURCE, "v21a", BM25_SHA256, GRADER_SHA256, EVIDENCE_SOURCE_SHA256), "binding")
         for key, expected in (("minimum_n", MIN_N), ("cap_n", CAP_KEPT), ("seed", SEED),
-                              ("timestamp_resolution_us", 1_000_000), ("baseline_resolution_us", 1_000_000)):
+                              ("timestamp_resolution_us", 1000), ("baseline_resolution_us", 1_000_000)):
             _need(type(value[key]) is int and value[key] == expected, "binding")
         _need(type(value["max_record_delay_seconds"]) is int
               and 1 <= value["max_record_delay_seconds"] <= 86400, "clock")
@@ -358,8 +362,7 @@ def _entry(entry, b, snapshot):
         _need(_hex(incident[key]), "binding")
     for key in ("record_sha256", "supplied_jsonl_sha256", "situation_sha256"):
         _need(_hex(evidence[key]), "binding")
-    _need(evidence["record_sha256"] == incident["action_sha256"]
-          and evidence["action_utc"] == incident["action_time_utc"], "binding")
+    _need(evidence["record_sha256"] == incident["action_sha256"], "binding")
     _need(type(evidence["preaction_record_sha256"]) is list
           and all(_hex(d) for d in evidence["preaction_record_sha256"]), "binding")
     text = evidence["situation"]
@@ -367,18 +370,28 @@ def _entry(entry, b, snapshot):
     _need(type(incident["action_time_resolution_seconds"]) is int and incident["action_time_resolution_seconds"] == 1
           and type(evidence["timestamp_resolution_us"]) is int
           and evidence["timestamp_resolution_us"] == b["timestamp_resolution_us"], "clock")
-    when, recorded = _time(evidence["action_utc"]), _time(incident["recorded_at_utc"])
-    _need(when.strftime("%Y-%m-%dT%H:%M:%SZ") == incident["action_time_utc"]
+    when = _time(evidence["action_utc"])
+    digits = len(evidence["action_utc"].split(".")[1][:-1]) if "." in evidence["action_utc"] else 0
+    _need(10 ** (6 - digits) <= b["timestamp_resolution_us"], "clock")
+    action_second, recorded = _time(incident["action_time_utc"]), _time(incident["recorded_at_utc"])
+    _need(action_second.strftime("%Y-%m-%dT%H:%M:%SZ") == incident["action_time_utc"]
           and recorded.strftime("%Y-%m-%dT%H:%M:%SZ") == incident["recorded_at_utc"], "clock")
-    delta = timedelta(microseconds=b["timestamp_resolution_us"])
-    _need(_time(evidence["action_latest_utc"]) == when + delta, "clock")
-    # Recorder is stricter than capture at collection end: preserve strict <.
+    native_delta = timedelta(microseconds=b["timestamp_resolution_us"])
+    recorder_delta = timedelta(seconds=incident["action_time_resolution_seconds"])
+    native_latest = _time(evidence["action_latest_utc"])
+    recorder_latest = action_second + recorder_delta
+    _need(native_latest == when + native_delta
+          and action_second == when.replace(microsecond=0)
+          and action_second <= when < native_latest <= recorder_latest, "clock")
+    # Preserve the recorder's full conservative interval, even when the native
+    # source provides finer precision. Never replace it with a narrower native
+    # interval to admit a baseline/start/close/delay boundary the recorder refuses.
     available = _time(next(iter(snapshot.values()))["mtime"])
-    _need(available + timedelta(seconds=1) < when
-          and _time(b["collection_start_utc"]) + delta <= when
-          and when + delta <= recorded < _time(b["collection_end_utc"])
-          and when + delta < _time(b["collection_end_utc"])
-          and (recorded - when).total_seconds() <= b["max_record_delay_seconds"], "clock")
+    _need(available + timedelta(seconds=1) < action_second
+          and _time(b["collection_start_utc"]) + recorder_delta <= action_second
+          and recorder_latest <= recorded < _time(b["collection_end_utc"])
+          and recorder_latest < _time(b["collection_end_utc"])
+          and (recorded - action_second).total_seconds() <= b["max_record_delay_seconds"], "clock")
     by_ref = {lesson_ref(name): name for name in snapshot}
     _need(incident["lesson_ref"] in by_ref, "binding")
     gold = by_ref[incident["lesson_ref"]]
@@ -491,7 +504,9 @@ def _construct_cases(bindings, baseline, entries, *, privacy_applicability,
                "situation_sha256": evidence["situation_sha256"], "memory_snapshot_sha256": snapsha,
                "kept": False, "drop_reason": reason, "reporter": incident["reporter"],
                "action_ref": incident["action_ref"], "incident_sha256": entry.incident_sha256,
-               "evidence_sha256": entry.evidence_sha256}
+               "evidence_sha256": entry.evidence_sha256,
+               "native_action_utc": evidence["action_utc"], "native_action_latest_utc": evidence["action_latest_utc"],
+               "native_action_record_sha256": evidence["record_sha256"]}
         rows.append(row)
         texts[cid] = text
         ordered.append((when, cid, row))

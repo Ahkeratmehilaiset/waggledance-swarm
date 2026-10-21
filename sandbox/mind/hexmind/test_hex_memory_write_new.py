@@ -519,3 +519,61 @@ def test_r5_review_a_faiss_save_that_silently_cuts_or_alters_a_file_publishes_no
     assert (result, os.path.lexists(out), listing(out.parent)) == (UNWRITTEN, False, []), f"at --out: {left(out)}"
     assert hm.main(argv(capture, lessons, out)) == 0  # control: the same build publishes
     check_index(out)
+
+
+# --- Root GPT immutable review of 6c96dcad (Lead 2026-10-21T15:08:53Z), RED first on that module ------------------
+
+
+def one_array(key, change):
+    """A meta.json change of ONE parallel array ``key`` (``change`` None drops the key). Its doc_ids, name and dim,
+    the other array and index.faiss are kept, so the count, dim and doc_ids checks of the read-back still pass."""
+
+    def rewrite(path):
+        meta = json.loads(path.read_bytes())
+        if change is None:
+            del meta[key]
+        else:
+            meta[key] = change(meta[key])
+        path.write_bytes(json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    return rewrite
+
+
+PARALLEL = {"texts_emptied": one_array("texts", lambda values: []),
+            "metadata_emptied": one_array("metadata", lambda values: []),
+            "texts_dropped": one_array("texts", None),
+            "text_not_a_string": one_array("texts", lambda values: [None] + values[1:]),
+            "metadata_entry_not_an_object": one_array("metadata", lambda values: [[]] + values[1:])}
+
+
+def recall_outcome(out):
+    """What a query of a published index does (its local, ring-1 and ring-2 cells), for a failure message only."""
+    try:
+        return len(hm.Memory(out).recall(QUESTION, k=8, ring2=True)["hits"])
+    except (LookupError, TypeError, ValueError, OSError, RuntimeError) as error:
+        return f"{type(error).__name__}:{error}"
+
+
+@pytest.mark.parametrize("case", sorted(PARALLEL))
+def test_r5_review_a_saved_cell_with_one_parallel_array_wrong_publishes_nothing(tmp_path, monkeypatch, case):
+    """F3 residual: the right doc_ids, index, count and dim, but ONE of the arrays ``core.faiss_store`` search reads
+    for each hit (``texts[i]``, ``metadata[i]``) emptied, dropped or with an entry of the wrong type. Nothing is
+    published, no staging directory stays, and the same build then publishes."""
+    capture, lessons = inputs(tmp_path / "in")
+    out = tmp_path / "deeper" / "index"
+    real_save, changed = faiss_store.FaissCollection.save, []
+
+    def save_then_change(self):
+        real_save(self)
+        if not changed:
+            PARALLEL[case](Path(self._dir) / "meta.json")
+            changed.append(self.name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(faiss_store.FaissCollection, "save", save_then_change)
+        result = outcome(lambda: hm.main(argv(capture, lessons, out)))
+    assert len(changed) == 1  # the witness changed exactly one file
+    assert (result, os.path.lexists(out), listing(out.parent)) == (UNWRITTEN, False, []), \
+        f"at --out: {left(out)}; a query of it: {recall_outcome(out) if result == 'published' else None}"
+    assert hm.main(argv(capture, lessons, out)) == 0  # control: the same build publishes
+    check_index(out)

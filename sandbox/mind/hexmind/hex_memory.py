@@ -245,17 +245,27 @@ def _unique_keys(pairs):
     return dict(pairs)
 
 
+def _parallel(values, count, kind):
+    """A list of exactly ``count`` items of ``kind``: ``core.faiss_store`` search reads ``texts[i]`` and
+    ``metadata[i]`` for every hit ``i``, so both arrays must stay parallel to the doc_ids."""
+    return isinstance(values, list) and len(values) == count and all(isinstance(value, kind) for value in values)
+
+
 def _check_cell(folder, ids, dim):
     """Root GPT review 2026-10-21: one FAISS cell as ``core.faiss_store`` saved it, read back before the index is
     published. ``index.faiss`` must load with exactly ``len(ids)`` vectors of ``dim`` and ``meta.json`` must parse
-    (a repeated key refused) with exactly ``ids`` as its doc_ids; anything else is an OSError like a JSON read-back
-    that differs, so a cut or altered file that raised nothing is never published."""
+    (a repeated key refused) with exactly ``ids`` as its doc_ids and, parallel to them, a ``texts`` list of strings
+    and a ``metadata`` list of objects (the review of 6c96dcad: right doc_ids with an emptied, dropped or mistyped
+    array passed); anything else is an OSError like a JSON read-back that differs. Only these are checked: a file
+    that raised nothing and differs only in its vector values or in the contents of texts and metadata is published
+    (a stated limit)."""
     try:
         index = faiss.read_index(str(folder / "index.faiss"))
         meta = json.loads((folder / "meta.json").read_bytes(), object_pairs_hook=_unique_keys)
     except (OSError, RuntimeError, ValueError):
         raise OSError(errno.EIO, "FAISS read-back failed") from None
-    if index.ntotal != len(ids) or index.d != dim or not isinstance(meta, dict) or meta.get("doc_ids") != ids:
+    if index.ntotal != len(ids) or index.d != dim or not isinstance(meta, dict) or meta.get("doc_ids") != ids \
+            or not _parallel(meta.get("texts"), len(ids), str) or not _parallel(meta.get("metadata"), len(ids), dict):
         raise OSError(errno.EIO, "FAISS read-back differs")
 
 
@@ -286,9 +296,10 @@ def build(args):
     whatever the output is called (Root GPT review 2026-10-21: a valid output name never makes an invalid staging
     name; only an output name under 25 characters has a longer staging path, a stated limit where long paths are
     off): the two JSON files created exclusively, flushed, synced and read back, each FAISS cell saved by
-    ``core.faiss_store``, then synced and read back (``_check_cell``, the same review: a cut or altered FAISS file
-    that raised nothing is never published); only then is the staging directory renamed onto ``args.out``. That
-    rename refuses an existing name on
+    ``core.faiss_store``, then synced and read back (``_check_cell``, the same review: a FAISS file that raised
+    nothing is never published with another vector count, dim or doc_ids, or with a texts or metadata array not
+    parallel to them; vector values and the contents of texts and metadata are not compared); only then is the
+    staging directory renamed onto ``args.out``. That rename refuses an existing name on
     Windows and an existing file, link or non-empty directory on POSIX, and a failed rename while the name is taken is
     ``output_exists``; on POSIX it replaces an EMPTY directory made after the check (a stated limit). Any other OS
     failure while publishing is ``output_unwritten``; any other error is raised unchanged. After a failure the names

@@ -100,8 +100,14 @@ def test_dashboard_summarizes_sprint_consensus_without_authority() -> None:
     assert report["consensus"]["missing_agents"] == [
         "claude-rco-1",
         "claude-rco-2",
+        "claude-rco-3",
         "operator",
     ]
+    # The recognized third RCO is absent, not an observed response or enrollment.
+    assert "claude-rco-3" not in report["agent_activity"]["latest_by_agent"]
+    assert "claude-rco-3" in report["agent_activity"]["missing_expected_agents"]
+    assert report["queue"]["active_claim_count"] == 0
+    assert report["queue"]["done_event_count"] == 0
     assert report["consensus"]["complete"] is False
     assert report["consensus"]["execution_allowed_by_report"] is False
     assert report["authority_boundary"] == {

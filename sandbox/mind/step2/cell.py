@@ -23,9 +23,14 @@ inside the append) still quarantines the cell and refuses publishing until it is
 
 R5 (2026-10-21, fable-5): ``write_generation`` writes a generation whole into a fresh staging directory only. An
 existing directory that holds anything is refused as ``staging_not_empty`` before a byte is written (the FAISS count
-check alone let a published empty generation, or a directory holding only the other files, be rewritten); each file
-is created exclusively (``write_new_file``), and all five files are fsynced before ``publish`` renames the generation
-into place, as the log line and the pointer already were. A cut file in a staging directory is never published:
+check alone let a published empty generation, or a directory holding only the other files, be rewritten). The three
+files it writes itself, ``vectors.f32``, ``provenance.jsonl`` and ``receipt.json``, are created exclusively
+(``write_new_file``); the two FAISS files stay ``FaissCollection.save``'s own unchanged writes (``faiss.write_index``
+and ``open(..., "w")``), which replace a file of that name that appears in the staging directory after the emptiness
+check (Root GPT review 2026-10-21: the earlier wording claimed that for all five files, more than the code does; a
+process of the same user writing into the fresh staging directory is outside the threat model, as in
+``hexmind/hex_memory.py``). All five files are fsynced before ``publish`` renames the generation into place, as the
+log line and the pointer already were. A cut file in a staging directory is never published:
 ``publish`` removes the directory on any exception, and one a hard crash leaves is hidden and never adopted.
 ``write_atomic`` stays a replace by contract (the pointer and ``memory.json``): the old bytes stay on any failure.
 
@@ -178,7 +183,8 @@ def read_log(cell_dir):
 
 def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, encoder, corpus_sha256, source):
     """Write one complete generation into ``gen_dir`` (a fresh staging directory) and return its receipt. R5: an
-    existing ``gen_dir`` that holds anything is refused before a byte is written, nothing is ever replaced, and every
+    existing ``gen_dir`` that holds anything is refused before a byte is written, the three files this function
+    creates itself are never replaced (the two FAISS files are ``FaissCollection.save``'s, which replaces), and every
     file is fsynced before this returns (module docstring)."""
     vectors = np.ascontiguousarray(vectors, dtype="<f4")
     ids = [record["record_id"] for record in records]

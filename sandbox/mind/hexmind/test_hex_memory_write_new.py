@@ -88,7 +88,8 @@ def left(out):
 
 
 def staging_pattern(out):
-    return re.compile(re.escape(f".{out.name}.staging-") + r"[0-9a-f]{16}")
+    """The staging name ``.staging-<16 hex>``, the same whatever ``out`` is called (Root GPT review F1 below)."""
+    return re.compile(r"\.staging-[0-9a-f]{16}")
 
 
 def check_index(out):
@@ -336,7 +337,7 @@ def test_r5_an_output_another_writer_makes_before_the_rename_is_kept_and_the_bui
 def test_r5_a_staging_name_collision_is_never_used_or_removed(tmp_path, monkeypatch):
     capture, lessons = inputs(tmp_path / "in")
     out = tmp_path / "deeper" / "index"
-    taken = out.parent / (".index.staging-" + "0" * 16)
+    taken = out.parent / (".staging-" + "0" * 16)
     taken.mkdir(parents=True)
     (taken / "embedder.json").write_bytes(b"another build's staged bytes")
     with monkeypatch.context() as patch:
@@ -449,3 +450,72 @@ def test_r5_a_hard_crash_never_leaves_a_cut_or_partial_index_under_the_output_na
     assert hm.main(argv(capture, lessons, out)) == 0  # a leftover never blocks a later build
     check_index(out)
     assert listing(out.parent) == sorted(["index", staged]) and tree(out.parent / staged) == leftover
+
+
+# --- Root GPT static review of 7d094fb4 (Lead 2026-10-21T14:24:18Z), RED first on that module ---------------------
+
+
+def test_r5_review_a_long_valid_output_name_publishes(tmp_path):
+    """F1: the staging name ``.<name>.staging-<16 hex>`` is 26 characters longer than the output name, so a valid
+    240-character output name made a 266-character staging component, over the usual 255 limit. The control comes
+    first: when this filesystem refuses a 240-character name, the case is UNKNOWN here and skipped with that reason."""
+    capture, lessons = inputs(tmp_path / "in")
+    control = tmp_path / ("c" * 240)
+    try:
+        control.mkdir()
+    except OSError as error:
+        pytest.skip(f"UNKNOWN here: this filesystem refuses a 240-character name ({error})")
+    out = tmp_path / ("i" * 240)
+    result = outcome(lambda: hm.main(argv(capture, lessons, out)))
+    assert result == "published", f"at --out: {left(out)}"
+    check_index(out)
+    assert listing(tmp_path) == sorted(["c" * 240, "i" * 240, "in"])
+
+
+def cut_half(path):
+    data = path.read_bytes()
+    path.write_bytes(data[:len(data) // 2])
+
+
+def drop_last_doc(path):
+    """A meta.json that still parses but no longer lists the cell's last record."""
+    meta = json.loads(path.read_bytes())
+    for key in ("doc_ids", "texts", "metadata"):
+        meta[key] = meta[key][:-1]
+    path.write_bytes(json.dumps(meta).encode("utf-8"))
+
+
+def empty_index(path):
+    """An index.faiss that still loads, with the same dim and no vector."""
+    faiss = faiss_store.faiss
+    faiss.write_index(faiss.IndexFlatIP(faiss.read_index(str(path)).d), str(path))
+
+
+SILENT = {"meta_cut": ("meta.json", cut_half), "index_cut": ("index.faiss", cut_half),
+          "meta_altered": ("meta.json", drop_last_doc), "index_emptied": ("index.faiss", empty_index)}
+
+
+@pytest.mark.parametrize("case", sorted(SILENT))
+def test_r5_review_a_faiss_save_that_silently_cuts_or_alters_a_file_publishes_nothing(tmp_path, monkeypatch, case):
+    """F3: a FAISS cell save that leaves a file cut or altered WITHOUT raising (a lying device, the class the JSON
+    read-back already covers; the faiss_save site above cuts AND raises, so it proves only the cleanup): half a file,
+    a meta.json that parses but lacks the cell's last record, or an index that loads with no vector. Nothing is
+    published, no staging directory stays, and the same build then publishes."""
+    capture, lessons = inputs(tmp_path / "in")
+    out = tmp_path / "deeper" / "index"
+    name, change = SILENT[case]
+    real_save, changed = faiss_store.FaissCollection.save, []
+
+    def save_then_change(self):
+        real_save(self)
+        if not changed:
+            change(Path(self._dir) / name)
+            changed.append(self.name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(faiss_store.FaissCollection, "save", save_then_change)
+        result = outcome(lambda: hm.main(argv(capture, lessons, out)))
+    assert len(changed) == 1  # the witness changed exactly one file
+    assert (result, os.path.lexists(out), listing(out.parent)) == (UNWRITTEN, False, []), f"at --out: {left(out)}"
+    assert hm.main(argv(capture, lessons, out)) == 0  # control: the same build publishes
+    check_index(out)

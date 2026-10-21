@@ -57,6 +57,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 SRC = Path(__file__).resolve().parents[3]
@@ -236,6 +237,28 @@ def _sync_file(path):
         os.fsync(handle.fileno())
 
 
+def _unique_keys(pairs):
+    """``object_pairs_hook``: an object with a repeated key is refused, never resolved to its last value."""
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _check_cell(folder, ids, dim):
+    """Root GPT review 2026-10-21: one FAISS cell as ``core.faiss_store`` saved it, read back before the index is
+    published. ``index.faiss`` must load with exactly ``len(ids)`` vectors of ``dim`` and ``meta.json`` must parse
+    (a repeated key refused) with exactly ``ids`` as its doc_ids; anything else is an OSError like a JSON read-back
+    that differs, so a cut or altered file that raised nothing is never published."""
+    try:
+        index = faiss.read_index(str(folder / "index.faiss"))
+        meta = json.loads((folder / "meta.json").read_bytes(), object_pairs_hook=_unique_keys)
+    except (OSError, RuntimeError, ValueError):
+        raise OSError(errno.EIO, "FAISS read-back failed") from None
+    if index.ntotal != len(ids) or index.d != dim or not isinstance(meta, dict) or meta.get("doc_ids") != ids:
+        raise OSError(errno.EIO, "FAISS read-back differs")
+
+
 def _discard(staging, cells):
     """After a failed build, best effort: remove only the names this build staged (its two JSON files, each cell's
     two FAISS files and directory, the faiss directory, then the staging directory). A removal that fails never
@@ -259,9 +282,13 @@ def build(args):
     write-new, the ``step2/corpus.publish_new`` shape). An existing ``args.out`` (a previous index, an empty
     directory, a file or a link) raises ``HexMemoryError("output_exists")`` before any input is read and is never
     replaced or written into (``core.faiss_store`` would load a previous cell and append to it). Every file is
-    written in a fresh sibling staging directory ``.<name>.staging-<16 random hex>`` made exclusively: the two JSON
-    files created exclusively, flushed, synced and read back, each FAISS cell saved by ``core.faiss_store`` and then
-    synced; only then is the staging directory renamed onto ``args.out``. That rename refuses an existing name on
+    written in a fresh sibling staging directory ``.staging-<16 random hex>`` made exclusively, 25 characters
+    whatever the output is called (Root GPT review 2026-10-21: a valid output name never makes an invalid staging
+    name; only an output name under 25 characters has a longer staging path, a stated limit where long paths are
+    off): the two JSON files created exclusively, flushed, synced and read back, each FAISS cell saved by
+    ``core.faiss_store``, then synced and read back (``_check_cell``, the same review: a cut or altered FAISS file
+    that raised nothing is never published); only then is the staging directory renamed onto ``args.out``. That
+    rename refuses an existing name on
     Windows and an existing file, link or non-empty directory on POSIX, and a failed rename while the name is taken is
     ``output_exists``; on POSIX it replaces an EMPTY directory made after the check (a stated limit). Any other OS
     failure while publishing is ``output_unwritten``; any other error is raised unchanged. After a failure the names
@@ -292,7 +319,7 @@ def build(args):
             topology.assign_cell(record["intent"], record["text"].lower()).cell_id
         kept.append((cell, record, stored["text"]))
     embedder = EMBEDDERS[args.embedder].fit([record["body"] for _, record, _ in kept])
-    staging = args.out.parent / f".{args.out.name}.staging-{secrets.token_hex(8)}"
+    staging = args.out.parent / f".staging-{secrets.token_hex(8)}"  # never the output's name (docstring)
     try:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         staging.mkdir()
@@ -318,6 +345,7 @@ def build(args):
             collection.save()
             for name in ("index.faiss", "meta.json"):
                 _sync_file(staging / "faiss" / f"cell_{cell}" / name)
+            _check_cell(staging / "faiss" / f"cell_{cell}", ids, embedder.dim)
         receipt = {"schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate",
                    "embedder": embedder.name, "dim": embedder.dim,
                    "capture_sha256": hashlib.sha256(capture_bytes).hexdigest(),

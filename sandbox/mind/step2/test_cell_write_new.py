@@ -266,3 +266,35 @@ def test_r5_guard_success_path_bytes_are_the_documented_formulas(tmp_path):
     assert files["receipt"].read_bytes() == cell_mod.canonical(receipt).encode("utf-8")
     checked = cell_mod.verify_generation(gen_dir, "learning", cell_mod.file_sha256(files["receipt"]))
     assert checked[0] == receipt and checked[3] is True
+
+
+# --- Root GPT static review of 7d094fb4 (Lead 2026-10-21T14:24:18Z), RED first on that module ---------------------
+
+
+@pytest.mark.parametrize("name", ["meta.json", "index.faiss"])
+def test_r5_review_a_faiss_file_placed_before_the_save_is_replaced_as_disclosed(tmp_path, monkeypatch, name):
+    """F2, resolved by narrowing the contract (RED first on 7d094fb4 as 'never replaced'): the two FAISS files are
+    the unchanged ``FaissCollection.save``'s own writes (``faiss.write_index`` and ``open(..., "w")``), so a file
+    another writer places after the empty-directory admission, right before the real save, is replaced, not refused,
+    and the generation holds the save's bytes, bound by its receipt and verified from disk. The three files
+    ``write_generation`` creates itself stay exclusive (the race test above); the docstrings say exactly that."""
+    gen_dir = tmp_path / "gen"
+    gen_dir.mkdir()
+    real_save = cell_mod.FaissCollection.save
+    target = cell_mod.paths(gen_dir, "learning")["index"].parent / name
+
+    def another_writer_then_save(self):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(SENTINEL)
+        real_save(self)
+
+    monkeypatch.setattr(cell_mod.FaissCollection, "save", another_writer_then_save)
+    receipt = write(gen_dir)
+    monkeypatch.undo()
+    assert target.read_bytes() != SENTINEL
+    checked = cell_mod.verify_generation(gen_dir, "learning", cell_mod.file_sha256(gen_dir / "receipt.json"))
+    assert checked[0] == receipt
+    module = " ".join(cell_mod.__doc__.split())
+    function = " ".join(cell_mod.write_generation.__doc__.split())
+    assert "``vectors.f32``, ``provenance.jsonl`` and ``receipt.json``, are created exclusively" in module
+    assert "each file is created exclusively" not in module and "nothing is ever replaced" not in function

@@ -170,7 +170,8 @@ if ($NextWakeupUtc) {
 }
 
 $statePath = Join-Path $auditDirectory 'wd-current-state.json'
-if (Test-Path -LiteralPath $statePath) {
+$stateExisted = Test-Path -LiteralPath $statePath
+if ($stateExisted) {
     $stateItem = Get-Item -LiteralPath $statePath -Force -ErrorAction Stop
     if (($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "lane checkpoint cannot replace a reparse point: $statePath"
@@ -246,15 +247,32 @@ if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 32768) {
 $temporary = Join-Path $auditDirectory (
     '.wd-current-state.{0}.{1}.tmp' -f $PID, [guid]::NewGuid().ToString('N')
 )
+$previousPath = $temporary + '.previous.json'
 $utf8 = New-Object Text.UTF8Encoding($false)
 try {
     [IO.File]::WriteAllText($temporary, $json, $utf8)
-    Move-Item -LiteralPath $temporary -Destination $statePath -Force
-}
-finally {
-    if (Test-Path -LiteralPath $temporary -PathType Leaf) {
-        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    if ($stateExisted) {
+        # Same-volume replacement keeps the old bytes as a recovery artifact.
+        # Never delete the old checkpoint before publication or fall back to copy.
+        [IO.File]::Replace($temporary, $statePath, $previousPath)
     }
+    else {
+        # The two-argument move never overwrites a concurrent creator. Do not
+        # re-check existence and silently switch to replacement after a race.
+        [IO.File]::Move($temporary, $statePath)
+    }
+}
+catch {
+    # Preserve the candidate (including a partial write) and the native cause.
+    # No cleanup or retry may destroy the only recoverable new checkpoint.
+    $publicationCause = $_.Exception.GetBaseException()
+    $publicationHResult = ([int]$publicationCause.HResult).ToString(
+        'X8', [Globalization.CultureInfo]::InvariantCulture
+    )
+    throw [IO.IOException]::new(
+        "lane checkpoint publication failed; target=$statePath; candidate=$temporary; previous=$previousPath; inner_exception=$($publicationCause.GetType().FullName); inner_hresult=0x$publicationHResult; $($_.Exception.Message)",
+        $_.Exception
+    )
 }
 
 Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -ErrorAction Stop

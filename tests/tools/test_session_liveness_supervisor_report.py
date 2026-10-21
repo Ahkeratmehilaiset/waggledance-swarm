@@ -94,6 +94,48 @@ def _process(command_line: str, pid: int = 1001) -> dict[str, object]:
     }
 
 
+def test_default_cohort_does_not_recommend_repair_for_an_unprovisioned_third_rco(tmp_path: Path) -> None:
+    agents = ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2"]
+    report = build_session_liveness_supervisor_report(
+        events=[_event(ts="2026-06-15T11:55:00Z", agent=agent) for agent in agents],
+        bridge_root=tmp_path,
+        processes=[_process(f"powershell -File Watch-Bridge.ps1 -Agent {agent}", pid=100 + index)
+                   for index, agent in enumerate(agents)],
+        process_snapshot_checked=True,
+        now_utc=_now(),
+    )
+
+    assert report["target_agents"] == sorted(agents)
+    assert report["agent_count"] == 4
+    assert report["watcher_repair_recommended_count"] == 0
+    assert report["restart_recommended_count"] == 0
+    assert report["decision"] == "session_liveness_ok"
+    assert report["authority_boundary"]["process_restart_allowed"] is False
+
+
+def test_explicit_third_rco_stays_inspectable_without_provisioning(tmp_path: Path) -> None:
+    report = build_session_liveness_supervisor_report(
+        events=[], bridge_root=tmp_path, processes=[], process_snapshot_checked=True,
+        agents=["claude-rco-3"], now_utc=_now(),
+    )
+    assert report["target_agents"] == ["claude-rco-3"]
+    assert report["watcher_repair_recommended_agents"] == ["claude-rco-3"]
+    assert report["authority_boundary"]["process_restart_allowed"] is False
+
+
+def test_observed_third_rco_screen_stays_in_the_inferred_report(tmp_path: Path) -> None:
+    report = build_session_liveness_supervisor_report(
+        events=[_event(ts="2026-06-15T11:55:00Z", agent="claude-rco-3")],
+        bridge_root=tmp_path,
+        screen_states={"claude-rco-3": _screen("idle_prompt", agent="claude-rco-3")},
+        now_utc=_now(),
+    )
+    assert "claude-rco-3" in report["target_agents"]
+    row = next(row for row in report["agents"] if row["agent"] == "claude-rco-3")
+    assert row["screen_idle"] is True
+    assert report["authority_boundary"]["process_restart_allowed"] is False
+
+
 def test_visible_working_cycle_suppresses_restart_despite_activity_gap() -> None:
     report = build_session_liveness_supervisor_report(
         events=[

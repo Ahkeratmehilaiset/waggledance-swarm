@@ -41,6 +41,55 @@ def _process(command_line: str, pid: int = 1001) -> dict[str, object]:
     }
 
 
+def test_default_cohort_does_not_invent_an_unprovisioned_third_rco() -> None:
+    # Preserve the probe's historical defaults, not the supervisor's distinct
+    # Tools/RCO1/RCO2/Fable watcher inventory.
+    agents = ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2"]
+    processes = [
+        _process(WATCHER_COMMAND.replace("codex-lead-1", agent), pid=100 + index)
+        for index, agent in enumerate(agents)
+    ]
+    report = probe_bridge_session_watchers(processes=processes)
+
+    assert report["target_agents"] == sorted(agents)
+    assert report["agent_count"] == 4
+    assert report["missing_watcher_count"] == 0
+    assert report["decision"] == "bridge_session_watchers_observed"
+    assert report["authority_boundary"]["process_restart_allowed"] is False
+
+
+def test_default_cli_does_not_fail_on_a_phantom_third_rco(tmp_path: Path, capsys) -> None:
+    agents = ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2"]
+    snapshot = tmp_path / "processes.json"
+    snapshot.write_text(json.dumps([
+        _process(WATCHER_COMMAND.replace("codex-lead-1", agent), pid=100 + index)
+        for index, agent in enumerate(agents)
+    ]), encoding="utf-8")
+
+    rc = main(["--processes-json", str(snapshot), "--bridge-root", str(tmp_path),
+               "--fail-on-missing", "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert rc == 0, report
+    assert report["target_agents"] == sorted(agents)
+
+
+def test_explicit_third_rco_stays_inspectable_without_provisioning() -> None:
+    report = probe_bridge_session_watchers(processes=[], agents=["claude-rco-3"])
+    assert report["target_agents"] == ["claude-rco-3"]
+    assert report["missing_watcher_count"] == 1
+    assert report["authority_boundary"]["process_restart_allowed"] is False
+
+
+def test_observed_extra_helpers_are_not_hidden_from_the_default_probe() -> None:
+    report = probe_bridge_session_watchers(processes=[
+        _process(WATCHER_COMMAND.replace("codex-lead-1", "claude-rco-3")),
+        _process(WATCHER_COMMAND.replace("codex-lead-1", "fable-5"), pid=1002),
+    ])
+    rows = {row["agent"]: row for row in report["agents"]}
+    assert rows["claude-rco-3"]["watcher_present"] is True
+    assert rows["fable-5"]["watcher_present"] is True
+
+
 def test_probe_reports_visible_watcher_and_expected_heartbeat() -> None:
     report = probe_bridge_session_watchers(
         processes=[

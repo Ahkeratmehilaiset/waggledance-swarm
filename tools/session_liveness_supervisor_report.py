@@ -46,12 +46,13 @@ from tools.check_bridge_wake_delivery import (  # noqa: E402
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
 
 
+# Historical report defaults, not runtime enrollment of every recognized RCO.
+# Explicit targets and observed screen/claim evidence may extend this cohort.
 DEFAULT_TARGET_AGENTS = (
     "codex-lead-1",
     "codex-tools-1",
     "claude-rco-1",
     "claude-rco-2",
-    "claude-rco-3",
 )
 DEFAULT_ACTIVITY_GAP_MINUTES = 45.0
 DEFAULT_CYCLE_BUDGET_MINUTES = 90.0

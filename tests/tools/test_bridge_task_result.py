@@ -15,6 +15,55 @@ from test_wd_startup_recovery import q
 BIN = REBOOT.parents[2] / '.agent-bridge/bin'
 
 
+def _token_function_source():
+    source = (BIN / 'Get-BridgeExecutionEvidence.ps1').read_text(encoding='utf-8')
+    return source.split('function Get-BridgeEvidenceToken {', 1)[1].split("$observed=[datetime]", 1)[0]
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_process_token_native_query_compiles_without_observing_a_real_token(ps):
+    # Compile the actual Win32 declaration in an isolated child; do NOT call Read.
+    body = _token_function_source().split("Add-Type -TypeDefinition @'", 1)[1].split("\n'@", 1)[0]
+    value = json.loads(_run_powershell(
+        f"Add-Type -TypeDefinition {q(body)}\n@{{compiled=($null -ne ('WdBridgeReadOnlyToken' -as [type]))}}|ConvertTo-Json",
+        executable=ps).stdout)
+    assert value == {'compiled': True}
+    assert 'OpenProcess(0x1000,false,pid)' in body
+    assert 'OpenProcessToken(process,8,out token)' in body
+    assert 'OpenProcessToken(process,8,out again)' in body
+    assert 'Lifetime(process,pid,created)' in body
+    assert 'Stamp(again)!=stamp' in body
+    assert 'Buffer(token,25,out size)' in body and 'Buffer(token,20,out size)' in body
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['Medium', 'High', 'denied', 'missing'])
+def test_token_adapter_preserves_typed_machine_result_or_unknown(ps, case):
+    # Explicit fake native class; no real process/token is queried by this fixture.
+    result = 'throw new System.InvalidOperationException("synthetic denied");' if case == 'denied' else (
+        'return new WdBridgeReadOnlyToken {Integrity="' + case + '",Elevated=' +
+        ('true' if case == 'High' else 'false') + '};')
+    declaration = ('public sealed class WdBridgeReadOnlyToken {public string Integrity; public bool Elevated; '
+                   'public static WdBridgeReadOnlyToken Read(int pid,long ticks){' + result + '}}')
+    process = '$null' if case == 'missing' else "([pscustomobject]@{ProcessId=5252;CreationDate=[datetime]'2026-10-21T01:00:00Z'})"
+    script = (f"Add-Type -TypeDefinition {q(declaration)}\nfunction Get-BridgeEvidenceToken {{" +
+              _token_function_source() + f"\nGet-BridgeEvidenceToken -Process {process}|ConvertTo-Json")
+    value = json.loads(_run_powershell(script, executable=ps).stdout)
+    if case in ('denied', 'missing'):
+        assert value['token_integrity'] is None and value['elevated'] is None
+        assert value['process_id'] is None and value['observation_error']
+    else:
+        assert value['token_integrity'] == case and value['elevated'] is (case == 'High')
+        assert value['process_id'] == 5252 and value['observation_error'] is None
+
+
+def test_evidence_reads_native_and_writer_tokens_separately():
+    source = (BIN / 'Get-BridgeExecutionEvidence.ps1').read_text(encoding='utf-8')
+    assert '$nativeToken=Get-BridgeEvidenceToken -Process $native' in source
+    assert '$writerToken=Get-BridgeEvidenceToken -Process $writer' in source
+    assert 'native_token=$nativeToken;writer_token=$writerToken;writer_pid=$PID' in source
+
+
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_classifier_keeps_caller_strict_mode_while_validating_its_own_inputs(ps):
     result = _run_powershell(f"""

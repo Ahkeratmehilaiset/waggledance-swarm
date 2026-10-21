@@ -1831,6 +1831,7 @@ def _rco3_toy_context(tmp_path: Path) -> dict:
 
 
 def _rco3_toy_stub(ctx: dict, *, mode: str = "valid") -> str:
+    from test_bridge_rco_enrollment import token_proof
     proof = dict(
         schema="wd.execution-evidence.v1", observed_agent="claude-rco-3",
         native_conversation_id=RCO3_TOY_NATIVE, native_pid=5252, launcher_pid=5253,
@@ -1838,7 +1839,14 @@ def _rco3_toy_stub(ctx: dict, *, mode: str = "valid") -> str:
         generation=MAIN_SHA, manifest_sha256=ctx["manifest_sha256"],
         observed_at_utc="__SYNTHETIC_OBSERVED_AT__", pin_status="manifest_and_launcher_verified",
         pin_error=None, ancestry_error=None, synthetic_fixture_no_native_observation=True,
+        writer_pid=5254, writer_process_start_utc="2000-01-01T00:00:03Z",
+        native_token=token_proof(5252, "2000-01-01T00:00:02Z"),
+        writer_token=token_proof(5254, "2000-01-01T00:00:03Z"),
     )
+    if mode in ("native_high", "writer_high"):
+        proof["native_token" if mode == "native_high" else "writer_token"].update(token_integrity="High", elevated=True)
+    if mode in ("native_missing", "writer_missing"):
+        del proof["native_token" if mode == "native_missing" else "writer_token"]
     counter = "[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'synthetic-collector.calls'), \"call`n\")\n"
     if mode == "throw":
         return "# SYNTHETIC ONLY; no native observation\n" + counter + "throw 'Synthetic collector unavailable'\n"
@@ -1862,7 +1870,7 @@ def _rco3_fixture_code(runtime_root: Path) -> Path:
 
 def _rco3_toy_write(tmp_path: Path, ctx: dict, *, event_type="decision", status="rco_pass",
                     payload=None, mode="valid", agent="claude-rco-3", agent_uuid=RCO3_UUID,
-                    reply=None) -> tuple[subprocess.CompletedProcess[str], dict | None]:
+                    reply=None, shell=None) -> tuple[subprocess.CompletedProcess[str], dict | None]:
     root = Path(__file__).resolve().parents[2]
     runtime = tmp_path / "rco3-toy-runtime"
     data = {"head": MAIN_SHA, "canonical_task_id": RCO3_TOY_TASK}
@@ -1874,7 +1882,7 @@ def _rco3_toy_write(tmp_path: Path, ctx: dict, *, event_type="decision", status=
             "-PayloadJson", json.dumps(data)]
     if reply is not None:
         args += ["-ReplyToEventJson", json.dumps(reply)]
-    completed = _run_writer(root, runtime, *args, evidence_stub=_rco3_toy_stub(ctx, mode=mode))
+    completed = _run_writer(root, runtime, *args, evidence_stub=_rco3_toy_stub(ctx, mode=mode), shell=shell)
     events = runtime / "shared/events.jsonl"
     written = json.loads(events.read_text(encoding="utf-8").splitlines()[-1]) if events.exists() else None
     return completed, written
@@ -1883,6 +1891,43 @@ def _rco3_toy_write(tmp_path: Path, ctx: dict, *, event_type="decision", status=
 def _assert_rco3_writer_collected_once(tmp_path: Path) -> None:
     path = _rco3_fixture_code(tmp_path / "rco3-toy-runtime") / "synthetic-collector.calls"
     assert path.read_text(encoding="utf-8").splitlines() == ["call"]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+def test_rco3_synthetic_medium_tokens_bind_on_each_host(tmp_path, shell):
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip("requested synthetic PowerShell host unavailable")
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, shell=executable)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("mode", ["native_high", "writer_high", "native_missing", "writer_missing"])
+def test_rco3_public_writer_current_token_refusal_keeps_veto(tmp_path, monkeypatch, shell, mode):
+    from tools import bridge_rco_enrollment as enrollment, check_rco_pass_present as gate
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip("requested synthetic PowerShell host unavailable")
+    ctx = _rco3_toy_context(tmp_path)
+    monkeypatch.setattr(gate, "load_rco_enrollment_context", lambda: ctx)
+    # Caller supplies a fabricated Medium claim: the public writer must discard it.
+    forged = {"schema": "wd.execution-evidence.v1", "caller_supplied": True,
+              "native_token": {"token_integrity": "Medium", "elevated": False},
+              "writer_token": {"token_integrity": "Medium", "elevated": False}}
+    completed, written = _rco3_toy_write(tmp_path, ctx, mode=mode, shell=executable,
+                                       event_type="finding", status="open", payload={"execution_evidence": forged})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "caller_supplied" not in json.dumps(written["payload"])
+    assert not enrollment.rco_event_enrollment_matches(written, context=ctx)
+    assert not gate.scan_recognized_rco_vetoes(events=[written], task_id=RCO3_TOY_TASK,
+                                            author_agent="codex-lead-1")["ok"]
 
 
 @WINDOWS_APPEND_V1

@@ -56,6 +56,7 @@ class LaneCurrentStateAtomicity(unittest.TestCase):
         command = f"""
 $ErrorActionPreference = 'Stop'
 $script:atomicityLock = $null
+$script:atomicityCandidateBase64 = $null
 $failed = $false
 $message = ''
 $nativeCode = 0
@@ -65,7 +66,8 @@ try {{
     $marker = {quote(BOUNDARY)}
     if (($source.Split(@($marker), [StringSplitOptions]::None)).Count -ne 2) {{ throw 'test boundary must occur exactly once' }}
     $injection = {quote(fault_code)}
-    if ($injection) {{ $source = $source.Replace($marker, $marker + [Environment]::NewLine + $injection) }}
+    $capture = '$script:atomicityCandidateBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($temporary))'
+    $source = $source.Replace($marker, $marker + [Environment]::NewLine + $capture + [Environment]::NewLine + $injection)
     & ([scriptblock]::Create($source)) -Agent codex-tools-1 -Worktree {quote(worktree)} -TaskId candidate -Status active -NextAction 'Synthetic publication test only' -WorkHeld $false -ReleaseHeld $true | Out-Null
 }}
 catch {{
@@ -74,7 +76,7 @@ catch {{
     $nativeCode = $_.Exception.GetBaseException().HResult -band 65535
 }}
 finally {{ if ($null -ne $script:atomicityLock) {{ $script:atomicityLock.Dispose() }} }}
-[pscustomobject]@{{ failed = $failed; message = $message; native_code = $nativeCode }} | ConvertTo-Json -Compress
+[pscustomobject]@{{ failed = $failed; message = $message; native_code = $nativeCode; candidate_before_publication = $script:atomicityCandidateBase64 }} | ConvertTo-Json -Compress
 if ($failed) {{ exit 1 }}
 """
         result = subprocess.run(
@@ -143,6 +145,21 @@ if ($failed) {{ exit 1 }}
                 self.assert_candidate_retained(directory, result, receipt)
                 self.assertEqual(receipt["native_code"], 32, receipt)
                 self.assertEqual(target.read_bytes(), OLD)
+
+    def test_publication_error_reports_inner_hresult_and_preserves_exact_bytes(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                target, directory, result, receipt = self.run_case(shell, fault="target_lock")
+                candidate = self.assert_candidate_retained(directory, result, receipt)
+                self.assertEqual(receipt["native_code"], 32, receipt)
+                self.assertIn("inner_exception=System.IO.IOException", receipt["message"])
+                self.assertIn("inner_hresult=0x80070020", receipt["message"])
+                self.assertEqual(target.read_bytes(), OLD)
+                self.assertEqual(
+                    candidate.read_bytes(),
+                    base64.b64decode(receipt["candidate_before_publication"], validate=True),
+                )
+                self.assertFalse(list(directory.glob("*.previous.json")))
 
     def test_absent_target_share_denial_retains_candidate(self):
         for shell in SHELLS:

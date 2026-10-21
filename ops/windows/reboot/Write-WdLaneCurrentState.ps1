@@ -265,8 +265,12 @@ try {
 catch {
     # Preserve the candidate (including a partial write) and the native cause.
     # No cleanup or retry may destroy the only recoverable new checkpoint.
+    $publicationCause = $_.Exception.GetBaseException()
+    $publicationHResult = ([int]$publicationCause.HResult).ToString(
+        'X8', [Globalization.CultureInfo]::InvariantCulture
+    )
     throw [IO.IOException]::new(
-        "lane checkpoint publication failed; target=$statePath; candidate=$temporary; previous=$previousPath; $($_.Exception.Message)",
+        "lane checkpoint publication failed; target=$statePath; candidate=$temporary; previous=$previousPath; inner_exception=$($publicationCause.GetType().FullName); inner_hresult=0x$publicationHResult; $($_.Exception.Message)",
         $_.Exception
     )
 }

@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.p4_adversarial_corpus import (
     MIN_CASES,
     REQUIRED_FAMILIES,
@@ -116,6 +118,40 @@ def test_wake_delivery_driver_blocks_repeated_silence() -> None:
     assert result["blocked"] is True
     assert result["decision"] == "wake_delivery_stalled"
     assert result["classifier_report"]["stalled_count"] == 1
+
+
+@pytest.mark.parametrize("agent,blocked", [
+    ("claude-rco-1", True),
+    ("claude-rco-2", True),
+    ("claude-rco-3", True),
+    ("claude-rco-4", False),
+])
+def test_taxonomy_driver_honors_only_recognized_rco_vetoes(agent, blocked) -> None:
+    head = "1" * 40
+    result = evaluate_case({
+        "id": "unit_taxonomy_rco_veto",
+        "family": "cause_b_ordering",
+        "driver": "taxonomy",
+        "payload": {
+            "task_id": "unit-rco-veto",
+            "head_sha": head,
+            "events": [{
+                "type": "finding",
+                "decision_status": "veto",
+                "author_identity": agent,
+                "task_id": "unit-rco-veto",
+                "head_sha": head,
+                "ts_utc": "2026-06-30T12:00:00Z",
+            }],
+        },
+    })
+
+    assert result["blocked"] is blocked
+    assert result["decision"] == ("taxonomy_blocked" if blocked else "taxonomy_clear")
+    assert result["classifier_report"]["clear_to_merge"] is (not blocked)
+    assert result["classifier_report"]["blocking"] == (
+        [(agent, "veto", head, "authoritative block at head")] if blocked else []
+    )
 
 
 def test_receipt_binding_driver_blocks_fake_digest() -> None:

@@ -582,6 +582,48 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 . (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
 
+# RCO3 evidence is writer-owned for EVERY event, including ordinary PASS and
+# cohort-relaxing recusal, not just bound result-contract answers. Discard caller
+# assertions (also the existing reply builder's earlier observation) and collect
+# ONCE per PUBLIC WRITER invocation. Other agents retain their existing path.
+# This observation remains unsigned, not cryptographic origin or OS isolation.
+$writerRco3 = $Agent -ceq 'claude-rco-3'
+$writerRco3Evidence = $null
+if ($writerRco3) {
+    if (-not (Test-BridgeObject -Value $payload)) { throw 'RCO3 event payload must be an object' }
+    foreach ($property in @($payload.PSObject.Properties)) {
+        if (@('execution_evidence','result_validation') -contains $property.Name) {
+            $payload.PSObject.Properties.Remove($property.Name)
+        }
+    }
+    try {
+        $writerRco3Evidence = & (Join-Path $PSScriptRoot 'Get-BridgeExecutionEvidence.ps1') |
+            ConvertFrom-Json @jsonArguments
+        if ($null -eq $writerRco3Evidence -or $writerRco3Evidence -isnot [pscustomobject] -or
+            $null -eq $writerRco3Evidence.PSObject.Properties['schema'] -or
+            $writerRco3Evidence.schema -cne 'wd.execution-evidence.v1') {
+            throw 'Execution evidence collector did not return one evidence object'
+        }
+    } catch {
+        # Unknown observation must NEVER erase an otherwise genuine veto. Keep a
+        # durable explicit failure witness; enrollment matching refuses positives.
+        $writerRco3Evidence = [pscustomobject]@{
+            schema='wd.execution-evidence.v1'; observed_at_utc=[datetime]::UtcNow.ToString('o')
+            observed_agent=$null; native_conversation_id=$null; native_pid=$null
+            native_process_start_utc=$null; launcher_pid=$null; cli_kind=$null
+            generation=$null; manifest_sha256=$null; pin_status='unknown'
+            pin_error=('writer_evidence_collection_failed:' + $_.Exception.GetType().FullName)
+            ancestry_error='observation_unavailable'; observation_source='public_writer_collector_failure'
+        }
+    }
+    . (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
+    $writerRco3Validation = Get-BridgeTaskResultValidation -Request $null -Payload $payload -Responder $Agent
+    $payload | Add-Member -Force NoteProperty result_validation $writerRco3Validation
+    $payload | Add-Member -Force NoteProperty execution_evidence $writerRco3Evidence
+    # Before request hashing / reply-binding checks, and after the observation.
+    $event['ts_utc'] = [datetime]::UtcNow.ToString('o')
+}
+
 function Assert-WriterContractEnvelope {
     param([Parameter(Mandatory)] $Event)
     # Get-BridgeContractField deliberately fails closed on conflicting copies.
@@ -634,9 +676,13 @@ if ($ReplyToEventJson) {
         $validation=Get-BridgeTaskResultValidation -Request $replyTo -Payload $payload -Responder $Agent
         if ($validation.errors.Count) { throw ('Task result rejected before write: '+($validation.errors -join ', ')) }
         if ($null -ne $validation.schema_valid) {
-            $evidence=& (Join-Path $PSScriptRoot 'Get-BridgeExecutionEvidence.ps1')|ConvertFrom-Json @jsonArguments
-            if ($evidence.pin_status -ceq 'mismatch') { throw ('Execution evidence rejected before write: '+$evidence.pin_error) }
-            if ($null -ne $evidence.observed_agent -and $evidence.observed_agent -cne $Agent) { throw 'Observed launcher agent does not match reply author' }
+            if ($writerRco3) {
+                $evidence = $writerRco3Evidence
+            } else {
+                $evidence=& (Join-Path $PSScriptRoot 'Get-BridgeExecutionEvidence.ps1')|ConvertFrom-Json @jsonArguments
+                if ($evidence.pin_status -ceq 'mismatch') { throw ('Execution evidence rejected before write: '+$evidence.pin_error) }
+                if ($null -ne $evidence.observed_agent -and $evidence.observed_agent -cne $Agent) { throw 'Observed launcher agent does not match reply author' }
+            }
             $payload|Add-Member -Force NoteProperty result_validation $validation
             $payload|Add-Member -Force NoteProperty execution_evidence $evidence
             # The reply timestamp must not predate its own runtime observation.

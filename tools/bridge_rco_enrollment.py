@@ -45,7 +45,7 @@ _ISSUER = object()
 _HEX40 = re.compile(r"[0-9a-fA-F]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}\Z")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
-_UTC = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)\Z")
+_UTC = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?(?:Z|\+00:00)\Z")
 _RECORD_KEYS = frozenset({
     "schema", "agent", "agent_uuid", "generation", "session_id", "run_id",
     "native_conversation_id", "cli_kind", "native_pid", "launcher_pid",
@@ -279,9 +279,11 @@ def rco_event_enrollment_matches(event, *, context=None) -> bool:
     if not isinstance(payload, Mapping):
         return False
     proof = payload.get("execution_evidence")
-    if not isinstance(proof, Mapping):
+    if not isinstance(proof, Mapping) or proof.get("schema") != "wd.execution-evidence.v1":
         return False
     for key in ("pin_error", "ancestry_error"):
+        if key not in proof:
+            return False
         value = proof.get(key)
         if value is not None and not (type(value) is str and value == ""):
             return False
@@ -294,6 +296,8 @@ def rco_event_enrollment_matches(event, *, context=None) -> bool:
         return False
     started = _utc(proof.get("native_process_start_utc"))
     observed = _utc(proof.get("observed_at_utc"))
+    prior_observed = _utc(record["observed_at_utc"])
     return (started is not None and observed is not None and started <= observed
+            and prior_observed <= observed
             and all(type(proof.get(key)) is int and proof[key] > 0
                     for key in ("native_pid", "launcher_pid")))

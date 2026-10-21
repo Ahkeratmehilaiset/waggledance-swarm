@@ -87,6 +87,8 @@ def test_closed_typed_attestation_contract_rejects_all_bad_records(shell, tmp_pa
         ("no_mind_authorship", 1), ("no_measurement_case_access", None),
         ("cli_kind", "claude.cmd"), ("native_process_start_utc", "2026-02-30T01:00:00Z"),
         ("native_process_start_utc", "2026-10-21T01:00:00.1234568Z"),
+        ("native_process_start_utc", "2026-10-21T01:00:00.\u0661Z"),
+        ("native_process_start_utc", "2026-10-21T01:00:00.\uff10Z"),
     ]:
         bad = copy.deepcopy(record())
         bad[key] = value

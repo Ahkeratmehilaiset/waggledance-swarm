@@ -366,7 +366,7 @@ function ConvertFrom-WdRcoEnrollmentRecord {
     }
     $times = @()
     foreach ($key in @('native_process_start_utc','observed_at_utc')) {
-        $match = [regex]::Match($record.$key, '\A(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)\z')
+        $match = [regex]::Match($record.$key, '\A([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?(?:Z|\+00:00)\z')
         if (-not $match.Success) { throw 'RCO enrollment requires an explicit UTC observation' }
         $second = [datetime]::ParseExact($match.Groups[1].Value, "yyyy-MM-dd'T'HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
         # Preserve fractional precision beyond DateTime ticks, like the Python reader.

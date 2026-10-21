@@ -66,6 +66,7 @@ def event(ctx):
         "agent": rec["agent"], "agent_uuid": rec["agent_uuid"],
         "session_id": rec["session_id"], "run_id": rec["run_id"],
         "payload": {"execution_evidence": {
+            "schema": "wd.execution-evidence.v1",
             "observed_agent": rec["agent"],
             **{key: rec[key] for key in (
                 "native_conversation_id", "native_pid", "native_process_start_utc",
@@ -250,8 +251,32 @@ def test_missing_required_event_evidence_refuses(tmp_path, key):
     ctx = context(tmp_path)
     candidate = event(ctx)
     del candidate["payload"]["execution_evidence"][key]
-    if key not in {"pin_error", "ancestry_error"}:
-        assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+    assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+@pytest.mark.parametrize("digit", ["\u0661", "\uff10"])
+@pytest.mark.parametrize("where", ["record", "event"])
+def test_unicode_decimal_timestamp_is_not_the_ascii_utc_contract(tmp_path, digit, where):
+    value = "2026-10-21T01:00:00." + digit + "Z"
+    if where == "record":
+        rec = record()
+        rec["native_process_start_utc"] = value
+        assert context(tmp_path, manifest({"claude-rco-3": rec}))["status"] == "unknown"
+    else:
+        ctx = context(tmp_path)
+        candidate = event(ctx)
+        candidate["payload"]["execution_evidence"]["native_process_start_utc"] = value
+        assert enrollment.rco_event_enrollment_matches(candidate, context=ctx) is False
+
+
+def test_current_observation_cannot_predate_the_prior_registration_receipt(tmp_path):
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    candidate["payload"]["execution_evidence"].update(
+        native_process_start_utc="2020-01-01T00:00:00Z",
+        observed_at_utc="2020-01-01T00:00:01Z",
+    )
+    assert enrollment.rco_event_enrollment_matches(candidate, context=ctx) is False
 
 
 def test_event_without_proof_or_self_asserted_enrollment_refuses(tmp_path):

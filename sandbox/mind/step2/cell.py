@@ -21,6 +21,14 @@ never adopted, verified, changed or removed, and it no longer refuses every late
 After a hard crash the writer lock also stays, as before, until it is removed by hand. A torn last log line (a crash
 inside the append) still quarantines the cell and refuses publishing until it is repaired by hand.
 
+R5 (2026-10-21, fable-5): ``write_generation`` writes a generation whole into a fresh staging directory only. An
+existing directory that holds anything is refused as ``staging_not_empty`` before a byte is written (the FAISS count
+check alone let a published empty generation, or a directory holding only the other files, be rewritten); each file
+is created exclusively (``write_new_file``), and all five files are fsynced before ``publish`` renames the generation
+into place, as the log line and the pointer already were. A cut file in a staging directory is never published:
+``publish`` removes the directory on any exception, and one a hard crash leaves is hidden and never adopted.
+``write_atomic`` stays a replace by contract (the pointer and ``memory.json``): the old bytes stay on any failure.
+
 Loading verifies the pointer, the log chain, the receipt and every file BEFORE ``FaissCollection`` reads anything:
 ``FaissCollection._try_load`` turns a missing or corrupt file into an empty index with only a warning. Any failure
 QUARANTINES the cell with a fixed reason code. A quarantined cell never answers and never abstains; the query layer
@@ -92,6 +100,15 @@ def write_atomic(path, data):
     os.replace(temporary, path)
 
 
+def write_new_file(path, data):
+    """R5: create ``path`` exclusively, so a file already there is never replaced (FileExistsError), then write, flush
+    and fsync ``data`` (the ``corpus.publish_new`` file shape), for a generation's fresh staging directory."""
+    with open(path, "xb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def pairs_sha256(ids, vectors):
     digest = hashlib.sha256()
     for doc_id, row in zip(ids, vectors):
@@ -160,7 +177,9 @@ def read_log(cell_dir):
 
 
 def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, encoder, corpus_sha256, source):
-    """Write one complete generation into ``gen_dir`` (a fresh staging directory) and return its receipt."""
+    """Write one complete generation into ``gen_dir`` (a fresh staging directory) and return its receipt. R5: an
+    existing ``gen_dir`` that holds anything is refused before a byte is written, nothing is ever replaced, and every
+    file is fsynced before this returns (module docstring)."""
     vectors = np.ascontiguousarray(vectors, dtype="<f4")
     ids = [record["record_id"] for record in records]
     if len(ids) != len(set(ids)):
@@ -172,6 +191,8 @@ def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, enc
         if record["time_utc"] >= cutoff_utc:
             raise CellError("provenance_after_cutoff")
     files = paths(gen_dir, cell_id)
+    if gen_dir.exists() and os.listdir(gen_dir):  # R5: never a directory that already holds a file to replace
+        raise CellError("staging_not_empty")
     collection = FaissCollection(f"cell_{cell_id}", dim=dim, persist_dir=str(files["index"].parent))
     if collection.count:
         raise CellError("staging_not_empty")
@@ -181,10 +202,13 @@ def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, enc
     if collection.count != len(ids):
         raise CellError("count_mismatch")
     collection.save()
-    files["vectors"].write_bytes(vectors.tobytes())
+    for name in ("index", "meta"):  # R5: FaissCollection.save does not sync; opened only to fsync, nothing written
+        with open(files[name], "rb+") as handle:
+            os.fsync(handle.fileno())
+    write_new_file(files["vectors"], vectors.tobytes())
     rows = [{"record_id": r["record_id"], "kind": r["kind"], "time_utc": r["time_utc"], "cell_id": cell_id,
              "provenance": r["provenance"]} for r in records]
-    files["provenance"].write_bytes("".join(canonical(row) + "\n" for row in rows).encode("utf-8"))
+    write_new_file(files["provenance"], "".join(canonical(row) + "\n" for row in rows).encode("utf-8"))
     stored = np.vstack([collection._index.reconstruct(i) for i in range(collection.count)]) if ids \
         else np.zeros((0, dim), dtype="<f4")
     content = {
@@ -196,7 +220,7 @@ def write_generation(gen_dir, cell_id, records, vectors, *, dim, cutoff_utc, enc
     receipt = {"schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate", "content": content,
                "content_sha256": sha256(canonical(content).encode("utf-8")), "source": source,
                "built_utc": utc_now()}
-    (gen_dir / "receipt.json").write_bytes(canonical(receipt).encode("utf-8"))
+    write_new_file(gen_dir / "receipt.json", canonical(receipt).encode("utf-8"))
     return receipt
 
 

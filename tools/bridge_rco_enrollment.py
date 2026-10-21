@@ -4,6 +4,11 @@ This does not register, provision, launch or observe a process. ``rco_enrollment
 in a FUTURE installed deployment manifest is an OPERATOR provisioning attestation,
 not an agent's self-attestation about history, authorship, cases or token state.
 The current bundle without that record is not_provisioned, never enrolled.
+The record's PID/start/session/run fields are the prior registration observation
+receipt, NOT future restart pins: final manifest bytes must freeze before launch.
+Durable binding is role UUID + actually observed conversation + target generation.
+The current event needs its own nonblank session/run and observed positive
+PID/launcher lifetime. This Source contract alone does not make cold adoption ready.
 
 Trust is the externally supplied manifest SHA256 plus the existing same-user
 bridge trust. Event execution evidence is still unsigned: equality is consistency,
@@ -252,7 +257,7 @@ def rco_enrollment_status(agent, *, context=None) -> str:
 
 
 def rco_event_enrollment_matches(event, *, context=None) -> bool:
-    """RCO1/2 unchanged; RCO3 needs both issued context and the exact bound evidence."""
+    """Bind durable enrollment identity and current observed execution, not old PIDs."""
     if not isinstance(event, Mapping):
         return False
     agent = event.get("agent")
@@ -266,7 +271,9 @@ def rco_event_enrollment_matches(event, *, context=None) -> bool:
     _, generation, manifest_hash, items = validated
     record = dict(items)
     if any(type(event.get(key)) is not str or event[key] != record[key]
-           for key in ("agent", "agent_uuid", "session_id", "run_id")):
+           for key in ("agent", "agent_uuid")):
+        return False
+    if not all(_nonblank(event.get(key)) for key in ("session_id", "run_id")):
         return False
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
@@ -283,8 +290,10 @@ def rco_event_enrollment_matches(event, *, context=None) -> bool:
             or proof.get("cli_kind") != record["cli_kind"]
             or _uuid(proof.get("native_conversation_id")) != _uuid(record["native_conversation_id"])
             or _hex(proof.get("generation"), _HEX40) != generation
-            or _hex(proof.get("manifest_sha256"), _HEX64) != manifest_hash
-            or _utc(proof.get("native_process_start_utc")) != _utc(record["native_process_start_utc"])):
+            or _hex(proof.get("manifest_sha256"), _HEX64) != manifest_hash):
         return False
-    return all(type(proof.get(key)) is int and proof[key] == record[key]
-               for key in ("native_pid", "launcher_pid"))
+    started = _utc(proof.get("native_process_start_utc"))
+    observed = _utc(proof.get("observed_at_utc"))
+    return (started is not None and observed is not None and started <= observed
+            and all(type(proof.get(key)) is int and proof[key] > 0
+                    for key in ("native_pid", "launcher_pid")))

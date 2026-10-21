@@ -72,6 +72,7 @@ def event(ctx):
                 "launcher_pid", "cli_kind", "generation",
             )},
             "manifest_sha256": ctx["manifest_sha256"],
+            "observed_at_utc": "2026-10-21T01:00:01Z",
             "pin_status": "manifest_and_launcher_verified",
             "pin_error": None, "ancestry_error": None,
         }},
@@ -216,14 +217,15 @@ def test_context_mutation_cannot_promote_or_rebind(tmp_path):
 
 @pytest.mark.parametrize("where,key,value", [
     ("top", "agent_uuid", SYNTHETIC_NATIVE_UUID), ("top", "session_id", ""),
-    ("top", "run_id", "other"), ("proof", "observed_agent", None),
+    ("top", "run_id", None), ("proof", "observed_agent", None),
     ("proof", "native_conversation_id", ROLE_UUID), ("proof", "native_pid", True),
-    ("proof", "native_pid", 4243), ("proof", "launcher_pid", False),
+    ("proof", "native_pid", 0), ("proof", "launcher_pid", False),
     ("proof", "cli_kind", "claude.cmd"), ("proof", "generation", "b" * 40),
     ("proof", "manifest_sha256", "0" * 64), ("proof", "pin_status", "unknown"),
     ("proof", "pin_error", "error"), ("proof", "pin_error", False),
     ("proof", "ancestry_error", "error"),
-    ("proof", "native_process_start_utc", "2026-10-21T01:00:00.1234568Z"),
+    ("proof", "native_process_start_utc", "2026-10-21T01:00:02Z"),
+    ("proof", "observed_at_utc", None), ("proof", "observed_at_utc", ""),
 ])
 def test_event_binding_mismatch_refuses(tmp_path, where, key, value):
     ctx = context(tmp_path)
@@ -262,3 +264,35 @@ def test_record_input_is_not_retained_as_mutable_alias(tmp_path):
     ctx = context(tmp_path, manifest({"claude-rco-3": rec}))
     rec["session_id"] = "changed"
     assert enrollment.rco_event_enrollment_matches(event(ctx), context=ctx)
+
+
+def test_observation_receipt_survives_new_process_and_bridge_run(tmp_path):
+    # The operator pins an actually observed conversation in future M BEFORE its
+    # cold launch. Old registration PIDs/run labels cannot pin the future launch.
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    candidate.update(session_id="synthetic-current-session", run_id="synthetic-current-run")
+    candidate["payload"]["execution_evidence"].update(
+        native_pid=5252, launcher_pid=5253,
+        native_process_start_utc="2026-10-21T02:00:00Z",
+        observed_at_utc="2026-10-21T02:00:01Z",
+    )
+    assert enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+def test_current_lifetime_order_retains_seventh_fractional_digit(tmp_path):
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    candidate["payload"]["execution_evidence"].update(
+        native_process_start_utc="2026-10-21T01:00:00.1234568Z",
+        observed_at_utc="2026-10-21T01:00:00.1234567Z",
+    )
+    assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+def test_unknown_report_cannot_be_promoted_by_dict_mutation(tmp_path):
+    ctx = context(tmp_path, manifest(None))
+    dict.__setitem__(ctx, "status", "enrolled")
+    dict.__setitem__(ctx, "enrollment", record())
+    assert enrollment.rco_enrollment_status("claude-rco-3", context=ctx) == "unknown"
+    assert not enrollment.rco_event_enrollment_matches(event(ctx), context=ctx)

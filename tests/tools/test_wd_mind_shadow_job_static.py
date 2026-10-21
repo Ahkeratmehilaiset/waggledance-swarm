@@ -2,7 +2,8 @@
 
 Nothing here starts PowerShell or any process: the adapter and the harness are read as text. The native harness is
 never collected or run by CI. Design provenance: RCO1 (A1-A7, job reuse, R1, R2, the throwing-Stop rule), RCO2
-(G1-G4 and the member witness), Lead (planning and Source-prep decisions); fable-5 wrote this test and the adapter.
+(G1-G4 and the member witness), Lead (planning and Source-prep decisions, and the 2026-10-21 guard Source-GO whose
+disk rule is Lead's deployment budget at 542e26be); fable-5 wrote this test and the adapter.
 """
 
 import re
@@ -94,7 +95,8 @@ def _function(text, name):
 
 def test_outcome_rules_completed_needs_drain_lock_and_no_unknown(adapter):
     body = _function(adapter, "Resolve-WdShadowOutcome")
-    assert set(re.findall(r"return '([a-z_]+)'", body)) == {"completed", "stopped_at_deadline", "stop_unconfirmed"}
+    assert set(re.findall(r"return '([a-z_]+)'", body)) == {
+        "completed", "stopped_by_off_switch", "stopped_at_disk_floor", "stopped_at_deadline", "stop_unconfirmed"}
     completed = body[:body.index("return 'completed'")].rsplit("if (", 1)[1]
     for need in ("$Drained", "$RootExited", "$LockAcquired", "$Unknown.Count -eq 0", "-not $StopCalled"):
         assert need in completed, need
@@ -327,7 +329,7 @@ def test_root_witness_prologue_holds_a_detached_exclusive_token_then_publishes_o
 def test_root_exit_code_is_raw_evidence_read_after_an_observed_exit_before_dispose(adapter):
     # cp4: the true managed ExitCode after a positive root-exit observation and before Dispose; a failed query stays
     # UNKNOWN (never 0); the containment outcome never reads it and nothing infers producer success.
-    assert "$Schema = 'wd.mind-shadow-run-outcome.v2'" in adapter
+    assert "$Schema = 'wd.mind-shadow-run-outcome.v3'" in adapter
     assert adapter.count("$managed.ExitCode") == 1 and adapter.count("$rootExitCode = 'UNKNOWN'") == 1
     assert re.search(r"if \(\$null -ne \$rootExitAt\) \{\s*try \{\s*\$rootExitCode = \$managed\.ExitCode\s*\} "
                      r"catch \{\s*Add-WdShadowUnknown \$unknown 'root_exit_code'", adapter)
@@ -355,6 +357,93 @@ def test_lock_reacquire_uses_the_producer_lock_byte(adapter):
     assert re.findall(r"\$LockByte = (\d+)", adapter) == [str(2 ** 30)]
     body = _function(adapter, "Test-WdShadowLiveDirLock")
     assert ".Lock($LockByte, 1)" in body and ".Unlock($LockByte, 1)" in body and "[IO.FileMode]::Open," in body
+
+
+def test_guards_are_fixed_once_and_refuse_before_the_first_write(adapter):
+    # Guards (Lead Source-GO 2026-10-21, after the operator's shadow-run decision): Lead's deployment disk floor
+    # (542e26be) on C:\ always and on the run root and live dir volumes, a reviewed bound that refuses when unknown,
+    # and one fixed off switch name in the approved run root; each refuses before the run dir, the first write.
+    assert re.findall(r"\$DiskFloorBytes = \[long\](\d+)", adapter) == [str(3 * 2 ** 30)]
+    assert re.findall(r"\$OffSwitchName = '([^']*)'", adapter) == ["mind-shadow.off"]
+    for name, count in (("DiskFloorBytes", 1), ("OffSwitchName", 1), ("offSwitchPath", 1), ("guardRoots", 1),
+                        ("ExpectedPeakAdditionalBytes", 0)):
+        assigned = re.findall(r"(?i)\$(?:script:|global:|local:|private:)?" + name + r"\s*[-+*/%]?=", adapter)
+        assert len(assigned) == count, name
+    assert re.search(r"\[Parameter\(Mandatory\)\] \[long\] \$ExpectedPeakAdditionalBytes\n\)", adapter)
+    assert "$offSwitchPath = Join-Path $runRootFull $OffSwitchName" in adapter
+    assert re.search(r"\$guardRoots = @\(@\('C:\\', \[IO\.Path\]::GetPathRoot\(\$runRootFull\), "
+                     r"\[IO\.Path\]::GetPathRoot\(\$liveFull\)\) \|\s*ForEach-Object \{ \$_\.ToUpperInvariant\(\) \} "
+                     r"\| Select-Object -Unique\)", adapter)
+    switch = re.search(r"if \(Test-WdShadowOffSwitch -Path \$offSwitchPath\) \{\s*throw ", adapter)
+    bound = re.search(r"if \(\$ExpectedPeakAdditionalBytes -le 0\) \{\s*throw ", adapter)
+    budget = re.search(r"\$shortfall = Get-WdShadowDiskShortfall -Roots \$guardRoots -AdditionalBytes "
+                       r"\$ExpectedPeakAdditionalBytes\nif \(\$null -ne \$shortfall\) \{ throw ", adapter)
+    assert switch and bound and budget
+    validated = adapter.index("if (-not (Test-Path -LiteralPath $runRootFull -PathType Container))")
+    first_write = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
+    assert validated < switch.start() < bound.start() < budget.start() < first_write
+    assert adapter.count("New-Item") == 1 and budget.start() < adapter.index("[guid]::NewGuid()")
+    assert re.search(r"guard = \[ordered\]@\{\s*disk_floor_bytes = \$DiskFloorBytes; expected_peak_additional_bytes = "
+                     r"\$ExpectedPeakAdditionalBytes\s*volumes = @\(\$guardRoots\); off_switch = \$offSwitchPath\s*\}",
+                     adapter)
+
+
+def test_disk_shortfall_is_leads_deployment_rule_and_fails_closed(adapter):
+    body = _function(adapter, "Get-WdShadowDiskShortfall")
+    assert "if ($free -lt $DiskFloorBytes -or $AdditionalBytes -gt ($free - $DiskFloorBytes)) {" in body
+    assert "$free = [long]$drive.AvailableFreeSpace" in body and "$drive = New-Object IO.DriveInfo($root)" in body
+    assert re.search(r"if \(-not \$drive\.IsReady -or \$drive\.DriveType -ne \[IO\.DriveType\]::Fixed\) \{\s*"
+                     r"return \"", body)
+    assert re.search(r"\} catch \{\s*return \"\$root is unmeasured ", body)
+    assert body.count("return $null") == 1 and body.rstrip().endswith("return $null\n}")
+    floor = "if ($null -ne (Get-WdShadowDiskShortfall -Roots $Roots -AdditionalBytes 0)) { return 'disk_floor' }"
+    assert floor in _function(adapter, "Get-WdShadowGuardStop")
+
+
+def test_off_switch_reads_existence_only_and_counts_any_doubt_as_on(adapter):
+    body = _function(adapter, "Test-WdShadowOffSwitch")
+    assert "if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($Path))) { return $true }" in body
+    assert "[void](Get-Item -LiteralPath $Path -Force -ErrorAction Stop)" in body
+    assert re.search(r"\} catch \[Management\.Automation\.ItemNotFoundException\] \{\s*return \$false\s*\} "
+                     r"catch \{\s*return \$true\s*\}\n\}", body)
+    assert body.count("return $false") == 1 and body.count("return $true") == 3
+    for word in ("Get-Content", "ReadAll", "Open(", "StreamReader", "Remove-", "Delete", "Move(", "New-Item"):
+        assert word not in body, word
+    guard = _function(adapter, "Get-WdShadowGuardStop")
+    switch = guard.index("if (Test-WdShadowOffSwitch -Path $OffSwitchPath) { return 'off_switch' }")
+    assert switch < guard.index("Get-WdShadowDiskShortfall")
+    assert set(re.findall(r"return '([a-z_]+)'", guard)) == {"off_switch", "disk_floor"}
+    assert guard.rstrip().endswith("return $null\n}")
+
+
+def test_a_guard_hit_in_a_slice_leaves_through_the_one_stop_path(adapter):
+    start = adapter.index("while (-not $forceStop -and $clock.ElapsedMilliseconds -lt $deadlineMs) {")
+    loop = adapter[start:adapter.index("if (-not $drained) {")]
+    assert re.search(r"\{\s*try \{\s*\$guardStop = Get-WdShadowGuardStop -OffSwitchPath \$offSwitchPath -Roots "
+                     r"\$guardRoots\s*\} catch \{\s*\$guardStop = 'guard_error'\s*Add-WdShadowUnknown \$unknown "
+                     r"'guard' ", loop)
+    leave = loop.index("if ($null -ne $guardStop) { break }")
+    assert loop.index("$guardStop = Get-WdShadowGuardStop") < leave < loop.index("$slice = ")
+    assert loop.index("$slice = ") < loop.index("$managed.Wait($slice)")
+    assert adapter.count("Get-WdShadowGuardStop -OffSwitchPath") == 1 and adapter.count("$managed.Stop()") == 1
+    assert adapter.count("$guardStop = ") == 3 and adapter.count("$guardStop = $null") == 1
+    assert adapter.index("$guardStop = $null") < adapter.index("[WdManagedTurnProcess]::new(")
+
+
+def test_a_guard_stop_is_named_and_needs_what_the_deadline_stop_needs(adapter):
+    body = _function(adapter, "Resolve-WdShadowOutcome")
+    assert "[string] $GuardStop" in body and "-LockAcquired $lockOk -GuardStop $guardStop -Unknown $unknown" in adapter
+    needs = ("$Unknown.Count -eq 0", "$StopCalled", "$StopOk", "$StopConfirmed", "$RootExited", "$LockAcquired")
+    for name, guard in (("stopped_by_off_switch", "$GuardStop -ceq 'off_switch'"),
+                        ("stopped_at_disk_floor", "$GuardStop -ceq 'disk_floor'"),
+                        ("stopped_at_deadline", "-not $GuardStop")):
+        condition = body[:body.index("return '" + name + "'")].rsplit("if (", 1)[1]
+        for need in needs + (guard,):
+            assert need in condition, (name, need)
+        assert " -or " not in condition and "-not $StopCalled" not in condition
+    completed = body[:body.index("return 'completed'")].rsplit("if (", 1)[1]
+    assert "-not $GuardStop" in completed and "-not $StopCalled" in completed
+    assert adapter.count("guard_stop = $guardStop") == 1
 
 
 def test_harness_refuses_by_default_before_any_process_or_type(harness):

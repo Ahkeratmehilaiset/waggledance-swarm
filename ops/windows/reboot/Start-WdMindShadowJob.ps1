@@ -1,8 +1,8 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs the Mind shadow producer once inside an owned kill-on-close job with one fixed deadline. Preparation code:
-    no run is authorized, and native acceptance A1-A7 is NOT_RUN.
+    Runs the Mind shadow producer once inside an owned kill-on-close job with one fixed deadline, a C: floor and an
+    operator off switch. Preparation code: no run is authorized, and native acceptance A1-A7 is NOT_RUN.
 
 .DESCRIPTION
     Route B (Lead decision): the job type is the lane loop's own WdManagedTurnProcess. The adapter refuses a type or
@@ -12,11 +12,11 @@
 
     Time: one Stopwatch is the enforcement clock, started once and never reset; UTC is read once at launch and every
     *_utc value is that launch time plus the monotonic elapsed time. Stop() (TerminateJobObject) runs only at the
-    1800 s deadline, after an unreadable job state or after a failed start record, followed by at most 30 s for the
-    job to drain. completed needs a full drain before the deadline (root exit alone never counts), an observed root
-    exit, a positive exclusive reacquire and release of the live-dir lock, and no unknown value; stopped_at_deadline
-    needs a Stop that returned, a confirmed drain, the root observed exited on the managed handle after that drain
-    and the lock reacquire (D1); everything else is stop_unconfirmed.
+    1800 s deadline, after a guard hit (see Guards), after an unreadable job state or after a failed start record,
+    followed by at most 30 s for the job to drain. completed needs a full drain before the deadline (root exit alone
+    never counts), an observed root exit, a positive exclusive reacquire and release of the live-dir lock, and no
+    unknown value; stopped_at_deadline needs a Stop that returned, a confirmed drain, the root observed exited on the
+    managed handle after that drain and the lock reacquire (D1); everything else is stop_unconfirmed.
 
     Records (D8 baseline) live in a new per-launch directory under the approved run root, outside the live dir, and
     each is published once (CreateNew, then a rename that never overwrites). The input file and the verified type are
@@ -45,6 +45,19 @@
     native parity on PS 5.1 and 7 is NOT_RUN. A missing, partial or foreign record is UNKNOWN or FAIL, never proof
     that no process ran.
 
+    Guards (Lead Source-GO 2026-10-21, after the operator's shadow-run decision): a C: floor and an operator off
+    switch, record schema v3. The floor and its comparison are Lead's deployment disk budget rule (542e26be):
+    3221225472 bytes (3 GiB), always on C:\ and on the volumes of the run root and the live dir. Before anything is
+    written, each volume must hold the floor plus ExpectedPeakAdditionalBytes, a reviewed positive bound from the
+    caller (unknown refuses; it is not a measured footprint or a reservation); while the job runs, each must keep the
+    floor itself, and a failed measurement counts as below it. The off switch is any entry named mind-shadow.off in
+    the approved run root: present before the start, nothing is started; appearing later, the job is stopped through
+    the deadline's Stop path. Only its existence is read, never its content, and only a positive not-found answer
+    under an existing run root counts as off. Both guards are read once per loop slice, so a guard acts within about
+    one second plus the stop wait, never instantly; nothing here reserves space or guards against other writers. A
+    confirmed guard stop is stopped_by_off_switch or stopped_at_disk_floor under the stopped_at_deadline rules; a
+    guard error is UNKNOWN, so stop_unconfirmed.
+
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
     membership is never used, and nothing is defaulted from the caller. whoami.exe comes from the OS system directory
@@ -58,7 +71,8 @@
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
     the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
-    cp5 child run id transport and command prefix design and the root witness contract); fable-5 wrote this file.
+    cp5 child run id transport and command prefix design, the root witness contract, and the guard Source-GO with
+    its 542e26be disk rule); fable-5 wrote this file.
     There is no process kill by PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -69,7 +83,9 @@ param(
     [Parameter(Mandatory)] [string] $ApprovedRunRoot,
     [Parameter(Mandatory)] [string] $LiveDir,
     [Parameter(Mandatory)] [string] $ApprovedUserSid,
-    [Parameter(Mandatory)] [ValidateSet('medium', 'high', IgnoreCase = $false)] [string] $ApprovedIntegrityLevel
+    [Parameter(Mandatory)] [ValidateSet('medium', 'high', IgnoreCase = $false)] [string] $ApprovedIntegrityLevel,
+    # Guards: the reviewed positive additional-write bound for this run; unknown (0 or less) refuses before any write.
+    [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,10 +105,15 @@ $StopConfirmationWaitSeconds = 30
 $PollMilliseconds = 1000
 # The producer's Windows live-dir lock byte: sandbox/mind/mind_capture_producer.py LOCK_BYTE = 2 ** 30.
 $LockByte = 1073741824
+# Guards (Lead Source-GO 2026-10-21): Lead's deployment disk floor (542e26be), never lowered or omitted, and the one
+# fixed name of the operator off switch in the approved run root.
+$DiskFloorBytes = [long]3221225472
+$OffSwitchName = 'mind-shadow.off'
 $StatePath = 'C:\Python\WD_REBOOT_STATE_CURRENT.json'
 $BundleStore = 'C:\Python\wd-reboot-bundles'
 $WrapperName = 'Invoke-WdBridgePython.ps1'
-$Schema = 'wd.mind-shadow-run-outcome.v2'
+# Record schema v3 (guards): binding.guard, controller_outcome.guard_stop and the two guard stop outcomes.
+$Schema = 'wd.mind-shadow-run-outcome.v3'
 # cp4 (Tools PS5 and Root PS7 finding): -File turns the wrapper's published exit code into 0, so the root runs the
 # wrapper through -Command and this literal shim (never expanded here) forwards it; no published code exits 255.
 $RootExitShim = '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 255'
@@ -203,6 +224,52 @@ function Test-WdShadowLiveDirLock {
     return $result
 }
 
+function Get-WdShadowDiskShortfall {
+    # Lead's deployment disk budget rule (542e26be): every volume must be a ready fixed local volume holding the floor
+    # plus the bound; exactly floor + bound passes, one byte less does not, and the subtraction follows the floor check
+    # so it cannot overflow. $null when every volume passes, else the first shortfall as text; a failed measurement is
+    # a shortfall (fail closed). It may over-refuse; it reserves nothing and does not guard against other writers.
+    param([string[]] $Roots, [long] $AdditionalBytes)
+    foreach ($root in $Roots) {
+        try {
+            $drive = New-Object IO.DriveInfo($root)
+            if (-not $drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) {
+                return "$root is not a ready fixed local volume"
+            }
+            $free = [long]$drive.AvailableFreeSpace
+        } catch {
+            return "$root is unmeasured ($($_.Exception.GetType().FullName))"
+        }
+        if ($free -lt $DiskFloorBytes -or $AdditionalBytes -gt ($free - $DiskFloorBytes)) {
+            return "$root free=$free, additional=$AdditionalBytes, floor=$DiskFloorBytes"
+        }
+    }
+    return $null
+}
+
+function Test-WdShadowOffSwitch {
+    # The operator off switch: any entry with the fixed name, read for its existence only (never its content). Only a
+    # positive not-found answer under an existing run root counts as off; anything else counts as on (fail closed).
+    param([string] $Path)
+    try {
+        if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($Path))) { return $true }
+        [void](Get-Item -LiteralPath $Path -Force -ErrorAction Stop)
+        return $true
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $false
+    } catch {
+        return $true
+    }
+}
+
+function Get-WdShadowGuardStop {
+    # One reading of both guards: the off switch first, then the floor itself (the bound is spent while the job runs).
+    param([string] $OffSwitchPath, [string[]] $Roots)
+    if (Test-WdShadowOffSwitch -Path $OffSwitchPath) { return 'off_switch' }
+    if ($null -ne (Get-WdShadowDiskShortfall -Roots $Roots -AdditionalBytes 0)) { return 'disk_floor' }
+    return $null
+}
+
 function Get-WdShadowDescendants {
     param($Managed, [System.Collections.IList] $Unknown, [string] $Field)
     try {
@@ -215,13 +282,23 @@ function Get-WdShadowDescendants {
 
 function Resolve-WdShadowOutcome {
     # G3: root exit alone never completes, and a drain needs an observed root exit as well (D1); G2: the lock must be
-    # reacquired; G4: any unknown value is never positive.
+    # reacquired; G4: any unknown value is never positive. A guard stop needs exactly what the deadline stop needs.
     param([bool] $Drained, [bool] $RootExited, [bool] $StopCalled, [bool] $StopOk, [bool] $StopConfirmed,
-        [bool] $LockAcquired, [System.Collections.IList] $Unknown)
-    if ($Unknown.Count -eq 0 -and $Drained -and $RootExited -and -not $StopCalled -and $LockAcquired) {
+        [bool] $LockAcquired, [string] $GuardStop, [System.Collections.IList] $Unknown)
+    if ($Unknown.Count -eq 0 -and $Drained -and $RootExited -and -not $StopCalled -and $LockAcquired -and
+        -not $GuardStop) {
         return 'completed'
     }
-    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $RootExited -and $LockAcquired) {
+    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $RootExited -and $LockAcquired -and
+        $GuardStop -ceq 'off_switch') {
+        return 'stopped_by_off_switch'
+    }
+    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $RootExited -and $LockAcquired -and
+        $GuardStop -ceq 'disk_floor') {
+        return 'stopped_at_disk_floor'
+    }
+    if ($Unknown.Count -eq 0 -and $StopCalled -and $StopOk -and $StopConfirmed -and $RootExited -and $LockAcquired -and
+        -not $GuardStop) {
         return 'stopped_at_deadline'
     }
     return 'stop_unconfirmed'
@@ -357,6 +434,19 @@ $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($liveFull))
 if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -cne 'NTFS') {
     throw 'refused: the live dir is not on a local NTFS disk'
 }
+# Guards before anything is written: the off switch must be off, the bound known and positive, and every volume must
+# hold the floor plus the bound.
+$offSwitchPath = Join-Path $runRootFull $OffSwitchName
+if (Test-WdShadowOffSwitch -Path $offSwitchPath) {
+    throw "refused: the operator off switch $offSwitchPath is on (or unreadable); nothing was started"
+}
+if ($ExpectedPeakAdditionalBytes -le 0) {
+    throw 'refused: ExpectedPeakAdditionalBytes is unknown or not positive; supply the reviewed bound'
+}
+$guardRoots = @(@('C:\', [IO.Path]::GetPathRoot($runRootFull), [IO.Path]::GetPathRoot($liveFull)) |
+    ForEach-Object { $_.ToUpperInvariant() } | Select-Object -Unique)
+$shortfall = Get-WdShadowDiskShortfall -Roots $guardRoots -AdditionalBytes $ExpectedPeakAdditionalBytes
+if ($null -ne $shortfall) { throw "refused: the disk budget is not met before the start ($shortfall)" }
 
 # cp5: the root inherits this process's environment (Root's static reading of the type), so a run id variable here
 # would conflict with the launch id; it is refused, never reused, and this environment is never changed.
@@ -419,6 +509,7 @@ $rootExitCode = 'UNKNOWN'
 $drainAt = $null
 $before = 'UNKNOWN'
 $after = 'UNKNOWN'
+$guardStop = $null
 $lock = [ordered]@{ attempted = $false; acquired = $false; released = $false; error = $null }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $script:LaunchUtc = [DateTime]::UtcNow
@@ -434,6 +525,10 @@ $binding = [ordered]@{
         absolute_utc = Get-WdShadowUtc -ElapsedSeconds $DeadlineSeconds
         launch_utc = Get-WdShadowUtc -ElapsedSeconds 0
         clock = 'Stopwatch (monotonic); every *_utc value is launch_utc plus elapsed seconds'
+    }
+    guard = [ordered]@{
+        disk_floor_bytes = $DiskFloorBytes; expected_peak_additional_bytes = $ExpectedPeakAdditionalBytes
+        volumes = @($guardRoots); off_switch = $offSwitchPath
     }
 }
 $intent = [ordered]@{
@@ -472,6 +567,14 @@ try {
         }
         $deadlineMs = [long]$DeadlineSeconds * 1000
         while (-not $forceStop -and $clock.ElapsedMilliseconds -lt $deadlineMs) {
+            # Guards: one reading per slice before the wait; a hit leaves the job undrained, so the Stop below runs.
+            try {
+                $guardStop = Get-WdShadowGuardStop -OffSwitchPath $offSwitchPath -Roots $guardRoots
+            } catch {
+                $guardStop = 'guard_error'
+                Add-WdShadowUnknown $unknown 'guard' $_.Exception.GetType().FullName
+            }
+            if ($null -ne $guardStop) { break }
             $slice = [int][Math]::Max(1, [Math]::Min($PollMilliseconds, $deadlineMs - $clock.ElapsedMilliseconds))
             try {
                 if ($null -eq $rootExitAt) {
@@ -555,7 +658,7 @@ if (-not $rootExited -and -not @($unknown | Where-Object { $_['field'] -ceq 'roo
 if (-not $jobDrained) { Add-WdShadowUnknown $unknown 'job_drained' 'drain not confirmed' }
 $lockOk = [bool]$lock.acquired -and [bool]$lock.released
 $outcome = Resolve-WdShadowOutcome -Drained $drained -RootExited $rootExited -StopCalled $stopCalled `
-    -StopOk $stopOk -StopConfirmed $stopConfirmed -LockAcquired $lockOk -Unknown $unknown
+    -StopOk $stopOk -StopConfirmed $stopConfirmed -LockAcquired $lockOk -GuardStop $guardStop -Unknown $unknown
 $rootExitUtc = 'UNKNOWN'
 if ($rootExited) { $rootExitUtc = Get-WdShadowUtc -ElapsedSeconds $rootExitAt }
 $drainUtc = 'UNKNOWN'
@@ -564,6 +667,7 @@ $stopUtc = $null
 if ($null -ne $stopAt) { $stopUtc = Get-WdShadowUtc -ElapsedSeconds $stopAt }
 Publish-WdShadowRecord -Directory $runDir -Name 'controller_outcome' -Record ([ordered]@{
     schema = $Schema; record = 'controller_outcome'; binding = $binding; outcome = $outcome
+    guard_stop = $guardStop
     root_exit_utc = $rootExitUtc
     root_exit_code = $rootExitCode
     job_drained = [ordered]@{ drained = $jobDrained; after_stop = $stopConfirmed

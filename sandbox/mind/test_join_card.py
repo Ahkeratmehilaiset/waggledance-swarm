@@ -84,7 +84,7 @@ def test_pr1905_tools_lane_reads_the_whole_conjunction_in_one_card():
     assert sections(text) == NO_MEMORY and len(text.encode()) <= jc.CARD_BYTES
     record = view["prs"][str(tlv.NUMBER)]
     slot = line(text, "SLOT")
-    assert slot.startswith(f"SLOT pr={tlv.NUMBER} head={tlv.NEW} credited_at_head=2(")
+    assert slot.startswith(f"SLOT pr={tlv.NUMBER} head={tlv.NEW} credited_at_head=3(")
     assert all(vote["ref"][:12] in slot for vote in record["credited"])
     assert "you_in_set=no veto=none_observed ci_at_head=" in slot and slot.endswith("last_open_slot=yes")
     assert line(text, "UNDERSTAND").startswith(f"UNDERSTAND your build_tools vote is the last open slot on PR{tlv.NUMBER}")
@@ -153,7 +153,9 @@ def test_the_only_empty_slot_comes_first_and_gets_the_slot_line():
     heads = {n: hashlib.sha1(f"order {n}".encode()).hexdigest() for n in (2000, 2001)}
     branches = {n: f"codex-lead-1/order-{n}-20261013" for n in heads}
     events = [tlv.vote("2026-10-13T17:30:00Z", "claude-rco-1", head=heads[2000], task=branches[2000], number=2000),
+              tlv.vote("2026-10-13T17:30:00.5Z", "claude-rco-3", head=heads[2000], task=branches[2000], number=2000),
               tlv.vote("2026-10-13T17:50:00Z", "claude-rco-1", head=heads[2001], task=branches[2001], number=2001),
+              tlv.vote("2026-10-13T17:50:00.5Z", "claude-rco-3", head=heads[2001], task=branches[2001], number=2001),
               tlv.vote("2026-10-13T17:50:01Z", "codex-lead-1", head=heads[2001], task=branches[2001], number=2001)]
     github = tlv.merge_github(*(tlv.github_of(head=heads[n], number=n, branch=branches[n],
                                               observed=tjd.shift(AS_OF, minutes=-5)) for n in heads))

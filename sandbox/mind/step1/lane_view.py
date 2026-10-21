@@ -15,8 +15,9 @@ the only empty slot.
    ``agent_uuid`` and ``verification`` ``declared``; a row whose two fields disagree is refused). Its event body,
    looked up by its content ref, must be a ``decision`` on this PR bound to exactly the GitHub head (full SHA), its
    task must be the PR branch (GitHub ``headRefName``), and its identity must fill a slot: ``build_lead``
-   codex-lead-1, ``build_tools`` codex-tools-1, one slot per recognized RCO. An RCO that is a commit author of the
-   PR, or that declared ``rco_recused`` at this head on this task, fills no slot and is never asked; every event
+   codex-lead-1, ``build_tools`` codex-tools-1, two distinct eligible recognized RCOs (never all three). An RCO that
+   is a commit author of the PR, or that declared ``rco_recused`` at this head on this task, fills no slot and is
+   never asked; every event
    body of that recusal row must say what the row says, as for a vote, and be a recusal the way the core reads one
    (a ``decision`` or ``message``, ``recused`` not false), else ``recusal_unverified``. Anything else is listed as
    not credited, never counted.
@@ -54,8 +55,10 @@ from tools.bridge_compact_view import event_id  # noqa: E402
 SCHEMA = "wd.mind-lane-view.v1a"
 SCOPE = "advisory_lane_view_not_gate"
 UNKNOWN = ws.UNKNOWN
-LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+LANES = ("codex-lead-1", "codex-tools-1", *sorted(ws.RECOGNIZED_RCOS), "fable-5")
 SLOT_OWNER = {**{slot: agent for agent, slot in ws.BUILD_SLOT.items()}, **{rco: rco for rco in ws.RECOGNIZED_RCOS}}
+# Ordering is not the quorum: the workspace's VOTE_SLOTS deliberately contains only the two build slots.
+SLOT_ORDER = (*ws.VOTE_SLOTS, *sorted(ws.RECOGNIZED_RCOS))
 LINE_LIMIT = 3
 STATUS_SCHEMA = "wd.bridge-mind-gh-status.v1"
 GITHUB_MAX_AGE = ws.CONTEXT_MAX_AGE
@@ -83,7 +86,8 @@ REASON_TEXT = {
     "vote_body_disagrees": "a vote row and its event body disagree",
     "recusal_unverified": "a recusal at this head cannot be verified",
     "commit_authors_unknown": "the commit authors are not known, so RCO eligibility is UNKNOWN",
-    "independent_rco_unavailable": "no independent RCO slot is available; an operator missing-slot decision is needed",
+    "independent_rco_unavailable": "fewer than two independent RCO identities are available; "
+                                   "an operator missing-slot decision is needed",
     "github_older_than_bridge_head": "the GitHub capture is older than bridge evidence of a different head",
 }
 
@@ -336,19 +340,23 @@ def evaluate_pr(inputs: Any, pr: Mapping[str, Any], raw: Mapping[str, Any], gh: 
                                  at=max(when for _, when in events)))
         else:
             not_credited.append(dict(entry, reason=why))
-    # Removing every excused slot must never turn two builds into RCO coverage.
+    # Removing excused identities must never turn fewer than two eligible RCOs into quorum coverage.
     # This is a bounded observational abstention, not a waiver or gate verdict.
-    if set(ws.RECOGNIZED_RCOS) <= set(excused):
+    eligible_rcos = [rco for rco in sorted(ws.RECOGNIZED_RCOS) if rco not in excused]
+    if len(eligible_rcos) < 2:
         reasons.append("independent_rco_unavailable")
     reasons = sorted(set(reasons), key=list(REASON_TEXT).index)
     record.update(not_credited=not_credited, excused=[{"agent": agent, "why": why} for agent, why in sorted(excused.items())])
     if reasons:
         return dict(record, state="abstain", reasons=reasons)
     filled = {vote["slot"] for vote in credited}
-    empty = [slot for slot in ws.VOTE_SLOTS if slot not in filled and slot not in excused]
+    empty = [slot for slot in ws.VOTE_SLOTS if slot not in filled]
+    # Only the strictly verified current-head decisions above can supply distinct RCO identities, never raw rows.
+    needed_rcos = max(0, 2 - len(filled.intersection(ws.RECOGNIZED_RCOS)))
+    empty += [rco for rco in eligible_rcos if rco not in filled][:needed_rcos]
     times = [vote["at"] for vote in credited] + [facts["checks_completed"]]
     record.update(credited=[{key: vote[key] for key in ("slot", "agent", "head", "ref", "ts_utc")}
-                            for vote in sorted(credited, key=lambda v: (ws.VOTE_SLOTS.index(v["slot"]), v["ref"]))],
+                            for vote in sorted(credited, key=lambda v: (SLOT_ORDER.index(v["slot"]), v["ref"]))],
                   empty_slots=empty, route=_route([event for vote in credited for event in vote["events"]]),
                   waiting_since_utc=UNKNOWN if None in times or not credited else stamp(max(times)))
     if not credited:

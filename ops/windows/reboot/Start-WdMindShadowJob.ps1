@@ -56,7 +56,11 @@
     under an existing run root counts as off. Both guards are read once per loop slice, so a guard acts within about
     one second plus the stop wait, never instantly; nothing here reserves space or guards against other writers. A
     confirmed guard stop is stopped_by_off_switch or stopped_at_disk_floor under the stopped_at_deadline rules; a
-    guard error is UNKNOWN, so stop_unconfirmed.
+    guard error is UNKNOWN, so stop_unconfirmed. Follow-up (Lead, after Root's static finding at 386517ac): the
+    volume and NTFS checks read textual drive roots, so neither the run root nor the live dir may pass through a
+    reparse point (a junction, a symbolic link or a volume mount point). An existing component that is one, or
+    that cannot be read, refuses before anything is written; one that appears later counts as a floor hit. Nothing
+    is pinned, so a path change between two readings stays possible: no whole-directory or race safety is claimed.
 
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
@@ -72,7 +76,7 @@
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
     the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
     cp5 child run id transport and command prefix design, the root witness contract, and the guard Source-GO with
-    its 542e26be disk rule); fable-5 wrote this file.
+    its 542e26be disk rule, and the reparse follow-up after Root's static finding); fable-5 wrote this file.
     There is no process kill by PID, and producer.lock is only opened here, never created or removed.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -262,10 +266,33 @@ function Test-WdShadowOffSwitch {
     }
 }
 
+function Get-WdShadowReparseAncestor {
+    # Follow-up (Lead, after Root's static finding at 386517ac): a textual drive root measures the backing volume
+    # only when no existing component of the path is a reparse point (a junction, a symbolic link or a volume mount
+    # point). Walks from the path up to its root, skipping a component that does not exist yet; $null when every
+    # existing component is ordinary, else the first reparse or unreadable component as text (fail closed). It may
+    # over-refuse (cloud file placeholders are reparse points too) and pins nothing, so a later change stays possible.
+    param([string] $Path)
+    for ($current = $Path; -not [string]::IsNullOrEmpty($current); $current = [IO.Path]::GetDirectoryName($current)) {
+        try {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        } catch [Management.Automation.ItemNotFoundException] {
+            continue
+        } catch {
+            return "$current is unreadable ($($_.Exception.GetType().FullName))"
+        }
+        if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return "$current is a reparse point" }
+    }
+    return $null
+}
+
 function Get-WdShadowGuardStop {
     # One reading of both guards: the off switch first, then the floor itself (the bound is spent while the job runs).
-    param([string] $OffSwitchPath, [string[]] $Roots)
+    # A reparse point that appears in a guarded path counts as a floor hit: the textual roots would then no longer
+    # establish the backing volume (fail closed).
+    param([string] $OffSwitchPath, [string[]] $Roots, [string[]] $Paths)
     if (Test-WdShadowOffSwitch -Path $OffSwitchPath) { return 'off_switch' }
+    foreach ($guarded in $Paths) { if ($null -ne (Get-WdShadowReparseAncestor -Path $guarded)) { return 'disk_floor' } }
     if ($null -ne (Get-WdShadowDiskShortfall -Roots $Roots -AdditionalBytes 0)) { return 'disk_floor' }
     return $null
 }
@@ -422,6 +449,13 @@ if ($matched.Count -ne 1) { throw "refused: expected one Initialize-WdNativeTurn
 $runRootFull = [IO.Path]::GetFullPath($ApprovedRunRoot).TrimEnd('\')
 $liveFull = [IO.Path]::GetFullPath($LiveDir).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $runRootFull -PathType Container)) { throw 'refused: the run root is not a directory' }
+# Follow-up (Lead): the volume and NTFS checks below read textual roots, so neither path may pass through a reparse
+# point or a volume mount point; refused before anything is written.
+$guardPaths = @($runRootFull, $liveFull)
+foreach ($guarded in $guardPaths) {
+    $reparse = Get-WdShadowReparseAncestor -Path $guarded
+    if ($null -ne $reparse) { throw "refused: $reparse, so its textual root would not measure its backing volume" }
+}
 $ignore = [StringComparison]::OrdinalIgnoreCase
 if ([string]::Equals($runRootFull, $liveFull, $ignore) -or $liveFull.StartsWith($runRootFull + '\', $ignore) -or
     $runRootFull.StartsWith($liveFull + '\', $ignore)) {
@@ -569,7 +603,7 @@ try {
         while (-not $forceStop -and $clock.ElapsedMilliseconds -lt $deadlineMs) {
             # Guards: one reading per slice before the wait; a hit leaves the job undrained, so the Stop below runs.
             try {
-                $guardStop = Get-WdShadowGuardStop -OffSwitchPath $offSwitchPath -Roots $guardRoots
+                $guardStop = Get-WdShadowGuardStop -OffSwitchPath $offSwitchPath -Roots $guardRoots -Paths $guardPaths
             } catch {
                 $guardStop = 'guard_error'
                 Add-WdShadowUnknown $unknown 'guard' $_.Exception.GetType().FullName

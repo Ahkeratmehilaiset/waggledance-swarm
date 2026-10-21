@@ -3,7 +3,8 @@
 Nothing here starts PowerShell or any process: the adapter and the harness are read as text. The native harness is
 never collected or run by CI. Design provenance: RCO1 (A1-A7, job reuse, R1, R2, the throwing-Stop rule), RCO2
 (G1-G4 and the member witness), Lead (planning and Source-prep decisions, and the 2026-10-21 guard Source-GO whose
-disk rule is Lead's deployment budget at 542e26be); fable-5 wrote this test and the adapter.
+disk rule is Lead's deployment budget at 542e26be, with its follow-up on reparse and mount ancestry after Root's
+static finding); fable-5 wrote this test and the adapter.
 """
 
 import re
@@ -420,7 +421,8 @@ def test_a_guard_hit_in_a_slice_leaves_through_the_one_stop_path(adapter):
     start = adapter.index("while (-not $forceStop -and $clock.ElapsedMilliseconds -lt $deadlineMs) {")
     loop = adapter[start:adapter.index("if (-not $drained) {")]
     assert re.search(r"\{\s*try \{\s*\$guardStop = Get-WdShadowGuardStop -OffSwitchPath \$offSwitchPath -Roots "
-                     r"\$guardRoots\s*\} catch \{\s*\$guardStop = 'guard_error'\s*Add-WdShadowUnknown \$unknown "
+                     r"\$guardRoots -Paths \$guardPaths\s*\} catch \{\s*\$guardStop = 'guard_error'\s*"
+                     r"Add-WdShadowUnknown \$unknown "
                      r"'guard' ", loop)
     leave = loop.index("if ($null -ne $guardStop) { break }")
     assert loop.index("$guardStop = Get-WdShadowGuardStop") < leave < loop.index("$slice = ")
@@ -428,6 +430,44 @@ def test_a_guard_hit_in_a_slice_leaves_through_the_one_stop_path(adapter):
     assert adapter.count("Get-WdShadowGuardStop -OffSwitchPath") == 1 and adapter.count("$managed.Stop()") == 1
     assert adapter.count("$guardStop = ") == 3 and adapter.count("$guardStop = $null") == 1
     assert adapter.index("$guardStop = $null") < adapter.index("[WdManagedTurnProcess]::new(")
+
+
+def test_reparse_or_mount_ancestry_is_refused_before_any_volume_check_or_write(adapter):
+    # Lead follow-up 2026-10-21 (Root's static finding at 386517ac): a textual drive root measures the backing
+    # volume only when neither the run root nor the live dir passes through a reparse or mount point.
+    body = _function(adapter, "Get-WdShadowReparseAncestor")
+    assert re.search(r"for \(\$current = \$Path; -not \[string\]::IsNullOrEmpty\(\$current\); "
+                     r"\$current = \[IO\.Path\]::GetDirectoryName\(\$current\)\) \{", body)
+    assert "$item = Get-Item -LiteralPath $current -Force -ErrorAction Stop" in body
+    assert re.search(r"\} catch \[Management\.Automation\.ItemNotFoundException\] \{\s*continue\s*\} "
+                     r"catch \{\s*return \"\$current is unreadable ", body)
+    reparse = ("if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) "
+               "{ return \"$current is a reparse point\" }")
+    assert reparse in body
+    assert body.count("return $null") == 1 and body.rstrip().endswith("return $null\n}")
+    for word in ("Get-Content", "ReadAll", "Open(", "Remove-", "Delete", "Move(", "New-Item", "Set-", "Resolve-"):
+        assert word not in body, word
+    assert len(re.findall(r"(?i)\$(?:script:|global:|local:|private:)?guardPaths\s*[-+*/%]?=", adapter)) == 1
+    assert "$guardPaths = @($runRootFull, $liveFull)" in adapter
+    check = re.search(r"foreach \(\$guarded in \$guardPaths\) \{\s*\$reparse = Get-WdShadowReparseAncestor "
+                      r"-Path \$guarded\s*if \(\$null -ne \$reparse\) \{ throw \"refused: ", adapter)
+    assert check
+    validated = adapter.index("if (-not (Test-Path -LiteralPath $runRootFull -PathType Container))")
+    ntfs = adapter.index("$drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($liveFull))")
+    roots = adapter.index("$guardRoots = @(")
+    first_write = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
+    assert validated < check.start() < ntfs < roots < first_write
+
+
+def test_the_slice_guard_rechecks_both_paths_and_counts_a_reparse_as_a_floor_hit(adapter):
+    guard = _function(adapter, "Get-WdShadowGuardStop")
+    assert "param([string] $OffSwitchPath, [string[]] $Roots, [string[]] $Paths)" in guard
+    recheck = ("foreach ($guarded in $Paths) { if ($null -ne (Get-WdShadowReparseAncestor -Path $guarded)) "
+               "{ return 'disk_floor' } }")
+    assert recheck in guard
+    assert guard.index("return 'off_switch'") < guard.index(recheck) < guard.index("Get-WdShadowDiskShortfall")
+    assert adapter.count("-Roots $guardRoots -Paths $guardPaths") == 1
+    assert adapter.count("Get-WdShadowReparseAncestor -Path") == 2
 
 
 def test_a_guard_stop_is_named_and_needs_what_the_deadline_stop_needs(adapter):

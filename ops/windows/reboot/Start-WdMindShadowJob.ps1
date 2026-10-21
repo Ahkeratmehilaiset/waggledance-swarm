@@ -53,8 +53,9 @@
     floor itself, and a failed measurement counts as below it. The off switch is any entry named mind-shadow.off in
     the approved run root: present before the start, nothing is started; appearing later, the job is stopped through
     the deadline's Stop path. Only its existence is read, never its content, through File.GetAttributes (never the
-    PowerShell provider, which can report a denied read as not found), and only a positive file-not-found answer
-    under an existing run root counts as off. Both guards are read once per loop slice, so a guard acts within about
+    PowerShell provider, which may report a denied read as not found: suspected from static code, not observed),
+    and only a positive file-not-found answer under an existing run root counts as off. Both guards are read once
+    per loop slice, so a guard acts within about
     one second plus the stop wait, never instantly; nothing here reserves space or guards against other writers. A
     confirmed guard stop is stopped_by_off_switch or stopped_at_disk_floor under the stopped_at_deadline rules; a
     guard error is UNKNOWN, so stop_unconfirmed. Follow-up (Lead, after Root's static finding at 386517ac): the
@@ -63,8 +64,9 @@
     that cannot be read, refuses before anything is written; one that appears later counts as a floor hit. Only a
     file-not-found or directory-not-found answer skips a component that does not exist yet. A drive letter made by
     subst or another DOS device mapping is invisible to this walk: reparse points in its target path are not seen,
-    and the volume checks read the letter itself (not observed). Nothing is pinned, so a path change between two
-    readings stays possible: no whole-directory or race safety is claimed.
+    and the volume and NTFS checks measure whatever volume Windows resolves the drive letter to; that this is the
+    expected target volume is not observed. Nothing is pinned, so a path change between two readings stays possible:
+    no whole-directory or race safety is claimed.
 
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
@@ -258,8 +260,9 @@ function Get-WdShadowDiskShortfall {
 function Test-WdShadowOffSwitch {
     # The operator off switch: any entry with the fixed name, read for its existence only (never its content). Only a
     # positive not-found answer under an existing run root counts as off; anything else counts as on (fail closed).
-    # Follow-up (Lead, after RCO1's static F1): read with File.GetAttributes, never the PowerShell provider, which can
-    # report a denied read as not found; only FileNotFound counts as off (DirectoryNotFound, denied or unknown: on).
+    # Follow-up (Lead, after RCO1's static F1): read with File.GetAttributes, never the PowerShell provider, which may
+    # report a denied read as not found (suspected from static code, not observed); only FileNotFound counts as off
+    # (DirectoryNotFound, denied or unknown: on).
     param([string] $Path)
     try {
         if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($Path))) { return $true }

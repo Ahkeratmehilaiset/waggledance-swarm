@@ -504,7 +504,7 @@ def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     assert "$promptWatcherWindowTitle = 'WD-Codex-Prompt-Watcher'" in launcher
     assert "Codex prompt-watcher window title is not native-argument safe" in launcher
     launch_block = launcher.index(
-        "# The UI prompt watcher is intentionally separate from the five bridge"
+        "# The UI prompt watcher is intentionally separate from the four bridge"
     )
     handshake_verify = launcher.index(
         'throw "bridge bootstrap handshake process is not alive for $launchedAgent"'
@@ -6846,7 +6846,7 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "$progressMessage = ((" in launcher
     assert "Write-Host $progressMessage" in launcher
     assert "ask WD-Supervisor to replace stale generation" in launcher
-    assert "Bootstrapping five bridge watchers" in launcher
+    assert "Bootstrapping four bridge watchers" in launcher
     assert "supervisor reconciliation conflict" in supervisor
     containment_body = supervisor[
         supervisor.index("function Invoke-TaskContainment") : supervisor.index(

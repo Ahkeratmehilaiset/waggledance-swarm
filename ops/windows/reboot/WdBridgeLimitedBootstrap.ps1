@@ -38,7 +38,11 @@ function Get-WdBridgeLimitedBootstrapDecision {
     )
 
     # Native Lead owns its session producer; this result does not certify it.
-    $lanes = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3', 'fable-5')
+    $recognizedRcos = @('claude-rco-1', 'claude-rco-2', 'claude-rco-3')
+    # Identity recognition is not runtime provisioning. No third RCO has a
+    # pinned fleet lane/native session yet; enabling it needs a separately
+    # approved, consistent fleet and watcher configuration, not this list.
+    $runtimeWatcherAgents = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
     $reasons = New-Object System.Collections.Generic.List[string]
     if ($IsAdministrator) {
         $reasons.Add('elevated caller: the workers must run Limited like WD-Supervisor workers; use a non-elevated terminal')
@@ -70,8 +74,15 @@ function Get-WdBridgeLimitedBootstrapDecision {
         $reasons.Add('the installed bundle generation is not the exact pinned generation')
     }
     $agents = @($WatcherAgents)
-    $exact = $null -ne $WatcherAgents -and $agents.Count -eq $lanes.Count
-    foreach ($lane in $lanes) {
+    $recognizedWatchers = @('codex-tools-1', 'fable-5') + $recognizedRcos
+    if (@($agents | Where-Object { $_ -cnotin $recognizedWatchers }).Count -ne 0) {
+        $reasons.Add('the watcher configuration contains an unrecognized identity')
+    }
+    if ($agents -ccontains 'claude-rco-3') {
+        $reasons.Add('claude-rco-3 is recognized but not provisioned as a supervised fleet lane; HOLD')
+    }
+    $exact = $null -ne $WatcherAgents -and $agents.Count -eq $runtimeWatcherAgents.Count
+    foreach ($lane in $runtimeWatcherAgents) {
         $seen = 0
         foreach ($agent in $agents) { if ($agent -ceq $lane) { $seen++ } }
         if ($seen -ne 1) { $exact = $false }

@@ -38,6 +38,12 @@ observation receipt, not impossible pins on future cold-launched processes.
 Current event evidence must match conversation, target generation and manifest
 and contain its own current positive PIDs, session/run and observed lifetime.
 
+The currently pinned execution-evidence collector derives a Claude conversation
+ID from `--resume <observed-conversation-id>` on its native command line. A fresh
+first session without that argument reports no conversation ID and cannot grant
+positive authority. The separately approved cold adoption must resume the same
+genuinely observed fresh conversation; this is not permission to restart it now.
+
 This is consistency under the externally approved manifest and existing
 same-user bridge trust, **not** cryptographic proof of event origin, OS
 isolation, automatic independence certification, or cold-ready acceptance.
@@ -81,6 +87,12 @@ do not run a worktree-relative copy or hot-repin an existing session. This PR
 does not invent a fleet worktree path, resume ID or an active `wd-fleet.json`
 lane. Actual provisioning and cold adoption must name those real values in the
 normal bundle/start decision before the new session can vote.
+
+Lead also chooses the same controlled, advisory-only Grok beneficiary label for
+RCO3 as for RCO1/RCO2. This enables neither the broker nor F0 and grants no vote.
+Only separately authorized public, synthetic or privacy-cleared review evidence
+may be supplied; Mind authorship work, measurement cases and gold remain forbidden.
+No actual consultation or native provisioning is performed by this Source change.
 
 ## Scope and historical truth
 

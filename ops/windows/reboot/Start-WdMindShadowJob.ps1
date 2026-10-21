@@ -78,6 +78,12 @@
     follows the resume; this does not meet a before-resume native-evidence need and waives nothing. L2, a root that
     exits before its creation time is read leaves that identity UNKNOWN; the observation time is never used instead.
 
+    PR1915 follow-ups (Lead Source-GO, after the bot, RCO1 and RCO2 static findings): B1, WD_BRIDGE_PYTHON_WRAPPER
+    must be exactly the bundle-root wrapper, with no reparse point on its path, and its bytes must hash to the
+    manifest pin before anything is written; the root reads the file again later, so a change in between stays
+    possible and no OS isolation is claimed. B2, a volume root as the run root or the live dir is refused before its
+    separator could be trimmed into a drive-relative path.
+
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
     the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
@@ -300,6 +306,24 @@ function Get-WdShadowReparseAncestor {
     return $null
 }
 
+function Resolve-WdShadowDirectoryPath {
+    # PR1915 follow-up B2 (bot P1, RCO1 P1-a, RCO2 B2; Lead Source-GO): a volume root is refused BEFORE its trailing
+    # separator is trimmed, because a trimmed volume root is drive-relative and names the current directory of that
+    # drive, so the existence, reparse and containment checks and the records would follow that directory. Any other
+    # full path keeps its root and loses only its trailing separators; the later guards are unchanged.
+    param([string] $Name, [string] $Value)
+    $full = [IO.Path]::GetFullPath($Value)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrEmpty($root) -or [string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refused: $Name is a volume root; name a directory below it"
+    }
+    $trimmed = $full.TrimEnd('\')
+    if ($trimmed.Length -le $root.Length -or -not $trimmed.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refused: $Name does not name a directory below its volume root"
+    }
+    return $trimmed
+}
+
 function Get-WdShadowGuardStop {
     # One reading of both guards: the off switch first, then the floor itself (the bound is spent while the job runs).
     # A reparse point that appears in a guarded path counts as a floor hit: the textual roots would then no longer
@@ -434,6 +458,24 @@ foreach ($name in @($pins.Keys)) {
 if ([IO.Path]::GetFileName($pins['WD_BRIDGE_PYTHON_WRAPPER']) -cne $WrapperName) {
     throw "refused: WD_BRIDGE_PYTHON_WRAPPER is not the bundle wrapper $WrapperName"
 }
+# PR1915 follow-up B1 (bot P1, RCO1 P1-b, RCO2 B1; Lead Source-GO): the root executes this file, so containment and the
+# name are not enough. The pin must be exactly the bundle-root wrapper, no component of its path may be a reparse
+# point, and its bytes must hash to the manifest's own pin, as the lane loop's do. Residual limit: the root reads the
+# file again later, so a change between this check and that read stays possible; no OS isolation is claimed.
+$wrapperPath = [IO.Path]::GetFullPath((Join-Path $bundle $WrapperName))
+$wrapperSelected = [IO.Path]::GetFullPath($pins['WD_BRIDGE_PYTHON_WRAPPER'])
+if (-not [string]::Equals($wrapperSelected, $wrapperPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "refused: WD_BRIDGE_PYTHON_WRAPPER is not exactly the bundle-root wrapper $wrapperPath"
+}
+$wrapperReparse = Get-WdShadowReparseAncestor -Path $wrapperPath
+if ($null -ne $wrapperReparse) { throw "refused: $wrapperReparse on the wrapper path" }
+$wrapperPin = $manifest.files.PSObject.Properties[$WrapperName]
+if ($null -eq $wrapperPin -or [string]$wrapperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') {
+    throw "refused: the manifest has no sha256 pin for $WrapperName"
+}
+if ((Read-WdShadowFileSnapshot -Path $wrapperPath).Hash -cne ([string]$wrapperPin.Value).ToUpperInvariant()) {
+    throw 'refused: the wrapper bytes do not match the manifest'
+}
 
 # R2 (RCO1): one read, one hash, one parse of the same bytes, exactly one imported function.
 $loopPath = Join-Path $bundle 'Invoke-WdLaneTurnLoop.ps1'
@@ -460,8 +502,9 @@ if ($matched.Count -ne 1) { throw "refused: expected one Initialize-WdNativeTurn
 . ([scriptblock]::Create($matched[0].Extent.Text))
 
 # Fresh local state only; results outside the live dir.
-$runRootFull = [IO.Path]::GetFullPath($ApprovedRunRoot).TrimEnd('\')
-$liveFull = [IO.Path]::GetFullPath($LiveDir).TrimEnd('\')
+# PR1915 follow-up B2: a volume root is refused before its separator could be trimmed (Resolve-WdShadowDirectoryPath).
+$runRootFull = Resolve-WdShadowDirectoryPath -Name 'ApprovedRunRoot' -Value $ApprovedRunRoot
+$liveFull = Resolve-WdShadowDirectoryPath -Name 'LiveDir' -Value $LiveDir
 if (-not (Test-Path -LiteralPath $runRootFull -PathType Container)) { throw 'refused: the run root is not a directory' }
 # Follow-up (Lead): the volume and NTFS checks below read textual roots, so neither path may pass through a reparse
 # point or a volume mount point; refused before anything is written.

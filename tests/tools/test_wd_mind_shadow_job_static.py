@@ -481,7 +481,9 @@ def test_the_slice_guard_rechecks_both_paths_and_counts_a_reparse_as_a_floor_hit
     assert recheck in guard
     assert guard.index("return 'off_switch'") < guard.index(recheck) < guard.index("Get-WdShadowDiskShortfall")
     assert adapter.count("-Roots $guardRoots -Paths $guardPaths") == 1
-    assert adapter.count("Get-WdShadowReparseAncestor -Path") == 2
+    # The two guarded paths plus the B1 wrapper path check (PR1915 follow-up).
+    assert adapter.count("Get-WdShadowReparseAncestor -Path") == 3
+    assert adapter.count("Get-WdShadowReparseAncestor -Path $wrapperPath") == 1
 
 
 def test_a_guard_stop_is_named_and_needs_what_the_deadline_stop_needs(adapter):
@@ -516,3 +518,50 @@ def test_harness_witness_is_fail_closed_and_no_case_passes_yet(harness):
         assert need in passed, need
     cases = re.findall(r"'(A[1-7])' = 'UNKNOWN'", harness)
     assert sorted(cases) == [f"A{i}" for i in range(1, 8)]
+
+
+def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes(adapter):
+    # PR1915 follow-up B1 (bot P1 at L435, RCO1 P1-b, RCO2 B1; Lead Source-GO): containment and the file name are not
+    # enough for the file the root executes; the pin must be exactly the bundle-root wrapper, its path free of
+    # reparse points, and its bytes must hash to the manifest's own pin (the lane loop pattern) before any write.
+    assert len(re.findall(r"(?i)\$wrapperPath\s*[-+*/%]?=", adapter)) == 1
+    exact = re.search(r"\$wrapperPath = \[IO\.Path\]::GetFullPath\(\(Join-Path \$bundle \$WrapperName\)\)\s*"
+                      r"\$wrapperSelected = \[IO\.Path\]::GetFullPath\(\$pins\['WD_BRIDGE_PYTHON_WRAPPER'\]\)\s*"
+                      r"if \(-not \[string\]::Equals\(\$wrapperSelected, \$wrapperPath, "
+                      r"\[StringComparison\]::OrdinalIgnoreCase\)\) \{\s*throw \"refused: ", adapter)
+    reparse = re.search(r"\$wrapperReparse = Get-WdShadowReparseAncestor -Path \$wrapperPath\s*"
+                        r"if \(\$null -ne \$wrapperReparse\) \{ throw \"refused: ", adapter)
+    pin = re.search(r"\$wrapperPin = \$manifest\.files\.PSObject\.Properties\[\$WrapperName\]\s*"
+                    r"if \(\$null -eq \$wrapperPin -or \[string\]\$wrapperPin\.Value -cnotmatch "
+                    r"'\^\[0-9A-Fa-f\]\{64\}\$'\) \{\s*throw \"refused: ", adapter)
+    hashed = re.search(r"if \(\(Read-WdShadowFileSnapshot -Path \$wrapperPath\)\.Hash -cne "
+                       r"\(\[string\]\$wrapperPin\.Value\)\.ToUpperInvariant\(\)\) \{\s*throw 'refused: ", adapter)
+    assert exact and reparse and pin and hashed
+    anchored = adapter.index("if ($manifestSnapshot.Hash -cne $ExpectedManifestSha256)")
+    first_write = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
+    assert anchored < exact.start() < reparse.start() < pin.start() < hashed.start() < first_write
+    assert hashed.start() < adapter.index("[WdManagedTurnProcess]::new(")
+    assert adapter.count("WD_BRIDGE_PYTHON_WRAPPER = [string]$env:WD_BRIDGE_PYTHON_WRAPPER") == 1
+
+
+def test_a_volume_root_run_root_or_live_dir_is_refused_before_the_separator_is_trimmed(adapter):
+    # PR1915 follow-up B2 (bot P1 at L463, RCO1 P1-a, RCO2 B2; Lead Source-GO): a trimmed 'C:\' is 'C:', a
+    # drive-relative path, so a volume root is refused before any trim; every other path keeps its root.
+    body = _function(adapter, "Resolve-WdShadowDirectoryPath")
+    full = body.index("$full = [IO.Path]::GetFullPath($Value)")
+    root = body.index("$root = [IO.Path]::GetPathRoot($full)")
+    root_check = body.index("[string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)")
+    trim = body.index("$trimmed = $full.TrimEnd('\\')")
+    assert full < root < root_check < trim
+    assert re.search(r"OrdinalIgnoreCase\)\) \{\s*throw \"refused: \$Name is a volume root", body)
+    assert re.search(r"if \(\$trimmed\.Length -le \$root\.Length -or -not \$trimmed\.StartsWith\(\$root, "
+                     r"\[StringComparison\]::OrdinalIgnoreCase\)\) \{\s*throw \"refused: ", body)
+    assert body.count("return $trimmed") == 1 and body.rstrip().endswith("return $trimmed\n}")
+    for name, value in (("runRootFull", "ApprovedRunRoot"), ("liveFull", "LiveDir")):
+        assigned = re.findall(r"(?i)\$" + name + r"\s*[-+*/%]?=[^\n]*", adapter)
+        assert assigned == [f"${name} = Resolve-WdShadowDirectoryPath -Name '{value}' -Value ${value}"], name
+    trims = [line.strip() for line in adapter.splitlines() if "TrimEnd(" in line]
+    assert sorted(trims) == sorted(["$bundlePrefix = [IO.Path]::GetFullPath($bundle).TrimEnd('\\') + '\\'",
+                                    "$trimmed = $full.TrimEnd('\\')"])
+    resolved = adapter.index("$liveFull = Resolve-WdShadowDirectoryPath")
+    assert resolved < adapter.index("if (-not (Test-Path -LiteralPath $runRootFull -PathType Container))")

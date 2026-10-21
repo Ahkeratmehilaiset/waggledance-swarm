@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from waggledance.core.magma.canonical import sha256_digest
+
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.check_standing_consensus_sign_class import classify_ab
 from tools.idle_consensus_auto_merge import (
@@ -433,6 +435,18 @@ def test_rule12_receipt_names_the_policy_and_slot_holders(tmp_path: Path) -> Non
     assert [ref["agent"] for ref in payload["rule12_review"]["rco_pass_refs"]] == [
         "claude-rco-1",
         "claude-rco-2",
+    ]
+    evaluation = json.loads((directory / "evaluation-001-merge.json").read_text())
+    receipt = json.loads((directory / "receipt-001-merge.json").read_text())
+    # MUTANT_DROP_RCO_PASS_PREDICATE: verified names alone do not bind the verdict.
+    assert "rco:pass_present" in evaluation["reason_codes"]
+    # MUTANT_EMPTY_RCO_DIGEST: bind the actual two head-bound RCO references.
+    assert receipt["rco_decision_digest"] == sha256_digest(
+        payload["rule12_review"]["rco_pass_refs"]
+    )
+    # MUTANT_VERIFIER_AS_SOLVER: provenance names slot holders, not gate machinery.
+    assert evaluation["solver_selection"] == [
+        "codex-lead-1", "claude-rco-1", "claude-rco-2",
     ]
     bundle_text = "".join(p.read_text() for p in directory.glob("*.json"))
     assert "rule12:best_available_consensus" in bundle_text

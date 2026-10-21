@@ -1238,3 +1238,157 @@ def test_c_d1_before_c_d2_a_future_dated_checkpoint_with_a_far_wake_is_unknown(s
     d = evaluate(scope_snap(checkpoint=c), NOW)
     assert d["verdict"] == "unknown"
     assert only(d, "checkpoint")["reasons"] == ["checkpoint_from_future"]
+
+
+# --- hold substring regression (synthetic only; no live control evidence) -----------------
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+@pytest.mark.parametrize("text", [
+    "evaluate threshold fixture", "evaluate thresholds fixture",
+    "evaluate_threshold_fixture", "evaluate_thresholds_fixture", "THRESHOLD",
+])
+def test_noncontrol_word_with_hold_suffix_does_not_suppress_recovery(scope_snap, field, text):
+    c = cp()
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "dispatch", "MUTANT_LEGACY_HOLD_SUBSTRING"
+    assert "hold_possible_control_token" not in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+    if scope_snap is cponly:
+        assert "request_completeness_not_evaluated" in d["reasons"]
+        assert "bounded_reconcile_not_acceptance" in d["reasons"]
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+@pytest.mark.parametrize("text", [
+    "HOLD this work", "hold_pending", "on_hold", "HOLD1549", "holding work",
+    "withhold work", "withholding work", "unhold task", "rehold work",
+    "threshold then HOLD", "HOLD_threshold",
+])
+def test_hold_control_forms_still_suppress_recovery(scope_snap, field, text):
+    c = cp()
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", "MUTANT_IGNORE_EXPLICIT_HOLD"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_harmless_hold_suffix_never_clears_incomplete_evidence(scope_snap):
+    s = scope_snap(checkpoint=dict(cp(), next_action="evaluate threshold fixture"))
+    s["evidence"]["complete"] = False
+    d = evaluate(s, NOW)
+    assert d["verdict"] == "unknown", "MUTANT_ACCEPT_INCOMPLETE_EVIDENCE"
+    assert "evidence_incomplete" in d["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_named_legacy_hold_substring_mutant_is_killed(monkeypatch, scope_snap):
+    def legacy_control_token(c):
+        return any(token in text.lower()
+                   for text in [c["next_action"], *c["blockers"]]
+                   for token in guard.CONTROL_TOKENS)
+    monkeypatch.setattr(guard, "_control_token", legacy_control_token)
+    with pytest.raises(AssertionError, match="MUTANT_LEGACY_HOLD_SUBSTRING"):
+        test_noncontrol_word_with_hold_suffix_does_not_suppress_recovery(
+            scope_snap, "next_action", "evaluate threshold fixture")
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+@pytest.mark.parametrize("text", [
+    "onhold", "onHold", "ONHOLD", "prehold", "taskhold", "xholding", "awithhold",
+    "thresholdhold", "thresholdshold", "thresholdholding",
+    "prethreshold", "thresholded", "thresholds2", "threshold2",
+    "\u00e9threshold", "threshold\u00e9", "\u03c0threshold", "threshold\u03c0",
+    "placeholder", "foothold", "household", "uphold",
+])
+def test_hold_identifier_not_whole_threshold_still_suppresses_recovery(scope_snap, field, text):
+    c = cp()
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", "MUTANT_LEADING_ASCII_HOLD_BOUNDARY"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+@pytest.mark.parametrize("token", [t for t in guard.CONTROL_TOKENS if t != "hold"])
+def test_threshold_exception_preserves_every_other_control_token(scope_snap, field, token):
+    c = cp()
+    text = "evaluate threshold fixture; " + token
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", "MUTANT_STRIP_OTHER_CONTROLS_WITH_THRESHOLD"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_named_leading_ascii_hold_boundary_mutant_is_killed(monkeypatch, scope_snap):
+    hold_pattern = guard.re.compile(r"(?<![a-z])(?:with|un|re)?hold")
+
+    def unsafe_control_token(c):
+        return any((hold_pattern.search(lower) is not None
+                    if token == "hold" else token in lower)
+                   for lower in (text.lower() for text in [c["next_action"], *c["blockers"]])
+                   for token in guard.CONTROL_TOKENS)
+
+    monkeypatch.setattr(guard, "_control_token", unsafe_control_token)
+    with pytest.raises(AssertionError, match="MUTANT_LEADING_ASCII_HOLD_BOUNDARY"):
+        test_hold_identifier_not_whole_threshold_still_suppresses_recovery(
+            scope_snap, "next_action", "onhold")
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+@pytest.mark.parametrize("field", ["next_action", "blockers"])
+@pytest.mark.parametrize("text", [
+    "e\u0301threshold", "\u0130threshold", "pre\u200bthreshold",
+    "threshold\u0301", "threshold\u0307", "threshold\u200bpost",
+    "\u0301threshold", "\u200cthreshold", "\u200dthreshold", "\u2060threshold",
+    "\ufeffthreshold", "\u00adthreshold", "\u034fthreshold", "\ufe0fthreshold",
+    "\u202ethreshold", "\u2066threshold", "\u00a0threshold", "\u2028threshold",
+    "\x00threshold", "threshold\x00",
+])
+def test_unicode_glue_never_clears_a_possible_hold(scope_snap, field, text):
+    c = cp()
+    c[field] = [text] if field == "blockers" else text
+    d = evaluate(scope_snap(checkpoint=c), NOW)
+    assert d["verdict"] == "unknown", "MUTANT_UNICODE_THRESHOLD_BOUNDARY"
+    assert "hold_possible_control_token" in only(d, "checkpoint")["reasons"]
+    assert d["authority"] == "none"
+
+
+def test_threshold_exception_edges_are_a_closed_ascii_separator_set():
+    # A closed set avoids incomplete Unicode category/range lists. Include
+    # surrogates: this is in-memory synthetic text, never an encoded live log.
+    separators = " \t\r\n_"
+    assert not guard._control_token({"next_action": "threshold", "blockers": []})
+    assert not guard._control_token({"next_action": "thresholds", "blockers": []})
+    for codepoint in range(0x110000):
+        edge = chr(codepoint)
+        expected = edge not in separators
+        for text in (edge + "threshold", "thresholds" + edge):
+            assert guard._control_token({"next_action": text, "blockers": []}) is expected, (
+                "MUTANT_OPEN_ENDED_THRESHOLD_SEPARATOR", hex(codepoint), repr(text))
+
+
+@pytest.mark.parametrize("scope_snap", [snap, cponly])
+def test_named_unicode_threshold_boundary_mutant_is_killed(monkeypatch, scope_snap):
+    unsafe_pattern = guard.re.compile(r"(?<![^\W_])thresholds?(?![^\W_])")
+
+    def unsafe_control_token(c):
+        return any((token in unsafe_pattern.sub(" ", lower)
+                    if token == "hold" else token in lower)
+                   for lower in (text.lower() for text in [c["next_action"], *c["blockers"]])
+                   for token in guard.CONTROL_TOKENS)
+
+    monkeypatch.setattr(guard, "_control_token", unsafe_control_token)
+    with pytest.raises(AssertionError, match="MUTANT_UNICODE_THRESHOLD_BOUNDARY"):
+        test_unicode_glue_never_clears_a_possible_hold(
+            scope_snap, "next_action", "e\u0301threshold")

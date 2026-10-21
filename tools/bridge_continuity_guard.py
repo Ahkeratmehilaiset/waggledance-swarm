@@ -80,6 +80,11 @@ _RECOVERABLE_STATUS_RE = re.compile(r"^r[0-9]+_pushed_awaiting_[a-z0-9_-]+$")
 CONTROL_TOKENS = ("hold", "paus", "stop", "halt", "freeze", "do not", "do_not", "don't",
                   "dont ", "veto", "operator", "signature", "nonce", "approval", "cutover",
                   "rollback", "revert", "abort", "cancel", "abandon", "park", "defer")
+# Exempt threshold/thresholds only at start/end or ASCII space/tab/CR/LF/underscore.
+# Keep the conservative substring check for every other HOLD form, including
+# unfamiliar punctuation, Unicode, combining marks and lower() expansions at
+# either edge. A closed separator set avoids open-ended Unicode word boundaries.
+_NONCONTROL_THRESHOLD_RE = re.compile(r"(?<![^ \t\r\n_])thresholds?(?![^ \t\r\n_])")
 NON_PROOF_EVENT_TYPES = frozenset({"heartbeat", "liveness"})
 CLAIM_STATES = frozenset({"active", "expired", "released"})
 PROCESSING_KINDS = frozenset({"receipt", "bound_reply"})
@@ -437,7 +442,9 @@ def _held(holds: list[dict], task_ids: set[str], request_ids: set[str]) -> list[
 
 def _control_token(cp: dict) -> bool:
     texts = [cp["next_action"], *cp["blockers"]]
-    return any(token in text.lower() for text in texts for token in CONTROL_TOKENS)
+    return any((token in _NONCONTROL_THRESHOLD_RE.sub(" ", lower)
+                if token == "hold" else token in lower)
+               for lower in (text.lower() for text in texts) for token in CONTROL_TOKENS)
 
 
 def _alert_gate(snap: dict, cp: dict) -> str | None:

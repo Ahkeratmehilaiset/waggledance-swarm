@@ -348,10 +348,188 @@ function Get-WdNativeLeadResumeState {
   return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
 }
 
+function Get-WdNativeLeadProducerAttestation {
+  param([hashtable] $Context)
+  $refused=@{verified=$false;retirement_allowed=$false;reason='producer_identity_not_ready'}
+  try {
+    if ($null -eq $Context -or [string]$Context.token -cnotmatch '^[0-9a-f]{32}$' -or
+        [int]$Context.job_id -le 0 -or [int]$Context.launcher_pid -le 0) { return $refused }
+    $job=Get-Job -Id ([int]$Context.job_id) -ErrorAction Stop
+    if ($null -eq $job -or [int]$job.Id -ne [int]$Context.job_id -or
+        $job.Name -cne 'agent-bridge-watcher-codex-lead-1' -or $job.State -cne 'Running') {
+      $refused.reason='producer_job_not_running';return $refused
+    }
+    $producerOutput=@(Receive-Job -Id ([int]$Context.job_id) -Keep -ErrorAction Stop)
+    $refusals=@($producerOutput | Where-Object {
+      $null -ne $_ -and $null -ne $_.PSObject.Properties['schema'] -and
+      [string]$_.schema -ceq 'wd.session-wake-producer-refusal.v1'
+    })
+    if ($refusals.Count -gt 0) {
+      $refused.reason='producer_identity_refused: '+[string]$refusals[0].reason;return $refused
+    }
+    $proofs=@($producerOutput | Where-Object {
+      $null -ne $_ -and $null -ne $_.PSObject.Properties['schema'] -and
+      [string]$_.schema -ceq 'wd.session-wake-producer.v1'
+    })
+    if ($proofs.Count -eq 0) { return $refused }
+    if ($proofs.Count -ne 1) { throw 'ambiguous producer proof' }
+    $proof=$proofs[0]
+    foreach ($field in @('token','session_id','generation','runtime_root','watcher_script','watcher_sha256','baseline_path')) {
+      if ([string]::IsNullOrWhiteSpace([string]$Context[$field]) -or
+          [string]$proof.$field -cne [string]$Context[$field]) { throw ('producer '+$field+' mismatch') }
+    }
+    if ($proof.agent -cne 'codex-lead-1' -or [int]$proof.process_id -le 0 -or
+        [int]$proof.process_id -eq [int]$Context.launcher_pid -or
+        [int]$proof.parent_pid -ne [int]$Context.launcher_pid -or
+        [string]::IsNullOrWhiteSpace([string]$proof.command_line) -or
+        [string]::IsNullOrWhiteSpace([string]$proof.executable_path)) { throw 'producer process identity missing' }
+    $producer=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$proof.process_id) -ErrorAction Stop)
+    $parent=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$Context.launcher_pid) -ErrorAction Stop)
+    # Win32_Process uses DMTF microseconds; native StartTime retains 100 ns.
+    # Project only the native timestamp into that exact domain using integer
+    # arithmetic. This is not a tolerance: the next microsecond still refuses.
+    $launcherNativeTicks=([DateTimeOffset]$Context.launcher_start_utc).UtcTicks
+    if ($launcherNativeTicks -le 0) { throw 'launcher lifetime missing' }
+    $launcherCimTicks=$launcherNativeTicks - ($launcherNativeTicks % 10)
+    if ($producer.Count -ne 1 -or $parent.Count -ne 1 -or
+        [int]$parent[0].ProcessId -ne [int]$Context.launcher_pid -or
+        [int]$producer[0].ProcessId -ne [int]$proof.process_id -or
+        [int]$producer[0].ParentProcessId -ne [int]$Context.launcher_pid -or
+        [string]$producer[0].CommandLine -cne [string]$proof.command_line -or
+        [string]$producer[0].ExecutablePath -cne [string]$proof.executable_path -or
+        ([DateTimeOffset]$producer[0].CreationDate).UtcTicks -ne ([DateTimeOffset]$proof.creation_utc).UtcTicks -or
+        ([DateTimeOffset]$parent[0].CreationDate).UtcTicks -ne $launcherCimTicks -or
+        ([DateTimeOffset]$proof.parent_start_utc).UtcTicks -ne ([DateTimeOffset]$Context.launcher_start_utc).UtcTicks) {
+      throw 'producer or launcher lifetime changed'
+    }
+    # The fresh GUID-scoped marker is written only after Watch-Bridge establishes
+    # its baseline. A Running PowerShell job by itself is not watcher readiness.
+    $baseline=[IO.Path]::GetFullPath([string]$Context.baseline_path)
+    if (-not (Test-Path -LiteralPath $baseline -PathType Leaf)) { return $refused }
+    $item=Get-Item -LiteralPath $baseline -ErrorAction Stop
+    if ($item.PSIsContainer -or $item.Length -gt 256 -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'producer baseline is not plain' }
+    $node=$item.Directory
+    while ($null -ne $node) {
+      if ($node.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'producer baseline ancestor is not plain' }
+      $node=$node.Parent
+    }
+    $readyAt=[DateTimeOffset]::Parse([IO.File]::ReadAllText($baseline).Trim(),[Globalization.CultureInfo]::InvariantCulture)
+    if ($readyAt.UtcTicks -lt ([DateTimeOffset]$proof.creation_utc).UtcTicks -or
+        $readyAt.UtcTicks -gt [DateTimeOffset]::UtcNow.UtcTicks -or
+        (Get-FileHash -LiteralPath ([string]$Context.watcher_script)).Hash -cne [string]$Context.watcher_sha256) {
+      throw 'producer baseline or script changed'
+    }
+    # Re-read actual job state after all process and baseline observations.
+    $job=Get-Job -Id ([int]$Context.job_id) -ErrorAction Stop
+    if ($null -eq $job -or [int]$job.Id -ne [int]$Context.job_id -or
+        $job.Name -cne 'agent-bridge-watcher-codex-lead-1' -or $job.State -cne 'Running') {
+      throw 'producer stopped during attestation'
+    }
+    return @{verified=$true;retirement_allowed=$true;reason='current_session_producer_verified';
+      process_id=[int]$proof.process_id;creation_utc=[string]$proof.creation_utc;
+      command_line=[string]$proof.command_line;observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')}
+  } catch {
+    $refused.reason=$_.Exception.Message
+    return $refused
+  }
+}
+
+function Invoke-WdNativeLeadWatcherRetirement {
+  param([hashtable] $ProducerContext, [hashtable] $RetirementContext,
+    [string] $VerifiedSupervisorCode, [string] $Worktree)
+  $result=@{status='kept';reason='producer_identity_not_ready';stopped_pid=0}
+  $attestation=Get-WdNativeLeadProducerAttestation -Context $ProducerContext
+  if (-not $attestation.verified) { $result.reason=$attestation.reason;return $result }
+  $mutex=$null;$acquired=$false;$targetHandle=$null;$stopIntentWritten=$false
+  try {
+    if ($null -eq $RetirementContext -or -not $VerifiedSupervisorCode) { throw 'retirement context unavailable' }
+    # Pure named helpers from the already deployment-hash-verified supervisor.
+    # Never dot-source its reconciliation entry point or weaken its old-bundle proof.
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($VerifiedSupervisorCode,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'retirement parser invalid' }
+    foreach ($name in @('Initialize-WdSupervisorCommandLineParser','ConvertFrom-WdWindowsCommandLine',
+        'Test-WdPowerShellSwitchToken','Test-WdPowerShellHostOptionToken','Get-WdPowerShellHostKind',
+        'Test-WdPowerShellFileSwitchToken','Test-WdEncodedCommandValue','Get-WdPowerShellFileInvocation',
+        'Test-NamedCommandLineLeafArgument','Test-WdWatcherScriptArgument','Get-AgentCommandProcesses','Test-WdCanonicalWatcherProcess',
+        'Test-WdReplaceableStaleWatcherProcess','Test-WdTrustedInstalledPowerShellExecutable',
+        'Assert-WdSupervisorPathWithoutReparse','Read-Utf8SupervisorSnapshot',
+        'Invoke-WdSupervisorGitCapture','Resolve-WdSupervisorGitApplication','Get-WdCanonicalTextGitBlobId',
+        'Get-WdWatcherReconcileMutexName')) {
+      $defs=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+      if ($defs.Count -ne 1) { throw ('retirement helper missing or ambiguous: '+$name) }
+      . ([scriptblock]::Create($defs[0].Extent.Text))
+    }
+    $mutex=[Threading.Mutex]::new($false,(Get-WdWatcherReconcileMutexName -RuntimeRoot $ProducerContext.runtime_root))
+    try { $acquired=$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] {
+      $acquired=$true;throw 'retirement mutex was abandoned; preserve external watcher'
+    }
+    if (-not $acquired) { throw 'retirement mutex busy; preserve external watcher' }
+    $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $watchers=@(Get-AgentCommandProcesses $processes 'Watch-Bridge.ps1' 'codex-lead-1')
+    if ($watchers.Count -eq 0) { $result.status='absent';$result.reason='verified producer, no external watcher';return $result }
+    if ($watchers.Count -ne 1) { throw 'ambiguous external Lead watchers; preserve all' }
+    $target=$watchers[0]
+    if ([int]$target.ProcessId -eq [int]$attestation.process_id -or
+        [int]$target.ProcessId -eq [int]$ProducerContext.launcher_pid) { throw 'external target is an owned native/session process' }
+    $exact=Test-WdCanonicalWatcherProcess -Process $target -ExpectedExecutable $RetirementContext.executable `
+      -ScriptPath $ProducerContext.watcher_script -Agent codex-lead-1 -RuntimeRoot $ProducerContext.runtime_root
+    $stale=$false
+    if (-not $exact) {
+      $stale=Test-WdReplaceableStaleWatcherProcess -Process $target -ExpectedExecutable $RetirementContext.executable `
+        -CurrentScriptPath $ProducerContext.watcher_script -Agent codex-lead-1 -RuntimeRoot $ProducerContext.runtime_root `
+        -BundleParent $RetirementContext.bundle_parent -SourceRepositoryRoot $RetirementContext.source_repo `
+        -GitExecutable $RetirementContext.git_executable
+    }
+    if (-not $exact -and -not $stale) { throw 'external watcher has unknown command or bundle identity' }
+    # Cache the OS process handle before lifetime checks: never kill by a bare PID.
+    $targetHandle=Get-Process -Id ([int]$target.ProcessId) -ErrorAction Stop
+    $null=$targetHandle.Handle
+    # Match native handle lifetime in CIM's microsecond domain, not with an
+    # arbitrary time window. All subsequent CIM-to-CIM checks remain exact.
+    $targetNativeTicks=$targetHandle.StartTime.ToUniversalTime().Ticks
+    if ($targetHandle.HasExited -or $targetNativeTicks -le 0 -or
+        ($targetNativeTicks - ($targetNativeTicks % 10)) -ne
+        ([DateTimeOffset]$target.CreationDate).UtcTicks) { throw 'external watcher lifetime changed' }
+    $fresh=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$target.ProcessId) -ErrorAction Stop)
+    if ($fresh.Count -ne 1 -or [int]$fresh[0].ProcessId -ne [int]$target.ProcessId -or
+        [string]$fresh[0].CommandLine -cne [string]$target.CommandLine -or
+        [string]$fresh[0].ExecutablePath -cne [string]$target.ExecutablePath -or
+        ([DateTimeOffset]$fresh[0].CreationDate).UtcTicks -ne ([DateTimeOffset]$target.CreationDate).UtcTicks) {
+      throw 'external watcher identity changed at stop boundary'
+    }
+    $finalProof=Get-WdNativeLeadProducerAttestation -Context $ProducerContext
+    if (-not $finalProof.verified -or $finalProof.process_id -ne $attestation.process_id -or
+        $finalProof.creation_utc -cne $attestation.creation_utc -or
+        $finalProof.command_line -cne $attestation.command_line) { throw 'producer changed at stop boundary' }
+    $intentPath=Join-Path $Worktree ('.codex-audit\wd-turn-loop\native-lead-retirement-'+$ProducerContext.token+'.json')
+    $intent=@{schema='wd.native-lead-retirement.v1';status='stopping';session_id=$ProducerContext.session_id;
+      generation=$ProducerContext.generation;producer=$finalProof;external_pid=[int]$target.ProcessId;
+      external_creation_utc=([DateTimeOffset]$target.CreationDate).ToString('o');external_command_line=[string]$target.CommandLine}
+    if (Test-Path -LiteralPath $intentPath) { throw 'retirement intent already exists; reconcile, do not repeat stop' }
+    Write-WdTurnJson $intentPath $intent
+    $stopIntentWritten=$true
+    $targetHandle.Kill()
+    if (-not $targetHandle.WaitForExit(5000)) { throw 'external stop uncertain; retained retirement intent' }
+    $intent.status='retired';Write-WdTurnJson $intentPath $intent
+    $result.status='retired';$result.reason='own live producer attested before exact external stop';$result.stopped_pid=[int]$target.ProcessId
+    return $result
+  } catch {
+    if ($stopIntentWritten) { $result.status='uncertain' }
+    $result.reason=$_.Exception.Message;return $result
+  } finally {
+    if ($null -ne $targetHandle) { $targetHandle.Dispose() }
+    if ($acquired -and $null -ne $mutex) { $mutex.ReleaseMutex() }
+    if ($null -ne $mutex) { $mutex.Dispose() }
+  }
+}
+
 function Invoke-WdNativeLeadTerminal {
   param([string] $CliPath, [string[]] $Arguments, [string] $ThreadId,
     [string] $Worktree, [string] $RuntimeRoot, [string] $Generation,
-    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode)
+    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode,
+    [hashtable] $RetirementContext=$null, [string] $VerifiedSupervisorCode='')
   if ([Console]::IsInputRedirected) { throw 'Native Lead requires an interactive terminal' }
   if ($ThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
     throw 'Automatic Lead delivery requires the exact recorded conversation; never guess a recent thread'
@@ -399,7 +577,8 @@ function Invoke-WdNativeLeadTerminal {
     # delegates only process waiting: it never reads stdin or controls the UI.
     $relayNative=[pscustomobject]@{Id=$native.Id;StartTime=$native.StartTime;Process=$native;
       TerminalRecord=$record;ReadyPath=$readyPath;
-      WakeJobId=[string]$env:AGENT_BRIDGE_WAKE_JOB;ProducerEnabled=($env:WAGGLE_BRIDGE_WAKE_ENABLED -cne '0')}
+      WakeJobId=[string]$env:AGENT_BRIDGE_WAKE_JOB;ProducerEnabled=($env:WAGGLE_BRIDGE_WAKE_ENABLED -cne '0');
+      RetirementContext=$RetirementContext;VerifiedSupervisorCode=$VerifiedSupervisorCode;Worktree=$Worktree;RetirementAttempted=$false}
     $relayNative | Add-Member ScriptMethod WaitForExit {
       param([int]$TimeoutMilliseconds)
       $exited=$this.Process.WaitForExit($TimeoutMilliseconds)
@@ -413,6 +592,40 @@ function Invoke-WdNativeLeadTerminal {
           $this.TerminalRecord.bridge_wake_producer_status='unavailable'
           $this.TerminalRecord.bridge_wake_producer_observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
           throw 'Native Lead wake producer unavailable; automatic delivery withheld'
+        }
+        if ($null -ne $this.RetirementContext -and -not $this.RetirementAttempted) {
+          # Retry only a known, pre-intent mutex contention, never an uncertain
+          # stop or an ambiguous identity. Do not publish terminal_ready while
+          # the external producer is kept. Every attempt re-attests identities.
+          for ($attempt=1; $attempt -le 5; $attempt++) {
+            $retirement=Invoke-WdNativeLeadWatcherRetirement -ProducerContext $this.RetirementContext.producer `
+              -RetirementContext $this.RetirementContext.external -VerifiedSupervisorCode $this.VerifiedSupervisorCode -Worktree $this.Worktree
+            $this.TerminalRecord['external_watcher_retirement']=$retirement
+            Write-WdTurnJson $this.ReadyPath $this.TerminalRecord
+            if ($retirement.status -cin @('retired','absent')) {
+              $this.RetirementAttempted=$true
+              break
+            }
+            # A new job may not have emitted its proof or established baseline
+            # yet. Leave readiness withheld and retry on the next relay poll,
+            # bounded from the actual native process start, never from a poll.
+            if ($retirement.status -ceq 'kept' -and $retirement.reason -ceq 'producer_identity_not_ready' -and
+                [DateTimeOffset]::UtcNow -lt ([DateTimeOffset]$this.StartTime).AddSeconds(60)) {
+              return $false
+            }
+            if ($attempt -lt 5 -and $retirement.status -ceq 'kept' -and
+                $retirement.reason -ceq 'retirement mutex busy; preserve external watcher') {
+              Start-Sleep -Milliseconds (100 * $attempt)
+              continue
+            }
+            # Stop only the exact session-owned job already checked above.
+            # Preserve the external watcher and native terminal; outer failure
+            # handling records the refusal and publishes the operator notice.
+            $this.TerminalRecord.bridge_wake_producer_status='unavailable'
+            $this.TerminalRecord.bridge_wake_transport='withheld'
+            Stop-Job -Job $job -ErrorAction Stop
+            throw ('Native Lead external watcher retirement unresolved; automatic delivery withheld: '+$retirement.reason)
+          }
         }
         if ($this.TerminalRecord.bridge_wake_producer_status -cne 'running') {
           # A job observation only; terminal_ready never proves watcher baseline
@@ -664,7 +877,7 @@ function Assert-WdLeadInteractivePostureBaseline {
 function Read-WdLaneTurnRunnerSnapshot {
   param(
     [Parameter(Mandatory)] [string] $ScriptRoot,
-    [ValidateSet('Invoke-WdLaneTurnLoop.ps1', 'Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1', 'start-wd-tools-consumer.ps1')]
+    [ValidateSet('Invoke-WdLaneTurnLoop.ps1', 'Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1', 'start-wd-tools-consumer.ps1', 'wd_supervisor.ps1')]
     [string] $FileName = 'Invoke-WdLaneTurnLoop.ps1',
     [AllowNull()] [object] $DeploymentAnchor = $null,
     [switch] $SourceTreeMode
@@ -2270,7 +2483,7 @@ $turnRunnerHash = ''
 $conversationCodeHashes = @{}
 $verifiedConversationCode = @{}
 if ($nativeLead) {
-  foreach ($name in @('Invoke-WdLaneTurnLoop.ps1','start-wd-tools-consumer.ps1')) {
+  foreach ($name in @('Invoke-WdLaneTurnLoop.ps1','start-wd-tools-consumer.ps1','wd_supervisor.ps1')) {
     $snapshot=Read-WdLaneTurnRunnerSnapshot -ScriptRoot $PSScriptRoot -FileName $name `
       -DeploymentAnchor $deploymentAnchor -SourceTreeMode:$sourceTreeMode
     $conversationCodeHashes[$name]=[string]$snapshot.Hash
@@ -2690,15 +2903,17 @@ $sessionArgs = @{
   AgentUuid = [string]$lane.agent_uuid
   Capabilities = @($lane.capabilities | ForEach-Object { [string]$_ })
   SkipBridgeRead = $true
-  # Native Lead's UI and queue relay outlive Supervisor OFF. Its hash-pinned
-  # session watcher owns the dirty bit; the supervisor config excludes Lead
-  # so a single bridge event cannot be produced by two independent watchers.
+  # Native Lead's session watcher outlives Supervisor OFF. The supervisor
+  # excludes new Lead producers but can retain an old external watcher.
+  # Relay readiness requires verified retirement/absence of that watcher;
+  # installation must still establish the single-producer precondition.
   SkipWakeWatcher = (-not $nativeLead)
   PrimaryRepoRoot = $primaryRepo
 }
 if ([bool]$lane.require_dedicated_worktree) {
   $sessionArgs.RequireDedicatedWorktree = $true
 }
+if ($nativeLead) { $sessionArgs.WakeProducerGeneration = $bundleGeneration }
 
 Set-Location -LiteralPath $worktree
 try {
@@ -3087,9 +3302,21 @@ $launchArguments += $startupPrompt
 $previousPreference = $ErrorActionPreference
 try {
   if ($nativeLead) {
+    $leadRetirementContext = $null
+    if ($null -ne $session.wake_producer_context) {
+      $producerContext = $session.wake_producer_context
+      if ([string]$producerContext.generation -cne $bundleGeneration -or
+          [string]$producerContext.session_id -cne $RunId -or
+          [int]$producerContext.launcher_pid -ne $PID) { throw 'Lead producer context is not this launcher generation/session' }
+      $leadRetirementContext = @{producer=$producerContext;external=@{
+        executable=(Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe');
+        bundle_parent=(Split-Path -Parent $PSScriptRoot);source_repo=$primaryRepo;
+        git_executable=[string]$script:WdGitExecutable}}
+    }
     Invoke-WdNativeLeadTerminal -CliPath $cliPath -Arguments $launchArguments -ThreadId $nativeResume.thread_id `
       -Worktree $worktree -RuntimeRoot $runtimeRoot -Generation $bundleGeneration -ExpectedCliHash $cliExecutableHash `
-      -SessionId $RunId -VerifiedCode $verifiedConversationCode
+      -SessionId $RunId -VerifiedCode $verifiedConversationCode -RetirementContext $leadRetirementContext `
+      -VerifiedSupervisorCode ([string]$verifiedConversationCode['wd_supervisor.ps1'])
     $cliExitCode = 0
   } else {
     $ErrorActionPreference = 'Continue'

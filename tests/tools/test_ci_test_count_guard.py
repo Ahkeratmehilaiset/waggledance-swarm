@@ -4,7 +4,8 @@ K 011920df job 113510581050 printed ``[: 28144\\n13\\n80: integer expression
 expected`` and still passed: ``grep -oP '\\d+'`` also took the duration digits of
 ``28144 tests collected in 13.80s``, the ``[`` error made the ``if`` false, and a
 failed collection was never checked. These tests run the real step script from
-``.github/workflows/ci.yml`` under bash with a fake ``pytest`` first on PATH.
+``.github/workflows/ci.yml`` under bash with fake ``pytest`` and module-entrypoint
+``python`` commands first on PATH. Neither command imports or runs real tests.
 """
 
 from __future__ import annotations
@@ -45,12 +46,25 @@ def _step_script() -> str:
     return steps[0]["run"]
 
 
-def _run(tmp_path: Path, stdout: str, exit_code: int = 0) -> subprocess.CompletedProcess[str]:
+def _run(tmp_path: Path, stdout: str, exit_code: int = 0, *,
+         mind_exit_code: int = 0) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    fake = fake_bin / "pytest"
-    fake.write_bytes(b'#!/usr/bin/env bash\nprintf "%s" "$FAKE_PYTEST_OUT"\nexit "$FAKE_PYTEST_EXIT"\n')
-    fake.chmod(0o755)
+    fake_program = (
+        b'#!/usr/bin/env bash\n'
+        b'printf "%s:%s\\n" "${0##*/}" "$*" >> "$FAKE_PYTEST_TRACE"\n'
+        b'if [ "${0##*/}" = "python" ]; then\n'
+        b'  if [ "$1" != "-m" ] || [ "$2" != "pytest" ]; then exit 96; fi\n'
+        b'  printf "%s" "$FAKE_MIND_OUT"\n'
+        b'  exit "$FAKE_MIND_EXIT"\n'
+        b'fi\n'
+        b'printf "%s" "$FAKE_PYTEST_OUT"\n'
+        b'exit "$FAKE_PYTEST_EXIT"\n'
+    )
+    for name in ("pytest", "python"):
+        fake = fake_bin / name
+        fake.write_bytes(fake_program)
+        fake.chmod(0o755)
     script = tmp_path / "step.sh"
     script.write_bytes(_step_script().encode("utf-8"))
     env = {key: value for key, value in os.environ.items()
@@ -58,6 +72,9 @@ def _run(tmp_path: Path, stdout: str, exit_code: int = 0) -> subprocess.Complete
     env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
     env["FAKE_PYTEST_OUT"] = stdout
     env["FAKE_PYTEST_EXIT"] = str(exit_code)
+    env["FAKE_PYTEST_TRACE"] = str(tmp_path / "calls.txt")
+    env["FAKE_MIND_OUT"] = "10 tests collected in 1.00s\n"
+    env["FAKE_MIND_EXIT"] = str(mind_exit_code)
     # GitHub runs an unannotated run step as ``bash -e {0}`` (see the job log).
     return subprocess.run([_bash(), "-e", script.name], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=60)
@@ -123,3 +140,46 @@ def test_a_missing_multiple_or_malformed_count_fails(tmp_path, stdout):
 def test_a_failed_collection_fails_even_with_a_valid_count_line(tmp_path, exit_code):
     done = _run(tmp_path, "28144 tests collected in 13.80s\n", exit_code)
     assert done.returncode != 0, done.stdout + done.stderr
+
+
+def test_module_collection_uses_a_fake_python_and_records_both_commands(tmp_path):
+    # CI 3a5f1817: only pytest was stubbed, so python -m pytest escaped this fixture.
+    done = _run(tmp_path, "4200 tests collected in 13.80s\n")
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = (tmp_path / "calls.txt").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2
+    assert calls[0] == "pytest:tests/ --collect-only -q"
+    assert calls[1].startswith("python:-m pytest sandbox/mind/")
+    assert calls[1].endswith(" --collect-only -q")
+    assert done.stderr == ""
+
+
+def test_a_failed_module_collection_does_not_pass_the_count_guard(tmp_path):
+    done = _run(tmp_path, "4200 tests collected in 13.80s\n", mind_exit_code=7)
+    assert done.returncode != 0
+    assert "Test count: 4200\n" in done.stdout
+    assert "Mind test collection failed" in done.stdout
+    calls = (tmp_path / "calls.txt").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2
+    assert calls[1].startswith("python:-m pytest sandbox/mind/")
+
+
+def test_mutant_refusing_module_shim_is_killed_after_positive_control(tmp_path, monkeypatch):
+    control = tmp_path / "control"
+    control.mkdir()
+    done = _run(control, "4200 tests collected in 13.80s\n")
+    assert done.returncode == 0, done.stdout + done.stderr
+    original_write = Path.write_bytes
+
+    def refusing_module_shim(path, data):
+        if path.name == "python":
+            # MUTANT_REFUSING_MODULE_SHIM: do not launch a real Python as a fallback.
+            data = b"#!/usr/bin/env bash\nexit 97\n"
+        return original_write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", refusing_module_shim)
+    mutant = tmp_path / "mutant"
+    mutant.mkdir()
+    refused = _run(mutant, "4200 tests collected in 13.80s\n")
+    with pytest.raises(AssertionError, match="Mind test collection failed"):
+        assert refused.returncode == 0, refused.stdout + refused.stderr

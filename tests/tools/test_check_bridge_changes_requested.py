@@ -2473,3 +2473,50 @@ def test_rco_neutral_record_matrix_in_peer_gate() -> None:
                         assert result["latest_approval_event"]["status"] == "rco_pass", case
                     else:
                         assert result["latest_blocking_event"]["status"] == "hold", case
+
+
+@pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2"])
+@pytest.mark.parametrize("event_type", ["decision", "rco_review"])
+@pytest.mark.parametrize("status", ["superseded", "cancelled"])
+@pytest.mark.parametrize("previous_status", ["rco_pass", "hold"])
+def test_rco_closeout_status_blocks_until_same_rco_exact_pass(
+    agent: str, event_type: str, status: str, previous_status: str,
+) -> None:
+    # MUTANT_RCO_CLOSEOUT_NEUTRAL / MUTANT_RCO_CLOSEOUT_CLEARS_VETO:
+    # current unknown RCO decisions are blocks, not administrative clears.
+    closeout = _event("2026-10-13T02:00:01Z", agent, event_type, status)
+    events = [_event("2026-10-13T02:00:00Z", agent, "decision", previous_status), closeout]
+    # Exact accepted control: only the same verified RCO's later exact pass.
+    passed = check_bridge_clear_to_merge(
+        events=[*events, _event("2026-10-13T02:00:02Z", agent, "decision", "rco_pass")],
+        task_id="T", merging_agent="codex-lead-1",
+    )
+    assert passed["clear_to_merge"] is True
+    assert passed["latest_blocking_event"] is None
+    assert passed["latest_approval_event"]["agent"] == agent
+    assert passed["latest_approval_event"]["status"] == "rco_pass"
+    blocked = check_bridge_clear_to_merge(events=events, task_id="T", merging_agent="codex-lead-1")
+    assert blocked["clear_to_merge"] is False
+    assert blocked["latest_blocking_event"]["agent"] == agent
+    assert blocked["latest_blocking_event"]["status"] == status
+
+
+@pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2"])
+@pytest.mark.parametrize("status", ["superseded", "cancelled"])
+def test_non_rco_closeout_cannot_clear_a_real_rco_veto(agent: str, status: str) -> None:
+    # MUTANT_ADMIN_CLOSEOUT_DROPS_RCO_VETO: a peer's closeout cannot retire
+    # another RCO's finding. This does not grant typed closeout semantics.
+    events = [
+        _event("2026-10-13T02:00:00Z", agent, "finding", "hold"),
+        _event("2026-10-13T02:00:01Z", "codex-tools-1", "decision", status),
+    ]
+    passed = check_bridge_clear_to_merge(
+        events=[*events, _event("2026-10-13T02:00:02Z", agent, "decision", "rco_pass")],
+        task_id="T", merging_agent="codex-lead-1",
+    )
+    assert passed["clear_to_merge"] is True
+    assert passed["latest_blocking_event"] is None
+    blocked = check_bridge_clear_to_merge(events=events, task_id="T", merging_agent="codex-lead-1")
+    assert blocked["clear_to_merge"] is False
+    assert blocked["latest_blocking_event"]["agent"] == agent
+    assert blocked["latest_blocking_event"]["status"] == "hold"

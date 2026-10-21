@@ -340,7 +340,7 @@ function Get-WdBridgeCodePackageDefinition {
         if ($value -cnotmatch '^[A-Za-z0-9_-]+$') {
             throw "unsafe bridge code package directory name for ${directoryName}: $value"
         }
-        if ($value -cin @('tools', 'waggledance', 'configs', 'bin')) {
+        if ($value -iin @('tools', 'waggledance', 'configs', 'bin', 'sandbox')) {
             throw "bridge code package directory name is reserved: $value"
         }
     }
@@ -359,7 +359,7 @@ function Get-WdBridgeCodePackageDefinition {
         throw 'bridge code package import smoke lists no package modules'
     }
     foreach ($packageModule in $packageModules) {
-        if ($packageModule -cnotmatch '^(tools|waggledance)(\.[A-Za-z_][A-Za-z0-9_]*)+$') {
+        if ($packageModule -cnotmatch '^(tools|waggledance|sandbox\.mind)(\.[A-Za-z_][A-Za-z0-9_]*)+$') {
             throw "unsafe bridge code package smoke module: $packageModule"
         }
         $modulePath = $packageModule.Replace('.', '/') + '.py'

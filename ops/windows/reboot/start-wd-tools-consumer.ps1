@@ -2126,6 +2126,40 @@ function Assert-DirectoryPathWithoutReparse {
     }
 }
 
+function Set-WdToolsGitHubConfigDirectory {
+    param([string] $ConfigDirectory = 'C:\Python\wd-gh-tools')
+
+    # Operator-provisioned directory selection only. Never read/copy credentials,
+    # run gh login, create config files, or change GH_TOKEN/GITHUB_TOKEN. A missing
+    # directory or hosts.yml preserves inherited configuration. An existing hosts.yml
+    # entry must be a regular non-reparse file. Children inherit this value.
+    if (-not [IO.Path]::IsPathRooted($ConfigDirectory)) {
+        throw 'Tools GitHub config directory must be absolute'
+    }
+    $candidate = [IO.Path]::GetFullPath($ConfigDirectory)
+    if ([IO.Path]::GetPathRoot($candidate) -ine 'C:\') {
+        throw 'Tools GitHub config directory must be on persistent C:'
+    }
+    Assert-DirectoryPathWithoutReparse -Candidate $candidate -Root 'C:\' -AllowMissing
+    if (-not (Test-Path -LiteralPath $candidate -PathType Container -ErrorAction Stop)) {
+        return $false
+    }
+    # Enumerate the directory entry without following its target: a non-file or
+    # dangling link is not absence and must reach the trusted-file refusal below.
+    $configHostsEntries = @(Get-ChildItem -LiteralPath $candidate -Force -ErrorAction Stop |
+        Where-Object { $_.Name.Equals('hosts.yml', [StringComparison]::OrdinalIgnoreCase) })
+    if ($configHostsEntries.Count -eq 0) {
+        return $false
+    }
+    if ($configHostsEntries.Count -ne 1) {
+        throw 'Tools GitHub hosts.yml entry is ambiguous'
+    }
+    $configHostsPath = [string]$configHostsEntries[0].FullName
+    Assert-FilePathWithoutReparse -Candidate $configHostsPath -Root 'C:\'
+    [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', $candidate, 'Process')
+    return $true
+}
+
 function Assert-FilePathWithoutReparse {
     param(
         [Parameter(Mandatory)] [string] $Candidate,
@@ -3224,6 +3258,7 @@ if (Test-Path -LiteralPath $readinessPath -PathType Leaf) {
     Remove-Item -LiteralPath $readinessPath -Force -ErrorAction Stop
 }
 
+$null = Set-WdToolsGitHubConfigDirectory
 $env:Path = $codexPathPlan.Path
 [Environment]::SetEnvironmentVariable(
     'WD_TOOLS_CODEX_REAL_COMMAND',

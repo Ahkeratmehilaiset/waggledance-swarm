@@ -64,7 +64,12 @@ def test_the_pytest_step_still_runs_the_whole_suite_and_can_fail():
     job = _jobs()["unified"]
     step = _step(job, "Run pytest")
 
-    assert step["run"].strip() == "python -m pytest tests/ -v --tb=short"
+    commands = step["run"].strip().splitlines()
+    assert len(commands) == 2  # full suite, then the finite synthetic Mind release
+    assert commands[0].strip() == "python -m pytest tests/ -v --tb=short"
+    # Exact admitted paths/options are independently pinned by test_mind_release_ci_scope.py.
+    assert commands[1].strip().startswith("python -m pytest sandbox/mind/")
+    assert commands[1].strip().endswith(" -v --tb=short")
     assert "continue-on-error" not in step and "continue-on-error" not in job
     assert "if" not in step and "timeout-minutes" not in step
 

@@ -1,5 +1,23 @@
 # Bridge-Consensus Approval v1
 
+## Current RCO roster amendment (operator 2026-10-21)
+
+Current recognized identities are `claude-rco-1`, `claude-rco-2` and
+`claude-rco-3`. DUAL-RCO means two distinct eligible non-author identities,
+not every member of the expanded roster. A veto from any of the three remains
+absolute and cannot be outvoted. Existing ordinary single-slot checks remain
+separate. A newly assigned role UUID is not a registered native session.
+
+RCO3 must be a fresh, history-free Claude reviewer with no Mind authorship,
+implemented design or measurement-case contribution, must never open cases or
+gold, and must observe medium/non-elevated execution before tests or votes.
+Actual registration precedes its first vote. Source recognition installs only
+through a separately approved normal main bundle; the introducing (a)-PR still
+needs the operator's exact-head signature. This does not grant runtime,
+installation, restart or Stage-2 authority. See
+`../ops/rco3_registration_and_review.md`. Historical signed driver generations
+retain their own two-member vocabulary; the amendment never rewrites old truth.
+
 **Status:** operator-authorized 2026-05-29 (plan-approval bootstrap).
 **Authorization source:** operator directive 2026-05-29 — *"rakenna kuvan
 mukainen järjestelmä ei pelkkää substraattia, kaikki ilman operaattori

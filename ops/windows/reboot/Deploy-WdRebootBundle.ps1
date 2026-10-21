@@ -245,7 +245,7 @@ function ConvertFrom-WdManualExecutionApprovalRecord {
     foreach ($name in @('schema', 'agent', 'source_commit', 'definition_sha256', 'approval_reference_sha256')) {
         if ($record.$name -isnot [string]) { throw 'manual execution approval string field has the wrong type' }
     }
-    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3')
     $manualPaths = @('tools/merge_with_bridge_receipt.py', 'tools/write_bridge_consensus_merge_receipt.py')
     if ($record.schema -cne 'wd.bridge-manual-execution-activation.v1' -or
         $record.enabled -isnot [bool] -or $record.enabled -ne $true -or

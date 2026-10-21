@@ -12,7 +12,7 @@ param(
     [switch]$EnableBridgeAlerts,
     [switch]$PauseNativeCronOnLimit,
     [switch]$DisableNativeCron,
-    [ValidateSet('','claude-rco-1','claude-rco-2','fable-5')][string]$Agent=''
+    [ValidateSet('','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')][string]$Agent=''
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest

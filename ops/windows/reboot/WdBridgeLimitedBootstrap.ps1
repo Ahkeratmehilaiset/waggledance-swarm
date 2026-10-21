@@ -38,7 +38,7 @@ function Get-WdBridgeLimitedBootstrapDecision {
     )
 
     # Native Lead owns its session producer; this result does not certify it.
-    $lanes = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+    $lanes = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3', 'fable-5')
     $reasons = New-Object System.Collections.Generic.List[string]
     if ($IsAdministrator) {
         $reasons.Add('elevated caller: the workers must run Limited like WD-Supervisor workers; use a non-elevated terminal')

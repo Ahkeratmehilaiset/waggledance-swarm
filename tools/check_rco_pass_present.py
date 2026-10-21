@@ -64,7 +64,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
-DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
+DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 
 BRIDGE_BLOCK_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 
@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Recognized RCO agent identity. Repeat to supply a set. "
-            "Defaults to claude-rco-1 and claude-rco-2."
+            "Defaults to claude-rco-1, claude-rco-2 and claude-rco-3."
         ),
     )
     parser.add_argument(

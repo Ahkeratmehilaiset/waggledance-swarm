@@ -52,7 +52,7 @@ EVIDENCE_SCHEMA = "wd.switch-evidence.v1"
 STAY, SWITCH, PARK, OPERATOR = "stay", "switch", "park", "operator_required"
 VERDICTS = (STAY, SWITCH, PARK, OPERATOR)
 
-MEMBERS = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")
+MEMBERS = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "claude-rco-3")
 PRINCIPALS = ("codex-lead-1", "fable-5")
 OPERATOR_CHANNELS = ("operator_terminal", "operator_window")
 # Plan 2.2 precedence: the operator first, then the principals, then the other members.

@@ -70,7 +70,7 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
 # -> importing it back would be a circular import. The canonical source is
 # ``check_rco_pass_present.DEFAULT_RCO_AGENTS``; a drift-guard test asserts the two
 # stay equal (test-time import, no cycle).
-_RECOGNIZED_RCOS = frozenset({"claude-rco-1", "claude-rco-2"})
+_RECOGNIZED_RCOS = frozenset({"claude-rco-1", "claude-rco-2", "claude-rco-3"})
 INFORMATIONAL_FINDING_STATUSES = frozenset(
     {"info", "informational", "fyi", "note", "advisory"}
 )

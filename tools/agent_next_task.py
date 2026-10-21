@@ -95,6 +95,7 @@ ACTIONABLE_PRODUCTION_LIVENESS_REASONS = {
 RCO_REVIEW_AGENTS = frozenset({
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
 })
 RCO_RESPONSE_STATUSES = {
     "rco_pass",
@@ -140,6 +141,7 @@ KNOWN_AUTHOR_AGENTS = (
     "codex-lead-1",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
     "grok-scout-1",
 )
 # A small, stable, charter-safe pool of always-available read-only

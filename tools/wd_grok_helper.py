@@ -26,7 +26,7 @@ MAX_LIFECYCLE_RECEIPT_DEPTH = 32
 # G1: Lead brokers every consultation; it may name ONE other Bridge agent the consultation is for,
 # and that agent also receives the answered or failed lifecycle event. Lead itself, grok-scout-1
 # and the operator are never requesters.
-REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "claude-rco-3", "fable-5")
 # F4 measurement. The CLI prints one JSON result (model, session, stop reason, token usage when it
 # reports them). Every consultation and deferral is appended to ONE ledger beside the state,
 # calibration runs included (purpose "calibration"). The ledger is evidence only: it never delays,

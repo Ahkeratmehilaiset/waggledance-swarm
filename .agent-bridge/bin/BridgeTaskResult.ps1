@@ -83,7 +83,7 @@ function Get-BridgeTaskResultValidation {
     $schemaValid=$null; $contentValid=$null
     $reviewTargets=@(if ($Responder) {$Responder} else {([string](Get-BridgeResultProperty $Request 'to') -split ',')|ForEach-Object {$_.Trim()}})
     $independentReview=((Get-BridgeResultProperty $requestPayload 'role') -ceq 'reviewer' -or
-        @($reviewTargets|Where-Object {$_ -cin @('claude-rco-1','claude-rco-2')}).Count -gt 0)
+        @($reviewTargets|Where-Object {$_ -cin @('claude-rco-1','claude-rco-2','claude-rco-3')}).Count -gt 0)
     if ($null -ne $contract) {
         $schemaValid=$true
         if ((Get-BridgeResultProperty $contract 'schema') -cne 'wd.task-result-contract.v1') { $errors.Add('unknown_result_contract') }

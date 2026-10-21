@@ -108,7 +108,7 @@ def test_closed_kind_enum_and_event_shapes() -> None:
     assert builder.DECISION_KINDS == frozenset(
         {"build_consensus", "rco_pass", "changes_requested"}
     )
-    assert builder.RECOGNIZED_RCO_AGENTS == frozenset({"claude-rco-1", "claude-rco-2"})
+    assert builder.RECOGNIZED_RCO_AGENTS == frozenset({"claude-rco-1", "claude-rco-2", "claude-rco-3"})
     assert builder.TEMPLATE_CWD == "template_not_emitted"
 
 
@@ -357,10 +357,17 @@ def test_builder_is_pure_and_never_opens_files(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.parametrize(
-    "agent", ["fable-5", "codex-lead-1", "codex-tools-1", "operator", "claude-rco-3"]
+    "agent", ["fable-5", "codex-lead-1", "codex-tools-1", "operator", "claude-rco-4"]
 )
 def test_rco_pass_rejects_unrecognized_agents(agent: str) -> None:
     assert _error(agent=agent) == "rco_pass_agent_not_recognized"
+
+
+def test_third_recognized_rco_can_prepare_a_pass_but_template_grants_no_authority() -> None:
+    report = _build(agent="claude-rco-3")
+    assert report["event"]["agent"] == "claude-rco-3"
+    assert report["identity_verified"] is False
+    assert report["approval_granted"] is False
 
 
 def test_non_rco_kinds_accept_any_valid_agent() -> None:

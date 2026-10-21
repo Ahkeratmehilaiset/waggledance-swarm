@@ -34,7 +34,7 @@ from tools.bridge_next_action import (  # noqa: E402
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
 
 
-DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
+DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 DEFAULT_MIN_AGE_MINUTES = 12.0
 DEFAULT_ACTIVITY_GAP_MINUTES = 45.0
 DEFAULT_TAIL = 50000
@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "RCO agent to check. Repeat to check multiple agents. Defaults to "
-            "claude-rco-1 and claude-rco-2."
+            "claude-rco-1, claude-rco-2 and claude-rco-3."
         ),
     )
     parser.add_argument(

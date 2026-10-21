@@ -172,12 +172,13 @@ def test_one_a_path_taints_the_whole_pr(a_path):
 def _bc(*, lead=True, tools=True, rco1=True, rco2=True, blocking=(), ok=True):
     return {
         "ok": ok,
+        "author_agent": "codex-lead-1",
         "identities": {
             "build_lead": {"agent": "codex-lead-1", "approved": lead},
             "build_tools": {"agent": "codex-tools-1", "approved": tools},
             "rco": {"by_agent": {
-                "claude-rco-1": {"approved": rco1},
-                "claude-rco-2": {"approved": rco2},
+                "claude-rco-1": {"approved": rco1, "eligible": True},
+                "claude-rco-2": {"approved": rco2, "eligible": True},
             }},
         },
         "blocking_rco_agents": list(blocking),
@@ -282,3 +283,62 @@ def test_single_rco_only_is_insufficient():
     # other has not passed must refuse (stronger DUAL-RCO bar).
     out = _eval(bridge_consensus=_bc(rco1=True, rco2=False))
     assert out["admitted"] is False
+
+
+@pytest.mark.parametrize("pair", [
+    ("claude-rco-1", "claude-rco-2"),
+    ("claude-rco-1", "claude-rco-3"),
+    ("claude-rco-2", "claude-rco-3"),
+])
+def test_dual_quorum_is_any_two_distinct_eligible_recognized_rcos(pair):
+    bc = _bc(rco1=False, rco2=False)
+    bc["author_agent"] = "codex-lead-1"
+    bc["identities"]["rco"]["by_agent"] = {
+        agent: {"agent": agent, "approved": agent in pair, "eligible": True}
+        for agent in ("claude-rco-1", "claude-rco-2", "claude-rco-3")
+    }
+    out = _eval(bridge_consensus=bc)
+    assert out["admitted"] is True
+    assert out["basis"]["dual_rco"] == list(pair)
+
+
+def test_dual_quorum_never_counts_the_author():
+    bc = _bc()
+    bc["author_agent"] = "claude-rco-1"
+    assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+def test_dual_quorum_never_counts_an_ineligible_identity():
+    bc = _bc()
+    bc["author_agent"] = "codex-lead-1"
+    bc["identities"]["rco"]["by_agent"]["claude-rco-2"]["eligible"] = False
+    assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+@pytest.mark.parametrize("author", [None, "", " ", "UNKNOWN", 7])
+def test_dual_quorum_requires_a_known_canonical_author(author):
+    bc = _bc()
+    bc["author_agent"] = author
+    assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_dual_quorum_requires_explicit_positive_eligibility(missing):
+    bc = _bc()
+    reviewer = bc["identities"]["rco"]["by_agent"]["claude-rco-2"]
+    if missing:
+        reviewer.pop("eligible")
+    else:
+        reviewer["eligible"] = None
+    assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+def test_dual_quorum_deduplicates_configured_names_and_rejects_unknown_holder():
+    assert _eval(recognized_rcos=("claude-rco-1", "claude-rco-1"))["admitted"] is False
+    bc = _bc(rco2=False)
+    bc["identities"]["rco"]["by_agent"]["claude-rco-4"] = {"approved": True}
+    assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+def test_third_recognized_rco_veto_outranks_the_other_two_passes():
+    assert _eval(bridge_consensus=_bc(blocking=["claude-rco-3"]))["admitted"] is False

@@ -30,6 +30,7 @@ DEFAULT_EXPECTED_AGENTS = (
     "codex-tools-1",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
     "operator",
 )
 CONSENSUS_STATUSES = {"consensus_pass", "changes_requested", "block"}

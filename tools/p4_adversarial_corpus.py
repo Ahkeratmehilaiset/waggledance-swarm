@@ -67,6 +67,7 @@ NOW_UTC = "2026-06-30T12:30:00Z"
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
     "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "claude-rco-3": "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50",
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
@@ -537,13 +538,14 @@ def _validate_receipt_binding(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _full_standing_bridge_consensus() -> dict[str, Any]:
     return {
         "ok": True,
+        "author_agent": "codex-lead-1",
         "identities": {
             "build_lead": {"agent": "codex-lead-1", "approved": True},
             "build_tools": {"agent": "codex-tools-1", "approved": True},
             "rco": {
                 "by_agent": {
-                    "claude-rco-1": {"approved": True},
-                    "claude-rco-2": {"approved": True},
+                    "claude-rco-1": {"approved": True, "eligible": True},
+                    "claude-rco-2": {"approved": True, "eligible": True},
                 }
             },
         },

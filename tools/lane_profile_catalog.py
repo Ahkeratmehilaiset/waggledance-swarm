@@ -44,8 +44,8 @@ from tools.bridge_capacity_advisor import (  # noqa: E402
 
 SCHEMA = "wd.lane-profile-catalog.v1"
 MODES = ("shadow", "approve", "auto")
-LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
-REVIEWER_LANES = ("claude-rco-1", "claude-rco-2")
+LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "claude-rco-3", "fable-5")
+REVIEWER_LANES = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 MAX_CATALOG_BYTES = 256 * 1024
 # Exactly the fields tools/bridge_capacity_advisor.py reads. The advisor itself
 # does not reject unknown keys, so the wrapper does: nothing may ride inside the

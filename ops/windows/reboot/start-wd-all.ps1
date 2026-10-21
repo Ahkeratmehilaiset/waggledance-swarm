@@ -2937,6 +2937,7 @@ $expectedLaneRuntimes = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
   'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd' }
   'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'claude-rco-3' = [pscustomobject]@{ cli = 'claude.cmd' }
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd' }
 }
 foreach ($lane in @($manifest.lanes)) {

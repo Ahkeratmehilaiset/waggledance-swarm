@@ -6,9 +6,10 @@ held by eligible approvers:
 
 * the **opposite-family** slot: an approval at the head from a lane whose model
   family is outside every implementer family (GPT ``codex-lead-1`` /
-  ``codex-tools-1``; Claude ``fable-5`` / ``claude-rco-1`` / ``claude-rco-2``);
-* the **RCO** slot: ``rco_pass`` at the head from EVERY eligible recognized RCO
-  (not an implementer, not self-recused, not absent);
+  ``codex-tools-1``; Claude ``fable-5`` / the three recognized Claude RCOs);
+* the **RCO** slot: exact-head ``rco_pass`` from two distinct eligible recognized RCOs
+  when at least two are present; the legacy sole-eligible route remains. An RCO
+  cannot be an implementer, self-recused or absent;
 * a **pool fallback** for the RCO slot (operator 2026-10-10 06:56Z): when no
   recognized RCO is present, the first eligible lane of ``RCO_POOL_FALLBACK``
   (Tools, Lead, Fable) with an exact-head ``rco_pass`` and no uncleared block of
@@ -89,6 +90,7 @@ FAMILIES: Mapping[str, str] = {
     "fable-5": "claude",
     "claude-rco-1": "claude",
     "claude-rco-2": "claude",
+    "claude-rco-3": "claude",
     "grok-scout-1": "grok",
 }
 GROK_AGENT = "grok-scout-1"
@@ -99,9 +101,10 @@ REVIEW_POOL: tuple[str, ...] = (
     "fable-5",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
 )
 # Must equal tools.check_promotion_eligible.DEFAULT_RCO_AGENTS (drift-guard test).
-RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
+RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 # Operator 2026-10-10 06:56Z, first-hand in the fable-5 session: "RCO paikan voi
 # täyttää tools, lead, fabel tai jos ei mikään niiistä niin grok". With no
 # recognized RCO present, these lanes may hold the RCO slot, in this order,
@@ -556,9 +559,15 @@ def evaluate_rule12_review_eligibility(
         holders = [a for a in present if slot_standing[a] == "eligible" and approved(a, statuses)]
         return {"standing": slot_standing, "present": present, "holders": holders}
 
-    # 2. RCO slot: every present recognized RCO must pass at the head.
+    # 2. Preserve the single-present legacy route; a dual requirement means
+    #    two distinct eligible recognized identities, never all three.
     rco_slot = fill(RCO_PASS_STATUSES, RECOGNIZED_RCOS)
-    rco_slot["missing_rco_pass"] = [a for a in rco_slot["present"] if a not in rco_slot["holders"]]
+    required_rcos = min(2, len(rco_slot["present"]))
+    enough_rcos = len(set(rco_slot["holders"])) >= required_rcos
+    rco_slot["required_count"] = required_rcos
+    rco_slot["missing_rco_pass"] = [] if enough_rcos else [
+        a for a in rco_slot["present"] if a not in rco_slot["holders"]
+    ]
     if rco_slot["present"]:
         rco_slot["state"] = "pending" if rco_slot["missing_rco_pass"] else "held"
     else:

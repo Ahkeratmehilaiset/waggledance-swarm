@@ -34,6 +34,7 @@ DEFAULT_TARGET_AGENTS: tuple[str, ...] = (
     "codex-tools-1",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
 )
 AGENT_ARG_RE = re.compile(
     r"""(?:^|\s)-Agent(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([a-z][a-z0-9_-]{1,32}))""",

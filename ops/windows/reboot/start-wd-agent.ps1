@@ -737,7 +737,7 @@ function Assert-WdLaneLaunchAvailable {
   $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $byPid = @{}
   $launcherOwners = @{}
-  $knownAgents = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+  $knownAgents = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')
   foreach ($process in $processes) {
     $processIdValue = [int]$process.ProcessId
     if ($byPid.ContainsKey($processIdValue)) { throw 'cannot prove lane ownership: duplicate PID in process snapshot' }
@@ -2249,6 +2249,7 @@ $expectedRuntime = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
   'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd' }
   'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'claude-rco-3' = [pscustomobject]@{ cli = 'claude.cmd' }
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd' }
 }[$Agent]
 if (

@@ -6,7 +6,7 @@ param(
     [ValidateSet('Scheduled','ClaudeHook','ClaudeHookAlert','ClaudeStatusline')][string]$Mode='Scheduled',
     [switch]$PauseNativeCronOnLimit,
     [string]$GuardWorktree='',
-    [ValidateSet('','claude-rco-1','claude-rco-2','fable-5')][string]$GuardAgent=''
+    [ValidateSet('','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')][string]$GuardAgent=''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -53,7 +53,7 @@ function Get-WdCapacityHookIdentity {
     $evidence=& (Join-Path $bin 'Get-BridgeExecutionEvidence.ps1')|ConvertFrom-Json
     if($evidence.pin_status -cne 'manifest_and_launcher_verified' -or
        $evidence.native_conversation_id -cne $Observation.native_thread_id -or
-       $evidence.observed_agent -cnotin @('claude-rco-1','claude-rco-2','fable-5')){throw 'Capacity alert native identity is not verified'}
+       $evidence.observed_agent -cnotin @('claude-rco-1','claude-rco-2','claude-rco-3','fable-5')){throw 'Capacity alert native identity is not verified'}
     [pscustomobject]@{agent=[string]$evidence.observed_agent;bin=$bin}
 }
 function Update-WdNativeCronGuard {

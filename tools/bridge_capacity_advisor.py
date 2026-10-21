@@ -57,7 +57,7 @@ from typing import Any
 
 
 MAX_INPUT_BYTES = 2 * 1024 * 1024
-ROLES = {"lead", "tools", "fable", "rco1", "rco2", "grok"}
+ROLES = {"lead", "tools", "fable", "rco1", "rco2", "rco3", "grok"}
 PROVIDERS = {"codex", "claude"}
 SAFE_REASONS = {"routine", "quota", "quality", "unavailable"}
 # codex-cli 0.154.0: app-server generate-json-schema,
@@ -339,7 +339,7 @@ def _task_advice(task: dict, policy: dict, agents: dict, capacities: dict, now: 
             issues.append("review_not_independent")
         if not isinstance(task.get("required_reviewers"), list) or task["agent_id"] not in task["required_reviewers"]:
             issues.append("reviewer_not_assigned")
-    if binding["role"] in {"rco1", "rco2"} and task.get("kind") != "review":
+    if binding["role"] in {"rco1", "rco2", "rco3"} and task.get("kind") != "review":
         issues.append("reviewer_not_implementation_worker")
     if binding["role"] == "grok":
         issues.append("grok_requires_existing_budget_helper_not_routing")

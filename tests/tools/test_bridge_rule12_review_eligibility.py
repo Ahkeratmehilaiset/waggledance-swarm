@@ -68,7 +68,11 @@ def grok(**overrides):
     return consultation
 
 
-def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), **kw):
+def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), *, legacy_two_rco_cohort=True, **kw):
+    # Original scenarios explicitly have only the historical two-person cohort.
+    # New three-person scenarios opt out; production never auto-recuses RCO3.
+    if legacy_two_rco_cohort:
+        events = [*events, recused("claude-rco-3")]
     kw.setdefault("now_utc", NOW)
     kw.setdefault("expected_diff_sha256", DIFF)
     kw.setdefault("expected_prompt_sha256", "1" * 64)
@@ -86,6 +90,38 @@ def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), **kw):
 
 GPT_RECUSED = [recused("codex-lead-1"), ev("codex-tools-1", "message", "review_recused")]
 BOTH_RCO = [rco_pass("claude-rco-1"), rco_pass("claude-rco-2")]
+
+
+@pytest.mark.parametrize("pair", [
+    ("claude-rco-1", "claude-rco-2"),
+    ("claude-rco-1", "claude-rco-3"),
+    ("claude-rco-2", "claude-rco-3"),
+])
+def test_any_two_of_three_eligible_recognized_rcos_satisfy_dual_quorum(pair):
+    result = evaluate([build_pass("codex-lead-1"), *(rco_pass(a) for a in pair)],
+                      legacy_two_rco_cohort=False)
+    assert result["decision"] == "satisfied"
+    assert result["slots"]["rco"]["required_count"] == 2
+    assert result["slots"]["rco"]["holders"] == list(pair)
+
+
+@pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2", "claude-rco-3"])
+@pytest.mark.parametrize("role", ["author", "concept", "design", "measurement"])
+def test_new_quorum_never_counts_a_contributor(agent, role):
+    other = next(a for a in r12.RECOGNIZED_RCOS if a != agent)
+    result = evaluate([build_pass("codex-lead-1"), rco_pass(agent), rco_pass(other)],
+                      [*FABLE_AUTHOR, {"agent": agent, "role": role}],
+                      legacy_two_rco_cohort=False)
+    assert result["decision"] == "not_satisfied"
+    assert agent not in result["slots"]["rco"]["holders"]
+
+
+def test_third_identity_veto_is_absolute_despite_other_two_approvals():
+    result = evaluate([build_pass("codex-lead-1"), *BOTH_RCO,
+                       ev("claude-rco-3", "finding", "info")],
+                      legacy_two_rco_cohort=False)
+    assert result["decision"] == "blocked"
+    assert result["blocking_rcos"] == ["claude-rco-3"]
 
 
 def test_claude_authored_needs_gpt_approval_and_both_eligible_rcos():

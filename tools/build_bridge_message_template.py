@@ -92,7 +92,7 @@ TO_REQUIRED_KINDS = frozenset({"review_requested"})
 
 # Mirrors ``$rcoReviewAgents`` in Write-AgentEvent.ps1 and ``_RECOGNIZED_RCOS`` in
 # tools/check_bridge_changes_requested.py (lock-step asserted by the tests).
-RECOGNIZED_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2"})
+RECOGNIZED_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2", "claude-rco-3"})
 # Payload keys the writer treats as a canonical task binding on rco_pass; the
 # template never emits them so the -TaskId binding stays the only binding.
 RCO_PASS_FORBIDDEN_PAYLOAD_KEYS = (

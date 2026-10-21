@@ -148,7 +148,7 @@ $taskIdRequiredTypes = @(
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
-$rcoReviewAgents = @('claude-rco-1', 'claude-rco-2')
+$rcoReviewAgents = @('claude-rco-1', 'claude-rco-2', 'claude-rco-3')
 $rcoPassAuthorAliasAgents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'grok-scout-1')
 $rcoPassTaskBindingFields = @('canonical_task_id', 'branch', 'headRefName', 'head_ref_name', 'branch_name')
 $grokPrWorktreeStrictEpochUtc = '2026-06-04T08:32:00Z'
@@ -665,7 +665,7 @@ if ($ReplyToEventJson) {
         }
     }
     $targets = @(Get-BridgeEventTargets ([pscustomobject]$event))
-    $fleetTargets = @($targets | Where-Object { $_ -cin @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') })
+    $fleetTargets = @($targets | Where-Object { $_ -cin @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5') })
     if ($identities.Count -gt 0 -or $fleetTargets.Count -gt 0) {
         $event['expected_responders'] = [pscustomobject]$identities
         $missing = @($targets | Where-Object { -not $identities.Contains($_) })

@@ -51,7 +51,7 @@ def test_shipped_catalog_validates_in_shadow_with_its_hash():
 
 def test_shipped_reviewer_floors_allow_only_raise_or_same():
     catalog = shipped()
-    for lane in ("claude-rco-1", "claude-rco-2"):
+    for lane in ("claude-rco-1", "claude-rco-2", "claude-rco-3"):
         spec = catalog["lanes"][lane]
         assert spec["reviewer"] is True
         # The floor is the current (default) profile: nothing weaker is reachable.
@@ -512,7 +512,7 @@ def test_a_burst_profile_for_another_role_or_provider_is_refused():
     with pytest.raises(CatalogError):
         validate_catalog(catalog)
     catalog = shipped()
-    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["roles"] = ["rco1", "rco2"]
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["roles"] = ["rco1", "rco2", "rco3"]
     with pytest.raises(CatalogError, match="not qualified for role fable"):
         validate_catalog(catalog)
 

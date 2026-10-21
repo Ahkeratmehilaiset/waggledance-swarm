@@ -80,7 +80,7 @@ def test_bridge_consensus_driver_blocks_author_self_rco_slot() -> None:
     assert result["blocked"] is True
     assert result["classifier_report"]["ok"] is False
     rco = result["classifier_report"]["identities"]["rco"]
-    assert rco["eligible_agents"] == ["claude-rco-2"]
+    assert rco["eligible_agents"] == ["claude-rco-2", "claude-rco-3"]
     assert rco["by_agent"]["claude-rco-1"]["eligible"] is False
 
 

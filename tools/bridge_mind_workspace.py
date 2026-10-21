@@ -35,11 +35,11 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
   the current-head votes of declared identities (a valid ``agent_uuid`` and ``verification`` ``declared``;
   the two must agree) into the consensus slots by the charter's identity map
-  (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, and one slot for each recognized RCO,
-  because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
-  presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
-  slot comes first (the last missing vote goes first), then (a)-class PRs with every slot filled (only the
-  operator signature is left), then PRs missing several votes, then high and other tensions. A
+  (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, plus two distinct reported RCO votes).
+  The snapshot cannot establish eligibility or authorship, and never treats reported votes as eligible
+  approvals. Exactly one empty reported slot comes first (the last missing vote goes first), then
+  (a)-class PRs with the reported slots filled (an operator signature may be needed; eligibility and
+  gate clearance remain UNKNOWN), then PRs missing several votes, then high and other tensions. A
   blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
   gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
 * ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
@@ -101,12 +101,12 @@ REASON = re.compile(r"[a-z0-9_]{1,64}")
 TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
-# The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty. The installed
-# rule-12 review policy needs every present eligible RCO, and the snapshot says nothing about RCO presence or the
-# PR author (recusal), so each recognized RCO is its own slot: a PR with one RCO pass still misses the other.
+# The charter's current identities. This snapshot cannot establish eligibility,
+# recusal or clearance. Suggestions count two distinct reported RCO votes, never
+# all three; the deterministic candidate order is only an advisory preference.
 BUILD_SLOT = {"codex-lead-1": "build_lead", "codex-tools-1": "build_tools"}
-RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
-VOTE_SLOTS = ("build_lead", "build_tools") + RECOGNIZED_RCOS
+RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
+VOTE_SLOTS = ("build_lead", "build_tools")
 COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
@@ -548,14 +548,16 @@ def _pr_attention(pr: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"] if vote["verified"]} - {None}
     empty = [slot for slot in VOTE_SLOTS if slot not in filled]
+    rco_needed = max(0, 2 - len(filled.intersection(RECOGNIZED_RCOS)))
+    empty += [rco for rco in RECOGNIZED_RCOS if rco not in filled][:rco_needed]
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]]
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
         if pr["class"] != "a":
             return None
         return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
-                "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
-                          "signature is left"}
+                "detail": f"PR{pr['pr']} at {head} has both reported build votes and two distinct reported RCO "
+                          "votes; an (a)-class signature may be needed. Eligibility and gate clearance remain UNKNOWN"}
     actors = sorted({agent for slot in empty for agent in
                      ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])})
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,

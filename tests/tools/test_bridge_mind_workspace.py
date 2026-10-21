@@ -26,8 +26,8 @@ OLD = "b" * 40
 # Built from parts, as the repo's other guard tests do, so this file never carries the literal tokens.
 GUARD_WORDS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
 UUIDS = {agent: f"00000000-0000-4000-8000-{index:012x}" for index, agent in enumerate(
-    ("claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5"), 1)}
-RCOS = ("claude-rco-1", "claude-rco-2")
+    ("claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-3"), 1)}
+RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 # Every slot but claude-rco-2's (the last missing vote), and every slot.
 ALMOST = ["codex-lead-1", "codex-tools-1", "claude-rco-1"]
 EVERY = ALMOST + ["claude-rco-2"]
@@ -233,6 +233,31 @@ def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_sugge
     assert all(item["suggestion_only"] is True for item in fields["attention"])
     text = mind.canonical_json(fields).lower()
     assert "approved" not in text and "clear to merge" not in text and "cleared" not in text.replace("never cleared", "")
+
+
+@pytest.mark.parametrize("pair", [RCOS[:2], RCOS[::2], RCOS[1:]])
+def test_two_distinct_reported_rcos_do_not_wait_for_a_third_vote(pair):
+    votes = ["codex-lead-1", "codex-tools-1", *pair]
+    attention = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]))["attention"]
+    assert [item["kind"] for item in attention] == ["signature_only"]
+    assert attention[0]["actors"] == ["operator"]
+    assert attention[0]["suggestion_only"] is True
+    assert "Eligibility and gate clearance remain UNKNOWN" in attention[0]["detail"]
+    assert "only the operator signature is left" not in attention[0]["detail"]
+
+
+def test_duplicate_third_rco_votes_do_not_fill_two_reported_slots():
+    votes = ["codex-lead-1", "codex-tools-1", "claude-rco-3", "claude-rco-3"]
+    attention = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]))["attention"]
+    assert attention[0]["kind"] == "last_missing_vote"
+    assert not any(item["kind"] == "signature_only" for item in attention)
+
+
+def test_third_rco_veto_is_not_outvoted_by_two_reported_passes():
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY, vetoes=["claude-rco-3"])]))
+    assert not any(item["kind"] in ("signature_only", "last_missing_vote") for item in fields["attention"])
+    assert any(item["rule"] == "veto_observed" and item["actors"] == ["claude-rco-3"]
+               for item in fields["tensions"])
 
 
 @pytest.mark.parametrize("reported, expected", [

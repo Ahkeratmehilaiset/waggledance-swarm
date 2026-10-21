@@ -174,6 +174,7 @@ def test_all_gates_pass_with_rco1() -> None:
     assert report["gate_results"]["rco_pass"]["recognized_rco_agents"] == [
         "claude-rco-1",
         "claude-rco-2",
+        "claude-rco-3",
     ]
     assert (
         report["gate_results"]["rco_pass"]["by_agent"]["claude-rco-1"][

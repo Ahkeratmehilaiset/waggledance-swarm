@@ -51,6 +51,7 @@ DEFAULT_TARGET_AGENTS = (
     "codex-tools-1",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
 )
 DEFAULT_ACTIVITY_GAP_MINUTES = 45.0
 DEFAULT_CYCLE_BUDGET_MINUTES = 90.0

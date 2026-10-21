@@ -17,11 +17,13 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from test_bridge_rco_enrollment import context as enrollment_context, manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tools import bridge_rule12_review_eligibility as r12  # noqa: E402
+from tools import bridge_rco_enrollment as enrollment  # noqa: E402
 from tools.bridge_pr_author import github_pr_git_identity_evidence  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     REVIEW_POLICY_LEGACY,
@@ -32,6 +34,15 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
 import tools.merge_with_bridge_receipt as merge_tool  # noqa: E402
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 from tools.write_bridge_consensus_merge_receipt import write_bridge_consensus_merge_receipt  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def historical_two_rco_cohort(tmp_path, monkeypatch):
+    """Load the historical two-RCO cohort without mutating helper process pins."""
+    ctx = enrollment_context(tmp_path, manifest())
+    assert ctx["status"] == "not_provisioned"
+    monkeypatch.setattr(r12, "load_rco_enrollment_context", lambda: ctx)
+
 
 # --- evaluator ---------------------------------------------------------------
 TASK = "fable-5/example-change-20261010"
@@ -181,6 +192,35 @@ def test_an_eligible_recognized_rco_keeps_the_pool_out():
     assert rco["pool_fallback"]["holder"] == ""
     assert rco["pool_fallback"]["standing"] == {}
     assert result["decision"] == "not_satisfied"
+
+
+@pytest.mark.parametrize("route", ["pool", "grok", "sole_recognized"])
+def test_unknown_enrollment_reserves_third_rco_quorum_place(tmp_path, monkeypatch, route):
+    ctx = enrollment.load_rco_enrollment_context(
+        bundle_root=tmp_path, expected_manifest_sha256=""
+    )
+    assert ctx["status"] == "unknown"
+    monkeypatch.setattr(r12, "load_rco_enrollment_context", lambda: ctx)
+    consultations = []
+    if route == "pool":
+        events = [*RCOS_RECUSED, rco_pass("codex-tools-1"), rco_pass("codex-lead-1")]
+    elif route == "grok":
+        events = [*RCOS_RECUSED, build_pass("codex-lead-1"), recused("codex-tools-1")]
+        consultations = [grok(requester="codex-tools-1")]
+    else:
+        events = [recused("claude-rco-2", ts=RCOS_RECUSED_TS),
+                  rco_pass("claude-rco-1"), build_pass("codex-lead-1")]
+    result = evaluate(events, consultations=consultations)
+    slot = result["slots"]["rco"]
+    assert slot["standing"]["claude-rco-3"] == "enrollment_unknown"
+    assert "claude-rco-3" in slot["present"]
+    assert slot["state"] == "pending"
+    assert slot["pool_fallback"]["holder"] == ""
+    assert result["grok_fallback"]["filled"] == []
+    assert result["decision"] == "not_satisfied"
+    if route == "sole_recognized":
+        assert slot["holders"] == ["claude-rco-1"]
+        assert slot["required_count"] == 2
 
 
 def test_an_available_pool_lane_keeps_the_slot_pending_and_grok_out():

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from test_wd_reboot_bundle import LANE_TEST_SHELLS, POWERSHELL, REBOOT, _run_powershell
+from test_wd_startup_recovery import load
 
 SUPERVISOR = REBOOT / "wd_supervisor.ps1"
 FUNCTIONS = ("Get-RequiredText", "Get-OptionalScheduledTask", "Test-LegacyDriverProvenNonApply", "Invoke-TaskContainment",
@@ -29,6 +30,42 @@ CASES = {
     "legacy_missing": ((False, "Ready"), None),
     "legacy_unreadable": ((False, "Ready"), "unreadable"),
 }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("agents,accepted", [
+    ("'codex-tools-1','claude-rco-1','claude-rco-2','fable-5'", True),
+    ("'codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5'", False),
+    ("'codex-tools-1','claude-rco-1','fable-5'", False),
+    ("'codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-2'", False),
+    ("'codex-tools-1','claude-rco-1','claude-rco-2','Fable-5'", False),
+    ("'codex-tools-1','claude-rco-1','claude-rco-2','unknown'", False),
+])
+def test_watcher_cohort_is_configured_legacy_four_not_all_recognized_rcos(ps, agents, accepted):
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(SUPERVISOR, "Assert-WdExactWatcherAgentSet")
+    script += f"\n$outcome='accepted'; try {{ Assert-WdExactWatcherAgentSet -Agents @({agents}) }} catch {{ $outcome=$_.Exception.Message }}\n"
+    script += "$outcome | ConvertTo-Json -Compress\n"
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert (result == "accepted") is accepted, result
+    if "claude-rco-3" in agents:
+        assert "not provisioned" in result, result
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("extra", ["$null", "''", "'  '"])
+def test_supervisor_configuration_route_does_not_drop_malformed_cohort_entries(ps, extra):
+    source = SUPERVISOR.read_text(encoding="utf-8-sig")
+    start = source.index("$watcherAgents = @(")
+    end = source.index("$watcherConflictRoot =", start)
+    # Execute the actual configuration-to-validator slice, not a replacement
+    # normalization that would miss a caller silently discarding bad entries.
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(SUPERVISOR, "Assert-WdExactWatcherAgentSet")
+    script += f"\n$configuration=[pscustomobject]@{{watchers=[pscustomobject]@{{agents=@('codex-tools-1','claude-rco-1','claude-rco-2','fable-5',{extra})}}}}\n"
+    script += "$outcome='accepted'; try {\n" + source[start:end]
+    script += "\n} catch { $outcome='refused' }; $outcome | ConvertTo-Json -Compress\n"
+    assert json.loads(_run_powershell(script, executable=ps).stdout) == "refused"
 
 
 def _task(value) -> str:

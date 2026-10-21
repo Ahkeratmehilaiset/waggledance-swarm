@@ -14,7 +14,7 @@
   switch, the launcher defaults to DryRun; mutation always requires -Apply.
   Supervisor OFF is the standing operator state: restore never registers,
   enables, starts or one-shot bootstraps WD-Supervisor, and it refuses unless
-  that task is exactly Disabled. The five bridge watchers and Tools start
+  that task is exactly Disabled. The four bridge watchers and Tools start
   afterwards from the non-elevated -Auto fleet wrapper (WdBridgeLimitedBootstrap.ps1).
   -SupervisorOff is still accepted and changes nothing.
 #>
@@ -153,7 +153,7 @@ if ($modeWasDefaulted) {
 # Supervisor OFF is the standing operator state (2026-09-30): no switch and no record is
 # needed, and this release has no ON path. Restore therefore never registers, enables,
 # starts or one-shot bootstraps WD-Supervisor and refuses unless it is exactly Disabled.
-# Elevated workers would be opaque to a later Limited supervisor, so the five bridge
+# Elevated workers would be opaque to a later Limited supervisor, so the four bridge
 # watchers and Tools start afterwards from the non-elevated -Auto fleet wrapper
 # (WdBridgeLimitedBootstrap.ps1) under the same Global reconcile mutexes.
 $restoreSupervisorOff = $true
@@ -3888,7 +3888,7 @@ try {
 
   if (-not $restoreSupervisorOff) {
     Write-Host ''
-    Write-Host 'Bootstrapping five bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
+    Write-Host 'Bootstrapping four bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
     $supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld `
       -TaskName ([string]$toolsConfig.task_name) `
       -ExpectedExecutable $expectedSupervisorExecutable `
@@ -4081,7 +4081,7 @@ try {
     }
   }
 
-  # The UI prompt watcher is intentionally separate from the five bridge
+  # The UI prompt watcher is intentionally separate from the four bridge
   # watchers. Start it only after every newly launched interactive lane has
   # completed and passed its bridge-bootstrap handshake.
   $promptWatcherAvailable = $false
@@ -4277,7 +4277,7 @@ try {
       -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
     Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
   } else {
-    Write-Host ("Elevated fleet restore complete; run_id={0}; Supervisor OFF: WD-Supervisor untouched (Disabled). The five bridge watchers and Tools are NOT verified here; the non-elevated -Auto wrapper starts and verifies them next." -f $RunId) -ForegroundColor Yellow
+    Write-Host ("Elevated fleet restore complete; run_id={0}; Supervisor OFF: WD-Supervisor untouched (Disabled). The four bridge watchers and Tools are NOT verified here; the non-elevated -Auto wrapper starts and verifies them next." -f $RunId) -ForegroundColor Yellow
   }
   if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
     Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'

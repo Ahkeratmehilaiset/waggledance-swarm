@@ -103,6 +103,11 @@ def test_powershell_writer_roster_and_registry_use_the_same_current_rco_identiti
 ])
 def test_current_powershell_literal_admission_lists_cannot_omit_the_third_rco(path):
     text = (ROOT / path).read_text(encoding="utf-8-sig")
+    # A named active runtime cohort is deployment inventory, not recognition.
+    # Its exact contents have their own assertion below; never turn every
+    # recognized identity into a provisioned worker merely to satisfy parity.
+    if path in {"ops/windows/reboot/WdBridgeLimitedBootstrap.ps1", "ops/windows/reboot/wd_supervisor.ps1"}:
+        text = re.sub(r"\$runtimeWatcherAgents\s*=\s*@\([^)]*\)", "", text)
     # Literal arrays and ValidateSet arguments are admission lists. Arrays of
     # machine-wrapper objects are deployment inventory, not identity policy.
     bodies = re.findall(r"(?:@|ValidateSet)\(([^)]*)\)", text, re.DOTALL)
@@ -111,6 +116,26 @@ def test_current_powershell_literal_admission_lists_cannot_omit_the_third_rco(pa
     mirrors = [names for names in rosters if names]
     assert mirrors, path
     assert all(names == EXPECTED for names in mirrors), (path, mirrors)
+
+
+def test_runtime_watcher_inventory_stays_exactly_the_provisioned_four():
+    expected = {"codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
+    for name in ("WdBridgeLimitedBootstrap.ps1", "wd_supervisor.ps1"):
+        text = (ROOT / "ops/windows/reboot" / name).read_text(encoding="utf-8-sig")
+        arrays = re.findall(r"\$runtimeWatcherAgents\s*=\s*@\(([^)]*)\)", text)
+        assert len(arrays) == 1, name
+        identities = re.findall(r"'([^']+)'", arrays[0])
+        assert len(identities) == len(expected) and set(identities) == expected, name
+    snapshot = json.loads((ROOT / "ops/windows/reboot/wd_supervisor_loop.json").read_text(encoding="utf-8-sig"))
+    assert set(snapshot["watchers"]["agents"]) == expected
+    assert len(snapshot["watchers"]["agents"]) == len(expected)
+    fleet = json.loads((ROOT / "ops/windows/reboot/wd-fleet.json").read_text(encoding="utf-8-sig"))
+    fleet_agents = {lane["agent"] for lane in fleet["lanes"]}
+    assert "claude-rco-3" not in fleet_agents
+    assert (fleet_agents - {"codex-lead-1"}) | {"codex-tools-1"} == expected
+    launcher = (ROOT / "ops/windows/reboot/start-wd-all.ps1").read_text(encoding="utf-8-sig")
+    assert "five bridge watchers" not in launcher
+    assert "Bootstrapping four bridge watchers and Tools" in launcher
 
 
 def test_profile_and_component_current_lane_rosters_include_exactly_the_same_rcos():

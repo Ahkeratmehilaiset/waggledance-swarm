@@ -19,17 +19,20 @@ immutable files written here, each with its sha256, time and window.
   ``charter.loaded`` is true only when the charter loads and a positive and a negative classifier control hold.
 
 Writes only the new ``--out`` directory (``capture.json``, ``detail-manifest.txt``, ``gh-pr-list.json``,
-``context.json``, ``capture-record.json``) and new cache files. Never writes a bridge event, never runs gate
-verdict code, never echoes event content in an error.
+``context.json``, ``capture-record.json``) and new cache files, each whole or not at all and never over another file
+(``write_new``, R5: a failed write refuses with ``output_unwritten``, a taken name with ``output_exists``). Never writes
+a bridge event, never runs gate verdict code, never echoes event content in an error.
 """
 
 import argparse
 import concurrent.futures
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -70,6 +73,47 @@ def row_digest(event):
     return sha(json.dumps(event, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def write_new(path, data):
+    """R5 write-new (the ``step2/calibrate.py`` ``write_new`` shape): publish the bytes ``data`` as the NEW file
+    ``path``, whole, or nothing at that name. A sibling staging file is created exclusively, written, flushed, fsynced,
+    closed and read back, then hard-linked to ``path``: a link never replaces, so a failed link while the name is taken
+    is ``output_exists`` (the file there is kept) and any other OS failure is ``output_unwritten``, both raised as
+    CaptureRefused. The staging name is removed after its exclusive create in every case, best effort; a file already
+    at that name fails the create and is never used or removed. No directory is made or synced here."""
+    staging = path.parent / f".{path.name}.staging-{secrets.token_hex(8)}"
+    try:
+        handle = staging.open("xb")
+    except OSError:
+        raise CaptureRefused("output_unwritten") from None
+    reason = "output_unwritten"
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if staging.read_bytes() != data:  # a short or altered write is never published
+            raise OSError(errno.EIO, "read-back differs")
+        try:
+            os.link(staging, path)  # never replaces: an existing output refuses the link on every platform
+        except OSError:
+            if os.path.lexists(path):  # the name is taken: another writer's output, kept
+                reason = "output_exists"
+            raise
+    except OSError:
+        raise CaptureRefused(reason) from None
+    finally:
+        try:
+            staging.unlink()  # only the staging name: a published output keeps its bytes under its own name
+        except OSError:
+            pass
+
+
+def write_new_text(path, text, encoding):
+    """``write_new`` of the exact bytes ``Path.write_text(text, encoding=encoding)`` wrote here before (each "\\n" as
+    ``os.linesep``, strict encoding); the text is encoded before any file is created."""
+    write_new(path, text.replace("\n", os.linesep).encode(encoding))
+
+
 def reader(bin_dir, *options):
     script = str(bin_dir / "Read-AgentBridge.ps1").replace("'", "''")
     command = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); & '" + script + "' -Compact " + \
@@ -105,8 +149,8 @@ def bridge_capture(args):
     manifest = "\n".join(f"{row['ref']} {row['row_sha256']} {row['source']}" for row in rows).encode("ascii")
     capture = {"schema": "wd.bridge-mind-capture.v1", "reader": READER, "reader_stdout_sha256": sha(manifest),
                "observed_utc": utc_now(), "events": [row["event"] for row in rows]}
-    (args.out / "capture.json").write_text(json.dumps(capture, ensure_ascii=False), encoding="utf-8")
-    (args.out / "detail-manifest.txt").write_bytes(manifest)
+    write_new_text(args.out / "capture.json", json.dumps(capture, ensure_ascii=False), "utf-8")
+    write_new(args.out / "detail-manifest.txt", manifest)
     return {"events": len(rows), "detail_calls": sum(row["source"] == "detail" for row in rows),
             "seed_rows": sum(row["source"] == "seed" for row in rows), "observed_utc": capture["observed_utc"]}
 
@@ -154,7 +198,7 @@ def github_context(args):
     data = gh("pr", "list", "--repo", REPO, "--state", "all", "--limit", "400", "--json",
               "number,state,headRefOid,headRefName")
     observed = utc_now()
-    (args.out / "gh-pr-list.json").write_bytes(data)
+    write_new(args.out / "gh-pr-list.json", data)
     rows, fetched = {}, 0
     for item in json.loads(data):
         number, head, branch, state = item["number"], item["headRefOid"], item["headRefName"], item["state"]
@@ -164,7 +208,12 @@ def github_context(args):
         if state == "OPEN":
             cache = args.files_cache / f"{number}-{head}.v2.json"
             if not cache.exists():
-                cache.write_bytes(gh("pr", "view", str(number), "--repo", REPO, "--json", "files,headRefOid,commits"))
+                view_bytes = gh("pr", "view", str(number), "--repo", REPO, "--json", "files,headRefOid,commits")
+                try:
+                    write_new(cache, view_bytes)
+                except CaptureRefused as exc:
+                    if str(exc) != "output_exists":  # else another capture published this view first: that one is read
+                        raise
                 fetched += 1
             view = json.loads(cache.read_bytes())
             if view.get("headRefOid") == head:
@@ -177,8 +226,8 @@ def github_context(args):
                "charter": {"loaded": loaded, "charter_blob": blob_sha1(DEFAULT_CHARTER_PATH),
                            "classifier_blob": blob_sha1(CLASSIFIER_FILE)},
                "prs": rows}
-    (args.out / "context.json").write_bytes(
-        (json.dumps(context, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
+    write_new(args.out / "context.json",
+              (json.dumps(context, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
     return {"prs": len(rows), "views_fetched": fetched, "charter_loaded": loaded, "observed_utc": observed}
 
 
@@ -283,9 +332,9 @@ def github_status(args):
               "required_contexts": required, "list_sha256": sha(data), "prs": rows,
               "mentions_captured": mentioned is not None}
     ws.guard_object(status)
-    (args.out / "gh-open-status.json").write_bytes(data)
-    (args.out / "observed-status.json").write_bytes(
-        (json.dumps(status, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
+    write_new(args.out / "gh-open-status.json", data)
+    write_new(args.out / "observed-status.json",
+              (json.dumps(status, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
     return {"open_prs": len(rows), "observed_utc": observed}
 
 
@@ -314,7 +363,7 @@ def main():
     if args.reuse_context is not None:
         for name in ("gh-pr-list.json", "context.json", "gh-open-status.json", "observed-status.json"):
             if (args.reuse_context / name).exists() or name in ("gh-pr-list.json", "context.json"):
-                (args.out / name).write_bytes((args.reuse_context / name).read_bytes())
+                write_new(args.out / name, (args.reuse_context / name).read_bytes())
         reused = json.loads((args.out / "context.json").read_text(encoding="ascii"))
         record["github"] = {"reused_from": args.reuse_context.name, "observed_utc": reused["observed_utc"]}
     else:
@@ -335,8 +384,7 @@ def main():
                        for name in ("capture.json", "detail-manifest.txt", "gh-pr-list.json", "context.json",
                                     "gh-open-status.json", "observed-status.json") if (args.out / name).exists()}
     ws.guard_object(record)
-    (args.out / "capture-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
-                                                  encoding="ascii")
+    write_new_text(args.out / "capture-record.json", json.dumps(record, indent=2, sort_keys=True) + "\n", "ascii")
     print(json.dumps({k: record[k] for k in ("bridge", "github")}))
     return 0
 

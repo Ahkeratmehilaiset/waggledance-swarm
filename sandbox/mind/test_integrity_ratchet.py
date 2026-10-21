@@ -22,7 +22,7 @@ import integrity_ratchet as ir  # noqa: E402
 # This tree's counts, filled ONCE with ``python -B -I sandbox/mind/integrity_ratchet.py`` and only ever lowered.
 ALLOWED: dict[str, dict[str, int]] = {
     "capture/capacity_lens.py": {"json": 1, "int": 3, "write": 3},
-    "capture/capture_round.py": {"json": 10, "write": 9},
+    "capture/capture_round.py": {"json": 10},
     "capture/live_mind.py": {"json": 5, "write": 1},
     "capture/overlap_lens.py": {"json": 2, "write": 2},
     "capture/round_loop.py": {"json": 3, "prefix": 1},

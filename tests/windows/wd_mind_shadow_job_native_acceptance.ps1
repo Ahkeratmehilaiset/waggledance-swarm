@@ -116,16 +116,19 @@ function Test-WdShadowCount {
 }
 
 function Get-WdShadowStopVerdict {
-    # A1 stop sub-cases: the named outcome, a confirmed drain to ActiveProcesses 0 and an end inside the deadline plus
-    # the stop wait (1800 + 30 s); any mistyped value is UNKNOWN.
-    param($Observation, [string] $Outcome)
+    # A1 stop sub-cases: the named outcome, a confirmed drain to ActiveProcesses 0 and a nonnegative integer elapsed
+    # time inside the bound deadline plus the stop wait (30 s). A deadline stop must not end before its bound
+    # deadline; an early off-switch or floor stop may. A mistyped or negative value or no valid deadline is UNKNOWN.
+    param($Observation, [string] $Outcome, $DeadlineSeconds)
     if (-not (Test-WdShadowExactKeys $Observation @('outcome', 'stop_confirmed', 'active_processes_after',
             'elapsed_seconds'))) { return 'UNKNOWN' }
     $active = $Observation['active_processes_after']
     $elapsed = $Observation['elapsed_seconds']
     if (-not (Test-WdShadowCount $active) -or -not (Test-WdShadowCount $elapsed) -or
         $Observation['stop_confirmed'] -isnot [bool] -or $Observation['outcome'] -isnot [string]) { return 'UNKNOWN' }
-    if ($Observation['outcome'] -cne $Outcome -or $active -ne 0 -or $elapsed -gt 1830 -or
+    if ($elapsed -lt 0 -or -not (Test-WdShadowCount $DeadlineSeconds) -or $DeadlineSeconds -le 0) { return 'UNKNOWN' }
+    if ($Observation['outcome'] -cne $Outcome -or $active -ne 0 -or $elapsed -gt $DeadlineSeconds + 30 -or
+        ($Outcome -ceq 'stopped_at_deadline' -and $elapsed -lt $DeadlineSeconds) -or
         -not $Observation['stop_confirmed']) { return 'FAIL' }
     return 'PASS'
 }
@@ -150,11 +153,14 @@ function Get-WdShadowRefusalVerdict {
 function Get-WdShadowSubcaseVerdict {
     # One sub-case of RCO1's A1-A7 contract (proposal v2) with RCO2's G1-G4 and Lead's guard cases.
     param([string] $CaseId, [string] $Name, $Observation, [hashtable] $Binding)
+    $deadline = $null
+    if ($null -ne $Binding -and $Binding['deadline_seconds'] -is [string] -and
+        $Binding['deadline_seconds'] -cmatch '^[1-9][0-9]{0,5}\z') { $deadline = [long]$Binding['deadline_seconds'] }
     switch -CaseSensitive ($CaseId + '/' + $Name) {
-        'A1/deadline' { return Get-WdShadowStopVerdict $Observation 'stopped_at_deadline' }
-        'A1/pipe_holding_grandchild' { return Get-WdShadowStopVerdict $Observation 'stopped_at_deadline' }
-        'A1/off_switch_during_run' { return Get-WdShadowStopVerdict $Observation 'stopped_by_off_switch' }
-        'A1/disk_floor_hit' { return Get-WdShadowStopVerdict $Observation 'stopped_at_disk_floor' }
+        'A1/deadline' { return Get-WdShadowStopVerdict $Observation 'stopped_at_deadline' $deadline }
+        'A1/pipe_holding_grandchild' { return Get-WdShadowStopVerdict $Observation 'stopped_at_deadline' $deadline }
+        'A1/off_switch_during_run' { return Get-WdShadowStopVerdict $Observation 'stopped_by_off_switch' $deadline }
+        'A1/disk_floor_hit' { return Get-WdShadowStopVerdict $Observation 'stopped_at_disk_floor' $deadline }
         'A1/early_root_exit_orphan' {
             # G3: the root exits early while an orphan lives; that is never completed.
             if (-not (Test-WdShadowExactKeys $Observation @('outcome', 'orphan_alive_at_root_exit')) -or
@@ -211,12 +217,14 @@ function Get-WdShadowSubcaseVerdict {
             if ($handles -isnot [array] -or
                 -not (Test-WdShadowExactKeys $lock @('attempted', 'acquired', 'released', 'error')) -or
                 $lock['attempted'] -isnot [bool] -or $lock['acquired'] -isnot [bool] -or
-                $lock['released'] -isnot [bool]) { return 'UNKNOWN' }
+                $lock['released'] -isnot [bool] -or
+                ($null -ne $lock['error'] -and $lock['error'] -isnot [string])) { return 'UNKNOWN' }
             if ($handles.Count -gt 0 -or
                 ($lock['attempted'] -and (-not $lock['acquired'] -or -not $lock['released']))) {
                 return 'FAIL'
             }
-            if ($lock['attempted']) { return 'PASS' }
+            # An explicit lock error is never PASS, even when every flag reads true.
+            if ($lock['attempted'] -and $null -eq $lock['error']) { return 'PASS' }
             return 'UNKNOWN'
         }
         { $_ -cmatch '^A7/(integrity_mismatch|preloaded_type|lane_loop_zero_functions|lane_loop_two_functions|' +
@@ -247,6 +255,16 @@ function Get-WdShadowCaseVerdict {
     $bindingKeys = @('harness_run_id', 'case_id', 'launch_id', 'root_pid', 'root_creation_utc', 'deadline_seconds')
     if (-not (Test-WdShadowExactKeys $Binding $bindingKeys) -or [string]$Binding['case_id'] -cne $CaseId -or
         -not (Test-WdShadowExactKeys $Observation @('binding', 'subcases'))) { return 'UNKNOWN' }
+    # A complete valid expected binding before any comparison (the adapter's launch id is a [guid] 'D' string);
+    # a blank, malformed or unknown expected value refuses.
+    $formats = @{
+        harness_run_id = '^\S+\z'; case_id = '^A[1-7]\z'; root_pid = '^[1-9][0-9]{0,9}\z'
+        launch_id = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
+        root_creation_utc = '^\S+\z'; deadline_seconds = '^[1-9][0-9]{0,5}\z'
+    }
+    foreach ($key in $bindingKeys) {
+        if ($Binding[$key] -isnot [string] -or $Binding[$key] -cnotmatch $formats[$key]) { return 'UNKNOWN' }
+    }
     $seen = $Observation['binding']
     if (-not (Test-WdShadowExactKeys $seen $bindingKeys)) { return 'UNKNOWN' }
     foreach ($key in $bindingKeys) {

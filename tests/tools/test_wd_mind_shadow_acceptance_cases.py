@@ -77,11 +77,11 @@ def _hosts():
     return hosts
 
 
-def _binding(case_id, launch="11111111-2222-4333-8444-555555555555"):
+def _binding(case_id, launch="11111111-2222-4333-8444-555555555555", deadline="1800"):
     # Text values only: PowerShell 7 ConvertFrom-Json would turn an ISO date string into a DateTime, which the strict
     # binding check refuses (the evaluators compare binding values as exact strings).
     return {"harness_run_id": "SYNTHETIC-HARNESS-RUN", "case_id": case_id, "launch_id": launch, "root_pid": "4242",
-            "root_creation_utc": "SYNTHETIC-ROOT-CREATION-UTC", "deadline_seconds": "1800"}
+            "root_creation_utc": "SYNTHETIC-ROOT-CREATION-UTC", "deadline_seconds": deadline}
 
 
 def _stopped(outcome):
@@ -95,6 +95,11 @@ def _a1():
             "off_switch_during_run": _stopped("stopped_by_off_switch"),
             "disk_floor_hit": _stopped("stopped_at_disk_floor"),
             "single_confirmed_stop": {"stop_calls": 1, "stop_confirmed": True}}
+
+
+def _a1_at(elapsed):
+    return {name: (dict(sub, elapsed_seconds=elapsed) if "elapsed_seconds" in sub else sub)
+            for name, sub in _a1().items()}
 
 
 def _a2():
@@ -129,12 +134,12 @@ def _a7():
     return {name: dict(REFUSED) for name in A7_SUBCASES}
 
 
-def _case(name, case_id, subcases, binding=None, extra=None):
+def _case(name, case_id, subcases, binding=None, extra=None, expected=None):
     observation = {"binding": binding if binding is not None else _binding(case_id), "subcases": subcases}
     if extra:
         observation.update(extra)
-    return {"name": name, "kind": "case", "case_id": case_id, "binding": _binding(case_id),
-            "observation": observation}
+    return {"name": name, "kind": "case", "case_id": case_id,
+            "binding": expected if expected is not None else _binding(case_id), "observation": observation}
 
 
 def _with(subcases, name, **change):
@@ -144,6 +149,11 @@ def _with(subcases, name, **change):
 
 
 ALL_PASS = {f"A{i}": "PASS" for i in range(1, 8)}
+BLANK_A6 = {key: ("A6" if key == "case_id" else "") for key in _binding("A6")}
+INVALID_A6 = (("harness_run_id", "", "blank"), ("harness_run_id", "  ", "space"), ("launch_id", "", "blank"),
+              ("launch_id", "launch-1", "not_a_guid"), ("root_pid", "", "blank"), ("root_pid", "0", "zero"),
+              ("root_creation_utc", "", "blank"), ("deadline_seconds", "", "blank"),
+              ("deadline_seconds", "abc", "text"))
 
 FIXTURES = [
     (_case("a1_pass", "A1", _a1()), "PASS"),
@@ -196,6 +206,29 @@ FIXTURES = [
      "FAIL"),
     (_case("a7_refusal_exit_zero", "A7", _with(_a7(), "reparse_ancestry", exit_code=0)), "FAIL"),
     (_case("a7_no_refusal_seen", "A7", _with(_a7(), "disk_floor_before_start", refusal_seen=None)), "UNKNOWN"),
+    # Lead's boundary probe of edf55c95: three false-PASS categories, RED first, positive controls kept.
+    (_case("a1_deadline_negative_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=-1)), "UNKNOWN"),
+    (_case("a1_deadline_zero_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=0)), "FAIL"),
+    (_case("a1_deadline_before_bound", "A1", _with(_a1(), "deadline", elapsed_seconds=1799)), "FAIL"),
+    (_case("a1_grandchild_before_bound", "A1", _with(_a1(), "pipe_holding_grandchild", elapsed_seconds=0)),
+     "FAIL"),
+    (_case("a1_switch_negative_elapsed", "A1", _with(_a1(), "off_switch_during_run", elapsed_seconds=-1)),
+     "UNKNOWN"),
+    (_case("a1_deadline_at_bound", "A1", _with(_a1(), "deadline", elapsed_seconds=1800)), "PASS"),
+    (_case("a1_deadline_tolerance_edge", "A1", _with(_a1(), "deadline", elapsed_seconds=1830)), "PASS"),
+    (_case("a1_early_switch_and_floor", "A1", _with(_with(_a1(), "off_switch_during_run", elapsed_seconds=5),
+                                                    "disk_floor_hit", elapsed_seconds=0)), "PASS"),
+    (_case("a1_bound_deadline_600", "A1", _a1_at(601), binding=_binding("A1", deadline="600"),
+           expected=_binding("A1", deadline="600")), "PASS"),
+    (_case("a1_beyond_bound_deadline_600", "A1", _a1_at(631), binding=_binding("A1", deadline="600"),
+           expected=_binding("A1", deadline="600")), "FAIL"),
+    (_case("a6_lock_error_with_true_flags", "A6", _with(_a6(), "inherited_handles", lock_reacquire={
+        "attempted": True, "acquired": True, "released": True, "error": "synthetic-access-denied"})), "UNKNOWN"),
+    (_case("a6_lock_error_mistyped", "A6", _with(_a6(), "inherited_handles", lock_reacquire={
+        "attempted": True, "acquired": True, "released": True, "error": 5})), "UNKNOWN"),
+    (_case("a6_blank_expected_and_seen_binding", "A6", _a6(), binding=dict(BLANK_A6), expected=dict(BLANK_A6)),
+     "UNKNOWN"),
+    (_case("a6_seen_blank_root_pid", "A6", _a6(), binding=dict(_binding("A6"), root_pid="")), "FAIL"),
     (_case("unknown_case_id", "A8", _a7()), "UNKNOWN"),
     ({"name": "run_a4_not_ready", "kind": "run", "verdicts": dict(ALL_PASS, A4="NOT_READY")}, "NOT_READY"),
     ({"name": "run_fake_a4_pass", "kind": "run", "verdicts": ALL_PASS}, "NOT_READY"),
@@ -204,6 +237,10 @@ FIXTURES = [
      "UNKNOWN"),
     ({"name": "run_unknown_case", "kind": "run", "verdicts": dict(ALL_PASS, A6="UNKNOWN", A4="NOT_READY")},
      "NOT_READY"),
+] + [
+    (_case(f"a6_invalid_expected_{key}_{label}", "A6", _a6(), binding=dict(_binding("A6"), **{key: value}),
+           expected=dict(_binding("A6"), **{key: value})), "UNKNOWN")
+    for key, value, label in INVALID_A6
 ]
 
 

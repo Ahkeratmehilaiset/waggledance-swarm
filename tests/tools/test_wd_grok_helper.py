@@ -1461,7 +1461,11 @@ def test_status_keeps_a_legacy_state_and_reports_provider_evidence_verbatim(tmp_
 
 # --- G1: requester-bound results for a Lead-brokered consultation ------------------------------
 
-G1_REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+G1_REQUESTERS = ("codex-tools-1", "claude-rco-1", "claude-rco-2", "claude-rco-3", "fable-5")
+
+
+def test_g1_requester_cases_cover_the_actual_helper_roster():
+    assert G1_REQUESTERS == wd_grok_helper.REQUESTERS
 
 
 @pytest.mark.parametrize("requester", G1_REQUESTERS)
@@ -1478,7 +1482,7 @@ def test_g1_requester_travels_in_the_reservation_and_every_lifecycle_state(tmp_p
     assert saved["requested_by"] == requester
 
 
-@pytest.mark.parametrize("requester", ["codex-lead-1", "grok-scout-1", "operator", "Claude-RCO-2", "unknown-1", "",
+@pytest.mark.parametrize("requester", ["codex-lead-1", "grok-scout-1", "operator", "Claude-RCO-2", "Claude-RCO-3", "unknown-1", "",
                                        "fable-5\n", 7, ["fable-5"]])
 def test_g1_any_other_requester_is_refused_before_a_reservation(tmp_path, requester):
     seed(tmp_path)

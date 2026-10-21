@@ -476,8 +476,13 @@ def test_a_lane_without_any_recorded_turn_is_listed(tmp_path, capsys):
     assert main(["--claude-projects", str(tmp_path / "claude"), "--codex-sessions", str(tmp_path / "none"),
                  "--hours", "24", "--fleet-manifest", ""]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["sources"]["lanes_without_recorded_turns"] == ["claude-rco-1", "claude-rco-2", "codex-lead-1",
-                                                                 "codex-tools-1"]
+    assert report["sources"]["lanes_without_recorded_turns"] == ["claude-rco-1", "claude-rco-2", "claude-rco-3",
+                                                                 "codex-lead-1", "codex-tools-1"]
+    # Recognition alone is neither an observed turn nor authority to execute.
+    assert set(report["sources"]["claude"]["last_turn_by_lane"]) == {"fable-5"}
+    assert report["sources"]["codex"]["last_turn_by_lane"] == {}
+    assert "claude:claude-rco-3" not in report["lanes"]
+    assert report["execution_allowed"] is False
 
 
 def test_a_symlinked_session_transcript_does_not_name_a_subagent_lane(tmp_path, monkeypatch):

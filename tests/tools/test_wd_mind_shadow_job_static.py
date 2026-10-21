@@ -404,8 +404,8 @@ def test_disk_shortfall_is_leads_deployment_rule_and_fails_closed(adapter):
 def test_off_switch_reads_existence_only_and_counts_any_doubt_as_on(adapter):
     body = _function(adapter, "Test-WdShadowOffSwitch")
     assert "if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($Path))) { return $true }" in body
-    assert "[void](Get-Item -LiteralPath $Path -Force -ErrorAction Stop)" in body
-    assert re.search(r"\} catch \[Management\.Automation\.ItemNotFoundException\] \{\s*return \$false\s*\} "
+    assert "[void][IO.File]::GetAttributes($Path)" in body
+    assert re.search(r"\} catch \[IO\.FileNotFoundException\] \{\s*return \$false\s*\} "
                      r"catch \{\s*return \$true\s*\}\n\}", body)
     assert body.count("return $false") == 1 and body.count("return $true") == 3
     for word in ("Get-Content", "ReadAll", "Open(", "StreamReader", "Remove-", "Delete", "Move(", "New-Item"):
@@ -438,10 +438,11 @@ def test_reparse_or_mount_ancestry_is_refused_before_any_volume_check_or_write(a
     body = _function(adapter, "Get-WdShadowReparseAncestor")
     assert re.search(r"for \(\$current = \$Path; -not \[string\]::IsNullOrEmpty\(\$current\); "
                      r"\$current = \[IO\.Path\]::GetDirectoryName\(\$current\)\) \{", body)
-    assert "$item = Get-Item -LiteralPath $current -Force -ErrorAction Stop" in body
-    assert re.search(r"\} catch \[Management\.Automation\.ItemNotFoundException\] \{\s*continue\s*\} "
+    assert "$attributes = [IO.File]::GetAttributes($current)" in body
+    assert re.search(r"\} catch \[IO\.FileNotFoundException\] \{\s*continue\s*\} "
+                     r"catch \[IO\.DirectoryNotFoundException\] \{\s*continue\s*\} "
                      r"catch \{\s*return \"\$current is unreadable ", body)
-    reparse = ("if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) "
+    reparse = ("if ($attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) "
                "{ return \"$current is a reparse point\" }")
     assert reparse in body
     assert body.count("return $null") == 1 and body.rstrip().endswith("return $null\n}")
@@ -457,6 +458,19 @@ def test_reparse_or_mount_ancestry_is_refused_before_any_volume_check_or_write(a
     roots = adapter.index("$guardRoots = @(")
     first_write = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
     assert validated < check.start() < ntfs < roots < first_write
+
+
+def test_existence_reads_name_their_not_found_types_and_never_use_the_provider(adapter):
+    # Lead follow-up 2026-10-21 (RCO1 static F1, suspected, not observed): the PowerShell provider can report a denied
+    # read as not found, so both existence reads use File.GetAttributes and only the named not-found types count.
+    assert "ItemNotFoundException" not in adapter and adapter.count("[IO.File]::GetAttributes(") == 2
+    switch = _function(adapter, "Test-WdShadowOffSwitch")
+    walk = _function(adapter, "Get-WdShadowReparseAncestor")
+    for body in (switch, walk):
+        assert "Get-Item" not in body and "Test-Path" not in body and body.count("[IO.File]::GetAttributes(") == 1
+    assert re.findall(r"catch \[([A-Za-z.]+)\]", switch) == ["IO.FileNotFoundException"]
+    assert re.findall(r"catch \[([A-Za-z.]+)\]", walk) == ["IO.FileNotFoundException", "IO.DirectoryNotFoundException"]
+    assert walk.count("continue") == 2 and switch.count("return $false") == 1
 
 
 def test_the_slice_guard_rechecks_both_paths_and_counts_a_reparse_as_a_floor_hit(adapter):

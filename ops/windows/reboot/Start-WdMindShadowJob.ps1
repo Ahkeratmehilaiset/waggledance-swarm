@@ -52,15 +52,19 @@
     caller (unknown refuses; it is not a measured footprint or a reservation); while the job runs, each must keep the
     floor itself, and a failed measurement counts as below it. The off switch is any entry named mind-shadow.off in
     the approved run root: present before the start, nothing is started; appearing later, the job is stopped through
-    the deadline's Stop path. Only its existence is read, never its content, and only a positive not-found answer
+    the deadline's Stop path. Only its existence is read, never its content, through File.GetAttributes (never the
+    PowerShell provider, which can report a denied read as not found), and only a positive file-not-found answer
     under an existing run root counts as off. Both guards are read once per loop slice, so a guard acts within about
     one second plus the stop wait, never instantly; nothing here reserves space or guards against other writers. A
     confirmed guard stop is stopped_by_off_switch or stopped_at_disk_floor under the stopped_at_deadline rules; a
     guard error is UNKNOWN, so stop_unconfirmed. Follow-up (Lead, after Root's static finding at 386517ac): the
     volume and NTFS checks read textual drive roots, so neither the run root nor the live dir may pass through a
     reparse point (a junction, a symbolic link or a volume mount point). An existing component that is one, or
-    that cannot be read, refuses before anything is written; one that appears later counts as a floor hit. Nothing
-    is pinned, so a path change between two readings stays possible: no whole-directory or race safety is claimed.
+    that cannot be read, refuses before anything is written; one that appears later counts as a floor hit. Only a
+    file-not-found or directory-not-found answer skips a component that does not exist yet. A drive letter made by
+    subst or another DOS device mapping is invisible to this walk: reparse points in its target path are not seen,
+    and the volume checks read the letter itself (not observed). Nothing is pinned, so a path change between two
+    readings stays possible: no whole-directory or race safety is claimed.
 
     Identity (T1): the actual mandatory integrity label of this token (its S-1-16 SID as whoami.exe reports it) must
     equal the approved level, and the token user SID must equal the explicitly supplied approved user SID. Group
@@ -254,12 +258,14 @@ function Get-WdShadowDiskShortfall {
 function Test-WdShadowOffSwitch {
     # The operator off switch: any entry with the fixed name, read for its existence only (never its content). Only a
     # positive not-found answer under an existing run root counts as off; anything else counts as on (fail closed).
+    # Follow-up (Lead, after RCO1's static F1): read with File.GetAttributes, never the PowerShell provider, which can
+    # report a denied read as not found; only FileNotFound counts as off (DirectoryNotFound, denied or unknown: on).
     param([string] $Path)
     try {
         if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($Path))) { return $true }
-        [void](Get-Item -LiteralPath $Path -Force -ErrorAction Stop)
+        [void][IO.File]::GetAttributes($Path)
         return $true
-    } catch [Management.Automation.ItemNotFoundException] {
+    } catch [IO.FileNotFoundException] {
         return $false
     } catch {
         return $true
@@ -272,16 +278,21 @@ function Get-WdShadowReparseAncestor {
     # point). Walks from the path up to its root, skipping a component that does not exist yet; $null when every
     # existing component is ordinary, else the first reparse or unreadable component as text (fail closed). It may
     # over-refuse (cloud file placeholders are reparse points too) and pins nothing, so a later change stays possible.
+    # Follow-up (Lead, after RCO1's static F1): read with File.GetAttributes, never the PowerShell provider; only
+    # FileNotFound or DirectoryNotFound skips a component, and a denied or unknown answer refuses. A subst or other
+    # DOS device drive letter is invisible here: reparse points in its target path are not seen (not observed).
     param([string] $Path)
     for ($current = $Path; -not [string]::IsNullOrEmpty($current); $current = [IO.Path]::GetDirectoryName($current)) {
         try {
-            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-        } catch [Management.Automation.ItemNotFoundException] {
+            $attributes = [IO.File]::GetAttributes($current)
+        } catch [IO.FileNotFoundException] {
+            continue
+        } catch [IO.DirectoryNotFoundException] {
             continue
         } catch {
-            return "$current is unreadable ($($_.Exception.GetType().FullName))"
+            return "$current is unreadable ($($_.Exception.GetBaseException().GetType().FullName))"
         }
-        if ($item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return "$current is a reparse point" }
+        if ($attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return "$current is a reparse point" }
     }
     return $null
 }

@@ -4,6 +4,7 @@ import os
 import subprocess
 import hashlib
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -49,12 +50,27 @@ def test_token_adapter_preserves_typed_machine_result_or_unknown(ps, case):
     script = (f"Add-Type -TypeDefinition {q(declaration)}\nfunction Get-BridgeEvidenceToken {{" +
               _token_function_source() + f"\nGet-BridgeEvidenceToken -Process {process}|ConvertTo-Json")
     value = json.loads(_run_powershell(script, executable=ps).stdout)
-    if case in ('denied', 'missing'):
+    assert value['schema'] == 'wd.process-token.v1'
+    if sys.platform != 'win32' or case in ('denied', 'missing'):
         assert value['token_integrity'] is None and value['elevated'] is None
-        assert value['process_id'] is None and value['observation_error']
+        assert value['process_id'] is None and value['process_start_utc'] is None
+        assert isinstance(value['observation_error'], str) and value['observation_error'].strip()
     else:
         assert value['token_integrity'] == case and value['elevated'] is (case == 'High')
         assert value['process_id'] == 5252 and value['observation_error'] is None
+
+
+@pytest.mark.parametrize('case', ['Medium', 'High', 'denied', 'missing'])
+def test_token_adapter_unsupported_host_is_complete_unknown(monkeypatch, case):
+    # A pure fixture counterexample: no PowerShell or native operation is run.
+    unknown = dict(schema='wd.process-token.v1', process_id=None,
+                   process_start_utc=None, token_integrity=None, elevated=None,
+                   observation_error='Process token identity unavailable')
+    result = subprocess.CompletedProcess([], 0, stdout=json.dumps(unknown))
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'platform', 'linux')
+        patch.setattr(sys.modules[__name__], '_run_powershell', lambda *a, **k: result)
+        test_token_adapter_preserves_typed_machine_result_or_unknown('synthetic-no-host', case)
 
 
 def test_evidence_reads_native_and_writer_tokens_separately():

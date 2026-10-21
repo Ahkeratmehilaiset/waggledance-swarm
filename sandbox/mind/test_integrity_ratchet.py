@@ -30,7 +30,7 @@ ALLOWED: dict[str, dict[str, int]] = {
     "hexmind/bakeoff.py": {"json": 2, "write": 2},
     "hexmind/bakeoff_v2.py": {"json": 2, "write": 1},
     "hexmind/capacity_axis.py": {"json": 1, "write": 1},
-    "hexmind/hex_memory.py": {"json": 2, "write": 2},
+    "hexmind/hex_memory.py": {"json": 2},
     "learn_step.py": {"json": 4},
     "lesson_cards.py": {"dollar": 1},
     "measure_answers.py": {"json": 2, "write": 1},

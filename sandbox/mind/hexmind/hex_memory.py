@@ -38,17 +38,20 @@ Routes:
 * ``wd_hybrid``: ``HybridRetrievalService.retrieve`` unchanged, for comparison.
 
 Every stored text passes the decoded privacy guard of the workspace; a refused record is counted, never stored.
-Writes only under ``--out``. No network, no bridge event, no gate code.
+Writes only the NEW directory ``--out``, whole or not at all (R5 write-new, ``build``): an existing one is refused
+before any input is read. No network, no bridge event, no gate code.
 """
 
 import argparse
 import asyncio
 import datetime as dt
+import errno
 import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import sys
 import time
 from collections import Counter
@@ -208,7 +211,66 @@ def lesson_records(directory, before):
                "meta": {"kind": "lesson", "file": path.name, "date": stamp.group(1) if stamp else None}}
 
 
+class HexMemoryError(ValueError):
+    """An index that cannot be published as given: ``output_exists`` or ``output_unwritten`` (R5 write-new)."""
+
+
+def _text_bytes(text):
+    """The bytes the text-mode ``write_text(text, encoding="ascii")`` of before R5 wrote: each newline as os.linesep."""
+    return text.replace("\n", os.linesep).encode("ascii")
+
+
+def _stage_file(path, data):
+    """One new file of the staged index: created exclusively, written, flushed, synced, closed and read back."""
+    with path.open("xb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if path.read_bytes() != data:  # a short or altered write is never published
+        raise OSError(errno.EIO, "read-back differs")
+
+
+def _sync_file(path):
+    """A file core.faiss_store wrote and closed without a sync: synced before the index is published."""
+    with path.open("r+b") as handle:
+        os.fsync(handle.fileno())
+
+
+def _discard(staging, cells):
+    """After a failed build, best effort: remove only the names this build staged (its two JSON files, each cell's
+    two FAISS files and directory, the faiss directory, then the staging directory). A removal that fails never
+    changes the outcome, and a name this build did not stage keeps its directory."""
+    folders = [staging / "faiss" / f"cell_{cell}" for cell in sorted(cells)]
+    files = [folder / name for folder in folders for name in ("index.faiss", "meta.json")]
+    for path in files + [staging / "embedder.json", staging / "hex-memory-receipt.json"]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    for path in folders + [staging / "faiss", staging]:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
 def build(args):
+    """Build the index and publish it as the NEW directory ``args.out``, whole, or nothing at that path (R5
+    write-new, the ``step2/corpus.publish_new`` shape). An existing ``args.out`` (a previous index, an empty
+    directory, a file or a link) raises ``HexMemoryError("output_exists")`` before any input is read and is never
+    replaced or written into (``core.faiss_store`` would load a previous cell and append to it). Every file is
+    written in a fresh sibling staging directory ``.<name>.staging-<16 random hex>`` made exclusively: the two JSON
+    files created exclusively, flushed, synced and read back, each FAISS cell saved by ``core.faiss_store`` and then
+    synced; only then is the staging directory renamed onto ``args.out``. That rename refuses an existing name on
+    Windows and an existing file, link or non-empty directory on POSIX, and a failed rename while the name is taken is
+    ``output_exists``; on POSIX it replaces an EMPTY directory made after the check (a stated limit). Any other OS
+    failure while publishing is ``output_unwritten``; any other error is raised unchanged. After a failure the names
+    this call staged are removed, best effort; a staging name already taken fails its create and is never used or
+    removed, and a hard crash leaves the staging directory behind, never published and never touched by a later
+    build. Directories are not synced; another process of the same user that changes the staging directory or a
+    parent directory while this runs is not defended."""
+    if os.path.lexists(args.out):
+        raise HexMemoryError("output_exists")  # before any input is read: a previous index is never replaced
     started = time.perf_counter()
     before = parse_utc(args.before) if args.before else None
     capture_bytes = args.capture.read_bytes()
@@ -230,31 +292,52 @@ def build(args):
             topology.assign_cell(record["intent"], record["text"].lower()).cell_id
         kept.append((cell, record, stored["text"]))
     embedder = EMBEDDERS[args.embedder].fit([record["body"] for _, record, _ in kept])
-    (args.out / "embedder.json").write_text(json.dumps(embedder.state(), ensure_ascii=True, sort_keys=True,
-                                                       separators=(",", ":")), encoding="ascii")
-    embed_started = time.perf_counter()
-    vectors = embedder.passages([record["body"] for _, record, _ in kept])
-    embed_ms = round((time.perf_counter() - embed_started) * 1000)
-    registry = FaissRegistry(base_dir=str(args.out / "faiss"), default_dim=embedder.dim)
-    cells = {}
-    for (cell, record, text), vector in zip(kept, vectors):
-        bucket = cells.setdefault(cell, ([], [], [], []))
-        bucket[0].append(record["doc_id"])
-        bucket[1].append(text)
-        bucket[2].append(vector)
-        bucket[3].append(dict(record["meta"], cell_id=cell))
-    for cell, (ids, texts, cell_vectors, metas) in sorted(cells.items()):
-        collection = registry.get_or_create(f"cell_{cell}")
-        collection.add_batch(ids, texts, np.vstack(cell_vectors), metas)
-        collection.save()
-    receipt = {"schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate", "embedder": embedder.name,
-               "dim": embedder.dim, "capture_sha256": hashlib.sha256(capture_bytes).hexdigest(),
-               "before_utc": args.before, "records": len(kept),
-               "by_cell": {cell: len(v[0]) for cell, v in sorted(cells.items())},
-               "refused_by_privacy_guard": dict(refused), "embed_ms": embed_ms,
-               "build_ms": round((time.perf_counter() - started) * 1000)}
-    ws.guard_object(receipt)
-    (args.out / "hex-memory-receipt.json").write_text(json.dumps(receipt, indent=1, sort_keys=True), encoding="ascii")
+    staging = args.out.parent / f".{args.out.name}.staging-{secrets.token_hex(8)}"
+    try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        staging.mkdir()
+    except OSError:
+        raise HexMemoryError("output_unwritten") from None
+    cells, reason = {}, "output_unwritten"
+    try:
+        _stage_file(staging / "embedder.json", _text_bytes(json.dumps(embedder.state(), ensure_ascii=True,
+                                                                      sort_keys=True, separators=(",", ":"))))
+        embed_started = time.perf_counter()
+        vectors = embedder.passages([record["body"] for _, record, _ in kept])
+        embed_ms = round((time.perf_counter() - embed_started) * 1000)
+        registry = FaissRegistry(base_dir=str(staging / "faiss"), default_dim=embedder.dim)
+        for (cell, record, text), vector in zip(kept, vectors):
+            bucket = cells.setdefault(cell, ([], [], [], []))
+            bucket[0].append(record["doc_id"])
+            bucket[1].append(text)
+            bucket[2].append(vector)
+            bucket[3].append(dict(record["meta"], cell_id=cell))
+        for cell, (ids, texts, cell_vectors, metas) in sorted(cells.items()):
+            collection = registry.get_or_create(f"cell_{cell}")
+            collection.add_batch(ids, texts, np.vstack(cell_vectors), metas)
+            collection.save()
+            for name in ("index.faiss", "meta.json"):
+                _sync_file(staging / "faiss" / f"cell_{cell}" / name)
+        receipt = {"schema": SCHEMA, "authority": "none", "scope": "shadow_memory_not_gate",
+                   "embedder": embedder.name, "dim": embedder.dim,
+                   "capture_sha256": hashlib.sha256(capture_bytes).hexdigest(),
+                   "before_utc": args.before, "records": len(kept),
+                   "by_cell": {cell: len(v[0]) for cell, v in sorted(cells.items())},
+                   "refused_by_privacy_guard": dict(refused), "embed_ms": embed_ms,
+                   "build_ms": round((time.perf_counter() - started) * 1000)}
+        ws.guard_object(receipt)
+        _stage_file(staging / "hex-memory-receipt.json", _text_bytes(json.dumps(receipt, indent=1, sort_keys=True)))
+        try:
+            os.rename(staging, args.out)  # never replaces on Windows (POSIX: see the docstring)
+        except OSError:
+            if os.path.lexists(args.out):  # the name is taken: another writer's output, kept
+                reason = "output_exists"
+            raise
+    except BaseException as error:
+        _discard(staging, cells)
+        if isinstance(error, OSError):
+            raise HexMemoryError(reason) from None
+        raise
     print(json.dumps(receipt))
     return 0
 
@@ -318,7 +401,6 @@ def main(argv=None):
     two.add_argument("--ring2", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "build":
-        args.out.mkdir(parents=True, exist_ok=True)
         return build(args)
     result = Memory(args.index).recall(args.text, args.k, args.route, args.ring2)
     ws.guard_object(result)

@@ -8,7 +8,9 @@ The record's PID/start/session/run fields are the prior registration observation
 receipt, NOT future restart pins: final manifest bytes must freeze before launch.
 Durable binding is role UUID + actually observed conversation + target generation.
 The current event needs its own nonblank session/run and observed positive
-PID/launcher lifetime. This Source contract alone does not make cold adoption ready.
+PID/launcher lifetime. Both the writing process and native CLI need current,
+PID/lifetime-bound machine token observations: Medium and non-elevated, never
+the historical record alone. This Source contract does not make cold adoption ready.
 
 Trust is the externally supplied manifest SHA256 plus the existing same-user
 bridge trust. Event execution evidence is still unsigned: equality is consistency,
@@ -256,6 +258,17 @@ def rco_enrollment_status(agent, *, context=None) -> str:
     return validated[0] if validated is not None else "unknown"
 
 
+def _medium_process_token(token, pid, started) -> bool:
+    """Current machine observation, not the historical enrollment's token claim."""
+    return (isinstance(token, Mapping) and token.get("schema") == "wd.process-token.v1"
+            and type(pid) is int and pid > 0
+            and type(token.get("process_id")) is int and token["process_id"] == pid
+            and started is not None and _utc(token.get("process_start_utc")) == started
+            and type(token.get("token_integrity")) is str and token["token_integrity"] == "Medium"
+            and token.get("elevated") is False
+            and "observation_error" in token and token["observation_error"] is None)
+
+
 def rco_event_enrollment_matches(event, *, context=None) -> bool:
     """Bind durable enrollment identity and current observed execution, not old PIDs."""
     if not isinstance(event, Mapping):
@@ -297,7 +310,12 @@ def rco_event_enrollment_matches(event, *, context=None) -> bool:
     started = _utc(proof.get("native_process_start_utc"))
     observed = _utc(proof.get("observed_at_utc"))
     prior_observed = _utc(record["observed_at_utc"])
+    writer_started = _utc(proof.get("writer_process_start_utc"))
     return (started is not None and observed is not None and started <= observed
             and prior_observed <= observed
+            and writer_started is not None and writer_started <= observed
+            and _medium_process_token(proof.get("native_token"), proof.get("native_pid"), started)
+            and _medium_process_token(proof.get("writer_token"), proof.get("writer_pid"), writer_started)
+            and proof.get("writer_pid") != proof.get("native_pid")
             and all(type(proof.get(key)) is int and proof[key] > 0
                     for key in ("native_pid", "launcher_pid")))

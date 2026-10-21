@@ -80,11 +80,101 @@ public sealed class WdBridgeReadOnlyProcess {
         return [WdBridgeReadOnlyProcess]::Read($ProcessId)
     }
 }
+function Get-BridgeEvidenceToken {
+    param($Process)
+    try {
+        if ($null -eq $Process -or [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Process token identity unavailable' }
+        if (-not ('WdBridgeReadOnlyToken' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public sealed class WdBridgeReadOnlyToken {
+  public string Integrity;
+  public bool Elevated;
+  [StructLayout(LayoutKind.Sequential)] struct SidAttributes { public IntPtr Sid; public uint Attributes; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint GetProcessId(IntPtr process);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr p,out long created,out long exited,out long kernel,out long user);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr buffer,uint size,out uint needed);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertSidToStringSidW(IntPtr sid,out IntPtr text);
+  [DllImport("advapi32.dll")] static extern bool IsValidSid(IntPtr sid);
+  [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
+  static IntPtr Buffer(IntPtr token,int kind,out uint size) {
+    size=0;
+    bool initial=GetTokenInformation(token,kind,IntPtr.Zero,0,out size);
+    int error=Marshal.GetLastWin32Error();
+    if(initial || error!=122 || size==0 || size>1048576) throw new Win32Exception(error,"Token information size unavailable");
+    IntPtr data=Marshal.AllocHGlobal(checked((int)size)); uint returned;
+    if(!GetTokenInformation(token,kind,data,size,out returned)) {
+      error=Marshal.GetLastWin32Error(); Marshal.FreeHGlobal(data); throw new Win32Exception(error,"Token information unavailable");
+    }
+    if(returned==0 || returned>size) {Marshal.FreeHGlobal(data);throw new InvalidOperationException("Invalid token buffer length");}
+    size=returned;return data;
+  }
+  static string Stamp(IntPtr token) {
+    uint size;IntPtr data=Buffer(token,10,out size); // TOKEN_STATISTICS: TokenId and ModifiedId
+    try {if(size<56) throw new InvalidOperationException("Truncated token statistics");return Marshal.ReadInt64(data,0)+":"+Marshal.ReadInt64(data,48);}
+    finally {Marshal.FreeHGlobal(data);}
+  }
+  static void Lifetime(IntPtr process,int pid,long expectedCreated) {
+    long created,exited,kernel,user;
+    if(GetProcessId(process)!=(uint)pid || !GetProcessTimes(process,out created,out exited,out kernel,out user)
+       || exited!=0 || created!=expectedCreated) throw new InvalidOperationException("Process token lifetime/PID association changed");
+  }
+  public static WdBridgeReadOnlyToken Read(int pid,long expectedTicks) {
+    // QUERY_LIMITED_INFORMATION and TOKEN_QUERY only. No group/env inference,
+    // impersonation, privilege adjustment, token mutation, or helper-as-native substitution.
+    IntPtr process=OpenProcess(0x1000,false,pid),token=IntPtr.Zero,again=IntPtr.Zero;
+    if(process==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(),"Token process unavailable");
+    try {
+      long created,exited,kernel,user;
+      if(!GetProcessTimes(process,out created,out exited,out kernel,out user) || exited!=0) throw new InvalidOperationException("Token process lifetime unavailable");
+      // CIM serializes microseconds; permit only its sub-microsecond quantization.
+      if(Math.Abs(DateTime.FromFileTimeUtc(created).Ticks-expectedTicks)>=10) throw new InvalidOperationException("Token process creation differs from ancestry observation");
+      Lifetime(process,pid,created);
+      if(!OpenProcessToken(process,8,out token)) throw new Win32Exception(Marshal.GetLastWin32Error(),"Process token query denied");
+      string stamp=Stamp(token),integrity; bool elevated; uint size;
+      IntPtr data=Buffer(token,25,out size); // TokenIntegrityLevel, not group membership
+      try {
+        int minimum=Marshal.SizeOf(typeof(SidAttributes));
+        if(size<minimum) throw new InvalidOperationException("Truncated integrity label");
+        IntPtr sid=Marshal.ReadIntPtr(data);long offset=sid.ToInt64()-data.ToInt64();
+        if(offset<minimum || offset+8>size || !IsValidSid(sid) || offset+GetLengthSid(sid)>size) throw new InvalidOperationException("Invalid integrity SID");
+        IntPtr text;
+        if(!ConvertSidToStringSidW(sid,out text)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {string value=Marshal.PtrToStringUni(text);integrity=value=="S-1-16-8192" ? "Medium" : value=="S-1-16-12288" ? "High" : value=="S-1-16-16384" ? "System" : value=="S-1-16-4096" ? "Low" : "Other";}
+        finally {LocalFree(text);}
+      } finally {Marshal.FreeHGlobal(data);}
+      data=Buffer(token,20,out size); // TokenElevation: typed DWORD 0/1
+      try {if(size<4) throw new InvalidOperationException("Truncated elevation");int value=Marshal.ReadInt32(data);if(value!=0 && value!=1) throw new InvalidOperationException("Invalid elevation");elevated=value==1;}
+      finally {Marshal.FreeHGlobal(data);}
+      if(!OpenProcessToken(process,8,out again) || Stamp(token)!=stamp || Stamp(again)!=stamp) throw new InvalidOperationException("Process primary token changed during observation");
+      Lifetime(process,pid,created);
+      return new WdBridgeReadOnlyToken {Integrity=integrity,Elevated=elevated};
+    } finally {if(again!=IntPtr.Zero)CloseHandle(again);if(token!=IntPtr.Zero)CloseHandle(token);CloseHandle(process);}
+  }
+}
+'@
+        }
+        $value=[WdBridgeReadOnlyToken]::Read([int]$Process.ProcessId,$Process.CreationDate.ToUniversalTime().Ticks)
+        return [pscustomobject]@{schema='wd.process-token.v1';process_id=[int]$Process.ProcessId;
+            process_start_utc=$Process.CreationDate.ToUniversalTime().ToString('o');
+            token_integrity=$value.Integrity;elevated=[bool]$value.Elevated;observation_error=$null}
+    } catch {
+        return [pscustomobject]@{schema='wd.process-token.v1';process_id=$null;process_start_utc=$null;
+            token_integrity=$null;elevated=$null;observation_error=$_.Exception.Message}
+    }
+}
 $observed=[datetime]::UtcNow.ToString('o')
-$native=$null; $launcher=$null; $nativeId=$null; $ancestryError=$null; $observedAgent=$null
+$native=$null; $launcher=$null; $nativeId=$null; $ancestryError=$null; $observedAgent=$null; $writer=$null
 $ancestryPhase='self_process'
 try {
-        $child=Get-BridgeEvidenceProcess $PID
+        $writer=Get-BridgeEvidenceProcess $PID
+        $child=$writer
         $visited=@{}
         for ($i=0;$i -lt 24 -and $null -ne $child;$i++) {
             if ($visited.ContainsKey([string]$child.ProcessId)) { break }
@@ -104,6 +194,8 @@ if ($null -ne $launcher) {
     if ($launcher.CommandLine -match '(?i)start-wd-tools-consumer\.ps1') {$observedAgent='codex-tools-1'}
     elseif ($launcher.CommandLine -match '(?i)-Agent\s+"?([a-z][a-z0-9_-]{1,32})(?:"|\s|$)') {$observedAgent=$Matches[1]}
 }
+$nativeToken=Get-BridgeEvidenceToken -Process $native
+$writerToken=Get-BridgeEvidenceToken -Process $writer
 $pinStatus='unknown'; $pinError=$null; $generation=$null; $manifestHash=$null
 $helperHashes=[ordered]@{}
 foreach ($leaf in @('Get-BridgeExecutionEvidence.ps1','Write-BridgeTaskReply.ps1','Write-AgentEvent.ps1','BridgeTaskResult.ps1')) {
@@ -134,6 +226,8 @@ if ($env:WD_BRIDGE_BIN) {
     native_process_start_utc=$(if ($null -ne $native) {$native.CreationDate.ToUniversalTime().ToString('o')} else {$null});
     cli_kind=$(if ($null -ne $native) {$native.Name} else {$null});launcher_pid=$(if ($null -ne $launcher) {$launcher.ProcessId} else {$null});
     ancestry_error=$ancestryError;ancestry_failure_phase=$(if($ancestryError){$ancestryPhase}else{$null});
+    native_token=$nativeToken;writer_token=$writerToken;writer_pid=$PID;
+    writer_process_start_utc=$(if($null -ne $writer){$writer.CreationDate.ToUniversalTime().ToString('o')}else{$null});
     process_query_method=$script:bridgeEvidenceProcessMethod;cim_error=$script:bridgeEvidenceCimError;
     observation_source='helper_runtime_and_process_ancestry';
     semantic_content_verified=$false;task_completion_verified=$false} | ConvertTo-Json -Depth 8

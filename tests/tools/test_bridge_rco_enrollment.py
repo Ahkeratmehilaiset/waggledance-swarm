@@ -60,6 +60,12 @@ def context(tmp_path, value=None, **kwargs):
     )
 
 
+def token_proof(pid, started):
+    return {"schema": "wd.process-token.v1", "process_id": pid,
+            "process_start_utc": started, "token_integrity": "Medium",
+            "elevated": False, "observation_error": None}
+
+
 def event(ctx):
     rec = record()
     return {
@@ -76,6 +82,10 @@ def event(ctx):
             "observed_at_utc": "2026-10-21T01:00:01Z",
             "pin_status": "manifest_and_launcher_verified",
             "pin_error": None, "ancestry_error": None,
+            "writer_pid": 4244,
+            "writer_process_start_utc": "2026-10-21T01:00:00.5Z",
+            "native_token": token_proof(rec["native_pid"], rec["native_process_start_utc"]),
+            "writer_token": token_proof(4244, "2026-10-21T01:00:00.5Z"),
         }},
     }
 
@@ -96,6 +106,62 @@ def test_valid_operator_attestation_and_bound_event(tmp_path):
     assert enrollment.rco_enrollment_status("claude-rco-3", context=ctx) == "enrolled"
     assert enrollment.rco_event_enrollment_matches(event(ctx), context=ctx)
     assert "marker" not in json.dumps(ctx)
+
+
+@pytest.mark.parametrize("which", ["native_token", "writer_token"])
+@pytest.mark.parametrize("key,value", [
+    ("token_integrity", "High"), ("token_integrity", "Low"),
+    ("token_integrity", "medium"), ("token_integrity", None),
+    ("elevated", True), ("elevated", 0), ("elevated", "False"),
+    ("process_id", True), ("process_id", 9999),
+    ("process_start_utc", "2026-10-21T01:00:00.9Z"),
+    ("observation_error", "denied"), ("schema", "caller assertion"),
+])
+def test_current_token_observation_is_mandatory_medium(tmp_path, which, key, value):
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    candidate["payload"]["execution_evidence"][which][key] = value
+    assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+@pytest.mark.parametrize("which", ["native_token", "writer_token"])
+@pytest.mark.parametrize("value", [None, {}, [], "Medium"])
+def test_missing_or_malformed_current_token_refuses(tmp_path, which, value):
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    candidate["payload"]["execution_evidence"][which] = value
+    assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+@pytest.mark.parametrize("which", ["native_token", "writer_token"])
+@pytest.mark.parametrize("key", list(token_proof(1, "2026-10-21T00:00:00Z")))
+def test_every_current_token_field_is_required(tmp_path, which, key):
+    ctx = context(tmp_path)
+    candidate = event(ctx)
+    del candidate["payload"]["execution_evidence"][which][key]
+    assert not enrollment.rco_event_enrollment_matches(candidate, context=ctx)
+
+
+def test_high_current_token_does_not_approve_or_clear_its_veto(tmp_path, monkeypatch):
+    from tools import check_rco_pass_present as gate
+    from tools import check_bridge_changes_requested as changes
+    ctx = context(tmp_path)
+    monkeypatch.setattr(gate, "load_rco_enrollment_context", lambda: ctx)
+    monkeypatch.setattr(changes, "load_rco_enrollment_context", lambda: ctx)
+    candidate = event(ctx)
+    candidate.update(type="decision", status="rco_pass", task_id="synthetic/token", ts_utc="2026-10-21T01:00:02Z")
+    candidate["message"] = "RCO_PASS exact head " + GENERATION
+    candidate["payload"].update(head=GENERATION)
+    assert gate.check_rco_pass_present(events=[candidate], task_id="synthetic/token", head=GENERATION,
+                                      author_agent="codex-lead-1")["ok"]
+    candidate["payload"]["execution_evidence"]["native_token"]["token_integrity"] = "High"
+    veto = {**candidate, "type": "finding", "status": "open", "ts_utc": "2026-10-21T01:00:01Z"}
+    assert not gate.check_rco_pass_present(events=[candidate], task_id="synthetic/token", head=GENERATION,
+                                     author_agent="codex-lead-1")["ok"]
+    assert not gate.scan_recognized_rco_vetoes(events=[veto, candidate], task_id="synthetic/token",
+                                        author_agent="codex-lead-1")["ok"]
+    assert not changes.check_bridge_clear_to_merge(events=[veto, candidate], task_id="synthetic/token",
+                                                   merging_agent="codex-lead-1")["clear_to_merge"]
 
 
 @pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2"])
@@ -311,6 +377,9 @@ def test_observation_receipt_survives_new_process_and_bridge_run(tmp_path):
         native_pid=5252, launcher_pid=5253,
         native_process_start_utc="2026-10-21T02:00:00Z",
         observed_at_utc="2026-10-21T02:00:01Z",
+        native_token=token_proof(5252, "2026-10-21T02:00:00Z"),
+        writer_pid=5254, writer_process_start_utc="2026-10-21T02:00:00.5Z",
+        writer_token=token_proof(5254, "2026-10-21T02:00:00.5Z"),
     )
     assert enrollment.rco_event_enrollment_matches(candidate, context=ctx)
 

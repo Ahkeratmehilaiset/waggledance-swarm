@@ -62,6 +62,11 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
 )
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
+from tools.bridge_rco_enrollment import (  # noqa: E402
+    load_rco_enrollment_context,
+    rco_event_enrollment_matches,
+)
+
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
 DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
@@ -522,11 +527,15 @@ def check_rco_pass_present(
 
     # Find qualifying head-bound passes (type-restricted, status=rco_pass, bound to exact head)
     qualifying: list[tuple[int, Mapping[str, Any]]] = []
+    enrollment_context = load_rco_enrollment_context()
     for idx, ev in rco_events:
         agent = str(ev.get("agent", ""))
         if agent not in eligible_rco_agents:
             continue
-        if _is_qualifying_rco_pass(ev, head, agent):
+        if _is_qualifying_rco_pass(ev, head, agent) and (
+            agent != "claude-rco-3"
+            or rco_event_enrollment_matches(ev, context=enrollment_context)
+        ):
             qualifying.append((idx, ev))
 
     stale_rco_pass_events = _stale_rco_pass_events(

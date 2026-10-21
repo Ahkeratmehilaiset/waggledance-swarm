@@ -1465,7 +1465,7 @@ function Assert-WdExactWatcherAgentSet {
             -DifferenceObject $Agents `
             -CaseSensitive).Count -ne 0
     ) {
-        throw 'supervisor watcher identities are not the exact four supervised lanes; native Lead owns its producer'
+        throw 'supervisor watcher identities are not the exact five supervised lanes; native Lead owns its producer'
     }
 }
 

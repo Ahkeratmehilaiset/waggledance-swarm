@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 import pytest
+from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.check_standing_consensus_sign_class import classify_ab
@@ -146,6 +147,23 @@ def _gate(tmp_path: Path, events: list[dict] | None = None, **overrides) -> dict
     )
     kwargs.update(overrides)
     return evaluate_auto_merge_gate(**kwargs)
+
+
+def test_rule12_conversion_keeps_the_actually_enrolled_pass_not_a_later_forgery(tmp_path, monkeypatch):
+    proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
+    valid = _event("claude-rco-3", "decision", "rco_pass", "2026-06-07T17:25:00Z", uuid=proof["agent_uuid"])
+    valid.update({key: proof[key] for key in ("session_id", "run_id")})
+    valid["payload"].update(proof["payload"])
+    forged = json.loads(json.dumps(valid))
+    forged["ts_utc"] = "2026-06-07T17:29:00Z"
+    forged["payload"]["execution_evidence"]["native_conversation_id"] = "99999999-2222-4333-8444-555555555555"
+    events = [e for e in _rule12_events() if e["agent"] != "claude-rco-2"] + [valid, forged]
+    result = _gate(tmp_path, events)["bridge_consensus"]
+    assert result["ok"] is True, result["reasons"]
+    third = result["identities"]["rco"]["by_agent"]["claude-rco-3"]
+    assert third["enrollment_event"]["payload"]["execution_evidence"] == proof["payload"]["execution_evidence"]
+    ref = next(row for row in result["rco_pass_refs"] if row["agent"] == "claude-rco-3")
+    assert ref["ts_utc"] == valid["ts_utc"]
 
 
 # --- default stays legacy --------------------------------------------------

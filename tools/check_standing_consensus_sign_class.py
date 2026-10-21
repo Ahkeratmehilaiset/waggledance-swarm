@@ -33,6 +33,11 @@ REPORT_VERSION = "wd.standing_consensus_sign_class.v0"
 
 RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 
+from tools.bridge_rco_enrollment import (
+    load_rco_enrollment_context,
+    rco_event_enrollment_matches,
+)
+
 # ----------------------------------------------------------------------------
 # (a)-class: ALWAYS operator-EXPLICIT. Never rides standing-consensus-sign.
 # These lists are the SECURITY-CRITICAL half: any gate-verdict file, governance
@@ -316,11 +321,19 @@ def evaluate_standing_consensus_sign(
     author = bc.get("author_agent")
     if not isinstance(author, str) or re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", author) is None:
         reasons.append("verified consensus author is missing or invalid")
+    enrollment_context = load_rco_enrollment_context()
     approved_rcos = [
         rco for rco in dict.fromkeys(recognized_rcos)
         if rco in RECOGNIZED_RCOS and rco != author
         and _approved(rco_by.get(rco))
         and rco_by[rco].get("eligible") is True
+        and (
+            rco != "claude-rco-3"
+            or rco_event_enrollment_matches(
+                rco_by[rco].get("enrollment_event") or {},
+                context=enrollment_context,
+            )
+        )
     ]
     if len(approved_rcos) < 2:
         reasons.append("DUAL-RCO incomplete: two distinct eligible non-author RCO_PASS identities required at head")

@@ -5,6 +5,47 @@ an explicit exact-head operator signature. Installation is a separate normal
 main-bundle decision. No installed bundle, launcher, live environment, key,
 session, worktree, process or measurement is changed merely by this Source PR.
 
+## Positive enrollment and verified absence
+
+Recognition reserves a veto identity; it does not enable positive votes.
+`tools/bridge_rco_enrollment.py` reads only the inherited deployment root and
+external manifest SHA256. A verified manifest without an RCO3 entry means
+`not_provisioned`: a silent future lane does not enlarge the current quorum.
+Missing, unreadable, malformed or mismatched pins mean `unknown`, not absence.
+Unknown cannot approve or relax the quorum. A public role UUID, handshake file,
+`enrollment_verified: true` report flag, or JSON-copied context is insufficient.
+
+Positive RCO3 PASS, clearing and quorum-relaxing self-recusal must match its
+operator-attested native conversation and the installed generation/manifest.
+All recognized vetoes are considered even without enrollment. Two eligible
+positive holders suffice; no three-vote requirement is introduced.
+
+For the separately approved **normal bundle** preparation, the installer accepts
+optional `-RcoEnrollmentRecordPath` naming one bounded, strict 17-field
+`wd.rco-enrollment.v1` record on persistent C:. It reuses the no-reparse,
+opened-handle-bound approval reader. The Source converter, manifest emission
+and existing-manifest binding are tested by extracted functions on synthetic
+records; those tests never execute the installer. Omission adds no enrollment
+key and preserves the original manifest bytes. No real record is supplied by
+this PR, and this parameter is not installation permission.
+
+The record holds role identity, target generation, a genuinely observed fresh
+native conversation, prior registration session/run, observed PID/launcher and
+UTC lifetime, Medium/non-elevated token observation, and explicit operator
+attestations of fresh history, no Mind authorship and no case access. It must
+exist before the final manifest/hash is frozen. Prior PIDs/session/run are an
+observation receipt, not impossible pins on future cold-launched processes.
+Current event evidence must match conversation, target generation and manifest
+and contain its own current positive PIDs, session/run and observed lifetime.
+
+This is consistency under the externally approved manifest and existing
+same-user bridge trust, **not** cryptographic proof of event origin, OS
+isolation, automatic independence certification, or cold-ready acceptance.
+Creating/observing the fresh session, assigning its real fleet path and native
+identity, obtaining the operator attestation and validating medium-token cold
+adoption remain explicit prerequisites of the later runtime package. Do not
+substitute synthetic fixture UUIDs or old generation pins.
+
 ## Identity and independence
 
 The three current recognized identities are `claude-rco-1`, `claude-rco-2` and

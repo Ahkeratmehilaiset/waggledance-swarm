@@ -32,6 +32,27 @@ POLICY_MIRRORS = (
 )
 
 
+def test_p4_taxonomy_consumer_receives_the_current_roster(monkeypatch):
+    from tools import p4_adversarial_corpus as corpus
+
+    actual_classifier = corpus.classify_bridge_events
+    observed = []
+
+    def record_roster(*args, **kwargs):
+        observed.append(frozenset(kwargs["recognized_rcos"]))
+        return actual_classifier(*args, **kwargs)
+
+    monkeypatch.setattr(corpus, "classify_bridge_events", record_roster)
+    corpus.evaluate_case({
+        "id": "unit_taxonomy_consumer_roster",
+        "family": "cause_b_ordering",
+        "driver": "taxonomy",
+        "payload": {"events": []},
+    })
+
+    assert observed == [EXPECTED]
+
+
 @pytest.mark.parametrize("path,name", POLICY_MIRRORS)
 def test_all_current_python_policy_rco_identity_lists_are_identical(path, name):
     tree = ast.parse((ROOT / path).read_text(encoding="utf-8-sig"))

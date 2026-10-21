@@ -79,6 +79,16 @@ def event(ctx):
     }
 
 
+def install_synthetic_enrollment(tmp_path, monkeypatch, *, provisioned=False):
+    """Gate fixtures only: real pinned toy manifest, never a runtime registration."""
+    root, digest = publish(tmp_path, None if provisioned else manifest())
+    monkeypatch.setenv("WD_BRIDGE_BUNDLE_ROOT", str(root))
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", digest)
+    ctx = enrollment.load_rco_enrollment_context()
+    assert ctx["status"] == ("enrolled" if provisioned else "not_provisioned")
+    return event(ctx)
+
+
 def test_valid_operator_attestation_and_bound_event(tmp_path):
     ctx = context(tmp_path)
     assert isinstance(ctx, dict)

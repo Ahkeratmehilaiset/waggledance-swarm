@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 
 import pytest
+from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -22,6 +23,17 @@ DIFF = "d" * 64
 NOW = "2026-10-06T17:00:00.0000000Z"
 NONCE = "c" * 32
 FABLE_AUTHOR = [{"agent": "fable-5", "role": "author"}]
+
+
+@pytest.fixture(autouse=True)
+def verified_historical_cohort(tmp_path, monkeypatch):
+    # Verified absence, not fabricated recusal. Production sees the same contract.
+    install_synthetic_enrollment(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def enrolled_rco3(tmp_path, monkeypatch):
+    return install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
 
 
 def ev(agent, type_, status, head=H, task=TASK, ts="2026-10-06T16:50:00Z", **extra):
@@ -69,10 +81,8 @@ def grok(**overrides):
 
 
 def evaluate(events, contributors=FABLE_AUTHOR, consultations=(), *, legacy_two_rco_cohort=True, **kw):
-    # Original scenarios explicitly have only the historical two-person cohort.
-    # New three-person scenarios opt out; production never auto-recuses RCO3.
-    if legacy_two_rco_cohort:
-        events = [*events, recused("claude-rco-3")]
+    # Legacy argument retained for callers; enrollment comes only from the pinned
+    # fixture manifest, never from a synthetic recusal added by this helper.
     kw.setdefault("now_utc", NOW)
     kw.setdefault("expected_diff_sha256", DIFF)
     kw.setdefault("expected_prompt_sha256", "1" * 64)
@@ -97,8 +107,13 @@ BOTH_RCO = [rco_pass("claude-rco-1"), rco_pass("claude-rco-2")]
     ("claude-rco-1", "claude-rco-3"),
     ("claude-rco-2", "claude-rco-3"),
 ])
-def test_any_two_of_three_eligible_recognized_rcos_satisfy_dual_quorum(pair):
-    result = evaluate([build_pass("codex-lead-1"), *(rco_pass(a) for a in pair)],
+def test_any_two_of_three_eligible_recognized_rcos_satisfy_dual_quorum(pair, enrolled_rco3):
+    passes = [rco_pass(a) for a in pair]
+    for entry in passes:
+        if entry["agent"] == "claude-rco-3":
+            entry.update({key: enrolled_rco3[key] for key in ("agent_uuid", "session_id", "run_id")})
+            entry["payload"].update(enrolled_rco3["payload"])
+    result = evaluate([build_pass("codex-lead-1"), *passes],
                       legacy_two_rco_cohort=False)
     assert result["decision"] == "satisfied"
     assert result["slots"]["rco"]["required_count"] == 2
@@ -107,7 +122,7 @@ def test_any_two_of_three_eligible_recognized_rcos_satisfy_dual_quorum(pair):
 
 @pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2", "claude-rco-3"])
 @pytest.mark.parametrize("role", ["author", "concept", "design", "measurement"])
-def test_new_quorum_never_counts_a_contributor(agent, role):
+def test_new_quorum_never_counts_a_contributor(agent, role, enrolled_rco3):
     other = next(a for a in r12.RECOGNIZED_RCOS if a != agent)
     result = evaluate([build_pass("codex-lead-1"), rco_pass(agent), rco_pass(other)],
                       [*FABLE_AUTHOR, {"agent": agent, "role": role}],
@@ -122,6 +137,43 @@ def test_third_identity_veto_is_absolute_despite_other_two_approvals():
                       legacy_two_rco_cohort=False)
     assert result["decision"] == "blocked"
     assert result["blocking_rcos"] == ["claude-rco-3"]
+
+
+def test_unprovisioned_third_rco_does_not_deadlock_the_sole_eligible_route():
+    result = evaluate(
+        [build_pass("codex-lead-1"), recused("claude-rco-1"),
+         rco_pass("claude-rco-2")],
+        legacy_two_rco_cohort=False,
+    )
+    assert result["decision"] == "satisfied"
+    assert result["slots"]["rco"]["required_count"] == 1
+    assert result["slots"]["rco"]["holders"] == ["claude-rco-2"]
+    assert result["slots"]["rco"]["standing"]["claude-rco-3"] == "not_provisioned"
+
+
+def test_unenrolled_third_rco_positive_cannot_satisfy_rule12():
+    result = evaluate(
+        [build_pass("codex-lead-1"), rco_pass("claude-rco-1"),
+         rco_pass("claude-rco-3")],
+        legacy_two_rco_cohort=False,
+    )
+    assert result["decision"] == "not_satisfied"
+    assert "claude-rco-3" not in result["slots"]["rco"]["holders"]
+
+
+@pytest.mark.parametrize("unknown", [True, False])
+def test_unbound_third_rco_recusal_cannot_lower_the_quorum(tmp_path, monkeypatch, unknown):
+    proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
+    if unknown:
+        monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "0" * 64)
+    fake_recusal = recused("claude-rco-3")
+    fake_recusal.update({key: proof[key] for key in ("agent_uuid", "session_id", "run_id")})
+    fake_recusal["payload"].update(proof["payload"])
+    fake_recusal["payload"]["execution_evidence"]["native_conversation_id"] = "99999999-2222-4333-8444-555555555555"
+    result = evaluate([build_pass("codex-lead-1"), rco_pass("claude-rco-1"),
+                       recused("claude-rco-2"), fake_recusal], legacy_two_rco_cohort=False)
+    assert result["decision"] == "not_satisfied"
+    assert result["slots"]["rco"]["required_count"] == 2
 
 
 def test_claude_authored_needs_gpt_approval_and_both_eligible_rcos():

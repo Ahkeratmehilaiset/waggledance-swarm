@@ -71,6 +71,11 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
 # ``check_rco_pass_present.DEFAULT_RCO_AGENTS``; a drift-guard test asserts the two
 # stay equal (test-time import, no cycle).
 _RECOGNIZED_RCOS = frozenset({"claude-rco-1", "claude-rco-2", "claude-rco-3"})
+
+from tools.bridge_rco_enrollment import (  # noqa: E402
+    load_rco_enrollment_context,
+    rco_event_enrollment_matches,
+)
 INFORMATIONAL_FINDING_STATUSES = frozenset(
     {"info", "informational", "fyi", "note", "advisory"}
 )
@@ -494,6 +499,7 @@ def check_bridge_clear_to_merge(
             "error": str(exc),
         }
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
+    enrollment_context = load_rco_enrollment_context()
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
     unverified_rco_block_events: list[dict[str, Any]] = []
     ignored_author_events: list[dict[str, Any]] = []
@@ -584,6 +590,15 @@ def check_bridge_clear_to_merge(
             )
         ):
             peer_signals[agent] = (index, "block", event)
+            continue
+        # Enrollment gates positive authority only. Never drop a veto because
+        # the new role has not yet been provisioned, or let an unenrolled pass
+        # or clear erase the same identity's existing block.
+        if (
+            agent == "claude-rco-3"
+            and (_is_clear_status(status) or _is_approval_status(status))
+            and not rco_event_enrollment_matches(event, context=enrollment_context)
+        ):
             continue
         if _is_clear_status(status):
             # ``recognized_rco_agent_set`` is the union of the canonical

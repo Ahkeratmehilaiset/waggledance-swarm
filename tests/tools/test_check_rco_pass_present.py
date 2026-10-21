@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 import pytest
+from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_rco_pass_present.py"
@@ -178,6 +179,21 @@ def test_pass_at_head_present_returns_ok() -> None:
         "required_runtime_evidence_present",
     ):
         assert result[key] is False
+
+
+def test_unenrolled_third_rco_public_uuid_pass_never_fills_the_slot() -> None:
+    event = _rco_event(agent="claude-rco-3", payload={"exact_head": HEAD})
+    result = check_rco_pass_present(events=[event], task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is False
+
+
+def test_explicit_nondefault_reviewer_override_keeps_legacy_semantics():
+    candidate = _rco_event(agent="fable-5", payload={"exact_head": HEAD})
+    result = check_rco_pass_present(events=[candidate], task_id=TASK, head=HEAD,
+                                    rco_agent="fable-5")
+    assert result["ok"] is True
+    assert result["has_qualifying_rco_pass_at_head"] is True
 
 
 def test_no_pass_silence_refuses() -> None:
@@ -655,7 +671,7 @@ def test_wrong_rco_agent_identity_not_counted() -> None:
 
 
 @pytest.mark.parametrize("agent", ["claude-rco-2", "claude-rco-3"])
-def test_backup_rco_pass_satisfies_default_rco_set(agent) -> None:
+def test_backup_rco_pass_satisfies_default_rco_set(agent, tmp_path, monkeypatch) -> None:
     events = [
         _rco_event(
             ts="2026-06-03T10:00:00Z",
@@ -665,6 +681,10 @@ def test_backup_rco_pass_satisfies_default_rco_set(agent) -> None:
             message=f"backup RCO_PASS at exact head {HEAD}",
         ),
     ]
+    if agent == "claude-rco-3":
+        proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
+        events[0].update({key: proof[key] for key in ("agent_uuid", "session_id", "run_id")})
+        events[0]["payload"]["execution_evidence"] = proof["payload"]["execution_evidence"]
     result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
     assert result["ok"] is True
     assert result["satisfying_rco_agent"] == agent

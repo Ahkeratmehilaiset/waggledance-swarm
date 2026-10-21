@@ -105,6 +105,12 @@ REVIEW_POOL: tuple[str, ...] = (
 )
 # Must equal tools.check_promotion_eligible.DEFAULT_RCO_AGENTS (drift-guard test).
 RECOGNIZED_RCOS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
+
+from tools.bridge_rco_enrollment import (
+    load_rco_enrollment_context,
+    rco_enrollment_status,
+    rco_event_enrollment_matches,
+)
 # Operator 2026-10-10 06:56Z, first-hand in the fable-5 session: "RCO paikan voi
 # täyttää tools, lead, fabel tai jos ei mikään niiistä niin grok". With no
 # recognized RCO present, these lanes may hold the RCO slot, in this order,
@@ -240,7 +246,8 @@ def _is_rco_block(event: Mapping[str, Any]) -> bool:
 
 
 def _rco_vetoes(
-    events: Sequence[Mapping[str, Any]], rco: str, task_id: str, head: str, now: datetime
+    events: Sequence[Mapping[str, Any]], rco: str, task_id: str, head: str, now: datetime,
+    enrollment_context: Mapping[str, Any] | None = None,
 ) -> bool:
     """True when ``rco`` has a block on the task that no later own pass clears.
 
@@ -252,6 +259,10 @@ def _rco_vetoes(
         (_parse_utc(event.get("ts_utc")), _event_head(event))
         for event in own
         if _is_pass_status(event, RCO_PASS_STATUSES)
+        and (
+            rco != "claude-rco-3"
+            or rco_event_enrollment_matches(event, context=enrollment_context)
+        )
     ]
     for event in own:
         if not _is_rco_block(event):
@@ -514,7 +525,10 @@ def evaluate_rule12_review_eligibility(
     result["implementer_families"] = sorted(implementer_families)
 
     # 1. Recognized-RCO veto over ALL recognized RCOs, ordered by ts_utc.
-    blocking = [rco for rco in RECOGNIZED_RCOS if _rco_vetoes(event_list, rco, task_id, head, now)]
+    enrollment_context = load_rco_enrollment_context()
+    blocking = [rco for rco in RECOGNIZED_RCOS if _rco_vetoes(
+        event_list, rco, task_id, head, now, enrollment_context
+    )]
     result["blocking_rcos"] = blocking
 
     def approved(agent: str, statuses: frozenset[str]) -> bool:
@@ -523,6 +537,10 @@ def evaluate_rule12_review_eligibility(
             and _is_pass_status(event, statuses)
             and _event_head(event) == head
             and _evidence_time_ok(event, now)
+            and (
+                agent != "claude-rco-3"
+                or rco_event_enrollment_matches(event, context=enrollment_context)
+            )
             for event in event_list
         )
 
@@ -543,11 +561,25 @@ def evaluate_rule12_review_eligibility(
     def standing(agent: str, statuses: frozenset[str]) -> str:
         if agent in implementers:
             return "implementer"
-        if _self_recused(event_list, agent, task_id, head, now, timed=False) and approved(
+        standing_events = event_list
+        if agent == "claude-rco-3":
+            enrollment = rco_enrollment_status(agent, context=enrollment_context)
+            if enrollment == "not_provisioned":
+                return "not_provisioned"
+            if enrollment != "enrolled":
+                # Unknown is not a claim that the role is absent. It reserves
+                # a possible quorum place but cannot supply positive evidence.
+                return "enrollment_unknown"
+            # Recusal relaxes the quorum just like a positive decision. It
+            # needs the registered conversation too; vetoes above stay unfiltered.
+            standing_events = [event for event in event_list
+                               if event.get("agent") != agent
+                               or rco_event_enrollment_matches(event, context=enrollment_context)]
+        if _self_recused(standing_events, agent, task_id, head, now, timed=False) and approved(
             agent, statuses
         ):
             return "conflicting"
-        if _self_recused(event_list, agent, task_id, head, now, timed=True):
+        if _self_recused(standing_events, agent, task_id, head, now, timed=True):
             return "recused"
         if _absent(event_list, agent, task_id, head, now, implementers):
             return "absent"
@@ -555,7 +587,8 @@ def evaluate_rule12_review_eligibility(
 
     def fill(statuses: frozenset[str], agents: Sequence[str]) -> dict[str, Any]:
         slot_standing = {agent: standing(agent, statuses) for agent in agents}
-        present = [a for a, s in slot_standing.items() if s in ("eligible", "conflicting")]
+        present = [a for a, s in slot_standing.items()
+                   if s in ("eligible", "conflicting", "enrollment_unknown")]
         holders = [a for a in present if slot_standing[a] == "eligible" and approved(a, statuses)]
         return {"standing": slot_standing, "present": present, "holders": holders}
 
@@ -662,7 +695,10 @@ def evaluate_rule12_review_eligibility(
         )
         for agent in REVIEW_POOL
     }
-    whole_pool_ineligible = all(s in ("implementer", "recused") for s in pool_standing.values())
+    # A verified, never-provisioned future role does not make the historical
+    # pool eligible. Unknown enrollment is intentionally NOT included here.
+    whole_pool_ineligible = all(s in ("implementer", "recused", "not_provisioned")
+                                for s in pool_standing.values())
     grok: dict[str, Any] = {
         "vacant_slots": vacant,
         "pool_standing": pool_standing,

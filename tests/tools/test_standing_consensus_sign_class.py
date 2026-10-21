@@ -10,6 +10,7 @@ by mixing or by an unrecognized path."""
 from __future__ import annotations
 
 import pytest
+from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 from tools.check_standing_consensus_sign_class import (
     classify_ab,
@@ -290,13 +291,15 @@ def test_single_rco_only_is_insufficient():
     ("claude-rco-1", "claude-rco-3"),
     ("claude-rco-2", "claude-rco-3"),
 ])
-def test_dual_quorum_is_any_two_distinct_eligible_recognized_rcos(pair):
+def test_dual_quorum_is_any_two_distinct_eligible_recognized_rcos(pair, tmp_path, monkeypatch):
+    proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
     bc = _bc(rco1=False, rco2=False)
     bc["author_agent"] = "codex-lead-1"
     bc["identities"]["rco"]["by_agent"] = {
         agent: {"agent": agent, "approved": agent in pair, "eligible": True}
         for agent in ("claude-rco-1", "claude-rco-2", "claude-rco-3")
     }
+    bc["identities"]["rco"]["by_agent"]["claude-rco-3"]["enrollment_event"] = proof
     out = _eval(bridge_consensus=bc)
     assert out["admitted"] is True
     assert out["basis"]["dual_rco"] == list(pair)
@@ -342,3 +345,12 @@ def test_dual_quorum_deduplicates_configured_names_and_rejects_unknown_holder():
 
 def test_third_recognized_rco_veto_outranks_the_other_two_passes():
     assert _eval(bridge_consensus=_bc(blocking=["claude-rco-3"]))["admitted"] is False
+
+
+def test_unenrolled_third_rco_cannot_replace_a_real_standing_voice():
+    bc = _bc(rco2=False)
+    bc["identities"]["rco"]["by_agent"]["claude-rco-3"] = {
+        "approved": True, "eligible": True, "enrollment_verified": True,
+    }
+    # A field in a caller report is not operator-anchored actual enrollment.
+    assert _eval(bridge_consensus=bc)["admitted"] is False

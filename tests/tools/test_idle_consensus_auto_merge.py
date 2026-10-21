@@ -2749,7 +2749,7 @@ def test_author_resolves_from_bridge_claim_not_operator_github_login(
 
     assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["author_agent"] == "claude-rco-1"
-    assert report["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2"]
+    assert report["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2", "claude-rco-3"]
     assert report["rco_pass_gate"]["ok"] is False
     assert (
         "missing exact-head RCO_PASS from recognized non-author RCO"
@@ -4011,6 +4011,14 @@ def _cause_b_verify(events: list[dict]) -> dict:
         pr_number=477,
         author_agent="fable-5",
     )
+
+
+def test_unenrolled_third_rco_cannot_supply_the_live_consensus_pass() -> None:
+    event = _cause_b_rco_signal("claude-rco-3", "rco_pass", ts="2026-05-18T01:00:00Z")
+    event["agent_uuid"] = "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50"
+    result = _cause_b_verify([*_cause_b_build_events(), event])
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["approved"] is False
 
 
 def _cause_b_rco_vetoed(report: dict, agent: str) -> bool:

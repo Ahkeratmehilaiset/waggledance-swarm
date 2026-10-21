@@ -43,6 +43,10 @@ from tools.idle_consensus_artifact import (  # noqa: E402
     write_idle_consensus_artifact,
 )
 from tools.bridge_pr_author import resolve_bridge_pr_author  # noqa: E402
+from tools.bridge_rco_enrollment import (  # noqa: E402
+    load_rco_enrollment_context,
+    rco_event_enrollment_matches,
+)
 from tools.bridge_rule12_review_eligibility import (  # noqa: E402
     FAMILIES as RULE12_FAMILIES,
     GROK_AGENT as RULE12_GROK_AGENT,
@@ -1702,6 +1706,7 @@ def verify_bridge_consensus(
     watched_agents = set(build_expected) | set(recognized_rco_agents)
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
     identity_valid_events: list[tuple[int, Mapping[str, Any]]] = []
+    enrollment_context = load_rco_enrollment_context()
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
             continue
@@ -1737,6 +1742,16 @@ def verify_bridge_consensus(
             task_id=task_id,
             pr_number=pr_number,
         )
+        if (
+            agent == "claude-rco-3"
+            and event_type in _BRIDGE_RCO_DECISION_EVENT_TYPES
+            and (status in RCO_PASS_STATUSES or _is_consensus_clear(status, event_type=event_type))
+            and not rco_event_enrollment_matches(event, context=enrollment_context)
+        ):
+            # An unoccupied role's public UUID is not a positive decision or a
+            # retraction. Negative and veto-typed events still follow the
+            # existing absolute-block path below.
+            continue
         # Block detection intentionally shares the peer-gate status classifier:
         # authoritative veto types invalidate consensus, but diagnostic
         # bridge chatter must not create a phantom block.
@@ -1911,6 +1926,13 @@ def verify_bridge_consensus(
             "approval_index": approval[0] if approval is not None else None,
             "block_index": block_index,
         }
+        if agent == "claude-rco-3" and approval is not None:
+            original = approval[1]
+            payload = original.get("payload")
+            payload = payload if isinstance(payload, Mapping) else {}
+            rco_identities[agent]["enrollment_event"] = {
+                key: original.get(key) for key in ("agent", "agent_uuid", "session_id", "run_id")
+            } | {"payload": {"execution_evidence": payload.get("execution_evidence")}}
 
     rco_approval: tuple[int, Mapping[str, Any]] | None = None
     satisfying_rco_agent = ""
@@ -2539,6 +2561,8 @@ def _evaluate_rule12_review(
     result["eligible_rco_agents"] = list(rco_slot.get("present") or [])
 
     rco_pass_refs: list[dict[str, Any]] = []
+    enrollment_events: dict[str, Mapping[str, Any]] = {}
+    enrollment_context = load_rco_enrollment_context()
     for agent in rco_holders:
         matches = [
             event
@@ -2548,9 +2572,16 @@ def _evaluate_rule12_review(
             and _rule12_is_pass_status(event, RULE12_RCO_PASS_STATUSES)
             and _rule12_event_head(event) == head_sha
             and _rule12_evidence_time_ok(event, now)
+            and (agent != "claude-rco-3"
+                 or rco_event_enrollment_matches(event, context=enrollment_context))
         ]
         if matches:
             event = matches[-1]
+            if agent == "claude-rco-3":
+                enrollment_events[agent] = {
+                    key: event[key] for key in
+                    ("agent", "agent_uuid", "session_id", "run_id", "payload")
+                }
             rco_pass_refs.append(
                 {
                     "agent": agent,
@@ -2591,6 +2622,8 @@ def _evaluate_rule12_review(
                     "eligible": agent in (rco_slot.get("present") or []),
                     "approved": agent in rco_holders,
                     "rule12_standing": rco_standing.get(agent, ""),
+                    **({"enrollment_event": enrollment_events[agent]}
+                       if agent in enrollment_events else {}),
                 }
                 for agent in RULE12_RECOGNIZED_RCOS
             },

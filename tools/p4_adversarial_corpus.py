@@ -34,6 +34,7 @@ from tools.check_bridge_wake_delivery import check_wake_delivery  # noqa: E402
 from tools.check_gate_signal_taskid_convention import (  # noqa: E402
     find_gate_signal_taskid_warnings,
 )
+from tools.check_rco_pass_present import DEFAULT_RCO_AGENTS  # noqa: E402
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
 )
@@ -339,7 +340,7 @@ def _taxonomy_case(
         events,
         task_id=task_id,
         head_sha=head_sha,
-        recognized_rcos=("claude-rco-1", "claude-rco-2"),
+        recognized_rcos=DEFAULT_RCO_AGENTS,
     )
     report = verdict.as_dict()
     blocked = verdict.clear_to_merge is not True

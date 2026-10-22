@@ -525,8 +525,29 @@ def test_harness_witness_is_fail_closed_and_no_case_passes_yet(harness):
     passed = body[:body.index("return 'PASS'")]
     for need in ("$Expected.Count -eq 0", "start_witness", "released", "[string]$seen.launch_id -cne $LaunchId"):
         assert need in passed, need
-    cases = re.findall(r"'(A[1-7])' = 'UNKNOWN'", harness)
+    cases = re.findall(r"'(A[1-7])' = 'NOT_READY'", harness)
     assert sorted(cases) == [f"A{i}" for i in range(1, 8)]
+
+
+def test_harness_case_evaluators_take_no_supplied_observation_and_never_pass_a_run(harness):
+    # Checkpoint 2 (Lead Source-preparation GO): the evaluators are pure, the script takes no observation input, A4 is
+    # always NOT_READY (no supported before-resume timing point, L1) and no whole run can PASS until one exists.
+    params = re.search(r"param\((.*?)\n\)", harness, flags=re.S).group(1)
+    assert re.findall(r"\$(\w+)", params) == ["OptInNativeAcceptance"]
+    case = _function(harness, "Get-WdShadowCaseVerdict")
+    assert "if ($CaseId -ceq 'A4') { return 'NOT_READY' }" in case
+    assert case.index("return 'NOT_READY'") < case.index("$required = @{")
+    run = _function(harness, "Get-WdShadowRunVerdict")
+    assert "$a4TimingPointSupported = $false" in run
+    assert len(re.findall(r"(?i)\$a4TimingPointSupported\s*=", harness)) == 1
+    assert run.index("if (-not $a4TimingPointSupported -or $values -ccontains 'NOT_READY') { return 'NOT_READY' }") \
+        < run.rindex("return 'PASS'")
+    for name in ("Get-WdShadowCaseVerdict", "Get-WdShadowSubcaseVerdict", "Get-WdShadowStopVerdict",
+                 "Get-WdShadowRefusalVerdict", "Get-WdShadowRunVerdict", "Test-WdShadowExactKeys"):
+        body = _function(harness, name)
+        for word in ("Start-", "Stop-Process", "Get-Process", "Get-Cim", "Invoke-", "New-Object", "[IO.", "$env:",
+                     "$script:", "$global:"):
+            assert word not in body, (name, word)
 
 
 def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes(adapter):

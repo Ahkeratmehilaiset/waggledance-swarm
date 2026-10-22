@@ -20,7 +20,7 @@ def source():
     return (REBOOT / 'Invoke-WdLaneTurnLoop.ps1').read_text(encoding='utf-8').split("Add-Type -TypeDefinition @'\n", 1)[1].split("\n'@", 1)[0]
 
 
-def fake_source(text):
+def fake_source(text, root_stop=False):
     declarations = list(DECLARATIONS.finditer(text))
     names = [re.search(r'(\w+)\s*\(', match['declaration']).group(1) for match in declarations]
     assert len(names) == 16 and set(names) == NAMES
@@ -31,13 +31,16 @@ def fake_source(text):
         'CreateProcess': 'if(!inherit || flags!=0x08000004) throw new Exception("suspended creation changed"); pi=new PROCESS_INFORMATION {process=new IntPtr(201),thread=new IntPtr(301),pid=4242,tid=4243}; return true;',
         'AssignProcessToJobObject': 'if(job.ToInt32()!=101 || process.ToInt32()!=201) throw new Exception("wrong owned job"); return true;',
         'ResumeThread': 'if(thread.ToInt32()!=301) throw new Exception("wrong thread"); return 1;',
-        'CloseHandle': 'return true;',
+        'CloseHandle': 'FakeCloses++; return true;',
         'QueryInformationJobObject': '''
             if(job.ToInt32()!=101 || kind!=1 || size!=Marshal.SizeOf(typeof(ACCOUNTING)) || returned!=IntPtr.Zero)
                 throw new Exception("query not bound to the exact owned job");
             info=new ACCOUNTING {total=FakeTotal,active=FakeActive};
             FakeQueries++; return !FakeQueryFailure;''',
     }
+    if root_stop:
+        bodies['TerminateProcess'] = 'if(process.ToInt32()!=201 || code!=124) throw new Exception("not the owned root handle"); FakeRootCalls++; return !FakeRootFailure;'
+        bodies['TerminateJobObject'] = 'if(job.ToInt32()!=101 || code!=124) throw new Exception("wrong outer safety job"); FakeJobCalls++; return true;'
 
     def replace(match):
         declaration = match['declaration']
@@ -51,6 +54,8 @@ def fake_source(text):
         public static uint FakeTotal,FakeActive;
         public static bool FakeQueryFailure;
         public static int FakeFiles,FakeQueries;
+        public static int FakeRootCalls,FakeJobCalls,FakeCloses;
+        public static bool FakeRootFailure;
         static int FakeLastError() {return 5;}
         IntPtr job,process;''')
     assert not re.search(r'DllImport|\bextern\b|kernel32|NativeLibrary|GetLastWin32Error', result)
@@ -99,3 +104,38 @@ def test_fake_builder_refuses_before_compilation(change):
             if change == 'unknown_import' else text+'\nclass Unsafe {static extern void UnknownNative();}')
     with pytest.raises(AssertionError):
         fake_source(text)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('failure', [False, True])
+def test_stop_root_only_keeps_outer_job_open_until_explicit_cleanup(ps, failure):
+    harness = r'''
+public static class RootOnlyHarness {
+    public static object Run(bool failure) {
+        var value=new WdManagedTurnProcess("synthetic",new string[0],"cwd","in","out","err");
+        var method=typeof(WdManagedTurnProcess).GetMethod("StopRootOnly",Type.EmptyTypes);
+        if(method==null) throw new MissingMemberException("StopRootOnly absent");
+        if(method.ReturnType!=typeof(void)) throw new Exception("root-only API must return void/throw");
+        int before=WdManagedTurnProcess.FakeCloses;
+        WdManagedTurnProcess.FakeRootFailure=failure;
+        string error=null;
+        try {method.Invoke(value,null);}
+        catch(System.Reflection.TargetInvocationException e) {
+            var win=e.InnerException as System.ComponentModel.Win32Exception;
+            if(win==null || win.NativeErrorCode!=5) throw;
+            error="Win32Exception5";
+        }
+        if(WdManagedTurnProcess.FakeRootCalls!=1 || WdManagedTurnProcess.FakeJobCalls!=0 || WdManagedTurnProcess.FakeCloses!=before)
+            throw new Exception("root-only stop closed/killed the outer safety job");
+        value.Stop();
+        if(WdManagedTurnProcess.FakeJobCalls!=1) throw new Exception("later outer stop missing");
+        value.Dispose();
+        if(WdManagedTurnProcess.FakeCloses!=before+2) throw new Exception("later disposal missing");
+        return new {root_calls=1,job_calls=1,error=error};
+    }
+}
+'''
+    code = fake_source(source(), root_stop=True) + harness
+    completed = _run_powershell('Add-Type -TypeDefinition '+q(code)+'\n[RootOnlyHarness]::Run('+('$true' if failure else '$false')+')|ConvertTo-Json', executable=ps, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {'root_calls': 1, 'job_calls': 1, 'error': 'Win32Exception5' if failure else None}

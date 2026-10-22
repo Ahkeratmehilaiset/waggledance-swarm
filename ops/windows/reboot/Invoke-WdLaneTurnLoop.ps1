@@ -178,6 +178,8 @@ public sealed class WdManagedTurnProcess : IDisposable {
             } finally { Marshal.FreeHGlobal(buffer); }
         }
     }
+    // Terminates only the already-owned root. Caller must observe exit; the job stays open.
+    public void StopRootOnly() { Check(TerminateProcess(process,124)); }
     public void Stop() { Check(TerminateJobObject(job,124)); }
     public void Dispose() {
         if(job!=IntPtr.Zero) { CloseHandle(job); job=IntPtr.Zero; }

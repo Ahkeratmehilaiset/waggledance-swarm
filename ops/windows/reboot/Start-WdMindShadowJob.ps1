@@ -87,6 +87,14 @@
     possible and no OS isolation is claimed. B2, a volume root as the run root or the live dir is refused before its
     separator could be trimmed into a drive-relative path.
 
+    PR1916 follow-ups (Lead Source-GO, after the bot P1s with RCO1 and RCO2 concurring): P1-A, WD_BRIDGE_CODE_ROOT
+    and WD_BRIDGE_BIN must be exactly the bundle's tools-bootstrap and its .agent-bridge\bin (a case variant of that
+    exact path only), existing directories with no reparse point on their paths, and the root gets these validated
+    paths and the validated wrapper path, never a second environment read. P1-B, the root calls the wrapper with
+    its real -VerifyPackage switch, so the wrapper verifies the whole bridge code package before the producer
+    runs. These are checks, not pins: a change between a check and a later read stays possible, and no OS
+    isolation is claimed.
+
     Design: RCO1 (A1-A7, the job reuse, R1, R2, the throwing-Stop rule, the D1/D2/T1 audit, the T1 trust-path finding),
     RCO2 (G1-G4 and the member witness), Tools (the -File exit diagnostic), Root (the PS7 exit characterization and
     the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
@@ -458,6 +466,24 @@ foreach ($name in @($pins.Keys)) {
         throw "refused: the pin $name is absent or foreign to the expected bundle"
     }
 }
+# PR1916 follow-up P1-A (bot, RCO1 and RCO2 concurring; Lead Source-GO): the root passes the code root and the bin
+# to the producer as --src and --bin, so containment is not enough. Each must be exactly the bundle's tools-bootstrap
+# and its .agent-bridge\bin (a Windows case variant of that exact path is accepted, nothing else), an existing
+# directory with no reparse point on its path; the root command uses these validated paths, never a second
+# environment read. Residual limit: nothing is pinned, so a change between this check and a later read stays
+# possible.
+$codeRootPath = [IO.Path]::GetFullPath((Join-Path $bundle 'tools-bootstrap'))
+$binPath = [IO.Path]::GetFullPath((Join-Path $codeRootPath '.agent-bridge\bin'))
+foreach ($exact in @(@('WD_BRIDGE_CODE_ROOT', $codeRootPath), @('WD_BRIDGE_BIN', $binPath))) {
+    $name = $exact[0]
+    $expected = $exact[1]
+    if (-not [string]::Equals([IO.Path]::GetFullPath($pins[$name]), $expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refused: $name is not exactly the bundle path $expected"
+    }
+    if (-not (Test-Path -LiteralPath $expected -PathType Container)) { throw "refused: $name is not a directory" }
+    $pinReparse = Get-WdShadowReparseAncestor -Path $expected
+    if ($null -ne $pinReparse) { throw "refused: $pinReparse on the $name path" }
+}
 if ([IO.Path]::GetFileName($pins['WD_BRIDGE_PYTHON_WRAPPER']) -cne $WrapperName) {
     throw "refused: WD_BRIDGE_PYTHON_WRAPPER is not the bundle wrapper $WrapperName"
 }
@@ -577,9 +603,12 @@ $rootWitness = '; $wdRootTokenPath = ' + (ConvertTo-WdShadowCommandLiteral -Valu
     '; $wdRootStartTemporary = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartTemporary) +
     '; $wdRootStartPath = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartPath) +
     '; $wdRootStartData = ' + (ConvertTo-WdShadowCommandLiteral -Value $rootStartData) + $RootWitnessPrologue
-$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + $rootWitness + '; & ' + ((@(
-    $env:WD_BRIDGE_PYTHON_WRAPPER, 'sandbox/mind/mind_capture_producer.py', '--src', $env:WD_BRIDGE_CODE_ROOT,
-    '--bin', $env:WD_BRIDGE_BIN, '--live-dir', $liveFull) |
+# PR1916 follow-up P1-B (bot, RCO1 and RCO2 concurring; Lead Source-GO): the wrapper verifies the whole bridge code
+# package, not only the producer file, only with its -VerifyPackage switch, so the root passes it as a real named
+# switch (bare command text, never a quoted argument) before the tool; every path is the validated one (P1-A).
+$rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + $rootWitness + '; & ' +
+    (ConvertTo-WdShadowCommandLiteral -Value $wrapperPath) + ' -VerifyPackage ' + ((@(
+    'sandbox/mind/mind_capture_producer.py', '--src', $codeRootPath, '--bin', $binPath, '--live-dir', $liveFull) |
     ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim
 $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $rootCommand)
 Initialize-WdNativeTurnType
@@ -633,7 +662,7 @@ $intent = [ordered]@{
 try {
     Publish-WdShadowRecord -Directory $runDir -Name 'run_intent' -Record $intent
     try {
-        $managed = [WdManagedTurnProcess]::new($hostExe, $arguments, $env:WD_BRIDGE_CODE_ROOT, $inputPath,
+        $managed = [WdManagedTurnProcess]::new($hostExe, $arguments, $codeRootPath, $inputPath,
             (Join-Path $runDir 'root.stdout.log'), (Join-Path $runDir 'root.stderr.log'))
     } catch {
         # The type terminates and disposes its own partial job on a failed create, assignment or resume.

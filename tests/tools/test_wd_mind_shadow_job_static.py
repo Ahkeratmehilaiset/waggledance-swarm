@@ -217,10 +217,11 @@ def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argum
     assert "[Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value)" in body
     assert re.search(r"if \(\$Value -match '\[\"\\x00-\\x1F\]'\) \{\s*throw", body)
     assert "return \"'\" + " in body
+    # PR1916 P1-A and P1-B: the validated wrapper, code root and bin paths, and the real -VerifyPackage switch.
     assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
-                     r"\+ \$rootWitness \+ '; & ' \+ \(\(@\(\s*\$env:WD_BRIDGE_PYTHON_WRAPPER, "
-                     r"'sandbox/mind/mind_capture_producer\.py', '--src', \$env:WD_BRIDGE_CODE_ROOT,\s*'--bin', "
-                     r"\$env:WD_BRIDGE_BIN, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
+                     r"\+ \$rootWitness \+ '; & ' \+\s*\(ConvertTo-WdShadowCommandLiteral -Value \$wrapperPath\) "
+                     r"\+ ' -VerifyPackage ' \+ \(\(@\(\s*'sandbox/mind/mind_capture_producer\.py', '--src', "
+                     r"\$codeRootPath, '--bin', \$binPath, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
                      r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
     intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
     assert adapter.index("$rootCommand = ") < intent
@@ -488,8 +489,9 @@ def test_the_slice_guard_rechecks_both_paths_and_counts_a_reparse_as_a_floor_hit
     assert recheck in guard
     assert guard.index("return 'off_switch'") < guard.index(recheck) < guard.index("Get-WdShadowDiskShortfall")
     assert adapter.count("-Roots $guardRoots -Paths $guardPaths") == 1
-    # The two guarded paths plus the B1 wrapper path check (PR1915 follow-up).
-    assert adapter.count("Get-WdShadowReparseAncestor -Path") == 3
+    # The two guarded paths, the B1 wrapper path check (PR1915 follow-up) and the P1-A code root and bin check
+    # (PR1916 follow-up).
+    assert adapter.count("Get-WdShadowReparseAncestor -Path") == 4
     assert adapter.count("Get-WdShadowReparseAncestor -Path $wrapperPath") == 1
 
 
@@ -549,6 +551,28 @@ def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes
     assert anchored < exact.start() < reparse.start() < pin.start() < hashed.start() < first_write
     assert hashed.start() < adapter.index("[WdManagedTurnProcess]::new(")
     assert adapter.count("WD_BRIDGE_PYTHON_WRAPPER = [string]$env:WD_BRIDGE_PYTHON_WRAPPER") == 1
+
+
+def test_code_root_and_bin_pins_are_the_exact_bundle_paths_and_the_root_uses_them(adapter):
+    # PR1916 follow-ups P1-A and P1-B (bot, RCO1 and RCO2 concurring; Lead Source-GO): the producer gets --src and
+    # --bin from these pins, so each must be exactly the bundle path with no reparse point, the root uses only the
+    # validated paths, and the wrapper gets its real -VerifyPackage switch. tests/tools/
+    # test_wd_mind_shadow_bundle_binding.py runs these statements and the generated command on a fake bundle.
+    exact = re.search(r"\$codeRootPath = \[IO\.Path\]::GetFullPath\(\(Join-Path \$bundle 'tools-bootstrap'\)\)\s*"
+                      r"\$binPath = \[IO\.Path\]::GetFullPath\(\(Join-Path \$codeRootPath '\.agent-bridge\\bin'\)\)",
+                      adapter)
+    assert exact
+    for text in ("if (-not [string]::Equals([IO.Path]::GetFullPath($pins[$name]), $expected, "
+                 "[StringComparison]::OrdinalIgnoreCase)) {",
+                 "if (-not (Test-Path -LiteralPath $expected -PathType Container)) {",
+                 "$pinReparse = Get-WdShadowReparseAncestor -Path $expected"):
+        assert adapter.count(text) == 1, text
+    for name in ("$env:WD_BRIDGE_CODE_ROOT", "$env:WD_BRIDGE_BIN", "$env:WD_BRIDGE_PYTHON_WRAPPER"):
+        assert adapter.count(name) == 1, name
+    assert adapter.count("-VerifyPackage") == 1 and "' -VerifyPackage ' + " in adapter
+    first_write = adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
+    assert exact.start() < first_write < adapter.index("$rootCommand = ")
+    assert "[WdManagedTurnProcess]::new($hostExe, $arguments, $codeRootPath, $inputPath," in adapter
 
 
 def test_a_volume_root_run_root_or_live_dir_is_refused_before_the_separator_is_trimmed(adapter):

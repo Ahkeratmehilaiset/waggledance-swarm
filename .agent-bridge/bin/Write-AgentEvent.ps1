@@ -676,6 +676,12 @@ if ($ReplyToEventJson) {
         if (Test-BridgeContractFieldConflict $replyTo $key) { throw "Conflicting required request field '$key'" }
         $required = Get-BridgeContractField $replyTo $key
         if ($null -eq $required) { continue }
+        # Scalars and arrays cannot safely retain sibling binding properties
+        # through JSON serialization. Preserve the existing null normalization
+        # and legacy payload handling, but never echo into a non-object reply.
+        if (-not (Test-BridgeObject $payload)) {
+            throw 'ReplyToEventJson requires an object payload for required binding fields'
+        }
         # Only a genuinely absent field is writer-filled. Explicit null/wrong
         # or conflicting caller copies must fail binding, never be corrected.
         $direct = ([pscustomobject]$event).PSObject.Properties[$key]

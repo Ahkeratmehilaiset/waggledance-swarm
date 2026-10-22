@@ -32,6 +32,12 @@ def test_structured_reply_required_fields_use_isolated_writer(tmp_path, ps, conf
                                                        types={'answer': 'integer'}, equals={'answer': 42})))
     if conflict: request['nonce'] = 'conflicting-nonce'
     runtime = tmp_path / 'runtime'
+    log = runtime / 'shared/events.jsonl'
+    if sys.platform != 'win32':
+        # A real unsupported-host refusal must not change even an existing log.
+        log.parent.mkdir(parents=True)
+        log.write_bytes(b'')
+    before = log.read_bytes() if log.exists() else None
     evidence = "[pscustomobject]@{pin_status='synthetic';observed_agent=$null;task_completion_verified=$false}|ConvertTo-Json"
     result = _run_bridge_script(REBOOT.parents[2], runtime, 'Write-BridgeTaskReply.ps1',
                                 '-Agent', agent, '-RequestEventJson', json.dumps(request),
@@ -39,9 +45,17 @@ def test_structured_reply_required_fields_use_isolated_writer(tmp_path, ps, conf
                                 shell=ps, evidence_stub=evidence, frame=dict(
                                     AGENT_BRIDGE_AGENT=agent, AGENT_BRIDGE_AGENT_UUID=agent_uuid,
                                     AGENT_BRIDGE_SESSION_ID='tools-session', AGENT_BRIDGE_RUN_ID='tools-run'))
-    log = runtime / 'shared/events.jsonl'
+    after = log.read_bytes() if log.exists() else None
     if conflict:
-        assert result.returncode != 0 and not log.exists(), result.stdout + result.stderr
+        assert result.returncode != 0 and after == before, result.stdout + result.stderr
+    elif sys.platform != 'win32':
+        # AppendV1 intentionally refuses unfenced appends outside Windows;
+        # keep the successful-input refusal visible rather than skipping it.
+        assert result.returncode != 0, result.stdout + result.stderr
+        # PowerShell can wrap the sentence with host formatting between clauses.
+        assert 'AppendV1 validation checkpoints require Windows file identity' in result.stderr
+        assert 'write-through atomic replacement; refusing an unfenced append' in result.stderr
+        assert after == before
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         event = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])

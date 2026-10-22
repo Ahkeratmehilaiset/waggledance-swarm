@@ -40,6 +40,19 @@ try {{Invoke-WdMindShadowA7OwnedProbe -ApprovedNativeExecution;throw 'partial ac
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_typed_case_binding_refuses_before_source_or_process_reads(ps):
+    script = rf"""
+$binding=@{{schema='wd.mind-shadow-a7-prestart-binding.v1';harness_run_id='synthetic';case_id='A7';controller_pid=[long]4242;controller_creation_utc='synthetic-time';source_commit=('a'*40);manifest_sha256=('B'*64);adapter_sha256=('C'*64);attempts=@{{}}}}
+try {{
+    Invoke-WdMindShadowA7OwnedProbe -ApprovedNativeExecution -Plan @{{name='not_used'}} -ApprovedInputs @{{not_used='synthetic'}} -CaseRoot 'C:\synthetic\.codex-audit\case' -LiteralAdapterCommand 'must never run' -CaseBinding $binding -EvidenceRoot 'C:\synthetic\.codex-audit'
+    throw 'typed binding accepted'
+}} catch {{if($_.Exception.Message-notmatch 'complete typed case binding'){{throw}}}}
+@{{typed_binding_refused=$true}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {'typed_binding_refused': True}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('mode', ['exact_two', 'preloaded_one', 'fast_excess', 'root_only', 'wrong_guard',
                                   'new_directory', 'zero_exit', 'unknown_total', 'identity_unknown', 'timeout'])
 def test_actual_owned_command_mechanics_with_strict_fake(tmp_path, ps, mode):

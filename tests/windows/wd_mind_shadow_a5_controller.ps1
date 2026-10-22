@@ -26,8 +26,8 @@ function ConvertFrom-WdA5StrictUtc {
 
 function Get-WdA5ReadyField {
     param($Object,[string]$Name)
-    if($Object-is[Collections.IDictionary]){if($Object.Contains($Name)){return $Object[$Name]}}
-    elseif($null-ne$Object){$property=$Object.PSObject.Properties[$Name];if($null-ne$property){return $property.Value}}
+    if($Object-is[Collections.IDictionary]){if($Object.Contains($Name)){return ,$Object[$Name]}}
+    elseif($null-ne$Object){$property=$Object.PSObject.Properties[$Name];if($null-ne$property){return ,$property.Value}}
     throw ('missing A5 ready field '+$Name)
 }
 
@@ -58,6 +58,7 @@ function Test-WdA5ReadyKillWindow {
         $now=ConvertFrom-WdA5StrictUtc $NowUtc
         if($start.AddSeconds($hold).Ticks-ne$deadline.Ticks){throw 'inconsistent absolute hold deadline'}
         $cutoff=$deadline.AddSeconds(-[double]$SafetyMarginSeconds)
+        if($cutoff.Ticks-ge$deadline.Ticks){throw 'safety margin not representable by host clock arithmetic'}
         if($now.Ticks-lt$start.Ticks-or$now.Ticks-ge$cutoff.Ticks){throw 'kill window not open'}
         return @{status='WINDOW_OPEN_TIMING_ONLY';within_window=$true;native_authority=$false;kill_before_utc=$cutoff.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
     }catch{return @{status='UNKNOWN';within_window=$false;native_authority=$false;reason=$_.Exception.Message}}

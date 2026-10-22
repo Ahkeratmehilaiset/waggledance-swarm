@@ -174,7 +174,7 @@ try{{Get-WdA5Literal "bad`n"|Out-Null;throw 'newline literal accepted'}}catch{{i
                                   'offset', 'zero_margin', 'negative_margin', 'nan', 'infinity',
                                   'margin_equals_hold', 'string_hold', 'bool_hold', 'wrong_status',
                                   'string_margin', 'bool_margin', 'fractional_hold', 'invalid_date',
-                                  'overflow', 'whole_pass', 'foreign_controller_time'])
+                                  'overflow', 'whole_pass', 'foreign_controller_time', 'array_hold', 'array_time', 'array_pass', 'unrepresentable_margin'])
 def test_pure_ready_kill_window_is_strict_bound_and_never_authority(ps, mode):
     script = rf"""
 $expected=@{{schema='wd.mind-shadow-a5-controller-context.v1';harness_run_id='synthetic';launch_id='11111111-1111-1111-1111-111111111111';source_commit=('a'*40);manifest_sha256=('B'*64);parent_pid='123';parent_creation_utc='2026-10-22T00:00:00.0000000Z'}}
@@ -196,6 +196,8 @@ switch({q(mode)}){{
     invalid_date{{$ready.ready_utc='2026-02-30T00:00:00.0000000Z'}}
     overflow{{$ready.ready_utc='9999-12-31T23:59:59.0000000Z';$ready.deadline_utc='9999-12-31T23:59:59.0000000Z'}}
     whole_pass{{$ready.whole_A5_PASS=$true}};foreign_controller_time{{$ready.controller.creation_utc='2026-10-22T00:00:01.0000000Z'}}
+    array_hold{{$ready.hold_seconds=@(10)}};array_time{{$ready.ready_utc=@($ready.ready_utc)}};array_pass{{$ready.whole_A5_PASS=@($false)}}
+    unrepresentable_margin{{$margin=[double]1e-20}}
 }}
 $result=Test-WdA5ReadyKillWindow -Ready $ready -ExpectedContext $expected -ExpectedController $controller -NowUtc $now -SafetyMarginSeconds $margin
 $result|ConvertTo-Json

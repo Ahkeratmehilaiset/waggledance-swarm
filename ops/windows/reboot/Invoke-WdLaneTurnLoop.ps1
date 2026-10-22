@@ -145,6 +145,9 @@ public sealed class WdManagedTurnProcess : IDisposable {
     public uint ActiveProcesses {
         get { ACCOUNTING info; Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(ACCOUNTING)),IntPtr.Zero)); return info.active; }
     }
+    public uint TotalProcesses {
+        get { ACCOUNTING info; Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(ACCOUNTING)),IntPtr.Zero)); return info.total; }
+    }
     public WdManagedDescendant[] LiveDescendants {
         get {
             // Job accounting can briefly retain a root whose process handle is

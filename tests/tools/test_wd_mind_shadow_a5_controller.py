@@ -71,7 +71,10 @@ function New-WdA5InnerProcess {{param($HostPath,$Arguments,$Directory,$InputPath
     [IO.File]::WriteAllText($OutputPath,'');[IO.File]::WriteAllText($ErrorPath,'')
     $value=[pscustomobject]@{{Pid=4242;stopped=$false;disposed=$false}}
     $value|Add-Member ScriptMethod Wait {{param($ms) if($ms-ne0){{throw 'unexpected wait'}};return ($script:mode-ceq'early_exit')}}
-    $value|Add-Member ScriptMethod Stop {{$this.stopped=$true;if($script:mode-ceq'stop_failure'){{throw 'synthetic stop failure'}}}}
+    $value|Add-Member ScriptMethod Stop {{
+        if(-not[IO.File]::Exists((Join-Path {q(run / launch)} 'cleanup-started.json'))){{throw 'cleanup marker missing before inner stop'}}
+        $this.stopped=$true;if($script:mode-ceq'stop_failure'){{throw 'synthetic stop failure'}}
+    }}
     $value|Add-Member ScriptMethod Dispose {{$this.disposed=$true}}
     $value|Add-Member ScriptProperty ActiveProcesses {{return [uint32]3}}
     $value|Add-Member ScriptProperty TotalProcesses {{if($script:mode-ceq'unknown_count'){{return 'unknown'}};if($script:mode-ceq'extra_count'){{return [uint32]4}};return [uint32]3}}
@@ -85,10 +88,11 @@ $directory=Join-Path {q(run)} {q(launch)};$readyPath=Join-Path $directory 'ready
 if([IO.File]::Exists($readyPath)){{$receipt=[IO.File]::ReadAllText($readyPath)|ConvertFrom-Json}}
 $released=$true;$controllerWitness=Join-Path $directory 'controller.witness'
 if([IO.File]::Exists($controllerWitness)){{try{{$stream=[IO.File]::Open($controllerWitness,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$stream.Dispose()}}catch{{$released=$false}}}}
-@{{message=$message;result=$result;receipt=$receipt;ready_before_cleanup=$script:readyBeforeCleanup;controller_witness_released=$released}}|ConvertTo-Json -Depth 14
+@{{message=$message;result=$result;receipt=$receipt;ready_before_cleanup=$script:readyBeforeCleanup;controller_witness_released=$released;cleanup_marker=[IO.File]::Exists((Join-Path $directory 'cleanup-started.json'))}}|ConvertTo-Json -Depth 14
 """
     value = run_json(script, ps)
     assert value['controller_witness_released'] is True, value
+    assert value['cleanup_marker'] is (mode != 'stale_directory'), value
     if mode in ('ready', 'stop_failure'):
         assert value['ready_before_cleanup'] is True, value
         assert value['receipt']['whole_A5_PASS'] is False

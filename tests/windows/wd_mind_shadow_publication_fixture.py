@@ -22,11 +22,18 @@ PINS = {
     'producer_sha256': ('sandbox/mind/mind_capture_producer.py', 'e7719531d6e357407f9b2087fbfeb9d15a847aa7df1296413c35280e21d26a21'),
     'core_sha256': ('tools/wd_bridge_mind.py', 'cd009fbc890e15435919f31e52342e6c956825db523898b2c349b887a64d9557'),
 }
+# Only these two measured raw encodings of each immutable Git blob qualify.
+# Unknown/mixed encodings are NOT normalized into acceptance. Actual raw hashes
+# remain in the run binding; function segments use LF only after raw validation.
+CANONICAL_PINS = {
+    'producer_sha256': '441ad7b5bd9ef0f6bbb53466bd3eae0a601effdc61ec380850cc8313672ea275',
+    'core_sha256': '3aaf56219fdef4afb208bfbf7c659422fb9618f2df95343bd6528148a389029a',
+}
 OLD_POINTER = b'{"fixture":"A4","last_ok":"old.capture"}\n'
 NEW_POINTER = b'{"fixture":"A4","last_ok":"new.capture"}\n'
 CAPTURES = {'old.capture': b'synthetic old capture\n', 'new.capture': b'synthetic new capture\n'}
-FUNCTION_PINS = {'atomic_write': 'dab949119b339050fc42094e8054ab92cfe9ec0a223aba8e5777ff28b3409315',
-                 '_sharing_retry': 'fb0a44ba16502de5ba77387d0bb2085811e613df5526ce5165192d28de9cc3df'}
+FUNCTION_PINS = {'atomic_write': '803391e2cf8089a72f76a3434665d4296c412694903ddea476ec253c624dd28f',
+                 '_sharing_retry': '91f92938912f6865c9f59f2900517caa8316d957f74bb09da201f4ce3e2159f1'}
 
 
 def digest(data):
@@ -69,7 +76,7 @@ def check_binding(binding):
     if binding['phase'] not in ('before_replace', 'after_replace'):
         raise ValueError('phase')
     for key, (_, expected) in PINS.items():
-        if binding[key] != expected:
+        if binding[key] not in (expected, CANONICAL_PINS[key]):
             raise ValueError('source_hash')
 
 
@@ -79,8 +86,11 @@ def extracted_functions(code_root, binding, replace, sleep=time.sleep):
     for key, (relative, expected) in PINS.items():
         path = code_root / relative
         data = path.read_bytes()
-        if path.is_symlink() or digest(data) != expected:
+        if path.is_symlink() or digest(data) != binding[key]:
             raise ValueError('source_hash')
+        data = data.replace(b'\r\n', b'\n')
+        if digest(data) != CANONICAL_PINS[key]:
+            raise ValueError('canonical_source_hash')
         tree = ast.parse(data, filename=str(path))
         name = 'atomic_write' if key == 'producer_sha256' else '_sharing_retry'
         matches = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name]

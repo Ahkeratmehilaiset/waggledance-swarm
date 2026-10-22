@@ -10,8 +10,9 @@ whole-deadline guarantee. No PID kill, before-resume witness or run_start proxy.
 #>
 
 function Assert-WdPublicationFilePin {
-    param([string] $Path, [string] $Sha256, [switch] $ReturnText)
-    if ($Sha256 -cnotmatch '^[a-fA-F0-9]{64}$' -or -not [IO.Path]::IsPathRooted($Path)) { throw 'refused: file pin' }
+    param([string] $Path, [string[]] $Sha256, [switch] $ReturnInfo, [switch] $ReturnHash)
+    if ($Sha256.Count -lt 1 -or $Sha256.Count -gt 2 -or -not [IO.Path]::IsPathRooted($Path)) { throw 'refused: file pin' }
+    foreach ($pin in $Sha256) { if ($pin -cnotmatch '^[a-fA-F0-9]{64}$') { throw 'refused: file pin' } }
     $item = Get-Item -LiteralPath $Path -ErrorAction Stop
     if ($item.PSIsContainer) { throw 'refused: expected regular file' }
     $check = $item
@@ -22,8 +23,9 @@ function Assert-WdPublicationFilePin {
     $bytes = [IO.File]::ReadAllBytes($Path)
     $algorithm = [Security.Cryptography.SHA256]::Create()
     try { $actual = [BitConverter]::ToString($algorithm.ComputeHash($bytes)).Replace('-','') } finally { $algorithm.Dispose() }
-    if ($actual -ine $Sha256) { throw 'refused: source hash' }
-    if ($ReturnText) { return ([Text.UTF8Encoding]::new($false,$true)).GetString($bytes) }
+    if ($actual -inotIn $Sha256) { throw 'refused: source hash' }
+    if ($ReturnInfo) { return [pscustomobject]@{text=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes);sha256=$actual.ToLowerInvariant()} }
+    if ($ReturnHash) { return $actual.ToLowerInvariant() }
 }
 
 function Write-WdPublicationRecordOnce {
@@ -62,8 +64,8 @@ function Get-WdPublicationReady {
         [IO.Path]::GetFileName($temporary) -cnotmatch '^\.latest\.json\.[A-Za-z0-9_-]+\.tmp$') { throw 'refused: foreign temporary' }
     if (@(Compare-Object @('_sharing_retry','atomic_write') (@($ready.function_sha256.PSObject.Properties.Name) | Sort-Object)).Count) { throw 'refused: extraction shape' }
     foreach ($key in @('atomic_write','_sharing_retry')) { if ($ready.function_sha256.$key -cnotmatch '^[0-9a-f]{64}$') { throw 'refused: extraction hash' } }
-    if ($ready.function_sha256.atomic_write -cne 'dab949119b339050fc42094e8054ab92cfe9ec0a223aba8e5777ff28b3409315' -or
-        $ready.function_sha256._sharing_retry -cne 'fb0a44ba16502de5ba77387d0bb2085811e613df5526ce5165192d28de9cc3df') { throw 'refused: extraction hash' }
+    if ($ready.function_sha256.atomic_write -cne '803391e2cf8089a72f76a3434665d4296c412694903ddea476ec253c624dd28f' -or
+        $ready.function_sha256._sharing_retry -cne '91f92938912f6865c9f59f2900517caa8316d957f74bb09da201f4ce3e2159f1') { throw 'refused: extraction hash' }
     return $ready
 }
 
@@ -125,14 +127,14 @@ function Invoke-WdMindShadowPublicationProbe {
     if ('WdManagedTurnProcess' -as [type]) { throw 'refused: native type already loaded' }
     $loop = Join-Path $CodeRoot 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1'
     $fixture = Join-Path $CodeRoot 'tests/windows/wd_mind_shadow_publication_fixture.py'
-    $loopText = Assert-WdPublicationFilePin $loop 'B1CFF1049C1B91866A3F648948190E9F613EE47BC439F18C4AB31A1F6FCEB7D7' -ReturnText
-    Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') 'E7719531D6E357407F9B2087FBFEB9D15A847AA7DF1296413C35280E21D26A21'
-    Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') 'CD009FBC890E15435919F31E52342E6C956825DB523898B2C349B887A64D9557'
+    $loopPin = Assert-WdPublicationFilePin $loop @('B1CFF1049C1B91866A3F648948190E9F613EE47BC439F18C4AB31A1F6FCEB7D7','16A2A446414FEF6A9B31DD1729EFC7978C2D72712D0A7B7026E905628118C2CE') -ReturnInfo
+    $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('E7719531D6E357407F9B2087FBFEB9D15A847AA7DF1296413C35280E21D26A21','441AD7B5BD9EF0F6BBB53466BD3EAE0A601EFFDC61EC380850CC8313672EA275') -ReturnHash
+    $coreHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') @('CD009FBC890E15435919F31E52342E6C956825DB523898B2C349B887A64D9557','3AAF56219FDEF4AFB208BFBF7C659422FB9618F2DF95343BD6528148A389029A') -ReturnHash
     Assert-WdPublicationFilePin $fixture $ExpectedFixtureSha256
     Assert-WdPublicationFilePin $MyInvocation.MyCommand.ScriptBlock.File $ExpectedProbeSha256
     Assert-WdPublicationFilePin $PythonPath $ExpectedPythonSha256
     $tokens=$null;$errors=$null
-    $ast=[Management.Automation.Language.Parser]::ParseInput($loopText,[ref]$tokens,[ref]$errors)
+    $ast=[Management.Automation.Language.Parser]::ParseInput($loopPin.text,[ref]$tokens,[ref]$errors)
     $functions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-WdNativeTurnType'},$true))
     if ($errors.Count -or $functions.Count -ne 1) { throw 'refused: native source shape' }
     . ([scriptblock]::Create($functions[0].Extent.Text))
@@ -149,7 +151,7 @@ function Invoke-WdMindShadowPublicationProbe {
     $claimStream.Dispose()
     $fixtureRoot = Join-Path $run 'fixture'
     [void][IO.Directory]::CreateDirectory($fixtureRoot)
-    $binding=[ordered]@{run_id=$RunId;launch_id=$LaunchId;phase=$Phase;producer_sha256='e7719531d6e357407f9b2087fbfeb9d15a847aa7df1296413c35280e21d26a21';core_sha256='cd009fbc890e15435919f31e52342e6c956825db523898b2c349b887a64d9557'}
+    $binding=[ordered]@{run_id=$RunId;launch_id=$LaunchId;phase=$Phase;producer_sha256=$producerHash;core_sha256=$coreHash}
     $inputPath=Join-Path $run 'empty.stdin'
     [IO.File]::WriteAllBytes($inputPath,[byte[]]@())
     $arguments=[string[]]@($fixture,'--approved-native-fixture','--root',$fixtureRoot,'--code-root',$CodeRoot,'--binding-json',($binding|ConvertTo-Json -Compress))
@@ -173,7 +175,7 @@ function Invoke-WdMindShadowPublicationProbe {
             $managed.Dispose()
         }
     }
-    $result=[ordered]@{schema='wd.publication-probe.v1';binding=$binding;phase=$Phase;ready=$ready;snapshot=$snapshot;job_drain_confirmed=$drained;status='NOT_ACCEPTED';reason=$reason;scope='instrumented extracted publication primitive and owned job, NOT full adapter/producer';whole_A4_PASS=$false;native_permission_inferred=$false;fixture_sha256=$ExpectedFixtureSha256;probe_sha256=$ExpectedProbeSha256;loop_sha256='B1CFF1049C1B91866A3F648948190E9F613EE47BC439F18C4AB31A1F6FCEB7D7'}
+    $result=[ordered]@{schema='wd.publication-probe.v1';binding=$binding;phase=$Phase;ready=$ready;snapshot=$snapshot;job_drain_confirmed=$drained;status='NOT_ACCEPTED';reason=$reason;scope='instrumented extracted publication primitive and owned job, NOT full adapter/producer';whole_A4_PASS=$false;native_permission_inferred=$false;fixture_sha256=$ExpectedFixtureSha256;probe_sha256=$ExpectedProbeSha256;loop_sha256=$loopPin.sha256}
     if ($drained -and $null -ne $snapshot -and -not $reason) { $result.status='PUBLICATION_PRIMITIVE_OBSERVED' }
     Write-WdPublicationRecordOnce (Join-Path $run 'result.json') $result
     return [pscustomobject]$result

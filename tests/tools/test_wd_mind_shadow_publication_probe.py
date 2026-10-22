@@ -180,6 +180,23 @@ def test_actual_retry_function_is_executed_without_real_sleep(tmp_path):
     assert functions == m.FUNCTION_PINS
 
 
+def test_canonical_git_lf_source_bytes_are_supported_explicitly(tmp_path):
+    m = load_fixture()
+    code = tmp_path / 'canonical'
+    for relative in ('sandbox/mind/mind_capture_producer.py', 'tools/wd_bridge_mind.py'):
+        path = code / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((ROOT / relative).read_bytes().replace(b'\r\n', b'\n'))
+    declared = binding('before_replace')
+    declared['producer_sha256'] = '441ad7b5bd9ef0f6bbb53466bd3eae0a601effdc61ec380850cc8313672ea275'
+    declared['core_sha256'] = '3aaf56219fdef4afb208bfbf7c659422fb9618f2df95343bd6528148a389029a'
+    target = tmp_path / 'canonical.json'
+    atomic, hashes = m.extracted_functions(code, declared, m.os.replace)
+    atomic(target, b'canonical synthetic bytes')
+    assert target.read_bytes() == b'canonical synthetic bytes'
+    assert hashes == m.FUNCTION_PINS
+
+
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_probe_safe_load_default_refusal_and_parse(ps):
     assert PROBE.is_file(), 'Actual publication owned-job probe Source is missing'

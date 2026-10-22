@@ -11,6 +11,7 @@ before-resume rule and this Source-preparation GO); fable-5 wrote this test and 
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -268,3 +269,278 @@ def test_case_and_run_verdicts_from_strict_fake_observations(verdicts, item, exp
 
 def test_every_fixture_has_exactly_one_verdict(verdicts):
     assert sorted(verdicts) == sorted(item["name"] for item, _ in FIXTURES)
+
+
+# Checkpoint 3 (Lead A7 driver GO, 2026-10-22): the A7 pre-start refusal drivers. The host defines the harness
+# functions only, makes every native and filesystem-changing cmdlet and the three real driver seams throw, and hands
+# each driver fake seams: a preparation that only creates the planned run root in the test's temporary folder, a child
+# runner that returns a recorded child result without starting anything, and a child lister. The refusal a fake child
+# prints is rendered from the adapter's own throw template, so each plan is tied to the actual adapter refusal text.
+ADAPTER = ROOT / "ops" / "windows" / "reboot" / "Start-WdMindShadowJob.ps1"
+WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="the A7 drivers plan Windows paths for the Windows-only "
+                                  "adapter: non-Windows is an untested platform for these synthetic runs, not evidence")
+
+A7_HOST = r"""
+param([string] $Harness, [string] $Fixture)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+foreach ($name in @('Start-Process', 'Stop-Process', 'Start-Job', 'Invoke-Expression', 'Invoke-Command', 'Add-Type',
+        'Wait-Process', 'Get-Process', 'Get-CimInstance', 'Get-WmiObject', 'New-Item', 'Set-Acl', 'Get-Acl')) {
+    Set-Item -Path "function:global:$name" -Value ([scriptblock]::Create("throw 'unexpected native call: $name'"))
+}
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Harness, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'the harness does not parse' }
+foreach ($statement in $ast.EndBlock.Statements) {
+    if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) {
+        . ([scriptblock]::Create($statement.Extent.Text))
+    }
+}
+foreach ($name in @('Start-WdShadowA7Child', 'Get-WdShadowA7ChildProcesses', 'New-WdShadowA7CaseRoot')) {
+    Set-Item -Path "function:$name" -Value ([scriptblock]::Create("throw 'unexpected native call: $name'"))
+}
+function ConvertTo-HostValue($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [Management.Automation.PSCustomObject]) {
+        $table = @{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-HostValue $property.Value
+        }
+        return $table
+    }
+    if ($Value -is [array]) { return , @($Value | ForEach-Object { ConvertTo-HostValue $_ }) }
+    return $Value
+}
+$rows = @()
+foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixture)))) {
+    $entry = ConvertTo-HostValue $item
+    $inputs = $entry['inputs']
+    if ($inputs -is [hashtable] -and $inputs['ExpectedPeakAdditionalBytes'] -is [int]) {
+        $inputs['ExpectedPeakAdditionalBytes'] = [long]$inputs['ExpectedPeakAdditionalBytes']
+    }
+    $row = [ordered]@{ name = $entry['name'] }
+    try {
+        if ($entry['kind'] -ceq 'plan') {
+            $plan = Get-WdShadowA7Plan -Name $entry['sub'] -Inputs $inputs -CaseRoot $entry['case_root']
+            if ($null -eq $plan) { $row.result = 'NO_PLAN' } else {
+                $row.result = 'PLAN'; $row.plan = $plan
+                $row.command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['adapter']
+            }
+        } else {
+            $child = $entry['child']; $kids = @($entry['children']); $made = [bool]$entry['create_entry']
+            $runRoot = [string]$entry['run_root']
+            $seen = [ordered]@{ prepared = 0; ran = 0; listed = 0 }
+            $prepare = {
+                param($Plan)
+                $seen.prepared++
+                [void][IO.Directory]::CreateDirectory([string]$Plan['run_root'])
+            }.GetNewClosure()
+            $run = {
+                param([string] $HostPath, [string] $Command)
+                $seen.ran++
+                if ($made) { [void][IO.Directory]::CreateDirectory((Join-Path $runRoot 'SYNTHETIC-LAUNCH-DIR')) }
+                return @{ pid = [int]$child['pid']; exit_code = $child['exit_code']
+                    error_text = [string]$child['error_text'] }
+            }.GetNewClosure()
+            $list = { param([int] $ParentId) $seen.listed++; return , @($kids) }.GetNewClosure()
+            $observation = Invoke-WdShadowA7Driver -Name $entry['sub'] -Inputs $inputs -CaseRoot $entry['case_root'] `
+                -AdapterPath 'SYNTHETIC-ADAPTER.ps1' -HostPath 'SYNTHETIC-HOST.exe' -Prepare $prepare -RunChild $run `
+                -ListChildren $list
+            $row.seams = $seen
+            if ($null -eq $observation) { $row.result = 'NO_PLAN' } else {
+                $row.result = [string](Get-WdShadowSubcaseVerdict -CaseId 'A7' -Name $entry['sub'] `
+                    -Observation $observation -Binding $null)
+                $row.observation = $observation
+            }
+        }
+    } catch { $row.result = 'ERROR'; $row.error = [string]$_.Exception.Message }
+    $rows += $row
+}
+ConvertTo-Json -InputObject @($rows) -Compress -Depth 6
+"""
+
+A7_REACHABLE = ("integrity_mismatch", "preloaded_type", "off_switch_before_start", "off_switch_denied_read",
+                "disk_floor_before_start", "reparse_ancestry")
+A7_LOOP = ("lane_loop_zero_functions", "lane_loop_two_functions")
+
+
+def _adapter_template(needle):
+    # The exact throw (or return) text of the adapter that holds the needle, once.
+    texts = re.findall(r"(?:throw|return) [\"']([^\"']*" + re.escape(needle) + r"[^\"']*)[\"']",
+                       ADAPTER.read_text(encoding="utf-8"))
+    assert len(texts) == 1, (needle, texts)
+    return texts[0]
+
+
+def _a7_refusal(sub, case_root):
+    if sub == "integrity_mismatch":
+        return _adapter_template("the actual integrity level").replace("$integrity", "medium").replace(
+            "$ApprovedIntegrityLevel", "high")
+    if sub == "preloaded_type":
+        return _adapter_template("is already loaded in this process (R1)")
+    if sub in ("off_switch_before_start", "off_switch_denied_read"):
+        return _adapter_template("the operator off switch").replace("$offSwitchPath", case_root + "\\mind-shadow.off")
+    if sub == "disk_floor_before_start":
+        return _adapter_template("the disk budget is not met before the start").replace(
+            "$shortfall", "C:\\ free=1, additional=9223372036854775807, floor=3221225472")
+    reparse = _adapter_template("$current is a reparse point").replace("$current", case_root + "\\link")
+    return _adapter_template("so its textual root would not measure").replace("$reparse", reparse)
+
+
+def _a7_inputs(base):
+    return {"ExpectedSourceCommit": "SYNTHETIC-SOURCE-COMMIT", "ExpectedManifestSha256": "SYNTHETIC-MANIFEST-SHA",
+            "ExpectedAdapterSha256": "SYNTHETIC-ADAPTER-SHA", "ApprovedRunRoot": base,
+            "LiveDir": base + "-live", "ApprovedUserSid": "SYNTHETIC-USER-SID", "ApprovedIntegrityLevel": "medium",
+            "ExpectedPeakAdditionalBytes": 4096}
+
+
+def _a7_run_root(sub, case_root):
+    return case_root + "\\link\\run" if sub == "reparse_ancestry" else case_root
+
+
+A7_DRIVER_FIXTURES = [(f"a7d_{sub}_pass", "PASS") for sub in A7_REACHABLE] + [
+    ("a7d_off_switch_wrong_refusal", "UNKNOWN"),
+    ("a7d_integrity_exit_zero", "FAIL"),
+    ("a7d_disk_floor_run_dir_created", "FAIL"),
+    ("a7d_reparse_child_left", "FAIL"),
+    ("a7d_preloaded_no_exit", "UNKNOWN"),
+    ("a7d_denied_read_two_markers", "UNKNOWN"),
+    ("a7d_integrity_unmarked_refusal", "UNKNOWN"),
+] + [(f"a7d_{sub}_no_plan", "NO_PLAN") for sub in A7_LOOP] + [
+    ("a7d_unknown_subcase", "ERROR"),
+    ("a7d_missing_input", "ERROR"),
+    ("a7d_extra_input", "ERROR"),
+    ("a7d_nonpositive_bound", "ERROR"),
+    ("a7d_unknown_level", "ERROR"),
+    ("a7d_control_character", "ERROR"),
+]
+
+
+def _a7_items(folder):
+    items = {}
+
+    def driver(name, sub, exit_code=2, text=None, created=False, children=(), inputs=None):
+        case_root = str(folder / name)
+        error = "WD-A7-REFUSAL " + _a7_refusal(sub, case_root) if text is None else text
+        items[name] = {"name": name, "kind": "driver", "sub": sub, "case_root": case_root,
+                       "run_root": _a7_run_root(sub, case_root),
+                       "inputs": inputs if inputs is not None else _a7_inputs(str(folder / (name + "-approved"))),
+                       "child": {"pid": 4343, "exit_code": exit_code, "error_text": error},
+                       "create_entry": created, "children": list(children)}
+
+    for sub in A7_REACHABLE:
+        driver(f"a7d_{sub}_pass", sub)
+    driver("a7d_off_switch_wrong_refusal", "off_switch_before_start",
+           text="WD-A7-REFUSAL " + _a7_refusal("disk_floor_before_start", ""))
+    driver("a7d_integrity_exit_zero", "integrity_mismatch", exit_code=0)
+    driver("a7d_disk_floor_run_dir_created", "disk_floor_before_start", created=True)
+    driver("a7d_reparse_child_left", "reparse_ancestry", children=[5151])
+    driver("a7d_preloaded_no_exit", "preloaded_type", exit_code=None)
+    marked = "WD-A7-REFUSAL " + _a7_refusal("off_switch_denied_read", str(folder / "a7d_denied_read_two_markers"))
+    driver("a7d_denied_read_two_markers", "off_switch_denied_read", text=marked + "\n" + marked)
+    driver("a7d_integrity_unmarked_refusal", "integrity_mismatch",
+           text=_a7_refusal("integrity_mismatch", ""))
+    for sub in A7_LOOP:
+        driver(f"a7d_{sub}_no_plan", sub)
+    driver("a7d_unknown_subcase", "lane_loop_three_functions")
+    base = _a7_inputs(str(folder / "approved"))
+    driver("a7d_missing_input", "integrity_mismatch", inputs={k: v for k, v in base.items() if k != "LiveDir"})
+    driver("a7d_extra_input", "integrity_mismatch", inputs=dict(base, Verdict="PASS"))
+    driver("a7d_nonpositive_bound", "disk_floor_before_start", inputs=dict(base, ExpectedPeakAdditionalBytes=0))
+    driver("a7d_unknown_level", "integrity_mismatch", inputs=dict(base, ApprovedIntegrityLevel="system"))
+    driver("a7d_control_character", "off_switch_before_start", inputs=dict(base, ApprovedUserSid="S-1\nS-2"))
+    for sub in A7_REACHABLE + A7_LOOP:
+        name = f"a7p_{sub}"
+        items[name] = {"name": name, "kind": "plan", "sub": sub, "case_root": str(folder / name),
+                       "inputs": dict(base, ApprovedUserSid="SYNTHETIC-O'SID"),
+                       "adapter": str(folder / "adapter's.ps1")}
+    return items
+
+
+@pytest.fixture(scope="module", params=_hosts() or [pytest.param(None, marks=pytest.mark.skip(
+    reason="no PowerShell host on this runner: the synthetic A7 drivers need pwsh or Windows PowerShell"))],
+    ids=lambda host: host[0] if host else "no-host")
+def a7_rows(request, tmp_path_factory):
+    if os.name != "nt":
+        pytest.skip("the A7 drivers plan Windows paths for the Windows-only adapter: non-Windows is untested, "
+                    "not evidence")
+    _, executable = request.param
+    folder = tmp_path_factory.mktemp("a7")
+    items = _a7_items(folder)
+    host = folder / "a7_host.ps1"
+    host.write_text(A7_HOST, encoding="utf-8")
+    fixture = folder / "a7_fixture.json"
+    fixture.write_text(json.dumps(list(items.values())), encoding="utf-8")
+    done = subprocess.run([executable, "-NoProfile", "-NonInteractive", "-File", str(host), str(HARNESS),
+                           str(fixture)], capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0, done.stderr[-2000:]
+    rows = json.loads(done.stdout.strip().splitlines()[-1])
+    return {row["name"]: row for row in rows}, items
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("name,expected", A7_DRIVER_FIXTURES, ids=[name for name, _ in A7_DRIVER_FIXTURES])
+def test_a7_driver_observations_come_from_the_child_and_the_run_root(a7_rows, name, expected):
+    rows, _ = a7_rows
+    row = rows[name]
+    assert row["result"] == expected, row
+    if expected == "ERROR":
+        assert row["error"].startswith("refused: "), row
+        return
+    seams = row["seams"]
+    if expected == "NO_PLAN":
+        assert seams == {"prepared": 0, "ran": 0, "listed": 0}
+        return
+    assert seams == {"prepared": 1, "ran": 1, "listed": 1}
+    assert sorted(row["observation"]) == ["exit_code", "process_started", "refusal_seen", "run_dir_created"]
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("sub", A7_REACHABLE + A7_LOOP)
+def test_a7_plan_is_the_approved_inputs_with_exactly_one_deviation(a7_rows, sub):
+    rows, items = a7_rows
+    row, item = rows[f"a7p_{sub}"], items[f"a7p_{sub}"]
+    if sub in A7_LOOP:
+        # Unreachable in an actual run: the adapter reads the fixed reboot state pointer and bundle store and checks
+        # the loop bytes against the manifest pin before it counts the functions.
+        adapter = ADAPTER.read_text(encoding="utf-8")
+        assert "$StatePath = 'C:\\Python\\WD_REBOOT_STATE_CURRENT.json'" in adapter
+        assert "$BundleStore = 'C:\\Python\\wd-reboot-bundles'" in adapter
+        assert adapter.index("the lane loop bytes do not match the manifest") < adapter.index(
+            "expected one Initialize-WdNativeTurnType, found")
+        assert row["result"] == "NO_PLAN", row
+        return
+    plan = row["plan"]
+    assert sorted(plan) == ["inputs", "name", "preload", "prepare", "refusal", "run_root"]
+    assert plan["name"] == sub and plan["run_root"] == _a7_run_root(sub, item["case_root"])
+    assert plan["inputs"]["ApprovedRunRoot"] == plan["run_root"]
+    changed = sorted(k for k in item["inputs"] if k != "ApprovedRunRoot" and plan["inputs"][k] != item["inputs"][k])
+    want = {"integrity_mismatch": ["ApprovedIntegrityLevel"],
+            "disk_floor_before_start": ["ExpectedPeakAdditionalBytes"]}
+    assert changed == want.get(sub, []), changed
+    assert sorted(plan["inputs"]) == sorted(item["inputs"])
+    want_prepare = {"off_switch_before_start": "off_switch", "off_switch_denied_read": "off_switch_denied",
+                    "reparse_ancestry": "junction"}
+    assert plan["prepare"] == want_prepare.get(sub, "none")
+    assert plan["preload"] == ("lane_loop_type" if sub == "preloaded_type" else "none")
+    assert re.fullmatch(plan["refusal"].replace("\\z", "$").replace("(?-i)", ""),
+                        "WD-A7-REFUSAL " + _a7_refusal(sub, item["case_root"]))
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("sub", A7_REACHABLE)
+def test_a7_child_command_runs_the_adapter_once_with_literal_inputs(a7_rows, sub):
+    rows, item = a7_rows[0][f"a7p_{sub}"], a7_rows[1][f"a7p_{sub}"]
+    command = rows["command"]
+    adapter = item["adapter"].replace("'", "''")
+    assert command.count("& '" + adapter + "'") == 1
+    assert "-ApprovedUserSid 'SYNTHETIC-O''SID'" in command
+    assert command.index("try {") < command.index("& '" + adapter + "'") < command.index("} catch {")
+    assert "[Console]::Error.WriteLine('WD-A7-REFUSAL ' +" in command and "exit 2" in command
+    preload = "Initialize-WdNativeTurnType" in command
+    assert preload == (sub == "preloaded_type")
+    if preload:
+        assert command.index("Initialize-WdNativeTurnType") < command.index("try {")
+        assert "C:\\Python\\wd-reboot-bundles\\SYNTHETIC-SOURCE-COMMIT\\Invoke-WdLaneTurnLoop.ps1" in command
+    for word in ("Add-Type", "Start-Process", "Invoke-Expression", "Stop-Process"):
+        assert word not in command, word

@@ -928,6 +928,8 @@ function Invoke-WdShadowLifetimeDriver {
     $observation = $null
     $managed = $null
     $createError = $null
+    $driverFailure = $null
+    $driverStopAttempted = $false
     try {
         try { $managed = & $Seams['NewManaged'] $plan } catch { $createError = $_.Exception.Message }
         if ($null -eq $managed) {
@@ -1035,6 +1037,7 @@ function Invoke-WdShadowLifetimeDriver {
         $confirmedAt = $null
         if (-not $drained) {
             $stopCalls++
+            $driverStopAttempted = $true
             try { $managed.Stop(); $stopOk = $true } catch { $stopOk = $false }
             $until = (& $elapsed) + 30
             while ($true) {
@@ -1108,8 +1111,23 @@ function Invoke-WdShadowLifetimeDriver {
             }
             $observation = @{ unexpected_inherited_handles = $handles; lock_reacquire = $lock }
         }
+    } catch {
+        $driverFailure = $_
+        if ($null -ne $managed) {
+            try {
+                if ($null -ne $managed.PSObject.Methods['StopForExceptionalCleanup']) {
+                    $managed.StopForExceptionalCleanup()
+                } elseif (-not $driverStopAttempted) { $managed.Stop() }
+            } catch { $driverFailure.Exception.Data['owned_cleanup_stop_error'] = [string]$_ }
+        }
+        throw $driverFailure
     } finally {
-        if ($null -ne $managed) { $managed.Dispose() }
+        if ($null -ne $managed) {
+            try { $managed.Dispose() } catch {
+                if ($null -eq $driverFailure) { throw }
+                $driverFailure.Exception.Data['owned_cleanup_dispose_error'] = [string]$_
+            }
+        }
     }
     return @{ case_id = $CaseId; name = $Name; binding = $binding; observation = $observation }
 }
@@ -1333,7 +1351,18 @@ function New-WdShadowOwnedStopOnce {
         $record['inner_calls'] = 1
         $record['origin'] = 'driver'
         if ($this.Shared['observing']) { $record['origin'] = 'observer' }
+        if ($this.Shared['exceptional_cleanup']) { $record['origin'] = 'driver_exception_cleanup' }
         try { $this.Inner.Stop() } catch { $record['failed'] = $true; $record['error'] = [string]$_; throw }
+    }
+    $facade | Add-Member -MemberType ScriptMethod -Name StopForExceptionalCleanup -Value {
+        $this.Shared['driver_exception'] = $true
+        # A failed earlier Stop counts as attempted too: never another request or inner call.
+        if ([int]$this.StopRecord['inner_calls'] -ne 0) { return }
+        $this.Shared['exceptional_cleanup'] = $true
+        try { $this.Stop() } catch {
+            $this.Shared['errors'].Add('driver cleanup stop: ' + [string]$_)
+            throw
+        } finally { $this.Shared['exceptional_cleanup'] = $false }
     }
     $facade | Add-Member -MemberType ScriptMethod -Name Wait -Value {
         param($Milliseconds)
@@ -1346,6 +1375,7 @@ function New-WdShadowOwnedStopOnce {
         # A failed owned Dispose is recorded (the receipt then blocks), never rethrown over the original error.
         try { $this.Inner.Dispose(); $this.StopRecord['dispose'] = 'ok' } catch {
             $this.StopRecord['dispose'] = 'failed'; $this.StopRecord['dispose_error'] = [string]$_
+            if ($this.Shared['driver_exception']) { $this.Shared['errors'].Add('driver cleanup dispose: ' + [string]$_) }
         }
     }
     return $facade
@@ -1416,7 +1446,8 @@ function New-WdShadowOwnedLifetimeSeams {
         dispose = 'not_called'; dispose_error = $null }
     $Record['errors'] = New-Object Collections.Generic.List[string]
     $errors = $Record['errors']
-    $shared = @{ observer = $null; observing = $false }
+    $shared = @{ observer = $null; observing = $false; exceptional_cleanup = $false
+        driver_exception = $false; errors = $errors }
     $budget = $Record['budget']
     $observe = {
         if ($null -eq $shared['observer']) { return }
@@ -1519,6 +1550,7 @@ function ConvertTo-WdShadowOwnedLifetimeReceipt {
     if (-not $partial) {
         $blocked = $blocked -or $null -ne $budget['trigger'] -or [bool]$stop['failed'] -or
             [string]$stop['origin'] -ceq 'observer' -or [string]$stop['origin'] -ceq 'setup_cleanup' -or
+            [string]$stop['origin'] -ceq 'driver_exception_cleanup' -or
             [string]$stop['dispose'] -ceq 'failed'
     }
     $observation = $null

@@ -1338,17 +1338,19 @@ function New-WdA7ManagedProcess {
         $global:WdFakeActive = 0; $global:WdFakeRootExited = $true
     }
     $fake | Add-Member -MemberType ScriptMethod -Name Wait -Value {
-        param($Milliseconds) $global:WdClock += $Milliseconds / 1000.0; return [bool]$global:WdFakeRootExited
+        param($Milliseconds) $global:WdClock += $Milliseconds / 1000.0
+        if ($global:WdFakeMode -ceq 'witness_before_stop') { $global:WdFakeRootExited = $true }
+        return [bool]$global:WdFakeRootExited
     }
     $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
         $global:WdFakeCalls += , 'dispose'
-        if ($global:WdFakeMode -ceq 'dispose_throws') { throw 'synthetic owned dispose failure' }
+        if ($global:WdFakeMode -like '*dispose_throws*') { throw 'synthetic owned dispose failure' }
     }
     return $fake
 }
 function Get-WdA7ObservedIdentity {
     param([int]$ProbePid)
-    if ($global:WdFakeMode -ceq 'identity_throws') { throw 'synthetic identity failure' }
+    if ($global:WdFakeMode -like 'identity_throws*') { throw 'synthetic identity failure' }
     return @{ pid = [string]$ProbePid; creation_utc = 'SYNTHETIC-CREATION-' + $ProbePid }
 }
 function Invoke-WdMindShadowA7OwnedProbe {
@@ -1455,13 +1457,25 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
             $savedSeams = ${function:Get-WdShadowLifetimeSeams}
             $savedStopOnce = ${function:New-WdShadowOwnedStopOnce}
             $savedWitness = ${function:Get-WdShadowMemberObservation}
-            $global:WdWitnessReads = 0
+            $global:WdWitnessReads = 0; $global:WdClockReads = 0
             try {
                 ${function:script:Get-WdShadowLifetimeSeams} = {
                     $seams = & $savedSeams
-                    $seams['Clock'] = { return [double]$global:WdClock }
+                    $seams['Clock'] = {
+                        $global:WdClockReads++
+                        if ($entry['inject'] -ceq 'clock_throw') { throw 'synthetic post-acquisition clock failure' }
+                        if ($entry['inject'] -ceq 'observer_then_clock_throw') {
+                            if ($global:WdClockReads -ge 2) { throw 'synthetic post-observer clock failure' }
+                            [IO.File]::WriteAllBytes($directory + '\root.stdout.log', [byte[]]::new(200))
+                        }
+                        return [double]$global:WdClock
+                    }.GetNewClosure()
                     $seams['Sleep'] = { param([int] $Milliseconds) $global:WdClock += $Milliseconds / 1000.0 }
-                    $seams['FreeBytes'] = { param([string] $Path) return [long]$global:WdFree }
+                    $seams['FreeBytes'] = {
+                        param([string] $Path)
+                        if ($entry['inject'] -ceq 'free_throw') { throw 'synthetic post-acquisition free failure' }
+                        return [long]$global:WdFree
+                    }.GetNewClosure()
                     return $seams
                 }.GetNewClosure()
                 if ($entry['inject'] -ceq 'setup') {
@@ -1470,6 +1484,7 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
                 ${function:script:Get-WdShadowMemberObservation} = {
                     param([string] $WitnessDirectory, [object[]] $Expected)
                     $global:WdWitnessReads++
+                    if ($entry['inject'] -ceq 'witness_throw') { throw 'synthetic post-acquisition witness failure' }
                     if ($global:WdFakeActive -eq 0 -and $entry['inject'] -ceq 'witness_growth') {
                         [IO.File]::WriteAllBytes($WitnessDirectory + '\root.stdout.log', [byte[]]::new(200))
                     }
@@ -1615,6 +1630,18 @@ WIRING_WHOLE_FAIL = [
     ("whf_setup_failure", {"kind": "whole", "inject": "setup"}),
     ("whf_setup_cleanup_errors", {"kind": "whole", "inject": "setup", "stop_throws": True, "mode": "dispose_throws"}),
     ("whf_identity_failure", {"kind": "whole", "mode": "identity_throws"}),
+    ("whf_exception_clock", {"kind": "whole", "inject": "clock_throw"}),
+    ("whf_exception_free", {"kind": "whole", "inject": "free_throw"}),
+    ("whf_exception_clock_cleanup_errors", {"kind": "whole", "inject": "clock_throw", "stop_throws": True,
+                                             "mode": "dispose_throws"}),
+    ("whf_exception_identity_cleanup_errors", {"kind": "whole", "mode": "identity_throws_dispose_throws",
+                                                "stop_throws": True}),
+    ("whf_exception_witness_after_stop", {"kind": "whole", "inject": "witness_throw"}),
+    ("whf_exception_witness_before_stop", {"kind": "whole", "inject": "witness_throw",
+                                          "mode": "witness_before_stop", "case": ("A1", "early_root_exit_orphan")}),
+    ("whf_exception_witness_after_failed_stop", {"kind": "whole", "inject": "witness_throw",
+                                                "stop_throws": True}),
+    ("whf_exception_clock_after_observer", {"kind": "whole", "inject": "observer_then_clock_throw", "max": 100}),
     ("whf_dispose_failure", {"kind": "whole", "mode": "dispose_throws"}),
     ("whf_stop_failure", {"kind": "whole", "stop_throws": True}),
     ("whf_witness_growth", {"kind": "whole", "inject": "witness_growth", "max": 100}),
@@ -1836,9 +1863,30 @@ def test_whole_owned_wrapper_keeps_failures_and_cleanup_errors_in_an_unknown_rec
         if name == "whf_setup_cleanup_errors":
             assert [text.split(":")[0] for text in errors] == ["setup", "cleanup stop", "cleanup dispose"], row
             assert stop["failed"] is True and stop["dispose"] == "failed", row
-    elif name == "whf_identity_failure":  # RootCreation failed: the driver disposed, it never stopped
-        assert row["calls"][2:] == ["dispose"] and "synthetic identity failure" in receipt["failure"]["message"]
-        assert receipt["binding"] is None and stop["dispose"] == "ok", row  # the driver binding is not returned
+    elif name == "whf_identity_failure" or name.startswith("whf_exception_"):
+        assert row["calls"][2:] == ["stop", "dispose"], row
+        assert receipt["failure"] is not None and receipt["binding"] is None, row
+        assert stop["inner_calls"] == 1 and stop["requests"] == 1, row
+        if name == "whf_identity_failure" or "identity" in name:
+            assert "synthetic identity failure" in receipt["failure"]["message"], row
+        elif "witness" in name:
+            assert "synthetic post-acquisition witness failure" in receipt["failure"]["message"], row
+        elif "after_observer" in name:
+            assert "synthetic post-observer clock failure" in receipt["failure"]["message"], row
+        else:
+            token = "free" if name.endswith("_free") else "clock"
+            assert "synthetic post-acquisition " + token + " failure" in receipt["failure"]["message"], row
+        if "after_observer" in name:
+            assert stop["origin"] == "observer", row
+        elif "after_stop" in name or "after_failed_stop" in name:
+            assert stop["origin"] == "driver", row
+        else:
+            assert stop["origin"] == "driver_exception_cleanup", row
+        if "cleanup_errors" in name:
+            assert stop["failed"] is True and stop["dispose"] == "failed", row
+            assert "synthetic owned stop failure" in stop["error"], row
+            assert "synthetic owned dispose failure" in stop["dispose_error"], row
+            assert [text.split(":")[0] for text in errors] == ["driver cleanup stop", "driver cleanup dispose"], row
     elif name == "whf_dispose_failure":
         assert receipt["failure"] is None and stop["dispose"] == "failed", row
         assert "synthetic owned dispose failure" in stop["dispose_error"], row

@@ -695,7 +695,20 @@ def test_harness_lifetime_drivers_sequence_the_job_through_seams_and_the_real_jo
                  "$managed.TotalProcesses", "& $Seams['KillController'] $managed", "$managed.Dispose()",
                  "& $Seams['InheritedHandles'] $managed", "Get-WdShadowMemberObservation"):
         assert need in driver, need
-    assert driver.count("$managed.Stop()") == 1
+    # Normal and exceptional cleanup have two textual sites, not two stop attempts.
+    # The raw fallback is guarded by the actual prior-attempt flag; owned cleanup
+    # uses the facade's shared latch, including when the first Stop failed.
+    assert driver.count("$managed.Stop()") == 2
+    assert "$driverStopAttempted = $false" in driver
+    assert "$driverStopAttempted = $true\n            try { $managed.Stop();" in driver
+    assert "elseif (-not $driverStopAttempted) { $managed.Stop() }" in driver
+    assert "$managed.StopForExceptionalCleanup()" in driver
+    assert driver.index("$managed.StopForExceptionalCleanup()") < driver.index("$managed.Dispose()")
+    facade = _function(harness, "New-WdShadowOwnedStopOnce")
+    cleanup = facade[facade.index("-Name StopForExceptionalCleanup"):facade.index("-Name Wait")]
+    assert cleanup.index("if ([int]$this.StopRecord['inner_calls'] -ne 0) { return }") < \
+        cleanup.index("try { $this.Stop() }")
+    assert "driver_exception_cleanup" in facade
     assert driver.index("& $Seams['NewManaged'] $plan") < driver.index("$managed.Stop()") < driver.index(
         "$managed.Dispose()")
     compose = _function(harness, "ConvertTo-WdShadowLifetimeCaseObservation")

@@ -13,10 +13,13 @@
     Time: one Stopwatch is the enforcement clock, started once and never reset; UTC is read once at launch and every
     *_utc value is that launch time plus the monotonic elapsed time. Stop() (TerminateJobObject) runs only at the
     1800 s deadline, after a guard hit (see Guards), after an unreadable job state or after a failed start record,
-    followed by at most 30 s for the job to drain. completed needs a full drain before the deadline (root exit alone
-    never counts), an observed root exit, a positive exclusive reacquire and release of the live-dir lock, and no
-    unknown value; stopped_at_deadline needs a Stop that returned, a confirmed drain, the root observed exited on the
-    managed handle after that drain and the lock reacquire (D1); everything else is stop_unconfirmed.
+    followed by at most 30 s for the job to drain. completed needs a full drain first observed strictly before the
+    deadline (Tools P2: the clock is read after that observation and the deadline is checked again after the
+    guards; a first observation at or after it takes the Stop path), with root exit alone never counting, an
+    observed root exit, a positive exclusive reacquire and release of the live-dir lock, and no unknown value;
+    stopped_at_deadline needs a Stop that returned, a confirmed drain, the root observed exited on the managed
+    handle after that drain and the lock reacquire (D1); everything else is stop_unconfirmed. This bounds when a
+    drain is credited; it does not preempt a blocking call.
 
     Records (D8 baseline) live in a new per-launch directory under the approved run root, outside the live dir, and
     each is published once (CreateNew, then a rename that never overwrites). The input file and the verified type are
@@ -666,6 +669,9 @@ try {
                 Add-WdShadowUnknown $unknown 'guard' $_.Exception.GetType().FullName
             }
             if ($null -ne $guardStop) { break }
+            # Tools P2 (late drain): the guards may have used up the time; never wait or credit a drain at or after
+            # the deadline.
+            if ($clock.ElapsedMilliseconds -ge $deadlineMs) { break }
             $slice = [int][Math]::Max(1, [Math]::Min($PollMilliseconds, $deadlineMs - $clock.ElapsedMilliseconds))
             try {
                 if ($null -eq $rootExitAt) {
@@ -674,8 +680,14 @@ try {
                     Start-Sleep -Milliseconds ([Math]::Min(250, $slice))
                 }
                 if ($null -ne $rootExitAt -and $managed.ActiveProcesses -eq 0) {
-                    $drained = $true
-                    $drainAt = $clock.Elapsed.TotalSeconds
+                    # Tools P2: completed needs the drain observed strictly before the deadline, by one clock
+                    # reading taken after the observation; a later first observation leaves the job undrained, so
+                    # the Stop below runs.
+                    $observed = $clock.Elapsed
+                    if ($observed.TotalMilliseconds -lt $deadlineMs) {
+                        $drained = $true
+                        $drainAt = $observed.TotalSeconds
+                    }
                     break
                 }
             } catch {

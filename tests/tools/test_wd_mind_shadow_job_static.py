@@ -109,7 +109,11 @@ def test_outcome_rules_completed_needs_drain_lock_and_no_unknown(adapter):
 
 
 def test_drain_stop_and_lock_flags_come_from_their_own_checks(adapter):
-    drain = r"if \(\$null -ne \$rootExitAt -and \$managed\.ActiveProcesses -eq 0\) \{\s*\$drained = \$true"
+    # Tools P2 (late drain): the drain is credited only from one clock reading after the observation, strictly
+    # before the deadline; tests/tools/test_wd_mind_shadow_deadline.py runs this loop on a fake clock.
+    drain = (r"if \(\$null -ne \$rootExitAt -and \$managed\.ActiveProcesses -eq 0\) \{\s*"
+             r"\$observed = \$clock\.Elapsed\s*if \(\$observed\.TotalMilliseconds -lt \$deadlineMs\) \{\s*"
+             r"\$drained = \$true\s*\$drainAt = \$observed\.TotalSeconds\s*\}\s*break")
     assert re.search(drain, adapter) and adapter.count("$drained = $true") == 1
     confirm = r"if \(\$managed\.ActiveProcesses -eq 0\) \{ \$stopConfirmed = \$true; break \}"
     assert re.search(confirm, adapter) and adapter.count("$stopConfirmed = $true") == 1
@@ -426,6 +430,9 @@ def test_a_guard_hit_in_a_slice_leaves_through_the_one_stop_path(adapter):
                      r"'guard' ", loop)
     leave = loop.index("if ($null -ne $guardStop) { break }")
     assert loop.index("$guardStop = Get-WdShadowGuardStop") < leave < loop.index("$slice = ")
+    # Tools P2 (late drain): the deadline is checked again after the guards, before the wait.
+    recheck = loop.index("if ($clock.ElapsedMilliseconds -ge $deadlineMs) { break }")
+    assert leave < recheck < loop.index("$slice = ")
     assert loop.index("$slice = ") < loop.index("$managed.Wait($slice)")
     assert adapter.count("Get-WdShadowGuardStop -OffSwitchPath") == 1 and adapter.count("$managed.Stop()") == 1
     assert adapter.count("$guardStop = ") == 3 and adapter.count("$guardStop = $null") == 1

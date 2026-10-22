@@ -595,18 +595,30 @@ function ConvertTo-WdShadowA7Literal {
 }
 
 function Get-WdShadowA7ChildCommand {
-    # The child's whole command: for preloaded_type the R1 preload (the installed lane loop's one
+    # The child's whole command: for preloaded_type the R1 preload (the loop bytes read ONCE and refused, exit 4,
+    # unless their raw SHA-256 equals the explicit pin, then those same bytes strictly decoded and parsed; their one
     # Initialize-WdNativeTurnType, defined and called; no single function is a setup error, exit 4), then exactly one
     # call of the adapter with the planned inputs as literals. An adapter refusal becomes one error line
     # "WD-A7-REFUSAL <message>" and exit 2; otherwise the adapter's own exit code passes through (0 when it set none).
-    param($Plan, [string] $AdapterPath)
+    param($Plan, [string] $AdapterPath, [string] $ExpectedLoopSha256)
     $inputs = $Plan['inputs']
     $text = '$ErrorActionPreference = ''Stop''; '
     if ($Plan['preload'] -ceq 'lane_loop_type') {
+        if ($ExpectedLoopSha256 -cnotmatch '^[0-9A-F]{64}\z') {
+            throw 'refused: the preload needs the exact uppercase SHA-256 pin of the loop bytes (no default)'
+        }
         $loop = ConvertTo-WdShadowA7Literal ('C:\Python\wd-reboot-bundles\' + $inputs['ExpectedSourceCommit'] +
             '\Invoke-WdLaneTurnLoop.ps1')
-        $text += '$wdA7Tokens = $null; $wdA7Errors = $null; ' +
-            '$wdA7Ast = [Management.Automation.Language.Parser]::ParseFile(' + $loop +
+        $text += '$wdA7Bytes = [IO.File]::ReadAllBytes(' + $loop + '); ' +
+            '$wdA7Sha = [Security.Cryptography.SHA256]::Create(); ' +
+            '$wdA7Hash = -join @($wdA7Sha.ComputeHash($wdA7Bytes) | ForEach-Object { $_.ToString(''X2'') }); ' +
+            '$wdA7Sha.Dispose(); if ($wdA7Hash -cne ' + (ConvertTo-WdShadowA7Literal $ExpectedLoopSha256) + ') { ' +
+            '[Console]::Error.WriteLine(''WD-A7-SETUP the lane loop is not its pinned bytes''); exit 4 }; ' +
+            '$wdA7Skip = 0; if ($wdA7Bytes.Length -ge 3 -and $wdA7Bytes[0] -eq 239 -and $wdA7Bytes[1] -eq 187 ' +
+            '-and $wdA7Bytes[2] -eq 191) { $wdA7Skip = 3 }; ' +
+            '$wdA7Text = (New-Object Text.UTF8Encoding($false, $true)).GetString($wdA7Bytes, $wdA7Skip, ' +
+            '$wdA7Bytes.Length - $wdA7Skip); $wdA7Tokens = $null; $wdA7Errors = $null; ' +
+            '$wdA7Ast = [Management.Automation.Language.Parser]::ParseInput($wdA7Text' +
             ', [ref]$wdA7Tokens, [ref]$wdA7Errors); ' +
             '$wdA7Found = @($wdA7Ast.EndBlock.Statements | Where-Object { ' +
             '$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and ' +
@@ -646,15 +658,15 @@ function Invoke-WdShadowA7Driver {
     # error line that is the planned refusal and run_dir_created is any new run-root entry. process_started is $true
     # for a listed live child (a start was seen) and otherwise $null: an empty listing misses a process that started
     # and ended and is never no-start evidence (Lead's v6 decision), so without an owned-job witness the sub-case stays
-    # UNKNOWN. $null when the sub-case has no plan.
+    # UNKNOWN. $null when the sub-case has no plan. The preload needs the explicit loop pin (Lead's v9 decision).
     param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot, [string] $AdapterPath, [string] $HostPath,
-        [scriptblock] $Prepare, [scriptblock] $RunChild, [scriptblock] $ListChildren)
+        [scriptblock] $Prepare, [scriptblock] $RunChild, [scriptblock] $ListChildren, [string] $ExpectedLoopSha256)
     if ($null -eq $Prepare -or $null -eq $RunChild -or $null -eq $ListChildren) {
         throw 'refused: a driver seam is missing'
     }
     $plan = Get-WdShadowA7Plan -Name $Name -Inputs $Inputs -CaseRoot $CaseRoot
     if ($null -eq $plan) { return $null }
-    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $AdapterPath
+    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $AdapterPath -ExpectedLoopSha256 $ExpectedLoopSha256
     [void](& $Prepare $plan)
     if (-not [IO.Directory]::Exists([string]$plan['run_root'])) { throw 'refused: the preparation made no run root' }
     $before = Get-WdShadowA7Entries -Path $plan['run_root']
@@ -1214,7 +1226,8 @@ function Invoke-WdShadowA7OwnedAttempt {
         -BoundBytes 1048576)
     $plan = Get-WdShadowA7Plan -Name $Name -Inputs $Inputs -CaseRoot $CaseRoot
     if ($null -eq $plan) { throw 'refused: a structural-only A7 sub-case has no owned attempt' }
-    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $Files['adapter']
+    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $Files['adapter'] `
+        -ExpectedLoopSha256 $Expected['loop']
     . $Files['runner']
     $receipt = Invoke-WdMindShadowA7OwnedProbe -ApprovedNativeExecution -Plan $plan -ApprovedInputs $Inputs `
         -CaseRoot $CaseRoot -LiteralAdapterCommand $command -CaseBinding $CaseBinding -HostPath $Files['host'] `
@@ -1256,43 +1269,105 @@ function ConvertTo-WdShadowA7CaseObservation {
     return @{ binding = $binding; subcases = $subcases }
 }
 
+# Checkpoint 6 (Lead's v9 GO, 2026-10-22T21:01:34Z): the owned lifetime seams take the synthetic member by explicit
+# pinned path, bind the run to the admitted host, member and evidence root and regenerate the one approved plan
+# before any write, load or process seam; a substituted plan refuses inside the seam before its first write. The
+# six-argument managed process has no child environment and no output cap, so the fixed member's child-local opt-in
+# (switch AND WD_MIND_SHADOW_SYNTHETIC_MEMBER=opt-in) and finite log bounds cannot be established: the root launch
+# seam refuses with that exact reason and the native lifetime branch stays NOT_READY (no caller or global
+# environment change, no generic shell command).
+
+function Test-WdShadowOwnedMemberPin {
+    # The pinned synthetic member: the same full C:\ path, ancestry and byte rules as the five admitted files (the A7
+    # five-file Test-WdShadowOwnedAdmission stays unchanged).
+    param([string] $MemberPath, [string] $ExpectedMemberSha256)
+    if ($MemberPath -cnotmatch '^C:\\[\x20-\x7E]+\z' -or $MemberPath.Contains('"') -or
+        [IO.Path]::GetFullPath($MemberPath) -cne $MemberPath) {
+        throw 'refused: the member path is not a full printable ASCII C:\ path'
+    }
+    $current = $MemberPath
+    while ($current.Length -gt 3) {
+        if (([IO.File]::Exists($current) -or [IO.Directory]::Exists($current)) -and
+            ([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'refused: the member path has reparse ancestry'
+        }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+    if ($ExpectedMemberSha256 -cnotmatch '^[0-9A-F]{64}\z') {
+        throw 'refused: the member pin is not an uppercase SHA-256'
+    }
+    if (-not [IO.File]::Exists($MemberPath)) { throw 'refused: the pinned member file is missing' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = -join @($sha.ComputeHash([IO.File]::ReadAllBytes($MemberPath)) | ForEach-Object { $_.ToString('X2') })
+    } finally { $sha.Dispose() }
+    if ($hash -cne $ExpectedMemberSha256) { throw 'refused: the member file is not its pinned bytes' }
+}
+
 function New-WdShadowOwnedLifetimeSeams {
-    # The future real job and root seams of the A1/A2 lifetime drivers: admission, then Root's frozen runner loaded
-    # from its pinned path into a private module; NewManaged runs Root's type initializer (its exact canonical loop
-    # only) and its six-argument managed process for the root member with a fresh empty input and bounded log files in
-    # the witness directory, and RootCreation reads Root's measured identity. The other seams are the plain ones of
-    # Get-WdShadowLifetimeSeams; its outer-context, controller-kill and handle seams stay refused.
-    param([switch] $ApprovedNativeExecution, [hashtable] $Files, [hashtable] $Expected, [string] $EvidenceRoot)
+    # The future real job and root seams of one A1/A2 lifetime sub-case: the opt-in switch (an accident guard, never
+    # authority), the five-file admission, the member pin, the run bound to the admitted host, member and evidence
+    # root, and the one approved plan regenerated here, all before Root's frozen runner is loaded into a private
+    # module. NewManaged refuses any plan that is not exactly that approved plan before any write, type or process
+    # call, and then refuses the approved one too: the six-argument managed process cannot give the member its
+    # child-local opt-in or finite log bounds (see checkpoint 6). RootCreation reads Root's measured identity. The
+    # other seams are the plain ones of Get-WdShadowLifetimeSeams; outer-context, controller-kill and handle stay
+    # refused.
+    param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
+        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $EvidenceRoot)
     if (-not $ApprovedNativeExecution) {
         throw 'refused: the owned lifetime seams need the explicit opt-in (an accident guard, never authority)'
     }
     [void](Test-WdShadowOwnedAdmission -Files $Files -Expected $Expected -EvidenceRoot $EvidenceRoot `
         -BoundBytes 8388608)
+    Test-WdShadowOwnedMemberPin -MemberPath $MemberPath -ExpectedMemberSha256 $ExpectedMemberSha256
+    if ($Run -isnot [hashtable] -or [string]$Run['witness_root'] -cne $EvidenceRoot -or
+        [string]$Run['host_path'] -cne [string]$Files['host'] -or [string]$Run['member_path'] -cne $MemberPath) {
+        throw 'refused: the run is not bound to the admitted host, member and evidence root'
+    }
+    $approved = Get-WdShadowLifetimePlan -CaseId $CaseId -Name $Name -Run $Run
+    $approvedHost = [string]$approved['host_path']
+    $approvedDirectory = [string]$approved['witness_directory']
+    $approvedLaunch = [string]$approved['binding']['launch_id']
+    $approvedArguments = [string[]]@($approved['arguments'])
     $module = New-Module -Name 'WdShadowOwnedRunner' -ScriptBlock { param([string] $Runner) . $Runner } `
         -ArgumentList $Files['runner']
-    $loop = & $module { param([string] $Path, [string] $Sha) Read-WdA7PinnedFile $Path $Sha -AsText } $Files['loop'] `
-        $Expected['loop']
-    $loopText = [string]$loop.text
     $seams = Get-WdShadowLifetimeSeams
     $seams['NewManaged'] = {
         param($Plan)
-        $directory = [string]$Plan['witness_directory']
-        $inputPath = $directory + '\root.input'
-        $stream = New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
-            [IO.FileShare]::None)
-        $stream.Dispose()
-        return & $module {
-            param([string] $Text, [string] $HostPath, [string[]] $Arguments, [string] $Directory, [string] $InputPath)
-            Initialize-WdA7OwnedType $Text
-            New-WdA7ManagedProcess $HostPath $Arguments $Directory $InputPath ($Directory + '\root.stdout.log') `
-                ($Directory + '\root.stderr.log')
-        } $loopText ([string]$Plan['host_path']) ([string[]]$Plan['arguments']) $directory $inputPath
+        $given = @()
+        if ($Plan -is [hashtable]) { $given = @($Plan['arguments']) }
+        $same = $Plan -is [hashtable] -and [string]$Plan['host_path'] -ceq $approvedHost -and
+            [string]$Plan['witness_directory'] -ceq $approvedDirectory -and $Plan['binding'] -is [hashtable] -and
+            [string]$Plan['binding']['launch_id'] -ceq $approvedLaunch -and $given.Count -eq $approvedArguments.Count
+        for ($index = 0; $same -and $index -lt $given.Count; $index++) {
+            if ([string]$given[$index] -cne $approvedArguments[$index]) { $same = $false }
+        }
+        if (-not $same) { throw 'refused: the plan is not the approved lifetime plan' }
+        throw ('refused: the fixed member needs its child-local opt-in (WD_MIND_SHADOW_SYNTHETIC_MEMBER) and finite ' +
+            'log bounds, which the six-argument managed process cannot establish; the native lifetime branch stays ' +
+            'NOT_READY')
     }.GetNewClosure()
     $seams['RootCreation'] = {
         param($Managed)
         return [string](& $module { param([int] $Id) (Get-WdA7ObservedIdentity $Id).creation_utc } ([int]$Managed.Pid))
     }.GetNewClosure()
     return $seams
+}
+
+function Invoke-WdShadowOwnedLifetimeDriver {
+    # The public owned lifetime run: the opt-in switch, then the owned seams (admission, member pin, run binding and
+    # the approved plan, all before any write), then the generic driver, whose first write is the registration file.
+    # The generic driver with injected seams stays a test surface, never a security or authority boundary.
+    param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
+        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $EvidenceRoot)
+    if (-not $ApprovedNativeExecution) {
+        throw 'refused: the owned lifetime run needs the explicit opt-in (an accident guard, never authority)'
+    }
+    $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution -CaseId $CaseId -Name $Name -Run $Run `
+        -Files $Files -Expected $Expected -MemberPath $MemberPath -ExpectedMemberSha256 $ExpectedMemberSha256 `
+        -EvidenceRoot $EvidenceRoot
+    return Invoke-WdShadowLifetimeDriver -CaseId $CaseId -Name $Name -Run $Run -Seams $seams
 }
 
 # Checkpoints 2 to 4: the case evaluators, the A7 pre-start drivers and the A1, A2, A3, A5 and A6 lifetime drivers

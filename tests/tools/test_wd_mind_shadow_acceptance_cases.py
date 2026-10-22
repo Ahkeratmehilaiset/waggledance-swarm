@@ -500,7 +500,13 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
             $plan = Get-WdShadowA7Plan -Name $entry['sub'] -Inputs $inputs -CaseRoot $entry['case_root']
             if ($null -eq $plan) { $row.result = 'NO_PLAN' } else {
                 $row.result = 'PLAN'; $row.plan = $plan
-                $row.command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['adapter']
+                $row.command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['adapter'] `
+                    -ExpectedLoopSha256 ('AB' * 32)
+                $row.nopin = $(try { [void](Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['adapter'])
+                    'RAN' } catch { [string]$_.Exception.Message })
+                $row.lowpin = $(try { [void](Get-WdShadowA7ChildCommand -Plan $plan `
+                    -AdapterPath $entry['adapter'] -ExpectedLoopSha256 ('ab' * 32)); 'RAN' } catch {
+                    [string]$_.Exception.Message })
             }
         } else {
             $child = $entry['child']; $kids = @($entry['children']); $made = [bool]$entry['create_entry']
@@ -521,7 +527,7 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
             $list = { param([int] $ParentId) $seen.listed++; return , @($kids) }.GetNewClosure()
             $observation = Invoke-WdShadowA7Driver -Name $entry['sub'] -Inputs $inputs -CaseRoot $entry['case_root'] `
                 -AdapterPath 'SYNTHETIC-ADAPTER.ps1' -HostPath 'SYNTHETIC-HOST.exe' -Prepare $prepare -RunChild $run `
-                -ListChildren $list
+                -ListChildren $list -ExpectedLoopSha256 ('AB' * 32)
             $row.seams = $seen
             if ($null -eq $observation) { $row.result = 'NO_PLAN' } else {
                 $row.result = [string](Get-WdShadowSubcaseVerdict -CaseId 'A7' -Name $entry['sub'] `
@@ -743,6 +749,14 @@ def test_a7_child_command_runs_the_adapter_once_with_literal_inputs(a7_rows, sub
     if preload:
         assert command.index("Initialize-WdNativeTurnType") < command.index("try {")
         assert "C:\\Python\\wd-reboot-bundles\\SYNTHETIC-SOURCE-COMMIT\\Invoke-WdLaneTurnLoop.ps1" in command
+        pin = "'" + "AB" * 32 + "'"
+        assert rows["nopin"].startswith("refused: ") and rows["lowpin"].startswith("refused: "), rows
+        assert command.count("ReadAllBytes(") == 1 and command.count("ParseInput(") == 1, command
+        assert "ParseFile(" not in command and "UTF8Encoding($false, $true)" in command, command
+        assert (command.index("ReadAllBytes(") < command.index(pin) < command.index("exit 4")
+                < command.index("ParseInput(") < command.rindex("Initialize-WdNativeTurnType")), command
+    else:
+        assert rows["nopin"] == "RAN" and "ReadAllBytes(" not in command, rows
     for word in ("Add-Type", "Start-Process", "Invoke-Expression", "Stop-Process"):
         assert word not in command, word
 
@@ -1391,7 +1405,8 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
             $plan = Get-WdShadowA7Plan -Name $entry['subs'][-1] -Inputs $inputs -CaseRoot ($entry['case_root'] + '-' +
                 $entry['subs'][-1])
             $row.command_matches = ($null -ne $global:WdFakeA7 -and $global:WdFakeA7.command -ceq
-                (Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['files']['adapter']))
+                (Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['files']['adapter'] `
+                    -ExpectedLoopSha256 $entry['expected']['loop']))
             $row.recorded = $global:WdFakeA7
             $row.attempt = $attempts[0]
             $row.result = 'ATTEMPTS'
@@ -1399,16 +1414,36 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
                 $case = ConvertTo-WdShadowA7CaseObservation -CaseBinding $entry['binding'] -Attempts $attempts
                 $row.result = [string](Get-WdShadowA7CaseVerdict -Binding $entry['binding'] -Observation $case)
             }
+        } elseif ($entry['kind'] -ceq 'driver') {
+            $directory = [string]$entry['run']['witness_root'] + '\' + [string]$entry['run']['launch_id']
+            try {
+                [void](Invoke-WdShadowOwnedLifetimeDriver -ApprovedNativeExecution -CaseId 'A1' -Name 'deadline' `
+                    -Run $entry['run'] -Files $entry['files'] -Expected $entry['expected'] `
+                    -MemberPath $entry['member'] -ExpectedMemberSha256 $entry['member_pin'] `
+                    -EvidenceRoot $entry['evidence'])
+                $row.result = 'RAN'
+            } finally {
+                $row.registration = [IO.File]::Exists($directory + '\members.registration')
+                $row.input = [IO.File]::Exists($directory + '\root.input')
+                $row.calls = @($global:WdFakeCalls)
+            }
         } else {
             $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution:([bool]$entry['approved']) `
-                -Files $entry['files'] -Expected $entry['expected'] -EvidenceRoot $entry['evidence']
+                -CaseId 'A1' -Name 'deadline' -Run $entry['run'] -Files $entry['files'] `
+                -Expected $entry['expected'] -MemberPath $entry['member'] `
+                -ExpectedMemberSha256 $entry['member_pin'] -EvidenceRoot $entry['evidence']
             $row.keys = @($seams.Keys | Sort-Object)
             $plan = Get-WdShadowLifetimePlan -CaseId 'A1' -Name 'deadline' -Run $entry['run']
+            if ($entry['substitute'] -ceq 'host') { $plan['host_path'] = 'C:\FOREIGN\pwsh.exe' }
+            if ($entry['substitute'] -ceq 'argument') {
+                $plan['arguments'] = [string[]]@($plan['arguments'] | ForEach-Object { $_ }) + @('-Foreign')
+            }
+            if ($entry['substitute'] -ceq 'directory') { $plan['witness_directory'] = $entry['evidence'] }
             [void][IO.Directory]::CreateDirectory([string]$plan['witness_directory'])
-            $managed = & $seams['NewManaged'] $plan
-            $row.pid = $managed.Pid
-            $row.creation = & $seams['RootCreation'] $managed
+            $row.launch = $(try { [void](& $seams['NewManaged'] $plan); 'RAN' } catch { [string]$_.Exception.Message })
+            $row.input = [IO.File]::Exists([string]$plan['witness_directory'] + '\root.input')
             $row.calls = @($global:WdFakeCalls)
+            $row.creation = & $seams['RootCreation'] ([pscustomobject]@{ Pid = 5151 })
             $row.refused = @(foreach ($seam in @('Context', 'KillController', 'InheritedHandles')) {
                 try { [void](& $seams[$seam] $plan); 'RAN' } catch { [string]$_.Exception.Message }
             })
@@ -1439,11 +1474,23 @@ WIRING_A7 = [
     ("w7_structural_case", {"subs": ["lane_loop_zero_functions"]}, "ERROR"),
     ("w7_whole_pass_receipt", {"mode": "whole_pass"}, "ERROR"),
     ("w7_extra_entry_key", {"mode": "extra_entry_key"}, "ERROR"),
+    ("w7_preload_pins_loop", {"subs": ["preloaded_type"]}, "ATTEMPTS"),
 ]
 WIRING_LIFETIME = [
     ("wl_owned_factory", {}, "SEAMS"),
     ("wl_not_approved", {"approved": False}, "ERROR"),
     ("wl_loop_pin_mismatch", {"pin": ("loop", "F" * 64)}, "ERROR"),
+    ("wl_member_pin_mismatch", {"member_pin": "0" * 64}, "ERROR"),
+    ("wl_member_lowercase_pin", {"member_lower": True}, "ERROR"),
+    ("wl_member_relative", {"member": "pins\\member.ps1"}, "ERROR"),
+    ("wl_foreign_run_host", {"run": ("host_path", "C:\\FOREIGN\\pwsh.exe")}, "ERROR"),
+    ("wl_foreign_run_member", {"run": ("member_path", "C:\\FOREIGN\\member.ps1")}, "ERROR"),
+    ("wl_escaped_witness_root", {"run": ("witness_root", "OTHER")}, "ERROR"),
+    ("wl_substituted_host", {"substitute": "host"}, "SEAMS"),
+    ("wl_substituted_argument", {"substitute": "argument"}, "SEAMS"),
+    ("wl_substituted_directory", {"substitute": "directory"}, "SEAMS"),
+    ("wld_foreign_host", {"kind": "driver", "run": ("host_path", "C:\\FOREIGN\\pwsh.exe")}, "ERROR"),
+    ("wld_launch_refused", {"kind": "driver"}, "ERROR"),
 ]
 
 
@@ -1461,6 +1508,8 @@ def wiring_rows(request, tmp_path_factory):
              "planner": pins / "planner.ps1", "runner": pins / "runner.ps1"}
     for key, path in files.items():
         path.write_bytes(FAKE_RUNNER.encode("utf-8") if key == "runner" else f"SYNTHETIC {key}\n".encode("ascii"))
+    member = pins / "member.ps1"
+    member.write_bytes(b"SYNTHETIC member\n")
     evidence = folder / ".codex-audit" / "evidence"
     evidence.mkdir(parents=True)
     (folder / "elsewhere").mkdir()
@@ -1483,7 +1532,18 @@ def wiring_rows(request, tmp_path_factory):
                         inputs=_a7_inputs(str(folder / "approved"), A7_FAKE_SID),
                         case_root=str(folder / ("case-" + name)))
         else:
-            item.update(kind="lifetime", run=_lt_run(folder, name))
+            own = folder / ".codex-audit" / name
+            own.mkdir(parents=True)
+            run = {"harness_run_id": "SYNTHETIC-HARNESS-RUN", "launch_id": LT_LAUNCH, "deadline_seconds": "60",
+                   "witness_root": str(own), "host_path": paths["host"], "member_path": str(member)}
+            if "run" in change:
+                key, value = change["run"]
+                run[key] = str(folder / ".codex-audit" / "other") if value == "OTHER" else value
+            pin = change.get("member_pin", _sha(member))
+            item.update(kind=change.get("kind", "lifetime"), run=run, evidence=str(own),
+                        member=change.get("member", str(member)),
+                        member_pin=pin.lower() if change.get("member_lower") else pin,
+                        substitute=change.get("substitute", ""))
         items.append(item)
     host = folder / "wiring_host.ps1"
     host.write_text(WIRING_HOST, encoding="utf-8")
@@ -1510,6 +1570,8 @@ def test_a7_owned_attempt_calls_roots_runner_once_with_the_pinned_plan(wiring_ro
     assert recorded["approved"] is True and recorded["inputs_same"] is True and row["command_matches"] is True
     assert recorded["plan_keys"] == ["inputs", "name", "preload", "prepare", "refusal", "run_root"]
     assert recorded["runner_sha"] == item["expected"]["runner"] and recorded["evidence"] == item["evidence"]
+    if name == "w7_preload_pins_loop":  # the attempt passes the admitted loop pin to the preload child
+        assert "'" + item["expected"]["loop"] + "'" in recorded["command"], recorded
     attempt = row["attempt"]
     assert sorted(attempt) == ["entry", "name", "owned_job", "raw", "status"]
     assert sorted(attempt["entry"]) == ["attempt", "refusal"]
@@ -1517,20 +1579,27 @@ def test_a7_owned_attempt_calls_roots_runner_once_with_the_pinned_plan(wiring_ro
 
 @WINDOWS_ONLY
 @pytest.mark.parametrize("name,change,expected", WIRING_LIFETIME, ids=[row[0] for row in WIRING_LIFETIME])
-def test_owned_lifetime_factory_uses_roots_type_and_identity_and_keeps_unsafe_seams_refused(wiring_rows, name,
-                                                                                             change, expected):
+def test_owned_lifetime_seams_bind_host_member_and_run_and_refuse_the_launch(wiring_rows, name, change, expected):
     row, item = wiring_rows[0][name], wiring_rows[1][name]
     assert row["result"] == expected, row
     if expected == "ERROR":
         assert row["error"].startswith("refused: "), row
+        if item["kind"] == "driver":  # the public wrapper: admission and binding before its first write
+            launched = name == "wld_launch_refused"
+            assert row["registration"] is launched and row["input"] is False and row["calls"] == [], row
+            if launched:
+                assert "child-local opt-in" in row["error"], row
         return
     assert row["keys"] == sorted(["NewManaged", "RootCreation", "Clock", "Sleep", "FreeBytes", "Context",
                                   "KillController", "InheritedHandles"])
-    directory = item["run"]["witness_root"] + "\\" + LT_LAUNCH
-    assert row["calls"][0] == "init " + str(len("SYNTHETIC loop\n"))
-    host, arguments, cwd, stdin, stdout, stderr = row["calls"][1][len("new "):].split("|")
-    assert host == item["run"]["host_path"] and cwd == directory and stdin == directory + "\\root.input"
-    assert stdout == directory + "\\root.stdout.log" and stderr == directory + "\\root.stderr.log"
-    assert "-OptInSyntheticMember" in arguments and "-Member root -Subcase A1/deadline" in arguments
-    assert row["pid"] == 5151 and row["creation"] == "SYNTHETIC-CREATION-5151"
+    # Lead's v9 decision: a substituted plan refuses before any write, type or process call; the approved plan
+    # also refuses there, because the six-argument managed process cannot give the fixed member its child-local
+    # opt-in or finite log bounds, so the native lifetime branch stays NOT_READY with that exact reason.
+    if item["substitute"]:
+        assert row["launch"].startswith("refused: the plan is not the approved lifetime plan"), row
+    else:
+        assert row["launch"].startswith("refused: ") and "child-local opt-in" in row["launch"], row
+        assert "log bounds" in row["launch"] and "NOT_READY" in row["launch"], row
+    assert row["input"] is False and row["calls"] == [], row
+    assert row["creation"] == "SYNTHETIC-CREATION-5151"
     assert len(row["refused"]) == 3 and all(text.startswith("refused: ") for text in row["refused"]), row

@@ -1,7 +1,9 @@
 """Only in-process synthetic files and PowerShell parsing; never native jobs."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -22,9 +24,16 @@ def load_fixture():
 
 
 def binding(phase):
-    return {'run_id': 'synthetic-run', 'launch_id': 'synthetic-launch', 'phase': phase,
-            'producer_sha256': 'e7719531d6e357407f9b2087fbfeb9d15a847aa7df1296413c35280e21d26a21',
-            'core_sha256': 'cd009fbc890e15435919f31e52342e6c956825db523898b2c349b887a64d9557'}
+    # Observe the exact supported checkout bytes; never normalize unknown bytes
+    # into an approved pin or assume the author's Windows CRLF checkout.
+    module = load_fixture()
+    observed = {'run_id': 'synthetic-run', 'launch_id': 'synthetic-launch', 'phase': phase}
+    for key, (relative, checkout_pin) in module.PINS.items():
+        actual = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
+        if actual not in (checkout_pin, module.CANONICAL_PINS[key]):
+            raise ValueError('unsupported_source_bytes')
+        observed[key] = actual
+    return observed
 
 
 def ps_json(script, ps):
@@ -224,7 +233,7 @@ function Add-Type {{throw 'unexpected native compilation'}}
 function Start-Process {{throw 'unexpected process'}}
 function Get-Process {{throw 'unexpected process query'}}
 . {q(PROBE)}
-Assert-WdPublicationFilePin {q(ROOT / 'tools/wd_bridge_mind.py')} 'CD009FBC890E15435919F31E52342E6C956825DB523898B2C349B887A64D9557'
+Assert-WdPublicationFilePin {q(ROOT / 'tools/wd_bridge_mind.py')} {q(binding('before_replace')['core_sha256'])}
 $job=[pscustomobject]@{{stopped=$false;calls=0}}
 $job|Add-Member ScriptMethod Stop {{$this.stopped=$true;$this.calls++}}
 $job|Add-Member ScriptMethod Wait {{param($ms) if($ms -ne 0){{throw 'unexpected wait'}};return $this.stopped}}
@@ -276,3 +285,73 @@ catch {{if($_.Exception.Message -notmatch 'duplicate or missing'){{throw}}}}
 @{{valid=$true;foreign_refused=$true}}|ConvertTo-Json
 """
     assert ps_json(script, ps) == {'valid': True, 'foreign_refused': True}
+
+
+def source_copy(tmp_path, newline):
+    code = tmp_path / 'source'
+    for relative in ('sandbox/mind/mind_capture_producer.py', 'tools/wd_bridge_mind.py'):
+        target = code / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = (ROOT / relative).read_bytes().replace(b'\r\n', b'\n')
+        target.write_bytes(data if newline == 'lf' else data.replace(b'\n', b'\r\n'))
+    return code
+
+
+@pytest.mark.parametrize('newline', ['lf', 'crlf'])
+def test_binding_uses_actual_supported_source_bytes(tmp_path, monkeypatch, newline):
+    # RCO2 F1: the same immutable Source can be checked out with either measured
+    # encoding. Bind the bytes actually exercised, not the author's CRLF host.
+    module = load_fixture()
+    code = source_copy(tmp_path, newline)
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', code)
+    observed = binding('before_replace')
+    for key, (relative, _) in module.PINS.items():
+        assert observed[key] == hashlib.sha256((code / relative).read_bytes()).hexdigest()
+    atomic, _ = module.extracted_functions(code, observed, module.os.replace)
+    target = tmp_path / 'synthetic-result.json'
+    atomic(target, b'synthetic bytes')
+    assert target.read_bytes() == b'synthetic bytes'
+
+
+def test_binding_refuses_unrecognized_source_bytes(tmp_path, monkeypatch):
+    code = source_copy(tmp_path, 'lf')
+    (code / 'tools/wd_bridge_mind.py').write_bytes(b'unrecognized synthetic Source')
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', code)
+    with pytest.raises(ValueError, match='unsupported_source_bytes'):
+        binding('before_replace')
+
+
+@pytest.mark.parametrize('newline', ['lf', 'crlf'])
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_ps_source_pin_check_uses_the_actual_encoding(tmp_path, monkeypatch, newline, ps):
+    # Exercise the actual existing PowerShell pin check with both byte sets.
+    code = source_copy(tmp_path, newline)
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', code)
+    test_source_pin_and_owned_job_stop_with_managed_fake(ps)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_future_fixture_child_argv_is_isolated_before_script_path(ps):
+    # RCO2 F2: evaluate only the actual argv assignment, never launch its child.
+    script = f"""
+$ErrorActionPreference='Stop'
+function Add-Type {{throw 'unexpected native compilation'}}
+function Start-Process {{throw 'unexpected process'}}
+function Get-Process {{throw 'unexpected process query'}}
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(PROBE)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse error'}}
+$nodes=@($ast.FindAll({{param($n)
+    $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -ceq '$arguments'
+}},$true))
+if($nodes.Count -ne 1){{throw 'argv assignment not unique'}}
+$fixture='SYNTHETIC-FIXTURE.py';$fixtureRoot='SYNTHETIC-ROOT';$CodeRoot='SYNTHETIC-CODE'
+$binding=@{{run_id='SYNTHETIC-RUN'}}
+. ([scriptblock]::Create($nodes[0].Extent.Text))
+@($arguments)|ConvertTo-Json -Compress
+"""
+    argv = ps_json(script, ps)
+    assert argv[:2] == ['-I', 'SYNTHETIC-FIXTURE.py']
+    assert argv[2:] == ['--approved-native-fixture', '--root', 'SYNTHETIC-ROOT',
+                       '--code-root', 'SYNTHETIC-CODE', '--binding-json', '{"run_id":"SYNTHETIC-RUN"}']

@@ -154,7 +154,7 @@ function Invoke-WdMindShadowPublicationProbe {
     $binding=[ordered]@{run_id=$RunId;launch_id=$LaunchId;phase=$Phase;producer_sha256=$producerHash;core_sha256=$coreHash}
     $inputPath=Join-Path $run 'empty.stdin'
     [IO.File]::WriteAllBytes($inputPath,[byte[]]@())
-    $arguments=[string[]]@($fixture,'--approved-native-fixture','--root',$fixtureRoot,'--code-root',$CodeRoot,'--binding-json',($binding|ConvertTo-Json -Compress))
+    $arguments=[string[]]@('-I',$fixture,'--approved-native-fixture','--root',$fixtureRoot,'--code-root',$CodeRoot,'--binding-json',($binding|ConvertTo-Json -Compress))
     $managed=$null;$ready=$null;$snapshot=$null;$reason='';$drained=$false
     try {
         $managed=[WdManagedTurnProcess]::new($PythonPath,$arguments,$CodeRoot,$inputPath,(Join-Path $run 'stdout.log'),(Join-Path $run 'stderr.log'))

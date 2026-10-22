@@ -20,22 +20,31 @@
     G1-G4, the member witness and the A1 pipe-holding grandchild, and Lead's guard cases (off switch before and during
     the run, a denied switch read, the floor before the start and during the run, reparse ancestry, one confirmed
     Stop, the deadline) placed as A1 and A7 sub-cases. An observation must have exactly the expected keys and types
-    and the run binding (harness run, case, launch id, root PID, root creation time, deadline); a missing, extra,
-    mistyped or partial value is UNKNOWN and a foreign binding is FAIL. A4 is always NOT_READY: the type resumes the
-    root inside its constructor (L1), so no supported before-resume timing point exists, and no whole run can PASS
-    until one does. No native driver produces observations yet, so every case stays NOT_READY (native NOT_RUN); a
-    synthetic or supplied PASS is never native acceptance, and the script takes no observation input.
+    and the run binding (A1-A6: harness run, case, launch id, root PID, root creation time, deadline; A7: its
+    pre-start attempt binding, below); a missing, extra, mistyped or partial value is UNKNOWN and a foreign binding is
+    FAIL. A4 is always NOT_READY: A4 is the job kill at the publication replacement (just before and just after the
+    latest.json replace: the pointer is the old or the new complete one, last_ok intact, temp leftovers listed;
+    Lead's correction 2026-10-22T19:14:40Z), no driver here produces that evidence, and no whole run can PASS until
+    one does. No native driver produces observations yet, so every case stays NOT_READY (native NOT_RUN); a synthetic
+    or supplied PASS is never native acceptance, and the script takes no observation input.
 
     Checkpoint 3 (Lead A7 driver GO, 2026-10-22): A7 pre-start refusal drivers. A driver plans one sub-case as the
-    approved adapter inputs with at most one deviation, runs the actual adapter once in a fresh child through injected
-    seams and derives the four refusal observations from the child's exit code and error stream, two listings of the
-    run root and the child's live children. RCO1's A1-A7 wording selects no particular adapter refusal (UNSPECIFIED,
-    RCO1 2026-10-22T19:01:24Z), so the refusal per sub-case is this file's explicit choice: T1 integrity, T1 user SID,
-    R1 type, the off switch, the floor and run-root reparse ancestry. Lead's v5 delta (2026-10-22T19:07:50Z) adds the
-    user SID variant that RCO1's 10-17 refinement names, so A7 requires nine sub-cases and the old eight are never
-    complete. The two lane-loop sub-cases have no plan (unreachable in an actual run). The drivers are not called by
-    the script: the A7 case verdict needs a run binding (launch id, root PID) that a pre-start refusal never has, so
-    A7 stays NOT_READY and native stays NOT_RUN.
+    approved adapter inputs with at most one deviation, runs the actual adapter once in a child through injected seams
+    and derives the four refusal observations from the child's exit code and error stream, two listings of the run
+    root and the child's live children. RCO1's A1-A7 wording selects no particular adapter refusal (UNSPECIFIED, RCO1
+    2026-10-22T19:01:24Z), so the refusal per sub-case is this file's explicit choice: T1 integrity, T1 user SID, R1
+    type, the off switch, the floor and run-root reparse ancestry (Lead's v5 delta adds the user SID variant that
+    RCO1's 10-17 refinement names).
+
+    Lead's v6 decision (2026-10-22T19:41:59Z): the native A7 scope is those seven pre-start guards; the zero- and
+    two-function lane-loop sub-cases cannot reach the count guard under the immutable production manifest, so they are
+    structural fixture coverage only (Get-WdShadowA7Coverage), never native PASS. A7 binds to a versioned pre-start
+    attempt binding (harness run, the measured controller id and creation time, Source and pin identity, one expected
+    attempt id per sub-case, the measured probe id and creation time), never to a managed launch id or root PID. An
+    empty live-child listing is never no-start evidence, so without an owned-job witness a driver observation stays
+    UNKNOWN; the uncontained real child and lister seams are disabled (they refuse before any process exists). The
+    probe child and the adapter's whoami.exe are probe processes, not the producer workload. The script never calls
+    the drivers; A7 stays NOT_READY, native NOT_RUN.
 
     Design: RCO1 (A1-A7), RCO2 (G1-G4 and the witness), Lead (decisions and the guard cases); fable-5 wrote this file.
 #>
@@ -150,13 +159,17 @@ function Get-WdShadowRefusalVerdict {
     param($Observation)
     if (-not (Test-WdShadowExactKeys $Observation @('exit_code', 'refusal_seen', 'run_dir_created',
             'process_started'))) { return 'UNKNOWN' }
+    # Lead's v6 decision: process_started may be $null (no no-start witness); a seen start, a run directory or a zero
+    # exit still fails, and a missing witness is never PASS.
+    $started = $Observation['process_started']
     if (-not (Test-WdShadowCount $Observation['exit_code']) -or $Observation['refusal_seen'] -isnot [bool] -or
-        $Observation['run_dir_created'] -isnot [bool] -or $Observation['process_started'] -isnot [bool]) {
+        $Observation['run_dir_created'] -isnot [bool] -or ($null -ne $started -and $started -isnot [bool])) {
         return 'UNKNOWN'
     }
-    if ($Observation['process_started'] -or $Observation['run_dir_created'] -or $Observation['exit_code'] -eq 0) {
+    if ($started -eq $true -or $Observation['run_dir_created'] -or $Observation['exit_code'] -eq 0) {
         return 'FAIL'
     }
+    if ($started -isnot [bool]) { return 'UNKNOWN' }
     if ($Observation['refusal_seen']) { return 'PASS' }
     return 'UNKNOWN'
 }
@@ -238,21 +251,106 @@ function Get-WdShadowSubcaseVerdict {
             if ($lock['attempted'] -and $null -eq $lock['error']) { return 'PASS' }
             return 'UNKNOWN'
         }
-        { $_ -cmatch '^A7/(integrity_mismatch|user_sid_mismatch|preloaded_type|lane_loop_zero_functions|' +
-            'lane_loop_two_functions|off_switch_before_start|off_switch_denied_read|disk_floor_before_start|' +
-            'reparse_ancestry)$' } {
+        # Lead's v6 decision: the two lane-loop sub-cases are structural fixture coverage only, never an A7 verdict.
+        { $_ -cmatch '^A7/(integrity_mismatch|user_sid_mismatch|preloaded_type|off_switch_before_start|' +
+            'off_switch_denied_read|disk_floor_before_start|reparse_ancestry)$' } {
             return Get-WdShadowRefusalVerdict $Observation
         }
     }
     return 'UNKNOWN'
 }
 
+function Get-WdShadowA7Coverage {
+    # Lead's v6 decision: the exact A7 native acceptance scope. The seven pre-start guard sub-cases can be reached by
+    # an actual run (native_prestart); the zero- and two-function lane loops cannot reach the count guard under the
+    # immutable production manifest (the loop bytes are checked against its pin first), so they are structural
+    # fixture coverage of the adapter's count guard only, never native PASS.
+    return [ordered]@{
+        integrity_mismatch = 'native_prestart'
+        user_sid_mismatch = 'native_prestart'
+        preloaded_type = 'native_prestart'
+        off_switch_before_start = 'native_prestart'
+        off_switch_denied_read = 'native_prestart'
+        disk_floor_before_start = 'native_prestart'
+        reparse_ancestry = 'native_prestart'
+        lane_loop_zero_functions = 'structural_fixture_only'
+        lane_loop_two_functions = 'structural_fixture_only'
+    }
+}
+
+function Get-WdShadowA7CaseVerdict {
+    # Lead's v6 decision: A7 is bound to its pre-start probe attempts, never to a managed launch (a refusal has no
+    # producer launch id or root PID). The expected binding is complete and valid first: the versioned schema, the
+    # harness run, the measured controller id and creation time, the approved Source and pin identity and one
+    # distinct expected attempt id per native sub-case.
+    # The observed binding must equal it (foreign is FAIL); each native sub-case carries its attempt (its expected
+    # attempt id plus the measured probe id and creation time, never shared by two sub-cases: a replay is FAIL) and
+    # its refusal observation. A missing, extra or malformed value is UNKNOWN; only seven PASS sub-cases PASS.
+    param($Binding, $Observation)
+    $native = @('integrity_mismatch', 'user_sid_mismatch', 'preloaded_type', 'off_switch_before_start',
+        'off_switch_denied_read', 'disk_floor_before_start', 'reparse_ancestry')
+    $pinKeys = @('schema', 'harness_run_id', 'case_id', 'controller_pid', 'controller_creation_utc', 'source_commit',
+        'manifest_sha256', 'adapter_sha256')
+    if (-not (Test-WdShadowExactKeys $Binding ($pinKeys + @('attempts'))) -or
+        -not (Test-WdShadowExactKeys $Observation @('binding', 'subcases'))) { return 'UNKNOWN' }
+    $formats = @{
+        schema = '^wd\.mind-shadow-a7-prestart-binding\.v1\z'; harness_run_id = '^\S+\z'; case_id = '^A7\z'
+        controller_pid = '^[1-9][0-9]{0,9}\z'; controller_creation_utc = '^\S+\z'
+        source_commit = '^[0-9a-f]{40}\z'; manifest_sha256 = '^[0-9A-F]{64}\z'; adapter_sha256 = '^[0-9A-F]{64}\z'
+    }
+    foreach ($key in $pinKeys) {
+        if ($Binding[$key] -isnot [string] -or $Binding[$key] -cnotmatch $formats[$key]) { return 'UNKNOWN' }
+    }
+    $attempts = $Binding['attempts']
+    if (-not (Test-WdShadowExactKeys $attempts $native)) { return 'UNKNOWN' }
+    $guid = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
+    $expectedIds = @{}
+    foreach ($name in $native) {
+        $id = $attempts[$name]
+        if ($id -isnot [string] -or $id -cnotmatch $guid -or $expectedIds.ContainsKey($id)) { return 'UNKNOWN' }
+        $expectedIds[$id] = $name
+    }
+    $seen = $Observation['binding']
+    if (-not (Test-WdShadowExactKeys $seen $pinKeys)) { return 'UNKNOWN' }
+    foreach ($key in $pinKeys) {
+        if ($seen[$key] -isnot [string] -or $seen[$key] -cne [string]$Binding[$key]) { return 'FAIL' }
+    }
+    $subcases = $Observation['subcases']
+    if (-not (Test-WdShadowExactKeys $subcases $native)) { return 'UNKNOWN' }
+    $probes = @{}
+    $verdicts = @(foreach ($name in $native) {
+        $entry = $subcases[$name]
+        $attempt = $null
+        if ($entry -is [hashtable]) { $attempt = $entry['attempt'] }
+        if (-not (Test-WdShadowExactKeys $entry @('attempt', 'refusal')) -or
+            -not (Test-WdShadowExactKeys $attempt @('attempt_id', 'probe_pid', 'probe_creation_utc')) -or
+            $attempt['attempt_id'] -isnot [string] -or $attempt['probe_pid'] -isnot [string] -or
+            $attempt['probe_pid'] -cnotmatch '^[1-9][0-9]{0,9}\z' -or $attempt['probe_creation_utc'] -isnot [string] -or
+            $attempt['probe_creation_utc'] -cnotmatch '^\S+\z') {
+            'UNKNOWN'
+            continue
+        }
+        $probe = $attempt['probe_pid'] + ' ' + $attempt['probe_creation_utc']
+        if ($attempt['attempt_id'] -cne [string]$attempts[$name] -or $probes.ContainsKey($probe)) {
+            'FAIL'
+            continue
+        }
+        $probes[$probe] = $name
+        Get-WdShadowSubcaseVerdict -CaseId 'A7' -Name $name -Observation $entry['refusal'] -Binding $null
+    })
+    if ($verdicts -ccontains 'FAIL') { return 'FAIL' }
+    if ($verdicts.Count -ne $native.Count -or @($verdicts | Where-Object { $_ -cne 'PASS' }).Count) { return 'UNKNOWN' }
+    return 'PASS'
+}
+
 function Get-WdShadowCaseVerdict {
     # One case from one strict observation: the run binding first (partial is UNKNOWN, foreign is FAIL), then every
-    # required sub-case once. A4 is always NOT_READY: no supported before-resume timing point exists (L1), and
-    # run_intent or run_start is never that witness.
+    # required sub-case once. A4 is always NOT_READY: A4 is the job kill at the publication replacement and no
+    # evidence of it exists here; run_intent or run_start is never that witness. A7 has its own pre-start attempt
+    # binding (Get-WdShadowA7CaseVerdict); the managed launch binding below is never loosened for it.
     param([string] $CaseId, $Binding, $Observation)
     if ($CaseId -ceq 'A4') { return 'NOT_READY' }
+    if ($CaseId -ceq 'A7') { return Get-WdShadowA7CaseVerdict -Binding $Binding -Observation $Observation }
     $required = @{
         A1 = @('deadline', 'early_root_exit_orphan', 'pipe_holding_grandchild', 'off_switch_during_run',
             'disk_floor_hit', 'single_confirmed_stop')
@@ -260,12 +358,8 @@ function Get-WdShadowCaseVerdict {
         A3 = @('outer_no_limits', 'outer_kill_on_close', 'planned_launch_context')
         A5 = @('controller_death')
         A6 = @('inherited_handles')
-        # Lead's v5 contract delta: RCO1's 10-17 refinement names the A7 integrity AND user variants.
-        A7 = @('integrity_mismatch', 'user_sid_mismatch', 'preloaded_type', 'lane_loop_zero_functions',
-            'lane_loop_two_functions', 'off_switch_before_start', 'off_switch_denied_read', 'disk_floor_before_start',
-            'reparse_ancestry')
     }
-    if (@('A1', 'A2', 'A3', 'A5', 'A6', 'A7') -cnotcontains $CaseId) { return 'UNKNOWN' }
+    if (@('A1', 'A2', 'A3', 'A5', 'A6') -cnotcontains $CaseId) { return 'UNKNOWN' }
     $bindingKeys = @('harness_run_id', 'case_id', 'launch_id', 'root_pid', 'root_creation_utc', 'deadline_seconds')
     if (-not (Test-WdShadowExactKeys $Binding $bindingKeys) -or [string]$Binding['case_id'] -cne $CaseId -or
         -not (Test-WdShadowExactKeys $Observation @('binding', 'subcases'))) { return 'UNKNOWN' }
@@ -297,8 +391,8 @@ function Get-WdShadowCaseVerdict {
 }
 
 function Get-WdShadowRunVerdict {
-    # The whole run: exactly A1-A7, each one of the four verdicts. Any FAIL fails it; while no supported A4
-    # before-resume timing point exists (L1), no run can PASS, whatever A4 verdict is supplied.
+    # The whole run: exactly A1-A7, each one of the four verdicts. Any FAIL fails it; while no A4 publication-kill
+    # evidence exists, no run can PASS, whatever A4 verdict is supplied.
     param($Verdicts)
     $a4TimingPointSupported = $false
     $caseIds = @('A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7')
@@ -322,13 +416,15 @@ function Get-WdShadowRunVerdict {
 # (L569) and run-root reparse ancestry (L543). The approved inputs are the executor's, which pass every earlier adapter
 # check (token user and integrity, adapter hash, state pointer, manifest, pins, wrapper, lane loop); a plan changes at
 # most one of them. A wrong approved integrity level is the deviation for an actual Medium actor, never an elevation.
+# Lead's v6 decision: a driver needs an owned-job witness to observe no start; the real child seam is disabled, so a
+# driver can show a FAIL (a seen start, a run-root entry, a zero exit) but never a native PASS.
 
 function Get-WdShadowA7Plan {
     # One A7 sub-case as a plan: the approved inputs with the run root replaced and at most one deviation, the case
     # root preparation, the R1 preload and the one refusal line the child must print. The two lane-loop sub-cases have
-    # no plan: the adapter reads the fixed reboot state pointer and bundle store and checks the loop bytes against the
-    # manifest pin before it counts the functions, so a zero- or two-function loop cannot reach that count in an
-    # actual run. Invalid input is refused, never planned.
+    # no plan (structural fixture coverage only, Get-WdShadowA7Coverage): the adapter reads the fixed reboot state
+    # pointer and bundle store and checks the loop bytes against the manifest pin before it counts the functions, so
+    # a zero- or two-function loop cannot reach that count in an actual run. Invalid input is refused, never planned.
     param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot)
     $reachable = @('integrity_mismatch', 'user_sid_mismatch', 'preloaded_type', 'off_switch_before_start',
         'off_switch_denied_read', 'disk_floor_before_start', 'reparse_ancestry')
@@ -463,9 +559,10 @@ function Invoke-WdShadowA7Driver {
     # once in a fresh host process and returns its id, exit code and error text, ListChildren lists the live processes
     # whose parent is that id. The observation comes only from those results and from two listings of the run root,
     # never from a supplied value: exit_code is the child's ($null when it did not end), refusal_seen needs exactly one
-    # error line that is the planned refusal, run_dir_created is any new run-root entry and process_started is any
-    # live child of the child after it ended (one that started and already ended is not seen: a limit). $null when the
-    # sub-case has no plan.
+    # error line that is the planned refusal and run_dir_created is any new run-root entry. process_started is $true
+    # for a listed live child (a start was seen) and otherwise $null: an empty listing misses a process that started
+    # and ended and is never no-start evidence (Lead's v6 decision), so without an owned-job witness the sub-case stays
+    # UNKNOWN. $null when the sub-case has no plan.
     param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot, [string] $AdapterPath, [string] $HostPath,
         [scriptblock] $Prepare, [scriptblock] $RunChild, [scriptblock] $ListChildren)
     if ($null -eq $Prepare -or $null -eq $RunChild -or $null -eq $ListChildren) {
@@ -493,45 +590,28 @@ function Invoke-WdShadowA7Driver {
     $refusal = [string]$plan['refusal']
     $seen = @(($child['error_text'] -split '\r?\n') | Where-Object { $_ -cmatch $refusal })
     $new = @($after | Where-Object { $before -cnotcontains $_ })
+    $started = $null
+    if ($children.Count -gt 0) { $started = $true }
     return @{
         exit_code = $child['exit_code']; refusal_seen = ($seen.Count -eq 1); run_dir_created = ($new.Count -gt 0)
-        process_started = ($children.Count -gt 0)
+        process_started = $started
     }
 }
 
 function Start-WdShadowA7Child {
-    # The real child seam (an approved executor's opt-in run only; the strict-fake tests replace it): one fresh host
-    # process without a profile runs the encoded child command; its error and output streams are read to the end and
-    # the call waits within the bound. A child still running at the bound is reported with exit code $null (UNKNOWN)
-    # and left running, never ended here.
-    param([string] $HostPath, [string] $Command, [int] $TimeoutSeconds = 300)
-    $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = $HostPath
-    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' +
-        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
-    $info.UseShellExecute = $false
-    $info.RedirectStandardError = $true
-    $info.RedirectStandardOutput = $true
-    $info.CreateNoWindow = $true
-    $process = [Diagnostics.Process]::Start($info)
-    try {
-        $errorRead = $process.StandardError.ReadToEndAsync()
-        [void]$process.StandardOutput.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            return @{ pid = $process.Id; exit_code = $null; error_text = '' }
-        }
-        $process.WaitForExit()
-        return @{ pid = $process.Id; exit_code = $process.ExitCode; error_text = [string]$errorRead.Result }
-    } finally { $process.Dispose() }
+    # DISABLED (Lead's v6 decision, 2026-10-22T19:41:59Z): the uncontained child of checkpoint 3 could be left running
+    # at its bound, read its streams without a bound, and proved nothing about a workload start. Until an owned-job
+    # controller (the pinned six-argument primitive) with a bounded drain and stop and an exact witness exists, this
+    # seam refuses before any process exists. Never a PID kill.
+    param([string] $HostPath, [string] $Command)
+    throw 'refused: the real A7 child seam is disabled until an owned-job controller with an exact witness exists'
 }
 
 function Get-WdShadowA7ChildProcesses {
-    # The real lister: the ids of live processes whose parent id is the ended child's id. A reused id can only add
-    # entries (fail closed); a process that started and ended before this reading is not seen.
+    # DISABLED (Lead's v6 decision): a live-child listing after the child ended misses a process that started and
+    # ended, so it can never show that no workload started; it refuses before any process query.
     param([int] $ParentId)
-    $found = @(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $ParentId" |
-        ForEach-Object { [int]$_.ProcessId })
-    return , $found
+    throw 'refused: the real A7 child lister is disabled: an empty listing is never no-start evidence'
 }
 
 function New-WdShadowA7CaseRoot {
@@ -576,10 +656,10 @@ function New-WdShadowA7CaseRoot {
     }
 }
 
-# Checkpoint 2 and 3: the case evaluators and the A7 pre-start drivers exist, but no whole-run driver produces case
-# observations (the A7 case needs a launch binding a pre-start refusal never has, A1-A3, A5 and A6 have no drivers and
-# A4 has no supported timing point), so every case stays NOT_READY (native NOT_RUN) and the harness refuses even on
-# opt-in.
+# Checkpoint 2 and 3: the case evaluators and the A7 pre-start drivers exist, but no driver produces case observations
+# (A7 has its pre-start attempt binding but no owned-job no-start witness, its real child seam is disabled; A1-A3, A5
+# and A6 have no drivers; A4 has no publication-kill evidence), so every case stays NOT_READY (native NOT_RUN) and the
+# harness refuses by default, on a partial run and on opt-in.
 $cases = [ordered]@{
     'A1' = 'NOT_READY'
     'A2' = 'NOT_READY'

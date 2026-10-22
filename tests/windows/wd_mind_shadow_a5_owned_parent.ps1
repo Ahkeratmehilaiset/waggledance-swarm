@@ -36,11 +36,13 @@ function Import-WdA5ParentPure {
 function Read-WdA5ParentJsonSnapshot {
     param([string]$Path)
     try{$bytes=[IO.File]::ReadAllBytes($Path)}catch [IO.FileNotFoundException]{return @{state='pending'}}catch [IO.DirectoryNotFoundException]{return @{state='pending'}}
+    catch [IO.IOException]{if(($_.Exception.GetBaseException().HResult-band65535)-in@(32,33)){return @{state='pending'}};throw}
     if($bytes.Length-eq0-or$bytes.Length-gt32768){throw 'partial/oversized ready JSON'}
     $text=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes)
     if(-not$text.TrimStart().StartsWith('{',[StringComparison]::Ordinal)){throw 'ready must be a JSON object before parser coercion'}
     if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$value=ConvertFrom-Json -InputObject $text -DateKind String -ErrorAction Stop}
-    else{$value=ConvertFrom-Json -InputObject $text -ErrorAction Stop}
+    elseif($PSVersionTable.PSVersion.Major-eq5){$value=ConvertFrom-Json -InputObject $text -ErrorAction Stop}
+    else{throw 'ready JSON requires PS5.1 or a host supporting DateKind String; PS6..7.4 not accepted'}
     return @{state='ready';value=$value;sha256=(Get-WdA5ParentSha256 $bytes)}
 }
 function Read-WdA5ParentMarker {
@@ -126,15 +128,35 @@ function Assert-WdA5ParentReady {
     $command=Get-WdA5ParentMemberCommand $Config.MemberPath $directory $Config.Context.launch_id ($Config.ControllerReadySeconds+$Config.HoldSeconds+60)
     Assert-WdA5ParentString (Get-WdA5ParentField $Ready 'command_sha256') (Get-WdA5ParentSha256 ([Text.Encoding]::UTF8.GetBytes($command)))
 }
+function Assert-WdA5ParentConfig {
+    param([hashtable]$Config)
+    Assert-WdA5ParentKeys $Config @('Context','HostPath','LoopPath','MemberPath','ControllerPath','RunRoot','EvidenceRoot','Pins','ControllerReadySeconds','HoldSeconds','SafetyMarginSeconds','ReadyWaitSeconds','ExitWaitSeconds','DrainSeconds')
+    foreach($key in @('HostPath','LoopPath','MemberPath','ControllerPath','RunRoot','EvidenceRoot')){
+        $path=$Config[$key]
+        if($path-isnot[string]-or$path-cnotmatch'^[\x20-\x7E]+\z'-or-not[IO.Path]::IsPathRooted($path)-or
+           [IO.Path]::GetFullPath($path).TrimEnd([char[]]@('\','/'))-cne$path){throw 'complete canonical scalar parent paths required'}
+    }
+    Assert-WdA5ParentKeys $Config.Pins @('host_sha256','loop_sha256','member_sha256','controller_sha256')
+    foreach($key in $Config.Pins.Keys){if($Config.Pins[$key]-isnot[string]-or$Config.Pins[$key]-cnotmatch'^[A-F0-9]{64}\z'){throw 'complete scalar parent pins required'}}
+    foreach($key in @('ControllerReadySeconds','HoldSeconds','ReadyWaitSeconds','ExitWaitSeconds','DrainSeconds')){
+        $bound=$Config[$key];$maximum=if($key-ceq'HoldSeconds'){120}elseif($key-ceq'ReadyWaitSeconds'){35}elseif($key-ceq'ControllerReadySeconds'){30}else{10}
+        if(($bound-isnot[int]-and$bound-isnot[long])-or$bound-lt1-or$bound-gt$maximum){throw 'unknown/unbounded parent wait configuration'}
+    }
+    $margin=$Config.SafetyMarginSeconds
+    if(($margin-isnot[int]-and$margin-isnot[long]-and$margin-isnot[double]-and$margin-isnot[decimal])-or
+       [double]::IsNaN([double]$margin)-or[double]::IsInfinity([double]$margin)-or$margin-le0-or$margin-ge$Config.HoldSeconds){throw 'positive finite parent safety margin required'}
+}
 function Invoke-WdA5OwnedParentCore {
     # Internal actor: public admission owns fixed seams; tests pass strict fakes.
+    # NewOwned MUST clean/dispose its partially acquired handles before throwing:
+    # an object not returned cannot be cleaned by this caller. No launch retries.
+    # Errors MUST be a bounded nonblocking snapshot, never inherited-pipe ReadToEnd.
+    # These synchronous seam contracts cannot provide OS preemption/timeouts;
+    # public positive admission stays disabled until real implementations qualify.
     param([hashtable]$Config,$PureModule,[hashtable]$Seams)
-    $failures=New-Object System.Collections.ArrayList;$owned=$null;$observation=$null;$counts=$null;$snapshot=$null
+    $failures=New-Object System.Collections.ArrayList;$owned=$null;$observation=$null;$counts=$null;$snapshot=$null;$zero=$null
     try{
-        foreach($key in @('ControllerReadySeconds','HoldSeconds','ReadyWaitSeconds','ExitWaitSeconds','DrainSeconds')){
-            $bound=$Config[$key];$maximum=if($key-ceq'HoldSeconds'){120}elseif($key-ceq'ReadyWaitSeconds'){35}elseif($key-ceq'ControllerReadySeconds'){30}else{10}
-            if(($bound-isnot[int]-and$bound-isnot[long])-or$bound-lt1-or$bound-gt$maximum){throw 'unknown/unbounded parent wait configuration'}
-        }
+        Assert-WdA5ParentConfig $Config
         foreach($key in @('NewOwned','Identity','NowUtc','Ready','Marker','Errors','Released')){if($Seams[$key]-isnot[scriptblock]){throw 'complete fixed parent dependency seams required'}}
         & $PureModule {param($context)Assert-WdA5Context $context} $Config.Context
         $self=& $Seams.Identity $PID
@@ -168,8 +190,17 @@ function Invoke-WdA5OwnedParentCore {
         $watch.Restart();while(-not$owned.Wait(0)){if($watch.Elapsed.TotalSeconds-ge$Config.ExitWaitSeconds){throw 'forced controller exit unknown'};Start-Sleep -Milliseconds 10}
         if($owned.ExitCode-isnot[int]-or$owned.ExitCode-ne124){throw 'controller did not have forced exit124'}
         if((& $Seams.Marker $marker)-cne'absent'){throw 'cleanup marker present/unknown after exit'}
+        $watch.Restart()
+        do{
+            $remaining=$owned.ActiveProcesses
+            if($remaining-isnot[uint32]){throw 'pre-cleanup member-death accounting unknown'}
+            if($remaining-eq0){$zero=@{active=$remaining;observed_before_outer_cleanup=$true;elapsed_ms=$watch.Elapsed.TotalMilliseconds};break}
+            if($watch.Elapsed.TotalSeconds-ge$Config.DrainSeconds){throw 'pre-cleanup member-death timeout'}
+            Start-Sleep -Milliseconds 10
+        }while($true)
         $errors=& $Seams.Errors
-        if($errors.stdout-isnot[string]-or$errors.stderr-isnot[string]-or$errors.stdout.Length-or$errors.stderr.Length){throw 'controller output errors/unknown'}
+        Assert-WdA5ParentKeys $errors @('stdout','stderr')
+        if($errors.stdout-isnot[string]-or$errors.stderr-isnot[string]-or$errors.stdout.Length-gt32768-or$errors.stderr.Length-gt32768-or$errors.stdout.Length-or$errors.stderr.Length){throw 'controller output errors/unknown'}
         $observed=@{}
         foreach($name in @('root','child','grandchild','controller')){
             $line=$Config.Context.launch_id+' '+$name
@@ -187,7 +218,7 @@ function Invoke-WdA5OwnedParentCore {
         }
     }
     $status=if($failures.Count-eq0-and$null-ne$observation){'OBSERVATIONS_COMPLETE_NOT_A5_PASS'}else{'UNKNOWN'}
-    return @{status=$status;whole_A5_PASS=$false;native_permission_inferred=$false;errors=@($failures);observation=$observation;outer_accounting=$counts;ready_snapshot_sha256=if($null-ne$snapshot-and$snapshot.ContainsKey('sha256')){$snapshot.sha256}else{$null}}
+    return @{status=$status;whole_A5_PASS=$false;native_permission_inferred=$false;errors=@($failures);observation=$observation;outer_accounting=$counts;pre_cleanup_zero=$zero;ready_snapshot_sha256=if($null-ne$snapshot-and$snapshot.ContainsKey('sha256')){$snapshot.sha256}else{$null}}
 }
 
 function Invoke-WdMindShadowA5OwnedParent {

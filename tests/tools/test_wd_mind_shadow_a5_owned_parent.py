@@ -77,7 +77,10 @@ try{{Read-WdA5ParentJsonSnapshot {q(packet)}|Out-Null;throw 'array accepted'}}ca
                                   'cleanup_error', 'errors_output', 'outer_missing_members',
                                   'expected_string', 'expected_order', 'expected_extra', 'directory_array',
                                   'pin_array', 'pin_number', 'command_array', 'observed_extra', 'row_array',
-                                  'raw_partial', 'raw_array', 'raw_scalar', 'raw_utf8', 'raw_empty', 'snapshot_wrong_type'])
+                                  'raw_partial', 'raw_array', 'raw_scalar', 'raw_utf8', 'raw_empty', 'snapshot_wrong_type',
+                                  'death_delayed', 'death_held', 'death_wrong_type', 'factory_partial_failure',
+                                  'invalid_path_array', 'invalid_pin_array', 'invalid_pin_keys', 'invalid_margin_nan',
+                                  'invalid_margin_infinite', 'invalid_margin_string', 'invalid_path_alias'])
 def test_actual_parent_actor_order_and_all_failures_stay_unknown(tmp_path, ps, mode):
     run = tmp_path / 'run'
     evidence = tmp_path / 'evidence'
@@ -91,6 +94,15 @@ $module=Import-WdA5ParentPure ([IO.File]::ReadAllText({q(frozen)}).Replace("`r`n
 $context=@{{schema='wd.mind-shadow-a5-controller-context.v1';harness_run_id='synthetic';launch_id='11111111-1111-1111-1111-111111111111';source_commit=('a'*40);manifest_sha256=('B'*64);parent_pid=[string]$PID;parent_creation_utc='2026-10-22T00:00:00.0000000Z'}}
 $pins=@{{host_sha256=('1'*64);loop_sha256=('2'*64);member_sha256=('3'*64);controller_sha256=('4'*64)}}
 $config=@{{Context=$context;HostPath='C:\synthetic\pwsh.exe';LoopPath='C:\synthetic\loop.ps1';MemberPath='C:\synthetic\member.ps1';ControllerPath='C:\synthetic\controller.ps1';RunRoot={q(run)};EvidenceRoot={q(evidence)};Pins=$pins;ControllerReadySeconds=1;HoldSeconds=10;SafetyMarginSeconds=2;ReadyWaitSeconds=1;ExitWaitSeconds=1;DrainSeconds=1}}
+switch($script:mode){{
+ invalid_path_array{{$config.MemberPath=@($config.MemberPath)}}
+ invalid_pin_array{{$config.Pins=$pins.Clone();$config.Pins.host_sha256=@($config.Pins.host_sha256)}}
+ invalid_pin_keys{{$config.Pins=$pins.Clone();$config.Pins.extra=('5'*64)}}
+ invalid_margin_nan{{$config.SafetyMarginSeconds=[double]::NaN}}
+ invalid_margin_infinite{{$config.SafetyMarginSeconds=[double]::PositiveInfinity}}
+ invalid_margin_string{{$config.SafetyMarginSeconds='2'}}
+ invalid_path_alias{{$config.MemberPath='C:\synthetic\.\member.ps1'}}
+}}
 $directory=Join-Path {q(run)} $context.launch_id
 $readyContext=@{{}};foreach($key in $context.Keys){{$readyContext[$key]=$context[$key]}}
 if($script:mode-ceq'foreign_context'){{$readyContext.harness_run_id='foreign'}}
@@ -128,17 +140,30 @@ $job|Add-Member ScriptMethod StopRootOnly {{
 $job|Add-Member ScriptMethod Stop {{[void]$script:events.Add('cleanup');$this.cleaning=$true;if($script:mode-ceq'cleanup_error'){{throw 'synthetic cleanup error'}}}}
 $job|Add-Member ScriptMethod Dispose {{[void]$script:events.Add('dispose')}}
 $job|Add-Member ScriptProperty ExitCode {{if($script:mode-ceq'exit_wrong'){{return 0}};return 124}}
-$job|Add-Member ScriptProperty ActiveProcesses {{if($this.cleaning){{return [uint32]0}};if($script:mode-ceq'counts_unknown'){{return 'UNKNOWN'}};if($script:mode-ceq'outer_missing_members'){{return [uint32]1}};return [uint32]4}}
+$script:deathReads=0
+$job|Add-Member ScriptProperty ActiveProcesses {{
+ if($this.cleaning){{return [uint32]0}}
+ if($script:mode-ceq'counts_unknown'){{return 'UNKNOWN'}}
+ if($script:mode-ceq'outer_missing_members'){{return [uint32]1}}
+ if($script:killed){{
+  [void]$script:events.Add('death_count');$script:deathReads++
+  if($script:mode-ceq'death_wrong_type'){{return 0}}
+  if($script:mode-ceq'death_held'){{return [uint32]4}}
+  if($script:mode-ceq'death_delayed'-and$script:deathReads-lt3){{return [uint32](4-2*($script:deathReads-1))}}
+  return [uint32]0
+ }}
+ return [uint32]4
+}}
 $job|Add-Member ScriptProperty TotalProcesses {{return [uint32]5}}
 $script:job=$job
 $seams=@{{
-    NewOwned={{param($config,$command) [void]$script:events.Add('factory');if($command-notmatch'Invoke-WdMindShadowA5Controller'-or$command-match'Invoke-Expression'){{throw 'not fixed controller command'}};return $script:job}}
+    NewOwned={{param($config,$command) [void]$script:events.Add('factory');if($script:mode-ceq'factory_partial_failure'){{[void]$script:events.Add('factory_dispose');throw 'original factory failure; partial cleanup failed'}};if($command-notmatch'Invoke-WdMindShadowA5Controller'-or$command-match'Invoke-Expression'){{throw 'not fixed controller command'}};return $script:job}}
     Identity={{param($pidValue) [void]$script:events.Add('identity');return @{{pid=[string]$pidValue;creation_utc='2026-10-22T00:00:00.0000000Z'}}}}
     NowUtc={{[void]$script:events.Add('now');if($script:mode-ceq'late'){{return '2026-10-22T00:00:08.0000000Z'}};return '2026-10-22T00:00:01.0000000Z'}}
     Ready={{param($path) [void]$script:events.Add('ready');if($script:mode-ceq'read_error'){{throw 'synthetic read error'}};if($script:mode-ceq'partial_ready'){{throw 'partial JSON'}};if($script:mode-ceq'positive'-or$script:mode-like'raw_*'){{return Read-WdA5ParentJsonSnapshot $script:fullReadyPath}};if($script:mode-ceq'snapshot_wrong_type'){{return [pscustomobject]@{{state='ready';value=$script:ready;sha256=('A'*64)}}}};return @{{state='ready';value=$script:ready;sha256=('A'*64)}}}}
     Marker={{param($path) [void]$script:events.Add('marker');if(($script:mode-ceq'marker_before'-and-not$script:killed)-or($script:mode-ceq'marker_after'-and$script:killed)){{return 'present'}};return 'absent'}}
     Errors={{[void]$script:events.Add('errors');if($script:mode-ceq'errors_output'){{return @{{stdout='';stderr='unexpected'}}}};return @{{stdout='';stderr=''}}}}
-    Released={{param($path,$expectedLine) [void]$script:events.Add('witness');if(-not$script:killed-or$script:job.cleaning){{throw 'witness wrong phase'}};if($script:mode-ceq'member_held'){{return @{{released=$false;text=$null}}}};return @{{released=$true;text=if($script:mode-ceq'foreign_member_line'){{'foreign'}}else{{$expectedLine}}}}}}
+    Released={{param($path,$expectedLine) [void]$script:events.Add('witness');if(-not$script:killed-or$script:job.cleaning-or$script:deathReads-lt1){{throw 'witness before member-death observation or after cleanup'}};if($script:mode-ceq'member_held'){{return @{{released=$false;text=$null}}}};return @{{released=$true;text=if($script:mode-ceq'foreign_member_line'){{'foreign'}}else{{$expectedLine}}}}}}
 }}
 $result=Invoke-WdA5OwnedParentCore -Config $config -PureModule $module -Seams $seams
 @{{result=$result;events=@($script:events)}}|ConvertTo-Json -Depth 14
@@ -147,13 +172,23 @@ $result=Invoke-WdA5OwnedParentCore -Config $config -PureModule $module -Seams $s
     result, events = value['result'], value['events']
     assert result['whole_A5_PASS'] is False
     assert result['native_permission_inferred'] is False
-    assert events[-1] == 'dispose'
-    assert events.count('factory') == 1
+    if mode.startswith('invalid_'):
+        assert events == [], value
+    elif mode == 'factory_partial_failure':
+        assert events == ['identity', 'factory', 'factory_dispose'], value
+        assert 'original factory failure' in result['errors'][0], value
+    else:
+        assert events[-1] == 'dispose'
+        assert events.count('factory') == 1
     assert events.count('kill') <= 1
-    if mode == 'positive':
+    if mode in ('positive', 'death_delayed'):
         assert result['status'] == 'OBSERVATIONS_COMPLETE_NOT_A5_PASS', value
-        assert events.index('now') < events.index('kill') < events.index('witness') < events.index('cleanup')
+        assert events.index('now') < events.index('kill') < events.index('death_count') < events.index('errors') < events.index('witness') < events.index('cleanup')
         assert result['outer_accounting']['total'] == 5
+        assert result['pre_cleanup_zero']['active'] == 0
+        assert result['pre_cleanup_zero']['observed_before_outer_cleanup'] is True
+        if mode == 'death_delayed':
+            assert events.count('death_count') == 3, value
         assert all(v['launch_id_verified'] is True for v in result['observation']['observed'].values())
     else:
         assert result['status'] == 'UNKNOWN', value
@@ -162,3 +197,67 @@ $result=Invoke-WdA5OwnedParentCore -Config $config -PureModule $module -Seams $s
         assert 'kill' not in events, value
     if mode.startswith(('expected_', 'directory_', 'pin_', 'command_', 'observed_', 'row_', 'raw_', 'snapshot_')):
         assert 'kill' not in events, value
+    if mode in ('death_held', 'death_wrong_type'):
+        assert 'witness' not in events and 'errors' not in events, value
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_real_source_ready_sharing_and_file_helpers_are_bounded_snapshots(tmp_path, ps):
+    source = tmp_path / 'source.ps1'
+    source.write_text('synthetic pinned text\n', encoding='utf-8')
+    ready = tmp_path / 'ready.json'
+    ready.write_text('{"value":"synthetic"}', encoding='utf-8')
+    witness = tmp_path / 'root.witness'
+    witness.write_bytes(b'synthetic root\n')
+    script = rf"""
+$source={q(source)};$ready={q(ready)};$witness={q(witness)}
+$raw=[IO.File]::ReadAllBytes($source);$hash=Get-WdA5ParentSha256 $raw
+$pin=Read-WdA5ParentPin $source $hash -Text
+if($pin.text-cne"synthetic pinned text`n"){{throw 'pin read'}}
+foreach($bad in @(@($source,('A'*64)),@({q(tmp_path)},$hash))){{
+ $refused=$false;try{{Read-WdA5ParentPin $bad[0] $bad[1]|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'bad pin accepted'}}
+}}
+if((Read-WdA5ParentMarker $source)-cne'present'-or(Read-WdA5ParentMarker {q(tmp_path / 'absent.json')})-cne'absent'){{throw 'marker state'}}
+$refused=$false;try{{Read-WdA5ParentMarker {q(tmp_path / 'missing-dir' / 'marker.json')}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'missing-dir marker accepted'}}
+$held=[IO.File]::Open($ready,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+try{{$snapshot=Read-WdA5ParentJsonSnapshot $ready;if($snapshot.state-cne'pending'){{throw 'sharing must stay pending'}}}}finally{{$held.Dispose()}}
+if((Read-WdA5ParentJsonSnapshot $ready).state-cne'ready'){{throw 'unlocked ready'}}
+$refused=$false;try{{Read-WdA5ParentJsonSnapshot {q(tmp_path)}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'unrelated ready IO accepted'}}
+$held=[IO.File]::Open($witness,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+try{{$r=Read-WdA5ParentReleasedWitness $witness;if($r.released){{throw 'held witness accepted'}}}}finally{{$held.Dispose()}}
+$r=Read-WdA5ParentReleasedWitness $witness
+if(-not$r.released-or$r.text-cne"synthetic root`n"){{throw 'actual synthetic released bytes'}}
+$refused=$false;try{{Read-WdA5ParentReleasedWitness {q(tmp_path)}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'unrelated witness IO accepted'}}
+if((Get-WdA5ParentSha256 ([IO.File]::ReadAllBytes($source)))-cne$hash-or[IO.File]::ReadAllText($witness)-cne"synthetic root`n"){{throw 'read helper overwrote fixture'}}
+@{{all_controls=$true;sharing_pending=$true;synthetic_only=$true}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {'all_controls': True, 'sharing_pending': True, 'synthetic_only': True}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_real_frozen_member_command_and_fixed_controller_literal_closure(tmp_path, ps):
+    frozen = tmp_path / 'frozen-controller.ps1'
+    frozen.write_text(frozen_controller_text(), encoding='utf-8')
+    script = rf"""
+$t=$null;$e=$null;$ast=[Management.Automation.Language.Parser]::ParseFile({q(frozen)},[ref]$t,[ref]$e)
+if($e.Count){{throw 'frozen parse'}}
+$parts=@();foreach($name in @('Get-WdA5Literal','Get-WdA5MemberCommand')){{
+ $found=@($ast.EndBlock.Statements|Where-Object{{$_-is[Management.Automation.Language.FunctionDefinitionAst]-and$_.Name-ceq$name}})
+ if($found.Count-ne1){{throw 'pure member function closure'}};$parts+=$found[0].Extent.Text
+}}
+$oracle=New-Module -ScriptBlock ([scriptblock]::Create($parts-join"`n"))
+foreach($pair in @(@(1,1),@(1,120),@(30,120))){{
+ $lifetime=$pair[0]+$pair[1]+60
+ $actual=Get-WdA5ParentMemberCommand "C:\synthetic\member's.ps1" "C:\synthetic\run's\launch" 'synthetic-launch' $lifetime
+ $expected=& $oracle {{param($l)Get-WdA5MemberCommand "C:\synthetic\member's.ps1" "C:\synthetic\run's\launch" 'synthetic-launch' $l}} $lifetime
+ if($actual-cne$expected){{throw 'independent frozen command mismatch'}}
+}}
+$context=@{{schema='wd.mind-shadow-a5-controller-context.v1';harness_run_id="synthetic's";launch_id='11111111-1111-1111-1111-111111111111';source_commit=('a'*40);manifest_sha256=('B'*64);parent_pid='123';parent_creation_utc='2026-10-22T00:00:00.0000000Z'}}
+$config=@{{Context=$context;HostPath="C:\synthetic\host's.exe";LoopPath='C:\synthetic\loop.ps1';MemberPath="C:\synthetic\member's.ps1";ControllerPath="C:\synthetic\controller's.ps1";RunRoot="C:\synthetic\run's";Pins=@{{host_sha256=('1'*64);loop_sha256=('2'*64);member_sha256=('3'*64);controller_sha256=('4'*64)}};ControllerReadySeconds=30;HoldSeconds=120}}
+$command=Get-WdA5ParentControllerCommand $config
+$tokens=$null;$errors=$null;[void][Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
+if($errors.Count-or-not$command.Contains("'synthetic''s'")-or-not$command.Contains("'C:\synthetic\controller''s.ps1'")-or-not$command.EndsWith(' -ReadyTimeoutSeconds 30 -HoldSeconds 120')){{throw 'fixed controller literal/arguments'}}
+foreach($key in @('ExpectedHostSha256','ExpectedLoopSha256','ExpectedMemberSha256','ExpectedControllerSha256')){{if(-not$command.Contains(' -'+$key+' ')){{throw 'missing command pin'}}}}
+@{{frozen_comparison=$true;fixed_command_parses=$true;executed=$false}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {'frozen_comparison': True, 'fixed_command_parses': True, 'executed': False}

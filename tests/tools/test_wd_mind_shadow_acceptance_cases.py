@@ -10,6 +10,7 @@ publication-kill rule, the A7 pre-start binding and this Source-preparation GO);
 evaluators.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "tests" / "windows" / "wd_mind_shadow_job_native_acceptance.ps1"
+HELPER_LAUNCH = ROOT / "tests" / "windows" / "wd_mind_shadow_owned_member_launch.ps1"
 
 HOST = r"""
 param([string] $Harness, [string] $Fixture)
@@ -1323,10 +1325,30 @@ function New-WdA7ManagedProcess {
     param($HostPath, $Arguments, $WorkingDirectory, $InputPath, $OutputPath, $ErrorPath)
     $text = @($HostPath, ($Arguments -join ' '), $WorkingDirectory, $InputPath, $OutputPath, $ErrorPath) -join '|'
     $global:WdFakeCalls += , ('new ' + $text)
-    return [pscustomobject]@{ Pid = 5151 }
+    [IO.File]::WriteAllBytes($OutputPath, [byte[]]@())
+    [IO.File]::WriteAllBytes($ErrorPath, [byte[]]@())
+    foreach ($member in @($global:WdFakeMembers)) {  # released synthetic witnesses, never a member process
+        [IO.File]::WriteAllText($WorkingDirectory + '\' + $member + '.witness', $global:WdFakeLaunch + ' ' + $member)
+    }
+    $fake = [pscustomobject]@{ Pid = 5151; TotalProcesses = 1; ExitCode = 0 }
+    $fake | Add-Member -MemberType ScriptProperty -Name ActiveProcesses -Value { $global:WdFakeActive }
+    $fake | Add-Member -MemberType ScriptMethod -Name Stop -Value {
+        $global:WdFakeCalls += , 'stop'
+        if ($global:WdFakeStopThrows) { throw 'synthetic owned stop failure' }
+        $global:WdFakeActive = 0; $global:WdFakeRootExited = $true
+    }
+    $fake | Add-Member -MemberType ScriptMethod -Name Wait -Value {
+        param($Milliseconds) $global:WdClock += $Milliseconds / 1000.0; return [bool]$global:WdFakeRootExited
+    }
+    $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+        $global:WdFakeCalls += , 'dispose'
+        if ($global:WdFakeMode -ceq 'dispose_throws') { throw 'synthetic owned dispose failure' }
+    }
+    return $fake
 }
 function Get-WdA7ObservedIdentity {
     param([int]$ProbePid)
+    if ($global:WdFakeMode -ceq 'identity_throws') { throw 'synthetic identity failure' }
     return @{ pid = [string]$ProbePid; creation_utc = 'SYNTHETIC-CREATION-' + $ProbePid }
 }
 function Invoke-WdMindShadowA7OwnedProbe {
@@ -1391,6 +1413,8 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
     }
     $global:WdFakeCalls = @(); $global:WdFakeA7 = $null; $global:WdFakeMode = [string]$entry['mode']
     $global:WdFakeCount = 0
+    $global:WdFakeActive = 0; $global:WdFakeRootExited = $true; $global:WdFakeMembers = @(); $global:WdFakeLaunch = ''
+    $global:WdClock = 0.0; $global:WdFree = [long]10737418240; $global:WdFakeStopThrows = $false
     $row = [ordered]@{ name = $entry['name'] }
     try {
         if ($entry['kind'] -ceq 'a7') {
@@ -1414,12 +1438,69 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
                 $case = ConvertTo-WdShadowA7CaseObservation -CaseBinding $entry['binding'] -Attempts $attempts
                 $row.result = [string](Get-WdShadowA7CaseVerdict -Binding $entry['binding'] -Observation $case)
             }
+        } elseif ($entry['kind'] -ceq 'receipt') {
+            $failure = $null
+            try { throw 'synthetic original failure' } catch { $failure = $_ }
+            $row.receipt = ConvertTo-WdShadowOwnedLifetimeReceipt -Result $null -Record @{ launch = @{} } `
+                -Failure $failure
+            $row.result = 'RECEIPT'
+        } elseif ($entry['kind'] -ceq 'whole') {
+            # The ACTUAL public wrapper and generic driver on the synthetic runner: a synthetic clock, sleep and
+            # free-space reading (the plain reads only), released synthetic witnesses, optional injected failures.
+            $directory = [string]$entry['run']['witness_root'] + '\' + [string]$entry['run']['launch_id']
+            $global:WdFakeActive = 1; $global:WdFakeRootExited = $false
+            $global:WdFakeMembers = @((Get-WdShadowLifetimeMembers)[$entry['case'] + '/' + $entry['sub']])
+            $global:WdFakeLaunch = [string]$entry['run']['launch_id']
+            $global:WdFakeStopThrows = [bool]$entry['stop_throws']
+            $savedSeams = ${function:Get-WdShadowLifetimeSeams}
+            $savedStopOnce = ${function:New-WdShadowOwnedStopOnce}
+            $savedWitness = ${function:Get-WdShadowMemberObservation}
+            $global:WdWitnessReads = 0
+            try {
+                ${function:script:Get-WdShadowLifetimeSeams} = {
+                    $seams = & $savedSeams
+                    $seams['Clock'] = { return [double]$global:WdClock }
+                    $seams['Sleep'] = { param([int] $Milliseconds) $global:WdClock += $Milliseconds / 1000.0 }
+                    $seams['FreeBytes'] = { param([string] $Path) return [long]$global:WdFree }
+                    return $seams
+                }.GetNewClosure()
+                if ($entry['inject'] -ceq 'setup') {
+                    ${function:script:New-WdShadowOwnedStopOnce} = { throw 'synthetic setup failure' }
+                }
+                ${function:script:Get-WdShadowMemberObservation} = {
+                    param([string] $WitnessDirectory, [object[]] $Expected)
+                    $global:WdWitnessReads++
+                    if ($global:WdFakeActive -eq 0 -and $entry['inject'] -ceq 'witness_growth') {
+                        [IO.File]::WriteAllBytes($WitnessDirectory + '\root.stdout.log', [byte[]]::new(200))
+                    }
+                    if ($global:WdFakeActive -eq 0 -and $entry['inject'] -ceq 'witness_log_gone') {
+                        [IO.File]::Delete($WitnessDirectory + '\root.stdout.log')
+                    }
+                    return (& $savedWitness -WitnessDirectory $WitnessDirectory -Expected $Expected)
+                }.GetNewClosure()
+                $row.receipt = Invoke-WdShadowOwnedLifetimeDriver -ApprovedNativeExecution -CaseId $entry['case'] `
+                    -Name $entry['sub'] -Run $entry['run'] -Files $entry['files'] -Expected $entry['expected'] `
+                    -MemberPath $entry['member'] -ExpectedMemberSha256 $entry['member_pin'] `
+                    -HelperPath $entry['helper'] -ExpectedHelperSha256 $entry['helper_pin'] `
+                    -EvidenceRoot $entry['evidence'] -MaxOutputBytes ([long]$entry['max'])
+                $row.result = 'RAN'
+            } finally {
+                ${function:script:Get-WdShadowLifetimeSeams} = $savedSeams
+                ${function:script:New-WdShadowOwnedStopOnce} = $savedStopOnce
+                ${function:script:Get-WdShadowMemberObservation} = $savedWitness
+                $row.registration = [IO.File]::Exists($directory + '\members.registration')
+                $row.input = [IO.File]::Exists($directory + '\root.input')
+                $row.calls = @($global:WdFakeCalls)
+                $row.witness_reads = $global:WdWitnessReads
+                $row.env_after = [string][Environment]::GetEnvironmentVariable('WD_MIND_SHADOW_SYNTHETIC_MEMBER')
+            }
         } elseif ($entry['kind'] -ceq 'driver') {
             $directory = [string]$entry['run']['witness_root'] + '\' + [string]$entry['run']['launch_id']
             try {
-                [void](Invoke-WdShadowOwnedLifetimeDriver -ApprovedNativeExecution -CaseId 'A1' -Name 'deadline' `
-                    -Run $entry['run'] -Files $entry['files'] -Expected $entry['expected'] `
+                [void](Invoke-WdShadowOwnedLifetimeDriver -ApprovedNativeExecution -CaseId $entry['case'] `
+                    -Name $entry['sub'] -Run $entry['run'] -Files $entry['files'] -Expected $entry['expected'] `
                     -MemberPath $entry['member'] -ExpectedMemberSha256 $entry['member_pin'] `
+                    -HelperPath $entry['helper'] -ExpectedHelperSha256 $entry['helper_pin'] `
                     -EvidenceRoot $entry['evidence'])
                 $row.result = 'RAN'
             } finally {
@@ -1428,20 +1509,41 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
                 $row.calls = @($global:WdFakeCalls)
             }
         } else {
+            $record = @{}
+            $global:WdFakeStopThrows = [bool]$entry['stop_throws']
             $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution:([bool]$entry['approved']) `
-                -CaseId 'A1' -Name 'deadline' -Run $entry['run'] -Files $entry['files'] `
+                -CaseId $entry['case'] -Name $entry['sub'] -Run $entry['run'] -Files $entry['files'] `
                 -Expected $entry['expected'] -MemberPath $entry['member'] `
-                -ExpectedMemberSha256 $entry['member_pin'] -EvidenceRoot $entry['evidence']
+                -ExpectedMemberSha256 $entry['member_pin'] -HelperPath $entry['helper'] `
+                -ExpectedHelperSha256 $entry['helper_pin'] -Record $record -EvidenceRoot $entry['evidence'] `
+                -MaxOutputBytes ([long]$entry['max'])
             $row.keys = @($seams.Keys | Sort-Object)
-            $plan = Get-WdShadowLifetimePlan -CaseId 'A1' -Name 'deadline' -Run $entry['run']
+            $plan = Get-WdShadowLifetimePlan -CaseId $entry['case'] -Name $entry['sub'] -Run $entry['run']
             if ($entry['substitute'] -ceq 'host') { $plan['host_path'] = 'C:\FOREIGN\pwsh.exe' }
             if ($entry['substitute'] -ceq 'argument') {
                 $plan['arguments'] = [string[]]@($plan['arguments'] | ForEach-Object { $_ }) + @('-Foreign')
             }
             if ($entry['substitute'] -ceq 'directory') { $plan['witness_directory'] = $entry['evidence'] }
             [void][IO.Directory]::CreateDirectory([string]$plan['witness_directory'])
-            $row.launch = $(try { [void](& $seams['NewManaged'] $plan); 'RAN' } catch { [string]$_.Exception.Message })
-            $row.input = [IO.File]::Exists([string]$plan['witness_directory'] + '\root.input')
+            $managed = $null
+            $row.launch = $(try { $managed = & $seams['NewManaged'] $plan; 'RAN' } catch {
+                [string]$_.Exception.Message })
+            $dir = [string]$plan['witness_directory']
+            $row.input = [IO.File]::Exists($dir + '\root.input')
+            if ($null -ne $managed) {
+                if ($entry['grow']) {
+                    [IO.File]::WriteAllBytes($dir + '\root.stdout.log', [byte[]]::new(200)); [void]$managed.Wait(0)
+                }
+                $row.stop_errors = @(foreach ($n in 1..2) { try { $managed.Stop(); 'ok' } catch { 'threw' } })
+                $row.receipt = ConvertTo-WdShadowOwnedLifetimeReceipt -Record $record -Result @{
+                    case_id = $entry['case']; name = $entry['sub']; binding = @{}
+                    observation = @{ synthetic = $true } }
+                $row.observations_before = [int]$record['budget']['observations']
+                [void](& $seams['Clock']); [void](& $seams['Sleep'] 0); [void](& $seams['FreeBytes'] $dir)
+                $row.observations_after = [int]$record['budget']['observations']
+            }
+            $row.record = $record
+            $row.env_after = [string][Environment]::GetEnvironmentVariable('WD_MIND_SHADOW_SYNTHETIC_MEMBER')
             $row.calls = @($global:WdFakeCalls)
             $row.creation = & $seams['RootCreation'] ([pscustomobject]@{ Pid = 5151 })
             $row.refused = @(foreach ($seam in @('Context', 'KillController', 'InheritedHandles')) {
@@ -1489,9 +1591,40 @@ WIRING_LIFETIME = [
     ("wl_substituted_host", {"substitute": "host"}, "SEAMS"),
     ("wl_substituted_argument", {"substitute": "argument"}, "SEAMS"),
     ("wl_substituted_directory", {"substitute": "directory"}, "SEAMS"),
+    ("wl_observer_over_bound", {"max": 100, "grow": True}, "SEAMS"),
+    ("wl_stop_failure", {"stop_throws": True}, "SEAMS"),
+    ("wl_a2_survivors", {"case": ("A2", "survivors")}, "SEAMS"),
+    ("wl_helper_pin_mismatch", {"helper_pin": "0" * 64}, "ERROR"),
+    ("wl_helper_relative", {"helper": "pins\\helper.ps1"}, "ERROR"),
+    ("wl_a3_refused", {"case": ("A3", "outer_no_limits")}, "ERROR"),
+    ("wl_a5_refused", {"case": ("A5", "controller_death")}, "ERROR"),
+    ("wl_a6_refused", {"case": ("A6", "inherited_handles")}, "ERROR"),
     ("wld_foreign_host", {"kind": "driver", "run": ("host_path", "C:\\FOREIGN\\pwsh.exe")}, "ERROR"),
-    ("wld_launch_refused", {"kind": "driver"}, "ERROR"),
+    ("wld_a3_refused", {"kind": "driver", "case": ("A3", "outer_no_limits")}, "ERROR"),
+    ("wl_bound_zero", {"max": 0}, "ERROR"),
+    ("wl_bound_over", {"max": 8388609}, "ERROR"),
 ]
+# Lead's v12: the ACTUAL public wrapper through the ACTUAL generic driver on the synthetic runner (both hosts).
+WHOLE_SUBS = [("A1", "deadline", "stopped_at_deadline"), ("A1", "early_root_exit_orphan", "stopped_at_deadline"),
+              ("A1", "pipe_holding_grandchild", "stopped_at_deadline"),
+              ("A1", "off_switch_during_run", "stopped_by_off_switch"),
+              ("A1", "disk_floor_hit", "stopped_at_disk_floor"), ("A1", "single_confirmed_stop", None),
+              ("A2", "survivors", None)]
+WIRING_WHOLE = [("wh_" + sub, {"kind": "whole", "case": (case, sub)}, outcome) for case, sub, outcome in WHOLE_SUBS]
+WIRING_WHOLE_FAIL = [
+    ("whf_setup_failure", {"kind": "whole", "inject": "setup"}),
+    ("whf_setup_cleanup_errors", {"kind": "whole", "inject": "setup", "stop_throws": True, "mode": "dispose_throws"}),
+    ("whf_identity_failure", {"kind": "whole", "mode": "identity_throws"}),
+    ("whf_dispose_failure", {"kind": "whole", "mode": "dispose_throws"}),
+    ("whf_stop_failure", {"kind": "whole", "stop_throws": True}),
+    ("whf_witness_growth", {"kind": "whole", "inject": "witness_growth", "max": 100}),
+    ("whf_witness_log_gone", {"kind": "whole", "inject": "witness_log_gone"}),
+    ("whf_bound_zero", {"kind": "whole", "max": 0}),
+    ("whf_bound_negative", {"kind": "whole", "max": -1}),
+    ("whf_bound_over", {"kind": "whole", "max": 8388609}),
+    ("whf_partial_record_receipt", {"kind": "receipt"}),
+]
+WHOLE_FAIL_ROWS = [row + (None,) for row in WIRING_WHOLE_FAIL]
 
 
 @pytest.fixture(scope="module", params=_hosts() or [pytest.param(None, marks=pytest.mark.skip(
@@ -1514,7 +1647,7 @@ def wiring_rows(request, tmp_path_factory):
     evidence.mkdir(parents=True)
     (folder / "elsewhere").mkdir()
     items = []
-    for name, change, _ in WIRING_A7 + WIRING_LIFETIME:
+    for name, change, _ in WIRING_A7 + WIRING_LIFETIME + WIRING_WHOLE + WHOLE_FAIL_ROWS:
         paths = {key: str(path) for key, path in files.items()}
         expected = {key: _sha(path) for key, path in files.items()}
         if "file" in change:
@@ -1540,10 +1673,14 @@ def wiring_rows(request, tmp_path_factory):
                 key, value = change["run"]
                 run[key] = str(folder / ".codex-audit" / "other") if value == "OTHER" else value
             pin = change.get("member_pin", _sha(member))
+            case, sub = change.get("case", ("A1", "deadline"))
+            item.update(case=case, sub=sub, helper=change.get("helper", str(HELPER_LAUNCH)),
+                        helper_pin=change.get("helper_pin", _sha(HELPER_LAUNCH)), max=change.get("max", 1048576),
+                        stop_throws=change.get("stop_throws", False), grow=change.get("grow", False))
             item.update(kind=change.get("kind", "lifetime"), run=run, evidence=str(own),
                         member=change.get("member", str(member)),
                         member_pin=pin.lower() if change.get("member_lower") else pin,
-                        substitute=change.get("substitute", ""))
+                        substitute=change.get("substitute", ""), inject=change.get("inject", ""))
         items.append(item)
     host = folder / "wiring_host.ps1"
     host.write_text(WIRING_HOST, encoding="utf-8")
@@ -1592,14 +1729,123 @@ def test_owned_lifetime_seams_bind_host_member_and_run_and_refuse_the_launch(wir
         return
     assert row["keys"] == sorted(["NewManaged", "RootCreation", "Clock", "Sleep", "FreeBytes", "Context",
                                   "KillController", "InheritedHandles"])
-    # Lead's v9 decision: a substituted plan refuses before any write, type or process call; the approved plan
-    # also refuses there, because the six-argument managed process cannot give the fixed member its child-local
-    # opt-in or finite log bounds, so the native lifetime branch stays NOT_READY with that exact reason.
+    # Lead's v11 GO: a substituted plan still refuses before any write, type or process call; the approved A1/A2
+    # plan launches through Root's six-argument API with the v10 fixed plan argv (child-only opt-in, literal
+    # member), behind ONE stop-once facade shared with the output observer, which observes at every seam.
     if item["substitute"]:
         assert row["launch"].startswith("refused: the plan is not the approved lifetime plan"), row
+        assert row["input"] is False and row["calls"] == [] and row["record"]["launch"]["started"] is False, row
     else:
-        assert row["launch"].startswith("refused: ") and "child-local opt-in" in row["launch"], row
-        assert "log bounds" in row["launch"] and "NOT_READY" in row["launch"], row
-    assert row["input"] is False and row["calls"] == [], row
+        assert row["launch"] == "RAN", row
+        directory = item["run"]["witness_root"] + "\\" + LT_LAUNCH
+        launch = row["record"]["launch"]
+        assert row["calls"][0] == "init " + str(len("SYNTHETIC loop\n"))
+        # the fixed command holds a pipe itself, so the host is the first field and the four paths the last four
+        host, rest = row["calls"][1][len("new "):].split("|", 1)
+        arguments, cwd, stdin, stdout, stderr = rest.rsplit("|", 4)
+        assert host == item["files"]["host"] == launch["host_path"] and launch["started"] is True
+        assert arguments == " ".join(launch["argv"]) and launch["argv"][:3] == ["-NoProfile", "-NonInteractive",
+                                                                               "-Command"]
+        assert launch["command_sha256"] == hashlib.sha256(launch["argv"][3].encode("utf-8")).hexdigest().upper()
+        assert launch["plan_schema"] == "wd.mind-shadow-fixed-member-launch-plan.v1" and "-File" not in arguments
+        assert "$env:WD_MIND_SHADOW_SYNTHETIC_MEMBER = 'opt-in'" in launch["argv"][3]
+        assert "-Subcase '" + item["case"] + "/" + item["sub"] + "'" in launch["argv"][3]
+        assert cwd == directory and stdin == directory + "\\root.input" and row["input"] is True
+        assert stdout == directory + "\\root.stdout.log" and stderr == directory + "\\root.stderr.log"
+        assert row["env_after"] == ""  # the parent environment never changes
+        stop, receipt = row["record"]["stop"], row["receipt"]
+        assert row["calls"].count("stop") == 1 and stop["inner_calls"] == 1, row  # one owned stop, never repeated
+        assert row["observations_after"] == row["observations_before"] + 3  # the clock, sleep and free seams observe
+        assert receipt["schema"] == "wd.mind-shadow-owned-lifetime-receipt.v2" and receipt["native_pass"] is False
+        if name == "wl_observer_over_bound":
+            assert row["record"]["budget"]["trigger"] == "OVER_BOUND" and stop["origin"] == "observer", row
+            assert stop["requests"] == 3 and receipt["observation"] is None and receipt["budget_or_stop_blocked"]
+        elif name == "wl_stop_failure":
+            assert stop["failed"] is True and row["stop_errors"] == ["threw", "ok"] and receipt["observation"] is None
+        else:
+            assert stop["origin"] == "driver" and stop["requests"] == 2 and row["stop_errors"] == ["ok", "ok"], row
+            assert receipt["observation"] == {"synthetic": True} and row["record"]["budget"]["trigger"] is None
     assert row["creation"] == "SYNTHETIC-CREATION-5151"
     assert len(row["refused"]) == 3 and all(text.startswith("refused: ") for text in row["refused"]), row
+
+
+def _whole_launch_ok(row, item):
+    launch = row["receipt"]["launch"]
+    assert launch["started"] is True and launch["argv"][:3] == ["-NoProfile", "-NonInteractive", "-Command"], row
+    assert launch["command_sha256"] == hashlib.sha256(launch["argv"][3].encode("utf-8")).hexdigest().upper()
+    assert "-Subcase '" + item["case"] + "/" + item["sub"] + "'" in launch["argv"][3] and row["env_after"] == ""
+    assert row["calls"][0] == "init " + str(len("SYNTHETIC loop\n")) and row["calls"][1].startswith("new ")
+    assert row["calls"][1][len("new "):].split("|", 1)[0] == item["files"]["host"] and row["input"] is True
+    assert row["registration"] is True
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("name,change,outcome", WIRING_WHOLE, ids=[row[0] for row in WIRING_WHOLE])
+def test_whole_owned_wrapper_runs_the_generic_driver_on_the_synthetic_runner(wiring_rows, name, change, outcome):
+    row, item = wiring_rows[0][name], wiring_rows[1][name]
+    assert row["result"] == "RAN", row
+    receipt = row["receipt"]
+    assert receipt["schema"] == "wd.mind-shadow-owned-lifetime-receipt.v2" and receipt["native_pass"] is False
+    assert receipt["failure"] is None and receipt["errors"] == [] and receipt["budget_or_stop_blocked"] is False
+    _whole_launch_ok(row, item)
+    # one owned stop at the deadline or guard, Dispose last, nothing after it
+    assert row["calls"][2:] == ["stop", "dispose"], row
+    stop = receipt["stop"]
+    assert stop["inner_calls"] == 1 and stop["origin"] == "driver" and stop["dispose"] == "ok", row
+    assert receipt["binding"]["root_pid"] == "5151" and receipt["binding"]["root_creation_utc"] == (
+        "SYNTHETIC-CREATION-5151")
+    assert receipt["binding"]["launch_id"] == LT_LAUNCH and receipt["case_id"] == item["case"]
+    budget = receipt["budget"]
+    assert budget["trigger"] is None and budget["last"]["status"] == "WITHIN_OBSERVED_BUDGET", row
+    # observed immediately before and after every direct witness read, plus the clock, sleep, free and wait seams
+    assert row["witness_reads"] >= 1 and budget["observations"] >= 2 * row["witness_reads"], row
+    observation = receipt["observation"]
+    if outcome:
+        assert observation["outcome"] == outcome, row
+    elif item["sub"] == "single_confirmed_stop":
+        assert observation == {"stop_calls": 1, "stop_confirmed": True}, row
+    else:
+        assert observation["live_descendants"] == [] and observation["independent_survivors"] == [], row
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("name,change", WIRING_WHOLE_FAIL, ids=[row[0] for row in WIRING_WHOLE_FAIL])
+def test_whole_owned_wrapper_keeps_failures_and_cleanup_errors_in_an_unknown_receipt(wiring_rows, name, change):
+    row, item = wiring_rows[0][name], wiring_rows[1][name]
+    if name.startswith("whf_bound_"):  # refused before any directory, input, registration, type or process
+        assert row["result"] == "ERROR" and row["error"].startswith("refused: the output bound"), row
+        assert row["registration"] is False and row["input"] is False and row["calls"] == [], row
+        return
+    if name == "whf_partial_record_receipt":  # a partial Record never throws over the original failure
+        receipt = row["receipt"]
+        assert row["result"] == "RECEIPT" and receipt["observation"] is None and receipt["budget_or_stop_blocked"]
+        assert "synthetic original failure" in receipt["failure"]["message"] and receipt["stop"] is None, row
+        return
+    assert row["result"] == "RAN", row
+    receipt = row["receipt"]
+    assert receipt["schema"] == "wd.mind-shadow-owned-lifetime-receipt.v2" and receipt["native_pass"] is False
+    assert receipt["observation"] is None and receipt["budget_or_stop_blocked"] is True, row
+    _whole_launch_ok(row, item)
+    stop, errors = receipt["stop"], receipt["errors"]
+    assert row["calls"].count("stop") <= 1 and row["calls"][-1] == "dispose", row  # never a second owned stop
+    if name.startswith("whf_setup_"):
+        # the owned object is cleaned up before the driver ever received it: one stop, one Dispose
+        assert row["calls"][2:] == ["stop", "dispose"] and stop["origin"] == "setup_cleanup", row
+        assert "synthetic setup failure" in receipt["failure"]["message"] and errors[0].startswith("setup: "), row
+        assert "cleanup" not in receipt["failure"]["message"], row  # the original error keeps precedence
+        if name == "whf_setup_cleanup_errors":
+            assert [text.split(":")[0] for text in errors] == ["setup", "cleanup stop", "cleanup dispose"], row
+            assert stop["failed"] is True and stop["dispose"] == "failed", row
+    elif name == "whf_identity_failure":  # RootCreation failed: the driver disposed, it never stopped
+        assert row["calls"][2:] == ["dispose"] and "synthetic identity failure" in receipt["failure"]["message"]
+        assert receipt["binding"] is None and stop["dispose"] == "ok", row  # the driver binding is not returned
+    elif name == "whf_dispose_failure":
+        assert receipt["failure"] is None and stop["dispose"] == "failed", row
+        assert "synthetic owned dispose failure" in stop["dispose_error"], row
+    elif name == "whf_stop_failure":  # the generic driver catches the owned stop error itself (its stop line)
+        assert receipt["failure"] is None and stop["failed"] is True and stop["inner_calls"] == 1, row
+        assert "synthetic owned stop failure" in stop["error"] and row["calls"][2:] == ["stop", "dispose"], row
+    elif name == "whf_witness_growth":  # growth inside the last witness read: only the after-read hook sees it
+        assert receipt["failure"] is None and receipt["budget"]["trigger"] == "OVER_BOUND", row
+    else:  # a log lost inside the last witness read: UNKNOWN or a kept failure, never PASS
+        assert receipt["budget"]["trigger"] == "UNKNOWN" or receipt["failure"] is not None, row

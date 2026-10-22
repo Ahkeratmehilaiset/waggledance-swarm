@@ -13,6 +13,57 @@ function Get-WdA5Sha256 {
     try{return [BitConverter]::ToString($hash.ComputeHash($Bytes)).Replace('-','')}finally{$hash.Dispose()}
 }
 
+function ConvertFrom-WdA5StrictUtc {
+    param($Value)
+    $format="yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"
+    $parsed=[DateTime]::MinValue
+    $style=[Globalization.DateTimeStyles]::AssumeUniversal-bor[Globalization.DateTimeStyles]::AdjustToUniversal
+    if($Value-isnot[string]-or$Value-cnotmatch'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z\z'-or
+       -not[DateTime]::TryParseExact($Value,$format,[Globalization.CultureInfo]::InvariantCulture,$style,[ref]$parsed)-or
+       $parsed.ToString($format,[Globalization.CultureInfo]::InvariantCulture)-cne$Value){throw 'refused: exact invariant roundtrip UTC required'}
+    return $parsed
+}
+
+function Get-WdA5ReadyField {
+    param($Object,[string]$Name)
+    if($Object-is[Collections.IDictionary]){if($Object.Contains($Name)){return ,$Object[$Name]}}
+    elseif($null-ne$Object){$property=$Object.PSObject.Properties[$Name];if($null-ne$property){return ,$property.Value}}
+    throw ('missing A5 ready field '+$Name)
+}
+
+function Test-WdA5ReadyKillWindow {
+    # PURE timing/binding prerequisite only. No clock/file/process reads and no
+    # native authority: caller supplies fresh NowUtc immediately before its call.
+    param($Ready,[hashtable]$ExpectedContext,[hashtable]$ExpectedController,$NowUtc,$SafetyMarginSeconds)
+    try{
+        Assert-WdA5Context $ExpectedContext
+        if($null-eq$ExpectedController-or$ExpectedController.Count-ne2-or$ExpectedController.pid-isnot[string]-or
+           $ExpectedController.pid-cnotmatch'^[1-9][0-9]{0,9}\z'){throw 'unknown expected owned controller'}
+        [void](ConvertFrom-WdA5StrictUtc $ExpectedController.creation_utc)
+        $context=Get-WdA5ReadyField $Ready 'context'
+        $keys=if($context-is[Collections.IDictionary]){@($context.Keys)}else{@($context.PSObject.Properties.Name)}
+        if($keys.Count-ne$ExpectedContext.Count){throw 'foreign ready context shape'}
+        foreach($key in $ExpectedContext.Keys){if((Get-WdA5ReadyField $context $key)-isnot[string]-or(Get-WdA5ReadyField $context $key)-cne$ExpectedContext[$key]){throw 'foreign ready context'}}
+        $controller=Get-WdA5ReadyField $Ready 'controller'
+        foreach($key in @('pid','creation_utc')){if((Get-WdA5ReadyField $controller $key)-isnot[string]-or(Get-WdA5ReadyField $controller $key)-cne$ExpectedController[$key]){throw 'foreign ready controller'}}
+        if((Get-WdA5ReadyField $Ready 'schema')-cne'wd.mind-shadow-a5-controller-ready.v1'-or
+           (Get-WdA5ReadyField $Ready 'status')-cne'INNER_JOB_READY_NOT_A5_PASS'-or(Get-WdA5ReadyField $Ready 'subcase')-cne'A5/controller_death'-or
+           (Get-WdA5ReadyField $Ready 'whole_A5_PASS')-isnot[bool]-or(Get-WdA5ReadyField $Ready 'whole_A5_PASS')){throw 'not an A5 ready prerequisite'}
+        $hold=Get-WdA5ReadyField $Ready 'hold_seconds'
+        if(($hold-isnot[int]-and$hold-isnot[long])-or$hold-lt1-or$hold-gt120){throw 'unknown hold duration'}
+        if(($SafetyMarginSeconds-isnot[int]-and$SafetyMarginSeconds-isnot[long]-and$SafetyMarginSeconds-isnot[double]-and$SafetyMarginSeconds-isnot[decimal])-or
+           [double]::IsNaN([double]$SafetyMarginSeconds)-or[double]::IsInfinity([double]$SafetyMarginSeconds)-or$SafetyMarginSeconds-le0-or$SafetyMarginSeconds-ge$hold){throw 'positive finite safety margin required'}
+        $start=ConvertFrom-WdA5StrictUtc (Get-WdA5ReadyField $Ready 'ready_utc')
+        $deadline=ConvertFrom-WdA5StrictUtc (Get-WdA5ReadyField $Ready 'deadline_utc')
+        $now=ConvertFrom-WdA5StrictUtc $NowUtc
+        if($start.AddSeconds($hold).Ticks-ne$deadline.Ticks){throw 'inconsistent absolute hold deadline'}
+        $cutoff=$deadline.AddSeconds(-[double]$SafetyMarginSeconds)
+        if($cutoff.Ticks-ge$deadline.Ticks){throw 'safety margin not representable by host clock arithmetic'}
+        if($now.Ticks-lt$start.Ticks-or$now.Ticks-ge$cutoff.Ticks){throw 'kill window not open'}
+        return @{status='WINDOW_OPEN_TIMING_ONLY';within_window=$true;native_authority=$false;kill_before_utc=$cutoff.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
+    }catch{return @{status='UNKNOWN';within_window=$false;native_authority=$false;reason=$_.Exception.Message}}
+}
+
 function Read-WdA5PinnedFile {
     param([string]$Path,[string]$Sha256,[switch]$Text)
     if(-not[IO.Path]::IsPathRooted($Path)-or$Sha256-cnotmatch'^[A-F0-9]{64}\z'){throw 'refused: complete explicit A5 file pin required'}
@@ -38,8 +89,7 @@ function Assert-WdA5Context {
        $Context.source_commit-cnotmatch'^[a-f0-9]{40}\z'-or$Context.manifest_sha256-cnotmatch'^[A-F0-9]{64}\z'-or$Context.parent_pid-cnotmatch'^[1-9][0-9]{0,9}\z'){
         throw 'refused: invalid A5 context identity'
     }
-    $created=[DateTimeOffset]::MinValue
-    if(-not[DateTimeOffset]::TryParse($Context.parent_creation_utc,[ref]$created)){throw 'refused: invalid A5 parent creation time'}
+    [void](ConvertFrom-WdA5StrictUtc $Context.parent_creation_utc)
 }
 
 function Write-WdA5Once {
@@ -93,7 +143,8 @@ function Invoke-WdA5ControllerCore {
     Write-WdA5Once (Join-Path $directory 'members.registration') ((($members|ForEach-Object{$Context.launch_id+' '+$_})-join"`n")+"`n")
     $controller=Get-WdA5Identity $PID
     if($controller.pid-cne[string]$PID-or-not$controller.creation_utc){throw 'refused: actual A5 controller identity unknown'}
-    $witness=$null;$inner=$null;$root=$null;$ready=$false
+    $witness=$null;$inner=$null;$root=$null;$ready=$false;$readyAttempted=$false;$holdClock=$null;$result=$null
+    $failures=New-Object System.Collections.ArrayList
     try{
         $witness=[IO.File]::Open((Join-Path $directory 'controller.witness'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         $line=[Text.Encoding]::ASCII.GetBytes($Context.launch_id+' controller '+$controller.pid+' '+$controller.creation_utc+"`n")
@@ -115,32 +166,47 @@ function Invoke-WdA5ControllerCore {
         $active=$inner.ActiveProcesses;$total=$inner.TotalProcesses
         if($active-isnot[uint32]-or$total-isnot[uint32]-or$active-ne3-or$total-ne3){throw 'refused: A5 fixed-tree accounting unknown or unexpected'}
         $observed=@{};foreach($name in $members){$observed[$name]=@{start_witness='present';released=$false;launch_id=$Context.launch_id}}
+        # UTC is anchored BEFORE the monotonic hold. Do not restart after a slow
+        # publication: cleanup cannot precede the original advertised deadline.
+        $readyUtc=[DateTime]::UtcNow;$holdClock=[Diagnostics.Stopwatch]::StartNew()
         $receipt=[ordered]@{schema='wd.mind-shadow-a5-controller-ready.v1';status='INNER_JOB_READY_NOT_A5_PASS';context=$Context;
             controller=$controller;root=$root;subcase='A5/controller_death';directory=$directory;pins=$Pins;
             observation=@{expected=$members;observed=$observed};inner_accounting=@{active=$active;total=$total};
             command_sha256=(Get-WdA5Sha256 ([Text.Encoding]::UTF8.GetBytes($command)));whole_A5_PASS=$false;
+            ready_utc=$readyUtc.ToString('o',[Globalization.CultureInfo]::InvariantCulture);hold_seconds=$HoldSeconds;
+            deadline_utc=$readyUtc.AddSeconds($HoldSeconds).ToString('o',[Globalization.CultureInfo]::InvariantCulture);
             cleanup_marker_path=(Join-Path $directory 'cleanup-started.json');
-            required_parent_order='StopRootOnly(controller); confirm forced exit124 and no cleanup marker/errors; observe all member releases; only THEN outer Stop/Dispose'}
+            required_parent_order='Require pure bound kill window with explicit positive margin; StopRootOnly strictly before cutoff; confirm forced exit124 and no cleanup marker/errors; observe releases BEFORE outer cleanup'}
+        $readyAttempted=$true
         Write-WdA5Once (Join-Path $directory 'ready.json') ($receipt|ConvertTo-Json -Depth 12 -Compress)
-        $ready=$true;$clock.Restart()
-        while($clock.Elapsed.TotalSeconds-lt$HoldSeconds){
+        $ready=$true
+        while($holdClock.Elapsed.TotalSeconds-lt$HoldSeconds){
             if($inner.Wait(0)){throw 'A5 inner root ended while controller should be held'}
             Start-Sleep -Milliseconds 10
         }
-        return @{status='CONTROLLER_EXPIRED_NOT_A5_PASS';ready_written=$ready;whole_A5_PASS=$false}
-    }finally{
+        $result=@{status='CONTROLLER_EXPIRED_NOT_A5_PASS';ready_written=$ready;whole_A5_PASS=$false}
+    }catch{[void]$failures.Add('primary: '+$_.Exception.Message)}finally{
         # Normal/error cleanup is NOT controller-death evidence. Abrupt controller
         # death relies on OS closing INNER job handle; parent retains OUTER safety.
-        try{if($null-ne$inner){try{
+        try{if($null-ne$inner){
             # An expiry/error cleanup is never controller-death evidence. Future
             # parent must positively verify this marker absent AFTER forced exit,
             # and fail UNKNOWN on unreadable state, errors or marker write failure.
             $cleanup=@{schema='wd.mind-shadow-a5-controller-cleanup.v1';context=$Context;controller=$controller;root=$root;ready_written=$ready;whole_A5_PASS=$false}
-            Write-WdA5Once (Join-Path $directory 'cleanup-started.json') ($cleanup|ConvertTo-Json -Depth 8 -Compress)
-            $inner.Stop()
-        }finally{$inner.Dispose()}}}
-        finally{if($null-ne$witness){$witness.Dispose()}}
+            $durable=$false
+            try{Write-WdA5Once (Join-Path $directory 'cleanup-started.json') ($cleanup|ConvertTo-Json -Depth 8 -Compress);$durable=$true}
+            catch{[void]$failures.Add('cleanup marker: '+$_.Exception.Message)}
+            if($readyAttempted-and-not$durable){
+                # Even an early ordinary error cannot close INNER inside the
+                # parent's open kill window. No retry; one bounded original hold.
+                while($holdClock.Elapsed.TotalSeconds-lt$HoldSeconds){Start-Sleep -Milliseconds 10}
+            }
+            try{$inner.Stop()}catch{[void]$failures.Add('inner stop: '+$_.Exception.Message)}
+            try{$inner.Dispose()}catch{[void]$failures.Add('inner dispose: '+$_.Exception.Message)}
+        }}finally{if($null-ne$witness){try{$witness.Dispose()}catch{[void]$failures.Add('witness dispose: '+$_.Exception.Message)}}}
     }
+    if($failures.Count){throw ($failures-join'; ')}
+    return $result
 }
 
 function Invoke-WdMindShadowA5Controller {

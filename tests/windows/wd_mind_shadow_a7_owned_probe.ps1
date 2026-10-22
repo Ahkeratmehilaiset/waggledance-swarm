@@ -66,8 +66,9 @@ function Get-WdA7PreparationAttributes {
 function Get-WdA7PreparationLinkTarget {
     param([string]$Path)
     $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if($item.LinkType-cne'Junction'-or@($item.Target).Count-ne1){throw 'not one junction target'}
-    return [IO.Path]::GetFullPath([string]$item.Target[0]).TrimEnd('\')
+    $targets=@($item.Target)
+    if($item.LinkType-cne'Junction'-or$targets.Count-ne1){throw 'not one junction target'}
+    return [IO.Path]::GetFullPath([string]$targets[0]).TrimEnd('\')
 }
 
 function Assert-WdA7PreparedState {

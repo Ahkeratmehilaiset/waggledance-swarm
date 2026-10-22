@@ -12,6 +12,35 @@ PROBE = ROOT / 'tests/windows/wd_mind_shadow_a7_owned_probe.ps1'
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('shape', ['scalar', 'single_array', 'two_targets', 'no_targets', 'wrong_kind'])
+def test_real_link_target_reader_preserves_provider_metadata_shape(ps, shape):
+    # Exercise the actual reader, not the prior matrix's replacement for it.
+    # Only Get-Item metadata is synthetic; no junction or ACL is created.
+    script = rf"""
+$script:metadata=[pscustomobject]@{{LinkType='Junction';Target='C:\synthetic\.codex-audit\target'}}
+switch ({q(shape)}) {{
+    'single_array' {{$script:metadata.Target=[string[]]@('C:\synthetic\.codex-audit\target')}}
+    'two_targets' {{$script:metadata.Target=[string[]]@('C:\one','C:\two')}}
+    'no_targets' {{$script:metadata.Target=[string[]]@()}}
+    'wrong_kind' {{$script:metadata.LinkType='SymbolicLink'}}
+}}
+function Get-Item {{
+    param([string]$LiteralPath,[switch]$Force,[string]$ErrorAction)
+    if($LiteralPath-cne'C:\synthetic\.codex-audit\link'){{throw 'unexpected metadata path'}}
+    return $script:metadata
+}}
+$target=$null;$message=$null
+try {{$target=Get-WdA7PreparationLinkTarget 'C:\synthetic\.codex-audit\link'}}catch{{$message=$_.Exception.Message}}
+@{{target=$target;message=$message}}|ConvertTo-Json
+"""
+    result = run_json(script, ps)
+    if shape in ('scalar', 'single_array'):
+        assert result == {'target': r'C:\synthetic\.codex-audit\target', 'message': None}
+    else:
+        assert result == {'target': None, 'message': 'not one junction target'}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('mode', ['missing_switch', 'readable_denied_switch', 'missing_junction', 'missing_plain_root'])
 def test_public_preparation_refuses_before_evidence_or_type(tmp_path, ps, mode):
     case = tmp_path / 'case'

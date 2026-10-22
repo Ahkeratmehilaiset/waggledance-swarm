@@ -699,7 +699,21 @@ def test_harness_lifetime_drivers_sequence_the_job_through_seams_and_the_real_jo
     assert driver.index("& $Seams['NewManaged'] $plan") < driver.index("$managed.Stop()") < driver.index(
         "$managed.Dispose()")
     compose = _function(harness, "ConvertTo-WdShadowLifetimeCaseObservation")
-    assert "one launch" in compose
+    assert "'wd.mind-shadow-lifetime-subcase-binding.v1'" in compose
+    # Lead's v8: A1 and A3 take the versioned per-sub-case binding; the old one-launch binding never reaches them.
+    case = _function(harness, "Get-WdShadowCaseVerdict")
+    assert case.index("Get-WdShadowLifetimeSubcaseCaseVerdict") < case.index("$required = @{")
+    # The future owned wiring: admission before any write or load, Root's runner loaded only from its pinned path,
+    # and the unsafe lifetime seams kept refused.
+    for name in ("Invoke-WdShadowA7OwnedAttempt", "New-WdShadowOwnedLifetimeSeams"):
+        body = _function(harness, name)
+        assert body.index("if (-not $ApprovedNativeExecution)") < body.index("Test-WdShadowOwnedAdmission") < \
+            body.index("$Files['runner']"), name
+        for word in ("Process]::", "Get-Cim", "Start-Sleep", "$env:", ".Kill", "New-Item"):
+            assert word not in body, (name, word)
+    owned = _function(harness, "New-WdShadowOwnedLifetimeSeams")
+    for seam in ("Context", "KillController", "InheritedHandles"):
+        assert f"$seams['{seam}'] =" not in owned, seam
     tail = harness[harness.rindex("\n}\n"):]
     assert "Invoke-WdShadow" not in tail and harness.rstrip().endswith("exit 3")
 

@@ -153,9 +153,9 @@ def test_the_only_empty_slot_comes_first_and_gets_the_slot_line():
     heads = {n: hashlib.sha1(f"order {n}".encode()).hexdigest() for n in (2000, 2001)}
     branches = {n: f"codex-lead-1/order-{n}-20261013" for n in heads}
     events = [tlv.vote("2026-10-13T17:30:00Z", "claude-rco-1", head=heads[2000], task=branches[2000], number=2000),
-              tlv.vote("2026-10-13T17:30:00.5Z", "claude-rco-3", head=heads[2000], task=branches[2000], number=2000),
+              tlv.vote("2026-10-13T17:30:00.5Z", "claude-rco-2", head=heads[2000], task=branches[2000], number=2000),
               tlv.vote("2026-10-13T17:50:00Z", "claude-rco-1", head=heads[2001], task=branches[2001], number=2001),
-              tlv.vote("2026-10-13T17:50:00.5Z", "claude-rco-3", head=heads[2001], task=branches[2001], number=2001),
+              tlv.vote("2026-10-13T17:50:00.5Z", "claude-rco-2", head=heads[2001], task=branches[2001], number=2001),
               tlv.vote("2026-10-13T17:50:01Z", "codex-lead-1", head=heads[2001], task=branches[2001], number=2001)]
     github = tlv.merge_github(*(tlv.github_of(head=heads[n], number=n, branch=branches[n],
                                               observed=tjd.shift(AS_OF, minutes=-5)) for n in heads))

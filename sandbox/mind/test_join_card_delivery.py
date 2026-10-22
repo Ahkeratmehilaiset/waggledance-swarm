@@ -70,7 +70,7 @@ def many(count, as_of):
         number, branch = 2000 + index, f"codex-lead-1/wait-{index}-20261013"
         head = hashlib.sha1(f"head {index}".encode()).hexdigest()
         events += [tlv.vote(f"2026-10-13T17:4{index}:00Z", "claude-rco-1", head=head, task=branch, number=number),
-                   tlv.vote(f"2026-10-13T17:4{index}:00.5Z", "claude-rco-3", head=head, task=branch, number=number),
+                   tlv.vote(f"2026-10-13T17:4{index}:00.5Z", "claude-rco-2", head=head, task=branch, number=number),
                    tlv.vote(f"2026-10-13T17:4{index}:01Z", "codex-lead-1", head=head, task=branch, number=number)]
         githubs.append(tlv.github_of(head=head, number=number, branch=branch, observed=shift(as_of, minutes=-5)))
     return case(as_of, events=events, github=tlv.merge_github(*githubs))

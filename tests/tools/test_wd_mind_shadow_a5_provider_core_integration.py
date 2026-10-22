@@ -255,5 +255,14 @@ def test_actual_factory_and_parent_core_share_one_strict_fake_run(tmp_path, labe
     else:
         assert result["status"] == "UNKNOWN" and result["observation"] is None and result["errors"]
         assert calls.count("root-only-stop") == (0 if mode == "bad_frame" else 1)
+        primary_prefix = {
+            "bad_frame": "primary: expected member array required",
+            "unknown_accounting": "primary: pre-cleanup member-death accounting unknown",
+            "held_output": "primary: refused: the output snapshot file is still held",
+            "held_witness": "primary: released witness missing/foreign/held: root",
+            "foreign_witness": "primary: released witness missing/foreign/held: root",
+        }
+        if mode in primary_prefix:
+            assert result["errors"][0].startswith(primary_prefix[mode]), row
         if mode == "early_cleanup_errors":
             assert [e.split(":")[0] for e in result["errors"]] == ["primary", "outer stop", "outer dispose"]

@@ -2092,7 +2092,7 @@ def _native_shell(name: str) -> str:
 class _CloseoutWorld:
     """A Lead request to Tools on an isolated runtime, plus the matching closeout arguments."""
 
-    def __init__(self, tmp_path: Path, shell: str) -> None:
+    def __init__(self, tmp_path: Path, shell: str, requirements: dict | None = None) -> None:
         self.root = Path(__file__).resolve().parents[2]
         self.runtime_root = tmp_path / "bridge-runtime"
         self.shared = self.runtime_root / "shared"
@@ -2118,7 +2118,8 @@ class _CloseoutWorld:
         completed = self.write({**self.lead, "-Type": "message", "-Status": "requested", "-TaskId": CLOSEOUT_TASK,
                                 "-To": "codex-tools-1", "-Message": "build please",
                                 "-RequestId": "fixture-closeout-request-v1",
-                                "-PayloadJson": json.dumps({"nonce": "n-1", "task_revision": 3})})
+                                "-PayloadJson": json.dumps({"nonce": "n-1", "token": "token-1", "task_revision": 3}
+                                                           if requirements is None else requirements)})
         assert completed.returncode == 0, completed.stdout + completed.stderr
         self.request = self.events()[-1]
 
@@ -2172,6 +2173,7 @@ def test_requester_closeout_closes_its_own_request_exactly(tmp_path: Path, shell
         "in_reply_to_requester": {key: request[key] for key in ("agent", "agent_uuid", "session_id", "run_id")},
         "request_ts_utc": request["ts_utc"],
         "nonce": "n-1",
+        "token": "token-1",
         "task_revision": 3,
     }
     for key, value in expected.items():
@@ -2205,7 +2207,131 @@ def test_normal_reply_twin_is_unchanged_and_requester_reply_stays_refused(tmp_pa
     assert answered.returncode == 0, answered.stdout + answered.stderr
     reply = world.events()[-1]
     assert reply["in_reply_to_request_id"] == world.request["request_id"]
-    assert not {"request_ts_utc", "nonce", "task_revision"} & set(reply)
+    assert not {"request_ts_utc", "nonce", "token", "task_revision"} & set(reply)
+    assert {key: reply['payload'].get(key) for key in ('nonce', 'token', 'task_revision')} == {
+        'nonce': 'n-1', 'token': 'token-1', 'task_revision': 3}
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize('shell', CLOSEOUT_SHELLS)
+@pytest.mark.parametrize('key', ['nonce', 'token', 'task_revision'])
+def test_normal_reply_required_values_refuse_null_wrong_and_request_conflict_without_append(tmp_path, shell, key):
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    log = world.shared / 'events.jsonl'
+    before = log.read_bytes()
+    for case in ('null', 'wrong', 'request_conflict'):
+        request = json.loads(json.dumps(world.request))
+        payload = {key: None if case == 'null' else 'wrong'}
+        if case == 'request_conflict':
+            request[key] = 'conflicting-required-value'
+            payload = {}
+        completed = world.write({**world.tools, '-Type': 'message', '-Status': 'answered',
+                                 '-TaskId': CLOSEOUT_TASK, '-To': 'codex-lead-1',
+                                 '-ReplyToEventJson': json.dumps(request), '-PayloadJson': json.dumps(payload)})
+        assert completed.returncode != 0, (case, completed.stdout, completed.stderr)
+        assert log.read_bytes() == before, case
+        assert world.events() == [world.request], case
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize('shell', CLOSEOUT_SHELLS)
+@pytest.mark.parametrize('key,value', [('nonce', 'n-1'), ('token', 'token-1'), ('task_revision', 3)])
+def test_required_reply_nonobject_payloads_refuse_without_append(tmp_path, shell, key, value):
+    """Batch all shapes; a real serialized append is evidence, not an in-memory guess."""
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell), requirements={key: value})
+    cases = {
+        'empty_array': [], 'one_object': [{}], 'object_array': [{'v': 1}],
+        'nested_objects': [[{'v': 1}]], 'two_objects': [{'v': 1}, {'v': 2}],
+        'already_bound_array': [{'nonce': 'n-1', 'token': 'token-1', 'task_revision': 3}],
+        'string': 'plain', 'object_text_string': '{"v":1}',
+        'number': 17, 'zero': 0, 'false': False, 'true': True,
+    }
+    log = world.shared / 'events.jsonl'
+    failures = []
+    for name, payload in cases.items():
+        before, events_before = log.read_bytes(), world.events()
+        completed = world.write({**world.tools, '-Type': 'message', '-Status': 'answered',
+                                 '-TaskId': CLOSEOUT_TASK, '-To': 'codex-lead-1',
+                                 '-ReplyToEventJson': json.dumps(world.request), '-PayloadJson': json.dumps(payload)})
+        after, events_after = log.read_bytes(), world.events()
+        observation = dict(case=name, shell=shell, required=key, exit=completed.returncode,
+                           bytes_unchanged=after == before, event_sequence_unchanged=events_after == events_before,
+                           appended_payload=events_after[-1]['payload'] if after != before else None)
+        print('PAYLOAD_SHAPE_OBSERVED ' + json.dumps(observation, sort_keys=True))
+        # PS7's existing ConvertFrom-Json pipeline unwraps a one-object array
+        # before the echo boundary. No raw-input tracking or reshaping is added.
+        parsed_object = shell == 'pwsh' and name in ('one_object', 'object_array', 'already_bound_array')
+        if parsed_object:
+            expected = {**payload[0], key: value}
+            valid = (completed.returncode == 0 and after != before and
+                     events_after[-1]['payload'] == expected and
+                     reply_matches_request(world.request, events_after[-1], 'codex-tools-1'))
+        else:
+            valid = completed.returncode != 0 and after == before and events_after == events_before
+            if name in ('string', 'object_text_string', 'number', 'zero', 'false', 'true'):
+                valid = valid and 'requires an object payload for required binding fields' in completed.stderr
+        if not valid: failures.append(observation)
+    assert failures == []
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize('shell', CLOSEOUT_SHELLS)
+@pytest.mark.parametrize('case', ['default', 'empty_object', 'object_values', 'matching_object', 'normalized_null'])
+def test_required_object_reply_binding_survives_real_json_roundtrip(tmp_path, shell, case):
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    original = {} if case in ('default', 'empty_object', 'normalized_null') else {'answer': 42, 'nested': {'ok': True}, 'empty': []}
+    if case == 'matching_object': original.update(nonce='n-1', token='token-1', task_revision=3)
+    arguments = {**world.tools, '-Type': 'message', '-Status': 'answered', '-TaskId': CLOSEOUT_TASK,
+                 '-To': 'codex-lead-1', '-ReplyToEventJson': json.dumps(world.request)}
+    if case != 'default':
+        arguments['-PayloadJson'] = ' \n ' + json.dumps(None if case == 'normalized_null' else original) + ' \r\n'
+    completed = world.write(arguments)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    # Load actual canonical fixture bytes, not the writer's in-memory object or receipt.
+    line = (world.shared / 'events.jsonl').read_text(encoding='utf-8').splitlines()[-1]
+    validate_event_line(line)
+    persisted = json.loads(line)
+    assert persisted['payload'] == {**original, 'nonce': 'n-1', 'token': 'token-1', 'task_revision': 3}
+    assert not {'nonce', 'token', 'task_revision'} & set(persisted)
+    assert reply_matches_request(world.request, persisted, 'codex-tools-1')
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize('shell', CLOSEOUT_SHELLS)
+@pytest.mark.parametrize('null_requirements', [False, True])
+def test_nonrequired_reply_payload_shapes_keep_existing_behavior(tmp_path, shell, null_requirements):
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    requirements = dict(nonce=None, token=None, task_revision=None) if null_requirements else {}
+    world = _CloseoutWorld(tmp_path, _native_shell(shell), requirements=requirements)
+    cases = [('empty_array', [], None, False), ('one_object', [{'v': 1}], {'v': 1}, True),
+             ('two_objects', [{'v': 1}, {'v': 2}], [{'v': 1}, {'v': 2}], True),
+             ('string', 'plain', 'plain', True), ('number', 17, 17, True),
+             ('false', False, False, True), ('true', True, True, True), ('explicit_null', None, {}, True)]
+    log = world.shared / 'events.jsonl'
+    failures = []
+    for name, payload, expected, accepted in cases:
+        # Preserve measured pre-existing PS5 array wrappers and PS7 unwrapping;
+        # non-required replies are deliberately outside the new object contract.
+        if shell == 'powershell' and isinstance(payload, list):
+            expected, accepted = {'value': payload, 'Count': len(payload)}, True
+        before = log.read_bytes()
+        completed = world.write({**world.tools, '-Type': 'message', '-Status': 'answered',
+                                 '-TaskId': CLOSEOUT_TASK, '-To': 'codex-lead-1',
+                                 '-ReplyToEventJson': json.dumps(world.request), '-PayloadJson': json.dumps(payload)})
+        after = log.read_bytes()
+        actual = world.events()[-1] if after != before else None
+        valid = ((completed.returncode == 0 and actual is not None and actual['payload'] == expected and
+                  reply_matches_request(world.request, actual, 'codex-tools-1')) if accepted else
+                 (completed.returncode != 0 and after == before))
+        print('LEGACY_PAYLOAD_OBSERVED ' + json.dumps(dict(case=name, shell=shell, null_requirements=null_requirements,
+              exit=completed.returncode, accepted=actual is not None, payload=actual['payload'] if actual else None)))
+        if not valid: failures.append(dict(case=name, exit=completed.returncode, payload=actual['payload'] if actual else None))
+    assert failures == []
 
 
 def _without(event: dict, key: str) -> dict:

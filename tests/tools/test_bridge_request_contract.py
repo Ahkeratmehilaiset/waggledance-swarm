@@ -105,17 +105,15 @@ def test_explicit_id_also_binds_requester_and_responder_identity(case):
 @pytest.mark.parametrize('engine', SHELLS)
 @pytest.mark.parametrize('partial_target', [False, True])
 def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine, partial_target):
+    from test_bridge_write_agent_event import _run_writer
+
     CODEX_TOOLS_UUID = json.loads((ROOT / 'configs/bridge_identity_registry.json').read_text())['identities']['codex-tools-1']
-    env = {k:v for k,v in os.environ.items() if not k.startswith('AGENT_BRIDGE_')}
-    env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(tmp_path)
     shared = tmp_path / 'shared'
     shared.mkdir()
     (shared / 'last_codex-tools-1.json').write_text(json.dumps(dict(
         agent='codex-tools-1', agent_uuid=CODEX_TOOLS_UUID, session_id='tools-session', run_id='tools-run')))
-    writer = ROOT / '.agent-bridge/bin/Write-AgentEvent.ps1'
     def write(*args):
-        proc = subprocess.run([engine, '-NoProfile', '-File', str(writer), '-TaskId', 'fixture/new-id', *args],
-                              env=env, capture_output=True, text=True, timeout=30)
+        proc = _run_writer(ROOT, tmp_path, '-TaskId', 'fixture/new-id', *args, shell=engine)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads((shared / 'events.jsonl').read_text().splitlines()[-1])
     request = write('-Agent','operator','-Type','message','-Status','handoff_ready','-To',
@@ -284,6 +282,84 @@ def _explicit_binding_rows():
     reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='digest-v2',
                  in_reply_to_requester={k: newer[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
     return first, newer, reply
+
+
+@pytest.mark.parametrize('engine', ['python', 'v2'] + SHELLS)
+@pytest.mark.parametrize('key', ['nonce', 'token', 'task_revision'])
+def test_explicit_id_requires_every_nonnull_field_and_rejects_conflicts(tmp_path, engine, key):
+    # One batch per actual engine: collect every bad envelope, not first failure only.
+    cases = []
+    for case in ('omitted', 'null', 'wrong', 'reply_conflict', 'request_conflict',
+                 'equal', 'direct_null', 'nested_null', 'no_requirement',
+                 'null_requirement', 'zero', 'false', 'empty_string', 'object', 'array', 'empty_array',
+                 'zero_vs_false', 'nested_bool_vs_int', 'required_type_conflict'):
+        _, request, reply = _explicit_binding_rows()
+        request['payload'].pop('nonce')
+        reply['payload'].pop('nonce')
+        value = {'zero': 0, 'false': False, 'empty_string': '', 'object': {'b': [1, 2], 'a': 0},
+                 'array': [1, 'two'], 'empty_array': []}.get(case, 'required-value')
+        request['payload'][key] = value
+        reply['payload'][key] = deepcopy(value)
+        if case == 'omitted': del reply['payload'][key]
+        if case == 'null': reply['payload'][key] = None
+        if case == 'wrong': reply['payload'][key] = 'wrong'
+        if case == 'reply_conflict': reply[key] = 'other'
+        if case == 'request_conflict':
+            request[key] = 'other'
+            del reply['payload'][key]
+        if case == 'equal':
+            request[key] = value
+            reply[key] = value
+        if case == 'direct_null':
+            request[key] = None
+            reply[key] = None
+        if case == 'nested_null':
+            request[key] = value
+            reply[key] = value
+            request['payload'][key] = reply['payload'][key] = None
+        if case == 'zero_vs_false':
+            request['payload'][key], reply['payload'][key] = 0, False
+        if case == 'nested_bool_vs_int':
+            request['payload'][key], reply['payload'][key] = {'v': [0]}, {'v': [False]}
+        if case == 'required_type_conflict':
+            request[key], request['payload'][key], reply['payload'][key] = 0, False, 0
+        if case in ('no_requirement', 'null_requirement'):
+            request['payload'].pop(key)
+            reply['payload'].pop(key)
+            if case == 'null_requirement': request['payload'][key] = None
+        cases.append(dict(case=case, request=request, reply=reply,
+                          expected=case not in ('omitted', 'null', 'wrong', 'reply_conflict', 'request_conflict',
+                                               'zero_vs_false', 'nested_bool_vs_int', 'required_type_conflict')))
+    if engine in ('python', 'v2'):
+        from tools.bridge_v2_request_contract import reply_matches_request as v2_matches
+        matcher = reply_matches_request if engine == 'python' else v2_matches
+        actual = [matcher(row['request'], row['reply'], 'codex-tools-1') for row in cases]
+    else:
+        fixture = tmp_path / 'required-fields.json'
+        fixture.write_text(json.dumps(cases), encoding='utf-8')
+        command = (f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; "
+                   f"$rows=Get-Content -LiteralPath '{fixture}' -Raw|ConvertFrom-Json; "
+                   "@($rows|ForEach-Object {Test-BridgeReplyBinding $_.request $_.reply 'codex-tools-1'})|ConvertTo-Json")
+        proc = subprocess.run([engine, '-NoProfile', '-NonInteractive', '-Command', command],
+                              capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        actual = json.loads(proc.stdout)
+    assert [(row['case'], got, row['expected']) for row, got in zip(cases, actual)
+            if got is not row['expected']] == []
+    assert len(actual) == len(cases)
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('closure', [False, True])
+@pytest.mark.parametrize('key', ['nonce', 'token', 'task_revision'])
+def test_incomplete_required_reply_or_closeout_leaves_both_exact_requests_open(tmp_path, engine, closure, key):
+    first, newer, reply = _explicit_binding_rows()
+    for row in (first, newer, reply): row['payload'].pop('nonce')
+    first['payload'][key], newer['payload'][key] = 'first', 'second'
+    if closure:
+        reply.update({name: newer[name] for name in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+        reply.update(type='decision', status='superseded', to='codex-tools-1')
+    assert _route_exact_binding_rows(tmp_path, engine, [first, newer, reply]) == {'request-v1', 'request-v2'}
 
 
 @pytest.mark.parametrize('wrong_requester_run', [False, True])

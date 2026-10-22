@@ -11,13 +11,24 @@ import re
 from typing import Any, Mapping
 
 _CONFLICT = object()
+_REQUIRED_FIELDS = ("nonce", "token", "task_revision")
+
+
+def _required_values_equal(left: Any, right: Any) -> bool:
+    # JSON values, not Python's bool/int equivalence; match the PS contract.
+    try:
+        return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(right, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
 
 
 def field(event: Mapping[str, Any], key: str) -> Any:
     payload = event.get("payload")
     nested = payload.get(key) if isinstance(payload, Mapping) else None
     direct = event.get(key)
-    if direct is not None and nested is not None and direct != nested:
+    if direct is not None and nested is not None and (
+        not _required_values_equal(direct, nested) if key in _REQUIRED_FIELDS else direct != nested
+    ):
         return _CONFLICT
     return direct if direct is not None else nested
 
@@ -104,13 +115,15 @@ def reply_matches_request(
     if reference is not None and timestamp(reference) != sent:
         return False
     correlated = reference is not None
-    for key in ("nonce", "token", "task_revision"):
+    for key in _REQUIRED_FIELDS:
         expected = field(request, key)
         actual = field(reply, key)
+        if expected is _CONFLICT:
+            return False
         if expected is not None:
-            # IDs bind a reply without copying arbitrary payload fields, but an
-            # explicitly supplied wrong revision/nonce must never be accepted.
-            if (rid is None or actual is not None) and actual != expected:
+            # An ID locates the request; it never substitutes for its required
+            # nonce/token/revision, including conflicting envelope copies.
+            if actual is _CONFLICT or not _required_values_equal(actual, expected):
                 return False
             correlated = True
     if rid is None and (ambiguous_legacy or require_explicit_correlation) and not correlated:

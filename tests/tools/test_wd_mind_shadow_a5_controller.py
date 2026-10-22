@@ -95,10 +95,19 @@ $message=$null;$result=$null
 try{{$result=Invoke-WdA5ControllerCore $context 'synthetic-host' 'C:\synthetic\member.ps1' {q(run)} @{{synthetic='pin'}} 1 1}}catch{{$message=$_.Exception.Message}}
 if($null-ne$script:fake-and-not$script:fake.disposed){{throw 'inner not disposed'}}
 $directory=Join-Path {q(run)} {q(launch)};$readyPath=Join-Path $directory 'ready.json';$receipt=$null
-if([IO.File]::Exists($readyPath)){{$receipt=[IO.File]::ReadAllText($readyPath)|ConvertFrom-Json}}
+if([IO.File]::Exists($readyPath)){{
+    $json=[IO.File]::ReadAllText($readyPath)
+    if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){{$receipt=$json|ConvertFrom-Json -DateKind String}}
+    else{{$receipt=$json|ConvertFrom-Json}}
+}}
+$window=$null
+if($null-ne$receipt){{
+    $expectedController=@{{pid=[string]$PID;creation_utc='2026-10-22T00:00:00.0000000Z'}}
+    $window=Test-WdA5ReadyKillWindow -Ready $receipt -ExpectedContext $context -ExpectedController $expectedController -NowUtc $receipt.ready_utc -SafetyMarginSeconds 0.25
+}}
 $released=$true;$controllerWitness=Join-Path $directory 'controller.witness'
 if([IO.File]::Exists($controllerWitness)){{try{{$stream=[IO.File]::Open($controllerWitness,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$stream.Dispose()}}catch{{$released=$false}}}}
-@{{message=$message;result=$result;receipt=$receipt;ready_before_cleanup=$script:readyBeforeCleanup;controller_witness_released=$released;cleanup_marker=[IO.File]::Exists((Join-Path $directory 'cleanup-started.json'));dispose_elapsed=$script:disposeElapsed}}|ConvertTo-Json -Depth 14
+@{{message=$message;result=$result;receipt=$receipt;roundtrip_window=$window;ready_before_cleanup=$script:readyBeforeCleanup;controller_witness_released=$released;cleanup_marker=[IO.File]::Exists((Join-Path $directory 'cleanup-started.json'));dispose_elapsed=$script:disposeElapsed}}|ConvertTo-Json -Depth 14
 """
     value = run_json(script, ps)
     assert value['controller_witness_released'] is True, value
@@ -117,6 +126,12 @@ if([IO.File]::Exists($controllerWitness)){{try{{$stream=[IO.File]::Open($control
         assert value['receipt']['context']['launch_id'] == launch
         assert value['receipt']['observation']['expected'] == ['root', 'child', 'grandchild']
         assert all(row['released'] is False for row in value['receipt']['observation']['observed'].values())
+        assert value['roundtrip_window']['within_window'] is True, value
+        assert value['roundtrip_window']['native_authority'] is False, value
+        for row in value['receipt']['observation']['observed'].values():
+            assert row['expected_launch_id'] == launch, value
+            assert row['launch_id_verified'] is False, value
+            assert 'launch_id' not in row, value
         if mode == 'ready':
             assert value['result']['status'] == 'CONTROLLER_EXPIRED_NOT_A5_PASS'
         elif mode == 'stop_failure':

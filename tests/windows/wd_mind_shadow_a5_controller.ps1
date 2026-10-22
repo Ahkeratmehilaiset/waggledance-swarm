@@ -165,7 +165,9 @@ function Invoke-WdA5ControllerCore {
         }while($true)
         $active=$inner.ActiveProcesses;$total=$inner.TotalProcesses
         if($active-isnot[uint32]-or$total-isnot[uint32]-or$active-ne3-or$total-ne3){throw 'refused: A5 fixed-tree accounting unknown or unexpected'}
-        $observed=@{};foreach($name in $members){$observed[$name]=@{start_witness='present';released=$false;launch_id=$Context.launch_id}}
+        # Held witnesses cannot yet be read: the launch id is expected, not
+        # observed. Parent must verify actual contents after release.
+        $observed=@{};foreach($name in $members){$observed[$name]=@{start_witness='present';released=$false;expected_launch_id=$Context.launch_id;launch_id_verified=$false}}
         # UTC is anchored BEFORE the monotonic hold. Do not restart after a slow
         # publication: cleanup cannot precede the original advertised deadline.
         $readyUtc=[DateTime]::UtcNow;$holdClock=[Diagnostics.Stopwatch]::StartNew()

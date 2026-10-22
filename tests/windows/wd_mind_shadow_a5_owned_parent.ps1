@@ -86,26 +86,45 @@ function Get-WdA5ParentField {
     elseif($null-ne$Value){$p=$Value.PSObject.Properties[$Name];if($null-ne$p){return ,$p.Value}}
     throw ('unknown parent receipt field '+$Name)
 }
+function Assert-WdA5ParentKeys {
+    param($Value,[string[]]$Names)
+    if($Value-is[Collections.IDictionary]){$keys=@($Value.Keys)}
+    elseif($Value-is[pscustomobject]){$keys=@($Value.PSObject.Properties.Name)}
+    else{throw 'parent receipt object required'}
+    if($keys.Count-ne$Names.Count-or@(Compare-Object ($keys|Sort-Object) ($Names|Sort-Object) -CaseSensitive).Count){throw 'unknown parent receipt keys'}
+}
+function Assert-WdA5ParentString {
+    param($Actual,[string]$Expected)
+    if($Actual-isnot[string]-or$Actual-cne$Expected){throw 'foreign or mistyped parent receipt string'}
+}
 function Assert-WdA5ParentReady {
     param($Ready,[hashtable]$Config,$PureModule)
     $directory=Join-Path $Config.RunRoot $Config.Context.launch_id
-    if((Get-WdA5ParentField $Ready 'directory')-cne$directory-or(Get-WdA5ParentField $Ready 'cleanup_marker_path')-cne(Join-Path $directory 'cleanup-started.json')){throw 'foreign ready paths'}
-    $pins=Get-WdA5ParentField $Ready 'pins';foreach($key in $Config.Pins.Keys){if((Get-WdA5ParentField $pins $key)-cne$Config.Pins[$key]){throw 'foreign ready pins'}}
+    Assert-WdA5ParentString (Get-WdA5ParentField $Ready 'directory') $directory
+    Assert-WdA5ParentString (Get-WdA5ParentField $Ready 'cleanup_marker_path') (Join-Path $directory 'cleanup-started.json')
+    $pins=Get-WdA5ParentField $Ready 'pins';Assert-WdA5ParentKeys $pins @('host_sha256','loop_sha256','member_sha256','controller_sha256')
+    foreach($key in $Config.Pins.Keys){Assert-WdA5ParentString (Get-WdA5ParentField $pins $key) $Config.Pins[$key]}
     $root=Get-WdA5ParentField $Ready 'root'
     if((Get-WdA5ParentField $root 'pid')-isnot[string]-or(Get-WdA5ParentField $root 'pid')-cnotmatch'^[1-9][0-9]{0,9}\z'){throw 'unknown inner root identity'}
     & $PureModule {param($time)[void](ConvertFrom-WdA5StrictUtc $time)} (Get-WdA5ParentField $root 'creation_utc')
     $account=Get-WdA5ParentField $Ready 'inner_accounting'
     foreach($key in @('active','total')){$count=Get-WdA5ParentField $account $key;if(($count-isnot[int]-and$count-isnot[long]-and$count-isnot[uint32])-or$count-ne3){throw 'unknown inner fixed-three accounting'}}
     $observation=Get-WdA5ParentField $Ready 'observation';$expected=Get-WdA5ParentField $observation 'expected'
-    if(($expected-join',')-cne'root,child,grandchild'){throw 'foreign expected member set'}
+    $names=@('root','child','grandchild')
+    if($expected-isnot[Array]-or$expected.Rank-ne1-or$expected.Count-ne3){throw 'expected member array required'}
+    for($index=0;$index-lt3;$index++){Assert-WdA5ParentString $expected[$index] $names[$index]}
     $observed=Get-WdA5ParentField $observation 'observed'
+    Assert-WdA5ParentKeys $observed $names
     foreach($name in @('root','child','grandchild')){
         $row=Get-WdA5ParentField $observed $name
-        if((Get-WdA5ParentField $row 'start_witness')-cne'present'-or(Get-WdA5ParentField $row 'released')-isnot[bool]-or(Get-WdA5ParentField $row 'released')-or
-           (Get-WdA5ParentField $row 'expected_launch_id')-cne$Config.Context.launch_id-or(Get-WdA5ParentField $row 'launch_id_verified')-isnot[bool]-or(Get-WdA5ParentField $row 'launch_id_verified')){throw 'ready launch labels are not expected-only held observations'}
+        Assert-WdA5ParentKeys $row @('start_witness','released','expected_launch_id','launch_id_verified')
+        Assert-WdA5ParentString (Get-WdA5ParentField $row 'start_witness') 'present'
+        Assert-WdA5ParentString (Get-WdA5ParentField $row 'expected_launch_id') $Config.Context.launch_id
+        if((Get-WdA5ParentField $row 'released')-isnot[bool]-or(Get-WdA5ParentField $row 'released')-or
+           (Get-WdA5ParentField $row 'launch_id_verified')-isnot[bool]-or(Get-WdA5ParentField $row 'launch_id_verified')){throw 'ready launch labels are not expected-only held observations'}
     }
     $command=Get-WdA5ParentMemberCommand $Config.MemberPath $directory $Config.Context.launch_id ($Config.ControllerReadySeconds+$Config.HoldSeconds+60)
-    if((Get-WdA5ParentField $Ready 'command_sha256')-cne(Get-WdA5ParentSha256 ([Text.Encoding]::UTF8.GetBytes($command)))){throw 'foreign fixed member command'}
+    Assert-WdA5ParentString (Get-WdA5ParentField $Ready 'command_sha256') (Get-WdA5ParentSha256 ([Text.Encoding]::UTF8.GetBytes($command)))
 }
 function Invoke-WdA5OwnedParentCore {
     # Internal actor: public admission owns fixed seams; tests pass strict fakes.
@@ -127,7 +146,9 @@ function Invoke-WdA5OwnedParentCore {
         $watch=[Diagnostics.Stopwatch]::StartNew()
         do{
             if($owned.Wait(0)){throw 'controller exited before ready'}
-            $snapshot=& $Seams.Ready (Join-Path $directory 'ready.json')
+            $candidate=& $Seams.Ready (Join-Path $directory 'ready.json')
+            if($candidate-isnot[hashtable]-or$candidate.state-isnot[string]){throw 'unknown ready snapshot shape'}
+            $snapshot=$candidate
             if($snapshot.state-ceq'ready'){break};if($snapshot.state-cne'pending'){throw 'unknown ready state'}
             if($watch.Elapsed.TotalSeconds-ge$Config.ReadyWaitSeconds){throw 'ready timeout'};Start-Sleep -Milliseconds 10
         }while($true)

@@ -135,7 +135,7 @@ GATE_NON_BLOCKING_CONTEXT_STATUS_SEGMENTS = ("_advisory_", "_corrected_", "_corr
 FLOOR_APPROVAL_TYPES = frozenset({"decision", "rco_review", "finding"})
 FLOOR_CLEAR_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
 FLOOR_DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})  # a generic done is never an approval
-FLOOR_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2"})   # canonical RCOs: their finding is a veto BY TYPE
+FLOOR_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2", "claude-rco-3"})   # canonical RCOs: their finding is a veto BY TYPE
 # Compatibility names (7f070e36): every exact approval status, the approval types, the done approval.
 COMMIT_HEAD_STATUSES = FLOOR_APPROVAL_STATUSES | FLOOR_BUILD_CONSENSUS_STATUSES
 COMMIT_HEAD_TYPES = FLOOR_APPROVAL_TYPES

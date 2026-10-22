@@ -14,8 +14,8 @@ design is FAIL-CLOSED and this module is itself (a)-class + charter-denylisted, 
   gate-weakening via the mechanism the gate grants);
 * admission is DEFAULT-OFF -- the caller must explicitly enable it, so merging the
   PR that wires this module does not by itself turn standing-sign on;
-* admission requires the FULL best-possible-consensus (lead+tools build, DUAL-RCO
-  BOTH recognized RCOs, CI all-green, no recognized-RCO veto, head-exact,
+* admission requires the FULL best-possible-consensus (lead+tools build, two
+  distinct eligible recognized RCOs, CI all-green, no recognized-RCO veto, head-exact,
   diff-clean, MAGMA receipt). Any missing/ambiguous element -> operator_review.
 
 Two pure entry points (no side effects, dict in / dict out):
@@ -31,7 +31,12 @@ from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
 
 REPORT_VERSION = "wd.standing_consensus_sign_class.v0"
 
-RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
+RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
+
+from tools.bridge_rco_enrollment import (
+    load_rco_enrollment_context,
+    rco_event_enrollment_matches,
+)
 
 # ----------------------------------------------------------------------------
 # (a)-class: ALWAYS operator-EXPLICIT. Never rides standing-consensus-sign.
@@ -309,9 +314,29 @@ def evaluate_standing_consensus_sign(
     if not _approved(ids.get("build_tools")):
         reasons.append("tools build_consensus missing/blocked at head")
     rco_by = (ids.get("rco") or {}).get("by_agent") or {}
-    for rco in recognized_rcos:
-        if not _approved(rco_by.get(rco)):
-            reasons.append(f"DUAL-RCO incomplete: {rco} has no approved RCO_PASS at head")
+    # Two distinct eligible identities, not every member of an expanding roster.
+    # The verified upstream report supplies author/eligibility; never count its
+    # author or an unknown/ineligible reviewer as the second voice. Real upstream
+    # reports always carry both fields; absence is not legacy approval evidence.
+    author = bc.get("author_agent")
+    if not isinstance(author, str) or re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", author) is None:
+        reasons.append("verified consensus author is missing or invalid")
+    enrollment_context = load_rco_enrollment_context()
+    approved_rcos = [
+        rco for rco in dict.fromkeys(recognized_rcos)
+        if rco in RECOGNIZED_RCOS and rco != author
+        and _approved(rco_by.get(rco))
+        and rco_by[rco].get("eligible") is True
+        and (
+            rco != "claude-rco-3"
+            or rco_event_enrollment_matches(
+                rco_by[rco].get("enrollment_event") or {},
+                context=enrollment_context,
+            )
+        )
+    ]
+    if len(approved_rcos) < 2:
+        reasons.append("DUAL-RCO incomplete: two distinct eligible non-author RCO_PASS identities required at head")
     blocking = list(bc.get("blocking_rco_agents") or [])
     if blocking:
         reasons.append(f"recognized-RCO veto present (outranks pass): {sorted(blocking)}")
@@ -338,7 +363,7 @@ def evaluate_standing_consensus_sign(
         "best_possible_consensus": True,
         "build": [str(ids.get("build_lead", {}).get("agent", "")),
                   str(ids.get("build_tools", {}).get("agent", ""))],
-        "dual_rco": list(recognized_rcos),
+        "dual_rco": approved_rcos[:2],
         "head_exact": True,
         "no_rco_veto": True,
         "ci_all_green": True,

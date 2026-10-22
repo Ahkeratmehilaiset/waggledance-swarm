@@ -19,6 +19,7 @@ import lane_view as lv  # noqa: E402
 import lane_view_mutants as mut  # noqa: E402
 from tools import wd_bridge_mind as core  # noqa: E402
 from tools.bridge_compact_view import event_id  # noqa: E402
+from tools import bridge_rco_enrollment as enrollment  # noqa: E402
 
 NUMBER = 1905
 BRANCH = "codex-lead-1/operator-manual-ten-train-20261013"
@@ -26,9 +27,10 @@ OLD, NEW = hashlib.sha1(b"head A").hexdigest(), hashlib.sha1(b"head B").hexdiges
 SECOND, SECOND_BRANCH, SECOND_HEAD = 1906, "codex-tools-1/second-20261013", hashlib.sha1(b"head C").hexdigest()
 UUIDS = {"codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101", "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
          "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103", "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+         "claude-rco-3": enrollment.RCO3_ROLE_UUID,  # assigned role UUID in synthetic events, not a live session
          "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80"}
 REQUIRED = ["unified", "test (3.11)", "test (3.12)", "test (3.13)", "security-scan", "lock-resolver-check"]
-AUTHORS = ["claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5"]
+AUTHORS = ["codex-lead-1", "codex-tools-1", "fable-5"]
 AS_OF = "2026-10-13T18:00:00Z"
 FORBIDDEN = ("ready", "merge eligible", "manual_execution")
 
@@ -46,11 +48,12 @@ def vote(ts, agent, head=NEW, task=BRANCH, number=NUMBER, kind="decision", **ext
 
 
 def base_events():
-    """The PR1905 night in small: a request sets the bridge head A, then the RCO1 and Lead votes bind head B."""
+    """Synthetic PR1905 shape: head A request, then head B votes with two eligible RCOs under the current quorum."""
     return [event("2026-10-13T13:26:48Z", "codex-lead-1", "message", "requested", {"pr": NUMBER, "head": OLD}),
             vote("2026-10-13T17:40:43.4458582Z", "claude-rco-1", task_id=BRANCH),
             vote("2026-10-13T17:40:44.4266226Z", "codex-lead-1", canonical_task_id=BRANCH, merge_owner="operator",
-                 component_prs=[1885, 1878])]
+                 component_prs=[1885, 1878]),
+            vote("2026-10-13T17:40:43.9458582Z", "claude-rco-2", task_id=BRANCH)]
 
 
 def snapshot_of(events, as_of=AS_OF, *, log_identity="capture-window:" + "0" * 64, blocked=None):
@@ -107,8 +110,9 @@ def make_case(events=None, github=None, as_of=AS_OF):
             "bodies": {event_id(row): row for row in events}, "as_of_utc": as_of}
 
 
-def view_of(case):
-    return lv.lane_view(case["snapshot"], case["github"], case["bodies"], as_of_utc=case["as_of_utc"])
+def view_of(case, *, enrollment_context=None):
+    return lv.lane_view(case["snapshot"], case["github"], case["bodies"], as_of_utc=case["as_of_utc"],
+                        enrollment_context=enrollment_context)
 
 
 def lines_for(view, number=NUMBER):
@@ -125,13 +129,173 @@ def assert_abstains(view, reason):
     assert found and reason in found[0]["reasons"] and found[0]["detail"].startswith("UNKNOWN")
 
 
+def quorum_events(rcos):
+    """Synthetic current-head decisions only; no hidden RCO vote from the historical baseline."""
+    return [vote("2026-10-13T17:40:00Z", agent) for agent in
+            ("codex-lead-1", "codex-tools-1", *rcos)]
+
+
+def synthetic_enrollment(tmp_path, *, provisioned=True, valid_pin=True):
+    """Loader-issued toy attestation only: no fixture represents or provisions a real native session."""
+    generation = "a" * 40
+    root = tmp_path / generation
+    root.mkdir(exist_ok=True)
+    manifest = {"schema_version": 1, "source_commit": generation, "files": {}}
+    if provisioned:
+        manifest["rco_enrollments"] = {"claude-rco-3": {
+            "schema": "wd.rco-enrollment.v1", "agent": "claude-rco-3", "agent_uuid": enrollment.RCO3_ROLE_UUID,
+            "generation": generation, "session_id": "synthetic-session-not-real", "run_id": "synthetic-run-not-real",
+            "native_conversation_id": "11111111-2222-4333-8444-555555555555", "cli_kind": "claude.exe",
+            "native_pid": 4242, "launcher_pid": 4243,
+            "native_process_start_utc": "2026-10-21T01:00:00Z", "observed_at_utc": "2026-10-21T01:00:01Z",
+            "token_integrity": "Medium", "elevated": False, "fresh_history_free": True,
+            "no_mind_authorship": True, "no_measurement_case_access": True,
+        }}
+    data = json.dumps(manifest, sort_keys=True).encode("utf-8")
+    (root / "deployment-manifest.json").write_bytes(data)
+    return enrollment.load_rco_enrollment_context(
+        bundle_root=root, expected_manifest_sha256=hashlib.sha256(data).hexdigest() if valid_pin else "0" * 64)
+
+
+def test_enrollment_default_never_invites_sessionless_rco3():
+    """J1: recognition alone cannot replace the recused legacy RCO with an unprovisioned session."""
+    events = quorum_events(["claude-rco-2"]) + [event(
+        "2026-10-13T17:41:00Z", "claude-rco-1", "message", "rco_recused", {"pr": NUMBER, "head": NEW})]
+    view = view_of(make_case(events, github_of(authors=["fable-5"])))
+    assert_abstains(view, "independent_rco_unavailable")
+    assert not view["lanes"]["claude-rco-3"]["actions"]
+
+
+def test_enrollment_default_never_credits_sessionless_rco3():
+    record = view_of(make_case(quorum_events(lv.ws.RECOGNIZED_RCOS), github_of(authors=["fable-5"])))["prs"][
+        str(NUMBER)]
+    assert "claude-rco-3" not in {row["agent"] for row in record["credited"]}
+    assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [
+        ("claude-rco-3", "rco_enrollment_unknown")]
+
+
+@pytest.mark.parametrize("which", ["omitted", "not_provisioned", "unknown", "forged_dict", "mutated"])
+def test_enrollment_untrusted_context_never_invites_or_credits_rco3(which, tmp_path):
+    context = None
+    expected = "unknown"
+    if which == "not_provisioned":
+        context, expected = synthetic_enrollment(tmp_path, provisioned=False), "not_provisioned"
+    elif which == "unknown":
+        context = synthetic_enrollment(tmp_path, valid_pin=False)
+    elif which == "forged_dict":
+        context = dict(synthetic_enrollment(tmp_path))
+    elif which == "mutated":
+        context = synthetic_enrollment(tmp_path, provisioned=False)
+        dict.__setitem__(context, "status", "enrolled")  # deliberate corruption must invalidate the issued digest
+    case = make_case(quorum_events(lv.ws.RECOGNIZED_RCOS), github_of(authors=["fable-5"]))
+    record = view_of(case, enrollment_context=context)["prs"][str(NUMBER)]
+    assert record["state"] == "votes_complete"  # the two legacy RCOs need no enrollment
+    assert {row["agent"] for row in record["credited"] if row["slot"] in lv.ws.RECOGNIZED_RCOS} == {
+        "claude-rco-1", "claude-rco-2"}
+    assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [
+        ("claude-rco-3", "rco_enrollment_" + expected)]
+    events = quorum_events(["claude-rco-2"]) + [event(
+        "2026-10-13T17:41:00Z", "claude-rco-1", "message", "rco_recused", {"pr": NUMBER, "head": NEW})]
+    view = view_of(make_case(events, github_of(authors=["fable-5"])), enrollment_context=context)
+    assert_abstains(view, "independent_rco_unavailable")
+    assert not view["lanes"]["claude-rco-3"]["actions"]
+
+
+def test_enrollment_explicit_context_and_omission_never_load_ambient_inputs(tmp_path, monkeypatch):
+    context = synthetic_enrollment(tmp_path)
+    events = quorum_events(["claude-rco-2", "claude-rco-3"])
+    case = make_case(events, github_of(authors=["fable-5"]))
+
+    def ambient_read_forbidden(*args, **kwargs):
+        raise AssertionError("the frozen lane view must not load a live enrollment context or manifest")
+
+    monkeypatch.setattr(enrollment, "load_rco_enrollment_context", ambient_read_forbidden)
+    monkeypatch.setattr(enrollment, "_manifest_bytes", ambient_read_forbidden)
+    enrolled = view_of(case, enrollment_context=context)["prs"][str(NUMBER)]
+    assert enrolled["state"] == "votes_complete"
+    for invalid in (None, {}, dict(context)):
+        observed = view_of(case, enrollment_context=invalid)["prs"][str(NUMBER)]
+        assert observed["state"] == "action" and observed["empty_slots"] == ["claude-rco-1"]
+        assert "claude-rco-3" not in {row["agent"] for row in observed["credited"]}
+
+
+@pytest.mark.parametrize("rcos", [("claude-rco-1", "claude-rco-2"),
+                                  ("claude-rco-1", "claude-rco-3"),
+                                  ("claude-rco-2", "claude-rco-3")])
+def test_quorum_any_two_distinct_recognized_rcos_complete(rcos, tmp_path):
+    view = view_of(make_case(quorum_events(rcos), github_of(authors=["fable-5"])),
+                   enrollment_context=synthetic_enrollment(tmp_path))
+    record = view["prs"][str(NUMBER)]
+    assert record["state"] == "votes_complete" and record["empty_slots"] == []
+    assert {row["agent"] for row in record["credited"] if row["slot"] in lv.ws.RECOGNIZED_RCOS} == set(rcos)
+    assert not any(lines_for(view).values())
+
+
+def test_quorum_one_rco_leaves_exactly_one_eligible_advisory_slot():
+    view = view_of(make_case(quorum_events(["claude-rco-1"]), github_of(authors=["fable-5"])))
+    record = view["prs"][str(NUMBER)]
+    assert record["state"] == "action" and record["empty_slots"] == ["claude-rco-2"]
+    assert {lane for lane, lines in lines_for(view).items() if lines} == {"claude-rco-2"}
+    assert "required RCO coverage is UNKNOWN" in view["lanes"]["claude-rco-2"]["actions"][0]
+
+
+@pytest.mark.parametrize("exclusion", ["commit_author", "rco_recused"])
+def test_quorum_excluded_rco_never_fills_or_is_asked(exclusion, tmp_path):
+    events = quorum_events(lv.ws.RECOGNIZED_RCOS)
+    authors = ["fable-5"]
+    if exclusion == "commit_author":
+        authors.append("claude-rco-1")
+    else:
+        events.append(event("2026-10-13T17:41:00Z", "claude-rco-1", "message", "rco_recused",
+                            {"pr": NUMBER, "head": NEW}))
+    view = view_of(make_case(events, github_of(authors=authors)),
+                   enrollment_context=synthetic_enrollment(tmp_path))
+    record = view["prs"][str(NUMBER)]
+    assert record["state"] == "votes_complete" and record["empty_slots"] == []
+    assert {row["agent"] for row in record["credited"] if row["slot"] in lv.ws.RECOGNIZED_RCOS} == {
+        "claude-rco-2", "claude-rco-3"}
+    assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [("claude-rco-1", exclusion)]
+    assert not view["lanes"]["claude-rco-1"]["actions"]
+
+
+@pytest.mark.parametrize("exclusion", ["commit_author", "rco_recused"])
+def test_quorum_all_excused_abstains(exclusion, tmp_path):
+    events = quorum_events(lv.ws.RECOGNIZED_RCOS)
+    authors = list(lv.ws.RECOGNIZED_RCOS) if exclusion == "commit_author" else ["fable-5"]
+    if exclusion == "rco_recused":
+        events += [event("2026-10-13T17:41:00Z", rco, "message", "rco_recused", {"pr": NUMBER, "head": NEW})
+                   for rco in lv.ws.RECOGNIZED_RCOS]
+    view = view_of(make_case(events, github_of(authors=authors)),
+                   enrollment_context=synthetic_enrollment(tmp_path))
+    assert_abstains(view, "independent_rco_unavailable")
+    assert view["counts"]["votes_complete"] == 0
+
+
+def test_quorum_two_excused_never_make_builds_complete():
+    view = view_of(make_case(quorum_events([]), github_of(authors=["claude-rco-1", "claude-rco-2"])))
+    assert_abstains(view, "independent_rco_unavailable")
+
+
+def test_quorum_duplicate_identity_does_not_fill_second_slot():
+    events = quorum_events(["claude-rco-1"]) + [vote("2026-10-13T17:41:00Z", "claude-rco-1")]
+    record = view_of(make_case(events, github_of(authors=["fable-5"])))["prs"][str(NUMBER)]
+    assert record["state"] == "action" and record["empty_slots"] == ["claude-rco-2"]
+
+
+def test_quorum_only_verified_current_head_votes_fill_slots():
+    events = quorum_events(["claude-rco-1"]) + [vote("2026-10-13T17:41:00Z", "claude-rco-2", head=OLD)]
+    record = view_of(make_case(events, github_of(authors=["fable-5"])))["prs"][str(NUMBER)]
+    assert record["state"] == "action" and record["empty_slots"] == ["claude-rco-2"]
+    assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [("claude-rco-2", "other_head")]
+
+
 def test_lane_view_tools_line_at_the_github_head_not_the_bridge_head():
     events = base_events()
     view = view_of(make_case(events))
     record = view["prs"][str(NUMBER)]
     assert record["bridge_view_head"] == OLD and record["github_head"] == NEW and record["state"] == "action"
     assert record["empty_slots"] == ["build_tools"]
-    assert [vote["ref"] for vote in record["credited"]] == [refs_of(events)[2], refs_of(events)[1]]
+    assert [vote["ref"] for vote in record["credited"]] == [refs_of(events)[2], refs_of(events)[1], refs_of(events)[3]]
     line = view["lanes"]["codex-tools-1"]["actions"][0]
     assert f"build vote on PR{NUMBER} at {NEW[:12]} is the only empty slot" in line
     for cite in (refs_of(events)[2][:16], refs_of(events)[1][:16], f"GitHub 6/6 at {NEW[:12]}",
@@ -188,7 +352,7 @@ def test_lane_view_votes_on_another_task_are_not_credited():
     view = view_of(moved)
     record = view["prs"][str(NUMBER)]
     assert record["state"] == "no_credited_vote" and not record["credited"] and not any(lines_for(view).values())
-    assert sorted(row["reason"] for row in record["not_credited"]) == ["other_task", "other_task"]
+    assert sorted(row["reason"] for row in record["not_credited"]) == ["other_task"] * 3
 
 
 def test_lane_view_one_vote_on_another_task_leaves_two_empty_slots():
@@ -212,7 +376,7 @@ def test_lane_view_votes_rebound_to_the_bridge_head_are_not_credited():
     view = view_of(moved)
     record = view["prs"][str(NUMBER)]
     assert record["state"] == "no_credited_vote" and not any(lines_for(view).values())
-    assert sorted(row["reason"] for row in record["not_credited"]) == ["other_head", "other_head"]
+    assert sorted(row["reason"] for row in record["not_credited"]) == ["other_head"] * 3
 
 
 def test_lane_view_e4d970bb_head_a_head_b_late_vote_at_a():
@@ -220,7 +384,8 @@ def test_lane_view_e4d970bb_head_a_head_b_late_vote_at_a():
     events = [event("2026-10-13T10:00:00Z", "codex-lead-1", "message", "head_updated", {"pr": NUMBER, "head": OLD}),
               event("2026-10-13T11:00:00Z", "codex-lead-1", "message", "head_updated", {"pr": NUMBER, "head": NEW}),
               vote("2026-10-13T11:10:00Z", "claude-rco-1"), vote("2026-10-13T11:20:00Z", "codex-lead-1"),
-              vote("2026-10-13T11:30:00Z", "codex-tools-1", head=OLD)]
+              vote("2026-10-13T11:30:00Z", "codex-tools-1", head=OLD),
+              vote("2026-10-13T11:15:00Z", "claude-rco-2")]
     view = view_of(make_case(events, github_of(observed="2026-10-13T17:55:00Z")))
     record = view["prs"][str(NUMBER)]
     assert record["bridge_view_head"] == NEW and record["github_head"] == NEW
@@ -325,22 +490,23 @@ def test_lane_view_an_identity_votes_only_in_its_own_slot():
     assert record["empty_slots"] == ["build_tools"]
 
 
-def test_lane_view_author_rco_fills_no_slot_and_is_never_asked():
-    events = base_events() + [vote("2026-10-13T17:41:00Z", "claude-rco-2")]
-    view = view_of(make_case(events, github_of(authors=["claude-rco-1", "codex-lead-1"])))
+def test_lane_view_author_rco_fills_no_slot_and_is_never_asked(tmp_path):
+    events = base_events() + [vote("2026-10-13T17:41:00Z", "claude-rco-3")]
+    view = view_of(make_case(events, github_of(authors=["claude-rco-1", "codex-lead-1"])),
+                   enrollment_context=synthetic_enrollment(tmp_path))
     record = view["prs"][str(NUMBER)]
     assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [("claude-rco-1", "commit_author")]
     assert {"agent": "claude-rco-1", "why": "commit_author"} in record["excused"]
     assert record["empty_slots"] == ["build_tools"]
     assert not lines_for(view)["claude-rco-1"]
     line = view["lanes"]["codex-tools-1"]["actions"][0]
-    assert refs_of(events)[1][:16] not in line and refs_of(events)[3][:16] in line
+    assert refs_of(events)[1][:16] not in line and refs_of(events)[4][:16] in line
 
 
 def test_pool_empty_regression_twin_both_rco_authors_cannot_mean_votes_complete():
     """REGRESSION_TWIN_EMPTY_RCO_POOL: builds alone cannot fill RCO coverage."""
     events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
-    control = view_of(make_case(events, github_of(authors=["claude-rco-2"])))
+    control = view_of(make_case(events, github_of(authors=["fable-5"])))
     assert control["prs"][str(NUMBER)]["state"] == "votes_complete"
     view = view_of(make_case(events, github_of(authors=["claude-rco-1", "claude-rco-2"])))
     assert_abstains(view, "independent_rco_unavailable")
@@ -362,7 +528,7 @@ def test_both_declared_recusals_do_not_credit_an_existing_rco_vote():
 
 
 def test_unfilled_rco_line_does_not_invent_required_policy_from_unknown_class():
-    events = base_events() + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
+    events = base_events()[:3] + [vote("2026-10-13T17:41:00Z", "codex-tools-1")]
     view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
     line, = view["lanes"]["claude-rco-2"]["actions"]
     assert "required RCO coverage is UNKNOWN" in line
@@ -378,12 +544,13 @@ def _recusal(head, task=BRANCH):
                  task=task)
 
 
-def test_lane_view_declared_recusal_at_the_github_head_excuses_the_rco():
-    events = base_events() + [_recusal(NEW)]
-    record = view_of(make_case(events, github_of(authors=["codex-lead-1"])))["prs"][str(NUMBER)]
+def test_lane_view_declared_recusal_at_the_github_head_excuses_the_rco(tmp_path):
+    events = base_events() + [_recusal(NEW), vote("2026-10-13T17:41:00Z", "claude-rco-3")]
+    record = view_of(make_case(events, github_of(authors=["codex-lead-1"])),
+                     enrollment_context=synthetic_enrollment(tmp_path))["prs"][str(NUMBER)]
     assert record["empty_slots"] == ["build_tools"] and {"agent": "claude-rco-2", "why": "rco_recused"} in record["excused"]
     # At another head the recusal does not count: the slot is empty and that RCO is asked.
-    view = view_of(make_case(base_events() + [_recusal(OLD)], github_of(authors=["codex-lead-1"])))
+    view = view_of(make_case(base_events()[:3] + [_recusal(OLD)], github_of(authors=["codex-lead-1"])))
     assert view["prs"][str(NUMBER)]["empty_slots"] == ["build_tools", "claude-rco-2"]
     assert f"RCO vote on PR{NUMBER} at {NEW[:12]} is empty (claude-rco-2" in view["lanes"]["claude-rco-2"]["actions"][0]
 
@@ -396,10 +563,13 @@ def test_lane_view_recusal_on_another_task_or_refused_abstains():
     assert_abstains(view_of(case), "vote_row_refused")
 
 
-def _recusal_row_case(change):
+def _recusal_row_case(change, *, enrolled_rco3=False):
     """claude-rco-2's genuine recusal at the GitHub head, then its snapshot ROW made to disagree with what its event
     body says (Lead's W1, 10-16): ``change`` changes the row, or is another canonical event that the row then names."""
-    case = make_case(base_events() + [_recusal(NEW)], github_of(authors=["codex-lead-1"]))
+    events = base_events() + [_recusal(NEW)]
+    if enrolled_rco3:
+        events.append(vote("2026-10-13T17:41:00Z", "claude-rco-3"))
+    case = make_case(events, github_of(authors=["codex-lead-1"]))
     [row] = case["snapshot"]["prs"][str(NUMBER)]["recusals"]
     if callable(change):
         change(row)
@@ -434,12 +604,16 @@ def test_lane_view_recusal_row_its_body_does_not_support_abstains(change):
     assert view["prs"][str(NUMBER)]["excused"] == []
 
 
-def test_lane_view_recusal_kinds_and_case_are_read_as_the_core_reads_them():
+def test_lane_view_recusal_kinds_and_case_are_read_as_the_core_reads_them(tmp_path):
+    context = synthetic_enrollment(tmp_path)
     recusal = event("2026-10-13T17:30:00Z", "claude-rco-2", "Message", "RCO_Recused", {"pr": NUMBER, "head": NEW})
-    record = view_of(make_case(base_events() + [recusal], github_of(authors=["codex-lead-1"])))["prs"][str(NUMBER)]
+    events = base_events() + [recusal, vote("2026-10-13T17:41:00Z", "claude-rco-3")]
+    record = view_of(make_case(events, github_of(authors=["codex-lead-1"])),
+                     enrollment_context=context)["prs"][str(NUMBER)]
     assert record["empty_slots"] == ["build_tools"] and {"agent": "claude-rco-2", "why": "rco_recused"} in record["excused"]
     # A decision is a recusal kind of the core too, so a row whose body is one is supported ...
-    record = view_of(_recusal_row_case(_rco2_body(kind="decision")))["prs"][str(NUMBER)]
+    record = view_of(_recusal_row_case(_rco2_body(kind="decision"), enrolled_rco3=True),
+                     enrollment_context=context)["prs"][str(NUMBER)]
     assert record["empty_slots"] == ["build_tools"] and {"agent": "claude-rco-2", "why": "rco_recused"} in record["excused"]
     # ... but through the real core an RCO's decision rco_recused is also a veto observation (its conservative block
     # path), so that PR abstains anyway.
@@ -476,7 +650,7 @@ def test_lane_view_body_is_its_ref_content_and_not_after_the_as_of():
 
 
 def test_lane_view_a_decision_type_is_required_for_a_vote():
-    events = base_events() + [vote("2026-10-13T17:42:00Z", "claude-rco-2", kind="rco_review")]
+    events = base_events()[:3] + [vote("2026-10-13T17:42:00Z", "claude-rco-2", kind="rco_review")]
     view = view_of(make_case(events, github_of(authors=["codex-lead-1"])))
     record = view["prs"][str(NUMBER)]
     assert [(row["agent"], row["reason"]) for row in record["not_credited"]] == [("claude-rco-2", "not_a_decision")]
@@ -663,7 +837,8 @@ def synthetic_labels(events):
     refs = refs_of(events)
     return {"facts_in_input": {"github_head": NEW, "bridge_view_head": OLD, "older_request": {"ref": refs[0]},
                                "votes_at_github_head": [{"agent": "claude-rco-1", "ref": refs[1]},
-                                                        {"agent": "codex-lead-1", "ref": refs[2]}],
+                                                        {"agent": "codex-lead-1", "ref": refs[2]},
+                                                        {"agent": "claude-rco-2", "ref": refs[3]}],
                                "commit_authors": list(AUTHORS)},
             "expected": {"top_action": f"build vote on PR{NUMBER} at {NEW[:12]} is the only empty slot",
                          "owning_lane": "codex-tools-1",
@@ -695,6 +870,26 @@ def test_lane_view_frozen_pr1905_line_must_not_and_controls_in_every_cycle(froze
         view = acc.run_view(case)
         result, view_a = acc.controls(case, labels)
         assert acc.positive(view, labels)["pass"], case["cycle"]
-        assert all(acc.must_not(view, labels, view_a).values()), case["cycle"]
-        assert all(item["pass"] for item in result.values()), case["cycle"]
+        must_not = acc.must_not(view, labels, view_a)
+        assert all(value for name, value in must_not.items() if name != "3_no_author_named_for_the_rco_slot"), case["cycle"]
+        # The historical helper hardcodes RCO2 as an author; this new synthetic baseline has two legacy
+        # non-author RCOs. Preserve the author exclusion against the actual synthetic context, not old names.
+        authors = set(labels.authors) - set(lv.ws.BUILD_SLOT)
+        record = view["prs"][str(labels.number)]
+        assert not authors & {row["agent"] for row in record["credited"]}
+        assert not authors & set(record["empty_slots"])
+        assert not any(acc.pr_lines(view, labels.number).get(author) for author in authors)
+        # The frozen acceptance helper's b/c summaries hardcode two historical vote rows. This synthetic
+        # quorum now contains three (Lead and two RCOs); retain the other controls and verify b/c's actual
+        # unchanged binding properties with the current exact vote count, never count an excusal as a vote.
+        assert all(item["pass"] for name, item in result.items() if name not in ("b", "c")), case["cycle"]
+        refs = sorted(labels.votes.values())
+        for field, value, reason in (("task", BRANCH + "-moved", "other_task"),
+                                     ("head", labels.old_head, "other_head")):
+            moved, renamed = mut.rebind_events(case, labels.number, refs, **{field: value})
+            changed = acc.run_view(moved)
+            record = changed["prs"][str(labels.number)]
+            assert not any(acc.pr_lines(changed, labels.number).values()) and not record["credited"]
+            assert sorted(row["reason"] for row in record["not_credited"] if row["ref"] in renamed.values()) == [
+                reason] * len(refs)
         assert all(acc.case_facts(case, view, labels).values()), case["cycle"]

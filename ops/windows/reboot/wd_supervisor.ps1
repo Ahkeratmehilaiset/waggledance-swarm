@@ -1451,16 +1451,27 @@ function Assert-WdExactWatcherAgentSet {
 
     # Native Lead's hash-pinned session owns its watcher even when this
     # supervisor is OFF. Never add a second producer for that conversation.
-    $expected = @(
+    $recognizedRcos = @('claude-rco-1', 'claude-rco-2', 'claude-rco-3')
+    # Recognition alone never enrolls a native session. The deployed fleet
+    # still provisions four supervised lanes; a fifth needs a separately
+    # approved consistent fleet/native registration and watcher configuration.
+    $runtimeWatcherAgents = @(
         'codex-tools-1',
         'claude-rco-1',
         'claude-rco-2',
         'fable-5'
     )
+    $recognizedWatchers = @('codex-tools-1', 'fable-5') + $recognizedRcos
+    if (@($Agents | Where-Object { $_ -cnotin $recognizedWatchers }).Count -ne 0) {
+        throw 'supervisor watcher configuration contains an unrecognized identity'
+    }
+    if ($Agents -ccontains 'claude-rco-3') {
+        throw 'claude-rco-3 is recognized but not provisioned as a supervised fleet lane; HOLD'
+    }
     if (
-        $Agents.Count -ne $expected.Count -or
+        $Agents.Count -ne $runtimeWatcherAgents.Count -or
         @(Compare-Object `
-            -ReferenceObject $expected `
+            -ReferenceObject $runtimeWatcherAgents `
             -DifferenceObject $Agents `
             -CaseSensitive).Count -ne 0
     ) {
@@ -3143,8 +3154,7 @@ if (-not $watcherScript.StartsWith(
 }
 $watcherAgents = @(
     @($configuration.watchers.agents) |
-        ForEach-Object { [string]$_ } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        ForEach-Object { [string]$_ }
 )
 if ($watcherAgents.Count -eq 0) {
     throw 'supervisor watcher agent list must not be empty'

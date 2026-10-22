@@ -24,6 +24,9 @@ param(
     # Explicit operator-approved cold-manifest input, never an activation sidecar.
     # Omission preserves the default (manual execution disabled) manifest.
     [string] $ManualExecutionApprovalRecordPath = '',
+    # Optional operator attestation for a previously observed fresh RCO3 session.
+    # Does not launch/register a lane; omission leaves enrollment absent.
+    [string] $RcoEnrollmentRecordPath = '',
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
@@ -245,7 +248,7 @@ function ConvertFrom-WdManualExecutionApprovalRecord {
     foreach ($name in @('schema', 'agent', 'source_commit', 'definition_sha256', 'approval_reference_sha256')) {
         if ($record.$name -isnot [string]) { throw 'manual execution approval string field has the wrong type' }
     }
-    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3')
     $manualPaths = @('tools/merge_with_bridge_receipt.py', 'tools/write_bridge_consensus_merge_receipt.py')
     if ($record.schema -cne 'wd.bridge-manual-execution-activation.v1' -or
         $record.enabled -isnot [bool] -or $record.enabled -ne $true -or
@@ -306,6 +309,101 @@ function Assert-WdManualExecutionManifestBinding {
         -SourceCommit $SourceCommit -DefinitionHash $DefinitionHash -Definition $Definition -FleetAgentNames $FleetAgentNames
     if (($actual | ConvertTo-Json -Depth 8 -Compress) -cne ($ExpectedActivation | ConvertTo-Json -Depth 8 -Compress)) {
         throw 'existing manifest manual execution activation differs from the explicit approval record'
+    }
+}
+
+function ConvertFrom-WdRcoEnrollmentRecord {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text,
+        [Parameter(Mandatory)] [string] $SourceCommit
+    )
+    if (-not ('WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator' -as [type]) -or
+        $Text.Length -gt 16384 -or -not $Text.TrimStart().StartsWith('{') -or
+        -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($Text)) {
+        throw 'RCO enrollment violates the strict bounded JSON contract'
+    }
+    $jsonArguments = @{ InputObject = $Text; ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $jsonArguments['DateKind'] = 'String'
+    }
+    $record = ConvertFrom-Json @jsonArguments
+    $keys = @('schema','agent','agent_uuid','generation','session_id','run_id',
+        'native_conversation_id','cli_kind','native_pid','launcher_pid',
+        'native_process_start_utc','observed_at_utc','token_integrity','elevated',
+        'fresh_history_free','no_mind_authorship','no_measurement_case_access')
+    if ($record -isnot [pscustomobject] -or
+        (@($record.PSObject.Properties.Name | Sort-Object) -join ',') -cne (@($keys | Sort-Object) -join ',')) {
+        throw 'RCO enrollment requires exactly the seventeen v1 fields'
+    }
+    foreach ($key in @('schema','agent','agent_uuid','generation','session_id','run_id',
+        'native_conversation_id','cli_kind','native_process_start_utc','observed_at_utc','token_integrity')) {
+        if ($record.$key -isnot [string] -or [string]::IsNullOrWhiteSpace($record.$key) -or
+            $record.$key -cne $record.$key.Trim()) {
+            throw 'RCO enrollment string field has invalid type or whitespace'
+        }
+    }
+    $roleUuid = '3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50'
+    if ($record.schema -cne 'wd.rco-enrollment.v1' -or $record.agent -cne 'claude-rco-3' -or
+        $record.agent_uuid -cne $roleUuid -or $SourceCommit -cnotmatch '\A[0-9a-f]{40}\z' -or
+        $record.generation.ToLowerInvariant() -cne $SourceCommit -or
+        $record.native_conversation_id -cnotmatch '\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -or
+        $record.native_conversation_id.ToLowerInvariant() -ceq $roleUuid -or
+        $record.cli_kind -cne 'claude.exe' -or $record.token_integrity -cne 'Medium') {
+        throw 'RCO enrollment identity, generation or medium-token attestation is invalid'
+    }
+    foreach ($key in @('native_pid','launcher_pid')) {
+        if (($record.$key -isnot [int] -and $record.$key -isnot [long]) -or $record.$key -le 0) {
+            throw 'RCO enrollment process IDs must be positive native JSON integers'
+        }
+    }
+    foreach ($key in @('fresh_history_free','no_mind_authorship','no_measurement_case_access')) {
+        if ($record.$key -isnot [bool] -or $record.$key -ne $true) {
+            throw 'RCO enrollment requires explicit operator attestations'
+        }
+    }
+    if ($record.elevated -isnot [bool] -or $record.elevated -ne $false) {
+        throw 'RCO enrollment refuses elevated or unknown token state'
+    }
+    $times = @()
+    foreach ($key in @('native_process_start_utc','observed_at_utc')) {
+        $match = [regex]::Match($record.$key, '\A([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?(?:Z|\+00:00)\z')
+        if (-not $match.Success) { throw 'RCO enrollment requires an explicit UTC observation' }
+        $second = [datetime]::ParseExact($match.Groups[1].Value, "yyyy-MM-dd'T'HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+        # Preserve fractional precision beyond DateTime ticks, like the Python reader.
+        $times += $second.ToString('yyyyMMddHHmmss', [Globalization.CultureInfo]::InvariantCulture) + $match.Groups[2].Value.PadRight(9, '0')
+    }
+    if ([string]::CompareOrdinal($times[0], $times[1]) -gt 0) {
+        throw 'RCO enrollment observation precedes process start'
+    }
+    # This is an operator-attested prior observation, NOT a future PID pin or
+    # a cryptographic certificate. Runtime adoption remains a separate decision.
+    $result = [ordered]@{}
+    foreach ($key in $keys) { $result[$key] = $record.$key }
+    return $result
+}
+
+function Add-WdRcoEnrollmentToManifest {
+    param([Parameter(Mandatory)] $Manifest, [AllowNull()] $Enrollment)
+    if ($null -ne $Enrollment) {
+        $Manifest['rco_enrollments'] = [ordered]@{ 'claude-rco-3' = $Enrollment }
+    }
+}
+
+function Assert-WdRcoEnrollmentManifestBinding {
+    param([Parameter(Mandatory)] $Deployment, [AllowNull()] $ExpectedEnrollment,
+        [Parameter(Mandatory)] [string] $SourceCommit)
+    $property = $Deployment.PSObject.Properties['rco_enrollments']
+    if ($null -eq $ExpectedEnrollment) {
+        if ($null -ne $property) { throw 'existing manifest contains unrequested RCO enrollment' }
+        return
+    }
+    if ($null -eq $property -or $property.Value -isnot [pscustomobject] -or
+        (@($property.Value.PSObject.Properties.Name) -join ',') -cne 'claude-rco-3') {
+        throw 'existing manifest is missing or changes the requested RCO enrollment'
+    }
+    $actual = ConvertFrom-WdRcoEnrollmentRecord -Text ($property.Value.'claude-rco-3' | ConvertTo-Json -Depth 8 -Compress) -SourceCommit $SourceCommit
+    if (($actual | ConvertTo-Json -Depth 8 -Compress) -cne ($ExpectedEnrollment | ConvertTo-Json -Depth 8 -Compress)) {
+        throw 'existing manifest RCO enrollment differs from the explicit attestation'
     }
 }
 
@@ -867,6 +965,11 @@ $manualApprovalText = $null
 if ($ManualExecutionApprovalRecordPath -cne '') {
     $manualApprovalText = Read-WdManualExecutionApprovalText -Path $ManualExecutionApprovalRecordPath
 }
+$rcoEnrollmentText = $null
+if ($RcoEnrollmentRecordPath -cne '') {
+    # Reuse the bounded C-drive, no-reparse, opened-handle-bound reader.
+    $rcoEnrollmentText = Read-WdManualExecutionApprovalText -Path $RcoEnrollmentRecordPath
+}
 
 $temporaryParent = Resolve-FullPath ([IO.Path]::GetTempPath())
 $materializationRoot = Assert-ChildPath `
@@ -966,6 +1069,11 @@ foreach ($relativeCodeFile in @($bridgeCodeDefinition.python_files | ForEach-Obj
 $materializedFleet = Get-Content -LiteralPath (
     Join-Path $materializedRebootRoot 'wd-fleet.json'
 ) -Raw | ConvertFrom-Json -ErrorAction Stop
+$rcoEnrollment = $null
+if ($null -ne $rcoEnrollmentText) {
+    . (Join-Path $toolsBootstrapSource 'BridgeLogReader.ps1')
+    $rcoEnrollment = ConvertFrom-WdRcoEnrollmentRecord -Text $rcoEnrollmentText -SourceCommit $head
+}
 $manualFleetAgents = @()
 $manualActivation = $null
 if ($null -ne $manualApprovalText) {
@@ -1079,6 +1187,7 @@ $manifestObject = [ordered]@{
 if ($null -ne $manualActivation) {
     $manifestObject['manual_execution'] = $manualActivation
 }
+Add-WdRcoEnrollmentToManifest -Manifest $manifestObject -Enrollment $rcoEnrollment
 
 Write-Host "WD reboot bundle source: $branch@$head"
 Write-Host "Install target: $targetRoot"
@@ -1212,12 +1321,15 @@ $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
     -ExpectedType Leaf)
 $installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
     -Path $installedManifestPath
-if ($null -ne $manualActivation -and
+if (($null -ne $manualActivation -or $null -ne $rcoEnrollment) -and
     -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid([string]$installedManifestSnapshot.Text)) {
     throw 'installed manual execution manifest violates the strict JSON contract'
 }
-$installedManifest = [string]$installedManifestSnapshot.Text |
-    ConvertFrom-Json -ErrorAction Stop
+$installedJsonArguments = @{ InputObject = [string]$installedManifestSnapshot.Text; ErrorAction = 'Stop' }
+if ($null -ne $rcoEnrollment -and (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+    $installedJsonArguments['DateKind'] = 'String'
+}
+$installedManifest = ConvertFrom-Json @installedJsonArguments
 $installedManifestHash = ([string]$installedManifestSnapshot.Hash).ToUpperInvariant()
 if (
     [int]$installedManifest.schema_version -ne 1 -or
@@ -1227,6 +1339,7 @@ if (
 }
 Assert-WdManualExecutionManifestBinding -Deployment $installedManifest -ExpectedActivation $manualActivation `
     -SourceCommit $head -DefinitionHash $bridgeCodePackage.Hash -Definition $bridgeCodeDefinition -FleetAgentNames $manualFleetAgents
+Assert-WdRcoEnrollmentManifestBinding -Deployment $installedManifest -ExpectedEnrollment $rcoEnrollment -SourceCommit $head
 $installedHashProperties = @($installedManifest.files.PSObject.Properties)
 if ($installedHashProperties.Count -ne $sourceHashes.Count) {
     throw "installed reboot bundle file set does not match commit $head"

@@ -347,8 +347,9 @@ for ($i=0; $i -lt 205; $i++) { Add-WdConversationLine $view ('line-' + $i) 'Gree
 $bounded = @{count=$view.Entries.Count; first=$view.Entries[0].Text; last=$view.Entries[199].Text}
 Update-WdConversationControl $view 'A'
 $agentFirst = $view.Agent
+$agentsSeen = @($agentFirst)
 $oldDisplayCleared = @($view.Entries | Where-Object { $_.Text -like 'line-*' }).Count -eq 0
-for ($i=0; $i -lt 5; $i++) { Update-WdConversationControl $view 'A' }
+for ($i=0; $i -lt 6; $i++) { Update-WdConversationControl $view 'A'; $agentsSeen += $view.Agent }
 $grokFilter = $view.Agent
 Update-WdConversationControl $view 'A'
 Update-WdConversationControl $view 'T'
@@ -358,7 +359,7 @@ Update-WdConversationControl $view 'P'
 $paused = $view.Paused
 Update-WdConversationControl $view 'Spacebar'
 Update-WdConversationControl $view 'Q'
-@{bounded=$bounded; agent_first=$agentFirst; grok_filter=$grokFilter; type_first=$typeFirst; agent_all=$view.Agent; type_all=$view.Kind;
+@{bounded=$bounded; agent_first=$agentFirst; agents_seen=$agentsSeen; grok_filter=$grokFilter; type_first=$typeFirst; agent_all=$view.Agent; type_all=$view.Kind;
     old_display_cleared=$oldDisplayCleared; rows=$view.Counts.rows; visible=$view.Counts.visible;
     paused=$paused; resumed=(-not $view.Paused); quit=$view.Quit} | ConvertTo-Json -Depth 5 -Compress
 """)
@@ -366,6 +367,7 @@ Update-WdConversationControl $view 'Q'
     assert report["agent_first"] == "codex-lead-1" and report["type_first"] == "message"
     assert report["agent_all"] == report["type_all"] == ""
     assert report['grok_filter'] == 'grok-scout-1'
+    assert 'claude-rco-3' in report['agents_seen']
     assert report["old_display_cleared"] is True
     assert report["rows"] == 12 and report["visible"] == 9
     assert report["paused"] and report["resumed"] and report["quit"]

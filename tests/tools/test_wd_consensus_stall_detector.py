@@ -178,6 +178,12 @@ def test_an_operator_signature_hold_still_suppresses_the_stall():
     assert module.diagnose(PR, [dict(hold, agent='someone-else')]) is not None
 
 
+def test_third_recognized_rco_signature_hold_suppresses_a_false_stall():
+    module = load_detector()
+    hold = {'agent': 'claude-rco-3', 'task_id': 'fix/x', 'status': 'operator_signature_required'}
+    assert module.diagnose(PR, [hold]) is None
+
+
 def test_an_unclassified_stall_is_withheld_even_with_a_pin_and_posting(monkeypatch, tmp_path):
     module = load_detector()
     bundle, sha = pinned_bundle(tmp_path / 'bundle')

@@ -42,7 +42,7 @@ BRIDGE = RUNTIME_ROOT / "shared" / "events.jsonl"
 LOG = Path(r"C:\Python\wd_consensus_stall.log")
 STATE = Path(r"C:\Python\wd_consensus_stall_state.json")
 BUILD_AGENTS = ("codex-lead-1", "codex-tools-1")
-RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
+RCO_AGENTS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 TAIL_LINES = 6000
 MONITOR_AGENT = "wd-stall-monitor"   # neutral, non-RCO -> a finding/message here is never a veto
 STALL_ALERT_MIN = 15.0               # only alert after a stall persists this long (not freshly-opened)
@@ -170,7 +170,7 @@ def collect_signals(events: list[dict], head: str) -> tuple[dict, list]:
 
 
 RECOGNIZED_HOLD_IDENTITIES = {
-    "codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "operator",
+    "codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "claude-rco-3", "operator",
 }
 
 
@@ -235,6 +235,7 @@ def diagnose(pr: dict, events: list[dict]) -> dict | None:
         "tools_build": ("codex-tools-1", "build"),
         "rco1": ("claude-rco-1", "rco_pass"),
         "rco2": ("claude-rco-2", "rco_pass"),
+        "rco3": ("claude-rco-3", "rco_pass"),
     }
     status = {}
     for slot, (agent, kind) in slots.items():
@@ -246,8 +247,12 @@ def diagnose(pr: dict, events: list[dict]) -> dict | None:
         else:
             status[slot] = "MISSING"
 
-    # charter-clean needs lead+tools+>=1 RCO; off-allowlist needs both RCO.
-    problems = [s for s, v in status.items() if v != "READY"]
+    # Keep the observer's dual-review hint at two, not three after roster growth.
+    # This is advisory only; the actual gate proves eligibility and identity.
+    problems = [s for s in ("lead_build", "tools_build") if status[s] != "READY"]
+    rco_slots = ("rco1", "rco2", "rco3")
+    needed = max(0, 2 - sum(status[s] == "READY" for s in rco_slots))
+    problems.extend([s for s in rco_slots if status[s] != "READY"][:needed])
     return {
         "pr": pr["number"],
         "branch": branch,
@@ -281,6 +286,7 @@ SLOT_AGENTS = {
     "tools_build": "codex-tools-1",
     "rco1": "claude-rco-1",
     "rco2": "claude-rco-2",
+    "rco3": "claude-rco-3",
 }
 
 

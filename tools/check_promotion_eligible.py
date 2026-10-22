@@ -114,7 +114,7 @@ AUTHORITY_CANONICAL_STATUSES = frozenset(
         "rco_pass_pending_ci",
     }
 )
-DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2")
+DEFAULT_RCO_AGENTS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 PASS_STATES = {"pass", "passed", "success", "successful", "ok"}
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 
@@ -190,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Recognized RCO identity. May be repeated. Defaults to "
-            "claude-rco-1 and claude-rco-2."
+            "claude-rco-1, claude-rco-2 and claude-rco-3."
         ),
     )
     parser.add_argument(

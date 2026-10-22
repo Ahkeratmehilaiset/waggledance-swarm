@@ -69,6 +69,14 @@ def test_the_bridge_path_launches_only_limited_beside_a_disabled_supervisor(ps, 
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_recognition_does_not_provision_a_fifth_watcher(ps):
+    five = LANES.replace("'fable-5'", "'claude-rco-3','fable-5'")
+    decision = run(ps, f"$o={observation(WatcherAgents=five)}\nGet-WdBridgeLimitedBootstrapDecision @o | ConvertTo-Json -Compress\n")
+    assert decision['action'] == 'refuse', decision
+    assert any('not provisioned' in reason for reason in decision['reasons']), decision
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case,ok,stage,runs', [
     ('ready', True, 'done', ['True', 'False']), ('elevated', False, 'decision', []),
     ('apply_failed', False, 'apply', ['True']), ('apply_conflict', False, 'apply', ['True']),

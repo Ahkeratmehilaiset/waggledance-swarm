@@ -460,7 +460,7 @@ def test_quality_issue_selects_only_prequalified_alternative(inputs):
     assert decision(inputs)["action"] == "blocked"
 
 
-@pytest.mark.parametrize("role", ["lead", "tools", "fable", "rco1", "rco2"])
+@pytest.mark.parametrize("role", ["lead", "tools", "fable", "rco1", "rco2", "rco3"])
 def test_each_worker_role_uses_its_own_qualified_profile(inputs, role):
     inputs[0]["agents"]["example-lead"]["role"] = role
     for profile in inputs[0]["profiles"].values():
@@ -469,6 +469,17 @@ def test_each_worker_role_uses_its_own_qualified_profile(inputs, role):
         inputs[1]["tasks"][0].update(kind="review", author_agent="independent-author",
                                       required_reviewers=["example-lead", "other-reviewer"])
     assert decision(inputs)["action"] == "keep_current"
+
+
+@pytest.mark.parametrize("kind", ["implementation", "advisory"])
+def test_third_rco_is_not_an_implementation_or_advisory_worker(inputs, kind):
+    inputs[0]["agents"]["example-lead"]["role"] = "rco3"
+    for profile in inputs[0]["profiles"].values():
+        profile["roles"] = ["rco3"]
+    inputs[1]["tasks"][0]["kind"] = kind
+    row = decision(inputs)
+    assert row["action"] == "blocked"
+    assert "reviewer_not_implementation_worker" in row["reasons"]
 
 
 def test_grok_is_not_an_ordinary_fallback_worker(inputs):

@@ -29,6 +29,8 @@ from waggledance.core.work_queue import (  # noqa: E402
 )
 
 
+# Historical session-probe defaults, not the recognized RCO identity roster.
+# Explicit targets and observed helpers/claims remain inspectable below.
 DEFAULT_TARGET_AGENTS: tuple[str, ...] = (
     "codex-lead-1",
     "codex-tools-1",

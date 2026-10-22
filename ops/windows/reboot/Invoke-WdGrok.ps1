@@ -7,7 +7,7 @@ param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
     [ValidateRange(2, 8)] [int] $MaxRounds = 6, [string] $AcknowledgeInheritedSurface = '', [string] $RequestedBy = '')
 $ErrorActionPreference = 'Stop'
 # G1: the one Bridge agent a Lead-brokered consultation is for; it also receives answered/failed.
-$requesters = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+$requesters = @('codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3', 'fable-5')
 $manifestPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
 if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
     (Get-FileHash -LiteralPath $manifestPath).Hash -cne $env:WD_REBOOT_EXPECTED_MANIFEST_HASH) {

@@ -9,7 +9,7 @@ import re
 
 from waggledance.core.bridge_request_contract import reply_matches_request, timestamp
 
-ACTIVE_WORKERS = frozenset({'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'})
+ACTIVE_WORKERS = frozenset({'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3', 'fable-5'})
 ON_DEMAND_WORKERS = frozenset({'grok-scout-1'})
 STAGES = ('request_durable', 'watcher_seen', 'relay_enqueued', 'model_turn_started', 'answer_durable',
           'lead_processed', 'user_reported')
@@ -19,7 +19,7 @@ ROLE_FIELDS = {
     'planner': ('requirements', 'constraints', 'handoff_target'),
     'advisor': ('question', 'evidence'),
 }
-ROLE_AGENTS = {'tools': {'codex-tools-1'}, 'reviewer': {'claude-rco-1', 'claude-rco-2'},
+ROLE_AGENTS = {'tools': {'codex-tools-1'}, 'reviewer': {'claude-rco-1', 'claude-rco-2', 'claude-rco-3'},
                'planner': {'fable-5'}, 'advisor': {'grok-scout-1'}}
 
 

@@ -53,6 +53,7 @@ RECOGNIZED_AGENTS = (
     "codex-tools-1",
     "claude-rco-1",
     "claude-rco-2",
+    "claude-rco-3",
 )
 
 

@@ -880,7 +880,7 @@ def test_merge_ready_resolves_author_from_claim_and_rejects_rco_self_pass():
 
     assert r["ready"] is False
     assert r["author_agent"] == "claude-rco-1"
-    assert r["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2"]
+    assert r["rco_pass_gate"]["eligible_rco_agents"] == ["claude-rco-2", "claude-rco-3"]
     assert "rco_pass_missing_or_stale" in r["blockers"]
 
 

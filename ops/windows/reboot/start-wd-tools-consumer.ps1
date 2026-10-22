@@ -1242,7 +1242,7 @@ function Test-WdContinuityControlEvents {
         $author = [string]$event.agent
         $diagnostic = $false
         if (-not $payloadControl -and $author -cmatch '^[a-z][a-z0-9-]{0,63}$' -and
-            $author -cnotin @('operator','claude-rco-1','claude-rco-2')) {
+            $author -cnotin @('operator','claude-rco-1','claude-rco-2','claude-rco-3')) {
             if ($finding) {
                 $diagnostic = $author -ceq $Agent -and [string]$event.status -cin @('confirmed_bug','suspected_bug')
             } else {

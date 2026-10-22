@@ -26,8 +26,8 @@ OLD = "b" * 40
 # Built from parts, as the repo's other guard tests do, so this file never carries the literal tokens.
 GUARD_WORDS = ("PRIVATE_" + "MARKER", "_DO_NOT_" + "LEAK")
 UUIDS = {agent: f"00000000-0000-4000-8000-{index:012x}" for index, agent in enumerate(
-    ("claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5"), 1)}
-RCOS = ("claude-rco-1", "claude-rco-2")
+    ("claude-rco-1", "claude-rco-2", "codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-3"), 1)}
+RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
 # Every slot but claude-rco-2's (the last missing vote), and every slot.
 ALMOST = ["codex-lead-1", "codex-tools-1", "claude-rco-1"]
 EVERY = ALMOST + ["claude-rco-2"]
@@ -251,6 +251,31 @@ def test_attention_puts_the_last_missing_ci_green_vote_first_and_is_only_a_sugge
     assert all(item["suggestion_only"] is True for item in fields["attention"])
     text = mind.canonical_json(fields).lower()
     assert "approved" not in text and "clear to merge" not in text and "cleared" not in text.replace("never cleared", "")
+
+
+@pytest.mark.parametrize("pair", [RCOS[:2], RCOS[::2], RCOS[1:]])
+def test_two_distinct_reported_rcos_do_not_wait_for_a_third_vote(pair):
+    votes = ["codex-lead-1", "codex-tools-1", *pair]
+    attention = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]))["attention"]
+    assert [item["kind"] for item in attention] == ["signature_only"]
+    assert attention[0]["actors"] == ["operator"]
+    assert attention[0]["suggestion_only"] is True
+    assert "Eligibility and gate clearance remain UNKNOWN" in attention[0]["detail"]
+    assert "only the operator signature is left" not in attention[0]["detail"]
+
+
+def test_duplicate_third_rco_votes_do_not_fill_two_reported_slots():
+    votes = ["codex-lead-1", "codex-tools-1", "claude-rco-3", "claude-rco-3"]
+    attention = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]))["attention"]
+    assert attention[0]["kind"] == "last_missing_vote"
+    assert not any(item["kind"] == "signature_only" for item in attention)
+
+
+def test_third_rco_veto_is_not_outvoted_by_two_reported_passes():
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY, vetoes=["claude-rco-3"])]))
+    assert not any(item["kind"] in ("signature_only", "last_missing_vote") for item in fields["attention"])
+    assert any(item["rule"] == "veto_observed" and item["actors"] == ["claude-rco-3"]
+               for item in fields["tensions"])
 
 
 @pytest.mark.parametrize("reported, expected", [
@@ -929,11 +954,12 @@ def test_with_a_context_a_declared_class_is_never_signature_only_but_a_computed_
 
 
 def test_without_a_context_a_declared_a_class_keeps_the_main_signature_only_suggestion():
-    """B1 omitted compatibility (Root 05:59Z): no context, so main's declared-class suggestion and bytes stay."""
+    """The omitted interface keeps the RCO3 branch's explicitly uncertain declared-class suggestion."""
     fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY)]))
     assert [item["kind"] for item in fields["attention"]] == ["signature_only"]
-    assert fields["attention"][0]["detail"] == (f"PR10 at {HEAD[:12]} has every reported vote and is (a)-class: only "
-                                                "the operator signature is left")
+    assert fields["attention"][0]["detail"] == (
+        f"PR10 at {HEAD[:12]} has both reported build votes and two distinct reported RCO "
+        "votes; an (a)-class signature may be needed. Eligibility and gate clearance remain UNKNOWN")
     assert "class_unverified" not in _rules(fields) and "context_applied" not in _rules(fields)
 
 
@@ -1976,6 +2002,56 @@ def test_the_twin_is_what_the_core_emits_once_the_core_is_on_this_tree():
                                  reason="canonical_event_invalid") == _core_blocked_twin()
 
 
+def _integration_context(*authors):
+    """Synthetic context: the real train interface plus the new three-RCO roster."""
+    return {"schema": "wd.bridge-mind-pr-context.v2", "authority": "none",
+            "capture_sha256": ref("rco3-main-integration-context"), "observed_utc": AS_OF,
+            "charter": {"loaded": True, "charter_blob": "c" * 40, "classifier_blob": "d" * 40},
+            "prs": {"10": {"state": "OPEN", "head": HEAD, "head_ref_name": "synthetic/pr10",
+                            "commit_authors": list(authors),
+                            "path_class": {"charter_allowed": True, "denylist_hits": [],
+                                           "a_hits": ["tools/example_gate.py"], "unrecognized": []}}}}
+
+
+def test_main_integration_two_other_rcos_fill_quorum_when_first_is_author():
+    votes = ["codex-lead-1", "codex-tools-1", "claude-rco-2", "claude-rco-3"]
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]),
+                             context=_integration_context("claude-rco-1"))
+    attention = [item for item in fields["attention"] if item["subject"] == "pr:10"]
+    assert len(attention) == 1 and attention[0]["kind"] == "signature_only"
+    assert attention[0]["actors"] == ["operator"]
+    assert "missing-slot decision" not in attention[0]["detail"]
+
+
+def test_main_integration_author_pass_never_fills_quorum_and_third_is_asked():
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY)]),
+                             context=_integration_context("claude-rco-1"))
+    attention = next(item for item in fields["attention"] if item["subject"] == "pr:10")
+    assert attention["kind"] == "last_missing_vote"
+    assert attention["actors"] == ["claude-rco-3"]
+    assert "claude-rco-1" in attention["detail"] and "fills no RCO slot" in attention["detail"]
+    assert "operator's missing-slot decision" not in attention["detail"]
+
+
+def test_main_integration_two_authors_need_operator_route_not_signature_only():
+    votes = EVERY + ["claude-rco-3"]
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=votes)]),
+                             context=_integration_context("claude-rco-1", "claude-rco-2"))
+    attention = next(item for item in fields["attention"] if item["subject"] == "pr:10")
+    assert attention["kind"] == "last_missing_vote"
+    assert attention["actors"] == ["operator"]
+    assert "operator's missing-slot decision" in attention["detail"]
+    assert not any(item["kind"] == "signature_only" for item in fields["attention"])
+
+
+def test_main_integration_refused_context_cannot_trust_a_declared_class():
+    context = _integration_context()
+    context["charter"]["loaded"] = "true"
+    fields = mind.reflection(_snapshot(prs=[_pr(10, klass="a", votes=EVERY)]), context=context)
+    assert not any(item["kind"] == "signature_only" for item in fields["attention"])
+    assert any(item["rule"] == "context_refused" for item in fields["tensions"])
+
+
 def _context_v2(rows, **options):
     """A v2 context: ``rows`` maps a PR number to (state, head, path_class, commit_authors)."""
     value = _context({number: row[:3] for number, row in rows.items()}, **options)
@@ -1986,8 +2062,8 @@ def _context_v2(rows, **options):
 
 
 @pytest.mark.parametrize("authors, kinds, detail", [
-    # the author fills no slot, so its slot stays missing and only the operator can decide it (RCO1 A1)
-    (["claude-rco-2"], ["last_missing_vote"], "an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver"),
+    # The author fills no slot; the third recognized RCO can fill the second eligible slot.
+    (["claude-rco-2"], ["last_missing_vote"], "claude-rco-2 is a declared commit author of this PR and fills no RCO slot"),
     (["fable-5"], ["last_missing_vote"], "missing: claude-rco-2"),  # another author changes nothing
     (None, ["last_missing_vote"], "missing: claude-rco-2"),         # authors unknown: as before
 ])
@@ -1997,13 +2073,13 @@ def test_a_declared_commit_author_rco_is_never_asked_for_its_own_pr(authors, kin
                              context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, authors)}))
     assert [item["kind"] for item in fields["attention"] if item["kind"] != "tension"] == kinds
     assert fields["attention"][0]["detail"].endswith(detail)
-    assert fields["attention"][0]["actors"] == (["operator"] if authors == ["claude-rco-2"] else ["claude-rco-2"])
+    assert fields["attention"][0]["actors"] == (["claude-rco-3"] if authors == ["claude-rco-2"] else ["claude-rco-2"])
     both = mind.reflection(_snapshot(prs=[_pr(10, votes=["codex-lead-1", "codex-tools-1"])]),
                            context=_context_v2({10: ("OPEN", HEAD, NOT_PROTECTED, ["claude-rco-2"])}))
     assert both["attention"][0]["kind"] == "votes_missing"
-    assert both["attention"][0]["actors"] == ["claude-rco-1", "operator"]
+    assert both["attention"][0]["actors"] == ["claude-rco-1", "claude-rco-3"]
     assert both["attention"][0]["detail"].endswith("claude-rco-2 is a declared commit author of this PR and fills "
-                                                   "no RCO slot; an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver")
+                                                   "no RCO slot")
 
 
 @pytest.mark.parametrize("authors", [["Claude Opus 5.5"], "claude-rco-2", [1]])
@@ -2085,15 +2161,15 @@ def _recusal(agent, number, head, uuid=None):
 
 
 @pytest.mark.parametrize("recusal, actors, detail", [
-    # recused at the head: its slot stays missing and only the operator can decide it (RCO1 A1)
-    (_recusal("claude-rco-2", 10, HEAD), ["operator"], "an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver"),
+    # Recusal fills nothing and never asks its declarer; the third identity remains available.
+    (_recusal("claude-rco-2", 10, HEAD), ["claude-rco-3"], "claude-rco-2 declared rco_recused at this head and fills no RCO slot"),
     (_recusal("claude-rco-2", 10, OLD), ["claude-rco-2"], "missing: claude-rco-2"),  # another head changes nothing
     # an undeclared identity excuses nothing
     (_recusal("claude-rco-2", 10, HEAD, "UNKNOWN"), ["claude-rco-2"], "missing: claude-rco-2"),
 ])
 def test_an_rco_recused_at_the_head_fills_no_slot_and_is_never_asked(recusal, actors, detail):
     """Sandbox round 2 (fable-5): PR1878 asked claude-rco-2 for the last missing vote after its rco_recused there.
-    RCO1 A1: the recused RCO's slot is still missing, never filled by the recusal."""
+    RCO1 A1: the recusal fills no slot; another non-excused identity must supply the missing vote."""
     key, pr = _pr(10, votes=ALMOST)
     pr["recusals"] = [recusal]
     fields = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
@@ -2102,9 +2178,9 @@ def test_an_rco_recused_at_the_head_fills_no_slot_and_is_never_asked(recusal, ac
     key, pr = _pr(10, votes=["codex-lead-1", "codex-tools-1"])
     pr["recusals"] = [_recusal("claude-rco-2", 10, HEAD)]
     both = mind.reflection(_snapshot(prs=[(key, pr)]), context=_context({10: ("OPEN", HEAD, NOT_PROTECTED)}))
-    assert both["attention"][0]["actors"] == ["claude-rco-1", "operator"]
+    assert both["attention"][0]["actors"] == ["claude-rco-1", "claude-rco-3"]
     assert both["attention"][0]["detail"].endswith("claude-rco-2 declared rco_recused at this head and fills no RCO "
-                                                   "slot; an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver")
+                                                   "slot")
     assert pr["recusals"][0]["source_refs"][0] in both["attention"][0]["refs"]
 
 
@@ -2211,11 +2287,12 @@ def test_b1_a_later_pass_label_needs_a_pass_the_core_did_not_retire(pass_first, 
     assert pr["veto_observations"] == snapshot["prs"]["1951"]["veto_observations"]  # never cleared
 
 
-@pytest.mark.parametrize("authors, actors", [
-    (["claude-rco-1"], ["operator"]),            # both RCOs excused, zero RCO passes (RCO1 A1)
-    (None, ["claude-rco-1", "operator"]),        # only the recused RCO excused: the other is asked, and the operator
+@pytest.mark.parametrize("authors, actors, missing, operator_needed", [
+    (["claude-rco-1"], ["claude-rco-3", "operator"], "claude-rco-3, claude-rco-1", True),
+    (None, ["claude-rco-1", "claude-rco-3"], "claude-rco-1, claude-rco-3", False),
 ])
-def test_b1_an_excused_rco_slot_is_missing_and_needs_the_operator_decision_never_signature_only(authors, actors):
+def test_b1_excused_rcos_fill_no_slots_and_only_unfillable_quorum_needs_operator(authors, actors, missing,
+                                                                             operator_needed):
     """B1 A1 (RCO1 static, Lead 06:16Z): an author or recused RCO fills no slot. The core keeps a message
     rco_recused as a recusal without a veto, so the PR stays suggestable; with a loaded charter and a computed
     protected hit the checkpoint called it 'only the operator signature is left' with zero RCO passes."""
@@ -2236,9 +2313,8 @@ def test_b1_an_excused_rco_slot_is_missing_and_needs_the_operator_decision_never
     items = [item for item in fields["attention"] if item["subject"] == "pr:1952"]
     assert [item["kind"] for item in items] == ["votes_missing"]
     assert items[0]["actors"] == actors
-    assert items[0]["detail"].startswith(f"PR1952 at {H_B1[:12]} is reported CI-green; missing: claude-rco-1, "
-                                         "claude-rco-2")
-    assert items[0]["detail"].endswith("an excused RCO slot needs the operator's missing-slot decision; an (a) signature is not a slot waiver")
+    assert items[0]["detail"].startswith(f"PR1952 at {H_B1[:12]} is reported CI-green; missing: {missing}")
+    assert items[0]["detail"].endswith(mind.SLOT_DECISION) is operator_needed
     assert "only the operator signature is left" not in mind.canonical_json(fields)
     assert "claude-rco-2" not in _actors(fields) and ("claude-rco-1" in _actors(fields)) is (authors is None)
 
@@ -2258,11 +2334,10 @@ def test_b1_a_current_pass_of_another_agent_uuid_is_no_ordering_evidence():
 
 
 def test_a1_a_declared_commit_author_rco_fills_no_slot_even_with_its_own_pass():
-    """RCO1 A1: author is not reviewer, so an author RCO's own rco_pass fills nothing and its slot stays missing for
-    the operator's missing-slot decision; never 'only the operator signature is left' (this PR cannot sign itself)."""
+    """RCO1 A1 survives roster extension: an author pass fills nothing; the third RCO must vote instead."""
     fields = mind.reflection(_snapshot(prs=[_pr(10, votes=EVERY)]),
                              context=_context_v2({10: ("OPEN", HEAD, PROTECTED, ["claude-rco-1"])}))
     items = [item for item in fields["attention"] if item["subject"] == "pr:10"]
-    assert [(item["kind"], item["actors"]) for item in items] == [("last_missing_vote", ["operator"])]
-    assert items[0]["detail"].startswith(f"PR10 at {HEAD[:12]} is reported CI-green; missing: claude-rco-1; ")
+    assert [(item["kind"], item["actors"]) for item in items] == [("last_missing_vote", ["claude-rco-3"])]
+    assert items[0]["detail"].startswith(f"PR10 at {HEAD[:12]} is reported CI-green; missing: claude-rco-3; ")
     assert "only the operator signature is left" not in mind.canonical_json(fields)

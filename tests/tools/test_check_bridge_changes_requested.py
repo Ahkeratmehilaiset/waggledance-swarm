@@ -84,6 +84,21 @@ def test_clear_when_no_peer_signal_for_task() -> None:
     assert result["latest_blocking_event"] is None
 
 
+@pytest.mark.parametrize("status", ["cleared", "rco_pass"])
+def test_unenrolled_third_rco_positive_never_retracts_its_veto(status):
+    def third(type_, status_, ts):
+        return _event(ts, "claude-rco-3", type_, status_) | {
+            "agent_uuid": "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50",
+        }
+    result = check_bridge_clear_to_merge(
+        events=[third("finding", "info", "2026-10-21T10:00:00Z"),
+                third("decision", status, "2026-10-21T10:01:00Z")],
+        task_id="T", merging_agent="codex-lead-1",
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-3"
+
+
 def test_missing_default_identity_registry_refuses_peer_gate(
     monkeypatch,
     tmp_path: Path,

@@ -88,7 +88,7 @@ GROK = "grok"
 # tools/wd_switch_policy.MEMBERS and TRIP_LINES, repeated here so this module does not import the
 # switch policy and, through it, the switch evidence, relaunch and planner modules; a test pins
 # them together.
-MEMBERS = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")
+MEMBERS = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "claude-rco-3")
 TRIP_LINES = {"steady": 70.0, "burst": 90.0, "sprint": 95.0}
 
 ROUTE, DUPLICATE, SATISFIED, WAIT, UNKNOWN, SKIPPED, HOLD = (

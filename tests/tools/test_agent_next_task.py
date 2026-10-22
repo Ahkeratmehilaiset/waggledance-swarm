@@ -822,7 +822,7 @@ def test_prioritizes_stalled_rco_lane_failover_before_smoke(
     candidate = report["candidate"]
     assert candidate["kind"] == "rco_lane_failover_scout"
     assert candidate["stalled_agent"] == "claude-rco-2"
-    assert candidate["fallback_reviewers"] == ["claude-rco-1"]
+    assert candidate["fallback_reviewers"] == ["claude-rco-1", "claude-rco-3"]
     assert candidate["mode"] == "read-only"
     assert candidate["write_scope"] == []
     assert "report_unanswered_bridge_requests.py" in candidate["recommended_command"]

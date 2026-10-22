@@ -55,10 +55,12 @@ def _run_writer(
     root: Path,
     runtime_root: Path,
     *args: str,
+    evidence_stub: str | None = None,
     shell: str | None = None,
     frame: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return _run_bridge_script(root, runtime_root, "Write-AgentEvent.ps1", *args, shell=shell, frame=frame)
+    return _run_bridge_script(root, runtime_root, "Write-AgentEvent.ps1", *args,
+                              evidence_stub=evidence_stub, shell=shell, frame=frame)
 
 
 def _run_bridge_script(
@@ -66,6 +68,7 @@ def _run_bridge_script(
     runtime_root: Path,
     script_name: str,
     *args: str,
+    evidence_stub: str | None = None,
     shell: str | None = None,
     frame: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -90,6 +93,9 @@ def _run_bridge_script(
             source = script.read_text(encoding="utf-8-sig")
             if "Global\\WaggleDanceBridge" in source:
                 script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    if evidence_stub is not None:
+        # Explicit isolated toy collector: never queries or impersonates native production identity.
+        (code / "Get-BridgeExecutionEvidence.ps1").write_text(evidence_stub, encoding="utf-8")
     return subprocess.run(
         [
             shell or _powershell(),
@@ -1800,6 +1806,274 @@ def test_a_missing_or_wrong_answer_token_leaves_answer_to_processed_unknown(tmp_
     assert (summary["known"], summary["unknown"]) == (known, 1 - known)
 
 
+# RCO3 producer/enrollment E2E: synthetic manifest + copied public writer + toy collector only.
+RCO3_UUID = "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50"
+RCO3_TOY_NATIVE = "11111111-2222-4333-8444-555555555555"
+RCO3_TOY_TASK = "synthetic/rco3-writer-evidence"
+
+
+def _rco3_toy_context(tmp_path: Path) -> dict:
+    from tools.bridge_rco_enrollment import load_rco_enrollment_context
+
+    rec = dict(
+        schema="wd.rco-enrollment.v1", agent="claude-rco-3", agent_uuid=RCO3_UUID,
+        generation=MAIN_SHA, session_id="synthetic-prior-session", run_id="synthetic-prior-run",
+        native_conversation_id=RCO3_TOY_NATIVE, cli_kind="claude.exe", native_pid=4241,
+        launcher_pid=4242, native_process_start_utc="2000-01-01T00:00:00Z",
+        observed_at_utc="2000-01-01T00:00:01Z", token_integrity="Medium", elevated=False,
+        fresh_history_free=True, no_mind_authorship=True, no_measurement_case_access=True,
+    )
+    bundle = tmp_path / MAIN_SHA
+    bundle.mkdir()
+    raw = json.dumps(dict(source_commit=MAIN_SHA, rco_enrollments={"claude-rco-3": rec})).encode()
+    (bundle / "deployment-manifest.json").write_bytes(raw)
+    return load_rco_enrollment_context(bundle_root=bundle, expected_manifest_sha256=hashlib.sha256(raw).hexdigest())
+
+
+def _rco3_toy_stub(ctx: dict, *, mode: str = "valid") -> str:
+    from test_bridge_rco_enrollment import token_proof
+    proof = dict(
+        schema="wd.execution-evidence.v1", observed_agent="claude-rco-3",
+        native_conversation_id=RCO3_TOY_NATIVE, native_pid=5252, launcher_pid=5253,
+        native_process_start_utc="2000-01-01T00:00:02Z", cli_kind="claude.exe",
+        generation=MAIN_SHA, manifest_sha256=ctx["manifest_sha256"],
+        observed_at_utc="__SYNTHETIC_OBSERVED_AT__", pin_status="manifest_and_launcher_verified",
+        pin_error=None, ancestry_error=None, synthetic_fixture_no_native_observation=True,
+        writer_pid=5254, writer_process_start_utc="2000-01-01T00:00:03Z",
+        native_token=token_proof(5252, "2000-01-01T00:00:02Z"),
+        writer_token=token_proof(5254, "2000-01-01T00:00:03Z"),
+    )
+    if mode in ("native_high", "writer_high"):
+        proof["native_token" if mode == "native_high" else "writer_token"].update(token_integrity="High", elevated=True)
+    if mode in ("native_missing", "writer_missing"):
+        del proof["native_token" if mode == "native_missing" else "writer_token"]
+    counter = "[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'synthetic-collector.calls'), \"call`n\")\n"
+    if mode == "throw":
+        return "# SYNTHETIC ONLY; no native observation\n" + counter + "throw 'Synthetic collector unavailable'\n"
+    if mode == "invalid":
+        return "# SYNTHETIC ONLY; no native observation\n" + counter + "'not-json'\n"
+    if mode == "unknown":
+        proof.update(observed_agent=None, native_conversation_id=None, native_pid=None,
+                     pin_status="unknown", pin_error="synthetic unknown", ancestry_error="synthetic unknown")
+    if mode == "mismatch":
+        proof.update(pin_status="mismatch", pin_error="synthetic pin mismatch")
+    raw = json.dumps(proof).replace("'", "''")
+    return ("# SYNTHETIC ONLY; no native observation\n" + counter
+            + "$syntheticObserved=[datetime]::UtcNow.ToString('o')\n"
+            + "'" + raw + "'.Replace('__SYNTHETIC_OBSERVED_AT__',$syntheticObserved)\n")
+
+
+def _rco3_fixture_code(runtime_root: Path) -> Path:
+    suffix = hashlib.sha256(str(runtime_root).encode()).hexdigest()[:16]
+    return runtime_root.parent / ("writer-fixture-" + suffix) / ".agent-bridge/bin"
+
+
+def _rco3_toy_write(tmp_path: Path, ctx: dict, *, event_type="decision", status="rco_pass",
+                    payload=None, mode="valid", agent="claude-rco-3", agent_uuid=RCO3_UUID,
+                    reply=None, shell=None) -> tuple[subprocess.CompletedProcess[str], dict | None]:
+    root = Path(__file__).resolve().parents[2]
+    runtime = tmp_path / "rco3-toy-runtime"
+    data = {"head": MAIN_SHA, "canonical_task_id": RCO3_TOY_TASK}
+    if payload is not None:
+        data.update(payload)
+    args = ["-Agent", agent, "-AgentUuid", agent_uuid, "-SessionId", "synthetic-current-session",
+            "-RunId", "synthetic-current-run", "-Type", event_type, "-Status", status,
+            "-TaskId", RCO3_TOY_TASK, "-To", "operator", "-Message", f"synthetic writer fixture only {MAIN_SHA}",
+            "-PayloadJson", json.dumps(data)]
+    if reply is not None:
+        args += ["-ReplyToEventJson", json.dumps(reply)]
+    completed = _run_writer(root, runtime, *args, evidence_stub=_rco3_toy_stub(ctx, mode=mode), shell=shell)
+    events = runtime / "shared/events.jsonl"
+    written = json.loads(events.read_text(encoding="utf-8").splitlines()[-1]) if events.exists() else None
+    return completed, written
+
+
+def _assert_rco3_writer_collected_once(tmp_path: Path) -> None:
+    path = _rco3_fixture_code(tmp_path / "rco3-toy-runtime") / "synthetic-collector.calls"
+    assert path.read_text(encoding="utf-8").splitlines() == ["call"]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+def test_rco3_synthetic_medium_tokens_bind_on_each_host(tmp_path, shell):
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip("requested synthetic PowerShell host unavailable")
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, shell=executable)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("mode", ["native_high", "writer_high", "native_missing", "writer_missing"])
+def test_rco3_public_writer_current_token_refusal_keeps_veto(tmp_path, monkeypatch, shell, mode):
+    from tools import bridge_rco_enrollment as enrollment, check_rco_pass_present as gate
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip("requested synthetic PowerShell host unavailable")
+    ctx = _rco3_toy_context(tmp_path)
+    monkeypatch.setattr(gate, "load_rco_enrollment_context", lambda: ctx)
+    # Caller supplies a fabricated Medium claim: the public writer must discard it.
+    forged = {"schema": "wd.execution-evidence.v1", "caller_supplied": True,
+              "native_token": {"token_integrity": "Medium", "elevated": False},
+              "writer_token": {"token_integrity": "Medium", "elevated": False}}
+    completed, written = _rco3_toy_write(tmp_path, ctx, mode=mode, shell=executable,
+                                       event_type="finding", status="open", payload={"execution_evidence": forged})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "caller_supplied" not in json.dumps(written["payload"])
+    assert not enrollment.rco_event_enrollment_matches(written, context=ctx)
+    assert not gate.scan_recognized_rco_vetoes(events=[written], task_id=RCO3_TOY_TASK,
+                                            author_agent="codex-lead-1")["ok"]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("event_type,status", [("decision", "rco_pass"), ("message", "rco_recused")])
+def test_rco3_ordinary_public_writer_computes_binding(tmp_path: Path, monkeypatch, event_type, status) -> None:
+    from datetime import datetime
+    from tools import bridge_rco_enrollment as enrollment, check_rco_pass_present as pass_gate
+
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, event_type=event_type, status=status)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert enrollment.rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+    proof = written["payload"]["execution_evidence"]
+    assert datetime.fromisoformat(written["ts_utc"].replace("Z", "+00:00")) >= datetime.fromisoformat(
+        proof["observed_at_utc"].replace("Z", "+00:00"))
+    assert written["payload"]["result_validation"]["schema_valid"] is None
+    if status == "rco_pass":
+        monkeypatch.setattr(pass_gate, "load_rco_enrollment_context", lambda: ctx)
+        assert pass_gate.check_rco_pass_present(events=[written], task_id=RCO3_TOY_TASK,
+            head=MAIN_SHA, author_agent="codex-lead-1")["ok"] is True
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("spelling", ["execution_evidence", "Execution_Evidence"])
+def test_rco3_caller_evidence_and_validation_are_not_authority(tmp_path: Path, spelling) -> None:
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+
+    ctx = _rco3_toy_context(tmp_path)
+    injected = {spelling: {"pin_status": "manifest_and_launcher_verified", "caller_supplied": True},
+                "result_validation": {"schema_valid": True, "caller_supplied": True}}
+    completed, written = _rco3_toy_write(tmp_path, ctx, payload=injected)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "caller_supplied" not in json.dumps(written["payload"])
+    assert written["payload"]["result_validation"]["schema_valid"] is None
+    assert rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+def test_rco3_complete_caller_forgery_cannot_replace_failed_collector(tmp_path: Path) -> None:
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+
+    ctx = _rco3_toy_context(tmp_path)
+    forged = dict(schema="wd.execution-evidence.v1", observed_agent="claude-rco-3",
+        native_conversation_id=RCO3_TOY_NATIVE, native_pid=5252, launcher_pid=5253,
+        native_process_start_utc="2000-01-01T00:00:02Z", observed_at_utc="2000-01-01T00:00:03Z",
+        cli_kind="claude.exe", generation=MAIN_SHA, manifest_sha256=ctx["manifest_sha256"],
+        pin_status="manifest_and_launcher_verified", pin_error=None, ancestry_error=None,
+        caller_supplied=True)
+    completed, written = _rco3_toy_write(tmp_path, ctx, mode="throw", payload=dict(execution_evidence=forged))
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not rco_event_enrollment_matches(written, context=ctx)
+    assert "caller_supplied" not in json.dumps(written["payload"])
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("mode", ["throw", "invalid", "unknown", "mismatch"])
+@pytest.mark.parametrize("event_type,status", [("decision", "rco_pass"), ("finding", "open"), ("message", "rco_recused")])
+def test_rco3_unknown_observation_cannot_approve_or_hide_veto(tmp_path: Path, monkeypatch,
+                                                           mode, event_type, status) -> None:
+    from tools import bridge_rco_enrollment as enrollment, check_rco_pass_present as pass_gate
+
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, mode=mode, event_type=event_type, status=status)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert written is not None and written["status"] == status
+    assert "execution_evidence" in written["payload"]
+    assert not enrollment.rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+    monkeypatch.setattr(pass_gate, "load_rco_enrollment_context", lambda: ctx)
+    assert pass_gate.check_rco_pass_present(events=[written], task_id=RCO3_TOY_TASK,
+        head=MAIN_SHA, author_agent="codex-lead-1")["ok"] is False
+    if event_type == "finding":
+        assert pass_gate.scan_recognized_rco_vetoes(events=[written], task_id=RCO3_TOY_TASK,
+            author_agent="codex-lead-1")["ok"] is False
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("agent,agent_uuid", [("claude-rco-1", CLAUDE_RCO1_UUID), ("claude-rco-2", CLAUDE_RCO2_UUID)])
+def test_legacy_rco_public_writer_path_is_unchanged(tmp_path: Path, agent, agent_uuid) -> None:
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, agent=agent, agent_uuid=agent_uuid, mode="throw")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "execution_evidence" not in written["payload"]
+    assert not (_rco3_fixture_code(tmp_path / "rco3-toy-runtime") / "synthetic-collector.calls").exists()
+
+
+def _rco3_bound_toy_request() -> dict:
+    return dict(agent="operator", agent_uuid=PROFILE_UUID, session_id="synthetic-operator-session",
+        run_id="synthetic-operator-run", type="message", status="review_requested", to="claude-rco-3",
+        task_id=RCO3_TOY_TASK, ts_utc="2000-01-01T00:00:02Z", request_id="synthetic-rco3-bound-request",
+        request_digest="c" * 64, expected_responders={"claude-rco-3": dict(agent_uuid=RCO3_UUID,
+            session_id="synthetic-current-session", run_id="synthetic-current-run")},
+        payload=dict(nonce="synthetic-exact-nonce", result_contract=dict(schema="wd.task-result-contract.v1",
+            required=["answer"], additional_properties=False)))
+
+
+@WINDOWS_APPEND_V1
+def test_rco3_bound_public_writer_collects_once_and_preserves_contract(tmp_path: Path) -> None:
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, status="rco_pass", reply=_rco3_bound_toy_request(),
+        payload=dict(nonce="synthetic-exact-nonce", result={"answer": "synthetic review"},
+                     execution_evidence={"caller_supplied": True}, result_validation={"caller_supplied": True}))
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert rco_event_enrollment_matches(written, context=ctx)
+    assert written["in_reply_to_request_id"] == "synthetic-rco3-bound-request"
+    assert written["in_reply_to_request_digest"] == "c" * 64
+    assert written["payload"]["nonce"] == "synthetic-exact-nonce"
+    assert written["payload"]["result_validation"]["schema_valid"] is True
+    assert "caller_supplied" not in json.dumps(written["payload"])
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("mode", ["throw", "mismatch"])
+def test_rco3_bound_veto_survives_unknown_collector(tmp_path: Path, mode) -> None:
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+
+    ctx = _rco3_toy_context(tmp_path)
+    completed, written = _rco3_toy_write(tmp_path, ctx, mode=mode, event_type="finding", status="open",
+        reply=_rco3_bound_toy_request(), payload=dict(nonce="synthetic-exact-nonce", result={"answer": "finding"}))
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert written["type"] == "finding"
+    assert not rco_event_enrollment_matches(written, context=ctx)
+    _assert_rco3_writer_collected_once(tmp_path)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("bad", ["nonce", "result", "session"])
+def test_rco3_bound_public_writer_still_rejects_bad_binding_or_result(tmp_path: Path, bad) -> None:
+    ctx = _rco3_toy_context(tmp_path)
+    request = _rco3_bound_toy_request()
+    data = dict(nonce="synthetic-exact-nonce", result={"answer": "synthetic review"})
+    if bad == "nonce":
+        data["nonce"] = "wrong"
+    elif bad == "result":
+        data["result"] = {}
+    else:
+        request["expected_responders"]["claude-rco-3"]["session_id"] = "wrong"
+    completed, written = _rco3_toy_write(tmp_path, ctx, reply=request, payload=data)
+    assert completed.returncode != 0
+    assert written is None
 # -- Requester closeout (Lead lead-fable-requester-closeout-producer-20261013-v1) ---------------------------
 # The original requester closes its own bound request as superseded or cancelled with one exact correlated
 # decision. Every run is native PowerShell 5.1 and 7 on an isolated root and a fixture copy of the writer.

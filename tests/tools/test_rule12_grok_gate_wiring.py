@@ -17,7 +17,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_bridge_rco_enrollment import context as enrollment_context, manifest
 
+from tools import bridge_rco_enrollment as enrollment
+from tools import bridge_rule12_review_eligibility as r12
 from tools import rule12_grok_ledger_adapter as adapter
 from tools import wd_grok_helper as helper
 from tools.bridge_pr_author import github_pr_git_identity_evidence
@@ -61,6 +64,14 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+
+
+@pytest.fixture(autouse=True)
+def historical_two_rco_cohort(tmp_path, monkeypatch):
+    """Historical vacancy is verified by a pinned toy manifest, never ambient pins."""
+    ctx = enrollment_context(tmp_path, manifest())
+    assert ctx["status"] == "not_provisioned"
+    monkeypatch.setattr(r12, "load_rco_enrollment_context", lambda: ctx)
 
 
 class _HelperClock(datetime):
@@ -389,6 +400,21 @@ def test_an_unbound_request_record_is_not_an_attempt(tmp_path, root):
 
 
 # --- the slot shape ----------------------------------------------------------
+def test_unknown_third_rco_enrollment_cannot_open_the_grok_slot(tmp_path, root, monkeypatch):
+    ctx = enrollment.load_rco_enrollment_context(
+        bundle_root=tmp_path, expected_manifest_sha256=""
+    )
+    assert ctx["status"] == "unknown"
+    monkeypatch.setattr(r12, "load_rco_enrollment_context", lambda: ctx)
+    _run(root)
+    report = _gate(tmp_path, root)
+    _blocked_on_rco(report)
+    slot = report["bridge_consensus"]["rule12"]["slots"]["rco"]
+    assert slot["standing"]["claude-rco-3"] == "enrollment_unknown"
+    assert slot["present"] == ["claude-rco-3"]
+    assert slot["state"] == "pending"
+
+
 def test_a_silent_eligible_rco_keeps_the_slot_pending(tmp_path, root):
     _run(root)
     events = [e for e in _events() if not (e["agent"] == "claude-rco-2" and e["type"] == "message"

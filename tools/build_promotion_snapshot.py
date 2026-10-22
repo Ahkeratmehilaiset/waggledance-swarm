@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Recognized RCO identity. May be repeated. Defaults to "
-            "claude-rco-1 and claude-rco-2."
+            "claude-rco-1, claude-rco-2 and claude-rco-3."
         ),
     )
     parser.add_argument("--json", action="store_true")

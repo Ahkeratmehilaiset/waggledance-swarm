@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 import pytest
+from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_rco_pass_present.py"
@@ -40,6 +41,7 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
     "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "claude-rco-3": "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50",
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
@@ -179,6 +181,21 @@ def test_pass_at_head_present_returns_ok() -> None:
         assert result[key] is False
 
 
+def test_unenrolled_third_rco_public_uuid_pass_never_fills_the_slot() -> None:
+    event = _rco_event(agent="claude-rco-3", payload={"exact_head": HEAD})
+    result = check_rco_pass_present(events=[event], task_id=TASK, head=HEAD)
+    assert result["ok"] is False
+    assert result["has_qualifying_rco_pass_at_head"] is False
+
+
+def test_explicit_nondefault_reviewer_override_keeps_legacy_semantics():
+    candidate = _rco_event(agent="fable-5", payload={"exact_head": HEAD})
+    result = check_rco_pass_present(events=[candidate], task_id=TASK, head=HEAD,
+                                    rco_agent="fable-5")
+    assert result["ok"] is True
+    assert result["has_qualifying_rco_pass_at_head"] is True
+
+
 def test_no_pass_silence_refuses() -> None:
     events = [
         _rco_event(
@@ -216,7 +233,7 @@ def test_pass_at_different_old_head_is_stale_refuse() -> None:
         "accepted_task_ids": [TASK],
         "head": HEAD,
         "stale_heads": [OTHER_HEAD],
-        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2", "claude-rco-3"],
         "legacy_request_status": "rco_requested",
     }
 
@@ -653,20 +670,25 @@ def test_wrong_rco_agent_identity_not_counted() -> None:
     assert result["has_qualifying_rco_pass_at_head"] is False
 
 
-def test_backup_rco_pass_satisfies_default_rco_set() -> None:
+@pytest.mark.parametrize("agent", ["claude-rco-2", "claude-rco-3"])
+def test_backup_rco_pass_satisfies_default_rco_set(agent, tmp_path, monkeypatch) -> None:
     events = [
         _rco_event(
             ts="2026-06-03T10:00:00Z",
-            agent="claude-rco-2",
+            agent=agent,
             status="rco_pass",
             type_="decision",
             message=f"backup RCO_PASS at exact head {HEAD}",
         ),
     ]
+    if agent == "claude-rco-3":
+        proof = install_synthetic_enrollment(tmp_path, monkeypatch, provisioned=True)
+        events[0].update({key: proof[key] for key in ("agent_uuid", "session_id", "run_id")})
+        events[0]["payload"]["execution_evidence"] = proof["payload"]["execution_evidence"]
     result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
     assert result["ok"] is True
-    assert result["satisfying_rco_agent"] == "claude-rco-2"
-    assert result["eligible_rco_agents"] == ["claude-rco-1", "claude-rco-2"]
+    assert result["satisfying_rco_agent"] == agent
+    assert result["eligible_rco_agents"] == ["claude-rco-1", "claude-rco-2", "claude-rco-3"]
 
 
 def test_registered_rco_uuid_mismatch_does_not_count() -> None:
@@ -796,7 +818,7 @@ def test_author_rco_self_pass_is_excluded_fail_closed() -> None:
     )
     assert result["ok"] is False
     assert result["decision"] == "no_qualifying_pass"
-    assert result["eligible_rco_agents"] == ["claude-rco-1"]
+    assert result["eligible_rco_agents"] == ["claude-rco-1", "claude-rco-3"]
     assert result["satisfying_rco_agent"] is None
 
 
@@ -1123,7 +1145,7 @@ def test_unrelated_task_exact_head_pass_is_reported_without_counting() -> None:
         ],
         "rejected_task_ids": [other_task],
         "head": HEAD,
-        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2", "claude-rco-3"],
         "legacy_request_status": "rco_requested",
     }
     assert result["task_id_mismatch_rco_events"] == [
@@ -1518,7 +1540,7 @@ def test_cli_json_reports_rco_reemit_guidance_for_task_mismatch(
         ],
         "rejected_task_ids": [unrelated_task],
         "head": HEAD,
-        "target_rco_agents": ["claude-rco-1", "claude-rco-2"],
+        "target_rco_agents": ["claude-rco-1", "claude-rco-2", "claude-rco-3"],
         "legacy_request_status": "rco_requested",
     }
 

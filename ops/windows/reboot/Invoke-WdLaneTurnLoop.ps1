@@ -333,7 +333,7 @@ function Remove-WdCompletedTurnArtifacts {
 function Invoke-WdLaneTurnLoop {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [ValidateSet('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')] [string] $Agent,
+        [Parameter(Mandatory)] [ValidateSet('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')] [string] $Agent,
         [Parameter(Mandatory)] [ValidateSet('codex','claude')] [string] $Backend,
         [Parameter(Mandatory)] [string] $CliPath,
         [Parameter(Mandatory)] [string] $Model,
@@ -364,7 +364,7 @@ function Invoke-WdLaneTurnLoop {
     }
     $pins = @{
         'codex-lead-1'=@('codex','gpt-6-astra','xhigh'); 'codex-tools-1'=@('codex','gpt-5.6-terra','high')
-        'claude-rco-1'=@('claude','sonnet','max'); 'claude-rco-2'=@('claude','sonnet','max'); 'fable-5'=@('claude','fable','max')
+        'claude-rco-1'=@('claude','sonnet','max'); 'claude-rco-2'=@('claude','sonnet','max'); 'claude-rco-3'=@('claude','native','native'); 'fable-5'=@('claude','fable','max')
     }[$Agent]
     if ($Backend -cne $pins[0] -or $Model -cne $pins[1] -or $Effort -cne $pins[2]) { throw 'managed lane runtime pins mismatch' }
     if ($Backend -ceq 'claude' -and $ClaudePermissionPosture -cne 'existing_interactive') {

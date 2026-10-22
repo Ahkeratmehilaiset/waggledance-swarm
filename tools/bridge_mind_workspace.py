@@ -69,10 +69,10 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   recognized RCO among them is excused from that PR: it fills no RCO slot (author is not reviewer), not even
   with its own vote, and is never asked for it. A recognized RCO's own ``rco_recused`` at the exact PR head (core
   ``recusals``, the core's explicit recusal extension, a declared identity) excuses it the same way, with or
-  without a context. An excused RCO's slot stays empty: the attention item names it as missing and gives it to
-  the operator's missing-slot decision (RCO1 A1). It is never ``signature_only``, an (a) signature is not a
-  slot waiver, and no excused RCO is asked. These are the only recusal reads here; a declared author or recusal
-  is data, not authentication.
+  without a context. Two other distinct reported RCOs can fill the quorum. If fewer than two non-excused
+  identities remain, the unmet requirement goes to the operator's missing-slot decision (RCO1 A1), never
+  ``signature_only``: an (a) signature is not a slot waiver, and no excused RCO is asked. These are the only
+  recusal reads here; a declared author or recusal is data, not authentication.
 * A class is computed only from a used context whose charter evidence is ``loaded`` exactly ``true`` with both
   artifact identities, for a PR whose context row is ``OPEN``, at the snapshot head, with a ``path_class``: a
   protected hit (an ``a_hits`` or ``denylist_hits`` entry) or a path set the charter does not allow
@@ -90,12 +90,11 @@ pure function of that snapshot (and, optionally, the previous reflected one) and
   green at that exact head and no veto observation (an unreadable one counts as one), the workspace counts
   the current-head votes of declared identities (a valid ``agent_uuid`` and ``verification`` ``declared``;
   the two must agree) into the consensus slots by the charter's identity map
-  (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, and one slot for each recognized RCO,
-  because the installed rule-12 policy needs every present eligible RCO and the snapshot carries neither
-  presence nor the author, so an RCO-authored PR never reaches ``signature_only`` here). Exactly one empty
-  slot comes first (the last missing vote goes first), then PRs with every slot filled and a computed
-  protected class (only the operator signature is left; without a context, main's declared (a) class), then PRs
-  missing several votes, then high and other tensions. A
+  (``build_lead`` = codex-lead-1, ``build_tools`` = codex-tools-1, plus two distinct reported RCO votes).
+  The snapshot cannot establish eligibility or authorship, and never treats reported votes as eligible
+  approvals. Exactly one empty reported slot comes first (the last missing vote goes first), then
+  (a)-class PRs with the reported slots filled (an operator signature may be needed; eligibility and
+  gate clearance remain UNKNOWN), then PRs missing several votes, then high and other tensions. A
   blocked source gives no PR suggestion at all, only its tensions. A suggestion is never a clearance: the
   gate computes the real verdict from canonical events, and the core marks gate eligibility UNKNOWN.
 * ``next_question``: ``{"global": entry, "lanes": {agent: entry}}``, each entry from its first attention
@@ -157,12 +156,12 @@ REASON = re.compile(r"[a-z0-9_]{1,64}")
 TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _ESCAPED = re.compile(r"\\u([0-9a-fA-F]{4})")
 _TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)")
-# The charter's consensus identities (CLAUDE.md rule 9a). Used only to suggest which slot is empty. The installed
-# rule-12 review policy needs every present eligible RCO, and the snapshot says nothing about RCO presence or the
-# PR author (recusal), so each recognized RCO is its own slot: a PR with one RCO pass still misses the other.
+# The charter's current identities. This snapshot cannot establish eligibility,
+# recusal or clearance. Suggestions count two distinct reported RCO votes, never
+# all three; the deterministic candidate order is only an advisory preference.
 BUILD_SLOT = {"codex-lead-1": "build_lead", "codex-tools-1": "build_tools"}
-RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2")
-VOTE_SLOTS = ("build_lead", "build_tools") + RECOGNIZED_RCOS
+RECOGNIZED_RCOS = ("claude-rco-1", "claude-rco-2", "claude-rco-3")
+VOTE_SLOTS = ("build_lead", "build_tools")
 COMMAND_GRACE = timedelta(minutes=15)
 ATTENTION_LIMIT = 50
 QUESTION_LIMIT = 400
@@ -677,12 +676,20 @@ def _excused(inputs: "_Inputs", pr: Mapping[str, Any]) -> frozenset[str]:
 
 
 def _empty_slots(pr: Mapping[str, Any], excused: frozenset[str] = frozenset()) -> list[str]:
-    """Vote slots with no verified current vote. An excused RCO fills no slot, not even with its own vote (author is
-    not reviewer), so its slot stays empty: it is never asked for it, and only the operator's missing-slot decision
-    can settle that slot (RCO1 A1)."""
+    """Two distinct reported RCOs, excluding declared authors/recusals, plus both build slots.
+
+    An excused RCO never fills a slot. Two other recognized RCOs can fill the quorum;
+    when fewer than two are available, retain an excused placeholder for the operator's
+    missing-slot decision, never as a vote or an implicit signature waiver.
+    """
     filled = {vote_slot(vote["agent"], vote["status"]) for vote in pr["votes"]
               if vote["verified"] and vote["agent"] not in excused} - {None}
-    return [slot for slot in VOTE_SLOTS if slot not in filled]
+    empty = [slot for slot in VOTE_SLOTS if slot not in filled]
+    needed = max(0, 2 - len(filled.intersection(RECOGNIZED_RCOS)))
+    available = [rco for rco in RECOGNIZED_RCOS if rco not in excused and rco not in filled]
+    empty += available[:needed]
+    empty += [rco for rco in RECOGNIZED_RCOS if rco in excused][:max(0, needed - len(available))]
+    return empty
 
 
 def _not_asked(pr: Mapping[str, Any], agents: Iterable[str],
@@ -904,16 +911,17 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     excused = _excused(inputs, pr)
     empty = _empty_slots(pr, excused)
     refs = pr["refs"] + pr["ci_refs"] + [ref for vote in pr["votes"] for ref in vote["refs"]] + pr["recusal_refs"]
+    missing_excused = excused.intersection(empty)
     subject, head = f"pr:{pr['pr']}", pr["head"][:12]
     if not empty:
-        # Every slot is filled, so no RCO is excused here: an excused RCO's slot is always empty.
+        # The two-RCO quorum is filled by non-excused identities, not necessarily all three.
         if not inputs.explicit:
             # The omitted interface keeps main's suggestion from the declared class.
             if pr["class"] != "a":
                 return None
             return {"kind": "signature_only", "subject": subject, "actors": ["operator"], "refs": refs,
-                    "detail": f"PR{pr['pr']} at {head} has every reported vote and is (a)-class: only the operator "
-                              "signature is left"}
+                    "detail": f"PR{pr['pr']} at {head} has both reported build votes and two distinct reported RCO "
+                              "votes; an (a)-class signature may be needed. Eligibility and gate clearance remain UNKNOWN"}
         # Only a computed protected hit from loaded charter evidence; a declared class never suffices.
         if inputs.computed_class(pr) != "protected":
             return None
@@ -925,10 +933,10 @@ def _pr_attention(inputs: _Inputs, pr: Mapping[str, Any]) -> dict[str, Any] | No
     # An excused RCO is never asked for its own slot; the operator takes the missing-slot decision (RCO1 A1).
     actors = sorted({agent for slot in empty if slot not in excused for agent in
                      ([slot] if slot in RECOGNIZED_RCOS else [a for a, s in BUILD_SLOT.items() if s == slot])}
-                    | ({"operator"} if excused else set()))
+                    | ({"operator"} if missing_excused else set()))
     return {"kind": "last_missing_vote" if len(empty) == 1 else "votes_missing", "subject": subject, "actors": actors,
             "refs": refs, "detail": f"PR{pr['pr']} at {head} is reported CI-green; missing: {', '.join(empty)}"
-                                    + _author_note(inputs, pr) + (f"; {SLOT_DECISION}" if excused else "")}
+                                    + _author_note(inputs, pr) + (f"; {SLOT_DECISION}" if missing_excused else "")}
 
 
 def derive_attention(inputs: _Inputs, tensions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

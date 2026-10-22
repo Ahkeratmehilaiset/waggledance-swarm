@@ -7,7 +7,7 @@ param(
     # Opt-in only. Absent, the emitted status is byte-identical to today and
     # nothing about models, schedules or default output changes.
     [switch]$Attribution,
-    [ValidateSet('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')]
+    [ValidateSet('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')]
     [string]$Agent='',
     [switch]$Json
 )
@@ -50,7 +50,7 @@ function Get-CapacityLaneSummary($Status) {
         }
     }
     $now=[datetimeoffset]::Parse([string]$Status.observed_at,[Globalization.CultureInfo]::InvariantCulture)
-    foreach($lane in @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')) {
+    foreach($lane in @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')) {
         if($Agent -and $Agent -cne $lane){continue}
         $provider=if($lane -like 'codex-*'){'codex'}else{'claude'}
         $candidates=@()

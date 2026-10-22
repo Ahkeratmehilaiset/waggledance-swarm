@@ -33,6 +33,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
 AGENT_UUIDS = {
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
     "claude-rco-2": "76739997-0058-41a2-8514-78ff295537aa",
+    "claude-rco-3": "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50",
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
@@ -74,8 +75,17 @@ def test_recognized_rco_finding_blocks_by_type_regardless_of_status(status: str)
 
 
 def test_either_recognized_rco_finding_blocks() -> None:
-    for rco in _RECOGNIZED_RCOS:
+    for rco in ("claude-rco-1", "claude-rco-2", "claude-rco-3"):
         assert _clear([_ev("2026-06-25T01:00:00Z", rco, "finding", "x_pass")]) is False
+
+
+def test_two_recognized_passes_never_outvote_the_third_identity_finding() -> None:
+    events = [
+        _ev("2026-06-25T01:00:00Z", "claude-rco-3", "finding", "info"),
+        _ev("2026-06-25T02:00:00Z", "claude-rco-1", "decision", "rco_pass"),
+        _ev("2026-06-25T03:00:00Z", "claude-rco-2", "decision", "rco_pass"),
+    ]
+    assert _clear(events) is False
 
 
 def test_type_blocked_blocks_by_type_any_identity() -> None:

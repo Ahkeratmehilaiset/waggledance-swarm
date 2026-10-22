@@ -8,6 +8,25 @@ rules below are written so that failure mode can never recur.
 
 ## Golden rules
 
+### Current RCO roster amendment (operator 2026-10-21)
+
+The current recognized RCO set is `claude-rco-1`, `claude-rco-2`,
+`claude-rco-3`. A DUAL-RCO requirement means **two distinct eligible recognized
+identities**, neither an author nor ineligible under the existing contribution
+and recusal checks. Advice alone is not authorship. It never means all three.
+A veto from any recognized RCO
+remains absolute, including the third identity and an author RCO. Existing
+ordinary single-slot routes are not turned into dual gates by this amendment.
+
+`claude-rco-3` must be a new, history-free Claude session: no Mind code or plan
+authorship, no measurement cases/gold, review and tests only. Its actual session
+must observe and record a medium/non-elevated token before review or tests.
+The registry UUID is an assigned bridge role identity, not a native session ID;
+actual session registration must precede its first vote. Source recognition is
+not a launch or installation. The one introducing (a)-PR needs the operator's
+exact-head signature and installs only with a later normal main bundle.
+See `docs/ops/rco3_registration_and_review.md` for the registration boundary.
+
 1. **The only source of truth is the persistent C-drive repo.**
    Work exclusively in `C:\Python\project2`. Never develop in `U:\`,
    `R:\`, any RAM-disk, `%TEMP%`, or a zip-extraction folder.
@@ -131,9 +150,9 @@ evaluated fail-closed:
 * **Independent RCO** — a **recognized RCO identity** posts an explicit
   `RCO_PASS` (`type=decision` with a status in the approval set) on the PR's
   **canonical task_id** (= branch name) at the **exact head SHA**. The
-  recognized RCO set is `{claude-rco-1, claude-rco-2}` (backup-RCO co-authority,
+  recognized RCO set is `{claude-rco-1, claude-rco-2, claude-rco-3}` (backup-RCO co-authority,
   added 2026-06-05 to relieve the single-RCO availability SPOF). A valid
-  `RCO_PASS` from **either** recognized identity satisfies the RCO slot, so a
+  `RCO_PASS` from **any** eligible recognized identity satisfies this ordinary RCO slot, so a
   merge can proceed when one RCO is offline. The passing RCO **must not be the
   PR author** (author ≠ reviewer); if a recognized RCO authored the PR, only the
   *other* recognized RCO can satisfy the RCO slot.
@@ -298,12 +317,12 @@ The rule text:
   signature:
   - an approval from the model family opposite to the implementer (operator
     10:17Z): GPT (`codex-lead-1`, `codex-tools-1`) for Claude-authored work,
-    Claude (`fable-5`, `claude-rco-1`, `claude-rco-2`) for GPT-authored work, or
+    Claude (`fable-5`, `claude-rco-1`, `claude-rco-2`, `claude-rco-3`) for GPT-authored work, or
     Grok (below). When the implementation mixes both families, the approver is
     chosen case by case so that no approver approves a part it authored;
-  - `RCO_PASS` from every recognized RCO that is eligible (not the author and
-    not a concept, design or measurement source of the change): both when both
-    are eligible, otherwise the one that is; when neither is eligible or
+  - `RCO_PASS` from two distinct recognized RCOs when at least two are eligible
+    (not the author or a concept, design or measurement source of the change),
+    otherwise the one that is; when none is eligible or
     present, a Grok fallback fills the RCO slot;
   - all required CI checks green;
   - no unretracted veto or finding from any recognized RCO;

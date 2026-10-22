@@ -78,6 +78,7 @@ REPO = HERE.parents[1]
 CODE = ("sandbox/mind/join_card.py", "sandbox/mind/join_card_delivery.py", "sandbox/mind/join_turn.py",
         "sandbox/mind/step1/lane_view.py", "sandbox/mind/step1/lane_view_frozen.py", "tools/__init__.py",
         "tools/bridge_compact_view.py", "tools/bridge_diff_privacy.py", "tools/bridge_mind_workspace.py",
+        "tools/bridge_rco_enrollment.py",
         "tools/wd_bridge_mind.py", "waggledance/__init__.py",
         "waggledance/core/__init__.py", "waggledance/core/bridge_log_reader.py")  # the repo import closure, tested
 EXISTS = "the output directory already exists; a turn is only written into a new directory"

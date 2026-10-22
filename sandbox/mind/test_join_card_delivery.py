@@ -70,6 +70,7 @@ def many(count, as_of):
         number, branch = 2000 + index, f"codex-lead-1/wait-{index}-20261013"
         head = hashlib.sha1(f"head {index}".encode()).hexdigest()
         events += [tlv.vote(f"2026-10-13T17:4{index}:00Z", "claude-rco-1", head=head, task=branch, number=number),
+                   tlv.vote(f"2026-10-13T17:4{index}:00.5Z", "claude-rco-2", head=head, task=branch, number=number),
                    tlv.vote(f"2026-10-13T17:4{index}:01Z", "codex-lead-1", head=head, task=branch, number=number)]
         githubs.append(tlv.github_of(head=head, number=number, branch=branch, observed=shift(as_of, minutes=-5)))
     return case(as_of, events=events, github=tlv.merge_github(*githubs))
@@ -157,7 +158,8 @@ def test_filled_slot_and_two_empty_slots_are_no_condition():
     assert view["prs"][str(tlv.NUMBER)]["state"] == "votes_complete"
     out = jcd.deliver(view, receipts(), now_utc=as_of)
     assert out["ledger"] == [] and out["operator_lines"] == []
-    two_empty = tlv.base_events()[:2]  # only RCO1 voted: build_lead and build_tools are empty
+    baseline = tlv.base_events()
+    two_empty = [baseline[0], baseline[1], baseline[3]]  # two eligible RCOs voted; both build slots are empty
     view = case(as_of, events=two_empty)
     assert view["prs"][str(tlv.NUMBER)]["empty_slots"] == ["build_lead", "build_tools"]
     out = jcd.deliver(view, receipts(), now_utc=as_of)

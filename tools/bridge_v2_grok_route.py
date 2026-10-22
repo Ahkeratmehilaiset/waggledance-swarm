@@ -98,7 +98,12 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # on either path. status() and the answered report are untouched. Independent component review:
                 # RCO1 97EA6325 at 0a60abf0 (same helper blob as 97cc3268); not a formal RCO_PASS.
                 "81f71da5ccc6441047d4395c8bcbed790d4a007a": "fecc701a plus GH-F1: no launch on an unpersisted "
-                                                            "reservation"}
+                                                            "reservation",
+                # RCO1 static component review 19AB1B2A (2026-10-21): byte-identical to
+                # 81f71da5 except one REQUESTERS member; admission/report fields unchanged.
+                # Not a whole-head RCO_PASS or broker/F0 activation.
+                "871d8c0acf0d931774b0a8a37d15589628206809": "81f71da5 plus claude-rco-3 in REQUESTERS "
+                                                            "(one tuple member; same local eligibility)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

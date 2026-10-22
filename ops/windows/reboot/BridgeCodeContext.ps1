@@ -1012,7 +1012,7 @@ function Assert-WdBridgeManualExecution {
     if ($null -eq $activationProperty) { throw 'manual bridge execution is not activated' }
     $activation = $activationProperty.Value
     $names = @($activation.PSObject.Properties.Name | Sort-Object)
-    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+    $agents = @('codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2', 'claude-rco-3')
     if (
         ($names -join ',') -cne 'agent,approval_reference_sha256,definition_sha256,enabled,schema,source_commit,tools' -or
         [string]$activation.schema -cne 'wd.bridge-manual-execution-activation.v1' -or

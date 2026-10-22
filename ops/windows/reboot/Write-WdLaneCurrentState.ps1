@@ -36,6 +36,7 @@ param(
         'codex-tools-1',
         'claude-rco-1',
         'claude-rco-2',
+        'claude-rco-3',
         'fable-5'
     )]
     [string] $Agent,

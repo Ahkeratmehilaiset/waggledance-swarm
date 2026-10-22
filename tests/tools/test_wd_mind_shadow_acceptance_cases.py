@@ -182,12 +182,86 @@ def _a7_with(subcases, name, part, **change):
     return copy
 
 
-def _case(name, case_id, subcases, binding=None, extra=None, expected=None):
-    observation = {"binding": binding if binding is not None else _binding(case_id), "subcases": subcases}
+LT_SCHEMA = "wd.mind-shadow-lifetime-subcase-binding.v1"
+LT_REQUIRED = {"A1": ("deadline", "early_root_exit_orphan", "pipe_holding_grandchild", "off_switch_during_run",
+                      "disk_floor_hit", "single_confirmed_stop"),
+               "A3": ("outer_no_limits", "outer_kill_on_close", "planned_launch_context")}
+
+
+def _lt_guid(index):
+    return f"1a1a1a1a-0000-4000-8000-{index:012d}"  # synthetic, never a real launch id
+
+
+def _lt_pins(case_id, harness="SYNTHETIC-HARNESS-RUN", deadline="1800"):
+    return {"schema": LT_SCHEMA, "harness_run_id": harness, "case_id": case_id, "controller_pid": "4141",
+            "controller_creation_utc": "SYNTHETIC-CONTROLLER-START", "source_commit": SYNTHETIC_COMMIT,
+            "manifest_sha256": SYNTHETIC_MANIFEST, "adapter_sha256": SYNTHETIC_ADAPTER, "deadline_seconds": deadline}
+
+
+def _per_subcase(case_id, subcases, seen, expected):
+    # Lead's v8 decision: A1 and A3 carry a versioned per-sub-case binding, one launch per sub-case. The old-style
+    # fixture bindings are mapped onto it: the observed launch is the expected one unless the fixture names a foreign
+    # launch, each root id is distinct (the old root id plus the sub-case index) and missing old fields stay missing.
+    names = LT_REQUIRED[case_id]
+    want = dict(_lt_pins(case_id, expected.get("harness_run_id"), expected.get("deadline_seconds")),
+                launches={name: _lt_guid(i) for i, name in enumerate(names)})
+    pins = {key: value for key, value in want.items() if key != "launches"}
+    for key in ("harness_run_id", "case_id", "deadline_seconds"):
+        if key in seen:
+            pins[key] = seen[key]
+        else:
+            pins.pop(key)
+    default = _binding(case_id)["launch_id"]
+    wrapped = {}
+    for index, (name, observation) in enumerate(subcases.items()):
+        launch = {}
+        if "launch_id" in seen:
+            launch["launch_id"] = want["launches"].get(name, _lt_guid(90 + index)) if seen["launch_id"] == default \
+                else seen["launch_id"]
+        if "root_pid" in seen:
+            launch["root_pid"] = str(int(seen["root_pid"]) + index) if seen["root_pid"].isdigit() else seen["root_pid"]
+        if "root_creation_utc" in seen:
+            launch["root_creation_utc"] = seen["root_creation_utc"]
+        wrapped[name] = {"launch": launch, "observation": observation}
+    return want, {"binding": pins, "subcases": wrapped}
+
+
+def _case(name, case_id, subcases, binding=None, extra=None, expected=None, legacy=False):
+    seen = binding if binding is not None else _binding(case_id)
+    want = expected if expected is not None else _binding(case_id)
+    if case_id in LT_REQUIRED and not legacy:
+        want, observation = _per_subcase(case_id, subcases, seen, want)
+    else:
+        observation = {"binding": seen, "subcases": subcases}
     if extra:
         observation.update(extra)
-    return {"name": name, "kind": "case", "case_id": case_id,
-            "binding": expected if expected is not None else _binding(case_id), "observation": observation}
+    return {"name": name, "kind": "case", "case_id": case_id, "binding": want, "observation": observation}
+
+
+def _ps_case(name, case_id, subcases, change):
+    item = _case(name, case_id, subcases)
+    change(item["binding"], item["observation"])
+    return item
+
+
+def _set(path, value):
+    def change(want, seen):
+        target = {"want": want, "seen": seen}[path[0]]
+        for key in path[1:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    return change
+
+
+def _reuse_root(want, seen):
+    first, second = list(seen["subcases"].values())[:2]
+    second["launch"]["root_pid"] = first["launch"]["root_pid"]
+
+
+def _swap_launches(want, seen):
+    first, second = list(seen["subcases"].values())[:2]
+    first["launch"]["launch_id"], second["launch"]["launch_id"] = (second["launch"]["launch_id"],
+                                                                  first["launch"]["launch_id"])
 
 
 def _with(subcases, name, **change):
@@ -321,6 +395,29 @@ FIXTURES = [
     (_case(f"a6_invalid_expected_{key}_{label}", "A6", _a6(), binding=dict(_binding("A6"), **{key: value}),
            expected=dict(_binding("A6"), **{key: value})), "UNKNOWN")
     for key, value, label in INVALID_A6
+]
+
+
+# Lead's v8 decision: the versioned A1/A3 per-sub-case binding (one unique launch per preregistered sub-case, its own
+# measured root, all bound to the same harness run, controller and Source, manifest and adapter identity).
+FIXTURES += [
+    (_case("a1_legacy_single_binding", "A1", _a1(), legacy=True), "UNKNOWN"),
+    (_case("a3_legacy_single_binding", "A3", _a3(), legacy=True), "UNKNOWN"),
+    (_ps_case("a1_reused_root", "A1", _a1(), _reuse_root), "FAIL"),
+    (_ps_case("a3_reused_root", "A3", _a3(), _reuse_root), "FAIL"),
+    (_ps_case("a1_swapped_launches", "A1", _a1(), _swap_launches), "FAIL"),
+    (_ps_case("a1_duplicate_expected_launch", "A1", _a1(),
+              _set(("want", "launches", "disk_floor_hit"), _lt_guid(0))), "UNKNOWN"),
+    (_ps_case("a1_expected_extra_launch", "A1", _a1(), _set(("want", "launches", "bonus"), _lt_guid(77))), "UNKNOWN"),
+    (_ps_case("a1_foreign_controller", "A1", _a1(), _set(("seen", "binding", "controller_pid"), "4242")), "FAIL"),
+    (_ps_case("a3_foreign_source", "A3", _a3(), _set(("seen", "binding", "source_commit"), "7" * 40)), "FAIL"),
+    (_ps_case("a3_wrong_schema", "A3", _a3(), _set(("want", "schema"), "wd.mind-shadow-lifetime-subcase-binding.v0")),
+     "UNKNOWN"),
+    (_ps_case("a1_launch_extra_key", "A1", _a1(), _set(("seen", "subcases", "deadline", "launch", "verdict"), "PASS")),
+     "UNKNOWN"),
+    (_ps_case("a1_root_pid_zero", "A1", _a1(), _set(("seen", "subcases", "deadline", "launch", "root_pid"), "0")),
+     "UNKNOWN"),
+    (_ps_case("a3_controller_blank", "A3", _a3(), _set(("want", "controller_pid"), "")), "UNKNOWN"),
 ]
 
 
@@ -700,10 +797,7 @@ function Close-FakeMembers($State) {
     }
     if ($null -ne $State.lock -and -not $State.lock_held) { $State.lock.Dispose(); $State.lock = $null }
 }
-$rows = @()
-foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixture)))) {
-    $entry = ConvertTo-HostValue $item
-    $fake = $entry['fake']
+function New-FakeRun($fake, [string] $Launch) {
     $state = @{ now = 0.0; streams = @{}; lock = $null; exited = $false; active = 1; created = 0; stops = 0
         kills = 0; waits = 0; disposed = 0; contexts = 0; root_exit_at = $fake['root_exit_at']
         active_after_root_exit = [int]$fake['active_after_root_exit']
@@ -711,10 +805,11 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
         stop_throws = [bool]$fake['stop_throws']; held = @($fake['held']); started = @($fake['started'])
         foreign = @($fake['foreign']); late = [string]$fake['late']; total = [int]$fake['total']
         free = [long]$fake['free']; inherited = @($fake['inherited']); lock_held = [bool]$fake['lock_held']
-        create_throws = [bool]$fake['create_throws']; launch = [string]$entry['run']['launch_id']; dir = '' }
+        create_throws = [bool]$fake['create_throws']; launch = $Launch; dir = ''; pid = [int]$fake['pid']
+        creation = [string]$fake['creation'] }
     $managed = New-Object PSObject
     Add-Member -InputObject $managed -MemberType NoteProperty -Name State -Value $state
-    Add-Member -InputObject $managed -MemberType ScriptProperty -Name Pid -Value { 4242 }
+    Add-Member -InputObject $managed -MemberType ScriptProperty -Name Pid -Value { [int]$this.State.pid }
     Add-Member -InputObject $managed -MemberType ScriptProperty -Name ActiveProcesses -Value { [int]$this.State.active }
     Add-Member -InputObject $managed -MemberType ScriptProperty -Name TotalProcesses -Value { [int]$this.State.total }
     Add-Member -InputObject $managed -MemberType ScriptProperty -Name ExitCode -Value {
@@ -761,7 +856,7 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
             if ($Plan['case_id'] -ceq 'A6') { $state.lock = Open-FakeHeld ([string]$Plan['lock_path']) '' }
             return $managed
         }.GetNewClosure()
-        RootCreation = { param($Managed) return 'SYNTHETIC-ROOT-CREATION-UTC' }
+        RootCreation = { param($Managed) return [string]$state.creation }.GetNewClosure()
         Clock = { return [double]$state.now }.GetNewClosure()
         Sleep = { param([int] $Milliseconds) $state.now += $Milliseconds / 1000.0 }.GetNewClosure()
         FreeBytes = { param([string] $Path) return [long]$state.free }.GetNewClosure()
@@ -772,14 +867,35 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
         }.GetNewClosure()
         InheritedHandles = { param($Managed) return @($state.inherited) }.GetNewClosure()
     }
+    return @{ seams = $seams; state = $state }
+}
+$rows = @()
+foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixture)))) {
+    $entry = ConvertTo-HostValue $item
+    $made = New-FakeRun $entry['fake'] ([string]$entry['run']['launch_id'])
+    $state = $made['state']
+    $seams = $made['seams']
     if ($entry.ContainsKey('extra_seam')) { $seams['Verdict'] = { 'PASS' } }
     if ($entry.ContainsKey('real_seams')) { $seams = Get-WdShadowLifetimeSeams }
     $row = [ordered]@{ name = $entry['name'] }
     try {
         if ($entry['kind'] -ceq 'compose') {
-            $result = Invoke-WdShadowLifetimeDriver -CaseId $entry['case_id'] -Name $entry['sub'] -Run $entry['run'] `
-                -Seams $seams
-            $case = ConvertTo-WdShadowLifetimeCaseObservation -CaseId $entry['case_id'] -Results @($result)
+            # One fake job and one launch per sub-case run; the case observation is composed from all of them.
+            $results = @()
+            foreach ($one in @($entry['runs'])) {
+                $each = New-FakeRun $one['fake'] ([string]$one['launch'])
+                $run = @{} + $entry['run']
+                $run['launch_id'] = [string]$one['launch']
+                try {
+                    $results += , (Invoke-WdShadowLifetimeDriver -CaseId $entry['case_id'] -Name $one['sub'] `
+                        -Run $run -Seams $each['seams'])
+                } finally {
+                    foreach ($stream in @($each['state'].streams.Values)) { $stream.Dispose() }
+                    if ($null -ne $each['state'].lock) { $each['state'].lock.Dispose() }
+                }
+            }
+            $case = ConvertTo-WdShadowLifetimeCaseObservation -CaseId $entry['case_id'] -Results $results `
+                -Pins $entry['pins']
             $row.result = [string](Get-WdShadowCaseVerdict -CaseId $entry['case_id'] -Binding $entry['expected'] `
                 -Observation $case)
         } else {
@@ -818,7 +934,8 @@ def _lt_run(folder, name, deadline="60", audit=True):
 def _lt_fake(**change):
     fake = {"root_exit_at": None, "active_after_root_exit": 0, "active_after_stop": 0, "stop_throws": False,
             "held": [], "started": ["root"], "foreign": [], "late": "none", "total": 1, "free": 1 << 40,
-            "inherited": [], "lock_held": False, "create_throws": False}
+            "inherited": [], "lock_held": False, "create_throws": False, "pid": 4242,
+            "creation": "SYNTHETIC-ROOT-CREATION-UTC"}
     fake.update(change)
     return fake
 
@@ -874,12 +991,30 @@ LIFETIME_ERRORS = [
     ("lt_witness_not_fresh", "A6", "inherited_handles", {"not_fresh": True}),
     ("lt_bad_deadline", "A1", "deadline", {"deadline": "0"}),
 ]
+LT_A1_RUNS = [("deadline", {}), ("early_root_exit_orphan", {"started": ["root", "orphan"], "root_exit_at": 10,
+                                                             "active_after_root_exit": 1}),
+              ("pipe_holding_grandchild", {"started": ["root", "child", "pipe_grandchild"]}),
+              ("off_switch_during_run", {}), ("disk_floor_hit", {}), ("single_confirmed_stop", {})]
+LT_A3_RUNS = [("outer_no_limits", {}), ("outer_kill_on_close", {}), ("planned_launch_context", {})]
+
+
+def _distinct(runs, first):
+    return [(sub, dict(fake, pid=first + index, creation=f"SYNTHETIC-ROOT-CREATION-{first + index}"))
+            for index, (sub, fake) in enumerate(runs)]
+
+
 LIFETIME_COMPOSE = [
-    ("ltc_a2", "A2", "survivors", {"started": ["root", "child", "grandchild"], "late": "dies"}, "PASS"),
-    ("ltc_a5", "A5", "controller_death", {"started": ["root", "child", "grandchild"]}, "PASS"),
-    ("ltc_a6", "A6", "inherited_handles", {}, "PASS"),
-    ("ltc_a6_foreign_root", "A6", "inherited_handles", {}, "FAIL"),
-    ("ltc_a1_needs_per_subcase_binding", "A1", "deadline", {}, "ERROR"),
+    ("ltc_a2", "A2", [("survivors", {"started": ["root", "child", "grandchild"], "late": "dies"})], "PASS"),
+    ("ltc_a5", "A5", [("controller_death", {"started": ["root", "child", "grandchild"]})], "PASS"),
+    ("ltc_a6", "A6", [("inherited_handles", {})], "PASS"),
+    ("ltc_a6_foreign_root", "A6", [("inherited_handles", {})], "FAIL"),
+    ("ltc_a1", "A1", _distinct(LT_A1_RUNS, 5001), "PASS"),
+    ("ltc_a3", "A3", _distinct(LT_A3_RUNS, 5011), "PASS"),
+    ("ltc_a3_reused_root", "A3", LT_A3_RUNS, "FAIL"),
+    ("ltc_a1_missing_subcase", "A1", _distinct(LT_A1_RUNS[:5], 5021), "UNKNOWN"),
+    ("ltc_a3_foreign_launch", "A3", _distinct(LT_A3_RUNS, 5031), "FAIL"),
+    ("ltc_a3_duplicate_subcase", "A3", _distinct(LT_A3_RUNS + LT_A3_RUNS[:1], 5041), "ERROR"),
+    ("ltc_a3_foreign_harness", "A3", _distinct(LT_A3_RUNS, 5051), "ERROR"),
 ]
 
 
@@ -897,12 +1032,26 @@ def _lt_items(folder):
         if change.get("not_fresh"):
             (Path(item["run"]["witness_root"]) / LT_LAUNCH).mkdir(parents=True)
         items.append(item)
-    for name, case_id, sub, fake, _ in LIFETIME_COMPOSE:
-        expected = _binding(case_id, launch=LT_LAUNCH, deadline="60")
-        if name.endswith("foreign_root"):
-            expected["root_pid"] = "4343"
-        items.append({"name": name, "kind": "compose", "case_id": case_id, "sub": sub, "run": _lt_run(folder, name),
-                      "fake": _lt_fake(**fake), "expected": expected})
+    for name, case_id, runs, _ in LIFETIME_COMPOSE:
+        pins = None
+        if case_id in LT_REQUIRED:
+            # One unique launch per sub-case (the expected binding's), each run on its own fake job and root.
+            pins = _lt_pins(case_id, deadline="60")
+            expected = dict(pins, launches={sub: _lt_guid(i) for i, sub in enumerate(LT_REQUIRED[case_id])})
+            launches = [expected["launches"][sub] for sub, _ in runs]
+            if name.endswith("foreign_launch"):
+                launches[1] = _lt_guid(66)
+            if name.endswith("foreign_harness"):
+                pins = dict(pins, harness_run_id="SYNTHETIC-OTHER-RUN")
+        else:
+            expected = _binding(case_id, launch=LT_LAUNCH, deadline="60")
+            if name.endswith("foreign_root"):
+                expected["root_pid"] = "4343"
+            launches = [LT_LAUNCH for _ in runs]
+        items.append({"name": name, "kind": "compose", "case_id": case_id, "run": _lt_run(folder, name),
+                      "fake": _lt_fake(), "expected": expected, "pins": pins,
+                      "runs": [{"sub": sub, "fake": _lt_fake(**fake), "launch": launch}
+                               for (sub, fake), launch in zip(runs, launches)]})
     return items
 
 
@@ -987,14 +1136,14 @@ def test_lifetime_driver_refuses_invalid_input_and_the_disabled_real_seams(lt_ro
 
 
 @WINDOWS_ONLY
-@pytest.mark.parametrize("name,case_id,sub,fake,expected", LIFETIME_COMPOSE, ids=[row[0] for row in LIFETIME_COMPOSE])
-def test_lifetime_case_observation_keeps_the_old_launch_binding(lt_rows, name, case_id, sub, fake, expected):
+@pytest.mark.parametrize("name,case_id,runs,expected", LIFETIME_COMPOSE, ids=[row[0] for row in LIFETIME_COMPOSE])
+def test_lifetime_case_observation_binds_each_launch(lt_rows, name, case_id, runs, expected):
+    # A2, A5 and A6 keep the old one-launch binding; A1 and A3 compose Lead's v8 per-sub-case binding from one driver
+    # run per sub-case (a reused root fails, a missing sub-case is UNKNOWN, a duplicate or foreign run refuses).
     row = lt_rows[0][name]
     assert row["result"] == expected, row
     if expected == "ERROR":
-        # A1 and A3 need one launch per sub-case; the old case binding names one launch and root, so composing them
-        # is refused rather than inventing a binding.
-        assert row["error"].startswith("refused: ") and "one launch" in row["error"], row
+        assert row["error"].startswith("refused: "), row
 
 
 # Lead's v7: the one synthetic lifetime member. Its default invocation (no switch, no environment opt-in, or only
@@ -1144,3 +1293,244 @@ def test_member_default_invocation_refuses_before_any_witness(member_rows, switc
     assert done.returncode == 3, (done.returncode, done.stderr[-2000:])
     assert "refused: the synthetic member runs only on an explicit opt-in" in done.stderr
     assert sorted(os.listdir(directory)) == ["members.registration"]
+
+
+# Lead's v8: the future owned wiring through Root's frozen runner (Invoke-WdMindShadowA7OwnedProbe and its type,
+# managed-process and identity functions). The host loads a SYNTHETIC runner file in place of Root's, with the same
+# function names as recording fakes, so nothing real is loaded, typed, started or killed; every pinned file is a
+# synthetic file in the test's temporary folder and its pin is computed here.
+FAKE_RUNNER = r"""
+function Read-WdA7PinnedFile {
+    param([string]$Path, [string]$ExpectedSha256, [switch]$AsText)
+    return @{ text = [IO.File]::ReadAllText($Path); sha256 = $ExpectedSha256 }
+}
+function Initialize-WdA7OwnedType { param([string]$LoopText) $global:WdFakeCalls += , ('init ' + $LoopText.Length) }
+function New-WdA7ManagedProcess {
+    param($HostPath, $Arguments, $WorkingDirectory, $InputPath, $OutputPath, $ErrorPath)
+    $text = @($HostPath, ($Arguments -join ' '), $WorkingDirectory, $InputPath, $OutputPath, $ErrorPath) -join '|'
+    $global:WdFakeCalls += , ('new ' + $text)
+    return [pscustomobject]@{ Pid = 5151 }
+}
+function Get-WdA7ObservedIdentity {
+    param([int]$ProbePid)
+    return @{ pid = [string]$ProbePid; creation_utc = 'SYNTHETIC-CREATION-' + $ProbePid }
+}
+function Invoke-WdMindShadowA7OwnedProbe {
+    [CmdletBinding()]
+    param([switch]$ApprovedNativeExecution, [Collections.IDictionary]$Plan, [hashtable]$ApprovedInputs,
+        [string]$CaseRoot, [string]$LiteralAdapterCommand, [hashtable]$CaseBinding, [string]$HostPath,
+        [string]$AdapterPath, [string]$LoopPath, [string]$PlannerPath, [string]$EvidenceRoot,
+        [string]$ExpectedHostSha256, [string]$ExpectedAdapterSha256, [string]$ExpectedLoopSha256,
+        [string]$ExpectedPlannerSha256, [string]$ExpectedRunnerSha256)
+    $global:WdFakeCount++
+    $global:WdFakeA7 = [ordered]@{ approved = [bool]$ApprovedNativeExecution; plan_keys = @($Plan.Keys | Sort-Object)
+        command = $LiteralAdapterCommand; case_root = $CaseRoot; host = $HostPath; evidence = $EvidenceRoot
+        planner = $PlannerPath; runner_sha = $ExpectedRunnerSha256; loop_sha = $ExpectedLoopSha256
+        inputs_same = ($ApprovedInputs.Count -eq 8) }
+    $attempt = @{ attempt_id = [string]$CaseBinding.attempts[[string]$Plan.name]
+        probe_pid = [string](5300 + $global:WdFakeCount); probe_creation_utc = 'SYNTHETIC-PROBE-START' }
+    $entry = @{ attempt = $attempt
+        refusal = @{ exit_code = 2; refusal_seen = $true; run_dir_created = $false; process_started = $false } }
+    if ($global:WdFakeMode -ceq 'extra_entry_key') { $entry['verdict'] = 'PASS' }
+    $result = [pscustomobject]@{ status = 'OWNED_GUARD_REFUSAL_OBSERVED'; whole_A7_PASS = $false; entry = $entry
+        owned_job = @{ total_processes = 2; expected_probe_processes = 2 }; raw = @{ error_text = 'synthetic' } }
+    return [pscustomobject]@{ schema = 'wd.a7-owned-probe.v1'; binding = $CaseBinding; name = [string]$Plan.name
+        result = $result; whole_A7_PASS = ($global:WdFakeMode -ceq 'whole_pass') }
+}
+"""
+
+WIRING_HOST = r"""
+param([string] $Harness, [string] $Fixture)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+foreach ($name in @('Start-Process', 'Stop-Process', 'Start-Job', 'Invoke-Expression', 'Invoke-Command', 'Add-Type',
+        'Wait-Process', 'Get-Process', 'Get-CimInstance', 'Get-WmiObject', 'New-Item', 'Set-Acl', 'Get-Acl',
+        'Start-Sleep')) {
+    Set-Item -Path "function:global:$name" -Value ([scriptblock]::Create("throw 'unexpected native call: $name'"))
+}
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Harness, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'the harness does not parse' }
+foreach ($statement in $ast.EndBlock.Statements) {
+    if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) {
+        . ([scriptblock]::Create($statement.Extent.Text))
+    }
+}
+function ConvertTo-HostValue($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [Management.Automation.PSCustomObject]) {
+        $table = @{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-HostValue $property.Value
+        }
+        return $table
+    }
+    if ($Value -is [array]) { return , @($Value | ForEach-Object { ConvertTo-HostValue $_ }) }
+    return $Value
+}
+$rows = @()
+foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixture)))) {
+    $entry = ConvertTo-HostValue $item
+    $inputs = $entry['inputs']
+    if ($inputs -is [hashtable]) {
+        $inputs['ExpectedPeakAdditionalBytes'] = [long]$inputs['ExpectedPeakAdditionalBytes']
+    }
+    $global:WdFakeCalls = @(); $global:WdFakeA7 = $null; $global:WdFakeMode = [string]$entry['mode']
+    $global:WdFakeCount = 0
+    $row = [ordered]@{ name = $entry['name'] }
+    try {
+        if ($entry['kind'] -ceq 'a7') {
+            $attempts = @()
+            foreach ($sub in @($entry['subs'])) {
+                $attempts += , (Invoke-WdShadowA7OwnedAttempt -ApprovedNativeExecution:([bool]$entry['approved']) `
+                    -Name $sub -Inputs $inputs -CaseRoot ($entry['case_root'] + '-' + $sub) `
+                    -CaseBinding $entry['binding'] -Files $entry['files'] -Expected $entry['expected'] `
+                    -EvidenceRoot $entry['evidence'])
+            }
+            # the fake runner keeps its last call, so the last sub-case's command is the one compared
+            $plan = Get-WdShadowA7Plan -Name $entry['subs'][-1] -Inputs $inputs -CaseRoot ($entry['case_root'] + '-' +
+                $entry['subs'][-1])
+            $row.command_matches = ($null -ne $global:WdFakeA7 -and $global:WdFakeA7.command -ceq
+                (Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $entry['files']['adapter']))
+            $row.recorded = $global:WdFakeA7
+            $row.attempt = $attempts[0]
+            $row.result = 'ATTEMPTS'
+            if (@($entry['subs']).Count -eq 7) {
+                $case = ConvertTo-WdShadowA7CaseObservation -CaseBinding $entry['binding'] -Attempts $attempts
+                $row.result = [string](Get-WdShadowA7CaseVerdict -Binding $entry['binding'] -Observation $case)
+            }
+        } else {
+            $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution:([bool]$entry['approved']) `
+                -Files $entry['files'] -Expected $entry['expected'] -EvidenceRoot $entry['evidence']
+            $row.keys = @($seams.Keys | Sort-Object)
+            $plan = Get-WdShadowLifetimePlan -CaseId 'A1' -Name 'deadline' -Run $entry['run']
+            [void][IO.Directory]::CreateDirectory([string]$plan['witness_directory'])
+            $managed = & $seams['NewManaged'] $plan
+            $row.pid = $managed.Pid
+            $row.creation = & $seams['RootCreation'] $managed
+            $row.calls = @($global:WdFakeCalls)
+            $row.refused = @(foreach ($seam in @('Context', 'KillController', 'InheritedHandles')) {
+                try { [void](& $seams[$seam] $plan); 'RAN' } catch { [string]$_.Exception.Message }
+            })
+            $row.result = 'SEAMS'
+        }
+    } catch { $row.result = 'ERROR'; $row.error = [string]$_.Exception.Message; $row.recorded = $global:WdFakeA7 }
+    $rows += $row
+}
+ConvertTo-Json -InputObject @($rows) -Compress -Depth 8
+"""
+
+
+def _sha(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest().upper()
+
+
+WIRING_A7 = [
+    ("w7_owned_attempt", {}, "ATTEMPTS"),
+    ("w7_all_native_compose", {"subs": list(A7_NATIVE)}, "PASS"),
+    ("w7_not_approved", {"approved": False}, "ERROR"),
+    ("w7_runner_pin_mismatch", {"pin": ("runner", "0" * 64)}, "ERROR"),
+    ("w7_lowercase_pin", {"lower": "loop"}, "ERROR"),
+    ("w7_relative_path", {"file": ("host", "pins\\host.exe")}, "ERROR"),
+    ("w7_not_c_drive", {"file": ("adapter", "D:\\pins\\adapter.ps1")}, "ERROR"),
+    ("w7_missing_file", {"file": ("planner", "missing")}, "ERROR"),
+    ("w7_evidence_outside_audit", {"evidence": "elsewhere"}, "ERROR"),
+    ("w7_structural_case", {"subs": ["lane_loop_zero_functions"]}, "ERROR"),
+    ("w7_whole_pass_receipt", {"mode": "whole_pass"}, "ERROR"),
+    ("w7_extra_entry_key", {"mode": "extra_entry_key"}, "ERROR"),
+]
+WIRING_LIFETIME = [
+    ("wl_owned_factory", {}, "SEAMS"),
+    ("wl_not_approved", {"approved": False}, "ERROR"),
+    ("wl_loop_pin_mismatch", {"pin": ("loop", "F" * 64)}, "ERROR"),
+]
+
+
+@pytest.fixture(scope="module", params=_hosts() or [pytest.param(None, marks=pytest.mark.skip(
+    reason="no PowerShell host on this runner: the synthetic wiring needs pwsh or Windows PowerShell"))],
+    ids=lambda host: host[0] if host else "no-host")
+def wiring_rows(request, tmp_path_factory):
+    if os.name != "nt":
+        pytest.skip("the owned wiring admits only local C: NTFS paths: non-Windows is untested, not evidence")
+    _, executable = request.param
+    folder = tmp_path_factory.mktemp("wiring")
+    pins = folder / "pins"
+    pins.mkdir()
+    files = {"host": pins / "host.exe", "adapter": pins / "adapter.ps1", "loop": pins / "loop.ps1",
+             "planner": pins / "planner.ps1", "runner": pins / "runner.ps1"}
+    for key, path in files.items():
+        path.write_bytes(FAKE_RUNNER.encode("utf-8") if key == "runner" else f"SYNTHETIC {key}\n".encode("ascii"))
+    evidence = folder / ".codex-audit" / "evidence"
+    evidence.mkdir(parents=True)
+    (folder / "elsewhere").mkdir()
+    items = []
+    for name, change, _ in WIRING_A7 + WIRING_LIFETIME:
+        paths = {key: str(path) for key, path in files.items()}
+        expected = {key: _sha(path) for key, path in files.items()}
+        if "file" in change:
+            key, value = change["file"]
+            paths[key] = str(pins / value) if value == "missing" else value
+        if "pin" in change:
+            expected[change["pin"][0]] = change["pin"][1]
+        if "lower" in change:
+            expected[change["lower"]] = expected[change["lower"]].lower()
+        item = {"name": name, "approved": change.get("approved", True), "files": paths, "expected": expected,
+                "evidence": str(folder / "elsewhere") if change.get("evidence") else str(evidence),
+                "mode": change.get("mode", "")}
+        if name.startswith("w7_"):
+            item.update(kind="a7", subs=change.get("subs", ["integrity_mismatch"]), binding=_a7_binding(),
+                        inputs=_a7_inputs(str(folder / "approved"), A7_FAKE_SID),
+                        case_root=str(folder / ("case-" + name)))
+        else:
+            item.update(kind="lifetime", run=_lt_run(folder, name))
+        items.append(item)
+    host = folder / "wiring_host.ps1"
+    host.write_text(WIRING_HOST, encoding="utf-8")
+    fixture = folder / "wiring_fixture.json"
+    fixture.write_text(json.dumps(items), encoding="utf-8")
+    done = subprocess.run([executable, "-NoProfile", "-NonInteractive", "-File", str(host), str(HARNESS),
+                           str(fixture)], capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0, done.stderr[-2000:]
+    rows = json.loads(done.stdout.strip().splitlines()[-1])
+    return {row["name"]: row for row in rows}, {item["name"]: item for item in items}
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("name,change,expected", WIRING_A7, ids=[row[0] for row in WIRING_A7])
+def test_a7_owned_attempt_calls_roots_runner_once_with_the_pinned_plan(wiring_rows, name, change, expected):
+    row, item = wiring_rows[0][name], wiring_rows[1][name]
+    assert row["result"] == expected, row
+    if expected == "ERROR":
+        assert row["error"].startswith("refused: "), row
+        if name not in ("w7_whole_pass_receipt", "w7_extra_entry_key"):
+            assert row["recorded"] is None, row  # refused before the runner was called
+        return
+    recorded = row["recorded"]
+    assert recorded["approved"] is True and recorded["inputs_same"] is True and row["command_matches"] is True
+    assert recorded["plan_keys"] == ["inputs", "name", "preload", "prepare", "refusal", "run_root"]
+    assert recorded["runner_sha"] == item["expected"]["runner"] and recorded["evidence"] == item["evidence"]
+    attempt = row["attempt"]
+    assert sorted(attempt) == ["entry", "name", "owned_job", "raw", "status"]
+    assert sorted(attempt["entry"]) == ["attempt", "refusal"]
+
+
+@WINDOWS_ONLY
+@pytest.mark.parametrize("name,change,expected", WIRING_LIFETIME, ids=[row[0] for row in WIRING_LIFETIME])
+def test_owned_lifetime_factory_uses_roots_type_and_identity_and_keeps_unsafe_seams_refused(wiring_rows, name,
+                                                                                             change, expected):
+    row, item = wiring_rows[0][name], wiring_rows[1][name]
+    assert row["result"] == expected, row
+    if expected == "ERROR":
+        assert row["error"].startswith("refused: "), row
+        return
+    assert row["keys"] == sorted(["NewManaged", "RootCreation", "Clock", "Sleep", "FreeBytes", "Context",
+                                  "KillController", "InheritedHandles"])
+    directory = item["run"]["witness_root"] + "\\" + LT_LAUNCH
+    assert row["calls"][0] == "init " + str(len("SYNTHETIC loop\n"))
+    host, arguments, cwd, stdin, stdout, stderr = row["calls"][1][len("new "):].split("|")
+    assert host == item["run"]["host_path"] and cwd == directory and stdin == directory + "\\root.input"
+    assert stdout == directory + "\\root.stdout.log" and stderr == directory + "\\root.stderr.log"
+    assert "-OptInSyntheticMember" in arguments and "-Member root -Subcase A1/deadline" in arguments
+    assert row["pid"] == 5151 and row["creation"] == "SYNTHETIC-CREATION-5151"
+    assert len(row["refused"]) == 3 and all(text.startswith("refused: ") for text in row["refused"]), row

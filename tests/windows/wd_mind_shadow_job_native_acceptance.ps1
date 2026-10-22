@@ -353,6 +353,77 @@ function Get-WdShadowA7CaseVerdict {
     return 'PASS'
 }
 
+function Get-WdShadowLifetimeSubcaseCaseVerdict {
+    # Lead's v8 decision: A1 and A3 bind each preregistered sub-case to its own launch. The expected binding is
+    # complete and valid first: the versioned schema, the harness run, the case, the measured controller id and
+    # creation time, the approved Source, manifest and adapter identity, the deadline and one distinct lowercase GUID
+    # launch per sub-case. The observed pins must equal it (foreign is FAIL); each sub-case carries its launch (its
+    # expected launch id, a measured root id and creation time never shared by two sub-cases: a reused root is FAIL)
+    # and its observation. A missing, extra or malformed value is UNKNOWN; only all PASS sub-cases PASS.
+    param([string] $CaseId, $Binding, $Observation)
+    $required = @{
+        A1 = @('deadline', 'early_root_exit_orphan', 'pipe_holding_grandchild', 'off_switch_during_run',
+            'disk_floor_hit', 'single_confirmed_stop')
+        A3 = @('outer_no_limits', 'outer_kill_on_close', 'planned_launch_context')
+    }
+    if (-not $required.ContainsKey($CaseId)) { return 'UNKNOWN' }
+    $names = $required[$CaseId]
+    $pinKeys = @('schema', 'harness_run_id', 'case_id', 'controller_pid', 'controller_creation_utc', 'source_commit',
+        'manifest_sha256', 'adapter_sha256', 'deadline_seconds')
+    if (-not (Test-WdShadowExactKeys $Binding ($pinKeys + @('launches'))) -or
+        -not (Test-WdShadowExactKeys $Observation @('binding', 'subcases'))) { return 'UNKNOWN' }
+    $formats = @{
+        schema = '^wd\.mind-shadow-lifetime-subcase-binding\.v1\z'; harness_run_id = '^\S+\z'
+        case_id = '^' + $CaseId + '\z'; controller_pid = '^[1-9][0-9]{0,9}\z'; controller_creation_utc = '^\S+\z'
+        source_commit = '^[0-9a-f]{40}\z'; manifest_sha256 = '^[0-9A-F]{64}\z'; adapter_sha256 = '^[0-9A-F]{64}\z'
+        deadline_seconds = '^[1-9][0-9]{0,5}\z'
+    }
+    foreach ($key in $pinKeys) {
+        if ($Binding[$key] -isnot [string] -or $Binding[$key] -cnotmatch $formats[$key]) { return 'UNKNOWN' }
+    }
+    $launches = $Binding['launches']
+    if (-not (Test-WdShadowExactKeys $launches $names)) { return 'UNKNOWN' }
+    $guid = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
+    $ids = @{}
+    foreach ($name in $names) {
+        $id = $launches[$name]
+        if ($id -isnot [string] -or $id -cnotmatch $guid -or $ids.ContainsKey($id)) { return 'UNKNOWN' }
+        $ids[$id] = $name
+    }
+    $seen = $Observation['binding']
+    if (-not (Test-WdShadowExactKeys $seen $pinKeys)) { return 'UNKNOWN' }
+    foreach ($key in $pinKeys) {
+        if ($seen[$key] -isnot [string] -or $seen[$key] -cne [string]$Binding[$key]) { return 'FAIL' }
+    }
+    $subcases = $Observation['subcases']
+    if (-not (Test-WdShadowExactKeys $subcases $names)) { return 'UNKNOWN' }
+    $roots = @{}
+    $verdicts = @(foreach ($name in $names) {
+        $entry = $subcases[$name]
+        $launch = $null
+        if ($entry -is [hashtable]) { $launch = $entry['launch'] }
+        if (-not (Test-WdShadowExactKeys $entry @('launch', 'observation')) -or
+            -not (Test-WdShadowExactKeys $launch @('launch_id', 'root_pid', 'root_creation_utc')) -or
+            $launch['launch_id'] -isnot [string] -or $launch['root_pid'] -isnot [string] -or
+            $launch['root_pid'] -cnotmatch '^[1-9][0-9]{0,9}\z' -or $launch['root_creation_utc'] -isnot [string] -or
+            $launch['root_creation_utc'] -cnotmatch '^\S+\z') {
+            'UNKNOWN'
+            continue
+        }
+        $root = $launch['root_pid'] + ' ' + $launch['root_creation_utc']
+        if ($launch['launch_id'] -cne [string]$launches[$name] -or $roots.ContainsKey($root)) {
+            'FAIL'
+            continue
+        }
+        $roots[$root] = $name
+        Get-WdShadowSubcaseVerdict -CaseId $CaseId -Name $name -Observation $entry['observation'] `
+            -Binding @{ deadline_seconds = $Binding['deadline_seconds']; launch_id = $launch['launch_id'] }
+    })
+    if ($verdicts -ccontains 'FAIL') { return 'FAIL' }
+    if ($verdicts.Count -ne $names.Count -or @($verdicts | Where-Object { $_ -cne 'PASS' }).Count) { return 'UNKNOWN' }
+    return 'PASS'
+}
+
 function Get-WdShadowCaseVerdict {
     # One case from one strict observation: the run binding first (partial is UNKNOWN, foreign is FAIL), then every
     # required sub-case once. A4 is always NOT_READY: A4 is the job kill at the publication replacement and no
@@ -361,6 +432,9 @@ function Get-WdShadowCaseVerdict {
     param([string] $CaseId, $Binding, $Observation)
     if ($CaseId -ceq 'A4') { return 'NOT_READY' }
     if ($CaseId -ceq 'A7') { return Get-WdShadowA7CaseVerdict -Binding $Binding -Observation $Observation }
+    if ($CaseId -ceq 'A1' -or $CaseId -ceq 'A3') {
+        return Get-WdShadowLifetimeSubcaseCaseVerdict -CaseId $CaseId -Binding $Binding -Observation $Observation
+    }
     $required = @{
         A1 = @('deadline', 'early_root_exit_orphan', 'pipe_holding_grandchild', 'off_switch_during_run',
             'disk_floor_hit', 'single_confirmed_stop')
@@ -1021,18 +1095,204 @@ function Invoke-WdShadowLifetimeDriver {
 }
 
 function ConvertTo-WdShadowLifetimeCaseObservation {
-    # A case observation for Get-WdShadowCaseVerdict from driver results, with the old launch binding unchanged. That
-    # binding names one launch and root, so only the one-sub-case lifetime cases (A2, A5, A6) compose; A1 and A3 need
-    # one launch per sub-case, and composing them is refused until a per-sub-case binding is decided.
-    param([string] $CaseId, [object[]] $Results)
-    if (@('A2', 'A5', 'A6') -cnotcontains $CaseId) {
-        throw "refused: $CaseId needs one launch per sub-case; the case binding names one launch and root"
+    # A case observation for Get-WdShadowCaseVerdict from driver results. A2, A5 and A6 (one sub-case each) keep the
+    # old one-launch binding; A1 and A3 take Lead's v8 per-sub-case binding: the pins of the run (versioned schema,
+    # harness run, case, measured controller, Source, manifest, adapter, deadline) plus, per sub-case, its own launch
+    # and measured root from its own driver run. A duplicate sub-case or a result of another case, run or deadline
+    # is refused; a missing sub-case is left for the evaluator (UNKNOWN).
+    param([string] $CaseId, [object[]] $Results, $Pins)
+    if ($CaseId -ceq 'A1' -or $CaseId -ceq 'A3') {
+        $pinKeys = @('schema', 'harness_run_id', 'case_id', 'controller_pid', 'controller_creation_utc',
+            'source_commit', 'manifest_sha256', 'adapter_sha256', 'deadline_seconds')
+        if (-not (Test-WdShadowExactKeys $Pins $pinKeys) -or
+            [string]$Pins['schema'] -cne 'wd.mind-shadow-lifetime-subcase-binding.v1' -or
+            [string]$Pins['case_id'] -cne $CaseId) {
+            throw 'refused: the run pins are not exactly the versioned per-sub-case binding pins'
+        }
+        $subcases = @{}
+        foreach ($result in @($Results)) {
+            if ($result -isnot [hashtable] -or [string]$result['case_id'] -cne $CaseId) {
+                throw 'refused: a driver result of another case'
+            }
+            $name = [string]$result['name']
+            $bound = $result['binding']
+            if ($subcases.ContainsKey($name)) { throw 'refused: two driver results for one sub-case' }
+            if ([string]$bound['harness_run_id'] -cne [string]$Pins['harness_run_id'] -or
+                [string]$bound['deadline_seconds'] -cne [string]$Pins['deadline_seconds']) {
+                throw 'refused: a driver result of another harness run or deadline'
+            }
+            $subcases[$name] = @{ observation = $result['observation']
+                launch = @{ launch_id = $bound['launch_id']; root_pid = $bound['root_pid']
+                    root_creation_utc = $bound['root_creation_utc'] } }
+        }
+        $binding = @{}
+        foreach ($key in $pinKeys) { $binding[$key] = $Pins[$key] }
+        return @{ binding = $binding; subcases = $subcases }
     }
+    if (@('A2', 'A5', 'A6') -cnotcontains $CaseId) { throw "refused: $CaseId has no lifetime case composition" }
     if (@($Results).Count -ne 1 -or $Results[0] -isnot [hashtable] -or [string]$Results[0]['case_id'] -cne $CaseId) {
         throw 'refused: one driver result of this case is required'
     }
     $subcases = @{ ([string]$Results[0]['name']) = $Results[0]['observation'] }
     return @{ binding = $Results[0]['binding']; subcases = $subcases }
+}
+
+# Checkpoint 5 (Lead's v8 GO, 2026-10-22T20:34:33Z): the future owned wiring through Root's frozen A7 runner
+# (tests/windows/wd_mind_shadow_a7_owned_probe.ps1 at Root head b066290d). Its module file is not on this branch, so
+# every routine takes the runner and the other pinned files by explicit path and expected SHA-256 and refuses when
+# one is missing or differs; the opt-in switch is an accident guard, never operator or Medium authority. Admission
+# (Test-WdShadowOwnedAdmission) runs before any write, load or process seam. The A7 attempt calls Root's
+# Invoke-WdMindShadowA7OwnedProbe once with this file's unchanged pinned planner output; the lifetime factory takes
+# Root's type initializer, six-argument managed process and measured identity for the A1/A2 job and root seams. The
+# outer-context, controller-kill and handle seams stay refused. Nothing here runs a real routine in tests.
+
+function Test-WdShadowOwnedAdmission {
+    # Before any write, load or process seam: exactly the host, adapter, loop, planner and runner files, each an
+    # existing full C:\ path of printable ASCII with no reparse point in its ancestry and SHA-256 bytes equal to its
+    # uppercase pin; the evidence root an existing directory directly in a .codex-audit folder, no reparse ancestry, on
+    # the local fixed NTFS C: volume, which keeps the 3 GiB floor plus the bound. Returns the measured pins.
+    param([hashtable] $Files, [hashtable] $Expected, [string] $EvidenceRoot, [long] $BoundBytes)
+    $keys = @('host', 'adapter', 'loop', 'planner', 'runner')
+    if (-not (Test-WdShadowExactKeys $Files $keys) -or -not (Test-WdShadowExactKeys $Expected $keys)) {
+        throw 'refused: the pinned files are not exactly host, adapter, loop, planner and runner'
+    }
+    foreach ($path in (@($keys | ForEach-Object { $Files[$_] }) + @($EvidenceRoot))) {
+        if ($path -isnot [string] -or $path -cnotmatch '^C:\\[\x20-\x7E]+\z' -or $path.Contains('"') -or
+            [IO.Path]::GetFullPath($path).TrimEnd('\') -cne $path.TrimEnd('\')) {
+            throw 'refused: a pinned path is not a full printable ASCII C:\ path'
+        }
+        $current = $path.TrimEnd('\')
+        while ($current.Length -gt 3) {
+            if (([IO.File]::Exists($current) -or [IO.Directory]::Exists($current)) -and
+                ([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'refused: a pinned path has reparse ancestry'
+            }
+            $current = [IO.Path]::GetDirectoryName($current)
+        }
+    }
+    $measured = @{}
+    foreach ($key in $keys) {
+        if ($Expected[$key] -isnot [string] -or $Expected[$key] -cnotmatch '^[0-9A-F]{64}\z') {
+            throw "refused: the $key pin is not an uppercase SHA-256"
+        }
+        if (-not [IO.File]::Exists($Files[$key])) { throw "refused: the pinned $key file is missing" }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = -join @($sha.ComputeHash([IO.File]::ReadAllBytes($Files[$key])) |
+                ForEach-Object { $_.ToString('X2') })
+        }
+        finally { $sha.Dispose() }
+        if ($hash -cne $Expected[$key]) { throw "refused: the $key file is not its pinned bytes" }
+        $measured[$key] = $hash
+    }
+    if (-not [IO.Directory]::Exists($EvidenceRoot) -or
+        [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($EvidenceRoot.TrimEnd('\'))) -cne '.codex-audit') {
+        throw 'refused: the evidence root is not an existing directory directly inside a .codex-audit folder'
+    }
+    $drive = New-Object IO.DriveInfo('C')
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -cne 'NTFS') {
+        throw 'refused: the evidence volume is not the local fixed NTFS C: volume'
+    }
+    if ($BoundBytes -le 0 -or $drive.AvailableFreeSpace -lt 3221225472 + $BoundBytes) {
+        throw 'refused: C: would fall below the 3 GiB floor plus the bound'
+    }
+    return $measured
+}
+
+function Invoke-WdShadowA7OwnedAttempt {
+    # One native A7 sub-case through Root's frozen public runner: admission, this file's pinned plan and literal child
+    # command (the five planner functions Root pins are unchanged), Root's runner loaded from its pinned path, ONE call
+    # of Invoke-WdMindShadowA7OwnedProbe, and its receipt reduced to the strict A7 entry (attempt and refusal) with the
+    # owned-job counts and raw output kept separately. A whole-A7 PASS claim, another sub-case or an entry of any other
+    # shape is refused. The two structural loop sub-cases have no owned attempt.
+    param([switch] $ApprovedNativeExecution, [string] $Name, [hashtable] $Inputs, [string] $CaseRoot,
+        [hashtable] $CaseBinding, [hashtable] $Files, [hashtable] $Expected, [string] $EvidenceRoot)
+    if (-not $ApprovedNativeExecution) {
+        throw 'refused: the owned A7 attempt needs the explicit opt-in (an accident guard, never authority)'
+    }
+    [void](Test-WdShadowOwnedAdmission -Files $Files -Expected $Expected -EvidenceRoot $EvidenceRoot `
+        -BoundBytes 1048576)
+    $plan = Get-WdShadowA7Plan -Name $Name -Inputs $Inputs -CaseRoot $CaseRoot
+    if ($null -eq $plan) { throw 'refused: a structural-only A7 sub-case has no owned attempt' }
+    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $Files['adapter']
+    . $Files['runner']
+    $receipt = Invoke-WdMindShadowA7OwnedProbe -ApprovedNativeExecution -Plan $plan -ApprovedInputs $Inputs `
+        -CaseRoot $CaseRoot -LiteralAdapterCommand $command -CaseBinding $CaseBinding -HostPath $Files['host'] `
+        -AdapterPath $Files['adapter'] -LoopPath $Files['loop'] -PlannerPath $Files['planner'] `
+        -EvidenceRoot $EvidenceRoot -ExpectedHostSha256 $Expected['host'] -ExpectedAdapterSha256 $Expected['adapter'] `
+        -ExpectedLoopSha256 $Expected['loop'] -ExpectedPlannerSha256 $Expected['planner'] `
+        -ExpectedRunnerSha256 $Expected['runner']
+    $result = $null
+    if ($null -ne $receipt) { $result = $receipt.result }
+    if ($null -eq $result -or $receipt.whole_A7_PASS -ne $false -or $result.whole_A7_PASS -ne $false -or
+        [string]$receipt.name -cne $Name) {
+        throw 'refused: the owned runner receipt is not one attempt of this sub-case'
+    }
+    $entry = $result.entry
+    if (-not (Test-WdShadowExactKeys $entry @('attempt', 'refusal')) -or
+        -not (Test-WdShadowExactKeys $entry['attempt'] @('attempt_id', 'probe_pid', 'probe_creation_utc')) -or
+        -not (Test-WdShadowExactKeys $entry['refusal'] @('exit_code', 'refusal_seen', 'run_dir_created',
+            'process_started'))) { throw 'refused: the owned runner entry is not exactly attempt and refusal' }
+    return @{
+        name = $Name; entry = $entry; owned_job = $result.owned_job; raw = $result.raw
+        status = [string]$result.status
+    }
+}
+
+function ConvertTo-WdShadowA7CaseObservation {
+    # The A7 case observation from owned attempts: the binding pins the runner accepted and, per native sub-case, its
+    # strict entry; a duplicate sub-case is refused, a missing one is left for the evaluator (UNKNOWN).
+    param([hashtable] $CaseBinding, [object[]] $Attempts)
+    $binding = @{}
+    foreach ($key in @('schema', 'harness_run_id', 'case_id', 'controller_pid', 'controller_creation_utc',
+            'source_commit', 'manifest_sha256', 'adapter_sha256')) { $binding[$key] = $CaseBinding[$key] }
+    $subcases = @{}
+    foreach ($attempt in @($Attempts)) {
+        if ($attempt -isnot [hashtable] -or $subcases.ContainsKey([string]$attempt['name'])) {
+            throw 'refused: two owned attempts for one A7 sub-case'
+        }
+        $subcases[[string]$attempt['name']] = $attempt['entry']
+    }
+    return @{ binding = $binding; subcases = $subcases }
+}
+
+function New-WdShadowOwnedLifetimeSeams {
+    # The future real job and root seams of the A1/A2 lifetime drivers: admission, then Root's frozen runner loaded
+    # from its pinned path into a private module; NewManaged runs Root's type initializer (its exact canonical loop
+    # only) and its six-argument managed process for the root member with a fresh empty input and bounded log files in
+    # the witness directory, and RootCreation reads Root's measured identity. The other seams are the plain ones of
+    # Get-WdShadowLifetimeSeams; its outer-context, controller-kill and handle seams stay refused.
+    param([switch] $ApprovedNativeExecution, [hashtable] $Files, [hashtable] $Expected, [string] $EvidenceRoot)
+    if (-not $ApprovedNativeExecution) {
+        throw 'refused: the owned lifetime seams need the explicit opt-in (an accident guard, never authority)'
+    }
+    [void](Test-WdShadowOwnedAdmission -Files $Files -Expected $Expected -EvidenceRoot $EvidenceRoot `
+        -BoundBytes 8388608)
+    $module = New-Module -Name 'WdShadowOwnedRunner' -ScriptBlock { param([string] $Runner) . $Runner } `
+        -ArgumentList $Files['runner']
+    $loop = & $module { param([string] $Path, [string] $Sha) Read-WdA7PinnedFile $Path $Sha -AsText } $Files['loop'] `
+        $Expected['loop']
+    $loopText = [string]$loop.text
+    $seams = Get-WdShadowLifetimeSeams
+    $seams['NewManaged'] = {
+        param($Plan)
+        $directory = [string]$Plan['witness_directory']
+        $inputPath = $directory + '\root.input'
+        $stream = New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+            [IO.FileShare]::None)
+        $stream.Dispose()
+        return & $module {
+            param([string] $Text, [string] $HostPath, [string[]] $Arguments, [string] $Directory, [string] $InputPath)
+            Initialize-WdA7OwnedType $Text
+            New-WdA7ManagedProcess $HostPath $Arguments $Directory $InputPath ($Directory + '\root.stdout.log') `
+                ($Directory + '\root.stderr.log')
+        } $loopText ([string]$Plan['host_path']) ([string[]]$Plan['arguments']) $directory $inputPath
+    }.GetNewClosure()
+    $seams['RootCreation'] = {
+        param($Managed)
+        return [string](& $module { param([int] $Id) (Get-WdA7ObservedIdentity $Id).creation_utc } ([int]$Managed.Pid))
+    }.GetNewClosure()
+    return $seams
 }
 
 # Checkpoints 2 to 4: the case evaluators, the A7 pre-start drivers and the A1, A2, A3, A5 and A6 lifetime drivers

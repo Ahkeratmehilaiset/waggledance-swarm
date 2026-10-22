@@ -672,3 +672,55 @@ def test_a_volume_root_run_root_or_live_dir_is_refused_before_the_separator_is_t
                                     "$trimmed = $full.TrimEnd('\\')"])
     resolved = adapter.index("$liveFull = Resolve-WdShadowDirectoryPath")
     assert resolved < adapter.index("if (-not (Test-Path -LiteralPath $runRootFull -PathType Container))")
+
+
+MEMBER = ROOT / "tests" / "windows" / "wd_mind_shadow_acceptance_member.ps1"
+
+
+def test_harness_lifetime_drivers_sequence_the_job_through_seams_and_the_real_job_seams_are_disabled(harness):
+    # Lead's v7 GO: actual A1/A2/A3/A5/A6 driver bodies (launch, wait, stop, observation) on injected seams; the real
+    # job, root-identity, context, controller-kill and handle seams refuse until the pinned owned-job API is reconciled
+    # once; the script still ends in its refusal and never calls a driver.
+    seams = _function(harness, "Get-WdShadowLifetimeSeams")
+    for name in ("NewManaged", "RootCreation", "Context", "KillController", "InheritedHandles"):
+        assert re.search(name + r" = \{\n? *param\([^)]*\)\n? *throw 'refused: [^']*disabled[^']*'\n? *\}", seams), name
+    for word in ("Process]::Start", "ProcessStartInfo", "GetProcessById", ".Kill", "Stop-Process", "taskkill",
+                 "Start-Process", "Start-Sleep"):
+        assert word not in seams, word
+    driver = _function(harness, "Invoke-WdShadowLifetimeDriver")
+    for word in ("Get-WdShadowLifetimeSeams", "Process]::", "Get-Cim", "Start-Sleep", "$env:", "$global:", "$script:",
+                 ".Kill", "New-Item"):
+        assert word not in driver, word
+    for need in ("& $Seams['NewManaged'] $plan", "$managed.Stop()", "$managed.ActiveProcesses",
+                 "$managed.TotalProcesses", "& $Seams['KillController'] $managed", "$managed.Dispose()",
+                 "& $Seams['InheritedHandles'] $managed", "Get-WdShadowMemberObservation"):
+        assert need in driver, need
+    assert driver.count("$managed.Stop()") == 1
+    assert driver.index("& $Seams['NewManaged'] $plan") < driver.index("$managed.Stop()") < driver.index(
+        "$managed.Dispose()")
+    compose = _function(harness, "ConvertTo-WdShadowLifetimeCaseObservation")
+    assert "one launch" in compose
+    tail = harness[harness.rindex("\n}\n"):]
+    assert "Invoke-WdShadow" not in tail and harness.rstrip().endswith("exit 3")
+
+
+def test_member_fixture_refuses_by_default_and_uses_only_preregistered_members(harness):
+    assert MEMBER.is_file(), MEMBER
+    text = _code(MEMBER)
+    lines = [line for line in text.splitlines() if line.strip()]
+    first = next(i for i, line in enumerate(lines) if not line.lstrip().startswith(("param", "[", ")", "#requires")))
+    assert "OptInSyntheticMember" in lines[first] and "WD_MIND_SHADOW_SYNTHETIC_MEMBER" in lines[first]
+    assert "exit 3" in " ".join(lines[first:first + 4])
+    # One registry: the member refuses any name, sub-case or tree the harness drivers do not preregister.
+    assert _function(text, "Get-WdShadowLifetimeMembers") == _function(harness, "Get-WdShadowLifetimeMembers")
+    assert text.count("Process]::Start(") == 1
+    assert "Process]::Start(" in _function(text, "Start-WdShadowMemberProcess")
+    for word in ("Invoke-WebRequest", "Invoke-RestMethod", "WebClient", "Net.Sockets", "HttpClient", "events.jsonl",
+                 ".agent-bridge", "Add-Type", "Start-Process", "Invoke-Expression", "Remove-Item", ".Kill",
+                 "Stop-Process", "DllImport", "F:\\", "mind_capture_producer"):
+        assert word not in text, word
+    witness = _function(text, "Open-WdShadowMemberWitness")
+    assert "[IO.FileMode]::CreateNew" in witness and "[IO.FileShare]::None" in witness
+    run = _function(text, "Test-WdShadowMemberRun")
+    for need in ("'.codex-audit'", "members.registration", "Get-WdShadowLifetimeMembers"):
+        assert need in run, need

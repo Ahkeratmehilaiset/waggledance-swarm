@@ -46,6 +46,16 @@
     probe child and the adapter's whoami.exe are probe processes, not the producer workload. The script never calls
     the drivers; A7 stays NOT_READY, native NOT_RUN.
 
+    Checkpoint 4 (Lead's v7 GO, 2026-10-22T20:06:21Z): the A1, A2, A3, A5 and A6 lifetime driver bodies
+    (Invoke-WdShadowLifetimeDriver). Each runs one sub-case: it preregisters the synthetic members
+    (wd_mind_shadow_acceptance_member.ps1) in a fresh run-bound witness directory, launches the root member in an
+    owned job, waits under the adapter's deadline, guard and drain rules, stops once, confirms the drain, reads the
+    member witnesses and, for A6, reacquires the lock itself; A5 kills the controller instead. The real job, root
+    identity, context, controller-kill and handle seams are disabled until the pinned owned-job API is reconciled once,
+    so the drivers run only on strict fakes. The workload is the synthetic member, never the producer, so the
+    adapter's own loop is not exercised. The old case binding names one launch and root, so only A2, A5 and A6
+    compose into a case observation; A1 and A3 need one launch per sub-case. The script never calls the drivers.
+
     Design: RCO1 (A1-A7), RCO2 (G1-G4 and the witness), Lead (decisions and the guard cases); fable-5 wrote this file.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -656,10 +666,380 @@ function New-WdShadowA7CaseRoot {
     }
 }
 
-# Checkpoint 2 and 3: the case evaluators and the A7 pre-start drivers exist, but no driver produces case observations
-# (A7 has its pre-start attempt binding but no owned-job no-start witness, its real child seam is disabled; A1-A3, A5
-# and A6 have no drivers; A4 has no publication-kill evidence), so every case stays NOT_READY (native NOT_RUN) and the
-# harness refuses by default, on a partial run and on opt-in.
+# Checkpoint 4 (Lead's v7 GO, 2026-10-22T20:06:21Z): the A1, A2, A3, A5 and A6 lifetime drivers. One driver body runs
+# one sub-case: it preregisters the sub-case's synthetic members in a fresh run-bound witness directory, starts the
+# root member in an owned job through the job seam, polls the root and the job counts against the bound deadline and
+# the guards (the adapter's loop rules: one guard reading per slice, a drain counts only strictly before the deadline),
+# stops once when the job is not drained, confirms the drain within the stop wait, reads the member witnesses and, for
+# A6, reacquires the lock itself. The observation comes from the job's counts, exit and Stop, the witness files and
+# the lock attempt, never from a supplied value. The workload is the synthetic member fixture
+# (wd_mind_shadow_acceptance_member.ps1), never the producer: the adapter's own loop starts only the producer, so these
+# drivers exercise the owned-job primitive under the adapter's stop rules, not the adapter loop itself. The real job,
+# root identity, context, controller-kill and handle seams are disabled until the pinned owned-job API is reconciled
+# once, so the drivers run only on strict fakes here.
+
+function Get-WdShadowLifetimeMembers {
+    # The preregistered synthetic members of each lifetime sub-case, root first; the member fixture holds the same
+    # table and refuses any other name, sub-case or tree.
+    return [ordered]@{
+        'A1/deadline' = @('root')
+        'A1/early_root_exit_orphan' = @('root', 'orphan')
+        'A1/pipe_holding_grandchild' = @('root', 'child', 'pipe_grandchild')
+        'A1/off_switch_during_run' = @('root')
+        'A1/disk_floor_hit' = @('root')
+        'A1/single_confirmed_stop' = @('root')
+        'A2/survivors' = @('root', 'child', 'grandchild', 'late_child')
+        'A3/outer_no_limits' = @('root')
+        'A3/outer_kill_on_close' = @('root')
+        'A3/planned_launch_context' = @('root')
+        'A5/controller_death' = @('root', 'child', 'grandchild')
+        'A6/inherited_handles' = @('root')
+    }
+}
+
+function Get-WdShadowLifetimePlan {
+    # One lifetime sub-case as a plan: its preregistered members, the fresh run-bound witness directory under a
+    # .codex-audit folder (named by the launch id), the deadline, the guard trigger and the root member's command.
+    # Invalid input is refused, never planned.
+    param([string] $CaseId, [string] $Name, [hashtable] $Run)
+    $registry = Get-WdShadowLifetimeMembers
+    $key = $CaseId + '/' + $Name
+    if (-not $registry.Contains($key)) { throw 'refused: unknown lifetime sub-case' }
+    $keys = @('harness_run_id', 'launch_id', 'deadline_seconds', 'witness_root', 'host_path', 'member_path')
+    if (-not (Test-WdShadowExactKeys $Run $keys)) { throw 'refused: the run inputs are not exactly the lifetime keys' }
+    foreach ($field in $keys) {
+        if ($Run[$field] -isnot [string] -or $Run[$field] -cnotmatch '^[\x21-\x7E][\x20-\x7E]*\z' -or
+            $Run[$field].Contains('"')) { throw "refused: $field is not printable ASCII text" }
+    }
+    if ($Run['launch_id'] -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') {
+        throw 'refused: the launch id is not a lowercase GUID'
+    }
+    if ($Run['deadline_seconds'] -cnotmatch '^[1-9][0-9]{0,5}\z') { throw 'refused: the deadline is not positive' }
+    foreach ($field in @('witness_root', 'host_path', 'member_path')) {
+        if (-not [IO.Path]::IsPathRooted($Run[$field])) { throw "refused: $field is not a rooted path" }
+    }
+    $root = [IO.Path]::GetFullPath($Run['witness_root']).TrimEnd('\')
+    if ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($root)) -cne '.codex-audit') {
+        throw 'refused: the witness root is not a run folder directly in a .codex-audit folder'
+    }
+    $directory = $root + '\' + $Run['launch_id']
+    $deadline = [long]$Run['deadline_seconds']
+    $guard = 'none'
+    if ($key -ceq 'A1/off_switch_during_run') { $guard = 'off_switch' }
+    if ($key -ceq 'A1/disk_floor_hit') { $guard = 'disk_floor' }
+    $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-File', $Run['member_path'], '-OptInSyntheticMember',
+        '-LaunchId', $Run['launch_id'], '-Member', 'root', '-Subcase', $key, '-WitnessDirectory', $directory,
+        '-LifetimeSeconds', ([string]($deadline + 60)))
+    return @{
+        case_id = $CaseId; name = $Name; members = [string[]]@($registry[$key]); witness_directory = $directory
+        deadline_seconds = $deadline; guard = $guard; trigger_seconds = [long][Math]::Floor($deadline / 2)
+        off_switch = $directory + '\mind-shadow.off'; lock_path = $directory + '\producer.lock'
+        disk_floor_bytes = [long]3221225472; host_path = $Run['host_path']; arguments = $arguments
+        binding = @{
+            harness_run_id = $Run['harness_run_id']; case_id = $CaseId; launch_id = $Run['launch_id']
+            root_pid = 'UNKNOWN'; root_creation_utc = 'UNKNOWN'; deadline_seconds = $Run['deadline_seconds']
+        }
+    }
+}
+
+function Get-WdShadowLifetimeSeams {
+    # The real seams of an approved executor's run. The clock, the sleep and the free-space reading are plain reads;
+    # the job (the pinned six-argument owned-job primitive with its read-only TotalProcesses), the root identity, the
+    # outer context, the controller kill and the inherited-handle listing are DISABLED until that API is reconciled
+    # once with its Source pin (Lead's v7): they refuse before any process, job or handle exists. Never a PID kill.
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    return @{
+        NewManaged = {
+            param($Plan)
+            throw 'refused: the real lifetime job seam is disabled until the pinned owned-job API is reconciled'
+        }
+        RootCreation = { param($Managed) throw 'refused: the real root identity seam is disabled with the job seam' }
+        Clock = { return $clock.Elapsed.TotalSeconds }.GetNewClosure()
+        Sleep = { param([int] $Milliseconds) [Threading.Thread]::Sleep($Milliseconds) }
+        FreeBytes = {
+            param([string] $Path)
+            return [long](New-Object IO.DriveInfo([IO.Path]::GetPathRoot($Path))).AvailableFreeSpace
+        }
+        Context = { param($Plan) throw 'refused: the real outer job context seam is disabled with the job seam' }
+        KillController = {
+            param($Managed)
+            throw 'refused: the real controller kill seam is disabled with the job seam'
+        }
+        InheritedHandles = {
+            param($Managed)
+            throw 'refused: the real inherited-handle seam is disabled with the job seam'
+        }
+    }
+}
+
+function Test-WdShadowLifetimeOffSwitch {
+    # The adapter's rule: existence only, and any doubt counts as on.
+    param([string] $Path)
+    try { [void][IO.File]::GetAttributes($Path); return $true }
+    catch [IO.FileNotFoundException] { return $false }
+    catch [IO.DirectoryNotFoundException] { return $false }
+    catch { return $true }
+}
+
+function Get-WdShadowLifetimeHeld {
+    # The members whose witness file is still held (a live member: its start line cannot be read while it is held,
+    # and only preregistered members write into the fresh run directory), and whether every member left a start
+    # witness with a known state, a released one bound to this launch.
+    param([hashtable] $Observed, [string[]] $Members, [string] $LaunchId)
+    $held = @()
+    $complete = $true
+    foreach ($member in $Members) {
+        $seen = $Observed[$member]
+        if ($null -eq $seen -or [string]$seen.start_witness -cne 'present' -or $seen.released -isnot [bool] -or
+            ($seen.released -and [string]$seen.launch_id -cne $LaunchId)) { $complete = $false; continue }
+        if (-not $seen.released) { $held += $member }
+    }
+    return @{ held = $held; complete = $complete }
+}
+
+function Invoke-WdShadowLifetimeDriver {
+    # One lifetime sub-case through injected seams (exactly the keys of Get-WdShadowLifetimeSeams): launch the root
+    # member in the owned job, wait (deadline, guards, root exit, drain), stop once when not drained, confirm the drain
+    # within the 30 s stop wait, observe. A5 kills the controller instead of stopping. Returns the sub-case, its launch
+    # binding (measured root id and creation time, UNKNOWN when nothing started) and its observation ($null when the
+    # evidence is incomplete, which is never PASS).
+    param([string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Seams)
+    $seamKeys = @('NewManaged', 'RootCreation', 'Clock', 'Sleep', 'FreeBytes', 'Context', 'KillController',
+        'InheritedHandles')
+    if (-not (Test-WdShadowExactKeys $Seams $seamKeys)) { throw 'refused: the seams are not exactly the driver seams' }
+    foreach ($seam in $seamKeys) {
+        if ($Seams[$seam] -isnot [scriptblock]) { throw "refused: the $seam seam is not a script block" }
+    }
+    $plan = Get-WdShadowLifetimePlan -CaseId $CaseId -Name $Name -Run $Run
+    $directory = [string]$plan['witness_directory']
+    if ([IO.Directory]::Exists($directory) -or [IO.File]::Exists($directory)) {
+        throw 'refused: the witness directory is not fresh'
+    }
+    [void][IO.Directory]::CreateDirectory($directory)
+    $lines = (@($plan['members'] | ForEach-Object { $Run['launch_id'] + ' ' + $_ }) -join "`n") + "`n"
+    $bytes = [Text.Encoding]::ASCII.GetBytes($lines)
+    $stream = New-Object IO.FileStream(($directory + '\members.registration'), [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if ($CaseId -ceq 'A3') {
+        $context = & $Seams['Context'] $plan
+        if ($context -isnot [string] -or $context -cne $Name) {
+            throw 'refused: the planned launch context was not entered'
+        }
+    }
+    $binding = $plan['binding']
+    $deadline = [double]$plan['deadline_seconds']
+    $members = [string[]]$plan['members']
+    $launchId = [string]$Run['launch_id']
+    $observation = $null
+    $managed = $null
+    $createError = $null
+    try {
+        try { $managed = & $Seams['NewManaged'] $plan } catch { $createError = $_.Exception.Message }
+        if ($null -eq $managed) {
+            if ($CaseId -cne 'A3') { throw ('refused: the owned job did not start the root member: ' + $createError) }
+            # A refused start without an owned-job witness of no start is never refused_before_start.
+            return @{ case_id = $CaseId; name = $Name; binding = $binding
+                observation = @{ result = 'refused_unwitnessed' } }
+        }
+        $binding['root_pid'] = [string][long]$managed.Pid
+        $creation = & $Seams['RootCreation'] $managed
+        if ($creation -isnot [string] -or $creation -cnotmatch '^\S+\z') { throw 'refused: no root creation time' }
+        $binding['root_creation_utc'] = $creation
+        $start = [double](& $Seams['Clock'])
+        $elapsed = { [double](& $Seams['Clock']) - $start }
+        if ($CaseId -ceq 'A3' -or $CaseId -ceq 'A5' -or $CaseId -ceq 'A6') {
+            # Wait (bounded by the deadline) until the members have started: A3 and A6 need the root alive, A5 the
+            # whole tree before the controller dies.
+            $want = @('root')
+            if ($CaseId -ceq 'A5') { $want = $members }
+            while ((& $elapsed) -lt $deadline) {
+                $now = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $want
+                if (@($want | Where-Object { [string]$now[$_].start_witness -cne 'present' }).Count -eq 0) { break }
+                & $Seams['Sleep'] 250
+            }
+        }
+        $result = $null
+        if ($CaseId -ceq 'A3') {
+            $root = (Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected @('root'))['root']
+            $total = [long]$managed.TotalProcesses
+            $result = 'root_unwitnessed'
+            if ([string]$root.start_witness -ceq 'present' -and $root.released -eq $false) {
+                # The pinned primitive creates the root suspended, assigns it and only then resumes it (from code, not
+                # observed): a live root witness with the root counted in the job is that order's outcome. Its start
+                # line is checked after the stop, once the witness is released.
+                if ($total -ge 1) { $result = 'assigned_before_resume' } else { $result = 'started_unassigned' }
+            }
+        }
+        $handles = $null
+        if ($CaseId -ceq 'A6') {
+            $handles = @(& $Seams['InheritedHandles'] $managed)
+            foreach ($handle in $handles) {
+                if ($handle -isnot [string]) { throw 'refused: an inherited handle is not a text description' }
+            }
+        }
+        if ($CaseId -ceq 'A5') {
+            & $Seams['KillController'] $managed
+            $until = (& $elapsed) + 30
+            while ((& $elapsed) -lt $until) {
+                $now = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+                if (@($members | Where-Object { $now[$_].released -eq $false }).Count -eq 0) { break }
+                & $Seams['Sleep'] 250
+            }
+            $observed = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+            return @{ case_id = $CaseId; name = $Name; binding = $binding
+                observation = @{ expected = $members; observed = $observed } }
+        }
+        # The adapter's loop: one guard reading per slice, then one wait; a drain counts only strictly before the
+        # deadline. A3 and A6 stop as soon as they have observed what they need.
+        $drained = $false
+        $guardStop = $null
+        $rootExitAt = $null
+        $orphanAlive = $null
+        $floor = [long]$plan['disk_floor_bytes']
+        $triggered = $false
+        $loop = $CaseId -ceq 'A1' -or $CaseId -ceq 'A2'
+        while ($loop -and (& $elapsed) -lt $deadline) {
+            if ($plan['guard'] -cne 'none' -and -not $triggered -and (& $elapsed) -ge $plan['trigger_seconds']) {
+                # The during-run guard: the driver itself turns the off switch on or raises the floor above the
+                # measured free space (a synthetic floor hit, never a filled disk).
+                $triggered = $true
+                if ($plan['guard'] -ceq 'off_switch') {
+                    $switch = New-Object IO.FileStream([string]$plan['off_switch'], [IO.FileMode]::CreateNew,
+                        [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    $switch.Dispose()
+                } else {
+                    $floor = [long](& $Seams['FreeBytes'] $directory) + 1
+                }
+            }
+            if (Test-WdShadowLifetimeOffSwitch ([string]$plan['off_switch'])) { $guardStop = 'off_switch'; break }
+            if ([long](& $Seams['FreeBytes'] $directory) -lt $floor) { $guardStop = 'disk_floor'; break }
+            $slice = [int][Math]::Max(1, [Math]::Min(1000, ($deadline - (& $elapsed)) * 1000))
+            if ($null -eq $rootExitAt) {
+                if ($managed.Wait($slice)) {
+                    $rootExitAt = & $elapsed
+                    if ($Name -ceq 'early_root_exit_orphan') {
+                        # Alive at the root exit = its witness held then; its start line is checked after the stop.
+                        $orphan = (Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected @('orphan'))
+                        $seen = $orphan['orphan']
+                        if ([string]$seen.start_witness -ceq 'present' -and $seen.released -is [bool]) {
+                            $orphanAlive = -not $seen.released
+                        }
+                    }
+                }
+            } else {
+                & $Seams['Sleep'] ([Math]::Min(250, $slice))
+            }
+            if ($null -ne $rootExitAt -and [long]$managed.ActiveProcesses -eq 0) {
+                if ((& $elapsed) -lt $deadline) { $drained = $true }
+                break
+            }
+        }
+        $stopCalls = 0
+        $stopOk = $false
+        $stopConfirmed = $false
+        $confirmedAt = $null
+        if (-not $drained) {
+            $stopCalls++
+            try { $managed.Stop(); $stopOk = $true } catch { $stopOk = $false }
+            $until = (& $elapsed) + 30
+            while ($true) {
+                if ([long]$managed.ActiveProcesses -eq 0) { $stopConfirmed = $true; $confirmedAt = & $elapsed; break }
+                if ((& $elapsed) -ge $until) { break }
+                & $Seams['Sleep'] 250
+            }
+            if ($stopConfirmed -and $null -eq $rootExitAt -and $managed.Wait(0)) { $rootExitAt = & $elapsed }
+        } else {
+            $confirmedAt = $rootExitAt
+        }
+        $active = [long]$managed.ActiveProcesses
+        $outcome = 'completed'
+        if (-not $drained) {
+            $outcome = 'stop_unconfirmed'
+            if ($stopOk -and $stopConfirmed -and $null -ne $rootExitAt) {
+                $outcome = 'stopped_at_deadline'
+                if ($guardStop -ceq 'off_switch') { $outcome = 'stopped_by_off_switch' }
+                if ($guardStop -ceq 'disk_floor') { $outcome = 'stopped_at_disk_floor' }
+            }
+        }
+        # The drain time, or the end of the stop wait when the drain was never confirmed (a FAIL, never a PASS).
+        if ($null -eq $confirmedAt) { $confirmedAt = & $elapsed }
+        $seconds = [long][Math]::Floor($confirmedAt)
+        # A start line is read only once its witness is released: a foreign, missing or still-held one leaves the
+        # orphan and root observations without evidence.
+        $after = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+        foreach ($member in @('orphan', 'root')) {
+            if ($members -cnotcontains $member) { continue }
+            $seen = $after[$member]
+            if ($seen.released -ne $true -or [string]$seen.launch_id -cne $launchId) {
+                if ($member -ceq 'orphan') { $orphanAlive = $null }
+                if ($null -ne $result) { $result = 'root_unwitnessed' }
+            }
+        }
+        if ($CaseId -ceq 'A3') { $observation = @{ result = $result } }
+        if ($CaseId -ceq 'A1') {
+            switch -CaseSensitive ($Name) {
+                'early_root_exit_orphan' {
+                    $observation = @{ outcome = $outcome; orphan_alive_at_root_exit = $orphanAlive }
+                }
+                'single_confirmed_stop' { $observation = @{ stop_calls = $stopCalls; stop_confirmed = $stopConfirmed } }
+                default {
+                    $observation = @{ outcome = $outcome; stop_confirmed = $stopConfirmed
+                        active_processes_after = $active; elapsed_seconds = $seconds }
+                }
+            }
+        }
+        if ($CaseId -ceq 'A2') {
+            $observed = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+            $state = Get-WdShadowLifetimeHeld -Observed $observed -Members $members -LaunchId $launchId
+            if ($state['complete']) {
+                $live = @()
+                $independent = @()
+                if ($active -gt 0) { $live = @($state['held']) } else { $independent = @($state['held']) }
+                $observation = @{ live_descendants = $live; independent_survivors = $independent
+                    child_started_during_stop_survived = (@($state['held']) -ccontains 'late_child') }
+            }
+        }
+        if ($CaseId -ceq 'A6') {
+            $lock = @{ attempted = $false; acquired = $false; released = $false; error = $null }
+            if ($stopConfirmed) {
+                $lock['attempted'] = $true
+                try {
+                    $held = New-Object IO.FileStream([string]$plan['lock_path'], [IO.FileMode]::OpenOrCreate,
+                        [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                    $lock['acquired'] = $true
+                    $held.Dispose()
+                    $lock['released'] = $true
+                } catch { $lock['error'] = $_.Exception.GetType().FullName }
+            }
+            $observation = @{ unexpected_inherited_handles = $handles; lock_reacquire = $lock }
+        }
+    } finally {
+        if ($null -ne $managed) { $managed.Dispose() }
+    }
+    return @{ case_id = $CaseId; name = $Name; binding = $binding; observation = $observation }
+}
+
+function ConvertTo-WdShadowLifetimeCaseObservation {
+    # A case observation for Get-WdShadowCaseVerdict from driver results, with the old launch binding unchanged. That
+    # binding names one launch and root, so only the one-sub-case lifetime cases (A2, A5, A6) compose; A1 and A3 need
+    # one launch per sub-case, and composing them is refused until a per-sub-case binding is decided.
+    param([string] $CaseId, [object[]] $Results)
+    if (@('A2', 'A5', 'A6') -cnotcontains $CaseId) {
+        throw "refused: $CaseId needs one launch per sub-case; the case binding names one launch and root"
+    }
+    if (@($Results).Count -ne 1 -or $Results[0] -isnot [hashtable] -or [string]$Results[0]['case_id'] -cne $CaseId) {
+        throw 'refused: one driver result of this case is required'
+    }
+    $subcases = @{ ([string]$Results[0]['name']) = $Results[0]['observation'] }
+    return @{ binding = $Results[0]['binding']; subcases = $subcases }
+}
+
+# Checkpoints 2 to 4: the case evaluators, the A7 pre-start drivers and the A1, A2, A3, A5 and A6 lifetime drivers
+# exist, but no driver produces native observations (A7 has no owned-job no-start witness and its real child seam is
+# disabled; the real lifetime job seams are disabled until the pinned owned-job API is reconciled, and A1 and A3 have no
+# per-sub-case launch binding; A4 has no publication-kill evidence), so every case stays NOT_READY (native NOT_RUN) and
+# the harness refuses by default, on a partial run and on opt-in; it never calls a driver.
 $cases = [ordered]@{
     'A1' = 'NOT_READY'
     'A2' = 'NOT_READY'
@@ -669,6 +1049,7 @@ $cases = [ordered]@{
     'A6' = 'NOT_READY'
     'A7' = 'NOT_READY'
 }
-Write-Error ('refused: checkpoint 3 has case evaluators and A7 pre-start drivers but no whole-run drivers; ' +
+Write-Error ('refused: checkpoint 4 has case evaluators, A7 pre-start drivers and lifetime drivers on disabled ' +
+    'real seams but no whole run; ' +
     (@($cases.Keys) -join ', ') + ' stay NOT_READY (native NOT_RUN)')
 exit 3

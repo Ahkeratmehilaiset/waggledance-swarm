@@ -1269,6 +1269,9 @@ function ConvertTo-WdShadowA7CaseObservation {
     return @{ binding = $binding; subcases = $subcases }
 }
 
+# Checkpoint 7 (Lead's v11 GO, 2026-10-22T21:44:33Z) supersedes the launch refusal below: the A1/A2 root launch
+# uses the v10 fixed member plan (child-only opt-in by a fixed literal -Command, which the six-argument API
+# accepts as argv) and the opt-in output observer behind one stop-once facade; see New-WdShadowOwnedLifetimeSeams.
 # Checkpoint 6 (Lead's v9 GO, 2026-10-22T21:01:34Z): the owned lifetime seams take the synthetic member by explicit
 # pinned path, bind the run to the admitted host, member and evidence root and regenerate the one approved plan
 # before any write, load or process seam; a substituted plan refuses inside the seam before its first write. The
@@ -1280,47 +1283,89 @@ function ConvertTo-WdShadowA7CaseObservation {
 function Test-WdShadowOwnedMemberPin {
     # The pinned synthetic member: the same full C:\ path, ancestry and byte rules as the five admitted files (the A7
     # five-file Test-WdShadowOwnedAdmission stays unchanged).
-    param([string] $MemberPath, [string] $ExpectedMemberSha256)
+    param([string] $MemberPath, [string] $ExpectedMemberSha256, [string] $What = 'member')
     if ($MemberPath -cnotmatch '^C:\\[\x20-\x7E]+\z' -or $MemberPath.Contains('"') -or
         [IO.Path]::GetFullPath($MemberPath) -cne $MemberPath) {
-        throw 'refused: the member path is not a full printable ASCII C:\ path'
+        throw "refused: the $What path is not a full printable ASCII C:\ path"
     }
     $current = $MemberPath
     while ($current.Length -gt 3) {
         if (([IO.File]::Exists($current) -or [IO.Directory]::Exists($current)) -and
             ([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'refused: the member path has reparse ancestry'
+            throw "refused: the $What path has reparse ancestry"
         }
         $current = [IO.Path]::GetDirectoryName($current)
     }
     if ($ExpectedMemberSha256 -cnotmatch '^[0-9A-F]{64}\z') {
-        throw 'refused: the member pin is not an uppercase SHA-256'
+        throw "refused: the $What pin is not an uppercase SHA-256"
     }
-    if (-not [IO.File]::Exists($MemberPath)) { throw 'refused: the pinned member file is missing' }
+    if (-not [IO.File]::Exists($MemberPath)) { throw "refused: the pinned $What file is missing" }
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $hash = -join @($sha.ComputeHash([IO.File]::ReadAllBytes($MemberPath)) | ForEach-Object { $_.ToString('X2') })
     } finally { $sha.Dispose() }
-    if ($hash -cne $ExpectedMemberSha256) { throw 'refused: the member file is not its pinned bytes' }
+    if ($hash -cne $ExpectedMemberSha256) { throw "refused: the $What file is not its pinned bytes" }
+}
+
+function New-WdShadowOwnedStopOnce {
+    # ONE private stop-once facade over the owned managed object, shared by the driver and the output observer: the
+    # first Stop request reaches the owned object exactly once (a failure is recorded and rethrown, never retried) and
+    # records whether the observer or the driver asked first; later requests only count. Wait observes the output
+    # budget before and after the owned wait. Never a process or PID kill.
+    param($Inner, [Collections.IDictionary] $Record, [hashtable] $Shared, [scriptblock] $Observe)
+    $facade = [pscustomobject]@{ Inner = $Inner; StopRecord = $Record; Shared = $Shared; ObserveHook = $Observe }
+    $facade | Add-Member -MemberType ScriptProperty -Name Pid -Value { $this.Inner.Pid }
+    $facade | Add-Member -MemberType ScriptProperty -Name ActiveProcesses -Value { $this.Inner.ActiveProcesses }
+    $facade | Add-Member -MemberType ScriptProperty -Name TotalProcesses -Value { $this.Inner.TotalProcesses }
+    $facade | Add-Member -MemberType ScriptProperty -Name ExitCode -Value { $this.Inner.ExitCode }
+    $facade | Add-Member -MemberType ScriptMethod -Name Stop -Value {
+        $record = $this.StopRecord
+        $record['requests'] = [int]$record['requests'] + 1
+        if ([int]$record['inner_calls'] -ne 0) { return }
+        $record['inner_calls'] = 1
+        $record['origin'] = 'driver'
+        if ($this.Shared['observing']) { $record['origin'] = 'observer' }
+        try { $this.Inner.Stop() } catch { $record['failed'] = $true; throw }
+    }
+    $facade | Add-Member -MemberType ScriptMethod -Name Wait -Value {
+        param($Milliseconds)
+        & $this.ObserveHook
+        $done = $this.Inner.Wait($Milliseconds)
+        & $this.ObserveHook
+        return $done
+    }
+    $facade | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.Inner.Dispose() }
+    return $facade
 }
 
 function New-WdShadowOwnedLifetimeSeams {
-    # The future real job and root seams of one A1/A2 lifetime sub-case: the opt-in switch (an accident guard, never
-    # authority), the five-file admission, the member pin, the run bound to the admitted host, member and evidence
-    # root, and the one approved plan regenerated here, all before Root's frozen runner is loaded into a private
-    # module. NewManaged refuses any plan that is not exactly that approved plan before any write, type or process
-    # call, and then refuses the approved one too: the six-argument managed process cannot give the member its
-    # child-local opt-in or finite log bounds (see checkpoint 6). RootCreation reads Root's measured identity. The
-    # other seams are the plain ones of Get-WdShadowLifetimeSeams; outer-context, controller-kill and handle stay
+    # The future real job and root seams of one A1 or A2 lifetime sub-case (Lead's v11 GO): the opt-in switch (an
+    # accident guard, never authority); A3, A5 and A6 refused before any side effect; the five-file admission, the
+    # member pin, the launch helper pin, the run bound to the admitted host, member and evidence root and the one
+    # approved plan regenerated here, all before Root's frozen runner or the helper is loaded into a private module.
+    # NewManaged refuses any plan that is not exactly that approved plan before any write, type or process call; for
+    # the approved plan it creates the empty root.input, runs Root's type initializer and its six-argument managed
+    # process with the admitted host and the ACTUAL argv of the helper's fixed member plan (child-only opt-in, the
+    # literal member; never the generic -File arguments), wraps the owned object in the stop-once facade and binds
+    # the helper's output observer to that facade. The clock, sleep and free-space seams and every facade wait
+    # observe the output budget. Record (one fresh empty table) receives the launch, budget and stop evidence for
+    # the receipt. RootCreation reads Root's measured identity; outer-context, controller-kill and handle seams stay
     # refused.
     param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
-        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $EvidenceRoot)
+        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $HelperPath,
+        [string] $ExpectedHelperSha256, [hashtable] $Record, [string] $EvidenceRoot, [long] $MaxOutputBytes = 1048576)
     if (-not $ApprovedNativeExecution) {
         throw 'refused: the owned lifetime seams need the explicit opt-in (an accident guard, never authority)'
     }
+    if ($CaseId -cne 'A1' -and $CaseId -cne 'A2') {
+        throw ('refused: owned ' + $CaseId + ' is not supported here (A3 real contexts, A5 parent kill and A6 ' +
+            'handle listing stay refused)')
+    }
+    if ($Record -isnot [hashtable] -or $Record.Count -ne 0) { throw 'refused: the owned record is not one empty table' }
     [void](Test-WdShadowOwnedAdmission -Files $Files -Expected $Expected -EvidenceRoot $EvidenceRoot `
         -BoundBytes 8388608)
     Test-WdShadowOwnedMemberPin -MemberPath $MemberPath -ExpectedMemberSha256 $ExpectedMemberSha256
+    Test-WdShadowOwnedMemberPin -MemberPath $HelperPath -ExpectedMemberSha256 $ExpectedHelperSha256 -What 'helper'
     if ($Run -isnot [hashtable] -or [string]$Run['witness_root'] -cne $EvidenceRoot -or
         [string]$Run['host_path'] -cne [string]$Files['host'] -or [string]$Run['member_path'] -cne $MemberPath) {
         throw 'refused: the run is not bound to the admitted host, member and evidence root'
@@ -1332,7 +1377,43 @@ function New-WdShadowOwnedLifetimeSeams {
     $approvedArguments = [string[]]@($approved['arguments'])
     $module = New-Module -Name 'WdShadowOwnedRunner' -ScriptBlock { param([string] $Runner) . $Runner } `
         -ArgumentList $Files['runner']
+    $launcher = New-Module -Name 'WdShadowOwnedLaunch' -ScriptBlock { param([string] $Helper) . $Helper } `
+        -ArgumentList $HelperPath
+    $fixed = & $launcher {
+        param($HostPath, $Member, $Directory, $Launch, $Subcase, $Lifetime, $Pin)
+        Get-WdShadowFixedMemberLaunchPlan -HostPath $HostPath -MemberPath $Member -WitnessDirectory $Directory `
+            -LaunchId $Launch -Subcase $Subcase -LifetimeSeconds $Lifetime -ExpectedMemberSha256 $Pin
+    } $Files['host'] $MemberPath $approvedDirectory $approvedLaunch ($CaseId + '/' + $Name) `
+        ([long]$approved['deadline_seconds'] + 60) $ExpectedMemberSha256
+    $fixedArgv = [string[]]@($fixed['argv'])
+    $loopText = [string](& $module {
+        param([string] $Path, [string] $Sha) (Read-WdA7PinnedFile $Path $Sha -AsText).text
+    } $Files['loop'] $Expected['loop'])
+    $Record['launch'] = [ordered]@{
+        host_path = [string]$Files['host']; argv = $fixedArgv; command_sha256 = [string]$fixed['command_sha256']
+        plan_schema = [string]$fixed['schema']; member_sha256 = $ExpectedMemberSha256; started = $false
+    }
+    $Record['budget'] = [ordered]@{ observations = 0; last = $null; trigger = $null }
+    $Record['stop'] = [ordered]@{ requests = 0; inner_calls = 0; origin = $null; failed = $false }
+    $shared = @{ observer = $null; observing = $false }
+    $budget = $Record['budget']
+    $observe = {
+        if ($null -eq $shared['observer']) { return }
+        $shared['observing'] = $true
+        try { $seen = & $shared['observer'] } finally { $shared['observing'] = $false }
+        $budget['observations'] = [int]$budget['observations'] + 1
+        $budget['last'] = $seen
+        if ($null -eq $budget['trigger'] -and [string]$seen['status'] -cne 'WITHIN_OBSERVED_BUDGET') {
+            $budget['trigger'] = [string]$seen['status']
+        }
+    }.GetNewClosure()
     $seams = Get-WdShadowLifetimeSeams
+    $clock = $seams['Clock']; $sleep = $seams['Sleep']; $freeBytes = $seams['FreeBytes']
+    $seams['Clock'] = { & $observe; return (& $clock @args) }.GetNewClosure()
+    $seams['Sleep'] = { & $observe; & $sleep @args }.GetNewClosure()
+    $seams['FreeBytes'] = { & $observe; return (& $freeBytes @args) }.GetNewClosure()
+    $stopRecord = $Record['stop']; $launchRecord = $Record['launch']
+    $stopOnce = ${function:New-WdShadowOwnedStopOnce}
     $seams['NewManaged'] = {
         param($Plan)
         $given = @()
@@ -1344,9 +1425,25 @@ function New-WdShadowOwnedLifetimeSeams {
             if ([string]$given[$index] -cne $approvedArguments[$index]) { $same = $false }
         }
         if (-not $same) { throw 'refused: the plan is not the approved lifetime plan' }
-        throw ('refused: the fixed member needs its child-local opt-in (WD_MIND_SHADOW_SYNTHETIC_MEMBER) and finite ' +
-            'log bounds, which the six-argument managed process cannot establish; the native lifetime branch stays ' +
-            'NOT_READY')
+        $inputPath = $approvedDirectory + '\root.input'
+        $stream = New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+            [IO.FileShare]::None)
+        $stream.Dispose()
+        $inner = & $module {
+            param([string] $Text, [string] $HostPath, [string[]] $Arguments, [string] $Directory, [string] $InputPath)
+            Initialize-WdA7OwnedType $Text
+            New-WdA7ManagedProcess $HostPath $Arguments $Directory $InputPath ($Directory + '\root.stdout.log') `
+                ($Directory + '\root.stderr.log')
+        } $loopText $approvedHost $fixedArgv $approvedDirectory $inputPath
+        $launchRecord['started'] = $true
+        $facade = & $stopOnce -Inner $inner -Record $stopRecord -Shared $shared -Observe $observe
+        $shared['observer'] = & $launcher {
+            param($Managed, $Directory, $Max)
+            New-WdShadowOwnedOutputObserver -ApprovedObservation -Managed $Managed -EvidenceDirectory $Directory `
+                -MaxOutputBytes $Max
+        } $facade $approvedDirectory $MaxOutputBytes
+        & $observe
+        return $facade
     }.GetNewClosure()
     $seams['RootCreation'] = {
         param($Managed)
@@ -1355,19 +1452,41 @@ function New-WdShadowOwnedLifetimeSeams {
     return $seams
 }
 
+function ConvertTo-WdShadowOwnedLifetimeReceipt {
+    # The versioned owned lifetime receipt: the actual launch evidence (the admitted host and the fixed plan argv and
+    # command hash passed to the owned process), the observed output budget and the stop-once record. A budget
+    # trigger (over the bound, the floor or UNKNOWN), a failed stop or a stop first requested by the observer makes
+    # the observation null (UNKNOWN), never PASS; the evidence is kept. Observed bytes only, never native PASS.
+    param([hashtable] $Result, [hashtable] $Record)
+    $observation = $null
+    if ($null -ne $Result) { $observation = $Result['observation'] }
+    $blocked = $null -ne $Record['budget']['trigger'] -or [bool]$Record['stop']['failed'] -or
+        [string]$Record['stop']['origin'] -ceq 'observer'
+    if ($blocked) { $observation = $null }
+    return [ordered]@{
+        schema = 'wd.mind-shadow-owned-lifetime-receipt.v1'; case_id = $Result['case_id']; name = $Result['name']
+        binding = $Result['binding']; observation = $observation; launch = $Record['launch']
+        budget = $Record['budget']; stop = $Record['stop']; budget_or_stop_blocked = [bool]$blocked
+        native_pass = $false
+    }
+}
+
 function Invoke-WdShadowOwnedLifetimeDriver {
-    # The public owned lifetime run: the opt-in switch, then the owned seams (admission, member pin, run binding and
-    # the approved plan, all before any write), then the generic driver, whose first write is the registration file.
-    # The generic driver with injected seams stays a test surface, never a security or authority boundary.
+    # The public owned A1/A2 lifetime run: the opt-in switch, then the owned seams (all admission, pins, run binding
+    # and the approved plan before any write), then the generic driver, whose first write is the registration file,
+    # and the versioned receipt. The generic driver with injected seams stays a test surface, never a boundary.
     param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
-        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $EvidenceRoot)
+        [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $HelperPath,
+        [string] $ExpectedHelperSha256, [string] $EvidenceRoot)
     if (-not $ApprovedNativeExecution) {
         throw 'refused: the owned lifetime run needs the explicit opt-in (an accident guard, never authority)'
     }
+    $record = @{}
     $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution -CaseId $CaseId -Name $Name -Run $Run `
         -Files $Files -Expected $Expected -MemberPath $MemberPath -ExpectedMemberSha256 $ExpectedMemberSha256 `
-        -EvidenceRoot $EvidenceRoot
-    return Invoke-WdShadowLifetimeDriver -CaseId $CaseId -Name $Name -Run $Run -Seams $seams
+        -HelperPath $HelperPath -ExpectedHelperSha256 $ExpectedHelperSha256 -Record $record -EvidenceRoot $EvidenceRoot
+    $result = Invoke-WdShadowLifetimeDriver -CaseId $CaseId -Name $Name -Run $Run -Seams $seams
+    return ConvertTo-WdShadowOwnedLifetimeReceipt -Result $result -Record $record
 }
 
 # Checkpoints 2 to 4: the case evaluators, the A7 pre-start drivers and the A1, A2, A3, A5 and A6 lifetime drivers

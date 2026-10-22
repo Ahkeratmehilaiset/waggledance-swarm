@@ -1,6 +1,7 @@
 # Synthetic mind-shadow owned-member launch helpers (Lead's v10 GO, 2026-10-22T21:22:07Z). Test and harness Source
-# only: this file defines functions and nothing else; running it directly refuses (exit 3). Neither function starts a
-# process, runs the member, touches a job or a native handle, or changes any environment, and neither is authority:
+# only: this file defines functions and nothing else; running it directly refuses (exit 3). The PURE builder starts
+# no process, runs no member and touches no job or handle; the opt-in observer only requests Stop on the one owned
+# object it is explicitly given. Neither changes any environment of the parent, and neither is authority:
 # a future approved caller must still do the raw file, ancestry and admission binding and bind the ACTUAL executed
 # argv and command hash to its approved run; any real use needs its own separate runtime decision.
 #

@@ -115,7 +115,11 @@ public sealed class WdManagedTurnProcess : IDisposable {
         if(h==new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
         return h;
     }
-    public WdManagedTurnProcess(string exe,string[] args,string cwd,string input,string output,string error) {
+    public WdManagedTurnProcess(string exe,string[] args,string cwd,string input,string output,string error)
+        : this(exe,args,cwd,input,output,error,null) { }
+    // Optional synchronous PID-only observation; it has no timeout of its own.
+    // The ordinary six-argument/null path performs no observation.
+    public WdManagedTurnProcess(string exe,string[] args,string cwd,string input,string output,string error,Action<int> beforeResume) {
         IntPtr hi=IntPtr.Zero,ho=IntPtr.Zero,he=IntPtr.Zero,thread=IntPtr.Zero;
         try {
             job=CreateJobObject(IntPtr.Zero,null); Check(job!=IntPtr.Zero);
@@ -128,6 +132,7 @@ public sealed class WdManagedTurnProcess : IDisposable {
             Check(CreateProcess(exe,cmd,IntPtr.Zero,IntPtr.Zero,true,0x08000004,IntPtr.Zero,cwd,ref si,out pi));
             process=pi.process; thread=pi.thread; Pid=pi.pid;
             Check(AssignProcessToJobObject(job,process));
+            if(beforeResume!=null) beforeResume(Pid);
             Check(ResumeThread(thread)!=0xffffffff);
         } catch {
             if(process!=IntPtr.Zero) { TerminateProcess(process,125); WaitForSingleObject(process,5000); }

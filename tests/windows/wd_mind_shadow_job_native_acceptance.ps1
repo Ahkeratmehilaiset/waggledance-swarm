@@ -30,10 +30,12 @@
     approved adapter inputs with at most one deviation, runs the actual adapter once in a fresh child through injected
     seams and derives the four refusal observations from the child's exit code and error stream, two listings of the
     run root and the child's live children. RCO1's A1-A7 wording selects no particular adapter refusal (UNSPECIFIED,
-    RCO1 2026-10-22T19:01:24Z), so the refusal per sub-case is this file's explicit choice: T1 integrity, R1 type, the
-    off switch, the floor and run-root reparse ancestry. The two lane-loop sub-cases have no plan (unreachable in an
-    actual run). The drivers are not called by the script: the A7 case verdict needs a run binding (launch id, root
-    PID) that a pre-start refusal never has, so A7 stays NOT_READY and native stays NOT_RUN.
+    RCO1 2026-10-22T19:01:24Z), so the refusal per sub-case is this file's explicit choice: T1 integrity, T1 user SID,
+    R1 type, the off switch, the floor and run-root reparse ancestry. Lead's v5 delta (2026-10-22T19:07:50Z) adds the
+    user SID variant that RCO1's 10-17 refinement names, so A7 requires nine sub-cases and the old eight are never
+    complete. The two lane-loop sub-cases have no plan (unreachable in an actual run). The drivers are not called by
+    the script: the A7 case verdict needs a run binding (launch id, root PID) that a pre-start refusal never has, so
+    A7 stays NOT_READY and native stays NOT_RUN.
 
     Design: RCO1 (A1-A7), RCO2 (G1-G4 and the witness), Lead (decisions and the guard cases); fable-5 wrote this file.
 #>
@@ -236,8 +238,9 @@ function Get-WdShadowSubcaseVerdict {
             if ($lock['attempted'] -and $null -eq $lock['error']) { return 'PASS' }
             return 'UNKNOWN'
         }
-        { $_ -cmatch '^A7/(integrity_mismatch|preloaded_type|lane_loop_zero_functions|lane_loop_two_functions|' +
-            'off_switch_before_start|off_switch_denied_read|disk_floor_before_start|reparse_ancestry)$' } {
+        { $_ -cmatch '^A7/(integrity_mismatch|user_sid_mismatch|preloaded_type|lane_loop_zero_functions|' +
+            'lane_loop_two_functions|off_switch_before_start|off_switch_denied_read|disk_floor_before_start|' +
+            'reparse_ancestry)$' } {
             return Get-WdShadowRefusalVerdict $Observation
         }
     }
@@ -257,8 +260,10 @@ function Get-WdShadowCaseVerdict {
         A3 = @('outer_no_limits', 'outer_kill_on_close', 'planned_launch_context')
         A5 = @('controller_death')
         A6 = @('inherited_handles')
-        A7 = @('integrity_mismatch', 'preloaded_type', 'lane_loop_zero_functions', 'lane_loop_two_functions',
-            'off_switch_before_start', 'off_switch_denied_read', 'disk_floor_before_start', 'reparse_ancestry')
+        # Lead's v5 contract delta: RCO1's 10-17 refinement names the A7 integrity AND user variants.
+        A7 = @('integrity_mismatch', 'user_sid_mismatch', 'preloaded_type', 'lane_loop_zero_functions',
+            'lane_loop_two_functions', 'off_switch_before_start', 'off_switch_denied_read', 'disk_floor_before_start',
+            'reparse_ancestry')
     }
     if (@('A1', 'A2', 'A3', 'A5', 'A6', 'A7') -cnotcontains $CaseId) { return 'UNKNOWN' }
     $bindingKeys = @('harness_run_id', 'case_id', 'launch_id', 'root_pid', 'root_creation_utc', 'deadline_seconds')
@@ -313,9 +318,10 @@ function Get-WdShadowRunVerdict {
 # Checkpoint 3 (Lead A7 driver GO, 2026-10-22): the A7 pre-start refusal drivers. RCO1's A1-A7 wording names an
 # integrity mismatch refused before the start (integrity and user variants) and selects no particular adapter refusal
 # (UNSPECIFIED, RCO1 2026-10-22T19:01:24Z), so the refusal of each sub-case is this file's explicit choice: T1
-# integrity (adapter L423), R1 type (L124), the off switch (L561), the floor (L569) and run-root reparse ancestry
-# (L543). The approved inputs are the executor's, which pass every earlier adapter check (token user and integrity,
-# adapter hash, state pointer, manifest, pins, wrapper, lane loop); a plan changes at most one of them.
+# integrity (adapter L423), T1 user SID (L426, Lead's v5 delta), R1 type (L124), the off switch (L561), the floor
+# (L569) and run-root reparse ancestry (L543). The approved inputs are the executor's, which pass every earlier adapter
+# check (token user and integrity, adapter hash, state pointer, manifest, pins, wrapper, lane loop); a plan changes at
+# most one of them. A wrong approved integrity level is the deviation for an actual Medium actor, never an elevation.
 
 function Get-WdShadowA7Plan {
     # One A7 sub-case as a plan: the approved inputs with the run root replaced and at most one deviation, the case
@@ -324,8 +330,8 @@ function Get-WdShadowA7Plan {
     # manifest pin before it counts the functions, so a zero- or two-function loop cannot reach that count in an
     # actual run. Invalid input is refused, never planned.
     param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot)
-    $reachable = @('integrity_mismatch', 'preloaded_type', 'off_switch_before_start', 'off_switch_denied_read',
-        'disk_floor_before_start', 'reparse_ancestry')
+    $reachable = @('integrity_mismatch', 'user_sid_mismatch', 'preloaded_type', 'off_switch_before_start',
+        'off_switch_denied_read', 'disk_floor_before_start', 'reparse_ancestry')
     $unreachable = @('lane_loop_zero_functions', 'lane_loop_two_functions')
     if ($reachable -cnotcontains $Name -and $unreachable -cnotcontains $Name) { throw 'refused: unknown A7 sub-case' }
     $keys = @('ExpectedSourceCommit', 'ExpectedManifestSha256', 'ExpectedAdapterSha256', 'ApprovedRunRoot', 'LiveDir',
@@ -361,6 +367,19 @@ function Get-WdShadowA7Plan {
             $other = @{ medium = 'high'; high = 'medium' }[$level]
             $planned['ApprovedIntegrityLevel'] = $other
             $pattern = [regex]::Escape("refused: the actual integrity level $level is not the approved $other")
+        }
+        'user_sid_mismatch' {
+            # A foreign SID of the adapter's own form (its value check runs first): the approved SID with its last
+            # sub-authority replaced by 0 (by 1 when it is 0).
+            $sid = [string]$Inputs['ApprovedUserSid']
+            if ($sid -cnotmatch '^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+\z') {
+                throw 'refused: ApprovedUserSid is not a domain user SID, so no foreign SID of its form is derived'
+            }
+            $prefix = $sid.Substring(0, $sid.LastIndexOf('-') + 1)
+            $rid = '0'
+            if ($sid.Substring($prefix.Length) -ceq '0') { $rid = '1' }
+            $planned['ApprovedUserSid'] = $prefix + $rid
+            $pattern = [regex]::Escape('refused: the token user SID is not the approved user SID')
         }
         'preloaded_type' {
             $preload = 'lane_loop_type'

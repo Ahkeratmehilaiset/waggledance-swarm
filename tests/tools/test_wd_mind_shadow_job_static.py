@@ -569,6 +569,12 @@ def test_harness_a7_drivers_use_injected_seams_and_never_kill_or_run_by_default(
     assert plan.count("return $null") == 1
     assert "'lane_loop_zero_functions', 'lane_loop_two_functions'" in plan
     assert harness.rstrip().endswith("exit 3")
+    # Lead's v5 contract delta: the A7 required set holds both T1 variants (integrity and user), never the old eight.
+    case = _function(harness, "Get-WdShadowCaseVerdict")
+    a7 = re.search(r"A7 = @\((.*?)\)", case, flags=re.S).group(1)
+    assert re.findall(r"'(\w+)'", a7)[:2] == ["integrity_mismatch", "user_sid_mismatch"]
+    assert len(re.findall(r"'(\w+)'", a7)) == 9
+    assert "user_sid_mismatch" in _function(harness, "Get-WdShadowSubcaseVerdict")
 
 
 def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes(adapter):

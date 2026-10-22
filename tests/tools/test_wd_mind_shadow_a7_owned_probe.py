@@ -13,6 +13,19 @@ PROBE = ROOT / 'tests/windows/wd_mind_shadow_a7_owned_probe.ps1'
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_real_pinned_planner_importer_admits_v9_and_preserves_explicit_child_pin(ps):
+    planner = ROOT / 'tests/windows/wd_mind_shadow_job_native_acceptance.ps1'
+    script = rf"""
+$text=[IO.File]::ReadAllText({q(planner)}).Replace("`r`n","`n")
+. ([scriptblock]::Create((Import-WdA7PinnedPlanner $text)))
+$inputs=@{{ExpectedSourceCommit=('a'*40);ExpectedManifestSha256=('B'*64);ExpectedAdapterSha256=('C'*64);ApprovedRunRoot='C:\synthetic\.codex-audit\run';LiveDir='C:\synthetic\.codex-audit\live';ApprovedUserSid='S-1-5-21-1-2-3-4';ApprovedIntegrityLevel='medium';ExpectedPeakAdditionalBytes=1}}
+$command=Get-WdShadowA7ChildCommand @{{preload='lane_loop_type';inputs=$inputs}} 'C:\synthetic\adapter.ps1' ('D'*64)
+@{{pin_included=$command.Contains("'"+('D'*64)+"'");reads=[regex]::Matches($command,'ReadAllBytes\(').Count;parses=[regex]::Matches($command,'ParseInput\(').Count;parsefile=$command.Contains('ParseFile(')}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {'pin_included': True, 'reads': 1, 'parses': 1, 'parsefile': False}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('revision', ['new_exact', 'old_exact', 'mutated'])
 def test_composed_owned_initializer_admits_only_the_new_root_only_loop(tmp_path, ps, revision):
     # Exercise the real initializer admission; Add-Type is a throwing barrier,
@@ -87,7 +100,10 @@ function Read-WdA7PinnedFile {{param($Path,$ExpectedSha256,[switch]$AsText) retu
 function Import-WdA7PinnedPlanner {{param($Text) return @'
 function Test-WdShadowExactKeys {{param($Value,$Keys) return ($Value.Count-eq$Keys.Count-and@($Keys|Where-Object{{-not$Value.ContainsKey($_)}}).Count-eq0)}}
 function Get-WdShadowA7Plan {{param($Name,$Inputs,$CaseRoot) return $script:syntheticPlan}}
-function Get-WdShadowA7ChildCommand {{param($Plan,$AdapterPath) return 'literal synthetic command'}}
+function Get-WdShadowA7ChildCommand {{param($Plan,$AdapterPath,$ExpectedLoopSha256)
+    if($ExpectedLoopSha256-cne('C'*64)){{throw 'synthetic loop pin was not passed'}}
+    return 'literal synthetic command'
+}}
 '@}}
 function Get-WdA7ObservedIdentity {{param($ProbePid) return @{{pid=[string]$PID;creation_utc='2026-10-22T00:00:00Z'}}}}
 function Initialize-WdA7OwnedType {{throw 'unexpected type initialization before preparation verification'}}

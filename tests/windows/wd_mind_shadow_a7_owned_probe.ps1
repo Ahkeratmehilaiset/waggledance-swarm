@@ -243,7 +243,7 @@ function Import-WdA7PinnedPlanner {
     param([string]$Text)
     $pins=@{
         'Get-WdShadowA7Plan'='CCD57370DFED13BF3FC7B612B96AAE38A248209733ED5B1E4B0E0E42E25985C0'
-        'Get-WdShadowA7ChildCommand'='6B28EBEFBBA89DF82A946143D9D895858F9E7DCE5FBFC0ABDAC2BB6BE3028072'
+        'Get-WdShadowA7ChildCommand'='3546C494820F925C56C2E56CEB817B28D34556BFF904132E33D8DA29B7651C5A'
         'ConvertTo-WdShadowA7Literal'='2B085E3C0635E64FBB1C3C1D641C26988D85F3EA6E638FF3A71067E7864C49B1'
         'Test-WdShadowExactKeys'='92B5FCB906838F5CA04382094E829484370C0D6589AE718CA05DE7F61FC5B8F9'
         'Test-WdShadowCount'='27ECF6B8C09E4B56CE5B3137A44D72243F874EFB513CA887798B70C72D4F67E6'
@@ -298,7 +298,7 @@ function Invoke-WdMindShadowA7OwnedProbe {
     foreach($key in @('name','run_root','refusal','prepare','preload')){if($Plan[$key]-isnot[string]-or$Plan[$key]-cne$expected[$key]){throw 'refused: foreign plan'}}
     if(-not(Test-WdShadowExactKeys $Plan.inputs @($ApprovedInputs.Keys))){throw 'refused: plan input shape'}
     foreach($key in $ApprovedInputs.Keys){if($Plan.inputs[$key]-cne$expected.inputs[$key]){throw 'refused: foreign planned input'}}
-    if((Get-WdShadowA7ChildCommand $expected $AdapterPath)-cne$LiteralAdapterCommand){throw 'refused: literal planner command mismatch'}
+    if((Get-WdShadowA7ChildCommand $expected $AdapterPath $loopPin.sha256)-cne$LiteralAdapterCommand){throw 'refused: literal planner command mismatch'}
     Assert-WdA7PreparedState $expected $CaseRoot $loopPin.path $ApprovedInputs.ExpectedSourceCommit
     $EvidenceRoot=[IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\')
     if($EvidenceRoot-notmatch'^C:\\.*\\\.codex-audit(?:\\|$)'-or-not[IO.Directory]::Exists($EvidenceRoot)){throw 'refused: existing C audit evidence root required'}

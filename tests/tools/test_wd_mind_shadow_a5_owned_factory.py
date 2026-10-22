@@ -72,8 +72,26 @@ foreach ($item in $spec.rows) {
     $evidence = $spec.audit + '\evidence-' + $item.name
     $run = $spec.audit + '\run-' + $item.name
     if ($item.run_outside) { $run = $spec.outside + '\run-' + $item.name }
+    if ($item.same_roots) {  # RCO2 R2: the same folder, its leaf in another case
+        $run = [IO.Path]::GetDirectoryName($evidence) + '\' + [IO.Path]::GetFileName($evidence).ToUpperInvariant()
+    }
     [void][IO.Directory]::CreateDirectory($evidence)
     if ($item.stale_output) { [IO.File]::WriteAllText($evidence + '\a5-controller.stdout.log', 'old') }
+    # The frozen controller needs an existing EMPTY plain run root: the fixture supplies it (or the row's defect),
+    # and the inventory before the factory call separates these fixture entries from factory side effects.
+    if ($item.run_file) { [IO.File]::WriteAllText($run, 'not a folder') }
+    elseif (-not $item.run_missing) { [void][IO.Directory]::CreateDirectory($run) }
+    if ($item.run_nonempty) { [IO.File]::WriteAllText($run + '\stale.txt', 'stale') }
+    $inventory = {
+        @(foreach ($root in @($evidence, $run)) {
+                if ([IO.Directory]::Exists($root)) {
+                    'D ' + $root
+                    [IO.Directory]::GetFileSystemEntries($root, '*', [IO.SearchOption]::AllDirectories) |
+                        ForEach-Object { 'E ' + $_ }
+                } elseif ([IO.File]::Exists($root)) { 'F ' + $root }
+            }) | Sort-Object
+    }
+    $before = @(& $inventory)
     $launch = $spec.launch
     if ($item.bad_context) { $launch = $launch.ToUpperInvariant() }
     $config = @{
@@ -141,6 +159,8 @@ foreach ($item in $spec.rows) {
     $row.calls = @($global:WdF)
     $row.input = [IO.File]::Exists($evidence + '\a5-controller.input')
     $row.run_dir = [IO.Directory]::Exists($run)
+    $row.inv_before = @($before)
+    $row.inv_after = @(& $inventory)
     $row.env = [string][Environment]::GetEnvironmentVariable('WD_MIND_SHADOW_SYNTHETIC_MEMBER')
     $rows += $row
 }
@@ -152,6 +172,8 @@ ROWS = {
     "bad_context": {"bad_context": True}, "bad_controller_pin": {"bad_controller_pin": True},
     "bad_parent_pin": {"bad_parent_pin": True}, "bad_runner_pin": {"bad_runner_pin": True},
     "bound_zero": {"max": 0}, "bound_over": {"max": 32769}, "run_outside": {"run_outside": True},
+    "run_missing": {"run_missing": True}, "run_not_directory": {"run_file": True},
+    "run_nonempty": {"run_nonempty": True}, "same_roots": {"same_roots": True},
     "stale_output": {"stale_output": True}, "substituted_command": {"substitute": True},
     "foreign_config": {"foreign_config": True}, "setup_failure": {"mode": "no_root_stop"},
     "setup_cleanup_errors": {"mode": "cleanup_errors"}, "ctor_throws": {"mode": "ctor_throws"},
@@ -162,7 +184,10 @@ REFUSED = {"not_approved": "explicit opt-in", "bad_context": "invalid A5 context
            "bad_controller_pin": "parent raw pin mismatch",  # the frozen parent's own pin reader message
            "bad_parent_pin": "parent file is not its pinned bytes", "bad_runner_pin": "runner file is not its pinned",
            "bound_zero": "output bound", "bound_over": "output bound", "run_outside": "RunRoot is not a folder",
-           "stale_output": "never overwritten"}
+           "stale_output": "never overwritten", "run_missing": "RunRoot is not an existing empty plain folder",
+           "run_not_directory": "RunRoot is not an existing empty plain folder",
+           "run_nonempty": "RunRoot is not an existing empty plain folder",
+           "same_roots": "EvidenceRoot and RunRoot are the same folder"}
 
 
 def _sha(path):
@@ -196,7 +221,8 @@ def rows(request, tmp_path_factory):
     for name, change in ROWS.items():
         item = {"name": name, "approved": True, "max": 32768, "mode": "", "snapshot": ""}
         item.update({flag: False for flag in ("run_outside", "stale_output", "bad_context", "bad_controller_pin",
-                                              "bad_parent_pin", "bad_runner_pin", "foreign_config", "substitute")})
+                                              "bad_parent_pin", "bad_runner_pin", "foreign_config", "substitute",
+                                              "run_missing", "run_file", "run_nonempty", "same_roots")})
         item.update(change)
         items.append(item)
     spec = {"parent": str(PARENT), "controller": str(CONTROLLER), "runner": str(pins / "runner.ps1"),
@@ -221,7 +247,9 @@ def test_factory_refuses_before_any_write_or_call(rows, name):
     row = rows[0][name]
     assert row["result"] == "ERROR" and REFUSED[name] in row["error"], row
     assert row["error"].startswith("refused: ") or name == "bad_controller_pin", row
-    assert row["calls"] == [] and row["input"] is False and row["run_dir"] is False and row["record"] == {}, row
+    assert row["calls"] == [] and row["input"] is False and row["record"] == {}, row
+    # no factory side effect at all: the evidence and run-root inventories are exactly the fixture's
+    assert row["inv_after"] == row["inv_before"], row
 
 
 @pytest.mark.parametrize("name", ["launch_ok", "snapshot_text"])
@@ -239,6 +267,13 @@ def test_factory_launches_the_frozen_parent_command_once_through_the_owned_const
     assert row["identity"] == {"pid": "6161", "creation_utc": "2026-10-22T00:00:01.0000000Z"} and row["now_ok"]
     assert row["ready"] == "pending" and row["marker"] == "threw", row  # no run directory: unknown answers throw
     assert all(text.startswith("refused: not ") for text in row["foreign"]), row
+    # the factory and the fake constructor add exactly the fixed input and the two fixed logs; the empty run root
+    # supplied by the fixture stays empty (the frozen controller, never run here, would create the run directory)
+    added = sorted(set(row["inv_after"]) - set(row["inv_before"]))
+    assert added == sorted("E " + evidence + "\\a5-controller." + suffix for suffix in ("input", "stdout.log",
+                                                                                         "stderr.log")), row
+    run = spec["audit"] + "\\run-" + name
+    assert "D " + run in row["inv_before"] and not set(row["inv_before"]) - set(row["inv_after"]), row
     want = "ok" if name == "snapshot_text" else ""
     assert row["errors"] == {"stdout": want, "stderr": ""} and row["out_after"] is True, row
 

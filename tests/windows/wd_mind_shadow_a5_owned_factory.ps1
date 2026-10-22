@@ -85,8 +85,9 @@ function New-WdA5OwnedFactorySeams {
     # bound (1 to 32768, the Core's own limit), the frozen parent and Root runner pins and their fixed function
     # closures, the parent's own Config check, the four file pins (host, loop, member, controller; the controller's
     # canonical identity through the parent's pure import), the Context identity, local C: NTFS with 3 GiB free,
-    # EvidenceRoot an existing folder and RunRoot a folder directly in a .codex-audit folder, a fresh run directory
-    # and absent fixed output files. NewOwned launches ONCE (never retried) through Root's initializer and six-argument
+    # EvidenceRoot an existing folder and RunRoot an existing EMPTY plain folder directly in a .codex-audit folder
+    # (the frozen controller refuses anything else), a fresh run directory and absent fixed output files.
+    # NewOwned launches ONCE (never retried) through Root's initializer and six-argument
     # owned constructor with the admitted host and the frozen parent's literal controller command.
     param([switch] $ApprovedNativeExecution, [hashtable] $Config, [string] $ParentPath, [string] $ExpectedParentSha256,
         [string] $RunnerPath, [string] $ExpectedRunnerSha256, [hashtable] $Record, [long] $MaxOutputBytes = 32768)
@@ -130,6 +131,15 @@ function New-WdA5OwnedFactorySeams {
         }
     }
     if (-not [IO.Directory]::Exists($Config.EvidenceRoot)) { throw 'refused: EvidenceRoot is not an existing folder' }
+    $runRoot = $Config.RunRoot
+    if ([string]::Equals($runRoot, $Config.EvidenceRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'refused: EvidenceRoot and RunRoot are the same folder (the factory files would fill the run root)'
+    }
+    if (-not [IO.Directory]::Exists($runRoot) -or
+        ([IO.File]::GetAttributes($runRoot) -band [IO.FileAttributes]::ReparsePoint) -or
+        [IO.Directory]::GetFileSystemEntries($runRoot).Length -ne 0) {
+        throw 'refused: RunRoot is not an existing empty plain folder (the frozen controller requires one)'
+    }
     $directory = $Config.RunRoot + '\' + $Config.Context.launch_id
     if ([IO.Directory]::Exists($directory) -or [IO.File]::Exists($directory)) {
         throw 'refused: the run directory is not fresh'

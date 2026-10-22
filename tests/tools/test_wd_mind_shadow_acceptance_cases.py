@@ -127,8 +127,11 @@ def _a6():
 
 
 REFUSED = {"exit_code": 1, "refusal_seen": True, "run_dir_created": False, "process_started": False}
-A7_SUBCASES = ("integrity_mismatch", "preloaded_type", "lane_loop_zero_functions", "lane_loop_two_functions",
-               "off_switch_before_start", "off_switch_denied_read", "disk_floor_before_start", "reparse_ancestry")
+# Lead's v5 contract delta (2026-10-22T19:07:50Z): RCO1's 10-17 refinement names the A7 integrity AND user variants,
+# so the user SID mismatch is a required sub-case too; the old eight-sub-case set is never complete.
+A7_OLD_EIGHT = ("integrity_mismatch", "preloaded_type", "lane_loop_zero_functions", "lane_loop_two_functions",
+                "off_switch_before_start", "off_switch_denied_read", "disk_floor_before_start", "reparse_ancestry")
+A7_SUBCASES = A7_OLD_EIGHT[:1] + ("user_sid_mismatch",) + A7_OLD_EIGHT[1:]
 
 
 def _a7():
@@ -207,6 +210,9 @@ FIXTURES = [
      "FAIL"),
     (_case("a7_refusal_exit_zero", "A7", _with(_a7(), "reparse_ancestry", exit_code=0)), "FAIL"),
     (_case("a7_no_refusal_seen", "A7", _with(_a7(), "disk_floor_before_start", refusal_seen=None)), "UNKNOWN"),
+    (_case("a7_old_eight_without_user_variant", "A7", {name: dict(REFUSED) for name in A7_OLD_EIGHT}), "UNKNOWN"),
+    (_case("a7_user_sid_but_started", "A7", _with(_a7(), "user_sid_mismatch", process_started=True)), "FAIL"),
+    (_case("a7_user_sid_no_refusal_seen", "A7", _with(_a7(), "user_sid_mismatch", refusal_seen=False)), "UNKNOWN"),
     # Lead's boundary probe of edf55c95: three false-PASS categories, RED first, positive controls kept.
     (_case("a1_deadline_negative_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=-1)), "UNKNOWN"),
     (_case("a1_deadline_zero_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=0)), "FAIL"),
@@ -359,9 +365,12 @@ foreach ($item in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Fixtur
 ConvertTo-Json -InputObject @($rows) -Compress -Depth 6
 """
 
-A7_REACHABLE = ("integrity_mismatch", "preloaded_type", "off_switch_before_start", "off_switch_denied_read",
-                "disk_floor_before_start", "reparse_ancestry")
+A7_REACHABLE = ("integrity_mismatch", "user_sid_mismatch", "preloaded_type", "off_switch_before_start",
+                "off_switch_denied_read", "disk_floor_before_start", "reparse_ancestry")
 A7_LOOP = ("lane_loop_zero_functions", "lane_loop_two_functions")
+# A well-formed fake domain user SID (the adapter refuses any other form): the user variant derives its deviation from
+# it. Synthetic, never a real account.
+A7_FAKE_SID = "S-1-5-21-1000000001-1000000002-1000000003-1001"
 
 
 def _adapter_template(needle):
@@ -376,6 +385,8 @@ def _a7_refusal(sub, case_root):
     if sub == "integrity_mismatch":
         return _adapter_template("the actual integrity level").replace("$integrity", "medium").replace(
             "$ApprovedIntegrityLevel", "high")
+    if sub == "user_sid_mismatch":
+        return _adapter_template("the token user SID is not the approved user SID")
     if sub == "preloaded_type":
         return _adapter_template("is already loaded in this process (R1)")
     if sub in ("off_switch_before_start", "off_switch_denied_read"):
@@ -387,10 +398,10 @@ def _a7_refusal(sub, case_root):
     return _adapter_template("so its textual root would not measure").replace("$reparse", reparse)
 
 
-def _a7_inputs(base):
+def _a7_inputs(base, sid="SYNTHETIC-USER-SID"):
     return {"ExpectedSourceCommit": "SYNTHETIC-SOURCE-COMMIT", "ExpectedManifestSha256": "SYNTHETIC-MANIFEST-SHA",
             "ExpectedAdapterSha256": "SYNTHETIC-ADAPTER-SHA", "ApprovedRunRoot": base,
-            "LiveDir": base + "-live", "ApprovedUserSid": "SYNTHETIC-USER-SID", "ApprovedIntegrityLevel": "medium",
+            "LiveDir": base + "-live", "ApprovedUserSid": sid, "ApprovedIntegrityLevel": "medium",
             "ExpectedPeakAdditionalBytes": 4096}
 
 
@@ -406,7 +417,10 @@ A7_DRIVER_FIXTURES = [(f"a7d_{sub}_pass", "PASS") for sub in A7_REACHABLE] + [
     ("a7d_preloaded_no_exit", "UNKNOWN"),
     ("a7d_denied_read_two_markers", "UNKNOWN"),
     ("a7d_integrity_unmarked_refusal", "UNKNOWN"),
+    ("a7d_user_sid_earlier_guard_refusal", "UNKNOWN"),
+    ("a7d_user_sid_child_left", "FAIL"),
 ] + [(f"a7d_{sub}_no_plan", "NO_PLAN") for sub in A7_LOOP] + [
+    ("a7d_user_sid_malformed", "ERROR"),
     ("a7d_unknown_subcase", "ERROR"),
     ("a7d_missing_input", "ERROR"),
     ("a7d_extra_input", "ERROR"),
@@ -422,9 +436,10 @@ def _a7_items(folder):
     def driver(name, sub, exit_code=2, text=None, created=False, children=(), inputs=None):
         case_root = str(folder / name)
         error = "WD-A7-REFUSAL " + _a7_refusal(sub, case_root) if text is None else text
+        sid = A7_FAKE_SID if sub == "user_sid_mismatch" else "SYNTHETIC-USER-SID"
         items[name] = {"name": name, "kind": "driver", "sub": sub, "case_root": case_root,
                        "run_root": _a7_run_root(sub, case_root),
-                       "inputs": inputs if inputs is not None else _a7_inputs(str(folder / (name + "-approved"))),
+                       "inputs": inputs if inputs is not None else _a7_inputs(str(folder / (name + "-approved")), sid),
                        "child": {"pid": 4343, "exit_code": exit_code, "error_text": error},
                        "create_entry": created, "children": list(children)}
 
@@ -440,10 +455,15 @@ def _a7_items(folder):
     driver("a7d_denied_read_two_markers", "off_switch_denied_read", text=marked + "\n" + marked)
     driver("a7d_integrity_unmarked_refusal", "integrity_mismatch",
            text=_a7_refusal("integrity_mismatch", ""))
+    # The exact path reached: the integrity guard runs before the user SID check, so its refusal is not user evidence.
+    driver("a7d_user_sid_earlier_guard_refusal", "user_sid_mismatch",
+           text="WD-A7-REFUSAL " + _a7_refusal("integrity_mismatch", ""))
+    driver("a7d_user_sid_child_left", "user_sid_mismatch", children=[6161])
     for sub in A7_LOOP:
         driver(f"a7d_{sub}_no_plan", sub)
     driver("a7d_unknown_subcase", "lane_loop_three_functions")
     base = _a7_inputs(str(folder / "approved"))
+    driver("a7d_user_sid_malformed", "user_sid_mismatch", inputs=dict(base))
     driver("a7d_missing_input", "integrity_mismatch", inputs={k: v for k, v in base.items() if k != "LiveDir"})
     driver("a7d_extra_input", "integrity_mismatch", inputs=dict(base, Verdict="PASS"))
     driver("a7d_nonpositive_bound", "disk_floor_before_start", inputs=dict(base, ExpectedPeakAdditionalBytes=0))
@@ -451,8 +471,9 @@ def _a7_items(folder):
     driver("a7d_control_character", "off_switch_before_start", inputs=dict(base, ApprovedUserSid="S-1\nS-2"))
     for sub in A7_REACHABLE + A7_LOOP:
         name = f"a7p_{sub}"
+        sid = A7_FAKE_SID if sub == "user_sid_mismatch" else "SYNTHETIC-O'SID"
         items[name] = {"name": name, "kind": "plan", "sub": sub, "case_root": str(folder / name),
-                       "inputs": dict(base, ApprovedUserSid="SYNTHETIC-O'SID"),
+                       "inputs": dict(base, ApprovedUserSid=sid),
                        "adapter": str(folder / "adapter's.ps1")}
     return items
 
@@ -515,9 +536,14 @@ def test_a7_plan_is_the_approved_inputs_with_exactly_one_deviation(a7_rows, sub)
     assert plan["name"] == sub and plan["run_root"] == _a7_run_root(sub, item["case_root"])
     assert plan["inputs"]["ApprovedRunRoot"] == plan["run_root"]
     changed = sorted(k for k in item["inputs"] if k != "ApprovedRunRoot" and plan["inputs"][k] != item["inputs"][k])
-    want = {"integrity_mismatch": ["ApprovedIntegrityLevel"],
+    want = {"integrity_mismatch": ["ApprovedIntegrityLevel"], "user_sid_mismatch": ["ApprovedUserSid"],
             "disk_floor_before_start": ["ExpectedPeakAdditionalBytes"]}
     assert changed == want.get(sub, []), changed
+    if sub == "user_sid_mismatch":
+        # The foreign SID must pass the adapter's own form check, so the refusal reached is the T1 user check.
+        form = re.search(r"-Name 'ApprovedUserSid' -Value \$ApprovedUserSid -Pattern '([^']+)'",
+                         ADAPTER.read_text(encoding="utf-8")).group(1)
+        assert re.fullmatch(form.replace("\\d", "[0-9]"), plan["inputs"]["ApprovedUserSid"])
     assert sorted(plan["inputs"]) == sorted(item["inputs"])
     want_prepare = {"off_switch_before_start": "off_switch", "off_switch_denied_read": "off_switch_denied",
                     "reparse_ancestry": "junction"}
@@ -534,7 +560,8 @@ def test_a7_child_command_runs_the_adapter_once_with_literal_inputs(a7_rows, sub
     command = rows["command"]
     adapter = item["adapter"].replace("'", "''")
     assert command.count("& '" + adapter + "'") == 1
-    assert "-ApprovedUserSid 'SYNTHETIC-O''SID'" in command
+    sid = rows["plan"]["inputs"]["ApprovedUserSid"] if sub == "user_sid_mismatch" else "SYNTHETIC-O'SID"
+    assert "-ApprovedUserSid '" + sid.replace("'", "''") + "'" in command
     assert command.index("try {") < command.index("& '" + adapter + "'") < command.index("} catch {")
     assert "[Console]::Error.WriteLine('WD-A7-REFUSAL ' +" in command and "exit 2" in command
     preload = "Initialize-WdNativeTurnType" in command

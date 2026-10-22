@@ -9,9 +9,18 @@ function Get-BridgeContractField {
         (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) {
         return [pscustomobject]@{ invalid_binding = $true }
     }
-    if ($null -ne $direct -and $null -ne $direct.Value) { return $direct.Value }
-    if ($null -ne $nested) { return $nested.Value }
+    if ($null -ne $direct -and $null -ne $direct.Value) { return ,$direct.Value }
+    if ($null -ne $nested) { return ,$nested.Value }
     return $null
+}
+
+function Test-BridgeContractFieldConflict {
+    param($Event, [string]$Name)
+    $direct = $Event.PSObject.Properties[$Name]
+    $payload = $Event.PSObject.Properties['payload']
+    $nested = if ($null -ne $payload -and $null -ne $payload.Value) { $payload.Value.PSObject.Properties[$Name] } else { $null }
+    return ($null -ne $direct -and $null -ne $direct.Value -and $null -ne $nested -and $null -ne $nested.Value -and
+        (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value))
 }
 
 function ConvertTo-BridgeContractJson {
@@ -154,10 +163,12 @@ function Test-BridgeReplyBinding {
     if ($null -ne $reference -and (ConvertTo-BridgeContractTime $reference) -ne $sent) { return $false }
     $correlated = $null -ne $reference
     foreach ($key in @('nonce','token','task_revision')) {
+        if (Test-BridgeContractFieldConflict $Request $key) { return $false }
         $expected = Get-BridgeContractField $Request $key
         $actual = Get-BridgeContractField $Reply $key
         if ($null -ne $expected) {
-            if (($null -eq $rid -or $null -ne $actual) -and $actual -cne $expected) { return $false }
+            if ((Test-BridgeContractFieldConflict $Reply $key) -or $null -eq $actual -or
+                (ConvertTo-BridgeContractJson $actual) -cne (ConvertTo-BridgeContractJson $expected)) { return $false }
             $correlated = $true
         }
     }

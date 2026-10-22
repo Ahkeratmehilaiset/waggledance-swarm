@@ -550,6 +550,27 @@ def test_harness_case_evaluators_take_no_supplied_observation_and_never_pass_a_r
             assert word not in body, (name, word)
 
 
+def test_harness_a7_drivers_use_injected_seams_and_never_kill_or_run_by_default(harness):
+    # Checkpoint 3 (Lead A7 driver GO): the real child seam starts one child with an encoded command and waits for it
+    # without killing anything; the driver core reaches the system only through its injected seams; only the two
+    # unreachable lane-loop sub-cases have no plan; the script still ends in its refusal on every invocation.
+    child = _function(harness, "Start-WdShadowA7Child")
+    for need in ("-EncodedCommand", "WaitForExit(", "RedirectStandardError = $true", "UseShellExecute = $false"):
+        assert need in child, need
+    for word in ("Kill", "Stop-Process", "taskkill", "Start-Process"):
+        assert word not in child, word
+    driver = _function(harness, "Invoke-WdShadowA7Driver")
+    for word in ("Start-WdShadowA7Child", "Get-WdShadowA7ChildProcesses", "New-WdShadowA7CaseRoot", "New-Item",
+                 "Get-Cim", "$env:", "$global:", "$script:"):
+        assert word not in driver, word
+    for need in ("& $Prepare $plan", "& $RunChild ", "& $ListChildren "):
+        assert need in driver, need
+    plan = _function(harness, "Get-WdShadowA7Plan")
+    assert plan.count("return $null") == 1
+    assert "'lane_loop_zero_functions', 'lane_loop_two_functions'" in plan
+    assert harness.rstrip().endswith("exit 3")
+
+
 def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes(adapter):
     # PR1915 follow-up B1 (bot P1 at L435, RCO1 P1-b, RCO2 B1; Lead Source-GO): containment and the file name are not
     # enough for the file the root executes; the pin must be exactly the bundle-root wrapper, its path free of

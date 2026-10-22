@@ -26,6 +26,15 @@
     until one does. No native driver produces observations yet, so every case stays NOT_READY (native NOT_RUN); a
     synthetic or supplied PASS is never native acceptance, and the script takes no observation input.
 
+    Checkpoint 3 (Lead A7 driver GO, 2026-10-22): A7 pre-start refusal drivers. A driver plans one sub-case as the
+    approved adapter inputs with at most one deviation, runs the actual adapter once in a fresh child through injected
+    seams and derives the four refusal observations from the child's exit code and error stream, two listings of the
+    run root and the child's live children. RCO1's A1-A7 wording selects no particular adapter refusal (UNSPECIFIED,
+    RCO1 2026-10-22T19:01:24Z), so the refusal per sub-case is this file's explicit choice: T1 integrity, R1 type, the
+    off switch, the floor and run-root reparse ancestry. The two lane-loop sub-cases have no plan (unreachable in an
+    actual run). The drivers are not called by the script: the A7 case verdict needs a run binding (launch id, root
+    PID) that a pre-start refusal never has, so A7 stays NOT_READY and native stays NOT_RUN.
+
     Design: RCO1 (A1-A7), RCO2 (G1-G4 and the witness), Lead (decisions and the guard cases); fable-5 wrote this file.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -301,8 +310,257 @@ function Get-WdShadowRunVerdict {
     return 'PASS'
 }
 
-# Checkpoint 2: the case evaluators exist, but no native driver produces their observations, so every case stays
-# NOT_READY (native NOT_RUN) and the harness refuses even on opt-in.
+# Checkpoint 3 (Lead A7 driver GO, 2026-10-22): the A7 pre-start refusal drivers. RCO1's A1-A7 wording names an
+# integrity mismatch refused before the start (integrity and user variants) and selects no particular adapter refusal
+# (UNSPECIFIED, RCO1 2026-10-22T19:01:24Z), so the refusal of each sub-case is this file's explicit choice: T1
+# integrity (adapter L423), R1 type (L124), the off switch (L561), the floor (L569) and run-root reparse ancestry
+# (L543). The approved inputs are the executor's, which pass every earlier adapter check (token user and integrity,
+# adapter hash, state pointer, manifest, pins, wrapper, lane loop); a plan changes at most one of them.
+
+function Get-WdShadowA7Plan {
+    # One A7 sub-case as a plan: the approved inputs with the run root replaced and at most one deviation, the case
+    # root preparation, the R1 preload and the one refusal line the child must print. The two lane-loop sub-cases have
+    # no plan: the adapter reads the fixed reboot state pointer and bundle store and checks the loop bytes against the
+    # manifest pin before it counts the functions, so a zero- or two-function loop cannot reach that count in an
+    # actual run. Invalid input is refused, never planned.
+    param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot)
+    $reachable = @('integrity_mismatch', 'preloaded_type', 'off_switch_before_start', 'off_switch_denied_read',
+        'disk_floor_before_start', 'reparse_ancestry')
+    $unreachable = @('lane_loop_zero_functions', 'lane_loop_two_functions')
+    if ($reachable -cnotcontains $Name -and $unreachable -cnotcontains $Name) { throw 'refused: unknown A7 sub-case' }
+    $keys = @('ExpectedSourceCommit', 'ExpectedManifestSha256', 'ExpectedAdapterSha256', 'ApprovedRunRoot', 'LiveDir',
+        'ApprovedUserSid', 'ApprovedIntegrityLevel', 'ExpectedPeakAdditionalBytes')
+    if (-not (Test-WdShadowExactKeys $Inputs $keys)) {
+        throw 'refused: the approved inputs are not exactly the adapter parameters'
+    }
+    foreach ($key in $keys[0..6]) {
+        if ($Inputs[$key] -isnot [string] -or $Inputs[$key] -cnotmatch '^[\x20-\x7E]+\z') {
+            throw "refused: $key is not printable ASCII text"
+        }
+    }
+    $level = [string]$Inputs['ApprovedIntegrityLevel']
+    if (@('medium', 'high') -cnotcontains $level) { throw 'refused: ApprovedIntegrityLevel is not medium or high' }
+    $bound = $Inputs['ExpectedPeakAdditionalBytes']
+    if (-not (Test-WdShadowCount $bound) -or $bound -le 0) {
+        throw 'refused: ExpectedPeakAdditionalBytes is not a positive integer'
+    }
+    if ($CaseRoot -cnotmatch '^[\x20-\x7E]+\z' -or -not [IO.Path]::IsPathRooted($CaseRoot)) {
+        throw 'refused: the case root is not a rooted printable ASCII path'
+    }
+    if ($unreachable -ccontains $Name) { return $null }
+    $root = [IO.Path]::GetFullPath($CaseRoot).TrimEnd('\')
+    $runRoot = $root
+    $prepare = 'none'
+    $preload = 'none'
+    $planned = @{}
+    foreach ($key in $keys) { $planned[$key] = $Inputs[$key] }
+    $offSwitch = 'refused: the operator off switch ' + $root +
+        '\mind-shadow.off is on (or unreadable); nothing was started'
+    switch -CaseSensitive ($Name) {
+        'integrity_mismatch' {
+            $other = @{ medium = 'high'; high = 'medium' }[$level]
+            $planned['ApprovedIntegrityLevel'] = $other
+            $pattern = [regex]::Escape("refused: the actual integrity level $level is not the approved $other")
+        }
+        'preloaded_type' {
+            $preload = 'lane_loop_type'
+            $pattern = [regex]::Escape('refused: WdManagedTurnProcess is already loaded in this process (R1); ' +
+                'start the adapter in a fresh process')
+        }
+        'off_switch_before_start' { $prepare = 'off_switch'; $pattern = [regex]::Escape($offSwitch) }
+        'off_switch_denied_read' { $prepare = 'off_switch_denied'; $pattern = [regex]::Escape($offSwitch) }
+        'disk_floor_before_start' {
+            $planned['ExpectedPeakAdditionalBytes'] = [long]::MaxValue
+            $pattern = [regex]::Escape('refused: the disk budget is not met before the start (C:\ free=') + '[0-9]+' +
+                [regex]::Escape(', additional=' + [long]::MaxValue + ', floor=') + '[0-9]+' + [regex]::Escape(')')
+        }
+        'reparse_ancestry' {
+            $runRoot = $root + '\link\run'
+            $prepare = 'junction'
+            $pattern = [regex]::Escape('refused: ' + $root + '\link is a reparse point, so its textual root would ' +
+                'not measure its backing volume')
+        }
+    }
+    $planned['ApprovedRunRoot'] = $runRoot
+    return [ordered]@{
+        name = $Name; inputs = $planned; run_root = $runRoot; refusal = '^WD-A7-REFUSAL ' + $pattern + '\z'
+        prepare = $prepare; preload = $preload
+    }
+}
+
+function ConvertTo-WdShadowA7Literal {
+    # A single-quoted literal of printable ASCII text; anything else is refused, never escaped.
+    param([string] $Value)
+    if ($Value -cnotmatch '^[\x20-\x7E]*\z') { throw 'refused: a child command value is not printable ASCII text' }
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Get-WdShadowA7ChildCommand {
+    # The child's whole command: for preloaded_type the R1 preload (the installed lane loop's one
+    # Initialize-WdNativeTurnType, defined and called; no single function is a setup error, exit 4), then exactly one
+    # call of the adapter with the planned inputs as literals. An adapter refusal becomes one error line
+    # "WD-A7-REFUSAL <message>" and exit 2; otherwise the adapter's own exit code passes through (0 when it set none).
+    param($Plan, [string] $AdapterPath)
+    $inputs = $Plan['inputs']
+    $text = '$ErrorActionPreference = ''Stop''; '
+    if ($Plan['preload'] -ceq 'lane_loop_type') {
+        $loop = ConvertTo-WdShadowA7Literal ('C:\Python\wd-reboot-bundles\' + $inputs['ExpectedSourceCommit'] +
+            '\Invoke-WdLaneTurnLoop.ps1')
+        $text += '$wdA7Tokens = $null; $wdA7Errors = $null; ' +
+            '$wdA7Ast = [Management.Automation.Language.Parser]::ParseFile(' + $loop +
+            ', [ref]$wdA7Tokens, [ref]$wdA7Errors); ' +
+            '$wdA7Found = @($wdA7Ast.EndBlock.Statements | Where-Object { ' +
+            '$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and ' +
+            '$_.Name -ceq ''Initialize-WdNativeTurnType'' }); ' +
+            'if ($wdA7Errors.Count -or $wdA7Found.Count -ne 1) { ' +
+            '[Console]::Error.WriteLine(''WD-A7-SETUP the lane loop has no single Initialize-WdNativeTurnType''); ' +
+            'exit 4 }; . ([scriptblock]::Create($wdA7Found[0].Extent.Text)); Initialize-WdNativeTurnType; '
+    }
+    $call = '& ' + (ConvertTo-WdShadowA7Literal $AdapterPath)
+    foreach ($key in @('ExpectedSourceCommit', 'ExpectedManifestSha256', 'ExpectedAdapterSha256', 'ApprovedRunRoot',
+            'LiveDir', 'ApprovedUserSid', 'ApprovedIntegrityLevel')) {
+        $call += ' -' + $key + ' ' + (ConvertTo-WdShadowA7Literal ([string]$inputs[$key]))
+    }
+    $call += ' -ExpectedPeakAdditionalBytes ' + ([long]$inputs['ExpectedPeakAdditionalBytes']).ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
+    $text += 'try { ' + $call + '; $wdA7Code = $LASTEXITCODE; if ($wdA7Code -isnot [int]) { $wdA7Code = 0 }; ' +
+        'exit $wdA7Code } catch { ' +
+        '[Console]::Error.WriteLine(''WD-A7-REFUSAL '' + ($_.Exception.Message -replace ''[\r\n]+'', '' '')); exit 2 }'
+    return $text
+}
+
+function Get-WdShadowA7Entries {
+    # The entry names directly in a directory, sorted ordinally; a missing directory is an empty set and an unreadable
+    # one throws (never evidence).
+    param([string] $Path)
+    if (-not [IO.Directory]::Exists($Path)) { return , ([string[]]@()) }
+    $names = [string[]]@([IO.Directory]::GetFileSystemEntries($Path))
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    return , $names
+}
+
+function Invoke-WdShadowA7Driver {
+    # One A7 sub-case through injected seams: Prepare builds the case root of the plan, RunChild runs the child command
+    # once in a fresh host process and returns its id, exit code and error text, ListChildren lists the live processes
+    # whose parent is that id. The observation comes only from those results and from two listings of the run root,
+    # never from a supplied value: exit_code is the child's ($null when it did not end), refusal_seen needs exactly one
+    # error line that is the planned refusal, run_dir_created is any new run-root entry and process_started is any
+    # live child of the child after it ended (one that started and already ended is not seen: a limit). $null when the
+    # sub-case has no plan.
+    param([string] $Name, [hashtable] $Inputs, [string] $CaseRoot, [string] $AdapterPath, [string] $HostPath,
+        [scriptblock] $Prepare, [scriptblock] $RunChild, [scriptblock] $ListChildren)
+    if ($null -eq $Prepare -or $null -eq $RunChild -or $null -eq $ListChildren) {
+        throw 'refused: a driver seam is missing'
+    }
+    $plan = Get-WdShadowA7Plan -Name $Name -Inputs $Inputs -CaseRoot $CaseRoot
+    if ($null -eq $plan) { return $null }
+    $command = Get-WdShadowA7ChildCommand -Plan $plan -AdapterPath $AdapterPath
+    [void](& $Prepare $plan)
+    if (-not [IO.Directory]::Exists([string]$plan['run_root'])) { throw 'refused: the preparation made no run root' }
+    $before = Get-WdShadowA7Entries -Path $plan['run_root']
+    $child = & $RunChild $HostPath $command
+    if (-not (Test-WdShadowExactKeys $child @('pid', 'exit_code', 'error_text')) -or
+        -not (Test-WdShadowCount $child['pid']) -or $child['pid'] -le 0 -or $child['error_text'] -isnot [string] -or
+        ($null -ne $child['exit_code'] -and -not (Test-WdShadowCount $child['exit_code']))) {
+        throw 'refused: the child result is not an id, an exit code and an error text'
+    }
+    $after = Get-WdShadowA7Entries -Path $plan['run_root']
+    $listed = & $ListChildren ([int]$child['pid'])
+    $children = @()
+    if ($null -ne $listed) { $children = @($listed) }
+    foreach ($id in $children) {
+        if (-not (Test-WdShadowCount $id) -or $id -le 0) { throw 'refused: a listed child is not a process id' }
+    }
+    $refusal = [string]$plan['refusal']
+    $seen = @(($child['error_text'] -split '\r?\n') | Where-Object { $_ -cmatch $refusal })
+    $new = @($after | Where-Object { $before -cnotcontains $_ })
+    return @{
+        exit_code = $child['exit_code']; refusal_seen = ($seen.Count -eq 1); run_dir_created = ($new.Count -gt 0)
+        process_started = ($children.Count -gt 0)
+    }
+}
+
+function Start-WdShadowA7Child {
+    # The real child seam (an approved executor's opt-in run only; the strict-fake tests replace it): one fresh host
+    # process without a profile runs the encoded child command; its error and output streams are read to the end and
+    # the call waits within the bound. A child still running at the bound is reported with exit code $null (UNKNOWN)
+    # and left running, never ended here.
+    param([string] $HostPath, [string] $Command, [int] $TimeoutSeconds = 300)
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $HostPath
+    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' +
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    $info.UseShellExecute = $false
+    $info.RedirectStandardError = $true
+    $info.RedirectStandardOutput = $true
+    $info.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($info)
+    try {
+        $errorRead = $process.StandardError.ReadToEndAsync()
+        [void]$process.StandardOutput.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            return @{ pid = $process.Id; exit_code = $null; error_text = '' }
+        }
+        $process.WaitForExit()
+        return @{ pid = $process.Id; exit_code = $process.ExitCode; error_text = [string]$errorRead.Result }
+    } finally { $process.Dispose() }
+}
+
+function Get-WdShadowA7ChildProcesses {
+    # The real lister: the ids of live processes whose parent id is the ended child's id. A reused id can only add
+    # entries (fail closed); a process that started and ended before this reading is not seen.
+    param([int] $ParentId)
+    $found = @(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $ParentId" |
+        ForEach-Object { [int]$_.ProcessId })
+    return , $found
+}
+
+function New-WdShadowA7CaseRoot {
+    # The real preparation (an approved executor's opt-in run only): a fresh case root with its run root, plus the
+    # sub-case object: the off switch file; the off switch file with a deny-read-attributes entry for the current user,
+    # refused unless this process then cannot read the switch attributes (the parent directory listing may still
+    # grant them, so a denied read is not assumed); or a junction "link" to an ordinary "target" that holds the run
+    # directory. Nothing is removed afterwards.
+    param($Plan)
+    $runRoot = [string]$Plan['run_root']
+    $prepare = [string]$Plan['prepare']
+    if (@('none', 'off_switch', 'off_switch_denied', 'junction') -cnotcontains $prepare) {
+        throw 'refused: unknown A7 preparation'
+    }
+    $caseRoot = $runRoot
+    if ($prepare -ceq 'junction') { $caseRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($runRoot)) }
+    if ([IO.Directory]::Exists($caseRoot) -or [IO.File]::Exists($caseRoot)) {
+        throw 'refused: the case root is not fresh'
+    }
+    [void][IO.Directory]::CreateDirectory($caseRoot)
+    if ($prepare -ceq 'junction') {
+        $target = Join-Path $caseRoot 'target'
+        [void][IO.Directory]::CreateDirectory((Join-Path $target 'run'))
+        [void](New-Item -ItemType Junction -Path (Join-Path $caseRoot 'link') -Value $target)
+        return
+    }
+    if ($prepare -ceq 'none') { return }
+    $switchPath = Join-Path $runRoot 'mind-shadow.off'
+    $stream = New-Object IO.FileStream($switchPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+        [IO.FileShare]::None)
+    $stream.Dispose()
+    if ($prepare -ceq 'off_switch') { return }
+    $acl = Get-Acl -LiteralPath $switchPath
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($user,
+        [Security.AccessControl.FileSystemRights]::ReadAttributes, [Security.AccessControl.AccessControlType]::Deny)))
+    Set-Acl -LiteralPath $switchPath -AclObject $acl
+    $denied = $false
+    try { [void][IO.File]::GetAttributes($switchPath) } catch [UnauthorizedAccessException] { $denied = $true }
+    if (-not $denied) {
+        throw 'refused: the switch attributes are still readable here, so a denied read is not observed'
+    }
+}
+
+# Checkpoint 2 and 3: the case evaluators and the A7 pre-start drivers exist, but no whole-run driver produces case
+# observations (the A7 case needs a launch binding a pre-start refusal never has, A1-A3, A5 and A6 have no drivers and
+# A4 has no supported timing point), so every case stays NOT_READY (native NOT_RUN) and the harness refuses even on
+# opt-in.
 $cases = [ordered]@{
     'A1' = 'NOT_READY'
     'A2' = 'NOT_READY'
@@ -312,6 +570,6 @@ $cases = [ordered]@{
     'A6' = 'NOT_READY'
     'A7' = 'NOT_READY'
 }
-Write-Error ('refused: checkpoint 2 has case evaluators but no native drivers; ' + (@($cases.Keys) -join ', ') +
-    ' stay NOT_READY (native NOT_RUN)')
+Write-Error ('refused: checkpoint 3 has case evaluators and A7 pre-start drivers but no whole-run drivers; ' +
+    (@($cases.Keys) -join ', ') + ' stay NOT_READY (native NOT_RUN)')
 exit 3

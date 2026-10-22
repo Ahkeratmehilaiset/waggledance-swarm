@@ -93,7 +93,7 @@ function Invoke-WdA5ControllerCore {
     Write-WdA5Once (Join-Path $directory 'members.registration') ((($members|ForEach-Object{$Context.launch_id+' '+$_})-join"`n")+"`n")
     $controller=Get-WdA5Identity $PID
     if($controller.pid-cne[string]$PID-or-not$controller.creation_utc){throw 'refused: actual A5 controller identity unknown'}
-    $witness=$null;$inner=$null;$ready=$false
+    $witness=$null;$inner=$null;$root=$null;$ready=$false
     try{
         $witness=[IO.File]::Open((Join-Path $directory 'controller.witness'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         $line=[Text.Encoding]::ASCII.GetBytes($Context.launch_id+' controller '+$controller.pid+' '+$controller.creation_utc+"`n")
@@ -119,7 +119,8 @@ function Invoke-WdA5ControllerCore {
             controller=$controller;root=$root;subcase='A5/controller_death';directory=$directory;pins=$Pins;
             observation=@{expected=$members;observed=$observed};inner_accounting=@{active=$active;total=$total};
             command_sha256=(Get-WdA5Sha256 ([Text.Encoding]::UTF8.GetBytes($command)));whole_A5_PASS=$false;
-            required_parent_order='StopRootOnly(controller); confirm controller exit; observe all member releases; only THEN outer Stop/Dispose'}
+            cleanup_marker_path=(Join-Path $directory 'cleanup-started.json');
+            required_parent_order='StopRootOnly(controller); confirm forced exit124 and no cleanup marker/errors; observe all member releases; only THEN outer Stop/Dispose'}
         Write-WdA5Once (Join-Path $directory 'ready.json') ($receipt|ConvertTo-Json -Depth 12 -Compress)
         $ready=$true;$clock.Restart()
         while($clock.Elapsed.TotalSeconds-lt$HoldSeconds){
@@ -130,7 +131,14 @@ function Invoke-WdA5ControllerCore {
     }finally{
         # Normal/error cleanup is NOT controller-death evidence. Abrupt controller
         # death relies on OS closing INNER job handle; parent retains OUTER safety.
-        try{if($null-ne$inner){try{$inner.Stop()}finally{$inner.Dispose()}}}
+        try{if($null-ne$inner){try{
+            # An expiry/error cleanup is never controller-death evidence. Future
+            # parent must positively verify this marker absent AFTER forced exit,
+            # and fail UNKNOWN on unreadable state, errors or marker write failure.
+            $cleanup=@{schema='wd.mind-shadow-a5-controller-cleanup.v1';context=$Context;controller=$controller;root=$root;ready_written=$ready;whole_A5_PASS=$false}
+            Write-WdA5Once (Join-Path $directory 'cleanup-started.json') ($cleanup|ConvertTo-Json -Depth 8 -Compress)
+            $inner.Stop()
+        }finally{$inner.Dispose()}}}
         finally{if($null-ne$witness){$witness.Dispose()}}
     }
 }

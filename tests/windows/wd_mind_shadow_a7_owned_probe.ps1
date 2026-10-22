@@ -58,6 +58,70 @@ function Test-WdA7Count {
     return (($Value-is[int]-or$Value-is[uint32]-or$Value-is[long])-and$Value-ge0)
 }
 
+function Get-WdA7PreparationAttributes {
+    param([string]$Path)
+    return [IO.File]::GetAttributes($Path)
+}
+
+function Get-WdA7PreparationLinkTarget {
+    param([string]$Path)
+    $item=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if($item.LinkType-cne'Junction'-or@($item.Target).Count-ne1){throw 'not one junction target'}
+    return [IO.Path]::GetFullPath([string]$item.Target[0]).TrimEnd('\')
+}
+
+function Assert-WdA7PreparedState {
+    # Observe only: never create a switch, change ACLs or create/fix a junction.
+    # These point-in-time checks do not prevent a same-user filesystem race.
+    param($Plan,[string]$CaseRoot,[string]$LoopPath,[string]$ExpectedSourceCommit)
+    try {
+        $root=[IO.Path]::GetFullPath($CaseRoot).TrimEnd('\')
+        if($root-notmatch'^C:\\.*\\\.codex-audit\\'){throw 'case root not synthetic audit-local'}
+        for($current=$root;$current;$current=[IO.Path]::GetDirectoryName($current)){
+            $attributes=Get-WdA7PreparationAttributes $current
+            if(-not($attributes-band[IO.FileAttributes]::Directory)-or($attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'case ancestry not plain directory'}
+        }
+        $expectedRoot=$root
+        if($Plan.prepare-ceq'junction'){$expectedRoot=Join-Path $root 'link\run'}
+        if(-not[string]::Equals([IO.Path]::GetFullPath($Plan.run_root).TrimEnd('\'),$expectedRoot,[StringComparison]::OrdinalIgnoreCase)){throw 'run root mismatch'}
+        $names=Get-WdA7Entries $root
+        switch -CaseSensitive ($Plan.prepare) {
+            'none' {if($names.Count){throw 'plain case is not empty'}}
+            'off_switch' {
+                if($names.Count-ne1-or$names[0]-cne'mind-shadow.off'){throw 'switch entry missing or extra'}
+                $path=Join-Path $root 'mind-shadow.off'
+                $attributes=Get-WdA7PreparationAttributes $path
+                if(($attributes-band([IO.FileAttributes]::Directory-bor[IO.FileAttributes]::ReparsePoint))-or[IO.FileInfo]::new($path).Length-ne0){throw 'switch not ordinary empty file'}
+            }
+            'off_switch_denied' {
+                if($names.Count-ne1-or$names[0]-cne'mind-shadow.off'){throw 'denied switch entry missing or extra'}
+                $denied=$false
+                try {[void](Get-WdA7PreparationAttributes (Join-Path $root 'mind-shadow.off'))}
+                catch {if($_.Exception.GetBaseException()-is[UnauthorizedAccessException]){$denied=$true}else{throw}}
+                if(-not$denied){throw 'switch attributes are not denied'}
+            }
+            'junction' {
+                if($names.Count-ne2-or$names-cnotcontains'link'-or$names-cnotcontains'target'){throw 'junction preparation entries'}
+                $target=Join-Path $root 'target';$run=Join-Path $target 'run';$link=Join-Path $root 'link'
+                foreach($plain in @($target,$run)){
+                    $attributes=Get-WdA7PreparationAttributes $plain
+                    if(-not($attributes-band[IO.FileAttributes]::Directory)-or($attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'junction target not plain'}
+                }
+                $attributes=Get-WdA7PreparationAttributes $link
+                if(-not($attributes-band[IO.FileAttributes]::ReparsePoint)-or-not($attributes-band[IO.FileAttributes]::Directory)){throw 'expected directory junction'}
+                if(-not[string]::Equals((Get-WdA7PreparationLinkTarget $link),$target,[StringComparison]::OrdinalIgnoreCase)){throw 'foreign junction target'}
+                $children=Get-WdA7Entries $target
+                if($children.Count-ne1-or$children[0]-cne'run'-or(Get-WdA7Entries $run).Count){throw 'junction target not fresh'}
+            }
+            default {throw 'unknown preparation'}
+        }
+        if($Plan.preload-ceq'lane_loop_type'){
+            $literal='C:\Python\wd-reboot-bundles\'+$ExpectedSourceCommit+'\Invoke-WdLaneTurnLoop.ps1'
+            if(-not[string]::Equals([IO.Path]::GetFullPath($LoopPath),$literal,[StringComparison]::OrdinalIgnoreCase)){throw 'preloaded initializer path differs from pinned literal'}
+        } elseif($Plan.preload-cne'none'){throw 'unknown preload'}
+    } catch {throw ('refused: A7 preparation: '+$_.Exception.Message)}
+}
+
 function Invoke-WdA7OwnedCommand {
     # Internal mechanics: public entry validates all provenance/context first.
     # Synthetic tests replace ONLY this factory/identity boundary with strict fakes.
@@ -68,6 +132,9 @@ function Invoke-WdA7OwnedCommand {
     $names=@('integrity_mismatch','user_sid_mismatch','preloaded_type','off_switch_before_start','off_switch_denied_read','disk_floor_before_start','reparse_ancestry')
     if ($Name-cnotin$names -or -not $LiteralAdapterCommand -or -not $HostPath -or -not $AttemptId -or -not $RefusalPattern -or
         -not [IO.Directory]::Exists($EvidenceDirectory)) { throw 'refused: complete internal A7 command context required' }
+    # Closure hypothesis, NOT a measured host-independent baseline: the pinned
+    # preloaded command exits before adapter whoami; other guards run probe+whoami.
+    # PS5 Add-Type/csc/console may add processes: extra remains FAIL, lower UNKNOWN.
     $expected=if($Name-ceq'preloaded_type'){1}else{2}
     $before=Get-WdA7Entries $RunRoot
     $inputPath=Join-Path $EvidenceDirectory 'stdin.once'
@@ -142,7 +209,8 @@ function Invoke-WdA7OwnedCommand {
         status=$status;whole_A7_PASS=$false
         entry=@{attempt=@{attempt_id=$AttemptId;probe_pid=if($null-ne$probePid){[string]$probePid}else{$null};probe_creation_utc=$created};
                 refusal=@{exit_code=$exit;refusal_seen=$refusalSeen;run_dir_created=if($null-ne$newEntries){[bool]$newEntries.Count}else{$null};process_started=$processStarted}}
-        owned_job=@{total_processes=$total;active_processes_at_end=$active;expected_probe_processes=$expected;drain_confirmed=$drained;stop_called=$stopped;timed_out=$timedOut}
+        owned_job=@{total_processes=$total;active_processes_at_end=$active;expected_probe_processes=$expected;drain_confirmed=$drained;stop_called=$stopped;timed_out=$timedOut;
+                    count_basis='Conditional pinned command closure hypothesis, NOT measured host-independent baseline; same cardinality is not image identity'}
         raw=@{stdout=$out;error_text=$err;output_bytes=$bytes;new_run_entries=$newEntries;errors=@($errors)}
         scope='Job-contained cumulative history only, conditional on exact command/adapter/refusal; NOT image proof or global/OS/broker isolation'
     }
@@ -230,6 +298,7 @@ function Invoke-WdMindShadowA7OwnedProbe {
     if(-not(Test-WdShadowExactKeys $Plan.inputs @($ApprovedInputs.Keys))){throw 'refused: plan input shape'}
     foreach($key in $ApprovedInputs.Keys){if($Plan.inputs[$key]-cne$expected.inputs[$key]){throw 'refused: foreign planned input'}}
     if((Get-WdShadowA7ChildCommand $expected $AdapterPath)-cne$LiteralAdapterCommand){throw 'refused: literal planner command mismatch'}
+    Assert-WdA7PreparedState $expected $CaseRoot $loopPin.path $ApprovedInputs.ExpectedSourceCommit
     $EvidenceRoot=[IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\')
     if($EvidenceRoot-notmatch'^C:\\.*\\\.codex-audit(?:\\|$)'-or-not[IO.Directory]::Exists($EvidenceRoot)){throw 'refused: existing C audit evidence root required'}
     $directoryCheck=Get-Item -LiteralPath $EvidenceRoot

@@ -35,13 +35,14 @@ def test_invalid_role_request_is_rejected(bad):
     with pytest.raises(ValueError): prepare_request(value)
 
 
-@pytest.mark.parametrize('bad', ['', 'ack', 'old_id', 'wrong_session', 'wrong_result', 'new_authority'])
+@pytest.mark.parametrize('bad', ['', 'ack', 'old_id', 'wrong_session', 'wrong_result', 'new_authority',
+                                 'missing_revision', 'null_revision', 'wrong_revision', 'conflicting_revision'])
 def test_handoff_validates_exact_result_before_preparing_next_step(bad):
     request = prepare_request(plan(), now=datetime(2026, 9, 18, tzinfo=timezone.utc))
     reply = dict(request['expected_responders']['fable-5'], task_id=request['task_id'],
                  ts_utc='2026-09-18T00:01:00Z', to='codex-lead-1', type='message', status='answered',
                  in_reply_to_request_id=request['request_id'], in_reply_to_requester=plan()['requester'],
-                 payload={'result': {'cost': 45}})
+                 payload={'task_revision': request['payload']['task_revision'], 'result': {'cost': 45}})
     next_plan = plan()
     next_plan.update(role='tools', target='codex-tools-1', consumes_fields=['handoff'])
     next_plan['responder']['agent'] = 'codex-tools-1'
@@ -50,6 +51,10 @@ def test_handoff_validates_exact_result_before_preparing_next_step(bad):
     if bad == 'wrong_session': reply['session_id'] = 'other'
     if bad == 'wrong_result': reply['payload']['result'] = {'wrong': 45}
     if bad == 'new_authority': next_plan['authorization_ref'] = 'invented'
+    if bad == 'missing_revision': del reply['payload']['task_revision']
+    if bad == 'null_revision': reply['payload']['task_revision'] = None
+    if bad == 'wrong_revision': reply['payload']['task_revision'] = 'different'
+    if bad == 'conflicting_revision': reply['task_revision'] = 'different'
     if bad:
         with pytest.raises(ValueError): prepare_handoff(request, reply, next_plan)
     else:

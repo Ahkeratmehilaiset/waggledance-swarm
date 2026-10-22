@@ -672,6 +672,18 @@ if ($ReplyToEventJson) {
     $event['in_reply_to_requester'] = [pscustomobject]$context
     $digest = Get-BridgeContractField $replyTo 'request_digest'
     if ($digest) { $event['in_reply_to_request_digest'] = $digest }
+    foreach ($key in @('nonce','token','task_revision')) {
+        if (Test-BridgeContractFieldConflict $replyTo $key) { throw "Conflicting required request field '$key'" }
+        $required = Get-BridgeContractField $replyTo $key
+        if ($null -eq $required) { continue }
+        # Only a genuinely absent field is writer-filled. Explicit null/wrong
+        # or conflicting caller copies must fail binding, never be corrected.
+        $direct = ([pscustomobject]$event).PSObject.Properties[$key]
+        $nested = $payload.PSObject.Properties[$key]
+        if ($null -eq $direct -and $null -eq $nested) {
+            $payload | Add-Member NoteProperty $key $required
+        }
+    }
     if (-not (Test-BridgeReplyBinding $replyTo ([pscustomobject]$event) $Agent)) { throw 'Reply identity or payload contradicts the request binding' }
     # A delivered/correlated event is not proof that its requested result is valid.
     # Enforce explicit task contracts at the public writer too, so callers cannot

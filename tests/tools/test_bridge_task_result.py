@@ -16,6 +16,40 @@ from test_wd_startup_recovery import q
 BIN = REBOOT.parents[2] / '.agent-bridge/bin'
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('conflict', [False, True])
+def test_structured_reply_required_fields_use_isolated_writer(tmp_path, ps, conflict):
+    from test_bridge_write_agent_event import _run_bridge_script
+
+    agent = 'codex-tools-1'
+    agent_uuid = json.loads((REBOOT.parents[2] / 'configs/bridge_identity_registry.json').read_text())['identities'][agent]
+    required = dict(nonce='exact-nonce', token='exact-token', task_revision=3)
+    request = dict(ts_utc='2026-01-01T00:00:00Z', request_id='quality-request', request_digest='digest',
+                   agent='operator', session_id='op-session', run_id='op-run', to=agent, type='wake_request',
+                   status='request', task_id='fixture/result', expected_responders={agent: dict(
+                       agent_uuid=agent_uuid, session_id='tools-session', run_id='tools-run')}, payload=dict(
+                       **required, result_contract=dict(schema='wd.task-result-contract.v1', required=['answer'],
+                                                       types={'answer': 'integer'}, equals={'answer': 42})))
+    if conflict: request['nonce'] = 'conflicting-nonce'
+    runtime = tmp_path / 'runtime'
+    evidence = "[pscustomobject]@{pin_status='synthetic';observed_agent=$null;task_completion_verified=$false}|ConvertTo-Json"
+    result = _run_bridge_script(REBOOT.parents[2], runtime, 'Write-BridgeTaskReply.ps1',
+                                '-Agent', agent, '-RequestEventJson', json.dumps(request),
+                                '-ResultJson', json.dumps({'answer': 42}), '-ReceiptJson',
+                                shell=ps, evidence_stub=evidence, frame=dict(
+                                    AGENT_BRIDGE_AGENT=agent, AGENT_BRIDGE_AGENT_UUID=agent_uuid,
+                                    AGENT_BRIDGE_SESSION_ID='tools-session', AGENT_BRIDGE_RUN_ID='tools-run'))
+    log = runtime / 'shared/events.jsonl'
+    if conflict:
+        assert result.returncode != 0 and not log.exists(), result.stdout + result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        event = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])
+        assert {key: event['payload'][key] for key in required} == required
+        assert not set(required) & set(event)
+        assert event['payload']['result'] == {'answer': 42}
+
+
 def _token_function_source():
     source = (BIN / 'Get-BridgeExecutionEvidence.ps1').read_text(encoding='utf-8')
     return source.split('function Get-BridgeEvidenceToken {', 1)[1].split("$observed=[datetime]", 1)[0]

@@ -2118,7 +2118,7 @@ class _CloseoutWorld:
         completed = self.write({**self.lead, "-Type": "message", "-Status": "requested", "-TaskId": CLOSEOUT_TASK,
                                 "-To": "codex-tools-1", "-Message": "build please",
                                 "-RequestId": "fixture-closeout-request-v1",
-                                "-PayloadJson": json.dumps({"nonce": "n-1", "task_revision": 3})})
+                                "-PayloadJson": json.dumps({"nonce": "n-1", "token": "token-1", "task_revision": 3})})
         assert completed.returncode == 0, completed.stdout + completed.stderr
         self.request = self.events()[-1]
 
@@ -2172,6 +2172,7 @@ def test_requester_closeout_closes_its_own_request_exactly(tmp_path: Path, shell
         "in_reply_to_requester": {key: request[key] for key in ("agent", "agent_uuid", "session_id", "run_id")},
         "request_ts_utc": request["ts_utc"],
         "nonce": "n-1",
+        "token": "token-1",
         "task_revision": 3,
     }
     for key, value in expected.items():
@@ -2205,7 +2206,30 @@ def test_normal_reply_twin_is_unchanged_and_requester_reply_stays_refused(tmp_pa
     assert answered.returncode == 0, answered.stdout + answered.stderr
     reply = world.events()[-1]
     assert reply["in_reply_to_request_id"] == world.request["request_id"]
-    assert not {"request_ts_utc", "nonce", "task_revision"} & set(reply)
+    assert not {"request_ts_utc", "nonce", "token", "task_revision"} & set(reply)
+    assert {key: reply['payload'].get(key) for key in ('nonce', 'token', 'task_revision')} == {
+        'nonce': 'n-1', 'token': 'token-1', 'task_revision': 3}
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize('shell', CLOSEOUT_SHELLS)
+@pytest.mark.parametrize('key', ['nonce', 'token', 'task_revision'])
+def test_normal_reply_required_values_refuse_null_wrong_and_request_conflict_without_append(tmp_path, shell, key):
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    log = world.shared / 'events.jsonl'
+    before = log.read_bytes()
+    for case in ('null', 'wrong', 'request_conflict'):
+        request = json.loads(json.dumps(world.request))
+        payload = {key: None if case == 'null' else 'wrong'}
+        if case == 'request_conflict':
+            request[key] = 'conflicting-required-value'
+            payload = {}
+        completed = world.write({**world.tools, '-Type': 'message', '-Status': 'answered',
+                                 '-TaskId': CLOSEOUT_TASK, '-To': 'codex-lead-1',
+                                 '-ReplyToEventJson': json.dumps(request), '-PayloadJson': json.dumps(payload)})
+        assert completed.returncode != 0, (case, completed.stdout, completed.stderr)
+        assert log.read_bytes() == before, case
+        assert world.events() == [world.request], case
 
 
 def _without(event: dict, key: str) -> dict:

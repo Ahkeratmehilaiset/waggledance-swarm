@@ -888,8 +888,9 @@ function Invoke-WdShadowLifetimeDriver {
     # member in the owned job, wait (deadline, guards, root exit, drain), stop once when not drained, confirm the drain
     # within the 30 s stop wait, observe. A5 kills the controller instead of stopping. Returns the sub-case, its launch
     # binding (measured root id and creation time, UNKNOWN when nothing started) and its observation ($null when the
-    # evidence is incomplete, which is never PASS).
-    param([string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Seams)
+    # evidence is incomplete, which is never PASS). WitnessObserve (optional, private to the owned wrapper) is called
+    # immediately before and after every direct witness read; it only observes, it never replaces a seam.
+    param([string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Seams, [scriptblock] $WitnessObserve = $null)
     $seamKeys = @('NewManaged', 'RootCreation', 'Clock', 'Sleep', 'FreeBytes', 'Context', 'KillController',
         'InheritedHandles')
     if (-not (Test-WdShadowExactKeys $Seams $seamKeys)) { throw 'refused: the seams are not exactly the driver seams' }
@@ -912,6 +913,13 @@ function Invoke-WdShadowLifetimeDriver {
         if ($context -isnot [string] -or $context -cne $Name) {
             throw 'refused: the planned launch context was not entered'
         }
+    }
+    $read = {
+        param([object[]] $Want)
+        if ($null -ne $WitnessObserve) { & $WitnessObserve }
+        $seen = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $Want
+        if ($null -ne $WitnessObserve) { & $WitnessObserve }
+        return $seen
     }
     $binding = $plan['binding']
     $deadline = [double]$plan['deadline_seconds']
@@ -940,14 +948,14 @@ function Invoke-WdShadowLifetimeDriver {
             $want = @('root')
             if ($CaseId -ceq 'A5') { $want = $members }
             while ((& $elapsed) -lt $deadline) {
-                $now = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $want
+                $now = & $read $want
                 if (@($want | Where-Object { [string]$now[$_].start_witness -cne 'present' }).Count -eq 0) { break }
                 & $Seams['Sleep'] 250
             }
         }
         $result = $null
         if ($CaseId -ceq 'A3') {
-            $root = (Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected @('root'))['root']
+            $root = (& $read @('root'))['root']
             $total = [long]$managed.TotalProcesses
             $result = 'root_unwitnessed'
             if ([string]$root.start_witness -ceq 'present' -and $root.released -eq $false) {
@@ -968,11 +976,11 @@ function Invoke-WdShadowLifetimeDriver {
             & $Seams['KillController'] $managed
             $until = (& $elapsed) + 30
             while ((& $elapsed) -lt $until) {
-                $now = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+                $now = & $read $members
                 if (@($members | Where-Object { $now[$_].released -eq $false }).Count -eq 0) { break }
                 & $Seams['Sleep'] 250
             }
-            $observed = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+            $observed = & $read $members
             return @{ case_id = $CaseId; name = $Name; binding = $binding
                 observation = @{ expected = $members; observed = $observed } }
         }
@@ -1006,7 +1014,7 @@ function Invoke-WdShadowLifetimeDriver {
                     $rootExitAt = & $elapsed
                     if ($Name -ceq 'early_root_exit_orphan') {
                         # Alive at the root exit = its witness held then; its start line is checked after the stop.
-                        $orphan = (Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected @('orphan'))
+                        $orphan = (& $read @('orphan'))
                         $seen = $orphan['orphan']
                         if ([string]$seen.start_witness -ceq 'present' -and $seen.released -is [bool]) {
                             $orphanAlive = -not $seen.released
@@ -1053,7 +1061,7 @@ function Invoke-WdShadowLifetimeDriver {
         $seconds = [long][Math]::Floor($confirmedAt)
         # A start line is read only once its witness is released: a foreign, missing or still-held one leaves the
         # orphan and root observations without evidence.
-        $after = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+        $after = & $read $members
         foreach ($member in @('orphan', 'root')) {
             if ($members -cnotcontains $member) { continue }
             $seen = $after[$member]
@@ -1076,7 +1084,7 @@ function Invoke-WdShadowLifetimeDriver {
             }
         }
         if ($CaseId -ceq 'A2') {
-            $observed = Get-WdShadowMemberObservation -WitnessDirectory $directory -Expected $members
+            $observed = & $read $members
             $state = Get-WdShadowLifetimeHeld -Observed $observed -Members $members -LaunchId $launchId
             if ($state['complete']) {
                 $live = @()
@@ -1325,7 +1333,7 @@ function New-WdShadowOwnedStopOnce {
         $record['inner_calls'] = 1
         $record['origin'] = 'driver'
         if ($this.Shared['observing']) { $record['origin'] = 'observer' }
-        try { $this.Inner.Stop() } catch { $record['failed'] = $true; throw }
+        try { $this.Inner.Stop() } catch { $record['failed'] = $true; $record['error'] = [string]$_; throw }
     }
     $facade | Add-Member -MemberType ScriptMethod -Name Wait -Value {
         param($Milliseconds)
@@ -1334,7 +1342,12 @@ function New-WdShadowOwnedStopOnce {
         & $this.ObserveHook
         return $done
     }
-    $facade | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $this.Inner.Dispose() }
+    $facade | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+        # A failed owned Dispose is recorded (the receipt then blocks), never rethrown over the original error.
+        try { $this.Inner.Dispose(); $this.StopRecord['dispose'] = 'ok' } catch {
+            $this.StopRecord['dispose'] = 'failed'; $this.StopRecord['dispose_error'] = [string]$_
+        }
+    }
     return $facade
 }
 
@@ -1353,10 +1366,15 @@ function New-WdShadowOwnedLifetimeSeams {
     # refused.
     param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
         [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $HelperPath,
-        [string] $ExpectedHelperSha256, [hashtable] $Record, [string] $EvidenceRoot, [long] $MaxOutputBytes = 1048576)
+        [string] $ExpectedHelperSha256, [hashtable] $Record, [string] $EvidenceRoot, [long] $MaxOutputBytes = 1048576,
+        [hashtable] $Hooks = $null)
     if (-not $ApprovedNativeExecution) {
         throw 'refused: the owned lifetime seams need the explicit opt-in (an accident guard, never authority)'
     }
+    if ($MaxOutputBytes -lt 1 -or $MaxOutputBytes -gt 8388608) {
+        throw 'refused: the output bound is not 1 to 8388608 bytes (checked before any side effect)'
+    }
+    if ($null -ne $Hooks -and $Hooks.Count -ne 0) { throw 'refused: the hook table is not one empty table' }
     if ($CaseId -cne 'A1' -and $CaseId -cne 'A2') {
         throw ('refused: owned ' + $CaseId + ' is not supported here (A3 real contexts, A5 parent kill and A6 ' +
             'handle listing stay refused)')
@@ -1394,7 +1412,10 @@ function New-WdShadowOwnedLifetimeSeams {
         plan_schema = [string]$fixed['schema']; member_sha256 = $ExpectedMemberSha256; started = $false
     }
     $Record['budget'] = [ordered]@{ observations = 0; last = $null; trigger = $null }
-    $Record['stop'] = [ordered]@{ requests = 0; inner_calls = 0; origin = $null; failed = $false }
+    $Record['stop'] = [ordered]@{ requests = 0; inner_calls = 0; origin = $null; failed = $false; error = $null
+        dispose = 'not_called'; dispose_error = $null }
+    $Record['errors'] = New-Object Collections.Generic.List[string]
+    $errors = $Record['errors']
     $shared = @{ observer = $null; observing = $false }
     $budget = $Record['budget']
     $observe = {
@@ -1429,26 +1450,50 @@ function New-WdShadowOwnedLifetimeSeams {
         $stream = New-Object IO.FileStream($inputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
             [IO.FileShare]::None)
         $stream.Dispose()
-        $inner = & $module {
-            param([string] $Text, [string] $HostPath, [string[]] $Arguments, [string] $Directory, [string] $InputPath)
-            Initialize-WdA7OwnedType $Text
-            New-WdA7ManagedProcess $HostPath $Arguments $Directory $InputPath ($Directory + '\root.stdout.log') `
-                ($Directory + '\root.stderr.log')
-        } $loopText $approvedHost $fixedArgv $approvedDirectory $inputPath
+        try {
+            $inner = & $module {
+                param([string] $Text, [string] $HostPath, [string[]] $Arguments, [string] $Directory,
+                    [string] $InputPath)
+                Initialize-WdA7OwnedType $Text
+                New-WdA7ManagedProcess $HostPath $Arguments $Directory $InputPath ($Directory + '\root.stdout.log') `
+                    ($Directory + '\root.stderr.log')
+            } $loopText $approvedHost $fixedArgv $approvedDirectory $inputPath
+        } catch { $errors.Add('launch: ' + [string]$_); throw }
         $launchRecord['started'] = $true
-        $facade = & $stopOnce -Inner $inner -Record $stopRecord -Shared $shared -Observe $observe
-        $shared['observer'] = & $launcher {
-            param($Managed, $Directory, $Max)
-            New-WdShadowOwnedOutputObserver -ApprovedObservation -Managed $Managed -EvidenceDirectory $Directory `
-                -MaxOutputBytes $Max
-        } $facade $approvedDirectory $MaxOutputBytes
-        & $observe
+        try {
+            $facade = & $stopOnce -Inner $inner -Record $stopRecord -Shared $shared -Observe $observe
+            $shared['observer'] = & $launcher {
+                param($Managed, $Directory, $Max)
+                New-WdShadowOwnedOutputObserver -ApprovedObservation -Managed $Managed -EvidenceDirectory $Directory `
+                    -MaxOutputBytes $Max
+            } $facade $approvedDirectory $MaxOutputBytes
+            & $observe
+        } catch {
+            # Setup failed after the owned object was acquired and before the driver received it: one owned stop
+            # (only when none was made yet, never retried) and one Dispose, every error kept, the original rethrown.
+            $setup = $_
+            $errors.Add('setup: ' + [string]$setup)
+            if ([int]$stopRecord['inner_calls'] -eq 0) {
+                $stopRecord['inner_calls'] = 1
+                $stopRecord['origin'] = 'setup_cleanup'
+                try { $inner.Stop() } catch {
+                    $stopRecord['failed'] = $true; $stopRecord['error'] = [string]$_
+                    $errors.Add('cleanup stop: ' + [string]$_)
+                }
+            }
+            try { $inner.Dispose(); $stopRecord['dispose'] = 'ok' } catch {
+                $stopRecord['dispose'] = 'failed'; $stopRecord['dispose_error'] = [string]$_
+                $errors.Add('cleanup dispose: ' + [string]$_)
+            }
+            throw $setup
+        }
         return $facade
     }.GetNewClosure()
     $seams['RootCreation'] = {
         param($Managed)
         return [string](& $module { param([int] $Id) (Get-WdA7ObservedIdentity $Id).creation_utc } ([int]$Managed.Pid))
     }.GetNewClosure()
+    if ($null -ne $Hooks) { $Hooks['witness'] = $observe }
     return $seams
 }
 
@@ -1457,17 +1502,35 @@ function ConvertTo-WdShadowOwnedLifetimeReceipt {
     # command hash passed to the owned process), the observed output budget and the stop-once record. A budget
     # trigger (over the bound, the floor or UNKNOWN), a failed stop or a stop first requested by the observer makes
     # the observation null (UNKNOWN), never PASS; the evidence is kept. Observed bytes only, never native PASS.
-    param([hashtable] $Result, [hashtable] $Record)
+    # v2: a driver failure (its original error), a kept setup or cleanup error, a failed owned Dispose, a setup
+    # cleanup stop or a partial Record also gives UNKNOWN; reading a partial Record never throws over the failure.
+    param([hashtable] $Result, [hashtable] $Record, [object] $Failure = $null)
+    $empty = @{}
+    $launch = $null; $budget = $null; $stop = $null; $errors = @()
+    if ($null -ne $Record) {
+        $launch = $Record['launch']; $budget = $Record['budget']; $stop = $Record['stop']
+        if ($null -ne $Record['errors']) { $errors = @($Record['errors']) }
+    }
+    $given = $empty
+    if ($null -ne $Result) { $given = $Result }
+    $partial = $launch -isnot [Collections.IDictionary] -or $budget -isnot [Collections.IDictionary] -or
+        $stop -isnot [Collections.IDictionary]
+    $blocked = $partial -or $null -ne $Failure -or $null -eq $Result -or $errors.Count -ne 0
+    if (-not $partial) {
+        $blocked = $blocked -or $null -ne $budget['trigger'] -or [bool]$stop['failed'] -or
+            [string]$stop['origin'] -ceq 'observer' -or [string]$stop['origin'] -ceq 'setup_cleanup' -or
+            [string]$stop['dispose'] -ceq 'failed'
+    }
     $observation = $null
-    if ($null -ne $Result) { $observation = $Result['observation'] }
-    $blocked = $null -ne $Record['budget']['trigger'] -or [bool]$Record['stop']['failed'] -or
-        [string]$Record['stop']['origin'] -ceq 'observer'
-    if ($blocked) { $observation = $null }
+    if (-not $blocked) { $observation = $given['observation'] }
+    $failed = $null
+    if ($null -ne $Failure) {
+        $failed = [ordered]@{ type = $Failure.Exception.GetType().FullName; message = [string]$Failure }
+    }
     return [ordered]@{
-        schema = 'wd.mind-shadow-owned-lifetime-receipt.v1'; case_id = $Result['case_id']; name = $Result['name']
-        binding = $Result['binding']; observation = $observation; launch = $Record['launch']
-        budget = $Record['budget']; stop = $Record['stop']; budget_or_stop_blocked = [bool]$blocked
-        native_pass = $false
+        schema = 'wd.mind-shadow-owned-lifetime-receipt.v2'; case_id = $given['case_id']; name = $given['name']
+        binding = $given['binding']; observation = $observation; launch = $launch; budget = $budget; stop = $stop
+        errors = [string[]]$errors; failure = $failed; budget_or_stop_blocked = [bool]$blocked; native_pass = $false
     }
 }
 
@@ -1477,16 +1540,28 @@ function Invoke-WdShadowOwnedLifetimeDriver {
     # and the versioned receipt. The generic driver with injected seams stays a test surface, never a boundary.
     param([switch] $ApprovedNativeExecution, [string] $CaseId, [string] $Name, [hashtable] $Run, [hashtable] $Files,
         [hashtable] $Expected, [string] $MemberPath, [string] $ExpectedMemberSha256, [string] $HelperPath,
-        [string] $ExpectedHelperSha256, [string] $EvidenceRoot)
+        [string] $ExpectedHelperSha256, [string] $EvidenceRoot, [long] $MaxOutputBytes = 1048576)
     if (-not $ApprovedNativeExecution) {
         throw 'refused: the owned lifetime run needs the explicit opt-in (an accident guard, never authority)'
     }
+    if ($MaxOutputBytes -lt 1 -or $MaxOutputBytes -gt 8388608) {
+        throw 'refused: the output bound is not 1 to 8388608 bytes (checked before any side effect)'
+    }
     $record = @{}
+    $hooks = @{}
     $seams = New-WdShadowOwnedLifetimeSeams -ApprovedNativeExecution -CaseId $CaseId -Name $Name -Run $Run `
         -Files $Files -Expected $Expected -MemberPath $MemberPath -ExpectedMemberSha256 $ExpectedMemberSha256 `
-        -HelperPath $HelperPath -ExpectedHelperSha256 $ExpectedHelperSha256 -Record $record -EvidenceRoot $EvidenceRoot
-    $result = Invoke-WdShadowLifetimeDriver -CaseId $CaseId -Name $Name -Run $Run -Seams $seams
-    return ConvertTo-WdShadowOwnedLifetimeReceipt -Result $result -Record $record
+        -HelperPath $HelperPath -ExpectedHelperSha256 $ExpectedHelperSha256 -Record $record `
+        -EvidenceRoot $EvidenceRoot -MaxOutputBytes $MaxOutputBytes -Hooks $hooks
+    # After admission every driver failure is kept in the v2 receipt (UNKNOWN), never rethrown without it.
+    $result = $null
+    $failure = $null
+    try {
+        $result = Invoke-WdShadowLifetimeDriver -CaseId $CaseId -Name $Name -Run $Run -Seams $seams `
+            -WitnessObserve $hooks['witness']
+    } catch { $failure = $_ }
+    try { return ConvertTo-WdShadowOwnedLifetimeReceipt -Result $result -Record $record -Failure $failure }
+    catch { if ($null -ne $failure) { throw $failure }; throw }
 }
 
 # Checkpoints 2 to 4: the case evaluators, the A7 pre-start drivers and the A1, A2, A3, A5 and A6 lifetime drivers

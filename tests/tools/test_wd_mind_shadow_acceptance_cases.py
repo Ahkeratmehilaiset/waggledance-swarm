@@ -6,7 +6,8 @@ expression cmdlets with mocks that throw on any call, and feeds the pure case ev
 A verdict here is synthetic author proof of the refusal, outcome and record logic, never native acceptance: native
 A1-A7 stays NOT_RUN until an approved Medium executor runs the harness. Case contract: RCO1 (A1-A7, proposal v2 as
 locked by Lead), RCO2 (G1-G4, the member witness and the A1 pipe-holding grandchild), Lead (the guard cases, the A4
-before-resume rule and this Source-preparation GO); fable-5 wrote this test and the evaluators.
+publication-kill rule, the A7 pre-start binding and this Source-preparation GO); fable-5 wrote this test and the
+evaluators.
 """
 
 import json
@@ -132,10 +133,53 @@ REFUSED = {"exit_code": 1, "refusal_seen": True, "run_dir_created": False, "proc
 A7_OLD_EIGHT = ("integrity_mismatch", "preloaded_type", "lane_loop_zero_functions", "lane_loop_two_functions",
                 "off_switch_before_start", "off_switch_denied_read", "disk_floor_before_start", "reparse_ancestry")
 A7_SUBCASES = A7_OLD_EIGHT[:1] + ("user_sid_mismatch",) + A7_OLD_EIGHT[1:]
+# Lead's v6 decision (2026-10-22T19:41:59Z): the native A7 scope is the seven reachable pre-start guards; the zero- and
+# two-function loop cases are structural fixture coverage only. A7 binds to its pre-start probe attempts, never to a
+# managed launch id or root PID. Every identity below is synthetic and labelled so; a real run must observe them.
+A7_STRUCTURAL = ("lane_loop_zero_functions", "lane_loop_two_functions")
+A7_NATIVE = tuple(name for name in A7_SUBCASES if name not in A7_STRUCTURAL)
+A7_SCHEMA = "wd.mind-shadow-a7-prestart-binding.v1"
+SYNTHETIC_COMMIT = "5" * 40  # synthetic, never a real commit
+SYNTHETIC_MANIFEST = "5" * 64  # synthetic, never a real manifest hash
+SYNTHETIC_ADAPTER = "6" * 64  # synthetic, never a real adapter hash
 
 
-def _a7():
-    return {name: dict(REFUSED) for name in A7_SUBCASES}
+def _a7_attempts():
+    return {name: f"5a7a7a7a-0000-4000-8000-{index:012d}" for index, name in enumerate(A7_NATIVE, 1)}
+
+
+def _a7_binding(**change):
+    binding = {"schema": A7_SCHEMA, "harness_run_id": "SYNTHETIC-HARNESS-RUN", "case_id": "A7",
+               "controller_pid": "4141", "controller_creation_utc": "SYNTHETIC-CONTROLLER-START",
+               "source_commit": SYNTHETIC_COMMIT, "manifest_sha256": SYNTHETIC_MANIFEST,
+               "adapter_sha256": SYNTHETIC_ADAPTER, "attempts": _a7_attempts()}
+    binding.update(change)
+    return binding
+
+
+def _a7_seen(**change):
+    seen = {key: value for key, value in _a7_binding().items() if key != "attempts"}
+    seen.update(change)
+    return seen
+
+
+def _a7(names=A7_NATIVE):
+    attempts = _a7_attempts()
+    return {name: {"attempt": {"attempt_id": attempts.get(name, "5a7a7a7a-0000-4000-8000-999999999999"),
+                               "probe_pid": str(5000 + index), "probe_creation_utc": f"SYNTHETIC-PROBE-START-{index}"},
+                   "refusal": dict(REFUSED)} for index, name in enumerate(names, 1)}
+
+
+def _a7_case(name, subcases, seen=None, expected=None):
+    return {"name": name, "kind": "case", "case_id": "A7",
+            "binding": expected if expected is not None else _a7_binding(),
+            "observation": {"binding": seen if seen is not None else _a7_seen(), "subcases": subcases}}
+
+
+def _a7_with(subcases, name, part, **change):
+    copy = json.loads(json.dumps(subcases))
+    copy[name][part].update(change)
+    return copy
 
 
 def _case(name, case_id, subcases, binding=None, extra=None, expected=None):
@@ -204,15 +248,44 @@ FIXTURES = [
                                                  lock_reacquire={"attempted": True, "acquired": False,
                                                                  "released": False, "error": "IOException"})), "FAIL"),
     (_case("a6_lock_unmeasured", "A6", _with(_a6(), "inherited_handles", lock_reacquire=None)), "UNKNOWN"),
-    (_case("a7_pass", "A7", _a7()), "PASS"),
-    (_case("a7_switch_but_started", "A7", _with(_a7(), "off_switch_before_start", process_started=True)), "FAIL"),
-    (_case("a7_denied_read_wrote_run_dir", "A7", _with(_a7(), "off_switch_denied_read", run_dir_created=True)),
+    (_a7_case("a7_pass", _a7()), "PASS"),
+    (_a7_case("a7_switch_but_started", _a7_with(_a7(), "off_switch_before_start", "refusal", process_started=True)),
      "FAIL"),
-    (_case("a7_refusal_exit_zero", "A7", _with(_a7(), "reparse_ancestry", exit_code=0)), "FAIL"),
-    (_case("a7_no_refusal_seen", "A7", _with(_a7(), "disk_floor_before_start", refusal_seen=None)), "UNKNOWN"),
-    (_case("a7_old_eight_without_user_variant", "A7", {name: dict(REFUSED) for name in A7_OLD_EIGHT}), "UNKNOWN"),
-    (_case("a7_user_sid_but_started", "A7", _with(_a7(), "user_sid_mismatch", process_started=True)), "FAIL"),
-    (_case("a7_user_sid_no_refusal_seen", "A7", _with(_a7(), "user_sid_mismatch", refusal_seen=False)), "UNKNOWN"),
+    (_a7_case("a7_denied_read_wrote_run_dir", _a7_with(_a7(), "off_switch_denied_read", "refusal",
+                                                       run_dir_created=True)), "FAIL"),
+    (_a7_case("a7_refusal_exit_zero", _a7_with(_a7(), "reparse_ancestry", "refusal", exit_code=0)), "FAIL"),
+    (_a7_case("a7_no_refusal_seen", _a7_with(_a7(), "disk_floor_before_start", "refusal", refusal_seen=None)),
+     "UNKNOWN"),
+    (_a7_case("a7_old_eight_without_user_variant", _a7(A7_OLD_EIGHT)), "UNKNOWN"),
+    (_a7_case("a7_user_sid_but_started", _a7_with(_a7(), "user_sid_mismatch", "refusal", process_started=True)),
+     "FAIL"),
+    (_a7_case("a7_user_sid_no_refusal_seen", _a7_with(_a7(), "user_sid_mismatch", "refusal", refusal_seen=False)),
+     "UNKNOWN"),
+    # Lead's v6 decision: the pre-start attempt binding, no no-start inference, loop cases structural only.
+    (_a7_case("a7_no_start_evidence", _a7_with(_a7(), "preloaded_type", "refusal", process_started=None)), "UNKNOWN"),
+    (_case("a7_managed_launch_binding", "A7", _a7()), "UNKNOWN"),
+    (_a7_case("a7_wrong_schema", _a7(), seen=_a7_seen(schema="wd.mind-shadow-a7-prestart-binding.v0"),
+              expected=_a7_binding(schema="wd.mind-shadow-a7-prestart-binding.v0")), "UNKNOWN"),
+    (_a7_case("a7_foreign_source_pin", _a7(), seen=_a7_seen(source_commit="6" * 40)), "FAIL"),
+    (_a7_case("a7_foreign_controller", _a7(), seen=_a7_seen(controller_creation_utc="SYNTHETIC-OTHER-START")),
+     "FAIL"),
+    (_a7_case("a7_controller_pid_blank", _a7(), seen=_a7_seen(controller_pid=""),
+              expected=_a7_binding(controller_pid="")), "UNKNOWN"),
+    (_a7_case("a7_foreign_attempt", _a7_with(_a7(), "integrity_mismatch", "attempt",
+                                             attempt_id="99999999-0000-4000-8000-000000000001")), "FAIL"),
+    (_a7_case("a7_replayed_attempt", _a7_with(_a7(), "user_sid_mismatch", "attempt",
+                                              attempt_id=_a7_attempts()["integrity_mismatch"])), "FAIL"),
+    (_a7_case("a7_replayed_probe", _a7_with(_a7(), "user_sid_mismatch", "attempt", probe_pid="5001",
+                                            probe_creation_utc="SYNTHETIC-PROBE-START-1")), "FAIL"),
+    (_a7_case("a7_missing_attempt", {name: ({"refusal": sub["refusal"]} if name == "reparse_ancestry" else sub)
+                                     for name, sub in _a7().items()}), "UNKNOWN"),
+    (_a7_case("a7_attempt_extra_key", _a7_with(_a7(), "reparse_ancestry", "attempt", verdict="PASS")), "UNKNOWN"),
+    (_a7_case("a7_probe_pid_zero", _a7_with(_a7(), "reparse_ancestry", "attempt", probe_pid="0")), "UNKNOWN"),
+    (_a7_case("a7_duplicate_expected_attempts", _a7(), expected=_a7_binding(attempts=dict(
+        _a7_attempts(), user_sid_mismatch=_a7_attempts()["integrity_mismatch"]))), "UNKNOWN"),
+    (_a7_case("a7_expected_attempt_missing", _a7(), expected=_a7_binding(attempts={
+        name: value for name, value in _a7_attempts().items() if name != "preloaded_type"})), "UNKNOWN"),
+    (_a7_case("a7_structural_loop_cases_included", _a7(A7_SUBCASES)), "UNKNOWN"),
     # Lead's boundary probe of edf55c95: three false-PASS categories, RED first, positive controls kept.
     (_case("a1_deadline_negative_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=-1)), "UNKNOWN"),
     (_case("a1_deadline_zero_elapsed", "A1", _with(_a1(), "deadline", elapsed_seconds=0)), "FAIL"),
@@ -409,7 +482,9 @@ def _a7_run_root(sub, case_root):
     return case_root + "\\link\\run" if sub == "reparse_ancestry" else case_root
 
 
-A7_DRIVER_FIXTURES = [(f"a7d_{sub}_pass", "PASS") for sub in A7_REACHABLE] + [
+# Lead's v6 decision: an empty live-child listing is never no-start evidence, so a correct refusal without an owned-job
+# witness stays UNKNOWN; only a seen start, a run-root entry or a zero exit decides (FAIL).
+A7_DRIVER_FIXTURES = [(f"a7d_{sub}_no_start_witness", "UNKNOWN") for sub in A7_REACHABLE] + [
     ("a7d_off_switch_wrong_refusal", "UNKNOWN"),
     ("a7d_integrity_exit_zero", "FAIL"),
     ("a7d_disk_floor_run_dir_created", "FAIL"),
@@ -444,7 +519,7 @@ def _a7_items(folder):
                        "create_entry": created, "children": list(children)}
 
     for sub in A7_REACHABLE:
-        driver(f"a7d_{sub}_pass", sub)
+        driver(f"a7d_{sub}_no_start_witness", sub)
     driver("a7d_off_switch_wrong_refusal", "off_switch_before_start",
            text="WD-A7-REFUSAL " + _a7_refusal("disk_floor_before_start", ""))
     driver("a7d_integrity_exit_zero", "integrity_mismatch", exit_code=0)
@@ -514,6 +589,8 @@ def test_a7_driver_observations_come_from_the_child_and_the_run_root(a7_rows, na
         return
     assert seams == {"prepared": 1, "ran": 1, "listed": 1}
     assert sorted(row["observation"]) == ["exit_code", "process_started", "refusal_seen", "run_dir_created"]
+    # A seen live child is a start; no listed child is no evidence ($null), never a no-start observation.
+    assert row["observation"]["process_started"] is (True if a7_rows[1][name]["children"] else None)
 
 
 @WINDOWS_ONLY

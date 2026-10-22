@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ADAPTER = ROOT / "ops" / "windows" / "reboot" / "Start-WdMindShadowJob.ps1"
 
 HOST = r"""
-param([string] $Adapter, [string] $Fixture)
+param([string] $Adapter, [string] $Fixture, [string] $FakeRoot)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 foreach ($name in @('Start-Process', 'Stop-Process', 'Start-Job', 'Invoke-Expression', 'Invoke-Command', 'Add-Type',
@@ -146,10 +146,14 @@ function Invoke-WdFakeRun($Entry) {
     $clock = New-WdFakeClock
     $managed = New-WdFakeManaged
     $forceStop = $false
-    $offSwitchPath = 'C:\SYNTHETIC-RUN-ROOT\mind-shadow.off'
-    $guardRoots = @('C:\')
-    $guardPaths = @('C:\SYNTHETIC-RUN-ROOT', 'C:\SYNTHETIC-LIVE')
-    $liveFull = 'C:\SYNTHETIC-LIVE'
+    # PR1916 CI fixture portability (Lead fixture assignment v2): the fake paths live below the test's own temporary
+    # directory and use the host's path rules, because the extracted statements Join-Path on them and Linux pwsh has
+    # no C drive. The guard and lock fakes above ignore these values; nothing is created at them.
+    $runRoot = [IO.Path]::Combine($FakeRoot, 'SYNTHETIC-RUN-ROOT')
+    $offSwitchPath = [IO.Path]::Combine($runRoot, 'mind-shadow.off')
+    $guardRoots = @([IO.Path]::GetPathRoot($FakeRoot))
+    $liveFull = [IO.Path]::Combine($FakeRoot, 'SYNTHETIC-LIVE')
+    $guardPaths = @($runRoot, $liveFull)
     . ([scriptblock]::Create($drainText))
     . ([scriptblock]::Create($outcomeText))
     return [ordered]@{
@@ -236,7 +240,7 @@ def runs(request, tmp_path_factory):
     fixture = folder / "fixture.json"
     fixture.write_text(json.dumps([item for item, _ in FIXTURES]), encoding="utf-8")
     done = subprocess.run([executable, "-NoProfile", "-NonInteractive", "-File", str(host), str(ADAPTER),
-                           str(fixture)], capture_output=True, text=True, timeout=180)
+                           str(fixture), str(folder)], capture_output=True, text=True, timeout=180)
     assert done.returncode == 0, done.stderr[-2000:]
     rows = json.loads(done.stdout.strip().splitlines()[-1])
     return {row["name"]: row for row in rows}

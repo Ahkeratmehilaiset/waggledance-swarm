@@ -22,6 +22,12 @@ from pathlib import Path
 
 import pytest
 
+# Windows scope (Lead fixture assignment v2): the pin contract under test is Windows-only (the adapter's bundle prefix
+# trims and appends a backslash, and the fake reparse ancestry below uses the same separator), so on another OS these
+# synthetic pin and command runs are skipped as an untested platform, never counted as evidence.
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows-only bundle pin contract (backslash bundle prefix): "
+                                "non-Windows is an untested platform for these synthetic runs, not evidence")
+
 ROOT = Path(__file__).resolve().parents[2]
 ADAPTER = ROOT / "ops" / "windows" / "reboot" / "Start-WdMindShadowJob.ps1"
 WRAPPER_HASH = "AB" * 32

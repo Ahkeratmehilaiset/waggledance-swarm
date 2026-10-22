@@ -38,6 +38,7 @@ function Read-WdA5ParentJsonSnapshot {
     try{$bytes=[IO.File]::ReadAllBytes($Path)}catch [IO.FileNotFoundException]{return @{state='pending'}}catch [IO.DirectoryNotFoundException]{return @{state='pending'}}
     if($bytes.Length-eq0-or$bytes.Length-gt32768){throw 'partial/oversized ready JSON'}
     $text=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes)
+    if(-not$text.TrimStart().StartsWith('{',[StringComparison]::Ordinal)){throw 'ready must be a JSON object before parser coercion'}
     if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$value=ConvertFrom-Json -InputObject $text -DateKind String -ErrorAction Stop}
     else{$value=ConvertFrom-Json -InputObject $text -ErrorAction Stop}
     return @{state='ready';value=$value;sha256=(Get-WdA5ParentSha256 $bytes)}

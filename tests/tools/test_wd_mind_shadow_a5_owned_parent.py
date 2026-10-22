@@ -58,6 +58,19 @@ if($snapshot.value.ready_utc-isnot[string]-or$snapshot.value.ready_utc-cne$sourc
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_ready_snapshot_refuses_single_object_array_before_json_coercion(tmp_path, ps):
+    packet = tmp_path / 'array-ready.json'
+    packet.write_text('[{"ready_utc":"2026-10-22T00:00:00.0000000Z"}]', encoding='utf-8')
+    script = rf"""
+$message=$null
+try{{Read-WdA5ParentJsonSnapshot {q(packet)}|Out-Null;throw 'array accepted'}}catch{{$message=$_.Exception.Message}}
+@{{message=$message}}|ConvertTo-Json
+"""
+    value = run_json(script, ps)
+    assert 'JSON object' in value['message'], value
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('mode', ['positive', 'foreign_context', 'foreign_controller', 'late', 'marker_before',
                                   'marker_after', 'partial_ready', 'read_error', 'stop_error', 'wait_timeout',
                                   'exit_wrong', 'member_held', 'foreign_member_line', 'counts_unknown',

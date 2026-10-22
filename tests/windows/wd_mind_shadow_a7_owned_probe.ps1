@@ -201,6 +201,12 @@ function Invoke-WdMindShadowA7OwnedProbe {
     if(-not$ApprovedNativeExecution){throw 'refused: explicit approved native opt-in required; this grants no authority'}
     $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
     if($null-eq$Plan-or$null-eq$ApprovedInputs-or$null-eq$CaseBinding-or-not$CaseRoot-or-not$LiteralAdapterCommand-or-not$EvidenceRoot){throw 'refused: complete A7 attempt context required'}
+    foreach($key in @('schema','harness_run_id','case_id','controller_pid','controller_creation_utc','source_commit','manifest_sha256','adapter_sha256')){
+        if($CaseBinding[$key]-isnot[string]){throw 'refused: complete typed case binding required'}
+    }
+    if($CaseBinding.controller_pid-cnotmatch'^[1-9][0-9]{0,9}$'-or$CaseBinding.controller_creation_utc-cnotmatch'^\S+$'){
+        throw 'refused: complete typed case binding required'
+    }
     $hostPin=Read-WdA7PinnedFile $HostPath $ExpectedHostSha256
     $adapterPin=Read-WdA7PinnedFile $AdapterPath $ExpectedAdapterSha256
     $loopPin=Read-WdA7PinnedFile $LoopPath $ExpectedLoopSha256 -AsText

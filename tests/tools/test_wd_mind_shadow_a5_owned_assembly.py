@@ -192,6 +192,10 @@ def test_assembly_keeps_an_original_core_failure_as_unknown(rows):
     assert receipt["status"] == "UNKNOWN" and receipt["whole_A5_PASS"] is False
     assert receipt["core"]["observation"] is None
     assert receipt["core"]["status"] == "UNKNOWN" and receipt["core"]["errors"] and receipt["core_error"] is None
+    # The intended primary cause comes first, not only some Core error: an unrelated marker guard error
+    # alone would also give UNKNOWN (Root v17 gap).
+    assert receipt["core"]["errors"][0].startswith(
+        "primary: pre-cleanup member-death accounting unknown"), receipt["core"]["errors"]
     assert row["calls"].count("constructor-fake") == 1 and row["calls"].count("outer-stop") == 1, row
 
 

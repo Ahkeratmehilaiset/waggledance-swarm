@@ -127,7 +127,7 @@ function Invoke-WdMindShadowPublicationProbe {
     if ('WdManagedTurnProcess' -as [type]) { throw 'refused: native type already loaded' }
     $loop = Join-Path $CodeRoot 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1'
     $fixture = Join-Path $CodeRoot 'tests/windows/wd_mind_shadow_publication_fixture.py'
-    $loopPin = Assert-WdPublicationFilePin $loop @('B1CFF1049C1B91866A3F648948190E9F613EE47BC439F18C4AB31A1F6FCEB7D7','16A2A446414FEF6A9B31DD1729EFC7978C2D72712D0A7B7026E905628118C2CE') -ReturnInfo
+    $loopPin = Assert-WdPublicationFilePin $loop @('B6DC04884D298D3C676B7E2688B6AE30E17F157640F94367EAB9EF33446DF4F6','C9CBC5DA5FB75527795F9ECBBE35ABE187298C2251240A5CC885CC331370C9CF') -ReturnInfo
     $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('E7719531D6E357407F9B2087FBFEB9D15A847AA7DF1296413C35280E21D26A21','441AD7B5BD9EF0F6BBB53466BD3EAE0A601EFFDC61EC380850CC8313672EA275') -ReturnHash
     $coreHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') @('CD009FBC890E15435919F31E52342E6C956825DB523898B2C349B887A64D9557','3AAF56219FDEF4AFB208BFBF7C659422FB9618F2DF95343BD6528148A389029A') -ReturnHash
     Assert-WdPublicationFilePin $fixture $ExpectedFixtureSha256

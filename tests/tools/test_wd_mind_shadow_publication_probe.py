@@ -36,6 +36,45 @@ def binding(phase):
     return observed
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('encoding', ['lf', 'crlf', 'mutated'])
+def test_composed_probe_pins_the_exact_owned_accounting_loop(tmp_path, ps, encoding):
+    canonical = (ROOT / 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1').read_bytes().replace(b'\r\n', b'\n')
+    assert hashlib.sha256(canonical).hexdigest() == 'c9cbc5da5fb75527795f9ecbbe35abe187298c2251240a5cc885cc331370c9cf'
+    data = canonical.replace(b'\n', b'\r\n') if encoding == 'crlf' else canonical
+    if encoding == 'mutated':
+        data += b'\n# not the frozen accounting Source\n'
+    loop = tmp_path / 'synthetic-loop.ps1'
+    loop.write_bytes(data)
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+function Add-Type {{throw 'unexpected native compilation'}}
+function Start-Process {{throw 'unexpected process'}}
+function Get-Process {{throw 'unexpected process query'}}
+. {q(PROBE)}
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(PROBE)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'probe parse error'}}
+$assignments=@($ast.FindAll({{param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$loopPin'
+}},$true))
+if($assignments.Count -ne 1){{throw 'loop admission assignment changed'}}
+$loop={q(loop)}
+try {{
+    $actual=. ([scriptblock]::Create($assignments[0].Right.Extent.Text))
+    @{{accepted=$true;sha256=$actual.sha256}}|ConvertTo-Json
+}} catch {{
+    if($_.Exception.Message -cne 'refused: source hash'){{throw}}
+    @{{accepted=$false}}|ConvertTo-Json
+}}
+"""
+    result = ps_json(script, ps)
+    if encoding == 'mutated':
+        assert result == {'accepted': False}
+    else:
+        assert result == {'accepted': True, 'sha256': hashlib.sha256(data).hexdigest()}
+
+
 def ps_json(script, ps):
     completed = _run_powershell(script, executable=ps, check=False)
     assert completed.returncode == 0, completed.stderr

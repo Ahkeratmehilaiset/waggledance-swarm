@@ -1,5 +1,6 @@
 """Strict synthetic A7 owned-runner mechanics; no real process/native calls."""
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,33 @@ from test_wd_startup_recovery import q
 
 
 PROBE = ROOT / 'tests/windows/wd_mind_shadow_a7_owned_probe.ps1'
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('revision', ['new_exact', 'old_exact', 'mutated'])
+def test_composed_owned_initializer_admits_only_the_new_root_only_loop(tmp_path, ps, revision):
+    # Exercise the real initializer admission; Add-Type is a throwing barrier,
+    # so even the accepted Source never compiles or executes any native call.
+    text = (ROOT / 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1').read_text(encoding='utf-8')
+    assert hashlib.sha256(text.encode()).hexdigest() == 'fef4d7f152d7bba9a345c6213e02c51a218e8bf61999a8058af6fb20cacc84e9'
+    if revision == 'old_exact':
+        text = text.replace('    // Terminates only the already-owned root. Caller must observe exit; the job stays open.\n'
+                            '    public void StopRootOnly() { Check(TerminateProcess(process,124)); }\n', '')
+        assert hashlib.sha256(text.encode()).hexdigest() == 'c9cbc5da5fb75527795f9ecbbe35abe187298c2251240a5cc885cc331370c9cf'
+    elif revision == 'mutated':
+        text += '\n# not the frozen owned-root-only Source\n'
+    loop = tmp_path / 'synthetic-loop.ps1'
+    loop.write_text(text, encoding='utf-8', newline='')
+    script = f"""
+function Add-Type {{throw 'synthetic native compilation barrier'}}
+$message=$null
+try {{Initialize-WdA7OwnedType ([IO.File]::ReadAllText({q(loop)}))}}catch{{$message=$_.Exception.Message}}
+@{{message=$message}}|ConvertTo-Json
+"""
+    value = run_json(script, ps)
+    expected = ('synthetic native compilation barrier' if revision == 'new_exact'
+                else 'refused: loop accounting Source identity')
+    assert value == {'message': expected}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

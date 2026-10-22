@@ -40,7 +40,7 @@ def binding(phase):
 @pytest.mark.parametrize('encoding', ['lf', 'crlf', 'mutated'])
 def test_composed_probe_pins_the_exact_owned_accounting_loop(tmp_path, ps, encoding):
     canonical = (ROOT / 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1').read_bytes().replace(b'\r\n', b'\n')
-    assert hashlib.sha256(canonical).hexdigest() == 'c9cbc5da5fb75527795f9ecbbe35abe187298c2251240a5cc885cc331370c9cf'
+    assert hashlib.sha256(canonical).hexdigest() == 'fef4d7f152d7bba9a345c6213e02c51a218e8bf61999a8058af6fb20cacc84e9'
     data = canonical.replace(b'\n', b'\r\n') if encoding == 'crlf' else canonical
     if encoding == 'mutated':
         data += b'\n# not the frozen accounting Source\n'

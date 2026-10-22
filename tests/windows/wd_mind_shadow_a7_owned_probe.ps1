@@ -220,7 +220,7 @@ function Invoke-WdA7OwnedCommand {
 function Initialize-WdA7OwnedType {
     param([string]$LoopText)
     $canonical=Get-WdA7Sha256 ([Text.Encoding]::UTF8.GetBytes($LoopText))
-    if ($canonical-cne'C9CBC5DA5FB75527795F9ECBBE35ABE187298C2251240A5CC885CC331370C9CF') { throw 'refused: loop accounting Source identity' }
+    if ($canonical-cne'FEF4D7F152D7BBA9A345C6213E02C51A218E8BF61999A8058AF6FB20CACC84E9') { throw 'refused: loop accounting Source identity' }
     $type='WdManagedTurnProcess'-as[type]
     $proof=Get-Variable -Name WdA7OwnedTypeProof -Scope Script -ErrorAction SilentlyContinue
     if ($null-ne$type) {

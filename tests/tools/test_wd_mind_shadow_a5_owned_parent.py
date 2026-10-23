@@ -205,7 +205,7 @@ $result=Invoke-WdA5OwnedParentCore -Config $config -PureModule $module -Seams $s
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_real_source_ready_sharing_and_file_helpers_are_bounded_snapshots(tmp_path, ps):
+def test_real_source_ready_and_file_helpers_are_bounded_snapshots(tmp_path, ps):
     source = tmp_path / 'source.ps1'
     source.write_text('synthetic pinned text\n', encoding='utf-8')
     ready = tmp_path / 'ready.json'
@@ -222,19 +222,36 @@ foreach($bad in @(@($source,('A'*64)),@({q(tmp_path)},$hash))){{
 }}
 if((Read-WdA5ParentMarker $source)-cne'present'-or(Read-WdA5ParentMarker {q(tmp_path / 'absent.json')})-cne'absent'){{throw 'marker state'}}
 $refused=$false;try{{Read-WdA5ParentMarker {q(tmp_path / 'missing-dir' / 'marker.json')}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'missing-dir marker accepted'}}
-$held=[IO.File]::Open($ready,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-try{{$snapshot=Read-WdA5ParentJsonSnapshot $ready;if($snapshot.state-cne'pending'){{throw 'sharing must stay pending'}}}}finally{{$held.Dispose()}}
 if((Read-WdA5ParentJsonSnapshot $ready).state-cne'ready'){{throw 'unlocked ready'}}
 $refused=$false;try{{Read-WdA5ParentJsonSnapshot {q(tmp_path)}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'unrelated ready IO accepted'}}
-$held=[IO.File]::Open($witness,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
-try{{$r=Read-WdA5ParentReleasedWitness $witness;if($r.released){{throw 'held witness accepted'}}}}finally{{$held.Dispose()}}
 $r=Read-WdA5ParentReleasedWitness $witness
 if(-not$r.released-or$r.text-cne"synthetic root`n"){{throw 'actual synthetic released bytes'}}
 $refused=$false;try{{Read-WdA5ParentReleasedWitness {q(tmp_path)}|Out-Null}}catch{{$refused=$true}};if(-not$refused){{throw 'unrelated witness IO accepted'}}
 if((Get-WdA5ParentSha256 ([IO.File]::ReadAllBytes($source)))-cne$hash-or[IO.File]::ReadAllText($witness)-cne"synthetic root`n"){{throw 'read helper overwrote fixture'}}
-@{{all_controls=$true;sharing_pending=$true;synthetic_only=$true}}|ConvertTo-Json
+@{{all_controls=$true;synthetic_only=$true}}|ConvertTo-Json
 """
-    assert run_json(script, ps) == {'all_controls': True, 'sharing_pending': True, 'synthetic_only': True}
+    assert run_json(script, ps) == {'all_controls': True, 'synthetic_only': True}
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows sharing-violation HResult contract (32/33)')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_windows_ready_and_witness_sharing_conflicts_are_bounded_snapshots(tmp_path, ps):
+    ready = tmp_path / 'ready.json'
+    ready.write_text('{"value":"synthetic"}', encoding='utf-8')
+    witness = tmp_path / 'root.witness'
+    witness.write_bytes(b'synthetic root\n')
+    script = rf"""
+$ready={q(ready)};$witness={q(witness)}
+$held=[IO.File]::Open($ready,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+try{{$snapshot=Read-WdA5ParentJsonSnapshot $ready;if($snapshot.state-cne'pending'){{throw 'sharing must stay pending'}}}}finally{{$held.Dispose()}}
+if((Read-WdA5ParentJsonSnapshot $ready).state-cne'ready'){{throw 'unlocked ready'}}
+$held=[IO.File]::Open($witness,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+try{{$r=Read-WdA5ParentReleasedWitness $witness;if($r.released){{throw 'held witness accepted'}}}}finally{{$held.Dispose()}}
+$r=Read-WdA5ParentReleasedWitness $witness
+if(-not$r.released-or$r.text-cne"synthetic root`n"){{throw 'actual synthetic released bytes'}}
+@{{sharing_pending=$true;synthetic_only=$true}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {'sharing_pending': True, 'synthetic_only': True}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

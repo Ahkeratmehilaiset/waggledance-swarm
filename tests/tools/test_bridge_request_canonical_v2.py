@@ -28,6 +28,7 @@ HELPERS = {
 CULTURES = ("invariant", "fi-FI", "tr-TR")
 LONG_OK = 1048574
 KEYS_ORDINAL = "'b','a','B','A','a_b','ab','a-b','aB','_x','1','10','2','z',([string][char]0xE4)"
+SIDE = "$check = { [string]$global:cv2fx }"
 
 
 def ok(text: str) -> tuple[str, bytes]:
@@ -167,8 +168,59 @@ CASES: list[tuple[str, str, tuple]] = [
     ("l_chars_default_over", "$v = 'a' * " + str(LONG_OK + 1), err("output exceeds 1048576 characters")),
     ("l_maxdepth_cannot_widen", "$v = 1; $opt = @{ MaxDepth = 33 }", err("MaxDepth")),
     ("l_maxchars_cannot_widen", "$v = 1; $opt = @{ MaxChars = 1048577 }", err("MaxChars")),
+    # C1: an ETS member must be refused by kind, never read or invoked ($global:cv2fx counts script runs).
+    (
+        "x_arraylist_script_count",
+        "$v = [System.Collections.ArrayList]::new(); [void]$v.Add('a'); [void]$v.Add('b'); [void]$v.Add('c'); "
+        "Add-Member -InputObject $v -MemberType ScriptProperty -Name Count -Value { $global:cv2fx++; 1 } -Force; " + SIDE,
+        err("unsupported member type ScriptProperty"),
+    ),
+    (
+        "x_hashtable_script_getenumerator",
+        "$v = @{ real = 1 }; Add-Member -InputObject $v -MemberType ScriptMethod -Name GetEnumerator "
+        "-Value { $global:cv2fx++; @{ fake = 2 }.GetEnumerator() } -Force; " + SIDE,
+        err("unsupported member type ScriptMethod"),
+    ),
+    (
+        "x_array_script_gettype",
+        "$v = [object[]]@(1, 2); Add-Member -InputObject $v -MemberType ScriptMethod -Name GetType "
+        "-Value { $global:cv2fx++; [string] } -Force; " + SIDE,
+        err("unsupported member type ScriptMethod"),
+    ),
+    (
+        "x_list_script_indexer",
+        "$v = [System.Collections.Generic.List[object]]::new(); $v.Add(1); Add-Member -InputObject $v "
+        "-MemberType ScriptMethod -Name get_Item -Value { $global:cv2fx++; 9 } -Force; " + SIDE,
+        err("unsupported member type ScriptMethod"),
+    ),
+    (
+        "x_nested_member_list",
+        "$inner = [System.Collections.ArrayList]::new(); [void]$inner.Add(1); Add-Member -InputObject $inner "
+        "-MemberType ScriptProperty -Name Count -Value { $global:cv2fx++; 0 } -Force; $v = @(1, $inner); " + SIDE,
+        err("unsupported member type ScriptProperty"),
+    ),
+    (
+        "x_string_script_length",
+        "$v = Add-Member -InputObject 'abc' -MemberType ScriptProperty -Name Length "
+        "-Value { $global:cv2fx++; 1 } -Force -PassThru; " + SIDE,
+        err("unsupported member type ScriptProperty"),
+    ),
+    ("x_scalar_note_property", "$v = Add-Member -InputObject 5 -NotePropertyName x -NotePropertyValue 1 -PassThru", err("unsupported member type NoteProperty")),
+    ("x_dictionary_note_property", "$v = @{ a = 1 }; Add-Member -InputObject $v -NotePropertyName x -NotePropertyValue 1", err("unsupported member type NoteProperty")),
+    (
+        "x_pscustomobject_alias",
+        "$v = [pscustomobject]@{ a = 1 }; Add-Member -InputObject $v -MemberType AliasProperty -Name b -Value a",
+        err("unsupported member type AliasProperty"),
+    ),
+    (
+        "x_pscustomobject_script_method",
+        "$v = [pscustomobject]@{ a = 1 }; Add-Member -InputObject $v -MemberType ScriptMethod -Name m "
+        "-Value { $global:cv2fx++; 1 }; " + SIDE,
+        err("unsupported member type ScriptMethod"),
+    ),
 ]
 EXTRA = {"m_input_not_mutated": "b,a|3,2"}
+EXTRA.update({name: "0" for name, body, _ in CASES if body.endswith(SIDE)})
 
 HOST_SCRIPT = r"""param([string]$Source, [string]$Culture)
 $ErrorActionPreference = 'Stop'
@@ -188,15 +240,17 @@ $rows.Add("ast`terrors=$($errors.Count);param=$($null -ne $ast.ParamBlock);begin
 $strict = [System.Text.UTF8Encoding]::new($false, $true)
 function B64([string]$Text) { [Convert]::ToBase64String($strict.GetBytes($Text)) }
 function Invoke-Case([string]$CaseName, [scriptblock]$Body) {
-    $v = $null; $opt = @{}; $check = $null
+    $v = $null; $opt = @{}; $check = $null; $global:cv2fx = 0
     . $Body
     try {
-        $out = ConvertTo-WdBridgeCanonicalV2 -Value $v @opt
-        $extra = if ($check) { [string](& $check) } else { '' }
-        $rows.Add($CaseName + "`tOK`t" + (B64 $out) + "`t" + (B64 $extra))
+        $text = ConvertTo-WdBridgeCanonicalV2 -Value $v @opt
+        $status = 'OK'
     } catch {
-        $rows.Add($CaseName + "`tERR`t" + (B64 $_.Exception.Message) + "`t")
+        $text = $_.Exception.Message
+        $status = 'ERR'
     }
+    $extra = if ($check) { [string](& $check) } else { '' }
+    $rows.Add($CaseName + "`t" + $status + "`t" + (B64 $text) + "`t" + (B64 $extra))
 }
 @@CASES@@
 [Console]::Out.Write(($rows -join "`n"))
@@ -294,6 +348,7 @@ def test_golden_bytes(host_rows, host, culture, name, expected):
     else:
         assert row[0] == "ERR", f"accepted: {base64.b64decode(row[1])[:200]!r}"
         assert expected[1] in base64.b64decode(row[1]).decode("utf-8")
+        assert base64.b64decode(row[2]).decode("utf-8") == EXTRA.get(name, ""), "a script member ran"
 
 
 @pytest.mark.parametrize("culture", CULTURES)

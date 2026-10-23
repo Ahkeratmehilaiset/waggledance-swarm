@@ -11,7 +11,10 @@
 # Strings escape only quote, backslash and U+0000..U+001F (\b \f \n \r \t, other controls as lowercase \u00xx);
 # every other character stays literal, with no Unicode normalization. Unpaired UTF-16 surrogates are refused.
 # Object keys sort with the ordinal UTF-16 comparer; arrays keep their order. Nesting is bounded by -MaxDepth and
-# output length (UTF-16 chars) by -MaxChars; a caller may lower both but not raise them. The input is only read.
+# output length (UTF-16 chars) by -MaxChars; a caller may lower both but not raise them. The input is only read,
+# through .NET reflection, never through PowerShell member access, so no ETS member is ever run. A value that
+# carries a script, code, alias or note member (on a scalar, list or dictionary), or a non-note member on a
+# PSCustomObject, is refused; the members are listed by kind only.
 # No cmdlet is called, so neither a culture-dependent sort nor the v1 serializer's scalar path is involved.
 # Strict UTF-8 encoding of the result is the caller's job. This file defines functions only.
 
@@ -33,38 +36,60 @@ function Add-WdBridgeCanonicalV2Value {
         Add-WdBridgeCanonicalV2Text -Builder $Builder -Text 'null' -MaxChars $MaxChars
         return
     }
-    # GetType() sees through a PSObject wrapper (a PSCustomObject reports its own type); a method, unlike a
-    # property, is never shadowed by a dictionary key.
-    $base = $Value
-    $type = $base.GetType()
-    if ($type -eq [string]) {
-        Add-WdBridgeCanonicalV2String -Builder $Builder -Text $base -MaxChars $MaxChars
+    # Never use PowerShell member access on the input: an ETS member (Add-Member or type data) can shadow GetType,
+    # Count, the indexer or GetEnumerator and would run its script. The runtime type, list items and dictionary
+    # entries are read by .NET reflection through the interfaces. A PSObject wrapping a PSCustomObject reaches
+    # reflection as the PSObject itself; any other wrapper reaches it as its base object.
+    $type = [object].GetMethod('GetType').Invoke($Value, $null)
+    $isObject = $type -eq [System.Management.Automation.PSObject] -or $type -eq [System.Management.Automation.PSCustomObject]
+    $isString = $type -eq [string]
+    $isBool = $type -eq [bool]
+    $isInteger = $type -eq [sbyte] -or $type -eq [int16] -or $type -eq [int32] -or $type -eq [int64]
+    $isDictionary = [System.Collections.IDictionary].IsAssignableFrom($type)
+    $isList = [System.Collections.IList].IsAssignableFrom($type)
+    if (-not ($isString -or $isBool -or $isInteger -or $isDictionary -or $isObject -or $isList)) {
+        throw "canonical-v2: unsupported type $($type.FullName)"
+    }
+    # Members are only listed by kind, never read or invoked. Beyond adapted .NET members everything is refused:
+    # a script, code, alias or note member on a scalar, list or dictionary, and any non-note member on a
+    # PSCustomObject (whose note properties are its data). The one exception is the Windows PowerShell type-data
+    # alias Count on arrays, which this function never uses.
+    foreach ($member in $Value.PSObject.Members) {
+        $kind = [string]$member.MemberType
+        if ($isObject) {
+            $allowed = $kind -ceq 'NoteProperty' -or $kind -ceq 'Method'
+        } else {
+            $allowed = $kind -ceq 'Property' -or $kind -ceq 'ParameterizedProperty' -or $kind -ceq 'Method' -or
+                ($kind -ceq 'AliasProperty' -and $type.IsArray -and $member.Name -ceq 'Count' -and
+                    $member.ReferencedMemberName -ceq 'Length')
+        }
+        if (-not $allowed) { throw "canonical-v2: unsupported member type $kind" }
+    }
+    if ($isString) {
+        Add-WdBridgeCanonicalV2String -Builder $Builder -Text $Value -MaxChars $MaxChars
         return
     }
-    if ($type -eq [bool]) {
+    if ($isBool) {
         $word = 'false'
-        if ($base) { $word = 'true' }
+        if ([object]::Equals($Value, $true)) { $word = 'true' }
         Add-WdBridgeCanonicalV2Text -Builder $Builder -Text $word -MaxChars $MaxChars
         return
     }
-    if ($type -eq [sbyte] -or $type -eq [int16] -or $type -eq [int32] -or $type -eq [int64]) {
-        $digits = $base.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    if ($isInteger) {
+        $digits = [System.Convert]::ToString($Value, [System.Globalization.CultureInfo]::InvariantCulture)
         Add-WdBridgeCanonicalV2Text -Builder $Builder -Text $digits -MaxChars $MaxChars
         return
-    }
-    $isDictionary = $base -is [System.Collections.IDictionary]
-    $isObject = $base -is [System.Management.Automation.PSCustomObject]
-    $isList = $base -is [System.Collections.IList]
-    if (-not ($isDictionary -or $isObject -or $isList)) {
-        throw "canonical-v2: unsupported type $($type.FullName)"
     }
     $inner = $Depth + 1
     if ($inner -gt $MaxDepth) { throw "canonical-v2: nesting depth exceeds $MaxDepth" }
     if ($isList) {
+        $count = [System.Collections.ICollection].GetProperty('Count').GetValue($Value)
+        $item = [System.Collections.IList].GetMethod('get_Item')
         Add-WdBridgeCanonicalV2Text -Builder $Builder -Text '[' -MaxChars $MaxChars
-        for ($i = 0; $i -lt $base.Count; $i++) {
+        for ($i = 0; $i -lt $count; $i++) {
             if ($i -gt 0) { Add-WdBridgeCanonicalV2Text -Builder $Builder -Text ',' -MaxChars $MaxChars }
-            Add-WdBridgeCanonicalV2Value -Builder $Builder -Value $base[$i] -Depth $inner -MaxDepth $MaxDepth -MaxChars $MaxChars
+            $element = $item.Invoke($Value, [object[]]@($i))
+            Add-WdBridgeCanonicalV2Value -Builder $Builder -Value $element -Depth $inner -MaxDepth $MaxDepth -MaxChars $MaxChars
         }
         Add-WdBridgeCanonicalV2Text -Builder $Builder -Text ']' -MaxChars $MaxChars
         return
@@ -72,16 +97,18 @@ function Add-WdBridgeCanonicalV2Value {
     $names = [System.Collections.Generic.List[string]]::new()
     $values = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
     if ($isDictionary) {
-        foreach ($entry in $base.GetEnumerator()) {
-            $key = $entry.Key
-            if ([object]::ReferenceEquals($null, $key) -or $key.GetType() -ne [string]) {
-                $keyType = 'null'
-                if (-not [object]::ReferenceEquals($null, $key)) { $keyType = $key.GetType().FullName }
-                throw "canonical-v2: non-string key $keyType"
-            }
+        $entries = [System.Collections.IDictionary].GetMethod('GetEnumerator').Invoke($Value, $null)
+        $moveNext = [System.Collections.IEnumerator].GetMethod('MoveNext')
+        $keyOf = [System.Collections.IDictionaryEnumerator].GetProperty('Key')
+        $valueOf = [System.Collections.IDictionaryEnumerator].GetProperty('Value')
+        while ($moveNext.Invoke($entries, $null)) {
+            $key = $keyOf.GetValue($entries)
+            if ([object]::ReferenceEquals($null, $key)) { throw 'canonical-v2: non-string key null' }
+            $keyType = [object].GetMethod('GetType').Invoke($key, $null)
+            if ($keyType -ne [string]) { throw "canonical-v2: non-string key $($keyType.FullName)" }
             if ($values.ContainsKey($key)) { throw 'canonical-v2: duplicate key' }
             $names.Add($key)
-            $values[$key] = $entry.Value
+            $values[$key] = $valueOf.GetValue($entries)
         }
     } else {
         foreach ($property in $Value.PSObject.Properties) {

@@ -1102,7 +1102,10 @@ function Invoke-WdShadowLifetimeDriver {
         if ($CaseId -ceq 'A2') {
             $observed = & $read $members
             $state = Get-WdShadowLifetimeHeld -Observed $observed -Members $members -LaunchId $launchId
-            if ($state['complete']) {
+            # Registered witnesses are not an exhaustive job inventory. Preserve a witnessed survivor as FAIL,
+            # but do not emit an empty-survivor PASS without a successful Stop and confirmed zero job count.
+            $noUnwitnessedSurvivor = ($active -eq 0 -and $stopOk -and $stopConfirmed)
+            if ($state['complete'] -and (@($state['held']).Count -gt 0 -or $noUnwitnessedSurvivor)) {
                 $live = @()
                 $independent = @()
                 if ($active -gt 0) { $live = @($state['held']) } else { $independent = @($state['held']) }

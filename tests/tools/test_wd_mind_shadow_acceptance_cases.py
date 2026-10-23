@@ -982,6 +982,15 @@ LIFETIME_FIXTURES = [
     ("lt_a1_single_stop", "A1", "single_confirmed_stop", {}, "PASS"),
     ("lt_a1_single_stop_unconfirmed", "A1", "single_confirmed_stop", {"active_after_stop": 1}, "FAIL"),
     ("lt_a2_clean", "A2", "survivors", {"started": ["root", "child", "grandchild"], "late": "dies"}, "PASS"),
+    # Tools PR1918: released registered witnesses do not exhaust the owned job. An unknown surviving member or
+    # invalid accounting cannot become no-survivor PASS just because none of those witness handles is held.
+    ("lt_a2_positive_active_without_held_witness", "A2", "survivors",
+     {"started": ["root", "child", "grandchild"], "late": "dies", "active_after_stop": 1}, "UNKNOWN"),
+    ("lt_a2_negative_active_without_held_witness", "A2", "survivors",
+     {"started": ["root", "child", "grandchild"], "late": "dies", "active_after_stop": -1}, "UNKNOWN"),
+    ("lt_a2_stop_throws_without_held_witness", "A2", "survivors",
+     {"started": ["root", "child", "grandchild"], "late": "dies", "active_after_stop": 1,
+      "stop_throws": True}, "UNKNOWN"),
     ("lt_a2_independent_survivor", "A2", "survivors",
      {"started": ["root", "child", "grandchild"], "late": "dies", "held": ["grandchild"]}, "FAIL"),
     ("lt_a2_live_descendant", "A2", "survivors",

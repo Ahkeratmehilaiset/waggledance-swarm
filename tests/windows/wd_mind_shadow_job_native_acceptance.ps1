@@ -1073,6 +1073,15 @@ function Invoke-WdShadowLifetimeDriver {
                 if ($null -ne $result) { $result = 'root_unwitnessed' }
             }
         }
+        # PR1918 bot P2: an A1 sub-case succeeds only when EVERY expected member started, was released and is bound
+        # to this launch; a missing, still-held or foreign one leaves it without evidence (an unconfirmed stop
+        # still fails on the job's own count).
+        $witnessed = $true
+        foreach ($member in $members) {
+            $seen = $after[$member]
+            if ($null -eq $seen -or [string]$seen.start_witness -cne 'present' -or $seen.released -isnot [bool] -or
+                -not $seen.released -or [string]$seen.launch_id -cne $launchId) { $witnessed = $false }
+        }
         if ($CaseId -ceq 'A3') { $observation = @{ result = $result } }
         if ($CaseId -ceq 'A1') {
             switch -CaseSensitive ($Name) {
@@ -1084,6 +1093,10 @@ function Invoke-WdShadowLifetimeDriver {
                     $observation = @{ outcome = $outcome; stop_confirmed = $stopConfirmed
                         active_processes_after = $active; elapsed_seconds = $seconds }
                 }
+            }
+            if (-not $witnessed) {
+                if ($Name -ceq 'early_root_exit_orphan') { $observation['orphan_alive_at_root_exit'] = $null }
+                elseif ($drained -or $stopConfirmed) { $observation = $null }
             }
         }
         if ($CaseId -ceq 'A2') {

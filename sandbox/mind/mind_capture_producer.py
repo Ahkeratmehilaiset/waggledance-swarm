@@ -56,8 +56,10 @@ B5 ARTIFACT BUDGET (``OutputBudget``): every byte this producer writes under <li
 --max-output-bytes (default 256 MiB), charged BEFORE the write: each candidate file (``write_new``), each atomic
 replacement with its temporary copy (``atomic_write``: latest.json, a view cache file, last-refusal.json; the
 bytes it replaces are never credited back), each log record with the line end a cut last line may need
-(``journal``). The files the shadow run writes under the cycle's run dir are counted right after it returns or
-raises (``tree_bytes``). A charge past the allowance minus a small reserve refuses the cycle with
+(``journal``), and each shadow output (publication, delta, board, receipt): the run takes ``charge`` and calls it
+before it writes the output; a code tree whose run cannot take it refuses every cycle before any write
+(shadow_unbudgeted, ``takes_charge``), never an unbudgeted run. A charge past the allowance minus a small reserve
+refuses the cycle with
 output_budget_exhausted before that write; the one refusal record of it is drawn from the reserve, and the
 script then writes one fixed STOP line to stderr and exits STOP_EXIT: no further cycle or record. Pruning and
 replacement never credit bytes back, so the count is an upper bound of the bytes written in this run, not of
@@ -856,26 +858,6 @@ def plain(path, directory):
     return stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode)
 
 
-def tree_bytes(path):
-    """B5: the bytes below ``path`` that another module wrote (the shadow run's dir): each regular file's size,
-    and a link or other reparse point counted by its own lstat size, never followed. A missing ``path`` is 0; a
-    listing or lstat that fails refuses the cycle (output_unmeasurable)."""
-    total, pending = 0, [path]
-    try:
-        if not os.path.lexists(path):
-            return 0
-        while pending:
-            with os.scandir(pending.pop()) as entries:
-                for entry in entries:
-                    if plain(entry.path, True):
-                        pending.append(entry.path)
-                    else:
-                        total += os.lstat(entry.path).st_size
-    except OSError:
-        raise CycleRefused("output_unmeasurable") from None
-    return total
-
-
 def prune(cycles_dir, keep, protected):
     """B4 retention: remove the PRUNED files (capture, state, detail manifest) of each cycle dir older than the last
     ``keep`` names, never of a ``protected`` one (last_ok's cycle and the active candidate: the prior recoverable
@@ -964,11 +946,24 @@ def refused(rec, reason, tick, last_ok):
     return last_ok
 
 
+def takes_charge(run):
+    """B5: whether this code tree's shadow run takes the pre-write ``charge`` keyword, by name or through a
+    **keywords parameter that passes it on. A run from before it would write its outputs unbudgeted, so the
+    cycle refuses instead (shadow_unbudgeted): there is no unbudgeted fallback."""
+    code = getattr(run, "__code__", None)
+    if code is None:
+        return False
+    named = code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]
+    return "charge" in named or bool(code.co_flags & 0x08)  # 0x08 is CO_VARKEYWORDS, a **keywords parameter
+
+
 def candidate_cycle(rec, last_ok, seeded):
     """The immutable completed candidate of one cycle under <live-dir>/cycles and the last_ok that commits it. The
     committed state is read first (a bad one refuses before any write), every payload is validated before the first
     write, and the shadow run must have read the very capture and context written. Raises a fixed refusal; the files
     of a refused candidate stay in its dir, which latest.json never names and retention prunes like any old dir."""
+    if not takes_charge(shadow.run):  # B5: before any read or write of this cycle
+        raise CycleRefused("shadow_unbudgeted")
     state = None if last_ok is None else read_state(live / last_ok["state_file"], last_ok["state_sha256"],
                                                     last_ok["generation"])
     try:
@@ -990,12 +985,9 @@ def candidate_cycle(rec, last_ok, seeded):
     rec["capture"] = {"ms": capture_ms, "events": len(rows), "capture_bytes": len(payloads["capture.json"])}
     previous, rec["previous"] = previous_publication(last_ok)
     started = time.perf_counter()
-    try:
-        receipt = shadow.run(cycle_dir / "capture.json", audit_root, cycle_dir / "run",
-                             context_path=None if context is None else cycle_dir / "context.json",
-                             previous_path=previous)
-    finally:  # B5: the shadow run writes its own files; they are counted after it, refused or not
-        OutputBudget.charge(tree_bytes(cycle_dir / "run"))
+    receipt = shadow.run(cycle_dir / "capture.json", audit_root, cycle_dir / "run",
+                         context_path=None if context is None else cycle_dir / "context.json",
+                         previous_path=previous, charge=OutputBudget.charge)  # B5: each output before it
     run_ms = round((time.perf_counter() - started) * 1000)
     if receipt["capture"]["sha256"] != digests["capture.json"] or (receipt["context"] or {}).get("sha256") != \
             digests.get("context.json"):

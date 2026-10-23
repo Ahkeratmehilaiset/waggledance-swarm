@@ -904,3 +904,35 @@ def test_the_core_keeps_the_taxonomy_constant_values_read_without_importing_it()
     imported = [node.module or "" for node in ast.walk(core) if isinstance(node, ast.ImportFrom)]
     imported += [alias.name for node in ast.walk(core) if isinstance(node, ast.Import) for alias in node.names]
     assert not set(imported) & set(GATE_MODULES)
+
+
+def test_write_snapshot_charges_its_exact_publication_bytes_before_any_write_and_keeps_default_bytes(tmp_path):
+    """B5 pre-write hook (Lead 12 h run): an optional keyword-only ``charge`` is called with the length of the exact
+    publication bytes before the temporary file exists; without it the bytes are the same; a charge that raises
+    leaves no file and no temporary copy, and the raised exception passes unchanged."""
+    import inspect
+
+    for api in (mind.write_snapshot, mind._write_publication):
+        parameter = inspect.signature(api).parameters["charge"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is None, api.__name__
+    value = nested_publication_fixture()
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    plain, charged = audit / "plain.json", audit / "charged.json"
+    digest = mind.write_snapshot(value, plain, audit_root=audit)
+    sizes = []
+    assert mind.write_snapshot(value, charged, audit_root=audit, charge=sizes.append) == digest
+    assert charged.read_bytes() == plain.read_bytes() and sizes == [len(plain.read_bytes())]
+
+    class Over(Exception):
+        pass
+
+    def refuse(size):
+        assert sorted(os.listdir(audit)) == ["charged.json", "plain.json"]  # nothing of this write exists yet
+        raise Over(size)
+
+    with pytest.raises(Over):
+        mind.write_snapshot(value, audit / "refused.json", audit_root=audit, charge=refuse)
+    assert sorted(os.listdir(audit)) == ["charged.json", "plain.json"]
+    mind._write_publication({"schema": "positional"}, audit / "positional.json", audit)  # the step1 adapter's call
+    assert json.loads((audit / "positional.json").read_text(encoding="utf-8")) == {"schema": "positional"}

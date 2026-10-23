@@ -123,6 +123,13 @@ function Invoke-WdMindShadowPublicationProbe {
     $CodeRoot = [IO.Path]::GetFullPath($CodeRoot).TrimEnd('\')
     $AuditRoot = [IO.Path]::GetFullPath($AuditRoot).TrimEnd('\')
     if ($AuditRoot -notmatch '^C:\\.*\\\.codex-audit(?:\\|$)' -or -not [IO.Directory]::Exists($AuditRoot)) { throw 'refused: existing local audit root required' }
+    # Check the existing directory and every ancestor before pins, type initialization or writes.
+    # This is a check, not OS isolation: a same-user change after it remains possible.
+    $auditAncestor = Get-Item -LiteralPath $AuditRoot -ErrorAction Stop
+    while ($null -ne $auditAncestor) {
+        if ($auditAncestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'refused: reparse audit root' }
+        $auditAncestor = $auditAncestor.Parent
+    }
     if ([IO.DriveInfo]::new('C').AvailableFreeSpace -lt 3221225472) { throw 'refused: disk floor' }
     if ('WdManagedTurnProcess' -as [type]) { throw 'refused: native type already loaded' }
     $loop = Join-Path $CodeRoot 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1'

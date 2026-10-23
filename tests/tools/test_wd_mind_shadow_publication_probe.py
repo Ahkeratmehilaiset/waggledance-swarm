@@ -81,6 +81,61 @@ def ps_json(script, ps):
     return json.loads(completed.stdout)
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('reparse_at', ['none', 'root', 'parent', 'ancestor'])
+def test_audit_root_reparse_ancestry_refuses_before_pins_or_writes(tmp_path, ps, reparse_at):
+    # RCO2 / bot P2: strict metadata fakes, never a real junction or native job.
+    # The next pin checkpoint throws even in the positive control, before any
+    # type initializer, constructor or publication write can be reached.
+    audit = tmp_path / 'audit'
+    audit.mkdir()
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+function Add-Type {{throw 'unexpected native compilation'}}
+function Start-Process {{throw 'unexpected process'}}
+function Get-Process {{throw 'unexpected process query'}}
+. {q(PROBE)}
+$audit={q(audit)};$where={q(reparse_at)}
+$normal=[IO.FileAttributes]::Directory
+$linked=$normal -bor [IO.FileAttributes]::ReparsePoint
+$ancestor=[pscustomobject]@{{Attributes=$normal;Parent=$null}}
+$parent=[pscustomobject]@{{Attributes=$normal;Parent=$ancestor}}
+$leaf=[pscustomobject]@{{Attributes=$normal;Parent=$parent}}
+switch -CaseSensitive ($where) {{
+    'root' {{$leaf.Attributes=$linked}}
+    'parent' {{$parent.Attributes=$linked}}
+    'ancestor' {{$ancestor.Attributes=$linked}}
+}}
+$global:publicationAuditMetadata=$leaf
+$global:publicationAuditPath=$audit
+$global:publicationPinCalls=0
+function Get-Item {{
+    [CmdletBinding()] param([string]$LiteralPath)
+    if($LiteralPath -cne $global:publicationAuditPath){{throw 'unexpected metadata read'}}
+    return $global:publicationAuditMetadata
+}}
+function Assert-WdPublicationFilePin {{
+    $global:publicationPinCalls++
+    throw 'synthetic: next pin checkpoint'
+}}
+$state=''
+try {{
+    Invoke-WdMindShadowPublicationProbe -ApprovedNativeExecution -CodeRoot {q(ROOT)} `
+        -AuditRoot $audit -RunId synthetic -LaunchId synthetic -Phase before_replace
+    throw 'unexpected completed probe'
+}} catch {{
+    if($_.Exception.Message -ceq 'refused: reparse audit root'){{$state='refused'}}
+    elseif($_.Exception.Message -ceq 'synthetic: next pin checkpoint'){{$state='admitted'}}
+    else{{throw}}
+}}
+@{{state=$state;pin_calls=$global:publicationPinCalls}}|ConvertTo-Json -Compress
+"""
+    expected = {'state': 'admitted', 'pin_calls': 1} if reparse_at == 'none' else {
+        'state': 'refused', 'pin_calls': 0}
+    assert ps_json(script, ps) == expected
+    assert list(audit.iterdir()) == []
+
+
 @pytest.mark.parametrize('phase', ['before_replace', 'after_replace'])
 def test_real_extracted_replace_barrier_and_complete_pointer(tmp_path, phase):
     m = load_fixture()

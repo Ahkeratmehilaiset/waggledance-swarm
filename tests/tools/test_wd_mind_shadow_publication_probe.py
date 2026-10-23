@@ -83,12 +83,13 @@ def ps_json(script, ps):
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('reparse_at', ['none', 'root', 'parent', 'ancestor'])
+@pytest.mark.skipif(sys.platform != 'win32', reason='Public probe admits only existing C-drive audit roots')
 def test_audit_root_reparse_ancestry_refuses_before_pins_or_writes(tmp_path, ps, reparse_at):
     # RCO2 / bot P2: strict metadata fakes, never a real junction or native job.
     # The next pin checkpoint throws even in the positive control, before any
     # type initializer, constructor or publication write can be reached.
-    audit = tmp_path / 'audit'
-    audit.mkdir()
+    audit = tmp_path / '.codex-audit' / 'audit'
+    audit.mkdir(parents=True)
     script = f"""
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 function Add-Type {{throw 'unexpected native compilation'}}

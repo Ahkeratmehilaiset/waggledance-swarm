@@ -1,6 +1,7 @@
 """Strict synthetic A7 owned-runner mechanics; no real process/native calls."""
 import json
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -54,29 +55,31 @@ try {{Initialize-WdA7OwnedType ([IO.File]::ReadAllText({q(loop)}))}}catch{{$mess
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('shape', ['scalar', 'single_array', 'two_targets', 'no_targets', 'wrong_kind'])
-def test_real_link_target_reader_preserves_provider_metadata_shape(ps, shape):
+def test_real_link_target_reader_preserves_provider_metadata_shape(tmp_path, ps, shape):
     # Exercise the actual reader, not the prior matrix's replacement for it.
     # Only Get-Item metadata is synthetic; no junction or ACL is created.
+    target = tmp_path / 'target'
+    link = tmp_path / 'link'
     script = rf"""
-$script:metadata=[pscustomobject]@{{LinkType='Junction';Target='C:\synthetic\.codex-audit\target'}}
+$script:metadata=[pscustomobject]@{{LinkType='Junction';Target={q(target)}}}
 switch ({q(shape)}) {{
-    'single_array' {{$script:metadata.Target=[string[]]@('C:\synthetic\.codex-audit\target')}}
-    'two_targets' {{$script:metadata.Target=[string[]]@('C:\one','C:\two')}}
+    'single_array' {{$script:metadata.Target=[string[]]@({q(target)})}}
+    'two_targets' {{$script:metadata.Target=[string[]]@({q(target)},{q(tmp_path / 'other')})}}
     'no_targets' {{$script:metadata.Target=[string[]]@()}}
     'wrong_kind' {{$script:metadata.LinkType='SymbolicLink'}}
 }}
 function Get-Item {{
     param([string]$LiteralPath,[switch]$Force,[string]$ErrorAction)
-    if($LiteralPath-cne'C:\synthetic\.codex-audit\link'){{throw 'unexpected metadata path'}}
+    if($LiteralPath-cne{q(link)}){{throw 'unexpected metadata path'}}
     return $script:metadata
 }}
 $target=$null;$message=$null
-try {{$target=Get-WdA7PreparationLinkTarget 'C:\synthetic\.codex-audit\link'}}catch{{$message=$_.Exception.Message}}
+try {{$target=Get-WdA7PreparationLinkTarget {q(link)}}}catch{{$message=$_.Exception.Message}}
 @{{target=$target;message=$message}}|ConvertTo-Json
 """
     result = run_json(script, ps)
     if shape in ('scalar', 'single_array'):
-        assert result == {'target': r'C:\synthetic\.codex-audit\target', 'message': None}
+        assert result == {'target': str(target), 'message': None}
     else:
         assert result == {'target': None, 'message': 'not one junction target'}
 
@@ -123,6 +126,7 @@ try{{Invoke-WdMindShadowA7OwnedProbe -ApprovedNativeExecution -Plan $script:synt
     assert result['message'].startswith('refused: A7 preparation'), result
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Actual preparation requires a Windows C-drive audit root')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('mode', ['none_ok', 'none_nonempty', 'none_reparse', 'switch_ok',
                                   'switch_nonempty', 'switch_directory', 'denied_ok', 'denied_readable',
@@ -180,6 +184,21 @@ try{{Assert-WdA7PreparedState @{{prepare={q(prepare)};run_root=$runRoot;preload=
     assert result['accepted'] is positive, result
     if not positive:
         assert result['message'].startswith('refused: A7 preparation'), result
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Non-Windows host refusal contract')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_real_preparation_refuses_non_windows_root_before_metadata(tmp_path, ps):
+    # Keep the real Windows-only admission guard; do not fake a C drive on Unix.
+    script = rf"""
+function Get-WdA7PreparationAttributes {{throw 'unexpected metadata before host-path refusal'}}
+$message=$null
+try{{Assert-WdA7PreparedState @{{prepare='none';run_root={q(tmp_path)};preload='none'}} {q(tmp_path)} 'unused-loop' ('a'*40)}}catch{{$message=$_.Exception.Message}}
+@{{message=$message}}|ConvertTo-Json
+"""
+    assert run_json(script, ps) == {
+        'message': 'refused: A7 preparation: case root not synthetic audit-local'
+    }
 
 
 def run_json(script, ps):

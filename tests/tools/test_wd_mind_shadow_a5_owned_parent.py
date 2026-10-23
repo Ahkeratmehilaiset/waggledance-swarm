@@ -1,6 +1,7 @@
 """Strict fake A5 OUTER parent; never run a controller/member/native job."""
 import json
 import hashlib
+import os
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -88,12 +89,14 @@ def test_actual_parent_actor_order_and_all_failures_stay_unknown(tmp_path, ps, m
     evidence.mkdir()
     frozen = tmp_path / 'frozen-controller.ps1'
     frozen.write_text(frozen_controller_text(), encoding='utf-8')
+    # Host-canonical fake paths under tmp_path: a C: literal is not rooted on Linux (PR1918 Ubuntu CI).
+    synthetic = tmp_path / 'synthetic'
     script = rf"""
 $script:mode={q(mode)};$script:events=New-Object System.Collections.ArrayList;$script:killed=$false
 $module=Import-WdA5ParentPure ([IO.File]::ReadAllText({q(frozen)}).Replace("`r`n","`n"))
 $context=@{{schema='wd.mind-shadow-a5-controller-context.v1';harness_run_id='synthetic';launch_id='11111111-1111-1111-1111-111111111111';source_commit=('a'*40);manifest_sha256=('B'*64);parent_pid=[string]$PID;parent_creation_utc='2026-10-22T00:00:00.0000000Z'}}
 $pins=@{{host_sha256=('1'*64);loop_sha256=('2'*64);member_sha256=('3'*64);controller_sha256=('4'*64)}}
-$config=@{{Context=$context;HostPath='C:\synthetic\pwsh.exe';LoopPath='C:\synthetic\loop.ps1';MemberPath='C:\synthetic\member.ps1';ControllerPath='C:\synthetic\controller.ps1';RunRoot={q(run)};EvidenceRoot={q(evidence)};Pins=$pins;ControllerReadySeconds=1;HoldSeconds=10;SafetyMarginSeconds=2;ReadyWaitSeconds=1;ExitWaitSeconds=1;DrainSeconds=1}}
+$config=@{{Context=$context;HostPath={q(synthetic / 'pwsh.exe')};LoopPath={q(synthetic / 'loop.ps1')};MemberPath={q(synthetic / 'member.ps1')};ControllerPath={q(synthetic / 'controller.ps1')};RunRoot={q(run)};EvidenceRoot={q(evidence)};Pins=$pins;ControllerReadySeconds=1;HoldSeconds=10;SafetyMarginSeconds=2;ReadyWaitSeconds=1;ExitWaitSeconds=1;DrainSeconds=1}}
 switch($script:mode){{
  invalid_path_array{{$config.MemberPath=@($config.MemberPath)}}
  invalid_pin_array{{$config.Pins=$pins.Clone();$config.Pins.host_sha256=@($config.Pins.host_sha256)}}
@@ -101,7 +104,7 @@ switch($script:mode){{
  invalid_margin_nan{{$config.SafetyMarginSeconds=[double]::NaN}}
  invalid_margin_infinite{{$config.SafetyMarginSeconds=[double]::PositiveInfinity}}
  invalid_margin_string{{$config.SafetyMarginSeconds='2'}}
- invalid_path_alias{{$config.MemberPath='C:\synthetic\.\member.ps1'}}
+ invalid_path_alias{{$config.MemberPath={q(str(synthetic) + os.sep + '.' + os.sep + 'member.ps1')}}}
 }}
 $directory=Join-Path {q(run)} $context.launch_id
 $readyContext=@{{}};foreach($key in $context.Keys){{$readyContext[$key]=$context[$key]}}

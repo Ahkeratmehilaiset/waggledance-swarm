@@ -2,7 +2,7 @@
 
 usage: python -B sandbox/mind/mind_capture_producer.py --src <code tree> --live-dir <dir inside a .codex-audit root>
            --bin <pinned .agent-bridge/bin> [--cycles N] [--interval S] [--window W] [--workers K] [--keep K]
-           [--seed-from <an earlier capture.json>] [--repo <owner/name>]
+           [--seed-from <an earlier capture.json>] [--repo <owner/name>] [--max-output-bytes B]
 
 Every cycle builds one immutable candidate dir under <live-dir>/cycles and then commits it with ONE pointer:
   1. FENCE-FREE BRIDGE CAPTURE through the inherited pinned reader, compact path only (a non-Compact read, -Raw
@@ -52,6 +52,16 @@ Every cycle builds one immutable candidate dir under <live-dir>/cycles and then 
 A refusal is a fixed reason, recorded in live-log.jsonl (flushed and synced); when the log cannot be written, in
 <live-dir>/last-refusal.json (that one record, replaced atomically); when neither can be written, the producer writes
 one fixed STOP line to stderr and exits STOP_EXIT, committing nothing further.
+B5 ARTIFACT BUDGET (``OutputBudget``): every byte this producer writes under <live-dir> in one run counts against
+--max-output-bytes (default 256 MiB), charged BEFORE the write: each candidate file (``write_new``), each atomic
+replacement with its temporary copy (``atomic_write``: latest.json, a view cache file, last-refusal.json; the
+bytes it replaces are never credited back), each log record with the line end a cut last line may need
+(``journal``). The files the shadow run writes under the cycle's run dir are counted right after it returns or
+raises (``tree_bytes``). A charge past the allowance minus a small reserve refuses the cycle with
+output_budget_exhausted before that write; the one refusal record of it is drawn from the reserve, and the
+script then writes one fixed STOP line to stderr and exits STOP_EXIT: no further cycle or record. Pruning and
+replacement never credit bytes back, so the count is an upper bound of the bytes written in this run, not of
+the live dir's size, of directory or file-system metadata, or of anything written outside <live-dir>.
 At start, <live-dir>/latest.json is read whole once, right after the seed file and before any write or process start
 (``read_latest``): a missing one is a fresh start; one this producer cannot read whole, or one of another schema (the
 latest.json of another tool's live dir, or of the earlier window/cursor producer) is refused with a fixed reason and
@@ -97,11 +107,14 @@ def count_problem(options):
     """Why the parsed count options are refused at parse time, or None. --window must be 1..TAIL_CAP - SEED_MARGIN:
     0 would list the tool's bounded full snapshot and trim no row, and above the bound each detail read of a seed,
     and above TAIL_CAP its listing too, would be refused (fail closed: refused also when every listed row would be
-    reused). --keep must be at least 1: 0 would prune no cycle capture, and a negative -k only the k oldest."""
+    reused). --keep must be at least 1: 0 would prune no cycle capture, and a negative -k only the k oldest.
+    --max-output-bytes (B5) must leave room past OutputBudget.reserve and stay at most 1 TiB."""
     if not 1 <= options.window <= TAIL_CAP - SEED_MARGIN:
         return f"--window must be 1..{TAIL_CAP - SEED_MARGIN} lines"
     if options.keep < 1:
         return "--keep must be at least 1"
+    if not OutputBudget.reserve < options.max_output_bytes <= 2 ** 40:  # B5: room past the reserve, below 1 TiB
+        return f"--max-output-bytes must be {OutputBudget.reserve + 1}..{2 ** 40}"
     return None
 
 
@@ -118,6 +131,8 @@ parser.add_argument("--keep", type=int, default=12)
 parser.add_argument("--seed-from", type=Path, default=None,
                     help="An earlier capture.json whose rows are reused when their own canonical ref matches.")
 parser.add_argument("--repo", default="Ahkeratmehilaiset/waggledance-swarm")
+parser.add_argument("--max-output-bytes", type=int, default=268435456,
+                    help="B5: bytes this run may write under the live dir (OutputBudget.allowance).")
 
 READER = "Read-AgentBridge.ps1 -Compact -EventId"
 # Every reader option is joined into a PowerShell command line, so the options must be one of the three calls this
@@ -160,6 +175,29 @@ class CaptureRefused(RuntimeError):
 class CycleRefused(CaptureRefused):
     """Fixed reasons only: a reader that times out or raises OSError, an output this producer cannot read, a state
     or candidate it cannot verify, a dir it cannot make, a prune that fails. It refuses the cycle."""
+
+
+class BudgetExhausted(CycleRefused):
+    """B5, the one fixed reason output_budget_exhausted: a write would pass this run's artifact allowance
+    (``OutputBudget.charge``). It refuses the cycle before that write; the script then ends after its record."""
+
+
+class OutputBudget:
+    """B5: the bytes this run has written under the live dir. ``charge`` counts a write before it happens and
+    refuses one that would pass the allowance minus ``reserve``; the first refusal marks the run exhausted, and
+    from then on the reserve may be used, by the one refusal record that reports it (the script then ends).
+    Nothing is credited back. The script sets ``allowance`` from --max-output-bytes before its first write."""
+    allowance = 268435456  # 256 MiB, the --max-output-bytes default
+    reserve = 65536  # kept for the refusal record of an exhausted budget
+    spent = 0
+    exhausted = False
+
+    @classmethod
+    def charge(cls, size):
+        if size < 0 or cls.spent + size > cls.allowance - (0 if cls.exhausted else cls.reserve):
+            cls.exhausted = True
+            raise BudgetExhausted("output_budget_exhausted")
+        cls.spent += size
 
 
 class SeedRefused(RuntimeError):
@@ -230,6 +268,7 @@ def atomic_write(path, data):
     os.replace through the core's _sharing_retry (which retries only the Windows sharing window, a PermissionError,
     with a bounded backoff). The own temporary file is removed when the replace did not happen. No OSError is
     suppressed: each reaches the caller, which refuses the cycle with its fixed reason."""
+    OutputBudget.charge(len(data))  # B5: the temporary copy's bytes, before it exists
     temporary = None
     try:
         fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
@@ -246,6 +285,7 @@ def atomic_write(path, data):
 
 def write_new(path, data):
     """Create ``path`` exclusively (a cycle file is written once, never replaced), flushed and synced; its sha256."""
+    OutputBudget.charge(len(data))  # B5: before the file exists
     with open(path, "xb") as handle:
         handle.write(data)
         handle.flush()
@@ -816,6 +856,26 @@ def plain(path, directory):
     return stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode)
 
 
+def tree_bytes(path):
+    """B5: the bytes below ``path`` that another module wrote (the shadow run's dir): each regular file's size,
+    and a link or other reparse point counted by its own lstat size, never followed. A missing ``path`` is 0; a
+    listing or lstat that fails refuses the cycle (output_unmeasurable)."""
+    total, pending = 0, [path]
+    try:
+        if not os.path.lexists(path):
+            return 0
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if plain(entry.path, True):
+                        pending.append(entry.path)
+                    else:
+                        total += os.lstat(entry.path).st_size
+    except OSError:
+        raise CycleRefused("output_unmeasurable") from None
+    return total
+
+
 def prune(cycles_dir, keep, protected):
     """B4 retention: remove the PRUNED files (capture, state, detail manifest) of each cycle dir older than the last
     ``keep`` names, never of a ``protected`` one (last_ok's cycle and the active candidate: the prior recoverable
@@ -852,6 +912,7 @@ def journal(rec):
     earlier append failed part way and left a cut last line, the record starts with a line end, so it is still one
     whole line of its own and a refusal stays observable (the cut line is left as it is)."""
     line = (json.dumps(rec, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
+    OutputBudget.charge(len(line) + 1)  # B5: the record and the line end a cut last line may need
     with open(live / "live-log.jsonl", "a+b") as handle:
         end = handle.seek(0, os.SEEK_END)
         if end:
@@ -871,14 +932,14 @@ def record_refusal(rec):
     try:
         journal(rec)
         return
-    except OSError:
+    except (OSError, BudgetExhausted):  # B5: past the reserve too
         pass
     fallback = {"schema": REFUSAL_SCHEMA, "authority": "none", "status": "refused",
                 **{key: rec.get(key) for key in ("cycle", "cycle_dir", "reason", "finished_utc")}}
     try:
         atomic_write(live / "last-refusal.json", canonical(fallback))
         return
-    except OSError:
+    except (OSError, BudgetExhausted):  # B5: past the reserve too
         pass
     sys.stderr.write("mind_capture_producer STOP: refusal_unrecordable\n")
     sys.stderr.flush()
@@ -929,8 +990,12 @@ def candidate_cycle(rec, last_ok, seeded):
     rec["capture"] = {"ms": capture_ms, "events": len(rows), "capture_bytes": len(payloads["capture.json"])}
     previous, rec["previous"] = previous_publication(last_ok)
     started = time.perf_counter()
-    receipt = shadow.run(cycle_dir / "capture.json", audit_root, cycle_dir / "run",
-                         context_path=None if context is None else cycle_dir / "context.json", previous_path=previous)
+    try:
+        receipt = shadow.run(cycle_dir / "capture.json", audit_root, cycle_dir / "run",
+                             context_path=None if context is None else cycle_dir / "context.json",
+                             previous_path=previous)
+    finally:  # B5: the shadow run writes its own files; they are counted after it, refused or not
+        OutputBudget.charge(tree_bytes(cycle_dir / "run"))
     run_ms = round((time.perf_counter() - started) * 1000)
     if receipt["capture"]["sha256"] != digests["capture.json"] or (receipt["context"] or {}).get("sha256") != \
             digests.get("context.json"):
@@ -985,10 +1050,14 @@ def one_cycle(cycle, last_ok, seeded):
         journal(rec)
     except OSError:
         return refused(rec, "log_unwritable", tick, last_ok)
+    except BudgetExhausted as exc:
+        return refused(rec, str(exc), tick, last_ok)
     try:
         atomic_write(live / "latest.json", canonical(latest))
     except OSError:
         return refused(rec, "latest_unwritable", tick, last_ok)
+    except BudgetExhausted as exc:
+        return refused(rec, str(exc), tick, last_ok)
     print(json.dumps({"cycle": cycle, "status": "committed", "cycle_ms": rec["cycle_ms"]}), flush=True)
     return committed
 
@@ -1001,6 +1070,7 @@ if __name__ == "__main__":
     problem = count_problem(args)
     if problem is not None:
         parser.error(problem)  # exit 2 with the usage, before the code tree's imports and any write or process start
+    OutputBudget.allowance = args.max_output_bytes  # B5: checked by count_problem, set before any write
     src, live, bin_dir = args.src.resolve(), Path(os.path.abspath(args.live_dir)), args.bin
     audit_root = next(parent for parent in live.parents if parent.name == ".codex-audit")
     sys.path.insert(0, str(src))
@@ -1034,5 +1104,9 @@ if __name__ == "__main__":
     for cycle in range(1, args.cycles + 1):
         tick = time.perf_counter()
         last_ok = one_cycle(cycle, last_ok, seeded)
+        if OutputBudget.exhausted:  # B5: its one refusal record is written; no further cycle or record
+            sys.stderr.write("mind_capture_producer STOP: output_budget_exhausted\n")
+            sys.stderr.flush()
+            raise SystemExit(STOP_EXIT)
         if cycle < args.cycles:
             time.sleep(max(5, args.interval - (time.perf_counter() - tick)))

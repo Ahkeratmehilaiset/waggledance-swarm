@@ -1,0 +1,88 @@
+name: Windows shell advisory
+
+# Deliberately not a PR/push trigger: the six required PR checks are unchanged.
+# Dispatch on the reviewed default workflow ref and supply the exact test head.
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Exact 40-character source commit to test (not a branch)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows-shell-advisory:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      EXPECTED_HEAD: ${{ inputs.head }}
+    steps:
+      - name: Validate exact requested head
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_HEAD -cnotmatch '\A[0-9a-f]{40}\z') {
+            throw 'Advisory requires an exact lowercase commit SHA, never a ref'
+          }
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install existing bridge test dependencies
+        run: python -m pip install pytest PyYAML
+
+      - name: Verify exact checkout and distinct PS5/PS7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git -c http.sslBackend=openssl -c core.longpaths=true rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:EXPECTED_HEAD) { throw 'Advisory checkout head mismatch' }
+          $ps5 = (Get-Command powershell.exe -ErrorAction Stop).Source
+          $ps7 = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $v5 = [string](& $ps5 -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.Major')
+          if ($LASTEXITCODE -ne 0) { throw 'PS5 probe failed' }
+          $v7 = [int](& $ps7 -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.Major')
+          if ($LASTEXITCODE -ne 0) { throw 'PS7 probe failed' }
+          if ($v5 -cne '5' -or $v7 -lt 7 -or [string]::Equals($ps5, $ps7, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Two aliases do not establish distinct PS5 and PS7 engines'
+          }
+          New-Item -ItemType Directory -Path .codex-audit/windows-shell-advisory -Force | Out-Null
+          @{schema='wd.windows-shell-advisory.v1';head=$actual;ps5_path=$ps5;ps5_major=$v5;ps7_path=$ps7;ps7_major=$v7;
+            observed_utc=[DateTimeOffset]::UtcNow.ToString('o');scope='Exact source test checkout, not installed runtime or RCO_PASS'} |
+            ConvertTo-Json | Set-Content .codex-audit/windows-shell-advisory/engines.json -Encoding utf8
+
+      - name: Run affected Windows shell tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $tests = @('tests/tools/test_wd_lead_reply_delivery.py', 'tests/tools/test_wd_native_tools_wake.py')
+          # The retirement file exists only on generations containing that change.
+          if (Test-Path tests/tools/test_wd_lead_watcher_retirement.py) { $tests += 'tests/tools/test_wd_lead_watcher_retirement.py' }
+          python -m pytest @tests -q --tb=short --junitxml=.codex-audit/windows-shell-advisory/junit.xml 2>&1 |
+            Tee-Object .codex-audit/windows-shell-advisory/pytest.log
+          $code = $LASTEXITCODE
+          @{schema='wd.windows-shell-advisory-result.v1';head=$env:EXPECTED_HEAD;pytest_exit=$code;tests=$tests;
+            completed_utc=[DateTimeOffset]::UtcNow.ToString('o');required_ci_replacement=$false} |
+            ConvertTo-Json | Set-Content .codex-audit/windows-shell-advisory/result.json -Encoding utf8
+          exit $code
+
+      - name: Preserve advisory evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-shell-advisory-${{ inputs.head }}-${{ github.run_id }}
+          path: .codex-audit/windows-shell-advisory
+          if-no-files-found: warn

@@ -26,14 +26,23 @@ Only the optional classify_ab(..., git_context=...) keyword does I/O: read-only
 Git child processes for the narrowly verified new-test exception. The context is
 exactly {base, head, base_tree, head_tree, target, git, cwd}: full lowercase
 SHA-1 IDs, an absolute path to the Git executable (never a bare name resolved
-through the current directory or PATH) and the repository directory. base must
-be the one merge base of target and head, so the proof covers the whole change
-against the target, not a later slice of the branch. Every read disables
-replacement objects and runs with an environment built from fixed values only:
-no GIT_DIR, common-dir, object, alternate, replace, graft, namespace or config
-variable, HOME or XDG location of the caller reaches the child, and system and
-global Git configuration are off. At most 32 paths and 4 MiB per Git output are
-accepted (a validation limit, not a memory ceiling), each read has a 10-second
+through the current directory or PATH) and the absolute repository directory.
+base must be the one merge base of target and head, so the proof covers the
+whole change against the target, not a later slice of the branch. target is
+caller-supplied: future wiring must bind it to the PR snapshot's base-branch tip
+(and base to its merge base) and re-derive the proof at the fresh gate. Every
+read disables replacement objects, repository grafts (GIT_GRAFT_FILE is the null
+device), the commit-graph (core.commitGraph=false) and lazy fetching
+(GIT_NO_LAZY_FETCH=1; a Git that predates the variable ignores it), and runs
+with an environment built from fixed values only: no GIT_DIR, common-dir,
+object, alternate, replace, graft, shallow, namespace or config variable, HOME
+or XDG location of the caller reaches the child, and system and global Git
+configuration are off. A shallow repository, or one with any partial-clone or
+promisor key in its configuration, is refused before any ancestry evidence is
+read. The repository's own configuration, alternates and objects still apply:
+the trust root is the cwd repository, which must be the gate's own trusted
+clone, never a PR-controlled checkout. At most 32 paths and 4 MiB per Git
+output are accepted (a validation limit, not a memory ceiling), each read has a 10-second
 timeout. A failed proof returns exactly the legacy path-only result; a returned
 (b) grants no approval, signature, merge or runtime authority. No existing
 admission/snapshot/receipt caller supplies the context: this is preparation,
@@ -251,7 +260,8 @@ def _path_is_b(path: str) -> bool:
 
 
 _GIT_CHILD_FIXED = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
+                    "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
                     "GIT_OPTIONAL_LOCKS": "0"}
 
 
@@ -260,8 +270,9 @@ def _measured_git_env(git: str) -> dict[str, str]:
 
     Only fixed values and the folder of the explicit Git executable go in (plus
     the Windows system root a Windows child needs), so a caller's GIT_DIR,
-    GIT_COMMON_DIR, object/alternate/replace/graft/namespace/config variables,
-    HOME and XDG locations never reach Git.
+    GIT_COMMON_DIR, object/alternate/replace/graft/shallow/namespace/config
+    variables, HOME and XDG locations never reach Git. The repository's own
+    info/grafts file is replaced by the null device and lazy fetching is off.
     """
     env = dict(_GIT_CHILD_FIXED)
     folder = os.path.dirname(git)
@@ -289,7 +300,8 @@ def _verified_added_test_diff(
     if not all(type(context[k]) is str and re.fullmatch(r"[0-9a-f]{40}", context[k])
                for k in required - {"git", "cwd"}):
         return None
-    if type(context["cwd"]) is not str or not context["cwd"].strip():
+    cwd = context["cwd"]
+    if type(cwd) is not str or not os.path.isabs(cwd) or any(ord(c) < 32 for c in cwd):
         return None
     git = context["git"]
     if (type(git) is not str or not os.path.isabs(git) or any(ord(c) < 32 for c in git)
@@ -311,11 +323,11 @@ def _verified_added_test_diff(
             return None
 
     limit = 4 * 1024 * 1024
-    prefix = [git, "--no-pager", "--no-replace-objects", "--literal-pathspecs"]
+    prefix = [git, "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c", "core.commitGraph=false"]
     env = _measured_git_env(git)
 
     def read(*args: str) -> bytes:
-        completed = subprocess.run(prefix + list(args), cwd=context["cwd"],
+        completed = subprocess.run(prefix + list(args), cwd=cwd,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, check=True, timeout=10, env=env)
         data = completed.stdout
@@ -324,6 +336,19 @@ def _verified_added_test_diff(
         return data
 
     try:
+        # A shallow file rewrites parents like grafts do, and a promisor remote
+        # could lazily fetch a missing object over the network: refuse both
+        # before any ancestry evidence is read.
+        if read("rev-parse", "--is-shallow-repository") != b"false\n":
+            return None
+        config = read("config", "--null", "--list")
+        if not config or not config.endswith(b"\0"):
+            return None
+        for entry in config.split(b"\0")[:-1]:
+            key = entry.split(b"\n", 1)[0].decode("utf-8").casefold()
+            if (key == "extensions.partialclone"
+                    or re.fullmatch(r"remote\..+\.(?:promisor|partialclonefilter)", key, re.S)):
+                return None
         base, head = context["base"], context["head"]
         for commit, tree in ((base, context["base_tree"]), (head, context["head_tree"])):
             if read("rev-parse", "--verify", commit + "^{commit}") != (commit + "\n").encode():

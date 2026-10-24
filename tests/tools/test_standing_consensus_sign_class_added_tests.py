@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -16,11 +18,13 @@ BASE, HEAD, BASE_TREE, HEAD_TREE, TARGET = (c * 40 for c in "12345")
 # An absolute Git path that is never launched: every call goes to the synthetic fake below.
 GIT_FOLDER = "C:/b9-synthetic-git-not-opened/cmd" if os.name == "nt" else "/b9-synthetic-git-not-opened/cmd"
 GIT = GIT_FOLDER + ("/git.exe" if os.name == "nt" else "/git")
+REPOSITORY = "C:/b9-synthetic-repository-not-opened" if os.name == "nt" else "/b9-synthetic-repository-not-opened"
 CONTEXT = dict(base=BASE, head=HEAD, base_tree=BASE_TREE, head_tree=HEAD_TREE, target=TARGET, git=GIT,
-               cwd="C:/b9-synthetic-repository-not-opened")
+               cwd=REPOSITORY)
 PATH = "tests/tools/test_b9_sample.py"
 TEXT = b"def test_sample():\n    assert 1 == 1\n"
-PREFIX = [GIT, "--no-pager", "--no-replace-objects", "--literal-pathspecs"]
+PREFIX = [GIT, "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c", "core.commitGraph=false"]
+CONFIG = b"core.commitgraph\nfalse\0core.repositoryformatversion\n0\0core.bare\nfalse\0"
 # The parent environment of every measured call (synthetic values only): Git directory, common-dir, object,
 # replace, graft, namespace and config controls plus HOME/XDG locations. None of them may reach the Git child.
 HOSTILE = {"GIT_DIR": "C:/synthetic-other/.git", "GIT_COMMON_DIR": "C:/synthetic-other/common",
@@ -34,7 +38,7 @@ HOSTILE = {"GIT_DIR": "C:/synthetic-other/.git", "GIT_COMMON_DIR": "C:/synthetic
            "GIT_CONFIG_NOSYSTEM": "0", "GIT_CONFIG_PARAMETERS": "'core.synthetic=1'", "GIT_CONFIG_COUNT": "1",
            "GIT_CONFIG_KEY_0": "diff.external", "GIT_CONFIG_VALUE_0": "synthetic-diff",
            "GIT_EXTERNAL_DIFF": "synthetic-diff", "GIT_EXEC_PATH": "C:/synthetic-exec",
-           "GIT_CEILING_DIRECTORIES": "C:/", "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+           "GIT_CEILING_DIRECTORIES": "C:/", "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1", "GIT_NO_LAZY_FETCH": "0",
            "HOME": "C:/synthetic-home", "XDG_CONFIG_HOME": "C:/synthetic-xdg"}
 PARENT_ENV = dict(HOSTILE, PATH="C:/synthetic-parent/bin", SYSTEMROOT="C:/synthetic-os")
 
@@ -42,7 +46,8 @@ PARENT_ENV = dict(HOSTILE, PATH="C:/synthetic-parent/bin", SYSTEMROOT="C:/synthe
 def child_env():
     """The exact environment the measured Git child must get, built from fixed values only."""
     env = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_NO_REPLACE_OBJECTS": "1",
-           "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+           "GIT_GRAFT_FILE": os.devnull, "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
+           "GIT_OPTIONAL_LOCKS": "0"}
     if os.name == "nt":
         root = PARENT_ENV["SYSTEMROOT"]
         env.update({"SYSTEMROOT": root, "WINDIR": root, "PATHEXT": ".COM;.EXE;.BAT;.CMD",
@@ -101,6 +106,10 @@ class SyntheticGit:
         self.calls = []
         def put(args, data):
             self.commands[tuple(PREFIX + args)] = data
+        self.shallow_key = tuple(PREFIX + ["rev-parse", "--is-shallow-repository"])
+        self.commands[self.shallow_key] = b"false\n"
+        self.config_key = tuple(PREFIX + ["config", "--null", "--list"])
+        self.commands[self.config_key] = CONFIG
         for sha, tree in ((BASE, BASE_TREE), (HEAD, HEAD_TREE)):
             put(["rev-parse", "--verify", sha + "^{commit}"], (sha + "\n").encode())
             put(["rev-parse", "--verify", sha + "^{tree}"], (tree + "\n").encode())
@@ -163,6 +172,49 @@ class AddedTestsConformance(unittest.TestCase):
                               "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_PARAMETERS",
                               "GIT_CONFIG_COUNT", "GIT_CONFIG", "GIT_CONFIG_SYSTEM"} & set(env))
             self.assertNotIn("C:/synthetic-parent/bin", env["PATH"])
+
+    def test_grafts_lazy_fetch_and_commit_graph_overlays_are_pinned_off(self):
+        """RCO2 G1/G2, RCO1 N1: repo-local grafts, promisor lazy fetch and a commit-graph never answer for objects."""
+        fixture = SyntheticGit()
+        self.assertEqual("b", self.measured(fixture=fixture)["ab_class"])
+        for cmd, env in zip(fixture.calls, fixture.envs):
+            self.assertEqual(os.devnull, env["GIT_GRAFT_FILE"])
+            self.assertEqual("1", env["GIT_NO_LAZY_FETCH"])
+            self.assertEqual(["-c", "core.commitGraph=false"], list(cmd[4:6]))
+
+    def test_shallow_repository_is_refused_before_merge_base_evidence(self):
+        """RCO2 G1: a shallow file rewrites parents like grafts; refuse it before any ancestry evidence is read."""
+        legacy = self.subject.classify_ab([PATH])
+        for output in (b"true\n", b"", b"false", b"FALSE\n", b"false\nfalse\n", b" false\n",
+                       subprocess.CalledProcessError(128, ["git"])):
+            fixture = SyntheticGit(); fixture.commands[fixture.shallow_key] = output
+            with self.subTest(output=output):
+                self.assertEqual(legacy, self.measured(fixture=fixture))
+                self.assertIn(fixture.shallow_key, fixture.calls)
+                self.assertNotIn(fixture.merge_base_key, fixture.calls)
+        fixture = SyntheticGit()
+        self.assertEqual("b", self.measured(fixture=fixture)["ab_class"])
+        self.assertLess(fixture.calls.index(fixture.shallow_key), fixture.calls.index(fixture.merge_base_key))
+
+    def test_partial_clone_or_promisor_remote_is_refused(self):
+        """RCO2 G2, RCO1 N1: a promisor remote could lazily fetch a missing object (network, configured programs)."""
+        legacy = self.subject.classify_ab([PATH])
+        for extra in (b"extensions.partialclone\norigin\0", b"remote.origin.promisor\ntrue\0",
+                      b"remote.Toy.Remote.promisor\nfalse\0", b"remote.origin.partialclonefilter\nblob:none\0",
+                      b"extensions.partialclone\0", b"EXTENSIONS.PARTIALCLONE\norigin\0"):
+            fixture = SyntheticGit(); fixture.commands[fixture.config_key] = CONFIG + extra
+            with self.subTest(extra=extra):
+                self.assertEqual(legacy, self.measured(fixture=fixture))
+                self.assertNotIn(fixture.merge_base_key, fixture.calls)
+        for output in (b"", CONFIG[:-1], b"\xff\nx\0", subprocess.CalledProcessError(1, ["git"])):
+            fixture = SyntheticGit(); fixture.commands[fixture.config_key] = output
+            with self.subTest(output=output):
+                self.assertEqual(legacy, self.measured(fixture=fixture))
+        for extra in (b"remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*\0", b"core.promisorx\ntrue\0"):
+            fixture = SyntheticGit(); fixture.commands[fixture.config_key] = CONFIG + extra
+            with self.subTest(extra=extra):
+                self.assertEqual("b", self.measured(fixture=fixture)["ab_class"])
+                self.assertLess(fixture.calls.index(fixture.config_key), fixture.calls.index(fixture.merge_base_key))
 
     def test_base_must_be_the_one_merge_base_of_target_and_head(self):
         """RCO1 F1: a caller passing head^ of a longer branch, or any other ancestor, never proves the PR change."""
@@ -312,7 +364,9 @@ class AddedTestsConformance(unittest.TestCase):
         contexts = ({}, True, {"added_only": True}, dict(CONTEXT, added_only=True),
                     dict(CONTEXT, head="main"), dict(CONTEXT, base=BASE.upper() + "x"),
                     dict(CONTEXT, head_tree=None), dict(CONTEXT, cwd=""), dict(CONTEXT, base_tree=True),
-                    without_target, without_git, dict(CONTEXT, target="main"), dict(CONTEXT, target=None))
+                    without_target, without_git, dict(CONTEXT, target="main"), dict(CONTEXT, target=None),
+                    dict(CONTEXT, cwd="relative/repository"), dict(CONTEXT, cwd=None),
+                    dict(CONTEXT, cwd=REPOSITORY + "\n"))
         for context in contexts:
             with self.subTest(context=context):
                 self.assertEqual(self.subject.classify_ab([PATH]), self.measured(context=context))
@@ -388,6 +442,126 @@ class AddedTestsConformance(unittest.TestCase):
         result = self.subject.evaluate_standing_consensus_sign(enabled=False, changed_paths=[PATH],
             bridge_consensus={}, ci_all_green=True, diff_gate_allowed=True, head_matches=True, receipt_present=True)
         self.assertFalse(result["admitted"])
+
+
+TOY_TEST = "tests/tools/test_toy_added.py"
+TOY_FILES = {"README.md": "toy\n", "tools/toy.py": "x = 1\n"}
+
+
+@unittest.skipIf(os.name == "nt", "actual-Git toy repositories run on the Linux CI only; Windows runs the strict fakes")
+class ActualGitToyRepositories(unittest.TestCase):
+    """RCO1 F3: actual Git on throwaway toy repositories (synthetic data, no network, no persistent config)."""
+
+    def setUp(self):
+        self.subject = load_subject()
+        git = shutil.which("git")
+        self.assertTrue(git and os.path.isabs(git), "the Linux CI must provide an absolute Git executable")
+        self.git = git
+        holder = tempfile.TemporaryDirectory(prefix="b9-toy-git-")
+        self.addCleanup(holder.cleanup)
+        self.root = holder.name
+        self.repo = os.path.join(self.root, "repo")
+        self.home = os.path.join(self.root, "home")
+        os.mkdir(self.repo)
+        os.mkdir(self.home)
+        self.toy("-c", "init.defaultBranch=main", "init", "-q")
+        self.legacy = self.subject.classify_ab([TOY_TEST])
+        added = dict(TOY_FILES, **{TOY_TEST: "def test_toy():\n    assert True\n"})
+        changed = dict(TOY_FILES, **{"tools/toy.py": "x = 2\n"})
+        self.c0 = self.commit(TOY_FILES)
+        self.t1 = self.commit(dict(TOY_FILES, **{"docs/toy.md": "target\n"}), self.c0)
+        self.h1 = self.commit(added, self.c0)
+        # An earlier non-test change hidden behind head^: m1 changes a tool, h2 then adds only the test.
+        self.m1 = self.commit(changed, self.c0)
+        self.h2 = self.commit(dict(changed, **{TOY_TEST: added[TOY_TEST]}), self.m1)
+
+    def toy(self, *args, data=None, **extra):
+        """A toy-repository Git command with a built environment: no inherited GIT_*, user or system config."""
+        env = {"PATH": os.pathsep.join((os.path.dirname(self.git), "/usr/bin", "/bin")), "HOME": self.home,
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "toy-author",
+               "GIT_AUTHOR_EMAIL": "toy-author", "GIT_COMMITTER_NAME": "toy-author",
+               "GIT_COMMITTER_EMAIL": "toy-author", "GIT_AUTHOR_DATE": "1700000000 +0000",
+               "GIT_COMMITTER_DATE": "1700000000 +0000"}
+        env.update(extra)
+        return subprocess.run([self.git, *args], cwd=self.repo, input=data, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, check=True, timeout=30, env=env).stdout.decode()
+
+    def tree(self, files):
+        entries, folders = [], {}
+        for name, text in files.items():
+            top, _, rest = name.partition("/")
+            if rest:
+                folders.setdefault(top, {})[rest] = text
+            else:
+                oid = self.toy("hash-object", "-w", "--stdin", data=text.encode()).strip()
+                entries.append(f"100644 blob {oid}\t{top}\n")
+        entries += [f"040000 tree {self.tree(sub)}\t{top}\n" for top, sub in folders.items()]
+        return self.toy("mktree", data="".join(entries).encode()).strip()
+
+    def commit(self, files, *parents):
+        flags = [part for parent in parents for part in ("-p", parent)]
+        return self.toy("commit-tree", self.tree(files), *flags, "-m", "toy").strip()
+
+    def context(self, base, head, target):
+        return dict(base=base, head=head, base_tree=self.toy("rev-parse", base + "^{tree}").strip(),
+                    head_tree=self.toy("rev-parse", head + "^{tree}").strip(), target=target, git=self.git,
+                    cwd=self.repo)
+
+    def prove(self, base, head, target, parent_env=None):
+        with mock.patch.dict(os.environ, parent_env or {}):
+            return self.subject.classify_ab([TOY_TEST], git_context=self.context(base, head, target))
+
+    def test_actual_git_proves_the_added_test_and_refuses_the_hidden_earlier_change(self):
+        result = self.prove(self.c0, self.h1, self.t1)
+        self.assertEqual("b", result["ab_class"])
+        self.assertEqual([TOY_TEST], result["git_evidence"]["paths"])
+        self.assertEqual((self.c0, self.t1), (result["git_evidence"]["base"], result["git_evidence"]["target"]))
+        self.assertEqual(self.legacy, self.prove(self.m1, self.h2, self.t1))
+        self.assertEqual(self.legacy, self.prove(self.c0, self.h2, self.t1))
+
+    def test_actual_git_ignores_replace_refs(self):
+        self.toy("replace", self.t1, self.commit(dict(TOY_FILES, **{"docs/toy.md": "target\n"}), self.m1))
+        self.assertEqual(self.m1 + "\n", self.toy("merge-base", "--all", self.t1, self.h2))
+        self.assertEqual(self.legacy, self.prove(self.m1, self.h2, self.t1))
+        self.assertEqual("b", self.prove(self.c0, self.h1, self.t1)["ab_class"])
+
+    def test_actual_git_ignores_repository_grafts(self):
+        Path(self.repo, ".git", "info").mkdir(exist_ok=True)
+        Path(self.repo, ".git", "info", "grafts").write_text(f"{self.t1} {self.m1}\n", encoding="ascii")
+        self.assertEqual(self.m1 + "\n", self.toy("merge-base", "--all", self.t1, self.h2))
+        self.assertEqual(self.legacy, self.prove(self.m1, self.h2, self.t1))
+        self.assertEqual("b", self.prove(self.c0, self.h1, self.t1)["ab_class"])
+
+    def test_actual_git_ignores_a_hostile_inherited_environment(self):
+        other = os.path.join(self.root, "other")
+        os.mkdir(other)
+        subprocess.run([self.git, "init", "-q", other], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+                       timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": self.home, "GIT_CONFIG_NOSYSTEM": "1",
+                                        "GIT_CONFIG_GLOBAL": os.devnull})
+        grafts = Path(self.root, "hostile-grafts")
+        grafts.write_text(f"{self.t1} {self.m1}\n", encoding="ascii")
+        shallow = Path(self.root, "hostile-shallow")
+        shallow.write_text(self.c0 + "\n", encoding="ascii")
+        self.assertEqual(self.m1 + "\n", self.toy("merge-base", "--all", self.t1, self.h2, GIT_GRAFT_FILE=str(grafts)))
+        hostile = {"GIT_DIR": os.path.join(other, ".git"), "GIT_WORK_TREE": other,
+                   "GIT_OBJECT_DIRECTORY": os.path.join(other, ".git", "objects"), "GIT_GRAFT_FILE": str(grafts),
+                   "GIT_SHALLOW_FILE": str(shallow), "GIT_NO_REPLACE_OBJECTS": "0", "GIT_NO_LAZY_FETCH": "0",
+                   "GIT_CONFIG_GLOBAL": str(grafts), "HOME": self.home, "XDG_CONFIG_HOME": self.home}
+        self.assertEqual("b", self.prove(self.c0, self.h1, self.t1, hostile)["ab_class"])
+        self.assertEqual(self.legacy, self.prove(self.m1, self.h2, self.t1, hostile))
+
+    def test_actual_git_refuses_a_shallow_repository(self):
+        Path(self.repo, ".git", "shallow").write_text(self.c0 + "\n", encoding="ascii")
+        self.assertEqual("true\n", self.toy("rev-parse", "--is-shallow-repository"))
+        self.assertEqual(self.legacy, self.prove(self.c0, self.h1, self.t1))
+
+    def test_actual_git_refuses_a_partial_clone_or_promisor_remote(self):
+        for key, value in (("remote.origin.promisor", "true"), ("extensions.partialClone", "origin")):
+            with self.subTest(key=key):
+                self.toy("config", key, value)
+                self.assertEqual(self.legacy, self.prove(self.c0, self.h1, self.t1))
+                self.toy("config", "--unset", key)
+        self.assertEqual("b", self.prove(self.c0, self.h1, self.t1)["ab_class"])
 
 
 if __name__ == "__main__":

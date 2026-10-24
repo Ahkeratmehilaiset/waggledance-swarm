@@ -524,9 +524,63 @@ class HiddenGitlinkConformance(unittest.TestCase):
             self.assertEqual("--ignore-submodules=none", call[call.index("diff") + 1])
 
 
+NINE_B_KEYWORDS = ("standing_consensus_sign", "git_context", "added_test_repository", "added_test_git")
+# B16 (Grok f9234eeb item 2): the CLOSED set of production call shapes that pass a dormant 9b keyword, with counts.
+# Any new call site, a dynamic flag, a git_context expression or a new same-name forward changes this multiset.
+ALLOWED_NINE_B_SHAPES = {
+    ("tools/check_standing_consensus_sign_class.py", "git_context", "name:git_context"): 1,
+    ("tools/idle_consensus_auto_merge.py", "standing_consensus_sign", "expr:args.standing_consensus_sign"): 1,
+    ("tools/idle_consensus_auto_merge.py", "standing_consensus_sign", "name:standing_consensus_sign"): 2,
+    ("tools/standing_sign_receipt_replay_canary.py", "standing_consensus_sign", "const:True"): 1,
+    ("tools/write_bridge_consensus_merge_receipt.py", "added_test_git", "name:added_test_git"): 1,
+    ("tools/write_bridge_consensus_merge_receipt.py", "added_test_repository", "name:added_test_repository"): 1,
+    ("tools/write_bridge_consensus_merge_receipt.py", "standing_consensus_sign", "name:standing_consensus_sign"): 1,
+}
+
+
+def nine_b_call_shapes(root):
+    """Every production call keyword among NINE_B_KEYWORDS as (file, keyword, shape) with counts."""
+    import ast
+
+    shapes = {}
+    for base in ("tools", "ops", "waggledance"):
+        for path in sorted((Path(root) / base).rglob("*.py")):
+            rel = path.relative_to(root).as_posix()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)):
+                if not isinstance(node, ast.Call):
+                    continue
+                for word in node.keywords:
+                    if word.arg not in NINE_B_KEYWORDS:
+                        continue
+                    value = word.value
+                    shape = ("const:" + repr(value.value) if isinstance(value, ast.Constant)
+                             else "name:" + value.id if isinstance(value, ast.Name) else "expr:" + ast.unparse(value))
+                    key = (rel, word.arg, shape)
+                    shapes[key] = shapes.get(key, 0) + 1
+    return shapes
+
+
 class DormantStandingSignConformance(unittest.TestCase):
     """B13 (RCO1 A1): Rule 9b stays dormant. No production caller or CLI turns standing-sign on or supplies the
     added-test repository; the one pre-existing enabling call is the plan-only replay canary (apply=False)."""
+
+    def test_nine_b_call_shapes_are_a_closed_set(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(ALLOWED_NINE_B_SHAPES, nine_b_call_shapes(root))
+        # The canary call is the only enabling one: literal True, apply=False and no Git keyword at that call.
+        mutations = {
+            "dynamic flag": "evaluate_standing_consensus_sign({}, standing_consensus_sign=flag)\n",
+            "git_context expression": "classify_ab(paths, git_context=ctx)\n",
+            "new same-name forward": "merge(added_test_repository=added_test_repository)\n",
+        }
+        for label, line in mutations.items():
+            with self.subTest(label), tempfile.TemporaryDirectory(prefix="b16-shape-") as holder:
+                os.makedirs(os.path.join(holder, "tools"))
+                with open(os.path.join(holder, "tools", "t.py"), "x", encoding="utf-8") as handle:
+                    handle.write(line)
+                found = nine_b_call_shapes(holder)
+                self.assertTrue(found)
+                self.assertFalse(set(found) <= set(ALLOWED_NINE_B_SHAPES), label)
 
     def test_no_production_caller_or_cli_enables_standing_sign_or_supplies_the_repository(self):
         import ast

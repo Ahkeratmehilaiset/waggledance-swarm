@@ -145,6 +145,9 @@ public sealed class WdManagedTurnProcess : IDisposable {
     public uint ActiveProcesses {
         get { ACCOUNTING info; Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(ACCOUNTING)),IntPtr.Zero)); return info.active; }
     }
+    public uint TotalProcesses {
+        get { ACCOUNTING info; Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(ACCOUNTING)),IntPtr.Zero)); return info.total; }
+    }
     public WdManagedDescendant[] LiveDescendants {
         get {
             // Job accounting can briefly retain a root whose process handle is
@@ -175,6 +178,8 @@ public sealed class WdManagedTurnProcess : IDisposable {
             } finally { Marshal.FreeHGlobal(buffer); }
         }
     }
+    // Terminates only the already-owned root. Caller must observe exit; the job stays open.
+    public void StopRootOnly() { Check(TerminateProcess(process,124)); }
     public void Stop() { Check(TerminateJobObject(job,124)); }
     public void Dispose() {
         if(job!=IntPtr.Zero) { CloseHandle(job); job=IntPtr.Zero; }

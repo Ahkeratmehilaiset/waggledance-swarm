@@ -525,8 +525,84 @@ def test_harness_witness_is_fail_closed_and_no_case_passes_yet(harness):
     passed = body[:body.index("return 'PASS'")]
     for need in ("$Expected.Count -eq 0", "start_witness", "released", "[string]$seen.launch_id -cne $LaunchId"):
         assert need in passed, need
-    cases = re.findall(r"'(A[1-7])' = 'UNKNOWN'", harness)
+    cases = re.findall(r"'(A[1-7])' = 'NOT_READY'", harness)
     assert sorted(cases) == [f"A{i}" for i in range(1, 8)]
+
+
+def test_harness_case_evaluators_take_no_supplied_observation_and_never_pass_a_run(harness):
+    # Checkpoint 2 (Lead Source-preparation GO): the evaluators are pure, the script takes no observation input, A4 is
+    # always NOT_READY (no publication-kill evidence: Lead's v6 correction) and no whole run can PASS until it exists.
+    params = re.search(r"param\((.*?)\n\)", harness, flags=re.S).group(1)
+    assert re.findall(r"\$(\w+)", params) == ["OptInNativeAcceptance"]
+    case = _function(harness, "Get-WdShadowCaseVerdict")
+    assert "if ($CaseId -ceq 'A4') { return 'NOT_READY' }" in case
+    assert case.index("return 'NOT_READY'") < case.index("$required = @{")
+    run = _function(harness, "Get-WdShadowRunVerdict")
+    assert "$a4TimingPointSupported = $false" in run
+    assert len(re.findall(r"(?i)\$a4TimingPointSupported\s*=", harness)) == 1
+    assert run.index("if (-not $a4TimingPointSupported -or $values -ccontains 'NOT_READY') { return 'NOT_READY' }") \
+        < run.rindex("return 'PASS'")
+    for name in ("Get-WdShadowCaseVerdict", "Get-WdShadowA7CaseVerdict", "Get-WdShadowSubcaseVerdict",
+                 "Get-WdShadowStopVerdict", "Get-WdShadowRefusalVerdict", "Get-WdShadowRunVerdict",
+                 "Test-WdShadowExactKeys"):
+        body = _function(harness, name)
+        for word in ("Start-", "Stop-Process", "Get-Process", "Get-Cim", "Invoke-", "New-Object", "[IO.", "$env:",
+                     "$script:", "$global:"):
+            assert word not in body, (name, word)
+
+
+def test_harness_a7_drivers_use_injected_seams_and_never_kill_or_run_by_default(harness):
+    # Checkpoint 3 (Lead A7 driver GO) with Lead's v6 decision: the uncontained real child and lister seams are
+    # disabled (they refuse before any process exists); the driver core reaches the system only through its injected
+    # seams and never turns an empty listing into no-start evidence; only the two structural lane-loop sub-cases have
+    # no plan; the script still ends in its refusal on every invocation.
+    for name in ("Start-WdShadowA7Child", "Get-WdShadowA7ChildProcesses"):
+        seam = _function(harness, name)
+        assert re.search(r"param\([^)]*\)\n    throw 'refused: [^']+'\n\}\n$", seam), name
+        for word in ("Process]::Start", "ProcessStartInfo", "WaitForExit", "Get-CimInstance", "Kill", "Stop-Process",
+                     "taskkill", "Start-Process"):
+            assert word not in seam, (name, word)
+    driver = _function(harness, "Invoke-WdShadowA7Driver")
+    for word in ("Start-WdShadowA7Child", "Get-WdShadowA7ChildProcesses", "New-WdShadowA7CaseRoot", "New-Item",
+                 "Get-Cim", "$env:", "$global:", "$script:"):
+        assert word not in driver, word
+    for need in ("& $Prepare $plan", "& $RunChild ", "& $ListChildren "):
+        assert need in driver, need
+    assert not re.search(r"process_started\s*=\s*\(?\s*\$false", driver)
+    assert "process_started = ($children.Count -gt 0)" not in driver
+    plan = _function(harness, "Get-WdShadowA7Plan")
+    assert plan.count("return $null") == 1
+    assert "'lane_loop_zero_functions', 'lane_loop_two_functions'" in plan
+    assert harness.rstrip().endswith("exit 3")
+    # Lead's v5 delta and v6 decision: the native A7 set holds both T1 variants (integrity and user) and the seven
+    # reachable guards; the two loop sub-cases are structural fixture coverage only, never a native sub-case.
+    a7 = _function(harness, "Get-WdShadowA7CaseVerdict")
+    native = re.findall(r"'(\w+)'", re.search(r"\$native = @\((.*?)\)", a7, flags=re.S).group(1))
+    assert native[:2] == ["integrity_mismatch", "user_sid_mismatch"] and len(native) == 7
+    assert not any(name.startswith("lane_loop_") for name in native)
+    assert r"'^wd\.mind-shadow-a7-prestart-binding\.v1\z'" in a7
+    for word in ("launch_id", "root_pid"):
+        assert word not in a7, word
+    subcase = _function(harness, "Get-WdShadowSubcaseVerdict")
+    assert "user_sid_mismatch" in subcase and "lane_loop_" not in subcase
+    coverage = dict(re.findall(r"(\w+) = '(native_prestart|structural_fixture_only)'",
+                               _function(harness, "Get-WdShadowA7Coverage")))
+    assert sorted(name for name, scope in coverage.items() if scope == "native_prestart") == sorted(native)
+    assert sorted(name for name, scope in coverage.items() if scope == "structural_fixture_only") == [
+        "lane_loop_two_functions", "lane_loop_zero_functions"]
+    # Lead's v6 A4 correction: A4 is the publication replacement kill; no before-resume wording remains.
+    assert "before-resume" not in HARNESS.read_text(encoding="utf-8")
+
+
+def test_a7_loop_count_cases_are_structural_fixture_only(adapter):
+    # Lead's v6 decision: under the immutable production manifest the zero- and two-function loops cannot reach the
+    # count guard (the loop bytes are checked against the manifest pin first), so their coverage is this structural
+    # check of the adapter's own count guard, never a native PASS.
+    guard = ('if ($matched.Count -ne 1) { throw "refused: expected one Initialize-WdNativeTurnType, found '
+             '$($matched.Count)" }')
+    assert adapter.count(guard) == 1
+    assert adapter.index("the lane loop bytes do not match the manifest") < adapter.index(guard)
+    assert adapter.index("$loopBytes = [IO.File]::ReadAllBytes($loopPath)") < adapter.index(guard)
 
 
 def test_the_wrapper_pin_is_the_exact_bundle_root_file_with_manifest_bound_bytes(adapter):
@@ -596,3 +672,82 @@ def test_a_volume_root_run_root_or_live_dir_is_refused_before_the_separator_is_t
                                     "$trimmed = $full.TrimEnd('\\')"])
     resolved = adapter.index("$liveFull = Resolve-WdShadowDirectoryPath")
     assert resolved < adapter.index("if (-not (Test-Path -LiteralPath $runRootFull -PathType Container))")
+
+
+MEMBER = ROOT / "tests" / "windows" / "wd_mind_shadow_acceptance_member.ps1"
+
+
+def test_harness_lifetime_drivers_sequence_the_job_through_seams_and_the_real_job_seams_are_disabled(harness):
+    # Lead's v7 GO: actual A1/A2/A3/A5/A6 driver bodies (launch, wait, stop, observation) on injected seams; the real
+    # job, root-identity, context, controller-kill and handle seams refuse until the pinned owned-job API is reconciled
+    # once; the script still ends in its refusal and never calls a driver.
+    seams = _function(harness, "Get-WdShadowLifetimeSeams")
+    for name in ("NewManaged", "RootCreation", "Context", "KillController", "InheritedHandles"):
+        assert re.search(name + r" = \{\n? *param\([^)]*\)\n? *throw 'refused: [^']*disabled[^']*'\n? *\}", seams), name
+    for word in ("Process]::Start", "ProcessStartInfo", "GetProcessById", ".Kill", "Stop-Process", "taskkill",
+                 "Start-Process", "Start-Sleep"):
+        assert word not in seams, word
+    driver = _function(harness, "Invoke-WdShadowLifetimeDriver")
+    for word in ("Get-WdShadowLifetimeSeams", "Process]::", "Get-Cim", "Start-Sleep", "$env:", "$global:", "$script:",
+                 ".Kill", "New-Item"):
+        assert word not in driver, word
+    for need in ("& $Seams['NewManaged'] $plan", "$managed.Stop()", "$managed.ActiveProcesses",
+                 "$managed.TotalProcesses", "& $Seams['KillController'] $managed", "$managed.Dispose()",
+                 "& $Seams['InheritedHandles'] $managed", "Get-WdShadowMemberObservation"):
+        assert need in driver, need
+    # Normal and exceptional cleanup have two textual sites, not two stop attempts.
+    # The raw fallback is guarded by the actual prior-attempt flag; owned cleanup
+    # uses the facade's shared latch, including when the first Stop failed.
+    assert driver.count("$managed.Stop()") == 2
+    assert "$driverStopAttempted = $false" in driver
+    assert "$driverStopAttempted = $true\n            try { $managed.Stop();" in driver
+    assert "elseif (-not $driverStopAttempted) { $managed.Stop() }" in driver
+    assert "$managed.StopForExceptionalCleanup()" in driver
+    assert driver.index("$managed.StopForExceptionalCleanup()") < driver.index("$managed.Dispose()")
+    facade = _function(harness, "New-WdShadowOwnedStopOnce")
+    cleanup = facade[facade.index("-Name StopForExceptionalCleanup"):facade.index("-Name Wait")]
+    assert cleanup.index("if ([int]$this.StopRecord['inner_calls'] -ne 0) { return }") < \
+        cleanup.index("try { $this.Stop() }")
+    assert "driver_exception_cleanup" in facade
+    assert driver.index("& $Seams['NewManaged'] $plan") < driver.index("$managed.Stop()") < driver.index(
+        "$managed.Dispose()")
+    compose = _function(harness, "ConvertTo-WdShadowLifetimeCaseObservation")
+    assert "'wd.mind-shadow-lifetime-subcase-binding.v1'" in compose
+    # Lead's v8: A1 and A3 take the versioned per-sub-case binding; the old one-launch binding never reaches them.
+    case = _function(harness, "Get-WdShadowCaseVerdict")
+    assert case.index("Get-WdShadowLifetimeSubcaseCaseVerdict") < case.index("$required = @{")
+    # The future owned wiring: admission before any write or load, Root's runner loaded only from its pinned path,
+    # and the unsafe lifetime seams kept refused.
+    for name in ("Invoke-WdShadowA7OwnedAttempt", "New-WdShadowOwnedLifetimeSeams"):
+        body = _function(harness, name)
+        assert body.index("if (-not $ApprovedNativeExecution)") < body.index("Test-WdShadowOwnedAdmission") < \
+            body.index("$Files['runner']"), name
+        for word in ("Process]::", "Get-Cim", "Start-Sleep", "$env:", ".Kill", "New-Item"):
+            assert word not in body, (name, word)
+    owned = _function(harness, "New-WdShadowOwnedLifetimeSeams")
+    for seam in ("Context", "KillController", "InheritedHandles"):
+        assert f"$seams['{seam}'] =" not in owned, seam
+    tail = harness[harness.rindex("\n}\n"):]
+    assert "Invoke-WdShadow" not in tail and harness.rstrip().endswith("exit 3")
+
+
+def test_member_fixture_refuses_by_default_and_uses_only_preregistered_members(harness):
+    assert MEMBER.is_file(), MEMBER
+    text = _code(MEMBER)
+    lines = [line for line in text.splitlines() if line.strip()]
+    first = next(i for i, line in enumerate(lines) if not line.lstrip().startswith(("param", "[", ")", "#requires")))
+    assert "OptInSyntheticMember" in lines[first] and "WD_MIND_SHADOW_SYNTHETIC_MEMBER" in lines[first]
+    assert "exit 3" in " ".join(lines[first:first + 4])
+    # One registry: the member refuses any name, sub-case or tree the harness drivers do not preregister.
+    assert _function(text, "Get-WdShadowLifetimeMembers") == _function(harness, "Get-WdShadowLifetimeMembers")
+    assert text.count("Process]::Start(") == 1
+    assert "Process]::Start(" in _function(text, "Start-WdShadowMemberProcess")
+    for word in ("Invoke-WebRequest", "Invoke-RestMethod", "WebClient", "Net.Sockets", "HttpClient", "events.jsonl",
+                 ".agent-bridge", "Add-Type", "Start-Process", "Invoke-Expression", "Remove-Item", ".Kill",
+                 "Stop-Process", "DllImport", "F:\\", "mind_capture_producer"):
+        assert word not in text, word
+    witness = _function(text, "Open-WdShadowMemberWitness")
+    assert "[IO.FileMode]::CreateNew" in witness and "[IO.FileShare]::None" in witness
+    run = _function(text, "Test-WdShadowMemberRun")
+    for need in ("'.codex-audit'", "members.registration", "Get-WdShadowLifetimeMembers"):
+        assert need in run, need

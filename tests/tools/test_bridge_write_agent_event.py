@@ -2137,7 +2137,7 @@ class _CloseoutWorld:
 
     def closeout_arguments(self, request: dict | None = None, request_text: str | None = None,
                            **changes: str) -> dict[str, str]:
-        arguments = {**self.lead, "-Type": "decision", "-Status": "superseded", "-TaskId": CLOSEOUT_TASK,
+        arguments = {**self.lead, "-Type": "message", "-Status": "superseded", "-TaskId": CLOSEOUT_TASK,
                      "-To": "codex-tools-1", "-Message": "superseded by the train",
                      "-CloseRequestEventJson": request_text or json.dumps(request or self.request)}
         arguments.update({"-" + key: value for key, value in changes.items()})
@@ -2165,7 +2165,7 @@ def test_requester_closeout_closes_its_own_request_exactly(tmp_path: Path, shell
     line = (world.shared / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
     validate_event_line(line)
     closeout = json.loads(line)
-    assert (closeout["agent"], closeout["type"], closeout["status"]) == ("codex-lead-1", "decision", status)
+    assert (closeout["agent"], closeout["type"], closeout["status"]) == ("codex-lead-1", "message", status)
     assert (closeout["task_id"], closeout["to"]) == (request["task_id"], request["to"])
     expected = {
         "in_reply_to_request_id": request["request_id"],
@@ -2346,8 +2346,9 @@ CLOSEOUT_REFUSALS = [
     ("wrong_task", lambda w: w.closeout_arguments(TaskId="fixture/other-task"), "task and recipients"),
     ("wrong_to", lambda w: w.closeout_arguments(To="fable-5"), "task and recipients"),
     ("extra_to", lambda w: w.closeout_arguments(To="codex-tools-1,fable-5"), "task and recipients"),
-    ("message_type", lambda w: w.closeout_arguments(Type="message"), "-Type decision"),
-    ("approval_status", lambda w: w.closeout_arguments(Status="approved"), "-Type decision"),
+    # B3 v2: a decision closeout would be a vote; a recognized RCO's decision reads as its block.
+    ("decision_type", lambda w: w.closeout_arguments(Type="decision"), "-Type message"),
+    ("approval_status", lambda w: w.closeout_arguments(Status="approved"), "-Type message"),
     # The unchanged envelope guard refuses a payload-only contract field before the closeout branch runs.
     ("payload_digest", lambda w: w.closeout_arguments(PayloadJson=json.dumps(
         {"in_reply_to_request_digest": "0" * 64})), "Conflicting payload contract field 'in_reply_to_request_digest'"),
@@ -2412,6 +2413,121 @@ def test_a_closeout_from_an_altered_request_copy_never_closes_the_real_request(t
     assert not _closes(world.request, [world.request, closeout])
 
 
+# -- B3 v2 (Lead sprint24-fable-requester-closeout-type-fix-20261024-v2): a routing closeout is never a vote -------
+# The veto scanner reads any status of a recognized RCO's decision that is not an exact approval, clear or tooling
+# record as that RCO's block, so a requester closeout written as a decision by an RCO became a new block on its task.
+# A closeout is a message: it closes the request for routing only and is outside every veto and consensus event type.
+
+def _rco_request(world: _CloseoutWorld) -> tuple[dict, dict[str, str], dict[str, str]]:
+    """RCO2 asks Lead on the closeout task; returns the request, RCO2's metadata and its inherited launch frame."""
+    rco_uuid = json.loads((world.root / "configs/bridge_identity_registry.json").read_text(
+        encoding="utf-8"))["identities"]["claude-rco-2"]
+    rco = {"-Agent": "claude-rco-2", "-AgentUuid": rco_uuid, "-SessionId": "rco2-session", "-RunId": "rco2-run"}
+    frame = {"AGENT_BRIDGE_AGENT": "claude-rco-2", "AGENT_BRIDGE_AGENT_UUID": rco_uuid,
+             "AGENT_BRIDGE_SESSION_ID": "rco2-session", "AGENT_BRIDGE_RUN_ID": "rco2-run"}
+    (world.shared / "last_codex-lead-1.json").write_text(json.dumps(dict(
+        agent="codex-lead-1", agent_uuid=world.lead["-AgentUuid"], session_id="lead-session", run_id="lead-run")))
+    written = world.write({**rco, "-Type": "message", "-Status": "requested", "-TaskId": CLOSEOUT_TASK,
+                           "-To": "codex-lead-1", "-Message": "re-review please",
+                           "-RequestId": "fixture-rco-request-v1",
+                           "-PayloadJson": json.dumps({"nonce": "n-rco"})}, frame)
+    assert written.returncode == 0, written.stdout + written.stderr
+    return world.events()[-1], rco, frame
+
+
+def _rco_closeout(world: _CloseoutWorld, request: dict, rco: dict[str, str], frame: dict[str, str],
+                  status: str = "superseded") -> dict:
+    arguments = world.closeout_arguments(request, **{key[1:]: value for key, value in rco.items()},
+                                         To="codex-lead-1", Status=status)
+    completed = world.close(arguments, frame)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return world.events()[-1]
+
+
+PASS_HEAD = "a" * 40
+
+
+def _pin_unknown_enrollment(monkeypatch) -> None:
+    from tools import check_bridge_changes_requested as peer, check_rco_pass_present as slot
+    from tools.bridge_rco_enrollment import load_rco_enrollment_context
+
+    # No live bundle: a lane shell may carry the installed bundle root and manifest pin. With an empty root and
+    # pin the RCO3 enrollment context is unknown without any environment or file read (RCO2 is not_required).
+    context = load_rco_enrollment_context(bundle_root="", expected_manifest_sha256="")
+    for module in (peer, slot):
+        monkeypatch.setattr(module, "load_rco_enrollment_context", lambda: context)
+
+
+def _peer_gate(events: list[dict], monkeypatch) -> dict:
+    from tools.check_bridge_changes_requested import check_bridge_clear_to_merge
+
+    _pin_unknown_enrollment(monkeypatch)
+    return check_bridge_clear_to_merge(events=events, task_id=CLOSEOUT_TASK, merging_agent="codex-lead-1",
+                                       author_agent="codex-tools-1")
+
+
+def _slot_gate(events: list[dict], monkeypatch) -> dict:
+    from tools.check_rco_pass_present import check_rco_pass_present
+
+    _pin_unknown_enrollment(monkeypatch)
+    return check_rco_pass_present(events=events, task_id=CLOSEOUT_TASK, head=PASS_HEAD, author_agent="codex-tools-1")
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+@pytest.mark.parametrize("status", ["superseded", "cancelled"])
+def test_an_rco_routing_closeout_after_its_rco_pass_creates_no_vote(tmp_path: Path, monkeypatch, shell: str,
+                                                                    status: str) -> None:
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    request, rco, frame = _rco_request(world)
+    rco_pass = {"ts_utc": request["ts_utc"], "agent": "claude-rco-2", "agent_uuid": rco["-AgentUuid"],
+                "type": "decision", "status": "rco_pass", "task_id": CLOSEOUT_TASK, "to": "codex-lead-1",
+                "message": "synthetic pass at exact head " + PASS_HEAD, "payload": {"head": PASS_HEAD}}
+    before = _peer_gate([rco_pass, request], monkeypatch)
+    assert before["clear_to_merge"] and before["latest_approval_event"]["status"] == "rco_pass", before
+    closeout = _rco_closeout(world, request, rco, frame, status)
+    after = _peer_gate([rco_pass, request, closeout], monkeypatch)
+    # The closeout neither blocks nor passes nor replaces the RCO's earlier approval.
+    assert after["clear_to_merge"], after
+    assert after["latest_blocking_event"] is None and after["unverified_rco_block_events"] == [], after
+    assert after["latest_approval_event"] == before["latest_approval_event"], after
+    # The RCO slot gate keeps that exact-head pass as well: the same pass event, no veto after it.
+    slot_before = _slot_gate([rco_pass, request], monkeypatch)
+    slot_after = _slot_gate([rco_pass, request, closeout], monkeypatch)
+    assert slot_before["ok"] and slot_before["decision"] == "rco_pass_present", slot_before
+    assert slot_after["ok"] and slot_after["blocking_rco_agents"] == [], slot_after
+    assert slot_after["rco_pass_event"] == slot_before["rco_pass_event"], slot_after
+    assert (closeout["agent"], closeout["type"], closeout["status"]) == ("claude-rco-2", "message", status)
+    assert reply_matches_request(request, closeout, "codex-lead-1", requester_closure=True)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("shell", CLOSEOUT_SHELLS)
+@pytest.mark.parametrize("veto_type", ["finding", "decision"])
+def test_a_routing_closeout_never_clears_or_hides_the_rco_veto_it_closes(tmp_path: Path, monkeypatch, shell: str,
+                                                                          veto_type: str) -> None:
+    from tools.check_rco_pass_present import scan_recognized_rco_vetoes
+
+    world = _CloseoutWorld(tmp_path, _native_shell(shell))
+    request, rco, frame = _rco_request(world)
+    # An actual RCO veto that was itself sent as a request (synthetic copy, never appended): only its owner's
+    # valid clearance may lift it; a routing closeout of that request must leave it latched.
+    veto = {**request, "type": veto_type, "status": "changes_requested", "message": "synthetic RCO veto"}
+    latched = _peer_gate([veto], monkeypatch)
+    assert not latched["clear_to_merge"], latched
+    closeout = _rco_closeout(world, veto, rco, frame)
+    after = _peer_gate([veto, closeout], monkeypatch)
+    assert not after["clear_to_merge"], after
+    assert after["latest_blocking_event"] == latched["latest_blocking_event"], after
+    # The slot-side veto scan still lists exactly that veto; the closeout adds no veto event of its own.
+    scan = scan_recognized_rco_vetoes(events=[veto, closeout], task_id=CLOSEOUT_TASK, author_agent="codex-tools-1")
+    assert scan["decision"] == "recognized_rco_veto_present", scan
+    assert [event["type"] for event in scan["veto_events"]] == [veto_type], scan
+    assert closeout["type"] == "message"
+
+
 # -- Current launch frame (Lead lead-pr1893-current-frame-disposition-20261013-v1, RCO1, RCO2) ---------------
 # Launch consistency: a closeout's declared actor must be the launch frame inherited now. AGENT_BRIDGE_AGENT,
 # _AGENT_UUID, _SESSION_ID and _RUN_ID must all be inherited and equal the declared values; any missing field
@@ -2471,7 +2587,7 @@ def test_a_later_frame_closes_its_own_request_from_inherited_metadata(tmp_path: 
     assert written.returncode == 0, written.stdout + written.stderr
     later = world.events()[-1]
     assert (later["session_id"], later["run_id"]) == ("lead-session-2", "lead-run-2")
-    arguments = {"-Agent": "codex-lead-1", "-Type": "decision", "-Status": "cancelled", "-TaskId": task,
+    arguments = {"-Agent": "codex-lead-1", "-Type": "message", "-Status": "cancelled", "-TaskId": task,
                  "-To": "codex-tools-1", "-Message": "no longer needed", "-CloseRequestEventJson": json.dumps(later)}
     completed = world.close(arguments, frame)
     assert completed.returncode == 0, completed.stdout + completed.stderr

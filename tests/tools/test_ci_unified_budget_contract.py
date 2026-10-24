@@ -91,7 +91,10 @@ def test_nothing_in_the_workflow_can_skip_or_narrow_the_pytest_run():
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job = workflow["jobs"]["unified"]
 
-    assert set(workflow) == {"name", True, "jobs"}  # YAML 1.1 reads the "on" key as True
+    # Only PR-run supersession was added; the separate concurrency contract pins
+    # its exact group/cancellation policy. No env/defaults/job skip is admitted.
+    assert set(workflow) == {"name", True, "concurrency", "jobs"}  # YAML 1.1: "on" -> True
+    assert set(workflow["concurrency"]) == {"group", "cancel-in-progress"}
     assert set(job) == {"runs-on", "timeout-minutes", "steps"}
     assert set(_step(job, "Run pytest")) == {"name", "run"}
     assert not [step for step in job["steps"] if "env" in step or "working-directory" in step or "shell" in step]

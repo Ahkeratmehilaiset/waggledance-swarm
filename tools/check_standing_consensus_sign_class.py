@@ -18,18 +18,32 @@ design is FAIL-CLOSED and this module is itself (a)-class + charter-denylisted, 
   distinct eligible recognized RCOs, CI all-green, no recognized-RCO veto, head-exact,
   diff-clean, MAGMA receipt). Any missing/ambiguous element -> operator_review.
 
-Legacy entry points (dict in / dict out):
-  classify_ab(changed_paths)            -> mechanical (a)/(b) classification.
-  evaluate_standing_consensus_sign(...) -> admission verdict (admitted bool).
+Entry points (dict in / dict out):
+  classify_ab(changed_paths)            -> mechanical (a)/(b) classification, pure.
+  evaluate_standing_consensus_sign(...) -> admission verdict (admitted bool), pure.
 
-classify_ab(..., git_context={base, head, base_tree, head_tree, cwd}) opts into
-read-only Git subprocesses for the narrowly verified new-test exception. No
-existing admission/snapshot/receipt caller supplies it; this is preparation,
-not runtime wiring or self-activation.
+Only the optional classify_ab(..., git_context=...) keyword does I/O: read-only
+Git child processes for the narrowly verified new-test exception. The context is
+exactly {base, head, base_tree, head_tree, target, git, cwd}: full lowercase
+SHA-1 IDs, an absolute path to the Git executable (never a bare name resolved
+through the current directory or PATH) and the repository directory. base must
+be the one merge base of target and head, so the proof covers the whole change
+against the target, not a later slice of the branch. Every read disables
+replacement objects and runs with an environment built from fixed values only:
+no GIT_DIR, common-dir, object, alternate, replace, graft, namespace or config
+variable, HOME or XDG location of the caller reaches the child, and system and
+global Git configuration are off. At most 32 paths and 4 MiB per Git output are
+accepted (a validation limit, not a memory ceiling), each read has a 10-second
+timeout. A failed proof returns exactly the legacy path-only result; a returned
+(b) grants no approval, signature, merge or runtime authority. No existing
+admission/snapshot/receipt caller supplies the context: this is preparation,
+not runtime wiring or self-activation. Future wiring must carry and re-derive
+the proof at the fresh gate/receipt boundary under its own review.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 from typing import Any, Mapping, Sequence
@@ -236,6 +250,30 @@ def _path_is_b(path: str) -> bool:
     return bool(p) and (p in _B_EXACT or any(rx.match(p) for rx in _B_PATTERNS))
 
 
+_GIT_CHILD_FIXED = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_OPTIONAL_LOCKS": "0"}
+
+
+def _measured_git_env(git: str) -> dict[str, str]:
+    """The whole environment of a measured Git child: built, never inherited.
+
+    Only fixed values and the folder of the explicit Git executable go in (plus
+    the Windows system root a Windows child needs), so a caller's GIT_DIR,
+    GIT_COMMON_DIR, object/alternate/replace/graft/namespace/config variables,
+    HOME and XDG locations never reach Git.
+    """
+    env = dict(_GIT_CHILD_FIXED)
+    folder = os.path.dirname(git)
+    if os.name == "nt":
+        root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
+        env.update({"SYSTEMROOT": root, "WINDIR": root, "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                    "PATH": os.pathsep.join((folder, os.path.join(root, "System32"), root))})
+    else:
+        env["PATH"] = os.pathsep.join((folder, "/usr/bin", "/bin"))
+    return env
+
+
 def _verified_added_test_diff(
     paths: Sequence[str], context: Mapping[str, str],
 ) -> dict[str, Any] | None:
@@ -245,13 +283,17 @@ def _verified_added_test_diff(
     returns None so the unchanged path classifier remains authoritative. The
     bound is a validation limit, not a physical peak-memory promise.
     """
-    required = {"base", "head", "base_tree", "head_tree", "cwd"}
+    required = {"base", "head", "base_tree", "head_tree", "target", "git", "cwd"}
     if not isinstance(context, Mapping) or set(context) != required:
         return None
     if not all(type(context[k]) is str and re.fullmatch(r"[0-9a-f]{40}", context[k])
-               for k in required - {"cwd"}):
+               for k in required - {"git", "cwd"}):
         return None
     if type(context["cwd"]) is not str or not context["cwd"].strip():
+        return None
+    git = context["git"]
+    if (type(git) is not str or not os.path.isabs(git) or any(ord(c) < 32 for c in git)
+            or os.path.basename(git).casefold() not in ("git", "git.exe")):
         return None
     if (not paths or len(paths) > 32 or not all(type(p) is str for p in paths)
             or len(set(paths)) != len(paths)):
@@ -269,12 +311,13 @@ def _verified_added_test_diff(
             return None
 
     limit = 4 * 1024 * 1024
-    prefix = ["git", "--no-pager", "--literal-pathspecs"]
+    prefix = [git, "--no-pager", "--no-replace-objects", "--literal-pathspecs"]
+    env = _measured_git_env(git)
 
     def read(*args: str) -> bytes:
         completed = subprocess.run(prefix + list(args), cwd=context["cwd"],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, check=True, timeout=10)
+                                   stderr=subprocess.PIPE, check=True, timeout=10, env=env)
         data = completed.stdout
         if type(data) is not bytes or len(data) > limit:
             raise ValueError("missing or oversized Git evidence")
@@ -287,6 +330,13 @@ def _verified_added_test_diff(
                 return None
             if read("rev-parse", "--verify", commit + "^{tree}") != (tree + "\n").encode():
                 return None
+        target = context["target"]
+        if read("rev-parse", "--verify", target + "^{commit}") != (target + "\n").encode():
+            return None
+        # base must be THE merge base of target and head: head^ of a longer
+        # branch, or any other ancestor, would prove only a slice of the change.
+        if read("merge-base", "--all", target, head) != (base + "\n").encode():
+            return None
         # Exact lowercase ls-tree absence is insufficient on case-insensitive
         # filesystems. Inspect the entire immutable base namespace, including
         # ancestor directories, rather than trust caller path labels.
@@ -353,7 +403,8 @@ def _verified_added_test_diff(
             if read("ls-tree", "-z", head, "--", path) != expected_tree:
                 return None
             data = read("cat-file", "blob", oid)
-            if b"\0" in data or hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != oid:
+            blob_id = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False)
+            if b"\0" in data or blob_id.hexdigest() != oid:
                 return None
             data.decode("utf-8")
             expected_patch += (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
@@ -373,7 +424,7 @@ def _verified_added_test_diff(
         if actual_patch != expected_patch:
             return None
         return {"base": base, "head": head, "base_tree": context["base_tree"],
-                "head_tree": context["head_tree"], "paths": [p for p, _ in entries],
+                "head_tree": context["head_tree"], "target": target, "paths": [p for p, _ in entries],
                 "blobs": dict(entries),
                 "base_paths_sha256": hashlib.sha256(base_names).hexdigest(),
                 "diff_sha256": hashlib.sha256(actual_patch).hexdigest(),

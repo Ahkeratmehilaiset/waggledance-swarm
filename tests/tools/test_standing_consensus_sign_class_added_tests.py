@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import subprocess
 import sys
 import types
@@ -11,12 +12,44 @@ from pathlib import Path
 from unittest import mock
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
-BASE, HEAD, BASE_TREE, HEAD_TREE = (c * 40 for c in "1234")
-CONTEXT = dict(base=BASE, head=HEAD, base_tree=BASE_TREE, head_tree=HEAD_TREE,
+BASE, HEAD, BASE_TREE, HEAD_TREE, TARGET = (c * 40 for c in "12345")
+# An absolute Git path that is never launched: every call goes to the synthetic fake below.
+GIT_FOLDER = "C:/b9-synthetic-git-not-opened/cmd" if os.name == "nt" else "/b9-synthetic-git-not-opened/cmd"
+GIT = GIT_FOLDER + ("/git.exe" if os.name == "nt" else "/git")
+CONTEXT = dict(base=BASE, head=HEAD, base_tree=BASE_TREE, head_tree=HEAD_TREE, target=TARGET, git=GIT,
                cwd="C:/b9-synthetic-repository-not-opened")
 PATH = "tests/tools/test_b9_sample.py"
 TEXT = b"def test_sample():\n    assert 1 == 1\n"
-PREFIX = ["git", "--no-pager", "--literal-pathspecs"]
+PREFIX = [GIT, "--no-pager", "--no-replace-objects", "--literal-pathspecs"]
+# The parent environment of every measured call (synthetic values only): Git directory, common-dir, object,
+# replace, graft, namespace and config controls plus HOME/XDG locations. None of them may reach the Git child.
+HOSTILE = {"GIT_DIR": "C:/synthetic-other/.git", "GIT_COMMON_DIR": "C:/synthetic-other/common",
+           "GIT_WORK_TREE": "C:/synthetic-other", "GIT_INDEX_FILE": "C:/synthetic-other/index",
+           "GIT_OBJECT_DIRECTORY": "C:/synthetic-other/objects",
+           "GIT_ALTERNATE_OBJECT_DIRECTORIES": "C:/synthetic-other/alternates",
+           "GIT_REPLACE_REF_BASE": "refs/synthetic-replace/", "GIT_NO_REPLACE_OBJECTS": "0",
+           "GIT_GRAFT_FILE": "C:/synthetic-other/grafts", "GIT_SHALLOW_FILE": "C:/synthetic-other/shallow",
+           "GIT_NAMESPACE": "synthetic", "GIT_CONFIG": "C:/synthetic-other/config",
+           "GIT_CONFIG_GLOBAL": "C:/synthetic-home/.gitconfig", "GIT_CONFIG_SYSTEM": "C:/synthetic-system/gitconfig",
+           "GIT_CONFIG_NOSYSTEM": "0", "GIT_CONFIG_PARAMETERS": "'core.synthetic=1'", "GIT_CONFIG_COUNT": "1",
+           "GIT_CONFIG_KEY_0": "diff.external", "GIT_CONFIG_VALUE_0": "synthetic-diff",
+           "GIT_EXTERNAL_DIFF": "synthetic-diff", "GIT_EXEC_PATH": "C:/synthetic-exec",
+           "GIT_CEILING_DIRECTORIES": "C:/", "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+           "HOME": "C:/synthetic-home", "XDG_CONFIG_HOME": "C:/synthetic-xdg"}
+PARENT_ENV = dict(HOSTILE, PATH="C:/synthetic-parent/bin", SYSTEMROOT="C:/synthetic-os")
+
+
+def child_env():
+    """The exact environment the measured Git child must get, built from fixed values only."""
+    env = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_NO_REPLACE_OBJECTS": "1",
+           "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+    if os.name == "nt":
+        root = PARENT_ENV["SYSTEMROOT"]
+        env.update({"SYSTEMROOT": root, "WINDIR": root, "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                    "PATH": os.pathsep.join((GIT_FOLDER, os.path.join(root, "System32"), root))})
+    else:
+        env["PATH"] = os.pathsep.join((GIT_FOLDER, "/usr/bin", "/bin"))
+    return env
 
 
 def load_subject():
@@ -38,7 +71,7 @@ def load_subject():
 
 
 def blob_oid(data):
-    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
 
 
 def patch_for(path, data):
@@ -71,6 +104,11 @@ class SyntheticGit:
         for sha, tree in ((BASE, BASE_TREE), (HEAD, HEAD_TREE)):
             put(["rev-parse", "--verify", sha + "^{commit}"], (sha + "\n").encode())
             put(["rev-parse", "--verify", sha + "^{tree}"], (tree + "\n").encode())
+        self.target_key = tuple(PREFIX + ["rev-parse", "--verify", TARGET + "^{commit}"])
+        self.commands[self.target_key] = (TARGET + "\n").encode()
+        self.merge_base_key = tuple(PREFIX + ["merge-base", "--all", TARGET, HEAD])
+        self.commands[self.merge_base_key] = (BASE + "\n").encode()
+        self.envs = []
         self.base_paths_key = tuple(PREFIX + ["ls-tree", "-r", "--name-only", "-z", BASE, "--"])
         self.commands[self.base_paths_key] = b"README.md\0tests/tools/test_existing.py\0"
         raw, names, patch = b"", b"", b""
@@ -90,8 +128,9 @@ class SyntheticGit:
 
     def run(self, cmd, **kwargs):
         self.calls.append(tuple(cmd))
+        self.envs.append(kwargs.get("env"))
         expected = dict(cwd=CONTEXT["cwd"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, check=True, timeout=10)
+                        stderr=subprocess.PIPE, check=True, timeout=10, env=child_env())
         if kwargs != expected or tuple(cmd) not in self.commands:
             raise AssertionError(f"Unexpected real-process attempt: {cmd!r}, {kwargs!r}")
         value = self.commands[tuple(cmd)]
@@ -106,9 +145,45 @@ class AddedTestsConformance(unittest.TestCase):
 
     def measured(self, paths=None, fixture=None, context=None):
         fixture = fixture or SyntheticGit()
-        with mock.patch("subprocess.run", side_effect=fixture.run):
+        with mock.patch("subprocess.run", side_effect=fixture.run), mock.patch.dict(os.environ, PARENT_ENV, clear=True):
             return self.subject.classify_ab([PATH] if paths is None else paths,
                                             git_context=CONTEXT if context is None else context)
+
+    def test_every_git_read_disables_replacements_and_gets_only_a_built_environment(self):
+        """RCO2 13D46D21: replace refs and inherited GIT_DIR/common-dir/object/config controls must not reach Git."""
+        fixture = SyntheticGit()
+        self.assertEqual("b", self.measured(fixture=fixture)["ab_class"])
+        self.assertTrue(fixture.calls)
+        for cmd, env in zip(fixture.calls, fixture.envs):
+            self.assertEqual(PREFIX, list(cmd[:len(PREFIX)]))
+            self.assertEqual(child_env(), env)
+            for name, value in HOSTILE.items():
+                self.assertFalse(name in env and env[name] == value, name)
+            self.assertFalse({"HOME", "XDG_CONFIG_HOME", "GIT_DIR", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_PARAMETERS",
+                              "GIT_CONFIG_COUNT", "GIT_CONFIG", "GIT_CONFIG_SYSTEM"} & set(env))
+            self.assertNotIn("C:/synthetic-parent/bin", env["PATH"])
+
+    def test_base_must_be_the_one_merge_base_of_target_and_head(self):
+        """RCO1 F1: a caller passing head^ of a longer branch, or any other ancestor, never proves the PR change."""
+        for output in (b"6" * 40 + b"\n", (BASE + "\n" + "6" * 40 + "\n").encode(), b"", (BASE + "\n").encode() * 2,
+                       BASE.encode()):
+            fixture = SyntheticGit(); fixture.commands[fixture.merge_base_key] = output
+            with self.subTest(output=output):
+                self.assertEqual(self.subject.classify_ab([PATH]), self.measured(fixture=fixture))
+        fixture = SyntheticGit(); fixture.commands[fixture.target_key] = b"f" * 40 + b"\n"
+        self.assertEqual(self.subject.classify_ab([PATH]), self.measured(fixture=fixture))
+        fixture = SyntheticGit()
+        self.assertEqual(TARGET, self.measured(fixture=fixture)["git_evidence"]["target"])
+        self.assertIn(fixture.merge_base_key, fixture.calls)
+
+    def test_git_executable_must_be_an_explicit_absolute_git_path(self):
+        """RCO1 F2: never a bare-name launch resolved through the current directory or PATH."""
+        folder = GIT_FOLDER + "/"
+        for git in ("git", "git.exe", "cmd/git.exe", folder + "python.exe", folder + "git.exe.bat", folder,
+                    folder + "git\n", "", None, 7):
+            with self.subTest(git=git):
+                self.assertEqual(self.subject.classify_ab([PATH]), self.measured(context=dict(CONTEXT, git=git)))
 
     def test_legacy_no_context_never_spawns_or_downgrades(self):
         with mock.patch("subprocess.run", side_effect=AssertionError("No subprocess on legacy path")) as run:
@@ -232,9 +307,12 @@ class AddedTestsConformance(unittest.TestCase):
             self.assertIn("--find-copies-harder", command)
 
     def test_missing_extra_or_malformed_context(self):
+        without_target = {k: v for k, v in CONTEXT.items() if k != "target"}
+        without_git = {k: v for k, v in CONTEXT.items() if k != "git"}
         contexts = ({}, True, {"added_only": True}, dict(CONTEXT, added_only=True),
                     dict(CONTEXT, head="main"), dict(CONTEXT, base=BASE.upper() + "x"),
-                    dict(CONTEXT, head_tree=None), dict(CONTEXT, cwd=""), dict(CONTEXT, base_tree=True))
+                    dict(CONTEXT, head_tree=None), dict(CONTEXT, cwd=""), dict(CONTEXT, base_tree=True),
+                    without_target, without_git, dict(CONTEXT, target="main"), dict(CONTEXT, target=None))
         for context in contexts:
             with self.subTest(context=context):
                 self.assertEqual(self.subject.classify_ab([PATH]), self.measured(context=context))

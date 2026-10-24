@@ -3,6 +3,7 @@ import base64
 import json
 import hashlib
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -77,6 +78,7 @@ def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_p
     bundle.mkdir()
     publisher = bundle / 'Send-WdContinuityAlert.ps1'
     capture = tmp_path / 'call.json'
+    execution_marker = tmp_path / 'publisher-executed.txt'
     publisher.write_text(
         'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest,$ProgressKey)\n'
         f'$PSBoundParameters | ConvertTo-Json -Compress | Set-Content -LiteralPath {q(capture)}\n'
@@ -88,7 +90,11 @@ def test_operator_notice_caller_anchors_code_and_bounds_checkpoint_payload(tmp_p
     manifest.write_text(json.dumps({'files': {publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper(), **notice_registry(bundle)}}))
     anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
     if case == 'tampered':
-        publisher.write_text('throw "untrusted"')
+        # Independent of call.json: even a publisher that throws before
+        # capturing arguments must leave evidence if the hash guard is bypassed.
+        publisher.write_text(
+            f'[IO.File]::WriteAllText({q(execution_marker)}, "executed"); throw "untrusted"',
+            encoding='utf-8')
     audit = tmp_path / '.codex-audit'
     audit.mkdir()
     checkpoint = audit / 'wd-current-state.json'
@@ -111,6 +117,8 @@ try {{
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     assert result['ok'] == (case not in ('tampered', 'bad_receipt')), result
     if case == 'tampered':
+        assert result['error'] == 'Continuity publisher hash mismatch', result
+        assert not execution_marker.exists(), 'tampered publisher executed before refusal'
         assert not capture.exists()
     else:
         call = json.loads(capture.read_text(encoding='utf-8-sig'))
@@ -547,9 +555,13 @@ def test_real_guard_cli_drives_native_recovery_without_accepting_results(tmp_pat
     script += f"""
 $env:WD_BRIDGE_PYTHON_WRAPPER={q(wrapper)}
 $script:calls=0
+$script:attempts=0
+$script:messages=@()
 function Test-WdContinuityControlEvents {{param($RuntimeRoot,$TaskId) return $false}}
 function Send-WdNativeToolsQueueMessage {{
  param($CliPath,$ThreadId,$Message,$Worktree)
+ $script:attempts++
+ $script:messages+=,$Message
  if ($Message -notmatch 'Nothing here says a dependency completed; nothing is accepted') {{throw 'unsafe wake'}}
  $script:calls++; return 'queue-id'
 }}
@@ -559,12 +571,29 @@ $errors=@()
  -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -Now '2026-09-29T05:00:00Z' | Out-Null}}
  catch {{$errors += $_.Exception.Message}}
 }}
-@{{calls=$script:calls;errors=$errors}} | ConvertTo-Json -Compress
+@{{calls=$script:calls;attempts=$script:attempts;messages=$script:messages;errors=$errors}} | ConvertTo-Json -Compress
 """
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report['calls'] == (1 if status == 'in_progress' else 0), report
+    assert report['attempts'] == (1 if status == 'in_progress' else 0), report
     if status == 'in_progress':
         assert not report['errors'], report
+        expected_message = (
+            'Work-bound continuity recovery for codex-lead-1; action_key=[0-9a-f]{64}'
+            r'\. A durable unfinished checkpoint reached its reconciliation deadline\. FIRST perform read-only reconciliation of the current checkpoint, pinned canonical bridge reader/next-action/claims, task control events, checkpoint blockers and operator HOLDs\. Nothing here says a dependency completed; nothing is accepted\. '
+            r'This is a recovery check, not a new assignment or permission\. Preserve operator pauses, scoped HOLDs, cancellations and peer scopes; never repeat completed side effects\. '
+            r'Reconcile the named work, continue an eligible operator-authorized slice, or report the exact blocker and bounded wait\. Do not stop at a status-only summary while eligible work remains\. '
+            r'Checkpoint task_id=legacy-awaiting-suite\. Queue acceptance is not completion\.')
+        assert len(report['messages']) == 1, report
+        assert re.fullmatch(expected_message, report['messages'][0]), report
+    else:
+        assert not report['messages'], report
+        expected_error = (
+            'Continuity evidence unknown; operator reconciliation required: '
+            'checkpoint_status_unrecognized,request_completeness_not_evaluated'
+            if status == 'handoff' else
+            'Continuity work held; operator digest only, no recovery wake')
+        assert report['errors'] == [expected_error, expected_error], report
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

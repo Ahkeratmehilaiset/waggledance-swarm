@@ -103,7 +103,13 @@ HELPER_BLOBS = {"ae94754cfd88d24ffa9f7828315b513a6040e1b0": "7da35242 (RCO1-revi
                 # 81f71da5 except one REQUESTERS member; admission/report fields unchanged.
                 # Not a whole-head RCO_PASS or broker/F0 activation.
                 "871d8c0acf0d931774b0a8a37d15589628206809": "81f71da5 plus claude-rco-3 in REQUESTERS "
-                                                            "(one tuple member; same local eligibility)"}
+                                                            "(one tuple member; same local eligibility)",
+                # fable-5 2026-10-23: the PR1850 GH-F1 fix (03ed72f9) ported onto the main helper above,
+                # consult() GH-F1 branch only: a delivery error that the failed lifecycle records after the
+                # finalizing write is persisted by one best-effort write; if that write fails the original
+                # error is still raised with a note and the finalized failed state stays. Awaiting review.
+                "b970f75c735cdb4b94fc5370616c9f9735a61f36": "871d8c0a plus the persisted GH-F1 failed-lifecycle "
+                                                            "delivery error (PR1850 port)"}
 HELPER_STATUS_FIELDS = ("schema", "status", "eligible")  # what admit reads from status(); no local hour
 HELPER_REPORT_FIELDS = ("schema", "status", "task_id", "request_id", "last_attempt_utc", "report_sha256")
 HELPER_MAX_PROMPT_BYTES = 48000  # wd_grok_helper.consult refuses more itself, but after the broker's reservation

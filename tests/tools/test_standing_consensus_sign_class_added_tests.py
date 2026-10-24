@@ -525,39 +525,97 @@ class HiddenGitlinkConformance(unittest.TestCase):
 
 
 NINE_B_KEYWORDS = ("standing_consensus_sign", "git_context", "added_test_repository", "added_test_git")
-# B16 (Grok f9234eeb item 2): the CLOSED set of production call shapes that pass a dormant 9b keyword, with counts.
-# Any new call site, a dynamic flag, a git_context expression or a new same-name forward changes this multiset.
-ALLOWED_NINE_B_SHAPES = {
-    ("tools/check_standing_consensus_sign_class.py", "git_context", "name:git_context"): 1,
-    ("tools/idle_consensus_auto_merge.py", "standing_consensus_sign", "expr:args.standing_consensus_sign"): 1,
-    ("tools/idle_consensus_auto_merge.py", "standing_consensus_sign", "name:standing_consensus_sign"): 2,
-    ("tools/standing_sign_receipt_replay_canary.py", "standing_consensus_sign", "const:True"): 1,
-    ("tools/write_bridge_consensus_merge_receipt.py", "added_test_git", "name:added_test_git"): 1,
-    ("tools/write_bridge_consensus_merge_receipt.py", "added_test_repository", "name:added_test_repository"): 1,
-    ("tools/write_bridge_consensus_merge_receipt.py", "standing_consensus_sign", "name:standing_consensus_sign"): 1,
-}
+
+
+def _nine_b_shape(value):
+    import ast
+
+    if isinstance(value, ast.Constant):
+        return "const:" + repr(value.value)
+    if isinstance(value, ast.Name):
+        return "name:" + value.id
+    return "expr:" + ast.unparse(value)
 
 
 def nine_b_call_shapes(root):
-    """Every production call keyword among NINE_B_KEYWORDS as (file, keyword, shape) with counts."""
+    """Every production place that passes or stores a dormant 9b name, as (file, name, form) with counts.
+
+    Forms: call keywords (also dict(...)), string-keyed dict literals, (name, value) pairs, Store-context string
+    subscripts, and every ** spread (call or dict) in a file that has any of those: the reviewed forwarding structures.
+    Out of scope (known limits): computed key strings, setdefault/update with positional keys, cross-file dataflow."""
     import ast
 
     shapes = {}
     for base in ("tools", "ops", "waggledance"):
         for path in sorted((Path(root) / base).rglob("*.py")):
             rel = path.relative_to(root).as_posix()
+            found, spreads = [], []
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)):
-                if not isinstance(node, ast.Call):
-                    continue
-                for word in node.keywords:
-                    if word.arg not in NINE_B_KEYWORDS:
-                        continue
-                    value = word.value
-                    shape = ("const:" + repr(value.value) if isinstance(value, ast.Constant)
-                             else "name:" + value.id if isinstance(value, ast.Name) else "expr:" + ast.unparse(value))
-                    key = (rel, word.arg, shape)
-                    shapes[key] = shapes.get(key, 0) + 1
+                if isinstance(node, ast.Call):
+                    for word in node.keywords:
+                        if word.arg in NINE_B_KEYWORDS:
+                            found.append((rel, word.arg, _nine_b_shape(word.value)))
+                        elif word.arg is None:
+                            spreads.append((rel, "**", "spread:" + ast.unparse(word.value)))
+                elif isinstance(node, ast.Dict):
+                    for key, value in zip(node.keys, node.values):
+                        if key is None:
+                            spreads.append((rel, "**", "spread:" + ast.unparse(value)))
+                        elif isinstance(key, ast.Constant) and key.value in NINE_B_KEYWORDS:
+                            found.append((rel, key.value, "dict:" + _nine_b_shape(value)))
+                elif (isinstance(node, ast.Tuple) and len(node.elts) == 2 and isinstance(node.elts[0], ast.Constant)
+                      and node.elts[0].value in NINE_B_KEYWORDS):
+                    found.append((rel, node.elts[0].value, "pair:" + _nine_b_shape(node.elts[1])))
+                elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                    for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                        if (isinstance(target, ast.Subscript) and isinstance(target.ctx, ast.Store)
+                                and isinstance(target.slice, ast.Constant) and target.slice.value in NINE_B_KEYWORDS):
+                            value = "none" if node.value is None else _nine_b_shape(node.value)
+                            found.append((rel, target.slice.value, "store:" + value))
+            for key in found + (spreads if found else []):
+                shapes[key] = shapes.get(key, 0) + 1
     return shapes
+
+
+# B16/B17 (Grok f9234eeb item 2, RCO1 A1, RCO2 T1): the CLOSED set of production 9b shapes with counts, derived
+# once by the B17 authoring script from the reviewed code and frozen here. Any new or changed site fails.
+ALLOWED_NINE_B_SHAPES = {
+    ('tools/check_standing_consensus_sign_class.py', 'git_context', 'name:git_context'): 1,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:added_test_kwargs'): 1,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:added_test_options'): 1,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:attempted_failure'): 4,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:base'): 23,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:dict(state)'): 2,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:gate'): 3,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:grok_kwargs'): 1,
+    ('tools/idle_consensus_auto_merge.py', '**', 'spread:report'): 2,
+    ('tools/idle_consensus_auto_merge.py', '**', "spread:{'enrollment_event': enrollment_events[agent]} if agent in enrollment_events else {}"): 1,
+    ('tools/idle_consensus_auto_merge.py', '**', "spread:{key: value for key, value in adapter.items() if key != 'consultations'}"): 1,
+    ('tools/idle_consensus_auto_merge.py', 'added_test_git', 'dict:name:added_test_git'): 1,
+    ('tools/idle_consensus_auto_merge.py', 'added_test_repository', 'dict:name:added_test_repository'): 1,
+    ('tools/idle_consensus_auto_merge.py', 'git_context', 'store:name:added_test_context'): 1,
+    ('tools/idle_consensus_auto_merge.py', 'standing_consensus_sign', 'dict:name:standing_sign_gate'): 2,
+    ('tools/idle_consensus_auto_merge.py', 'standing_consensus_sign', 'expr:args.standing_consensus_sign'): 1,
+    ('tools/idle_consensus_auto_merge.py', 'standing_consensus_sign', 'name:standing_consensus_sign'): 2,
+    ('tools/idle_consensus_auto_merge.py', 'standing_consensus_sign', 'pair:name:standing_consensus_sign'): 1,
+    ('tools/merge_with_bridge_receipt.py', '**', 'spread:fresh_rule12_kwargs'): 1,
+    ('tools/merge_with_bridge_receipt.py', '**', 'spread:grok_kwargs'): 2,
+    ('tools/merge_with_bridge_receipt.py', '**', 'spread:proof_kwargs'): 2,
+    ('tools/merge_with_bridge_receipt.py', '**', 'spread:ready_report'): 2,
+    ('tools/merge_with_bridge_receipt.py', 'added_test_git', 'dict:name:added_test_git'): 1,
+    ('tools/merge_with_bridge_receipt.py', 'added_test_repository', 'dict:name:added_test_repository'): 1,
+    ('tools/merge_with_bridge_receipt.py', 'standing_consensus_sign', 'dict:name:standing_consensus_sign'): 1,
+    ('tools/standing_sign_receipt_replay_canary.py', 'standing_consensus_sign', 'const:True'): 1,
+    ('tools/standing_sign_receipt_replay_canary.py', 'standing_consensus_sign', "dict:expr:dict(gate_report.get('standing_consensus_sign', {}))"): 2,
+    ('tools/write_bridge_consensus_merge_receipt.py', '**', 'spread:proof_kwargs'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', '**', 'spread:rule12_kwargs'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'added_test_git', 'dict:name:added_test_git'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'added_test_git', 'name:added_test_git'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'added_test_repository', 'dict:name:added_test_repository'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'added_test_repository', 'name:added_test_repository'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'standing_consensus_sign', 'dict:name:standing_consensus_sign'): 1,
+    ('tools/write_bridge_consensus_merge_receipt.py', 'standing_consensus_sign', 'name:standing_consensus_sign'): 1,
+}
 
 
 class DormantStandingSignConformance(unittest.TestCase):
@@ -572,6 +630,11 @@ class DormantStandingSignConformance(unittest.TestCase):
             "dynamic flag": "evaluate_standing_consensus_sign({}, standing_consensus_sign=flag)\n",
             "git_context expression": "classify_ab(paths, git_context=ctx)\n",
             "new same-name forward": "merge(added_test_repository=added_test_repository)\n",
+            "string-key dict spread": "opts = {\"standing_consensus_sign\": True}\nmerge(**opts)\n",
+            "literal dict spread": "merge(**{\"standing_consensus_sign\": True})\n",
+            "dict call spread": "merge(**dict(standing_consensus_sign=True))\n",
+            "subscript store": "kw = {}\nkw[\"standing_consensus_sign\"] = True\nmerge(**kw)\n",
+            "pair list": "merge(**dict([(\"standing_consensus_sign\", True)]))\n",
         }
         for label, line in mutations.items():
             with self.subTest(label), tempfile.TemporaryDirectory(prefix="b16-shape-") as holder:

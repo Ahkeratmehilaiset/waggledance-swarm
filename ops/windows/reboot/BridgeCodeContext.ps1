@@ -1049,7 +1049,7 @@ function Assert-WdBridgeManualExecution {
     # Canonical long options only. Reject argparse abbreviations/duplicates and
     # admission-changing options before Python, rather than trusting last-wins.
     $valued = @('--expected-head', '--expected-base-sha', '--from-agent', '--repo',
-        '--out-dir', '--consensus-proposal-id', '--bridge-task-id')
+        '--out-dir', '--consensus-proposal-id', '--bridge-task-id', '--review-policy')
     $flags = @('--json')
     if ($Tool -ceq $manualPaths[0]) { $valued += '--method'; $flags += '--apply' }
     else { $valued += '--pr-status-file' }
@@ -1092,6 +1092,12 @@ function Assert-WdBridgeManualExecution {
         [string]$options['--from-agent'] -cne [string]$activation.agent -or
         [string]$options['--repo'] -cne 'Ahkeratmehilaiset/waggledance-swarm'
     ) { throw 'manual bridge execution requires exact head/base/repository/lane binding' }
+    # Launch the executor's existing policies, never weaken their checks here.
+    # Omission preserves its default; no Grok or path-exception option is added.
+    if ($options.ContainsKey('--review-policy') -and
+        [string]$options['--review-policy'] -cnotin @('bridge_consensus_v1', 'rule12')) {
+        throw 'manual bridge execution review policy must be an exact existing value'
+    }
     if ($Tool -ceq $manualPaths[0]) {
         if ($positional.Count -ne 1 -or $positional[0] -cnotmatch '^[1-9][0-9]*$') {
             throw 'manual bridge merge requires exactly one PR number'

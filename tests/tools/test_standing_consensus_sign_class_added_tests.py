@@ -438,6 +438,26 @@ class AddedTestsConformance(unittest.TestCase):
         with mock.patch.object(self.subject, "load_charter", side_effect=RuntimeError("synthetic charter unavailable")):
             self.assertEqual("a", self.measured()["ab_class"])
 
+    def test_evaluator_runs_the_protected_reader_and_keeps_only_its_evidence(self):
+        """B9 integration: the evaluator hands the context to the reader itself; its proof, never a label, is kept."""
+        kwargs = dict(enabled=True, changed_paths=[PATH], bridge_consensus={}, ci_all_green=True,
+                      diff_gate_allowed=True, head_matches=True, receipt_present=True)
+        expected = self.measured()["git_evidence"]
+        for shallow, ab_class in ((b"false\n", "b"), (b"true\n", "a")):
+            fixture = SyntheticGit(); fixture.commands[fixture.shallow_key] = shallow
+            with mock.patch("subprocess.run", side_effect=fixture.run), \
+                    mock.patch.dict(os.environ, PARENT_ENV, clear=True):
+                out = self.subject.evaluate_standing_consensus_sign(git_context=CONTEXT, **kwargs)
+            with self.subTest(shallow=shallow):
+                self.assertEqual(ab_class, out["ab_class"])
+                self.assertFalse(out["admitted"])
+                self.assertEqual(expected if ab_class == "b" else None, out.get("git_evidence"))
+        with mock.patch("subprocess.run", side_effect=AssertionError("default-off or legacy never reads Git")):
+            off = self.subject.evaluate_standing_consensus_sign(git_context=CONTEXT, **dict(kwargs, enabled=False))
+            legacy = self.subject.evaluate_standing_consensus_sign(**kwargs)
+        self.assertNotIn("git_evidence", off)
+        self.assertEqual(("a", None), (legacy["ab_class"], legacy.get("git_evidence")))
+
     def test_no_standing_signature_self_activation(self):
         result = self.subject.evaluate_standing_consensus_sign(enabled=False, changed_paths=[PATH],
             bridge_consensus={}, ci_all_green=True, diff_gate_allowed=True, head_matches=True, receipt_present=True)
@@ -554,6 +574,14 @@ class ActualGitToyRepositories(unittest.TestCase):
         Path(self.repo, ".git", "shallow").write_text(self.c0 + "\n", encoding="ascii")
         self.assertEqual("true\n", self.toy("rev-parse", "--is-shallow-repository"))
         self.assertEqual(self.legacy, self.prove(self.c0, self.h1, self.t1))
+
+    def test_actual_git_evaluator_keeps_the_reader_evidence(self):
+        context = self.context(self.c0, self.h1, self.t1)
+        proof = self.subject.classify_ab([TOY_TEST], git_context=context)["git_evidence"]
+        out = self.subject.evaluate_standing_consensus_sign(
+            enabled=True, changed_paths=[TOY_TEST], bridge_consensus={}, ci_all_green=True, diff_gate_allowed=True,
+            head_matches=True, receipt_present=True, git_context=context)
+        self.assertEqual(("b", proof, False), (out["ab_class"], out["git_evidence"], out["admitted"]))
 
     def test_actual_git_refuses_a_partial_clone_or_promisor_remote(self):
         for key, value in (("remote.origin.promisor", "true"), ("extensions.partialClone", "origin")):

@@ -22,15 +22,18 @@ Entry points (dict in / dict out):
   classify_ab(changed_paths)            -> mechanical (a)/(b) classification, pure.
   evaluate_standing_consensus_sign(...) -> admission verdict (admitted bool), pure.
 
-Only the optional classify_ab(..., git_context=...) keyword does I/O: read-only
-Git child processes for the narrowly verified new-test exception. The context is
-exactly {base, head, base_tree, head_tree, target, git, cwd}: full lowercase
+Only the optional git_context keyword does I/O (classify_ab, and the evaluator,
+which forwards it only when enabled and supplied and keeps only the classifier's
+own evidence): read-only Git child processes for the narrowly verified new-test
+exception. The context is exactly {base, head, base_tree, head_tree, target,
+git, cwd}: full lowercase
 SHA-1 IDs, an absolute path to the Git executable (never a bare name resolved
 through the current directory or PATH) and the absolute repository directory.
 base must be the one merge base of target and head, so the proof covers the
 whole change against the target, not a later slice of the branch. target is
-caller-supplied: future wiring must bind it to the PR snapshot's base-branch tip
-(and base to its merge base) and re-derive the proof at the fresh gate. Every
+caller-supplied: tools.pr_status_snapshot.build_added_test_context derives it
+from the live PR snapshot's base-branch tip (and base from the compare merge
+base), and this reader re-verifies both against local objects. Every
 read disables replacement objects, repository grafts (GIT_GRAFT_FILE is the null
 device), the commit-graph (core.commitGraph=false) and lazy fetching
 (GIT_NO_LAZY_FETCH=1; a Git that predates the variable ignores it), and runs
@@ -44,10 +47,13 @@ the trust root is the cwd repository, which must be the gate's own trusted
 clone, never a PR-controlled checkout. At most 32 paths and 4 MiB per Git
 output are accepted (a validation limit, not a memory ceiling), each read has a 10-second
 timeout. A failed proof returns exactly the legacy path-only result; a returned
-(b) grants no approval, signature, merge or runtime authority. No existing
-admission/snapshot/receipt caller supplies the context: this is preparation,
-not runtime wiring or self-activation. Future wiring must carry and re-derive
-the proof at the fresh gate/receipt boundary under its own review.
+(b) grants no approval, signature, merge or runtime authority. The auto-merge
+gate, the receipt plan and the merge executor take the trusted repository and
+Git tool only as explicit API arguments (added_test_repository/added_test_git;
+no CLI switch, default None keeps the legacy path): the gate re-derives a fresh
+context, the receipt records the gate's evidence, and the fresh gate before a
+merge must reproduce that evidence exactly. Cached snapshot class, status or
+context is never proof, and nothing here turns standing-sign on.
 """
 from __future__ import annotations
 
@@ -520,6 +526,7 @@ def evaluate_standing_consensus_sign(
     head_matches: bool,
     receipt_present: bool,
     recognized_rcos: Sequence[str] = RECOGNIZED_RCOS,
+    git_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Decide whether a (b)-class off-allowlist PR's operator signature is satisfied
     by the STANDING signature (best-possible-consensus). Fail-closed at every step."""
@@ -534,10 +541,14 @@ def evaluate_standing_consensus_sign(
         out["reasons"] = ["standing-consensus-sign disabled (default-off; not self-activating)"]
         return out
 
-    ab = classify_ab(changed_paths)
+    ab = (classify_ab(changed_paths) if git_context is None else
+          classify_ab(changed_paths, git_context=git_context))
     out["ab_class"] = ab["ab_class"]
     out["a_hits"] = ab["a_hits"]
     out["unrecognized"] = ab["unrecognized"]
+    if isinstance(ab.get("git_evidence"), Mapping):
+        # Preserve the actual classifier proof, never caller/snapshot labels.
+        out["git_evidence"] = dict(ab["git_evidence"])
     if ab["ab_class"] != "b":
         out["reasons"] = [ab["reason"]]
         return out

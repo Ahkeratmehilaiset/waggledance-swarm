@@ -1121,6 +1121,64 @@ def test_standing_sign_default_off_keeps_offallowlist_blocked(tmp_path: Path) ->
     assert any("path gate failed" in r for r in report["reasons"])
 
 
+def test_added_test_caller_never_trusts_snapshot_context(tmp_path, monkeypatch):
+    context = {"base": BASE, "target": BASE, "head": HEAD,
+               "base_tree": "a" * 40, "head_tree": "b" * 40,
+               "cwd": str(tmp_path), "git": str(tmp_path / "git.exe")}
+    calls = []
+    monkeypatch.setattr(idle_merge_tool, "build_added_test_context", lambda **kw: context)
+    def evaluator(**kwargs):
+        calls.append(kwargs)
+        return {"admitted": False, "ab_class": "a"}
+    monkeypatch.setattr(idle_merge_tool, "evaluate_standing_consensus_sign", evaluator)
+    status = _standing_status(git_context={"forged": True}, added_only=True, ab_class="b")
+    _standing_gate(tmp_path, pr_status=status, standing_consensus_sign=True,
+                   added_test_repository=tmp_path, added_test_git=tmp_path / "git.exe")
+    assert calls[0]["git_context"] == context
+    calls.clear()
+    _standing_gate(tmp_path, pr_status=status, added_test_repository=tmp_path,
+                   added_test_git=tmp_path / "git.exe")
+    assert "git_context" not in calls[0]
+
+
+def test_added_test_caller_failed_fresh_context_does_not_fall_back(tmp_path, monkeypatch):
+    def refuse(**kwargs):
+        raise idle_merge_tool.PrStatusSnapshotError({"errors": ["stale synthetic PR"]})
+    def forbidden(**kwargs):
+        raise AssertionError("failed fresh context must not try a legacy class-b result")
+    monkeypatch.setattr(idle_merge_tool, "build_added_test_context", refuse)
+    monkeypatch.setattr(idle_merge_tool, "evaluate_standing_consensus_sign", forbidden)
+    report = _standing_gate(tmp_path, standing_consensus_sign=True,
+                            added_test_repository=tmp_path, added_test_git=tmp_path / "git.exe")
+    assert report["standing_consensus_sign"]["admitted"] is False
+    assert any("added-test" in reason for reason in report["reasons"])
+
+
+def test_added_test_chain_reaches_the_protected_reader_through_the_real_evaluator(tmp_path, monkeypatch):
+    """fable-5 integration: gate -> fresh context -> evaluator -> protected reader; synthetic Git only."""
+    import os
+    from unittest import mock
+
+    import tools.check_standing_consensus_sign_class as standing_tool
+    from test_standing_consensus_sign_class_added_tests import CONTEXT, PARENT_ENV, PATH, SyntheticGit
+
+    monkeypatch.setattr(idle_merge_tool, "build_added_test_context", lambda **kw: dict(CONTEXT))
+    status = _standing_status(changed_paths=[PATH])
+    system_root = {"SYSTEMROOT": PARENT_ENV["SYSTEMROOT"]}
+    with mock.patch("subprocess.run", side_effect=SyntheticGit().run), mock.patch.dict(os.environ, system_root):
+        expected = standing_tool.classify_ab([PATH], git_context=CONTEXT)["git_evidence"]
+    with mock.patch("subprocess.run", side_effect=SyntheticGit().run), mock.patch.dict(os.environ, system_root):
+        report = _standing_gate(tmp_path, pr_status=status, standing_consensus_sign=True,
+                                added_test_repository=tmp_path, added_test_git=tmp_path / "git.exe")
+    standing = report["standing_consensus_sign"]
+    assert (standing["ab_class"], standing["git_evidence"]) == ("b", expected)
+    assert standing["admitted"] is True
+    with mock.patch("subprocess.run", side_effect=AssertionError("no configured proof, no Git read")):
+        legacy = _standing_gate(tmp_path, pr_status=status, standing_consensus_sign=True)
+    assert legacy["standing_consensus_sign"]["ab_class"] == "a"
+    assert "git_evidence" not in legacy["standing_consensus_sign"]
+
+
 def test_standing_sign_refuses_a_class_even_when_enabled(tmp_path: Path) -> None:
     report = _standing_gate(
         tmp_path,

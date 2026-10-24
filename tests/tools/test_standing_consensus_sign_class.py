@@ -10,6 +10,7 @@ by mixing or by an unrecognized path."""
 from __future__ import annotations
 
 import pytest
+import tools.check_standing_consensus_sign_class as standing_tool
 from test_bridge_rco_enrollment import install_synthetic_enrollment
 
 from tools.check_standing_consensus_sign_class import (
@@ -198,6 +199,38 @@ def _eval(**over):
     )
     kw.update(over)
     return evaluate_standing_consensus_sign(**kw)
+
+
+def test_added_test_evaluator_preserves_actual_proof_without_clearing_veto(monkeypatch):
+    context = {"head": "a" * 40, "target": "b" * 40, "base": "c" * 40,
+               "head_tree": "d" * 40, "base_tree": "e" * 40,
+               "cwd": "synthetic-only", "git": "synthetic-only"}
+    proof = {"head": context["head"], "target": context["target"], "diff_sha256": "f" * 64}
+    calls = []
+
+    def classifier(paths, **kwargs):
+        calls.append((paths, kwargs))
+        return {"ab_class": "b", "a_hits": [], "unrecognized": [],
+                "reason": "synthetic measured proof", "git_evidence": proof}
+
+    monkeypatch.setattr(standing_tool, "classify_ab", classifier)
+    monkeypatch.setattr(standing_tool, "load_rco_enrollment_context",
+                        lambda: {"root": None, "status": "unknown", "accepted": False})
+    monkeypatch.setattr(standing_tool, "rco_event_enrollment_matches", lambda *a, **kw: False)
+    out = _eval(git_context=context, bridge_consensus=_bc(blocking=["claude-rco-3"]))
+    assert calls[0][1] == {"git_context": context}
+    assert out["git_evidence"] == proof
+    assert out["admitted"] is False
+    assert any("veto" in reason for reason in out["reasons"])
+
+
+def test_added_test_evaluator_default_off_never_starts_classifier(monkeypatch):
+    def forbidden(*a, **kw):
+        raise AssertionError("default-off must not classify or read Git")
+    monkeypatch.setattr(standing_tool, "classify_ab", forbidden)
+    out = _eval(enabled=False, git_context={"ab_class": "b", "added_only": True})
+    assert out["admitted"] is False
+    assert "git_evidence" not in out
 
 
 def test_b_class_full_best_consensus_is_admitted():

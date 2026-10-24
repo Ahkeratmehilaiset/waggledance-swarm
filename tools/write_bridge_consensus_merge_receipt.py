@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -167,8 +167,19 @@ def write_bridge_consensus_merge_receipt(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    standing_consensus_sign: bool = False,
+    added_test_repository: Path | None = None,
+    added_test_git: Path | None = None,
+    runner: Callable[[Sequence[str]], Any] | None = None,
 ) -> dict[str, Any]:
     now = _validated_now_utc(now_utc)
+    proof_kwargs: dict[str, Any] = {}
+    if type(standing_consensus_sign) is not bool:
+        raise ValueError("standing_consensus_sign must be a boolean")
+    if standing_consensus_sign or added_test_repository is not None or added_test_git is not None:
+        proof_kwargs = {"standing_consensus_sign": standing_consensus_sign,
+                        "added_test_repository": added_test_repository,
+                        "added_test_git": added_test_git, "runner": runner}
     if type(grok_fallback) is not bool or (
         grok_fallback and review_policy != REVIEW_POLICY_RULE12
     ):
@@ -207,6 +218,7 @@ def write_bridge_consensus_merge_receipt(
         review_policy=review_policy,
         grok_fallback=grok_fallback,
         grok_reports_root=_grok_reports_root,
+        **proof_kwargs,
     )
     gate_report = apply_operator_path_exception(
         gate_report, grant=operator_path_exception, pr_status=pr_status,
@@ -302,6 +314,10 @@ def _merge_plan_report(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     grok_reports_root: Path | None = None,
+    standing_consensus_sign: bool = False,
+    added_test_repository: Path | None = None,
+    added_test_git: Path | None = None,
+    runner: Callable[[Sequence[str]], Any] | None = None,
 ) -> dict[str, Any]:
     rule12_kwargs: dict[str, Any] = (
         {"review_policy": review_policy, "now_utc": now_utc}
@@ -312,6 +328,10 @@ def _merge_plan_report(
         rule12_kwargs["grok_fallback"] = True
         if grok_reports_root is not None:
             rule12_kwargs["_grok_reports_root"] = grok_reports_root
+    if standing_consensus_sign or added_test_repository is not None or added_test_git is not None:
+        rule12_kwargs.update(standing_consensus_sign=standing_consensus_sign,
+                             added_test_repository=added_test_repository,
+                             added_test_git=added_test_git, runner=runner)
     try:
         return evaluate_auto_merge_gate(
             pr_status=pr_status,
@@ -371,6 +391,9 @@ def _receipt_payload(
         "diff_digest": sha256_digest(str(pr_status.get("diff_text", ""))),
         "receipt_manifest_planned": str(manifest_path),
     }
+    standing = gate_report.get("standing_consensus_sign")
+    if isinstance(standing, Mapping) and isinstance(standing.get("git_evidence"), Mapping):
+        payload["added_test_git_evidence"] = dict(standing["git_evidence"])
     if _is_rule12(bridge_consensus):
         # Rule 12 receipts name the policy and keep the evaluator report so a
         # consumer can re-derive the slot holders; legacy payloads are unchanged.

@@ -28,6 +28,39 @@ AGENT_UUIDS = {
 }
 
 
+def test_added_test_receipt_plan_forwards_explicit_proof_configuration(monkeypatch):
+    calls = []
+    def fake_gate(**kwargs):
+        calls.append(kwargs)
+        return {"ok": False}
+    monkeypatch.setattr(receipt_tool, "evaluate_auto_merge_gate", fake_gate)
+    repository = Path(Path.cwd().anchor) / "synthetic-repository"
+    git = repository / "git.exe"
+    receipt_tool._merge_plan_report(
+        pr_status={}, events_path=repository / "events", expected_head=HEAD,
+        expected_base_sha=BASE, consensus_proposal_id=TASK, receipt_bundle_path="synthetic",
+        repo="example/repository", from_agent="codex-lead-1", bridge_task_id=TASK,
+        now_utc=NOW, standing_consensus_sign=True,
+        added_test_repository=repository, added_test_git=git,
+    )
+    assert calls[0]["standing_consensus_sign"] is True
+    assert calls[0]["added_test_repository"] == repository
+    assert calls[0]["added_test_git"] == git
+
+
+def test_added_test_receipt_payload_retains_only_gate_proof():
+    proof = {"head": HEAD, "base": BASE, "target": BASE, "diff_sha256": "a" * 64}
+    kwargs = dict(pr_status={"git_evidence": {"forged": True}},
+                  bridge_consensus={}, expected_head=HEAD, expected_base_sha=BASE,
+                  consensus_proposal_id=TASK, repo="example/repository",
+                  manifest_path=Path("synthetic-manifest.json"), now_utc=NOW)
+    payload = receipt_tool._receipt_payload(
+        gate_report={"standing_consensus_sign": {"git_evidence": proof}}, **kwargs)
+    assert payload["added_test_git_evidence"] == proof
+    legacy = receipt_tool._receipt_payload(gate_report={}, **kwargs)
+    assert "added_test_git_evidence" not in legacy
+
+
 def test_explicit_operator_path_receipt_is_truthful(tmp_path: Path) -> None:
     from waggledance.core.magma.canonical import sha256_digest
     status = _pr_status()

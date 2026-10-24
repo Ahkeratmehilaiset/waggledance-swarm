@@ -478,7 +478,7 @@ class DormantStandingSignConformance(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[2]
         enabling, supplying, cli_options, flag_options, flag_literals = [], [], [], [], []
-        for base in ("tools", "waggledance"):
+        for base in ("tools", "ops", "waggledance"):  # RCO1 A1: the tools/ and ops/ call sites
             for path in sorted((root / base).rglob("*.py")):
                 rel = path.relative_to(root).as_posix()
                 for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)):
@@ -512,7 +512,7 @@ class DormantStandingSignConformance(unittest.TestCase):
         self.assertEqual([("tools/idle_consensus_auto_merge.py", "store_true", None)], flag_options)
         self.assertEqual(["tools/idle_consensus_auto_merge.py"], flag_literals)  # only the opt-in definition
         invoking = []
-        for base in ("tools", ".github"):
+        for base in ("tools", "ops", ".github"):
             for path in sorted(p for p in (root / base).rglob("*") if p.is_file()):
                 if path.suffix.lower() not in (".ps1", ".psm1", ".sh", ".yml", ".yaml", ".cmd", ".bat"):
                     continue

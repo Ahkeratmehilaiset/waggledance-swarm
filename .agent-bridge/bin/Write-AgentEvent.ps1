@@ -718,10 +718,13 @@ if ($ReplyToEventJson) {
     # Requester closeout: the declared original requester (agent, agent_uuid, session_id, run_id, consistent with
     # the inherited launch frame) withdraws its own bound request as superseded or cancelled. ReplyTo stays
     # responder-only. This is not a task result, an approval or a reply on behalf of the addressed lane, and it
-    # releases no claim.
+    # releases no claim. It is a message, never a decision: the peer gate reads a recognized RCO's decision of any
+    # status that is not an exact approval, clear or tooling record as that RCO's block, so a decision closeout
+    # was a vote (B3 v2). A message is outside every veto and consensus event type and leaves an existing veto
+    # latched; only its owner's own valid clearance lifts it.
     if ($RequestId) { throw 'A requester closeout cannot also declare a new RequestId' }
-    if ($Type -cne 'decision' -or $Status -cnotin @('superseded', 'cancelled')) {
-        throw 'CloseRequestEventJson requires -Type decision with -Status superseded or cancelled'
+    if ($Type -cne 'message' -or $Status -cnotin @('superseded', 'cancelled')) {
+        throw 'CloseRequestEventJson requires -Type message with -Status superseded or cancelled'
     }
     $closed = $CloseRequestEventJson | ConvertFrom-Json @jsonArguments
     if ($null -eq $closed -or $closed.GetType() -ne [System.Management.Automation.PSCustomObject]) {

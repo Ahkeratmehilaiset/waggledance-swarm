@@ -117,7 +117,8 @@ def test_added_test_context_passes_the_protected_reader_input_contract(monkeypat
     legacy = standing_tool.classify_ab(["tests/tools/test_new_case.py"])
     assert standing_tool.classify_ab(["tests/tools/test_new_case.py"], git_context=context) == legacy
     assert reads == [([context["git"], "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c",
-                       "core.commitGraph=false", "rev-parse", "--is-shallow-repository"], context["cwd"])]
+                       "core.commitGraph=false", "-c", "diff.ignoreSubmodules=none", "rev-parse",
+                       "--is-shallow-repository"], context["cwd"])]
 
 
 def _base_ref_payload(sha: str = BASE) -> dict:

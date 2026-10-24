@@ -79,6 +79,19 @@ def blob_oid(data):
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
 
 
+# The submodule filter options of the reader under test. They are absent before the B15 fix, so the same strict fake
+# replays the pre-fix argv in the RED run; test_submodule_filter_options_are_exact_and_on_every_diff pins them.
+_SUBJECT = load_subject()
+PREFIX = PREFIX + list(getattr(_SUBJECT, "_GIT_SUBMODULE_CONFIG", ()))
+DIFF_OPTIONS = list(getattr(_SUBJECT, "_DIFF_SUBMODULES", ()))
+BASE_ENTRIES = {"README.md": b"100644 blob " + blob_oid(b"readme\n").encode(),
+                "tests/tools/test_existing.py": b"100644 blob " + blob_oid(b"def test_existing():\n    pass\n").encode()}
+
+
+def listing(entries):
+    return b"".join(meta + b"\t" + name.encode() + b"\0" for name, meta in sorted(entries.items()))
+
+
 def patch_for(path, data):
     oid = blob_oid(data)
     out = (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
@@ -130,9 +143,15 @@ class SyntheticGit:
             put(["ls-tree", "-z", BASE, "--", path], b"")
             put(["ls-tree", "-z", HEAD, "--", path], b"100644 blob " + oid.encode() + b"\t" + p + b"\0")
             put(["cat-file", "blob", oid], data)
-        self.raw_key = tuple(PREFIX + ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies", "--find-copies-harder", "--raw", "--abbrev=40", "-z", BASE, HEAD, "--"])
-        self.names_key = tuple(PREFIX + ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies", "--find-copies-harder", "--name-status", "-z", BASE, HEAD, "--"])
-        self.patch_key = tuple(PREFIX + ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", BASE, HEAD, "--"])
+        head_entries = dict(BASE_ENTRIES, **{path: b"100644 blob " + blob_oid(data).encode()
+                                             for path, data in self.files.items()})
+        self.base_listing_key = tuple(PREFIX + ["ls-tree", "-r", "-z", BASE, "--"])
+        self.head_listing_key = tuple(PREFIX + ["ls-tree", "-r", "-z", HEAD, "--"])
+        self.commands[self.base_listing_key] = listing(BASE_ENTRIES)
+        self.commands[self.head_listing_key] = listing(head_entries)
+        self.raw_key = tuple(PREFIX + ["diff", *DIFF_OPTIONS, "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies", "--find-copies-harder", "--raw", "--abbrev=40", "-z", BASE, HEAD, "--"])
+        self.names_key = tuple(PREFIX + ["diff", *DIFF_OPTIONS, "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies", "--find-copies-harder", "--name-status", "-z", BASE, HEAD, "--"])
+        self.patch_key = tuple(PREFIX + ["diff", *DIFF_OPTIONS, "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--full-index", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", BASE, HEAD, "--"])
         self.commands.update({self.raw_key: raw, self.names_key: names, self.patch_key: patch})
 
     def run(self, cmd, **kwargs):
@@ -467,6 +486,42 @@ class AddedTestsConformance(unittest.TestCase):
         result = self.subject.evaluate_standing_consensus_sign(enabled=False, changed_paths=[PATH],
             bridge_consensus={}, ci_all_green=True, diff_gate_allowed=True, head_matches=True, receipt_present=True)
         self.assertFalse(result["admitted"])
+
+
+class HiddenGitlinkConformance(unittest.TestCase):
+    """B15 (Grok f9234eeb): a gitlink change that git diff hides (diff.ignoreSubmodules or submodule.NAME.ignore
+    set to all) must refuse the proof and keep the exact legacy classification."""
+
+    def setUp(self):
+        self.subject = load_subject()
+
+    def measured(self, fixture):
+        with mock.patch("subprocess.run", side_effect=fixture.run), mock.patch.dict(os.environ, PARENT_ENV, clear=True):
+            return self.subject.classify_ab([PATH], git_context=CONTEXT)
+
+    def test_hidden_gitlink_change_refuses_the_proof_and_keeps_the_legacy_result(self):
+        fixture = SyntheticGit()
+        # Every diff still shows only the added test (the filter hid the gitlink); only the trees show sub moved.
+        old, new = b"160000 commit " + b"a" * 40, b"160000 commit " + b"b" * 40
+        fixture.commands[fixture.base_listing_key] = listing(dict(BASE_ENTRIES, sub=old))
+        fixture.commands[fixture.head_listing_key] = listing(dict(BASE_ENTRIES, sub=new, **{PATH: b"100644 blob " + blob_oid(TEXT).encode()}))
+        self.assertEqual(self.subject.classify_ab([PATH]), self.measured(fixture))
+        control = SyntheticGit()
+        control.commands[control.base_listing_key] = listing(dict(BASE_ENTRIES, sub=old))
+        control.commands[control.head_listing_key] = listing(dict(BASE_ENTRIES, sub=old, **{PATH: b"100644 blob " + blob_oid(TEXT).encode()}))
+        self.assertEqual("rederived_git_added_regular_tests", self.measured(control)["git_evidence"]["status"])
+
+    def test_submodule_filter_options_are_exact_and_on_every_diff(self):
+        self.assertEqual(("-c", "diff.ignoreSubmodules=none"), self.subject._GIT_SUBMODULE_CONFIG)
+        self.assertEqual(("--ignore-submodules=none",), self.subject._DIFF_SUBMODULES)
+        fixture = SyntheticGit()
+        self.measured(fixture)
+        diffs = [call for call in fixture.calls if "diff" in call]
+        self.assertEqual(3, len(diffs))
+        for call in fixture.calls:
+            self.assertEqual(["-c", "diff.ignoreSubmodules=none"], list(call[6:8]))
+        for call in diffs:
+            self.assertEqual("--ignore-submodules=none", call[call.index("diff") + 1])
 
 
 class DormantStandingSignConformance(unittest.TestCase):

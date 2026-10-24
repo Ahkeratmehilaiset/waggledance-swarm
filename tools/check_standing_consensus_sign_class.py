@@ -280,6 +280,11 @@ def _path_is_b(path: str) -> bool:
     return bool(p) and (p in _B_EXACT or any(rx.match(p) for rx in _B_PATTERNS))
 
 
+# git diff hides a changed gitlink under diff.ignoreSubmodules or
+# submodule.<name>.ignore=all: every diff refuses that filter (defense in depth;
+# the full-tree comparison in the reader is the oracle).
+_GIT_SUBMODULE_CONFIG = ("-c", "diff.ignoreSubmodules=none")
+_DIFF_SUBMODULES = ("--ignore-submodules=none",)
 _GIT_CHILD_FIXED = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                     "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
                     "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
@@ -344,7 +349,8 @@ def _verified_added_test_diff(
             return None
 
     limit = 4 * 1024 * 1024
-    prefix = [git, "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c", "core.commitGraph=false"]
+    prefix = [git, "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c", "core.commitGraph=false",
+              *_GIT_SUBMODULE_CONFIG]
     env = _measured_git_env(git)
 
     def read(*args: str) -> bytes:
@@ -417,7 +423,7 @@ def _verified_added_test_diff(
                 if existing and (end == len(components) or existing != {original}
                                  or original in base_file_names):
                     return None
-        raw = read("diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+        raw = read("diff", *_DIFF_SUBMODULES, "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
                    "--find-copies-harder", "--raw", "--abbrev=40", "-z", base, head, "--")
         fields = raw.split(b"\0")
         if not raw or fields[-1] != b"" or len(fields) != len(paths) * 2 + 1:
@@ -434,11 +440,26 @@ def _verified_added_test_diff(
             entries.append((path, oid))
         if len({p for p, _ in entries}) != len(paths) or {p for p, _ in entries} != set(paths):
             return None
-        names = read("diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+        names = read("diff", *_DIFF_SUBMODULES, "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
                      "--find-copies-harder", "--name-status", "-z", base, head, "--")
         if names != b"".join(b"A\0" + p.encode() + b"\0" for p, _ in entries):
             return None
-        actual_patch = read("diff", "--no-color", "--no-ext-diff", "--no-textconv",
+        # A gitlink change hidden from git diff still changes the tree: the full
+        # base and head listings must differ by exactly the candidate blobs.
+        listings = []
+        for commit in (base, head):
+            listing = read("ls-tree", "-r", "-z", commit, "--")
+            if listing and not listing.endswith(b"\0"):
+                return None
+            items = [item.partition(b"\t") for item in listing.split(b"\0")[:-1]]
+            if any(not tab for _, tab, _ in items) or len({name for _, _, name in items}) != len(items):
+                return None
+            listings.append({name: meta for meta, _, name in items})
+        expected_head = dict(listings[0])
+        expected_head.update({p.encode(): f"100644 blob {oid}".encode() for p, oid in entries})
+        if listings[1] != expected_head or len(expected_head) != len(listings[0]) + len(entries):
+            return None
+        actual_patch = read("diff", *_DIFF_SUBMODULES, "--no-color", "--no-ext-diff", "--no-textconv",
                             "--no-renames", "--full-index", "--src-prefix=a/",
                             "--dst-prefix=b/", "--no-relative", base, head, "--")
         expected_patch = b""

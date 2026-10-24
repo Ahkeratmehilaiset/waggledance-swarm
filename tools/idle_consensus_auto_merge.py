@@ -684,13 +684,17 @@ def evaluate_auto_merge_gate(
     added_test_error = False
     if standing_consensus_sign and added_test_repository is not None:
         try:
-            added_test_kwargs["git_context"] = build_added_test_context(
+            added_test_context = build_added_test_context(
                 pr_status=pr_status, expected_head=expected_head, repo=repo,
                 repository=added_test_repository, git=added_test_git, runner=runner,
             )
-        except PrStatusSnapshotError:
-            # A configured proof that became stale must not fall back to a
-            # permissive legacy (b) result. No cached context is consulted.
+        except (PrStatusSnapshotError, OSError, ValueError, TypeError, KeyError):
+            added_test_context = None
+        if isinstance(added_test_context, Mapping):
+            added_test_kwargs["git_context"] = added_test_context
+        else:
+            # A configured proof that became stale, failed or returned nothing must
+            # not fall back to a permissive legacy (b) result. No cached context is consulted.
             added_test_error = True
             blockers.append("added-test proof context could not be freshly derived")
     standing_sign_gate = evaluate_standing_consensus_sign(
@@ -867,6 +871,11 @@ def evaluate_auto_merge_gate(
                     or ["unknown fresh-gate refusal"]
                 )
             ]
+        elif (not isinstance(fresh_gate.get("standing_consensus_sign", {}), Mapping)
+              or not isinstance(report.get("standing_consensus_sign", {}), Mapping)):
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = ["fresh or planned standing-sign result is not an object"]
         elif (fresh_gate.get("standing_consensus_sign", {}).get("git_evidence")
               != report.get("standing_consensus_sign", {}).get("git_evidence")):
             apply_recheck["ok"] = False

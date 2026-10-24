@@ -452,16 +452,73 @@ class AddedTestsConformance(unittest.TestCase):
                 self.assertEqual(ab_class, out["ab_class"])
                 self.assertFalse(out["admitted"])
                 self.assertEqual(expected if ab_class == "b" else None, out.get("git_evidence"))
+                # B13 (RCO1 A2): the trust root the proof actually used, recorded only with a proof.
+                self.assertEqual({"cwd": CONTEXT["cwd"], "git": CONTEXT["git"]} if ab_class == "b" else None,
+                                 out.get("git_provenance"))
         with mock.patch("subprocess.run", side_effect=AssertionError("default-off or legacy never reads Git")):
             off = self.subject.evaluate_standing_consensus_sign(git_context=CONTEXT, **dict(kwargs, enabled=False))
             legacy = self.subject.evaluate_standing_consensus_sign(**kwargs)
         self.assertNotIn("git_evidence", off)
         self.assertEqual(("a", None), (legacy["ab_class"], legacy.get("git_evidence")))
+        self.assertNotIn("git_provenance", off)
+        self.assertNotIn("git_provenance", legacy)
 
     def test_no_standing_signature_self_activation(self):
         result = self.subject.evaluate_standing_consensus_sign(enabled=False, changed_paths=[PATH],
             bridge_consensus={}, ci_all_green=True, diff_gate_allowed=True, head_matches=True, receipt_present=True)
         self.assertFalse(result["admitted"])
+
+
+class DormantStandingSignConformance(unittest.TestCase):
+    """B13 (RCO1 A1): Rule 9b stays dormant. No production caller or CLI turns standing-sign on or supplies the
+    added-test repository; the one pre-existing enabling call is the plan-only replay canary (apply=False)."""
+
+    def test_no_production_caller_or_cli_enables_standing_sign_or_supplies_the_repository(self):
+        import ast
+
+        root = Path(__file__).resolve().parents[2]
+        enabling, supplying, cli_options, flag_options, flag_literals = [], [], [], [], []
+        for base in ("tools", "waggledance"):
+            for path in sorted((root / base).rglob("*.py")):
+                rel = path.relative_to(root).as_posix()
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=rel)):
+                    if isinstance(node, ast.Constant) and node.value == "--standing-consensus-sign":
+                        flag_literals.append(rel)  # an exact argv literal; prose mentions are not literals
+                    if not isinstance(node, ast.Call):
+                        continue
+                    words = {k.arg: k.value for k in node.keywords if k.arg}
+                    flag = words.get("standing_consensus_sign")
+                    if isinstance(flag, ast.Constant) and flag.value is True:
+                        apply = words.get("apply")
+                        enabling.append((rel, apply.value if isinstance(apply, ast.Constant) else "dynamic",
+                                         "added_test_repository" in words))
+                    for name in ("added_test_repository", "added_test_git"):
+                        value = words.get(name)
+                        forwarded = isinstance(value, ast.Name) and value.id == name
+                        if value is not None and not forwarded and not (
+                                isinstance(value, ast.Constant) and value.value is None):
+                            supplying.append((rel, name))
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument":
+                        texts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                        if any("added-test" in t or "added_test" in t for t in texts):
+                            cli_options.append(rel)
+                        if "--standing-consensus-sign" in texts:
+                            default = words.get("default")
+                            flag_options.append((rel, getattr(words.get("action"), "value", None),
+                                                 None if default is None else getattr(default, "value", "dynamic")))
+        self.assertEqual([("tools/standing_sign_receipt_replay_canary.py", False, False)], enabling)
+        self.assertEqual([], supplying)
+        self.assertEqual([], cli_options)
+        self.assertEqual([("tools/idle_consensus_auto_merge.py", "store_true", None)], flag_options)
+        self.assertEqual(["tools/idle_consensus_auto_merge.py"], flag_literals)  # only the opt-in definition
+        invoking = []
+        for base in ("tools", ".github"):
+            for path in sorted(p for p in (root / base).rglob("*") if p.is_file()):
+                if path.suffix.lower() not in (".ps1", ".psm1", ".sh", ".yml", ".yaml", ".cmd", ".bat"):
+                    continue
+                if "--standing-consensus-sign" in path.read_text(encoding="utf-8-sig", errors="replace"):
+                    invoking.append(path.relative_to(root).as_posix())
+        self.assertEqual([], invoking)
 
 
 TOY_TEST = "tests/tools/test_toy_added.py"

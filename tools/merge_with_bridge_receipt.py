@@ -454,6 +454,14 @@ def merge_with_bridge_receipt(
     receipt_standing = (receipt_gate_report.get("standing_consensus_sign", {})
                         if isinstance(receipt_gate_report, Mapping) else {})
     fresh_standing = fresh_gate.get("standing_consensus_sign", {})
+    if not isinstance(receipt_standing, Mapping) or not isinstance(fresh_standing, Mapping):
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=["fresh or receipt standing-sign result is not an object"],
+            stage="apply_recheck", pr_number=pr_number,
+            extra={"fresh_gate": fresh_gate, "snapshot_path": str(snapshot_path),
+                   "receipt_bundle_path": receipt_report["receipt_bundle_path"]},
+        )
     if (fresh_standing.get("git_evidence") != receipt_standing.get("git_evidence")):
         return _blocked(
             decision="apply_gate_recheck_failed",

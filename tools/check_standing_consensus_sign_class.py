@@ -54,6 +54,21 @@ no CLI switch, default None keeps the legacy path): the gate re-derives a fresh
 context, the receipt records the gate's evidence, and the fresh gate before a
 merge must reproduce that evidence exactly. Cached snapshot class, status or
 context is never proof, and nothing here turns standing-sign on.
+
+Scope and limits. Threading standing_consensus_sign through the receipt plan
+and the merge executor is Rule 9b wiring onto the merge runtime path: it stays
+API-only and default False, a change that wires it is class (a) and needs the
+operator's explicit signature, and no production caller or CLI enables it (the
+one pre-existing enabling call is the plan-only replay canary, apply=False).
+Purpose fit is limited: this added-test proof reaches only the dormant 9b
+evaluator; the Rule 12 and charter consumers still classify path-only, so an
+operational consumer that lifts the per-PR signature for an added-tests-only PR
+is UNKNOWN here, not claimed. With the proof configured, any updated_at, check
+or base-tip move between the plan and the fresh gate blocks the whole merge
+(conservative; re-plan). The trusted clone must already hold the PR head and
+merge-base objects: nothing fetches, and a missing object fails closed to the
+legacy result. The evaluator records the cwd and Git tool the proof ran with
+(git_provenance), and the receipt keeps it next to the evidence.
 """
 from __future__ import annotations
 
@@ -549,6 +564,8 @@ def evaluate_standing_consensus_sign(
     if isinstance(ab.get("git_evidence"), Mapping):
         # Preserve the actual classifier proof, never caller/snapshot labels.
         out["git_evidence"] = dict(ab["git_evidence"])
+        # The trust root the proof ran in: the context's absolute cwd and Git tool.
+        out["git_provenance"] = {"cwd": str(git_context["cwd"]), "git": str(git_context["git"])}
     if ab["ab_class"] != "b":
         out["reasons"] = [ab["reason"]]
         return out

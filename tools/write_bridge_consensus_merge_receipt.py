@@ -394,6 +394,8 @@ def _receipt_payload(
     standing = gate_report.get("standing_consensus_sign")
     if isinstance(standing, Mapping) and isinstance(standing.get("git_evidence"), Mapping):
         payload["added_test_git_evidence"] = dict(standing["git_evidence"])
+        if isinstance(standing.get("git_provenance"), Mapping):
+            payload["added_test_git_provenance"] = dict(standing["git_provenance"])
     if _is_rule12(bridge_consensus):
         # Rule 12 receipts name the policy and keep the evaluator report so a
         # consumer can re-derive the slot holders; legacy payloads are unchanged.

@@ -61,6 +61,22 @@ def test_added_test_receipt_payload_retains_only_gate_proof():
     assert "added_test_git_evidence" not in legacy
 
 
+def test_added_test_receipt_records_the_measured_trust_root():
+    """fable-5 B13 (RCO1 A2, RCO2 A5): the receipt keeps the repository and Git path the proof actually used."""
+    proof = {"head": HEAD, "base": BASE, "target": BASE, "diff_sha256": "a" * 64}
+    provenance = {"cwd": "/trusted/clone", "git": "/usr/bin/git"}
+    kwargs = dict(pr_status={"git_provenance": {"forged": True}},
+                  bridge_consensus={}, expected_head=HEAD, expected_base_sha=BASE,
+                  consensus_proposal_id=TASK, repo="example/repository",
+                  manifest_path=Path("synthetic-manifest.json"), now_utc=NOW)
+    payload = receipt_tool._receipt_payload(
+        gate_report={"standing_consensus_sign": {"git_evidence": proof, "git_provenance": provenance}}, **kwargs)
+    assert payload["added_test_git_provenance"] == provenance
+    no_proof = receipt_tool._receipt_payload(
+        gate_report={"standing_consensus_sign": {"git_provenance": provenance}}, **kwargs)
+    assert "added_test_git_provenance" not in no_proof
+
+
 def test_explicit_operator_path_receipt_is_truthful(tmp_path: Path) -> None:
     from waggledance.core.magma.canonical import sha256_digest
     status = _pr_status()

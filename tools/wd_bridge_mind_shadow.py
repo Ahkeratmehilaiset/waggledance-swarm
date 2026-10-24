@@ -40,7 +40,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -125,14 +125,18 @@ def read_capture(value: Any) -> dict[str, Any]:
     return value
 
 
-def _write_new(path: Path, data: bytes) -> str:
+def _write_new(path: Path, data: bytes, charge: Callable[[int], object] | None = None) -> str:
+    if charge is not None:  # the caller's pre-write byte budget; it raises to refuse the write
+        charge(len(data))
     with open(path, "xb") as handle:
         handle.write(data)
     return hashlib.sha256(data).hexdigest()
 
 
 def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Path | None = None,
-        previous_path: Path | None = None) -> dict[str, Any]:
+        previous_path: Path | None = None, charge: Callable[[int], object] | None = None) -> dict[str, Any]:
+    """One shadow run. ``charge`` (optional; the capture producer's B5 budget) is called with each output's
+    byte length before that output is written (publication, delta, board, receipt) and raises to refuse it."""
     core = _module("tools.wd_bridge_mind")
     board = _module("tools.wd_pr_missing_slot_board")
     from tools.bridge_compact_view import event_id
@@ -165,7 +169,7 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
     out.mkdir()
     publication = out / "reflected.publication.json"
     try:
-        digest = core.write_snapshot(reflected, publication, audit_root=audit_root)
+        digest = core.write_snapshot(reflected, publication, audit_root=audit_root, charge=charge)
         verified = core.read_snapshot(publication, audit_root=audit_root)
     except core.ProjectionError:
         raise ShadowRefused("the core refused the reflected publication") from None
@@ -177,12 +181,12 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
             changes = delta_push.delta(previous, verified)
         except delta_push.DeltaError:
             raise ShadowRefused("the delta refused the snapshot pair") from None
-        _write_new(out / "delta.jsonl", delta_push.render_lines(changes).encode("utf-8"))
+        _write_new(out / "delta.jsonl", delta_push.render_lines(changes).encode("utf-8"), charge)
     try:  # the board's guarded serializer, not its bare renderer: the board text is guarded whole like every output
         _, text = board.serialize_mind_view(board.build_mind_view(verified, digest), as_json=False)
     except board.MindRefused:
         raise ShadowRefused("the board refused the verified snapshot") from None
-    board_sha = _write_new(out / "board.txt", text.encode("utf-8"))
+    board_sha = _write_new(out / "board.txt", text.encode("utf-8"), charge)
     receipt = {
         "schema": RECEIPT_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
         "capture": {"path": str(capture_file), "sha256": capture_sha, "reader": capture["reader"],
@@ -203,7 +207,7 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
     }
     encoded = json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     workspace.guard_object(receipt)
-    _write_new(out / "receipt.json", encoded.encode("ascii"))
+    _write_new(out / "receipt.json", encoded.encode("ascii"), charge)
     return receipt
 
 

@@ -208,3 +208,50 @@ def test_the_shadow_pipeline_reads_no_log_and_imports_no_gate_bridge_writer_or_p
                  "check_rco_pass_present", "idle_consensus_auto_merge", "merge_with_bridge_receipt", "urllib",
                  "socket", '"gh"', "'gh'", "datetime.now", "time.time"):
         assert word not in source
+
+
+class _Over(Exception):
+    """This file's own budget refusal; the shadow run must let it pass unchanged."""
+
+
+def _budget(limit, seen):
+    """A pre-write charge of at most ``limit`` bytes in all, recording each accepted size in ``seen``."""
+    def charge(size):
+        if sum(seen) + size > limit:
+            raise _Over(size)
+        seen.append(size)
+    return charge
+
+
+def test_every_shadow_output_is_charged_before_it_is_written_and_the_default_bytes_are_unchanged(audit):
+    _chain()
+    first = _write(audit / "capture1.json", _capture(EVENTS[:2], observed="2026-01-01T00:55:00Z"))
+    shadow.run(first, audit, audit / "base")
+    previous = audit / "base" / "reflected.publication.json"
+    capture = _write(audit / "capture.json", _capture())
+    shadow.run(capture, audit, audit / "run_a", previous_path=previous)
+    seen = []
+    shadow.run(capture, audit, audit / "run_b", previous_path=previous, charge=seen.append)
+    names = ["reflected.publication.json", "delta.jsonl", "board.txt", "receipt.json"]
+    assert sorted(path.name for path in (audit / "run_b").iterdir()) == sorted(names)
+    assert seen == [len((audit / "run_b" / name).read_bytes()) for name in names]  # write order, exact sizes
+    for name in names:  # the receipt names its own dir; otherwise a charged run writes the default bytes
+        assert (audit / "run_b" / name).read_bytes() == (audit / "run_a" / name).read_bytes().replace(b"run_a",
+                                                                                                      b"run_b")
+
+
+def test_the_shadow_run_refuses_each_output_past_the_budget_before_writing_it(audit):
+    _chain()
+    capture = _write(audit / "capture.json", _capture())
+    sizes = []
+    shadow.run(capture, audit, audit / "run_0", charge=sizes.append)
+    names = ["reflected.publication.json", "board.txt", "receipt.json"]
+    assert len(sizes) == 3 and sizes == [len((audit / "run_0" / name).read_bytes()) for name in names]
+    seen = []
+    shadow.run(capture, audit, audit / "run_1", charge=_budget(sum(sizes), seen))  # exact equality passes
+    assert seen == sizes and sorted(path.name for path in (audit / "run_1").iterdir()) == sorted(names)
+    for index in range(3):  # one byte short of each output: it and every later one never exist, nor a temporary
+        out = audit / f"run_{index + 2}"
+        with pytest.raises(_Over):
+            shadow.run(capture, audit, out, charge=_budget(sum(sizes[:index + 1]) - 1, []))
+        assert sorted(path.name for path in out.iterdir()) == sorted(names[:index])

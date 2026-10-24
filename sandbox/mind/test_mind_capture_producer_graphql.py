@@ -213,7 +213,8 @@ class FakeConnection:
     made = []
 
     def __init__(self, host, port=None, timeout=None, context=None, **extra):
-        self.host, self.port, self.timeout, self.context, self.extra, self.calls = host, port, timeout, context, extra, []
+        self.host, self.port, self.timeout, self.context = host, port, timeout, context
+        self.extra, self.calls = extra, []
         FakeConnection.made.append(self)
 
     def set_tunnel(self, *args, **kwargs):
@@ -275,7 +276,8 @@ def test_the_queries_ask_only_the_public_capture_fields():
     (("--pr-transport", "graphql", "--http-request-budget", "-3", "--graphql-auth-env", AUTH_ENV), "budget"),
     (("--pr-transport", "graphql", "--http-request-budget", "1000001", "--graphql-auth-env", AUTH_ENV), "budget"),
     (("--pr-transport", "graphql", "--http-request-budget", "5"), "auth"),
-    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "WD_B6_UNSET_FOR_TESTS"), "auth"),
+    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "WD_B6_UNSET_FOR_TESTS"),
+     "auth"),
     (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "lower case"), "auth"),
     (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", AUTH_ENV,
       "--repo", "a/b/c"), "repo"),
@@ -361,7 +363,8 @@ def test_the_selected_graphql_source_runs_the_producers_own_pr_context_with_the_
         assert SENTINEL not in text
     # the gh path over the same output bytes builds the same context and record (observed time and ms aside)
     same = graphql(load(), route(VIEWS, ROWS), 10)
-    answers = {("pr", "list"): same.list(60), ("pr", "view", "7"): same.view(7, 60), ("pr", "view", "8"): same.view(8, 60)}
+    answers = {("pr", "list"): same.list(60), ("pr", "view", "7"): same.view(7, 60),
+               ("pr", "view", "8"): same.view(8, 60)}
     other = load()
     other.gh = lambda timeout, *argv: answers[argv[:2] if argv[1] == "list" else argv[:3]]
     cache_gh = tmp_path / "files-cache-gh"
@@ -433,7 +436,8 @@ def test_fetch_row_over_the_graphql_source_keeps_the_list_row_shape():
 
 def test_the_script_selects_the_pr_source_once_after_the_start_reads_and_before_the_first_cycle():
     tree = ast.parse(PRODUCER.read_text(encoding="utf-8"))
-    [main] = [node for node in tree.body if isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"]
+    [main] = [node for node in tree.body
+              if isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"]
     texts = [ast.unparse(statement) for statement in main.body]
     [selection] = [i for i, text in enumerate(texts) if "pr_source(args, os.environ)" in text]
     [loop] = [i for i, statement in enumerate(main.body) if isinstance(statement, ast.For)]

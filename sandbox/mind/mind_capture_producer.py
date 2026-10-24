@@ -956,7 +956,8 @@ def fetch_row(number, timeout):
     number."""
     source = GraphqlPrSource.selected
     if source is None:
-        data = gh(timeout, "pr", "view", str(number), "--repo", args.repo, "--json", "number,state,headRefOid,headRefName")
+        data = gh(timeout, "pr", "view", str(number), "--repo", args.repo, "--json",
+                  "number,state,headRefOid,headRefName")
     else:
         data = source.row(number, timeout)
     parsed = None if data is None else pr_rows(b"[" + data + b"]")

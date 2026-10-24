@@ -1,7 +1,10 @@
 """Opt-in A4 fixture: instrumented extracted publication primitive, NOT a producer run.
 
 No production module is imported. The only extracted executable nodes are the
-hash-verified atomic_write and _sharing_retry functions. A fixture-owned wrapper
+hash-verified atomic_write and _sharing_retry functions. atomic_write's B5
+OutputBudget.charge resolves to a fixture-owned charge, never the real budget
+class; the run requires the exact pointer size before the temporary exists.
+A fixture-owned wrapper
 around the real os.replace parks exactly before/after that call. Forced job
 termination does not execute Python finally; before-stop temporary residue is
 expected. This is file-level provenance, not OS isolation or runtime authority.
@@ -19,20 +22,20 @@ from types import SimpleNamespace
 
 
 PINS = {
-    'producer_sha256': ('sandbox/mind/mind_capture_producer.py', 'e7719531d6e357407f9b2087fbfeb9d15a847aa7df1296413c35280e21d26a21'),
-    'core_sha256': ('tools/wd_bridge_mind.py', 'cd009fbc890e15435919f31e52342e6c956825db523898b2c349b887a64d9557'),
+    'producer_sha256': ('sandbox/mind/mind_capture_producer.py', '68467beb20d3e0aec7c82b997990a5525f83f3e8664357303c6ca54c3bbfc2ff'),
+    'core_sha256': ('tools/wd_bridge_mind.py', '83c1c43d4e6038711c7a7e90781693f27733d38ba0da51975a06af17599a8be1'),
 }
 # Only these two measured raw encodings of each immutable Git blob qualify.
 # Unknown/mixed encodings are NOT normalized into acceptance. Actual raw hashes
 # remain in the run binding; function segments use LF only after raw validation.
 CANONICAL_PINS = {
-    'producer_sha256': '441ad7b5bd9ef0f6bbb53466bd3eae0a601effdc61ec380850cc8313672ea275',
-    'core_sha256': '3aaf56219fdef4afb208bfbf7c659422fb9618f2df95343bd6528148a389029a',
+    'producer_sha256': 'cdae4867fe340589d7b701571ee6f6c15cf769abe565c1978ace104b4c98bc82',
+    'core_sha256': '8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211',
 }
 OLD_POINTER = b'{"fixture":"A4","last_ok":"old.capture"}\n'
 NEW_POINTER = b'{"fixture":"A4","last_ok":"new.capture"}\n'
 CAPTURES = {'old.capture': b'synthetic old capture\n', 'new.capture': b'synthetic new capture\n'}
-FUNCTION_PINS = {'atomic_write': '803391e2cf8089a72f76a3434665d4296c412694903ddea476ec253c624dd28f',
+FUNCTION_PINS = {'atomic_write': 'bbb259db7fa10bf8391525a8443614989da32d646ed9cadc813af2a849a7c676',
                  '_sharing_retry': '91f92938912f6865c9f59f2900517caa8316d957f74bb09da201f4ce3e2159f1'}
 
 
@@ -80,7 +83,14 @@ def check_binding(binding):
             raise ValueError('source_hash')
 
 
-def extracted_functions(code_root, binding, replace, sleep=time.sleep):
+def unlimited_charge(size):
+    # Fixture-owned stand-in for the producer's B5 OutputBudget.charge: its 256 MiB
+    # default never refuses these synthetic sizes. A refusing charge is passed in.
+    if type(size) is not int or size < 0:
+        raise ValueError('charge_size')
+
+
+def extracted_functions(code_root, binding, replace, sleep=time.sleep, charge=unlimited_charge):
     check_binding(binding)
     functions = {}
     for key, (relative, expected) in PINS.items():
@@ -106,7 +116,7 @@ def extracted_functions(code_root, binding, replace, sleep=time.sleep):
     atomic_node, atomic_path, _ = functions['atomic_write']
     # A proxy changes only replace; no global os/module mutation or producer main.
     proxy = SimpleNamespace(fdopen=os.fdopen, fsync=os.fsync, unlink=os.unlink, replace=replace)
-    namespace = {'os': proxy, 'tempfile': tempfile,
+    namespace = {'os': proxy, 'tempfile': tempfile, 'OutputBudget': SimpleNamespace(charge=charge),
                  'core': SimpleNamespace(_sharing_retry=retry_globals['_sharing_retry'])}
     exec(compile(ast.Module(body=[atomic_node], type_ignores=[]), str(atomic_path), 'exec'), namespace)
     return namespace['atomic_write'], {name: value[2] for name, value in functions.items()}
@@ -171,7 +181,12 @@ def run_fixture(root, code_root, binding, *, park=None, pid_provider=os.getpid):
         park()
         raise RuntimeError('publication_barrier_returned')
 
-    atomic, functions = extracted_functions(code_root, binding, intercepted)
+    def charged(size):
+        # B5: atomic_write charges the exact new pointer bytes before its temporary exists.
+        if size != len(NEW_POINTER) or any(path.name.endswith('.tmp') for path in root.iterdir()):
+            raise ValueError('charge_order')
+
+    atomic, functions = extracted_functions(code_root, binding, intercepted, charge=charged)
     for name, data in {**CAPTURES, 'latest.json': OLD_POINTER}.items():
         with (root / name).open('xb') as stream:
             stream.write(data)

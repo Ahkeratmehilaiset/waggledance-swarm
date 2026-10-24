@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -292,8 +293,8 @@ def test_canonical_git_lf_source_bytes_are_supported_explicitly(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((ROOT / relative).read_bytes().replace(b'\r\n', b'\n'))
     declared = binding('before_replace')
-    declared['producer_sha256'] = '441ad7b5bd9ef0f6bbb53466bd3eae0a601effdc61ec380850cc8313672ea275'
-    declared['core_sha256'] = '3aaf56219fdef4afb208bfbf7c659422fb9618f2df95343bd6528148a389029a'
+    declared['producer_sha256'] = 'cdae4867fe340589d7b701571ee6f6c15cf769abe565c1978ace104b4c98bc82'
+    declared['core_sha256'] = '8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211'
     target = tmp_path / 'canonical.json'
     atomic, hashes = m.extracted_functions(code, declared, m.os.replace)
     atomic(target, b'canonical synthetic bytes')
@@ -450,3 +451,85 @@ $binding=@{{run_id='SYNTHETIC-RUN'}}
     assert argv[:2] == ['-I', 'SYNTHETIC-FIXTURE.py']
     assert argv[2:] == ['--approved-native-fixture', '--root', 'SYNTHETIC-ROOT',
                        '--code-root', 'SYNTHETIC-CODE', '--binding-json', '{"run_id":"SYNTHETIC-RUN"}']
+
+
+def test_extracted_atomic_write_charges_the_exact_bytes_before_its_temporary_exists(tmp_path):
+    # RCO2 P1 BC4A1E18: PR1922 made atomic_write charge OutputBudget before mkstemp. The fixture resolves that
+    # global to a fixture-owned charge (never the real budget class); it must see the exact size first.
+    m = load_fixture()
+    target = tmp_path / 'synthetic.json'
+    seen = []
+
+    def charge(size):
+        seen.append((size, sorted(path.name for path in tmp_path.iterdir())))
+
+    atomic, functions = m.extracted_functions(ROOT, binding('before_replace'), m.os.replace, charge=charge)
+    atomic(target, b'synthetic bytes')
+    assert seen == [(len(b'synthetic bytes'), [])]
+    assert target.read_bytes() == b'synthetic bytes'
+    assert functions == m.FUNCTION_PINS
+
+
+def test_refused_charge_leaves_no_temporary_and_no_replace(tmp_path):
+    m = load_fixture()
+    replaced = []
+
+    class Refused(Exception):
+        pass
+
+    def charge(size):
+        raise Refused(size)
+
+    atomic, _ = m.extracted_functions(ROOT, binding('before_replace'), lambda *pair: replaced.append(pair), charge=charge)
+    with pytest.raises(Refused):
+        atomic(tmp_path / 'synthetic.json', b'synthetic bytes')
+    assert replaced == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_probe_pins_equal_the_fixture_pins():
+    # One pin set: the probe's own producer/core admissions and its ready function hashes equal the fixture's.
+    m = load_fixture()
+    text = PROBE.read_text(encoding='utf-8')
+    for key, variable in (('producer_sha256', '$producerHash'), ('core_sha256', '$coreHash')):
+        lines = [line for line in text.splitlines() if line.lstrip().startswith(variable + ' = ')]
+        assert len(lines) == 1, variable
+        found = [value.lower() for value in re.findall(r"'([0-9A-Fa-f]{64})'", lines[0])]
+        assert found == [m.PINS[key][1], m.CANONICAL_PINS[key]], variable
+    found = dict(re.findall(r"function_sha256\.(atomic_write|_sharing_retry) -cne '([0-9a-f]{64})'", text))
+    assert found == m.FUNCTION_PINS
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('encoding', ['lf', 'crlf', 'mutated'])
+def test_probe_source_pins_admit_the_current_producer_and_core_bytes(tmp_path, ps, encoding):
+    # RCO2 P1 BC4A1E18: evaluate only the actual producer/core admission assignments against synthetic copies,
+    # never the probe body, a native type or a child process.
+    code = source_copy(tmp_path, 'crlf' if encoding == 'crlf' else 'lf')
+    producer = code / 'sandbox/mind/mind_capture_producer.py'
+    if encoding == 'mutated':
+        producer.write_bytes(producer.read_bytes() + b'\n# not the merged producer Source\n')
+    script = f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+function Add-Type {{throw 'unexpected native compilation'}}
+function Start-Process {{throw 'unexpected process'}}
+function Get-Process {{throw 'unexpected process query'}}
+. {q(PROBE)}
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(PROBE)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'probe parse error'}}
+$CodeRoot={q(code)}
+$result=[ordered]@{{}}
+foreach($name in @('producerHash','coreHash')){{
+    $nodes=@($ast.FindAll({{param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq ('$'+$name)
+    }},$true))
+    if($nodes.Count -ne 1){{throw "source admission assignment changed: $name"}}
+    try {{$result[$name]=. ([scriptblock]::Create($nodes[0].Right.Extent.Text))}}
+    catch {{if($_.Exception.Message -cne 'refused: source hash'){{throw}};$result[$name]='refused'}}
+}}
+$result|ConvertTo-Json -Compress
+"""
+    core = hashlib.sha256((code / 'tools/wd_bridge_mind.py').read_bytes()).hexdigest()
+    expected = 'refused' if encoding == 'mutated' else hashlib.sha256(producer.read_bytes()).hexdigest()
+    assert ps_json(script, ps) == {'producerHash': expected, 'coreHash': core}

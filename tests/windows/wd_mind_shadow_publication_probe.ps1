@@ -64,7 +64,7 @@ function Get-WdPublicationReady {
         [IO.Path]::GetFileName($temporary) -cnotmatch '^\.latest\.json\.[A-Za-z0-9_-]+\.tmp$') { throw 'refused: foreign temporary' }
     if (@(Compare-Object @('_sharing_retry','atomic_write') (@($ready.function_sha256.PSObject.Properties.Name) | Sort-Object)).Count) { throw 'refused: extraction shape' }
     foreach ($key in @('atomic_write','_sharing_retry')) { if ($ready.function_sha256.$key -cnotmatch '^[0-9a-f]{64}$') { throw 'refused: extraction hash' } }
-    if ($ready.function_sha256.atomic_write -cne '803391e2cf8089a72f76a3434665d4296c412694903ddea476ec253c624dd28f' -or
+    if ($ready.function_sha256.atomic_write -cne 'bbb259db7fa10bf8391525a8443614989da32d646ed9cadc813af2a849a7c676' -or
         $ready.function_sha256._sharing_retry -cne '91f92938912f6865c9f59f2900517caa8316d957f74bb09da201f4ce3e2159f1') { throw 'refused: extraction hash' }
     return $ready
 }
@@ -135,8 +135,8 @@ function Invoke-WdMindShadowPublicationProbe {
     $loop = Join-Path $CodeRoot 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1'
     $fixture = Join-Path $CodeRoot 'tests/windows/wd_mind_shadow_publication_fixture.py'
     $loopPin = Assert-WdPublicationFilePin $loop @('F598363D3A77B76A1FB4BB53A8F0B76511C143AE6C4C9DCF19C4AF284839B7C7','FEF4D7F152D7BBA9A345C6213E02C51A218E8BF61999A8058AF6FB20CACC84E9') -ReturnInfo
-    $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('E7719531D6E357407F9B2087FBFEB9D15A847AA7DF1296413C35280E21D26A21','441AD7B5BD9EF0F6BBB53466BD3EAE0A601EFFDC61EC380850CC8313672EA275') -ReturnHash
-    $coreHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') @('CD009FBC890E15435919F31E52342E6C956825DB523898B2C349B887A64D9557','3AAF56219FDEF4AFB208BFBF7C659422FB9618F2DF95343BD6528148A389029A') -ReturnHash
+    $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('68467BEB20D3E0AEC7C82B997990A5525F83F3E8664357303C6CA54C3BBFC2FF','CDAE4867FE340589D7B701571EE6F6C15CF769ABE565C1978ACE104B4C98BC82') -ReturnHash
+    $coreHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') @('83C1C43D4E6038711C7A7E90781693F27733D38BA0DA51975A06AF17599A8BE1','8555BD3FDA512078BA61E3638AF7F17BA3DE55BE11E126F6A7740AE140A67211') -ReturnHash
     Assert-WdPublicationFilePin $fixture $ExpectedFixtureSha256
     Assert-WdPublicationFilePin $MyInvocation.MyCommand.ScriptBlock.File $ExpectedProbeSha256
     Assert-WdPublicationFilePin $PythonPath $ExpectedPythonSha256

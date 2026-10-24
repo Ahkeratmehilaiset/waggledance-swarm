@@ -580,6 +580,7 @@ def nine_b_call_shapes(root):
 # B16/B17 (Grok f9234eeb item 2, RCO1 A1, RCO2 T1): the CLOSED set of production 9b shapes with counts, derived
 # once by the B17 authoring script from the reviewed code and frozen here. Any new or changed site fails.
 ALLOWED_NINE_B_SHAPES = {
+    ('tools/classify_added_tests_readonly.py', 'git_context', 'name:context'): 1,
     ('tools/check_standing_consensus_sign_class.py', 'git_context', 'name:git_context'): 1,
     ('tools/idle_consensus_auto_merge.py', '**', 'spread:added_test_kwargs'): 1,
     ('tools/idle_consensus_auto_merge.py', '**', 'spread:added_test_options'): 1,

@@ -57,6 +57,7 @@
     "tools/check_bridge_changes_requested.py",
     "tools/check_rco_pass_present.py",
     "tools/check_standing_consensus_sign_class.py",
+    "tools/classify_added_tests_readonly.py",
     "tools/idle_check.py",
     "tools/idle_consensus_artifact.py",
     "tools/idle_consensus_auto_merge.py",
@@ -139,7 +140,8 @@
     "mind_shadow_producer": "sandbox/mind/mind_capture_producer.py",
     "mind_join_turn": "sandbox/mind/join_turn.py",
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
-    "rco_pass_present": "tools/check_rco_pass_present.py"
+    "rco_pass_present": "tools/check_rco_pass_present.py",
+    "classify_added_tests_readonly": "tools/classify_added_tests_readonly.py"
   },
   "manual_execution_capability": {
     "schema": "wd.bridge-manual-execution.v1",

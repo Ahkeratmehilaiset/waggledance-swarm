@@ -27,7 +27,7 @@ import re
 import stat
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tools.bridge_compact_view import event_id
 from waggledance.core.bridge_log_reader import parse_bridge_json_object
@@ -531,9 +531,12 @@ def _sharing_retry(operation):
             delay = min(_SHARING_MAX_DELAY, delay * 2)
 
 
-def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
+def _write_publication(publication: dict, path: Path, audit_root: Path, *,
+                       charge: Callable[[int], object] | None = None) -> str:
     target = _audit_path(path, audit_root)
     encoded = canonical_bytes(publication)
+    if charge is not None:  # an owner's pre-write byte budget (the capture producer, B5); it raises to refuse
+        charge(len(encoded))
     temporary = None
     try:
         fd, temporary = tempfile.mkstemp(prefix=".mind-", suffix=".tmp", dir=target.parent)
@@ -555,14 +558,17 @@ def _write_publication(publication: dict, path: Path, audit_root: Path) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def write_snapshot(value: dict, path: Path, *, audit_root: Path) -> str:
+def write_snapshot(value: dict, path: Path, *, audit_root: Path,
+                   charge: Callable[[int], object] | None = None) -> str:
     """Publish display+source cursor atomically; use checkpoint APIs to resume.
 
-    These explicit audit APIs are not a concurrent hostile-user sandbox.
+    These explicit audit APIs are not a concurrent hostile-user sandbox. ``charge`` (optional) is called with
+    the publication's exact byte length before anything is written; an exception it raises passes unchanged.
     """
     _validate_snapshot(value)
     digest = hashlib.sha256(canonical_bytes(value)).hexdigest()
-    _write_publication(dict(schema="wd.bridge-mind-publication.v1", snapshot=value, snapshot_sha256=digest), path, audit_root)
+    _write_publication(dict(schema="wd.bridge-mind-publication.v1", snapshot=value, snapshot_sha256=digest), path,
+                       audit_root, charge=charge)
     return digest
 
 

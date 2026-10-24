@@ -18,13 +18,20 @@ design is FAIL-CLOSED and this module is itself (a)-class + charter-denylisted, 
   distinct eligible recognized RCOs, CI all-green, no recognized-RCO veto, head-exact,
   diff-clean, MAGMA receipt). Any missing/ambiguous element -> operator_review.
 
-Two pure entry points (no side effects, dict in / dict out):
+Legacy entry points (dict in / dict out):
   classify_ab(changed_paths)            -> mechanical (a)/(b) classification.
   evaluate_standing_consensus_sign(...) -> admission verdict (admitted bool).
+
+classify_ab(..., git_context={base, head, base_tree, head_tree, cwd}) opts into
+read-only Git subprocesses for the narrowly verified new-test exception. No
+existing admission/snapshot/receipt caller supplies it; this is preparation,
+not runtime wiring or self-activation.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import subprocess
 from typing import Any, Mapping, Sequence
 
 from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
@@ -229,11 +236,168 @@ def _path_is_b(path: str) -> bool:
     return bool(p) and (p in _B_EXACT or any(rx.match(p) for rx in _B_PATTERNS))
 
 
-def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:
+def _verified_added_test_diff(
+    paths: Sequence[str], context: Mapping[str, str],
+) -> dict[str, Any] | None:
+    """Re-derive a narrow exception from exact immutable Git objects, never labels.
+
+    This optional reader is NOT wired into any admission caller. Unknown input
+    returns None so the unchanged path classifier remains authoritative. The
+    bound is a validation limit, not a physical peak-memory promise.
+    """
+    required = {"base", "head", "base_tree", "head_tree", "cwd"}
+    if not isinstance(context, Mapping) or set(context) != required:
+        return None
+    if not all(type(context[k]) is str and re.fullmatch(r"[0-9a-f]{40}", context[k])
+               for k in required - {"cwd"}):
+        return None
+    if type(context["cwd"]) is not str or not context["cwd"].strip():
+        return None
+    if (not paths or len(paths) > 32 or not all(type(p) is str for p in paths)
+            or len(set(paths)) != len(paths)):
+        return None
+    reserved = ("fixture", "corpus", "corpora", "conformance", "hook", "config",
+                "import", "conftest", "sitecustomize", "usercustomize")
+    for path in paths:
+        if (type(path) is not str
+                or re.fullmatch(r"tests/(?:[a-z0-9_][a-z0-9_-]*/)*test_[a-z0-9_][a-z0-9_-]*\.py", path) is None
+                or "windows" in path.split("/")
+                or any(re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])", part)
+                       for part in path.split("/"))
+                or any(word in path for word in reserved)
+                or _path_is_a(path)):
+            return None
+
+    limit = 4 * 1024 * 1024
+    prefix = ["git", "--no-pager", "--literal-pathspecs"]
+
+    def read(*args: str) -> bytes:
+        completed = subprocess.run(prefix + list(args), cwd=context["cwd"],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, check=True, timeout=10)
+        data = completed.stdout
+        if type(data) is not bytes or len(data) > limit:
+            raise ValueError("missing or oversized Git evidence")
+        return data
+
+    try:
+        base, head = context["base"], context["head"]
+        for commit, tree in ((base, context["base_tree"]), (head, context["head_tree"])):
+            if read("rev-parse", "--verify", commit + "^{commit}") != (commit + "\n").encode():
+                return None
+            if read("rev-parse", "--verify", commit + "^{tree}") != (tree + "\n").encode():
+                return None
+        # Exact lowercase ls-tree absence is insufficient on case-insensitive
+        # filesystems. Inspect the entire immutable base namespace, including
+        # ancestor directories, rather than trust caller path labels.
+        base_names = read("ls-tree", "-r", "--name-only", "-z", base, "--")
+        if base_names and not base_names.endswith(b"\0"):
+            return None
+        base_paths = [name.decode("utf-8") for name in base_names.split(b"\0")[:-1]]
+        if len(set(base_paths)) != len(base_paths):
+            return None
+        prefixes: dict[str, set[str]] = {}
+
+        def folded(parts: Sequence[str]) -> str:
+            # Windows also aliases trailing spaces/dots; never normalize a new
+            # candidate into acceptance. Candidate spellings were checked above.
+            return "/".join(part.rstrip(" .").casefold() for part in parts)
+
+        for old in base_paths:
+            components = old.split("/")
+            if (not old or old.startswith("/") or "\\" in old
+                    or any(p in ("", ".", "..") for p in components)
+                    or any(ord(c) < 32 for c in old)):
+                return None
+            for end in range(1, len(components) + 1):
+                original = "/".join(components[:end])
+                prefixes.setdefault(folded(components[:end]), set()).add(original)
+        base_file_names = set(base_paths)
+        for path in paths:
+            components = path.split("/")
+            for end in range(1, len(components) + 1):
+                original = "/".join(components[:end])
+                existing = prefixes.get(folded(components[:end]), set())
+                if existing and (end == len(components) or existing != {original}
+                                 or original in base_file_names):
+                    return None
+        raw = read("diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+                   "--find-copies-harder", "--raw", "--abbrev=40", "-z", base, head, "--")
+        fields = raw.split(b"\0")
+        if not raw or fields[-1] != b"" or len(fields) != len(paths) * 2 + 1:
+            return None
+        entries = []
+        for index in range(0, len(fields) - 1, 2):
+            match = re.fullmatch(rb":000000 100644 0{40} ([0-9a-f]{40}) A", fields[index])
+            path = fields[index + 1].decode("ascii")
+            if match is None or path not in paths:
+                return None
+            oid = match[1].decode("ascii")
+            if oid == "0" * 40:
+                return None
+            entries.append((path, oid))
+        if len({p for p, _ in entries}) != len(paths) or {p for p, _ in entries} != set(paths):
+            return None
+        names = read("diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+                     "--find-copies-harder", "--name-status", "-z", base, head, "--")
+        if names != b"".join(b"A\0" + p.encode() + b"\0" for p, _ in entries):
+            return None
+        actual_patch = read("diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                            "--no-renames", "--full-index", "--src-prefix=a/",
+                            "--dst-prefix=b/", "--no-relative", base, head, "--")
+        expected_patch = b""
+        for path, oid in entries:
+            if read("ls-tree", "-z", base, "--", path) != b"":
+                return None
+            expected_tree = f"100644 blob {oid}\t{path}".encode() + b"\0"
+            if read("ls-tree", "-z", head, "--", path) != expected_tree:
+                return None
+            data = read("cat-file", "blob", oid)
+            if b"\0" in data or hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != oid:
+                return None
+            data.decode("utf-8")
+            expected_patch += (f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+                               f"index {'0' * 40}..{oid}\n").encode()
+            if data:
+                lines = data.split(b"\n")
+                terminated = data.endswith(b"\n")
+                if terminated:
+                    lines.pop()
+                extent = "1" if len(lines) == 1 else f"1,{len(lines)}"
+                expected_patch += f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +{extent} @@\n".encode()
+                expected_patch += b"".join(b"+" + line + b"\n" for line in lines)
+                if not terminated:
+                    expected_patch += b"\\ No newline at end of file\n"
+            if len(expected_patch) > limit:
+                return None
+        if actual_patch != expected_patch:
+            return None
+        return {"base": base, "head": head, "base_tree": context["base_tree"],
+                "head_tree": context["head_tree"], "paths": [p for p, _ in entries],
+                "blobs": dict(entries),
+                "base_paths_sha256": hashlib.sha256(base_names).hexdigest(),
+                "diff_sha256": hashlib.sha256(actual_patch).hexdigest(),
+                "status": "rederived_git_added_regular_tests"}
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None
+
+
+def classify_ab(
+    changed_paths: Sequence[str], *, git_context: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Classify a PR's changed paths as (a) or (b). FAIL-CLOSED: the PR is (b) ONLY
     if EVERY changed path is a recognized (b) category and NONE is (a). An empty or
-    unrecognized path forces (a)."""
+    unrecognized path forces (a). An explicit exact-object git_context may
+    prove the bounded added-test-only exception; failed proof preserves the
+    exact legacy result. No caller-supplied added/status boolean is accepted.
+    """
     paths = list(changed_paths or [])
+    if git_context is not None:
+        evidence = _verified_added_test_diff(paths, git_context)
+        if evidence is not None:
+            return {"ab_class": "b", "a_hits": [], "unrecognized": [],
+                    "reason": "exact Git diff only adds verified regular new tests",
+                    "git_evidence": evidence}
     a_hits: list[str] = []
     unrecognized: list[str] = []
     if not paths:

@@ -9,7 +9,9 @@ operation) at the named publication boundary (Publish-BridgeWakeSnapshot). Earli
 repair-train preflight, Codex P1 on #1864) describe transient IOException when two writers publish the same
 sentinel; that is not reproduced or measured here. Inert temp files only, on every lane test shell: no live
 watcher, and no timing or stress result is used as proof. A non-colliding lost update by a writer outside the lock
-stays a known limit (the last test): nothing here claims complete correlation or any watcher outcome.
+stays a known limit (the last test): nothing here claims complete correlation or any watcher outcome. The
+cross-process test cleans up the one child it started (that Process object only) on every path; that cleanup is
+tested against a strict fake, so no real child is left running or killed to prove it.
 """
 import json
 from pathlib import Path
@@ -81,7 +83,7 @@ FAULTS = {
   & $script:realPublish -Temp $Temp -Path $Path""",
     # A second real writer in a child process of this shell starts while this transaction is open; this writer
     # publishes once the child has reached the sentinel lock (or, if there were no lock, has ended). The loop
-    # bound is a hang guard only.
+    # bound is a hang guard only; CHILD_FINISH cleans up the child on every path.
     'child_writer': """
   if($script:calls -eq 1){
     $script:child=[Diagnostics.Process]::Start($script:childStart)
@@ -114,6 +116,61 @@ catch{{$out.caught=$_.Exception.GetType().FullName}}
 [IO.File]::WriteAllText({result},($out|ConvertTo-Json -Compress))
 """
 
+# The finish step of the cross-process test, run in a finally after the writer whether it succeeded or failed. It
+# records how the child ended, then cleans up that exact Process object (never by name or process id): killed only
+# while it still runs after the bound, waited for boundedly, disposed on every path. A failed wait or cleanup is
+# recorded next to the original result instead of replacing it.
+CHILD_FINISH = """
+if($null -ne $script:child){
+  try{
+    $script:extra['child_exited']=$script:child.WaitForExit(20000)
+    $script:extra['child_exit_code']=$(if($script:child.HasExited){$script:child.ExitCode}else{$null})
+  }catch{$script:extra['child_wait_error']=Get-InnerType $_.Exception}
+  finally{
+    try{
+      if(-not $script:child.HasExited){
+        $script:child.Kill()
+        $script:extra['child_killed']=$script:child.WaitForExit(5000)
+      }
+    }catch{$script:extra['child_cleanup_error']=Get-InnerType $_.Exception}
+    finally{$script:child.Dispose()}
+  }
+}"""
+
+# Unwraps the MethodInvocationException PowerShell puts around a .NET method's exception.
+GET_INNER_TYPE = """function Get-InnerType {
+  param($Exception)
+  while($Exception -is [Management.Automation.MethodInvocationException] -and $null -ne $Exception.InnerException){$Exception=$Exception.InnerException}
+  $Exception.GetType().FullName
+}"""
+
+# A strict fake of the child Process object for the cleanup tests: only the members the finish step may use exist
+# (under StrictMode any other member is an error), every use is logged, and each case scripts the answers. A failing
+# answer is a failing .NET call, so its error reaches the finish step the way a real Process method error does.
+FAKE_CHILD = """
+$script:log=[Collections.Generic.List[string]]::new()
+$script:answers=[Collections.Queue]::new()
+foreach($answer in @({answers})){{$script:answers.Enqueue($answer)}}
+$script:exited=$false
+$script:killFails={kill_fails}
+$fake=[pscustomobject]@{{}}
+$fake|Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {{
+  param([int]$Milliseconds)
+  $script:log.Add("WaitForExit:$Milliseconds")
+  $answer=$script:answers.Dequeue()
+  if($answer -is [string]){{[void][Collections.Queue]::new().Dequeue()}}
+  if($answer){{$script:exited=$true}}
+  $answer
+}}
+$fake|Add-Member -MemberType ScriptProperty -Name HasExited -Value {{$script:log.Add('HasExited');$script:exited}}
+$fake|Add-Member -MemberType ScriptProperty -Name ExitCode -Value {{$script:log.Add('ExitCode');0}}
+$fake|Add-Member -MemberType ScriptMethod -Name Kill -Value {{
+  $script:log.Add('Kill')
+  if($script:killFails){{[void][Collections.Queue]::new().Dequeue()}}
+}}
+$fake|Add-Member -MemberType ScriptMethod -Name Dispose -Value {{$script:log.Add('Dispose')}}
+$script:child=$fake"""
+
 
 def _write(tmp_path, ps, fault, previous=None, setup='', finish=''):
     wake = tmp_path / 'wake_codex-lead-1'
@@ -126,11 +183,7 @@ Set-StrictMode -Version Latest
 $script:calls=0
 $script:extra=[ordered]@{{}}
 $script:realPublish=${{function:Publish-BridgeWakeSnapshot}}
-function Get-InnerType {{
-  param($Exception)
-  while($Exception -is [Management.Automation.MethodInvocationException] -and $null -ne $Exception.InnerException){{$Exception=$Exception.InnerException}}
-  $Exception.GetType().FullName
-}}
+{GET_INNER_TYPE}
 function Write-Competitor {{
   param([string]$Path,[string]$Text)
   $other=$Path+'.competitor.tmp'
@@ -146,7 +199,9 @@ function Publish-BridgeWakeSnapshot {{
 $caught=$null
 try{{Write-BridgeWakeObservation -Path {q(wake)} -Events @([pscustomobject]@{{request_id='mine-1';agent='operator';session_id='race'}})}}
 catch{{$caught=Get-InnerType $_.Exception}}
+finally{{
 {finish}
+}}
 $out=[ordered]@{{calls=$script:calls;caught=$caught;real=($null -ne $script:realPublish)}}
 if($script:extra.Count){{$out['extra']=$script:extra}}
 $out|ConvertTo-Json -Compress -Depth 4
@@ -155,6 +210,23 @@ $out|ConvertTo-Json -Compress -Depth 4
     text = wake.read_text(encoding='utf-8') if wake.exists() else None
     leftovers = sorted(p.name for p in tmp_path.iterdir() if p.name.lower().endswith('.tmp'))
     return result, text, leftovers
+
+
+def _finish(ps, child):
+    # Only the finish step, against the given child setup: no writer and no real child process.
+    script = f"""
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+{GET_INNER_TYPE}
+$script:extra=[ordered]@{{}}
+{child}
+$escaped=$null
+try{{
+{CHILD_FINISH}
+}}catch{{$escaped=Get-InnerType $_.Exception}}
+[ordered]@{{log=@($script:log);extra=$script:extra;escaped=$escaped}}|ConvertTo-Json -Compress -Depth 4
+"""
+    return json.loads(_run_powershell(script, executable=ps).stdout)
 
 
 def _ids(text):
@@ -242,12 +314,7 @@ $script:childStart=[Diagnostics.ProcessStartInfo]::new([Diagnostics.Process]::Ge
 $script:childStart.UseShellExecute=$false
 $script:childStart.Arguments={q(arguments)}
 $script:child=$null"""
-    finish = """
-if($null -ne $script:child){
-  $script:extra['child_exited']=$script:child.WaitForExit(20000)
-  $script:extra['child_exit_code']=$(if($script:child.HasExited){$script:child.ExitCode}else{$null})
-}"""
-    result, text, leftovers = _write(tmp_path, ps, 'child_writer', setup=setup, finish=finish)
+    result, text, leftovers = _write(tmp_path, ps, 'child_writer', setup=setup, finish=CHILD_FINISH)
 
     assert (_ids(text), result.get('extra')) == (
         ['mine-1', 'other-1'], {'child_waiting_at_publish': True, 'child_exited': True, 'child_exit_code': 0}), result
@@ -255,6 +322,46 @@ if($null -ne $script:child){
     assert json.loads(child_result.read_text(encoding='utf-8')) == {'ok': True, 'caught': None}
     assert json.loads(text)['correlation_complete'] is True
     assert leftovers == []
+
+
+# Cleanup of the child the cross-process test starts, for that exact Process object only (never by name or process
+# id): scripted answers to WaitForExit, whether Kill fails, the expected member uses, and the record.
+CLEANUP_CASES = {
+    # The child ended within the bound (the success path): no Kill, and the object is disposed.
+    'exited': ('$true', '$false',
+               ['WaitForExit:20000', 'HasExited', 'ExitCode', 'HasExited', 'Dispose'],
+               {'child_exited': True, 'child_exit_code': 0}),
+    # Still running after the bound (an earlier failure or a hang): killed, waited for boundedly, disposed.
+    'still_running': ('$false,$true', '$false',
+                      ['WaitForExit:20000', 'HasExited', 'HasExited', 'Kill', 'WaitForExit:5000', 'Dispose'],
+                      {'child_exited': False, 'child_exit_code': None, 'child_killed': True}),
+    # The wait itself fails: that failure is recorded, then the same cleanup runs.
+    'wait_failed': ("'fail',$true", '$false',
+                    ['WaitForExit:20000', 'HasExited', 'Kill', 'WaitForExit:5000', 'Dispose'],
+                    {'child_wait_error': 'System.InvalidOperationException', 'child_killed': True}),
+    # Kill fails: the cleanup failure is recorded next to the original one, and the object is still disposed.
+    'kill_failed': ('$false', '$true',
+                    ['WaitForExit:20000', 'HasExited', 'HasExited', 'Kill', 'Dispose'],
+                    {'child_exited': False, 'child_exit_code': None,
+                     'child_cleanup_error': 'System.InvalidOperationException'}),
+}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', sorted(CLEANUP_CASES))
+def test_the_owned_child_is_disposed_on_every_path_and_killed_only_while_running(ps, case):
+    answers, kill_fails, log, extra = CLEANUP_CASES[case]
+    result = _finish(ps, FAKE_CHILD.format(answers=answers, kill_fails=kill_fails))
+
+    assert result == {'log': log, 'extra': extra, 'escaped': None}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_without_a_started_child_the_finish_step_does_nothing(ps):
+    # The early failure: the child was never started (Start threw), so there is no object to clean up.
+    result = _finish(ps, '$script:log=[Collections.Generic.List[string]]::new()\n$script:child=$null')
+
+    assert result == {'log': [], 'extra': {}, 'escaped': None}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

@@ -19,6 +19,7 @@ import itertools
 import json
 import os
 import ssl
+import time
 import types
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from waggledance.core.bridge_log_reader import parse_bridge_json_object
 
 PRODUCER = Path(__file__).resolve().parent / "mind_capture_producer.py"
 LOADED = itertools.count()
-AUTH_ENV = "WD_B6_FAKE_AUTH_FOR_TESTS"
+AUTH_ENV = "WD_MIND_GRAPHQL_AUTH_B6FAKETEST"
 SENTINEL = "FAKE-B6-SENTINEL-not-a-credential"
 HEAD, OTHER, MERGED = "a" * 40, "b" * 40, "c" * 40
 
@@ -207,6 +208,79 @@ def test_the_list_time_bound_refuses_before_a_send(monkeypatch):
     assert source.budget.sent == 0
 
 
+@pytest.mark.parametrize("info", [{"endCursor": None}, {"hasNextPage": None, "endCursor": None},
+                                  {"hasNextPage": "false", "endCursor": None}, {"hasNextPage": 0, "endCursor": None},
+                                  {"hasNextPage": 1, "endCursor": "c1"}, {"hasNextPage": "true", "endCursor": "c1"}],
+                         ids=["missing", "null", "string_false", "int_0", "int_1", "string_true"])
+def test_a_list_page_whose_has_next_page_is_not_a_boolean_is_unknown_never_a_complete_list(info):
+    module = load()
+    fake = queue(ok({"repository": {"pullRequests": {"pageInfo": info,
+                                                     "nodes": [node(1, "OPEN", HEAD, "lane-a/x1")]}}}))
+    source = graphql(module, fake, 5)
+    assert source.list(30) is None and source.reason == "graphql_list_unexpected" and len(fake.sent) == 1
+
+
+class Clock:
+    """A fake monotonic clock set on one loaded producer module; every other time function stays the real one."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def late(transport, clock, *seconds):
+    """A transport whose n-th answer returns ``seconds[n]`` after its send started (the fake clock advances)."""
+    delays = list(seconds)
+
+    def send(*args):
+        clock.now += delays.pop(0)
+        return transport(*args)
+    return send
+
+
+def test_a_final_list_page_that_returns_past_the_list_deadline_is_refused_and_one_within_it_is_kept():
+    module = load()
+    module.time = clock = Clock()
+    fake = queue(page([(1, "OPEN", HEAD, "lane-a/x1")]))
+    source = graphql(module, late(fake, clock, 31), 5)
+    assert source.list(30) is None and source.reason == "graphql_list_timeout"
+    assert len(fake.sent) == 1 and source.budget.sent == 1  # the slot stays used
+    fake = queue(page([(1, "OPEN", HEAD, "lane-a/x1")]))
+    source = graphql(module, late(fake, clock, 29), 5)
+    assert json.loads(source.list(30)) == [node(1, "OPEN", HEAD, "lane-a/x1")] and source.reason is None
+
+
+def test_a_middle_list_page_that_returns_past_the_deadline_ends_the_list_unknown_without_a_further_send():
+    module = load()
+    module.time = clock = Clock()
+    rows = [(n, "OPEN", HEAD, f"lane-a/x{n}") for n in range(1, 5)]
+    fake = queue(page(rows[:2], "c1"), page(rows[2:]))
+    source = graphql(module, late(fake, clock, 10, 25), 5)
+    source.page = 2
+    assert source.list(30) is None and source.reason == "graphql_list_timeout"
+    assert len(fake.sent) == 2 and source.budget.sent == 2
+
+
+def test_a_failed_send_past_the_deadline_keeps_its_own_more_specific_reason():
+    module = load()
+    module.time = clock = Clock()
+    source = graphql(module, late(queue(OSError("reset")), clock, 31), 5)
+    assert source.list(30) is None and source.reason == "graphql_send_failed" and source.budget.sent == 1
+    source = graphql(module, late(queue((502, b"")), clock, 31), 5)
+    assert source.list(30) is None and source.reason == "graphql_status" and source.budget.sent == 1
+
+
+def test_the_list_query_asks_the_three_states_of_gh_state_all_explicitly():
+    module = load()
+    assert ("pullRequests(first:$first,after:$after,states:[OPEN,CLOSED,MERGED],"
+            "orderBy:{field:CREATED_AT,direction:DESC}){") in module.GraphqlPrSource.LIST
+
+
 class FakeConnection:
     """A stand-in http.client.HTTPSConnection: records its construction and calls; a tunnel fails the case."""
 
@@ -276,9 +350,10 @@ def test_the_queries_ask_only_the_public_capture_fields():
     (("--pr-transport", "graphql", "--http-request-budget", "-3", "--graphql-auth-env", AUTH_ENV), "budget"),
     (("--pr-transport", "graphql", "--http-request-budget", "1000001", "--graphql-auth-env", AUTH_ENV), "budget"),
     (("--pr-transport", "graphql", "--http-request-budget", "5"), "auth"),
-    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "WD_B6_UNSET_FOR_TESTS"),
+    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env",
+      "WD_MIND_GRAPHQL_AUTH_B6UNSETTEST"),
      "auth"),
-    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "lower case"), "auth"),
+    (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", "lower case"), "namespace"),
     (("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", AUTH_ENV,
       "--repo", "a/b/c"), "repo"),
     (("--http-request-budget", "5"), "gh"),
@@ -288,11 +363,12 @@ def test_the_graphql_mode_needs_an_explicit_positive_budget_and_an_auth_variable
         monkeypatch, extra, reason):
     module = load()
     monkeypatch.setenv(AUTH_ENV, SENTINEL)
-    monkeypatch.delenv("WD_B6_UNSET_FOR_TESTS", raising=False)
+    monkeypatch.delenv("WD_MIND_GRAPHQL_AUTH_B6UNSETTEST", raising=False)
     expected = {"budget": f"--pr-transport graphql needs --http-request-budget 1..{module.HttpRequestBudget.maximum}",
                 "auth": "--pr-transport graphql needs --graphql-auth-env naming a set variable",
                 "repo": "--pr-transport graphql needs --repo owner/name",
-                "gh": "--http-request-budget and --graphql-auth-env apply only to --pr-transport graphql"}[reason]
+                "gh": "--http-request-budget and --graphql-auth-env apply only to --pr-transport graphql",
+                "namespace": NAMESPACE}[reason]
     assert module.count_problem(options(module, *extra)) == expected
 
 
@@ -302,6 +378,68 @@ def test_an_auth_variable_of_another_shape_is_refused_at_parse_time(monkeypatch,
     monkeypatch.setenv(AUTH_ENV, value)
     assert module.count_problem(options(module, *GRAPHQL_OPTIONS)) == (
         "--pr-transport graphql needs --graphql-auth-env naming a set variable")
+
+
+NAMESPACE = ("--pr-transport graphql needs --graphql-auth-env naming a WD_MIND_GRAPHQL_AUTH_<SUFFIX> variable "
+             "(an uppercase suffix of 1..32)")
+REFUSED_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "PATH", "WD_MIND_GRAPHQL_AUTH_", "WD_MIND_GRAPHQL_AUTH_lower",
+                 "WD_MIND_GRAPHQL_AUTH_1A", "WD_MIND_GRAPHQL_AUTH_A-B", "WD_MIND_GRAPHQL_AUTH_" + "A" * 33,
+                 "XWD_MIND_GRAPHQL_AUTH_A", "wd_mind_graphql_auth_a"]
+
+
+class RecordingEnviron(dict):
+    """An explicit fake environment that records every lookup of a name (nothing here reads the real one)."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.touched = []
+
+    def get(self, name, default=None):
+        self.touched.append(name)
+        return super().get(name, default)
+
+    def __getitem__(self, name):
+        self.touched.append(name)
+        return super().__getitem__(name)
+
+    def __contains__(self, name):
+        self.touched.append(name)
+        return super().__contains__(name)
+
+    def pop(self, name, *default):
+        self.touched.append(name)
+        return super().pop(name, *default)
+
+
+class OsView:
+    """The os module with ``environ`` replaced by an explicit fake, set on one loaded producer module only."""
+
+    def __init__(self, environ):
+        self.environ = environ
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+@pytest.mark.parametrize("name", REFUSED_NAMES)
+def test_an_auth_variable_outside_the_dedicated_namespace_is_refused_before_any_read_or_pop(name):
+    module = load()
+    fake = RecordingEnviron({name: SENTINEL})
+    module.os = OsView(fake)
+    extra = ("--pr-transport", "graphql", "--http-request-budget", "5", "--graphql-auth-env", name)
+    assert module.count_problem(options(module, *extra)) == NAMESPACE and fake.touched == []
+    with pytest.raises(ValueError, match="^graphql_auth_env_refused$"):
+        module.pr_source(options(module, *extra), fake, queue())
+    assert fake.touched == [] and fake == {name: SENTINEL}
+
+
+def test_a_name_in_the_dedicated_namespace_is_read_once_at_parse_time_and_popped_once_at_selection():
+    module = load()
+    fake = RecordingEnviron({AUTH_ENV: SENTINEL})
+    module.os = OsView(fake)
+    assert module.count_problem(options(module, *GRAPHQL_OPTIONS)) is None and fake.touched == [AUTH_ENV]
+    source = module.pr_source(options(module, *GRAPHQL_OPTIONS), fake, queue())
+    assert fake.touched == [AUTH_ENV, AUTH_ENV] and fake == {} and source.auth() == "bearer " + SENTINEL
 
 
 def test_the_default_stays_the_gh_path_with_its_own_list_call(tmp_path):

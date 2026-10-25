@@ -43,6 +43,9 @@ Every cycle builds one immutable candidate dir under <live-dir>/cycles and then 
      https://api.github.com/graphql through ``GraphqlPrSource``, each HTTP request after one slot of the run's
      --http-request-budget (``HttpRequestBudget``: explicit, positive, no default), with no retry, redirect,
      proxy, netrc or auth refresh; a spent budget leaves every later context UNKNOWN (http_budget_exhausted).
+     Its socket timeout bounds each socket operation, not a whole request: a list answer that returns past the
+     list deadline is refused (graphql_list_timeout), but a slowly dripping answer or a blocked DNS lookup can
+     outlast the deadline before it is refused (a LIMIT left to a later supervisor decision).
   3. tools/wd_bridge_mind_shadow.py run() over those files, with the previous publication only when its snapshot,
      verified by the core's read_snapshot, hashes to last_ok.snapshot_sha256 (else none, recorded
      previous_identity_mismatch).
@@ -119,7 +122,8 @@ def count_problem(options):
     reused). --keep must be at least 1: 0 would prune no cycle capture, and a negative -k only the k oldest.
     --max-output-bytes (B5) must leave room past OutputBudget.reserve and stay at most 1 TiB. B6: --pr-transport
     graphql needs an explicit --http-request-budget of 1..HttpRequestBudget.maximum, a --repo owner/name and a
-    --graphql-auth-env naming a set variable of the auth value's shape; gh takes neither option."""
+    --graphql-auth-env naming a set variable of the auth value's shape, its name in the dedicated
+    WD_MIND_GRAPHQL_AUTH_ namespace (checked before any read); gh takes neither option."""
     if not 1 <= options.window <= TAIL_CAP - SEED_MARGIN:
         return f"--window must be 1..{TAIL_CAP - SEED_MARGIN} lines"
     if options.keep < 1:
@@ -133,7 +137,10 @@ def count_problem(options):
         if not GraphqlPrSource.repo_shape.fullmatch(options.repo):
             return "--pr-transport graphql needs --repo owner/name"
         name = options.graphql_auth_env
-        value = None if name is None or not GraphqlPrSource.auth_env_shape.fullmatch(name) else os.environ.get(name)
+        if name is not None and not GraphqlPrSource.auth_env_shape.fullmatch(name):  # before any read
+            return ("--pr-transport graphql needs --graphql-auth-env naming a "
+                    f"{GraphqlPrSource.auth_env_prefix}<SUFFIX> variable (an uppercase suffix of 1..32)")
+        value = None if name is None else os.environ.get(name)
         if value is None or not GraphqlPrSource.auth_value_shape.fullmatch(value):
             return "--pr-transport graphql needs --graphql-auth-env naming a set variable"
     elif options.http_request_budget is not None or options.graphql_auth_env is not None:
@@ -162,7 +169,7 @@ parser.add_argument("--http-request-budget", type=int, default=None,
                     help="B6: HTTP requests this run may send with --pr-transport graphql (required there).")
 parser.add_argument("--graphql-auth-env", default=None,
                     help="B6: the variable holding the opaque Authorization value for --pr-transport graphql; "
-                         "taken once, then removed from the environment.")
+                         "a WD_MIND_GRAPHQL_AUTH_<SUFFIX> name; taken once, then removed from the environment.")
 
 READER = "Read-AgentBridge.ps1 -Compact -EventId"
 # Every reader option is joined into a PowerShell command line, so the options must be one of the three calls this
@@ -692,11 +699,13 @@ class GraphqlPrSource:
     max_response = 8 * 2 ** 20  # bytes of one answer at most
     cursor = re.compile(r"[A-Za-z0-9+/=_-]{1,256}")  # an end cursor this source sends back, bounded
     repo_shape = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
-    auth_env_shape = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+    auth_env_prefix = "WD_MIND_GRAPHQL_AUTH_"  # the dedicated namespace: no system or service variable is taken
+    auth_env_shape = re.compile(r"WD_MIND_GRAPHQL_AUTH_[A-Z][A-Z0-9_]{0,31}")  # auth_env_prefix, then the suffix
     auth_value_shape = re.compile(r"[\x21-\x7e]{1,1024}")
     selected = None  # the run's source, set once by the script (None: the gh path)
     LIST = ("query($owner:String!,$name:String!,$first:Int!,$after:String){repository(owner:$owner,name:$name){"
-            "pullRequests(first:$first,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){"
+            "pullRequests(first:$first,after:$after,states:[OPEN,CLOSED,MERGED],"
+            "orderBy:{field:CREATED_AT,direction:DESC}){"
             "pageInfo{hasNextPage endCursor}nodes{number state headRefOid headRefName}}}}")
     ROW = ("query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
            "pullRequest(number:$number){number state headRefOid headRefName}}}")
@@ -755,8 +764,14 @@ class GraphqlPrSource:
 
     def list(self, timeout):
         """gh pr list's output shape: a JSON list of objects with the four listed fields, newest first, at most
-        LIST_LIMIT rows, each page one send within ``timeout`` seconds in all; None when a page is refused, fails or
-        has another shape (more rows than asked, a short page that names a next one, an unbounded cursor)."""
+        LIST_LIMIT rows, each page one send; None when a page is refused, fails or has another shape (more rows than
+        asked, a short page that names a next one, a hasNextPage that is not a Boolean, an unbounded cursor), or when
+        the list deadline (``timeout`` seconds from the start) has passed before a send or when an answer returns
+        (graphql_list_timeout; a more specific send or budget reason is kept). The socket timeout bounds each socket
+        operation, not a whole request, so a slowly dripping answer or a blocked DNS lookup can outlast the deadline
+        before it is refused: a LIMIT, not a wall-clock bound. A PR number repeated across pages is kept and counts
+        toward LIST_LIMIT (pr_rows skips it): stricter than gh, which drops a repeat uncounted; no live parity with
+        gh is claimed."""
         self.reason = None
         deadline, nodes, after = time.monotonic() + timeout, [], None
         while len(nodes) < LIST_LIMIT:
@@ -768,12 +783,15 @@ class GraphqlPrSource:
             data = self.post(self.LIST, {"first": first, "after": after}, min(GH_TIMEOUT, remaining))
             if data is None:
                 return None
+            if deadline - time.monotonic() <= 0:  # an answer that returns late is not accepted
+                self.reason = "graphql_list_timeout"
+                return None
             repository = data.get("repository")
             listed = repository.get("pullRequests") if type(repository) is dict else None
             info = listed.get("pageInfo") if type(listed) is dict else None
             batch = listed.get("nodes") if type(listed) is dict else None
-            more = type(info) is dict and info.get("hasNextPage") is True
-            if type(info) is not dict or type(batch) is not list or len(batch) > first or (more and len(batch) < first):
+            more = info.get("hasNextPage") if type(info) is dict else None
+            if type(more) is not bool or type(batch) is not list or len(batch) > first or (more and len(batch) < first):
                 self.reason = "graphql_list_unexpected"
                 return None
             nodes.extend(batch)
@@ -823,7 +841,8 @@ class GraphqlPrSource:
 def https_post(host, path, body, headers, timeout, limit):
     """B6, GraphqlPrSource's default transport: exactly one HTTPS POST on its own http.client connection to
     ``host``:443, the certificate and host name checked by the default context. http.client reads no proxy variable
-    and no netrc, and follows no redirect; nothing here retries. The status and at most ``limit`` + 1 body bytes."""
+    and no netrc, and follows no redirect; nothing here retries. ``timeout`` bounds each socket operation (connect,
+    each read), not the whole request. The status and at most ``limit`` + 1 body bytes."""
     connection = http.client.HTTPSConnection(host, 443, timeout=timeout, context=ssl.create_default_context())
     try:
         connection.request("POST", path, body=body, headers=headers)
@@ -839,10 +858,14 @@ def pr_source(options, environ, transport=None):
     --http-request-budget requests, whose Authorization value is taken from the variable --graphql-auth-env names
     and REMOVED from ``environ``, so no process this producer starts inherits it; the value is kept only in the
     provider, never written, logged or echoed. How the variable is set (the credential's source and value) is the
-    runtime's, outside this program. ValueError (a fixed reason) when the value is gone or of another shape."""
+    runtime's, outside this program. ValueError (a fixed reason) when the name is outside the dedicated
+    WD_MIND_GRAPHQL_AUTH_ namespace (raised before any read or pop) or the value is gone or of another shape."""
     if options.pr_transport != "graphql":
         return None
-    value = environ.pop(options.graphql_auth_env, None)
+    name = options.graphql_auth_env
+    if type(name) is not str or not GraphqlPrSource.auth_env_shape.fullmatch(name):  # before any read or pop
+        raise ValueError("graphql_auth_env_refused")
+    value = environ.pop(name, None)
     if type(value) is not str or not GraphqlPrSource.auth_value_shape.fullmatch(value):
         raise ValueError("graphql_auth_unavailable")
     header = "bearer " + value
@@ -975,7 +998,7 @@ def pr_context(cache_dir, needed=None):
     if source is None:
         data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", str(LIST_LIMIT),
                   "--json", "number,state,headRefOid,headRefName")
-    else:  # B6: each page one budgeted send, all within one GH_TIMEOUT
+    else:  # B6: each page one budgeted send; a page that returns past one GH_TIMEOUT deadline is refused
         data = source.list(GH_TIMEOUT)
     observed = utc_now(seconds=True)
     parsed = None if data is None else pr_rows(data)

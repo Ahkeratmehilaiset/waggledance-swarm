@@ -311,7 +311,8 @@ RCO_CHECKERS = (
     "tools/check_bridge_changes_requested.py",
     "tools/check_rco_pass_present.py",
 )
-# The merge/gate executors and their verdict modules: shipped and smoke-checked, never published.
+# Merge/gate executors: shipped and smoke-checked, never published directly or
+# through an ordinary entrypoint's static import closure.
 GATE_EXECUTORS = (
     "tools/idle_consensus_auto_merge.py",
     "tools/merge_with_bridge_receipt.py",
@@ -321,9 +322,55 @@ GATE_EXECUTORS = (
     "tools/rule12_grok_ledger_adapter.py",
 )
 
+# Verdict dependencies are protected even when a wrapper has an innocent name.
+# The classifier route below is a Source-only (a)-class addition: its eventual
+# operator-signed PR/bundle, not standing-sign or these tests, authorizes it.
+VERDICT_MODULES = (
+    "tools/check_standing_consensus_sign_class.py",
+    "tools/check_proven_safe_autosign_class.py",
+    "tools/classify_bridge_ci_scope.py",
+    "waggledance/core/idle_consensus_charter.py",
+    "waggledance/core/magma/consensus_receipt.py",
+)
+APPROVED_READONLY_GATE_ROUTES = RCO_CHECKERS + (
+    "tools/classify_added_tests_readonly.py",
+)
+
+
+def _entrypoint_closures(definition: dict) -> dict[str, set[str]]:
+    """Real parsed static imports, including the seed which _closure omits."""
+    closures = {}
+    for entrypoint in sorted(set(definition["python_entrypoints"].values())):
+        reached, unresolved = _closure([entrypoint])
+        assert not unresolved, (
+            f"published_entrypoint_unresolved: {entrypoint}: {sorted(unresolved)}"
+        )
+        closures[entrypoint] = {entrypoint, *reached}
+    return closures
+
 
 def _published_gate_paths(definition: dict) -> set[str]:
-    return set(RCO_CHECKERS + GATE_EXECUTORS) & set(definition["python_entrypoints"].values())
+    protected = set(RCO_CHECKERS + GATE_EXECUTORS + VERDICT_MODULES)
+    return {entrypoint for entrypoint, closure in _entrypoint_closures(definition).items()
+            if closure & protected}
+
+
+def _published_executor_paths(definition: dict) -> set[str]:
+    return {entrypoint for entrypoint, closure in _entrypoint_closures(definition).items()
+            if closure & set(GATE_EXECUTORS)}
+
+
+def _assert_published_gate_policy(definition: dict) -> None:
+    # This is independent of the route allowlist: even an allowlisted diagnostic
+    # must never acquire an executor dependency. A new wrapper cannot hide it.
+    executors = _published_executor_paths(definition)
+    assert not executors, f"published_gate_executor: {sorted(executors)}"
+    published = _published_gate_paths(definition)
+    expected = set(APPROVED_READONLY_GATE_ROUTES)
+    assert published == expected, (
+        f"published_gate_route_mismatch: unexpected={sorted(published - expected)}, "
+        f"missing={sorted(expected - published)}"
+    )
 
 
 MIND_MODULES = (
@@ -456,8 +503,11 @@ def test_staged_mind_cli_help_is_available_without_site_packages(staged_mind_sou
 def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     """A new bundle must deliver its reviewed gate fixes, not just a new pointer.
 
-    The only published gate paths are the two diagnostic RCO checkers (C6, three-party
-    route consensus 6108CB61); every merge/gate executor stays unpublished."""
+    Protected publication is a closed set of read-only routes: the two existing
+    RCO checkers (C6, route consensus 6108CB61) and the new classifier (separate
+    operator-signed (a)-class PR/bundle required). Static imports count, not names.
+    Every merge/gate executor stays unpublished, even behind an approved route.
+    These Source tests neither install a route nor enable standing-sign."""
     modules = {
         "tools.check_bridge_changes_requested",
         "tools.check_rco_pass_present",
@@ -476,7 +526,7 @@ def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     # The already-smoked idle gate imports the adapter transitively; no new entrypoint.
     reached, _ = _closure(["tools/idle_consensus_auto_merge.py"])
     assert adapter in reached
-    assert _published_gate_paths(definition) == set(RCO_CHECKERS)
+    _assert_published_gate_policy(definition)
     assert definition["python_entrypoints"].get("rco_changes_requested") == RCO_CHECKERS[0]
     assert definition["python_entrypoints"].get("rco_pass_present") == RCO_CHECKERS[1]
 
@@ -505,11 +555,94 @@ def test_dropping_rule12_grok_adapter_breaks_gate_delivery_checks(monkeypatch, m
 
 @pytest.mark.parametrize("executor", GATE_EXECUTORS)
 def test_publishing_any_gate_executor_breaks_the_no_activation_check(executor):
-    """Negative control: a third published gate module is caught, under any name."""
+    """Direct seeds count too: _closure itself does not include its seed."""
     definition = _definition()
-    assert _published_gate_paths(definition) == set(RCO_CHECKERS)
+    _assert_published_gate_policy(definition)
     definition["python_entrypoints"]["innocent_looking_tool"] = executor
-    assert _published_gate_paths(definition) != set(RCO_CHECKERS)
+    with pytest.raises(AssertionError, match="published_gate_executor"):
+        _assert_published_gate_policy(definition)
+
+
+@pytest.fixture
+def publication_readonly_source():
+    """The real shipped leaf is parsed as text in a toy tree, never imported."""
+    return (REPO_ROOT / "tools/classify_added_tests_readonly.py").read_text(encoding="utf-8")
+
+
+def _publication_fixture(tmp_path, monkeypatch, readonly_source):
+    """Real import parsing of synthetic files; never fabricate _closure output."""
+    def put(relative, text):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8")
+
+    for initializer in ("tools/__init__.py", "waggledance/__init__.py",
+                        "waggledance/core/__init__.py", "waggledance/core/magma/__init__.py"):
+        put(initializer, "")
+    for relative in (*RCO_CHECKERS, *GATE_EXECUTORS, *VERDICT_MODULES):
+        put(relative, "def main():\n    raise AssertionError('synthetic never executed')\n"
+                      "def classify_ab(*args, **kwargs):\n    raise AssertionError('synthetic never executed')\n")
+    put("tools/classify_added_tests_readonly.py", readonly_source)
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    return {
+        "python_files": [*RCO_CHECKERS, *GATE_EXECUTORS, *VERDICT_MODULES,
+                         "tools/classify_added_tests_readonly.py"],
+        "python_entrypoints": {
+            "changes": RCO_CHECKERS[0], "pass": RCO_CHECKERS[1],
+            "readonly": "tools/classify_added_tests_readonly.py",
+        },
+    }
+
+
+def test_publication_closure_shipped_classifier_and_benign_control(
+        tmp_path, monkeypatch, publication_readonly_source):
+    definition = _publication_fixture(tmp_path, monkeypatch, publication_readonly_source)
+    _assert_published_gate_policy(definition)
+    reached, unresolved = _closure(["tools/classify_added_tests_readonly.py"])
+    assert "tools/check_standing_consensus_sign_class.py" in reached
+    assert not unresolved
+    (tmp_path / "tools/innocent.py").write_text("VALUE = 1\n", encoding="utf-8")
+    definition["python_files"].append("tools/innocent.py")
+    definition["python_entrypoints"]["innocent"] = "tools/innocent.py"
+    _assert_published_gate_policy(definition)
+
+
+@pytest.mark.parametrize("mutation", [
+    "direct_executor", "wrapper_executor", "transitive_executor",
+    "unlisted_verdict_wrapper", "direct_unlisted_verdict",
+    "allowed_checker_executor", "unresolved_wrapper",
+])
+def test_publication_closure_refuses_named_mutants(
+        tmp_path, monkeypatch, mutation, publication_readonly_source):
+    definition = _publication_fixture(tmp_path, monkeypatch, publication_readonly_source)
+    _assert_published_gate_policy(definition)  # The shipped classifier is a clean control.
+    if mutation == "direct_executor":
+        entrypoint = "tools/merge_with_bridge_receipt.py"
+    elif mutation == "direct_unlisted_verdict":
+        entrypoint = "tools/check_standing_consensus_sign_class.py"
+    elif mutation == "allowed_checker_executor":
+        entrypoint = RCO_CHECKERS[0]
+        (tmp_path / entrypoint).write_text(
+            "from tools.merge_with_bridge_receipt import main\n", encoding="utf-8")
+    else:
+        entrypoint = "tools/innocent.py"
+        if mutation == "unlisted_verdict_wrapper":
+            text = "from tools.check_standing_consensus_sign_class import classify_ab\n"
+        elif mutation == "unresolved_wrapper":
+            text = "from tools.nonexistent_synthetic import absent\n"
+        else:
+            module = "tools.merge_with_bridge_receipt"
+            if mutation == "transitive_executor":
+                (tmp_path / "tools/indirection.py").write_text(
+                    "from tools.merge_with_bridge_receipt import main\n", encoding="utf-8")
+                definition["python_files"].append("tools/indirection.py")
+                module = "tools.indirection"
+            text = f"from {module} import main\nraise SystemExit(main())\n"
+        (tmp_path / entrypoint).write_text(text, encoding="utf-8")
+        definition["python_files"].append(entrypoint)
+    definition["python_entrypoints"]["innocent_looking_tool"] = entrypoint
+    with pytest.raises(AssertionError, match="published_"):
+        _assert_published_gate_policy(definition)
 
 
 def test_the_rco_checkers_ship_with_their_existing_internal_closure():

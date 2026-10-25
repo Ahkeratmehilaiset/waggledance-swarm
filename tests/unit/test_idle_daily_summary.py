@@ -88,6 +88,23 @@ def test_empty_bridge_produces_zero_quota_summary() -> None:
     assert summary.quota_total == DEFAULT_DAILY_QUOTA
 
 
+def test_summary_default_quota_still_diverges_from_the_charter_quota_of_ten() -> None:
+    # Operator directive 2026-10-25 raised the merge-gate cap
+    # (waggledance.core.idle_consensus_charter.DEFAULT_DAILY_QUOTA) to 10. The
+    # summary module carries its OWN default, which was out of that change's
+    # scope and is still 5, so the daily report shows x/5 while the gate
+    # allows 10. This pin records that known divergence; raising the summary
+    # default is a separate, conscious change that must update this test.
+    from waggledance.core.idle_consensus_charter import (
+        DEFAULT_DAILY_QUOTA as CHARTER_DAILY_QUOTA,
+    )
+
+    assert CHARTER_DAILY_QUOTA == 10
+    assert DEFAULT_DAILY_QUOTA == 5
+    assert DEFAULT_DAILY_QUOTA != CHARTER_DAILY_QUOTA
+    assert build_daily_summary(utc_date="2026-05-18", events=[]).quota_total == DEFAULT_DAILY_QUOTA
+
+
 def test_single_auto_merge_counted_for_quota() -> None:
     events = [
         _auto_merge_event(

@@ -162,7 +162,7 @@ All eight conditions must hold. Failure of any one downgrades the PR to operator
 1. **Consensus**: soft or hard convergence reached in an idle-protocol instance (`waggledance/core/idle_protocol.detect_idle_convergence` returns `soft_convergence` or `hard_convergence`).
 2. **CI green**: all required GitHub status checks pass.
 3. **Receipt verified**: a MAGMA receipt bundle is written for the consensus and `verify_manifest` returns `ok=True` (via `waggledance/core/magma/receipt_bundle.write_receipt_bundle`).
-4. **Rate limit**: within the UTC-day cap of `DEFAULT_MAX_AUTONOMOUS_MERGES_PER_DAY = 5` (matches `tools/idle_protocol_activate.DEFAULT_MAX_INSTANCES_PER_DAY`).
+4. **Rate limit**: within the UTC-day cap of `DEFAULT_DAILY_QUOTA = 10` (`waggledance/core/idle_consensus_charter.py`; raised from 5 by operator directive 2026-10-25). The idle-instance cap `tools/idle_protocol_activate.DEFAULT_MAX_INSTANCES_PER_DAY` is a separate limit.
 5. **Mergeable clean**: GitHub reports `mergeable: clean` (no conflicts).
 6. **Allowlist match**: every changed file path in the diff matches an allowlist entry.
 7. **No denylist hit**: no changed file path matches the file denylist and no diff content matches the code-pattern denylist.
@@ -219,11 +219,11 @@ The following always escalate to operator review regardless of consensus, even w
 
 ## Daily rate-limit details
 
-The rate-limit is **5 autonomous merges per UTC day**. The counter resets at UTC midnight.
+The rate-limit is **10 autonomous merges per UTC day** (operator directive 2026-10-25; 5 before that). The counter resets at UTC midnight.
 
 The autonomous-merge tool must increment the counter only on successful merge (not on DRAFT creation, not on refused merge). The counter is maintained in `docs/handoffs/idle_auto_merges_{YYYY-MM-DD}.md` (Slice 6 future) and cross-referenced in the receipt bundle of each autonomous merge.
 
-A sixth attempt in the same UTC day is refused with `rate_limited` exit code; the DRAFT PR remains for operator review.
+An eleventh attempt in the same UTC day is refused with `rate_limited` exit code; the DRAFT PR remains for operator review.
 
 ## Operator handoff
 

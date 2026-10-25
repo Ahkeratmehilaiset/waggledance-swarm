@@ -92,7 +92,7 @@ def test_soft_consensus_allowlisted_candidate_is_gate_eligible(tmp_path: Path) -
         "allowed": True,
         "utc_date": "2026-05-18",
         "quota_used": 0,
-        "quota_total": 5,
+        "quota_total": 10,
     }
 
 
@@ -154,7 +154,7 @@ def test_daily_rate_limit_refuses_gate_eligibility(tmp_path: Path) -> None:
     events_path = _write_events_with_extras(
         tmp_path,
         _fixture_payloads("soft_convergence.json"),
-        [_auto_merge_event(index) for index in range(1, 6)],
+        [_auto_merge_event(index) for index in range(1, 11)],
     )
     report = evaluate_consensus_to_pr_gate(
         events_path=events_path,
@@ -168,8 +168,8 @@ def test_daily_rate_limit_refuses_gate_eligibility(tmp_path: Path) -> None:
     assert report["rate_gate"] == {
         "allowed": False,
         "utc_date": "2026-05-18",
-        "quota_used": 5,
-        "quota_total": 5,
+        "quota_used": 10,
+        "quota_total": 10,
     }
     assert report["would_merge"] is False
 

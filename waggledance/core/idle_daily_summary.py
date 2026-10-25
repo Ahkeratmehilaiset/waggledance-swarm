@@ -24,13 +24,13 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
+from waggledance.core.idle_consensus_charter import DEFAULT_DAILY_QUOTA
 from waggledance.core.work_queue import resolve_bridge_root
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVENTS_PATH = ROOT / ".agent-bridge" / "shared" / "events.jsonl"
 DEFAULT_HANDOFF_DIR = ROOT / "docs" / "handoffs"
-DEFAULT_DAILY_QUOTA = 5
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 
 

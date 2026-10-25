@@ -747,7 +747,7 @@ def test_daily_rate_limit_blocks_without_runner(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(
             tmp_path,
-            [_auto_merge_event(index) for index in range(1, 6)],
+            [_auto_merge_event(index) for index in range(1, 11)],
         ),
         utc_date="2026-05-18",
         apply=True,
@@ -758,10 +758,10 @@ def test_daily_rate_limit_blocks_without_runner(
     assert report["rate_gate"] == {
         "allowed": False,
         "utc_date": "2026-05-18",
-        "quota_used": 5,
-        "quota_total": 5,
+        "quota_used": 10,
+        "quota_total": 10,
     }
-    assert "daily rate limit exceeded: 5/5 for 2026-05-18" in report["reasons"]
+    assert "daily rate limit exceeded: 10/10 for 2026-05-18" in report["reasons"]
 
 
 @pytest.mark.parametrize(

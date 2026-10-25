@@ -11,7 +11,10 @@ sentinel; that is not reproduced or measured here. Inert temp files only, on eve
 watcher, and no timing or stress result is used as proof. A non-colliding lost update by a writer outside the lock
 stays a known limit (the last test): nothing here claims complete correlation or any watcher outcome. The
 cross-process test cleans up the one child it started (that Process object only) on every path; that cleanup is
-tested against a strict fake, so no real child is left running or killed to prove it.
+tested against a strict fake, so no real child is left running or killed to prove it. The child's standard output
+and error are pipes owned by this writer, drained boundedly after the child ended, so the child's output lands in
+this record and never in the runner's captured streams; this is not a claim that a child outlives nothing, nor
+that a force-ended parent shell takes its child with it.
 """
 import json
 from pathlib import Path
@@ -83,7 +86,7 @@ FAULTS = {
   & $script:realPublish -Temp $Temp -Path $Path""",
     # A second real writer in a child process of this shell starts while this transaction is open; this writer
     # publishes once the child has reached the sentinel lock (or, if there were no lock, has ended). The loop
-    # bound is a hang guard only; CHILD_FINISH cleans up the child on every path.
+    # bound is a hang guard only; CHILD_FINISH cleans up the child and drains its owned streams on every path.
     'child_writer': """
   if($script:calls -eq 1){
     $script:child=[Diagnostics.Process]::Start($script:childStart)
@@ -103,6 +106,7 @@ CHILD = """
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 . {telemetry}
+{noise}
 $lockCommand=Get-Command Open-BridgeWakeLock -CommandType Function -ErrorAction SilentlyContinue
 $script:realLock=$(if($null -ne $lockCommand){{$lockCommand.ScriptBlock}}else{{$null}})
 function Open-BridgeWakeLock {{
@@ -116,10 +120,28 @@ catch{{$out.caught=$_.Exception.GetType().FullName}}
 [IO.File]::WriteAllText({result},($out|ConvertTo-Json -Compress))
 """
 
+# Drains one of the owned child's standard streams after the child ended or was killed: at most 4096 characters and
+# at most 5 s in all, with asynchronous reads and bounded waits, never a blocking read to the end. A child that
+# writes more than the pipe holds before it reaches the lock blocks and ends in the hang guard, then here.
+READ_CHILD_STREAM = """function Read-ChildStream {
+  param($Reader)
+  $buffer=[char[]]::new(4096)
+  $total=0
+  $clock=[Diagnostics.Stopwatch]::StartNew()
+  while($total -lt $buffer.Length){
+    $task=$Reader.ReadAsync($buffer,$total,$buffer.Length-$total)
+    if(-not $task.Wait([Math]::Max(0,5000-[int]$clock.ElapsedMilliseconds))){break}
+    if($task.Result -le 0){break}
+    $total+=$task.Result
+  }
+  [string]::new($buffer,0,$total).TrimEnd([char]13,[char]10)
+}"""
+
 # The finish step of the cross-process test, run in a finally after the writer whether it succeeded or failed. It
 # records how the child ended, then cleans up that exact Process object (never by name or process id): killed only
-# while it still runs after the bound, waited for boundedly, disposed on every path. A failed wait or cleanup is
-# recorded next to the original result instead of replacing it.
+# while it still runs after the bound, waited for boundedly, its two owned streams drained boundedly (any output is
+# recorded and fails the exact asserts), disposed on every path. A failed wait or cleanup is recorded next to the
+# original result instead of replacing it.
 CHILD_FINISH = """
 if($null -ne $script:child){
   try{
@@ -132,6 +154,10 @@ if($null -ne $script:child){
         $script:child.Kill()
         $script:extra['child_killed']=$script:child.WaitForExit(5000)
       }
+      $childOut=Read-ChildStream $script:child.StandardOutput
+      if($childOut){$script:extra['child_stdout']=$childOut}
+      $childErr=Read-ChildStream $script:child.StandardError
+      if($childErr){$script:extra['child_stderr']=$childErr}
     }catch{$script:extra['child_cleanup_error']=Get-InnerType $_.Exception}
     finally{$script:child.Dispose()}
   }
@@ -169,6 +195,18 @@ $fake|Add-Member -MemberType ScriptMethod -Name Kill -Value {{
   if($script:killFails){{[void][Collections.Queue]::new().Dequeue()}}
 }}
 $fake|Add-Member -MemberType ScriptMethod -Name Dispose -Value {{$script:log.Add('Dispose')}}
+function New-FakeReader {{
+  param([string]$Name)
+  $reader=[pscustomobject]@{{Name=$Name}}
+  $reader|Add-Member -MemberType ScriptMethod -Name ReadAsync -Value {{
+    param($Buffer,$Offset,$Count)
+    $script:log.Add("Read:$($this.Name)")
+    [Threading.Tasks.Task]::FromResult([int]0)
+  }}
+  $reader
+}}
+$fake|Add-Member -MemberType ScriptProperty -Name StandardOutput -Value {{New-FakeReader 'out'}}
+$fake|Add-Member -MemberType ScriptProperty -Name StandardError -Value {{New-FakeReader 'err'}}
 $script:child=$fake"""
 
 
@@ -184,6 +222,7 @@ $script:calls=0
 $script:extra=[ordered]@{{}}
 $script:realPublish=${{function:Publish-BridgeWakeSnapshot}}
 {GET_INNER_TYPE}
+{READ_CHILD_STREAM}
 function Write-Competitor {{
   param([string]$Path,[string]$Text)
   $other=$Path+'.competitor.tmp'
@@ -218,6 +257,7 @@ def _finish(ps, child):
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 {GET_INNER_TYPE}
+{READ_CHILD_STREAM}
 $script:extra=[ordered]@{{}}
 {child}
 $escaped=$null
@@ -225,6 +265,36 @@ try{{
 {CHILD_FINISH}
 }}catch{{$escaped=Get-InnerType $_.Exception}}
 [ordered]@{{log=@($script:log);extra=$script:extra;escaped=$escaped}}|ConvertTo-Json -Compress -Depth 4
+"""
+    return json.loads(_run_powershell(script, executable=ps).stdout)
+
+
+def _child(tmp_path, noise=''):
+    # The cross-process test's child: its script (noise = extra PowerShell the child runs first, for the output
+    # test), the handshake marker, its result file and the setup that configures how this writer starts it.
+    wake, marker, child_result = tmp_path / 'wake_codex-lead-1', tmp_path / 'child-at-lock', tmp_path / 'child.json'
+    child = tmp_path / 'child.ps1'
+    child.write_text(CHILD.format(telemetry=q(BIN / 'BridgeTelemetry.ps1'), marker=q(marker), wake=q(wake),
+                                  result=q(child_result), noise=noise), encoding='utf-8')
+    arguments = f'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{child}"'
+    setup = f"""
+$script:childMarker={q(marker)}
+$script:childStart=[Diagnostics.ProcessStartInfo]::new([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$script:childStart.UseShellExecute=$false
+$script:childStart.RedirectStandardOutput=$true
+$script:childStart.RedirectStandardError=$true
+$script:childStart.Arguments={q(arguments)}
+$script:child=$null"""
+    return wake, child_result, setup
+
+
+def _start_config(ps, setup):
+    # Only the setup, reporting how the child would be started; no child is started.
+    script = f"""
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+{setup}
+[ordered]@{{use_shell=$script:childStart.UseShellExecute;redirect_stdout=$script:childStart.RedirectStandardOutput;redirect_stderr=$script:childStart.RedirectStandardError}}|ConvertTo-Json -Compress
 """
     return json.loads(_run_powershell(script, executable=ps).stdout)
 
@@ -303,17 +373,7 @@ def test_a_cooperating_writer_in_another_process_keeps_both_bindings(tmp_path, p
     # Regression for the former lost-update LIMIT, for writers that both go through Write-BridgeWakeObservation:
     # the child starts while this writer's transaction is open and has to wait for the sentinel lock, so it reads
     # this writer's publication and both bindings survive.
-    wake, marker, child_result = tmp_path / 'wake_codex-lead-1', tmp_path / 'child-at-lock', tmp_path / 'child.json'
-    child = tmp_path / 'child.ps1'
-    child.write_text(CHILD.format(telemetry=q(BIN / 'BridgeTelemetry.ps1'), marker=q(marker), wake=q(wake),
-                                  result=q(child_result)), encoding='utf-8')
-    arguments = f'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{child}"'
-    setup = f"""
-$script:childMarker={q(marker)}
-$script:childStart=[Diagnostics.ProcessStartInfo]::new([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
-$script:childStart.UseShellExecute=$false
-$script:childStart.Arguments={q(arguments)}
-$script:child=$null"""
+    wake, child_result, setup = _child(tmp_path)
     result, text, leftovers = _write(tmp_path, ps, 'child_writer', setup=setup, finish=CHILD_FINISH)
 
     assert (_ids(text), result.get('extra')) == (
@@ -324,22 +384,50 @@ $script:child=$null"""
     assert leftovers == []
 
 
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_child_start_owns_its_standard_output_and_error_streams(tmp_path, ps):
+    # The child's standard output and error are pipes owned by this writer, not the runner's captured streams
+    # inherited through this shell. Configuration only; no child is started.
+    wake, child_result, setup = _child(tmp_path)
+
+    assert _start_config(ps, setup) == {'use_shell': False, 'redirect_stdout': True, 'redirect_stderr': True}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_finite_child_output_is_captured_into_this_record_not_the_runner_streams(tmp_path, ps):
+    # A finite line on each of the child's standard streams lands in this writer's record (where it also fails the
+    # exact asserts of the other tests), never in the runner's captured output where it would corrupt this JSON
+    # result. Not a guarantee about a child that outlives a force-ended parent shell.
+    noise = "[Console]::Out.WriteLine('child-noise');[Console]::Error.WriteLine('child-err')"
+    wake, child_result, setup = _child(tmp_path, noise=noise)
+    result, text, leftovers = _write(tmp_path, ps, 'child_writer', setup=setup, finish=CHILD_FINISH)
+
+    assert (_ids(text), result.get('extra')) == (
+        ['mine-1', 'other-1'], {'child_waiting_at_publish': True, 'child_exited': True, 'child_exit_code': 0,
+                                'child_stdout': 'child-noise', 'child_stderr': 'child-err'}), result
+    assert (result['caught'], result['calls']) == (None, 1), result
+    assert json.loads(child_result.read_text(encoding='utf-8')) == {'ok': True, 'caught': None}
+    assert leftovers == []
+
+
 # Cleanup of the child the cross-process test starts, for that exact Process object only (never by name or process
 # id): scripted answers to WaitForExit, whether Kill fails, the expected member uses, and the record.
 CLEANUP_CASES = {
     # The child ended within the bound (the success path): no Kill, and the object is disposed.
     'exited': ('$true', '$false',
-               ['WaitForExit:20000', 'HasExited', 'ExitCode', 'HasExited', 'Dispose'],
+               ['WaitForExit:20000', 'HasExited', 'ExitCode', 'HasExited', 'Read:out', 'Read:err', 'Dispose'],
                {'child_exited': True, 'child_exit_code': 0}),
     # Still running after the bound (an earlier failure or a hang): killed, waited for boundedly, disposed.
     'still_running': ('$false,$true', '$false',
-                      ['WaitForExit:20000', 'HasExited', 'HasExited', 'Kill', 'WaitForExit:5000', 'Dispose'],
+                      ['WaitForExit:20000', 'HasExited', 'HasExited', 'Kill', 'WaitForExit:5000', 'Read:out', 'Read:err',
+                       'Dispose'],
                       {'child_exited': False, 'child_exit_code': None, 'child_killed': True}),
     # The wait itself fails: that failure is recorded, then the same cleanup runs.
     'wait_failed': ("'fail',$true", '$false',
-                    ['WaitForExit:20000', 'HasExited', 'Kill', 'WaitForExit:5000', 'Dispose'],
+                    ['WaitForExit:20000', 'HasExited', 'Kill', 'WaitForExit:5000', 'Read:out', 'Read:err', 'Dispose'],
                     {'child_wait_error': 'System.InvalidOperationException', 'child_killed': True}),
-    # Kill fails: the cleanup failure is recorded next to the original one, and the object is still disposed.
+    # Kill fails: the cleanup failure is recorded next to the original one, the streams are not read, and the
+    # object is still disposed.
     'kill_failed': ('$false', '$true',
                     ['WaitForExit:20000', 'HasExited', 'HasExited', 'Kill', 'Dispose'],
                     {'child_exited': False, 'child_exit_code': None,

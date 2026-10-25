@@ -1,10 +1,15 @@
-"""Concurrent wake-sentinel writers: a collision at the publication step is retried from a fresh read.
+"""Concurrent wake-sentinel writers: cooperating writers serialize on the sentinel lock, and a collision with a
+writer outside the lock is retried from a fresh read.
 
-Earlier author and RCO reports (RCO2 repair-train preflight, Codex P1 on #1864) describe transient IOException
-when two writers publish the same sentinel; that is not reproduced or measured here. The tests below inject the
-other writer deterministically at the named publication boundary (Publish-BridgeWakeSnapshot) instead of relying
-on timing, on every lane test shell, with inert temp files only. A non-colliding lost update stays a known limit
-(the last test): nothing here claims complete correlation or any watcher outcome.
+Every Write-BridgeWakeObservation call holds <sentinel>.lock (FileShare.None) for its whole read, merge and
+publication. The cross-process test runs a second real writer in a child process of the same lane shell, started
+while the first writer's transaction is open; the nested tests run a second real writer in the same process. The
+collision tests inject a writer that does NOT take the lock (for example an older writer during mixed-version
+operation) at the named publication boundary (Publish-BridgeWakeSnapshot). Earlier author and RCO reports (RCO2
+repair-train preflight, Codex P1 on #1864) describe transient IOException when two writers publish the same
+sentinel; that is not reproduced or measured here. Inert temp files only, on every lane test shell: no live
+watcher, and no timing or stress result is used as proof. A non-colliding lost update by a writer outside the lock
+stays a known limit (the last test): nothing here claims complete correlation or any watcher outcome.
 """
 import json
 from pathlib import Path
@@ -50,8 +55,9 @@ FAULTS = {
     # Access denied is not a race: it is thrown at once, without a retry.
     'access_denied': """
   throw [UnauthorizedAccessException]::new('injected: access denied')""",
-    # A non-colliding interleaving: another writer publishes after this writer's read and this publication
-    # succeeds. Nothing fails, so nothing is retried, and the other writer's binding is lost (a known limit).
+    # A non-colliding interleaving with a writer that does not take the sentinel lock: it publishes after this
+    # writer's read and this publication succeeds. Nothing fails, so nothing is retried, and the other writer's
+    # binding is lost (a known limit for writers outside the lock).
     'lost_update': """
   if($script:calls -eq 1){
     Write-Competitor -Path $Path -Text (@{schema='wd.bridge-wake-observation.v1';requests=@(@{request_id='other-1';agent='operator';session_id='race';reply_ts_utc=''});correlation_complete=$true;authority_effect='none'}|ConvertTo-Json -Depth 5 -Compress)
@@ -59,10 +65,57 @@ FAULTS = {
   & $script:realPublish -Temp $Temp -Path $Path""",
     'none': """
   & $script:realPublish -Temp $Temp -Path $Path""",
+    # A second real writer of the SAME sentinel, in this process, tries to start its own transaction while this
+    # one is open: it must fail visibly after the bounded lock wait, never succeed and then be overwritten.
+    'nested_same_sentinel': """
+  if($script:calls -eq 1){
+    try{Write-BridgeWakeObservation -Path $Path -Events @([pscustomobject]@{request_id='other-1';agent='operator';session_id='race'})}
+    catch{$script:extra['nested']=Get-InnerType $_.Exception}
+  }
+  & $script:realPublish -Temp $Temp -Path $Path""",
+    # A real writer of a DIFFERENT sentinel is not serialized behind this one.
+    'other_sentinel': """
+  if($script:calls -eq 1){
+    Write-BridgeWakeObservation -Path (Join-Path (Split-Path -Parent $Path) 'wake_codex-tools-1') -Events @([pscustomobject]@{request_id='peer-1';agent='operator';session_id='race'})
+  }
+  & $script:realPublish -Temp $Temp -Path $Path""",
+    # A second real writer in a child process of this shell starts while this transaction is open; this writer
+    # publishes once the child has reached the sentinel lock (or, if there were no lock, has ended). The loop
+    # bound is a hang guard only.
+    'child_writer': """
+  if($script:calls -eq 1){
+    $script:child=[Diagnostics.Process]::Start($script:childStart)
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while(-not [IO.File]::Exists($script:childMarker) -and -not $script:child.HasExited){
+      if($clock.ElapsedMilliseconds -gt 20000){throw 'hang guard: the child writer neither reached the lock nor ended'}
+      Start-Sleep -Milliseconds 10
+    }
+    $script:extra['child_waiting_at_publish']=(-not $script:child.HasExited)
+  }
+  & $script:realPublish -Temp $Temp -Path $Path""",
 }
 
+# The child writer of the cross-process test: the real writer, with its sentinel-lock step wrapped so the parent
+# knows when the child has reached it. Without such a step (the old writer) the wrapper is never called.
+CHILD = """
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+. {telemetry}
+$lockCommand=Get-Command Open-BridgeWakeLock -CommandType Function -ErrorAction SilentlyContinue
+$script:realLock=$(if($null -ne $lockCommand){{$lockCommand.ScriptBlock}}else{{$null}})
+function Open-BridgeWakeLock {{
+  param([string]$Path)
+  [IO.File]::WriteAllText({marker},'at-lock')
+  & $script:realLock -Path $Path
+}}
+$out=[ordered]@{{ok=$false;caught=$null}}
+try{{Write-BridgeWakeObservation -Path {wake} -Events @([pscustomobject]@{{request_id='other-1';agent='operator';session_id='race'}});$out.ok=$true}}
+catch{{$out.caught=$_.Exception.GetType().FullName}}
+[IO.File]::WriteAllText({result},($out|ConvertTo-Json -Compress))
+"""
 
-def _write(tmp_path, ps, fault, previous=None):
+
+def _write(tmp_path, ps, fault, previous=None, setup='', finish=''):
     wake = tmp_path / 'wake_codex-lead-1'
     if previous is not None:
         wake.write_text(previous, encoding='utf-8')
@@ -71,7 +124,13 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 . {q(BIN / 'BridgeTelemetry.ps1')}
 $script:calls=0
+$script:extra=[ordered]@{{}}
 $script:realPublish=${{function:Publish-BridgeWakeSnapshot}}
+function Get-InnerType {{
+  param($Exception)
+  while($Exception -is [Management.Automation.MethodInvocationException] -and $null -ne $Exception.InnerException){{$Exception=$Exception.InnerException}}
+  $Exception.GetType().FullName
+}}
 function Write-Competitor {{
   param([string]$Path,[string]$Text)
   $other=$Path+'.competitor.tmp'
@@ -83,10 +142,14 @@ function Publish-BridgeWakeSnapshot {{
   $script:calls++
 {FAULTS[fault]}
 }}
+{setup}
 $caught=$null
 try{{Write-BridgeWakeObservation -Path {q(wake)} -Events @([pscustomobject]@{{request_id='mine-1';agent='operator';session_id='race'}})}}
-catch{{$caught=$_.Exception.GetType().FullName}}
-[ordered]@{{calls=$script:calls;caught=$caught;real=($null -ne $script:realPublish)}}|ConvertTo-Json -Compress
+catch{{$caught=Get-InnerType $_.Exception}}
+{finish}
+$out=[ordered]@{{calls=$script:calls;caught=$caught;real=($null -ne $script:realPublish)}}
+if($script:extra.Count){{$out['extra']=$script:extra}}
+$out|ConvertTo-Json -Compress -Depth 4
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     text = wake.read_text(encoding='utf-8') if wake.exists() else None
@@ -164,9 +227,77 @@ def test_access_denied_is_thrown_at_once(tmp_path, ps):
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_cooperating_writer_in_another_process_keeps_both_bindings(tmp_path, ps):
+    # Regression for the former lost-update LIMIT, for writers that both go through Write-BridgeWakeObservation:
+    # the child starts while this writer's transaction is open and has to wait for the sentinel lock, so it reads
+    # this writer's publication and both bindings survive.
+    wake, marker, child_result = tmp_path / 'wake_codex-lead-1', tmp_path / 'child-at-lock', tmp_path / 'child.json'
+    child = tmp_path / 'child.ps1'
+    child.write_text(CHILD.format(telemetry=q(BIN / 'BridgeTelemetry.ps1'), marker=q(marker), wake=q(wake),
+                                  result=q(child_result)), encoding='utf-8')
+    arguments = f'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{child}"'
+    setup = f"""
+$script:childMarker={q(marker)}
+$script:childStart=[Diagnostics.ProcessStartInfo]::new([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+$script:childStart.UseShellExecute=$false
+$script:childStart.Arguments={q(arguments)}
+$script:child=$null"""
+    finish = """
+if($null -ne $script:child){
+  $script:extra['child_exited']=$script:child.WaitForExit(20000)
+  $script:extra['child_exit_code']=$(if($script:child.HasExited){$script:child.ExitCode}else{$null})
+}"""
+    result, text, leftovers = _write(tmp_path, ps, 'child_writer', setup=setup, finish=finish)
+
+    assert (_ids(text), result.get('extra')) == (
+        ['mine-1', 'other-1'], {'child_waiting_at_publish': True, 'child_exited': True, 'child_exit_code': 0}), result
+    assert (result['caught'], result['calls']) == (None, 1), result
+    assert json.loads(child_result.read_text(encoding='utf-8')) == {'ok': True, 'caught': None}
+    assert json.loads(text)['correlation_complete'] is True
+    assert leftovers == []
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_second_writer_cannot_enter_an_open_transaction_and_fails_visibly(tmp_path, ps):
+    # The same-process variant: a dropped binding is never a false success. The second writer throws after its
+    # bounded lock wait and publishes nothing; this writer's snapshot stays complete for what it did merge.
+    result, text, leftovers = _write(tmp_path, ps, 'nested_same_sentinel')
+
+    assert (_ids(text), result.get('extra')) == (['mine-1'], {'nested': 'System.IO.IOException'}), result
+    assert (result['caught'], result['calls']) == (None, 1), result
+    assert json.loads(text)['correlation_complete'] is True
+    assert leftovers == []
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_writers_of_different_sentinels_are_not_serialized(tmp_path, ps):
+    result, text, leftovers = _write(tmp_path, ps, 'other_sentinel')
+
+    assert (result['caught'], result['calls']) == (None, 2), result
+    assert _ids(text) == ['mine-1']
+    assert _ids((tmp_path / 'wake_codex-tools-1').read_text(encoding='utf-8')) == ['peer-1']
+    assert leftovers == []
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_held_sentinel_lock_is_waited_for_boundedly_and_changes_nothing(tmp_path, ps):
+    previous = json.dumps({'schema': SCHEMA, 'requests': [{'request_id': 'old-1', 'agent': 'operator',
+                           'session_id': 'race', 'reply_ts_utc': ''}], 'correlation_complete': True,
+                           'authority_effect': 'none'})
+    lock = q(tmp_path / 'wake_codex-lead-1.lock')
+    setup = f"$held=[IO.File]::Open({lock},[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)"
+    result, text, leftovers = _write(tmp_path, ps, 'none', previous=previous, setup=setup, finish='$held.Dispose()')
+
+    assert (result['caught'], result['calls']) == ('System.IO.IOException', 0), result
+    assert text == previous
+    assert leftovers == []
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_a_non_colliding_lost_update_remains_a_known_limit(tmp_path, ps):
-    # LIMIT, not a guarantee: a successful publication over a snapshot this writer never read drops the other
-    # writer's binding and correlation_complete stays true. The retry covers publication errors only.
+    # LIMIT, not a guarantee, for a writer that does not take the sentinel lock (Write-Competitor here): its
+    # successful publication over a snapshot this writer never read is dropped and correlation_complete stays
+    # true. The lock serializes cooperating writers only; the retry covers publication errors only.
     result, text, leftovers = _write(tmp_path, ps, 'lost_update')
 
     assert (result['caught'], result['calls']) == (None, 1), result

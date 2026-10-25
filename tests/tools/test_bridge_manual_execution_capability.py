@@ -7,6 +7,7 @@ Existing Python executor tests own consensus/CI/RCO/receipt semantics.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -364,6 +365,27 @@ def test_standalone_receipt_limit_is_documented_without_gate_changes():
     doc = (ROOT / "docs/ops/bridge_manual_execution_capability.md").read_text(encoding="utf-8")
     assert "standalone receipt output is non-authoritative" in doc
     assert "must not be used as merge authorization" in doc
+
+
+def test_review_policy_doc_states_rule12_coverage_from_source():
+    """B2-DOC: admitting rule12 changes which approvals can satisfy the gate.
+
+    Pure text check: the evaluator source is parsed, never imported or run.
+    """
+    doc = " ".join((ROOT / "docs/ops/bridge_manual_execution_capability.md").read_text(encoding="utf-8").split())
+    source = (ROOT / "tools/bridge_rule12_review_eligibility.py").read_text(encoding="utf-8")
+    pool = next(ast.literal_eval(node.value) for node in ast.parse(source).body
+                if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "RCO_POOL_FALLBACK")
+    policy = doc[doc.index("`--review-policy` admits"):doc.index("This policy-argument parity")]
+    assert "change RCO coverage" not in policy
+    assert "requires every eligible recognized RCO" not in policy
+    for phrase in ("replaces the default Rule 9a verifier", "one opposite-family approval",
+                   "attested pool fallback", "`--grok-fallback` remain refused",
+                   "part of what a future activation decision authorizes"):
+        assert phrase in policy
+    assert pool and all(f"`{lane}`" in policy for lane in pool)
+    header = doc[:doc.index("## Default and activation boundary")]
+    assert "default" in next(s for s in header.split(". ") if "both Codex build approvals" in s)
 
 
 @pytest.mark.parametrize("tool", MANUAL.values())

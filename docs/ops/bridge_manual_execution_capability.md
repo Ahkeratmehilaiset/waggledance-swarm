@@ -2,8 +2,10 @@
 
 This is launch capability, not a merge approval. The protected merge executor,
 receipt writer, Rule 9a evaluator, charter, recognized RCO identities and blocking
-findings, and Rule 12 Grok switch are unchanged. CI, independent RCO_PASS, both
-Codex build approvals and all existing per-merge checks remain mandatory.
+findings, and Rule 12 Grok switch are unchanged. Under the default review policy,
+CI, independent RCO_PASS, both Codex build approvals and all existing per-merge
+checks remain mandatory; an admitted `rule12` policy changes that approval
+coverage as described below.
 
 ## Default and activation boundary
 
@@ -80,12 +82,23 @@ The marker is stripped before Python. Canonical long options only: duplicate,
 abbreviated and unknown options refuse before Python. Head/base must be full
 lowercase 40-character SHAs. `--review-policy` admits only the exact existing
 executor values `bridge_consensus_v1` and `rule12`, with either a separate value
-or `--review-policy=rule12`. Omission preserves the executor's current default.
-The marker and policy argument reach the same pinned driver with the same
-manifest, activation, lane and runtime bindings; admitting the argument does
-not approve its gate verdict or change RCO coverage. Current Rule 12 code still
-requires every eligible recognized RCO; instructions alone do not change that.
-`--now`, operator path-exception arguments and `--grok-fallback` remain refused. No
+or `--review-policy=rule12`. Omission preserves the executor's current default,
+`bridge_consensus_v1` (the Rule 9a verifier). The marker and policy argument
+reach the same pinned driver with the same manifest, activation, lane and
+runtime bindings. Admitting the argument approves no gate verdict, but `rule12`
+changes which approvals can satisfy the gate: it replaces the default Rule 9a
+verifier with the Rule 12 evaluator. There, one opposite-family approval (from a
+lane outside every implementer's model family) takes the place of both Codex
+build approvals. The RCO slot needs an exact-head `rco_pass` from two distinct
+eligible recognized RCOs when at least two are present, or from the one that
+is. When none is present (each is an implementer, self-recused, not provisioned
+or absent after an unanswered bound review request), an attested pool fallback
+can hold the RCO slot: the first eligible of `codex-tools-1`, `codex-lead-1` and
+`fable-5` whose exact-head `rco_pass` carries the pool attestation and that has
+no uncleared block of its own. Selecting `rule12` is therefore part of what a
+future activation decision authorizes; this source change activates no policy.
+`--now`, operator path-exception arguments and `--grok-fallback` remain refused,
+so the Rule 12 Grok fallback is not reachable through this route. No
 `--admin`, `--no-verify` or force-push option is admitted. Without `--apply` the
 existing merge driver keeps its dry-run behavior; a dry run is not a merge.
 

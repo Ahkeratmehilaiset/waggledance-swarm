@@ -327,6 +327,7 @@ GATE_EXECUTORS = (
 # operator-signed PR/bundle, not standing-sign or these tests, authorizes it.
 VERDICT_MODULES = (
     "tools/check_standing_consensus_sign_class.py",
+    "tools/bridge_event_taxonomy.py",
     "tools/check_proven_safe_autosign_class.py",
     "tools/classify_bridge_ci_scope.py",
     "waggledance/core/idle_consensus_charter.py",
@@ -370,6 +371,27 @@ def _assert_published_gate_policy(definition: dict) -> None:
     assert published == expected, (
         f"published_gate_route_mismatch: unexpected={sorted(published - expected)}, "
         f"missing={sorted(expected - published)}"
+    )
+
+
+def test_publication_protection_covers_packaged_gate_catalogue():
+    """Read the classifier's literal catalogue, never import/execute the gate."""
+    tree = ast.parse((REPO_ROOT / "tools/check_standing_consensus_sign_class.py")
+                     .read_text(encoding="utf-8"))
+    catalogues = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == "_A_CODE_SUBSTR"
+                          for target in node.targets)]
+    assert len(catalogues) == 1, "gate_catalogue_missing_or_ambiguous"
+    fragments = ast.literal_eval(catalogues[0])
+    assert type(fragments) is tuple and fragments
+    assert all(type(fragment) is str and fragment for fragment in fragments)
+    packaged = {path for path in _definition()["python_files"]
+                if not path.startswith("tests/") and not Path(path).name.startswith("test_")}
+    classified_gate_paths = {path for path in packaged
+                            if any(fragment in path.casefold() for fragment in fragments)}
+    protected = set(RCO_CHECKERS + GATE_EXECUTORS + VERDICT_MODULES)
+    assert classified_gate_paths <= protected, (
+        f"published_gate_catalogue_drift: {sorted(classified_gate_paths - protected)}"
     )
 
 
@@ -582,6 +604,8 @@ def _publication_fixture(tmp_path, monkeypatch, readonly_source):
     for relative in (*RCO_CHECKERS, *GATE_EXECUTORS, *VERDICT_MODULES):
         put(relative, "def main():\n    raise AssertionError('synthetic never executed')\n"
                       "def classify_ab(*args, **kwargs):\n    raise AssertionError('synthetic never executed')\n")
+    put("tools/bridge_event_taxonomy.py",
+        "def classify(*args):\n    raise AssertionError('synthetic never executed')\n")
     put("tools/classify_added_tests_readonly.py", readonly_source)
     monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
     return {
@@ -610,7 +634,7 @@ def test_publication_closure_shipped_classifier_and_benign_control(
 @pytest.mark.parametrize("mutation", [
     "direct_executor", "wrapper_executor", "transitive_executor",
     "unlisted_verdict_wrapper", "direct_unlisted_verdict",
-    "allowed_checker_executor", "unresolved_wrapper",
+    "allowed_checker_executor", "unresolved_wrapper", "taxonomy_wrapper",
 ])
 def test_publication_closure_refuses_named_mutants(
         tmp_path, monkeypatch, mutation, publication_readonly_source):
@@ -628,6 +652,8 @@ def test_publication_closure_refuses_named_mutants(
         entrypoint = "tools/innocent.py"
         if mutation == "unlisted_verdict_wrapper":
             text = "from tools.check_standing_consensus_sign_class import classify_ab\n"
+        elif mutation == "taxonomy_wrapper":
+            text = "from tools.bridge_event_taxonomy import classify\n"
         elif mutation == "unresolved_wrapper":
             text = "from tools.nonexistent_synthetic import absent\n"
         else:
@@ -641,7 +667,11 @@ def test_publication_closure_refuses_named_mutants(
         (tmp_path / entrypoint).write_text(text, encoding="utf-8")
         definition["python_files"].append(entrypoint)
     definition["python_entrypoints"]["innocent_looking_tool"] = entrypoint
-    with pytest.raises(AssertionError, match="published_"):
+    reason = ("published_entrypoint_unresolved" if mutation == "unresolved_wrapper"
+              else "published_gate_executor" if mutation in {
+                  "direct_executor", "wrapper_executor", "transitive_executor", "allowed_checker_executor"}
+              else "published_gate_route_mismatch")
+    with pytest.raises(AssertionError, match=reason):
         _assert_published_gate_policy(definition)
 
 

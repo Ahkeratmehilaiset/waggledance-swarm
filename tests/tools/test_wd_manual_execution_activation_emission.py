@@ -374,7 +374,7 @@ def test_actual_emitted_record_cannot_weaken_admission(shell, tmp_path, case):
     elif case == "actor": kwargs["actor"] = "codex-lead-1"
     elif case == "runtime": kwargs["runtime_alias"] = str(tmp_path / "other-runtime")
     elif case == "duplicate_option": kwargs["tail"] = ["--expected-head=" + SOURCE]
-    elif case == "unknown_option": kwargs["tail"] = ["--review-policy", "rule12"]
+    elif case == "unknown_option": kwargs["tail"] = ["--grok-fallback"]
     else: kwargs["tail"] = ["--json=true"]
     result = _invoke(shell, tmp_path, **kwargs)
     assert not result["accepted"], (case, result)

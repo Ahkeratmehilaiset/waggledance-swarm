@@ -13,8 +13,9 @@ stays a known limit (the last test): nothing here claims complete correlation or
 cross-process test cleans up the one child it started (that Process object only) on every path; that cleanup is
 tested against a strict fake, so no real child is left running or killed to prove it. The child's standard output
 and error are pipes owned by this writer, drained boundedly after the child ended, so the child's output lands in
-this record and never in the runner's captured streams; this is not a claim that a child outlives nothing, nor
-that a force-ended parent shell takes its child with it.
+this record and never in the runner's captured streams; a drain that did not reach EOF (an unfinished read or the
+character cap) is recorded as such and never passes for clean empty output. This is not a claim that a child
+outlives nothing, nor that a force-ended parent shell takes its child with it.
 """
 import json
 from pathlib import Path
@@ -121,27 +122,33 @@ catch{{$out.caught=$_.Exception.GetType().FullName}}
 """
 
 # Drains one of the owned child's standard streams after the child ended or was killed: at most 4096 characters and
-# at most 5 s in all, with asynchronous reads and bounded waits, never a blocking read to the end. A child that
-# writes more than the pipe holds before it reaches the lock blocks and ends in the hang guard, then here.
+# at most 5 s per stream, with asynchronous reads and bounded waits, never a blocking read to the end. The result
+# carries the text and how the drain ended: 'eof' (the stream closed), 'timeout' (a read did not finish within the
+# bound; that read task stays pending against the pipe and is dropped, its later result is never looked at) or 'cap'
+# (4096 characters were read and more may exist). A child that writes more than the pipe holds before it reaches the
+# lock blocks and ends in the hang guard, then here.
 READ_CHILD_STREAM = """function Read-ChildStream {
   param($Reader)
   $buffer=[char[]]::new(4096)
   $total=0
+  $outcome='eof'
   $clock=[Diagnostics.Stopwatch]::StartNew()
-  while($total -lt $buffer.Length){
+  while($true){
+    if($total -ge $buffer.Length){$outcome='cap';break}
     $task=$Reader.ReadAsync($buffer,$total,$buffer.Length-$total)
-    if(-not $task.Wait([Math]::Max(0,5000-[int]$clock.ElapsedMilliseconds))){break}
+    if(-not $task.Wait([Math]::Max(0,5000-[int]$clock.ElapsedMilliseconds))){$outcome='timeout';break}
     if($task.Result -le 0){break}
     $total+=$task.Result
   }
-  [string]::new($buffer,0,$total).TrimEnd([char]13,[char]10)
+  [ordered]@{text=[string]::new($buffer,0,$total);outcome=$outcome;chars=$total}
 }"""
 
 # The finish step of the cross-process test, run in a finally after the writer whether it succeeded or failed. It
 # records how the child ended, then cleans up that exact Process object (never by name or process id): killed only
 # while it still runs after the bound, waited for boundedly, its two owned streams drained boundedly (any output is
-# recorded and fails the exact asserts), disposed on every path. A failed wait or cleanup is recorded next to the
-# original result instead of replacing it.
+# recorded and fails the exact asserts; output that is only newlines is kept as is; a drain that ended in a timeout
+# or at the cap is recorded as <stream>_read), disposed on every path. A failed wait or cleanup is recorded next to
+# the original result instead of replacing it.
 CHILD_FINISH = """
 if($null -ne $script:child){
   try{
@@ -154,10 +161,13 @@ if($null -ne $script:child){
         $script:child.Kill()
         $script:extra['child_killed']=$script:child.WaitForExit(5000)
       }
-      $childOut=Read-ChildStream $script:child.StandardOutput
-      if($childOut){$script:extra['child_stdout']=$childOut}
-      $childErr=Read-ChildStream $script:child.StandardError
-      if($childErr){$script:extra['child_stderr']=$childErr}
+      foreach($stream in @(@('child_stdout',$script:child.StandardOutput),@('child_stderr',$script:child.StandardError))){
+        $read=Read-ChildStream $stream[1]
+        $shown=$read.text.TrimEnd([char]13,[char]10)
+        if(-not $shown){$shown=$read.text}
+        if($shown){$script:extra[$stream[0]]=$shown}
+        if($read.outcome -cne 'eof'){$script:extra[$stream[0]+'_read']=$read.outcome}
+      }
     }catch{$script:extra['child_cleanup_error']=Get-InnerType $_.Exception}
     finally{$script:child.Dispose()}
   }
@@ -172,13 +182,16 @@ GET_INNER_TYPE = """function Get-InnerType {
 
 # A strict fake of the child Process object for the cleanup tests: only the members the finish step may use exist
 # (under StrictMode any other member is an error), every use is logged, and each case scripts the answers. A failing
-# answer is a failing .NET call, so its error reaches the finish step the way a real Process method error does.
+# answer is a failing .NET call, so its error reaches the finish step the way a real Process method error does. The
+# stream readers answer from per-stream queues: a text chunk is copied into the caller's buffer, 'pending' is a task
+# whose Wait returns false at once (an unfinished read, with no real delay), an empty queue is EOF.
 FAKE_CHILD = """
 $script:log=[Collections.Generic.List[string]]::new()
 $script:answers=[Collections.Queue]::new()
 foreach($answer in @({answers})){{$script:answers.Enqueue($answer)}}
 $script:exited=$false
 $script:killFails={kill_fails}
+$script:streams={streams}
 $fake=[pscustomobject]@{{}}
 $fake|Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {{
   param([int]$Milliseconds)
@@ -201,7 +214,18 @@ function New-FakeReader {{
   $reader|Add-Member -MemberType ScriptMethod -Name ReadAsync -Value {{
     param($Buffer,$Offset,$Count)
     $script:log.Add("Read:$($this.Name)")
-    [Threading.Tasks.Task]::FromResult([int]0)
+    $queue=$null
+    if($script:streams.ContainsKey($this.Name)){{$queue=$script:streams[$this.Name]}}
+    if($null -eq $queue -or $queue.Count -eq 0){{return [Threading.Tasks.Task]::FromResult([int]0)}}
+    $answer=[string]$queue.Dequeue()
+    if($answer -ceq 'pending'){{
+      $task=[pscustomobject]@{{}}
+      $task|Add-Member -MemberType ScriptMethod -Name Wait -Value {{param($Milliseconds) $false}}
+      return $task
+    }}
+    if($Count -lt $answer.Length){{$answer=$answer.Substring(0,$Count)}}
+    $answer.ToCharArray().CopyTo($Buffer,$Offset)
+    [Threading.Tasks.Task]::FromResult([int]$answer.Length)
   }}
   $reader
 }}
@@ -439,9 +463,41 @@ CLEANUP_CASES = {
 @pytest.mark.parametrize('case', sorted(CLEANUP_CASES))
 def test_the_owned_child_is_disposed_on_every_path_and_killed_only_while_running(ps, case):
     answers, kill_fails, log, extra = CLEANUP_CASES[case]
-    result = _finish(ps, FAKE_CHILD.format(answers=answers, kill_fails=kill_fails))
+    result = _finish(ps, FAKE_CHILD.format(answers=answers, kill_fails=kill_fails, streams='@{}'))
 
     assert result == {'log': log, 'extra': extra, 'escaped': None}
+
+
+# Draining the owned streams of a child that ended (the exited lifecycle): per-stream answers, the expected reads and
+# the record. An unfinished read ('pending', the fake of a wait that ran out) or a drain that reached the 4096-char cap
+# is recorded as an explicit outcome next to whatever text arrived, so it can never pass for clean empty EOF; output
+# that is only newlines stays visible instead of being trimmed away.
+DRAIN_CASES = {
+    'text_then_eof': ("@{out=[Collections.Queue]::new(@(\"child-noise`r`n\"))}",
+                      ['Read:out', 'Read:out', 'Read:err'], {'child_stdout': 'child-noise'}),
+    'out_unfinished': ("@{out=[Collections.Queue]::new(@('pending'))}",
+                       ['Read:out', 'Read:err'], {'child_stdout_read': 'timeout'}),
+    'out_partial_then_unfinished': ("@{out=[Collections.Queue]::new(@('part','pending'))}",
+                                    ['Read:out', 'Read:out', 'Read:err'],
+                                    {'child_stdout': 'part', 'child_stdout_read': 'timeout'}),
+    'out_at_cap': ("@{out=[Collections.Queue]::new(@(('x'*4096)))}",
+                   ['Read:out', 'Read:err'], {'child_stdout': 'x' * 4096, 'child_stdout_read': 'cap'}),
+    'out_newline_only': ("@{out=[Collections.Queue]::new(@(\"`r`n\"))}",
+                         ['Read:out', 'Read:out', 'Read:err'], {'child_stdout': '\r\n'}),
+    'err_unfinished': ("@{err=[Collections.Queue]::new(@('pending'))}",
+                       ['Read:out', 'Read:err'], {'child_stderr_read': 'timeout'}),
+}
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', sorted(DRAIN_CASES))
+def test_an_unfinished_or_capped_stream_drain_is_recorded_and_never_looks_like_clean_eof(ps, case):
+    streams, reads, extra = DRAIN_CASES[case]
+    result = _finish(ps, FAKE_CHILD.format(answers='$true', kill_fails='$false', streams=streams))
+
+    expected_log = ['WaitForExit:20000', 'HasExited', 'ExitCode', 'HasExited'] + reads + ['Dispose']
+    assert result == {'log': expected_log, 'extra': {'child_exited': True, 'child_exit_code': 0, **extra},
+                      'escaped': None}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

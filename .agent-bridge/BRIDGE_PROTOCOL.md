@@ -445,6 +445,28 @@ operation lock / lease for TOCTOU).
      `superseded`, `cancelled`/`canceled`, and their underscore-suffixed
      forms close a request. Status tools report requester closeout as
      `closed`, not as an answer from the target agent.
+   - RCO requester closeout (normative): a recognized RCO that closes its
+     own obsolete request writes the closeout as `message` with
+     `superseded` or `cancelled`, never as `decision`. The `decision`
+     forms above stay valid history for readers, but the merge gates read
+     a recognized RCO's `decision` as a review verdict by its status, not
+     as closeout metadata: a closeout status such as `superseded` there
+     is that RCO's block, and a veto after its own exact-head `rco_pass`;
+     an approval status such as `approved` would read in the peer gate as
+     its approval. A closeout is request metadata only: it neither lifts
+     the original `finding` or veto, nor creates, replaces or renews any
+     `rco_pass` or build vote. Only the same RCO's own clearance keeps its
+     existing meaning: a later verified exact clear or approval in the
+     peer gate, a fresh exact-head `rco_pass` in the exact-head RCO slot.
+   - Requester closeout writer versions: on current main,
+     `Write-AgentEvent.ps1 -CloseRequestEventJson` accepts only
+     `-Type message` with `-Status superseded` or `cancelled` (#1924).
+     Bundles built from an older main either lack that parameter or still
+     require `decision`; the bundle installed for the lanes as of
+     2026-10-24 has no `-CloseRequestEventJson` parameter at all; lanes
+     get the route only through a separately approved normal bundle
+     install. Do not hand-write a closure event to work around a missing
+     or older parameter.
    - `done/request` is still request-like work. Do not use it as a
      closeout status.
 

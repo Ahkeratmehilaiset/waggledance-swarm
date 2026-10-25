@@ -456,6 +456,18 @@ def test_the_default_stays_the_gh_path_with_its_own_list_call(tmp_path):
                                           "--json", "number,state,headRefOid,headRefName"))]
 
 
+PROVENANCE = ("pr_source", "http_request_budget", "http_requests_sent")
+
+
+def old_fields(record):
+    """A pr_context record without the B6-PROV provenance fields (the only fields that may differ by source)."""
+    return {key: value for key, value in record.items() if key not in PROVENANCE}
+
+
+def provenance(record):
+    return {key: record[key] for key in PROVENANCE if key in record}
+
+
 def route(views, rows):
     """A FakeHttp answering list pages, rows and views of a small repo by the query each send names."""
 
@@ -509,7 +521,10 @@ def test_the_selected_graphql_source_runs_the_producers_own_pr_context_with_the_
     cache_gh.mkdir()
     context_gh, record_gh = other.pr_context(cache_gh, needed={7, 8, 9})
     assert dict(context, observed_utc=None) == dict(context_gh, observed_utc=None)
-    assert dict(record, observed_utc=None, ms=None) == dict(record_gh, observed_utc=None, ms=None)
+    assert record_gh["pr_source"] == "gh" and "http_requests_sent" not in record_gh
+    assert (record["pr_source"], record["http_request_budget"], record["http_requests_sent"]) == ("graphql", 10, 3)
+    assert dict(old_fields(record), observed_utc=None, ms=None) == dict(old_fields(record_gh), observed_utc=None,
+                                                                       ms=None)
     assert (cache / f"7-{HEAD}.view.v1.json").read_bytes() == (cache_gh / f"7-{HEAD}.view.v1.json").read_bytes()
 
 
@@ -534,6 +549,67 @@ def test_a_list_at_its_limit_reads_each_missing_snapshot_pr_with_one_budgeted_ro
     kinds = ["list" if "pullRequests(" in r["body"]["query"] else "view" if "commits(" in r["body"]["query"]
              else "row" for r in fake.sent]
     assert kinds == ["list", "row", "view", "view"]
+
+
+def provenance_route(rows, views, missing=()):
+    """route() plus a pullRequest of null for each number in ``missing`` (graphql_pr_missing)."""
+    base = route(views, rows)
+
+    def answer(request):
+        if request["body"]["variables"].get("number") in missing:
+            return ok({"repository": {"pullRequest": None}})
+        return base.answer(request)
+    return FakeHttp(answer)
+
+
+def test_every_gh_path_record_names_the_gh_source_and_keeps_its_gh_reasons(tmp_path):
+    module = load()
+    for listing, reason in ((None, "gh_list_unavailable"), (b"not json", "gh_list_unexpected")):
+        module.gh = lambda timeout, *argv, listing=listing: listing
+        context, record = module.pr_context(tmp_path)
+        assert context is None and record["reason"] == reason and provenance(record) == {"pr_source": "gh"}
+    answers = {("pr", "list"): json.dumps([node(*row) for row in ROWS]).encode("ascii")}
+    module.gh = lambda timeout, *argv: answers.get(argv[:2])
+    context, record = module.pr_context(tmp_path, needed={7, 8, 9})
+    assert record["status"] == "observed" and provenance(record) == {"pr_source": "gh"}
+
+
+def test_every_graphql_record_names_its_source_budget_and_the_slots_taken_up_to_that_return(tmp_path):
+    module = load()
+    module.GraphqlPrSource.selected = graphql(module, queue(OSError("reset")), 5)
+    context, record = module.pr_context(tmp_path)  # an early UNKNOWN: the failed send keeps its slot
+    assert context is None and record["reason"] == "graphql_send_failed"
+    assert provenance(record) == {"pr_source": "graphql", "http_request_budget": 5, "http_requests_sent": 1}
+    odd = ok({"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                                              "nodes": [dict(node(*ROWS[0]), title="x")]}}})
+    module.GraphqlPrSource.selected = graphql(module, queue(odd), 5)
+    context, record = module.pr_context(tmp_path)  # list bytes pr_rows refuses: a graphql reason, not gh_*
+    assert context is None and record["reason"] == "graphql_list_unexpected"
+    assert provenance(record) == {"pr_source": "graphql", "http_request_budget": 5, "http_requests_sent": 1}
+
+
+def test_a_graphql_list_at_its_limit_counts_its_row_sends_and_says_graphql_list_truncated(tmp_path):
+    module = load()
+    module.LIST_LIMIT = 2
+    fake = provenance_route(ROWS, VIEWS, missing={10})
+    module.GraphqlPrSource.selected = source = graphql(module, fake, 10)
+    context, record = module.pr_context(tmp_path, needed={7, 8, 9, 10})
+    assert context is None and record["reason"] == "graphql_list_truncated" and record["rows_added"] == 1
+    assert provenance(record) == {"pr_source": "graphql", "http_request_budget": 10, "http_requests_sent": 3}
+    assert len(fake.sent) == 3 == source.budget.sent  # the list page and two row reads, none refunded
+
+
+def test_slots_spent_during_views_are_counted_at_the_return_and_never_refunded(tmp_path):
+    module = load()
+    fake = route(VIEWS, ROWS)
+    module.GraphqlPrSource.selected = graphql(module, fake, 2)
+    context, record = module.pr_context(tmp_path, needed={7, 8, 9})
+    assert record["status"] == "observed" and record["views_unknown"] == 1
+    assert provenance(record) == {"pr_source": "graphql", "http_request_budget": 2, "http_requests_sent": 2}
+    assert len(fake.sent) == 2  # the list page and the view of 7; the view of 8 was refused before any send
+    context, record = module.pr_context(tmp_path, needed={7, 8, 9})
+    assert context is None and record["reason"] == "http_budget_exhausted"
+    assert provenance(record) == {"pr_source": "graphql", "http_request_budget": 2, "http_requests_sent": 2}
 
 
 VIEW_CASES = {

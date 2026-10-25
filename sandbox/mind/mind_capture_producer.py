@@ -989,11 +989,24 @@ def fetch_row(number, timeout):
     return parsed[0][str(number)], data
 
 
+def pr_provenance(source):
+    """B6-PROV: the provenance fields of one pr_context record, taken when it returns: pr_source, the configured PR
+    source (gh or graphql), and for graphql the run's --http-request-budget and its nonrefundable slots taken so far
+    in this run (http_requests_sent: every list page, row and view send of all cycles up to this return; DNS lookups
+    and handshakes are not counted). They name the configured provider and the sends made, not where each view came
+    from: the head-validated view cache is shared by both sources, so a reused view may have been read by either."""
+    if source is None:
+        return {"pr_source": "gh"}
+    return {"pr_source": "graphql", "http_request_budget": source.budget.limit,
+            "http_requests_sent": source.budget.sent}
+
+
 def pr_context(cache_dir, needed=None):
     """The cycle's PR context and its record; the context is None (UNKNOWN) when gh gives no usable list, when a
     list that reaches LIST_LIMIT leaves out a PR of ``needed`` (the PR numbers of the cycle's snapshot; None: not
     known) that one gh pr view does not add, when a shorter list leaves out a PR of ``needed``, when a cached view
-    does not validate, or when the workspace's read_context refuses it. See the module docstring (2.)."""
+    does not validate, or when the workspace's read_context refuses it. See the module docstring (2.). Every
+    record it returns, observed or UNKNOWN, carries ``pr_provenance`` (B6-PROV)."""
     started, deadline, source = time.perf_counter(), time.monotonic() + GH_BUDGET, GraphqlPrSource.selected
     if source is None:
         data = gh(GH_TIMEOUT, "pr", "list", "--repo", args.repo, "--state", "all", "--limit", str(LIST_LIMIT),
@@ -1005,8 +1018,9 @@ def pr_context(cache_dir, needed=None):
     record = {"charter_loaded": False, "observed_utc": observed}
     if parsed is None:
         unavailable = "gh_list_unavailable" if source is None else source.reason or "graphql_list_unavailable"
-        reason = unavailable if data is None else "gh_list_unexpected"
-        return None, dict(record, status="UNKNOWN", reason=reason, ms=round((time.perf_counter() - started) * 1000))
+        reason = unavailable if data is None else "gh_list_unexpected" if source is None else "graphql_list_unexpected"
+        return None, dict(record, **pr_provenance(source), status="UNKNOWN", reason=reason,
+                          ms=round((time.perf_counter() - started) * 1000))
     rows, skipped = parsed
     calls, added = 0, []
     if len(rows) + skipped >= LIST_LIMIT:  # gh stops at --limit, so a PR the snapshot names may be missing
@@ -1020,19 +1034,20 @@ def pr_context(cache_dir, needed=None):
                 rows[str(number)] = fetched[0]
                 added.append(fetched[1])
         if needed is None or set(needed) - {int(key) for key in rows}:
-            return None, dict(record, status="UNKNOWN", reason="gh_list_truncated", rows_added=len(added),
-                              ms=round((time.perf_counter() - started) * 1000))
+            truncated = "gh_list_truncated" if source is None else "graphql_list_truncated"
+            return None, dict(record, **pr_provenance(source), status="UNKNOWN", reason=truncated,
+                              rows_added=len(added), ms=round((time.perf_counter() - started) * 1000))
     elif needed is not None and set(needed) - {int(key) for key in rows}:
         # a shorter list holds every PR, so a PR of the snapshot it leaves out had a row pr_rows skips (such as a
         # branch outside the task grammar; gh pr view would give that same row) or is not on GitHub: UNKNOWN
-        return None, dict(record, status="UNKNOWN", reason="needed_pr_missing", rows_added=0,
-                          ms=round((time.perf_counter() - started) * 1000))
+        return None, dict(record, **pr_provenance(source), status="UNKNOWN", reason="needed_pr_missing",
+                          rows_added=0, ms=round((time.perf_counter() - started) * 1000))
     open_prs = [(int(number), head) for number, (state, head, _) in rows.items() if state == "OPEN"]
     views = {}
     for number, head in open_prs:  # reuse: every cached view this cycle needs is validated before any is used
         view = read_view(cache_dir / f"{number}-{head}.view.v1.json", number, head)
         if view is False:
-            return None, dict(record, status="UNKNOWN", reason="context_cache_invalid",
+            return None, dict(record, **pr_provenance(source), status="UNKNOWN", reason="context_cache_invalid",
                               ms=round((time.perf_counter() - started) * 1000))
         if view is not None:
             views[number] = view
@@ -1057,7 +1072,7 @@ def pr_context(cache_dir, needed=None):
     context = {"schema": ws.CONTEXT_SCHEMA_V2, "authority": "none", "capture_sha256": sha(b"\n".join([data, *added])),
                "observed_utc": observed, "charter": {"loaded": False, "charter_blob": None, "classifier_blob": None},
                "prs": prs}
-    record.update(prs=len(prs), skipped=skipped, views_fetched=calls, rows_added=len(added),
+    record.update(pr_provenance(source), prs=len(prs), skipped=skipped, views_fetched=calls, rows_added=len(added),
                   views_unknown=sum(1 for number, _ in open_prs if number not in views),
                   ms=round((time.perf_counter() - started) * 1000))
     reason = ws.read_context(context, ws.parse_time(observed))[1]

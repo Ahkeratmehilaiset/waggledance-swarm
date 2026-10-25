@@ -2011,7 +2011,9 @@ def test_an_allowance_with_no_room_past_the_reserve_is_refused_at_parse_time(tmp
     space, budget = budget_load(tmp_path / "live")
 
     def problem(value):
-        return space["count_problem"](types.SimpleNamespace(window=3000, keep=12, max_output_bytes=value))
+        return space["count_problem"](types.SimpleNamespace(window=3000, keep=12, max_output_bytes=value,
+                                                            pr_transport="gh", http_request_budget=None,
+                                                            graphql_auth_env=None))
 
     for value in (-1, 0, budget.reserve, 2 ** 40 + 1):
         assert problem(value) == f"--max-output-bytes must be {budget.reserve + 1}..{2 ** 40}", value

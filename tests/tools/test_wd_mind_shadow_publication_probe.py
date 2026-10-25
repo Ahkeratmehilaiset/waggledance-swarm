@@ -293,7 +293,7 @@ def test_canonical_git_lf_source_bytes_are_supported_explicitly(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((ROOT / relative).read_bytes().replace(b'\r\n', b'\n'))
     declared = binding('before_replace')
-    declared['producer_sha256'] = 'cdae4867fe340589d7b701571ee6f6c15cf769abe565c1978ace104b4c98bc82'
+    declared['producer_sha256'] = '299dce580d9d8fbdf3c5dbeb7fdc793c3d51ddb4913134a334456b7f282e8c61'
     declared['core_sha256'] = '8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211'
     target = tmp_path / 'canonical.json'
     atomic, hashes = m.extracted_functions(code, declared, m.os.replace)

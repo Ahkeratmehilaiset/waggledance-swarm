@@ -7,6 +7,7 @@ Existing Python executor tests own consensus/CI/RCO/receipt semantics.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -196,6 +197,39 @@ def test_manual_launch_requires_anchored_activation_and_exact_args(shell, bundle
     assert output["runtime_root"] == output["root_alias"] == str(bundle.parent / "inert-runtime")
 
 
+@pytest.mark.parametrize("tool", MANUAL.values())
+@pytest.mark.parametrize("policy", ["bridge_consensus_v1", "rule12"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_canonical_review_policy_reaches_inert_driver_unchanged(shell, bundle, tool, policy, equals):
+    """Launch-policy parity only: inert Python never grants a merge or RCO pass."""
+    _anchor(bundle, _activation(bundle))
+    args = _args(tool, bundle) + (
+        ["--review-policy=" + policy] if equals else ["--review-policy", policy])
+    run, signal = _invoke(shell, bundle, tool, args)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert signal.read_text() == "launched"
+    output = json.loads(run.stdout)
+    assert output["argv"] == args[1:]
+    assert output["runtime_root"] == str(bundle.parent / "inert-runtime")
+
+
+@pytest.mark.parametrize("tool", MANUAL.values())
+@pytest.mark.parametrize("tail", [
+    ["--review-policy"], ["--review-policy="], ["--review-policy", "unknown"],
+    ["--review-policy", "RULE12"], ["--review-policy", " rule12"],
+    ["--review-policy", "rule12 "], ["--review-p", "rule12"],
+    ["--review-policy", "rule12", "--review-policy", "bridge_consensus_v1"],
+    ["--review-policy=rule12", "--review-policy=rule12"],
+    ["--", "--review-policy", "rule12"],
+])
+def test_review_policy_refuses_noncanonical_or_duplicate_before_python(shell, bundle, tool, tail):
+    _anchor(bundle, _activation(bundle))
+    run, signal = _invoke(shell, bundle, tool, _args(tool, bundle) + tail)
+    assert run.returncode != 0
+    assert not signal.exists(), run.stdout + run.stderr
+    assert "manual bridge" in run.stdout + run.stderr
+
+
 @pytest.mark.parametrize("tool", EXECUTORS)
 def test_default_invocation_denies_all_six_executors_even_when_activated(shell, bundle, tool):
     _anchor(bundle, _activation(bundle))
@@ -239,7 +273,7 @@ def test_activation_refuses_before_python(shell, bundle, change):
 
 @pytest.mark.parametrize("change", ["no_anchor", "wrong_anchor", "no_python_pin", "wrong_python_pin", "wrong_lane", "short_head", "uppercase_head",
                                    "empty_base", "duplicate_head", "abbreviation",
-                                   "historical_now", "grok", "rule12", "operator_exception",
+                                   "historical_now", "grok", "unknown_review_policy", "operator_exception",
                                    "extra_marker", "wrong_repo", "missing_task", "option_value",
                                    "idle_path", "ordinary_marker", "events_override",
                                    "root_override", "events_equals", "root_equals"])
@@ -261,8 +295,8 @@ def test_manual_arguments_refuse_before_python(shell, bundle, change):
         args += ["--now", "2020-01-01T00:00:00Z"]
     elif change == "grok":
         args += ["--grok-fallback"]
-    elif change == "rule12":
-        args += ["--review-policy", "rule12"]
+    elif change == "unknown_review_policy":
+        args += ["--review-policy", "unknown"]
     elif change == "operator_exception":
         args += ["--operator-path-exception-json", "{}"]
     elif change == "extra_marker":
@@ -333,8 +367,29 @@ def test_standalone_receipt_limit_is_documented_without_gate_changes():
     assert "must not be used as merge authorization" in doc
 
 
+def test_review_policy_doc_states_rule12_coverage_from_source():
+    """B2-DOC: admitting rule12 changes which approvals can satisfy the gate.
+
+    Pure text check: the evaluator source is parsed, never imported or run.
+    """
+    doc = " ".join((ROOT / "docs/ops/bridge_manual_execution_capability.md").read_text(encoding="utf-8").split())
+    source = (ROOT / "tools/bridge_rule12_review_eligibility.py").read_text(encoding="utf-8")
+    pool = next(ast.literal_eval(node.value) for node in ast.parse(source).body
+                if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "RCO_POOL_FALLBACK")
+    policy = doc[doc.index("`--review-policy` admits"):doc.index("This policy-argument parity")]
+    assert "change RCO coverage" not in policy
+    assert "requires every eligible recognized RCO" not in policy
+    for phrase in ("replaces the default Rule 9a verifier", "one opposite-family approval",
+                   "attested pool fallback", "`--grok-fallback` remain refused",
+                   "part of what a future activation decision authorizes"):
+        assert phrase in policy
+    assert pool and all(f"`{lane}`" in policy for lane in pool)
+    header = doc[:doc.index("## Default and activation boundary")]
+    assert "default" in next(s for s in header.split(". ") if "both Codex build approvals" in s)
+
+
 @pytest.mark.parametrize("tool", MANUAL.values())
-@pytest.mark.parametrize("flag", ["--now", "--review-policy", "--grok-fallback",
+@pytest.mark.parametrize("flag", ["--now", "--grok-fallback",
                                  "--operator-path-exception-json"])
 @pytest.mark.parametrize("separator", [False, True])
 def test_weakening_tail_after_driver_arguments_is_refused(shell, bundle, tool, flag, separator):

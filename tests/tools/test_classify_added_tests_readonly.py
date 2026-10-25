@@ -32,6 +32,15 @@ def arguments():
             "--target", "5" * 40, "--path", "tests/test_synthetic_new.py"]
 
 
+def complete_proof(paths=None):
+    paths = paths or ["tests/test_synthetic_new.py"]
+    return {"status": "rederived_git_added_regular_tests", "base": "1" * 40,
+            "head": "2" * 40, "base_tree": "3" * 40, "head_tree": "4" * 40,
+            "target": "5" * 40, "paths": list(paths),
+            "blobs": {path: "6" * 40 for path in paths},
+            "base_paths_sha256": "7" * 64, "diff_sha256": "8" * 64}
+
+
 @pytest.fixture
 def cli(monkeypatch):
     module = importlib.import_module("tools.classify_added_tests_readonly")
@@ -45,7 +54,7 @@ def cli(monkeypatch):
 
 def test_exact_context_and_complete_paths_reach_only_the_classifier(cli, monkeypatch, capsys):
     calls = []
-    proof = {"status": "rederived_git_added_regular_tests", "head": "2" * 40}
+    proof = complete_proof(["tests/test_synthetic_new.py", "tests/test_second_synthetic.py"])
     result = {"ab_class": "b", "a_hits": [], "unrecognized": [],
               "reason": "synthetic exact proof", "git_evidence": proof}
 
@@ -64,12 +73,67 @@ def test_exact_context_and_complete_paths_reach_only_the_classifier(cli, monkeyp
                       {"git_context": context})]
     assert output["classification"] == result
     assert output["input_context"] == context
+    assert output["input_paths"] == calls[0][0]
     assert output["input_provenance"] == {"cwd": context["cwd"], "git": context["git"]}
     assert output["evidence_status"] == proof["status"]
     assert output["read_only"] is True
     assert output["authority_effect"] == "none"
     assert not {"admitted", "signature", "merge_command", "trusted"} & output.keys()
     assert "standing_consensus_sign" not in calls[0][1]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("base", "0" * 40), ("head", "0" * 40), ("base_tree", "0" * 40),
+    ("head_tree", "0" * 40), ("target", "0" * 40),
+    ("paths", ["tests/test_other.py"]), ("paths", []),
+    ("paths", ["tests/test_synthetic_new.py"] * 2),
+    ("blobs", {}), ("blobs", {"tests/test_synthetic_new.py": "0" * 40}),
+    ("diff_sha256", "missing"), ("base_paths_sha256", None),
+])
+def test_mismatched_or_incomplete_proof_is_not_echoed_as_rederived(
+        cli, monkeypatch, capsys, field, value):
+    proof = complete_proof()
+    proof[field] = value
+    result = {"ab_class": "b", "git_evidence": proof}
+    monkeypatch.setattr(cli, "classify_ab", lambda *args, **kwargs: result)
+    assert cli.main(arguments()) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["classification"] == result  # Preserve the dependency's actual return.
+    assert output["input_paths"] == ["tests/test_synthetic_new.py"]
+    assert output["evidence_status"] == "not_established"
+    assert output["authority_effect"] == "none"
+
+
+def test_status_only_proof_is_not_bound_evidence(cli, monkeypatch, capsys):
+    result = {"ab_class": "b", "git_evidence": {
+        "status": "rederived_git_added_regular_tests", "head": "2" * 40}}
+    monkeypatch.setattr(cli, "classify_ab", lambda *args, **kwargs: result)
+    assert cli.main(arguments()) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["evidence_status"] == "not_established"
+
+
+def test_nonserializable_dependency_result_has_fixed_error_json(cli, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "classify_ab", lambda *args, **kwargs: {
+        "ab_class": "a", "extra": {1, 2}})
+    assert cli.main(arguments()) == 2
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["error"] == "classification_unavailable"
+    assert output["evidence_status"] == "not_established"
+    assert "classification" not in output
+    assert captured.err == ""
+
+
+def test_nested_labels_are_data_not_report_authority(cli, monkeypatch, capsys):
+    result = {"ab_class": "b", "admitted": True, "trusted": True}
+    monkeypatch.setattr(cli, "classify_ab", lambda *args, **kwargs: result)
+    assert cli.main(arguments()) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["classification"] == result
+    assert output["evidence_status"] == "not_established"
+    assert output["authority_effect"] == "none"
+    assert not {"admitted", "trusted", "signature", "merge_command"} & output.keys()
 
 
 @pytest.mark.parametrize("classification", ["a", "b"])

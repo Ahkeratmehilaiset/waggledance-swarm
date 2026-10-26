@@ -94,6 +94,8 @@ def test_builds_status_payload_from_verified_receipt(manifest: Path) -> None:
     assert report["ok"] is True
     assert report["decision"] == "commit_status_payload_built"
     assert report["mode"] == "dry_run"
+    assert report["status_sha"] == HEAD
+    assert report["receipt_manifest"] == str(manifest.resolve())
     assert report["receipt_sha256"] == receipt_hex
     assert report["rco_agent"] == "claude-rco-1"
     assert report["identities"] == {
@@ -119,6 +121,56 @@ def test_refuses_head_and_base_mismatch(manifest: Path) -> None:
     assert _refusal(manifest, expected_head=OTHER)["decision"] == "head_mismatch"
     assert _refusal(manifest, expected_base=OTHER)["decision"] == "base_mismatch"
     assert _refusal(manifest, expected_head="not-a-sha")["decision"] == "invalid_input"
+    assert _refusal(manifest, status_sha="abc")["decision"] == "invalid_input"
+
+
+def test_status_sha_targets_the_squash_merge_commit(manifest: Path) -> None:
+    report = build_commit_status(manifest, expected_head=HEAD, expected_base=BASE, status_sha=OTHER)
+    assert report["status_sha"] == OTHER
+    assert report["head_sha"] == HEAD
+    assert f"repos/example/repo/statuses/{OTHER} " in report["gh_command_text"]
+    assert f"head={HEAD[:12]}" in report["status"]["description"]
+    assert f"merge={OTHER[:12]}" in report["status"]["description"]
+    assert len(report["status"]["description"]) <= 140
+
+
+def test_symlinked_manifest_reads_the_verified_bundle(manifest: Path, tmp_path: Path) -> None:
+    import os
+
+    link_dir = tmp_path / "link"
+    link_dir.mkdir()
+    try:
+        os.symlink(manifest, link_dir / "manifest.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not permitted on this host")
+    for name in ("payload-001-merge.json", "receipt-001-merge.json"):
+        decoy = json.loads((manifest.parent / name).read_text(encoding="utf-8"))
+        decoy["head_sha"] = OTHER
+        (link_dir / name).write_text(json.dumps(decoy), encoding="utf-8")
+    real_receipt = json.loads((manifest.parent / "receipt-001-merge.json").read_text(encoding="utf-8"))
+
+    report = build_commit_status(link_dir / "manifest.json", expected_head=HEAD, expected_base=BASE)
+
+    assert report["receipt_sha256"] == sha256_digest(real_receipt).split(":", 1)[1]
+    assert report["receipt_manifest"] == str(manifest.resolve())
+
+
+def test_refuses_rule12_receipts_by_name(manifest: Path) -> None:
+    def mutate(payload: dict) -> None:
+        payload["bridge_consensus"]["review_policy"] = "rule12"
+
+    _edit_payload(manifest, mutate)
+    report = _refusal(manifest)
+    assert report["decision"] == "unsupported_receipt_shape"
+    assert "rule12" in " ".join(report["errors"])
+
+
+def test_refuses_empty_author(manifest: Path) -> None:
+    def mutate(payload: dict) -> None:
+        payload["bridge_consensus"]["author_agent"] = ""
+
+    _edit_payload(manifest, mutate)
+    assert _refusal(manifest)["decision"] == "author_unknown"
 
 
 def test_refuses_tampered_receipt(manifest: Path) -> None:
@@ -198,6 +250,8 @@ def test_verify_reports_equal_and_named_differences(manifest: Path, tmp_path: Pa
     assert equal["ok"] is True
     assert equal["decision"] == "EQUAL"
     assert equal["differences"] == []
+    assert equal["matching_statuses"] == 1
+    assert equal["status_sha"] == HEAD
 
     changed = dict(built["status"])
     changed["description"] = "something else"
@@ -214,6 +268,26 @@ def test_verify_reports_equal_and_named_differences(manifest: Path, tmp_path: Pa
     assert absent["decision"] == "DIFFERENT"
     assert absent["differences"][0]["field"] == "context"
 
+    # /commits/{sha}/statuses lists newest first: a reposted history compares the newest entry.
+    stale = dict(built["status"])
+    stale["state"] = "pending"
+    fetched.write_text(json.dumps([dict(built["status"]), stale]), encoding="utf-8")
+    history = verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE)
+    assert history["decision"] == "EQUAL"
+    assert history["matching_statuses"] == 2
+
+    # the combined /commits/{sha}/status object carries one entry per context under "statuses"
+    fetched.write_text(json.dumps({"state": "success", "statuses": [dict(built["status"])]}), encoding="utf-8")
+    combined = verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE)
+    assert combined["decision"] == "EQUAL"
+
+    # a status posted on the squash merge commit is re-derived with the same status_sha
+    merged = build_commit_status(manifest, expected_head=HEAD, expected_base=BASE, status_sha=OTHER)
+    fetched.write_text(json.dumps(merged["status"]), encoding="utf-8")
+    on_merge = verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE, status_sha=OTHER)
+    assert on_merge["decision"] == "EQUAL"
+    assert verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE)["decision"] == "DIFFERENT"
+
 
 def test_cli_is_dry_run_only_and_uses_exit_codes(
     manifest: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -226,6 +300,9 @@ def test_cli_is_dry_run_only_and_uses_exit_codes(
 
     assert main(["--receipt-manifest", str(manifest), "--expected-head", OTHER, "--expected-base", BASE]) == 2
     assert json.loads(capsys.readouterr().out)["decision"] == "head_mismatch"
+
+    assert main(base_args + ["--status-sha", OTHER]) == 0
+    assert json.loads(capsys.readouterr().out)["status_sha"] == OTHER
 
     fetched = tmp_path / "fetched.json"
     fetched.write_text(json.dumps({"context": STATUS_CONTEXT, "state": "failure", "description": "x"}), encoding="utf-8")

@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Offline MAGMA merge receipt -> GitHub commit-status payload (dormant, unwired, v1).
 
-From a verified bridge-consensus merge receipt bundle (the bundle that
-``tools/write_bridge_consensus_merge_receipt.py`` writes and
-``tools/verify_magma_receipt.py`` checks) this tool builds the exact commit status
-that would carry the receipt digest onto the merge head, and it can re-derive that
-status against one somebody else fetched from GitHub.
-
-It never calls GitHub, never spawns a child process and has no apply mode: the
-``gh api`` line is emitted as TEXT for a human or an operator-signed script. Any
-receipt shape other than the one named above fails closed with a named reason.
-Spec: ``docs/architecture/MERGE_RECEIPT_COMMIT_STATUS_V1.md``.
+From a verified bridge-consensus merge receipt bundle (written by
+``tools/write_bridge_consensus_merge_receipt.py``, checked by ``tools/verify_magma_receipt.py``)
+this tool builds the exact commit status that carries the receipt digest onto the PR head
+(and, after a squash merge, onto the merge commit via ``--status-sha``), and it re-derives
+that status against one somebody else fetched. It never calls GitHub, never spawns a child
+process and has no apply mode: the ``gh api`` line is TEXT for an operator-signed step. Any
+other receipt shape fails closed with a named reason. Spec:
+``docs/architecture/MERGE_RECEIPT_COMMIT_STATUS_V1.md``.
 """
 from __future__ import annotations
 
@@ -68,7 +66,9 @@ def _read_json(path: Path, label: str) -> Any:
 
 def load_verified_receipt(manifest_path: Path) -> dict[str, Any]:
     """Verify the bundle with the shared verifier and bind to the one supported shape."""
-    manifest_path = Path(manifest_path)
+    # Resolve first: verify_manifest resolves symlinks itself, so payload and receipt must
+    # be read from the same (verified) directory, never from beside a symlink.
+    manifest_path = Path(manifest_path).resolve()
     verifier = verify_manifest(manifest_path)
     if not verifier.get("ok", False):
         _refuse("receipt_verification_failed", [str(e) for e in verifier.get("errors", [])])
@@ -121,11 +121,17 @@ def _identities(bridge_consensus: Mapping[str, Any]) -> dict[str, str]:
 
 
 def build_commit_status(
-    manifest_path: Path, *, expected_head: str, expected_base: str
+    manifest_path: Path, *, expected_head: str, expected_base: str, status_sha: str | None = None
 ) -> dict[str, Any]:
-    """Build the dry-run commit-status payload for a verified merge receipt."""
+    """Build the dry-run commit-status payload for a verified merge receipt.
+
+    ``status_sha`` is the commit the status is posted on; it defaults to the PR head. A
+    squash merge gives main a different SHA, so the same status is posted a second time
+    on that merge commit with ``status_sha`` set to it; the description keeps the head.
+    """
     head = _require_sha(expected_head, "expected_head")
     base = _require_sha(expected_base, "expected_base")
+    target = _require_sha(status_sha, "status_sha") if status_sha is not None else head
     loaded = load_verified_receipt(Path(manifest_path))
     payload = loaded["payload"]
     if payload.get("head_sha") != head:
@@ -135,34 +141,31 @@ def build_commit_status(
     flag_present = "autonomous_gate_pass_claimed" in payload
     flag = payload.get("autonomous_gate_pass_claimed")
     if flag_present and type(flag) is not bool:
-        _refuse(
-            "autonomous_gate_pass_claimed_not_boolean",
-            ["autonomous_gate_pass_claimed is present but not a boolean"],
-        )
+        _refuse("autonomous_gate_pass_claimed_not_boolean", ["autonomous_gate_pass_claimed is present but not a boolean"])
     bridge_consensus = payload.get("bridge_consensus")
     if not isinstance(bridge_consensus, Mapping):
         _refuse("missing_identities", ["payload.bridge_consensus missing"])
+    policy = payload.get("review_policy") or bridge_consensus.get("review_policy")
+    if policy is not None:
+        _refuse("unsupported_receipt_shape", [f"review_policy {policy!r} receipts are not supported in v1"])
     agents = _identities(bridge_consensus)
     author = str(bridge_consensus.get("author_agent") or "")
-    if author and author in agents.values():
+    if not author:
+        _refuse("author_unknown", ["bridge_consensus.author_agent is empty; author vs voter cannot be checked"])
+    if author in agents.values():
         _refuse("author_is_voter", [f"author {author} holds a voting slot"])
     repo = payload.get("repo")
     if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
         _refuse("invalid_input", ["payload.repo must be owner/name"])
     digest = sha256_digest(loaded["receipt"])
     receipt_hex = digest.split(":", 1)[1]
-    description = (
-        f"magma merge receipt {receipt_hex[:16]} rco={agents['rco']} head={head[:12]}"
-    )
-    status = {
-        "state": STATUS_STATE,
-        "context": STATUS_CONTEXT,
-        "description": description,
-        "target_url": None,
-    }
+    description = f"magma merge receipt {receipt_hex[:16]} rco={agents['rco']} head={head[:12]}"
+    if target != head:
+        description += f" merge={target[:12]}"
+    status = {"state": STATUS_STATE, "context": STATUS_CONTEXT, "description": description, "target_url": None}
     command = shlex.join(
         [
-            "gh", "api", "--method", "POST", f"repos/{repo}/statuses/{head}",
+            "gh", "api", "--method", "POST", f"repos/{repo}/statuses/{target}",
             "-f", f"state={STATUS_STATE}",
             "-f", f"context={STATUS_CONTEXT}",
             "-f", f"description={description}",
@@ -177,6 +180,7 @@ def build_commit_status(
         "pr_number": payload.get("pr_number"),
         "head_sha": head,
         "base_sha": base,
+        "status_sha": target,
         "receipt_digest": digest,
         "receipt_sha256": receipt_hex,
         "identities": agents,
@@ -189,13 +193,27 @@ def build_commit_status(
 
 
 def verify_fetched_status(
-    fetched_path: Path, manifest_path: Path, *, expected_head: str, expected_base: str
+    fetched_path: Path,
+    manifest_path: Path,
+    *,
+    expected_head: str,
+    expected_base: str,
+    status_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Compare a fetched status (object or list of statuses) with the re-derived one."""
-    built = build_commit_status(manifest_path, expected_head=expected_head, expected_base=expected_base)
+    """Compare a fetched status with the re-derived one.
+
+    Accepts one status object, the ``/commits/{sha}/statuses`` list (newest first, so a
+    reposted history is allowed and the newest entry with our context is compared) or
+    the combined ``/commits/{sha}/status`` object (one entry per context in ``statuses``).
+    """
+    built = build_commit_status(
+        manifest_path, expected_head=expected_head, expected_base=expected_base, status_sha=status_sha
+    )
     fetched = _read_json(Path(fetched_path), "fetched status")
-    if isinstance(fetched, Mapping):
-        candidates: list[Mapping[str, Any]] = [fetched]
+    if isinstance(fetched, Mapping) and isinstance(fetched.get("statuses"), list):
+        candidates = [item for item in fetched["statuses"] if isinstance(item, Mapping)]
+    elif isinstance(fetched, Mapping):
+        candidates = [fetched]
     elif isinstance(fetched, list):
         candidates = [item for item in fetched if isinstance(item, Mapping)]
     else:
@@ -203,27 +221,26 @@ def verify_fetched_status(
         candidates = []
     matches = [item for item in candidates if item.get("context") == STATUS_CONTEXT]
     differences: list[dict[str, Any]] = []
-    if len(matches) != 1:
+    if not matches:
         differences.append(
-            {
-                "field": "context",
-                "expected": STATUS_CONTEXT,
-                "fetched": f"{len(matches)} statuses with this context",
-            }
+            {"field": "context", "expected": STATUS_CONTEXT, "fetched": "no status with this context"}
         )
     else:
+        newest = matches[0]
         for field in _COMPARED_FIELDS:
-            if matches[0].get(field) != built["status"][field]:
+            if newest.get(field) != built["status"][field]:
                 differences.append(
-                    {"field": field, "expected": built["status"][field], "fetched": matches[0].get(field)}
+                    {"field": field, "expected": built["status"][field], "fetched": newest.get(field)}
                 )
     return {
         "ok": not differences,
         "decision": "EQUAL" if not differences else "DIFFERENT",
         "mode": "dry_run",
         "head_sha": built["head_sha"],
+        "status_sha": built["status_sha"],
         "receipt_sha256": built["receipt_sha256"],
         "expected_status": built["status"],
+        "matching_statuses": len(matches),
         "differences": differences,
     }
 
@@ -239,6 +256,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-base", required=True)
     parser.add_argument(
+        "--status-sha", default=None,
+        help="commit the status is posted on when it is not the PR head (the squash merge commit)",
+    )
+    parser.add_argument(
         "--verify", type=Path, default=None,
         help="path of a status JSON fetched by someone else; reports EQUAL or DIFFERENT",
     )
@@ -250,14 +271,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.verify is not None:
             report = verify_fetched_status(
-                args.verify, args.receipt_manifest,
-                expected_head=args.expected_head, expected_base=args.expected_base,
+                args.verify, args.receipt_manifest, expected_head=args.expected_head,
+                expected_base=args.expected_base, status_sha=args.status_sha,
             )
             code = 0 if report["ok"] else 1
         else:
             report = build_commit_status(
-                args.receipt_manifest,
-                expected_head=args.expected_head, expected_base=args.expected_base,
+                args.receipt_manifest, expected_head=args.expected_head,
+                expected_base=args.expected_base, status_sha=args.status_sha,
             )
             code = 0
     except ReceiptStatusError as exc:

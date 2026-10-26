@@ -832,3 +832,108 @@ def test_s13i_cli_writes_one_json_only_inside_a_codex_audit_directory(tmp_path, 
     assert sb.refusal_for(box, sb.SEEDS[0]) == sb.EXISTS
     assert sb.main(["--out", str(box), "--seed", str(sb.SEEDS[0])]) == 2  # exists: nothing is replaced
     assert "refused: " + sb.EXISTS in capsys.readouterr().out and list(box.iterdir()) == [written]
+
+
+# --- S13i review fix round 1: export identity (fable-5, 2026-10-26) -----------------------------------------------
+# Finding BENCH-EXPORT-IDENTITY / S13I-EXPORT-IDENTITY (Lead, RCO1 and RCO2 at PR1937 head fc7c1a97): load_remember
+# imported whatever the export directory or an already-cached module offered and recorded revision 6cf81dbb from a
+# constant. These tests use PURE STUB exports only; they import no remember, step-2, core.faiss_store, faiss or model
+# module. They were RED before the fix. Contract: every required file is verified against the derived 6cf81dbb git blob
+# ids BEFORE any import; cached modules of those names are displaced; an imported module whose origin is not the verified
+# export is refused; a mismatch is a named refusal (the rows stay NOT_RUN_DEPENDENCY), never a fake zero or an asserted
+# revision.
+
+EXPORT_FILES = ("sandbox/mind/remember/remember_v2.py", "sandbox/mind/remember/remember_v3.py",
+                "sandbox/mind/remember/remember_v21.py", "sandbox/mind/remember/prompts.py",
+                "sandbox/mind/step2/q4.py", "sandbox/mind/step2/corpus.py", "sandbox/mind/step2/memory.py",
+                "sandbox/mind/step2/cell.py", "sandbox/mind/step2/run_q4.py", "sandbox/mind/step2/encode.py")
+EXPORT_MODULES = tuple(Path(rel).stem for rel in EXPORT_FILES)
+
+
+def _stub_export(root, body_for):
+    for rel in EXPORT_FILES:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body_for(Path(rel).stem), encoding="utf-8", newline="\n")
+    return root
+
+
+def _importable_stub(stem):
+    if stem.startswith("remember_"):
+        return f'VERSION = "stub-{stem}"\nnp = None\n'
+    if stem == "q4":
+        return "RULE = {}\n\n\nclass Q4:\n    pass\n"
+    return f"# stub {stem}\n"
+
+
+@pytest.fixture
+def _export_module_guard():
+    """Restore the sys.modules entries of the export module names and sys.path after a test: no stub may leak."""
+    before = {name: sys.modules.get(name) for name in EXPORT_MODULES}
+    path_before = list(sys.path)
+    yield
+    for name, module in before.items():
+        sys.modules.pop(name, None)
+        if module is not None:
+            sys.modules[name] = module
+    sys.path[:] = path_before
+
+
+def test_s13i_fix1_export_with_wrong_bytes_is_refused_before_any_import(tmp_path, _export_module_guard):
+    sb = _bench()
+    assert set(sb.REMEMBER_BLOBS) == set(EXPORT_FILES)
+    assert all(re.fullmatch(r"[0-9a-f]{40}", blob) for blob in sb.REMEMBER_BLOBS.values())
+    export = _stub_export(tmp_path / "wrong", lambda stem: "raise RuntimeError('a stub export must never be imported')\n")
+    verdict = sb.verify_export(export)
+    assert verdict["ok"] is False and set(verdict["mismatch"]) == set(EXPORT_FILES) and verdict["missing"] == []
+    modules_before, path_before = {name: sys.modules.get(name) for name in EXPORT_MODULES}, list(sys.path)
+    out = sb.run_bench(sb.SEEDS[0], remember_export=export)
+    assert {name: sys.modules.get(name) for name in EXPORT_MODULES} == modules_before  # nothing was imported
+    assert sys.path == path_before and not any(str(entry).startswith(str(export)) for entry in sys.path)
+    for row in out["rows"]:
+        if row["question"] in sb.REMEMBER_QUESTIONS:
+            assert row["status"] == sb.NOT_RUN and row["metrics"] == {}
+            assert "does not match" in row["dependency"] and sb.REMEMBER_REVISION in row["dependency"]
+            assert "remember_v2.py" in row["dependency"] and "RuntimeError" not in row["dependency"]
+    assert out["code"]["remember_export"] is None and "does not match" in out["code"]["remember_import_error"]
+    (export / EXPORT_FILES[0]).unlink()
+    assert sb.verify_export(export)["missing"] == [EXPORT_FILES[0]]
+
+
+def test_s13i_fix1_cached_modules_cannot_override_the_verified_export(tmp_path, monkeypatch, _export_module_guard):
+    import types
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    table = {rel: sb.git_blob_id((export / rel).read_bytes()) for rel in EXPORT_FILES}
+    assert sb.verify_export(export, table)["ok"] is True and sb.verify_export(export)["ok"] is False
+    monkeypatch.setattr(sb, "REMEMBER_BLOBS", table)  # the facade: here the stub export IS the registered table
+    dummy = types.ModuleType("remember_v2")
+    dummy.__file__ = str(tmp_path / "elsewhere" / "remember_v2.py")
+    dummy.VERSION, dummy.np = "cached-dummy", None
+    monkeypatch.setitem(sys.modules, "remember_v2", dummy)
+    loaded = sb.load_remember(export)
+    assert loaded["v2"] is not dummy and loaded["v2"].VERSION == "stub-remember_v2"
+    assert Path(loaded["v2"].__file__).resolve() == (export / EXPORT_FILES[0]).resolve()
+    assert "remember_v2" in loaded["displaced"] and loaded["files"] == table
+    assert loaded["origins"]["remember_v2"] == EXPORT_FILES[0] and loaded["origins"]["q4"] == "sandbox/mind/step2/q4.py"
+    assert loaded["versions"] == {"v2": "stub-remember_v2", "v3": "stub-remember_v3", "v21": "stub-remember_v21"}
+
+
+def test_s13i_fix1_imported_module_from_outside_the_export_is_refused(tmp_path, monkeypatch, _export_module_guard):
+    import types
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    monkeypatch.setattr(sb, "REMEMBER_BLOBS", {rel: sb.git_blob_id((export / rel).read_bytes()) for rel in EXPORT_FILES})
+
+    def elsewhere(name):  # an import facade standing for a finder or cache that serves other code under the name
+        module = types.ModuleType(name)
+        module.__file__ = str(tmp_path / "elsewhere" / f"{name}.py")
+        module.VERSION, module.np, module.RULE = "elsewhere", None, {}
+        return module
+
+    monkeypatch.setattr(sb, "_import_module", elsewhere)
+    with pytest.raises(sb.BenchError, match="originates"):
+        sb.load_remember(export)
+    out = sb.run_bench(sb.SEEDS[0], remember_export=export)
+    assert out["code"]["remember_export"] is None and "originates" in out["code"]["remember_import_error"]
+    assert all(row["status"] == sb.NOT_RUN for row in out["rows"] if row["question"] in sb.REMEMBER_QUESTIONS)

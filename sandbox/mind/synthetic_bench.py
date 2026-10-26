@@ -20,8 +20,13 @@ names an export of those files (the same relative layout), the four REMEMBER que
 ``RememberV2`` (arms v2c gate, v2a shortlist), ``RememberV3`` (arm v3t: per-situation BM25) and ``RememberV21`` (arm
 v21a: MAY_OPPOSE marks) over a STRICT FAKE step-2 ``Q4``: synthetic unit vectors and texts, step 2's own BM25 and
 self-match code, an encoder that returns only vectors registered for exactly that text and raises for any other, no
-model, no FAISS index, no file of the fleet's memory. Without the export, or when its import fails, those rows are
-``NOT_RUN_DEPENDENCY`` with the dependency named: never a fake pass.
+model, no FAISS index, no file of the fleet's memory. The export is verified before anything is imported: every
+required file must have the git blob id registered in ``REMEMBER_BLOBS`` (``verify_export``), cached modules of those
+names are displaced, and each imported module must originate from the verified files; otherwise, and without the
+export, those rows are ``NOT_RUN_DEPENDENCY`` with the mismatch or dependency named: never a fake pass, never an
+asserted revision. Native dependency of that dormant path, stated plainly: step 2's ``memory.py`` and ``cell.py``
+import ``core.faiss_store`` from the repo root, so the faiss LIBRARY loads at import time (no index is built or read);
+CI never takes this path.
 
 Generator (``generate(seed)``): one seeded orthonormal basis of ``DIM`` vectors (Gram-Schmidt over ``random.Random``
 normals), so every planted cosine is exact: six topic directions plus one direction for irrelevant situations; per
@@ -44,6 +49,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -69,6 +75,19 @@ NOT_RUN = "NOT_RUN_DEPENDENCY"
 REMEMBER_REVISION = "6cf81dbb"
 DEPENDENCY = (f"REMEMBER code is not on main; the row needs the code dependencies of public Source-only Git revision "
               f"{REMEMBER_REVISION} (sandbox/mind/remember and sandbox/mind/step2) given with --remember-export")
+REMEMBER_BLOBS = {  # git blob id of each required file at public revision 6cf81dbb (git rev-parse; derived, not typed)
+    "sandbox/mind/remember/remember_v2.py": "d786ef6f9ff0d582681068e04f3269c8e08bd900",
+    "sandbox/mind/remember/remember_v3.py": "260f8ea783fe5074f56e6e23c3bf4aa41fedf694",
+    "sandbox/mind/remember/remember_v21.py": "a52bb327b0a81a1c00a38f47a3d1aca82af1fc9a",
+    "sandbox/mind/remember/prompts.py": "036fe9633febf52f3681e48116d72ea4b9c23095",
+    "sandbox/mind/step2/q4.py": "eb457381658dce37b6742ef55f99d35593af7f97",
+    "sandbox/mind/step2/corpus.py": "9aa057465f95c12b72ff3a10f7e32215c8b93228",
+    "sandbox/mind/step2/memory.py": "dbe927e874d0b42d53c06cdee465d878e4f79dbd",
+    "sandbox/mind/step2/cell.py": "8e52cc70cd7926a823c736b734382c5fe2b6c81d",
+    "sandbox/mind/step2/run_q4.py": "5fa8f06c12256ef3073e432bae8d262586db4ade",
+    "sandbox/mind/step2/encode.py": "5d9cfad31b861e32f0ac8cb14e46aeefb588ef09",
+}
+REMEMBER_MODULES = tuple(Path(rel).stem for rel in REMEMBER_BLOBS)
 DIM = 64
 TOPICS = 6
 LESSONS_PER_TOPIC = 4
@@ -274,35 +293,84 @@ class _StrictEncoder:
         return self._registered[text]
 
 
-def load_remember(export: Path) -> dict[str, Any]:
-    """Import the exported 6cf81dbb modules (repo-root packages tools/core/waggledance come from this tree)."""
+def git_blob_id(data: bytes) -> str:
+    """The git blob id of ``data`` (sha1 over ``blob <size>\\0`` + bytes): files are compared with the revision by it."""
+    return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
+
+
+def _key(path: str | Path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def verify_export(export: str | Path, expected: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Compare every required file of ``export`` with the registered blob ids BEFORE anything is imported (pure: reads
+    bytes, imports nothing, changes nothing). ``ok`` only when every file exists with exactly the registered bytes."""
+    expected = REMEMBER_BLOBS if expected is None else expected
     export = Path(export).resolve()
-    remember_dir, step2 = export / "sandbox" / "mind" / "remember", export / "sandbox" / "mind" / "step2"
-    for needed in ("remember_v2.py", "remember_v3.py", "remember_v21.py", "prompts.py"):
-        if not (remember_dir / needed).is_file():
-            raise BenchError(f"the export lacks sandbox/mind/remember/{needed}")
-    for needed in ("q4.py", "corpus.py", "memory.py", "cell.py", "run_q4.py", "encode.py"):
-        if not (step2 / needed).is_file():
-            raise BenchError(f"the export lacks sandbox/mind/step2/{needed}")
+    verified: dict[str, str] = {}
+    mismatch: list[str] = []
+    missing: list[str] = []
+    for rel, want in sorted(expected.items()):
+        path = export / rel
+        if not path.is_file():
+            missing.append(rel)
+        elif git_blob_id(path.read_bytes()) == want:
+            verified[rel] = want
+        else:
+            mismatch.append(rel)
+    return {"ok": not mismatch and not missing, "verified": verified, "mismatch": mismatch, "missing": missing}
+
+
+def _import_module(name: str):
+    """The import seam of ``load_remember`` (tests replace it to stand for a finder or cache serving other code)."""
+    return importlib.import_module(name)
+
+
+def load_remember(export: Path) -> dict[str, Any]:
+    """Import the exported ``REMEMBER_REVISION`` modules only after verifying them: (1) every required file must have the
+    registered blob id (``verify_export``), else a named ``BenchError`` before any import or ``sys.path`` change; (2) every
+    cached module of those names that was not loaded from the verified files is displaced; (3) every imported module must
+    originate from a verified file whose bytes still match, else a named ``BenchError``. The returned identity is what was
+    verified and imported, never a constant. Repo-root packages (tools/core/waggledance) come from this tree; native
+    dependency: step 2's ``memory.py`` and ``cell.py`` import ``core.faiss_store``, so the faiss library loads at import
+    time (no index is built or read)."""
+    export = Path(export).resolve()
+    expected = dict(REMEMBER_BLOBS)
+    verdict = verify_export(export, expected)
+    if not verdict["ok"]:
+        raise BenchError(f"the export does not match revision {REMEMBER_REVISION}: missing [{', '.join(verdict['missing'])}]"
+                         f" mismatch [{', '.join(verdict['mismatch'])}]")
+    by_key = {_key(export / rel): rel for rel in expected}
+    names = tuple(Path(rel).stem for rel in expected)
     displaced = []
-    for name in ("memory", "corpus", "q4", "cell", "encode", "run_q4", "prompts"):
+    for name in names:
         module = sys.modules.get(name)
-        if module is not None and not str(getattr(module, "__file__", "")).lower().startswith(str(step2).lower()) \
-                and not str(getattr(module, "__file__", "")).lower().startswith(str(remember_dir).lower()):
+        if module is None:
+            continue
+        origin = getattr(module, "__file__", None)
+        if origin is None or _key(origin) not in by_key:
             displaced.append(name)
-            del sys.modules[name]  # remember_v2 insists on step 2's module under this name
+            del sys.modules[name]  # a cached module under this name must not stand in for the verified file
+    remember_dir, step2 = export / "sandbox" / "mind" / "remember", export / "sandbox" / "mind" / "step2"
     for _path in (str(step2), str(remember_dir)):
         if _path not in sys.path:
             sys.path.insert(0, _path)
-    v2 = importlib.import_module("remember_v2")
-    v3 = importlib.import_module("remember_v3")
-    v21 = importlib.import_module("remember_v21")
-    q4_mod = importlib.import_module("q4")
-    files = {}
-    for rel in sorted(path.relative_to(export).as_posix() for path in export.rglob("*.py")):
-        files[rel] = hashlib.sha256((export / rel).read_bytes()).hexdigest()
-    return {"v2": v2, "v3": v3, "v21": v21, "q4": q4_mod, "np": v2.np, "files": files, "displaced": displaced,
-            "versions": {"v2": v2.VERSION, "v3": v3.VERSION, "v21": v21.VERSION}}
+    modules = {name: _import_module(name) for name in ("remember_v2", "remember_v3", "remember_v21", "q4")}
+    origins: dict[str, str] = {}
+    for name in names:
+        module = modules.get(name, sys.modules.get(name))
+        if module is None:
+            continue  # a verified file the imported chain did not need
+        origin = getattr(module, "__file__", None)
+        rel = by_key.get(_key(origin)) if origin else None
+        if rel is None:
+            raise BenchError(f"imported module {name} originates from {origin!r}, not from the verified export")
+        if git_blob_id(Path(origin).read_bytes()) != expected[rel]:
+            raise BenchError(f"imported module {name}: {rel} changed after verification")
+        origins[name] = rel
+    v2, v3, v21, q4_mod = modules["remember_v2"], modules["remember_v3"], modules["remember_v21"], modules["q4"]
+    return {"v2": v2, "v3": v3, "v21": v21, "q4": q4_mod, "np": v2.np, "files": verdict["verified"], "origins": origins,
+            "displaced": displaced, "versions": {"v2": v2.VERSION, "v3": v3.VERSION, "v21": v21.VERSION}}
 
 
 def strict_fake_q4(remember: Mapping[str, Any], synth: Synthetic):
@@ -550,7 +618,9 @@ def run_bench(seed: int, remember_export: str | Path | None = None) -> dict[str,
     synth = generate(seed)
     code = {"join_card_version": jc.VERSION, "join_card_sha256": hashlib.sha256((HERE / "join_card.py").read_bytes()).hexdigest(),
             "bench_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            "remember_export": None if remember is None else {"revision": REMEMBER_REVISION, "files": remember["files"],
+            "remember_export": None if remember is None else {"revision": REMEMBER_REVISION,
+                                                                 "verified_blobs": remember["files"],
+                                                                 "module_origins": remember["origins"],
                                                                  "versions": remember["versions"],
                                                                  "displaced_modules": remember["displaced"]},
             "remember_import_error": import_error, "python": sys.version.split()[0]}

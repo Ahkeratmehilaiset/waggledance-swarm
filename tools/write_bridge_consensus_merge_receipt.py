@@ -9,6 +9,7 @@ not perform the merge or weaken the gate's fail-closed checks.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
     evaluate_auto_merge_gate,
 )
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
+from tools.bridge_rco_enrollment import using_rco_enrollment_context  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.evaluation_result import (  # noqa: E402
     build_evaluation_result,
@@ -167,7 +169,13 @@ def write_bridge_consensus_merge_receipt(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    rco_enrollment_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Write after unchanged gate checks; optionally inject a loader-issued context.
+
+    Omitted/None keeps the installed manifest reader path. Only Python callers
+    can supply a context; there is no CLI flag or environment override for it.
+    """
     now = _validated_now_utc(now_utc)
     if type(grok_fallback) is not bool or (
         grok_fallback and review_policy != REVIEW_POLICY_RULE12
@@ -193,21 +201,26 @@ def write_bridge_consensus_merge_receipt(
             }
         )
     manifest_path = out_dir / "manifest.json"
-    gate_report = _merge_plan_report(
-        pr_status=pr_status,
-        events_path=events_path,
-        expected_head=expected_head,
-        expected_base_sha=expected_base_sha,
-        consensus_proposal_id=consensus_proposal_id,
-        receipt_bundle_path=str(manifest_path),
-        repo=repo,
-        from_agent=from_agent,
-        bridge_task_id=bridge_task_id,
-        now_utc=now,
-        review_policy=review_policy,
-        grok_fallback=grok_fallback,
-        grok_reports_root=_grok_reports_root,
+    enrollment_scope = (
+        nullcontext() if rco_enrollment_context is None
+        else using_rco_enrollment_context(rco_enrollment_context)
     )
+    with enrollment_scope:
+        gate_report = _merge_plan_report(
+            pr_status=pr_status,
+            events_path=events_path,
+            expected_head=expected_head,
+            expected_base_sha=expected_base_sha,
+            consensus_proposal_id=consensus_proposal_id,
+            receipt_bundle_path=str(manifest_path),
+            repo=repo,
+            from_agent=from_agent,
+            bridge_task_id=bridge_task_id,
+            now_utc=now,
+            review_policy=review_policy,
+            grok_fallback=grok_fallback,
+            grok_reports_root=_grok_reports_root,
+        )
     gate_report = apply_operator_path_exception(
         gate_report, grant=operator_path_exception, pr_status=pr_status,
         repo=repo, head=expected_head, base=expected_base_sha, now=now,

@@ -28,6 +28,8 @@ WD_REBOOT_EXPECTED_MANIFEST_HASH; an explicitly invalid argument never falls bac
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import hashlib
 import json
@@ -44,6 +46,10 @@ RCO3_AGENT = "claude-rco-3"
 RCO3_ROLE_UUID = "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50"
 _LEGACY_RCOS = frozenset({"claude-rco-1", "claude-rco-2"})
 _ISSUER = object()
+_OMITTED_LOADER_INPUT = object()
+_SCOPED_ENROLLMENT_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "wd_scoped_rco_enrollment_context", default=None,
+)
 _HEX40 = re.compile(r"[0-9a-fA-F]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}\Z")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
@@ -109,6 +115,32 @@ def _validated_context(context):
 
 def _hex(value, pattern):
     return value.lower() if type(value) is str and pattern.fullmatch(value) else None
+
+
+def _require_issued_context(context):
+    try:
+        valid = context is not None and _validated_context(context) is not None
+    except AttributeError:
+        valid = False
+    if not valid:
+        raise ValueError("invalid_rco_enrollment_context")
+    return context
+
+
+@contextmanager
+def using_rco_enrollment_context(context):
+    """Scope a caller's loader-issued context to this execution context only.
+
+    This is dependency injection, not enrollment, registration or an additional
+    trust boundary. Existing issuer/digest checks apply, including to UNKNOWN
+    fixtures. Nested calls restore their parent on success and exception.
+    Explicit loader arguments never consult this scope.
+    """
+    token = _SCOPED_ENROLLMENT_CONTEXT.set(_require_issued_context(context))
+    try:
+        yield
+    finally:
+        _SCOPED_ENROLLMENT_CONTEXT.reset(token)
 
 
 def _uuid(value):
@@ -203,12 +235,23 @@ def _record_valid(record, generation):
                 "fresh_history_free", "no_mind_authorship", "no_measurement_case_access")))
 
 
-def load_rco_enrollment_context(*, bundle_root=None, expected_manifest_sha256=None) -> dict:
+def load_rco_enrollment_context(
+    *, bundle_root=_OMITTED_LOADER_INPUT,
+    expected_manifest_sha256=_OMITTED_LOADER_INPUT,
+) -> dict:
     """Load one bounded externally pinned manifest, or return an unknown context.
 
     Missing RCO3 entry in a VERIFIED manifest means not_provisioned. Missing,
     malformed, unreadable or conflicting trust inputs mean unknown instead.
     """
+    if bundle_root is _OMITTED_LOADER_INPUT and expected_manifest_sha256 is _OMITTED_LOADER_INPUT:
+        scoped = _SCOPED_ENROLLMENT_CONTEXT.get()
+        if scoped is not None:
+            return _require_issued_context(scoped)
+    if bundle_root is _OMITTED_LOADER_INPUT:
+        bundle_root = None
+    if expected_manifest_sha256 is _OMITTED_LOADER_INPUT:
+        expected_manifest_sha256 = None
     root_value = os.environ.get("WD_BRIDGE_BUNDLE_ROOT") if bundle_root is None else bundle_root
     pin_value = (os.environ.get("WD_REBOOT_EXPECTED_MANIFEST_HASH")
                  if expected_manifest_sha256 is None else expected_manifest_sha256)

@@ -55,7 +55,7 @@ def contract_paths(root):
     text = _text(root, CONTRACT_PATH)
     section = text.split("**verdict-computing gate code**", 1)[1]
     section = section.split("* **the wiring step itself**", 1)[0]
-    return tuple(re.findall(r"`(tools/[A-Za-z0-9_/]+\.py)`", section))
+    return tuple(re.findall(r"`([^`]*)`", section))
 
 
 def _contract_tools(root):
@@ -69,7 +69,7 @@ def _rule9b_names(root):
     match = re.search(r"the gate code.*?to compute a verdict\s*\((.*?)\), plus", text, re.S)
     if not match or "merge/receipt" not in match[1]:
         raise ValueError("rule9b_unparseable")
-    return tuple(re.findall(r"`([a-z_]+)`", match[1]))
+    return tuple(re.findall(r"`([^`]*)`", match[1]))
 
 
 def _aliases(tree):

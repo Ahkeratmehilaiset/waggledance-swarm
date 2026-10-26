@@ -271,3 +271,37 @@ def test_protected_membership_is_exact_not_derived_from_the_registry(registry, s
         "tools/check_proven_safe_autosign_class.py",
     )
     assert registry.contract_paths(source_fixture) == registry.PROTECTED_PATHS
+
+
+@pytest.mark.parametrize("extra", [
+    "waggledance/core/idle_consensus_charter.py",
+    "tools/new-verifier.py",
+    "tools/new.verifier.py",
+])
+def test_contract_extra_token_is_not_filtered(registry, source_fixture, extra):
+    path = source_fixture / registry.CONTRACT_PATH
+    text = path.read_text(encoding="utf-8")
+    marker = ";\n* **the wiring step itself**"
+    assert text.count(marker) == 1
+    path.write_text(text.replace(marker, ", `" + extra + "`" + marker),
+                    encoding="utf-8")
+    result = registry.check_repository(source_fixture)
+    assert "protected_set_mismatch" in result["errors"], result
+    assert registry.contract_paths(source_fixture) == (*registry.PROTECTED_PATHS, extra)
+
+
+@pytest.mark.parametrize("extra", [
+    "new_checker2",
+    "new-checker",
+    "new.checker",
+    "tools/new_checker.py",
+])
+def test_rule9b_extra_token_is_not_filtered(registry, source_fixture, extra):
+    path = source_fixture / "CLAUDE.md"
+    text = path.read_text(encoding="utf-8")
+    marker = "), plus"
+    assert text.count(marker) == 1
+    path.write_text(text.replace(marker, ", `" + extra + "`" + marker),
+                    encoding="utf-8")
+    result = registry.check_repository(source_fixture)
+    assert "rule9b_names_mismatch" in result["errors"], result

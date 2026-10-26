@@ -41,7 +41,10 @@ seven path strings and order: `verify_bridge_consensus`,
 `idle_consensus_auto_merge`, `merge_with_bridge_receipt`,
 `write_bridge_consensus_merge_receipt`, and `check_proven_safe_autosign_class`
 (all `tools/*.py`). CI extracts and compares those path bytes, then cross-checks
-the five short names and the merge/receipt executor phrase in Rule 9b.
+the five short names and the merge/receipt executor phrase in Rule 9b. Both
+membership comparisons retain every backticked token in their declared section,
+including unexpected directories, punctuation and digits; none is filtered out
+before equality is checked.
 
 File presence is separate from protected membership and dormant/wired status.
 Only `tools/verify_bridge_consensus.py` may be `reserved_absent`. The charter's

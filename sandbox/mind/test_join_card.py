@@ -937,3 +937,25 @@ def test_s13i_fix1_imported_module_from_outside_the_export_is_refused(tmp_path, 
     out = sb.run_bench(sb.SEEDS[0], remember_export=export)
     assert out["code"]["remember_export"] is None and "originates" in out["code"]["remember_import_error"]
     assert all(row["status"] == sb.NOT_RUN for row in out["rows"] if row["question"] in sb.REMEMBER_QUESTIONS)
+
+
+def test_s13i_fix1_same_path_stale_cached_module_is_displaced_before_the_verified_import(tmp_path, monkeypatch,
+                                                                                         _export_module_guard):
+    """Lead 05:33Z: a cached module whose __file__ equals a verified path is still stale in memory; its code is not the
+    verified bytes. Every cached module of the ten names is displaced before the fresh import, same-path ones included."""
+    import types
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    monkeypatch.setattr(sb, "REMEMBER_BLOBS", {rel: sb.git_blob_id((export / rel).read_bytes()) for rel in EXPORT_FILES})
+    stale = {}
+    for name, rel in (("remember_v2", EXPORT_FILES[0]), ("q4", "sandbox/mind/step2/q4.py")):
+        module = types.ModuleType(name)
+        module.__file__ = str((export / rel).resolve())  # the SAME path as the verified file
+        module.VERSION, module.np, module.RULE = "stale-in-memory", None, {"stale": True}
+        monkeypatch.setitem(sys.modules, name, module)
+        stale[name] = module
+    loaded = sb.load_remember(export)
+    assert loaded["v2"] is not stale["remember_v2"] and loaded["q4"] is not stale["q4"]
+    assert loaded["v2"].VERSION == "stub-remember_v2" and loaded["q4"].RULE == {}
+    assert {"remember_v2", "q4"} <= set(loaded["displaced"])
+    assert sys.modules["remember_v2"] is loaded["v2"] and sys.modules["q4"] is loaded["q4"]

@@ -329,7 +329,8 @@ def _import_module(name: str):
 def load_remember(export: Path) -> dict[str, Any]:
     """Import the exported ``REMEMBER_REVISION`` modules only after verifying them: (1) every required file must have the
     registered blob id (``verify_export``), else a named ``BenchError`` before any import or ``sys.path`` change; (2) every
-    cached module of those names that was not loaded from the verified files is displaced; (3) every imported module must
+    cached module of those ten names is displaced before the fresh import, same-path ones included (code already in
+    memory is not the verified bytes, whatever its ``__file__`` says); (3) every imported module must
     originate from a verified file whose bytes still match, else a named ``BenchError``. The returned identity is what was
     verified and imported, never a constant. Repo-root packages (tools/core/waggledance) come from this tree; native
     dependency: step 2's ``memory.py`` and ``cell.py`` import ``core.faiss_store``, so the faiss library loads at import
@@ -344,13 +345,10 @@ def load_remember(export: Path) -> dict[str, Any]:
     names = tuple(Path(rel).stem for rel in expected)
     displaced = []
     for name in names:
-        module = sys.modules.get(name)
-        if module is None:
-            continue
-        origin = getattr(module, "__file__", None)
-        if origin is None or _key(origin) not in by_key:
+        if name in sys.modules:
             displaced.append(name)
-            del sys.modules[name]  # a cached module under this name must not stand in for the verified file
+            del sys.modules[name]  # every cached module of these names, same-path ones included: code already in
+            # memory is not the verified bytes, whatever its __file__ says; the fresh import below is the only one trusted
     remember_dir, step2 = export / "sandbox" / "mind" / "remember", export / "sandbox" / "mind" / "step2"
     for _path in (str(step2), str(remember_dir)):
         if _path not in sys.path:

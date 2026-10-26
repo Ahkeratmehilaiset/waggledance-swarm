@@ -19,13 +19,18 @@ Marker conventions used below:
 In the S13 runtime inventory (R1, identity prefix `926E8A8C`, with its
 supplement `2C3A49D7`) the label **842B** names one consumed runtime attempt:
 a one-shot action whose single permitted attempt has been used, held in the
-state **HOLD_NO_RETRY**. R1 assigns 842B batch execution to Lead/Root, not to
-a producer lane. The hold is restated in public PR text on `main` (PR #1922
-body: "Installed generation remains `227aa862`; 842B HOLD_NO_RETRY and
-canonical writer STOP remain") and in every S13 progress packet since.
+state **HOLD_NO_RETRY**. R1 row A2 states, exactly: set by codex-lead-1 on
+2026-10-18; what lifts it is "a new explicit operator authorization for
+another attempt"; lifted by OPERATOR. R1 makes no statement about who executes
+842B or about any producer lane. The hold is restated in public PR text on
+`main` (PR #1922 body: "Installed generation remains `227aa862`; 842B
+HOLD_NO_RETRY and canonical writer STOP remain") and in every S13 progress
+packet since.
 
-What the attempt executed, which driver ran it, and how it closed are
-**UNKNOWN** to this author. This document does not reconstruct them.
+What the attempt executed and which driver ran it are **UNKNOWN** to this
+author. How it closed is known to this author only as R1's secondary,
+unverified description (section 2); this document does not reconstruct it from
+any event or closure object.
 
 ## 2. What the S13 A2 preparation established (2026-10-26)
 
@@ -37,7 +42,10 @@ handoff 06:05:30Z, event reference
 
 | fact | value |
 |---|---|
-| consumed-attempt receipt identity | prefix `d538c88b08*` (R1 secondary description only; the full receipt object was requested once and not obtained) |
+| consumption bridge-event reference | prefix `d538c88b08` (R1 method: refs are the first 16 hex of the bridge event ref; this is the event that recorded the consumed attempt, 10:38:27Z; the full event and the objects it references were requested once and not obtained) |
+| closure, R1 secondary (unverified) | "exit 1 Get-FileHash lookup failure", as R1 row A2 describes the consumption event; not read from the event or from any closure object |
+| earlier HOLD events, R1 secondary (unverified) | first HOLD `20b4f50385` 03:25:25Z (gh UTF8/cp1252 failure before ready/merge); retry HOLD `3cd2f28c0e` 08:27:45Z (allowed retry stopped on an audit task_id mismatch); R1's wording, not read from the events |
+| authorization event, R1 secondary (unverified) | `4056ffc227` 10:28:06Z, the operator authorization of the ONE attempt that was then consumed; R1's wording, not read from the event |
 | referenced task / driver / closure tuple | UNKNOWN (never read as immutable objects) |
 | relevant fix already on `main` | none established (no commit, path or blob mapped to the 842B failure) |
 | historical compact bridge read for six R1-known receipt prefixes | failed `stable_snapshot_unavailable`, exit 1, one attempt, no retry |
@@ -73,11 +81,11 @@ values are listed so that the gap is explicit.
 
 | field | required content | current value |
 |---|---|---|
-| `original_event_ref` | bridge event reference (sha256) of the event that recorded the consumed attempt | UNKNOWN |
+| `original_event_ref` | bridge event reference (sha256) of the event that recorded the consumed attempt | prefix `d538c88b08` (consumption bridge event, R1 secondary); the full reference is UNKNOWN |
 | `original_task_id` | canonical task id under which the attempt ran | UNKNOWN |
-| `original_attempt_id` | attempt identity (the R1 receipt prefix is `d538c88b08*`; the full id is required) | UNKNOWN beyond the prefix |
+| `original_attempt_id` | attempt identity as the consumption event records it | UNKNOWN (no prefix is known for the attempt id; the known prefix is a bridge event reference, see `original_event_ref`) |
 | `original_receipt_sha256` | hash of the full consumed-attempt receipt object | UNKNOWN |
-| `original_closure_ref` | reference of the closure record (how the attempt ended) | UNKNOWN |
+| `original_closure_ref` | reference of the closure record (how the attempt ended) | UNKNOWN (R1's secondary description of the closure is in section 2; no closure object was read) |
 | `reproduction_attempt_id` | fresh id for the new attempt, bound to its own bridge request | none (no attempt authorized) |
 
 ### 3.2 Immutable roots
@@ -114,7 +122,7 @@ values are listed so that the gap is explicit.
 | `one_shot` | the written statement that exactly one attempt is permitted, who signed it, and at which head; the receipt names that single attempt and forbids a second | none |
 | `stop_condition` | the written condition under which the attempt stops itself | none |
 | `planned_rollback` | what will be restored, from which immutable object, and how the restoration will be proved | none |
-| `owner` | the identity that owns the attempt and its hold state (R1: Lead/Root for 842B batch execution) | Lead/Root (R1) |
+| `owner` | the identity that owns the attempt and its hold state | hold set by codex-lead-1 (R1 row A2), lifted only by the operator (R1); custody of this documentation item: codex-lead-1 by Lead request `s13-unblock-fable-pr1938-r1-citation-fix-20261026-v1`, not by any R1 statement |
 | `authorizer` | the operator signature that lifts HOLD_NO_RETRY for exactly this attempt | none |
 
 ### 3.6 Observations, after the attempt
@@ -150,16 +158,21 @@ hold is an operator action bound to one specific attempt receipt (section 3).
 
 ## 5. Unblock condition and owner
 
-**Condition (one):** the full consumed 842B tuple (the complete receipt whose
-identity begins `d538c88b08`, with its referenced task, driver and closure
-records) is produced as immutable objects with recorded sha256 hashes, from a
-source other than the failed historical compact read, and delivered to the
-bridge as a bound result. Only then can section 3.1 leave `UNKNOWN`, and only
-then can an operator decide on one measured attempt.
+**Condition (one):** the full consumption event whose reference begins
+`d538c88b08` and the full authorization event whose reference begins
+`4056ffc227`, together with the task, driver and closure objects they
+reference, are produced as immutable objects with recorded sha256 hashes, from
+a source other than the failed historical compact read (STOP_NO_RETRY; it is
+not re-attempted), and delivered to the bridge as a bound result. No full
+reference or hash is invented here; until then they stay `UNKNOWN`. Only then
+can section 3.1 leave `UNKNOWN`, and only then can an operator decide on one
+measured attempt.
 
-**Owner:** codex-lead-1 (Lead), as the R1 holder of 842B batch execution and
-the custodian of the historical bridge record. The operator remains the only
-authority that can lift HOLD_NO_RETRY.
+**Owner:** codex-lead-1 (Lead), the identity that set the hold (R1 row A2) and
+the custodian of the historical bridge record, assigned this documentation
+item by Lead request `s13-unblock-fable-pr1938-r1-citation-fix-20261026-v1`.
+R1 assigns no execution ownership. The operator remains the only authority
+that can lift HOLD_NO_RETRY.
 
 ## 6. What this document is not
 
@@ -183,3 +196,15 @@ authority that can lift HOLD_NO_RETRY.
   owner, authorizer) with the observations written after the attempt. They are
   pre-run decisions and are now in section 3.5, before the attempt; only
   observations remain after it (section 3.6). Nothing else changed.
+- Correction 2026-10-26 (claude-rco-1 and claude-rco-2 static finding
+  A2-DOC-R1-CITATION, Lead request
+  `s13-unblock-fable-pr1938-r1-citation-fix-20261026-v1`): the previous
+  version attributed to R1 an execution-ownership statement that R1 does not
+  contain, called the consumption event prefix a receipt identity although R1
+  defines its refs as bridge event references, and marked the closure UNKNOWN
+  without carrying
+  R1's secondary description of the closure, the two earlier HOLD events and
+  the authorization event. R1 row A2 is now quoted exactly, the prefix is in
+  `original_event_ref`, the R1 secondary facts are carried as unverified, and
+  the unblock condition names the full consumption and authorization events.
+  Sections 3.2 to 3.6 (apart from the `owner` row), 4 and 6 are unchanged.

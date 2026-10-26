@@ -937,3 +937,147 @@ def test_s13i_fix1_imported_module_from_outside_the_export_is_refused(tmp_path, 
     out = sb.run_bench(sb.SEEDS[0], remember_export=export)
     assert out["code"]["remember_export"] is None and "originates" in out["code"]["remember_import_error"]
     assert all(row["status"] == sb.NOT_RUN for row in out["rows"] if row["question"] in sb.REMEMBER_QUESTIONS)
+
+
+# Extra round (Lead SourceGO 2026-10-26, the frozen eight-item owner criteria of RCO1 and RCO2 for BENCH-EXPORT-IDENTITY /
+# S13I-EXPORT-IDENTITY at candidate 11867f53): one test per criterion-6 case plus the export-tree and bytecode rules.
+# Stub exports only: no real 6cf81dbb, step-2, faiss, torch or model module is imported; every test restores sys.modules
+# and sys.path through _export_module_guard.
+
+
+def _stale_module(name, path, **attrs):
+    import types
+    module = types.ModuleType(name)
+    module.__file__ = str(Path(path).resolve())
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    return module
+
+
+def _registered(sb, export, monkeypatch):
+    monkeypatch.setattr(sb, "REMEMBER_BLOBS", {rel: sb.git_blob_id((export / rel).read_bytes()) for rel in EXPORT_FILES})
+
+
+def _never_import(name):
+    raise AssertionError(f"import of {name} attempted although the export was to be refused before any import")
+
+
+def test_s13i_x_same_path_cached_module_with_another_version_is_displaced(tmp_path, monkeypatch, _export_module_guard):
+    """Criterion 6(a): a cached module whose __file__ equals a verified path is still code already in memory, not the
+    verified bytes; every one of the ten names is displaced before the fresh import and the displacement is recorded."""
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    _registered(sb, export, monkeypatch)
+    stale = {}
+    for name, rel in (("remember_v2", EXPORT_FILES[0]), ("q4", "sandbox/mind/step2/q4.py")):
+        stale[name] = _stale_module(name, export / rel, VERSION="stale-in-memory", np=None, RULE={"stale": True})
+        monkeypatch.setitem(sys.modules, name, stale[name])
+    loaded = sb.load_remember(export)
+    assert loaded["v2"] is not stale["remember_v2"] and loaded["q4"] is not stale["q4"]
+    assert loaded["v2"].VERSION == "stub-remember_v2" and loaded["q4"].RULE == {}
+    assert {"remember_v2", "q4"} <= set(loaded["displaced"])
+    assert sys.modules["remember_v2"] is loaded["v2"] and sys.modules["q4"] is loaded["q4"]
+
+
+def test_s13i_x_a_module_served_from_another_verified_file_is_refused(tmp_path, monkeypatch, _export_module_guard):
+    """Criterion 6(b) and 3: a module under the name remember_v2 whose origin is the verified q4.py (an alias served by
+    the import seam) is refused by name: the origin must be exactly the file registered for that name, not any verified
+    file."""
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    _registered(sb, export, monkeypatch)
+    real_import = sb._import_module
+
+    def alias(name):
+        if name == "remember_v2":
+            return _stale_module("remember_v2", export / "sandbox/mind/step2/q4.py", VERSION="alias-of-q4", np=None)
+        return real_import(name)
+
+    monkeypatch.setattr(sb, "_import_module", alias)
+    with pytest.raises(sb.BenchError, match=r"remember_v2 .*q4\.py.*remember_v2\.py"):
+        sb.load_remember(export)
+    out = sb.run_bench(sb.SEEDS[0], remember_export=export)
+    assert out["code"]["remember_export"] is None and "q4.py" in out["code"]["remember_import_error"]
+    assert all(row["status"] == sb.NOT_RUN for row in out["rows"] if row["question"] in sb.REMEMBER_QUESTIONS)
+
+
+@pytest.mark.parametrize("extra", ["tools/__init__.py", "core/__init__.py", "waggledance/__init__.py",
+                                   "sandbox/mind/step2/extra.py", "sandbox/mind/remember/__init__.py", "setup.py",
+                                   "sandbox/mind/step2/notes.txt"])
+def test_s13i_x_an_extra_entry_in_the_export_is_refused_before_any_import(tmp_path, monkeypatch, _export_module_guard,
+                                                                            extra):
+    """Criterion 4 and 6(c): the export tree must be exactly the ten registered files, their directories and the one
+    named manifest at the root. 6cf81dbb step2/corpus.py puts the EXPORT ROOT at sys.path[0], so an extra tools/, core/
+    or waggledance/ package or any extra .py would shadow this tree unverified. Refused by name before any import or
+    sys.path change."""
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    _registered(sb, export, monkeypatch)
+    path = export / extra
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("raise RuntimeError('never imported')\n", encoding="utf-8")
+    monkeypatch.setattr(sb, "_import_module", _never_import)
+    modules_before, path_before = {name: sys.modules.get(name) for name in EXPORT_MODULES}, list(sys.path)
+    with pytest.raises(sb.BenchError, match=re.escape(extra)):
+        sb.load_remember(export)
+    assert sys.path == path_before and {name: sys.modules.get(name) for name in EXPORT_MODULES} == modules_before
+    out = sb.run_bench(sb.SEEDS[0], remember_export=export)
+    assert out["code"]["remember_export"] is None and extra in out["code"]["remember_import_error"]
+    assert all(row["status"] == sb.NOT_RUN for row in out["rows"] if row["question"] in sb.REMEMBER_QUESTIONS)
+
+
+def test_s13i_x_bytecode_in_the_export_is_refused_before_any_import(tmp_path, monkeypatch, _export_module_guard):
+    """Criterion 6(d): a __pycache__ directory or any .pyc in the export is refused by name before any import; the one
+    tolerated extra entry is the named non-.py manifest at the root."""
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    _registered(sb, export, monkeypatch)
+    monkeypatch.setattr(sb, "_import_module", _never_import)
+    cache = export / "sandbox" / "mind" / "step2" / "__pycache__"
+    cache.mkdir()
+    (cache / "q4.cpython-313.pyc").write_bytes(b"\x00")
+    with pytest.raises(sb.BenchError, match="__pycache__"):
+        sb.load_remember(export)
+    cache.joinpath("q4.cpython-313.pyc").unlink()
+    cache.rmdir()
+    (export / "sandbox" / "mind" / "remember" / "remember_v2.pyc").write_bytes(b"\x00")
+    with pytest.raises(sb.BenchError, match=r"remember_v2\.pyc"):
+        sb.load_remember(export)
+    (export / "sandbox" / "mind" / "remember" / "remember_v2.pyc").unlink()
+    assert sb.export_tree_entries(export) == []
+    (export / sb.EXPORT_MANIFEST).write_text("{}\n", encoding="utf-8")
+    assert not sb.EXPORT_MANIFEST.endswith(".py") and sb.export_tree_entries(export) == []
+    (export / sb.EXPORT_MANIFEST).unlink()
+    (export / sb.EXPORT_MANIFEST).mkdir()
+    assert sb.export_tree_entries(export) == [sb.EXPORT_MANIFEST]  # a directory under the manifest name is not the manifest
+
+
+def test_s13i_x_bytecode_writing_is_off_during_the_export_import_and_restored(tmp_path, monkeypatch,
+                                                                              _export_module_guard):
+    """Criterion 5: sys.dont_write_bytecode is True while the export modules are imported and restored afterwards, also
+    when the import raises; no __pycache__ appears in the export."""
+    sb = _bench()
+    export = _stub_export(tmp_path / "verified", _importable_stub)
+    _registered(sb, export, monkeypatch)
+    real_import = sb._import_module
+    seen = []
+
+    def observe(name):
+        seen.append(sys.dont_write_bytecode)
+        return real_import(name)
+
+    monkeypatch.setattr(sb, "_import_module", observe)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    loaded = sb.load_remember(export)
+    assert loaded["versions"]["v2"] == "stub-remember_v2" and seen and all(seen)
+    assert sys.dont_write_bytecode is False and not list(export.rglob("__pycache__"))
+
+    def boom(name):
+        raise ImportError("boom")
+
+    for name in EXPORT_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sb, "_import_module", boom)
+    with pytest.raises(ImportError, match="boom"):
+        sb.load_remember(export)
+    assert sys.dont_write_bytecode is False

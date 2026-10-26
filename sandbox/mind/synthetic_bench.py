@@ -21,12 +21,17 @@ names an export of those files (the same relative layout), the four REMEMBER que
 v21a: MAY_OPPOSE marks) over a STRICT FAKE step-2 ``Q4``: synthetic unit vectors and texts, step 2's own BM25 and
 self-match code, an encoder that returns only vectors registered for exactly that text and raises for any other, no
 model, no FAISS index, no file of the fleet's memory. The export is verified before anything is imported: every
-required file must have the git blob id registered in ``REMEMBER_BLOBS`` (``verify_export``), cached modules of those
-names are displaced, and each imported module must originate from the verified files; otherwise, and without the
-export, those rows are ``NOT_RUN_DEPENDENCY`` with the mismatch or dependency named: never a fake pass, never an
-asserted revision. Native dependency of that dormant path, stated plainly: step 2's ``memory.py`` and ``cell.py``
-import ``core.faiss_store`` from the repo root, so the faiss LIBRARY loads at import time (no index is built or read);
-CI never takes this path.
+required file must have the git blob id registered in ``REMEMBER_BLOBS`` (``verify_export``); the export tree must hold
+nothing but those ten files, their directories and the one named non-.py manifest ``EXPORT_MANIFEST`` at the root
+(``export_tree_entries``: an extra ``.py``, a ``tools/``, ``core/`` or ``waggledance/`` package, a ``__pycache__`` or
+any ``.pyc`` is a named refusal, because step 2's ``corpus.py`` puts the export root at ``sys.path[0]``); every cached
+module of those ten names is displaced unconditionally; bytecode writing is off during the import; and each imported
+module must originate from exactly the file registered for its name, still with the registered bytes. Otherwise, and
+without the export, those rows are ``NOT_RUN_DEPENDENCY`` with the mismatch or dependency named: never a fake pass,
+never an asserted revision. Native dependency of that dormant path, stated plainly and no wider: step 2's ``memory.py``
+and ``cell.py`` import ``core.faiss_store`` from the repo root, so the faiss LIBRARY loads at import time (no index is
+built or read); torch and sentence_transformers are imported inside ``E5.__init__`` of step 2's ``encode.py`` and load
+only if an ``E5`` is constructed, which the strict fake ``Q4`` never does. CI never takes this path.
 
 Generator (``generate(seed)``): one seeded orthonormal basis of ``DIM`` vectors (Gram-Schmidt over ``random.Random``
 normals), so every planted cosine is exact: six topic directions plus one direction for irrelevant situations; per
@@ -88,6 +93,7 @@ REMEMBER_BLOBS = {  # git blob id of each required file at public revision 6cf81
     "sandbox/mind/step2/encode.py": "5d9cfad31b861e32f0ac8cb14e46aeefb588ef09",
 }
 REMEMBER_MODULES = tuple(Path(rel).stem for rel in REMEMBER_BLOBS)
+EXPORT_MANIFEST = "EXPORT_MANIFEST.json"  # the one tolerated extra entry of an export: a non-.py manifest file at its root
 DIM = 64
 TOPICS = 6
 LESSONS_PER_TOPIC = 4
@@ -321,41 +327,77 @@ def verify_export(export: str | Path, expected: Mapping[str, str] | None = None)
     return {"ok": not mismatch and not missing, "verified": verified, "mismatch": mismatch, "missing": missing}
 
 
+def export_tree_entries(export: str | Path, expected: Mapping[str, str] | None = None) -> list[str]:
+    """Every entry (file or directory, relative, ``/``-joined, sorted) under the export root that is NOT one of the
+    registered files, one of their parent directories, or the one named non-.py manifest FILE ``EXPORT_MANIFEST`` at the
+    root. Pure: lists names, reads no bytes, imports nothing. An empty list means the tree is exactly the registered set.
+    Reason: step 2's ``corpus.py`` inserts the export root at ``sys.path[0]``, so an extra ``tools/``, ``core/`` or
+    ``waggledance/`` package, any extra ``.py``, a ``__pycache__`` or a ``.pyc`` could shadow this tree unverified."""
+    expected = REMEMBER_BLOBS if expected is None else expected
+    export = Path(export).resolve()
+    allowed: set[str] = set()
+    for rel in expected:
+        parts = Path(rel).parts
+        allowed.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    unexpected: list[str] = []
+    for path in sorted(export.rglob("*")):
+        rel = path.relative_to(export).as_posix()
+        if rel in allowed:
+            continue
+        if rel == EXPORT_MANIFEST and not EXPORT_MANIFEST.endswith(".py") and path.is_file():
+            continue
+        unexpected.append(rel)
+    return unexpected
+
+
 def _import_module(name: str):
     """The import seam of ``load_remember`` (tests replace it to stand for a finder or cache serving other code)."""
     return importlib.import_module(name)
 
 
 def load_remember(export: Path) -> dict[str, Any]:
-    """Import the exported ``REMEMBER_REVISION`` modules only after verifying them: (1) every required file must have the
-    registered blob id (``verify_export``), else a named ``BenchError`` before any import or ``sys.path`` change; (2) every
-    cached module of those names that was not loaded from the verified files is displaced; (3) every imported module must
-    originate from a verified file whose bytes still match, else a named ``BenchError``. The returned identity is what was
-    verified and imported, never a constant. Repo-root packages (tools/core/waggledance) come from this tree; native
-    dependency: step 2's ``memory.py`` and ``cell.py`` import ``core.faiss_store``, so the faiss library loads at import
-    time (no index is built or read)."""
+    """Import the exported ``REMEMBER_REVISION`` modules only after verifying them, in this order, each step a named
+    ``BenchError`` before any import or ``sys.path`` change when it fails: (1) every required file must have the registered
+    blob id (``verify_export``); (2) the export tree must hold nothing but those files, their directories and the one named
+    manifest (``export_tree_entries``); (3) every cached module of the ten names is displaced unconditionally, same-path
+    ones included (code already in memory is not the verified bytes, whatever its ``__file__`` says), the displaced names
+    recorded; (4) the import runs with bytecode writing off (``sys.dont_write_bytecode``, restored afterwards); (5) every
+    imported module must originate from exactly the file registered for ITS name (``q4`` from ``step2/q4.py``, never
+    another verified file) and that file must still have the registered bytes. The returned identity is what was verified
+    and imported, never a constant. Repo-root packages (tools/core/waggledance) come from this tree. Native dependency,
+    stated no wider than the code: step 2's ``memory.py`` and ``cell.py`` import ``core.faiss_store``, so the faiss library
+    loads at import time (no index is built or read); torch and sentence_transformers are imported inside ``E5.__init__``
+    of step 2's ``encode.py`` and load only if an ``E5`` is constructed, which the strict fake ``Q4`` never does."""
     export = Path(export).resolve()
     expected = dict(REMEMBER_BLOBS)
     verdict = verify_export(export, expected)
     if not verdict["ok"]:
         raise BenchError(f"the export does not match revision {REMEMBER_REVISION}: missing [{', '.join(verdict['missing'])}]"
                          f" mismatch [{', '.join(verdict['mismatch'])}]")
+    unexpected = export_tree_entries(export, expected)
+    if unexpected:
+        raise BenchError(f"the export holds entries outside the registered set of revision {REMEMBER_REVISION}: "
+                         f"[{', '.join(unexpected)}]; only the registered files, their directories and {EXPORT_MANIFEST} "
+                         f"are allowed; nothing imported")
     by_key = {_key(export / rel): rel for rel in expected}
-    names = tuple(Path(rel).stem for rel in expected)
+    by_name = {Path(rel).stem: rel for rel in expected}
+    names = tuple(by_name)
     displaced = []
     for name in names:
-        module = sys.modules.get(name)
-        if module is None:
-            continue
-        origin = getattr(module, "__file__", None)
-        if origin is None or _key(origin) not in by_key:
+        if name in sys.modules:
             displaced.append(name)
-            del sys.modules[name]  # a cached module under this name must not stand in for the verified file
+            del sys.modules[name]  # every cached module of these names, same-path ones included: code already in
+            # memory is not the verified bytes, whatever its __file__ says; the fresh import below is the only one trusted
     remember_dir, step2 = export / "sandbox" / "mind" / "remember", export / "sandbox" / "mind" / "step2"
     for _path in (str(step2), str(remember_dir)):
         if _path not in sys.path:
             sys.path.insert(0, _path)
-    modules = {name: _import_module(name) for name in ("remember_v2", "remember_v3", "remember_v21", "q4")}
+    bytecode_before = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # no .pyc of the export is written by this import
+    try:
+        modules = {name: _import_module(name) for name in ("remember_v2", "remember_v3", "remember_v21", "q4")}
+    finally:
+        sys.dont_write_bytecode = bytecode_before
     origins: dict[str, str] = {}
     for name in names:
         module = modules.get(name, sys.modules.get(name))
@@ -365,6 +407,9 @@ def load_remember(export: Path) -> dict[str, Any]:
         rel = by_key.get(_key(origin)) if origin else None
         if rel is None:
             raise BenchError(f"imported module {name} originates from {origin!r}, not from the verified export")
+        if rel != by_name[name]:
+            raise BenchError(f"imported module {name} originates from {rel}, not from its own registered file "
+                             f"{by_name[name]}")
         if git_blob_id(Path(origin).read_bytes()) != expected[rel]:
             raise BenchError(f"imported module {name}: {rel} changed after verification")
         origins[name] = rel

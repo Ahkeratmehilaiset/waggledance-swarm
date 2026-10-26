@@ -144,64 +144,92 @@ function Publish-BridgeWakeSnapshot {
     }else{[IO.File]::Move($Temp,$Path)}
 }
 
+function Open-BridgeWakeLock {
+    # Serializes the writers of one sentinel; named so a test can hold it or see a writer reach it.
+    # Lock contract: the lock is the file <sentinel>.lock beside the sentinel, opened with FileShare.None for the
+    # whole read, merge and publication (the pattern of the BridgeReplyIndex.ps1 cache lock and the
+    # ClaimLeaseHeartbeat.ps1 claim lock). The OS releases it when the handle is closed, also when the holder
+    # process ends, so a leftover file is never a stale lock. It is an empty, persistent file: writers never delete
+    # it, because a deleted and re-created lock file would let two writers each hold "the" lock. It serializes only
+    # writers that call Write-BridgeWakeObservation; a writer without this lock (an older copy of this file) or
+    # another process that replaces or deletes the sentinel is not serialized.
+    param([string]$Path)
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while($true){
+        try{return [IO.File]::Open($Path+'.lock',[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}
+        catch [IO.DirectoryNotFoundException],[IO.FileNotFoundException],[IO.PathTooLongException],[IO.DriveNotFoundException]{throw}
+        catch [IO.IOException]{
+            # Held by another writer of this sentinel: a bounded wait, then this IOException stays visible.
+            if($clock.ElapsedMilliseconds -ge 3000){throw}
+            Start-Sleep -Milliseconds (Get-Random -Minimum 5 -Maximum 50)
+        }
+    }
+}
+
 function Write-BridgeWakeObservation {
     param([string]$Path,[object[]]$Events,
           [string]$Reason='',[Nullable[long]]$Watermark=$null,[Nullable[double]]$LatencyMs=$null,[string]$LatencyBasis='')
     # Validated before any read or write; $null when no metadata was supplied.
     $metadata=ConvertTo-BridgeObservationMetadata -Reason $Reason -Watermark $Watermark -LatencyMs $LatencyMs -LatencyBasis $LatencyBasis
-    # Another writer of the same sentinel can replace, create or move it between the read below and the
-    # publication. Earlier author and RCO reports describe the resulting IOException; it is not reproduced here,
-    # and the tests inject it synthetically at Publish-BridgeWakeSnapshot. Such an IOException is retried from a
-    # fresh read, which merges the other writer's bindings when its publication collided with this one. It counts
-    # as success only when this writer's own staged bytes are at $Path. Two limits remain; this function removes
-    # neither:
-    # - Lost update: in a non-colliding read-modify-write interleaving (both writers read the same snapshot and
-    #   both publications succeed) the later one drops the earlier one's bindings, and correlation_complete can
-    #   stay true.
+    # The sentinel lock (Open-BridgeWakeLock) is held from before the read below until after the publication, so
+    # two writers that both call this function cannot interleave: the later one reads the earlier one's snapshot,
+    # and both bindings survive when both calls succeed. A writer that cannot get the lock within its bound throws
+    # an IOException and changes nothing. A writer that does not take the lock can still replace, create or move
+    # the sentinel between the read and the publication. Earlier author and RCO reports describe the resulting
+    # IOException; it is not reproduced here, and the tests inject it synthetically at Publish-BridgeWakeSnapshot.
+    # Such an IOException is retried from a fresh read, which merges the other writer's bindings when its
+    # publication collided with this one. It counts as success only when this writer's own staged bytes are at
+    # $Path. Two limits remain:
+    # - Lost update by a writer outside the lock: in a non-colliding interleaving with such a writer (both read the
+    #   same snapshot and both publications succeed) the later one drops the earlier one's bindings, and
+    #   correlation_complete can stay true.
     # - A lasting IOException is thrown after the fifth attempt, and any other exception (access denied included)
     #   at once. What a caller does with that throw is outside this function.
-    for($attempt=1;;$attempt++){
-        $bindings=[Collections.Generic.List[object]]::new()
-        $complete=$true
-        if([IO.File]::Exists($Path)){
-            try{
-                if((Get-Item -LiteralPath $Path).Length -gt 131072){throw 'Oversized previous wake'}
-                $jsonArgs=@{ErrorAction='Stop'}
-                if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
-                $previous=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json @jsonArgs
-                if($previous.schema -cne 'wd.bridge-wake-observation.v1'){throw 'Legacy wake'}
-                foreach($item in @($previous.requests)){$bindings.Add($item)}
-                $complete=[bool]$previous.correlation_complete
-            }catch{$complete=$false}
-        }
-        foreach($event in $Events){
-            $bound=Get-BridgeStageBinding $event
-            if($null -eq $bound){$complete=$false;continue}
-            $bindings.Add([pscustomobject]@{request_id=[string]$bound.request_id;agent=[string]$bound.agent;
-                session_id=[string]$bound.session_id;reply_ts_utc=$(if($bound.PSObject.Properties['reply_ts_utc']){[string]$bound.reply_ts_utc}else{''})})
-        }
-        if($bindings.Count -gt 256){$complete=$false}
-        $value=[ordered]@{schema='wd.bridge-wake-observation.v1';observed_at_utc=[datetime]::UtcNow.ToString('o');
-            requests=@($bindings|Select-Object -Last 256);correlation_complete=$complete;authority_effect='none'}
-        # Describes this wake only: never carried forward from the previous snapshot.
-        if($null -ne $metadata){$value['metadata']=$metadata}
-        $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
-        $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($value|ConvertTo-Json -Depth 8 -Compress))
-        try{
-            [IO.File]::WriteAllBytes($temp,$bytes)
-            try{Publish-BridgeWakeSnapshot -Temp $temp -Path $Path;return}
-            catch [IO.IOException]{
-                # This writer's exact staged bytes at $Path are the only success witness after an error.
-                $published=$false
-                try{$published=[Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -ceq [Convert]::ToBase64String($bytes)}
-                catch [IO.IOException]{$published=$false}
-                if($published){return}
-                if($attempt -ge 5){throw}
+    $lock=Open-BridgeWakeLock -Path $Path
+    try{
+        for($attempt=1;;$attempt++){
+            $bindings=[Collections.Generic.List[object]]::new()
+            $complete=$true
+            if([IO.File]::Exists($Path)){
+                try{
+                    if((Get-Item -LiteralPath $Path).Length -gt 131072){throw 'Oversized previous wake'}
+                    $jsonArgs=@{ErrorAction='Stop'}
+                    if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
+                    $previous=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json @jsonArgs
+                    if($previous.schema -cne 'wd.bridge-wake-observation.v1'){throw 'Legacy wake'}
+                    foreach($item in @($previous.requests)){$bindings.Add($item)}
+                    $complete=[bool]$previous.correlation_complete
+                }catch{$complete=$false}
             }
-        }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
-        # Random, growing backoff: two watchers that saw the same event must not retry in lockstep.
-        Start-Sleep -Milliseconds (Get-Random -Minimum 1 -Maximum (50*$attempt))
-    }
+            foreach($event in $Events){
+                $bound=Get-BridgeStageBinding $event
+                if($null -eq $bound){$complete=$false;continue}
+                $bindings.Add([pscustomobject]@{request_id=[string]$bound.request_id;agent=[string]$bound.agent;
+                    session_id=[string]$bound.session_id;reply_ts_utc=$(if($bound.PSObject.Properties['reply_ts_utc']){[string]$bound.reply_ts_utc}else{''})})
+            }
+            if($bindings.Count -gt 256){$complete=$false}
+            $value=[ordered]@{schema='wd.bridge-wake-observation.v1';observed_at_utc=[datetime]::UtcNow.ToString('o');
+                requests=@($bindings|Select-Object -Last 256);correlation_complete=$complete;authority_effect='none'}
+            # Describes this wake only: never carried forward from the previous snapshot.
+            if($null -ne $metadata){$value['metadata']=$metadata}
+            $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+            $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($value|ConvertTo-Json -Depth 8 -Compress))
+            try{
+                [IO.File]::WriteAllBytes($temp,$bytes)
+                try{Publish-BridgeWakeSnapshot -Temp $temp -Path $Path;return}
+                catch [IO.IOException]{
+                    # This writer's exact staged bytes at $Path are the only success witness after an error.
+                    $published=$false
+                    try{$published=[Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -ceq [Convert]::ToBase64String($bytes)}
+                    catch [IO.IOException]{$published=$false}
+                    if($published){return}
+                    if($attempt -ge 5){throw}
+                }
+            }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+            # Random, growing backoff: two watchers that saw the same event must not retry in lockstep.
+            Start-Sleep -Milliseconds (Get-Random -Minimum 1 -Maximum (50*$attempt))
+        }
+    }finally{$lock.Dispose()}
 }
 
 function Test-BridgeObservationRoot {

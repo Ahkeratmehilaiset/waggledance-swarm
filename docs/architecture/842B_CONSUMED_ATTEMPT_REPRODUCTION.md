@@ -56,10 +56,17 @@ evidence that the historical record is absent.
 
 No reproduction attempt of 842B may be started, and none may be accepted as a
 measurement, unless a receipt with every field below is written **before**
-(section 3.1 to 3.3) and **after** (3.4 to 3.6) the attempt, as immutable
-objects whose hashes are recorded in the bound bridge result. A field whose
-actual value is not known is written as `UNKNOWN`; a receipt containing an
-`UNKNOWN` in sections 3.1 to 3.3 does not authorize an attempt. Current
+(section 3.1 to 3.5) and **after** (section 3.6) the attempt, as immutable
+objects whose hashes are recorded in the bound bridge result. Everything that
+decides or bounds the attempt (identities, immutable roots, invocation, input
+hashes and the before-checkpoint, the one-shot budget, the stop condition, the
+planned rollback, the owner and the exact operator authorizer) is written and
+signed before it starts. Only what the attempt produced (outputs, the
+after-checkpoint, exit, failure, loaded modules, physical peak, actual
+termination and the restoration proof) is written after it. A precondition is
+never backfilled after the attempt as if it had been known before. A field
+whose actual value is not known is written as `UNKNOWN`; a receipt containing
+an `UNKNOWN` in sections 3.1 to 3.5 does not authorize an attempt. Current
 values are listed so that the gap is explicit.
 
 ### 3.1 Identity of the attempt being reproduced
@@ -92,35 +99,37 @@ values are listed so that the gap is explicit.
 | `runtime_identity` | process image, start time, parent chain as the execution-evidence helper records them | UNKNOWN |
 | `token_identity` | the lane token's identity label and level (for example High or Medium), never the token value; agents never read, log or store token material | UNKNOWN |
 | `config_identity` | hash of every configuration file read at start | UNKNOWN |
-| `one_shot_budget` | the written statement that exactly one attempt is permitted, who signed it, and at which head | none |
 
-### 3.4 Inputs and outputs
-
-| field | required content | current value |
-|---|---|---|
-| `input_hashes` | sha256 of every input object the attempt reads | UNKNOWN |
-| `output_hashes` | sha256 of every object the attempt writes, with paths | UNKNOWN |
-| `canonical_checkpoint_before` / `_after` | identity of the canonical lane checkpoint record before and after | UNKNOWN |
-
-### 3.5 Failure and loaded code
+### 3.4 Inputs, before the attempt
 
 | field | required content | current value |
 |---|---|---|
+| `input_hashes` | sha256 of every input object the attempt will read | UNKNOWN |
+| `canonical_checkpoint_before` | identity of the canonical lane checkpoint record before the attempt | UNKNOWN |
+
+### 3.5 Controls, decided and signed before the attempt
+
+| field | required content | current value |
+|---|---|---|
+| `one_shot` | the written statement that exactly one attempt is permitted, who signed it, and at which head; the receipt names that single attempt and forbids a second | none |
+| `stop_condition` | the written condition under which the attempt stops itself | none |
+| `planned_rollback` | what will be restored, from which immutable object, and how the restoration will be proved | none |
+| `owner` | the identity that owns the attempt and its hold state (R1: Lead/Root for 842B batch execution) | Lead/Root (R1) |
+| `authorizer` | the operator signature that lifts HOLD_NO_RETRY for exactly this attempt | none |
+
+### 3.6 Observations, after the attempt
+
+| field | required content | current value |
+|---|---|---|
+| `output_hashes` | sha256 of every object the attempt wrote, with paths | UNKNOWN |
+| `canonical_checkpoint_after` | identity of the canonical lane checkpoint record after the attempt | UNKNOWN |
 | `exit_code` | process exit code | UNKNOWN |
 | `failure_literal` | the exact error text, exception type and HResult / errno, verbatim | UNKNOWN |
 | `failure_site` | file and line of the raise, bound to `source_blobs` | UNKNOWN |
 | `loaded_modules` | the list of modules actually loaded, with origin paths and hashes | UNKNOWN |
 | `physical_peak` | peak memory, disk and handle use, measured by the recorded method | NOT_MEASURED |
-
-### 3.6 Control
-
-| field | required content | current value |
-|---|---|---|
-| `one_shot` | true; the receipt names the single attempt and forbids a second | required |
-| `stop_condition` | the written condition under which the attempt stops itself | required |
-| `rollback` | what is restored, from which immutable object, and the proof that it was restored | required |
-| `owner` | the identity that owns the attempt and its hold state (R1: Lead/Root for 842B batch execution) | Lead/Root (R1) |
-| `authorizer` | the operator signature that lifts HOLD_NO_RETRY for exactly this attempt | none |
+| `actual_termination` | how the attempt ended: by its `stop_condition`, by exit, or by external termination, with the time from the record | UNKNOWN |
+| `restoration_proof` | the proof that the `planned_rollback` was carried out: hashes of the restored objects against the immutable sources | UNKNOWN |
 
 ## 4. Disposition
 
@@ -168,3 +177,9 @@ authority that can lift HOLD_NO_RETRY.
 - PR #1922 body (public, GitHub).
 - `main` `6b33c6f95bf2fe350bcde7485e7ed094a59ad4e9` for the compact reader's refusal site.
 - No test consumes this file; CI collects `tests/` whole and this change adds no test.
+- Correction 2026-10-26 (codex-tools-1 static finding A2-DOC-CONTROL-TIMING on
+  the first version of this file): the section 3 lead-in had grouped the
+  controls of the former section 3.6 (one-shot, stop condition, rollback,
+  owner, authorizer) with the observations written after the attempt. They are
+  pre-run decisions and are now in section 3.5, before the attempt; only
+  observations remain after it (section 3.6). Nothing else changed.

@@ -72,6 +72,7 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
 )
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
+    build_added_test_context,
     build_pr_status_snapshot,
 )
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
@@ -349,6 +350,8 @@ def evaluate_auto_merge_gate(
     apply: bool = False,
     require_bridge_consensus: bool = False,
     standing_consensus_sign: bool = False,
+    added_test_repository: Path | None = None,
+    added_test_git: Path | None = None,
     allow_lead_stall_failover: bool = False,
     lead_stall_failover_threshold_seconds: int = (
         LEAD_STALL_FAILOVER_THRESHOLD_SECONDS
@@ -368,6 +371,14 @@ def evaluate_auto_merge_gate(
     ``GROK_REPORTS_ROOT`` hold a vacant RCO slot. ``_grok_reports_root`` is a
     test seam for that fixed root, never a caller-selected authority.
     """
+    added_test_options: dict[str, Any] = {}
+    if added_test_repository is not None or added_test_git is not None:
+        if (not isinstance(added_test_repository, Path)
+                or not added_test_repository.is_absolute()
+                or not isinstance(added_test_git, Path) or not added_test_git.is_absolute()):
+            raise _invalid("invalid_input", "added-test repository and Git must be paired absolute Paths")
+        added_test_options = {"added_test_repository": added_test_repository,
+                              "added_test_git": added_test_git, "runner": runner}
     _validate_grok_fallback_inputs(
         review_policy=review_policy,
         grok_fallback=grok_fallback,
@@ -669,6 +680,23 @@ def evaluate_auto_merge_gate(
     # can never weaken the gate nor auto-sign the PR that wires it.
     ci_all_green = bool(checks) and not failing_checks
     receipt_present = bool(receipt_bundle_path) or bool(apply and artifact_hook_configured)
+    added_test_kwargs: dict[str, Any] = {}
+    added_test_error = False
+    if standing_consensus_sign and added_test_repository is not None:
+        try:
+            added_test_context = build_added_test_context(
+                pr_status=pr_status, expected_head=expected_head, repo=repo,
+                repository=added_test_repository, git=added_test_git, runner=runner,
+            )
+        except (PrStatusSnapshotError, OSError, ValueError, TypeError, KeyError):
+            added_test_context = None
+        if isinstance(added_test_context, Mapping):
+            added_test_kwargs["git_context"] = added_test_context
+        else:
+            # A configured proof that became stale, failed or returned nothing must
+            # not fall back to a permissive legacy (b) result. No cached context is consulted.
+            added_test_error = True
+            blockers.append("added-test proof context could not be freshly derived")
     standing_sign_gate = evaluate_standing_consensus_sign(
         enabled=standing_consensus_sign,
         changed_paths=changed_paths,
@@ -677,7 +705,9 @@ def evaluate_auto_merge_gate(
         diff_gate_allowed=bool(diff_gate.allowed),
         head_matches=(head_sha == expected_head),
         receipt_present=receipt_present,
-    )
+        **added_test_kwargs,
+    ) if not added_test_error else {"admitted": False, "ab_class": None,
+                                   "reasons": ["added-test proof context unavailable"]}
     if standing_sign_gate.get("admitted"):
         blockers = [b for b in blockers if not b.startswith("path gate failed")]
 
@@ -827,6 +857,7 @@ def evaluate_auto_merge_gate(
             now_utc=gate_now,
             grok_fallback=grok_fallback,
             _grok_reports_root=_grok_reports_root,
+            **added_test_options,
         )
         apply_recheck["fresh_gate"] = fresh_gate
         if fresh_gate.get("ok") is not True:
@@ -840,6 +871,16 @@ def evaluate_auto_merge_gate(
                     or ["unknown fresh-gate refusal"]
                 )
             ]
+        elif (not isinstance(fresh_gate.get("standing_consensus_sign", {}), Mapping)
+              or not isinstance(report.get("standing_consensus_sign", {}), Mapping)):
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = ["fresh or planned standing-sign result is not an object"]
+        elif (fresh_gate.get("standing_consensus_sign", {}).get("git_evidence")
+              != report.get("standing_consensus_sign", {}).get("git_evidence")):
+            apply_recheck["ok"] = False
+            apply_recheck["decision"] = "apply_snapshot_recheck_failed"
+            apply_recheck["reasons"] = ["fresh added-test Git evidence differs from plan"]
         elif fresh_gate.get("grok_fallback_evidence") != report.get(
             "grok_fallback_evidence"
         ):

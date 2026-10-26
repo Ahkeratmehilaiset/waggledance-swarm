@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,107 @@ from tools.pr_status_snapshot import (
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
+
+
+def _added_test_context_fixture(monkeypatch):
+    """All PR/object data and process calls are synthetic; no local Git reads."""
+    live = {"pr_number": 479, "head_sha": HEAD, "head_ref": "synthetic",
+            "base_sha": BASE, "base_tip_sha": BASE, "base_ref": "main",
+            "changed_paths": ["tests/tools/test_new_case.py"], "diff_text": "toy",
+            "checks": [], "git_identities": [], "git_identity_evidence": {},
+            "state": "OPEN", "is_draft": False, "updated_at": "synthetic", "title": "toy"}
+    comparison = {"base_commit": {"sha": BASE},
+                  "merge_base_commit": {"sha": OTHER_BASE,
+                                        "commit": {"tree": {"sha": "d" * 40}}}}
+    commit = {"sha": HEAD, "tree": {"sha": "e" * 40}}
+    calls = []
+
+    def runner(command):
+        calls.append(list(command))
+        if command == ["gh", "api", "--method", "GET", f"repos/example/repository/compare/{BASE}...{HEAD}"]:
+            value = comparison
+        elif command == ["gh", "api", "--method", "GET", f"repos/example/repository/git/commits/{HEAD}"]:
+            value = commit
+        else:
+            raise AssertionError(f"unexpected process: {command}")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")
+
+    monkeypatch.setattr(snapshot_tool, "build_pr_status_snapshot", lambda **kw: deepcopy(live))
+    args = dict(pr_status=deepcopy(live), expected_head=HEAD, repo="example/repository",
+                repository=Path(Path.cwd().anchor) / "synthetic-repository",
+                git=Path(Path.cwd().anchor) / "synthetic-tool" / "git.exe", runner=runner)
+    return args, live, comparison, commit, calls
+
+
+def test_added_test_context_rederives_real_target_merge_base_and_trees(monkeypatch):
+    args, live, comparison, commit, calls = _added_test_context_fixture(monkeypatch)
+    context = snapshot_tool.build_added_test_context(**args)
+    assert context == dict(head=HEAD, target=BASE, base=OTHER_BASE,
+                           base_tree="d" * 40, head_tree="e" * 40,
+                           cwd=str(args["repository"]), git=str(args["git"]))
+    assert len(calls) == 2
+
+
+def test_added_test_context_ignores_cached_class_flags_and_arbitrary_target(monkeypatch):
+    args, *_ = _added_test_context_fixture(monkeypatch)
+    args["pr_status"].update(added_only=True, ab_class="b", git_context={"target": HEAD}, target=HEAD)
+    context = snapshot_tool.build_added_test_context(**args)
+    assert context["target"] == BASE
+    assert context["base"] == OTHER_BASE
+
+
+def test_added_test_context_refuses_stale_identity_paths_diff_and_checks(monkeypatch):
+    args, *_ = _added_test_context_fixture(monkeypatch)
+    for field, value in (("head_sha", OTHER_BASE), ("base_sha", OTHER_BASE),
+                         ("base_tip_sha", OTHER_BASE), ("base_ref", "different"),
+                         ("changed_paths", ["tools/gate.py"]), ("diff_text", "other"),
+                         ("checks", [{"name": "toy", "state": "failure"}])):
+        stale = dict(args["pr_status"], **{field: value})
+        with pytest.raises(PrStatusSnapshotError):
+            snapshot_tool.build_added_test_context(**dict(args, pr_status=stale))
+
+
+def test_added_test_context_refuses_object_mismatch_and_metadata_drift(monkeypatch):
+    args, live, comparison, commit, calls = _added_test_context_fixture(monkeypatch)
+    comparison["base_commit"]["sha"] = OTHER_BASE
+    with pytest.raises(PrStatusSnapshotError):
+        snapshot_tool.build_added_test_context(**args)
+    comparison["base_commit"]["sha"] = BASE
+    commit["sha"] = OTHER_BASE
+    with pytest.raises(PrStatusSnapshotError):
+        snapshot_tool.build_added_test_context(**args)
+    commit["sha"] = HEAD
+    snapshots = [deepcopy(live), dict(live, head_sha=OTHER_BASE)]
+    monkeypatch.setattr(snapshot_tool, "build_pr_status_snapshot", lambda **kw: snapshots.pop(0))
+    with pytest.raises(PrStatusSnapshotError):
+        snapshot_tool.build_added_test_context(**args)
+
+
+def test_added_test_context_requires_explicit_absolute_trusted_tool_configuration(monkeypatch):
+    args, *_ = _added_test_context_fixture(monkeypatch)
+    for override in ({"repo": ""}, {"git": Path("git")}, {"repository": Path("relative")},
+                     {"git": None}, {"git": args["git"].with_name("other.exe")}):
+        with pytest.raises(PrStatusSnapshotError):
+            snapshot_tool.build_added_test_context(**dict(args, **override))
+
+
+def test_added_test_context_passes_the_protected_reader_input_contract(monkeypatch):
+    """fable-5 integration: the built tuple passes the reader's own checks; its first read is the refusal guard."""
+    import tools.check_standing_consensus_sign_class as standing_tool
+    args, *_ = _added_test_context_fixture(monkeypatch)
+    context = snapshot_tool.build_added_test_context(**args)
+    reads = []
+
+    def first_read(command, **kwargs):
+        reads.append((list(command), kwargs.get("cwd")))
+        raise OSError("synthetic: no Git process is ever started")
+
+    monkeypatch.setattr(standing_tool.subprocess, "run", first_read)
+    legacy = standing_tool.classify_ab(["tests/tools/test_new_case.py"])
+    assert standing_tool.classify_ab(["tests/tools/test_new_case.py"], git_context=context) == legacy
+    assert reads == [([context["git"], "--no-pager", "--no-replace-objects", "--literal-pathspecs", "-c",
+                       "core.commitGraph=false", "-c", "diff.ignoreSubmodules=none", "rev-parse",
+                       "--is-shallow-repository"], context["cwd"])]
 
 
 def _base_ref_payload(sha: str = BASE) -> dict:

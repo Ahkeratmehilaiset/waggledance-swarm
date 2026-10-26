@@ -1109,7 +1109,12 @@ RCO_CHECKER_ENTRYPOINTS = {
 def test_rco_checkers_are_published_entrypoints_and_import_smoked():
     """The pinned wrapper refuses any tool outside python_entrypoints, so an
     RCO asked to run a checker "via WD_BRIDGE_PYTHON_WRAPPER" gets native exit
-    1 before Python starts unless both checkers are published here."""
+    1 before Python starts unless both checkers are published here.
+
+    This test checks those two legacy names and their smoke declarations only.
+    The transitive publication boundary for every ordinary entrypoint is the
+    explicit route/executor policy in test_bridge_code_package_closure.py;
+    a filename-prefix filter cannot detect an innocently named gate wrapper."""
     entrypoints = DEFINITION["python_entrypoints"]
     for name, path in RCO_CHECKER_ENTRYPOINTS.items():
         assert entrypoints.get(name) == path, (name, entrypoints.get(name))
@@ -1117,7 +1122,9 @@ def test_rco_checkers_are_published_entrypoints_and_import_smoked():
     smoke = DEFINITION["import_smoke"]["package_modules"]
     for module in ("tools.check_bridge_changes_requested", "tools.check_rco_pass_present"):
         assert module in smoke, module
-    # Publishing is per path, never a pattern: no other check_* tool rides along.
+    # Retain this direct check_* naming restriction, not a publication-safety
+    # claim. Approved non-check_* diagnostics are named explicitly by the
+    # separate closure policy; no substring/prefix grants them permission.
     published_checkers = {
         path for path in entrypoints.values() if Path(path).name.startswith("check_")
     }

@@ -189,12 +189,27 @@ def merge_with_bridge_receipt(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    standing_consensus_sign: bool = False,
+    added_test_repository: Path | None = None,
+    added_test_git: Path | None = None,
 ) -> dict[str, Any]:
     """Run snapshot + receipt preflight, then optionally merge exact head.
 
     With ``grok_fallback`` (rule12 only) the fresh gate must reproduce the
     receipt's whole Grok evidence tuple, or the merge is refused before gh.
     """
+    if type(standing_consensus_sign) is not bool:
+        raise ValueError("standing_consensus_sign must be a boolean")
+    proof_kwargs: dict[str, Any] = {}
+    if standing_consensus_sign or added_test_repository is not None or added_test_git is not None:
+        if ((added_test_repository is not None or added_test_git is not None)
+                and (not isinstance(added_test_repository, Path)
+                     or not added_test_repository.is_absolute()
+                     or not isinstance(added_test_git, Path) or not added_test_git.is_absolute())):
+            raise ValueError("added-test repository and Git must be paired absolute Paths")
+        proof_kwargs = {"standing_consensus_sign": standing_consensus_sign,
+                        "added_test_repository": added_test_repository,
+                        "added_test_git": added_test_git, "runner": runner}
     if type(grok_fallback) is not bool:
         raise ValueError("grok_fallback must be a boolean")
     if grok_fallback and review_policy != REVIEW_POLICY_RULE12:
@@ -320,6 +335,7 @@ def merge_with_bridge_receipt(
             operator_path_exception=operator_path_exception,
             review_policy=review_policy,
             **grok_kwargs,
+            **proof_kwargs,
         )
     except BridgeConsensusMergeReceiptError as exc:
         return _blocked(
@@ -412,6 +428,7 @@ def merge_with_bridge_receipt(
             require_bridge_consensus=True,
             **fresh_rule12_kwargs,
             **grok_kwargs,
+            **proof_kwargs,
         )
     except AutoMergeGateError as exc:
         fresh_gate = dict(exc.report)
@@ -434,6 +451,25 @@ def merge_with_bridge_receipt(
             },
         )
     receipt_gate_report = receipt_report.get("gate_report")
+    receipt_standing = (receipt_gate_report.get("standing_consensus_sign", {})
+                        if isinstance(receipt_gate_report, Mapping) else {})
+    fresh_standing = fresh_gate.get("standing_consensus_sign", {})
+    if not isinstance(receipt_standing, Mapping) or not isinstance(fresh_standing, Mapping):
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=["fresh or receipt standing-sign result is not an object"],
+            stage="apply_recheck", pr_number=pr_number,
+            extra={"fresh_gate": fresh_gate, "snapshot_path": str(snapshot_path),
+                   "receipt_bundle_path": receipt_report["receipt_bundle_path"]},
+        )
+    if (fresh_standing.get("git_evidence") != receipt_standing.get("git_evidence")):
+        return _blocked(
+            decision="apply_gate_recheck_failed",
+            errors=["fresh gate added-test Git evidence differs from the receipt"],
+            stage="apply_recheck", pr_number=pr_number,
+            extra={"fresh_gate": fresh_gate, "snapshot_path": str(snapshot_path),
+                   "receipt_bundle_path": receipt_report["receipt_bundle_path"]},
+        )
     receipt_evidence = (
         receipt_gate_report.get("grok_fallback_evidence")
         if isinstance(receipt_gate_report, Mapping)

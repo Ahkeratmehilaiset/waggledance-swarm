@@ -263,6 +263,79 @@ def build_pr_status_snapshot(
     )
 
 
+def build_added_test_context(
+    *, pr_status: Mapping[str, Any], expected_head: str, repo: str,
+    repository: Path, git: Path, runner: Runner | None = None,
+) -> dict[str, str]:
+    """Re-derive PR object identities for the optional added-test proof.
+
+    This is NOT classification or approval. The classifier must independently
+    verify this tuple, the unique merge base and the entire diff using local
+    immutable Git objects. No snapshot status/class/context is authority. The
+    repository and absolute Git tool are trusted API configuration, never read
+    from snapshot JSON. There is deliberately no CLI activation switch here.
+    """
+    if (not isinstance(pr_status, Mapping) or type(repo) is not str
+            or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) is None
+            or not isinstance(repository, Path) or not repository.is_absolute()
+            or not isinstance(git, Path) or not git.is_absolute()
+            or git.name.lower() not in {"git", "git.exe"}):
+        raise _invalid("invalid_added_test_context", "explicit repository and Git tool required")
+    expected_head = _require_sha(expected_head, "expected head")
+    run = runner if runner is not None else _run_command
+    fresh = build_pr_status_snapshot(
+        pr_number=pr_status.get("pr_number"), repo=repo, runner=run,
+    )
+    fields = ("pr_number", "head_sha", "head_ref", "base_sha", "base_tip_sha",
+              "base_ref", "state", "is_draft", "updated_at", "title", "checks",
+              "changed_paths", "diff_text", "git_identities", "git_identity_evidence")
+    if (fresh.get("head_sha") != expected_head
+            or any(pr_status.get(key) != fresh.get(key) for key in fields)):
+        raise _invalid("added_test_snapshot_drift", "PR metadata changed before proof")
+    head = _require_sha(fresh.get("head_sha"), "head")
+    target = _require_sha(fresh.get("base_tip_sha"), "target")
+    if fresh.get("base_sha") != target:
+        raise _invalid("added_test_snapshot_drift", "PR target does not match live tip")
+
+    comparison_text = _run_gh_text(
+        run, ["gh", "api", "--method", "GET", f"repos/{repo}/compare/{target}...{head}"],
+        failure_decision="added_test_compare_failed", label="PR comparison identity",
+    )
+    _assert_no_private_markers(comparison_text)
+    comparison = _parse_json(comparison_text, decision="invalid_added_test_compare")
+    if (not isinstance(comparison, Mapping)
+            or not isinstance(comparison.get("base_commit"), Mapping)
+            or comparison["base_commit"].get("sha") != target
+            or not isinstance(comparison.get("merge_base_commit"), Mapping)):
+        raise _invalid("invalid_added_test_compare", "comparison target or merge base missing")
+    merge_base = comparison["merge_base_commit"]
+    base = _require_sha(merge_base.get("sha"), "merge base")
+    commit = merge_base.get("commit")
+    tree = commit.get("tree") if isinstance(commit, Mapping) else None
+    base_tree = _require_sha(tree.get("sha") if isinstance(tree, Mapping) else None, "base tree")
+    head_text = _run_gh_text(
+        run, ["gh", "api", "--method", "GET", f"repos/{repo}/git/commits/{head}"],
+        failure_decision="added_test_head_failed", label="PR head tree identity",
+    )
+    _assert_no_private_markers(head_text)
+    head_commit = _parse_json(head_text, decision="invalid_added_test_head")
+    if not isinstance(head_commit, Mapping) or head_commit.get("sha") != head:
+        raise _invalid("invalid_added_test_head", "head commit identity mismatch")
+    tree = head_commit.get("tree")
+    head_tree = _require_sha(tree.get("sha") if isinstance(tree, Mapping) else None, "head tree")
+
+    # Bracket the extra object reads. Even freshly derived evidence cannot be
+    # carried across a changed PR head, target tip, path set or diff.
+    final = build_pr_status_snapshot(
+        pr_number=fresh["pr_number"], repo=repo, runner=run,
+    )
+    if any(fresh.get(key) != final.get(key) for key in fields):
+        raise _invalid("added_test_snapshot_drift", "PR changed during object reads")
+    return {"head": head, "target": target, "base": base,
+            "head_tree": head_tree, "base_tree": base_tree,
+            "cwd": str(repository), "git": str(git)}
+
+
 def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:
     command = ["gh", "pr", "view", str(pr_number), "--json", f"{GH_JSON_FIELDS},state"]
     if repo:

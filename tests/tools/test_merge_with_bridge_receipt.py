@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Sequence
@@ -27,6 +28,118 @@ AGENT_UUIDS = {
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
+
+
+class _ReachedMergeProcess(Exception):
+    pass
+
+
+def _added_test_executor(monkeypatch, receipt_standing, fresh_standing, runner):
+    """fable-5 B13: the executor recheck with a synthetic receipt and fresh gate (shape of the Tools test below)."""
+    class MemoryPath(type(Path())):
+        def mkdir(self, *args, **kwargs):
+            pass
+
+        def write_text(self, *args, **kwargs):
+            return 0
+
+    status = {"head_sha": HEAD, "head_ref": "synthetic", "base_ref": "main"}
+    receipt = {"receipt_bundle_path": "synthetic-manifest",
+               "gate_report": {"standing_consensus_sign": receipt_standing}}
+    monkeypatch.setattr(merge_tool, "_utc_now", lambda: NOW)
+    monkeypatch.setattr(merge_tool, "build_pr_status_snapshot", lambda **kw: deepcopy(status))
+    monkeypatch.setattr(merge_tool, "write_bridge_consensus_merge_receipt", lambda **kw: deepcopy(receipt))
+    monkeypatch.setattr(merge_tool, "evaluate_auto_merge_gate",
+                        lambda **kw: {"ok": True, "standing_consensus_sign": deepcopy(fresh_standing)})
+    monkeypatch.setattr(merge_tool, "_snapshot_drift_fields", lambda *a: [])
+    monkeypatch.setattr(merge_tool, "apply_operator_path_exception", lambda report, **kw: report)
+    repository = Path(Path.cwd().anchor) / "synthetic-repository"
+    return merge_with_bridge_receipt(
+        pr_number=1174, repo="example/repository", events_path=repository / "events",
+        out_dir=MemoryPath(repository / "out"), expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id=TASK, apply=True, runner=runner,
+    )
+
+
+def test_legacy_b_without_git_evidence_passes_the_executor_evidence_recheck(monkeypatch):
+    """fable-5 B13 (RCO1 A4): a legacy (b) result without git_evidence on both sides compares equal. Differential:
+    the same harness with only the evidence changed is refused at that recheck, so the legacy run passed it."""
+    def runner(command):
+        raise _ReachedMergeProcess()
+    drift_error = "fresh gate added-test Git evidence differs from the receipt"
+    legacy = {"admitted": True, "ab_class": "b", "reasons": []}
+    try:
+        result = _added_test_executor(monkeypatch, legacy, legacy, runner)
+    except _ReachedMergeProcess:
+        result = {"errors": []}
+    assert drift_error not in result.get("errors", [])
+    drift = _added_test_executor(monkeypatch, legacy, dict(legacy, git_evidence={"diff_sha256": "e" * 64}),
+                                 runner)
+    assert drift["decision"] == "apply_gate_recheck_failed"
+    assert drift["errors"] == [drift_error]
+
+
+@pytest.mark.parametrize("side", ["receipt", "fresh"])
+def test_non_object_standing_result_is_an_explicit_executor_blocker(monkeypatch, side):
+    """fable-5 B13 (RCO2 A3): a None standing-sign result is refused before any merge process."""
+    def forbidden(command):
+        raise AssertionError("No merge process may start on a malformed standing-sign result")
+    legacy = {"admitted": True, "ab_class": "b", "reasons": []}
+    receipt_standing, fresh_standing = (None, legacy) if side == "receipt" else (legacy, None)
+    result = _added_test_executor(monkeypatch, receipt_standing, fresh_standing, forbidden)
+    assert result["decision"] == "apply_gate_recheck_failed"
+    assert result["errors"] == ["fresh or receipt standing-sign result is not an object"]
+
+
+def test_added_test_fresh_executor_refuses_proof_drift_before_merge(monkeypatch):
+    class MemoryPath(type(Path())):
+        def mkdir(self, *args, **kwargs):
+            pass
+        def write_text(self, *args, **kwargs):
+            return 0
+
+    proof = {"head": HEAD, "base": BASE, "target": BASE,
+             "base_tree": "c" * 40, "head_tree": "d" * 40, "diff_sha256": "e" * 64}
+    status = {"head_sha": HEAD, "head_ref": "synthetic", "base_ref": "main"}
+    receipt = {"receipt_bundle_path": "synthetic-manifest",
+               "gate_report": {"standing_consensus_sign": {"git_evidence": proof}}}
+    fresh = {"ok": True, "standing_consensus_sign": {"git_evidence": dict(proof, head_tree="f" * 40)}}
+    calls = []
+    gate_calls = []
+    writer_calls = []
+
+    def forbidden(command):
+        calls.append(command)
+        raise AssertionError("No merge process may start after proof drift")
+
+    def gate(**kwargs):
+        gate_calls.append(kwargs)
+        return fresh
+
+    def writer(**kwargs):
+        writer_calls.append(kwargs)
+        return receipt
+
+    monkeypatch.setattr(merge_tool, "_utc_now", lambda: NOW)
+    monkeypatch.setattr(merge_tool, "build_pr_status_snapshot", lambda **kw: deepcopy(status))
+    monkeypatch.setattr(merge_tool, "write_bridge_consensus_merge_receipt", writer)
+    monkeypatch.setattr(merge_tool, "evaluate_auto_merge_gate", gate)
+    monkeypatch.setattr(merge_tool, "_snapshot_drift_fields", lambda *a: [])
+    monkeypatch.setattr(merge_tool, "apply_operator_path_exception", lambda report, **kw: report)
+    repository = Path(Path.cwd().anchor) / "synthetic-repository"
+    result = merge_with_bridge_receipt(
+        pr_number=1174, repo="example/repository", events_path=repository / "events",
+        out_dir=MemoryPath(repository / "out"), expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id=TASK, apply=True, runner=forbidden,
+        standing_consensus_sign=True, added_test_repository=repository,
+        added_test_git=repository / "git.exe",
+    )
+    assert result["ok"] is False
+    assert result["decision"] == "apply_gate_recheck_failed"
+    assert any("added-test" in error for error in result["errors"])
+    assert calls == []
+    assert gate_calls[0]["added_test_repository"] == repository
+    assert writer_calls[0]["added_test_git"] == repository / "git.exe"
 
 
 @pytest.mark.parametrize("failure", [None, "expired_at_apply", "ci", "veto", "missing_tools"])

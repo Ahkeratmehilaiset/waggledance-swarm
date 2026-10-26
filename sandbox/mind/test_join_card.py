@@ -763,3 +763,72 @@ def test_named_mutant_joiners_refused_is_killed(monkeypatch):
     monkeypatch.setattr(jc, "JOINERS", frozenset())
     with pytest.raises(jc.JoinCardError):
         test_v03_genuine_text_in_any_script_still_renders()
+
+
+# --- S13i synthetic Mind bench (fable-5, 2026-10-26) --------------------------------------------------------------
+# Regression tests of sandbox/mind/synthetic_bench.py, the runnable synthetic bench of the six S13i questions (its
+# docstring). They were appended before the bench existed (RED: the import inside each test fails), then the bench was
+# written (GREEN). They assert the bench's contract, never a retrieval quality: a fake rank proves nothing about real
+# retrieval. The REMEMBER rows need the exported 6cf81dbb code, which CI does not have: without it they must be
+# NOT_RUN_DEPENDENCY with the dependency named, never a fake pass.
+
+def _bench():
+    import synthetic_bench as sb
+    return sb
+
+
+def test_s13i_generator_is_deterministic_per_seed_and_plants_what_it_declares():
+    sb = _bench()
+    first, again, other = sb.generate(sb.SEEDS[0]), sb.generate(sb.SEEDS[0]), sb.generate(sb.SEEDS[1])
+    assert first.digest() == again.digest() and first.digest() != other.digest()
+    for synth in (first, other):
+        base = synth.lesson("t0_l0")
+        for name in synth.plants["duplicates_of_t0_l0"]:
+            assert synth.cosine(name, "t0_l0") >= sb.PAIR_COSINE and synth.lesson(name)["text"] != base["text"]
+        older, newer = synth.plants["superseded_pair"]
+        assert f"supersedes: {synth.lesson(older)['file']}" in synth.lesson(newer)["text"]
+        assert synth.lesson(newer)["available_utc"] > synth.lesson(older)["available_utc"]
+        a, b = synth.plants["contradictory_pair"]
+        assert "always" in synth.lesson(a)["text"] and "never" in synth.lesson(b)["text"]
+        assert len(synth.relevant) == 2 * sb.TOPICS and len(synth.irrelevant) == 3
+        for situation in synth.irrelevant:
+            assert max(abs(synth.cosine_to_vector(name, situation["vector"])) for name in synth.names) < 0.05
+
+
+def test_s13i_bench_without_the_remember_export_runs_join_rows_and_marks_remember_rows_not_run():
+    sb = _bench()
+    out = sb.run_bench(sb.SEEDS[0], remember_export=None)
+    rows = out["rows"]
+    assert {row["question"] for row in rows} == set(sb.QUESTIONS)
+    for row in rows:
+        if row["question"] in sb.REMEMBER_QUESTIONS:
+            assert row["status"] == sb.NOT_RUN and "6cf81dbb" in row["dependency"] and row["metrics"] == {}
+        else:
+            assert row["status"] == "RUN" and row["dependency"] is None
+    budget = [row for row in rows if row["question"] == "utf8_card_budget"]
+    assert budget and all(row["metrics"]["over_budget"] == 0 and row["metrics"]["refused"] == 0
+                          and row["metrics"]["max_bytes"] <= jc.CARD_BYTES and row["metrics"]["cards"] > 0 for row in budget)
+    assert any(row["metrics"]["dropped_picks"] > 0 for row in budget)  # 3 picks of 450 bytes cannot all fit beside 6 PRs
+    [determinism] = [row for row in rows if row["question"] == "same_input_determinism"]
+    assert determinism["metrics"]["identical"] is True and len(determinism["metrics"]["digest"]) == 64
+    assert out["code"]["join_card_version"] == jc.VERSION and out["code"]["remember_export"] is None
+
+
+def test_s13i_cli_writes_one_json_only_inside_a_codex_audit_directory(tmp_path, capsys):
+    """The folder rule is a pure path check (tmp_path itself may lie inside a .codex-audit basetemp, as the audited
+    runs do, so it cannot serve as the outside case); the filesystem rules go through the CLI."""
+    sb = _bench()
+    assert sb.refusal_for(Path("C:/somewhere/plain/out"), sb.SEEDS[0]) == sb.NOT_AUDIT
+    assert sb.refusal_for(tmp_path / ".codex-audit" / "missing", sb.SEEDS[0]) == sb.NOT_A_DIR
+    assert sb.main(["--out", str(tmp_path / ".codex-audit" / "missing"), "--seed", str(sb.SEEDS[0])]) == 2
+    assert "refused: " + sb.NOT_A_DIR in capsys.readouterr().out and not (tmp_path / ".codex-audit").exists()
+    box = tmp_path / ".codex-audit" / "s13i"
+    box.mkdir(parents=True)
+    assert sb.refusal_for(box, sb.SEEDS[0]) is None
+    assert sb.main(["--out", str(box), "--seed", str(sb.SEEDS[0])]) == 0
+    [written] = list(box.iterdir())
+    data = json.loads(written.read_text(encoding="utf-8"))
+    assert data["schema"] == sb.SCHEMA and data["seed"] == sb.SEEDS[0] and len(data["rows"]) >= len(sb.QUESTIONS)
+    assert sb.refusal_for(box, sb.SEEDS[0]) == sb.EXISTS
+    assert sb.main(["--out", str(box), "--seed", str(sb.SEEDS[0])]) == 2  # exists: nothing is replaced
+    assert "refused: " + sb.EXISTS in capsys.readouterr().out and list(box.iterdir()) == [written]

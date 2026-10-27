@@ -110,6 +110,12 @@ function Invoke-WdFakeEntry($Entry) {
         $ExpectedSourceCommit = 'a' * 40
         $ExpectedManifestSha256 = 'B' * 64
         $liveFull = $Entry['live_dir']
+        # Explicit synthetic packet for this pin/exit-code fixture; the real
+        # defaults/bounds are separately tested through the actual ParamBlock.
+        $CaptureWindow = [int]3000
+        $CaptureWorkers = [int]4
+        $CaptureCycles = [int]36
+        $CaptureIntervalSeconds = [int]300
         . ([scriptblock]::Create($commandText))
         $row.arguments = @($arguments)
     }
@@ -273,7 +279,8 @@ def test_root_command_binds_verify_package_before_the_fake_producer_can_run(runs
         assert call["verify"] is True, call
         assert "-VerifyPackage" not in call["arguments"]
         assert call["arguments"] == ["--src", item["WD_BRIDGE_CODE_ROOT"], "--bin", item["WD_BRIDGE_BIN"],
-                                     "--live-dir", item["live_dir"]]
+                                     "--live-dir", item["live_dir"], "--window", "3000", "--workers", "4",
+                                     "--cycles", "36", "--interval", "300"]
         if item["verify_fails"] == "1":
             assert child["producer_ran"] is False and child["exit"] == 41, child
         else:

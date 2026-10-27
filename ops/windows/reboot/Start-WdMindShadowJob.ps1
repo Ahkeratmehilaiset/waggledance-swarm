@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs the Mind shadow producer once inside an owned kill-on-close job with one fixed deadline, a C: floor and an
+    Runs the Mind shadow producer once inside an owned kill-on-close job with one bounded deadline, a C: floor and an
     operator off switch. Preparation code: no run is authorized, and native acceptance A1-A7 is NOT_RUN.
 
 .DESCRIPTION
@@ -12,7 +12,7 @@
 
     Time: one Stopwatch is the enforcement clock, started once and never reset; UTC is read once at launch and every
     *_utc value is that launch time plus the monotonic elapsed time. Stop() (TerminateJobObject) runs only at the
-    1800 s deadline, after a guard hit (see Guards), after an unreadable job state or after a failed start record,
+    selected 60..1800 s deadline (default 1800), after a guard hit (see Guards), after an unreadable job state or after a failed start record,
     followed by at most 30 s for the job to drain. completed needs a full drain first observed strictly before the
     deadline (Tools P2: the clock is read after that observation and the deadline is checked again after the
     guards; a first observation at or after it takes the Stop path), with root exit alone never counting, an
@@ -20,6 +20,13 @@
     stopped_at_deadline needs a Stop that returned, a confirmed drain, the root observed exited on the managed
     handle after that drain and the lock reacquire (D1); everything else is stop_unconfirmed. This bounds when a
     drain is credited; it does not preempt a blocking call.
+
+    Capture parameters: explicit integer window, workers, cycles and interval are forwarded only through the same
+    verified wrapper to the existing producer flags. Defaults remain 3000/4/36/300. RunDeadlineSeconds bounds the
+    owned root/job controller, including bootstrap; it is not a producer per-cycle deadline flag. With one cycle
+    the selected controller deadline bounds that sole cycle's opportunity to complete, not its successful completion.
+    A smaller window guarantees neither a first commit nor reader throughput. No capture seed or arbitrary producer
+    arguments are accepted; the producer retains its own interval semantics. Stop confirmation still gets at most 30 s.
 
     Records (D8 baseline) live in a new per-launch directory under the approved run root, outside the live dir, and
     each is published once (CreateNew, then a rename that never overwrites). The input file and the verified type are
@@ -112,7 +119,12 @@ param(
     [Parameter(Mandatory)] [string] $ApprovedUserSid,
     [Parameter(Mandatory)] [ValidateSet('medium', 'high', IgnoreCase = $false)] [string] $ApprovedIntegrityLevel,
     # Guards: the reviewed positive additional-write bound for this run; unknown (0 or less) refuses before any write.
-    [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes
+    [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes,
+    [ValidateRange(1, 99500)] [int] $CaptureWindow = 3000,
+    [ValidateRange(1, 2147483647)] [int] $CaptureWorkers = 4,
+    [ValidateRange(1, 2147483647)] [int] $CaptureCycles = 36,
+    [ValidateRange(0, 2147483647)] [int] $CaptureIntervalSeconds = 300,
+    [ValidateRange(60, 1800)] [int] $RunDeadlineSeconds = 1800
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,7 +139,7 @@ if (Get-Command -Name 'Initialize-WdNativeTurnType' -CommandType Function -Error
     throw 'refused: Initialize-WdNativeTurnType is already defined in this session (R1)'
 }
 
-$DeadlineSeconds = 1800
+$DeadlineSeconds = $RunDeadlineSeconds
 $StopConfirmationWaitSeconds = 30
 $PollMilliseconds = 1000
 # The producer's Windows live-dir lock byte: sandbox/mind/mind_capture_producer.py LOCK_BYTE = 2 ** 30.
@@ -608,7 +620,11 @@ $rootWitness = '; $wdRootTokenPath = ' + (ConvertTo-WdShadowCommandLiteral -Valu
 # switch (bare command text, never a quoted argument) before the tool; every path is the validated one (P1-A).
 $rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + $rootWitness + '; & ' +
     (ConvertTo-WdShadowCommandLiteral -Value $wrapperPath) + ' -VerifyPackage ' + ((@(
-    'sandbox/mind/mind_capture_producer.py', '--src', $codeRootPath, '--bin', $binPath, '--live-dir', $liveFull) |
+    'sandbox/mind/mind_capture_producer.py', '--src', $codeRootPath, '--bin', $binPath, '--live-dir', $liveFull,
+    '--window', ($CaptureWindow.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--workers', ($CaptureWorkers.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--cycles', ($CaptureCycles.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--interval', ($CaptureIntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))) |
     ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim
 $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $rootCommand)
 Initialize-WdNativeTurnType

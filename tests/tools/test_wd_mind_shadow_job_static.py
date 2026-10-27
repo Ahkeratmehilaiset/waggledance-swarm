@@ -59,8 +59,9 @@ def test_adapter_imports_exactly_one_function_from_one_verified_read(adapter):
     assert adapter.count("[scriptblock]::Create(") == 1
 
 
-def test_adapter_deadline_and_stop_wait_are_fixed_once_on_a_stopwatch(adapter):
-    assert re.findall(r"\$DeadlineSeconds = (\d+)", adapter) == ["1800"]
+def test_adapter_deadline_is_bounded_and_stop_wait_fixed_once_on_a_stopwatch(adapter):
+    assert re.findall(r"\[ValidateRange\(60, 1800\)\] \[int\] \$RunDeadlineSeconds = (\d+)", adapter) == ["1800"]
+    assert re.findall(r"(?m)^\$DeadlineSeconds = (.+)$", adapter) == ["$RunDeadlineSeconds"]
     assert re.findall(r"\$StopConfirmationWaitSeconds = (\d+)", adapter) == ["30"]
     assert adapter.count("[Diagnostics.Stopwatch]::StartNew()") == 1
     assert adapter.count("$clock = ") == 1
@@ -222,7 +223,12 @@ def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argum
     assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
                      r"\+ \$rootWitness \+ '; & ' \+\s*\(ConvertTo-WdShadowCommandLiteral -Value \$wrapperPath\) "
                      r"\+ ' -VerifyPackage ' \+ \(\(@\(\s*'sandbox/mind/mind_capture_producer\.py', '--src', "
-                     r"\$codeRootPath, '--bin', \$binPath, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
+                     r"\$codeRootPath, '--bin', \$binPath, '--live-dir', \$liveFull,\s*"
+                     r"'--window', \(\$CaptureWindow\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--workers', \(\$CaptureWorkers\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--cycles', \(\$CaptureCycles\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--interval', \(\$CaptureIntervalSeconds\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\)\) "
+                     r"\|\s*ForEach-Object \{ "
                      r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
     intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
     assert adapter.index("$rootCommand = ") < intent
@@ -376,7 +382,11 @@ def test_guards_are_fixed_once_and_refuse_before_the_first_write(adapter):
                         ("ExpectedPeakAdditionalBytes", 0)):
         assigned = re.findall(r"(?i)\$(?:script:|global:|local:|private:)?" + name + r"\s*[-+*/%]?=", adapter)
         assert len(assigned) == count, name
-    assert re.search(r"\[Parameter\(Mandatory\)\] \[long\] \$ExpectedPeakAdditionalBytes\n\)", adapter)
+    # More optional parameters follow; the reviewed peak bound is still a
+    # mandatory long without a default. Its zero/default refusal and every
+    # guard-before-write check below stay unchanged.
+    assert re.search(r"\[Parameter\(Mandatory\)\] \[long\] \$ExpectedPeakAdditionalBytes,\n"
+                     r"\s*\[ValidateRange\(1, 99500\)\] \[int\] \$CaptureWindow = 3000,", adapter)
     assert "$offSwitchPath = Join-Path $runRootFull $OffSwitchName" in adapter
     assert re.search(r"\$guardRoots = @\(@\('C:\\', \[IO\.Path\]::GetPathRoot\(\$runRootFull\), "
                      r"\[IO\.Path\]::GetPathRoot\(\$liveFull\)\) \|\s*ForEach-Object \{ \$_\.ToUpperInvariant\(\) \} "

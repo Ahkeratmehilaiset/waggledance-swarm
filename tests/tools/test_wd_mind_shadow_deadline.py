@@ -141,6 +141,10 @@ function New-WdFakeManaged {
 function Invoke-WdFakeRun($Entry) {
     $global:WdFake = $Entry
     $global:WdFakeMs = [long]$Entry['start_ms']
+    # Bind the declared default without running the adapter body or its mandatory-parameter binder.
+    $RunDeadlineSeconds = ($ast.ParamBlock.Parameters | Where-Object {
+        $_.Name.VariablePath.UserPath -ceq 'RunDeadlineSeconds'
+    }).DefaultValue.SafeGetValue()
     . ([scriptblock]::Create($constants))
     . ([scriptblock]::Create($initial))
     $clock = New-WdFakeClock

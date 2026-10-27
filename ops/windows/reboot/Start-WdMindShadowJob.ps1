@@ -387,6 +387,7 @@ function New-OwnedShadowWatchState {
         root = $Root; records = [Collections.Generic.List[object]]::new()
         errors = [Collections.Generic.List[string]]::new(); cut_reason = $null
         retired = [Collections.Generic.List[object]]::new()
+        retired_owned_count = 0L; retired_gone_count = 0L
     } | ForEach-Object { $_.records.Add($Root); $_ }
 }
 
@@ -437,8 +438,12 @@ function Update-OwnedShadowTree {
                             ($null-ne$record.exit_ticks-and$candidate.birth_ticks-gt$record.exit_ticks)) {
                             throw 'retired_child_parent_lifetime_mismatch'
                         }
-                        if ($State.retired.Count-ge2048) { throw 'retired_observation_budget' }
+                        # Gone-at-open observations are bounded metadata, not retained
+                        # identity handles. Keep latest samples and an explicit total,
+                        # never stop a valid run merely for cumulative process churn.
+                        if ($State.retired.Count-ge2048) { $State.retired.RemoveAt(0) }
                         $State.retired.Add($candidate)
+                        $State.retired_gone_count = [long]$State['retired_gone_count'] + 1
                     } else { Add-OwnedShadowDescendant $State $record $candidate }
                 } catch {
                     if ($candidate.ContainsKey('process') -and -not @($State.records | Where-Object {
@@ -450,6 +455,23 @@ function Update-OwnedShadowTree {
             if (-not $live) { $record.final_scan_done = $true }
         } catch {
             $State.errors.Add('observe:' + $_.Exception.Message)
+        }
+    }
+    # Scan children before releasing an exited non-root identity. The root is a
+    # single fixed anchor used by cut-reason observation until final disposal.
+    # Failed final scans, live identities and failed disposal stay retained.
+    for ($retireIndex = $State.records.Count - 1; $retireIndex -ge 0; $retireIndex--) {
+        if (-not (& $WithinBudget)) { break }
+        $record = $State.records[$retireIndex]
+        if ([object]::ReferenceEquals($record, $State.root) -or
+            -not $record.final_scan_done -or $null -eq $record.exit_ticks) { continue }
+        try {
+            if (& $Seams.alive $record) { continue }
+            if ($record.ContainsKey('process')) { $record.process.Dispose() }
+            $State.records.RemoveAt($retireIndex)
+            $State.retired_owned_count = [long]$State['retired_owned_count'] + 1
+        } catch {
+            $State.errors.Add('retire:' + $record.pid + ':' + $_.Exception.Message)
         }
     }
 }
@@ -526,6 +548,9 @@ function Stop-OwnedShadowTree {
         lock=$lock;errors=$State.errors.ToArray();cleanup_seconds=((& $Seams.now_seconds) - $start)
         known_tree_and_lock_clean=($alive.Count -eq 0 -and $lock.acquired -and $lock.released -and $State.errors.Count -eq 0)
         complete_job_membership_proven=$false;unobserved_descendants='UNKNOWN'
+        retired_owned_count=[long]$State['retired_owned_count']
+        positively_gone_observation_count=[long]$State['retired_gone_count']
+        positively_gone_observations_truncated=([long]$State['retired_gone_count'] -gt $State.retired.Count)
         positively_gone_observations=$State.retired.ToArray()
     }
 }

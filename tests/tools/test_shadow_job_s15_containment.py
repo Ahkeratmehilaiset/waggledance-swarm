@@ -310,3 +310,160 @@ $result=Stop-OwnedShadowTree $state $seams 10
     assert row["result"]["known_tree_and_lock_clean"] is True, row
     assert row["result"]["complete_job_membership_proven"] is False, row
     assert row["result"]["unobserved_descendants"] == "UNKNOWN", row
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_record_budget_counts_simultaneous_handles_not_sequential_history(ps):
+    # Real adapter functions, fake processes only. Nine non-overlapping batches
+    # exceed the old cumulative cap while never retaining >257 live identities.
+    driver = _source_functions() + r"""
+function New-FakeOwnedChild([int]$Id,[long]$Birth,[int]$Parent,$Trace,[bool]$Live=$true) {
+ $p=[pscustomobject]@{trace=$Trace;disposed=$false;fail_dispose=$false}
+ $p|Add-Member ScriptMethod Dispose {
+  if($this.fail_dispose){throw 'fake_dispose_failure'}
+  if($this.disposed){throw 'fake_double_dispose'}
+  $this.disposed=$true;$this.trace.disposed++
+ }
+ return @{pid=$Id;birth_ticks=$Birth;parent_pid=$Parent;name='synthetic';live=$Live;process=$p}
+}
+$trace=@{children=@();disposed=0;time=0.0}
+$root=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+$state=New-OwnedShadowWatchState $root
+$seams=@{
+ alive={param($r) $r.live};exit_ticks={param($r) ($r.birth_ticks+100000L)}
+ children={param($r) if($r.pid-eq10){$trace.children}}.GetNewClosure()
+ same_identity={param($r) $true}
+ kill_tree={param($r) $r.live=$false}
+ pause={$trace.time+=0.1}.GetNewClosure()
+ now_seconds={$trace.time}.GetNewClosure()
+ lock={@{acquired=$true;released=$true;error=$null}}
+}
+$maximum=0
+for($batch=0;$batch-lt9;$batch++){
+ $children=@()
+ for($i=0;$i-lt256;$i++){
+  $number=$batch*256+$i
+  $children+=New-FakeOwnedChild (1000+$number) (200L+$number) 10 $trace
+ }
+ $trace.children=$children
+ Update-OwnedShadowTree $state $seams
+ $maximum=[Math]::Max($maximum,$state.records.Count)
+ $trace.children=@()
+ foreach($child in $children){$child.live=$false}
+ Update-OwnedShadowTree $state $seams
+}
+$sequential=@{errors=$state.errors.ToArray();retained=$state.records.Count;maximum=$maximum;
+ disposed=$trace.disposed;retired=$state['retired_owned_count']}
+$result=Stop-OwnedShadowTree $state $seams 30
+$sequential.cleanup=$result
+
+# Simultaneous pressure still refuses: 2048 children plus the fixed root.
+$trace2=@{children=@();disposed=0}
+$root2=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+$state2=New-OwnedShadowWatchState $root2
+for($i=0;$i-lt2048;$i++){
+ $trace2.children+=@{pid=(1000+$i);birth_ticks=(200L+$i);parent_pid=10;name='synthetic';live=$true}
+}
+$seams2=@{alive={param($r) $r.live};exit_ticks={param($r) ($r.birth_ticks+100000L)}
+ children={param($r) if($r.pid-eq10){$trace2.children}}.GetNewClosure()}
+Update-OwnedShadowTree $state2 $seams2
+
+# Retire a final-scanned dead parent only AFTER adopting its still-live child.
+$trace3=@{children=@();disposed=0;time=0.0}
+$root3=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+$parent=New-FakeOwnedChild 20 200 10 $trace3 $false
+$survivor=New-FakeOwnedChild 30 300 20 $trace3
+$state3=New-OwnedShadowWatchState $root3
+$seams3=@{alive={param($r) $r.live};exit_ticks={param($r) 10000L}
+ children={param($r) if($r.pid-eq10){$parent}elseif($r.pid-eq20){$survivor}}.GetNewClosure()}
+Update-OwnedShadowTree $state3 $seams3
+$parentCase=@{ids=@($state3.records|ForEach-Object{$_.pid});disposed=$trace3.disposed;
+ errors=$state3.errors.ToArray();child_disposed=$survivor.process.disposed}
+
+# Failed final scan and failed handle disposal must retain the record and error.
+$failedCases=@{}
+foreach($mode in @('scan','dispose')){
+ $tr=@{disposed=0}
+ $rt=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+ $dead=New-FakeOwnedChild 20 200 10 $tr $false
+ if($mode-eq'dispose'){$dead.process.fail_dispose=$true}
+ $st=New-OwnedShadowWatchState $rt
+ $sm=@{alive={param($r) $r.live};exit_ticks={param($r) 10000L}
+ children={param($r)
+  if($r.pid-eq10){$dead}elseif($mode-eq'scan'){throw 'fake_final_scan_failed'}
+ }.GetNewClosure()}
+ Update-OwnedShadowTree $st $sm
+ $failedCases[$mode]=@{ids=@($st.records|ForEach-Object{$_.pid});disposed=$tr.disposed;errors=$st.errors.ToArray()}
+}
+@{sequential=$sequential;simultaneous=@{retained=$state2.records.Count;errors=$state2.errors.ToArray()};
+ parent=$parentCase;failed=$failedCases}|ConvertTo-Json -Depth 12 -Compress
+"""
+    done = _run_powershell(driver, executable=ps, check=False)
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    sequential = row["sequential"]
+    assert sequential["errors"] == [], sequential
+    assert sequential["retained"] == 1 and sequential["maximum"] <= 257, sequential
+    assert sequential["disposed"] == 2304 and sequential["retired"] == 2304, sequential
+    assert sequential["cleanup"]["known_tree_and_lock_clean"] is True, sequential
+    assert sequential["cleanup"]["complete_job_membership_proven"] is False
+    assert sequential["cleanup"]["unobserved_descendants"] == "UNKNOWN"
+    assert row["simultaneous"]["retained"] == 2048, row
+    assert any("owned_record_budget" in error for error in row["simultaneous"]["errors"]), row
+    assert row["parent"] == {"ids": [10, 30], "disposed": 1,
+                             "errors": [], "child_disposed": False}, row
+    for mode in ("scan", "dispose"):
+        assert row["failed"][mode]["ids"] == [10, 20], row
+        assert row["failed"][mode]["disposed"] == 0, row
+        assert row["failed"][mode]["errors"], row
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_gone_history_is_bounded_without_cumulative_stop_or_hidden_errors(ps):
+    driver = _source_functions() + r"""
+$root=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+$trace=@{rows=@();time=0.0}
+for($i=0;$i-lt2304;$i++){
+ $trace.rows+=@{pid=(1000+$i);birth_ticks=(200L+$i);parent_pid=10;name='synthetic';gone=$true}
+}
+$state=New-OwnedShadowWatchState $root
+$seams=@{alive={param($r) $r.live};exit_ticks={param($r) 10000L}
+ children={param($r) if($r.pid-eq10){$trace.rows}}.GetNewClosure()
+ same_identity={param($r) $true};kill_tree={param($r) $r.live=$false}
+ pause={$trace.time+=0.1}.GetNewClosure();now_seconds={$trace.time}.GetNewClosure()
+ lock={@{acquired=$true;released=$true;error=$null}}}
+Update-OwnedShadowTree $state $seams
+$observed=@{errors=$state.errors.ToArray();count=$state['retired_gone_count'];
+ retained=$state.retired.Count;first=$state.retired[0].pid;last=$state.retired[$state.retired.Count-1].pid}
+$trace.rows=@()
+$observed.cleanup=Stop-OwnedShadowTree $state $seams 30
+
+$bad=@{}
+foreach($mode in @('wrong_parent','after_parent_exit','partial_OS_error')){
+ $rt=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=($mode-ne'after_parent_exit')}
+ $candidate=@{pid=20;birth_ticks=200;parent_pid=10;name='synthetic';gone=$true}
+ if($mode-eq'wrong_parent'){$candidate.parent_pid=99}
+ if($mode-eq'after_parent_exit'){$candidate.birth_ticks=600}
+ $st=New-OwnedShadowWatchState $rt
+ $sm=@{alive={param($r) $r.live};exit_ticks={param($r) 500L}
+ children={param($r)
+  if($r.pid-eq10){$candidate;if($mode-eq'partial_OS_error'){throw 'fake_CIM_error_after_row'}}
+ }.GetNewClosure()}
+ Update-OwnedShadowTree $st $sm
+ $bad[$mode]=@{errors=$st.errors.ToArray();retained=$st.retired.Count}
+}
+@{observed=$observed;bad=$bad}|ConvertTo-Json -Depth 12 -Compress
+"""
+    done = _run_powershell(driver, executable=ps, check=False)
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    observed = row["observed"]
+    assert observed["errors"] == [], observed
+    assert observed["count"] == 2304 and observed["retained"] == 2048, observed
+    assert observed["first"] == 1256 and observed["last"] == 3303, observed
+    assert observed["cleanup"]["positively_gone_observation_count"] == 2304, observed
+    assert observed["cleanup"]["positively_gone_observations_truncated"] is True, observed
+    assert observed["cleanup"]["known_tree_and_lock_clean"] is True, observed
+    assert observed["cleanup"]["complete_job_membership_proven"] is False
+    assert observed["cleanup"]["unobserved_descendants"] == "UNKNOWN"
+    for mode in ("wrong_parent", "after_parent_exit", "partial_OS_error"):
+        assert row["bad"][mode]["errors"], row
+    assert row["bad"]["wrong_parent"]["retained"] == 0, row
+    assert row["bad"]["after_parent_exit"]["retained"] == 0, row
+    assert row["bad"]["partial_OS_error"]["retained"] == 1, row

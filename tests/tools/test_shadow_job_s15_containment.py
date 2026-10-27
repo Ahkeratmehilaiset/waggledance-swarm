@@ -277,3 +277,36 @@ try{
     assert row["row"]["kill_calls"] == 1, row
     assert row["row"]["tree_flag"] is None, row
     assert row["row"]["unverified_child_touched"] is False, row
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_cleanup_rescans_exited_parent_before_claiming_known_chain_clean(ps):
+    driver = _source_functions() + r"""
+$root=@{pid=10;birth_ticks=100;parent_pid=1;name='root';live=$true}
+$child=@{pid=20;birth_ticks=200;parent_pid=10;name='late-child';live=$true}
+$trace=@{revealed=$false;time=0.0;killed=[Collections.Generic.List[int]]::new()}
+$state=New-OwnedShadowWatchState $root
+$seams=@{
+ alive={param($r) $r.live};exit_ticks={param($r) 500L}
+ children={param($r) if($r.pid-eq10-and$trace.revealed){$child}}.GetNewClosure()
+ same_identity={param($r) $true}
+ kill_tree={param($r)
+  $trace.killed.Add($r.pid);$r.live=$false
+  if($r.pid-eq10){$trace.revealed=$true}
+ }.GetNewClosure()
+ pause={$trace.time+=0.1}.GetNewClosure()
+ now_seconds={$trace.time}.GetNewClosure()
+ lock={@{acquired=$true;released=$true;error=$null}}
+}
+$state.cut_reason='synthetic_cleanup'
+$result=Stop-OwnedShadowTree $state $seams 10
+@{child_live=$child.live;killed=$trace.killed.ToArray();result=$result}|ConvertTo-Json -Depth 8 -Compress
+"""
+    done = _run_powershell(driver, executable=ps, check=False)
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    assert row["child_live"] is False, row
+    assert row["killed"] == [10, 20], row
+    assert row["result"]["known_tree_and_lock_clean"] is True, row
+    assert row["result"]["complete_job_membership_proven"] is False, row
+    assert row["result"]["unobserved_descendants"] == "UNKNOWN", row

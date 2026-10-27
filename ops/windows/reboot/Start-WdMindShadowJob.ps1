@@ -496,6 +496,12 @@ function Stop-OwnedShadowTree {
                 $State.errors.Add('kill:' + $record.pid + ':' + $_.Exception.Message)
             }
         }
+        # A child may become visible after the pre-kill snapshot. Finish the
+        # exited-parent scan while its identity handle is still retained, before
+        # treating an all-known-dead snapshot as clean. Same cleanup budget.
+        if (((& $Seams.now_seconds) - $start) -lt $CleanupSeconds) {
+            Update-OwnedShadowTree $State $Seams { ((& $Seams.now_seconds) - $start) -lt $CleanupSeconds }
+        }
         $alive = @()
         foreach ($record in $State.records) {
             try {

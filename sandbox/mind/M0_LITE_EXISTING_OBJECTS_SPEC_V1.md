@@ -1,6 +1,7 @@
 # M0-lite over existing objects: specification v1
 
-Author fable-5 (S14 2b Source GO, 2026-10-27). Base main ab22e4a0. A specification only: no case, gold, memory, model,
+Author fable-5 (S14 2b Source GO, 2026-10-27; fix round of the same day after RCO2 F1/F2 and four advisories, RCO1
+concurring). Base main ab22e4a0. A specification only: no case, gold, memory, model,
 run or grade was read, built, executed or scored while writing it. The Mind stays advisory; nothing here computes a gate verdict.
 
 ## 1. Purpose and limits
@@ -28,9 +29,9 @@ run or grade was read, built, executed or scored while writing it. The Mind stay
   (case file sha256, output sha256s, memory sha256, rule, git blob id of every step-2 source). Blind by construction.
 - Graph (literal, fixed, in this order): corpus.build -> encode.build -> memory.build -> run_q4.run -> judge (section 4).
   Every stage records its command line, input sha256s, output sha256s, exit code, wall seconds and bytes written.
-- Fact that bounds the graph: run_q4.py imports encode at module load and Q4 constructs the E5 encoder and the Memory
-  unconditionally, so the graph runs only where the frozen encoder cache and a built memory exist. There is no public entry
-  that runs q4.Lexical alone; a lexical-only path over existing objects is therefore MISSING (section 5, row 2), not proposed.
+- Fact that bounds the graph: run_q4.py imports encode at module load, and run_q4.run and q4.main construct the E5 encoder
+  and the Memory unconditionally and hand them to Q4, so the graph runs only where the frozen encoder cache and a built memory
+  exist. No public entry runs q4.Lexical alone; a lexical-only path over existing objects is MISSING (section 5, row 2).
 
 ## 3. Cases and gold (GOLD_SCHEMA_UNBOUND)
 - The run reads cases in run_q4's "fresh" shape: cases[]{id, situation, situation_time_utc}. Expected answers live in a separate
@@ -47,20 +48,33 @@ run or grade was read, built, executed or scored while writing it. The Mind stay
 
 ## 4. The hash judge (deterministic; reads two files; no model, no transport, no network)
 - Inputs: outputs.jsonl from the run and the sealed expected file. Output: judge.json plus judge.sha256.
-- Canonicalization: every JSON object is re-serialized with sorted keys, no whitespace, UTF-8, ensure_ascii false; strings are
-  NFC-normalized and CRLF becomes LF before comparison; ref comparison is byte-exact after that; numbers are compared only
-  where this spec names them (score is never compared, only used for ordering).
-- Ordering: results sorted by (score descending, ref ascending) before truncation to k = 3; a missing score sorts last.
-- Duplicates: results with an equal ref keep the first after ordering; duplicate case ids in either file are an ERROR for the file.
-- Abstention: expect_abstain true and abstain true -> ABSTAIN_OK; expect_abstain true and abstain false -> MISS;
-  expect_abstain false and abstain true -> MISS.
-- Error: status CRASH or crash true -> ERROR; an id present in one file and absent in the other -> ERROR; a missing required
-  field -> ERROR; an ERROR is never counted as HIT, MISS or ABSTAIN_OK.
-- Timestamps: situation_time_utc and time_utc are compared as exact RFC3339 strings ending in Z; no parsing, no tolerance;
-  a result whose time_utc is later than the case's situation_time_utc is a LEAK and the case is MISS regardless of ref.
-- Per case exactly one of HIT (expected_ref in the first k refs), MISS, ABSTAIN_OK, ERROR. judge.json holds the per-case table,
+- Expected rows, classified before any output is read: positives = rows with expect_abstain false and a non-null expected_ref;
+  negatives = rows with expect_abstain true and expected_ref null; every other expected row (null ref with expect_abstain false,
+  non-null ref with expect_abstain true, a missing or malformed field) is a file ERROR for that id. The counts of positives
+  and negatives are fixed by the expected file alone and written to judge.json before any output row is scored.
+- Status map (complete, fixed before any run; the run emits exactly these five statuses, q4 and run_q4 blobs in section 2):
+| status | positive case | negative case |
+| ANSWER | HIT if expected_ref is among the first k refs, else MISS | MISS |
+| ABSTAIN | MISS | ABSTAIN_OK |
+| DEGRADED | DEGRADED_MISS (never HIT; q4 rule 5: never a clean ANSWER) | DEGRADED_MISS (never ABSTAIN_OK) |
+| REFUSED | ERROR (a harness or case defect, never an ordinary MISS) | ERROR |
+| CRASH | ERROR | ERROR |
+  Any other status, a missing status, or crash true with a status other than CRASH is ERROR. An id present in one file and
+  absent in the other, a duplicate id in either file, or a missing required field is ERROR for that id.
+- Canonicalization: every JSON object is re-serialized with sorted keys, no whitespace, UTF-8, ensure_ascii false. Refs are
+  compared as exact bytes: no NFC, no CRLF rewriting, no case folding (refs are basenames or ts|agent|type|task_id strings
+  from one corpus; normalizing could only merge distinct refs). Score is never compared, only used for ordering.
+- Ordering: results sorted by (score descending, ref ascending) before truncation to k = 3; a missing score sorts last;
+  results with an equal ref keep the first after ordering.
+- Timestamps: one canonical representation, corpus.utc_text (%Y-%m-%dT%H:%M:%S.%fZ, six fractional digits, UTC). The judge
+  parses situation_time_utc and every result time_utc as aware UTC instants and compares instants, never strings; a case
+  time that does not parse is ERROR. A result instant later than the case instant is a LEAK and the case is MISS regardless
+  of ref and status, unless the case is already ERROR.
+- Per case exactly one of HIT, MISS, DEGRADED_MISS, ABSTAIN_OK, ERROR. judge.json holds the per-case table, the fixed counts,
   the sha256 of both inputs and of this spec's blob. Two runs of the judge on identical inputs must be byte-identical.
-- Metrics: recall_at_3 = HIT / positives; abstain_precision = ABSTAIN_OK / negatives; leak_count; error_count. Division by zero -> null.
+- Metrics over the fixed pre-output denominators (ERROR stays in both denominators, so a refusal or crash can only lower a
+  metric, never raise it): recall_at_3 = HIT / positives; abstain_specificity = ABSTAIN_OK / negatives (abstention recall,
+  not precision); degraded_count; leak_count; error_count. Division by zero -> null.
 
 ## 5. Seven-binding table (DONE only with an existing path, hash or revision; otherwise MISSING with owner)
 | # | binding | state | owner | what would fill it |
@@ -68,13 +82,14 @@ run or grade was read, built, executed or scored while writing it. The Mind stay
 | 2 | literal complete command graph | MISSING (proposed in section 2) | codex-lead-1 locks; Tools CLI facts | private paths, interpreter and executor identity bound to the section-2 blobs |
 | 3 | memory identity and encoder receipt | MISSING | the custodian Lead binds | encode.model_identity() plus memory_sha256 produced read-only by the custodian |
 | 4 | sealed sample receipts | MISSING | case custodian after row 1 | sha256 of the case file and of the expected file, written before the run |
-| 5 | resource allowance | MISSING (NOT_MEASURED) | executor measures, Root freezes | prospective bound only: 600 s wall, 200 MB written; measured in the run |
+| 5 | resource peak and enforceable allowance | MISSING (NOT_MEASURED) | executor measures, Root adjudicates | no guessed allowance here; a cap, if Root sets one before the lock, is a PROPOSAL, never DONE or observed until the run receipt |
 | 6 | judge transport | MISSING at 6cf81dbb; specified in section 4 | this spec (author fable-5); Root adjudicates | the section-4 judge as a file reader; no transport |
 | 7 | environment digest | UNKNOWN (10-26 tooling failure) | codex-lead-1 | python version, platform, blob ids and memory sha256 in run-manifest.json |
 
 ## 6. Hypothesis, metric, bar, sample, ending rule, snapshot, lock, roles
-- Hypothesis H1 (prospective, not a prediction): on the locked case set, recall_at_3 >= 0.60 and abstain_precision >= 0.50 with
-  leak_count = 0. Context: Q4 alone was 3/9 on the older sealed set; the bar is set above that on purpose.
+- Hypothesis H1 (prospective, not a prediction): on the locked case set, over the fixed denominators of section 4,
+  recall_at_3 >= 0.60 and abstain_specificity >= 0.50 with leak_count = 0 and error_count = 0 (an error or refusal can never
+  improve the result). Context: Q4 alone was 3/9 on the older sealed set; the bar is set above that on purpose.
 - Metric: section-4 metrics only. Sample: every case the locked source yields; no selection after any result is seen.
 - Ending rule: one run of the graph and one run of the judge; no rerun after a result; a refusal, a hook refusal or a crash is
   the result and is reported as such with its records.

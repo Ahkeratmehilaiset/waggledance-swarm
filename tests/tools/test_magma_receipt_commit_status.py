@@ -398,6 +398,27 @@ def test_verify_refuses_conflicting_or_foreign_target_proofs(
     assert json.loads(capsys.readouterr().out)["decision"] == "invalid_input"
 
 
+def test_verify_compares_repository_names_case_insensitively(manifest: Path, tmp_path: Path) -> None:
+    """PR1943 bot P2: GitHub owner and repository names are case-insensitive, so a status url spelled with another
+    casing than the receipt's ``repo`` proves the same repository; a genuinely different repository stays refused."""
+    built = build_commit_status(manifest, expected_head=HEAD, expected_base=BASE)
+    fetched = tmp_path / "fetched.json"
+    fetched.write_text(json.dumps([_posted(built["status"], HEAD, "Example/Repo")]), encoding="utf-8")
+    report = verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE)
+    assert report["decision"] == "EQUAL"
+    assert report["target_proof"] == HEAD
+    fetched.write_text(
+        json.dumps({"state": "success", "sha": HEAD, "statuses": [_posted(built["status"], HEAD, "EXAMPLE/REPO")]}),
+        encoding="utf-8",
+    )
+    assert verify_fetched_status(fetched, manifest, expected_head=HEAD, expected_base=BASE)["decision"] == "EQUAL"
+    # negative control kept: another repository, however cased, is still a refusal
+    fetched.write_text(json.dumps([_posted(built["status"], HEAD, "Example/Repo2")]), encoding="utf-8")
+    report = _verify_refusal(fetched, manifest)
+    assert report["decision"] == "target_repo_mismatch"
+    assert "Example/Repo2" in " ".join(report["errors"])
+
+
 def test_verify_keeps_head_and_squash_merge_commit_distinct(manifest: Path, tmp_path: Path) -> None:
     merged = build_commit_status(manifest, expected_head=HEAD, expected_base=BASE, status_sha=OTHER)
     fetched = tmp_path / "fetched.json"

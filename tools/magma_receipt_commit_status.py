@@ -196,7 +196,7 @@ def _target_proof(fetched: Any, candidates: Sequence[Mapping[str, Any]], repo: s
         found = _STATUS_URL_RE.search(url) if isinstance(url, str) else None
         if found is None:
             _refuse("invalid_input", [f"status url {index} is not repos/{{owner}}/{{name}}/statuses/{{sha}}"])
-        if found.group(1) != repo:
+        if found.group(1).casefold() != repo.casefold():  # GitHub owner and repository names are case-insensitive
             _refuse("target_repo_mismatch", [f"status url {index} names repo {found.group(1)}, receipt repo is {repo}"])
         proofs[f"url[{index}]"] = found.group(2)
     if len(set(proofs.values())) > 1:

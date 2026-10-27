@@ -108,9 +108,10 @@
     cp5 child run id transport and command prefix design, the root witness contract, and the guard Source-GO with
     its 542e26be disk rule, and the reparse follow-up after Root's static finding); fable-5 wrote this file.
     S15 containment: Tools ports the v3 retained PID/birth/handle chain and known-survivor cleanup into this adapter.
-    There is no arbitrary PID/name kill: a verified retained process object is rechecked before Kill(Boolean).
-    producer.lock is only opened here, never created or removed. A host without Kill(Boolean) refuses before
-    the first write; PS5.1 remains parseable for synthetic fixtures, not a claimed supported native run.
+    There is no arbitrary PID/name kill: each retained object is identity-checked before parameterless Kill().
+    Kill(Boolean) is never used: unverified OS descendants are not authorized by a retained root identity.
+    producer.lock is only opened here, never created or removed. The parameterless method is checked before
+    the first write. Native behavior and parity of every host remain unmeasured; synthetic tests are not native proof.
     Polling may miss an entire short-lived ancestry chain. owned_containment always states that complete
     job membership is unproven and unseen descendants UNKNOWN. This does not replace the separately qualified
     independent outer observer or authorize any run, installation, activation or change to STOP/HOLD/OFF.
@@ -476,8 +477,8 @@ function Stop-OwnedShadowTree {
     $start = & $Seams.now_seconds
     $attempts = [Collections.Generic.List[object]]::new()
     $attempted = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    # Root Kill(true) is insufficient when it already exited. Retained known
-    # survivors are individually identity-checked and killed, never by name.
+    # The retained known tree is stopped one verified object at a time. No OS
+    # tree traversal may terminate an uncorroborated descendant or name match.
     $alive = @()
     do {
         if (((& $Seams.now_seconds) - $start) -lt $CleanupSeconds) {
@@ -489,7 +490,7 @@ function Stop-OwnedShadowTree {
                 if ((& $Seams.alive $record) -and $attempted.Add(($record.pid.ToString()+':'+$record.birth_ticks))) {
                     if (-not (& $Seams.same_identity $record)) { throw 'identity_changed_no_kill' }
                     & $Seams.kill_tree $record
-                    $attempts.Add(@{pid=$record.pid;birth_ticks=$record.birth_ticks;action='kill_true'})
+                    $attempts.Add(@{pid=$record.pid;birth_ticks=$record.birth_ticks;action='kill_verified_object'})
                 }
             } catch {
                 $State.errors.Add('kill:' + $record.pid + ':' + $_.Exception.Message)
@@ -569,14 +570,14 @@ function Open-OwnedShadowChildRecord {
 
 function New-WindowsOwnedShadowSeams {
     param([string]$ProducerLock, [long]$LockByte)
-    if (-not [Diagnostics.Process].GetMethod('Kill', [type[]]@([bool]))) { throw 'Kill_Boolean_unavailable' }
+    if (-not [Diagnostics.Process].GetMethod('Kill', [type[]]@())) { throw 'Kill_verified_handle_unavailable' }
     if ($LockByte -ne 1073741824) { throw 'producer_lock_protocol_changed' }
     $lockFunction = ${function:Test-WdShadowLiveDirLock}.GetNewClosure()
     return @{
         alive = { param($r) $r.process.Refresh(); return -not $r.process.HasExited }
         exit_ticks = { param($r) return $r.process.ExitTime.ToUniversalTime().Ticks }
         same_identity = { param($r) return $r.process.StartTime.ToUniversalTime().Ticks -eq $r.birth_ticks }
-        kill_tree = { param($r) $r.process.Kill($true) }
+        kill_tree = { param($r) $r.process.Kill() }
         pause = { Start-Sleep -Milliseconds 50 }
         now_seconds = { [Diagnostics.Stopwatch]::GetTimestamp() / [double][Diagnostics.Stopwatch]::Frequency }
         lock = { & $lockFunction -Path $ProducerLock }.GetNewClosure()
@@ -839,7 +840,7 @@ $guardRoots = @(@('C:\', [IO.Path]::GetPathRoot($runRootFull), [IO.Path]::GetPat
 $shortfall = Get-WdShadowDiskShortfall -Roots $guardRoots -AdditionalBytes $ExpectedPeakAdditionalBytes
 if ($null -ne $shortfall) { throw "refused: the disk budget is not met before the start ($shortfall)" }
 # Prepare only closures/capability checks before the first write or root launch.
-# A host without handle-based Kill(Boolean) refuses; there is no PID/name fallback.
+# Only the zero-argument Kill method is allowed; no OS descendant traversal or PID/name fallback.
 $ownedSeams = New-WindowsOwnedShadowSeams -ProducerLock (Join-Path $liveFull 'producer.lock') -LockByte $LockByte
 
 # cp5: the root inherits this process's environment (Root's static reading of the type), so a run id variable here

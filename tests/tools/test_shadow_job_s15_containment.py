@@ -236,7 +236,7 @@ try{
  $seams=New-WindowsOwnedShadowSeams -ProducerLock 'synthetic-producer.lock' -LockByte 1073741824
  $lockResult=& $seams.lock
 }catch{$factoryError=$_.Exception.Message}
-@{error=$factoryError;lock=$lockResult;capable=($null-ne[Diagnostics.Process].GetMethod('Kill',[type[]]@([bool])))}|
+@{error=$factoryError;lock=$lockResult;capable=($null-ne[Diagnostics.Process].GetMethod('Kill',[type[]]@()))}|
  ConvertTo-Json -Depth 5 -Compress
 """
     done = _run_powershell(driver, executable=ps, check=False)
@@ -248,4 +248,32 @@ try{
                                "lock_byte": 1073741824,
                                "acquired": True, "released": True}, row
     else:
-        assert row["error"] == "Kill_Boolean_unavailable" and row["lock"] is None, row
+        assert row["error"] == "Kill_verified_handle_unavailable" and row["lock"] is None, row
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_factory_kill_callback_does_not_authorize_unverified_os_descendants(ps):
+    driver = _source_functions() + r"""
+function Test-WdShadowLiveDirLock {param([string]$Path) throw 'lock_must_not_run'}
+$errorText='';$row=$null
+try{
+ $seams=New-WindowsOwnedShadowSeams -ProducerLock 'synthetic-producer.lock' -LockByte 1073741824
+ $fake=[pscustomobject]@{kill_calls=0;tree_flag=$null;unverified_child_touched=$false}
+ $fake|Add-Member ScriptMethod Kill {
+  param([object]$EntireProcessTree=$null)
+  $this.kill_calls++
+  $this.tree_flag=$EntireProcessTree
+  if($EntireProcessTree-eq$true){$this.unverified_child_touched=$true}
+ }
+ & $seams.kill_tree @{pid=20;birth_ticks=200;process=$fake}
+ $row=@{kill_calls=$fake.kill_calls;tree_flag=$fake.tree_flag;unverified_child_touched=$fake.unverified_child_touched}
+}catch{$errorText=$_.Exception.Message}
+@{error=$errorText;row=$row}|ConvertTo-Json -Depth 5 -Compress
+"""
+    done = _run_powershell(driver, executable=ps, check=False)
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    assert row["error"] == "", row
+    assert row["row"]["kill_calls"] == 1, row
+    assert row["row"]["tree_flag"] is None, row
+    assert row["row"]["unverified_child_touched"] is False, row

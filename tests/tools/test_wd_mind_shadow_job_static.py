@@ -74,9 +74,10 @@ def test_adapter_kills_only_retained_identity_checked_objects_and_never_deletes(
         assert word not in adapter, word
     seams = _function(adapter, "New-WindowsOwnedShadowSeams")
     assert adapter.count(".Kill(") == 1
-    assert "$r.process.Kill($true)" in seams
-    assert "GetMethod('Kill', [type[]]@([bool]))" in seams
-    assert "Kill_Boolean_unavailable" in seams
+    assert "$r.process.Kill()" in seams
+    assert ".Kill($true)" not in adapter
+    assert "GetMethod('Kill', [type[]]@())" in seams
+    assert "Kill_verified_handle_unavailable" in seams
     stop = _function(adapter, "Stop-OwnedShadowTree")
     assert stop.index("& $Seams.same_identity $record") < stop.index("& $Seams.kill_tree $record")
     assert "identity_changed_no_kill" in stop

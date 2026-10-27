@@ -31,6 +31,9 @@ The historical contract's dormant-tool paragraph still names taxonomy as dormant
 its actual veto-scanner import makes that description stale. This registry records
 the Source fact without editing the contract or enabling standing-sign. New tools
 named by that contract paragraph must also appear in the registry.
+Every backticked token in that paragraph is retained, including unexpected
+directories, punctuation, digits and empty names; none is filtered before the
+registry subset check.
 
 ## Exact declared protected set and the named reservation
 

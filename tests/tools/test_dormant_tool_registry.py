@@ -305,3 +305,22 @@ def test_rule9b_extra_token_is_not_filtered(registry, source_fixture, extra):
                     encoding="utf-8")
     result = registry.check_repository(source_fixture)
     assert "rule9b_names_mismatch" in result["errors"], result
+
+@pytest.mark.parametrize("extra", [
+    "waggledance/core/new_dormant.py",
+    "tools/new-dormant.py",
+    "tools/new.dormant.py",
+    "new_dormant2",
+    "tools/new_dormant2.py",
+    "",
+])
+def test_contract_dormant_extra_token_is_not_filtered(registry, source_fixture, extra):
+    path = source_fixture / registry.CONTRACT_PATH
+    text = path.read_text(encoding="utf-8")
+    marker = ";\n* the **P4c corpus**"
+    assert text.count(marker) == 1
+    path.write_text(text.replace(marker, ", `" + extra + "`" + marker),
+                    encoding="utf-8")
+    result = registry.check_repository(source_fixture)
+    assert "contract_tool_missing:" + extra in result["errors"], result
+    assert not result["ok"]

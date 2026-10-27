@@ -61,7 +61,7 @@ def contract_paths(root):
 def _contract_tools(root):
     section = _text(root, CONTRACT_PATH).split("**dormant tools NOT yet wired**", 1)[1]
     section = section.split("\n*", 1)[0]
-    return set(re.findall(r"`(tools/[A-Za-z0-9_/]+\.py)`", section))
+    return set(re.findall(r"`([^`]*)`", section))
 
 
 def _rule9b_names(root):

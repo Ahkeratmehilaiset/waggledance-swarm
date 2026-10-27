@@ -15,6 +15,7 @@ FUNCTIONS = (
     "New-OwnedShadowWatchState", "Add-OwnedShadowDescendant",
     "Update-OwnedShadowTree", "Get-OwnedShadowCutReason", "Stop-OwnedShadowTree",
     "Open-OwnedShadowChildRecord", "Complete-OwnedShadowContainment",
+    "New-WindowsOwnedShadowSeams",
 )
 
 
@@ -219,3 +220,32 @@ def test_adapter_wires_observation_and_reports_only_known_membership():
     assert "complete_job_membership_proven=$false" in text
     assert "unobserved_descendants='UNKNOWN'" in text
     assert "if (-not $ownedCleanup.known_tree_and_lock_clean)" in text
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_factory_captures_fixed_lock_protocol_without_calling_any_os_seam(ps):
+    # Reflection only checks capability. All process/CIM/kill callbacks remain
+    # uncalled, and the lock function is replaced before constructing closures.
+    driver = _source_functions() + r"""
+function Test-WdShadowLiveDirLock {
+ param([string]$Path)
+ return @{path=$Path;lock_byte=$LockByte;acquired=$true;released=$true}
+}
+$factoryError='';$lockResult=$null
+try{
+ $seams=New-WindowsOwnedShadowSeams -ProducerLock 'synthetic-producer.lock' -LockByte 1073741824
+ $lockResult=& $seams.lock
+}catch{$factoryError=$_.Exception.Message}
+@{error=$factoryError;lock=$lockResult;capable=($null-ne[Diagnostics.Process].GetMethod('Kill',[type[]]@([bool])))}|
+ ConvertTo-Json -Depth 5 -Compress
+"""
+    done = _run_powershell(driver, executable=ps, check=False)
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    if row["capable"]:
+        assert row["error"] == "", row
+        assert row["lock"] == {"path": "synthetic-producer.lock",
+                               "lock_byte": 1073741824,
+                               "acquired": True, "released": True}, row
+    else:
+        assert row["error"] == "Kill_Boolean_unavailable" and row["lock"] is None, row

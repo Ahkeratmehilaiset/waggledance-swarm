@@ -115,7 +115,8 @@ def test_drain_stop_and_lock_flags_come_from_their_own_checks(adapter):
              r"\$observed = \$clock\.Elapsed\s*if \(\$observed\.TotalMilliseconds -lt \$deadlineMs\) \{\s*"
              r"\$drained = \$true\s*\$drainAt = \$observed\.TotalSeconds\s*\}\s*break")
     assert re.search(drain, adapter) and adapter.count("$drained = $true") == 1
-    confirm = r"if \(\$managed\.ActiveProcesses -eq 0\) \{ \$stopConfirmed = \$true; break \}"
+    confirm = (r"if \(\$managed\.ActiveProcesses -eq 0 -and \$managed\.Wait\(0\)\) "
+               r"\{ \$stopConfirmed = \$true; break \}")
     assert re.search(confirm, adapter) and adapter.count("$stopConfirmed = $true") == 1
     assert re.search(r"try \{\s*\$managed\.Stop\(\)\s*\$stopOk = \$true\s*\} catch", adapter)
     assert adapter.count("$stopOk = $true") == 1

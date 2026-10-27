@@ -233,7 +233,7 @@ function Publish-WdShadowRecord {
 }
 
 function Test-WdShadowLiveDirLock {
-    # G2 (RCO2): ActiveProcesses 0 proves only that the members are gone; the live-dir lock must be free as well. The
+    # G2 (RCO2): accounting zero is not complete process-exit proof; the live-dir lock must be free as well. The
     # file is opened, never created, truncated, written or removed.
     param([string] $Path)
     $result = [ordered]@{ attempted = $true; acquired = $false; released = $false; error = $null }
@@ -737,8 +737,10 @@ try {
             }
             $confirmUntil = $clock.ElapsedMilliseconds + [long]$StopConfirmationWaitSeconds * 1000
             while ($clock.ElapsedMilliseconds -lt $confirmUntil) {
+                # Accounting zero alone is not a root-exit observation. Keep the same bounded wait available
+                # until the owned root handle is signalled; this does not prove descendant membership or exit.
                 try {
-                    if ($managed.ActiveProcesses -eq 0) { $stopConfirmed = $true; break }
+                    if ($managed.ActiveProcesses -eq 0 -and $managed.Wait(0)) { $stopConfirmed = $true; break }
                 } catch {
                     Add-WdShadowUnknown $unknown 'job_state_after_stop' $_.Exception.GetType().FullName
                     break

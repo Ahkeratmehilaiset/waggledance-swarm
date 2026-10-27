@@ -44,6 +44,7 @@ def test_explicit_operator_path_receipt_is_truthful(tmp_path: Path) -> None:
         out_dir=tmp_path / "receipt", expected_head=HEAD, expected_base_sha=BASE,
         consensus_proposal_id=TASK, repo="example/repo", from_agent="codex-lead-1",
         bridge_task_id=TASK, now_utc=NOW, operator_path_exception=grant,
+        rco_enrollment_context=_unknown_enrollment_context(),
     )
     directory = Path(report["receipt_bundle_path"]).parent
     payload = json.loads((directory / "payload-001-merge.json").read_text())
@@ -144,6 +145,7 @@ def test_writes_verified_bridge_consensus_merge_receipt(tmp_path: Path) -> None:
         from_agent="codex-lead-1",
         bridge_task_id=TASK,
         now_utc=NOW,
+        rco_enrollment_context=_unknown_enrollment_context(),
     )
 
     assert report["decision"] == "bridge_consensus_merge_receipt_written"
@@ -183,6 +185,7 @@ def test_refuses_without_exact_head_rco_pass(tmp_path: Path) -> None:
             from_agent="codex-lead-1",
             bridge_task_id=TASK,
             now_utc=NOW,
+            rco_enrollment_context=_unknown_enrollment_context(),
         )
 
     report = excinfo.value.report
@@ -235,6 +238,7 @@ def test_receipt_writer_normalizes_aware_time_to_utc(tmp_path: Path) -> None:
         from_agent="codex-lead-1",
         bridge_task_id=TASK,
         now_utc=local_time,
+        rco_enrollment_context=_unknown_enrollment_context(),
     )
 
     payload = json.loads(
@@ -325,3 +329,188 @@ def _event(agent: str, status: str, ts_utc: str) -> dict:
         "message": f"{status} at head {HEAD}",
         "payload": {"head": HEAD, "pr": 1174},
     }
+
+
+def test_injected_enrollment_context_avoids_installed_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import bridge_rco_enrollment as enrollment
+
+    context = enrollment.load_rco_enrollment_context(
+        bundle_root="", expected_manifest_sha256="",
+    )
+    assert context["status"] == "unknown"
+
+    def forbidden_manifest_read(root):
+        pytest.fail("explicit synthetic enrollment must not read an installed manifest")
+
+    monkeypatch.setattr(enrollment, "_manifest_bytes", forbidden_manifest_read)
+    report = write_bridge_consensus_merge_receipt(
+        pr_status=_pr_status(), events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "receipt", expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id=TASK, repo="example/repo", from_agent="codex-lead-1",
+        bridge_task_id=TASK, now_utc=NOW, rco_enrollment_context=context,
+    )
+    assert report["ok"] is True
+    assert verify_manifest(Path(report["receipt_bundle_path"]))["ok"] is True
+    assert enrollment.rco_enrollment_status("claude-rco-3", context=context) == "unknown"
+
+
+def _unknown_enrollment_context():
+    from tools import bridge_rco_enrollment as enrollment
+    return enrollment.load_rco_enrollment_context(
+        bundle_root="", expected_manifest_sha256="",
+    )
+
+
+@pytest.mark.parametrize("kind", ["serialized", "mutated", "uninitialized"])
+def test_receipt_refuses_nonissued_or_mutated_enrollment(tmp_path, kind):
+    from tools import bridge_rco_enrollment as enrollment
+    context = _unknown_enrollment_context()
+    if kind == "serialized":
+        context = dict(context)
+    elif kind == "mutated":
+        dict.__setitem__(context, "status", "enrolled")
+    else:
+        context = dict.__new__(type(context))
+    with pytest.raises(ValueError, match="invalid_rco_enrollment_context"):
+        write_bridge_consensus_merge_receipt(
+            pr_status=_pr_status(), events_path=tmp_path / "not-read.jsonl",
+            out_dir=tmp_path / "receipt", expected_head=HEAD,
+            consensus_proposal_id=TASK, now_utc=NOW,
+            rco_enrollment_context=context,
+        )
+    assert not (tmp_path / "receipt").exists()
+
+
+@pytest.mark.parametrize("failure", ["unprovisioned_rco3", "wrong_uuid", "veto"])
+def test_injected_unknown_context_preserves_identity_and_veto_gates(tmp_path, failure):
+    events = _full_consensus()
+    if failure == "unprovisioned_rco3":
+        events[-1]["agent"] = "claude-rco-3"
+        events[-1]["agent_uuid"] = "3c7f49d1-5ac4-4ca3-8ff5-6c97c07bcd50"
+    elif failure == "wrong_uuid":
+        events[-1]["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    else:
+        events.append(_event("claude-rco-1", "changes_requested", "2026-06-13T22:43:00Z"))
+    with pytest.raises(BridgeConsensusMergeReceiptError) as caught:
+        write_bridge_consensus_merge_receipt(
+            pr_status=_pr_status(), events_path=_events_path(tmp_path, events),
+            out_dir=tmp_path / "receipt", expected_head=HEAD, expected_base_sha=BASE,
+            consensus_proposal_id=TASK, repo="example/repo", from_agent="codex-lead-1",
+            bridge_task_id=TASK, now_utc=NOW,
+            rco_enrollment_context=_unknown_enrollment_context(),
+        )
+    assert caught.value.report["ok"] is False
+    assert not (tmp_path / "receipt").exists()
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_enrollment_scope_restores_after_success_exception_and_nesting(raises):
+    from tools import bridge_rco_enrollment as enrollment
+    first, second = _unknown_enrollment_context(), _unknown_enrollment_context()
+    assert enrollment._SCOPED_ENROLLMENT_CONTEXT.get() is None
+    observed_error = False
+    try:
+        with enrollment.using_rco_enrollment_context(first):
+            assert enrollment.load_rco_enrollment_context() is first
+            with enrollment.using_rco_enrollment_context(second):
+                assert enrollment.load_rco_enrollment_context() is second
+            assert enrollment.load_rco_enrollment_context() is first
+            if raises:
+                raise RuntimeError("synthetic scope exception")
+    except RuntimeError as exc:
+        observed_error = True
+        assert raises and str(exc) == "synthetic scope exception"
+    assert observed_error is raises
+    assert enrollment._SCOPED_ENROLLMENT_CONTEXT.get() is None
+
+
+def test_enrollment_scope_isolated_between_execution_contexts_and_async_tasks():
+    import asyncio
+    from contextvars import Context
+    from tools import bridge_rco_enrollment as enrollment
+    first, second = _unknown_enrollment_context(), _unknown_enrollment_context()
+
+    async def compare_tasks():
+        ready, release = asyncio.Event(), asyncio.Event()
+
+        async def scoped_task():
+            with enrollment.using_rco_enrollment_context(first):
+                ready.set()
+                await release.wait()
+                assert enrollment.load_rco_enrollment_context() is first
+
+        async def other_task():
+            await ready.wait()
+            try:
+                assert enrollment._SCOPED_ENROLLMENT_CONTEXT.get() is None
+                with enrollment.using_rco_enrollment_context(second):
+                    assert enrollment.load_rco_enrollment_context() is second
+            finally:
+                release.set()
+
+        await asyncio.gather(scoped_task(), other_task())
+
+    with enrollment.using_rco_enrollment_context(first):
+        assert Context().run(enrollment._SCOPED_ENROLLMENT_CONTEXT.get) is None
+    asyncio.run(compare_tasks())
+    assert enrollment._SCOPED_ENROLLMENT_CONTEXT.get() is None
+
+
+def test_enrollment_scope_revalidates_context_before_each_load():
+    from tools import bridge_rco_enrollment as enrollment
+    context = _unknown_enrollment_context()
+    with enrollment.using_rco_enrollment_context(context):
+        dict.__setitem__(context, "status", "enrolled")
+        with pytest.raises(ValueError, match="invalid_rco_enrollment_context"):
+            enrollment.load_rco_enrollment_context()
+    assert enrollment._SCOPED_ENROLLMENT_CONTEXT.get() is None
+
+
+def test_enrollment_scope_never_replaces_explicit_loader_inputs(tmp_path, monkeypatch):
+    import hashlib
+    from tools import bridge_rco_enrollment as enrollment
+    generation = "a" * 40
+    bundle = tmp_path / generation
+    bundle.mkdir()
+    data = json.dumps({"source_commit": generation}).encode("utf-8")
+    (bundle / "deployment-manifest.json").write_bytes(data)
+    context = _unknown_enrollment_context()
+    with enrollment.using_rco_enrollment_context(context):
+        explicit = enrollment.load_rco_enrollment_context(
+            bundle_root=bundle, expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
+        )
+        assert explicit["status"] == "not_provisioned"
+        assert explicit is not context
+        assert _unknown_enrollment_context() is not context
+        # Explicit None still selects the original environment-default path.
+        # Stub only its IO boundary: never open the installed manifest in this test.
+        def synthetic_unreadable(root):
+            raise OSError("synthetic default-reader failure")
+        monkeypatch.setattr(enrollment, "_manifest_bytes", synthetic_unreadable)
+        assert enrollment.load_rco_enrollment_context(
+            bundle_root=None, expected_manifest_sha256=None,
+        ) is not context
+        assert enrollment.load_rco_enrollment_context() is context
+
+
+@pytest.mark.parametrize("explicit_none", [False, True])
+def test_receipt_default_has_no_enrollment_override(tmp_path, monkeypatch, explicit_none):
+    from tools import bridge_rco_enrollment as enrollment
+    seen = []
+
+    def synthetic_gate(**kwargs):
+        seen.append(enrollment._SCOPED_ENROLLMENT_CONTEXT.get())
+        return {"ok": False, "reasons": ["synthetic stop before receipt writes"]}
+
+    monkeypatch.setattr(receipt_tool, "_merge_plan_report", synthetic_gate)
+    optional = {"rco_enrollment_context": None} if explicit_none else {}
+    with pytest.raises(BridgeConsensusMergeReceiptError):
+        write_bridge_consensus_merge_receipt(
+            pr_status=_pr_status(), events_path=tmp_path / "not-read.jsonl",
+            out_dir=tmp_path / "receipt", expected_head=HEAD,
+            consensus_proposal_id=TASK, now_utc=NOW, **optional,
+        )
+    assert seen == [None]
+    assert not (tmp_path / "receipt").exists()

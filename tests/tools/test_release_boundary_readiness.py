@@ -4033,16 +4033,12 @@ def test_posix_parent_fakes_leave_unrelated_real_descriptors_untouched(
 
     # This descriptor is real, local scratch only. The fake fstat map must never
     # see it, and a fake close must not swallow its real close.
-    real_open, real_fstat, real_close, real_dup = os.open, os.fstat, os.close, os.dup
+    real_open, real_fstat, real_close = os.open, os.fstat, os.close
     target = tmp_path / "unrelated-descriptor"
     target.write_bytes(b"synthetic-fd-isolation")
     descriptor = real_open(target, os.O_RDONLY)
     closed = False
     try:
-        while descriptor in {40, 41, 50, 51}:
-            duplicate = real_dup(descriptor)
-            real_close(descriptor)
-            descriptor = duplicate
         before = real_fstat(descriptor)
         with pytest.MonkeyPatch.context() as patch:
             namespace[fixture_name](patch)
@@ -4058,3 +4054,76 @@ def test_posix_parent_fakes_leave_unrelated_real_descriptors_untouched(
     finally:
         if not closed:
             real_close(descriptor)
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "test_posix_output_parent_is_opened_relative_to_each_pinned_parent",
+        "test_posix_output_parent_identity_mismatch_closes_all_descriptors",
+    ],
+)
+@pytest.mark.parametrize("first_descriptor", [40, 50])
+def test_unrelated_descriptor_regression_finishes_with_lowest_free_allocator(
+    fixture_name: str, first_descriptor: int,
+) -> None:
+    import ast
+    import __future__
+
+    # Run the actual regression with a deterministic descriptor model. No real
+    # descriptor/process/native call; fail after eight dup calls instead of hang.
+    opened: set[int] = set()
+    trace = {"dup_calls": 0}
+
+    def allocate(*args, **kwargs):
+        descriptor = next(
+            value for value in range(first_descriptor, first_descriptor + 16)
+            if value not in opened
+        )
+        opened.add(descriptor)
+        return descriptor
+
+    def duplicate(descriptor):
+        assert descriptor in opened
+        trace["dup_calls"] += 1
+        if trace["dup_calls"] > 8:
+            raise RuntimeError("fd_selection_not_bounded_lowest_free")
+        return allocate()
+
+    def descriptor_stat(descriptor):
+        if descriptor not in opened:
+            raise OSError(9, "synthetic descriptor already closed")
+        return os.stat_result((
+            stat.S_IFREG | 0o600, 123, 456, 1, 0, 0, 22, 1, 1, 1,
+        ))
+
+    def close(descriptor):
+        assert descriptor in opened, "synthetic double-close"
+        opened.remove(descriptor)
+
+    fake_os = types.SimpleNamespace(
+        name=os.name, open=allocate, dup=duplicate, fstat=descriptor_stat,
+        close=close, O_RDONLY=os.O_RDONLY, supports_dir_fd=set(),
+    )
+
+    class ScratchOnly:
+        def __truediv__(self, name):
+            return self
+
+        def write_bytes(self, payload):
+            return len(payload)
+
+    function = next(
+        node for node in ast.parse(Path(__file__).read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "test_posix_parent_fakes_leave_unrelated_real_descriptors_untouched"
+    )
+    namespace = {
+        "os": fake_os, "types": types, "stat": stat, "Path": Path,
+        "boundary": boundary, "pytest": pytest, "__file__": __file__,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]),
+                 "<actual-fd-regression-lowest-free-model>", "exec",
+                 flags=__future__.annotations.compiler_flag,
+                 dont_inherit=True), namespace)
+    namespace[function.name](fixture_name, ScratchOnly())
+    assert opened == set(), opened
+    assert trace["dup_calls"] <= 8, trace

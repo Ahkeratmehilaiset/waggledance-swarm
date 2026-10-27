@@ -127,6 +127,9 @@ def test_real_schema_format_floor_is_used_not_stubbed(monkeypatch):
     assert result["schema_valid"] is True
     assert result["status"] == "HOLD"
     assert result["merge_authorized"] is False
+    assert result["binding_valid"] is None
+    assert result["binding_status"] == "UNKNOWN"
+    assert result["scope"] == "PYTHON_FORMAT_PROVENANCE_ONLY"
     assert "BINDING_MISSING" in result["reasons"]
     assert "ENROLLMENT_UNKNOWN" in result["reasons"]
 
@@ -146,13 +149,15 @@ def test_reserved_label_and_headless_approval_are_refused_by_actual_schema():
         assert result["merge_authorized"] is False
 
 
-def test_real_correlation_and_untrusted_enrollment_never_imply_permission():
+def test_unavailable_correlation_and_untrusted_enrollment_never_imply_permission():
     request, reply = bound_pair()
     mod = utility()
     before = copy.deepcopy((request, reply))
     for enrollment in (None, {}, {"status": "synthetic"}, {"verified": True}):
         result = mod.dry_run(reply, request=request, target="codex-tools-1", enrollment=enrollment)
-        assert result["binding_valid"] is True
+        assert result["binding_valid"] is None
+        assert result["binding_status"] == "UNKNOWN"
+        assert "BINDING_NOT_EVALUATED" in result["reasons"]
         assert result["schema_valid"] is True
         assert result["status"] == "HOLD"
         assert result["merge_authorized"] is False
@@ -160,8 +165,23 @@ def test_real_correlation_and_untrusted_enrollment_never_imply_permission():
     assert (request, reply) == before
     reply["payload"]["nonce"] = "wrong"
     result = mod.dry_run(reply, request=request, target="codex-tools-1")
+    assert result["status"] == "HOLD"  # No matcher is called, so no mismatch verdict is invented.
+    assert result["binding_valid"] is None
+    assert result["binding_status"] == "UNKNOWN"
+    assert "BINDING_NOT_EVALUATED" in result["reasons"]
+    assert result["merge_authorized"] is False
+
+
+@pytest.mark.parametrize("bad_request", [
+    [], "not-an-object", 1, False, {"bad": float("nan")}, {"diff_sha256": "short"},
+])
+def test_malformed_supplied_request_is_refused_without_evaluating_correlation(bad_request):
+    result = utility().dry_run(event(), request=bad_request, target="codex-tools-1")
     assert result["status"] == "REFUSED"
-    assert "BINDING_MISMATCH" in result["reasons"]
+    assert "BINDING_INVALID" in result["reasons"]
+    assert result["binding_valid"] is None
+    assert result["binding_status"] == "UNKNOWN"
+    assert result["merge_authorized"] is False
 
 
 def test_missing_binding_and_injected_fake_provenance_fail_closed():
@@ -188,25 +208,49 @@ def test_repeated_cli_calls_use_python_boundary_and_leave_inputs_untouched():
         answers.append(json.loads(output.getvalue()))
     assert answers[0] == answers[1]
     assert answers[0]["merge_authorized"] is False
+    assert answers[0]["binding_status"] == "UNKNOWN"
     output = io.StringIO()
     assert mod.main(["--dry-run"], stdin=io.StringIO("{}"), stdout=output) == 2
     assert json.loads(output.getvalue())["status"] == "REFUSED"
+
+
+def test_duplicate_cli_fields_stay_refused():
+    body = '{"event":' + json.dumps(event()) + ',"event":' + json.dumps(event()) + '}'
+    output = io.StringIO()
+    assert utility().main(["--dry-run"], stdin=io.StringIO(body), stdout=output) == 2
+    result = json.loads(output.getvalue())
+    assert result["status"] == "REFUSED"
+    assert result["binding_valid"] is None
+    assert result["binding_status"] == "UNKNOWN"
+    assert result["merge_authorized"] is False
 
 
 def test_static_module_has_no_writer_network_subprocess_or_installed_context():
     path = Path(__file__).resolve().parents[2] / "tools/bridge_evidence_metadata_readonly.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     forbidden = {"subprocess", "socket", "urllib", "http", "requests", "ctypes", "winreg",
-                 "bridge_event_writer", "bridge_rco_enrollment", "idle_consensus_auto_merge"}
+                 "bridge_event_writer", "bridge_rco_enrollment", "idle_consensus_auto_merge",
+                 "importlib", "bridge_v2_request_contract", "bridge_v2_identity_registry",
+                 "bridge_v2_log_reader", "bridge_v2_workflow"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             assert not any(set(alias.name.split(".")) & forbidden for alias in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not set((node.module or "").split(".")) & forbidden
+            assert not any(set(alias.name.split(".")) & forbidden for alias in node.names)
         if isinstance(node, ast.Call):
             name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-            assert name not in {"eval", "exec", "__import__", "write_text", "write_bytes", "open",
+            assert name not in {"eval", "exec", "__import__", "import_module", "write_text", "write_bytes", "open",
                                 "load_installed_context", "load_rco_enrollment_context"}
+
+
+def test_helper_names_no_dormant_port_including_in_comments_or_strings():
+    path = Path(__file__).resolve().parents[2] / "tools/bridge_evidence_metadata_readonly.py"
+    source = path.read_text(encoding="utf-8")
+    for name in ("bridge_v2_request_contract", "bridge_v2_identity_registry",
+                 "bridge_v2_log_reader", "bridge_v2_workflow"):
+        assert name not in source
+
 
 @pytest.mark.parametrize("key", ["last_write_utc_ticks", "creation_utc_ticks"])
 def test_actual_snapshot_utc_tick_fields_preserve_exact_names_and_values(key):
@@ -231,6 +275,7 @@ def test_actual_snapshot_nested_stat_shape_preserves_original_utc_tick_names():
     assert source == original
     assert json.loads(json.dumps(result)) == result
 
+
 @pytest.mark.parametrize("key", [
     "in_reply_to_request_id", "in_reply_to_request_digest", "in_reply_to_requester",
 ])
@@ -245,4 +290,3 @@ def test_former_payload_only_reply_is_still_refused_by_real_schema(key):
     assert result["schema_valid"] is False
     assert result["merge_authorized"] is False
     assert "EVENT_SCHEMA" in result["reasons"]
-

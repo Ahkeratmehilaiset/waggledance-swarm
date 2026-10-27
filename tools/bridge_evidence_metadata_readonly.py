@@ -1,13 +1,15 @@
-"""Dormant metadata helpers and Python-contract dry-run; no bridge writer.
+"""Dormant metadata helpers and Python-format dry-run; no bridge writer.
 
 Run: python -B -m tools.bridge_evidence_metadata_readonly --dry-run
 Stdin is {"event": {...}, "request": {...}, "target": "...", "enrollment": {...}}.
-Only event is required. Missing binding/enrollment remains HOLD (exit 3);
+Only event is required. Unverified binding/enrollment remains HOLD (exit 3);
 invalid input is REFUSED (exit 2). There is no authorization/PASS exit.
 
-The existing Python schema's format/provenance and request correlation checks
-are reused. This is NOT PowerShell-hook equivalence, enrollment verification,
-CI, a merge verdict, a live bridge check, or permission to lift any hold.
+The existing Python schema's format/provenance checks are reused. Request
+correlation is NOT evaluated: binding_valid stays null and binding_status is
+UNKNOWN, even for matching-looking fixtures. Supplied request JSON is checked
+only for representational safety. This is NOT PowerShell-hook equivalence,
+enrollment verification, CI, a merge verdict or permission to lift any hold.
 Enrollment fixtures are untrusted descriptions, even with "verified": true.
 No installed enrollment context is loaded, and no registered tool is run.
 """
@@ -102,17 +104,18 @@ def dry_run(
     target: str | None = None, enrollment: Mapping[str, Any] | None = None,
     provenance: Any = None,
 ) -> dict[str, Any]:
-    """Inspect fixtures using the actual existing Python boundary, without writes.
+    """Inspect fixtures using the actual existing Python schema, without writes.
 
     A caller may inject the schema's provenance object; it is still checked by
-    that schema, not manufactured from JSON claims. Enrollment is NEVER trusted
-    here. Correlation alone proves neither canonical append order nor completion.
+    that schema, not manufactured from JSON claims. Enrollment and correlation
+    are NEVER verified here. Neither canonical append order nor completion is
+    established by this format-only dry-run.
     """
     result: dict[str, Any] = {
         "status": "HOLD", "dry_run": True, "schema_valid": False,
-        "binding_valid": None, "enrollment_status": "UNKNOWN",
-        "merge_authorized": False, "reasons": [],
-        "scope": "PYTHON_FORMAT_PROVENANCE_CORRELATION_ONLY",
+        "binding_valid": None, "binding_status": "UNKNOWN",
+        "enrollment_status": "UNKNOWN", "merge_authorized": False, "reasons": [],
+        "scope": "PYTHON_FORMAT_PROVENANCE_ONLY",
     }
 
     def refuse(reason: str) -> dict[str, Any]:
@@ -126,7 +129,6 @@ def dry_run(
         return refuse("METADATA_INVALID")
     try:
         from tools import bridge_v2_event_schema as schema
-        from tools import bridge_v2_request_contract as contract
     except ImportError:
         return refuse("EXISTING_PYTHON_VALIDATOR_UNAVAILABLE")
     try:
@@ -140,15 +142,10 @@ def dry_run(
         return refuse("TARGET_MISSING")
     else:
         try:
-            binding = normalize_metadata(request)
-            matched = contract.reply_matches_request(
-                binding, candidate, target, require_explicit_correlation=True,
-            )
-        except (ValueError, TypeError, KeyError):
+            normalize_metadata(request)
+        except (ValueError, TypeError):
             return refuse("BINDING_INVALID")
-        result["binding_valid"] = matched
-        if not matched:
-            return refuse("BINDING_MISMATCH")
+        result["reasons"].append("BINDING_NOT_EVALUATED")
     if enrollment is None:
         result["reasons"].append("ENROLLMENT_UNKNOWN")
     elif isinstance(enrollment, Mapping):
@@ -191,9 +188,9 @@ def main(
     except (ValueError, TypeError, RecursionError):
         result = {
             "status": "REFUSED", "dry_run": True, "schema_valid": False,
-            "binding_valid": None, "enrollment_status": "UNKNOWN",
-            "merge_authorized": False, "reasons": ["CLI_INPUT_INVALID"],
-            "scope": "PYTHON_FORMAT_PROVENANCE_CORRELATION_ONLY",
+            "binding_valid": None, "binding_status": "UNKNOWN",
+            "enrollment_status": "UNKNOWN", "merge_authorized": False,
+            "reasons": ["CLI_INPUT_INVALID"], "scope": "PYTHON_FORMAT_PROVENANCE_ONLY",
         }
     print(json.dumps(result, sort_keys=True, allow_nan=False), file=outgoing)
     return 2 if result["status"] == "REFUSED" else 3
@@ -201,5 +198,3 @@ def main(
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

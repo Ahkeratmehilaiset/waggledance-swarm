@@ -64,7 +64,7 @@ def _source_identity():
     lf = raw.replace(b"\r\n", b"\n")
     git_blob = b"blob " + str(len(lf)).encode("ascii") + b"\0" + lf
     return {"sha256": _digest(raw),
-            "git_blob_lf": hashlib.sha1(git_blob).hexdigest()}
+            "git_blob_lf": hashlib.sha1(git_blob, usedforsecurity=False).hexdigest()}
 
 
 def _pin_fingerprints():

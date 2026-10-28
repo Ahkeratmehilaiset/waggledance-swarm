@@ -25,7 +25,8 @@ def load_recorder():
 def identity():
     raw = SOURCE.read_bytes()
     lf = raw.replace(b"\r\n", b"\n")
-    blob = hashlib.sha1(b"blob " + str(len(lf)).encode() + b"\0" + lf).hexdigest()
+    blob = hashlib.sha1(b"blob " + str(len(lf)).encode() + b"\0" + lf,
+                        usedforsecurity=False).hexdigest()
     return hashlib.sha256(raw).hexdigest(), blob
 
 
@@ -284,4 +285,19 @@ def test_hook_configuration_must_not_reuse_parent_report(rec, audit, tmp_path, m
     assert result["limited_indicator"] is None
     assert report.read_text() == "old\n"
 
+
+
+def test_source_git_blob_sha1_is_explicitly_non_security(rec, monkeypatch):
+    class NonSecurityHashes:
+        sha256 = staticmethod(hashlib.sha256)
+
+        @staticmethod
+        def sha1(value, *, usedforsecurity):
+            assert usedforsecurity is False
+            return hashlib.sha1(value, usedforsecurity=False)
+
+    # Replace only this loaded module's namespace, never shared hashlib methods.
+    monkeypatch.setattr(rec, "hashlib", NonSecurityHashes)
+    sha, blob = identity()
+    assert rec._source_identity() == {"sha256": sha, "git_blob_lf": blob}
 

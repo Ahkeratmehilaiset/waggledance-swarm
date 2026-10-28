@@ -551,7 +551,7 @@ def test_class_sweep_no_target_request_is_hold_before_publication(tmp_path, targ
     "unanswered-close", "single-unanswered-close", "partial-first-close", "partial-second-close",
     "all-answered-close", "single-answered-close", "closed-close", "partial-closed-close",
     "all-answered-next", "single-answered-next", "closed-next", "partial-closed-next",
-    "partial-closed-wrong-link", "uuid-open", "uuid-closed", "targets-open", "targets-closed",
+    "partial-closed-wrong-link", "uuid-unlinked-open", "uuid-closed", "targets-open", "targets-closed",
     "unbound-answer-close", "historical-no-target",
 ])
 def test_class_sweep_each_reachable_lifecycle_state_has_safe_exit(tmp_path, scenario):
@@ -572,7 +572,7 @@ def test_class_sweep_each_reachable_lifecycle_state_has_safe_exit(tmp_path, scen
     if "closed" in scenario:
         rows.append(_class_terminal(request, time="2026-01-01T00:00:02Z"))
     is_next = scenario.endswith("-next") or scenario in {
-        "partial-closed-wrong-link", "uuid-open", "uuid-closed", "targets-open",
+        "partial-closed-wrong-link", "uuid-unlinked-open", "uuid-closed", "targets-open",
         "targets-closed", "historical-no-target",
     }
     if is_next:
@@ -580,14 +580,14 @@ def test_class_sweep_each_reachable_lifecycle_state_has_safe_exit(tmp_path, scen
             request,
             requester_uuid="fixture-rotated-uuid" if scenario.startswith("uuid-") else None,
             targets=targets[0] if scenario.startswith("targets-") else None,
-            first=scenario in {"uuid-open", "targets-open"},
+            first=scenario in {"uuid-unlinked-open", "targets-open"},
             wrong_link=scenario == "partial-closed-wrong-link",
         )
         if scenario == "historical-no-target":
             rows = [_class_request(targets="")]
         result = _class_transition(tmp_path, rows, event)
         accepted = scenario not in {
-            "partial-closed-wrong-link", "uuid-open", "targets-open", "historical-no-target",
+            "partial-closed-wrong-link", "uuid-unlinked-open", "targets-open", "historical-no-target",
         }
     else:
         event = _class_terminal(request, time="2026-01-01T00:00:03Z")
@@ -657,4 +657,283 @@ def test_class_sweep_partial_answer_full_writer_closure_and_successor(tmp_path):
         parsed = json.loads(inventory.stdout)
         assert parsed["matched_count"] == 1
         assert parsed["requests"][0]["answer_state"] == "not_evaluated"
+
+# Candidate appended to tests/tools/test_bridge_request_lifecycle_p1.py by Lead custody.
+# NOT EXECUTED. Pure-contract tests assume an admitted actor; writer tests cover admission.
+# Rename the existing unlinked negative scenario uuid-open -> uuid-unlinked-open;
+# the linked positive uuid-open case below is its sanctioned exit, not a new first revision.
+
+
+def _restart_metadata(request, reason="requester_session_replaced"):
+    return {
+        "previous_requester": {
+            key: request[key] for key in ("agent", "agent_uuid", "session_id", "run_id")
+        },
+        "previous_targets": request["to"],
+        "restart_reason": reason,
+    }
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("changed", ["agent_uuid", "session_id", "run_id", "session_and_run"])
+def test_p1_restart_link_exits_uuid_open(tmp_path, changed):
+    """Inner transition only: current actor admission is an explicit precondition."""
+    request = _class_request()
+    successor = _class_next(request)
+    fields = ("session_id", "run_id") if changed == "session_and_run" else (changed,)
+    for field in fields:
+        successor[field] += "-restarted"
+    successor.update(_restart_metadata(request))
+    result = _class_transition(tmp_path, [request], successor)
+    assert result["accepted"] is True, result
+
+
+@WINDOWS_APPEND_V1
+def test_p1_restarted_responder_cannot_answer_but_requester_has_exit(tmp_path):
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    request = _class_request()
+    target = "codex-tools-1"
+    restarted_answer = _class_terminal(request, target)
+    restarted_answer["session_id"] += "-restarted"
+    restarted_answer["run_id"] += "-restarted"
+    assert not reply_matches_request(request, restarted_answer, target)
+    successor = _class_next(request)
+    successor["expected_responders"][target] = {
+        key: restarted_answer[key] for key in ("agent_uuid", "session_id", "run_id")
+    }
+    successor.update(_restart_metadata(request, "responder_session_replaced"))
+    result = _class_transition(tmp_path, [request, restarted_answer], successor)
+    assert result["accepted"] is True, result
+
+
+@WINDOWS_APPEND_V1
+def test_p1_restart_after_partial_answer_preserves_the_real_answer(tmp_path):
+    request = _class_request()
+    answer = _class_terminal(request, "claude-rco-1")
+    rows = [request, answer]
+    original = json.loads(json.dumps(rows))
+    successor = _class_next(request)
+    successor["session_id"] += "-restarted"
+    successor["run_id"] += "-restarted"
+    successor.update(_restart_metadata(request))
+    result = _class_transition(tmp_path, rows, successor)
+    assert result["accepted"] is True, result
+    assert rows == original
+
+
+@WINDOWS_APPEND_V1
+def test_p1_restart_successor_is_terminal_only_for_old_continuity(tmp_path):
+    request = _class_request()
+    successor = _class_next(request)
+    successor["session_id"] += "-restarted"
+    successor["run_id"] += "-restarted"
+    successor.update(_restart_metadata(request))
+    third = _class_next(successor)
+    third.update(ts_utc="2026-01-01T00:00:08Z", request_id="fixture-class-v3",
+                 request_digest="c" * 64, nonce="fixture-third-nonce", task_revision=3)
+    held = _class_transition(tmp_path, [request, successor], third)
+    assert held["accepted"] is False, held
+    rows = [request, successor]
+    rows.extend(_class_terminal(successor, target, time="2026-01-01T00:00:06Z")
+                for target in successor["to"].split(","))
+    result = _class_transition(tmp_path, rows, third)
+    assert result["accepted"] is True, result
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("bad", [
+    "missing-tuple", "wrong-agent", "wrong-uuid", "wrong-session", "wrong-run",
+    "empty-tuple-value", "nonstring-tuple-value", "missing-targets", "wrong-targets",
+    "missing-reason", "blank-reason", "unknown-reason", "nonstring-reason",
+    "wrong-id", "wrong-digest", "skipped-revision", "unlinked-revision-one",
+    "other-agent", "metadata-conflict", "no-actual-restart",
+])
+def test_p1_restart_metadata_cannot_bypass_the_active_request(tmp_path, bad):
+    request = _class_request()
+    successor = _class_next(request)
+    successor["session_id"] += "-restarted"
+    successor["run_id"] += "-restarted"
+    successor.update(_restart_metadata(request))
+    if bad == "missing-tuple":
+        successor.pop("previous_requester")
+    elif bad.startswith("wrong-") and bad[6:] in {"agent", "uuid", "session", "run"}:
+        field = {"agent": "agent", "uuid": "agent_uuid", "session": "session_id", "run": "run_id"}[bad[6:]]
+        successor["previous_requester"][field] += "-wrong"
+    elif bad == "empty-tuple-value":
+        successor["previous_requester"]["session_id"] = ""
+    elif bad == "nonstring-tuple-value":
+        successor["previous_requester"]["session_id"] = True
+    elif bad == "missing-targets":
+        successor.pop("previous_targets")
+    elif bad == "wrong-targets":
+        successor["previous_targets"] = "claude-rco-1"
+    elif bad == "missing-reason":
+        successor.pop("restart_reason")
+    elif bad == "blank-reason":
+        successor["restart_reason"] = " "
+    elif bad == "unknown-reason":
+        successor["restart_reason"] = "typed-recovery-authority"
+    elif bad == "nonstring-reason":
+        successor["restart_reason"] = True
+    elif bad == "wrong-id":
+        successor["previous_request_id"] = "wrong-predecessor"
+    elif bad == "wrong-digest":
+        successor["previous_request_digest"] = "f" * 64
+    elif bad == "skipped-revision":
+        successor["task_revision"] = 3
+    elif bad == "unlinked-revision-one":
+        successor["task_revision"] = 1
+        successor.pop("previous_request_id")
+        successor.pop("previous_request_digest")
+    elif bad == "other-agent":
+        successor["agent"] = "claude-rco-1"
+    elif bad == "metadata-conflict":
+        successor["payload"]["restart_reason"] = "responder_session_replaced"
+    elif bad == "no-actual-restart":
+        successor["session_id"] = request["session_id"]
+        successor["run_id"] = request["run_id"]
+    result = _class_transition(tmp_path, [request], successor)
+    assert result["accepted"] is False, (bad, result)
+
+
+@WINDOWS_APPEND_V1
+def test_p1_new_requester_session_links_without_impersonating_old_tuple(tmp_path, monkeypatch):
+    from test_bridge_write_agent_event import _peer_gate
+    from waggledance.core.bridge_request_contract import reply_matches_request
+
+    world = _p1_world(tmp_path)
+    request = world.request
+    veto = {"ts_utc": request["ts_utc"], "agent": "claude-rco-2",
+            "agent_uuid": "76739997-0058-41a2-8514-78ff295537aa", "type": "finding",
+            "status": "changes_requested", "task_id": request["task_id"],
+            "to": "codex-lead-1", "message": "synthetic retained veto",
+            "payload": {"head": "a" * 40}}
+    before_gate = _peer_gate([veto], monkeypatch)
+    before = world.events()
+    old_close = world.close(world.closeout_arguments(
+        SessionId="lead-session-2", RunId="lead-run-2", PayloadJson=json.dumps({
+            "superseded_by_request_id": "fixture-p1-successor-v2",
+            "superseded_by_task_revision": 2})), world.later_lead_frame)
+    assert old_close.returncode != 0
+    assert world.events() == before
+    arguments = _successor_arguments(world, **_restart_metadata(request))
+    arguments.update({"-SessionId": "lead-session-2", "-RunId": "lead-run-2"})
+    completed = world.write(arguments, world.later_lead_frame)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    events = world.events()
+    assert events[:-1] == before
+    successor = events[-1]
+    assert successor["session_id"] == "lead-session-2"
+    assert successor["run_id"] == "lead-run-2"
+    for name, value in _restart_metadata(request).items():
+        assert successor[name] == successor["payload"][name] == value
+    assert "in_reply_to_request_id" not in successor
+    assert not reply_matches_request(request, successor, "codex-tools-1")
+    assert not reply_matches_request(request, successor, "codex-tools-1", requester_closure=True)
+    assert not any(row["status"] in {"answered", "rco_pass", "build_consensus_pass"}
+                   for row in events)
+    after_gate = _peer_gate([veto, *events], monkeypatch)
+    assert not before_gate["clear_to_merge"] and not after_gate["clear_to_merge"]
+    assert after_gate["latest_blocking_event"] == before_gate["latest_blocking_event"]
+
+# Append after the v5 tests-only candidate. NOT RUN by the Tools helper.
+# All event-log writes below are exclusively to this test's synthetic fixture runtime.
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("duplicate", [False, True], ids=["single", "identical-successor-repeat"])
+def test_p1_restart_inventory_keeps_continuity_separate_from_answers(tmp_path, duplicate):
+    from test_bridge_write_agent_event import _run_bridge_script
+
+    world = _p1_world(tmp_path)
+    request = world.request
+
+    def inventory(event):
+        run = _run_bridge_script(
+            world.root, world.runtime_root, "Get-BridgeRequestInventory.ps1",
+            "-Agent", "codex-lead-1", "-RequestId", event["request_id"],
+            "-NoCache", shell=world.shell,
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        output = json.loads(run.stdout)
+        assert output["matched_count"] == 1
+        return output["requests"][0]
+
+    before = inventory(request)
+    assert before["answer_state"] == "not_evaluated"
+    # Baseline396 fails HERE, independently of restart publication or Source correction.
+    assert before["p1_continuity_state"] == "not_evaluated"
+
+    arguments = _successor_arguments(world, **_restart_metadata(request))
+    arguments.update({"-SessionId": "lead-session-2", "-RunId": "lead-run-2"})
+    run = world.write(arguments, world.later_lead_frame)
+    assert run.returncode == 0, run.stdout + run.stderr
+    successor = world.events()[-1]
+    if duplicate:
+        log = world.shared / "events.jsonl"
+        identical_line = log.read_bytes().splitlines(keepends=True)[-1]
+        assert identical_line.endswith(b"\n")
+        with log.open("ab") as fixture_log:
+            fixture_log.write(identical_line)
+
+    old_entry = inventory(request)
+    assert old_entry["answer_state"] == "not_evaluated"
+    assert old_entry["p1_continuity_state"] == "superseded_by_restart"
+    assert old_entry["p1_continuity_superseder"] == {
+        "request_id": successor["request_id"],
+        "request_digest": successor["request_digest"],
+    }
+    current_entry = inventory(successor)
+    assert current_entry["answer_state"] == "not_evaluated"
+    assert current_entry["p1_continuity_state"] == "not_evaluated"
+    assert current_entry["occurrences"] == (2 if duplicate else 1)
+    for name, value in _restart_metadata(request).items():
+        assert current_entry[name] == value
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("frame_kind", ["missing", "old-frame", "other-agent"])
+def test_p1_restart_successor_requires_own_current_inherited_frame(tmp_path, frame_kind):
+    world = _p1_world(tmp_path)
+    arguments = _successor_arguments(world, **_restart_metadata(world.request))
+    arguments.update({"-SessionId": "lead-session-2", "-RunId": "lead-run-2"})
+    frame = {} if frame_kind == "missing" else (
+        world.lead_frame if frame_kind == "old-frame" else world.tools_frame)
+    before = world.events()
+    completed = world.write(arguments, frame)
+    assert completed.returncode != 0
+    assert world.events() == before
+
+
+@WINDOWS_APPEND_V1
+def test_p1_public_writer_restarted_responder_has_recorded_exit(tmp_path):
+    world = _p1_world(tmp_path)
+    request = world.request
+    target_identity = {
+        "agent": "codex-tools-1", "agent_uuid": world.tools["-AgentUuid"],
+        "session_id": "tools-session-2", "run_id": "tools-run-2",
+    }
+    (world.shared / "last_codex-tools-1.json").write_text(
+        json.dumps(target_identity), encoding="utf-8")
+    new_tools = {**world.tools, "-SessionId": "tools-session-2", "-RunId": "tools-run-2"}
+    new_frame = {**world.tools_frame, "AGENT_BRIDGE_SESSION_ID": "tools-session-2",
+                 "AGENT_BRIDGE_RUN_ID": "tools-run-2"}
+    before = world.events()
+    answer = world.write({**new_tools, "-Type": "message", "-Status": "answered",
+        "-TaskId": request["task_id"], "-To": request["agent"],
+        "-ReplyToEventJson": json.dumps(request)}, new_frame)
+    assert answer.returncode != 0
+    assert world.events() == before
+    result = world.write(_successor_arguments(world, **_restart_metadata(
+        request, "responder_session_replaced")), world.lead_frame)
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = world.events()
+    assert events[:-1] == before
+    successor = events[-1]
+    assert successor["expected_responders"]["codex-tools-1"] == {
+        key: target_identity[key] for key in ("agent_uuid", "session_id", "run_id")
+    }
+    assert not any(row["status"] in {"answered", "rco_pass", "build_consensus_pass"}
+                   for row in events)
 

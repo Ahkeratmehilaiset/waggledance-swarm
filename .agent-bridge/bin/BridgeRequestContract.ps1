@@ -227,6 +227,7 @@ function Assert-BridgeP1Envelope {
     if (-not (Test-BridgeLifecycleP1 $Event)) { return }
     $row=[pscustomobject]$Event
     foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+            'previous_requester','previous_targets','restart_reason',
             'superseded_by_request_id','superseded_by_task_revision','action_required','fyi','artifact')) {
         if (Test-BridgeContractFieldConflict $row $name) { throw "P1 HOLD: conflicting $name" }
     }
@@ -260,6 +261,24 @@ function Assert-BridgeP1Envelope {
         throw 'P1 HOLD: invalid superseded_by_task_revision'
     }
     $artifact=Get-BridgeContractField $row 'artifact'
+    $restartReason=Get-BridgeContractField $row 'restart_reason'
+    $previousRequester=Get-BridgeContractField $row 'previous_requester'
+    $previousTargets=Get-BridgeContractField $row 'previous_targets'
+    if ($null -ne $restartReason -or $null -ne $previousRequester -or $null -ne $previousTargets) {
+        if ($restartReason -isnot [string] -or
+            $restartReason -cnotin @('requester_session_replaced','responder_session_replaced') -or
+            -not (Test-BridgeRequestLikeEvent $row) -or
+            ($previousRequester -isnot [pscustomobject] -and $previousRequester -isnot [Collections.IDictionary]) -or
+            $previousTargets -isnot [string] -or [string]::IsNullOrWhiteSpace($previousTargets)) {
+            throw 'P1 HOLD: restart successor requires its predecessor tuple, targets and a known reason'
+        }
+        foreach ($name in @('agent','agent_uuid','session_id','run_id')) {
+            $value=Get-BridgeP1Property $previousRequester $name
+            if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+                throw 'P1 HOLD: restart predecessor identity is incomplete'
+            }
+        }
+    }
     if ($null -ne $artifact) {
         if ($artifact -isnot [pscustomobject] -and $artifact -isnot [Collections.IDictionary]) {
             throw 'P1 HOLD: artifact must be an object'
@@ -305,6 +324,7 @@ function Initialize-BridgeP1Envelope {
     }
     $Event['payload']=[pscustomobject]$data
     foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+            'previous_requester','previous_targets','restart_reason',
             'superseded_by_request_id','superseded_by_task_revision','action_required','fyi','artifact')) {
         if ($data.Contains($name)) {
             $old=Get-BridgeP1Property $Event $name
@@ -341,6 +361,66 @@ function Get-BridgeP1TaskKey {
     # This key grants no identity authority: exact reply/closure binding stays unchanged.
     return ConvertTo-BridgeContractJson ([ordered]@{agent=[string]$Event.agent;
         task_id=[string]$Event.task_id})
+}
+
+function Test-BridgeP1RestartSuccessor {
+    # Continuity only. The public writer separately verifies the new actor's
+    # current inherited frame. This is never reply/closure or voting authority.
+    param($Request,$Successor)
+    if (-not (Test-BridgeRequestLikeEvent $Request) -or
+        -not (Test-BridgeRequestLikeEvent $Successor) -or
+        (Get-BridgeP1TaskKey $Request) -cne (Get-BridgeP1TaskKey $Successor) -or
+        -not (Test-BridgeLifecycleP1 $Request) -or -not (Test-BridgeLifecycleP1 $Successor) -or
+        $null -eq (Get-BridgeContractField $Successor 'restart_reason')) { return $false }
+    Assert-BridgeP1Envelope $Request
+    Assert-BridgeP1Envelope $Successor
+    if ((Get-BridgeContractField $Request 'request_binding_conflict') -or
+        (Get-BridgeContractField $Successor 'request_binding_conflict')) { return $false }
+    $previous=Get-BridgeContractField $Successor 'previous_requester'
+    $changed=$false
+    foreach ($name in @('agent','agent_uuid','session_id','run_id')) {
+        $old=Get-BridgeContractField $Request $name
+        $current=Get-BridgeContractField $Successor $name
+        if ($old -isnot [string] -or [string]::IsNullOrWhiteSpace($old) -or
+            $current -isnot [string] -or [string]::IsNullOrWhiteSpace($current) -or
+            (Get-BridgeP1Property $previous $name) -cne $old) { return $false }
+        if ($name -cne 'agent' -and $old -cne $current) { $changed=$true }
+    }
+    $oldId=Get-BridgeContractField $Request 'request_id'
+    $oldDigest=Get-BridgeContractField $Request 'request_digest'
+    $oldRevision=Get-BridgeContractField $Request 'task_revision'
+    $oldTime=ConvertTo-BridgeContractTime (Get-BridgeContractField $Request 'ts_utc')
+    $newTime=ConvertTo-BridgeContractTime (Get-BridgeContractField $Successor 'ts_utc')
+    if ($oldId -isnot [string] -or -not $oldId -or
+        $oldDigest -isnot [string] -or $oldDigest -cnotmatch '^[a-fA-F0-9]{64}$' -or
+        (Get-BridgeContractField $Successor 'request_id') -ceq $oldId -or
+        (Get-BridgeContractField $Successor 'previous_request_id') -cne $oldId -or
+        (Get-BridgeContractField $Successor 'previous_request_digest') -cne $oldDigest -or
+        -not (Test-BridgeP1Revision $oldRevision) -or
+        (Get-BridgeContractField $Successor 'task_revision') -ne ([long]$oldRevision+1) -or
+        (Get-BridgeContractField $Successor 'previous_targets') -cne (Get-BridgeContractField $Request 'to') -or
+        $null -eq $oldTime -or $null -eq $newTime -or $newTime -le $oldTime) { return $false }
+    if ((Get-BridgeContractField $Successor 'restart_reason') -ceq 'requester_session_replaced') {
+        return $changed
+    }
+    $oldResponders=Get-BridgeContractField $Request 'expected_responders'
+    $newResponders=Get-BridgeContractField $Successor 'expected_responders'
+    $newTargets=@(([string]$Successor.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
+    foreach ($target in @(([string]$Request.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
+        if ($newTargets -cnotcontains $target) { continue }
+        $oldIdentity=Get-BridgeP1Property $oldResponders $target
+        $newIdentity=Get-BridgeP1Property $newResponders $target
+        $complete=$true; $replaced=$false
+        foreach ($name in @('agent_uuid','session_id','run_id')) {
+            $old=Get-BridgeP1Property $oldIdentity $name
+            $current=Get-BridgeP1Property $newIdentity $name
+            if ($old -isnot [string] -or [string]::IsNullOrWhiteSpace($old) -or
+                $current -isnot [string] -or [string]::IsNullOrWhiteSpace($current)) { $complete=$false }
+            elseif ($old -cne $current) { $replaced=$true }
+        }
+        if ($complete -and $replaced) { return $true }
+    }
+    return $false
 }
 
 function Assert-BridgeP1Transition {
@@ -390,6 +470,16 @@ function Assert-BridgeP1Transition {
         $byId.Add($id,$entry)
         $entries.Add($entry)
     }
+    # Re-derive historical supersession too: otherwise rev2 can publish while
+    # the old request still blocks rev3 forever. No answer or closure is made.
+    foreach ($entry in $entries) {
+        $superseders=@($entries | Where-Object {
+            $_.position -gt $entry.position -and
+            (Test-BridgeP1RestartSuccessor $entry.request $_.request)
+        })
+        if ($superseders.Count -gt 1) { throw 'P1 HOLD: conflicting restart successors' }
+        if ($superseders.Count -eq 1) { $entry.all_terminal=$true }
+    }
     if (-not $newRequest) {
         $id=Get-BridgeContractField $ClosedRequest 'request_id'
         if (-not $byId.ContainsKey($id)) { throw 'P1 HOLD: exact closure request is absent' }
@@ -412,12 +502,21 @@ function Assert-BridgeP1Transition {
         }
         return
     }
-    if (@($entries | Where-Object {-not $_.all_terminal}).Count) {
+    $prior=@($entries | Where-Object {Test-BridgeLifecycleP1 $_.request} | Select-Object -Last 1)
+    $pending=@($entries | Where-Object {-not $_.all_terminal})
+    $restartReason=Get-BridgeContractField $Event 'restart_reason'
+    if ($null -ne $restartReason) {
+        if (-not $prior.Count -or $prior[0].all_terminal -or
+            -not (Test-BridgeP1RestartSuccessor $prior[0].request $Event)) {
+            throw 'P1 HOLD: restart successor does not match its nonterminal predecessor'
+        }
+        $pending=@($pending | Where-Object {$_ -ne $prior[0]})
+    }
+    if ($pending.Count) {
         throw 'P1 HOLD: one bound request is already active for this logical task'
     }
     $id=Get-BridgeContractField $Event 'request_id'
     if ($byId.ContainsKey($id)) { throw 'P1 HOLD: request ID already published; reconcile, never append a retry' }
-    $prior=@($entries | Where-Object {Test-BridgeLifecycleP1 $_.request} | Select-Object -Last 1)
     $previousId=Get-BridgeContractField $Event 'previous_request_id'
     $previousDigest=Get-BridgeContractField $Event 'previous_request_digest'
     $revision=Get-BridgeContractField $Event 'task_revision'

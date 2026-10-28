@@ -806,6 +806,22 @@ if ($ReplyToEventJson) {
         }
     }
 } elseif ($RequestId -or $Type -ceq 'wake_request' -or (Test-BridgeRequestLikeEvent ([pscustomobject]$event))) {
+    if ((Test-BridgeLifecycleP1 ([pscustomobject]$event)) -and
+        $null -ne (Get-BridgeContractField ([pscustomobject]$event) 'restart_reason')) {
+        # Same-agent continuity recovery speaks only as the CURRENT actor.
+        # Keep exact old reply and requester-closeout binding unchanged.
+        $restartFrame=[ordered]@{
+            AGENT_BRIDGE_AGENT=$Agent; AGENT_BRIDGE_AGENT_UUID=$AgentUuid
+            AGENT_BRIDGE_SESSION_ID=$SessionId; AGENT_BRIDGE_RUN_ID=$RunId
+        }
+        foreach ($name in @($restartFrame.Keys)) {
+            $inherited=[Environment]::GetEnvironmentVariable($name,'Process')
+            if ([string]::IsNullOrWhiteSpace($inherited) -or
+                [string]$inherited -cne [string]$restartFrame[$name]) {
+                throw "P1 HOLD: restart successor must match its current inherited launch frame ($name)"
+            }
+        }
+    }
     $event['request_id'] = if ($RequestId) { $RequestId } else { [guid]::NewGuid().ToString('D') }
     $identities = [ordered]@{}
     foreach ($target in @(Get-BridgeEventTargets ([pscustomobject]$event))) {

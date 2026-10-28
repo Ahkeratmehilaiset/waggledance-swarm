@@ -775,12 +775,13 @@ def test_operator_signed_bridge_consensus_merges_do_not_count_toward_daily_quota
 
     ``_count_daily_auto_merges`` counts a bridge event only when its payload
     carries ``auto_merged: true`` or, as a legacy fallback, when it is a
-    ``done`` event whose status contains ``auto_merge``.  Ordinary
-    bridge-consensus merges (the Rule 9a route, including merges executed
-    under an operator's head-exact signature) are recorded as
-    ``message``/``merged`` events that carry neither marker, so the counter
-    does not count them.  The code inspects no signature; this test pins the
-    marker rule and requires the charter to describe it the same way.
+    ``done`` event whose status contains ``auto_merge``.  A
+    ``message``/``merged`` event that lacks both markers (the ordinary Rule 9a
+    bridge-consensus record, including a merge executed under an operator's
+    head-exact signature) is not counted.  The code inspects no signature and
+    does not verify that every such merge lacks the marker; this test pins the
+    marker rule and requires the charter to describe it the same way.  The
+    quota total is deliberately not pinned here (it is loader-owned).
     """
     monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-05-18")
     # Gate tests must read no live bundle: pin an empty-root unknown enrollment
@@ -838,12 +839,9 @@ def test_operator_signed_bridge_consensus_merges_do_not_count_toward_daily_quota
         events_path=_events_path(tmp_path, signed_merges),
         utc_date="2026-05-18",
     )
-    assert report["rate_gate"] == {
-        "allowed": True,
-        "utc_date": "2026-05-18",
-        "quota_used": 0,
-        "quota_total": 5,
-    }
+    assert report["rate_gate"]["allowed"] is True
+    assert report["rate_gate"]["utc_date"] == "2026-05-18"
+    assert report["rate_gate"]["quota_used"] == 0
     assert report["decision"] != "rate_limited"
     assert not any("daily rate limit exceeded" in reason for reason in report["reasons"])
 

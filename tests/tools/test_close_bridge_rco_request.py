@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -24,8 +25,59 @@ from tools.close_bridge_rco_request import (  # noqa: E402
     close_bridge_rco_request,
     _read_events,
 )
-from tools.bridge_event_writer import _PortableTestBackend  # noqa: E402
+from tools.bridge_event_writer import (  # noqa: E402
+    _PortableDirectoryLease,
+    _PortableTestBackend,
+)
 from tools.idle_check import evaluate_idle_state  # noqa: E402
+
+
+
+class _BoundedCloseFixtureBackend(_PortableTestBackend):
+    """Injected portable fake: never mkdir existing ancestors outside its fixture.
+
+    This is not a replacement for the production Windows directory-lease backend.
+    All ancestor plain-directory checks remain; only creation is confined to the
+    synthetic root. The original D15 refusal receipts remain consumer-before evidence.
+    """
+
+    def __init__(self, fixture_root: Path, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.fixture_root = Path(os.path.abspath(fixture_root))
+
+    def open_plain_directory_chain(self, path: Path) -> list[_PortableDirectoryLease]:
+        full_path = Path(os.path.abspath(os.path.normpath(os.fspath(path))))
+        if not full_path.is_relative_to(self.fixture_root):
+            raise OSError("close fixture directory is outside its bounded root")
+        cursor = Path(full_path.anchor)
+        candidates = [cursor]
+        for part in full_path.relative_to(cursor).parts:
+            cursor = cursor / part
+            candidates.append(cursor)
+        leases = []
+        for candidate in candidates:
+            try:
+                info = candidate.lstat()
+            except FileNotFoundError:
+                if not candidate.is_relative_to(self.fixture_root):
+                    raise OSError("close fixture ancestor is absent; refusing creation")
+                candidate.mkdir()
+                info = candidate.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                raise OSError("close fixture requires plain directory ancestors")
+            leases.append(_PortableDirectoryLease())
+        return leases
+
+
+def test_bounded_close_fixture_refuses_a_directory_outside_its_root(tmp_path: Path) -> None:
+    fixture = tmp_path / "bounded"
+    fixture.mkdir()
+    outside = tmp_path / "never-created"
+    with pytest.raises(OSError, match="outside its bounded root"):
+        _BoundedCloseFixtureBackend(fixture).open_plain_directory_chain(outside)
+    assert not outside.exists()
 
 
 def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
@@ -109,7 +161,7 @@ def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
         merged_at="2026-05-20T19:00:00Z",
         now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
         emit=True,
-        writer_backend=_PortableTestBackend(),
+        writer_backend=_BoundedCloseFixtureBackend(bridge_root, ),
     )
     assert result["ok"] is True
     assert result["emitted"] is True
@@ -153,7 +205,7 @@ def test_close_does_not_extend_recent_merge_window(tmp_path: Path) -> None:
         merged_at="2026-05-20T19:00:00Z",
         now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
         emit=True,
-        writer_backend=_PortableTestBackend(),
+        writer_backend=_BoundedCloseFixtureBackend(bridge_root, ),
     )
 
     # Idle gate query at the SAME instant as the close emit. If the close
@@ -257,7 +309,7 @@ def test_mutex_timeout_queues_close_without_reporting_closed_or_sidecars(
             bridge_root=bridge_root,
             now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
             emit=True,
-            writer_backend=_PortableTestBackend(mutex_outcomes=["clean", "timeout"]),
+            writer_backend=_BoundedCloseFixtureBackend(bridge_root, mutex_outcomes=["clean", "timeout"]),
         )
 
     assert result["decision"] == "queued"
@@ -291,7 +343,7 @@ def test_invalid_from_agent_fails_before_wal_or_canonical_mutation(
             bridge_root=bridge_root,
             now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
             emit=True,
-            writer_backend=_PortableTestBackend(),
+            writer_backend=_BoundedCloseFixtureBackend(bridge_root, ),
         )
 
     assert excinfo.value.decision == "invalid_args"
@@ -327,7 +379,7 @@ def test_invalid_close_event_type_fails_before_wal_or_canonical_mutation(
             bridge_root=bridge_root,
             now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
             emit=True,
-            writer_backend=_PortableTestBackend(),
+            writer_backend=_BoundedCloseFixtureBackend(bridge_root, ),
         )
 
     assert excinfo.value.decision == "invalid_args"
@@ -554,3 +606,4 @@ def test_cli_smoke(tmp_path: Path) -> None:
     assert payload["proposed_event"]["status"] == "rco_closed_postmerge"
     assert payload["proposed_event"]["to"] == "codex,claude"
     assert "operator" not in payload["proposed_event"]["to"]
+

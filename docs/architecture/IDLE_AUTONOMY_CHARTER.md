@@ -225,6 +225,8 @@ The autonomous-merge tool must increment the counter only on successful merge (n
 
 A sixth attempt in the same UTC day is refused with `rate_limited` exit code; the DRAFT PR remains for operator review.
 
+Scope of the counter (clarified 2026-10-28): `_count_daily_auto_merges` / `_is_auto_merge_event` in `tools/idle_consensus_auto_merge.py` count a bridge event only when its payload carries `auto_merged: true` or, as a legacy fallback, when it is a `done` event whose status contains `auto_merge`; ordinary bridge-consensus merges recorded as `message`/`merged` events (the Rule 9a route, including merges executed under an operator's head-exact signature) carry neither marker and are therefore not counted toward this limit, and the code inspects no signature to decide that.
+
 ## Operator handoff
 
 For every autonomous merge:

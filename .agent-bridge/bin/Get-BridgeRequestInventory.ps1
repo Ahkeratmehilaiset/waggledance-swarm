@@ -228,6 +228,36 @@ $requests=@(foreach ($item in $selected) {
         case_variant_id=($folded[$id.ToLowerInvariant()] -gt 1)
         answer_state='not_evaluated'
     }
+    if (Test-BridgeLifecycleP1 $event) {
+        Assert-BridgeP1Envelope $event
+        foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+                'previous_requester','previous_targets','restart_reason',
+                'action_required','fyi','artifact')) {
+            $value=Get-BridgeContractField $event $name
+            if ($null -ne $value) { $record[$name]=$value }
+        }
+        # Descriptor availability is not file verification or answer authority.
+        $record['artifact_verification']='not_evaluated'
+        # Separate continuity from answer authority. Never turn this into an
+        # answered/approved reply or change exact reply/closure binding.
+        $superseders=@(foreach ($successorId in $order) {
+            $successorRecord=$byId[$successorId]
+            if (-not $conflictedIds.Contains($successorId) -and
+                $successorRecord.first_position -gt $entry.first_position -and
+                (Test-BridgeP1RestartSuccessor $event $successorRecord.event)) {
+                $successorRecord.event
+            }
+        })
+        if ($superseders.Count -gt 1) { throw 'P1 HOLD: conflicting restart successors in inventory' }
+        $record['p1_continuity_state']='not_evaluated'
+        if ($superseders.Count -eq 1) {
+            $record['p1_continuity_state']='superseded_by_restart'
+            $record['p1_continuity_superseder']=[pscustomobject]@{
+                request_id=(Get-BridgeContractField $superseders[0] 'request_id')
+                request_digest=(Get-BridgeContractField $superseders[0] 'request_digest')
+            }
+        }
+    }
     if ($IncludeRequest) { $record['request']=$event }
     [pscustomobject]$record
 })

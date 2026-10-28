@@ -441,3 +441,220 @@ $fixtureResult|ConvertTo-Json -Compress
             owner.kill()  # Only this test's own isolated child, never a process-name sweep.
             owner.communicate(timeout=10)
 
+
+# CLASS SWEEP: enumerate lifecycle exits, not just the reported partial answer.
+def _class_request(*, targets="codex-tools-1,claude-rco-1", requester_uuid="fixture-lead-uuid"):
+    identity = {"agent": "codex-lead-1", "agent_uuid": requester_uuid,
+                "session_id": "fixture-lead-session", "run_id": "fixture-lead-run"}
+    return {
+        **identity, "ts_utc": "2026-01-01T00:00:00Z", "type": "wake_request",
+        "status": "requested", "task_id": "fixture-p1-class-sweep", "to": targets,
+        "request_id": "fixture-class-v1", "request_digest": "a" * 64,
+        "request_lifecycle": "wd.request-lifecycle.p1", "task_revision": 1,
+        "nonce": "fixture-class-nonce", "action_required": True, "fyi": False,
+        "message": "synthetic lifecycle", "payload": {},
+        "expected_responders": {
+            target: {"agent_uuid": target + "-uuid", "session_id": target + "-session",
+                     "run_id": target + "-run"}
+            for target in targets.split(",") if target.strip()
+        },
+    }
+
+
+def _class_terminal(request, target=None, *, time="2026-01-01T00:00:01Z"):
+    closure = target is None
+    identity = (request if closure else request["expected_responders"][target])
+    return {
+        "ts_utc": time, "agent": request["agent"] if closure else target,
+        **{name: identity[name] for name in ("agent_uuid", "session_id", "run_id")},
+        "type": "message", "status": "superseded" if closure else "answered",
+        "task_id": request["task_id"], "to": request["to"] if closure else request["agent"],
+        "in_reply_to_request_id": request["request_id"],
+        "in_reply_to_request_digest": request["request_digest"],
+        "in_reply_to_requester": {
+            name: request[name] for name in ("agent", "agent_uuid", "session_id", "run_id")
+        },
+        "nonce": request["nonce"], "task_revision": request["task_revision"],
+        "superseded_by_request_id": "fixture-class-v2" if closure else None,
+        "superseded_by_task_revision": 2 if closure else None,
+        "payload": {},
+    }
+
+
+def _class_next(request, *, requester_uuid=None, targets=None, first=False, wrong_link=False):
+    event = _class_request(
+        targets=request["to"] if targets is None else targets,
+        requester_uuid=request["agent_uuid"] if requester_uuid is None else requester_uuid,
+    )
+    event.update(ts_utc="2026-01-01T00:00:04Z",
+                 request_id="fixture-wrong-v2" if wrong_link else "fixture-class-v2",
+                 request_digest="b" * 64, nonce="fixture-next-nonce")
+    if not first:
+        event.update(task_revision=2, previous_request_id=request["request_id"],
+                     previous_request_digest=request["request_digest"])
+    return event
+
+
+def _class_transition(tmp_path, rows, event, *, closed_request=None, initialize=False):
+    """Execute Source functions on synthetic rows only; never the installed writer."""
+    import os
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    fixture = tmp_path / "class-transition.json"
+    fixture.write_text(json.dumps({
+        "rows": rows, "event": event, "closed_request": closed_request,
+        "initialize": initialize,
+    }), encoding="utf-8")
+    quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+    command = (
+        "$ErrorActionPreference='Stop'\n"
+        f". {quote(root / '.agent-bridge/bin/BridgeEventClassifier.ps1')}\n"
+        f". {quote(root / '.agent-bridge/bin/BridgeRequestContract.ps1')}\n"
+        f"$fixture=ConvertFrom-Json ([IO.File]::ReadAllText({quote(fixture)}))\n"
+        "try {\n"
+        " if($fixture.initialize){\n"
+        "  $event=[ordered]@{}\n"
+        "  foreach($property in $fixture.event.PSObject.Properties){"
+        "$event[$property.Name]=$property.Value}\n"
+        "  Initialize-BridgeP1Envelope -Event $event -IsRequest $true\n"
+        " } else {\n"
+        "  Assert-BridgeP1Transition -Rows @($fixture.rows) -Event $fixture.event "
+        "-ClosedRequest $fixture.closed_request\n"
+        " }\n"
+        " [pscustomobject]@{accepted=$true;error=$null}|ConvertTo-Json -Compress\n"
+        "} catch {\n"
+        " [pscustomobject]@{accepted=$false;error=$_.Exception.Message}|ConvertTo-Json -Compress\n"
+        "}\n"
+    )
+    env = dict(os.environ)
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(tmp_path / "synthetic-unused-runtime")
+    run = subprocess.run(
+        [_native_shell("powershell"), "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=root, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    return json.loads(run.stdout)
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("targets", ["", " ", ", ,"], ids=["empty", "blank", "separators"])
+def test_class_sweep_no_target_request_is_hold_before_publication(tmp_path, targets):
+    request = _class_request(targets=targets)
+    result = _class_transition(tmp_path, [], request, initialize=True)
+    assert result["accepted"] is False, result
+    assert "at least one target" in result["error"]
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("scenario", [
+    "unanswered-close", "single-unanswered-close", "partial-first-close", "partial-second-close",
+    "all-answered-close", "single-answered-close", "closed-close", "partial-closed-close",
+    "all-answered-next", "single-answered-next", "closed-next", "partial-closed-next",
+    "partial-closed-wrong-link", "uuid-open", "uuid-closed", "targets-open", "targets-closed",
+    "unbound-answer-close", "historical-no-target",
+])
+def test_class_sweep_each_reachable_lifecycle_state_has_safe_exit(tmp_path, scenario):
+    request = _class_request(
+        targets="codex-tools-1" if scenario.startswith("single-") else "codex-tools-1,claude-rco-1"
+    )
+    rows = [request]
+    targets = request["to"].split(",")
+    if scenario.startswith("partial-"):
+        rows.append(_class_terminal(request, targets[1] if scenario == "partial-second-close" else targets[0]))
+    elif scenario in {"all-answered-close", "single-answered-close",
+                      "all-answered-next", "single-answered-next"}:
+        rows.extend(_class_terminal(request, target) for target in targets)
+    if scenario == "unbound-answer-close":
+        answer = _class_terminal(request, targets[0])
+        answer["in_reply_to_request_digest"] = "f" * 64
+        rows.append(answer)
+    if "closed" in scenario:
+        rows.append(_class_terminal(request, time="2026-01-01T00:00:02Z"))
+    is_next = scenario.endswith("-next") or scenario in {
+        "partial-closed-wrong-link", "uuid-open", "uuid-closed", "targets-open",
+        "targets-closed", "historical-no-target",
+    }
+    if is_next:
+        event = _class_next(
+            request,
+            requester_uuid="fixture-rotated-uuid" if scenario.startswith("uuid-") else None,
+            targets=targets[0] if scenario.startswith("targets-") else None,
+            first=scenario in {"uuid-open", "targets-open"},
+            wrong_link=scenario == "partial-closed-wrong-link",
+        )
+        if scenario == "historical-no-target":
+            rows = [_class_request(targets="")]
+        result = _class_transition(tmp_path, rows, event)
+        accepted = scenario not in {
+            "partial-closed-wrong-link", "uuid-open", "targets-open", "historical-no-target",
+        }
+    else:
+        event = _class_terminal(request, time="2026-01-01T00:00:03Z")
+        result = _class_transition(tmp_path, rows, event, closed_request=request)
+        accepted = scenario not in {
+            "all-answered-close", "single-answered-close", "closed-close", "partial-closed-close",
+        }
+    assert result["accepted"] is accepted, (scenario, result)
+    if not accepted:
+        assert "P1 HOLD" in result["error"], result
+    if scenario == "historical-no-target":
+        assert "at least one target" in result["error"], result
+
+
+@WINDOWS_APPEND_V1
+def test_class_sweep_partial_answer_full_writer_closure_and_successor(tmp_path):
+    """Owner criterion: durable closure preserves first answer and links the next revision."""
+    from test_bridge_write_agent_event import _run_bridge_script
+
+    world = _p1_world(tmp_path)
+    identities = json.loads((world.root / "configs/bridge_identity_registry.json").read_text(
+        encoding="utf-8"))["identities"]
+    rco = {"agent": "claude-rco-1", "agent_uuid": identities["claude-rco-1"],
+           "session_id": "fixture-rco-session", "run_id": "fixture-rco-run"}
+    (world.shared / "last_claude-rco-1.json").write_text(json.dumps(rco), encoding="utf-8")
+    task = world.request["task_id"] + "-multi"
+    requested = world.write({
+        **world.lead, "-Type": "wake_request", "-Status": "requested",
+        "-TaskId": task, "-To": "codex-tools-1,claude-rco-1",
+        "-RequestId": "fixture-multi-v1", "-Message": "synthetic multi-target",
+        "-PayloadJson": json.dumps({"request_lifecycle": "wd.request-lifecycle.p1",
+                                    "task_revision": 1, "nonce": "fixture-multi-nonce"}),
+    }, world.lead_frame)
+    assert requested.returncode == 0, requested.stdout + requested.stderr
+    world.request = world.events()[-1]
+    answer = world.write({
+        **world.tools, "-Type": "message", "-Status": "answered", "-TaskId": task,
+        "-To": "codex-lead-1", "-ReplyToEventJson": json.dumps(world.request),
+    }, world.tools_frame)
+    assert answer.returncode == 0, answer.stdout + answer.stderr
+    first_answer = world.events()[-1]
+    before = world.events()
+    closure = world.close(world.closeout_arguments(
+        TaskId=task, To=world.request["to"],
+        PayloadJson=json.dumps({"superseded_by_request_id": "fixture-p1-successor-v2",
+                                "superseded_by_task_revision": 2}),
+    ))
+    assert closure.returncode == 0, closure.stdout + closure.stderr
+    assert world.events()[:-1] == before
+    assert world.events()[-2] == first_answer
+    successor = world.write(_successor_arguments(world), world.lead_frame)
+    assert successor.returncode == 0, successor.stdout + successor.stderr
+    events = world.events()
+    assert len(events) == len(before) + 2
+    assert events[-2]["in_reply_to_request_id"] == world.request["request_id"]
+    assert events[-1]["previous_request_id"] == world.request["request_id"]
+    assert events[-1]["previous_request_digest"] == world.request["request_digest"]
+    assert sum(row.get("in_reply_to_request_id") == world.request["request_id"]
+               and row["status"] == "answered" for row in events) == 1
+    for row in (world.request, events[-1]):
+        inventory = _run_bridge_script(
+            world.root, world.runtime_root, "Get-BridgeRequestInventory.ps1",
+            "-Agent", "codex-lead-1", "-RequestId", row["request_id"], "-NoCache",
+            shell=world.shell,
+        )
+        assert inventory.returncode == 0, inventory.stdout + inventory.stderr
+        parsed = json.loads(inventory.stdout)
+        assert parsed["matched_count"] == 1
+        assert parsed["requests"][0]["answer_state"] == "not_evaluated"
+

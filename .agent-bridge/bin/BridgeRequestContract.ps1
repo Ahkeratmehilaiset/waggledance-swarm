@@ -233,6 +233,13 @@ function Assert-BridgeP1Envelope {
     if (-not (Test-BridgeP1Revision (Get-BridgeContractField $row 'task_revision'))) {
         throw 'P1 HOLD: task_revision must be a positive bounded integer'
     }
+    # Request declaration validation must not depend on the routing classifier,
+    # which intentionally ignores malformed requests with no recipients.
+    if ($null -ne (Get-BridgeContractField $row 'request_id') -and
+        @(([string](Get-BridgeContractField $row 'to')).Split(',') |
+            ForEach-Object {$_.Trim()} | Where-Object {$_}).Count -eq 0) {
+        throw 'P1 HOLD: request requires at least one target'
+    }
     $action=Get-BridgeContractField $row 'action_required'
     $fyi=Get-BridgeContractField $row 'fyi'
     if ($action -isnot [bool] -or $fyi -isnot [bool] -or $action -eq $fyi) {
@@ -330,10 +337,10 @@ function Initialize-BridgeP1Envelope {
 
 function Get-BridgeP1TaskKey {
     param($Event)
-    $targets=[string[]]@(([string]$Event.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
-    [Array]::Sort($targets,[StringComparer]::Ordinal)
-    return ConvertTo-BridgeContractJson ([ordered]@{agent=[string]$Event.agent;agent_uuid=[string]$Event.agent_uuid;
-        task_id=[string]$Event.task_id;targets=$targets})
+    # Logical continuity survives a requester restart or recipient-set change.
+    # This key grants no identity authority: exact reply/closure binding stays unchanged.
+    return ConvertTo-BridgeContractJson ([ordered]@{agent=[string]$Event.agent;
+        task_id=[string]$Event.task_id})
 }
 
 function Assert-BridgeP1Transition {
@@ -348,7 +355,9 @@ function Assert-BridgeP1Transition {
     $entries=[Collections.Generic.List[object]]::new()
     for ($position=0; $position -lt $Rows.Count; $position++) {
         $row=$Rows[$position]
-        if (-not (Test-BridgeRequestLikeEvent $row) -or (Get-BridgeP1TaskKey $row) -cne $key) { continue }
+        if ((Get-BridgeP1TaskKey $row) -cne $key) { continue }
+        if (Test-BridgeLifecycleP1 $row) { Assert-BridgeP1Envelope $row }
+        if (-not (Test-BridgeRequestLikeEvent $row)) { continue }
         $id=Get-BridgeContractField $row 'request_id'
         if ($id -isnot [string] -or -not $id) { throw 'P1 HOLD: same-key request has unknown binding' }
         if ($byId.ContainsKey($id)) {
@@ -359,7 +368,6 @@ function Assert-BridgeP1Transition {
             }
             continue
         }
-        if (Test-BridgeLifecycleP1 $row) { Assert-BridgeP1Envelope $row }
         $entry=[pscustomobject]@{request=$row;position=$position;all_terminal=$true;any_answer=$false;closure=$null}
         foreach ($target in @(([string]$row.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
             $terminal=$false
@@ -390,7 +398,8 @@ function Assert-BridgeP1Transition {
             (Get-BridgeContractField $entry.request 'request_digest') -cne (Get-BridgeContractField $ClosedRequest 'request_digest')) {
             throw 'P1 HOLD: closure request copy differs from canonical'
         }
-        if ($entry.any_answer -or $null -ne $entry.closure -or $entry.all_terminal) {
+        # Some targets answering is not terminal for targets still pending.
+        if ($null -ne $entry.closure -or $entry.all_terminal) {
             throw 'P1 HOLD: answered or closed revision cannot be superseded again'
         }
         if ($Event.status -ceq 'superseded') {
@@ -424,7 +433,7 @@ function Assert-BridgeP1Transition {
         $revision -ne ([long](Get-BridgeContractField $old.request 'task_revision')+1)) {
         throw 'P1 HOLD: predecessor ID, digest or revision does not match'
     }
-    if (-not $old.any_answer -and $null -ne $old.closure -and $old.closure.status -ceq 'superseded' -and
+    if ($null -ne $old.closure -and $old.closure.status -ceq 'superseded' -and
         ((Get-BridgeContractField $old.closure 'superseded_by_request_id') -cne $id -or
          (Get-BridgeContractField $old.closure 'superseded_by_task_revision') -ne $revision)) {
         throw 'P1 HOLD: successor does not match the explicit closure'

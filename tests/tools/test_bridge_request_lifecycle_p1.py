@@ -307,3 +307,137 @@ def test_p1_legacy_closeout_contract_is_not_silently_redefined(tmp_path: Path) -
     assert second.returncode == 0, second.stdout + second.stderr
     assert "request_lifecycle" not in world.events()[-1]
 
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize("failure", ["admission", "wal_open"])
+def test_p1_post_acquisition_failure_releases_append_mutex(tmp_path: Path, failure: str) -> None:
+    """A caught failure must not strand ownership in the still-running caller."""
+    import hashlib
+    import os
+    import re
+    import subprocess
+    import time
+
+    world = _p1_world(tmp_path)
+    suffix = hashlib.sha256(str(world.runtime_root).encode()).hexdigest()[:16]
+    writer = (world.runtime_root.parent / ("writer-fixture-" + suffix)
+              / ".agent-bridge/bin/Write-AgentEvent.ps1")
+    source = writer.read_text(encoding="utf-8-sig")
+    append_names = set(re.findall(r"Local\\WdWriterFixture-[0-9a-f]+-AppendV1", source))
+    assert len(append_names) == 1
+    append_name = append_names.pop()
+    publication_name = append_name.removesuffix("AppendV1") + "AcceptedQueuePublicationV1"
+
+    # Observe the real handle; do not replace the mutex implementation or its ACL.
+    factory = "    return New-BridgeNamedMutex -Name $Name"
+    assert source.count(factory) == 1
+    source = source.replace(factory, """    $fixtureMutex = New-BridgeNamedMutex -Name $Name
+    if ($Purpose -ceq 'Append') { $script:fixtureAppendHandle = $fixtureMutex.SafeWaitHandle }
+    return $fixtureMutex""")
+    if failure == "wal_open":
+        opening = ("function Open-PendingCanonicalWalLease {\n"
+                   "    param([Parameter(Mandatory)] [byte[]] $Bytes)\n")
+        assert source.count(opening) == 1
+        source = source.replace(opening, opening + (
+            "    throw [IO.IOException]::new('fixture pending WAL open failure')\n"))
+        arguments = world.closeout_arguments(PayloadJson=json.dumps({
+            "superseded_by_request_id": "fixture-p1-successor-v2",
+            "superseded_by_task_revision": 2,
+        }))
+        expected_error = "fixture pending WAL open failure"
+    else:
+        arguments = _successor_arguments(world)
+        expected_error = "already active for this logical task"
+    writer.write_text(source, encoding="utf-8-sig")
+    before = (world.shared / "events.jsonl").read_bytes()
+    arguments_file = tmp_path / "arguments.json"
+    arguments_file.write_text(json.dumps(arguments), encoding="utf-8")
+    ready = tmp_path / "owner-ready.json"
+    host_script = tmp_path / "owner.ps1"
+
+    def quote(value: Path | str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    host_script.write_text(
+        "$ErrorActionPreference='Stop'\n"
+        "$fixtureArguments=@{}\n"
+        f"(Get-Content -LiteralPath {quote(arguments_file)} -Raw | ConvertFrom-Json)"
+        ".PSObject.Properties | ForEach-Object {"
+        "$fixtureArguments[$_.Name.TrimStart('-')]=$_.Value }\n"
+        "$fixtureCaught=''\n"
+        f"try {{ . {quote(writer)} @fixtureArguments }} "
+        "catch { $fixtureCaught=$_.Exception.Message }\n"
+        "$fixtureReport=@{caught=$fixtureCaught; "
+        "append_handle_seen=($null -ne $script:fixtureAppendHandle); "
+        "append_handle_closed=($null -ne $script:fixtureAppendHandle -and "
+        "$script:fixtureAppendHandle.IsClosed)}\n"
+        f"[IO.File]::WriteAllText({quote(ready)},"
+        "($fixtureReport|ConvertTo-Json -Compress))\n"
+        "[void][Console]::In.ReadLine()\n",
+        encoding="utf-8-sig",
+    )
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))
+           or key.startswith("AGENT_BRIDGE_TEST_")}
+    env.update(world.lead_frame)
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(world.runtime_root)
+    owner = subprocess.Popen(
+        [world.shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(host_script)], cwd=world.root, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "owner did not reach the caught-failure observation"
+        observation = json.loads(ready.read_text(encoding="utf-8-sig"))
+        assert expected_error in observation["caught"], observation
+        assert observation["append_handle_seen"] is True, observation
+        assert owner.poll() is None, "owner exited; abandonment is not release evidence"
+        assert (world.shared / "events.jsonl").read_bytes() == before
+        # A different process, not the recursively-owning caller thread, probes both locks.
+        command = """
+$ErrorActionPreference='Stop'
+$fixtureResult=@{}
+foreach($fixtureName in @(__APPEND__,__PUBLICATION__)) {
+    $fixtureProbe=$null
+    $fixtureAcquired=$false
+    try {
+        try {
+            $fixtureProbe=[Threading.Mutex]::OpenExisting($fixtureName,
+                ([Security.AccessControl.MutexRights]::Synchronize -bor
+                 [Security.AccessControl.MutexRights]::Modify))
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            $fixtureProbe=[Threading.Mutex]::new($false,$fixtureName)
+        }
+        $fixtureAcquired=$fixtureProbe.WaitOne(500)
+        $fixtureResult[$fixtureName]=$fixtureAcquired
+    } finally {
+        if($fixtureAcquired){$fixtureProbe.ReleaseMutex()}
+        if($null -ne $fixtureProbe){$fixtureProbe.Dispose()}
+    }
+}
+$fixtureResult|ConvertTo-Json -Compress
+""".replace("__APPEND__", quote(append_name)).replace("__PUBLICATION__", quote(publication_name))
+        contender = subprocess.run(
+            [world.shell, "-NoProfile", "-NonInteractive", "-Command", command],
+            cwd=world.root, env=env, capture_output=True, text=True, timeout=20,
+        )
+        assert contender.returncode == 0, contender.stdout + contender.stderr
+        locks = json.loads(contender.stdout)
+        assert owner.poll() is None, "owner must remain alive throughout the probe"
+        print("P1_MUTEX_OBSERVED " + json.dumps({
+            "failure": failure, "owner_alive": True, **observation, "locks": locks,
+        }, sort_keys=True))
+        assert locks[publication_name] is True, locks
+        assert locks[append_name] is True, "AppendV1 ownership leaked after caught failure"
+        assert observation["append_handle_closed"] is True, observation
+        assert (world.shared / "events.jsonl").read_bytes() == before
+    finally:
+        try:
+            owner.communicate(input="\n", timeout=10)
+        except subprocess.TimeoutExpired:
+            owner.kill()  # Only this test's own isolated child, never a process-name sweep.
+            owner.communicate(timeout=10)
+

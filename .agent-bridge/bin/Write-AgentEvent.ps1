@@ -2533,22 +2533,6 @@ function Add-CanonicalLineWithWal {
                 $wal.Lease.Dispose()
                 $wal.Lease = $null
             }
-            if ($null -ne $mutex) {
-                if ($acquired) {
-                    try { $mutex.ReleaseMutex() }
-                    catch {
-                        Write-BridgeWarning -Message (
-                            "canonical AppendV1 release failed: $($_.Exception.Message)"
-                        )
-                    }
-                }
-                try { $mutex.Dispose() }
-                catch {
-                    Write-BridgeWarning -Message (
-                        "canonical AppendV1 dispose failed: $($_.Exception.Message)"
-                    )
-                }
-            }
             if ($null -ne $wal -and $wal.PSObject.Properties['DirectoryLeases']) {
                 Close-BridgeAcceptedQueueDirectoryLeases `
                     -Leases $wal.DirectoryLeases
@@ -2556,6 +2540,23 @@ function Add-CanonicalLineWithWal {
             }
         }
     } finally {
+        # This scope includes P1 admission and pending-WAL creation failures.
+        if ($null -ne $mutex) {
+            if ($acquired) {
+                try { $mutex.ReleaseMutex() }
+                catch {
+                    Write-BridgeWarning -Message (
+                        "canonical AppendV1 release failed: $($_.Exception.Message)"
+                    )
+                }
+            }
+            try { $mutex.Dispose() }
+            catch {
+                Write-BridgeWarning -Message (
+                    "canonical AppendV1 dispose failed: $($_.Exception.Message)"
+                )
+            }
+        }
         if ($null -ne $publicationMutex) {
             if ($publicationAcquired) {
                 try { $publicationMutex.ReleaseMutex() }

@@ -382,3 +382,73 @@ def test_compact_pytest_valid_report_is_still_verified(
     assert result["hook"]["refused"] == 0
 
 
+
+
+def _synthetic_unhooked_executor(rec, monkeypatch, tmp_path, executable_name):
+    """Metadata and invocation fakes only: no Python/py launcher is executed."""
+    executable = Path(tmp_path.anchor) / "r2-synthetic" / executable_name
+    assert "pytest" not in str(executable).lower()
+    original_meta = rec._file_meta
+    calls = []
+
+    def file_meta(path):
+        if path == executable:
+            return {"path": str(path), "bytes": 1, "sha256": "0" * 64}
+        return original_meta(path)
+
+    def invoke(*args):
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(rec, "_file_meta", file_meta)
+    monkeypatch.setattr(rec, "_invoke", invoke)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "")
+    monkeypatch.delenv("WD_D15_HOOK_REPORT", raising=False)
+    return str(executable), calls
+
+
+@pytest.mark.parametrize("executable_name,arguments", [
+    pytest.param("py.exe", ["-3", "-m", "pytest"], id="py-selector-3"),
+    pytest.param("py.exe", ["-3.13", "-m", "pytest"], id="py-selector-3.13"),
+    pytest.param("py.exe", ["-V:3.13", "-m", "pytest"], id="py-selector-V"),
+    pytest.param("python.exe", ["-m", "pytest.__main__"], id="package-main"),
+    pytest.param("python.exe", ["-c", "import pytest; pytest.main([])"], id="inline"),
+    pytest.param("python.exe", ["site-packages/pytest/__main__.py"], id="direct-main"),
+    pytest.param("python.exe", ["site-packages/PYTEST/__main__.py"], id="case-insensitive"),
+    pytest.param("python.exe", ["--r2-unknown-option", "-c", "pass"], id="unknown-python-option"),
+    pytest.param("py.exe", ["--r2-unknown-option", "-c", "pass"], id="unknown-py-option"),
+    pytest.param("python.exe", ["-c", "pass", "-mPyTest"], id="inline-tail-lookalike"),
+    pytest.param("python.exe", ["script.py", "--PYTEST"], id="script-tail-lookalike"),
+    pytest.param("python.exe", ["-m", "other_module", "-mpytest"], id="module-tail-lookalike"),
+])
+def test_rco_possible_pytest_or_unknown_python_option_requires_d15(
+        rec, audit, tmp_path, monkeypatch, executable_name, arguments):
+    executable, calls = _synthetic_unhooked_executor(
+        rec, monkeypatch, tmp_path, executable_name)
+    result = run(rec, audit, tmp_path, stage="rco-form",
+                 command=[executable, *arguments])
+    assert result["status"] == "INCOMPLETE", result
+    assert result["limited_indicator"] is None
+    assert result["errors"]  # A named precondition/classification refusal is required.
+    assert not calls  # No real launcher, nor even the clean-exit fake, may start.
+
+
+@pytest.mark.parametrize("arguments", [
+    ["-c", "pass"],
+    ["-B", "-m", "sandbox.mind.step2.corpus"],
+    ["-I", "-m", "sandbox.mind.step2.encode"],
+    ["-X", "dev", "-m", "sandbox.mind.step2.memory"],
+    ["--check-hash-based-pycs", "always", "-m", "sandbox.mind.step2.run_q4"],
+    ["-W", "ignore", "synthetic_judge.py"],
+    ["--", "synthetic_judge.py"],
+])
+def test_rco_known_direct_command_shapes_keep_limited_evidence(
+        rec, audit, tmp_path, monkeypatch, arguments):
+    executable, calls = _synthetic_unhooked_executor(
+        rec, monkeypatch, tmp_path, "python.exe")
+    result = run(rec, audit, tmp_path, stage="direct-shape",
+                 command=[executable, *arguments])
+    assert result["status"] == "COMPLETED", result["errors"]
+    assert result["limited_indicator"] == 0
+    assert result["hook"]["status"] == "NOT_APPLICABLE"
+    assert len(calls) == 1

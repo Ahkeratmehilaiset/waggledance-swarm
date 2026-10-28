@@ -109,6 +109,39 @@ def _is_pytest(command):
     return False
 
 
+def _command_class_unknown(command):
+    """Conservatively screen non-pytest commands before any execution."""
+    if any("pytest" in word.lower() for word in command):
+        return True
+    exe = Path(command[0]).name.lower()
+    if exe not in ("py", "py.exe") and not exe.startswith("python"):
+        return False
+    arguments = iter(command[1:])
+    # Each option is consumed once; stop at the first script/module/code target.
+    for arg in arguments:
+        if arg == "--":
+            return next(arguments, None) is None
+        if not arg.startswith("-"):
+            return False
+        if arg == "--check-hash-based-pycs":
+            if next(arguments, None) is None:
+                return True
+            continue
+        if arg.startswith("--check-hash-based-pycs="):
+            continue
+        mode = re.fullmatch(r"-[bBdEiIOPqRsSuvx]*([cmWX])(.*)", arg)
+        if mode:
+            value = mode[2] or next(arguments, None)
+            if value is None:
+                return True
+            if mode[1] in ("W", "X"):
+                continue
+            return False
+        if not re.fullmatch(r"-[bBdEiIOPqRsSuvx]+", arg):
+            return True
+    return False
+
+
 def _pytest_report(directory):
     tokens = shlex.split(os.environ.get("PYTEST_ADDOPTS", ""))
     if not any(a == "-p" and b == "hook_plugin_d15"
@@ -235,6 +268,10 @@ def record_command(*, attempt_id, stage, stage_number, command, cwd, audit_root,
         result["executable"] = _file_meta(Path(command[0]))
         cwd_stat = Path(cwd).stat()
         result["cwd_file_identity"] = {"device": cwd_stat.st_dev, "inode": cwd_stat.st_ino}
+        if (result["hook"]["status"] == "NOT_APPLICABLE"
+                and _command_class_unknown(command)):
+            result["hook"] = {"status": "UNKNOWN"}
+            raise ValueError("COMMAND_CLASS_UNKNOWN")
         if result["hook"]["status"] == "UNKNOWN":
             hook_path = _pytest_report(directory)
         with output.open("xb") as out, error.open("xb") as err:

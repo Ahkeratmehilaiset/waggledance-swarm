@@ -194,3 +194,245 @@ function Test-BridgeReplyBinding {
     }
     return $true
 }
+
+# Explicit opt-in producer metadata only. Never changes legacy digest keys,
+# routing, vote authority, HOLD or veto classification. No artifact is opened.
+function Get-BridgeP1Property {
+    param($Object,[string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [Collections.IDictionary]) { return ,$Object[$Name] }
+    $property=$Object.PSObject.Properties[$Name]
+    if ($null -ne $property) { return ,$property.Value }
+    return $null
+}
+
+function Test-BridgeLifecycleP1 {
+    param($Event)
+    if ($null -eq $Event) { return $false }
+    $marker=Get-BridgeContractField ([pscustomobject]$Event) 'request_lifecycle'
+    if ($null -eq $marker) { return $false }
+    if ($marker -isnot [string] -or $marker -cne 'wd.request-lifecycle.p1') {
+        throw 'P1 HOLD: unknown or conflicting request_lifecycle'
+    }
+    return $true
+}
+
+function Test-BridgeP1Revision {
+    param($Value)
+    return (($Value -is [int] -or $Value -is [long]) -and $Value -ge 1 -and $Value -le 2147483647)
+}
+
+function Assert-BridgeP1Envelope {
+    param($Event)
+    if (-not (Test-BridgeLifecycleP1 $Event)) { return }
+    $row=[pscustomobject]$Event
+    foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+            'superseded_by_request_id','superseded_by_task_revision','action_required','fyi','artifact')) {
+        if (Test-BridgeContractFieldConflict $row $name) { throw "P1 HOLD: conflicting $name" }
+    }
+    if (-not (Test-BridgeP1Revision (Get-BridgeContractField $row 'task_revision'))) {
+        throw 'P1 HOLD: task_revision must be a positive bounded integer'
+    }
+    $action=Get-BridgeContractField $row 'action_required'
+    $fyi=Get-BridgeContractField $row 'fyi'
+    if ($action -isnot [bool] -or $fyi -isnot [bool] -or $action -eq $fyi) {
+        throw 'P1 HOLD: action_required/fyi must be opposite JSON booleans'
+    }
+    foreach ($name in @('previous_request_id','superseded_by_request_id')) {
+        $value=Get-BridgeContractField $row $name
+        if ($null -ne $value -and ($value -isnot [string] -or $value -cnotmatch '^[A-Za-z0-9._:-]{1,128}$')) {
+            throw "P1 HOLD: invalid $name"
+        }
+    }
+    $previousDigest=Get-BridgeContractField $row 'previous_request_digest'
+    if ($null -ne $previousDigest -and ($previousDigest -isnot [string] -or $previousDigest -cnotmatch '^[a-fA-F0-9]{64}$')) {
+        throw 'P1 HOLD: invalid previous_request_digest'
+    }
+    $nextRevision=Get-BridgeContractField $row 'superseded_by_task_revision'
+    if ($null -ne $nextRevision -and -not (Test-BridgeP1Revision $nextRevision)) {
+        throw 'P1 HOLD: invalid superseded_by_task_revision'
+    }
+    $artifact=Get-BridgeContractField $row 'artifact'
+    if ($null -ne $artifact) {
+        if ($artifact -isnot [pscustomobject] -and $artifact -isnot [Collections.IDictionary]) {
+            throw 'P1 HOLD: artifact must be an object'
+        }
+        $path=Get-BridgeP1Property $artifact 'path'
+        $size=Get-BridgeP1Property $artifact 'bytes'
+        $sha=Get-BridgeP1Property $artifact 'sha256'
+        $owner=Get-BridgeP1Property $artifact 'owner'
+        if ($path -isnot [string] -or [string]::IsNullOrWhiteSpace($path) -or
+            $path.Length -gt 8192 -or $path.IndexOf([char]0) -ge 0 -or
+            $path -cnotmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+[\\/]|/[^/])' -or
+            ($size -isnot [int] -and $size -isnot [long]) -or $size -lt 0 -or $size -gt 9007199254740991 -or
+            $sha -isnot [string] -or $sha -cnotmatch '^[a-fA-F0-9]{64}$' -or
+            $owner -isnot [string] -or $owner -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+            throw 'P1 HOLD: artifact requires absolute path, integer bytes, full sha256 and owner'
+        }
+    }
+}
+
+function Initialize-BridgeP1Envelope {
+    param([Collections.IDictionary]$Event,$Request=$null,[bool]$IsRequest=$false)
+    $optIn=Test-BridgeLifecycleP1 ([pscustomobject]$Event)
+    if (-not $optIn -and -not (Test-BridgeLifecycleP1 $Request)) { return }
+    $data=[ordered]@{}
+    $payload=Get-BridgeP1Property $Event 'payload'
+    if ($null -ne $payload) {
+        if ($payload -is [Collections.IDictionary]) {
+            foreach ($name in $payload.Keys) { $data[$name]=$payload[$name] }
+        } elseif ($payload -is [pscustomobject]) {
+            foreach ($property in $payload.PSObject.Properties) { $data[$property.Name]=$property.Value }
+        } else { throw 'P1 HOLD: metadata needs an object payload' }
+    }
+    $data['request_lifecycle']='wd.request-lifecycle.p1'
+    if (-not $data.Contains('action_required') -and -not $data.Contains('fyi')) {
+        $data['action_required']=$IsRequest
+        $data['fyi']=-not $IsRequest
+    }
+    # Structured task replies retain their result, and expose its descriptor as
+    # a shape-checked claim, not a verified receipt and never an approval.
+    if (-not $data.Contains('artifact') -and -not $IsRequest) {
+        $resultArtifact=Get-BridgeP1Property (Get-BridgeP1Property $payload 'result') 'artifact'
+        if ($null -ne $resultArtifact) { $data['artifact']=$resultArtifact }
+    }
+    $Event['payload']=[pscustomobject]$data
+    foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+            'superseded_by_request_id','superseded_by_task_revision','action_required','fyi','artifact')) {
+        if ($data.Contains($name)) {
+            $old=Get-BridgeP1Property $Event $name
+            if ($null -ne $old -and (ConvertTo-BridgeContractJson $old) -cne (ConvertTo-BridgeContractJson $data[$name])) {
+                throw "P1 HOLD: top-level $name conflicts with payload"
+            }
+            $Event[$name]=$data[$name]
+        }
+    }
+    Assert-BridgeP1Envelope ([pscustomobject]$Event)
+    if ($IsRequest) {
+        foreach ($name in @('agent','agent_uuid','session_id','run_id','task_id','request_id','nonce')) {
+            $value=Get-BridgeContractField ([pscustomobject]$Event) $name
+            if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+                throw "P1 HOLD: bound request requires $name"
+            }
+        }
+        $expected=Get-BridgeContractField ([pscustomobject]$Event) 'expected_responders'
+        foreach ($target in @(([string]$Event['to']).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
+            $identity=Get-BridgeP1Property $expected $target
+            foreach ($name in @('agent_uuid','session_id','run_id')) {
+                $value=Get-BridgeP1Property $identity $name
+                if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+                    throw 'P1 HOLD: expected responder identity is incomplete'
+                }
+            }
+        }
+    }
+}
+
+function Get-BridgeP1TaskKey {
+    param($Event)
+    $targets=[string[]]@(([string]$Event.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
+    [Array]::Sort($targets,[StringComparer]::Ordinal)
+    return ConvertTo-BridgeContractJson ([ordered]@{agent=[string]$Event.agent;agent_uuid=[string]$Event.agent_uuid;
+        task_id=[string]$Event.task_id;targets=$targets})
+}
+
+function Assert-BridgeP1Transition {
+    # Rows must come from a complete frozen canonical prefix, refreshed under
+    # publication + append fences with an empty accepted queue. Never an overlay.
+    param([object[]]$Rows,$Event,$ClosedRequest=$null)
+    $newRequest=Test-BridgeRequestLikeEvent $Event
+    $subject=if ($newRequest) { $Event } else { $ClosedRequest }
+    if ($null -eq $subject) { throw 'P1 HOLD: closure lacks its full request' }
+    $key=Get-BridgeP1TaskKey $subject
+    $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    $entries=[Collections.Generic.List[object]]::new()
+    for ($position=0; $position -lt $Rows.Count; $position++) {
+        $row=$Rows[$position]
+        if (-not (Test-BridgeRequestLikeEvent $row) -or (Get-BridgeP1TaskKey $row) -cne $key) { continue }
+        $id=Get-BridgeContractField $row 'request_id'
+        if ($id -isnot [string] -or -not $id) { throw 'P1 HOLD: same-key request has unknown binding' }
+        if ($byId.ContainsKey($id)) {
+            $first=$byId[$id].request
+            if ((Get-BridgeRequestContent $first) -cne (Get-BridgeRequestContent $row) -or
+                (Get-BridgeContractField $first 'request_digest') -cne (Get-BridgeContractField $row 'request_digest')) {
+                throw 'P1 HOLD: conflicting immutable request ID'
+            }
+            continue
+        }
+        if (Test-BridgeLifecycleP1 $row) { Assert-BridgeP1Envelope $row }
+        $entry=[pscustomobject]@{request=$row;position=$position;all_terminal=$true;any_answer=$false;closure=$null}
+        foreach ($target in @(([string]$row.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
+            $terminal=$false
+            for ($replyPosition=$position+1; $replyPosition -lt $Rows.Count; $replyPosition++) {
+                $reply=$Rows[$replyPosition]
+                if ((Get-BridgeContractField $reply 'in_reply_to_request_id') -cne $id) { continue }
+                if ((Test-BridgeAnswerEvent $reply) -and
+                    (Test-BridgeReplyBinding $row $reply $target -RequestPosition $position -ReplyPosition $replyPosition)) {
+                    $entry.any_answer=$true
+                    $terminal=$true
+                }
+                if ((Test-BridgeRequesterClosureEvent $reply) -and
+                    (Test-BridgeReplyBinding $row $reply $target -RequesterClosure $true -RequestPosition $position -ReplyPosition $replyPosition)) {
+                    $entry.closure=$reply
+                    $terminal=$true
+                }
+            }
+            if (-not $terminal) { $entry.all_terminal=$false }
+        }
+        $byId.Add($id,$entry)
+        $entries.Add($entry)
+    }
+    if (-not $newRequest) {
+        $id=Get-BridgeContractField $ClosedRequest 'request_id'
+        if (-not $byId.ContainsKey($id)) { throw 'P1 HOLD: exact closure request is absent' }
+        $entry=$byId[$id]
+        if ((Get-BridgeRequestContent $entry.request) -cne (Get-BridgeRequestContent $ClosedRequest) -or
+            (Get-BridgeContractField $entry.request 'request_digest') -cne (Get-BridgeContractField $ClosedRequest 'request_digest')) {
+            throw 'P1 HOLD: closure request copy differs from canonical'
+        }
+        if ($entry.any_answer -or $null -ne $entry.closure -or $entry.all_terminal) {
+            throw 'P1 HOLD: answered or closed revision cannot be superseded again'
+        }
+        if ($Event.status -ceq 'superseded') {
+            $nextId=Get-BridgeContractField $Event 'superseded_by_request_id'
+            $nextRevision=Get-BridgeContractField $Event 'superseded_by_task_revision'
+            if ($null -eq $nextId -or $nextId -ceq $id -or
+                $nextRevision -ne ([long](Get-BridgeContractField $ClosedRequest 'task_revision')+1)) {
+                throw 'P1 HOLD: superseded closure requires a distinct linked successor revision'
+            }
+        }
+        return
+    }
+    if (@($entries | Where-Object {-not $_.all_terminal}).Count) {
+        throw 'P1 HOLD: one bound request is already active for this logical task'
+    }
+    $id=Get-BridgeContractField $Event 'request_id'
+    if ($byId.ContainsKey($id)) { throw 'P1 HOLD: request ID already published; reconcile, never append a retry' }
+    $prior=@($entries | Where-Object {Test-BridgeLifecycleP1 $_.request} | Select-Object -Last 1)
+    $previousId=Get-BridgeContractField $Event 'previous_request_id'
+    $previousDigest=Get-BridgeContractField $Event 'previous_request_digest'
+    $revision=Get-BridgeContractField $Event 'task_revision'
+    if (-not $prior.Count) {
+        if ($revision -ne 1 -or $null -ne $previousId -or $null -ne $previousDigest) {
+            throw 'P1 HOLD: first opt-in revision must be 1 without a predecessor'
+        }
+        return
+    }
+    $old=$prior[0]
+    if ($previousId -cne (Get-BridgeContractField $old.request 'request_id') -or
+        $previousDigest -cne (Get-BridgeContractField $old.request 'request_digest') -or
+        $revision -ne ([long](Get-BridgeContractField $old.request 'task_revision')+1)) {
+        throw 'P1 HOLD: predecessor ID, digest or revision does not match'
+    }
+    if (-not $old.any_answer -and $null -ne $old.closure -and $old.closure.status -ceq 'superseded' -and
+        ((Get-BridgeContractField $old.closure 'superseded_by_request_id') -cne $id -or
+         (Get-BridgeContractField $old.closure 'superseded_by_task_revision') -ne $revision)) {
+        throw 'P1 HOLD: successor does not match the explicit closure'
+    }
+    # Separate closure and request writes are NOT atomic. A stale prepared event
+    # is refused rather than silently retimed or published ahead of its predecessor.
+    $previousTime=if ($null -ne $old.closure) {$old.closure.ts_utc} else {$old.request.ts_utc}
+    if ([DateTimeOffset]::Parse($Event.ts_utc) -le [DateTimeOffset]::Parse($previousTime)) {
+        throw 'P1 HOLD: successor timestamp precedes its canonical predecessor'
+    }
+}

@@ -833,6 +833,7 @@ if ($ReplyToEventJson) {
             $bindingWarnings += 'Responder identity unavailable at request creation: ' + ($missing -join ', ') + '. Missing targets cannot close this request; reissue a new request_id after verifying their live identity.'
         }
     }
+    Initialize-BridgeP1Envelope -Event $event -IsRequest $true
     $identityBytes = [Text.Encoding]::UTF8.GetBytes((Get-BridgeRequestContent ([pscustomobject]$event)))
     $hasher = [Security.Cryptography.SHA256]::Create()
     try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
@@ -1060,6 +1061,19 @@ function Assert-BridgeJsonIntegersSafe {
     }
 }
 
+# P1 is explicitly opted in; legacy bytes and classifier behavior stay unchanged.
+$bridgeP1Reference=$null
+if ($ReplyToEventJson) {
+    Initialize-BridgeP1Envelope -Event $event -Request $replyTo
+} elseif ($CloseRequestEventJson) {
+    $bridgeP1Reference=$closed
+    Initialize-BridgeP1Envelope -Event $event -Request $closed
+} elseif (-not $event.Contains('request_id')) {
+    Initialize-BridgeP1Envelope -Event $event
+}
+$bridgeP1NeedsTransition=(Test-BridgeLifecycleP1 ([pscustomobject]$event)) -and
+    -not $ReplyToEventJson -and ($CloseRequestEventJson -or $event.Contains('request_id'))
+$bridgeP1Snapshot=$null
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [char]10)
 Assert-BridgeJsonObjectKeysAscii -Json $line
 Assert-BridgeJsonIntegersSafe -Json $line
@@ -2221,6 +2235,84 @@ function Invoke-BridgeCanonicalTransactionalAppend {
 $script:bridgeCheckpointFailureInjected = $false
 $script:bridgeWalCleanupFailureInjected = $false
 
+
+function Get-BridgeP1PriorSnapshot {
+    # Expensive complete parsing happens OUTSIDE global publication/append locks.
+    # This is a candidate snapshot, never permission to write. The frozen prefix
+    # and a bounded final delta are verified again under both fences.
+    param([string]$Path,[string]$Task)
+    . (Join-Path $PSScriptRoot 'BridgeReplyIndex.ps1')
+    try { $attributes=[IO.File]::GetAttributes($Path) }
+    catch [IO.FileNotFoundException] { return [pscustomobject]@{cursor=$null;length=0L;prefix=$null;rows=@()} }
+    catch [IO.DirectoryNotFoundException] { return [pscustomobject]@{cursor=$null;length=0L;prefix=$null;rows=@()} }
+    $snapshot=Read-BridgeReplyIndex -Path $Path -CachePath '' -NoCache
+    $relevant=@($snapshot.rows | Where-Object {(Get-BridgeP1Property $_ 'task_id') -ceq $Task})
+    [pscustomobject]@{cursor=$snapshot.candidate_cursor;length=$snapshot.snapshot_length;
+        prefix=$snapshot.prefix_sha256;rows=$relevant}
+}
+
+function Assert-BridgeP1QueueEmpty {
+    # Conservative subset of accepted-queue completeness: pending and ready
+    # must be EMPTY. Even a canonically duplicated retained WAL stays HOLD here;
+    # this producer neither drains, deletes nor overlays accepted state.
+    $leases=[Collections.Generic.List[object]]::new()
+    try {
+        foreach ($lease in @(Open-BridgePlainDirectoryChain -Path $bridgeRoot -Label 'P1 bridge root')) {
+            $leases.Add($lease)
+        }
+        foreach ($path in @((Join-Path $bridgeRoot 'spool'),(Join-Path $bridgeRoot 'spool/accepted-v1'))) {
+            try { $attributes=[IO.File]::GetAttributes($path) }
+            catch [IO.FileNotFoundException] { return }
+            catch [IO.DirectoryNotFoundException] { return }
+            $leases.Add((Open-BridgeAcceptedQueueDirectoryLease -Path $path -Label 'P1 accepted namespace'))
+        }
+        $accepted=Join-Path $bridgeRoot 'spool/accepted-v1'
+        foreach ($entry in [IO.Directory]::GetFileSystemEntries($accepted)) {
+            $name=[IO.Path]::GetFileName($entry)
+            if ($name -cnotin @('pending','ready','replayed','quarantine')) {
+                throw 'P1 HOLD: accepted queue has unknown namespace state'
+            }
+            $leases.Add((Open-BridgeAcceptedQueueDirectoryLease -Path $entry -Label 'P1 accepted state'))
+            if ($name -cin @('pending','ready') -and [IO.Directory]::GetFileSystemEntries($entry).Length -ne 0) {
+                throw 'P1 HOLD: accepted queue is not proven empty'
+            }
+        }
+    } finally { Close-BridgeAcceptedQueueDirectoryLeases -Leases $leases }
+}
+
+function Assert-BridgeP1CurrentTransition {
+    param([string]$Path,$Prior,$Incoming,$ClosedRequest)
+    # Caller holds clean publication AND append fences, before WAL acceptance.
+    . (Join-Path $PSScriptRoot 'BridgeReplyIndex.ps1')
+    Assert-BridgeP1QueueEmpty
+    try { $attributes=[IO.File]::GetAttributes($Path) }
+    catch [IO.FileNotFoundException] {
+        if ($null -ne $Prior.cursor) { throw 'P1 HOLD: canonical log disappeared' }
+        Assert-BridgeP1Transition -Rows @() -Event $Incoming -ClosedRequest $ClosedRequest
+        return
+    }
+    catch [IO.DirectoryNotFoundException] {
+        if ($null -ne $Prior.cursor) { throw 'P1 HOLD: canonical log disappeared' }
+        Assert-BridgeP1Transition -Rows @() -Event $Incoming -ClosedRequest $ClosedRequest
+        return
+    }
+    $length=(Get-Item -LiteralPath $Path -Force -ErrorAction Stop).Length
+    if ($length -lt $Prior.length -or $length-$Prior.length -gt 1048576) {
+        throw 'P1 HOLD: final canonical delta is truncated or exceeds 1 MiB; no retry loop'
+    }
+    if ($null -ne $Prior.cursor) {
+        Assert-BridgeReplySnapshotStable -Path $Path -Cursor $Prior.cursor -PrefixHash $Prior.prefix
+    }
+    $delta=Read-BridgeReplyIndexPages -Path $Path -Cursor $Prior.cursor -PageBytes 1048576 -PageRows 1000
+    if ($delta.status -cin @('BLOCKED','RETRY') -or $null -eq $delta.candidate_cursor -or
+        $delta.candidate_cursor.offset -ne $delta.snapshot_length -or $delta.snapshot_length -ne $length) {
+        throw 'P1 HOLD: final canonical snapshot is incomplete'
+    }
+    $newRows=@($delta.rows | Where-Object {(Get-BridgeP1Property $_ 'task_id') -ceq $Incoming.task_id})
+    $rows=[object[]]@($Prior.rows)+[object[]]$newRows
+    Assert-BridgeP1Transition -Rows $rows -Event $Incoming -ClosedRequest $ClosedRequest
+}
+
 function Add-CanonicalLineWithWal {
     param([Parameter(Mandatory)] [string] $Line)
 
@@ -2276,10 +2368,21 @@ function Add-CanonicalLineWithWal {
         # Publication ownership begins before the producer creates accepted-v1
         # state and remains held until canonical delivery or queue publication
         # and cleanup have reached a settled durable outcome.
+        if ($bridgeP1NeedsTransition) {
+            # Opt-in semantic admission must precede accepted WAL creation.
+            # A busy/dirty append fence is HOLD here, never a queued semantic bypass.
+            $mutex = New-BridgeV1Mutex -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
+            if ($null -eq $mutex) { throw 'P1 HOLD: append mutex construction returned null' }
+            try { $acquired=$mutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] { $acquired=$true; $dirtyAbandoned=$true }
+            if (-not $acquired -or $dirtyAbandoned) { throw 'P1 HOLD: clean append fence unavailable before acceptance' }
+            Assert-BridgeP1CurrentTransition -Path $Path -Prior $bridgeP1Snapshot -Incoming ([pscustomobject]$event) -ClosedRequest $bridgeP1Reference
+        }
         $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes
         $mutexError = ''
         try {
         try {
+            if (-not $acquired) {
             $mutex = New-BridgeV1Mutex `
                 -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
             if ($null -eq $mutex) { throw 'bridge append mutex construction returned null' }
@@ -2287,6 +2390,7 @@ function Add-CanonicalLineWithWal {
             catch [System.Threading.AbandonedMutexException] {
                 $acquired = $true
                 $dirtyAbandoned = $true
+            }
             }
         } catch {
             $mutexError = $_.Exception.Message
@@ -2653,6 +2757,9 @@ $outboxPath = Join-Path $outboxDir $dateName
 # Only shared/events.jsonl owns replay WAL and validation-checkpoint state.
 # Once it is durable, the per-agent outbox is an auxiliary best-effort copy:
 # its failure must not invite a blind retry of the canonical event.
+if ($bridgeP1NeedsTransition) {
+    $bridgeP1Snapshot=Get-BridgeP1PriorSnapshot -Path $eventsPath -Task $TaskId
+}
 $delivery = Add-CanonicalLineWithWal -Line $line
 if ($delivery.delivery_status -ceq 'canonical') {
     $delivery.outbox_written = [bool](

@@ -228,6 +228,16 @@ $requests=@(foreach ($item in $selected) {
         case_variant_id=($folded[$id.ToLowerInvariant()] -gt 1)
         answer_state='not_evaluated'
     }
+    if (Test-BridgeLifecycleP1 $event) {
+        Assert-BridgeP1Envelope $event
+        foreach ($name in @('request_lifecycle','task_revision','previous_request_id','previous_request_digest',
+                'action_required','fyi','artifact')) {
+            $value=Get-BridgeContractField $event $name
+            if ($null -ne $value) { $record[$name]=$value }
+        }
+        # Descriptor availability is not file verification or answer authority.
+        $record['artifact_verification']='not_evaluated'
+    }
     if ($IncludeRequest) { $record['request']=$event }
     [pscustomobject]$record
 })

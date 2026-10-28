@@ -67,9 +67,24 @@ def test_adapter_deadline_is_bounded_and_stop_wait_fixed_once_on_a_stopwatch(ada
     assert adapter.count("$clock = ") == 1
 
 
-def test_adapter_has_no_pid_kill_and_never_deletes(adapter):
-    for word in ("Stop-Process", "taskkill", "TerminateProcess", ".Kill(", "Remove-Item", "Delete("):
+def test_adapter_kills_only_retained_identity_checked_objects_and_never_deletes(adapter):
+    # S15 intentionally adds the v3 known-chain fallback, not an arbitrary PID
+    # or executable-name kill. Behavior is tested with strict fake seams.
+    for word in ("Stop-Process", "taskkill", "TerminateProcess", "Remove-Item", "Delete("):
         assert word not in adapter, word
+    seams = _function(adapter, "New-WindowsOwnedShadowSeams")
+    assert adapter.count(".Kill(") == 1
+    assert "$r.process.Kill()" in seams
+    assert ".Kill($true)" not in adapter
+    assert "GetMethod('Kill', [type[]]@())" in seams
+    assert "Kill_verified_handle_unavailable" in seams
+    stop = _function(adapter, "Stop-OwnedShadowTree")
+    assert stop.index("& $Seams.same_identity $record") < stop.index("& $Seams.kill_tree $record")
+    assert "identity_changed_no_kill" in stop
+    assert "complete_job_membership_proven=$false" in stop
+    assert "unobserved_descendants='UNKNOWN'" in stop
+    prepare = adapter.index("$ownedSeams = New-WindowsOwnedShadowSeams")
+    assert prepare < adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
 
 
 def test_adapter_starts_the_producer_only_through_the_wrapper_surface(adapter):

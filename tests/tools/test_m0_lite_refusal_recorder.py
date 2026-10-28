@@ -300,4 +300,85 @@ def test_source_git_blob_sha1_is_explicitly_non_security(rec, monkeypatch):
     monkeypatch.setattr(rec, "hashlib", NonSecurityHashes)
     sha, blob = identity()
     assert rec._source_identity() == {"sha256": sha, "git_blob_lf": blob}
+@pytest.mark.parametrize("arguments, expected", [
+    (["python.exe", "-mpytest"], True),
+    (["python.exe", "-Bmpytest"], True),
+    (["python.exe", "-Impytest"], True),
+    (["python.exe", "-IBmpytest"], True),
+    (["python.exe", "-Im", "pytest"], True),
+    (["python.exe", "-B", "-m", "pytest"], True),
+    (["pytest.exe", "--version"], True),
+    (["py.test", "--version"], True),
+    (["python.exe", "pytest-script.py"], True),
+    (["python.exe", "-mpytest_extra"], False),
+    (["python.exe", "-mpytest.plugins"], False),
+    (["python.exe", "-mPytest"], False),
+    (["python.exe", "--mpytest"], False),
+    (["python.exe", "-Xmpytest"], False),
+    (["python.exe", "-Wmpytest"], False),
+    (["python.exe", "-Impytest_extra"], False),
+    (["python.exe", "-Im", "pytest_extra"], False),
+    (["python.exe", "-c", "pass", "-mpytest"], False),
+    (["python.exe", "script.py", "-mpytest"], False),
+    (["python.exe", "--", "-mpytest"], False),
+    (["python.exe", "-m", "other_module", "-mpytest"], False),
+    (["python.exe", "-mother_module", "-mpytest"], False),
+    (["python.exe", "-W", "-mpytest", "-c", "pass"], False),
+    (["python.exe", "-X", "-mpytest", "-c", "pass"], False),
+    (["python.exe", "script.py", "pytest-script.py"], False),
+    (["python.exe", "-c", "pass", "pytest-script.py"], False),
+    (["python.exe", "-mother_module", "pytest-script.py"], False),
+    (["python.exe", "-Wignore", "-mpytest"], True),
+    (["python.exe", "-IWignore", "-mpytest"], True),
+    (["python.exe", "-X", "dev", "-mpytest"], True),
+    (["python.exe", "--check-hash-based-pycs", "always", "-mpytest"], True),
+])
+def test_compact_pytest_guard_and_lookalikes(rec, arguments, expected):
+    assert rec._is_pytest(arguments) is expected
+
+
+@pytest.mark.parametrize("arguments", [
+    ["-mpytest"], ["-Impytest"], ["-Im", "pytest"],
+])
+@pytest.mark.parametrize("missing", ["plugin", "report-config", "report-file"])
+def test_compact_pytest_missing_d15_never_reports_success(
+        rec, audit, tmp_path, monkeypatch, arguments, missing):
+    calls = []
+    if missing == "report-file":
+        configure_synthetic_pytest(rec, audit, monkeypatch, mode="missing")
+    else:
+        monkeypatch.setenv("PYTEST_ADDOPTS", "" if missing == "plugin" else "-p hook_plugin_d15")
+        monkeypatch.delenv("WD_D15_HOOK_REPORT", raising=False)
+
+        def fake_invoke(*args):
+            calls.append(args)
+            return 0
+
+        monkeypatch.setattr(rec, "_invoke", fake_invoke)
+    result = run(rec, audit, tmp_path, stage="pytest",
+                 command=[sys.executable, *arguments, "--version"])
+    assert result["status"] == "INCOMPLETE", result
+    assert result["limited_indicator"] is None
+    assert result["hook"]["status"] == "UNKNOWN"
+    expected = {"plugin": "D15_PLUGIN_NOT_CONFIGURED",
+                "report-config": "D15_REPORT_NOT_CONFIGURED",
+                "report-file": "D15_REPORT_MISSING"}[missing]
+    assert expected in result["errors"]
+    if missing != "report-file":
+        assert not calls  # Missing preconditions must stop before even the fake process.
+
+
+@pytest.mark.parametrize("arguments", [
+    ["-mpytest"], ["-Impytest"], ["-Im", "pytest"],
+])
+def test_compact_pytest_valid_report_is_still_verified(
+        rec, audit, tmp_path, monkeypatch, arguments):
+    report = configure_synthetic_pytest(rec, audit, monkeypatch)
+    result = run(rec, audit, tmp_path, stage="pytest",
+                 command=[sys.executable, *arguments, "--version"])
+    assert result["status"] == "COMPLETED", result["errors"]
+    assert result["hook"]["status"] == "VERIFIED_D15_REPORT"
+    assert result["hook"]["sha256"] == hashlib.sha256(report.read_bytes()).hexdigest()
+    assert result["hook"]["refused"] == 0
+
 

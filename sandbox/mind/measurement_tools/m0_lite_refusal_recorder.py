@@ -84,10 +84,29 @@ def _is_pytest(command):
     exe = Path(command[0]).name.lower()
     if exe in ("pytest", "pytest.exe", "py.test", "py.test.exe"):
         return True
-    return any(a == "-m" and b == "pytest"
-               for a, b in zip(command[1:], command[2:])) or any(
-                   Path(a).name.lower() in ("pytest.py", "pytest-script.py")
-                   for a in command[1:] if not a.startswith("-"))
+    scripts = ("pytest.py", "pytest-script.py")
+    arguments = iter(command[1:])
+    # Consume interpreter options once, stopping at the first execution target.
+    # A script/module argument is not another interpreter launch.
+    for arg in arguments:
+        if arg == "--":
+            return Path(next(arguments, "")).name.lower() in scripts
+        if not arg.startswith("-"):
+            return Path(arg).name.lower() in scripts
+        if arg == "--check-hash-based-pycs":
+            next(arguments, None)
+            continue
+        if arg.startswith("--check-hash-based-pycs="):
+            continue
+        mode = re.fullmatch(r"-[bBdEiIOPqRsSuvx]*([cmWX])(.*)", arg)
+        if mode:
+            value = mode[2] or next(arguments, None)
+            if mode[1] in ("W", "X"):
+                continue
+            return mode[1] == "m" and value == "pytest"
+        if not re.fullmatch(r"-[bBdEiIOPqRsSuvx]+", arg):
+            return False
+    return False
 
 
 def _pytest_report(directory):

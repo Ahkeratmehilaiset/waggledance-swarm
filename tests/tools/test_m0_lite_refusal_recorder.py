@@ -452,3 +452,32 @@ def test_rco_known_direct_command_shapes_keep_limited_evidence(
     assert result["limited_indicator"] == 0
     assert result["hook"]["status"] == "NOT_APPLICABLE"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("executable_name,arguments", [
+    pytest.param("pythonw.exe", ["-m", "pytest.__main__"], id="pythonw-package-main"),
+    pytest.param("pythonw.exe", ["-c", "import pytest;pytest.main([])"], id="pythonw-inline"),
+    pytest.param("pythonw.exe", ["--r2-unknown-option", "-c", "pass"], id="pythonw-unknown-option"),
+    pytest.param("cmd.exe", ["/c", "python -m pytest"], id="cmd-pytest"),
+    pytest.param("pwsh.exe", ["-NoProfile", "-Command", "python -m pytest"], id="pwsh-pytest"),
+    pytest.param("uv.exe", ["run", "pytest"], id="uv-pytest"),
+    pytest.param("cmd.exe", ["/c", "py.test"], id="cmd-legacy-alias"),
+    pytest.param("pwsh.exe", ["-NoProfile", "-Command", "py.test"], id="pwsh-legacy-alias"),
+    pytest.param("uv.exe", ["run", "py.test"], id="uv-legacy-alias"),
+    pytest.param("cmd.exe", ["/c", "PY.TEST"], id="legacy-alias-case-insensitive"),
+    pytest.param("python.exe", ["-m", "py.test"], id="python-legacy-module"),
+    pytest.param("python.exe", ["site-packages/py.test-script.py"], id="python-legacy-script"),
+    pytest.param("pwsh.exe", ["-c", "py.test"], id="pwsh-short-command-alias"),
+    pytest.param("cmd.exe", ["/c", "py.test.exe"], id="legacy-alias-executable"),
+    pytest.param("bash", ["-c", "py.test"], id="bash-legacy-alias"),
+])
+def test_class_sweep_launcher_and_alias_forms_require_d15(
+        rec, audit, tmp_path, monkeypatch, executable_name, arguments):
+    executable, calls = _synthetic_unhooked_executor(
+        rec, monkeypatch, tmp_path, executable_name)
+    result = run(rec, audit, tmp_path, stage="class-sweep",
+                 command=[executable, *arguments])
+    assert result["status"] == "INCOMPLETE", result
+    assert result["limited_indicator"] is None
+    assert result["errors"]
+    assert not calls

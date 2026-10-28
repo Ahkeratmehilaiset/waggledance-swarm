@@ -111,7 +111,7 @@ def _is_pytest(command):
 
 def _command_class_unknown(command):
     """Conservatively screen non-pytest commands before any execution."""
-    if any("pytest" in word.lower() for word in command):
+    if any(re.search(r"py[.]?test", word, re.IGNORECASE) for word in command):
         return True
     exe = Path(command[0]).name.lower()
     if exe not in ("py", "py.exe") and not exe.startswith("python"):

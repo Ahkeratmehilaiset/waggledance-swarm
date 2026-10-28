@@ -78,6 +78,11 @@ EXPECTED_PYYAML_602_MANIFEST = (
 )
 
 
+def _isolate_boundary_os(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep OS fakes local to the boundary, never on Python's shared os module."""
+    monkeypatch.setattr(boundary, "os", types.SimpleNamespace(**vars(os)))
+
+
 def _configure_output_test_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -762,6 +767,7 @@ def test_output_missing_parent_is_not_created(
 def test_output_parent_change_prevents_replace_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _isolate_boundary_os(monkeypatch)
     audit_root = _configure_output_test_root(tmp_path, monkeypatch)
     target = audit_root / f"{tmp_path.name}-parent-change.json"
     target.write_text("old", encoding="utf-8")
@@ -797,6 +803,7 @@ def test_output_parent_change_prevents_replace_and_cleans_temp(
 def test_posix_output_parent_is_opened_relative_to_each_pinned_parent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _isolate_boundary_os(monkeypatch)
     root = Path("C:/safe")
     nested = root / "nested"
     candidate = nested / "report.json"
@@ -841,6 +848,7 @@ def test_posix_output_parent_is_opened_relative_to_each_pinned_parent(
 def test_posix_output_parent_identity_mismatch_closes_all_descriptors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _isolate_boundary_os(monkeypatch)
     root = Path("C:/safe")
     nested = root / "nested"
     components = (root, nested)
@@ -2582,6 +2590,7 @@ def test_live_child_git_executable_provenance_accepts_stable_exe_views(
 def test_live_child_git_executable_provenance_rejects_path_mode_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _isolate_boundary_os(monkeypatch)
     executable = (tmp_path / "git.exe").resolve()
     executable.write_bytes(b"stable trusted git executable\n")
     actual = os.lstat(executable)
@@ -3967,3 +3976,154 @@ def test_live_child_caught_violation_always_discards_output(tail: str) -> None:
         _build_test_live_child_bundle(), source
     )
     _assert_live_child_violation(result)
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "test_posix_output_parent_is_opened_relative_to_each_pinned_parent",
+        "test_posix_output_parent_identity_mismatch_closes_all_descriptors",
+    ],
+)
+def test_posix_parent_fakes_leave_unrelated_real_descriptors_untouched(
+    fixture_name: str, tmp_path: Path,
+) -> None:
+    import ast
+    import builtins
+    import __future__
+
+    # Execute the actual existing fixture bodies and actual parent-fd primitives
+    # against a shared fake OS namespace. Never mutate the runner's real os module,
+    # even on the pre-fix RED path. An unrelated consumer shares that namespace.
+    shared_os = types.SimpleNamespace(**vars(os))
+    sandbox = types.ModuleType("_boundary_parent_fd_isolation")
+    sandbox.os = shared_os
+    sandbox.Path = Path
+    sandbox.stat = stat
+    sandbox._output_parent_components = lambda _path: ()
+    primitive_names = {
+        "_open_output_parent_handles", "_close_output_parent_handles",
+    }
+    primitive_nodes = [
+        node for node in ast.parse(Path(boundary.__file__).read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef) and node.name in primitive_names
+    ]
+    assert {node.name for node in primitive_nodes} == primitive_names
+
+    def no_native_import(name, *args, **kwargs):
+        raise AssertionError(f"selected fake primitive attempted import: {name}")
+
+    sandbox.__dict__["__builtins__"] = {
+        **vars(builtins), "__import__": no_native_import,
+    }
+    flags = __future__.annotations.compiler_flag
+    exec(compile(ast.Module(body=primitive_nodes, type_ignores=[]),
+                 "<actual-parent-fd-primitives>", "exec", flags=flags,
+                 dont_inherit=True), sandbox.__dict__)
+    fixture_nodes = [
+        node for node in ast.parse(Path(__file__).read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {fixture_name, "_isolate_boundary_os"}
+    ]
+    namespace = {
+        "boundary": sandbox, "os": shared_os, "types": types,
+        "Path": Path, "stat": stat, "pytest": pytest,
+    }
+    exec(compile(ast.Module(body=fixture_nodes, type_ignores=[]),
+                 "<actual-posix-fixture>", "exec", flags=flags,
+                 dont_inherit=True), namespace)
+
+    # This descriptor is real, local scratch only. The fake fstat map must never
+    # see it, and a fake close must not swallow its real close.
+    real_open, real_fstat, real_close = os.open, os.fstat, os.close
+    target = tmp_path / "unrelated-descriptor"
+    target.write_bytes(b"synthetic-fd-isolation")
+    descriptor = real_open(target, os.O_RDONLY)
+    closed = False
+    try:
+        before = real_fstat(descriptor)
+        with pytest.MonkeyPatch.context() as patch:
+            namespace[fixture_name](patch)
+            # Old first fixture reproduces KeyError(real fd), like the CI log;
+            # old second fixture returns its fake inode instead of this stat.
+            assert shared_os.fstat(descriptor) == before
+            for name in ("name", "open", "fstat", "close", "supports_dir_fd"):
+                assert getattr(shared_os, name) is getattr(os, name)
+            shared_os.close(descriptor)
+            closed = True
+            with pytest.raises(OSError):
+                real_fstat(descriptor)
+    finally:
+        if not closed:
+            real_close(descriptor)
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "test_posix_output_parent_is_opened_relative_to_each_pinned_parent",
+        "test_posix_output_parent_identity_mismatch_closes_all_descriptors",
+    ],
+)
+@pytest.mark.parametrize("first_descriptor", [40, 50])
+def test_unrelated_descriptor_regression_finishes_with_lowest_free_allocator(
+    fixture_name: str, first_descriptor: int,
+) -> None:
+    import ast
+    import __future__
+
+    # Run the actual regression with a deterministic descriptor model. No real
+    # descriptor/process/native call; fail after eight dup calls instead of hang.
+    opened: set[int] = set()
+    trace = {"dup_calls": 0}
+
+    def allocate(*args, **kwargs):
+        descriptor = next(
+            value for value in range(first_descriptor, first_descriptor + 16)
+            if value not in opened
+        )
+        opened.add(descriptor)
+        return descriptor
+
+    def duplicate(descriptor):
+        assert descriptor in opened
+        trace["dup_calls"] += 1
+        if trace["dup_calls"] > 8:
+            raise RuntimeError("fd_selection_not_bounded_lowest_free")
+        return allocate()
+
+    def descriptor_stat(descriptor):
+        if descriptor not in opened:
+            raise OSError(9, "synthetic descriptor already closed")
+        return os.stat_result((
+            stat.S_IFREG | 0o600, 123, 456, 1, 0, 0, 22, 1, 1, 1,
+        ))
+
+    def close(descriptor):
+        assert descriptor in opened, "synthetic double-close"
+        opened.remove(descriptor)
+
+    fake_os = types.SimpleNamespace(
+        name=os.name, open=allocate, dup=duplicate, fstat=descriptor_stat,
+        close=close, O_RDONLY=os.O_RDONLY, supports_dir_fd=set(),
+    )
+
+    class ScratchOnly:
+        def __truediv__(self, name):
+            return self
+
+        def write_bytes(self, payload):
+            return len(payload)
+
+    function = next(
+        node for node in ast.parse(Path(__file__).read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "test_posix_parent_fakes_leave_unrelated_real_descriptors_untouched"
+    )
+    namespace = {
+        "os": fake_os, "types": types, "stat": stat, "Path": Path,
+        "boundary": boundary, "pytest": pytest, "__file__": __file__,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]),
+                 "<actual-fd-regression-lowest-free-model>", "exec",
+                 flags=__future__.annotations.compiler_flag,
+                 dont_inherit=True), namespace)
+    namespace[function.name](fixture_name, ScratchOnly())
+    assert opened == set(), opened
+    assert trace["dup_calls"] <= 8, trace

@@ -57,7 +57,7 @@ Nämä tarvitaan runtime-moottoriin mutta eivät ole mukana zip:ssä:
 | `configs/settings.yaml` | Asetukset | Kyllä — konfiguraatio |
 | `main.py` | Käynnistin | Kyllä — entry point |
 
-**Nämä ovat todennäköisesti olemassa OpenClaw-projektissa (<openclaw-repo>\) mutta eivät olleet mukana zip:ssä.**
+**Nämä ovat todennäköisesti olemassa OpenClaw-projektissa (`<openclaw-repo>\`) mutta eivät olleet mukana zip:ssä.**
 
 ## Autonomia-analyysi
 

@@ -291,11 +291,10 @@ Two complementary safe lanes for capability growth (`waggledance/core/builder_la
 
 Subprocess invocation is gated for human review by default. The CLI emits an `advisory_only` outcome unless explicitly run with operator approval.
 
-## Development agent bridge
+## Development process
 
-This repository is developed by a fleet of agents that coordinate through an append-only bridge event log (`.agent-bridge/`): Codex Lead and Tools lanes, Claude review (RCO1, RCO2) and implementation (Fable) lanes, and an advisory Grok lane. Every change lands through a pull request, and the merge gate decides which review route applies. The gate's default (legacy) route needs, among other conditions, Lead and Tools build votes, an independent RCO pass bound to the exact head, green required CI, no unretracted RCO veto, and an explicit operator signature for off-allowlist changes ([`CLAUDE.md`](CLAUDE.md), Rule 9a). When the Rule 12 review policy is selected, best-available consensus applies instead: one approval from the model family opposite to the implementer, an RCO pass from every eligible recognized RCO (with a Grok fallback), green required CI, no unretracted veto or finding from any recognized RCO, the charter checks, and a MAGMA receipt naming every slot holder ([`CLAUDE.md`](CLAUDE.md), Rule 12).
+How this repository is developed and reviewed (the agent bridge, the merge gate, review routes, and a glossary of the terms used) is described in [`GOVERNANCE.md`](GOVERNANCE.md). The section that used to be here, "Development agent bridge", was moved there unchanged.
 
-After a reboot the operator restores the fleet from the installed reboot bundle with `start-wd-all.ps1 -Auto` ([`ops/windows/reboot/BOOT_AFTER_REBOOT.md`](ops/windows/reboot/BOOT_AFTER_REBOOT.md)). Bridge changes are recorded in [`CHANGELOG.md`](CHANGELOG.md); the last bridge release tag is `bridge-2026.09.27-bridge-final-acceptance`.
 
 ## Memory and Identity
 

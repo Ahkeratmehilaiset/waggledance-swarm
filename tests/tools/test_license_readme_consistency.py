@@ -6,9 +6,11 @@ LICENSE-BUSL.txt do not support: that tools and tests are Apache 2.0, that
 147/147 source files are tagged, and that every protected module converts to
 Apache 2.0 on one date. LICENSE-CORE.md honours a per-file BUSL-1.1 SPDX header
 through its default rule and gives Phase 10 and 11 files their own change date,
-and LICENSE-BUSL.txt defines the Licensed Work as the listed files. This test
-pins the corrected README prose against the licence files and the tracked
-headers. It reads them; it never changes a header, a list entry or a date.
+and LICENSE-BUSL.txt defines the Licensed Work as the listed files and converts
+on the Change Date or on the fourth anniversary of a version's first public
+distribution, whichever comes first. This test pins the corrected README prose
+against the licence files and the tracked headers. It reads them; it never
+changes a header, a list entry or a date.
 """
 from __future__ import annotations
 
@@ -33,9 +35,11 @@ def _license_section(readme: str) -> str:
 
 
 def _busl_headered_outside_the_list() -> list[str]:
+    """Every tracked .py file that carries a BUSL-1.1 SPDX header without being
+    listed in LICENSE-CORE.md, whatever tree it lives in."""
     core = _read(LICENSE_CORE)
     tracked = subprocess.run(
-        ["git", "ls-files", "--", "tests/*.py", "tools/*.py"],
+        ["git", "ls-files", "--", "*.py"],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
@@ -77,15 +81,36 @@ def test_readme_points_to_the_default_rule_and_both_change_dates() -> None:
     assert busl_date != "2030-12-31", "two distinct dates must be presented"
 
 
-def test_readme_flags_the_discrepancy_while_unlisted_headers_are_busl() -> None:
-    """While any tracked tests/ or tools/ file outside the LICENSE-CORE.md list
-    carries a BUSL-1.1 header, the README must not present those trees as Apache
-    and must carry the open-discrepancy paragraph; once no such file remains,
-    the paragraph must go. Headers are read, never changed."""
+def test_readme_states_the_earlier_anniversary_trigger() -> None:
+    """LICENSE-BUSL.txt converts on the Change Date or on the fourth anniversary
+    of the first public distribution of a version, whichever comes first. The
+    README must name that earlier alternative, not only the dates."""
+    busl = _read(LICENSE_BUSL)
     section = _license_section(_read(README))
-    if _busl_headered_outside_the_list():
+    assert "fourth anniversary" in busl and "whichever comes first" in busl
+    assert "fourth anniversary" in section
+    assert "whichever comes first" in section
+
+
+def test_readme_explains_files_with_no_spdx_header() -> None:
+    """A reader must learn what applies to a file that carries no SPDX header:
+    the LICENSE-CORE.md default rule (Apache 2.0 unless the file is listed)."""
+    section = _license_section(_read(README))
+    assert "no SPDX header" in section
+
+
+def test_readme_flags_the_discrepancy_while_unlisted_headers_are_busl() -> None:
+    """While any tracked .py file outside the LICENSE-CORE.md list carries a
+    BUSL-1.1 header, the README must carry the open-discrepancy paragraph, and
+    it must name tests/ and tools/ while files in those trees are among them;
+    once no unlisted BUSL header remains anywhere, the paragraph must go.
+    Headers are read, never changed."""
+    section = _license_section(_read(README))
+    unlisted = _busl_headered_outside_the_list()
+    if unlisted:
         assert "Open discrepancy" in section
-        assert "`tests/`" in section and "`tools/`" in section
         assert "promises no relicensing" in section
+        if any(rel.startswith(("tests/", "tools/")) for rel in unlisted):
+            assert "`tests/`" in section and "`tools/`" in section
     else:
         assert "Open discrepancy" not in section

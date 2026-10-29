@@ -59,16 +59,32 @@ def test_adapter_imports_exactly_one_function_from_one_verified_read(adapter):
     assert adapter.count("[scriptblock]::Create(") == 1
 
 
-def test_adapter_deadline_and_stop_wait_are_fixed_once_on_a_stopwatch(adapter):
-    assert re.findall(r"\$DeadlineSeconds = (\d+)", adapter) == ["1800"]
+def test_adapter_deadline_is_bounded_and_stop_wait_fixed_once_on_a_stopwatch(adapter):
+    assert re.findall(r"\[ValidateRange\(60, 1800\)\] \[int\] \$RunDeadlineSeconds = (\d+)", adapter) == ["1800"]
+    assert re.findall(r"(?m)^\$DeadlineSeconds = (.+)$", adapter) == ["$RunDeadlineSeconds"]
     assert re.findall(r"\$StopConfirmationWaitSeconds = (\d+)", adapter) == ["30"]
     assert adapter.count("[Diagnostics.Stopwatch]::StartNew()") == 1
     assert adapter.count("$clock = ") == 1
 
 
-def test_adapter_has_no_pid_kill_and_never_deletes(adapter):
-    for word in ("Stop-Process", "taskkill", "TerminateProcess", ".Kill(", "Remove-Item", "Delete("):
+def test_adapter_kills_only_retained_identity_checked_objects_and_never_deletes(adapter):
+    # S15 intentionally adds the v3 known-chain fallback, not an arbitrary PID
+    # or executable-name kill. Behavior is tested with strict fake seams.
+    for word in ("Stop-Process", "taskkill", "TerminateProcess", "Remove-Item", "Delete("):
         assert word not in adapter, word
+    seams = _function(adapter, "New-WindowsOwnedShadowSeams")
+    assert adapter.count(".Kill(") == 1
+    assert "$r.process.Kill()" in seams
+    assert ".Kill($true)" not in adapter
+    assert "GetMethod('Kill', [type[]]@())" in seams
+    assert "Kill_verified_handle_unavailable" in seams
+    stop = _function(adapter, "Stop-OwnedShadowTree")
+    assert stop.index("& $Seams.same_identity $record") < stop.index("& $Seams.kill_tree $record")
+    assert "identity_changed_no_kill" in stop
+    assert "complete_job_membership_proven=$false" in stop
+    assert "unobserved_descendants='UNKNOWN'" in stop
+    prepare = adapter.index("$ownedSeams = New-WindowsOwnedShadowSeams")
+    assert prepare < adapter.index("[void](New-Item -ItemType Directory -Path $runDir)")
 
 
 def test_adapter_starts_the_producer_only_through_the_wrapper_surface(adapter):
@@ -115,7 +131,8 @@ def test_drain_stop_and_lock_flags_come_from_their_own_checks(adapter):
              r"\$observed = \$clock\.Elapsed\s*if \(\$observed\.TotalMilliseconds -lt \$deadlineMs\) \{\s*"
              r"\$drained = \$true\s*\$drainAt = \$observed\.TotalSeconds\s*\}\s*break")
     assert re.search(drain, adapter) and adapter.count("$drained = $true") == 1
-    confirm = r"if \(\$managed\.ActiveProcesses -eq 0\) \{ \$stopConfirmed = \$true; break \}"
+    confirm = (r"if \(\$managed\.ActiveProcesses -eq 0 -and \$managed\.Wait\(0\)\) "
+               r"\{ \$stopConfirmed = \$true; break \}")
     assert re.search(confirm, adapter) and adapter.count("$stopConfirmed = $true") == 1
     assert re.search(r"try \{\s*\$managed\.Stop\(\)\s*\$stopOk = \$true\s*\} catch", adapter)
     assert adapter.count("$stopOk = $true") == 1
@@ -221,7 +238,12 @@ def test_root_command_forwards_the_wrapper_exit_code_and_quotes_every_data_argum
     assert re.search(r"\$rootCommand = \$RootRunIdPrefix \+ \(ConvertTo-WdShadowCommandLiteral -Value \$launchId\) "
                      r"\+ \$rootWitness \+ '; & ' \+\s*\(ConvertTo-WdShadowCommandLiteral -Value \$wrapperPath\) "
                      r"\+ ' -VerifyPackage ' \+ \(\(@\(\s*'sandbox/mind/mind_capture_producer\.py', '--src', "
-                     r"\$codeRootPath, '--bin', \$binPath, '--live-dir', \$liveFull\) \|\s*ForEach-Object \{ "
+                     r"\$codeRootPath, '--bin', \$binPath, '--live-dir', \$liveFull,\s*"
+                     r"'--window', \(\$CaptureWindow\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--workers', \(\$CaptureWorkers\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--cycles', \(\$CaptureCycles\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\),\s*"
+                     r"'--interval', \(\$CaptureIntervalSeconds\.ToString\(\[Globalization\.CultureInfo\]::InvariantCulture\)\)\) "
+                     r"\|\s*ForEach-Object \{ "
                      r"ConvertTo-WdShadowCommandLiteral -Value \$_ \}\) -join ' '\) \+ \$RootExitShim", adapter)
     intent = adapter.index("Publish-WdShadowRecord -Directory $runDir -Name 'run_intent'")
     assert adapter.index("$rootCommand = ") < intent
@@ -375,7 +397,11 @@ def test_guards_are_fixed_once_and_refuse_before_the_first_write(adapter):
                         ("ExpectedPeakAdditionalBytes", 0)):
         assigned = re.findall(r"(?i)\$(?:script:|global:|local:|private:)?" + name + r"\s*[-+*/%]?=", adapter)
         assert len(assigned) == count, name
-    assert re.search(r"\[Parameter\(Mandatory\)\] \[long\] \$ExpectedPeakAdditionalBytes\n\)", adapter)
+    # More optional parameters follow; the reviewed peak bound is still a
+    # mandatory long without a default. Its zero/default refusal and every
+    # guard-before-write check below stay unchanged.
+    assert re.search(r"\[Parameter\(Mandatory\)\] \[long\] \$ExpectedPeakAdditionalBytes,\n"
+                     r"\s*\[ValidateRange\(1, 99500\)\] \[int\] \$CaptureWindow = 3000,", adapter)
     assert "$offSwitchPath = Join-Path $runRootFull $OffSwitchName" in adapter
     assert re.search(r"\$guardRoots = @\(@\('C:\\', \[IO\.Path\]::GetPathRoot\(\$runRootFull\), "
                      r"\[IO\.Path\]::GetPathRoot\(\$liveFull\)\) \|\s*ForEach-Object \{ \$_\.ToUpperInvariant\(\) \} "

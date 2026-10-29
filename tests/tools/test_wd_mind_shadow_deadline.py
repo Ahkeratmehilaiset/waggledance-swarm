@@ -83,6 +83,12 @@ function Test-WdShadowLiveDirLock {
     if (-not $ok) { $failure = 'System.IO.IOException' }
     return [ordered]@{ attempted = $true; acquired = $ok; released = $ok; error = $failure }
 }
+# The S15 ownership behavior is independently exercised by strict fake seams
+# in test_shadow_job_s15_containment. This fixture isolates the existing job
+# deadline/Stop accounting, so the added ancestry observer is a no-op fake.
+function Update-OwnedShadowTree {
+    param([hashtable]$State, [hashtable]$Seams, [scriptblock]$WithinBudget)
+}
 function New-WdFakeClock {
     $fake = New-Object psobject
     Add-Member -InputObject $fake -MemberType ScriptProperty -Name ElapsedMilliseconds -Value {
@@ -141,10 +147,16 @@ function New-WdFakeManaged {
 function Invoke-WdFakeRun($Entry) {
     $global:WdFake = $Entry
     $global:WdFakeMs = [long]$Entry['start_ms']
+    # Bind the declared default without running the adapter body or its mandatory-parameter binder.
+    $RunDeadlineSeconds = ($ast.ParamBlock.Parameters | Where-Object {
+        $_.Name.VariablePath.UserPath -ceq 'RunDeadlineSeconds'
+    }).DefaultValue.SafeGetValue()
     . ([scriptblock]::Create($constants))
     . ([scriptblock]::Create($initial))
     $clock = New-WdFakeClock
     $managed = New-WdFakeManaged
+    $ownedState = @{ errors = New-Object System.Collections.ArrayList }
+    $ownedSeams = @{}
     $forceStop = $false
     # PR1916 CI fixture portability (Lead fixture assignment v2): the fake paths live below the test's own temporary
     # directory and use the host's path rules, because the extracted statements Join-Path on them and Linux pwsh has

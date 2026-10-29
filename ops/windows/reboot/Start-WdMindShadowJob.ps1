@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs the Mind shadow producer once inside an owned kill-on-close job with one fixed deadline, a C: floor and an
+    Runs the Mind shadow producer once inside an owned kill-on-close job with one bounded deadline, a C: floor and an
     operator off switch. Preparation code: no run is authorized, and native acceptance A1-A7 is NOT_RUN.
 
 .DESCRIPTION
@@ -12,14 +12,21 @@
 
     Time: one Stopwatch is the enforcement clock, started once and never reset; UTC is read once at launch and every
     *_utc value is that launch time plus the monotonic elapsed time. Stop() (TerminateJobObject) runs only at the
-    1800 s deadline, after a guard hit (see Guards), after an unreadable job state or after a failed start record,
-    followed by at most 30 s for the job to drain. completed needs a full drain first observed strictly before the
+    selected 60..1800 s deadline (default 1800), after a guard hit (see Guards), after unreadable job/owned-chain state or after a failed start record,
+    followed by at most 30 s for the job to drain. completed needs a managed-job drain first observed strictly before the
     deadline (Tools P2: the clock is read after that observation and the deadline is checked again after the
     guards; a first observation at or after it takes the Stop path), with root exit alone never counting, an
     observed root exit, a positive exclusive reacquire and release of the live-dir lock, and no unknown value;
     stopped_at_deadline needs a Stop that returned, a confirmed drain, the root observed exited on the managed
     handle after that drain and the lock reacquire (D1); everything else is stop_unconfirmed. This bounds when a
     drain is credited; it does not preempt a blocking call.
+
+    Capture parameters: explicit integer window, workers, cycles and interval are forwarded only through the same
+    verified wrapper to the existing producer flags. Defaults remain 3000/4/36/300. RunDeadlineSeconds bounds the
+    owned root/job controller, including bootstrap; it is not a producer per-cycle deadline flag. With one cycle
+    the selected controller deadline bounds that sole cycle's opportunity to complete, not its successful completion.
+    A smaller window guarantees neither a first commit nor reader throughput. No capture seed or arbitrary producer
+    arguments are accepted; the producer retains its own interval semantics. Stop confirmation still gets at most 30 s.
 
     Records (D8 baseline) live in a new per-launch directory under the approved run root, outside the live dir, and
     each is published once (CreateNew, then a rename that never overwrites). The input file and the verified type are
@@ -100,7 +107,14 @@
     the schema/caller inputs), Lead (route, deadline, records, launch id, time, binding, cp2 to cp5 decisions, the
     cp5 child run id transport and command prefix design, the root witness contract, and the guard Source-GO with
     its 542e26be disk rule, and the reparse follow-up after Root's static finding); fable-5 wrote this file.
-    There is no process kill by PID, and producer.lock is only opened here, never created or removed.
+    S15 containment: Tools ports the v3 retained PID/birth/handle chain and known-survivor cleanup into this adapter.
+    There is no arbitrary PID/name kill: each retained object is identity-checked before parameterless Kill().
+    Kill(Boolean) is never used: unverified OS descendants are not authorized by a retained root identity.
+    producer.lock is only opened here, never created or removed. The parameterless method is checked before
+    the first write. Native behavior and parity of every host remain unmeasured; synthetic tests are not native proof.
+    Polling may miss an entire short-lived ancestry chain. owned_containment always states that complete
+    job membership is unproven and unseen descendants UNKNOWN. This does not replace the separately qualified
+    independent outer observer or authorize any run, installation, activation or change to STOP/HOLD/OFF.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -112,7 +126,12 @@ param(
     [Parameter(Mandatory)] [string] $ApprovedUserSid,
     [Parameter(Mandatory)] [ValidateSet('medium', 'high', IgnoreCase = $false)] [string] $ApprovedIntegrityLevel,
     # Guards: the reviewed positive additional-write bound for this run; unknown (0 or less) refuses before any write.
-    [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes
+    [Parameter(Mandatory)] [long] $ExpectedPeakAdditionalBytes,
+    [ValidateRange(1, 99500)] [int] $CaptureWindow = 3000,
+    [ValidateRange(1, 2147483647)] [int] $CaptureWorkers = 4,
+    [ValidateRange(1, 2147483647)] [int] $CaptureCycles = 36,
+    [ValidateRange(0, 2147483647)] [int] $CaptureIntervalSeconds = 300,
+    [ValidateRange(60, 1800)] [int] $RunDeadlineSeconds = 1800
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,7 +146,7 @@ if (Get-Command -Name 'Initialize-WdNativeTurnType' -CommandType Function -Error
     throw 'refused: Initialize-WdNativeTurnType is already defined in this session (R1)'
 }
 
-$DeadlineSeconds = 1800
+$DeadlineSeconds = $RunDeadlineSeconds
 $StopConfirmationWaitSeconds = 30
 $PollMilliseconds = 1000
 # The producer's Windows live-dir lock byte: sandbox/mind/mind_capture_producer.py LOCK_BYTE = 2 ** 30.
@@ -233,7 +252,7 @@ function Publish-WdShadowRecord {
 }
 
 function Test-WdShadowLiveDirLock {
-    # G2 (RCO2): ActiveProcesses 0 proves only that the members are gone; the live-dir lock must be free as well. The
+    # G2 (RCO2): accounting zero is not complete process-exit proof; the live-dir lock must be free as well. The
     # file is opened, never created, truncated, written or removed.
     param([string] $Path)
     $result = [ordered]@{ attempted = $true; acquired = $false; released = $false; error = $null }
@@ -354,6 +373,290 @@ function Get-WdShadowDescendants {
         Add-WdShadowUnknown $Unknown $Field $_.Exception.GetType().FullName
         return 'UNKNOWN'
     }
+}
+
+# S15: v3 ownership-chain containment, carried into Source. No private audit
+# import or new launch surface. Known-chain cleanup never proves a complete
+# native job census; OS/CIM calls are not preempted by the cut-initiation clock.
+function New-OwnedShadowWatchState {
+    param([hashtable]$Root)
+    if ($Root.pid -le 0 -or $Root.birth_ticks -le 0) { throw 'invalid_owned_root' }
+    $Root.exit_ticks = $null
+    $Root.final_scan_done = $false
+    return @{
+        root = $Root; records = [Collections.Generic.List[object]]::new()
+        errors = [Collections.Generic.List[string]]::new(); cut_reason = $null
+        retired = [Collections.Generic.List[object]]::new()
+        retired_owned_count = 0L; retired_gone_count = 0L
+    } | ForEach-Object { $_.records.Add($Root); $_ }
+}
+
+function Add-OwnedShadowDescendant {
+    param([hashtable]$State, [hashtable]$Parent, [hashtable]$Child)
+    if ($Child.pid -le 0 -or $Child.pid -eq $Parent.pid -or
+        $Child.parent_pid -ne $Parent.pid -or $Child.birth_ticks -lt $Parent.birth_ticks -or
+        ($null -ne $Parent.exit_ticks -and $Child.birth_ticks -gt $Parent.exit_ticks)) {
+        throw 'child_identity_or_parent_lifetime_mismatch'
+    }
+    foreach ($known in $State.records) {
+        if ($known.pid -eq $Child.pid) {
+            if ($known.birth_ticks -ne $Child.birth_ticks) { throw 'observed_pid_reuse' }
+            if ($Child.ContainsKey('process') -and -not [object]::ReferenceEquals($Child.process,$known.process)) {
+                $Child.process.Dispose()
+            }
+            return
+        }
+    }
+    if ($State.records.Count -ge 2048) { throw 'owned_record_budget' }
+    $Child.exit_ticks = $null
+    $Child.final_scan_done = $false
+    $State.records.Add($Child)
+}
+
+function Update-OwnedShadowTree {
+    param([hashtable]$State, [hashtable]$Seams, [scriptblock]$WithinBudget = { $true })
+    # Only parents reached through this retained ownership chain are queried.
+    # An exited parent's final scan is allowed only inside its known lifetime.
+    for ($index = 0; $index -lt $State.records.Count; $index++) {
+        if (-not (& $WithinBudget)) { break }
+        $record = $State.records[$index]
+        try {
+            $live = & $Seams.alive $record
+            if (-not $live -and $null -eq $record.exit_ticks) {
+                $record.exit_ticks = & $Seams.exit_ticks $record
+            }
+            if (-not $live -and $record.final_scan_done) { continue }
+            # Adopt each verified child as it arrives. A later callback failure
+            # must not discard an already observed survivor with the batch.
+            & $Seams.children $record | ForEach-Object {
+                $candidate = $_
+                try {
+                    if (-not (& $WithinBudget)) { throw 'observation_budget_ended' }
+                    if ($candidate.ContainsKey('gone') -and $candidate.gone) {
+                        if ($candidate.pid -le 0 -or $candidate.parent_pid -ne $record.pid -or
+                            $candidate.birth_ticks -lt $record.birth_ticks -or
+                            ($null-ne$record.exit_ticks-and$candidate.birth_ticks-gt$record.exit_ticks)) {
+                            throw 'retired_child_parent_lifetime_mismatch'
+                        }
+                        # Gone-at-open observations are bounded metadata, not retained
+                        # identity handles. Keep latest samples and an explicit total,
+                        # never stop a valid run merely for cumulative process churn.
+                        if ($State.retired.Count-ge2048) { $State.retired.RemoveAt(0) }
+                        $State.retired.Add($candidate)
+                        $State.retired_gone_count = [long]$State['retired_gone_count'] + 1
+                    } else { Add-OwnedShadowDescendant $State $record $candidate }
+                } catch {
+                    if ($candidate.ContainsKey('process') -and -not @($State.records | Where-Object {
+                        $_.ContainsKey('process') -and [object]::ReferenceEquals($_.process,$candidate.process)
+                    }).Count) { $candidate.process.Dispose() }
+                    throw
+                }
+            }
+            if (-not $live) { $record.final_scan_done = $true }
+        } catch {
+            $State.errors.Add('observe:' + $_.Exception.Message)
+        }
+    }
+    # Scan children before releasing an exited non-root identity. The root is a
+    # single fixed anchor used by cut-reason observation until final disposal.
+    # Failed final scans, live identities and failed disposal stay retained.
+    for ($retireIndex = $State.records.Count - 1; $retireIndex -ge 0; $retireIndex--) {
+        if (-not (& $WithinBudget)) { break }
+        $record = $State.records[$retireIndex]
+        if ([object]::ReferenceEquals($record, $State.root) -or
+            -not $record.final_scan_done -or $null -eq $record.exit_ticks) { continue }
+        try {
+            if (& $Seams.alive $record) { continue }
+            if ($record.ContainsKey('process')) { $record.process.Dispose() }
+            $State.records.RemoveAt($retireIndex)
+            $State.retired_owned_count = [long]$State['retired_owned_count'] + 1
+        } catch {
+            $State.errors.Add('retire:' + $record.pid + ':' + $_.Exception.Message)
+        }
+    }
+}
+
+function Get-OwnedShadowCutReason {
+    param([hashtable]$State, [hashtable]$Seams, [double]$ElapsedSeconds,
+          [double]$DeadlineSeconds, [string]$ExternalReason = '')
+    if ($State.cut_reason) { return $State.cut_reason }
+    if ($ExternalReason) { $State.cut_reason = $ExternalReason }
+    elseif ($State.errors.Count) { $State.cut_reason = 'owned_observation_unknown' }
+    elseif ($ElapsedSeconds -ge $DeadlineSeconds) { $State.cut_reason = 'deadline_cut' }
+    else {
+        try {
+            if (-not (& $Seams.alive $State.root)) { $State.cut_reason = 'controller_exit_cleanup' }
+        } catch {
+            $State.errors.Add('root_observe:' + $_.Exception.Message)
+            $State.cut_reason = 'root_observation_unknown'
+        }
+    }
+    return $State.cut_reason
+}
+
+function Stop-OwnedShadowTree {
+    param([hashtable]$State, [hashtable]$Seams, [double]$CleanupSeconds = 30)
+    $start = & $Seams.now_seconds
+    $attempts = [Collections.Generic.List[object]]::new()
+    $attempted = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    # The retained known tree is stopped one verified object at a time. No OS
+    # tree traversal may terminate an uncorroborated descendant or name match.
+    $alive = @()
+    do {
+        if (((& $Seams.now_seconds) - $start) -lt $CleanupSeconds) {
+            Update-OwnedShadowTree $State $Seams { ((& $Seams.now_seconds) - $start) -lt $CleanupSeconds }
+        }
+        foreach ($record in $State.records) {
+            if (((& $Seams.now_seconds) - $start) -ge $CleanupSeconds) { break }
+            try {
+                if ((& $Seams.alive $record) -and $attempted.Add(($record.pid.ToString()+':'+$record.birth_ticks))) {
+                    if (-not (& $Seams.same_identity $record)) { throw 'identity_changed_no_kill' }
+                    & $Seams.kill_tree $record
+                    $attempts.Add(@{pid=$record.pid;birth_ticks=$record.birth_ticks;action='kill_verified_object'})
+                }
+            } catch {
+                $State.errors.Add('kill:' + $record.pid + ':' + $_.Exception.Message)
+            }
+        }
+        # A child may become visible after the pre-kill snapshot. Finish the
+        # exited-parent scan while its identity handle is still retained, before
+        # treating an all-known-dead snapshot as clean. Same cleanup budget.
+        if (((& $Seams.now_seconds) - $start) -lt $CleanupSeconds) {
+            Update-OwnedShadowTree $State $Seams { ((& $Seams.now_seconds) - $start) -lt $CleanupSeconds }
+        }
+        $alive = @()
+        foreach ($record in $State.records) {
+            try {
+                if (& $Seams.alive $record) { $alive += $record.pid }
+            } catch {
+                $State.errors.Add('exit_observe:' + $record.pid + ':' + $_.Exception.Message)
+                $alive += $record.pid
+            }
+        }
+        if (-not $alive.Count -or ((& $Seams.now_seconds) - $start) -ge $CleanupSeconds) { break }
+        & $Seams.pause
+    } while ($true)
+    if (((& $Seams.now_seconds) - $start) -ge $CleanupSeconds) {
+        $lock = @{acquired=$false;released=$false;error='cleanup_budget_before_lock'}
+    } else {
+        try { $lock = & $Seams.lock } catch {
+            $lock = @{acquired=$false;released=$false;error=$_.Exception.GetType().FullName}
+        }
+    }
+    return @{
+        cut_reason=$State.cut_reason;attempts=$attempts.ToArray();known_live_pids=@($alive)
+        lock=$lock;errors=$State.errors.ToArray();cleanup_seconds=((& $Seams.now_seconds) - $start)
+        known_tree_and_lock_clean=($alive.Count -eq 0 -and $lock.acquired -and $lock.released -and $State.errors.Count -eq 0)
+        complete_job_membership_proven=$false;unobserved_descendants='UNKNOWN'
+        retired_owned_count=[long]$State['retired_owned_count']
+        positively_gone_observation_count=[long]$State['retired_gone_count']
+        positively_gone_observations_truncated=([long]$State['retired_gone_count'] -gt $State.retired.Count)
+        positively_gone_observations=$State.retired.ToArray()
+    }
+}
+
+function Open-OwnedShadowChildRecord {
+    param($Row, [scriptblock]$OpenChild, [scriptblock]$ReadCurrentRow)
+    if ([int]$Row.ProcessId-le0) { throw 'invalid_child_pid' }
+    $retired=@{gone=$true;pid=[int]$Row.ProcessId;parent_pid=[int]$Row.ParentProcessId;
+        birth_ticks=$Row.CreationDate.ToUniversalTime().Ticks;reason=$null;unobserved_descendants='UNKNOWN'}
+    $child = $null
+    $accepted = $false
+    try {
+        try { $child = & $OpenChild ([int]$Row.ProcessId) }
+        catch [ArgumentException] {
+            # Positive OS lookup absence, not a permission/identity-query error.
+            # No PID is adopted or killed and unseen descendants stay UNKNOWN.
+            $retired.reason='not_running_at_open';return $retired
+        }
+        [void]$child.SafeHandle # Acquire BEFORE birth/name or fresh PID corroboration.
+        $birth = $child.StartTime.ToUniversalTime().Ticks
+        $current = @(& $ReadCurrentRow ([int]$Row.ProcessId))
+        if ($current.Count-eq0 -and $child.HasExited) {
+            $retired.birth_ticks=$birth;$retired.reason='held_identity_exited_current_row_absent'
+            return $retired
+        }
+        if ($current.Count -ne 1) { throw 'current_child_row_unknown' }
+        if ([int]$current[0].ProcessId -ne $child.Id -or
+            [int]$current[0].ParentProcessId -ne [int]$Row.ParentProcessId -or
+            [Math]::Abs($birth - $Row.CreationDate.ToUniversalTime().Ticks) -gt [TimeSpan]::TicksPerMillisecond -or
+            [Math]::Abs($birth - $current[0].CreationDate.ToUniversalTime().Ticks) -gt [TimeSpan]::TicksPerMillisecond -or
+            [string]$Row.Name -ine [string]$current[0].Name) {
+            throw 'CIM_process_identity_mismatch'
+        }
+        if ($child.HasExited) {
+            $retired.birth_ticks=$birth;$retired.reason='held_identity_exited_after_corroboration';return $retired
+        }
+        try { $name = $child.ProcessName } catch [InvalidOperationException] {
+            if (-not$child.HasExited) { throw }
+            $retired.birth_ticks=$birth;$retired.reason='held_identity_exited_during_name';return $retired
+        }
+        if ($name -ine [IO.Path]::GetFileNameWithoutExtension([string]$Row.Name)) { throw 'CIM_process_identity_mismatch' }
+        $accepted = $true
+        return @{pid=$child.Id;birth_ticks=$birth;parent_pid=[int]$current[0].ParentProcessId;name=$name;process=$child}
+    } finally {
+        if ($null -ne $child -and -not $accepted) { $child.Dispose() }
+    }
+}
+
+function New-WindowsOwnedShadowSeams {
+    param([string]$ProducerLock, [long]$LockByte)
+    if (-not [Diagnostics.Process].GetMethod('Kill', [type[]]@())) { throw 'Kill_verified_handle_unavailable' }
+    if ($LockByte -ne 1073741824) { throw 'producer_lock_protocol_changed' }
+    $lockFunction = ${function:Test-WdShadowLiveDirLock}.GetNewClosure()
+    return @{
+        alive = { param($r) $r.process.Refresh(); return -not $r.process.HasExited }
+        exit_ticks = { param($r) return $r.process.ExitTime.ToUniversalTime().Ticks }
+        same_identity = { param($r) return $r.process.StartTime.ToUniversalTime().Ticks -eq $r.birth_ticks }
+        kill_tree = { param($r) $r.process.Kill() }
+        pause = { Start-Sleep -Milliseconds 50 }
+        now_seconds = { [Diagnostics.Stopwatch]::GetTimestamp() / [double][Diagnostics.Stopwatch]::Frequency }
+        lock = { & $lockFunction -Path $ProducerLock }.GetNewClosure()
+        children = {
+            param($parent)
+            $children = @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + [int]$parent.pid) -OperationTimeoutSec 1 -ErrorAction Stop)
+            foreach ($row in $children) {
+                Open-OwnedShadowChildRecord -Row $row -OpenChild {
+                    param($ownedProcessId) [Diagnostics.Process]::GetProcessById($ownedProcessId)
+                } -ReadCurrentRow {
+                    param($ownedProcessId)
+                    Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ownedProcessId) -OperationTimeoutSec 1 -ErrorAction Stop
+                }
+            }
+        }
+    }
+}
+
+function Complete-OwnedShadowContainment {
+    param([hashtable]$State, [hashtable]$Seams, [Collections.IList]$Unknown,
+          [double]$CleanupSeconds)
+    $result = @{
+        known_tree_and_lock_clean=$false; complete_job_membership_proven=$false
+        unobserved_descendants='UNKNOWN'; known_live_pids=@(); attempts=@()
+        lock=@{attempted=$false;acquired=$false;released=$false;error='cleanup_not_observed'}
+    }
+    try {
+        if ($null -eq $State -or $null -eq $Seams) { throw 'owned_identity_or_seams_unknown' }
+        $result = Stop-OwnedShadowTree $State $Seams ([Math]::Max(0, $CleanupSeconds))
+        if (-not $result.known_tree_and_lock_clean) {
+            Add-WdShadowUnknown $Unknown 'owned_containment' 'known tree, identity, cleanup budget or lock not confirmed'
+        }
+    } catch {
+        Add-WdShadowUnknown $Unknown 'owned_containment' $_.Exception.GetType().FullName
+    } finally {
+        # Every retained handle closes, even after a cleanup or earlier disposal error.
+        if ($null -ne $State) {
+            foreach ($record in $State.records) {
+                if ($record.ContainsKey('process')) {
+                    try { $record.process.Dispose() } catch {
+                        $result.known_tree_and_lock_clean = $false
+                        Add-WdShadowUnknown $Unknown 'owned_handle_dispose' $_.Exception.GetType().FullName
+                    }
+                }
+            }
+        }
+    }
+    return $result
 }
 
 function Resolve-WdShadowOutcome {
@@ -567,6 +870,9 @@ $guardRoots = @(@('C:\', [IO.Path]::GetPathRoot($runRootFull), [IO.Path]::GetPat
     ForEach-Object { $_.ToUpperInvariant() } | Select-Object -Unique)
 $shortfall = Get-WdShadowDiskShortfall -Roots $guardRoots -AdditionalBytes $ExpectedPeakAdditionalBytes
 if ($null -ne $shortfall) { throw "refused: the disk budget is not met before the start ($shortfall)" }
+# Prepare only closures/capability checks before the first write or root launch.
+# Only the zero-argument Kill method is allowed; no OS descendant traversal or PID/name fallback.
+$ownedSeams = New-WindowsOwnedShadowSeams -ProducerLock (Join-Path $liveFull 'producer.lock') -LockByte $LockByte
 
 # cp5: the root inherits this process's environment (Root's static reading of the type), so a run id variable here
 # would conflict with the launch id; it is refused, never reused, and this environment is never changed.
@@ -608,7 +914,11 @@ $rootWitness = '; $wdRootTokenPath = ' + (ConvertTo-WdShadowCommandLiteral -Valu
 # switch (bare command text, never a quoted argument) before the tool; every path is the validated one (P1-A).
 $rootCommand = $RootRunIdPrefix + (ConvertTo-WdShadowCommandLiteral -Value $launchId) + $rootWitness + '; & ' +
     (ConvertTo-WdShadowCommandLiteral -Value $wrapperPath) + ' -VerifyPackage ' + ((@(
-    'sandbox/mind/mind_capture_producer.py', '--src', $codeRootPath, '--bin', $binPath, '--live-dir', $liveFull) |
+    'sandbox/mind/mind_capture_producer.py', '--src', $codeRootPath, '--bin', $binPath, '--live-dir', $liveFull,
+    '--window', ($CaptureWindow.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--workers', ($CaptureWorkers.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--cycles', ($CaptureCycles.ToString([Globalization.CultureInfo]::InvariantCulture)),
+    '--interval', ($CaptureIntervalSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))) |
     ForEach-Object { ConvertTo-WdShadowCommandLiteral -Value $_ }) -join ' ') + $RootExitShim
 $arguments = [string[]]@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $rootCommand)
 Initialize-WdNativeTurnType
@@ -621,6 +931,9 @@ if ($null -eq $managedType -or $null -eq $managedType.GetConstructor($constructo
 }
 $unknown = New-Object System.Collections.ArrayList
 $managed = $null
+$ownedRoot = $null
+$ownedState = $null
+$ownedCleanup = $null
 $drained = $false
 $stopCalled = $false
 $stopOk = $false
@@ -673,10 +986,22 @@ try {
         $binding.root['pid'] = $managed.Pid
         try {
             # The open process handle inside the type keeps this PID from being reused while it is read.
-            $started = [Diagnostics.Process]::GetProcessById($managed.Pid).StartTime
+            $ownedRoot = [Diagnostics.Process]::GetProcessById($managed.Pid)
+            [void]$ownedRoot.SafeHandle
+            $started = $ownedRoot.StartTime
             $binding.root['creation_time_utc'] = $started.ToUniversalTime().ToString('o')
+            $ownedState = New-OwnedShadowWatchState @{
+                pid=$managed.Pid; birth_ticks=$started.ToUniversalTime().Ticks; parent_pid=$null
+                name=$ownedRoot.ProcessName; process=$ownedRoot
+            }
         } catch {
             Add-WdShadowUnknown $unknown 'binding.root.creation_time_utc' $_.Exception.GetType().FullName
+            $forceStop = $true
+            if ($null -ne $ownedRoot -and $null -eq $ownedState) {
+                try { $ownedRoot.Dispose() } catch {
+                    Add-WdShadowUnknown $unknown 'owned_root_dispose' $_.Exception.GetType().FullName
+                }
+            }
         }
         try {
             Publish-WdShadowRecord -Directory $runDir -Name 'run_start' -Record ([ordered]@{
@@ -698,6 +1023,15 @@ try {
                 Add-WdShadowUnknown $unknown 'guard' $_.Exception.GetType().FullName
             }
             if ($null -ne $guardStop) { break }
+            # Retain every observed child before crediting job accounting. A
+            # later parent exit cannot erase a previously verified survivor.
+            Update-OwnedShadowTree $ownedState $ownedSeams {
+                $clock.ElapsedMilliseconds -lt $deadlineMs
+            }
+            if ($ownedState.errors.Count) {
+                Add-WdShadowUnknown $unknown 'owned_observation' ($ownedState.errors -join ';')
+                break
+            }
             # Tools P2 (late drain): the guards may have used up the time; never wait or credit a drain at or after
             # the deadline.
             if ($clock.ElapsedMilliseconds -ge $deadlineMs) { break }
@@ -737,8 +1071,10 @@ try {
             }
             $confirmUntil = $clock.ElapsedMilliseconds + [long]$StopConfirmationWaitSeconds * 1000
             while ($clock.ElapsedMilliseconds -lt $confirmUntil) {
+                # Accounting zero alone is not a root-exit observation. Keep the same bounded wait available
+                # until the owned root handle is signalled; this does not prove descendant membership or exit.
                 try {
-                    if ($managed.ActiveProcesses -eq 0) { $stopConfirmed = $true; break }
+                    if ($managed.ActiveProcesses -eq 0 -and $managed.Wait(0)) { $stopConfirmed = $true; break }
                 } catch {
                     Add-WdShadowUnknown $unknown 'job_state_after_stop' $_.Exception.GetType().FullName
                     break
@@ -780,7 +1116,37 @@ try {
         }
     }
 } finally {
-    if ($null -ne $managed) { $managed.Dispose() }
+    try {
+        if ($null -ne $ownedState) {
+            $remainingCleanup = [double]$StopConfirmationWaitSeconds
+            if ($null -ne $stopAt) {
+                $remainingCleanup = [Math]::Max(0, $remainingCleanup - ($clock.Elapsed.TotalSeconds - $stopAt))
+            }
+            if (-not $ownedState.cut_reason) {
+                $ownedState.cut_reason = Get-OwnedShadowCutReason $ownedState $ownedSeams $clock.Elapsed.TotalSeconds $DeadlineSeconds $guardStop
+                if (-not $ownedState.cut_reason) { $ownedState.cut_reason = 'final_known_chain_cleanup' }
+            }
+            $ownedCleanup = Complete-OwnedShadowContainment $ownedState $ownedSeams $unknown $remainingCleanup
+        }
+    } finally {
+        if ($null -ne $managed) {
+            try { $managed.Dispose() } catch {
+                Add-WdShadowUnknown $unknown 'job_dispose' $_.Exception.GetType().FullName
+            }
+        }
+    }
+}
+if ($null -ne $ownedCleanup) {
+    if (-not $ownedCleanup.known_tree_and_lock_clean) {
+        Add-WdShadowUnknown $unknown 'owned_cleanup' 'known survivor or lock observation remains unconfirmed'
+    } elseif ($drained -or $stopConfirmed) {
+        $lock = $ownedCleanup.lock
+    }
+    if ($drained -and @($ownedCleanup.attempts).Count -gt 0) {
+        # Accounting-zero did not describe the retained known tree. Its forced
+        # cleanup is evidence, never a naturally completed producer/job result.
+        Add-WdShadowUnknown $unknown 'owned_survivor_after_accounting_zero' 'known-chain cleanup required termination'
+    }
 }
 $rootExited = $null -ne $rootExitAt
 $jobDrained = $drained -or $stopConfirmed
@@ -810,6 +1176,7 @@ Publish-WdShadowRecord -Directory $runDir -Name 'controller_outcome' -Record ([o
     live_descendants_before_stop = $before
     live_descendants_after_stop = $after
     lock_reacquire = $lock
+    owned_containment = $ownedCleanup
     monotonic_elapsed_s = $clock.Elapsed.TotalSeconds
     unknown_reasons = @($unknown)
     written_utc = Get-WdShadowUtc -ElapsedSeconds $clock.Elapsed.TotalSeconds

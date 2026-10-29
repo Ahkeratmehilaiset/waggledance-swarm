@@ -7,8 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.check_bridge_changes_requested as check_bridge_changes_requested
+import tools.check_rco_pass_present as check_rco_pass_present
 import tools.idle_consensus_auto_merge as idle_merge_tool
 from tools.bridge_pr_author import github_pr_git_identity_evidence
+from tools.bridge_rco_enrollment import load_rco_enrollment_context
 from tools.idle_consensus_auto_merge import (
     AutoMergeGateError,
     build_parser,
@@ -762,6 +765,99 @@ def test_daily_rate_limit_blocks_without_runner(
         "quota_total": 5,
     }
     assert "daily rate limit exceeded: 5/5 for 2026-05-18" in report["reasons"]
+
+
+def test_operator_signed_bridge_consensus_merges_do_not_count_toward_daily_quota(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lock the existing counter scope; this is a pin, not a bug fix.
+
+    ``_count_daily_auto_merges`` counts a bridge event only when its payload
+    carries ``auto_merged: true`` or, as a legacy fallback, when it is a
+    ``done`` event whose status contains ``auto_merge``.  A
+    ``message``/``merged`` event that lacks both markers (the ordinary Rule 9a
+    bridge-consensus record, including a merge executed under an operator's
+    head-exact signature) is not counted.  The code inspects no signature and
+    does not verify that every such merge lacks the marker; this test pins the
+    marker rule and requires the charter to describe it the same way.  The
+    quota total is deliberately not pinned here (it is loader-owned).
+    """
+    monkeypatch.setattr(idle_merge_tool, "_today_utc", lambda: "2026-05-18")
+    # Gate tests must read no live bundle: pin an empty-root unknown enrollment
+    # context in both gate modules so the inherited lane pins are never opened.
+    enrollment = load_rco_enrollment_context(
+        bundle_root="", expected_manifest_sha256=""
+    )
+    monkeypatch.setattr(
+        idle_merge_tool, "load_rco_enrollment_context", lambda: enrollment
+    )
+    monkeypatch.setattr(
+        check_rco_pass_present, "load_rco_enrollment_context", lambda: enrollment
+    )
+    monkeypatch.setattr(
+        check_bridge_changes_requested,
+        "load_rco_enrollment_context",
+        lambda: enrollment,
+    )
+    signed_merges = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="message",
+            status="merged",
+            task_id=f"codex-tools-1/s16-signed-merge-{index}",
+        )
+        | {
+            "message": f"PR{1940 + index} merged once exact {HEAD}",
+            "payload": {
+                "head": HEAD,
+                "pr": 1940 + index,
+                "autonomous_gate_pass_claimed": False,
+            },
+        }
+        for index in range(1, 6)
+    ]
+    assert idle_merge_tool._count_daily_auto_merges(signed_merges, "2026-05-18") == 0
+
+    # Legacy fallback stays counted: a ``done`` event whose status contains
+    # ``auto_merge`` counts even without the payload flag.
+    legacy_done = _auto_merge_event(6) | {"payload": {}}
+    assert legacy_done["type"] == "done" and "auto_merge" in legacy_done["status"]
+    assert (
+        idle_merge_tool._count_daily_auto_merges(
+            signed_merges + [legacy_done], "2026-05-18"
+        )
+        == 1
+    )
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, signed_merges),
+        utc_date="2026-05-18",
+    )
+    assert report["rate_gate"]["allowed"] is True
+    assert report["rate_gate"]["utc_date"] == "2026-05-18"
+    assert report["rate_gate"]["quota_used"] == 0
+    assert report["decision"] != "rate_limited"
+    assert not any("daily rate limit exceeded" in reason for reason in report["reasons"])
+
+    charter = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "architecture"
+        / "IDLE_AUTONOMY_CHARTER.md"
+    ).read_text(encoding="utf-8")
+    rate_limit_section = charter.split("## Daily rate-limit details", 1)[1].split("\n## ", 1)[0]
+    assert "`_count_daily_auto_merges`" in rate_limit_section
+    assert "`auto_merged: true`" in rate_limit_section
+    assert "legacy fallback" in rate_limit_section
+    assert "`done` event whose status contains `auto_merge`" in rate_limit_section
+    assert "operator's head-exact signature" in rate_limit_section
+    assert "not counted" in rate_limit_section
 
 
 @pytest.mark.parametrize(

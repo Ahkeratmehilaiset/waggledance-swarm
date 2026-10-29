@@ -388,6 +388,27 @@ def test_governance_glossary_matches_rule12_rco_cardinality() -> None:
     assert "standing signature" in text
 
 
+def test_governance_glossary_grok_fallback_matches_gate_truth() -> None:
+    """Lead finding on PR #1957 (2026-10-29): the governance page must not
+    present Grok as an approval-slot substitute. In the gate as implemented,
+    tools/idle_consensus_auto_merge.py rejects any Grok fill except the RCO slot
+    as report-only, and that RCO fallback is reachable only through the opt-in
+    ``grok_fallback`` switch (default off). The page must say so, must keep the
+    written Rule 12 policy apart from the implemented route, and this test pins
+    the gate source it describes so a gate change forces a page update."""
+    text = (REPO_ROOT / "GOVERNANCE.md").read_text(encoding="utf-8")
+    gate = (REPO_ROOT / "tools" / "idle_consensus_auto_merge.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fill an approval or RCO slot" not in text
+    assert "opt-in switch" in text
+    assert "`grok_fallback`" in text
+    assert "default off" in text
+    assert "report-only" in text
+    assert "grok_fallback: bool = False" in gate
+    assert "Grok may hold only the RCO slot here" in gate
+
+
 # ---------------------------------------------------------------
 # 28. provider invocations log present
 # ---------------------------------------------------------------

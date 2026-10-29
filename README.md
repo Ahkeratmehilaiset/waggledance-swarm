@@ -293,7 +293,7 @@ Subprocess invocation is gated for human review by default. The CLI emits an `ad
 
 ## Development process
 
-How this repository is developed and reviewed (the agent bridge, the merge gate, review routes, and a glossary of the terms used) is described in [`GOVERNANCE.md`](GOVERNANCE.md). The section that used to be here, "Development agent bridge", was moved there unchanged.
+How this repository is developed and reviewed (the agent bridge, the merge gate, review routes, and a glossary of the terms used) is described in [`GOVERNANCE.md`](GOVERNANCE.md). The section that used to be here, "Development agent bridge", was moved there; its Rule 12 clause was corrected on the way to match `CLAUDE.md` (two distinct eligible RCOs, not every recognized RCO).
 
 
 ## Memory and Identity

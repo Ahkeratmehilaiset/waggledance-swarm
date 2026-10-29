@@ -372,6 +372,23 @@ def test_phase10_crown_jewel_files_have_change_date_header() -> None:
 
 
 # ---------------------------------------------------------------
+# 27b. GOVERNANCE.md glossary matches the Rule 12 RCO cardinality
+# ---------------------------------------------------------------
+
+
+def test_governance_glossary_matches_rule12_rco_cardinality() -> None:
+    """Rule 12 (CLAUDE.md) and tools/bridge_rule12_review_eligibility.py require
+    RCO passes from two distinct eligible recognized RCOs when at least two are
+    eligible, otherwise one; never every roster member. The governance page must
+    not describe the slot as "every eligible recognized RCO", and must state that
+    Rule 12 is the operator's standing signature rather than a per-PR one."""
+    text = (REPO_ROOT / "GOVERNANCE.md").read_text(encoding="utf-8")
+    assert "every eligible recognized RCO" not in text
+    assert "two distinct recognized RCOs when at least two are eligible" in text
+    assert "standing signature" in text
+
+
+# ---------------------------------------------------------------
 # 28. provider invocations log present
 # ---------------------------------------------------------------
 

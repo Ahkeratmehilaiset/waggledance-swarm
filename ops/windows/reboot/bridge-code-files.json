@@ -21,6 +21,8 @@
     "sandbox/mind/join_card.py",
     "sandbox/mind/join_card_delivery.py",
     "sandbox/mind/join_turn.py",
+    "sandbox/mind/measurement_tools/m0_lite_hash_judge.py",
+    "sandbox/mind/measurement_tools/m0_lite_refusal_recorder.py",
     "sandbox/mind/mind_capture_producer.py",
     "sandbox/mind/mind_chain_driver.py",
     "sandbox/mind/step1/lane_view.py",

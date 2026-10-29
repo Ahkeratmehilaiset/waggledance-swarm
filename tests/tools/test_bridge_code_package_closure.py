@@ -789,7 +789,8 @@ def _assert_shadow_release_delivery(definition):
     published = set(definition["python_entrypoints"].values())
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
-    assert sandbox_files <= required, "deferred_sandbox_file_published"
+    # These two frozen files are delivery-only, never newly published CLIs or smoke imports.
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES), "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
     assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
@@ -1056,3 +1057,50 @@ def test_shadow_source_origin_refuses_relative_file_and_namespace_origins(tmp_pa
     mutant = subprocess.run(command + [candidate.replace(guard, " pass  # MUTANT_RELATIVE_SOURCE_ORIGIN")] + arguments,
                             cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert mutant.returncode == 0, mutant.stderr
+
+
+M0_MEASUREMENT_TOOL_FILES = (
+    "sandbox/mind/measurement_tools/m0_lite_hash_judge.py",
+    "sandbox/mind/measurement_tools/m0_lite_refusal_recorder.py",
+)
+
+
+def _assert_m0_measurement_tool_delivery(definition, relative):
+    assert definition["python_files"].count(relative) == 1, "m0_frozen_file_not_packaged_once"
+    assert relative not in definition["python_entrypoints"].values(), "m0_entrypoint_not_authorized"
+    dotted = relative[:-3].replace("/", ".")
+    assert dotted not in definition["import_smoke"]["package_modules"], "m0_smoke_launch_not_authorized"
+    assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "m0_manual_execution_not_authorized"
+    )
+
+
+@pytest.mark.parametrize("relative", M0_MEASUREMENT_TOOL_FILES)
+def test_m0_frozen_tools_are_packaged_without_new_launch_routes(relative):
+    _assert_m0_measurement_tool_delivery(_definition(), relative)
+
+
+@pytest.mark.parametrize("relative", M0_MEASUREMENT_TOOL_FILES)
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "entrypoint", "smoke", "manual"])
+def test_m0_file_only_delivery_contract_refuses_each_boundary_mutant(relative, mutation):
+    definition = _definition()
+    # A synthetic success twin is useful on both the pre-fix and post-fix tree.
+    # It does not change any Source, build a bundle, or imply an installed file.
+    definition["python_files"] = [
+        item for item in definition["python_files"] if item != relative
+    ] + [relative]
+    _assert_m0_measurement_tool_delivery(definition, relative)
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(relative)
+    elif mutation == "duplicate":
+        mutant["python_files"].append(relative)
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unapproved_m0"] = relative
+    elif mutation == "smoke":
+        mutant["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
+    else:
+        mutant["manual_execution_capability"]["entrypoints"]["unapproved_m0"] = relative
+    with pytest.raises(AssertionError):
+        _assert_m0_measurement_tool_delivery(mutant, relative)
+    _assert_m0_measurement_tool_delivery(definition, relative)

@@ -87,14 +87,17 @@ Nämä tarvitaan runtime-moottoriin mutta eivät ole mukana zip:ssä:
 ## Asennus
 
 ```bash
+# Aseta OpenClaw-projektin polku (korvaa oma polkusi)
+OPENCLAW_REPO=/path/to/openclaw
+
 # 1. Kopioi yaml_bridge.py OpenClaw-projektiin
-cp yaml_bridge.py <openclaw-repo>/core/yaml_bridge.py
+cp yaml_bridge.py "$OPENCLAW_REPO/core/yaml_bridge.py"
 
 # 2. Kopioi agents/ YAML-kansiot
-cp -r agents/ <openclaw-repo>/agents/
+cp -r agents/ "$OPENCLAW_REPO/agents/"
 
 # 3. Aja integraatiopatcher
-cd <openclaw-repo>
+cd "$OPENCLAW_REPO"
 python integrate_yaml_agents.py
 
 # 4. Käynnistä uudelleen

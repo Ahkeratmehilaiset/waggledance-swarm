@@ -2,7 +2,7 @@
 
 **Captured (UTC):** 2026-05-04T21:35:00Z
 **Ollama version:** 0.22.1
-**Ollama path:** `C:/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama`
+**Ollama path:** `<user-home>/AppData/Local/Programs/Ollama/ollama`
 
 ## Selection (rule 14 preference order)
 

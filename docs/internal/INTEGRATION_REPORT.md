@@ -57,7 +57,7 @@ Nämä tarvitaan runtime-moottoriin mutta eivät ole mukana zip:ssä:
 | `configs/settings.yaml` | Asetukset | Kyllä — konfiguraatio |
 | `main.py` | Käynnistin | Kyllä — entry point |
 
-**Nämä ovat todennäköisesti olemassa OpenClaw-projektissa (S:\Python\openclaw\) mutta eivät olleet mukana zip:ssä.**
+**Nämä ovat todennäköisesti olemassa OpenClaw-projektissa (<openclaw-repo>\) mutta eivät olleet mukana zip:ssä.**
 
 ## Autonomia-analyysi
 
@@ -88,13 +88,13 @@ Nämä tarvitaan runtime-moottoriin mutta eivät ole mukana zip:ssä:
 
 ```bash
 # 1. Kopioi yaml_bridge.py OpenClaw-projektiin
-cp yaml_bridge.py S:/Python/openclaw/core/yaml_bridge.py
+cp yaml_bridge.py <openclaw-repo>/core/yaml_bridge.py
 
 # 2. Kopioi agents/ YAML-kansiot
-cp -r agents/ S:/Python/openclaw/agents/
+cp -r agents/ <openclaw-repo>/agents/
 
 # 3. Aja integraatiopatcher
-cd S:/Python/openclaw
+cd <openclaw-repo>
 python integrate_yaml_agents.py
 
 # 4. Käynnistä uudelleen

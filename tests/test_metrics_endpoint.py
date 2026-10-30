@@ -28,9 +28,11 @@ from waggledance.adapters.http.routes.metrics import router as metrics_router
 from waggledance.core.autonomy_growth.counterfactual_replay import (
     A3_LABEL_RUNTIME_MEASURED,
 )
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.share_manifest import (
     IMPORT_REPORT_VERSION,
     build_magma_share_import_peer_review_handoff,
+    build_magma_share_replay_admission_contract,
 )
 
 
@@ -127,10 +129,23 @@ class _EnabledFakeHexAssist(_FakeHexAssist):
 
 
 def _magma_import_report(share_id: str = "magma:share:metrics") -> dict:
+    admission_contract = build_magma_share_replay_admission_contract(
+        max_age_hours=168,
+        expected_share_id=share_id,
+        expected_purpose="cross_instance_replay",
+        expected_producer_agent_id="codex-metrics-fixture",
+        expected_producer_role="tools",
+        expected_producer_bridge_event_ref="bridge:metrics:share-export",
+    )
     return {
         "report_version": IMPORT_REPORT_VERSION,
         "ok": True,
         "blockers": [],
+        "admission_contract": admission_contract,
+        "admission_contract_digest": sha256_digest(admission_contract),
+        "created_at_utc": "2026-05-28T08:00:00Z",
+        "max_age_hours": 168,
+        "age_seconds": 3600,
         "source_receipt_verification_ok": True,
         "context_verified": True,
         "context_drift_detected": False,
@@ -147,31 +162,41 @@ def _magma_import_report(share_id: str = "magma:share:metrics") -> dict:
         "purpose": "cross_instance_replay",
         "share_manifest_digest": "sha256:" + "a" * 64,
         "source_manifest_digest": "sha256:" + "b" * 64,
+        "artifact_counts": {
+            "entries": 1,
+            "receipts": 1,
+            "evaluation_results": 1,
+            "payload_files": 0,
+        },
         "replay_plan": {
             "mode": "no_authority_metadata_replay",
             "entry_count": 1,
             "entries": [{
-                "entry_id": "entry-001",
+                "entry_id": f"{share_id}:entry:001",
                 "receipt_digest": "sha256:" + "c" * 64,
                 "evaluation_result_digest": "sha256:" + "d" * 64,
-                "subject_type": "solver_trace",
-                "risk_class": "low",
+                "subject_type": "solver",
+                "risk_class": "informational",
                 "expected_gate": "review",
                 "actual_gate": "review",
-                "verdict": "accepted",
+                "verdict": "pass",
             }],
         },
     }
 
 
 def _magma_handoff(label: str, minute: int) -> dict:
+    import_report = _magma_import_report()
     return build_magma_share_import_peer_review_handoff(
-        import_report=_magma_import_report(),
+        import_report=import_report,
         operator_decision_id=f"operator:decision:metrics:{label}",
         operator_agent_id=f"operator:metrics:{label}",
         bridge_event_ref=f"bridge:metrics:{label}",
         import_decision="accepted_for_peer_review",
         decision_reason_ref=f"reason:metrics:{label}",
+        expected_producer_provenance_digest=import_report[
+            "admission_contract"
+        ]["expected_producer_provenance_digest"],
         now_utc=datetime(2026, 5, 28, 9, minute, tzinfo=timezone.utc),
     )
 

@@ -13,7 +13,7 @@ from waggledance.core.hex_topology.subdivision_commit import (
 from waggledance.core.hex_topology.subdivision_operator import (
     SubdivisionPlan,
     apply_plan_to_topology,
-    compute_plan_id,
+    plan_subdivision,
 )
 from waggledance.core.hex_topology.subdivision_rehearsal import (
     SUBDIVISION_RUNTIME_REHEARSAL_SCHEMA,
@@ -259,23 +259,22 @@ def _plan_from_evidence(
         or not isinstance(plan_id, str)
     ):
         return None, False
-    computed_plan_id = compute_plan_id(
-        parent_cell_id=parent_id,
-        new_child_cell_ids=tuple(child_ids),
-    )
-    if computed_plan_id != plan_id:
-        return None, False
-    return (
-        SubdivisionPlan(
-            plan_id=plan_id,
+    try:
+        plan = plan_subdivision(
             parent_cell_id=parent_id,
-            new_child_cell_ids=tuple(sorted(child_ids)),
+            new_child_cell_ids=tuple(child_ids),
             rationale="runtime commit application from reviewed evidence",
             target_state=target_state,
-            no_runtime_mutation=True,
-        ),
-        True,
-    )
+        )
+    except ValueError:
+        # Fail closed: evidence carrying a degenerate plan (empty child
+        # set, duplicate children, parent listed as its own child, ...)
+        # must never rebuild into an applicable SubdivisionPlan, even
+        # when its plan_id was honestly computed over those same fields.
+        return None, False
+    if plan.plan_id != plan_id:
+        return None, False
+    return plan, True
 
 
 def _digest_matches(

@@ -145,7 +145,8 @@ try {
     if ($null -eq $filesProperty -or $null -eq $filesProperty.Value) { throw 'deployment manifest has no files map' }
     $wrapperEntry = $filesProperty.Value.PSObject.Properties['Invoke-WdBridgePython.ps1']
     if ($null -eq $wrapperEntry) { throw 'deployment manifest does not pin Invoke-WdBridgePython.ps1' }
-    $wrapperHash = (Get-FileHash -LiteralPath $wrapperItem.FullName -Algorithm SHA256).Hash
+    # .NET SHA-256, not Get-FileHash: Windows PowerShell started with a PowerShell 7 module path cannot load it.
+    $wrapperHash = Get-Sha256Hex -Bytes ([IO.File]::ReadAllBytes($wrapperItem.FullName))
     if ($wrapperHash -cne ([string]$wrapperEntry.Value).ToUpperInvariant()) {
         throw 'pinned wrapper differs from its deployment manifest entry'
     }

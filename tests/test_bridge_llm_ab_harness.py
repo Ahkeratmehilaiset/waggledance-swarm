@@ -4,6 +4,15 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolated_bridge_runtime_root(tmp_path, monkeypatch):
+    """D15 test isolation: BridgeLLMClient's TelemetryLogger appends under AGENT_BRIDGE_RUNTIME_ROOT when no
+    logger is injected (waggledance/core/bridge_llm/telemetry.py). The real client, harness and logger stay in
+    place; only the destination is this test's own tmp_path, so a session that carries the live bridge root
+    never receives test telemetry (PR1960 D15 map: these tests wrote to the live bridge directory)."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))
+
+
 def test_harness_share_zero_skips_treatment():
     """treatment_share=0 means treatment never runs; chosen is always control."""
     from waggledance.core.bridge_llm import (

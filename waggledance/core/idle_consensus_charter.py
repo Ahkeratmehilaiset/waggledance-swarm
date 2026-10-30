@@ -24,7 +24,7 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHARTER_PATH = ROOT / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md"
-DEFAULT_DAILY_QUOTA = 5
+DEFAULT_DAILY_QUOTA = 10
 _PRIVACY_CANARY_MARKERS = frozenset(
     ("PRIVATE" + "_MARKER", "_DO" + "_NOT" + "_LEAK")
 )

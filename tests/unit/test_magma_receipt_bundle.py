@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import IntEnum
 from pathlib import Path
 from typing import Any
 import json
@@ -14,6 +15,16 @@ from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
+
+
+class _BooleanInt(IntEnum):
+    FALSE = 0
+    TRUE = 1
+
+
+class _ExplosiveBool:
+    def __bool__(self) -> bool:
+        raise AssertionError("verifier status must not be coerced")
 
 
 def _digest(seed: str) -> str:
@@ -181,6 +192,48 @@ def test_write_receipt_bundle_verifier_failure_is_fail_closed(tmp_path: Path) ->
             chain_id="magma:bundle:test:v0",
             entries=[entry],
             verify_manifest=fail_manifest,
+        )
+
+
+@pytest.mark.parametrize(
+    "verifier_ok",
+    [
+        "false",
+        "true",
+        0,
+        1,
+        None,
+        _BooleanInt.FALSE,
+        _BooleanInt.TRUE,
+        _ExplosiveBool(),
+    ],
+)
+def test_write_receipt_bundle_rejects_non_literal_verifier_status(
+    tmp_path: Path,
+    verifier_ok: object,
+) -> None:
+    entry = _entry(
+        "alpha",
+        {"action": "evaluate"},
+        event_id="magma:bundle:test:001",
+    )
+
+    def malformed_manifest(_path: Path) -> dict[str, Any]:
+        return {
+            "ok": verifier_ok,
+            "receipt_count": 1,
+            "errors": [],
+        }
+
+    with pytest.raises(
+        ValueError,
+        match="verifier ok must be a literal bool",
+    ):
+        write_receipt_bundle(
+            out_dir=tmp_path / "bundle",
+            chain_id="magma:bundle:test:v0",
+            entries=[entry],
+            verify_manifest=malformed_manifest,
         )
 
 

@@ -1,7 +1,7 @@
 """The bounded Mind release is executed AND collected, never all of sandbox.
 
 Only parse workflow text here: no Mind import, dataset discovery or CLI launch.
-The final composition supplies the ten explicitly admitted synthetic test files.
+The final composition supplies the eleven explicitly admitted synthetic test files.
 """
 from copy import deepcopy
 import os
@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MIND_TESTS = (
     "sandbox/mind/test_mind_capture_producer_reader.py",
     "sandbox/mind/test_mind_capture_producer_state.py",
+    "sandbox/mind/test_mind_capture_producer_graphql.py",
     "sandbox/mind/test_join_turn.py",
     "sandbox/mind/test_join_card.py",
     "sandbox/mind/test_join_card_delivery.py",
@@ -141,8 +142,8 @@ def test_mutant_whole_sandbox_collection_is_killed():
         _assert_collection(mutant)
 
 
-def test_scope_contains_only_ten_unique_explicit_python_test_files():
-    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 10
+def test_scope_contains_only_eleven_unique_explicit_python_test_files():
+    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 11
     assert all(p.startswith("sandbox/mind/") and Path(p).name.startswith("test_")
                and p.endswith(".py") and ".." not in Path(p).parts for p in MIND_TESTS)
     assert not any("remember" in p or "learn" in p or "run_" in Path(p).name for p in MIND_TESTS)
@@ -216,7 +217,7 @@ def test_native_bash_runs_both_scopes_and_stops_on_full_suite_failure(
         assert calls[1][len(mind_prefix):len(mind_prefix) + len(MIND_TESTS)] == list(MIND_TESTS)
 
 
-def test_native_bash_collection_passes_the_same_ten_paths(tmp_path):
+def test_native_bash_collection_passes_the_same_eleven_paths(tmp_path):
     done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"])
     assert done.returncode == 0, done.stdout + done.stderr
     assert calls == [["tests/", "--collect-only", "-q"], ["-m", "pytest", *MIND_TESTS, "--collect-only", "-q"]]

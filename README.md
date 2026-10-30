@@ -278,7 +278,7 @@ The 16 phases of the autonomy fabric ship in this release as a self-contained sc
 | N | `core/local_intelligence/` | Local model distillation **safe scaffold** (advisory-only, 6 critical task kinds refused, no auto-promotion) |
 | Q | `core/cross_capsule/` | Cross-capsule observer (redacted summaries in, redacted observations out) |
 
-All Phase 9 core modules are BUSL-1.1 protected. Tools, tests, and UI compatibility code are Apache 2.0. Schemas are public-interface artifacts.
+Which licence applies to a Phase 9 module, and to tools, tests and UI compatibility code, is stated by that file's own SPDX header together with the licence files (see [License](#license)); tools and tests are not uniformly Apache 2.0. Schemas are public-interface artifacts.
 
 See [`docs/architecture/PHASE_9_ROADMAP.md`](docs/architecture/PHASE_9_ROADMAP.md) for the full navigation surface.
 
@@ -492,18 +492,20 @@ The codebase historically used bee/hive metaphors throughout. New code (Phase 9 
 
 ## License
 
-**Dual-licensed:**
+**Dual-licensed: Apache 2.0 by default, BUSL 1.1 for the protected core.** The licence files set the terms; this section only summarises them. Where this section and a licence file or a file header differ, the licence file and the header govern.
 
-| Component | License | File |
-|-----------|---------|------|
-| Open core (infrastructure, adapters, tests, API, tools) | Apache 2.0 | [`LICENSE`](LICENSE) |
-| Protected modules (autonomy fabric, dream mode, consolidator, meta-optimizer, projections, MAGMA core) | BUSL 1.1 | [`LICENSE-BUSL.txt`](LICENSE-BUSL.txt) |
+| Licence | Applies to | File |
+|---------|------------|------|
+| Apache 2.0 | the open core by default: every source file that is neither listed in `LICENSE-CORE.md` nor carries a BUSL-1.1 SPDX header (`LICENSE-CORE.md`, section "Default rule") | [`LICENSE`](LICENSE) |
+| BUSL 1.1 | the protected files and directories listed in [`LICENSE-CORE.md`](LICENSE-CORE.md): autonomy fabric, dream mode, consolidator, meta-optimizer, projections, MAGMA core and the Phase 10 and 11 substrate | [`LICENSE-BUSL.txt`](LICENSE-BUSL.txt) |
 
-Protected module list: [`LICENSE-CORE.md`](LICENSE-CORE.md). Phase 9 SPDX coverage: 147/147 source files tagged (107 BUSL-1.1 + 40 Apache-2.0).
+How to read one file: its `SPDX-License-Identifier` header states its licence, and a `BUSL-Change-Date` header, where present, states its own change date. A file with no SPDX header falls under the `LICENSE-CORE.md` default rule: Apache 2.0 unless the file is listed there as protected. `LICENSE-CORE.md` holds the protected list and the default rule; `LICENSE-BUSL.txt` holds the BUSL parameters (Licensed Work, Additional Use Grant, Change Date, Change License).
 
-BUSL change date: **2030-03-19** — protected modules become Apache 2.0 automatically on this date.
+**Open discrepancy (recorded here, not resolved here).** Many tracked source files outside the `LICENSE-CORE.md` list, including files under `tests/` and `tools/`, carry a BUSL-1.1 SPDX header. Under the `LICENSE-CORE.md` default rule such a header makes the file protected, while `LICENSE-BUSL.txt` defines the Licensed Work as the files listed in `LICENSE-CORE.md`. Earlier versions of this section said that tools and tests are Apache 2.0 and gave a count of tagged files; both statements were inaccurate and are withdrawn. No header, list entry, licence text or date has been changed to settle the question, and this README grants no rights and promises no relicensing. Until the owner resolves it, rely on each file's own header together with the two licence files.
 
-**Personal non-commercial use of protected modules is permitted.**
+Change dates: `LICENSE-BUSL.txt` sets the project-wide Change Date 2030-03-19 with Apache 2.0 as the Change License, and its terms also name an earlier alternative trigger: the fourth anniversary of the first publicly available distribution of a specific version of the Licensed Work, whichever comes first. The dates of first public distribution are not recorded in this repository. Files that carry a `BUSL-Change-Date` header (the Phase 10 and 11 files, 2030-12-31) use their own date in place of the project-wide one, as `LICENSE-CORE.md` states; neither file says how that per-file date relates to the anniversary trigger. Protected files therefore do not all convert on one date, and this README does not settle the date for any file.
+
+**Personal non-commercial use of protected modules is permitted** (the Additional Use Grant in `LICENSE-BUSL.txt`, which also permits any non-production use).
 Commercial licensing: see [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md) or contact janikorpi@hotmail.com.
 
 ## Credits

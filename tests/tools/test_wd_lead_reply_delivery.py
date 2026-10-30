@@ -370,3 +370,51 @@ try {{ Set-WdLaneChildManifestAnchor -ManifestPath {q(manifest)} -ExpectedHash (
 """
     value = json.loads(_run_powershell(script, executable=ps).stdout)
     assert value == dict(good=digest, rejected=True, after=digest)
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('mutation', ['schema', 'digest', 'parser_stamp', 'path', 'row_count', 'complete',
+                                     'cursor', 'prefix'])
+def test_reply_cache_serialized_envelope_corruption_rebuilds_without_answer_credit(tmp_path, ps, mutation):
+    from test_bridge_request_contract import events
+    _, request, _ = events()
+    request.update(request_id='cache-size-control', request_digest='cache-size-control-digest')
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    log = shared / 'events.jsonl'
+    log.write_text(json.dumps(request) + '\n', encoding='utf-8')
+
+    def read():
+        return subprocess.run([ps, '-NoProfile', '-NonInteractive', '-File',
+                               str(REBOOT.parents[2] / '.agent-bridge/bin/Get-BridgeReplySnapshot.ps1'),
+                               '-RequestId', 'cache-size-control'],
+                              env=dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path)),
+                              capture_output=True, text=True, timeout=40)
+
+    first = read()
+    assert first.returncode == 0, first.stderr
+    original = json.loads(first.stdout)
+    cache = Path(original['cache_path'])
+    envelope = json.loads(cache.read_text(encoding='utf-8-sig'))
+    content = json.loads(envelope['content'])
+    if mutation == 'schema':
+        envelope['schema'] = 'unknown-envelope'
+    elif mutation == 'digest':
+        envelope['sha256'] = '0' * 64
+    else:
+        if mutation == 'parser_stamp': content['parser_stamp'] = 'other-parser'
+        if mutation == 'path': content['path'] = str(tmp_path / 'different-canonical.jsonl')
+        if mutation == 'row_count': content['row_count'] += 1
+        if mutation == 'complete': content['complete'] = False
+        if mutation == 'cursor': content['cursor']['offset'] -= 1
+        if mutation == 'prefix': content['prefix_sha256'] = '0' * 64
+        envelope['content'] = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+        envelope['sha256'] = hashlib.sha256(envelope['content'].encode('utf-8')).hexdigest().upper()
+    cache.write_text(json.dumps(envelope, ensure_ascii=False), encoding='utf-8')
+    rebuilt = read()
+    assert rebuilt.returncode == 0, rebuilt.stderr
+    value = json.loads(rebuilt.stdout)
+    assert value['cache_status'] == 'rebuilt' and value['parsed_rows'] == 1
+    assert value['request'] == request
+    assert value['results'][0]['state'] == 'pending_at_snapshot'
+    assert value['results'][0]['answers'] == []

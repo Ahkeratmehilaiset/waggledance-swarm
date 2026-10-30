@@ -912,3 +912,132 @@ def test_paged_reader_refusal_contract(small, case):
     else:
         assert (pages['status'], pages['reason']) == ('BLOCKED', 'invalid_json')
         assert value['index']['threw'] and value['index']['error'].endswith('invalid_json')
+
+# Serialized-envelope size, not content characters: both cache directions share
+# one bounded Source policy. All data below is synthetic, never a live bridge.
+@pytest.fixture(scope="module")
+def serialized_cache_roundtrip(ps, tmp_path_factory):
+    root = tmp_path_factory.mktemp("reply-cache-envelope-large")
+    log = root / "events.jsonl"
+    log.write_bytes(_jsonl(_request(f"size-{i}") for i in range(144)))
+    script = _render(PRELUDE, INDEX=INDEX) + _render(r"""
+# Synthetic size-only pager seam: inflate retained row values AFTER the real
+# small canonical page has supplied its cursor, fingerprint and completeness.
+# This tests the writer's admitted-payload/read-back policy, not row provenance;
+# the existing real-log controls independently test canonical row correctness.
+function Read-BridgeReplyIndexPages {
+    param([string]$Path,$Cursor=$null,[int64]$MaxBytes=268435456,
+        [int]$PageBytes=67108864,[int]$PageRows=100000)
+    $snapshot=& $FixtureOriginalPages -Path $Path -Cursor $Cursor -MaxBytes $MaxBytes -PageBytes $PageBytes -PageRows $PageRows
+    foreach($row in @($snapshot.rows)){ $row.message='"' * 100000 }
+    return $snapshot
+}
+$first=Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CACHE%%
+$second=Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%CACHE%%
+$FixtureReport.first=ConvertTo-FixtureSummary $first
+$FixtureReport.second=ConvertTo-FixtureSummary $second
+$FixtureReport.envelope_bytes=(Get-Item -LiteralPath $first.cache_path).Length
+""", LOG=log, CACHE=root / "cache" / "reply-index.json") + REPORT
+    done = subprocess.run(_command(ps, root, "serialized-roundtrip", script), cwd=root,
+                          env=_environment(root), capture_output=True, text=True, timeout=SMALL_TIMEOUT)
+    assert done.returncode == 0, done.stderr[-4000:]
+    return json.loads(done.stdout)
+
+
+def test_serialized_cache_larger_than_57mb_is_readable_after_its_own_write(serialized_cache_roundtrip):
+    report = serialized_cache_roundtrip
+    assert 57060172 < report["envelope_bytes"] <= 67108864
+    first, second = report["first"], report["second"]
+    assert first["cache_status"] == "rebuilt" and first["parsed_rows"] == 144
+    assert second["cache_status"] == "incremental" and second["parsed_rows"] == 0
+    assert second["keys"] == first["keys"] and len(second["keys"]) == 144
+    assert second["offset"] == second["snapshot_length"] == first["snapshot_length"]
+
+
+@pytest.fixture(scope="module")
+def serialized_cache_boundaries(ps, tmp_path_factory):
+    root = tmp_path_factory.mktemp("reply-cache-envelope-boundaries")
+    log = root / "events.jsonl"
+    # Decoding yields real Unicode plus backslashes/quotes; the envelope has
+    # UTF-8 multibyte characters AND JSON escaping overhead.
+    log.write_bytes(_jsonl([dict(_request("size-boundary"), message=('\u96ea"\\' * 128))]))
+    script = _render(PRELUDE, INDEX=INDEX) + SMALL_HELPERS + _render(r"""
+$policy=Get-Command Get-BridgeReplyCacheMaxBytes -ErrorAction SilentlyContinue
+$FixtureReport.default_policy=$(if($null -ne $policy){& $policy}else{$null})
+# An internal test seam lowers ONLY the byte policy for fast exact boundaries;
+# the real reader, writer, identity/hash/schema and snapshot checks still run.
+$script:FixtureLimit=[int64]67108864
+function Get-BridgeReplyCacheMaxBytes { return $script:FixtureLimit }
+$seed=Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%SEED%%
+$envelope=[IO.File]::ReadAllText($seed.cache_path)
+$size=[int64](Get-Item -LiteralPath $seed.cache_path).Length
+$FixtureReport.physical_bytes=$size
+$FixtureReport.utf8_bytes=[Text.Encoding]::UTF8.GetByteCount($envelope)
+$FixtureReport.utf16_chars=$envelope.Length
+foreach($margin in @(1,0,-1)){
+    $script:FixtureLimit=$size+$margin
+    $name=if($margin -eq 1){'limit_minus_one'}elseif($margin -eq 0){'equal'}else{'limit_plus_one'}
+    $target=Join-Path %%CACHE_ROOT%% ($name+'.json')
+    $first=Read-BridgeReplyIndex -Path %%LOG%% -CachePath $target
+    $second=Read-BridgeReplyIndex -Path %%LOG%% -CachePath $target
+    $exists=Test-Path -LiteralPath $first.cache_path -PathType Leaf
+    $actual=$(if($exists){[int64](Get-Item -LiteralPath $first.cache_path).Length}else{$null})
+    $FixtureReport[$name]=[ordered]@{limit=$script:FixtureLimit;first=(ConvertTo-FixtureSummary $first);
+        second=(ConvertTo-FixtureSummary $second);cache_exists=$exists;cache_bytes=$actual}
+}
+# The already-published seed is one byte over this policy too. Reject it on
+# READ, rebuild from the tiny canonical fixture, and decline the oversized write.
+$script:FixtureLimit=$size-1
+$readOver=Read-BridgeReplyIndex -Path %%LOG%% -CachePath %%SEED%%
+$FixtureReport.read_over=ConvertTo-FixtureSummary $readOver
+$script:FixtureLimit=[int64]67108864
+# A destination directory forces the actual Move/Replace to fail. The
+# canonical snapshot remains valid, but cache publication MUST NOT be green.
+$target=Join-Path %%CACHE_ROOT%% 'write-failure.json'
+$parserKey=(Get-BridgeReplyTextHash ('date-strings-v1:'+$PSVersionTable.PSVersion.ToString())).Substring(0,24).ToLowerInvariant()
+$actual=Join-Path (Split-Path -Parent $target) ('write-failure.'+$parserKey+'.json')
+[void][IO.Directory]::CreateDirectory($actual)
+$failed=Read-BridgeReplyIndex -Path %%LOG%% -CachePath $target
+$FixtureReport.write_failure=ConvertTo-FixtureSummary $failed
+$FixtureReport.temporary_files=@(Get-ChildItem -LiteralPath %%CACHE_ROOT%% -File -Filter '*.tmp' | ForEach-Object {$_.Name})
+""", LOG=log, SEED=root / "cache" / "seed.json", CACHE_ROOT=root / "cache") + REPORT
+    done = subprocess.run(_command(ps, root, "serialized-boundaries", script), cwd=root,
+                          env=_environment(root), capture_output=True, text=True, timeout=SMALL_TIMEOUT)
+    assert done.returncode == 0, done.stderr[-4000:]
+    return json.loads(done.stdout)
+
+
+def test_serialized_cache_default_policy_is_explicit_and_bounded(serialized_cache_boundaries):
+    assert serialized_cache_boundaries["default_policy"] == 67108864
+
+
+@pytest.mark.parametrize("case", ["limit_minus_one", "equal", "limit_plus_one"])
+def test_serialized_cache_limits_use_actual_utf8_envelope_bytes(serialized_cache_boundaries, case):
+    report = serialized_cache_boundaries
+    assert report["physical_bytes"] == report["utf8_bytes"] > report["utf16_chars"]
+    value = report[case]
+    if case == "limit_plus_one":
+        assert value["first"]["cache_status"] == "not_cacheable_envelope_exceeds_bounds_snapshot_valid"
+        assert value["second"]["cache_status"] == "not_cacheable_envelope_exceeds_bounds_snapshot_valid"
+        assert not value["cache_exists"]
+        assert value["first"]["parsed_rows"] == value["second"]["parsed_rows"] == 1
+    else:
+        assert value["cache_exists"] and value["cache_bytes"] <= value["limit"]
+        assert value["first"]["cache_status"] == "rebuilt"
+        assert value["second"]["cache_status"] == "incremental" and value["second"]["parsed_rows"] == 0
+    assert value["first"]["keys"] == value["second"]["keys"]
+
+
+def test_serialized_cache_read_uses_the_same_envelope_limit(serialized_cache_boundaries):
+    value = serialized_cache_boundaries["read_over"]
+    assert value["cache_status"] == "not_cacheable_envelope_exceeds_bounds_snapshot_valid"
+    assert value["parsed_rows"] == 1 and value["keys"] == [
+        {"request_id": "size-boundary", "in_reply_to_request_id": None}]
+
+
+def test_serialized_cache_write_failure_is_reported_without_losing_the_snapshot(serialized_cache_boundaries):
+    report = serialized_cache_boundaries
+    assert report["write_failure"]["cache_status"] == "write_failed_snapshot_valid"
+    assert report["write_failure"]["parsed_rows"] == 1
+    assert report["write_failure"]["keys"] == [{"request_id": "size-boundary", "in_reply_to_request_id": None}]
+    assert report["temporary_files"] == []

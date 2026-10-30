@@ -56,5 +56,5 @@
       "tool": "tools/run_full_restart_continuity_proof.py"
     }
   ],
-  "soak_root": "C:\\Users\\mfi0jjko\\AppData\\Local\\Temp\\phase16b_soak_52iq64p1"
+  "soak_root": "<user-home>\\AppData\\Local\\Temp\\phase16b_soak_52iq64p1"
 }

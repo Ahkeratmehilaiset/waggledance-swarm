@@ -372,6 +372,44 @@ def test_phase10_crown_jewel_files_have_change_date_header() -> None:
 
 
 # ---------------------------------------------------------------
+# 27b. GOVERNANCE.md glossary matches the Rule 12 RCO cardinality
+# ---------------------------------------------------------------
+
+
+def test_governance_glossary_matches_rule12_rco_cardinality() -> None:
+    """Rule 12 (CLAUDE.md) and tools/bridge_rule12_review_eligibility.py require
+    RCO passes from two distinct eligible recognized RCOs when at least two are
+    eligible, otherwise one; never every roster member. The governance page must
+    not describe the slot as "every eligible recognized RCO", and must state that
+    Rule 12 is the operator's standing signature rather than a per-PR one."""
+    text = (REPO_ROOT / "GOVERNANCE.md").read_text(encoding="utf-8")
+    assert "every eligible recognized RCO" not in text
+    assert "two distinct recognized RCOs when at least two are eligible" in text
+    assert "standing signature" in text
+
+
+def test_governance_glossary_grok_fallback_matches_gate_truth() -> None:
+    """Lead finding on PR #1957 (2026-10-29): the governance page must not
+    present Grok as an approval-slot substitute. In the gate as implemented,
+    tools/idle_consensus_auto_merge.py rejects any Grok fill except the RCO slot
+    as report-only, and that RCO fallback is reachable only through the opt-in
+    ``grok_fallback`` switch (default off). The page must say so, must keep the
+    written Rule 12 policy apart from the implemented route, and this test pins
+    the gate source it describes so a gate change forces a page update."""
+    text = (REPO_ROOT / "GOVERNANCE.md").read_text(encoding="utf-8")
+    gate = (REPO_ROOT / "tools" / "idle_consensus_auto_merge.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fill an approval or RCO slot" not in text
+    assert "opt-in switch" in text
+    assert "`grok_fallback`" in text
+    assert "default off" in text
+    assert "report-only" in text
+    assert "grok_fallback: bool = False" in gate
+    assert "Grok may hold only the RCO slot here" in gate
+
+
+# ---------------------------------------------------------------
 # 28. provider invocations log present
 # ---------------------------------------------------------------
 

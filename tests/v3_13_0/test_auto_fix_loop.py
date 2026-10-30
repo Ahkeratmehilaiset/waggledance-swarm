@@ -29,6 +29,20 @@ from waggledance.core.v3_13_0.auto_fix_loop import (
 )
 
 
+class _ExplosiveBool:
+    def __bool__(self) -> bool:
+        raise AssertionError("boolean coercion must not run")
+
+
+_TRUTHY_NON_BOOL_VALUES = (
+    "false",
+    1,
+    [False],
+    {"approved": False},
+    _ExplosiveBool(),
+)
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
@@ -72,8 +86,8 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
                 capsule: Optional[RecoveryCapsuleView] = None,
                 events: list[TriggerEvent] = None,
                 risk_class: str = "local_artifact",
-                gate_approved: bool = True,
-                exec_success: bool = True,
+                gate_approved: object = True,
+                exec_success: object = True,
                 idempotent: bool = False,
                 dry_run: bool = False,
                 magma_events: list = None,
@@ -109,7 +123,7 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
             executed_intents.append(intent)
         return {
             "success": exec_success,
-            "error": "" if exec_success else "exec error",
+            "error": "" if exec_success is True else "exec error",
         }
 
     return AutoFixLoop(
@@ -122,7 +136,9 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
         classify_intent=classify,
         route_intent_through_gate=lambda _intent: {
             "approved": gate_approved,
-            "reason": "auto_approved" if gate_approved else "peer_rco_denied",
+            "reason": (
+                "auto_approved" if gate_approved is True else "peer_rco_denied"
+            ),
             "audit_event_id": "audit:gate",
         },
         execute_repair=execute,
@@ -355,6 +371,48 @@ class TestRepairByRiskClass:
         )
         results, _ = loop.run_once(cursor="")
         assert results[0].outcome == RepairOutcome.APPLIED.value
+
+    @pytest.mark.parametrize("gate_approved", _TRUTHY_NON_BOOL_VALUES)
+    def test_gate_approval_requires_literal_true(self, gate_approved: object):
+        executed = []
+        events = []
+        loop = _make_loop(
+            lease=self._setup_lease(),
+            capsule=_make_capsule(),
+            events=[_make_event()],
+            gate_approved=gate_approved,
+            executed_intents=executed,
+            magma_events=events,
+        )
+
+        results, _ = loop.run_once(cursor="")
+
+        assert results[0].outcome == RepairOutcome.DENIED.value
+        assert executed == []
+        event_types = {event["event_type"] for event in events}
+        assert "auto_fix_loop.repair_denied" in event_types
+        assert "auto_fix_loop.repair_applied" not in event_types
+
+    @pytest.mark.parametrize("exec_success", _TRUTHY_NON_BOOL_VALUES)
+    def test_execution_success_requires_literal_true(self, exec_success: object):
+        executed = []
+        events = []
+        loop = _make_loop(
+            lease=self._setup_lease(),
+            capsule=_make_capsule(),
+            events=[_make_event()],
+            exec_success=exec_success,
+            executed_intents=executed,
+            magma_events=events,
+        )
+
+        results, _ = loop.run_once(cursor="")
+
+        assert results[0].outcome == RepairOutcome.FAILED.value
+        assert len(executed) == 1
+        event_types = {event["event_type"] for event in events}
+        assert "auto_fix_loop.repair_failed" in event_types
+        assert "auto_fix_loop.repair_applied" not in event_types
 
 
 # --------------------------------------------------------------------------

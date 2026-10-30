@@ -277,6 +277,9 @@ def derive_claim_window(
     instrumented = _normalized_point_set(instrumented_served_points)
     instrumented_set = set(instrumented)
     missing = tuple(point for point in required if point not in instrumented_set)
+    enabled_is_true = enabled_across_window is True
+    clean_shutdown_is_true = clean_shutdown is True
+    torn_tail_detected = torn_tail is not False
 
     reason: str | None = None
     if read_error:
@@ -287,11 +290,11 @@ def derive_claim_window(
         reason = "invalid_expected_head_anchor"
     elif actual != expected_head:
         reason = "head_anchor_mismatch"
-    elif not enabled_across_window:
+    elif not enabled_is_true:
         reason = "not_enabled_across_window"
-    elif not clean_shutdown:
+    elif not clean_shutdown_is_true:
         reason = "unclean_shutdown_window_invalid"
-    elif torn_tail:
+    elif torn_tail_detected:
         reason = "ledger_torn_tail"
     elif missing:
         reason = "served_point_instrumentation_incomplete"
@@ -302,9 +305,9 @@ def derive_claim_window(
         coverage=coverage,
         actual_head=actual,
         expected_head=expected_head,
-        enabled_across_window=bool(enabled_across_window),
-        clean_shutdown=bool(clean_shutdown),
-        torn_tail=bool(torn_tail),
+        enabled_across_window=enabled_is_true,
+        clean_shutdown=clean_shutdown_is_true,
+        torn_tail=torn_tail_detected,
         required_served_points=required,
         instrumented_served_points=instrumented,
         missing_served_points=missing,

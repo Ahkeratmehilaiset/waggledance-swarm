@@ -29,6 +29,7 @@ from . import (
     budget_engine as be,
     governor as gov,
     kernel_state as ks,
+    mission_queue as mq,
     policy_core as pc,
 )
 
@@ -83,8 +84,8 @@ def _breaker_state_for_lane(state: ks.KernelState, lane: str) -> str:
             if b.quarantined:
                 return "quarantined"
             return b.state
-    # Unknown lane → treat as closed (open assumption would lock the
-    # gate when new lanes are introduced; better to allow + audit).
+    # Valid lanes do not all require a dedicated breaker snapshot. Lane
+    # membership is checked before this helper is called.
     return "closed"
 
 
@@ -110,9 +111,21 @@ def evaluate_one(
     budgets: tuple[ks.BudgetEntry, ...] | None = None,
 ) -> GateVerdict:
     """Run policy + breaker + budget checks on one recommendation."""
-    budgets = budgets if budgets is not None else state.budgets
+    if recommendation.lane not in mq.ALLOWED_LANES:
+        return GateVerdict(
+            recommendation_id=recommendation.recommendation_id,
+            verdict="REJECT_HARD",
+            reason=f"unknown recommendation lane: {recommendation.lane!r}",
+        )
+    if recommendation.kind not in mq.ALLOWED_KINDS:
+        return GateVerdict(
+            recommendation_id=recommendation.recommendation_id,
+            verdict="REJECT_HARD",
+            reason=f"unknown recommendation kind: {recommendation.kind!r}",
+        )
 
     # 1. Circuit breaker
+    budgets = budgets if budgets is not None else state.budgets
     breaker_state = _breaker_state_for_lane(state, recommendation.lane)
     if breaker_state in ("open", "quarantined"):
         return GateVerdict(

@@ -34,7 +34,7 @@ v3.7.7-stable-gate-alpha — Phase 16C                  Pre-release   2026-05-02
 
 ```
 $ command -v ollama
-/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama
+<user-home>/AppData/Local/Programs/Ollama/ollama
 
 $ ollama --version
 ollama version is 0.22.1

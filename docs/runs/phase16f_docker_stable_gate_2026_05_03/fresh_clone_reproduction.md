@@ -16,7 +16,7 @@ git fetch origin phase16f/docker-stable-gate
 git checkout phase16f/docker-stable-gate
 ```
 
-Result: clone succeeded, branch checkout succeeded. Clone path: `/tmp/wd-p16f-branchref-wQ3R15` (Windows-host-mapped to `C:/Users/mfi0jjko/AppData/Local/Temp/wd-p16f-branchref-wQ3R15`).
+Result: clone succeeded, branch checkout succeeded. Clone path: `/tmp/wd-p16f-branchref-wQ3R15` (Windows-host-mapped to `<user-home>/AppData/Local/Temp/wd-p16f-branchref-wQ3R15`).
 
 ## Step 2 — Verify clone identity
 

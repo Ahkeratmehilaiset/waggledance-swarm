@@ -1,6 +1,10 @@
 {
   "schema_version": 2,
   "fleet_name": "waggledance-five-agent-fleet",
+  "mind_read": {
+    "enabled": true,
+    "live_dir_mode": "shared_runtime_audit"
+  },
   "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",

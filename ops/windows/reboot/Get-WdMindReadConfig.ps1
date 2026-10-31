@@ -104,9 +104,20 @@ function Get-WdMindReadConfig {
     if ($null -eq $enabled -or $enabled.Value -isnot [bool]) { throw 'mind_config_invalid' }
     if (-not $enabled.Value) { return $null }
     $liveProperty = $config.PSObject.Properties['live_dir']
-    if ($null -eq $liveProperty -or $liveProperty.Value -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($liveProperty.Value)) { throw 'mind_config_invalid' }
-    $live = Assert-MindLocalPath -Path $liveProperty.Value
+    $liveMode = $config.PSObject.Properties['live_dir_mode']
+    if ($null -ne $liveProperty -and $null -eq $liveMode) {
+        if ($liveProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($liveProperty.Value)) {
+            throw 'mind_config_invalid'
+        }
+        $live = Assert-MindLocalPath -Path $liveProperty.Value
+    } elseif ($null -eq $liveProperty -and $null -ne $liveMode -and
+              $liveMode.Value -ceq 'shared_runtime_audit') {
+        $runtimeProperty = $fleet.PSObject.Properties['runtime_root']
+        if ($null -eq $runtimeProperty -or $runtimeProperty.Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($runtimeProperty.Value)) { throw 'mind_config_invalid' }
+        $runtime = Assert-MindLocalPath -Path $runtimeProperty.Value
+        $live = Assert-MindLocalPath -Path (Join-Path $runtime 'shared\.codex-audit\mind-live')
+    } else { throw 'mind_config_invalid' }
     if ($live -ieq [IO.Path]::GetPathRoot($live)) { throw 'mind_config_live_dir_refused' }
     $live = $live.TrimEnd('\')
     $parent = [IO.Path]::GetDirectoryName($live)

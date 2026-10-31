@@ -492,6 +492,10 @@ def validate_projection(projection, approved_tasks=None, include_refs=False, ros
         for record in records:
             if not isinstance(record, dict) or not isinstance(record.get("meta"), dict):
                 raise ProjectionRefused("projection_invalid")
+            # Python considers 0 and 0.0 equal to False in dict equality; the
+            # provenance flag must be the actual JSON boolean, not a number.
+            if not isinstance(record.get("provenance"), dict) or record["provenance"].get("canonical_event") is not False:
+                raise ProjectionRefused("projection_invalid")
             meta = record["meta"]
             if set(meta) != META_KEYS or not isinstance(record.get("time_utc"), str):
                 raise ProjectionRefused("projection_invalid")

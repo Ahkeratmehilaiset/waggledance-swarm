@@ -332,6 +332,8 @@ def _forge(change):
     lambda p: p["records"][0]["meta"].__setitem__("head", SENTINEL_TOKEN),
     lambda p: p["records"][0]["meta"].__setitem__("ci", "rco_pass"),
     lambda p: p["records"][0]["provenance"].__setitem__("canonical_event", True),
+    lambda p: p["records"][0]["provenance"].__setitem__("canonical_event", 0),
+    lambda p: p["records"][0]["provenance"].__setitem__("canonical_event", 0.0),
     lambda p: p["records"][0].__setitem__("time_utc", TS),  # not the normalized form
     lambda p: p["records"].append("not a record"),
 ])

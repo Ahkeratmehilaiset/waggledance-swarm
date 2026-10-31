@@ -28,7 +28,7 @@ class FakeIndex:
         return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (count, 1))
 
 
-def fake_memory(*, quarantined=False, records=1):
+def fake_memory(*, quarantined=False, records=4):
     rows = []
     texts = []
     for index in range(records):
@@ -49,7 +49,7 @@ def fake_memory(*, quarantined=False, records=1):
 def test_q4_finds_synthetic_record_without_returning_its_text():
     answer = q4.Q4(fake_memory(), FakeEncoder()).ask("retry network", "2026-01-02T00:00:00Z")
     assert answer["status"] == "ANSWER"
-    assert answer["rule"] == "q4-rule-v1.1"
+    assert answer["rule"] == "q4-rule-v1.2"
     assert answer["results"][0]["ref"] == "synthetic.md"
     assert "retry stale connection" not in str(answer)
 
@@ -80,6 +80,58 @@ def test_q4_empty_memory_is_a_reasoned_result_not_an_exception(quarantined, expe
     )
     assert answer["status"] == expected
     assert answer["reason"] == "empty_cell"
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize("quarantined,expected", [(False, "ABSTAIN"), (True, "DEGRADED")])
+def test_q4_refuses_small_candidate_sets_before_encoding(count, quarantined, expected):
+    class NeverEncode:
+        def query(self, text):
+            pytest.fail("encoder must not run when ranking cannot discriminate")
+
+    engine = q4.Q4(fake_memory(records=count, quarantined=quarantined), NeverEncode())
+    answer = engine.ask("retry network", "2026-01-02T00:00:00Z")
+    assert answer["status"] == expected
+    assert answer["reason"] == "low_candidate_count"
+    assert answer["results"] == []
+    assert answer["telemetry"]["candidates"] == count
+
+
+def test_q4_counts_candidates_after_freshness_filter_before_encoding():
+    class NeverEncode:
+        def query(self, text):
+            pytest.fail("encoder must not run when only three fresh candidates remain")
+
+    engine = q4.Q4(fake_memory(records=4), NeverEncode())
+    engine.available[3] = "2026-01-03T00:00:00.000000Z"
+    answer = engine.ask("retry network", "2026-01-02T00:00:00Z")
+    assert answer["status"] == "ABSTAIN"
+    assert answer["reason"] == "low_candidate_count"
+    assert answer["telemetry"]["candidates"] == 3
+    assert answer["telemetry"]["excluded_not_before_situation"] == 1
+
+
+def test_q4_counts_candidates_after_self_match_filter_before_encoding():
+    class NeverEncode:
+        def query(self, text):
+            pytest.fail("encoder must not run when only three non-self candidates remain")
+
+    engine = q4.Q4(fake_memory(records=4), NeverEncode())
+    engine.joined[3] = " retry network "
+    answer = engine.ask("retry network", "2026-01-02T00:00:00Z")
+    assert (answer["status"], answer["reason"]) == ("ABSTAIN", "low_candidate_count")
+    assert answer["telemetry"]["candidates"] == 3
+    assert answer["telemetry"]["excluded_self_match"] == 1
+
+
+def test_q4_small_candidate_guard_obeys_configured_agreement_depth():
+    rule = dict(q4.RULE, agree_depth=2)
+    answer = q4.Q4(fake_memory(records=2), FakeEncoder(), rule=rule).ask(
+        "retry network", "2026-01-02T00:00:00Z")
+    assert (answer["status"], answer["reason"]) == ("ABSTAIN", "low_candidate_count")
+    answer = q4.Q4(fake_memory(records=3), FakeEncoder(), rule=rule).ask(
+        "retry network", "2026-01-02T00:00:00Z")
+    assert answer["status"] == "ANSWER"
 
 
 def test_e5_query_contract_with_stubbed_dependencies(monkeypatch):
@@ -129,22 +181,23 @@ def test_loads_and_queries_a_synthetic_faiss_generation_without_mutating_it(tmp_
     generation = cell_root / "gen-000001"
     files = cell.paths(generation, "learning")
     files["index"].parent.mkdir(parents=True)
-    vectors = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    vectors = np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (8, 1))
     index = faiss.IndexFlatIP(2)
     index.add(vectors)
     files["index"].write_bytes(faiss.serialize_index(index).tobytes())
-    ids = ["synthetic#w", "synthetic#d"]
+    ids = [f"synthetic-{i}#{view}" for i in range(4) for view in ("w", "d")]
     metadata = {"dim": 2, "doc_ids": ids,
-                "texts": ["retry stale connection", "retry"], "metadata": [{}, {}]}
+                "texts": [text for _ in range(4) for text in ("retry stale connection", "retry")],
+                "metadata": [{} for _ in ids]}
     files["meta"].write_text(json.dumps(metadata), encoding="utf-8")
     rows = [{"record_id": item, "kind": "lesson", "cell_id": "learning",
              "time_utc": "2026-01-01T00:00:00.000000Z",
-             "provenance": {"record": "synthetic", "view": view,
+             "provenance": {"record": item.rsplit("#", 1)[0], "view": item.rsplit("#", 1)[1],
                             "available_utc": "2026-01-01T00:00:00.000000Z",
                             "file": "synthetic.md", "tier": {"source_type": "learned_from_case"}}}
-            for item, view in zip(ids, ("w", "d"))]
+            for item in ids]
     files["provenance"].write_text("".join(cell.canonical(row) + "\n" for row in rows), encoding="utf-8")
-    content = {"cell_id": "learning", "count": 2, "dim": 2,
+    content = {"cell_id": "learning", "count": len(ids), "dim": 2,
                "cutoff_utc": "2026-01-02T00:00:00.000000Z",
                "files": {name: cell.file_sha256(files[name]) for name in ("index", "meta", "provenance")},
                "ids_sha256": cell.sha256("\n".join(ids).encode()),

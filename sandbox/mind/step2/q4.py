@@ -1,4 +1,8 @@
-"""Read-only Q4 ranking port from 6cf81dbb; no CLI or memory writes."""
+"""Read-only Q4 ranking port from 6cf81dbb; no CLI or memory writes.
+
+The minimum candidate guard avoids automatic top-depth agreement on very small
+sets; it does not calibrate semantic relevance or establish retrieval accuracy.
+"""
 import datetime as dt
 import math
 import re
@@ -9,7 +13,7 @@ import numpy as np
 from sandbox.mind.step2 import corpus as corpus_mod
 from sandbox.mind.step2 import memory as memory_mod
 
-RULE = {"version": "q4-rule-v1.1", "agree_depth": 3, "views": ["w", "d", "b"], "shown_max": 3, "rrf_k": 60,
+RULE = {"version": "q4-rule-v1.2", "agree_depth": 3, "views": ["w", "d", "b"], "shown_max": 3, "rrf_k": 60,
         "bm25_k1": 1.2, "bm25_b": 0.75, "guard_band_s": 1.0, "self_match_shingle": 8, "self_match_share": 0.5}
 TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 WORDS = re.compile(r"[^\W_]+", re.UNICODE)
@@ -118,6 +122,9 @@ class Q4:
                      "excluded_self_match": int((fresh & self_match).sum())}
         if not candidate.any():
             return self._out("DEGRADED" if self.quarantined else "ABSTAIN", "empty_cell", [], telemetry, started)
+        if telemetry["candidates"] <= self.rule["agree_depth"]:
+            return self._out("DEGRADED" if self.quarantined else "ABSTAIN", "low_candidate_count", [], telemetry,
+                             started)
         query = self.encoder.query(situation)
         index = np.flatnonzero(candidate)
         views = {"w": self.w[index] @ query, "d": self.d[index] @ query, "b": self.lexical.scores(situation)[index]}

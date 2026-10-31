@@ -778,6 +778,14 @@ SHADOW_RELEASE_CLI = {
     "mind_join_turn": "sandbox/mind/join_turn.py",
 }
 
+# Read-only Q4 source may be delivered as code only. Its numerical runtime and
+# query entrypoint are not authorized by this source-file declaration.
+Q4_READONLY_FILES = frozenset({
+    "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
+    "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
+    "sandbox/mind/step2/q4.py",
+})
+
 
 def _assert_shadow_release_delivery(definition):
     _assert_mind_delivery(definition)  # Existing gates and manual capability stay unchanged.
@@ -790,8 +798,9 @@ def _assert_shadow_release_delivery(definition):
     published = set(definition["python_entrypoints"].values())
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
-    # These two frozen files are delivery-only, never newly published CLIs or smoke imports.
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES), "deferred_sandbox_file_published"
+    # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
+    assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
     assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
@@ -803,7 +812,7 @@ def _assert_shadow_release_delivery(definition):
 @pytest.mark.parametrize("mutation", [
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
-    "deferred_shadow_entrypoint", "deferred_shadow_smoke",
+    "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -819,6 +828,8 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_entrypoints"].pop("mind_join_turn")
     elif mutation == "shadow_library_published":
         mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
+    elif mutation == "q4_file_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/q4.py")
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":

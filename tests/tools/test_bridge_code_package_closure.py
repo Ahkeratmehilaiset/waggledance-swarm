@@ -839,6 +839,42 @@ Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
 PUBLIC_STATUS_API = "tools/wd_mind_public_session.py"
 PUBLIC_STATUS_CLI = "tools/wd_mind_public_session_cli.py"
+Q4_PUBLIC_POINTER_RESOLVER = "tools/wd_q4_public_pointer_resolver.py"
+Q4_PUBLIC_POINTER_DEPS = frozenset({
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+})
+
+
+def _assert_public_pointer_resolver_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_POINTER_RESOLVER in files, "public_pointer_resolver_drop"
+    assert Q4_PUBLIC_POINTER_DEPS <= files, "public_pointer_dependency_drop"
+    assert Q4_PUBLIC_POINTER_RESOLVER not in set(definition["python_entrypoints"].values()), (
+        "public_pointer_resolver_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "resolver_drop", "adapter_drop", "checkpoint_drop", "published"])
+def test_public_pointer_resolver_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_pointer_resolver_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "resolver_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_pointer_resolver_drop"
+    elif mutation in {"adapter_drop", "checkpoint_drop"}:
+        path = ("sandbox/mind/step2/shared_capture_adapter.py" if mutation == "adapter_drop"
+                else "sandbox/mind/step2/shared_index_checkpoint.py")
+        mutant["python_files"].remove(path)
+        reason = "public_pointer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_pointer"] = Q4_PUBLIC_POINTER_RESOLVER
+        reason = "public_pointer_resolver_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_pointer_resolver_delivery(mutant)
 
 
 def _assert_shadow_release_delivery(definition):

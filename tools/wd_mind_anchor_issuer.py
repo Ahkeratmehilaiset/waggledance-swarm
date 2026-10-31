@@ -10,7 +10,9 @@ Nothing is written, deployed or published here.
 """
 
 import hashlib
+import ntpath
 import os
+import re
 from dataclasses import asdict
 
 from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
@@ -18,11 +20,33 @@ from sandbox.mind.step2 import shared_capture_adapter as adapter
 from waggledance.core.bridge_log_reader import BridgeCursor, _validate_cursor
 
 
+_WINDOWS_DEVICE = re.compile(
+    r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])\Z",
+    re.IGNORECASE,
+)
+
+
+def _windows_path(value):
+    """Validate Windows lexical spelling, not filesystem identity or aliases."""
+    if type(value) is not str or not re.fullmatch(r"[A-Za-z]:\\.+", value):
+        raise ValueError("anchor_input_invalid")
+    if ntpath.normpath(value) != value:
+        raise ValueError("anchor_input_invalid")
+    for segment in value[3:].split("\\"):
+        if (not segment or segment in (".", "..") or segment.endswith((".", " "))
+                or _WINDOWS_DEVICE.fullmatch(segment.partition(".")[0].rstrip(" "))
+                or any(char in '<>:"|?*' or ord(char) < 32 or ord(char) == 127 for char in segment)):
+            raise ValueError("anchor_input_invalid")
+    return value
+
+
 def _path(value):
     if (type(value) is not str or not value or not os.path.isabs(value)
             or os.path.normpath(value) != value or "\x00" in value
             or any(ord(char) < 32 or ord(char) == 127 for char in value)):
         raise ValueError("anchor_input_invalid")
+    if os.name == "nt":
+        _windows_path(value)
     return value
 
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import ntpath
 import os
 from dataclasses import replace
 
@@ -93,6 +94,43 @@ def test_noncanonical_paths_and_lexically_identical_paths_refused(fields, which)
         bad["generation_path"] = bad["source_path"]
     with pytest.raises(ValueError):
         issuer.issue_anchor(enabled=True, **bad)
+
+
+@pytest.mark.parametrize("path", [r"\\server\share\events.jsonl", r"\\?\C:\logs\events.jsonl",
+    r"\\.\C:\logs\events.jsonl", r"C:\logs\events.jsonl:stream", r"C:\logs\CON.jsonl",
+    "C:\\logs\\events.jsonl.", "C:\\logs\\events.jsonl ", r"C:logs\events.jsonl",
+    r"C:\logs\even?ts.jsonl", "C:\\"])
+def test_windows_lexical_policy_rejects_unc_device_ads_and_unsupported_forms(path):
+    with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+        issuer._windows_path(path)
+
+
+@pytest.mark.parametrize("path", [r"C:\logs\events.jsonl", r"D:\data\generation.json"])
+def test_windows_lexical_policy_accepts_canonical_drive_paths_without_io(path):
+    assert issuer._windows_path(path) == path
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive-path input validation")
+@pytest.mark.parametrize("field", ["source_path", "generation_path"])
+@pytest.mark.parametrize("path", [r"\\server\share\events.jsonl", r"\\?\C:\logs\events.jsonl",
+                                   r"\\.\C:\logs\events.jsonl", r"C:\logs\events.jsonl:stream"])
+def test_windows_issuer_rejects_unsafe_forms_in_both_path_fields(fields, field, path):
+    with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+        issuer.issue_anchor(enabled=True, **{**fields, field: path})
+
+
+@pytest.mark.parametrize("name", ["NUL .txt", "CONIN$", "CONOUT$", "COM\u00b9.txt", "LPT\u00b2.txt"])
+@pytest.mark.parametrize("field", ["source_path", "generation_path"])
+def test_windows_reserved_device_variants_refuse_both_fields(fields, field, name):
+    path = "C:\\logs\\" + name
+    if hasattr(ntpath, "isreserved"):
+        assert ntpath.isreserved(path)
+    if os.name == "nt":
+        with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+            issuer.issue_anchor(enabled=True, **{**fields, field: path})
+    else:
+        with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+            issuer._windows_path(path)
 
 
 def test_public_policy_must_be_subset_of_nonreview_policy(fields):

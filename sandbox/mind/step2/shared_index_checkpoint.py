@@ -302,6 +302,42 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
     _refuse()
 
 
+def read_verified_pointer(root, approved_tasks, *, expected_pointer_sha256,
+                          policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+    """Return a narrow, hash-pinned view of the current verified checkpoint.
+
+    This function is read-only and does not create a lock. It checks the
+    pointer again after verifying its active artifacts and bounded archive
+    chain. This detects an ordinary concurrent publication during verification,
+    but is not a lease: callers must revalidate before a dependent write.
+    Caller pins are integrity assertions, not source or writer authentication.
+    """
+    try:
+        from sandbox.mind.step2.shared_capture_adapter import strict_pins
+        from sandbox.mind.step2.shared_bridge_snapshot import _token
+
+        root = _secure(root)
+        if (not root.is_dir() or not isinstance(expected_pointer_sha256, str)
+                or HEX.fullmatch(expected_pointer_sha256) is None):
+            _refuse()
+        tasks, roster = strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+            _refuse()
+        path = root / POINTER
+        raw = _read(path, max_bytes=_MAX_POINTER_BYTES)
+        if _sha(raw) != expected_pointer_sha256:
+            _refuse()
+        value = _validated_previous(root, raw, tasks, roster, policy_sha256, roster_sha256)
+        if _read(path, max_bytes=_MAX_POINTER_BYTES) != raw:
+            _refuse()
+        return {"pointer_sha256": expected_pointer_sha256, "generation": value["generation"],
+                "artifacts": dict(value["artifacts"]), "anchor_sha256": value["anchor_sha256"],
+                "cursor_end_sha256": _sha(_token(BridgeCursor(**value["cursor_end"])).encode("utf-8")),
+                "watermark_sha256": _sha(_token(BridgeCursor(**value["watermark"])).encode("utf-8"))}
+    except Exception:
+        _refuse()
+
+
 def _publish_pointer(root, pointer, raw, old_hash, value):
     if raw is not None:
         archive = root / ("q4-pointer-" + old_hash + ".json")

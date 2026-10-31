@@ -1,17 +1,23 @@
 """Read-only frozen hex-memory loader; no corpus builder or rebuild operation."""
+import hashlib
 import json
 from pathlib import Path
 from sandbox.mind.step2 import cell as cell_mod
 from waggledance.core import hex_cell_topology as topology_mod
 
 SCHEMA = "wd.bridge-mind-hex-memory-step2.v1"
+MAX_MEMORY_MANIFEST_BYTES = 1024 * 1024
 
 class MemoryError_(ValueError):
     """A memory directory that cannot be used as given."""
 
 
 def memory_sha256(out_dir):
-    return cell_mod.file_sha256(Path(out_dir) / "memory.json")
+    with (Path(out_dir) / "memory.json").open("rb") as manifest_file:
+        manifest = manifest_file.read(MAX_MEMORY_MANIFEST_BYTES + 1)
+    if len(manifest) > MAX_MEMORY_MANIFEST_BYTES:
+        raise MemoryError_("memory_over_budget")
+    return hashlib.sha256(manifest).hexdigest()
 
 
 class Memory:
@@ -20,7 +26,11 @@ class Memory:
     def __init__(self, out_dir):
         self.out_dir = out_dir
         try:
-            self.memory = json.loads((out_dir / "memory.json").read_bytes())
+            with (out_dir / "memory.json").open("rb") as manifest_file:
+                manifest = manifest_file.read(MAX_MEMORY_MANIFEST_BYTES + 1)
+            if len(manifest) > MAX_MEMORY_MANIFEST_BYTES:
+                raise MemoryError_("memory_over_budget")
+            self.memory = json.loads(manifest)
             if self.memory.get("schema") != SCHEMA:
                 raise MemoryError_("memory_schema")
             self.cell_ids = [cell_id for cell_id in topology_mod.ALL_CELLS if cell_id in self.memory["cells"]]

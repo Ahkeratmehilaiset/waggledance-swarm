@@ -158,3 +158,11 @@ def test_readonly_modules_do_not_expose_original_build_or_rebuild_api():
     for name in ("cell.py", "corpus.py", "memory.py", "encode.py"):
         tree = ast.parse((root / name).read_text(encoding="utf-8"))
         assert not ({node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))} & forbidden)
+
+
+def test_memory_manifest_over_budget_is_refused_before_json_parse(tmp_path):
+    (tmp_path / "memory.json").write_bytes(b"x" * (memory.MAX_MEMORY_MANIFEST_BYTES + 1))
+    with pytest.raises(memory.MemoryError_, match="memory_over_budget"):
+        memory.memory_sha256(tmp_path)
+    with pytest.raises(memory.MemoryError_, match="memory_unreadable"):
+        memory.Memory(tmp_path)

@@ -27,6 +27,7 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 _ARTIFACT_KEYS = frozenset({"descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256"})
 _VIEW_KEYS = frozenset({"pointer_sha256", "generation", "artifacts", "anchor_sha256",
                         "cursor_end_sha256", "watermark_sha256"})
+_PUBLIC_AGENTS = frozenset({"codex-lead-1", "codex-tools-1", "fable-5"})
 
 
 def _pin(value):
@@ -47,8 +48,9 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
 
     All policy bytes are caller-supplied and their origins must be separately
     trusted. The checkpoint validates the public generation/history. This
-    boundary additionally applies the public task/type allowlist to every
-    retained projection record. It performs no writes or query execution.
+    boundary additionally applies the public task/type/agent allowlists to
+    every retained projection record. Agent names are not authenticated and
+    recipient filtering is not proven here. No writes or query execution occur.
     """
     if enabled is not True:
         raise PublicPointerRefused("disabled")
@@ -85,7 +87,8 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
             if type(record) is not dict or type(record.get("meta")) is not dict:
                 raise ValueError()
             meta = record["meta"]
-            if meta.get("task_id") not in public_tasks or meta.get("type") not in public_types:
+            if (meta.get("task_id") not in public_tasks or meta.get("type") not in public_types
+                    or type(meta.get("agent")) is not str or meta["agent"] not in _PUBLIC_AGENTS):
                 raise ValueError()
         # Refuse an ordinary concurrent pointer replacement during resolution.
         _read_matching(root / checkpoint.POINTER, expected_pointer_sha256, limit=checkpoint._MAX_POINTER_BYTES)

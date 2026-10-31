@@ -18,7 +18,7 @@ def sha(raw):
 def simulated(monkeypatch, tmp_path):
     pointer = b"caller-pinned-pointer"
     descriptor = b"already-verified-descriptor"
-    projection = json.dumps({"records": [{"meta": {"task_id": "public-task", "type": "message"}}]}).encode()
+    projection = json.dumps({"records": [{"meta": {"agent": "codex-lead-1", "task_id": "public-task", "type": "message"}}]}).encode()
     values = {"q4-latest.json": pointer, "descriptor.json": descriptor, "projection.json": projection}
     artifacts = {"descriptor_sha256": sha(descriptor), "memory_sha256": "a" * 64,
                  "projection_sha256": sha(projection), "receipt_sha256": "b" * 64}
@@ -83,6 +83,37 @@ def test_out_of_policy_projection_refuses_even_when_hash_matches(simulated):
     view["artifacts"]["projection_sha256"] = sha(values["projection.json"])
     with pytest.raises(resolver.PublicPointerRefused, match="^resolution_refused$"):
         resolver.resolve_public_pointer(**args, enabled=True)
+
+
+@pytest.mark.parametrize("agent", ["claude-rco-1", "claude-rco-2"])
+def test_rco_projection_refuses_even_when_checkpoint_and_hash_match(simulated, agent):
+    args, values, view, _ = simulated
+    values["projection.json"] = json.dumps({"records": [{"meta": {
+        "agent": agent, "task_id": "public-task", "type": "message"}}]}).encode()
+    view["artifacts"]["projection_sha256"] = sha(values["projection.json"])
+    with pytest.raises(resolver.PublicPointerRefused, match="^resolution_refused$"):
+        resolver.resolve_public_pointer(**args, enabled=True)
+
+
+@pytest.mark.parametrize("agent", [None, "unknown-agent", 0, ["codex-lead-1"]])
+def test_unknown_missing_or_nonstring_agent_refuses_even_when_hash_matches(simulated, agent):
+    args, values, view, _ = simulated
+    meta = {"task_id": "public-task", "type": "message"}
+    if agent is not None:
+        meta["agent"] = agent
+    values["projection.json"] = json.dumps({"records": [{"meta": meta}]}).encode()
+    view["artifacts"]["projection_sha256"] = sha(values["projection.json"])
+    with pytest.raises(resolver.PublicPointerRefused, match="^resolution_refused$"):
+        resolver.resolve_public_pointer(**args, enabled=True)
+
+
+@pytest.mark.parametrize("agent", ["codex-lead-1", "codex-tools-1", "fable-5"])
+def test_allowlisted_agent_passes_this_defense_in_depth_boundary(simulated, agent):
+    args, values, view, _ = simulated
+    values["projection.json"] = json.dumps({"records": [{"meta": {
+        "agent": agent, "task_id": "public-task", "type": "message"}}]}).encode()
+    view["artifacts"]["projection_sha256"] = sha(values["projection.json"])
+    assert resolver.resolve_public_pointer(**args, enabled=True)["source_mode"] == "public-v1"
 
 
 def test_changed_descriptor_refuses(simulated):

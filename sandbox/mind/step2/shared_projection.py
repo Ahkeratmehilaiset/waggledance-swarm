@@ -23,9 +23,26 @@ of its PROJECTED approved fields in canonical JSON (``event:<hex64>``): it ident
 metadata, NOT the canonical bridge event (``provenance.canonical_event`` is false), and nothing here builds or
 claims a Q4 index generation.
 
-Remaining bounded channels, disclosed rather than closed: ``pr`` (a positive integer), ``head`` (40 lowercase hex
-characters) and ``ts_utc`` (a normalized timestamp) are validated by shape only; a producer could encode a few
-bytes in them. ``approved_tasks`` is trusted as given once it is safe-shaped.
+v3 (independent review of v2): two publication races and a forgeable writer input. ``write_projection`` now sets
+an ownership flag only after its exclusive staging creation succeeded and removes only a staging it owns (a
+collision with a foreign staging file refuses ``staging_collision`` and leaves that file alone); publication is an
+atomic no-replace primitive per platform (``_publish``: Windows ``os.rename`` which fails on an existing
+destination, POSIX ``os.link`` which never replaces, then unlink of the staging) and fails closed with
+``publication_unsupported`` on any other platform or a filesystem without hard links; a destination another
+publisher wrote first is never overwritten or deleted (``output_exists``). The writer additionally REVALIDATES the
+whole object (``validate_projection``): exact key sets, closed values, refusal reasons from ``REASONS``, and every
+record re-derived from its own approved fields through the same path as ``project_event`` with the same
+caller-pinned ``approved_tasks``; any difference refuses ``projection_invalid`` before anything is written. A UTC
+boundary instant whose offset conversion overflows is refused as ``time_invalid`` instead of aborting the batch.
+
+Trust assumptions, disclosed: revalidation is in-process (Python has no forgery-proof object), so it proves
+content, never who built it, and it is not authentication or canonical provenance; the Windows no-replace rename
+and the POSIX no-replace link are kernel semantics of local filesystems (verified here on NTFS), network or FUSE
+filesystems may differ and are then simply unsupported. Remaining bounded channels, disclosed rather than closed:
+``pr`` (a positive integer), ``head`` (40 lowercase hex characters) and ``ts_utc`` (a normalized timestamp) are
+validated by shape only; a producer could encode a few bytes in them; ``dropped_fields`` and the per-reason refusal
+counts are producer-influenced integers; batch order and size are observable. ``approved_tasks`` is trusted as
+given once it is safe-shaped.
 
 Default deny everywhere else: a lane outside ``LANES``, a type outside ``ALLOWED_TYPES`` (every peer-review and
 decision type is outside), a sealed-named approved task, a malformed time, PR or head, or any text field over its
@@ -42,7 +59,23 @@ from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
 
-SCHEMA = "wd.bridge-mind-shared-projection.v2"
+SCHEMA = "wd.bridge-mind-shared-projection.v3"
+SCOPE = "shared_metadata_projection_not_gate"
+PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "accepted", "refused", "dropped_fields", "records"})
+META_KEYS = frozenset({"type", "status", "agent", "task_id", "pr", "head", "ci"})
+# Every per-event refusal reason the projection may count; a refused key outside this set is a forged projection.
+REASONS = frozenset({"event_not_object", "time_invalid", "agent_invalid", "agent_over_bytes", "agent_not_lane",
+                     "type_invalid", "type_over_bytes", "type_not_allowed", "status_invalid", "status_over_bytes",
+                     "task_id_invalid", "task_id_over_bytes", "sealed_named_excluded", "pr_invalid", "head_invalid",
+                     "ci_invalid", "ci_over_bytes", "head_line_over_bytes"})
+# Publication strategy per platform (module bindings so tests can pin them deterministically):
+# nt    -> os.rename, which on Windows is MoveFileEx WITHOUT REPLACE_EXISTING and fails if the destination exists;
+# posix -> os.link, which never replaces (EEXIST) and is atomic on local filesystems; unlink the staging after.
+# Anything else, or a filesystem without hard links, fails closed with publication_unsupported.
+SUPPORTED_PLATFORMS = frozenset({"nt", "posix"})
+_PLATFORM = os.name
+_rename = os.rename
+_link = getattr(os, "link", None)
 LANES = frozenset({"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"})
 ALLOWED_TYPES = frozenset({"message", "wake_request", "handoff", "test", "claim", "release", "done", "milestone",
                            "status", "progress"})
@@ -123,7 +156,10 @@ def approved_fields(event, approved_tasks=frozenset()):
     if not isinstance(event, dict):
         raise ProjectionRefused("event_not_object")
     dropped = sum(1 for key in event if key not in APPROVED_FIELDS)
-    when = corpus_mod.parse_utc(event.get("ts_utc")) if isinstance(event.get("ts_utc"), str) else None
+    try:  # a boundary instant such as year 1 or 9999 with an offset overflows on conversion: refuse, never abort
+        when = corpus_mod.parse_utc(event.get("ts_utc")) if isinstance(event.get("ts_utc"), str) else None
+    except (OverflowError, ValueError):
+        when = None
     if when is None:
         raise ProjectionRefused("time_invalid")
     agent = _closed("agent", event.get("agent"), LANE, LANES)
@@ -169,16 +205,20 @@ def projected_ref(fields):
 def project_event(event, approved_tasks=frozenset()):
     """One shared record from one event, or ProjectionRefused; nothing partial is returned."""
     fields, dropped = approved_fields(event, approved_tasks)
+    return _record(fields), dropped
+
+
+def _record(fields):
+    """The exact record for validated approved fields; the writer re-derives every record through this."""
     text = head_line(fields)
     ref = projected_ref(fields)
-    record = {"record_id": "event:" + ref, "kind": "event", "time_utc": fields["ts_utc"],
-              "available_utc": fields["ts_utc"], "stored_text": text, "summary": text,
-              "meta": {"type": fields["type"], "status": fields["status"], "agent": fields["agent"],
-                       "task_id": fields["task_id"], "pr": fields["pr"], "head": fields["head"], "ci": fields["ci"]},
-              "provenance": {"source_kind": "projected_bridge_metadata", "event_ref": ref,
-                             "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
-                             "tier": {"source_type": "bridge_event"}, "available_utc": fields["ts_utc"]}}
-    return record, dropped
+    return {"record_id": "event:" + ref, "kind": "event", "time_utc": fields["ts_utc"],
+            "available_utc": fields["ts_utc"], "stored_text": text, "summary": text,
+            "meta": {"type": fields["type"], "status": fields["status"], "agent": fields["agent"],
+                     "task_id": fields["task_id"], "pr": fields["pr"], "head": fields["head"], "ci": fields["ci"]},
+            "provenance": {"source_kind": "projected_bridge_metadata", "event_ref": ref,
+                           "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
+                           "tier": {"source_type": "bridge_event"}, "available_utc": fields["ts_utc"]}}
 
 
 def encoder_input(record):
@@ -187,7 +227,7 @@ def encoder_input(record):
 
 
 def _projection(records, refused, dropped):
-    out = {"schema": SCHEMA, "authority": "none", "scope": "shared_metadata_projection_not_gate",
+    out = {"schema": SCHEMA, "authority": "none", "scope": SCOPE,
            "accepted": len(records), "refused": dict(sorted(refused.items())), "dropped_fields": dropped,
            "records": records}
     corpus_mod.ws.guard_object(out)
@@ -219,34 +259,113 @@ def project_notes(notes, allowlist=None):
     raise ProjectionRefused("notes_excluded")
 
 
-def write_projection(path, projection):
-    """Guard the whole object, stage it in a unique exclusively created file, then rename onto a path that must not
-    exist yet; on any refusal nothing new exists at or beside ``path``, and only this call's staging is removed."""
+def validate_projection(projection, approved_tasks=None):
+    """Strict exact revalidation of a projection object before it is published.
+
+    Every record is re-derived from its own approved fields through the same validation path as ``project_event``
+    (closed sets, byte caps, the caller-pinned approved set) and must be byte-for-byte equal to the re-derivation;
+    the top level must carry exactly the projection keys with closed values, refusal reasons from ``REASONS`` and
+    non-negative integer counts. Anything else refuses with ``projection_invalid`` and nothing is written. This is
+    in-process validation, not authentication: Python offers no forgery-proof object, so the writer trusts the
+    content only after re-deriving it, never because of who built it."""
+    approved = _approved_tasks(approved_tasks)
+    try:
+        if not isinstance(projection, dict) or set(projection) != PROJECTION_KEYS:
+            raise ProjectionRefused("projection_invalid")
+        records, refused, dropped = projection["records"], projection["refused"], projection["dropped_fields"]
+        if (projection["schema"] != SCHEMA or projection["authority"] != "none" or projection["scope"] != SCOPE
+                or not isinstance(records, list) or type(projection["accepted"]) is not int
+                or projection["accepted"] != len(records) or type(dropped) is not int or dropped < 0
+                or not isinstance(refused, dict)
+                or any(reason not in REASONS or type(count) is not int or count < 1
+                       for reason, count in refused.items())):
+            raise ProjectionRefused("projection_invalid")
+        for record in records:
+            if not isinstance(record, dict) or not isinstance(record.get("meta"), dict):
+                raise ProjectionRefused("projection_invalid")
+            meta = record["meta"]
+            if set(meta) != META_KEYS or not isinstance(record.get("time_utc"), str):
+                raise ProjectionRefused("projection_invalid")
+            synthetic = {"ts_utc": record["time_utc"], **meta}
+            fields, _ = approved_fields(synthetic, approved)
+            if fields["ts_utc"] != record["time_utc"] or _record(fields) != record:
+                raise ProjectionRefused("projection_invalid")
+    except ProjectionRefused:
+        raise ProjectionRefused("projection_invalid") from None
+    except (KeyError, TypeError, AttributeError, ValueError):
+        raise ProjectionRefused("projection_invalid") from None
+    return projection
+
+
+def _staging_name(path):
+    return path.with_name(f".{path.name}.{secrets.token_hex(8)}.staging")
+
+
+def _publish(staging, path):
+    """Atomic no-replace publication of ``staging`` at ``path``: ``output_exists`` if any publication is already
+    there (theirs is never touched), ``publication_unsupported`` where no no-replace primitive is available."""
+    if _PLATFORM == "nt":
+        try:
+            _rename(staging, path)  # MoveFileEx without REPLACE_EXISTING: fails when the destination exists
+        except FileExistsError:
+            raise ProjectionRefused("output_exists") from None
+        return
+    if _PLATFORM == "posix" and _link is not None:
+        try:
+            _link(staging, path)  # link(2) never replaces: EEXIST when another publisher won
+        except FileExistsError:
+            raise ProjectionRefused("output_exists") from None
+        except OSError:
+            raise ProjectionRefused("publication_unsupported") from None  # no hard links here: fail closed
+        try:
+            os.unlink(staging)  # the publication stands; a leftover staging holds the same guarded bytes
+        except OSError:
+            pass
+        return
+    raise ProjectionRefused("publication_unsupported")
+
+
+def write_projection(path, projection, approved_tasks=None):
+    """Revalidate strictly, guard the whole object, stage it in a unique exclusively created file, then publish it
+    atomically onto a path that must not exist yet. Only a staging file this call created is ever removed; a
+    destination written by anyone else is never overwritten or deleted; on a refusal nothing of ours remains."""
+    validate_projection(projection, approved_tasks)
     try:
         corpus_mod.ws.guard_object(projection)
     except corpus_mod.ws.WorkspaceError:
         raise ProjectionRefused("output_guarded") from None
+    if _PLATFORM not in SUPPORTED_PLATFORMS:
+        raise ProjectionRefused("publication_unsupported")
     data = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
     path = Path(path)
-    staging = None
+    staging, owned = None, False
     try:
         if path.exists():
-            raise ProjectionRefused("output_exists")
+            raise ProjectionRefused("output_exists")  # advisory early exit; the publication step is authoritative
         path.parent.mkdir(parents=True, exist_ok=True)
-        staging = path.with_name(f".{path.name}.{secrets.token_hex(8)}.staging")
-        with open(staging, "xb") as handle:
+        staging = _staging_name(path)
+        try:
+            handle = open(staging, "xb")
+        except FileExistsError:
+            raise ProjectionRefused("staging_collision") from None  # not ours: never touched
+        owned = True  # only now does this call own a file it may remove
+        with handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        if path.exists():
-            raise ProjectionRefused("output_exists")
-        os.rename(staging, path)  # fails on Windows and POSIX-renames onto nothing: the target was absent just above
+        _publish(staging, path)
     except ProjectionRefused:
-        if staging is not None and staging.exists():
-            staging.unlink()
+        _discard_own(staging, owned)
         raise
     except OSError:
-        if staging is not None and staging.exists():
-            staging.unlink()
+        _discard_own(staging, owned)
         raise ProjectionRefused("write_failed") from None
     return hashlib.sha256(data).hexdigest()
+
+
+def _discard_own(staging, owned):
+    if owned and staging is not None and staging.exists():
+        try:
+            staging.unlink()
+        except OSError:
+            pass

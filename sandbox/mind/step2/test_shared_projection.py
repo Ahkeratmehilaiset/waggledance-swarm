@@ -139,20 +139,20 @@ def test_s7_a_refused_write_leaves_no_file_and_no_staging(tmp_path):
     projection = project(event())
     projection["records"][0]["stored_text"] = "PRIVATE_" + "MARKER"  # only this test spells it, split for the scanner
     out = tmp_path / "out" / "projection.json"
-    with pytest.raises(sp.ProjectionRefused, match="output_guarded"):
-        sp.write_projection(out, projection)
+    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+        sp.write_projection(out, projection, approved_tasks=APPROVED)  # v3: strict revalidation refuses before the guard
     assert not out.exists() and list(tmp_path.rglob("*")) in ([], [tmp_path / "out"])
 
 
 def test_s7b_a_good_write_is_exclusive_atomic_and_returns_its_digest(tmp_path):
     out = tmp_path / "out" / "projection.json"
-    digest = sp.write_projection(out, project(event()))
+    digest = sp.write_projection(out, project(event()), approved_tasks=APPROVED)
     assert out.exists() and digest == hashlib.sha256(out.read_bytes()).hexdigest()
     assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]
     assert no_sentinel(out.read_text(encoding="utf-8"))
     before = out.read_bytes()
     with pytest.raises(sp.ProjectionRefused, match="output_exists"):  # v2: never overwrite a published file
-        sp.write_projection(out, project(event(status="done")))
+        sp.write_projection(out, project(event(status="done")), approved_tasks=APPROVED)
     assert out.read_bytes() == before and sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]
 
 
@@ -160,7 +160,7 @@ def test_s7c_a_filesystem_error_is_one_fixed_path_free_refusal(tmp_path):
     blocker = tmp_path / "file-not-dir"
     blocker.write_text("x", encoding="utf-8")
     with pytest.raises(sp.ProjectionRefused) as raised:
-        sp.write_projection(blocker / "sub" / "projection.json", project(event()))
+        sp.write_projection(blocker / "sub" / "projection.json", project(event()), approved_tasks=APPROVED)
     assert str(raised.value) == "write_failed"
 
 
@@ -236,3 +236,132 @@ def test_a_non_mapping_or_empty_batch_is_refused_or_empty():
         project("not an object")
     empty = project()
     assert empty["records"] == [] and empty["accepted"] == 0 and empty["schema"] == sp.SCHEMA
+
+
+# v3: publication races, strict revalidation at the writer, UTC boundary overflow. All synthetic, all deterministic.
+
+def _foreign(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"foreign publication, never ours")
+    return path.read_bytes()
+
+
+def test_v3_a_staging_collision_never_removes_a_file_this_call_did_not_create(tmp_path, monkeypatch):
+    out = tmp_path / "out" / "projection.json"
+    fixed = out.with_name(".projection.json.deadbeefdeadbeef.staging")
+    monkeypatch.setattr(sp, "_staging_name", lambda path: fixed)
+    before = _foreign(fixed)
+    with pytest.raises(sp.ProjectionRefused, match="staging_collision"):
+        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    assert fixed.read_bytes() == before and not out.exists()
+    assert sorted(p.name for p in out.parent.iterdir()) == [fixed.name]
+
+
+def _racing(publish, out):
+    def race(src, dst):
+        _foreign(out)  # another publisher wins between our existence check and our publication step
+        return publish(src, dst)
+    return race
+
+
+@pytest.mark.parametrize("platform,binding", [("nt", "_rename"), ("posix", "_link")])
+def test_v3_a_concurrent_destination_is_never_overwritten_or_deleted(tmp_path, monkeypatch, platform, binding):
+    out = tmp_path / "out" / "projection.json"
+    monkeypatch.setattr(sp, "_PLATFORM", platform)
+    monkeypatch.setattr(sp, binding, _racing(getattr(sp, binding), out))
+    with pytest.raises(sp.ProjectionRefused, match="output_exists"):
+        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    assert out.read_bytes() == b"foreign publication, never ours"
+    assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]  # own staging cleaned, theirs kept
+
+
+def test_v3_the_posix_strategy_publishes_by_link_then_unlinks_only_its_staging(tmp_path, monkeypatch):
+    out = tmp_path / "out" / "projection.json"
+    monkeypatch.setattr(sp, "_PLATFORM", "posix")
+    digest = sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    assert digest == hashlib.sha256(out.read_bytes()).hexdigest()
+    assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"] and out.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("link", [None, lambda src, dst: (_ for _ in ()).throw(PermissionError(1, "no hard links"))])
+def test_v3_an_unsupported_publication_strategy_fails_closed_with_nothing_left(tmp_path, monkeypatch, link):
+    out = tmp_path / "out" / "projection.json"
+    monkeypatch.setattr(sp, "_PLATFORM", "posix")
+    monkeypatch.setattr(sp, "_link", link)
+    with pytest.raises(sp.ProjectionRefused, match="publication_unsupported"):
+        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    assert not out.exists() and list(out.parent.iterdir()) == []
+
+
+def test_v3_an_unknown_platform_fails_closed_before_any_staging(tmp_path, monkeypatch):
+    out = tmp_path / "out" / "projection.json"
+    monkeypatch.setattr(sp, "_PLATFORM", "java")
+    with pytest.raises(sp.ProjectionRefused, match="publication_unsupported"):
+        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    assert not out.parent.exists()
+
+
+def _forge(change):
+    projection = project(event())
+    change(projection)
+    return projection
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p.__setitem__("schema", "wd.bridge-mind-shared-projection.v2"),
+    lambda p: p.__setitem__("authority", "gate"),
+    lambda p: p.__setitem__("extra", 1),
+    lambda p: p.__setitem__("accepted", 2),
+    lambda p: p.__setitem__("dropped_fields", True),
+    lambda p: p.__setitem__("refused", {SENTINEL_TOKEN: 1}),
+    lambda p: p.__setitem__("refused", {"time_invalid": 0}),
+    lambda p: p["records"][0].__setitem__("stored_text", SENTINEL_MESSAGE),
+    lambda p: p["records"][0].__setitem__("summary", SENTINEL_MESSAGE),
+    lambda p: p["records"][0].__setitem__("record_id", "event:" + "0" * 64),
+    lambda p: p["records"][0].__setitem__("note", SENTINEL_PAYLOAD),
+    lambda p: p["records"][0]["meta"].__setitem__("status", SENTINEL_TOKEN),
+    lambda p: p["records"][0]["meta"].__setitem__("task_id", SENTINEL_TOKEN),  # task-shaped but never approved
+    lambda p: p["records"][0]["meta"].__setitem__("agent", "someone-else"),
+    lambda p: p["records"][0]["meta"].__setitem__("type", "decision"),
+    lambda p: p["records"][0]["meta"].__setitem__("head", SENTINEL_TOKEN),
+    lambda p: p["records"][0]["meta"].__setitem__("ci", "rco_pass"),
+    lambda p: p["records"][0]["provenance"].__setitem__("canonical_event", True),
+    lambda p: p["records"][0].__setitem__("time_utc", TS),  # not the normalized form
+    lambda p: p["records"].append("not a record"),
+])
+def test_v3_the_writer_revalidates_the_exact_schema_and_refuses_a_forged_projection(tmp_path, change):
+    out = tmp_path / "out" / "projection.json"
+    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+        sp.write_projection(out, _forge(change), approved_tasks=APPROVED)
+    assert not out.exists() and (not out.parent.exists() or list(out.parent.iterdir()) == [])
+
+
+def test_v3_the_writer_needs_the_same_approved_set_to_accept_a_rendered_task(tmp_path):
+    projection = project(event())
+    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+        sp.write_projection(tmp_path / "a.json", projection)  # no set: every rendered task must be UNKNOWN
+    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+        sp.write_projection(tmp_path / "b.json", projection, approved_tasks=frozenset({"other-task-1"}))
+    assert sp.write_projection(tmp_path / "c.json", projection, approved_tasks=APPROVED)
+    assert sp.write_projection(tmp_path / "d.json", project(event(), approved=None))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json", "d.json"]
+
+
+def test_v3_the_writer_refuses_a_non_projection_value_without_touching_the_filesystem(tmp_path):
+    for bad in ("text", None, [], {"records": []}):
+        with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+            sp.write_projection(tmp_path / "out" / "projection.json", bad)
+    assert not (tmp_path / "out").exists()
+
+
+def test_v3_every_refusal_reason_is_a_member_of_the_closed_reason_set():
+    assert sp.REASONS >= {f"{name}_{kind}" for name in sp.BYTE_CAPS for kind in ("invalid", "over_bytes")}
+    assert {"time_invalid", "agent_not_lane", "type_not_allowed", "pr_invalid", "head_invalid",
+            "sealed_named_excluded", "head_line_over_bytes", "event_not_object"} <= sp.REASONS
+    assert all(re.fullmatch(r"[a-z][a-z0-9_]{1,63}", reason) for reason in sp.REASONS)
+
+
+@pytest.mark.parametrize("ts", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_v3_a_boundary_timestamp_is_refused_as_time_invalid_instead_of_aborting_the_batch(ts):
+    out = project(event(ts_utc=ts), event())
+    assert out["refused"] == {"time_invalid": 1} and out["accepted"] == 1

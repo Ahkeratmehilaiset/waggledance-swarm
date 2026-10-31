@@ -261,14 +261,18 @@ def test_the_shadow_run_refuses_each_output_past_the_budget_before_writing_it(au
 
 # -- producer-to-shadow provenance binding (Lead Source GO 2026-10-31, RCO2 F2 / P2) -----------------------------
 
-def _cursor(file_identity="log-a", generation=None, offset=12):
+FID = "windows-v1:0000abcd:0000000000000001"  # synthetic bridge log reader identities, the reader's own shape
+FID_B = "windows-v1:0000abcd:0000000000000002"
+
+
+def _cursor(file_identity=FID, generation=None, offset=12):
     """A compact position cursor of the reader's own form: bc1. + unpadded base64url of the canonical position."""
     body = json.dumps({"file_identity": file_identity, "generation": generation, "offset": offset},
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "bc1." + base64.urlsafe_b64encode(body).decode("ascii").rstrip("=")
 
 
-def _provenance(cursor=None, file_identity="log-a", generation=None):
+def _provenance(cursor=None, file_identity=FID, generation=None):
     return {"reader_cursor": _cursor(file_identity, generation) if cursor is None else cursor,
             "file_identity": file_identity, "log_generation": generation}
 
@@ -281,11 +285,11 @@ def test_a_capture_with_reader_provenance_binds_the_publication_to_that_bridge_l
     path = _write(audit / "capture.json", capture)
     receipt = shadow.run(path, audit, audit / "run1")
     verified = core.read_snapshot(audit / "run1" / "reflected.publication.json", audit_root=audit)
-    assert verified["source"]["log_identity"] == "bridge-log:log-a"
+    assert verified["source"]["log_identity"] == "capture-window:" + FID  # a window of that log, never the log itself
     assert verified["source"]["generation"] == generation  # None stays None in the core: never invented
     assert verified["source"]["cursor_start"] == 0 and verified["source"]["cursor_end"] == len(EVENTS)
     assert receipt["capture"]["provenance"] == {
-        "file_identity": "log-a", "log_generation": "UNKNOWN" if generation is None else generation,
+        "file_identity": FID, "log_generation": "UNKNOWN" if generation is None else generation,
         "reader_cursor_sha256": hashlib.sha256(capture["provenance"]["reader_cursor"].encode("ascii")).hexdigest(),
         "coverage": "bounded_window_not_whole_log"}
     assert "never whole-log coverage" in receipt["limits"][0] and any("never invented" in line for line in receipt["limits"])
@@ -294,16 +298,16 @@ def test_a_capture_with_reader_provenance_binds_the_publication_to_that_bridge_l
 
 
 @pytest.mark.parametrize("change, message", [
-    (lambda p: p.update(file_identity="log-b"), "does not match its reader cursor"),
+    (lambda p: p.update(file_identity=FID_B), "does not match its reader cursor"),
     (lambda p: p.update(log_generation="g9"), "does not match its reader cursor"),
-    (lambda p: p.update(reader_cursor=_cursor("log-a", "g9")), "does not match its reader cursor"),
+    (lambda p: p.update(reader_cursor=_cursor(FID, "g9")), "does not match its reader cursor"),
     (lambda p: p.update(reader_cursor="bc1.!!!"), "not a canonical compact-reader position cursor"),
-    (lambda p: p.update(reader_cursor=_cursor("log-a", None) + "="), "not a canonical compact-reader position cursor"),
-    (lambda p: p.update(reader_cursor=_cursor("log-a", None, offset=-1)), "not a canonical compact-reader position cursor"),
+    (lambda p: p.update(reader_cursor=_cursor(FID, None) + "="), "not a canonical compact-reader position cursor"),
+    (lambda p: p.update(reader_cursor=_cursor(FID, None, offset=-1)), "not a canonical compact-reader position cursor"),
     (lambda p: p.update(reader_cursor=12), "not a canonical compact-reader position cursor"),
     (lambda p: p.update(reader_cursor=_cursor("C:/Users/example/log", None), file_identity="C:/Users/example/log"),
      "not a canonical compact-reader position cursor"),
-    (lambda p: p.update(reader_cursor=_cursor("log-a", 3), log_generation=3), "not a canonical compact-reader position cursor"),
+    (lambda p: p.update(reader_cursor=_cursor(FID, 3), log_generation=3), "not a canonical compact-reader position cursor"),
     (lambda p: p.pop("log_generation"), "provenance is not"),
     (lambda p: p.update(extra=1), "provenance is not"),
 ])
@@ -314,12 +318,71 @@ def test_a_provenance_that_is_malformed_or_disagrees_with_its_cursor_is_refused_
     capture["provenance"] = provenance
     with pytest.raises(shadow.ShadowRefused, match=message) as info:
         shadow.read_capture(capture)
-    assert "log-b" not in str(info.value) and "Users" not in str(info.value) and "g9" not in str(info.value)
+    assert FID_B not in str(info.value) and "Users" not in str(info.value) and "g9" not in str(info.value)
 
 
 def test_a_provenance_of_another_shape_is_refused():
     capture = _capture()
-    for bad in ("log-a", ["log-a"], None):
+    for bad in (FID, [FID], None):
         capture["provenance"] = bad
         with pytest.raises(shadow.ShadowRefused, match="provenance is not"):
             shadow.read_capture(capture)
+
+
+# -- RCO1 P1 / P3 (Lead v4 2026-10-31): a bounded window is never published as the whole bridge log ----------------
+
+def _consumer_scope(source):
+    """A synthetic downstream consumer's plain reading of a published source, modelled on the repo's own lane view
+    rule (sandbox/mind/step1/lane_view.py: a ``capture-window:`` identity is bounded; any other identity with
+    ``coverage`` complete is read as complete coverage of the log it names)."""
+    identity = str(source["log_identity"])
+    if identity.startswith("capture-window:"):
+        return ("bounded_window", identity[len("capture-window:"):])
+    if source["coverage"] == "complete" and source["cursor_start"] == 0:
+        return ("whole_log_from_start", identity)
+    return ("other", identity)
+
+
+@pytest.mark.parametrize("generation", ["g7", None])
+def test_p1_a_provenance_publication_is_scoped_to_a_bounded_window_never_the_whole_bridge_log(audit, generation):
+    core, _ = _chain()
+    capture = _capture()
+    capture["provenance"] = _provenance(generation=generation)
+    path = _write(audit / "capture.json", capture)
+    receipt = shadow.run(path, audit, audit / "run1")
+    publication = audit / "run1" / "reflected.publication.json"
+    verified = core.read_snapshot(publication, audit_root=audit)
+    source = verified["source"]
+    assert _consumer_scope(source) == ("bounded_window", FID)  # the window marker travels in the snapshot itself
+    assert source["generation"] == generation and source["cursor_end"] == len(EVENTS)  # the window's own row range
+    text = publication.read_text(encoding="utf-8")
+    assert "bridge-log:" not in text  # no field names the log itself as the covered source
+    assert receipt["capture"]["provenance"]["coverage"] == "bounded_window_not_whole_log"
+    assert any("never the log itself" in line for line in receipt["limits"])
+
+
+def test_p1_the_legacy_capture_keeps_its_own_window_identity():
+    assert _consumer_scope({"log_identity": "capture-window:" + "0" * 64, "coverage": "complete", "cursor_start": 0}) \
+        == ("bounded_window", "0" * 64)
+
+
+@pytest.mark.parametrize("identity", [
+    "log-a", "bridge-log", "windows-v1:0000ABCD:0000000000000001", "windows-v1:0000abcd:00000000000000012",
+    "windows-v1:0000abc:0000000000000001", "posix-v1:C:/Users/x", "posix-v1:1a", "posix-v1:00000000000000001:2b",
+    "windows-v1:0000abcd:0000000000000001:extra", "capture-window:" + "0" * 64,
+])
+def test_p3_a_provenance_identity_outside_the_reader_shape_is_refused_without_echo(identity):
+    capture = _capture()
+    capture["provenance"] = _provenance(file_identity=identity)
+    with pytest.raises(shadow.ShadowRefused, match="not a canonical compact-reader position cursor") as info:
+        shadow.read_capture(capture)
+    assert identity not in str(info.value) and "Users" not in str(info.value)
+
+
+def test_p3_the_posix_reader_identity_shape_is_accepted_and_scoped_as_a_window(audit):
+    core, _ = _chain()
+    capture = _capture()
+    capture["provenance"] = _provenance(file_identity="posix-v1:1a:2b")
+    shadow.run(_write(audit / "capture.json", capture), audit, audit / "run1")
+    verified = core.read_snapshot(audit / "run1" / "reflected.publication.json", audit_root=audit)
+    assert verified["source"]["log_identity"] == "capture-window:posix-v1:1a:2b"

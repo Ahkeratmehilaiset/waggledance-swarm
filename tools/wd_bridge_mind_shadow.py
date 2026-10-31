@@ -17,10 +17,12 @@ process and never writes a bridge event. One run is a pure function of its input
    row the reader truncated has a ref that is not the log's own, so the capture digest travels with every output.
 2. ``tools/wd_bridge_mind.py`` ``full_rebuild`` over the capture window. With a capture ``provenance`` (the pinned
    compact reader's own position cursor plus the file identity and log generation it decodes to, re-decoded here and
-   required to agree) the source names that bridge log (``bridge-log:<file_identity>``) and carries its generation
-   as the reader reported it: ``None`` stays ``None`` and is reported UNKNOWN, never invented. Without provenance
-   the legacy declaration stays (``log_identity`` names the capture digest, generation ``None``). Either way the
-   cursor range is the window's own rows: nothing before the window is seen; it is never whole-log coverage.
+   required to agree) the source names a capture WINDOW of that bridge log (``capture-window:<file_identity>``),
+   never the log itself, and carries the generation as the reader reported it: ``None`` stays ``None`` and is
+   reported UNKNOWN, never invented. Without provenance the legacy declaration stays (``capture-window:<capture
+   digest>``, generation ``None``). Either way the cursor range is the window's own rows and the core's ``complete``
+   is complete over that window only: nothing before the window is seen; it is never whole-log coverage. The
+   ``capture-window:`` prefix is the window marker this repo's readers already bind on (RCO1 P1).
 3. ``tools/bridge_mind_workspace.py`` ``reflect`` with the previous reflected snapshot and the context.
 4. The reflected snapshot is published with the core's ``write_snapshot`` and read back with its
    ``read_snapshot``, so the envelope digest, the audit root and the path guards are verified. The previous
@@ -58,10 +60,15 @@ from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa:
 CAPTURE_SCHEMA = "wd.bridge-mind-capture.v1"
 CAPTURE_KEYS = frozenset({"schema", "reader", "reader_stdout_sha256", "observed_utc", "events"})
 # Optional capture provenance: the compact reader's position cursor the producer committed, with the file identity
-# and log generation that cursor decodes to (re-decoded and compared here, never taken on the producer's word).
+# and log generation that cursor decodes to. Re-decoding and comparing them here proves the self-consistency of
+# producer-written fields with the cursor they name; it does not authenticate who read the log or that the captured
+# rows came from it (RCO1 P2). The cursor proves a position, not an origin.
 PROVENANCE_KEYS = frozenset({"reader_cursor", "file_identity", "log_generation"})
+WINDOW_PREFIX = "capture-window:"  # the published identity is always a window, named by its digest or by its log
 _CURSOR = re.compile(r"bc1\.[A-Za-z0-9_-]{1,2044}\Z")
-_LOG_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,244}\Z")  # the reader's volume:index form; no slash
+# The bridge log reader's own identity shape (waggledance/core/bridge_log_reader.py _file_identity):
+# "windows-v1:<volume serial 8 hex>:<file index 16 hex>" or "posix-v1:<dev hex>:<ino hex>"; nothing else (RCO1 P3).
+_LOG_IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]{1,16}:[0-9a-f]{1,16})\Z")
 _LOG_GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # The inherited pinned readers a capture may come from; the reader string is a label, not authentication.
 READERS = frozenset({"Read-AgentBridge.ps1 -Raw", "Read-AgentBridge.ps1 -Compact -EventId"})
@@ -70,8 +77,9 @@ INPUT_LIMIT = 64 * 1024 * 1024
 _SHA = re.compile(r"[0-9a-f]{64}")
 LIMITS = (
     "capture window only: nothing before the first captured event is seen, never whole-log coverage",
-    "provenance binds the window to the bridge log and generation the pinned reader's cursor names; a null "
-    "generation stays UNKNOWN and is never invented; the cursor proves a position, not who read it",
+    "provenance binds the window to the bridge log and generation the pinned reader's cursor names, and the published "
+    "identity stays a window of that log (capture-window:<file identity>), never the log itself; a null generation "
+    "stays UNKNOWN and is never invented; the cursor proves a position, not who read it",
     "refs are capture-derived event ids; a row the pinned reader truncated has a ref that is not the log's own",
     "a digest proves bytes, not truth; identities are declared, never authenticated",
     "observe only: no gate, no verdict, no merge, no activation, no bridge write",
@@ -206,10 +214,12 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
     as_of = capture["observed_utc"]
     provenance = read_provenance(capture.get("provenance"))
     if provenance is None:  # legacy capture: the window is its own log, named by its digest
-        log_identity, generation = "capture-window:" + capture_sha, None
-    else:  # the bridge log the committed reader cursor names; a null generation stays None (UNKNOWN), never invented
-        log_identity, generation = "bridge-log:" + provenance["file_identity"], provenance["log_generation"]
-    # cursor_start/cursor_end are the window's own row range ("complete" over that range), never a whole-log claim.
+        log_identity, generation = WINDOW_PREFIX + capture_sha, None
+    else:  # a window of the bridge log the committed reader cursor names, never that log itself (RCO1 P1); a null
+        # generation stays None (UNKNOWN), never invented
+        log_identity, generation = WINDOW_PREFIX + provenance["file_identity"], provenance["log_generation"]
+    # cursor_start/cursor_end are the window's own row range and the core's "complete" is complete over that window
+    # only; the identity's window prefix is what readers bind on, so no field claims the whole log.
     source = {"log_identity": log_identity, "generation": generation, "cursor_start": 0,
               "cursor_end": len(events), "event_count": len(events), "coverage": "complete"}
     try:

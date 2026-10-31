@@ -67,6 +67,15 @@ function Clear-WdInheritedClaudeSessionMarkers {
   return $removed
 }
 $script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
+# Clear the whole namespace, including unknown/stale Q4 settings. Values are never logged.
+function Clear-WdInheritedQ4ReadSettings {
+  foreach ($q4Name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase)) {
+      if (Test-Path -LiteralPath "Env:$q4Name") { Remove-Item -LiteralPath "Env:$q4Name" }
+    }
+  }
+}
+Clear-WdInheritedQ4ReadSettings
 if ($CheckManagedAdmission -and -not $DryRun) {
   throw 'CheckManagedAdmission requires -DryRun'
 }
@@ -1863,6 +1872,36 @@ if ($null -ne $manifest.PSObject.Properties['mind_read']) {
   . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
   $mindValues = Get-WdMindReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
 }
+# Q4 configuration only: begin
+$q4Values = $null
+$q4Property = $manifest.PSObject.Properties['q4_read']
+if ($null -ne $q4Property) {
+  $q4Config = $q4Property.Value
+  if ($q4Property.Name -cne 'q4_read' -or $null -eq $q4Config -or $q4Config -isnot [pscustomobject]) {
+    throw 'q4_config_invalid'
+  }
+  $q4Enabled = $q4Config.PSObject.Properties['enabled']
+  if ($null -eq $q4Enabled -or $q4Enabled.Name -cne 'enabled' -or $q4Enabled.Value -isnot [bool]) {
+    throw 'q4_config_invalid'
+  }
+  if ($q4Enabled.Value) {
+    if ($null -eq $deploymentAnchor) { throw 'q4_config_requires_anchored_bundle' }
+    $q4Helper = Join-Path $PSScriptRoot 'Get-WdQ4ReadConfig.ps1'
+    $q4HelperPin = $deploymentAnchor.files.PSObject.Properties['Get-WdQ4ReadConfig.ps1']
+    if ($null -eq $q4HelperPin -or [string]$q4HelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') {
+      throw 'q4_config_helper_pin_mismatch'
+    }
+    [void](Assert-LanePathWithoutReparse -Path $q4Helper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+    $q4HelperSnapshot = Read-Utf8LaneSnapshot -Path $q4Helper
+    if ([string]$q4HelperSnapshot.Hash -cne ([string]$q4HelperPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+      throw 'q4_config_helper_pin_mismatch'
+    }
+    . ([scriptblock]::Create([string]$q4HelperSnapshot.Text))
+    $q4Values = Get-WdQ4ReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+  }
+}
+# Q4 configuration only: end
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
 }
@@ -2698,6 +2737,7 @@ if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
 }
 
+Clear-WdInheritedQ4ReadSettings
 $env:AGENT_BRIDGE_AGENT = [string]$lane.agent
 $env:AGENT_BRIDGE_AGENT_UUID = ([string]$lane.agent_uuid).ToLowerInvariant()
 $env:AGENT_BRIDGE_RUN_ID = $RunId
@@ -2706,6 +2746,14 @@ $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeRoot
 if ($null -ne $mindValues) {
   foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
     [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')
+  }
+}
+if ($null -ne $q4Values) {
+  foreach ($q4Value in $q4Values.PSObject.Properties) {
+    if (-not $q4Value.Name.StartsWith('WD_Q4_', [StringComparison]::Ordinal)) {
+      throw 'q4_config_export_invalid'
+    }
+    [Environment]::SetEnvironmentVariable($q4Value.Name, [string]$q4Value.Value, 'Process')
   }
 }
 $env:WD_AGENT_PROMPT_FILE = [string]$lane.prompt

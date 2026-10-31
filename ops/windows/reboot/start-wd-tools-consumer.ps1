@@ -53,6 +53,15 @@ function Clear-WdInheritedClaudeSessionMarkers {
   return $removed
 }
 $script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
+# Clear the whole namespace, including unknown/stale Q4 settings. Values are never logged.
+function Clear-WdInheritedQ4ReadSettings {
+  foreach ($q4Name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase)) {
+      if (Test-Path -LiteralPath "Env:$q4Name") { Remove-Item -LiteralPath "Env:$q4Name" }
+    }
+  }
+}
+Clear-WdInheritedQ4ReadSettings
 $script:WdGitExecutable = ''
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
@@ -3388,6 +3397,54 @@ if ($isDeployedLauncher) {
                 [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')
             }
         }
+    }
+}
+
+Clear-WdInheritedQ4ReadSettings
+# Q4 configuration only: begin
+$q4Values = $null
+if ($isDeployedLauncher) {
+    if ($null -eq $toolsDeployment) { throw 'q4_config_requires_anchored_bundle' }
+    $q4Property = $mindFleet.PSObject.Properties['q4_read']
+    if ($null -ne $q4Property) {
+        $q4Config = $q4Property.Value
+        if ($q4Property.Name -cne 'q4_read' -or $null -eq $q4Config -or $q4Config -isnot [pscustomobject]) {
+            throw 'q4_config_invalid'
+        }
+        $q4Enabled = $q4Config.PSObject.Properties['enabled']
+        if ($null -eq $q4Enabled -or $q4Enabled.Name -cne 'enabled' -or $q4Enabled.Value -isnot [bool]) {
+            throw 'q4_config_invalid'
+        }
+        if ($q4Enabled.Value) {
+            if ([string]$mindFleet.tools_supervisor.agent -cne $agent -or
+                ([string]$mindFleet.tools_supervisor.agent_uuid).ToLowerInvariant() -cne $agentUuid -or
+                -not ([IO.Path]::GetFullPath([string]$mindFleet.runtime_root).TrimEnd('\')).Equals(
+                    $runtimeRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'q4_config_tools_identity_mismatch'
+            }
+            $q4Helper = Join-Path $PSScriptRoot 'Get-WdQ4ReadConfig.ps1'
+            $q4HelperPin = $toolsDeployment.files.PSObject.Properties['Get-WdQ4ReadConfig.ps1']
+            if ($null -eq $q4HelperPin -or [string]$q4HelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') {
+                throw 'q4_config_helper_pin_mismatch'
+            }
+            Assert-FilePathWithoutReparse -Candidate $q4Helper -Root $toolsTrustedDrive
+            $q4HelperSnapshot = Read-Utf8FileSnapshot -Path $q4Helper
+            if ([string]$q4HelperSnapshot.Hash -cne ([string]$q4HelperPin.Value).ToUpperInvariant() -or
+                (Get-FileHash -LiteralPath $toolsDeploymentManifestPath -Algorithm SHA256).Hash -cne $toolsExpectedManifestHash.ToUpperInvariant()) {
+                throw 'q4_config_helper_pin_mismatch'
+            }
+            . ([scriptblock]::Create([string]$q4HelperSnapshot.Text))
+            $q4Values = Get-WdQ4ReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value)
+        }
+    }
+}
+# Q4 configuration only: end
+if ($null -ne $q4Values) {
+    foreach ($q4Value in $q4Values.PSObject.Properties) {
+        if (-not $q4Value.Name.StartsWith('WD_Q4_', [StringComparison]::Ordinal)) {
+            throw 'q4_config_export_invalid'
+        }
+        [Environment]::SetEnvironmentVariable($q4Value.Name, [string]$q4Value.Value, 'Process')
     }
 }
 

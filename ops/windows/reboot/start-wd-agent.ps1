@@ -41,9 +41,14 @@ Set-StrictMode -Version Latest
 
 # Inherited shell values are not an authorization or a deployment descriptor.
 # A future verified configuration source must set these after this scrub.
-foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
-  if (Test-Path -LiteralPath "Env:$mindName") { Remove-Item -LiteralPath "Env:$mindName" }
+function Clear-WdInheritedMindReadSettings {
+  foreach ($mindName in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$mindName).StartsWith('WD_MIND_', [StringComparison]::OrdinalIgnoreCase)) {
+      if (Test-Path -LiteralPath "Env:$mindName") { Remove-Item -LiteralPath "Env:$mindName" }
+    }
+  }
 }
+Clear-WdInheritedMindReadSettings
 
 # A lane must never inherit another Claude Code session's identity. Started from an
 # agent's tool shell, these markers make Claude Code treat an interactive lane as a
@@ -1857,6 +1862,34 @@ if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
 $manifest = [string]$manifestSnapshot.Text |
   ConvertFrom-Json -ErrorAction Stop
 $mindValues = $null
+# Public Mind configuration only: begin
+$publicMindValues = $null
+if ($null -ne $manifest.PSObject.Properties['mind_public_read']) {
+  if ($null -eq $deploymentAnchor) { throw 'mind_public_config_requires_anchored_bundle' }
+  $publicMindHelper = Join-Path $PSScriptRoot 'Get-WdMindPublicReadConfig.ps1'
+  [void](Assert-LanePathWithoutReparse -Path $publicMindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $publicMindPin = $deploymentAnchor.files.PSObject.Properties['Get-WdMindPublicReadConfig.ps1']
+  $publicMindSnapshot = Read-Utf8LaneSnapshot -Path $publicMindHelper
+  if ($null -eq $publicMindPin -or [string]$publicMindPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      [string]$publicMindSnapshot.Hash -cne ([string]$publicMindPin.Value).ToUpperInvariant() -or
+      (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+    throw 'mind_public_config_helper_pin_mismatch'
+  }
+  . ([scriptblock]::Create([string]$publicMindSnapshot.Text))
+  $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+  if ($null -ne $publicMindValues) {
+    $publicMindCli = Join-Path $PSScriptRoot 'tools-bootstrap/tools/wd_mind_public_session_cli.py'
+    [void](Assert-LanePathWithoutReparse -Path $publicMindCli -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+    $publicMindCliPin = $deploymentAnchor.files.PSObject.Properties['tools-bootstrap/tools/wd_mind_public_session_cli.py']
+    $publicMindCliSnapshot = Read-Utf8LaneSnapshot -Path $publicMindCli
+    if ($null -eq $publicMindCliPin -or [string]$publicMindCliPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$publicMindCliSnapshot.Hash -cne ([string]$publicMindCliPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+      throw 'mind_public_config_cli_pin_mismatch'
+    }
+  }
+}
+# Public Mind configuration only: end
 if ($null -ne $manifest.PSObject.Properties['mind_read']) {
   if ($null -eq $deploymentAnchor) { throw 'mind_config_requires_anchored_bundle' }
   $mindHelper = Join-Path $PSScriptRoot 'Get-WdMindReadConfig.ps1'
@@ -2473,6 +2506,13 @@ $startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStateP
   '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
   $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 $startupPrompt += (
+    ' Public status is a separate opt-in: only when WD_MIND_PUBLIC_ENABLED is 1, use the pinned ' +
+    'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_mind_public_session_cli.py with no CLI arguments, using only ' +
+    'the verified session tuple. Missing configuration or refusal means unavailable; never fall back to the ' +
+    'legacy Mind reader. It does not authenticate a same-user publisher or prove source freshness. Do not ' +
+    'forward raw output. Public status is not Q4 memory, a vote, a gate input or proof of real lane usage.'
+)
+$startupPrompt += (
   ' Optional bounded bridge-event status projection, not Q4 semantic memory; it is off unless explicitly enabled. ' +
   ' Only when WD_MIND_READ_ENABLED is 1 and the session has an explicitly configured ' +
   'WD_MIND_LATEST, WD_MIND_AUDIT_ROOT, WD_MIND_FLEET and WD_MIND_FLEET_SHA256, use the pinned ' +
@@ -2738,11 +2778,20 @@ if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
 }
 
 Clear-WdInheritedQ4ReadSettings
+Clear-WdInheritedMindReadSettings
 $env:AGENT_BRIDGE_AGENT = [string]$lane.agent
 $env:AGENT_BRIDGE_AGENT_UUID = ([string]$lane.agent_uuid).ToLowerInvariant()
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeRoot
+if ($null -ne $publicMindValues) {
+  foreach ($publicMindValue in $publicMindValues.PSObject.Properties) {
+    if (-not $publicMindValue.Name.StartsWith('WD_MIND_PUBLIC_', [StringComparison]::Ordinal)) {
+      throw 'mind_public_config_export_invalid'
+    }
+    [Environment]::SetEnvironmentVariable($publicMindValue.Name, [string]$publicMindValue.Value, 'Process')
+  }
+}
 if ($null -ne $mindValues) {
   foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
     [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')

@@ -1125,6 +1125,7 @@ foreach ($required in @(
         'start-wd-tools-consumer.ps1',
         'Get-WdNativeWakePrompt.ps1',
         'Get-WdMindReadConfig.ps1',
+        'Get-WdMindPublicReadConfig.ps1',
         'Get-WdQ4ReadConfig.ps1',
         'Invoke-WdQ4Query.ps1',
         'WdQ4ProcessJob.ps1',

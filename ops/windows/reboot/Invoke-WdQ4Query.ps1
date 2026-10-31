@@ -16,6 +16,9 @@ param(
     [string] $BundleRoot = '',
     [string] $ExpectedBundleCommit = '',
     [string] $ExpectedManifestSha256 = '',
+    [switch] $Public,
+    [string] $PublicPlanPath = '',
+    [string] $ExpectedPublicPlanSha256 = '',
     [double] $TimeoutSeconds = 30
 )
 $script:WdQ4WrapperPath=$PSCommandPath
@@ -155,7 +158,8 @@ function Get-WdQ4RosterPairs {
 
 function Get-WdQ4QueryPlan {
     param([string] $BundleRoot, [string] $ExpectedBundleCommit,
-          [string] $ExpectedManifestSha256, [double] $TimeoutSeconds = 30)
+          [string] $ExpectedManifestSha256, [double] $TimeoutSeconds = 30,
+          [switch] $Public, [string] $PublicPlanPath='', [string] $ExpectedPublicPlanSha256='')
     if (-not $BundleRoot -or $ExpectedBundleCommit -cnotmatch '^[0-9a-f]{40}$' -or
         $ExpectedManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'external_anchor_unavailable' }
     if ([double]::IsNaN($TimeoutSeconds) -or [double]::IsInfinity($TimeoutSeconds) -or
@@ -183,7 +187,18 @@ function Get-WdQ4QueryPlan {
     # BridgeCodeContext discovery variables or run its import smoke.
     . ([scriptblock]::Create($snapshots['BridgeCodeContext.ps1'].Text))
     . ([scriptblock]::Create($snapshots['Get-WdQ4ReadConfig.ps1'].Text))
-    $cfg = Get-WdQ4ReadConfig -FleetPath $snapshots['wd-fleet.json'].Path -FleetSha256 $snapshots['wd-fleet.json'].Hash
+    if ($Public) {
+        if ($ExpectedPublicPlanSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'binding_refused' }
+        $publicSnapshot=Read-WdQ4Snapshot -Path $PublicPlanPath -Limit 65536
+        if ($publicSnapshot.Hash -cne $ExpectedPublicPlanSha256.ToUpperInvariant()) { throw 'binding_refused' }
+        $publicDocument=ConvertFrom-WdQ4StrictJson -Text $publicSnapshot.Text
+        $cfg=Get-WdQ4PublicBinding -Document $publicDocument
+        $cfg | Add-Member -NotePropertyName WD_Q4_CODE_MANIFEST -NotePropertyValue $snapshots['bridge-code-files.json'].Path
+        $cfg | Add-Member -NotePropertyName WD_Q4_CODE_MANIFEST_SHA256 -NotePropertyValue $snapshots['bridge-code-files.json'].Hash.ToLowerInvariant()
+        $cfg | Add-Member -NotePropertyName WD_Q4_CODE_COMMIT -NotePropertyValue $ExpectedBundleCommit
+    } else {
+        $cfg = Get-WdQ4ReadConfig -FleetPath $snapshots['wd-fleet.json'].Path -FleetSha256 $snapshots['wd-fleet.json'].Hash
+    }
     if ($null -eq $cfg) { return [pscustomobject]@{Enabled=$false} }
     # No process is started unless the job helper is itself in the externally
     # pinned deployment manifest; execute the verified bytes, not a later read.
@@ -234,6 +249,10 @@ function Get-WdQ4QueryPlan {
         descriptor_sha256=$cfg.WD_Q4_DESCRIPTOR_SHA256;lock_file=$cfg.WD_Q4_LOCK_FILE
         lock_timeout=$cfg.WD_Q4_LOCK_TIMEOUT;timeout=$TimeoutSeconds;scratch_root=$scratch
     }
+    if ($Public -and ($publicDocument.config.bootstrap -cne $binding.bootstrap -or
+        $publicDocument.config.bootstrap_sha256 -cne $binding.bootstrap_sha256 -or
+        $publicDocument.config.verifier_sha256 -cne $binding.verifier_sha256 -or
+        [double]$publicDocument.config.timeout -ne $TimeoutSeconds)) { throw 'binding_refused' }
     if ((Read-WdQ4Snapshot $binding.descriptor 65536).Hash -cne $binding.descriptor_sha256.ToUpperInvariant() -or
         (Read-WdQ4Snapshot $binding.runtime_manifest).Hash -cne $binding.runtime_manifest_sha256.ToUpperInvariant() -or
         (Read-WdQ4Snapshot (Join-Path $root 'deployment-manifest.json')).Hash -cne $manifest.Hash) {
@@ -267,7 +286,16 @@ function Get-WdQ4QueryPlan {
             }
         } catch { throw 'roster_fleet_mismatch' }
     }
-    return [pscustomobject]@{Enabled=$true;CodeRoot=$integrity.CodeRoot;Config=$binding;
+    $publicPins=@{}
+    foreach($relative in @('tools/wd_q4_public_outer.py','tools/wd_q4_public_child.py','tools/wd_q4_public_query.py')) {
+        if (@($package.Definition.python_files) -ccontains $relative) {
+            $entry=$deployment.files.PSObject.Properties['tools-bootstrap/'+$relative]
+            if ($null -ne $entry -and [string]$entry.Value -cmatch '^[0-9A-Fa-f]{64}$') {
+                $publicPins[$relative]=([string]$entry.Value).ToLowerInvariant()
+            }
+        }
+    }
+    return [pscustomobject]@{Enabled=$true;CodeRoot=$integrity.CodeRoot;Config=$binding;PublicPins=$publicPins;
         ResolvedInputs=$resolvedInputs;ResolvedPins=$resolvedPins;
         JobHelperBytes=$jobSnapshot.Bytes;JobHelperSha256=$jobSnapshot.Hash}
 }
@@ -420,6 +448,183 @@ function Test-WdQ4Hash {
     return ($Value -is [string] -and $Value -cmatch '^[0-9a-f]{64}$')
 }
 
+function Get-WdQ4PublicBinding {
+    param($Document)
+    $c=$Document.config
+    if ($c -isnot [pscustomobject]) { throw 'binding_refused' }
+    $keys=[string[]]@($c.PSObject.Properties.Name);[Array]::Sort($keys,[StringComparer]::Ordinal)
+    if (($keys -join ',') -cne 'bootstrap,bootstrap_sha256,descriptor,descriptor_sha256,interpreter,interpreter_sha256,lock_file,lock_timeout,memory,runtime_generation,runtime_manifest,runtime_manifest_sha256,runtime_revision,runtime_root,scratch_root,timeout,verifier_sha256') { throw 'binding_refused' }
+    foreach($name in @('bootstrap_sha256','descriptor_sha256','interpreter_sha256','runtime_manifest_sha256','verifier_sha256')) {
+        if (-not (Test-WdQ4Hash $c.$name)) { throw 'binding_refused' }
+    }
+    foreach($name in @('runtime_generation','runtime_revision')) {
+        if ($c.$name -isnot [string] -or $c.$name -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'binding_refused' }
+    }
+    foreach($name in @('bootstrap','descriptor','interpreter','lock_file','memory','runtime_manifest','runtime_root','scratch_root')) {
+        $v=$c.$name
+        if ($v -isnot [string] -or $v -cnotmatch '^[A-Za-z]:\\' -or $v.Substring(2).Contains(':') -or
+            $v.Contains('/') -or $v -match '[\x00-\x1f<>|"?*]') { throw 'binding_refused' }
+        foreach($part in $v.Substring(3).Split('\')) {
+            if (-not $part -or $part -in @('.','..') -or $part.StartsWith(' ') -or $part.EndsWith(' ') -or
+                $part.EndsWith('.') -or $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { throw 'binding_refused' }
+        }
+    }
+    $lock=0.0
+    if ($c.lock_timeout -isnot [string] -or -not [double]::TryParse($c.lock_timeout,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$lock) -or
+        [double]::IsNaN($lock) -or [double]::IsInfinity($lock) -or $lock -lt 0 -or $lock -gt 30 -or
+        ($c.timeout -isnot [int] -and $c.timeout -isnot [long] -and $c.timeout -isnot [double] -and $c.timeout -isnot [decimal]) -or [double]::IsNaN([double]$c.timeout) -or
+        [double]::IsInfinity([double]$c.timeout) -or [double]$c.timeout -le 0 -or [double]$c.timeout -gt 1800) { throw 'binding_refused' }
+    return [pscustomobject]@{WD_Q4_MEMORY_ROOT=$c.memory;WD_Q4_DESCRIPTOR=$c.descriptor;WD_Q4_DESCRIPTOR_SHA256=$c.descriptor_sha256;
+        WD_Q4_PYTHON=$c.interpreter;WD_Q4_PYTHON_SHA256=$c.interpreter_sha256;WD_Q4_RUNTIME_ROOT=$c.runtime_root;
+        WD_Q4_SCRATCH_ROOT=$c.scratch_root;WD_Q4_RUNTIME_GENERATION=$c.runtime_generation;WD_Q4_RUNTIME_REVISION=$c.runtime_revision;
+        WD_Q4_RUNTIME_MANIFEST=$c.runtime_manifest;WD_Q4_RUNTIME_MANIFEST_SHA256=$c.runtime_manifest_sha256;
+        WD_Q4_LOCK_FILE=$c.lock_file;WD_Q4_LOCK_TIMEOUT=$c.lock_timeout}
+}
+
+function ConvertFrom-WdQ4PublicResult {
+    param($Result, $Expected)
+    if ($Result -isnot [pscustomobject] -or $null -eq $Expected) { throw 'runtime_refused' }
+    $keys=[string[]]@($Result.PSObject.Properties.Name)
+    [Array]::Sort($keys,[StringComparer]::Ordinal)
+    if (($keys -join ',') -cne 'binding,freshness,publisher_authentication,results,same_user_aba,schema,source_filter_attestation,status' -or
+        $Result.schema -cne 'wd.q4-public-query.v2' -or $Result.status -cnotin @('ANSWER','ABSTAIN','DEGRADED') -or
+        $Result.results -isnot [Array] -or $Result.results.Count -gt 100 -or
+        ($Result.status -ceq 'ANSWER' -and $Result.results.Count -eq 0) -or
+        ($Result.status -ceq 'ABSTAIN' -and $Result.results.Count -ne 0)) { throw 'runtime_refused' }
+    foreach($name in @('freshness','publisher_authentication','same_user_aba','source_filter_attestation')) {
+        if ($Result.$name -isnot [string] -or $Result.$name -cne 'UNKNOWN') { throw 'runtime_refused' }
+    }
+    if ($Result.binding -isnot [pscustomobject]) { throw 'runtime_refused' }
+    $keys=[string[]]@($Result.binding.PSObject.Properties.Name)
+    [Array]::Sort($keys,[StringComparer]::Ordinal)
+    if (($keys -join ',') -cne 'descriptor_sha256,encoder_sha256,memory_sha256,pointer_sha256,policy_sha256,projection_sha256,public_policy_sha256,receipt_sha256,roster_sha256,source_anchor_sha256') { throw 'runtime_refused' }
+    foreach($name in $keys) {
+        if (-not (Test-WdQ4Hash $Result.binding.$name)) { throw 'runtime_refused' }
+    }
+    foreach($name in @('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256','roster_sha256','public_policy_sha256','descriptor_sha256')) {
+        if (-not (Test-WdQ4Hash $Expected.$name) -or $Result.binding.$name -cne $Expected.$name) { throw 'runtime_refused' }
+    }
+    $items=@()
+    foreach($item in $Result.results) {
+        if ($item -isnot [pscustomobject]) { throw 'runtime_refused' }
+        $names=[string[]]@($item.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
+        if (($names -join ',') -cne 'canonical_event,doc_id_sha256,ref_kind,ref_sha256,stored_text' -or
+            $item.stored_text -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($item.stored_text) -gt 320 -or
+            $item.ref_kind -cne 'sha256_of_projected_metadata' -or $item.canonical_event -isnot [bool] -or
+            $item.canonical_event -ne $false -or -not (Test-WdQ4Hash $item.ref_sha256) -or
+            -not (Test-WdQ4Hash $item.doc_id_sha256)) { throw 'runtime_refused' }
+        $items+=@{stored_text=$item.stored_text;ref_sha256=$item.ref_sha256;doc_id_sha256=$item.doc_id_sha256;
+                  ref_kind='sha256_of_projected_metadata';canonical_event=$false}
+    }
+    return [pscustomobject]@{schema='wd.q4-public-query.v2';status=$Result.status;binding=$Result.binding;
+        freshness='UNKNOWN';publisher_authentication='UNKNOWN';source_filter_attestation='UNKNOWN';
+        same_user_aba='UNKNOWN';results=$items}
+}
+
+function Get-WdQ4PublicPlan {
+    param($BasePlan, [string]$Path, [string]$ExpectedSha256)
+    if ($null -eq $BasePlan -or -not $BasePlan.Enabled -or
+        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'binding_refused' }
+    $snapshot=Read-WdQ4Snapshot -Path $Path -Limit 65536
+    if ($snapshot.Hash -cne $ExpectedSha256.ToUpperInvariant()) { throw 'binding_refused' }
+    $document=ConvertFrom-WdQ4StrictJson -Text $snapshot.Text
+    $names=[string[]]@($document.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
+    if (($names -join ',') -cne 'config,encoder_sha256,pointer_sha256,policy_path,policy_sha256,public_policy_path,public_policy_sha256,root,roster_path,roster_sha256,schema,source_anchor_sha256' -or
+        $document.schema -cne 'wd.q4-public-wrapper-plan.v1') { throw 'binding_refused' }
+    foreach($name in @('encoder_sha256','pointer_sha256','policy_sha256','public_policy_sha256','roster_sha256','source_anchor_sha256')) {
+        if (-not (Test-WdQ4Hash $document.$name)) { throw 'binding_refused' }
+    }
+    $root=Assert-WdQ4LocalPath -Path $document.root -Directory $true
+    $inputs=@{}
+    foreach($name in @('policy','roster','public_policy')) {
+        $pathKey=$name+'_path';$hashKey=$name+'_sha256'
+        $limit=if($name -ceq 'roster'){1048576}else{65536}
+        $value=Read-WdQ4Snapshot -Path $document.$pathKey -Limit $limit
+        if ($value.Hash -cne $document.$hashKey.ToUpperInvariant()) { throw 'binding_refused' }
+        $inputs[$name]=$value.Bytes
+    }
+    foreach($relative in @('tools/wd_q4_public_outer.py','tools/wd_q4_public_child.py','tools/wd_q4_public_query.py')) {
+        if (-not (Test-WdQ4Hash $BasePlan.PublicPins[$relative])) { throw 'binding_refused' }
+    }
+    return [pscustomobject]@{Base=$BasePlan;Document=$document;Root=$root;Inputs=$inputs}
+}
+
+function Invoke-WdQ4PublicTransport {
+    param($Plan, [byte[]]$Query)
+    $base=$Plan.Base
+    if ($null -eq $Query -or $Query.Length -gt 65536) { throw 'invalid_query' }
+    $meta=[ordered]@{code_root=$base.CodeRoot;root=$Plan.Root;pointer_sha256=$Plan.Document.pointer_sha256;
+        source_anchor_sha256=$Plan.Document.source_anchor_sha256;encoder_sha256=$Plan.Document.encoder_sha256;
+        policy_sha256=$Plan.Document.policy_sha256;roster_sha256=$Plan.Document.roster_sha256;
+        public_policy_sha256=$Plan.Document.public_policy_sha256;config=$base.Config;
+        verifier_sha256=$base.Config.verifier_sha256;child_sha256=$base.PublicPins['tools/wd_q4_public_child.py'];
+        query_sha256=$base.PublicPins['tools/wd_q4_public_query.py']}
+    [byte[]]$metadataBytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($meta|ConvertTo-Json -Depth 8 -Compress))
+    if ($metadataBytes.Length -gt 65536) { throw 'binding_refused' }
+    $frame=[IO.MemoryStream]::new()
+    try {
+        foreach($name in @('metadata','policy','roster','public_policy','query')) {
+            [byte[]]$part=if($name -ceq 'metadata'){$metadataBytes}elseif($name -ceq 'query'){$Query}else{$Plan.Inputs[$name]}
+            $limit=if($name -ceq 'roster'){1048576}else{65536}
+            if ($null -eq $part -or $part.Length -gt $limit) { throw 'binding_refused' }
+            $header=[BitConverter]::GetBytes([uint32]$part.Length)
+            if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($header) }
+            $frame.Write($header,0,4);$frame.Write($part,0,$part.Length)
+        }
+        $stdinBytes=$frame.ToArray()
+    } finally { $frame.Dispose() }
+    $adapter=@'
+import io,json,struct,sys
+try:
+ def take(limit):
+  h=sys.stdin.buffer.read(4)
+  if len(h)!=4: raise ValueError()
+  n=struct.unpack('>I',h)[0]
+  if n>limit: raise ValueError()
+  b=sys.stdin.buffer.read(n)
+  if len(b)!=n: raise ValueError()
+  return b
+ meta=json.loads(take(65536).decode('utf-8')); root=meta['code_root']; sys.path.insert(0,root)
+ from tools.wd_q4_public_outer import bootstrap_public_imports
+ cfg=meta['config']
+ outer=bootstrap_public_imports(enabled=True,code_root=root,verifier_path=root+'/sandbox/mind/step2/runtime_manifest.py',verifier_sha256=meta['verifier_sha256'],public_child_sha256=meta['child_sha256'],public_query_sha256=meta['query_sha256'],runtime_root=cfg['runtime_root'],runtime_manifest=cfg['runtime_manifest'],runtime_manifest_sha256=cfg['runtime_manifest_sha256'],runtime_generation=cfg['runtime_generation'],runtime_revision=cfg['runtime_revision'])
+ if outer['status']!='MODULES_IMPORTED': raise ValueError()
+ from tools.wd_q4_agent_query import VerifiedQ4Config
+ policy=take(65536); roster=take(1048576); public=take(65536); query=take(65536)
+ if sys.stdin.buffer.read(1): raise ValueError()
+ code=outer['child'].run_public(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,root=meta['root'],expected_pointer_sha256=meta['pointer_sha256'],expected_source_sha256=meta['source_anchor_sha256'],expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],public_policy_bytes=public,public_policy_sha256=meta['public_policy_sha256'],enabled=True)
+ sys.exit(code)
+except Exception:
+ print('{"schema":"wd.q4-public-query.v2","status":"REFUSED","reason":"public_query_refused"}',flush=True)
+ sys.exit(2)
+'@
+    if ($base.JobHelperBytes -isnot [byte[]] -or $base.JobHelperBytes.Length -gt 1048576) { throw 'binding_refused' }
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try {$actual=[BitConverter]::ToString($sha.ComputeHash($base.JobHelperBytes)).Replace('-','')} finally {$sha.Dispose()}
+    if ($actual -cne ([string]$base.JobHelperSha256).ToUpperInvariant()) { throw 'binding_refused' }
+    if ($null -eq $script:WdQ4PinnedJobBlock) {
+        $helperText=[Text.UTF8Encoding]::new($false,$true).GetString($base.JobHelperBytes).TrimStart([char]0xFEFF)
+        . ([scriptblock]::Create($helperText));$script:WdQ4PinnedJobBlock=${function:Invoke-WdQ4ProcessJob}
+        if ($null -eq $script:WdQ4PinnedJobBlock) { throw 'binding_refused' }
+        $script:WdQ4PinnedJobHash=$actual
+    } elseif ($script:WdQ4PinnedJobHash -cne $actual) { throw 'binding_refused' }
+    $arguments=@('-I','-S','-B','-c',$adapter)
+    $seconds=[int][Math]::Floor([double]$base.Config.timeout)
+    if($seconds -lt 1 -or $seconds -gt 1800){throw 'runtime_refused'}
+    $process=& $script:WdQ4PinnedJobBlock -Executable $base.Config.interpreter -Arguments ([string[]]$arguments) `
+        -WorkingDirectory $base.CodeRoot -ScratchRoot $base.Config.scratch_root -InputBytes $stdinBytes `
+        -TimeoutSeconds $seconds -MaxOutputBytes 32768
+    if ($null -eq $process -or $process.ExitCode -ne 0 -or $process.Stdout -isnot [byte[]] -or
+        $process.Stdout.Length -gt 32768) { throw 'runtime_refused' }
+    $json=[Text.UTF8Encoding]::new($false,$true).GetString($process.Stdout)
+    $result=ConvertFrom-WdQ4StrictJson -Text $json
+    $expected=@{pointer_sha256=$Plan.Document.pointer_sha256;source_anchor_sha256=$Plan.Document.source_anchor_sha256;
+        encoder_sha256=$Plan.Document.encoder_sha256;policy_sha256=$Plan.Document.policy_sha256;
+        roster_sha256=$Plan.Document.roster_sha256;public_policy_sha256=$Plan.Document.public_policy_sha256;
+        descriptor_sha256=$base.Config.descriptor_sha256}
+    return ConvertFrom-WdQ4PublicResult -Result $result -Expected $expected
+}
+
 function ConvertFrom-WdQ4Result {
     param($Result, [string] $ExpectedDescriptor)
     if ($Result -isnot [pscustomobject] -or $Result.schema -isnot [string] -or
@@ -517,16 +722,29 @@ function ConvertFrom-WdQ4ResolvedResult {
 function Invoke-WdQ4Query {
     param([string] $BundleRoot='', [string] $ExpectedBundleCommit='',
           [string] $ExpectedManifestSha256='', [double] $TimeoutSeconds=30,
+          [switch] $Public, [string] $PublicPlanPath='', [string] $ExpectedPublicPlanSha256='',
           [IO.Stream] $InputStream)
     try {
         try {
-            $plan=Get-WdQ4QueryPlan -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds
+            if ($Public) {
+                $plan=Get-WdQ4QueryPlan -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds -Public -PublicPlanPath $PublicPlanPath -ExpectedPublicPlanSha256 $ExpectedPublicPlanSha256
+            } else {
+                $plan=Get-WdQ4QueryPlan -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds
+            }
         } catch {
+            if ($Public) {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='binding_refused'}}
             $reason=if($_.Exception.Message -ceq 'external_anchor_unavailable'){'external_anchor_unavailable'}elseif($_.Exception.Message -ceq 'roster_fleet_mismatch'){'roster_fleet_mismatch'}else{'binding_refused'}
             return [pscustomobject]@{schema='wd.q4-agent-wrapper.v1';status='REFUSED';reason=$reason;results=@()}
         }
         if (-not $plan.Enabled) {
+            if ($Public) {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='disabled'}}
             return [pscustomobject]@{schema='wd.q4-agent-wrapper.v1';status='REFUSED';reason='disabled';results=@()}
+        }
+        if ($Public) {
+            try {$publicPlan=Get-WdQ4PublicPlan -BasePlan $plan -Path $PublicPlanPath -ExpectedSha256 $ExpectedPublicPlanSha256}
+            catch {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='binding_refused'}}
+            try {$query=Read-WdQ4QueryBytes -InputStream $InputStream; return Invoke-WdQ4PublicTransport $publicPlan $query}
+            catch {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='public_query_refused'}}
         }
         try { $query=Read-WdQ4QueryBytes -InputStream $InputStream }
         catch { return [pscustomobject]@{schema='wd.q4-agent-wrapper.v1';status='REFUSED';reason='invalid_query';results=@()} }
@@ -534,12 +752,13 @@ function Invoke-WdQ4Query {
         if ($null -ne $plan.ResolvedPins) { return ConvertFrom-WdQ4ResolvedResult -Result $result -Plan $plan }
         return ConvertFrom-WdQ4Result -Result $result -ExpectedDescriptor $plan.Config.descriptor_sha256
     } catch {
+        if ($Public) {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='public_query_refused'}}
         return [pscustomobject]@{schema='wd.q4-agent-wrapper.v1';status='REFUSED';reason='runtime_refused';results=@()}
     }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $answer=Invoke-WdQ4Query -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds
+    $answer=Invoke-WdQ4Query -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds -Public:$Public -PublicPlanPath $PublicPlanPath -ExpectedPublicPlanSha256 $ExpectedPublicPlanSha256
     $answer|ConvertTo-Json -Depth 8 -Compress
     if ($answer.status -ceq 'REFUSED') { exit 2 }
     exit 0

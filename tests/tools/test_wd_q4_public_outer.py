@@ -1,5 +1,6 @@
 """Synthetic isolated outer bootstrap; no actual model, deployment or network."""
 import hashlib
+import importlib.machinery
 import json
 import os
 from pathlib import Path
@@ -62,7 +63,7 @@ def synthetic(tmp_path):
 
 
 def run_outer(plan, *, enabled=True, change=None, isolated=True, preload_untrusted=False, preloaded=None,
-              foreign_finder=False, extra_package_path=False, import_poison=None):
+              foreign_finder=False, extra_package_path=False, import_poison=None, pycache_prefix=False):
     args = {key: value for key, value in plan.items() if key not in ("marker", "untrusted")}
     if change:
         args.update(change)
@@ -100,6 +101,8 @@ def run_outer(plan, *, enabled=True, change=None, isolated=True, preload_untrust
             "print(json.dumps(output))\n")
     env = dict(os.environ, PYTHONPATH=str(plan["untrusted"]))
     flags = ["-I", "-S", "-B"] if isolated else ["-S", "-B"]
+    if pycache_prefix:
+        flags += ["-X", "pycache_prefix=" + str(Path(plan["code_root"]).parent / "foreign-cache")]
     run = subprocess.run([sys.executable, *flags, "-c", code], capture_output=True,
                          text=True, timeout=30, env=env)
     assert run.returncode == 0, (run.returncode, run.stderr)
@@ -137,6 +140,30 @@ def test_existing_timestamp_valid_pyc_refuses_before_public_import(synthetic):
     result = run_outer(synthetic, change={"public_child_sha256": digest(good)})
     assert result == {"status": "public_outer_refused", "before_equal": True,
                       "child_loaded": False, "query_loaded": False}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
+def test_redirected_pycache_prefix_refuses(synthetic):
+    result = run_outer(synthetic, pycache_prefix=True)
+    assert result == {"status": "public_outer_refused", "before_equal": True,
+                      "child_loaded": False, "query_loaded": False}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
+@pytest.mark.parametrize("module", ["wd_q4_public_child", "wd_q4_public_query"])
+@pytest.mark.parametrize("candidate", ["package", "extension"])
+def test_unpinned_alternate_module_candidate_never_executes(synthetic, module, candidate):
+    tools = Path(synthetic["code_root"]) / "tools"
+    if candidate == "package":
+        plant = tools / module / "__init__.py"
+        plant.parent.mkdir()
+        plant.write_text("from pathlib import Path\nPath(%r).write_text('alternate')\n" % str(synthetic["marker"]))
+    else:
+        plant = tools / (module + importlib.machinery.EXTENSION_SUFFIXES[0])
+        plant.write_bytes(b"not-a-loadable-synthetic-extension")
+    result = run_outer(synthetic)
+    assert result == {"status": "MODULES_IMPORTED", "before_equal": False, "child_value": "verified-site",
+                      "query_value": "synthetic-query", "code_root_closure": "NOT_VERIFIED"}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")

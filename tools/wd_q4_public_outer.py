@@ -166,13 +166,14 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
     rollback of module side effects: discard that child process on any refusal.
     """
     inserted = None
+    installed = []
     try:
         if type(enabled) is not bool:
             raise ValueError()
         if not enabled:
             return {"status": "OFF"}
         if not (sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode
-                and sys.dont_write_bytecode):
+                and sys.dont_write_bytecode and sys.pycache_prefix is None):
             raise ValueError()
         expected_finders = (importlib.machinery.BuiltinImporter, importlib.machinery.FrozenImporter,
                             importlib.machinery.PathFinder)
@@ -235,8 +236,23 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
         # after the interpreter's existing stdlib and CodeRoot search entries.
         inserted = str(site)
         sys.path.append(inserted)
-        child = importlib.import_module(_PUBLIC[0])
-        query = importlib.import_module(_PUBLIC[1])
+        # Compile and execute the exact caller-pinned snapshots. PathFinder
+        # may otherwise prefer an unpinned package, extension or bytecode.
+        def load_snapshot(name, path, raw):
+            short = name.rsplit(".", 1)[1]
+            if name in sys.modules or hasattr(tools, short):
+                raise ValueError()
+            module = types.ModuleType(name)
+            module.__file__ = str(path)
+            module.__package__ = "tools"
+            module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, origin=str(path))
+            sys.modules[name] = module
+            installed.append((name, short, module))
+            exec(compile(raw, str(path), "exec"), module.__dict__)
+            setattr(tools, short, module)
+            return module
+        child = load_snapshot(_PUBLIC[0], child_path, child_bytes)
+        query = load_snapshot(_PUBLIC[1], query_path, query_bytes)
         if not callable(getattr(child, "run_public", None)) or not callable(getattr(query, "query_public", None)):
             raise ValueError()
         return {"status": "MODULES_IMPORTED", "child": child, "query": query, "authority": "none",
@@ -244,6 +260,11 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
                 "code_root_closure": "NOT_VERIFIED",
                 "runtime_to_code_compatibility": "UNKNOWN", "same_user_toctou": "UNKNOWN"}
     except Exception:
+        for name, short, module in reversed(installed):
+            if sys.modules.get(name) is module:
+                del sys.modules[name]
+            if getattr(sys.modules.get("tools"), short, None) is module:
+                delattr(sys.modules["tools"], short)
         if inserted is not None:
             try:
                 sys.path.remove(inserted)

@@ -187,11 +187,11 @@ def test_primitive_is_off_by_default_and_its_surface_is_closed():
     with pytest.raises(pub.PublicProducerRefused, match="request_invalid"):
         pub.publish_public_generation(enabled=True, request={"config": None})
     assert issubclass(pub.PublicProducerRefused, ValueError)
-    assert pub.STATUSES == {"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED"}
+    assert pub.STATUSES == {"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED", "EMPTY_NO_CHANGE"}
     assert pub.REFUSALS == {"request_invalid", "pins_absent", "pins_mismatch", "prepare_refused", "empty_genesis",
                             "build_refused", "checkpoint_refused"}
     assert pub.REPORT_KEYS == {"status", "generation", "pointer_sha256", "artifacts", "records", "source_mode",
-                               "publisher_identity", "source_authenticity", "authenticated", "pins_bound"}
+                               "publisher_identity", "source_authenticity", "freshness", "authenticated", "pins_bound"}
     assert pub.STATUS_MODE == "public-v1" and pub.UNKNOWN == "UNKNOWN"
     assert not hasattr(pub, "publish_prepared")  # the Lead stub is not re-exported; ONE primitive only
 
@@ -340,3 +340,141 @@ def verified_cursor(config, root, pointer_sha256):
     verified = _public_read(root, pointer_sha256)
     assert sha(snapshot._token(end)) in (verified["cursor_end_sha256"], verified["watermark_sha256"])
     return end
+
+
+# ---- v2 (Lead review 20:34:25Z + 20:34:35Z + 20:34:58Z, bound continuation 20:34:47Z): the pointer receipt must bind ----
+# ---- the EXACT pointer value the checkpoint published under its writer lock, never a later live root read; a ----
+# ---- repeated strict-empty delta is a verified no_change, not a refusal and not a new publication. ----
+def _locked_pointer_digest(value):
+    """The digest the checkpoint itself publishes: sha256 of its canonical serialization of the returned value."""
+    return checkpoint._sha(checkpoint._canonical(value))
+
+
+def _after_commit(monkeypatch, name, effect):
+    """Wrap the REAL checkpoint commit: it runs unchanged, then ``effect(root, value)`` simulates what a concurrent
+    actor or an I/O fault does to the root the instant the writer lock is released; returns the captured values."""
+    real = getattr(checkpoint, name)
+    captured = []
+
+    def wrapped(root, *args, **kwargs):
+        value = real(root, *args, **kwargs)
+        captured.append(value)
+        replacement = effect(root, value)
+        return replacement if isinstance(replacement, dict) else value  # only a dict stands in for the commit return
+    monkeypatch.setattr(checkpoint, name, wrapped)
+    return captured
+
+
+@WINDOWS_ONLY
+def test_pointer_receipt_binds_the_locked_commit_value_not_a_later_root_read(tmp_path, monkeypatch):
+    log, generation_path, start = _log(tmp_path / "log", MIXED_EVENTS)
+    config_a = _config(log, generation_path, start)
+    # 1) a concurrent replacement lands the instant the lock is released: the receipt still names OUR publication
+    root = tmp_path / "replaced"
+    root.mkdir()
+    foreign = b'{"schema":"synthetic-foreign-pointer","generation":"gen-foreign"}'
+    captured = _after_commit(monkeypatch, "commit_generation",
+                             lambda root_, value: (root_ / checkpoint.POINTER).write_bytes(foreign))
+    report = _publish(_request(config_a, root, "gen-a"))
+    assert len(captured) == 1 and captured[0]["generation"] == "gen-a"
+    assert report["status"] == "PUBLISHED_GENESIS" and report["generation"] == "gen-a"
+    assert report["artifacts"] == captured[0]["artifacts"]
+    assert report["pointer_sha256"] == _locked_pointer_digest(captured[0])
+    assert report["pointer_sha256"] != sha(foreign) == sha((root / checkpoint.POINTER).read_bytes())
+    assert report["freshness"] == "UNKNOWN"  # the receipt never claims the pointer is still current
+    monkeypatch.undo()
+    # 2) the pointer file vanishes right after the commit (I/O fault): the receipt contract is unaffected, no live read
+    root = tmp_path / "vanished"
+    root.mkdir()
+    captured = _after_commit(monkeypatch, "commit_generation", lambda root_, value: (root_ / checkpoint.POINTER).unlink())
+    report = _publish(_request(config_a, root, "gen-a"))
+    assert report["status"] == "PUBLISHED_GENESIS" and report["pointer_sha256"] == _locked_pointer_digest(captured[0])
+    assert not (root / checkpoint.POINTER).exists()
+    monkeypatch.undo()
+    # 3) the same two faults on the HISTORY commit, after a real genesis and a real empty advance
+    root = tmp_path / "history"
+    root.mkdir()
+    report_a = _publish(_request(config_a, root, "gen-a"))
+    p0 = report_a["pointer_sha256"]
+    predecessor_a = pub.Predecessor(pointer_sha256=p0, memory_dir=root / "gen-a",
+                                    memory_sha256=report_a["artifacts"]["memory_sha256"],
+                                    projection_sha256=report_a["artifacts"]["projection_sha256"],
+                                    build_receipt_sha256=report_a["artifacts"]["receipt_sha256"])
+    log, generation_path, resume_empty = _log(tmp_path / "log", EMPTY_EVENTS, start=verified_cursor(config_a, root, p0))
+    config_empty = _config(log, generation_path, resume_empty)
+    p1 = _publish(_request(config_empty, root, "gen-x", predecessor=predecessor_a))["pointer_sha256"]
+    predecessor_p1 = pub.Predecessor(pointer_sha256=p1, memory_dir=root / "gen-a",
+                                     memory_sha256=report_a["artifacts"]["memory_sha256"],
+                                     projection_sha256=report_a["artifacts"]["projection_sha256"],
+                                     build_receipt_sha256=report_a["artifacts"]["receipt_sha256"])
+    log, generation_path, resume_b = _log(tmp_path / "log", LATER_PUBLIC_EVENTS, start=verified_cursor(config_empty, root, p1))
+    config_b = _config(log, generation_path, resume_b)
+    captured = _after_commit(monkeypatch, "commit_history_generation",
+                             lambda root_, value: (root_ / checkpoint.POINTER).write_bytes(foreign))
+    report_b = _publish(_request(config_b, root, "gen-b", predecessor=predecessor_p1))
+    assert report_b["status"] == "PUBLISHED_HISTORY" and report_b["generation"] == "gen-b"
+    assert report_b["artifacts"] == captured[0]["artifacts"] and captured[0]["generation"] == "gen-b"
+    assert report_b["pointer_sha256"] == _locked_pointer_digest(captured[0]) != sha(foreign)
+    monkeypatch.undo()
+    # 4) a commit return that does not name OUR generation or artifacts is refused: the receipt binds its own
+    #    publication or nothing (the published directory is retained, never deleted)
+    root = tmp_path / "mismatch"
+    root.mkdir()
+    _after_commit(monkeypatch, "commit_generation", lambda root_, value: dict(value, generation="gen-other"))
+    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+    assert (root / "gen-a").is_dir()
+    monkeypatch.undo()
+    root = tmp_path / "mismatch-artifacts"
+    root.mkdir()
+    _after_commit(monkeypatch, "commit_generation",
+                  lambda root_, value: dict(value, artifacts=dict(value["artifacts"], memory_sha256="0" * 64)))
+    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+    monkeypatch.undo()
+    root = tmp_path / "not-a-value"
+    root.mkdir()
+    _after_commit(monkeypatch, "commit_generation", lambda root_, value: {"status": "advanced"})
+    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+
+
+@WINDOWS_ONLY
+def test_repeated_empty_delta_is_a_verified_no_change_not_a_refusal_and_not_a_publication(tmp_path):
+    root = tmp_path / "mem"
+    root.mkdir()
+    log, generation_path, start = _log(tmp_path / "log", MIXED_EVENTS)
+    config_a = _config(log, generation_path, start)
+    report_a = _publish(_request(config_a, root, "gen-a"))
+    p0 = report_a["pointer_sha256"]
+    predecessor_a = pub.Predecessor(pointer_sha256=p0, memory_dir=root / "gen-a",
+                                    memory_sha256=report_a["artifacts"]["memory_sha256"],
+                                    projection_sha256=report_a["artifacts"]["projection_sha256"],
+                                    build_receipt_sha256=report_a["artifacts"]["receipt_sha256"])
+    log, generation_path, resume_empty = _log(tmp_path / "log", EMPTY_EVENTS, start=verified_cursor(config_a, root, p0))
+    config_empty = _config(log, generation_path, resume_empty)
+    p1 = _publish(_request(config_empty, root, "gen-x", predecessor=predecessor_a))["pointer_sha256"]
+    pointer_bytes = (root / checkpoint.POINTER).read_bytes()
+    assert sha(pointer_bytes) == p1
+    predecessor_p1 = pub.Predecessor(pointer_sha256=p1, memory_dir=root / "gen-a",
+                                     memory_sha256=report_a["artifacts"]["memory_sha256"],
+                                     projection_sha256=report_a["artifacts"]["projection_sha256"],
+                                     build_receipt_sha256=report_a["artifacts"]["receipt_sha256"])
+    # the log has not grown: a strict empty delta from the current watermark whose cursor does not move
+    log, generation_path, resume_same = _log(tmp_path / "log", [], start=verified_cursor(config_empty, root, p1))
+    config_same = _config(log, generation_path, resume_same)
+    files_before = sorted(str(path) for path in _files(root))
+    for _ in range(2):  # idempotent: repeating it changes nothing
+        report_same = _publish(_request(config_same, root, "gen-y", predecessor=predecessor_p1))
+        assert set(report_same) == pub.REPORT_KEYS and report_same["status"] == "EMPTY_NO_CHANGE"
+        assert report_same["pointer_sha256"] == p1 and report_same["generation"] is None
+        assert report_same["artifacts"] is None and report_same["records"] == 0
+        assert report_same["publisher_identity"] == report_same["source_authenticity"] == report_same["freshness"] == "UNKNOWN"
+        assert report_same["authenticated"] is False
+    assert (root / checkpoint.POINTER).read_bytes() == pointer_bytes
+    assert sorted(str(path) for path in _files(root)) == files_before and not (root / "gen-y").exists()
+    # a no_change against a STALE predecessor pointer is still refused (the checkpoint compares the pointer digest)
+    _refused(_request(config_same, root, "gen-y", predecessor=predecessor_a), "checkpoint_refused")
+    # and the series continues normally from the unchanged pointer
+    log, generation_path, resume_b = _log(tmp_path / "log", LATER_PUBLIC_EVENTS, start=resume_same)
+    config_b = _config(log, generation_path, resume_b)
+    report_b = _publish(_request(config_b, root, "gen-b", predecessor=predecessor_p1))
+    assert report_b["status"] == "PUBLISHED_HISTORY" and report_b["records"] == 5
+    assert _public_read(root, report_b["pointer_sha256"])["generation"] == "gen-b"

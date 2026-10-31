@@ -67,6 +67,27 @@ def _select(rows, **kw):
     return ann.select_announced_pointer(rows, enabled=True, **kw)
 
 
+@pytest.mark.parametrize("uuid", ["ä", "\ud800", "not-a-uuid"])
+def test_non_ascii_or_malformed_candidate_uuid_has_fixed_refusal(uuid):
+    _refused(lambda: _select([row(uuid=uuid)]), "candidate_rejected")
+
+
+def test_unencodable_task_id_has_fixed_refusal():
+    _refused(lambda: _select([row()], task_id="\ud800"), "request_invalid")
+
+
+@pytest.mark.parametrize("timestamp", ["2026-99-99T99:99:99Z", "2025-02-29T12:00:00Z",
+                                       "2026-10-31T24:00:00Z", "0000-01-01T00:00:00Z"])
+def test_impossible_utc_timestamp_has_fixed_refusal(timestamp):
+    _refused(lambda: _select([row(ts=timestamp)]), "candidate_rejected")
+
+
+def test_valid_leap_day_and_seven_fraction_digits_remain_ordered():
+    rows = [row(ts="2024-02-29T12:00:00.0000001Z"),
+            row(ts="2024-02-29T12:00:00.0000002Z", payload=payload(pointer_sha256=POINTER_B))]
+    assert _select(rows)["pointer_sha256"] == POINTER_B
+
+
 def test_surface_is_closed_and_off_by_default():
     assert ann.announcement_payload(report(), ANCHOR_SHA) == {"status": "OFF"}
     assert ann.select_announced_pointer([row()], task_id=TASK, publisher_agent=PUBLISHER, roster=ROSTER) == {"status": "OFF"}

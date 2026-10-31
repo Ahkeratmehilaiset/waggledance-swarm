@@ -30,6 +30,7 @@ therefore states ``authenticity``, ``freshness``, ``coverage``, ``ordering`` and
 ``advisory`` as True; only a separately trusted channel can supply an ACCEPTED pointer. Nothing here reads or writes
 the bridge, touches live rows, a model, a scheduler, keys, ACLs, an installer or an activation switch.
 """
+from datetime import datetime
 import hmac
 import json
 import re
@@ -153,6 +154,10 @@ def _ts_key(value):
     match = TS_UTC.fullmatch(value) if isinstance(value, str) else None
     if match is None:
         return None
+    try:
+        datetime.fromisoformat(match.group(1))  # Validate calendar/clock without truncating the seven-digit ordering key.
+    except ValueError:
+        return None
     return match.group(1) + "." + (match.group(2) or "").ljust(7, "0")
 
 
@@ -174,7 +179,11 @@ def select_announced_pointer(rows, *, task_id, publisher_agent, roster, verified
         _refuse("request_invalid")
     if not enabled:
         return {"status": "OFF"}
-    if (not isinstance(task_id, str) or not 1 <= len(task_id.encode("utf-8")) <= projection.BYTE_CAPS["task_id"]
+    try:
+        task_bytes = len(task_id.encode("utf-8")) if isinstance(task_id, str) else 0
+    except UnicodeEncodeError:
+        _refuse("request_invalid")
+    if (not 1 <= task_bytes <= projection.BYTE_CAPS["task_id"]
             or not isinstance(publisher_agent, str) or publisher_agent not in projection.LANES
             or not isinstance(roster, dict) or publisher_agent not in roster
             or not all(isinstance(agent, str) and isinstance(uuid, str) and projection.UUID.fullmatch(uuid) is not None
@@ -193,6 +202,7 @@ def select_announced_pointer(rows, *, task_id, publisher_agent, roster, verified
         uuid = row.get("agent_uuid")
         key = _ts_key(row.get("ts_utc"))
         if (row.get("type") != "message" or row.get("agent") != publisher_agent or not isinstance(uuid, str)
+                or projection.UUID.fullmatch(uuid) is None
                 or not hmac.compare_digest(uuid, expected_uuid) or row.get("task_id") != task_id or key is None
                 or not _payload_ok(payload)):
             _refuse("candidate_rejected")

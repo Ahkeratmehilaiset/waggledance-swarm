@@ -1913,6 +1913,14 @@ def test_a_candidate_cycle_builds_one_immutable_dir_whose_last_ok_names_and_hash
     assert file_sha(live / first["state_file"]) == first["state_sha256"]
     assert (first["context_file"], first["context_sha256"], rec["previous"]) == (None, None, None)
     state = space["read_state"](live / first["state_file"], first["state_sha256"], 1)
+    # the pinned compact head repeats the state's binding fields and names the full state's digest, never a row
+    assert first["state_head_file"] == f"cycles/{first['cycle_dir']}/state.head.json"
+    assert file_sha(live / first["state_head_file"]) == first["state_head_sha256"]
+    head = json.loads((live / first["state_head_file"]).read_text(encoding="ascii"))
+    assert head == {"schema": "wd.bridge-mind-producer-state-head.v1", "generation": 1, "cursor": state["cursor"],
+                    "source": state["source"], "window_sha256": state["window_sha256"], "state_file": "state.json",
+                    "state_sha256": first["state_sha256"]}
+    assert (live / first["state_head_file"]).stat().st_size < 65536 and "window" not in head
     assert [row["ref"] for row in state["window"]] == REFS[-WINDOW:] and state["cursor"] == SEEDED
     snapshot = core.read_snapshot(live / first["publication_file"], audit_root=live.parent)
     assert hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest() == first["snapshot_sha256"]
@@ -2081,7 +2089,8 @@ def budget_candidate_space(tmp_path, room, run_files):
     payloads = {"capture.json": b"c" * 10, "detail-manifest.txt": b"m" * 5, "state.json": b"s" * 20}
     space.update(advance=lambda state, seeded: ([], "cursor", {"file_identity": LOG_A, "log_generation": None},
                                                 {"new_rows": 0}),
-                 state_envelope=lambda generation, cursor, source, rows: {"generation": generation},
+                 state_envelope=lambda generation, cursor, source, rows: {"generation": generation, "cursor": cursor,
+                                                                          "source": source, "window_sha256": "0" * 64},
                  capture_object=lambda rows: ({"observed_utc": "2026-10-23T00:00:00Z"}, b"m" * 5),
                  snapshot_prs=lambda capture: set(), pr_context=lambda cache_dir, needed=None: (None, {"ms": 0}),
                  prewrite=lambda capture, manifest, context, state: dict(payloads),
@@ -2098,9 +2107,20 @@ def budget_candidate_space(tmp_path, room, run_files):
                 "global_question": None}
 
     space["shadow"] = types.SimpleNamespace(run=run)
-    return space, budget, sum(len(data) for data in payloads.values())
+    return space, budget, sum(len(data) for data in payloads.values()) + HEAD_BYTES
 
 
+def head_bytes():
+    """The bytes of the compact head the budget candidate writes beside its 20-byte stand-in state: charged like
+    every candidate file, so every budget expectation below counts them."""
+    space, _ = load()
+    state = {"generation": 1, "cursor": "cursor", "source": {"file_identity": LOG_A, "log_generation": None},
+             "window_sha256": "0" * 64}
+    return len(space["compact"](space["state_head"](state, hashlib.sha256(b"s" * 20).hexdigest())))
+
+
+HEAD_BYTES = head_bytes()
+CANDIDATE_BYTES = 35 + HEAD_BYTES  # the three stand-in payloads plus the compact head
 BUDGET_RUN_FILES = {"board.txt": b"b" * 30, "reflected.publication.json": b"p" * 40, "receipt.json": b"r" * 50}
 
 
@@ -2113,7 +2133,7 @@ def test_a_candidate_is_charged_its_payloads_and_every_file_its_shadow_run_wrote
 
 def test_a_candidate_whose_writes_use_exactly_the_room_commits(tmp_path):
     run_bytes = sum(len(data) for data in BUDGET_RUN_FILES.values())
-    space, budget, payload_bytes = budget_candidate_space(tmp_path, 35 + run_bytes, BUDGET_RUN_FILES)
+    space, budget, payload_bytes = budget_candidate_space(tmp_path, CANDIDATE_BYTES + run_bytes, BUDGET_RUN_FILES)
     assert space["candidate_cycle"]({}, None, {})["generation"] == 1
     assert budget.spent == payload_bytes + run_bytes == budget.allowance - budget.reserve and not budget.exhausted
 
@@ -2122,13 +2142,13 @@ def test_a_shadow_output_past_the_allowance_is_refused_before_it_is_written(tmp_
     """Changed from the first B5 commit (counted after the run): one byte short of the last shadow output refuses
     that output before it exists."""
     run_bytes = sum(len(data) for data in BUDGET_RUN_FILES.values())
-    space, budget, payload_bytes = budget_candidate_space(tmp_path, 35 + run_bytes - 1, BUDGET_RUN_FILES)
-    assert payload_bytes == 35
+    space, budget, payload_bytes = budget_candidate_space(tmp_path, CANDIDATE_BYTES + run_bytes - 1, BUDGET_RUN_FILES)
+    assert payload_bytes == CANDIDATE_BYTES
     with budget_exhausted(space):
         space["candidate_cycle"]({}, None, {})
     run_dir = next((tmp_path / "live" / "cycles").iterdir()) / "run"
     assert sorted(os.listdir(run_dir)) == ["board.txt", "reflected.publication.json"]  # the receipt never existed
-    assert budget.exhausted is True and budget.spent == 35 + run_bytes - len(BUDGET_RUN_FILES["receipt.json"])
+    assert budget.exhausted is True and budget.spent == CANDIDATE_BYTES + run_bytes - len(BUDGET_RUN_FILES["receipt.json"])
 
 
 def test_a_shadow_run_without_the_charge_keyword_refuses_the_cycle_before_any_write(tmp_path):

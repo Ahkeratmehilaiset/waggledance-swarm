@@ -227,7 +227,7 @@ class HybridRetrievalService:
             if self._embed_fn:
                 query_vec = self._embed_fn(query)
         except Exception as e:
-            log.warning("Embedding failed for hybrid retrieval: %s", e)
+            log.warning("Embedding failed for hybrid retrieval (error_type=%s)", type(e).__name__)
             trace.embeddings_degraded = True
 
         if query_vec is None:
@@ -413,7 +413,7 @@ class HybridRetrievalService:
                 if r.score >= self._min_score   # Phase D v2 — instance threshold (was hardcoded _MIN_SCORE)
             ]
         except Exception as e:
-            log.debug("FAISS cell %s search failed: %s", cell_id, e)
+            log.debug("FAISS cell %s search failed (error_type=%s)", cell_id, type(e).__name__)
             return []
 
     async def _search_global(self, query: str, k: int, trace: HybridTraceResult) -> None:
@@ -444,7 +444,7 @@ class HybridRetrievalService:
                     ))
                     trace.global_hit = True
         except Exception as e:
-            log.warning("Global ChromaDB search failed: %s", e)
+            log.warning("Global ChromaDB search failed (error_type=%s)", type(e).__name__)
             trace.chroma_degraded = True
             trace.global_chroma_ms = (time.perf_counter() - t_global) * 1000
 

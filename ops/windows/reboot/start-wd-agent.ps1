@@ -1847,6 +1847,22 @@ if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
 }
 $manifest = [string]$manifestSnapshot.Text |
   ConvertFrom-Json -ErrorAction Stop
+$mindValues = $null
+if ($null -ne $manifest.PSObject.Properties['mind_read']) {
+  if ($null -eq $deploymentAnchor) { throw 'mind_config_requires_anchored_bundle' }
+  $mindHelper = Join-Path $PSScriptRoot 'Get-WdMindReadConfig.ps1'
+  [void](Assert-LanePathWithoutReparse -Path $mindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $mindHelperPin = $deploymentAnchor.files.PSObject.Properties['Get-WdMindReadConfig.ps1']
+  $mindHelperSnapshot = Read-Utf8LaneSnapshot -Path $mindHelper
+  if ($null -eq $mindHelperPin -or [string]$mindHelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      [string]$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant() -or
+      (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+    throw 'mind_config_helper_pin_mismatch'
+  }
+  # Execute the same bytes whose snapshot hash was checked, not a later file read.
+  . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
+  $mindValues = Get-WdMindReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+}
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
 }
@@ -2686,6 +2702,11 @@ $env:AGENT_BRIDGE_AGENT_UUID = ([string]$lane.agent_uuid).ToLowerInvariant()
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeRoot
+if ($null -ne $mindValues) {
+  foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
+    [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')
+  }
+}
 $env:WD_AGENT_PROMPT_FILE = [string]$lane.prompt
 $env:WD_AGENT_RESTART_HANDOFF = [string]$manifest.state_precedence.current_handoff
 $env:WD_AGENT_3PACK_ROLES = [string]$manifest.state_precedence.roles

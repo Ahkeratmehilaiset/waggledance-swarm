@@ -3352,6 +3352,44 @@ Assert-ToolsBootstrapIntegrity `
     -SkipWakeWatcher `
     -SkipHeartbeatJob
 
+# Optional Mind settings come only from the same externally anchored bundle.
+if ($isDeployedLauncher) {
+    $mindFleetPath = Join-Path $PSScriptRoot 'wd-fleet.json'
+    Assert-FilePathWithoutReparse -Candidate $mindFleetPath -Root $toolsTrustedDrive
+    $mindFleetPin = $toolsDeployment.files.PSObject.Properties['wd-fleet.json']
+    $mindFleetSnapshot = Read-Utf8FileSnapshot -Path $mindFleetPath
+    if ($null -eq $mindFleetPin -or [string]$mindFleetPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$mindFleetSnapshot.Hash -cne ([string]$mindFleetPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $toolsDeploymentManifestPath -Algorithm SHA256).Hash -cne $toolsExpectedManifestHash.ToUpperInvariant()) {
+        throw 'mind_config_fleet_pin_mismatch'
+    }
+    $mindFleet = [string]$mindFleetSnapshot.Text | ConvertFrom-Json -ErrorAction Stop
+    if ($null -ne $mindFleet.PSObject.Properties['mind_read']) {
+        if ([string]$mindFleet.tools_supervisor.agent -cne $agent -or
+            ([string]$mindFleet.tools_supervisor.agent_uuid).ToLowerInvariant() -cne $agentUuid -or
+            -not ([IO.Path]::GetFullPath([string]$mindFleet.runtime_root).TrimEnd('\')).Equals(
+                $runtimeRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'mind_config_tools_identity_mismatch'
+        }
+        $mindHelper = Join-Path $PSScriptRoot 'Get-WdMindReadConfig.ps1'
+        Assert-FilePathWithoutReparse -Candidate $mindHelper -Root $toolsTrustedDrive
+        $mindHelperPin = $toolsDeployment.files.PSObject.Properties['Get-WdMindReadConfig.ps1']
+        $mindHelperSnapshot = Read-Utf8FileSnapshot -Path $mindHelper
+        if ($null -eq $mindHelperPin -or [string]$mindHelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            [string]$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant() -or
+            (Get-FileHash -LiteralPath $toolsDeploymentManifestPath -Algorithm SHA256).Hash -cne $toolsExpectedManifestHash.ToUpperInvariant()) {
+            throw 'mind_config_helper_pin_mismatch'
+        }
+        . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
+        $mindValues = Get-WdMindReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value)
+        if ($null -ne $mindValues) {
+            foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
+                [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')
+            }
+        }
+    }
+}
+
 $writer = Join-Path $bootstrapRoot 'Write-AgentEvent.ps1'
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `

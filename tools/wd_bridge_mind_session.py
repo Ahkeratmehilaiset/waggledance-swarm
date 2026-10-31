@@ -2,8 +2,8 @@
 """Read an existing Mind publication for the current agent session.
 
 This command does not start or install a producer and cannot authenticate an
-agent.  The compact view must have been obtained by the calling session; the
-fleet hash is supplied by the caller and is not, by itself, an authority check.
+agent. The compact cursor is read by this invocation from the session's bridge
+root. The fleet hash is caller supplied and is not an authority check.
 Only the lane reader's allowlisted projection is printed.  Any refusal is a
 fixed token, never raw input, paths, capture rows, or a partial projection.
 """
@@ -18,11 +18,10 @@ from pathlib import Path
 import re
 import sys
 
-from tools import wd_bridge_mind_lane_read as lane_reader
+from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FLEET_LIMIT = 1024 * 1024
-_VIEW_LIMIT = 8 * 1024 * 1024
 
 
 def _bounded_json(path: Path, limit: int) -> tuple[object, bytes]:
@@ -59,8 +58,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--latest", required=True, type=Path)
     parser.add_argument("--audit-root", required=True, type=Path)
-    parser.add_argument("--view", required=True, type=Path,
-                        help="caller-obtained compact reader view inside the audit root")
     parser.add_argument("--fleet", required=True, type=Path)
     parser.add_argument("--fleet-sha256", required=True)
     args = parser.parse_args(argv)
@@ -70,8 +67,12 @@ def main(argv: list[str] | None = None) -> int:
         roster = _fleet_roster(args.fleet, args.fleet_sha256.lower())
         if agent not in roster or not isinstance(uuid, str) or roster[agent].lower() != uuid.lower():
             raise ValueError("session_identity_unmatched")
-        view_path = lane_reader._owned(args.view, args.audit_root)
-        view, _ = _bounded_json(view_path, _VIEW_LIMIT)
+        bridge_root = os.environ.get("AGENT_BRIDGE_RUNTIME_ROOT")
+        if not bridge_root or not Path(bridge_root).is_absolute():
+            raise ValueError("bridge_root_unavailable")
+        rows, cursor, _ = bridge_compact_view._read_view_rows(Path(bridge_root) / "shared" / "events.jsonl", 1, "")
+        del rows  # Event contents are never returned or written by this command.
+        view = {"schema": lane_reader.VIEW_SCHEMA, "authority": "none", "cursor": cursor}
         result = lane_reader.lane_read(latest_path=args.latest, audit_root=args.audit_root,
                                        lane=agent, as_of=datetime.now(timezone.utc), binding=view, roster=roster)
         print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True))

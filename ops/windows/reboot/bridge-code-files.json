@@ -49,6 +49,7 @@
     "sandbox/mind/step2/wd_q4_private_read.py",
     "tools/__init__.py",
     "tools/wd_mind_public_session.py",
+    "tools/wd_mind_public_session_cli.py",
     "tools/wd_q4_agent_query.py",
     "tools/wd_q4_resolved_child.py",
     "tools/agent_next_task.py",

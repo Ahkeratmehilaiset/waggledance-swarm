@@ -45,6 +45,17 @@ space): the root must be an existing real directory and never a symlink, junctio
 target must not exist in any form (a link there is ``output_exists`` and is never followed), staging lives inside
 the root, and no directory is ever created. The writer cannot be pointed outside the root by its arguments.
 
+v5 (independent review of v4): flooring the display minute and using the same floor as ``available_utc`` made an
+event at 12:34:59 available to a 12:34:10 query (future-data leakage). ``time_utc`` stays the floored minute for
+privacy, but ``available_utc`` (record and provenance) is now the NEXT minute boundary after it (``_available``):
+a record is never visible inside the minute its event happened in, and an exact-boundary event waits a full
+minute (conservative by design). ``visible_at`` states the rule in code with exactly the compare ``q4.ask`` applies
+to ``provenance.available_utc`` (strictly below ``situation_time - guard_band_s`` in ``utc_text`` form), so Q4
+source/cutoff semantics bind as: visible iff next-minute-boundary < situation_time - guard_band. The last minute of
+year 9999 has no next boundary and refuses ``time_invalid`` instead of overflowing. ``include_refs`` is a strict
+bool on every entry point (``include_refs_invalid``): the string "false" is truthy and would have opened the refs
+channel.
+
 Trust assumptions, disclosed: revalidation is in-process (Python has no forgery-proof object), so it proves
 content, never who built it, and it is not authentication or canonical provenance; the Windows no-replace rename
 and the POSIX no-replace link are kernel semantics of local filesystems (verified here on NTFS), network or FUSE
@@ -62,6 +73,7 @@ UTF-8 byte cap (a 4-byte character costs four) refuses that event whole with one
 real capture, memory, index or model is touched by this module or its tests.
 """
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -72,7 +84,7 @@ from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
 
-SCHEMA = "wd.bridge-mind-shared-projection.v4"
+SCHEMA = "wd.bridge-mind-shared-projection.v5"
 TIME_PRECISION_SECONDS = 60  # event time is floored to the minute; seconds and fractions never reach the record
 # One safe file name inside the trusted output root: no separator, no drive, no leading dot, lower case, .json
 OUTPUT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,122}\.json")
@@ -169,12 +181,44 @@ def _task(value, approved_tasks):
     return value
 
 
+def _strict_flag(include_refs):
+    """``include_refs`` must be a real bool: the string "false" is truthy and would enable the refs channel."""
+    if type(include_refs) is not bool:
+        raise ProjectionRefused("include_refs_invalid")
+    return include_refs
+
+
+def _available(ts_text):
+    """Conservative availability: the NEXT minute boundary after the floored display minute, so a record is never
+    visible inside the minute its event happened in; past the last representable minute it refuses."""
+    try:
+        when = corpus_mod.parse_utc(ts_text) + dt.timedelta(seconds=TIME_PRECISION_SECONDS)
+    except (OverflowError, ValueError, TypeError):
+        raise ProjectionRefused("time_invalid") from None
+    return corpus_mod.utc_text(when)
+
+
+def visible_at(record, query_utc, guard_band_s=0):
+    """Whether a projected record may be seen by a query at ``query_utc``: ``provenance.available_utc`` must be
+    strictly below ``query_utc - guard_band_s`` in ``utc_text`` form, exactly the compare ``q4.ask`` applies
+    (``self.available < limit``). An unparseable query time sees nothing."""
+    when = corpus_mod.parse_utc(query_utc) if isinstance(query_utc, str) else None
+    if when is None:
+        return False
+    try:
+        limit = corpus_mod.utc_text(when - dt.timedelta(seconds=guard_band_s))
+    except (OverflowError, TypeError):
+        return False
+    return record["provenance"]["available_utc"] < limit
+
+
 def approved_fields(event, approved_tasks=frozenset(), include_refs=False):
     """The approved fields of one event, validated; forbidden and unknown keys are counted, never read.
 
     ``pr`` and ``head`` are always shape-validated (a malformed one refuses the event) but are projected as None
-    unless the caller opts in with ``include_refs=True``: they are producer-chosen integers and hex strings and so a
-    covert channel by default. The time is floored to ``TIME_PRECISION_SECONDS``."""
+    unless the caller opts in with ``include_refs=True`` (a strict bool): they are producer-chosen integers and hex
+    strings and so a covert channel by default. The time is floored to ``TIME_PRECISION_SECONDS``."""
+    include_refs = _strict_flag(include_refs)
     if not isinstance(event, dict):
         raise ProjectionRefused("event_not_object")
     dropped = sum(1 for key in event if key not in APPROVED_FIELDS)
@@ -184,8 +228,8 @@ def approved_fields(event, approved_tasks=frozenset(), include_refs=False):
         when = None
     if when is None:
         raise ProjectionRefused("time_invalid")
-    floored = (int(when.timestamp()) // TIME_PRECISION_SECONDS) * TIME_PRECISION_SECONDS
-    when = when.replace(microsecond=0) - type(when - when)(seconds=int(when.timestamp()) - floored)
+    when = when.replace(second=0, microsecond=0)  # floored display minute (UTC-aware after parse_utc)
+    _available(corpus_mod.utc_text(when))  # the next boundary must exist: the last minute of year 9999 refuses
     agent = _closed("agent", event.get("agent"), LANE, LANES)
     if agent is None:
         raise ProjectionRefused("agent_not_lane")
@@ -230,7 +274,7 @@ def projected_ref(fields):
 
 def project_event(event, approved_tasks=frozenset(), include_refs=False):
     """One shared record from one event, or ProjectionRefused; nothing partial is returned."""
-    fields, dropped = approved_fields(event, approved_tasks, include_refs)
+    fields, dropped = approved_fields(event, approved_tasks, _strict_flag(include_refs))
     return _record(fields), dropped
 
 
@@ -238,13 +282,14 @@ def _record(fields):
     """The exact record for validated approved fields; the writer re-derives every record through this."""
     text = head_line(fields)
     ref = projected_ref(fields)
+    available = _available(fields["ts_utc"])
     return {"record_id": "event:" + ref, "kind": "event", "time_utc": fields["ts_utc"],
-            "available_utc": fields["ts_utc"], "stored_text": text, "summary": text,
+            "available_utc": available, "stored_text": text, "summary": text,
             "meta": {"type": fields["type"], "status": fields["status"], "agent": fields["agent"],
                      "task_id": fields["task_id"], "pr": fields["pr"], "head": fields["head"], "ci": fields["ci"]},
             "provenance": {"source_kind": "projected_bridge_metadata", "event_ref": ref,
                            "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
-                           "tier": {"source_type": "bridge_event"}, "available_utc": fields["ts_utc"]}}
+                           "tier": {"source_type": "bridge_event"}, "available_utc": available}}
 
 
 def encoder_input(record):
@@ -265,6 +310,7 @@ def project_events(events, approved_tasks=None, include_refs=False):
 
     ``approved_tasks`` is a frozenset of safe-shaped task ids the caller pins from an operator-approved list; with
     none, every task id renders as UNKNOWN. ``include_refs`` opts in to projecting pr and head (off by default)."""
+    include_refs = _strict_flag(include_refs)
     approved = _approved_tasks(approved_tasks)
     records, refused, dropped = [], {}, 0
     for event in events:
@@ -294,6 +340,7 @@ def validate_projection(projection, approved_tasks=None, include_refs=False):
     non-negative integer counts. Anything else refuses with ``projection_invalid`` and nothing is written. This is
     in-process validation, not authentication: Python offers no forgery-proof object, so the writer trusts the
     content only after re-deriving it, never because of who built it."""
+    include_refs = _strict_flag(include_refs)
     approved = _approved_tasks(approved_tasks)
     try:
         if not isinstance(projection, dict) or set(projection) != PROJECTION_KEYS:
@@ -373,7 +420,7 @@ def write_projection(root, name, projection, approved_tasks=None, include_refs=F
     root and published atomically onto a target that must not exist in any form (a symlink or reparse point at the
     target is ``output_exists``, never followed). Only a staging file this call created is ever removed; a
     destination written by anyone else is never overwritten or deleted; on a refusal nothing of ours remains."""
-    validate_projection(projection, approved_tasks, include_refs)
+    validate_projection(projection, approved_tasks, _strict_flag(include_refs))
     try:
         corpus_mod.ws.guard_object(projection)
     except corpus_mod.ws.WorkspaceError:

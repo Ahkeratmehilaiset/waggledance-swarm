@@ -58,7 +58,7 @@ def test_s1_encoder_input_equals_stored_text_and_only_approved_tokens_reach_it(c
     record = projection["records"][0]
     assert sp.encoder_input(record) == record["stored_text"] == record["summary"]
     assert record["stored_text"] == "message milestone codex-lead-1 " + TASK + " pr:1973 head:" + HEAD + " ci:green"
-    assert record["kind"] == "event" and record["time_utc"] == TS_OUT == record["available_utc"]
+    assert record["kind"] == "event" and record["time_utc"] == TS_OUT and record["available_utc"] == "2026-10-31T12:01:00.000000Z"
     assert record["meta"] == {"type": "message", "status": "milestone", "agent": "codex-lead-1", "task_id": TASK,
                               "pr": 1973, "head": HEAD, "ci": "green"}
     serialized = json.dumps(projection, sort_keys=True)
@@ -195,7 +195,7 @@ def test_s9_refs_are_projected_digests_only_and_never_claim_the_canonical_event(
     assert HEX64.fullmatch(first["provenance"]["event_ref"])
     assert first["provenance"] == {"source_kind": "projected_bridge_metadata", "event_ref": first["provenance"]["event_ref"],
                                    "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
-                                   "tier": {"source_type": "bridge_event"}, "available_utc": TS_OUT}
+                                   "tier": {"source_type": "bridge_event"}, "available_utc": "2026-10-31T12:01:00.000000Z"}  # v5: next boundary
     third = project(event(status="done"))["records"][0]
     assert third["provenance"]["event_ref"] != first["provenance"]["event_ref"]
 
@@ -393,8 +393,8 @@ def test_v4_refs_render_only_when_the_caller_opts_in_and_are_still_shape_validat
 def test_v4_time_is_floored_to_the_minute_so_seconds_and_fractions_carry_nothing():
     assert sp.TIME_PRECISION_SECONDS == 60
     record = project(event(ts_utc="2026-10-31T12:34:56.789012Z"))["records"][0]
-    assert record["time_utc"] == record["available_utc"] == "2026-10-31T12:34:00.000000Z"
-    assert record["provenance"]["available_utc"] == "2026-10-31T12:34:00.000000Z"
+    assert record["time_utc"] == "2026-10-31T12:34:00.000000Z" and record["available_utc"] == "2026-10-31T12:35:00.000000Z"
+    assert record["provenance"]["available_utc"] == "2026-10-31T12:35:00.000000Z"  # v5: next boundary
     same = project(event(ts_utc="2026-10-31T12:34:00Z"))["records"][0]
     assert same["record_id"] == record["record_id"]  # one minute, one digest
 
@@ -461,3 +461,58 @@ def test_v4_the_published_file_and_nothing_else_lands_inside_the_root(tmp_path):
     digest = sp.write_projection(tmp_path, "projection.json", project(event()), approved_tasks=APPROVED)
     assert [p.name for p in tmp_path.iterdir()] == ["projection.json"]
     assert hashlib.sha256((tmp_path / "projection.json").read_bytes()).hexdigest() == digest
+
+
+# v5: availability is the NEXT minute boundary after the actual event (a within-minute query cannot see a later
+# event), year-9999 overflow fails closed, include_refs is a strict boolean everywhere.
+
+def test_v5_availability_is_the_next_minute_boundary_after_the_actual_event_time():
+    late = project(event(ts_utc="2026-10-31T12:34:59.500000Z"))["records"][0]
+    assert late["time_utc"] == "2026-10-31T12:34:00.000000Z"  # display stays floored for privacy
+    assert late["available_utc"] == late["provenance"]["available_utc"] == "2026-10-31T12:35:00.000000Z"
+    exact = project(event(ts_utc="2026-10-31T12:34:00Z"))["records"][0]
+    assert exact["available_utc"] == "2026-10-31T12:35:00.000000Z"  # never available in the minute it happened
+    assert exact["record_id"] == late["record_id"]  # one minute, one digest; availability is derived, not hashed
+
+
+@pytest.mark.parametrize("query,guard,visible", [
+    ("2026-10-31T12:34:10Z", 0, False),          # within the minute, before the event
+    ("2026-10-31T12:34:59.999999Z", 0, False),   # within the minute, after the event
+    ("2026-10-31T12:35:00Z", 0, False),          # the boundary itself: strict compare, same as Q4
+    ("2026-10-31T12:35:00.000001Z", 0, True),
+    ("2026-10-31T12:35:20Z", 30, False),         # guard band pushes the visible instant later
+    ("2026-10-31T12:35:40Z", 30, True),
+])
+def test_v5_a_within_minute_query_cannot_see_a_later_event_and_the_rule_matches_q4(query, guard, visible):
+    record = project(event(ts_utc="2026-10-31T12:34:59Z"))["records"][0]
+    assert sp.visible_at(record, query, guard_band_s=guard) is visible
+    from sandbox.mind.step2 import corpus as corpus_mod
+    import datetime as dt
+    limit = corpus_mod.utc_text(corpus_mod.parse_utc(query) - dt.timedelta(seconds=guard))
+    assert (record["provenance"]["available_utc"] < limit) is visible  # exactly q4.ask: available < limit
+
+
+def test_v5_a_query_time_that_does_not_parse_is_not_visible():
+    record = project(event())["records"][0]
+    assert sp.visible_at(record, "not a time") is False and sp.visible_at(record, None) is False
+
+
+def test_v5_the_last_minute_of_year_9999_fails_closed_instead_of_overflowing():
+    assert project(event(ts_utc="9999-12-31T23:59:30Z"))["refused"] == {"time_invalid": 1}
+    ok = project(event(ts_utc="9999-12-31T23:58:30Z"))["records"][0]
+    assert ok["available_utc"] == "9999-12-31T23:59:00.000000Z"
+
+
+@pytest.mark.parametrize("flag", ["false", "False", "", 0, 1, None, [], 1.0])
+def test_v5_include_refs_must_be_a_strict_boolean_on_every_entry_point(tmp_path, flag):
+    with pytest.raises(sp.ProjectionRefused, match="include_refs_invalid"):
+        sp.project_events([event()], approved_tasks=APPROVED, include_refs=flag)
+    with pytest.raises(sp.ProjectionRefused, match="include_refs_invalid"):
+        sp.project_event(event(), APPROVED, flag)
+    good = project(event())
+    with pytest.raises(sp.ProjectionRefused, match="include_refs_invalid"):
+        sp.validate_projection(good, APPROVED, flag)
+    with pytest.raises(sp.ProjectionRefused, match="include_refs_invalid"):
+        sp.write_projection(tmp_path, "x.json", good, approved_tasks=APPROVED, include_refs=flag)
+    assert list(tmp_path.iterdir()) == []
+    assert HEAD not in json.dumps(good)

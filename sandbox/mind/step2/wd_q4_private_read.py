@@ -34,7 +34,8 @@ DEGRADED, REFUSED) or exit 2 with a fixed adapter refusal reason; neither carrie
 Residual TOCTOU: ``memory.json`` is digested before and again after ``memory.Memory`` opened and verified the cells,
 and the open itself binds every cell receipt to ``memory.json``; a directory swapped between those reads is refused
 (``memory_descriptor_changed``), but a swap landing between the second digest and the FAISS reads inside Q4 is not
-detected here. The read-only root and its ACL (operator) close that window; this module cannot.
+detected here. A read-only root and suitable ACLs can reduce exposure, but do not establish protection against
+changes by an authorized or same-user process. This module alone does not close that window.
 """
 
 import argparse

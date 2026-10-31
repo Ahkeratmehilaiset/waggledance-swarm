@@ -264,13 +264,27 @@ def test_deployer_requires_the_q4_helper_and_manifest_hash_map():
     assert "Get-WdQ4ReadConfig.ps1" in fleet["deployment"]["required_bundle_files"]
 
 
+@pytest.mark.parametrize("source", ["deployer", "fleet"])
+def test_inactive_q4_query_wrapper_is_required_in_both_bundle_lists(source):
+    name = "Invoke-WdQ4Query.ps1"
+    if source == "deployer":
+        text = (OPS / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8-sig")
+        match = re.search(r"(?ms)foreach \(\$required in @\((.*?)\)\) \{", text)
+        assert match and f"'{name}'," in match.group(1)
+    else:
+        fleet = json.loads((OPS / "wd-fleet.json").read_text(encoding="utf-8-sig"))
+        assert name in fleet["deployment"]["required_bundle_files"]
+        assert fleet["q4_read"] == {"enabled": False}
+
+
 @WINDOWS
-def test_real_deployer_hash_function_includes_synthetic_helper_in_manifest(tmp_path):
+@pytest.mark.parametrize("name", ["Get-WdQ4ReadConfig.ps1", "Invoke-WdQ4Query.ps1"])
+def test_real_deployer_hash_function_includes_synthetic_helper_in_manifest(tmp_path, name):
     text = (OPS / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8-sig")
     match = re.search(r"(?ms)^function Get-RelativeFileHashMap \{.*?^\}", text)
     assert match, "deployer hash function not found"
     content = b"# synthetic helper; never executed\n"
-    (tmp_path / "Get-WdQ4ReadConfig.ps1").write_bytes(content)
+    (tmp_path / name).write_bytes(content)
     (tmp_path / "deployment-manifest.json").write_bytes(b"{}")
     result = powershell(
         "$ErrorActionPreference='Stop'\n"
@@ -278,4 +292,4 @@ def test_real_deployer_hash_function_includes_synthetic_helper_in_manifest(tmp_p
         + match.group(0) + "\n"
         f"$files=Get-RelativeFileHashMap -Root {quote(tmp_path)}\n"
         "[ordered]@{files=$files}|ConvertTo-Json -Depth 8 -Compress\n")
-    assert result["files"] == {"Get-WdQ4ReadConfig.ps1": hashlib.sha256(content).hexdigest().upper()}
+    assert result["files"] == {name: hashlib.sha256(content).hexdigest().upper()}

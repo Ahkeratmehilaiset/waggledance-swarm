@@ -69,6 +69,7 @@
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Get-WdQ4ReadConfig.ps1",
+      "Invoke-WdQ4Query.ps1",
       "Resolve-WdGrokModel.ps1",
       "Initialize-WdGrokRecovery.ps1",
       "Invoke-WdGrok.ps1",

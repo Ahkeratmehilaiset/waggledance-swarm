@@ -1475,6 +1475,7 @@ M0_MEASUREMENT_TOOL_FILES = (
 PREFIX_MIND_LIBRARY_FILES = (
     "sandbox/mind/step2/prefix_private_state.py",
     "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "tools/wd_q4_lane_query.py",
     "tools/wd_q4_prefix_public_query.py",
     "tools/wd_q4_secure_transport.py",
     "tools/wd_mind_live_reader.py",

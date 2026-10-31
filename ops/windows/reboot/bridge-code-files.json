@@ -60,6 +60,7 @@
     "tools/wd_q4_agent_query.py",
     "tools/wd_q4_lane_link.py",
     "tools/wd_q4_prefix_public_query.py",
+    "tools/wd_q4_lane_query.py",
     "tools/wd_q4_public_child.py",
     "tools/wd_q4_public_outer.py",
     "tools/wd_q4_public_plan.py",

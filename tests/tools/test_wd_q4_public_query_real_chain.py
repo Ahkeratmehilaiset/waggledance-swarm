@@ -99,7 +99,8 @@ def test_real_public_snapshot_builder_checkpoint_resolver_query(monkeypatch, tmp
     output = query()
     assert len(calls) == 1
     assert output["status"] == "ANSWER"
-    assert output["results"] == [reference]
+    assert output["schema"] == "wd.q4-public-query.v2"
+    assert output["results"] == [{**reference, "stored_text": record["stored_text"]}]
     assert output["binding"]["pointer_sha256"] == pointer_hash
     assert output["binding"]["source_anchor_sha256"] == anchor_hash
     assert output["binding"]["encoder_sha256"] == encoder_sha
@@ -108,7 +109,7 @@ def test_real_public_snapshot_builder_checkpoint_resolver_query(monkeypatch, tmp
     assert all(output[field] == "UNKNOWN" for field in
                ("publisher_authentication", "source_filter_attestation", "freshness", "same_user_aba"))
     assert fixtures.SENTINEL not in json.dumps(output)
-    assert record["stored_text"] not in json.dumps(output)
+    assert record["stored_text"] in json.dumps(output)
     for field in ("expected_pointer_sha256", "expected_source_sha256", "expected_encoder_sha256",
                   "policy_sha256", "roster_sha256", "public_policy_sha256"):
         with pytest.raises(public_query.PublicQueryRefused, match="^public_query_refused$"):

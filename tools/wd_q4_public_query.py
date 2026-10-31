@@ -17,6 +17,7 @@ from tools import wd_q4_agent_query as q4_query
 from tools import wd_q4_public_pointer_resolver as pointer_resolver
 
 _ARTIFACT_LIMIT = 16 * 1024 * 1024
+_PUBLIC_TEXT_LIMIT = 320  # UTF-8 bytes per projected metadata result.
 _SCOPE = "wd.q4-shared-projected-events.v1"
 _ENCODER_KEYS = frozenset({"model", "revision", "weights_sha256"})
 _RESULT_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"})
@@ -44,7 +45,8 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
 
     No environment switch, self-derived expected pin, legacy fallback, publisher
     attestation or live channel is supplied here. Disabled refuses before any
-    config validation, stdin read, resolver or backend invocation.
+    config validation, stdin read, resolver or backend invocation. V2 returns
+    bounded stored_text from the verified public projection, not raw events.
     """
     if enabled is not True:
         raise PublicQueryRefused("disabled")
@@ -135,15 +137,16 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
             if (type(item) is not dict
                     or set(item) != _RESULT_KEYS | {"stored_text"}
                     or type(item["stored_text"]) is not str
+                    or len(item["stored_text"].encode("utf-8", errors="strict")) > _PUBLIC_TEXT_LIMIT
                     or item["ref_kind"] != "sha256_of_projected_metadata"
                     or item["canonical_event"] is not False
                     or not all(pointer_resolver._pin(item[key])
                                for key in ("ref_sha256", "doc_id_sha256"))):
                 raise ValueError()
-            clean.append({key: item[key] for key in sorted(_RESULT_KEYS)})
+            clean.append({key: item[key] for key in sorted(_RESULT_KEYS | {"stored_text"})})
         read(pointer_path, expected_pointer_sha256, limit=pointer_limit)
         output = {
-            "schema": "wd.q4-public-query.v1", "status": result["status"],
+            "schema": "wd.q4-public-query.v2", "status": result["status"],
             "results": clean,
             "binding": {
                 "pointer_sha256": expected_pointer_sha256,

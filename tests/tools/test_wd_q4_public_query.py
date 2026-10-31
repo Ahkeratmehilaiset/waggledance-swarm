@@ -122,11 +122,11 @@ def test_disabled_has_no_stdin_resolver_backend_or_artifact_effect(seam, enabled
     assert seam["calls"] == [] and seam["reads"] == [] and seam["queries"] == []
 
 
-def test_enabled_exact_binding_provenance_and_no_text_echo(seam):
+def test_enabled_exact_binding_provenance_and_public_text(seam):
     out = invoke(seam)
+    assert out["schema"] == "wd.q4-public-query.v2"
     assert out["status"] == "ANSWER"
-    assert out["results"] == [{key: value for key, value in seam["answer"]["results"][0].items()
-                               if key != "stored_text"}]
+    assert out["results"] == seam["answer"]["results"]
     assert out["binding"]["pointer_sha256"] == seam["args"]["expected_pointer_sha256"]
     assert out["binding"]["source_anchor_sha256"] == seam["args"]["expected_source_sha256"]
     assert out["binding"]["encoder_sha256"] == seam["args"]["expected_encoder_sha256"]
@@ -134,7 +134,7 @@ def test_enabled_exact_binding_provenance_and_no_text_echo(seam):
     for field in ("publisher_authentication", "source_filter_attestation", "freshness", "same_user_aba"):
         assert out[field] == "UNKNOWN"
     encoded = json.dumps(out)
-    assert "SYNTHETIC_QUERY" not in encoded and "SYNTHETIC_STORED_TEXT" not in encoded
+    assert "SYNTHETIC_QUERY" not in encoded
     assert "C:" not in encoded and "gen-a" not in encoded
     assert len(seam["queries"]) == 1
     call = seam["queries"][0]
@@ -153,6 +153,26 @@ def test_enabled_exact_binding_provenance_and_no_text_echo(seam):
     assert verify_args["expected_mode"] == "public-v1"
     assert verify_args["expected_public_policy_sha256"] == seam["args"]["public_policy_sha256"]
     assert [entry[0] for entry in seam["reads"]].count("q4-latest.json") == 2
+
+
+@pytest.mark.parametrize("value", ["a" * 320, "ä" * 160, "😀" * 80])
+def test_public_text_at_utf8_byte_limit_is_preserved(seam, value):
+    seam["answer"]["results"][0]["stored_text"] = value
+    assert invoke(seam)["results"][0]["stored_text"] == value
+
+
+@pytest.mark.parametrize("value", [None, 4, [], "a" * 321, "ä" * 161, "😀" * 81, "\ud800"])
+def test_invalid_or_oversize_public_text_refuses_entire_response(seam, value):
+    seam["answer"]["results"][0]["stored_text"] = value
+    with pytest.raises(seam["mod"].PublicQueryRefused, match="^public_query_refused$"):
+        invoke(seam)
+
+
+def test_envelope_limit_still_applies_to_multiple_public_results(seam):
+    item = dict(seam["answer"]["results"][0], stored_text="ä" * 160)
+    seam["answer"]["results"] = [dict(item) for _ in range(100)]
+    with pytest.raises(seam["mod"].PublicQueryRefused, match="^public_query_refused$"):
+        invoke(seam)
 
 
 @pytest.mark.parametrize("field", ["expected_pointer_sha256", "expected_source_sha256",

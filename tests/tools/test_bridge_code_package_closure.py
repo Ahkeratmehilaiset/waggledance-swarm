@@ -851,6 +851,12 @@ Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
 Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
 Q4_PUBLIC_OUTER = "tools/wd_q4_public_outer.py"
 Q4_LANE_LINK = "tools/wd_q4_lane_link.py"
+MIND_ANCHOR_ISSUER = "tools/wd_mind_anchor_issuer.py"
+MIND_ANCHOR_DEPS = frozenset({
+    "sandbox/mind/step2/shared_bridge_snapshot.py",
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "waggledance/core/bridge_log_reader.py",
+})
 Q4_PUBLIC_OUTER_DEPS = frozenset({
     "tools/wd_q4_public_child.py", "tools/wd_q4_public_plan.py", Q4_PUBLIC_QUERY,
     Q4_PUBLIC_POINTER_RESOLVER, Q4_AGENT_API,
@@ -895,6 +901,55 @@ def _assert_q4_lane_link_delivery(definition):
     assert "tools.wd_q4_lane_link" not in definition["import_smoke"]["package_modules"], (
         "q4_lane_link_smoke_published"
     )
+
+
+def _assert_mind_anchor_delivery(definition):
+    files = definition["python_files"]
+    assert files.count(MIND_ANCHOR_ISSUER) == 1, "mind_anchor_drop_or_duplicate"
+    assert MIND_ANCHOR_DEPS <= set(files), "mind_anchor_dependency_drop"
+    assert MIND_ANCHOR_ISSUER not in definition["python_entrypoints"].values(), "mind_anchor_published"
+    assert MIND_ANCHOR_ISSUER not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "mind_anchor_manual_published"
+    )
+    assert "tools.wd_mind_anchor_issuer" not in definition["import_smoke"]["package_modules"], (
+        "mind_anchor_smoke_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_mind_anchor_issuer_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_mind_anchor_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(MIND_ANCHOR_ISSUER)
+        reason = "mind_anchor_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(MIND_ANCHOR_ISSUER)
+        reason = "mind_anchor_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_mind_anchor"] = MIND_ANCHOR_ISSUER
+        reason = "mind_anchor_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_mind_anchor"] = MIND_ANCHOR_ISSUER
+        reason = "mind_anchor_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_mind_anchor_issuer")
+        reason = "mind_anchor_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_mind_anchor_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(MIND_ANCHOR_DEPS))
+def test_mind_anchor_direct_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_mind_anchor_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="mind_anchor_dependency_drop"):
+        _assert_mind_anchor_delivery(mutant)
 
 
 @pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])

@@ -328,6 +328,7 @@ def _published_gate_paths(definition: dict) -> set[str]:
 
 MIND_MODULES = (
     "tools.wd_bridge_mind",
+    "tools.wd_mind_live_reader",
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
     "tools.wd_bridge_mind_rebuild",

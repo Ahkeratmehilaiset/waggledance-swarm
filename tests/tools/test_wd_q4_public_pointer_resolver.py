@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -95,3 +97,49 @@ def test_wrong_checkpoint_pin_refuses(simulated):
     view["pointer_sha256"] = "f" * 64
     with pytest.raises(resolver.PublicPointerRefused, match="^resolution_refused$"):
         resolver.resolve_public_pointer(**args, enabled=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint publication requires a fixed Windows volume")
+def test_real_public_generation_resolves_with_exact_pointer_and_keeps_private_rows_out(tmp_path):
+    """Exercise synthetic snapshot -> builder -> checkpoint -> resolver without mocks."""
+    from sandbox.mind.step2 import test_shared_index_builder as fixtures
+
+    snapshot, _, checkpoint = fixtures._public_integration_modules()
+    root = tmp_path / "public-series"
+    root.mkdir()
+    result, anchor_hash, anchor_bytes, start = fixtures._real_public_snapshot(
+        snapshot, tmp_path / "synthetic-log", fixtures.MIXED_EVENTS
+    )
+    built = fixtures.build(
+        root, name="gen-a", proj=result["projection"], approved_tasks=None, roster=None,
+        source=fixtures._public_source(result, anchor_hash, anchor_bytes), allow_unbound_source=False,
+    )
+    artifacts = fixtures._artifacts_of(built)
+    checkpoint.commit_generation(
+        root, "gen-a", start, result["candidate_cursor"], fixtures.APPROVED,
+        expected_pointer_sha256=None, expected_artifacts=artifacts, initial_cursor=start,
+        snapshot_result=result, policy_bytes=fixtures.POLICY_BYTES,
+        expected_policy_sha256=fixtures.POLICY_SHA, roster_bytes=fixtures.ROSTER_BYTES,
+        expected_roster_sha256=fixtures.ROSTER_SHA, expected_anchor_sha256=anchor_hash,
+        expected_anchor_bytes=anchor_bytes, **fixtures.PUBLIC_CHECKPOINT_KWARGS,
+    )
+    pointer_hash = sha((root / checkpoint.POINTER).read_bytes())
+    pins = dict(
+        expected_pointer_sha256=pointer_hash, policy_bytes=fixtures.POLICY_BYTES,
+        policy_sha256=fixtures.POLICY_SHA, roster_bytes=fixtures.ROSTER_BYTES,
+        roster_sha256=fixtures.ROSTER_SHA, public_policy_bytes=fixtures.PUBLIC_POLICY_BYTES,
+        public_policy_sha256=fixtures.PUBLIC_POLICY_SHA, enabled=True,
+    )
+    resolved = resolver.resolve_public_pointer(root, **pins)
+    assert resolved["generation"] == "gen-a"
+    assert Path(resolved["memory_root"]) == root / "gen-a"
+    assert Path(resolved["descriptor_path"]) == root / "gen-a" / "descriptor.json"
+    assert resolved["descriptor_sha256"] == artifacts["descriptor_sha256"]
+    assert sha(Path(resolved["descriptor_path"]).read_bytes()) == artifacts["descriptor_sha256"]
+    assert resolved["memory_sha256"] == artifacts["memory_sha256"]
+    assert resolved["projection_sha256"] == artifacts["projection_sha256"]
+    assert resolved["receipt_sha256"] == artifacts["receipt_sha256"]
+    assert resolved["pointer_sha256"] == pointer_hash
+    assert fixtures.SENTINEL.encode() not in fixtures._files_text(root / "gen-a")
+    with pytest.raises(resolver.PublicPointerRefused, match="^resolution_refused$"):
+        resolver.resolve_public_pointer(root, **{**pins, "expected_pointer_sha256": "0" * 64})

@@ -2434,7 +2434,8 @@ $startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStateP
   '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
   $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 $startupPrompt += (
-  ' Shared Mind read: only when WD_MIND_READ_ENABLED is 1 and the session has an explicitly configured ' +
+  ' Optional bounded bridge-event status projection, not Q4 semantic memory; it is off unless explicitly enabled. ' +
+  ' Only when WD_MIND_READ_ENABLED is 1 and the session has an explicitly configured ' +
   'WD_MIND_LATEST, WD_MIND_AUDIT_ROOT, WD_MIND_FLEET and WD_MIND_FLEET_SHA256, use the pinned ' +
   'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_bridge_mind_session.py with --latest, --audit-root, --fleet ' +
   'and --fleet-sha256 from those values in this agent session. Read its result locally; do not forward ' +

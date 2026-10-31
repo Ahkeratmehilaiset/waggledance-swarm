@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from sandbox.mind import mind_capture_producer as producer
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from tools.bridge_compact_view import event_id
-from waggledance.core.bridge_log_reader import BridgeCursor, BridgeReadStatus, read_bridge_log
+from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, BridgeReadStatus, read_bridge_log
 
 MAX_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 10000
@@ -40,7 +40,8 @@ def _token(cursor):
 
 def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes, max_rows, generation_path=None,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-                      _commitment_anchor=None, _public_tasks=None, _public_types=None):
+                      _commitment_anchor=None, _public_tasks=None, _public_types=None,
+                      expected_prefix_sha256=None, max_prefix_bytes=None):
     """Return an uncommitted delta; unpinned positional-policy calls are legacy only."""
     try:
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
@@ -62,8 +63,11 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
                 or type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS
                 or type(approved_non_review_tasks) is not frozenset):
             raise ValueError()
+        prefix_requested = expected_prefix_sha256 is not None or max_prefix_bytes is not None
+        prefix_args = (dict(expected_prefix_sha256=expected_prefix_sha256, max_prefix_bytes=max_prefix_bytes)
+                       if prefix_requested else {})
         result = read_bridge_log(path, cursor=cursor, max_bytes=max_bytes, max_rows=max_rows,
-                                 generation_path=generation_path)
+                                 generation_path=generation_path, **prefix_args)
         observed = dt.datetime.now(dt.timezone.utc).isoformat()
         candidate = result.candidate_cursor
         if (type(result.status) is not BridgeReadStatus or result.status not in (BridgeReadStatus.OK, BridgeReadStatus.IDLE)
@@ -103,6 +107,11 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
         value = adapter.adapt_rows(rows, snap, approved_non_review_tasks, ttl_seconds=900, **kwargs)
         value["source"]["coverage"] = "delta_only_not_complete_history"
         value["candidate_cursor"] = candidate
+        if prefix_requested:
+            prefix = getattr(result, "candidate_prefix", None)
+            if prefix is None or prefix.cursor != candidate:
+                raise ValueError()
+            value["candidate_prefix"] = prefix
         if chain is not None:
             value["_semantic_state"] = (chain, len(result.rows))
         return value
@@ -168,12 +177,14 @@ class _ProjectionBinding:
     semantic_commitment: str = field(repr=False)
     status_mode: str = "legacy"
     public_policy_sha256: str | None = None
+    candidate_prefix: BridgePrefixPin | None = None
 
 
 def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
                         generation_path, max_bytes, max_rows,
                         policy_bytes, policy_sha256, roster_bytes, roster_sha256,
-                        public_policy_bytes=None, public_policy_sha256=None):
+                        public_policy_bytes=None, public_policy_sha256=None,
+                        expected_prefix_sha256=None, max_prefix_bytes=None):
     """Read using an externally authenticated anchor and retain a delta binding.
 
     The caller must independently authenticate anchor_bytes and its expected
@@ -184,7 +195,10 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
     The in-memory semantic commitment includes all parsed rows in order before
     filtering, including duplicates; it is not a hash of original JSONL bytes
     and does not prove origin or correct computation by an untrusted caller.
-    Do not publish it: it can expose guesses about filtered private rows.
+    Do not publish it: it can expose guesses about filtered private rows. An
+    optional separately trusted prefix pin detects ordinary prior rewrites;
+    it does not authenticate origin or defeat concurrent same-user ABA. Prefix
+    hashes can reveal guesses about private source bytes and are not public.
     """
     try:
         if (type(anchor_bytes) is not bytes or len(anchor_bytes) > _ANCHOR_MAX_BYTES
@@ -224,14 +238,17 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
                                    generation_path=generation_path, policy_bytes=policy_bytes,
                                    policy_sha256=policy_sha256, roster_bytes=roster_bytes,
                                    roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256,
-                                   _public_tasks=public_tasks, _public_types=public_types)
+                                   _public_tasks=public_tasks, _public_types=public_types,
+                                   expected_prefix_sha256=expected_prefix_sha256,
+                                   max_prefix_bytes=max_prefix_bytes)
         chain, count = result.pop("_semantic_state")
         projection_data = _canonical(result["projection"])
         commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)
         result["_projection_binding"] = _ProjectionBinding(
             projection_data, _canonical(result["source"]), result["candidate_cursor"],
             anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment,
-            "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None)
+            "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None,
+            result.get("candidate_prefix"))
         return result
     except Exception:
         raise SnapshotRefused("snapshot_refused") from None
@@ -307,6 +324,14 @@ def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_s
                 or not hmac.compare_digest(binding.policy_sha256, expected_policy_sha256)
                 or not hmac.compare_digest(binding.roster_sha256, expected_roster_sha256)
                 or type(binding.row_commitment) is not bytes or len(binding.row_commitment) != 32
+                or (binding.candidate_prefix is None and "candidate_prefix" in snapshot_result)
+                or (binding.candidate_prefix is not None and
+                    (type(binding.candidate_prefix) is not BridgePrefixPin
+                     or binding.candidate_prefix.cursor != binding.candidate
+                     or type(binding.candidate_prefix.sha256) is not str
+                     or _SHA256.fullmatch(binding.candidate_prefix.sha256) is None
+                     or type(snapshot_result.get("candidate_prefix")) is not BridgePrefixPin
+                     or snapshot_result.get("candidate_prefix") != binding.candidate_prefix))
                 or type(binding.row_count) is not int or not 0 <= binding.row_count <= MAX_ROWS
                 or not isinstance(binding.semantic_commitment, str)
                 or _SHA256.fullmatch(binding.semantic_commitment) is None

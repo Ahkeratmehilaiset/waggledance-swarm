@@ -29,11 +29,11 @@ from sandbox.mind.step2 import shared_producer as producer
 HEX64 = re.compile(r"[0-9a-f]{64}")
 STATUS_MODE = "public-v1"
 UNKNOWN = "UNKNOWN"
-STATUSES = frozenset({"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED"})
+STATUSES = frozenset({"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED", "EMPTY_NO_CHANGE"})
 REFUSALS = frozenset({"request_invalid", "pins_absent", "pins_mismatch", "prepare_refused", "empty_genesis",
                       "build_refused", "checkpoint_refused"})
 REPORT_KEYS = frozenset({"status", "generation", "pointer_sha256", "artifacts", "records", "source_mode",
-                         "publisher_identity", "source_authenticity", "authenticated", "pins_bound"})
+                         "publisher_identity", "source_authenticity", "freshness", "authenticated", "pins_bound"})
 
 
 class PublicProducerRefused(ValueError):
@@ -121,24 +121,39 @@ def _bind_pins(request):
 
 
 def _report(status, *, generation, pointer_sha256, artifacts, records, public_policy_sha256):
+    """``freshness`` is UNKNOWN by construction: ``pointer_sha256`` is the pointer the checkpoint published under its
+    writer lock for THIS call; whether it is still the live pointer when the caller reads the report is not known."""
     report = {"status": status, "generation": generation, "pointer_sha256": pointer_sha256, "artifacts": artifacts,
               "records": records, "source_mode": {"status_mode": STATUS_MODE, "public_policy_sha256": public_policy_sha256},
-              "publisher_identity": UNKNOWN, "source_authenticity": UNKNOWN, "authenticated": False, "pins_bound": True}
+              "publisher_identity": UNKNOWN, "source_authenticity": UNKNOWN, "freshness": UNKNOWN,
+              "authenticated": False, "pins_bound": True}
     if set(report) != REPORT_KEYS or status not in STATUSES:
         _refuse("request_invalid")
     return report
 
 
-def _pointer_digest(root):
-    return hashlib.sha256((Path(root) / checkpoint.POINTER).read_bytes()).hexdigest()
+def _locked_pointer_digest(value, generation, artifacts):
+    """The receipt digest comes from the EXACT pointer value the checkpoint returned while it held the writer lock,
+    serialized with the checkpoint's own canonical form (the bytes it published). A later root read could name a
+    pointer another publication replaced ours with, so no file is read here. The value must name OUR generation and
+    artifacts, or the receipt binds nothing (``checkpoint_refused``; the published directory is retained)."""
+    if (not isinstance(value, dict) or value.get("generation") != generation or value.get("artifacts") != artifacts
+            or not isinstance(value.get("schema"), str)):
+        raise ValueError()
+    digest = checkpoint._sha(checkpoint._canonical(value))
+    if not _hex(digest):
+        raise ValueError()
+    return digest
 
 
 def publish_public_generation(*, enabled=False, request=None):
     """OFF by default. Enabled: bind the caller's pins, prepare ONE public-v1 delta (Lead strict chain), then either
-    advance the checkpoint on a strict empty delta (predecessor required), or build the public generation and commit
-    it as genesis (no predecessor) or as history (predecessor + verified watermark). Returns the closed report
-    (``REPORT_KEYS``) with ``publisher_identity`` and ``source_authenticity`` always ``UNKNOWN``; refuses with one
-    fixed token (``REFUSALS``), never text. Nothing is deleted on any path."""
+    advance the checkpoint on a strict empty delta (predecessor required; an unmoved cursor is ``EMPTY_NO_CHANGE``,
+    a verified repeat and not a publication), or build the public generation and commit it as genesis (no
+    predecessor) or as history (predecessor + verified watermark). The receipt's ``pointer_sha256`` is derived from
+    the pointer value the checkpoint returned under its lock, never from a later root read. Returns the closed report
+    (``REPORT_KEYS``) with ``publisher_identity``, ``source_authenticity`` and ``freshness`` always ``UNKNOWN``;
+    refuses with one fixed token (``REFUSALS``), never text. Nothing is deleted on any path."""
     if type(enabled) is not bool:
         _refuse("request_invalid")
     if not enabled:
@@ -170,11 +185,18 @@ def publish_public_generation(*, enabled=False, request=None):
         try:
             advanced = checkpoint.advance_empty_delta(root, result, tasks, expected_pointer_sha256=predecessor.pointer_sha256,
                                                       **checkpoint_pins, **public)
-            if not isinstance(advanced, dict) or advanced.get("status") != "advanced" or not _hex(advanced.get("pointer_sha256")):
+            if not isinstance(advanced, dict) or not _hex(advanced.get("pointer_sha256")):
+                raise ValueError()
+            if advanced.get("status") == "advanced":
+                status = "EMPTY_ADVANCED"
+            elif (advanced.get("status") == "no_change"
+                  and hmac.compare_digest(advanced["pointer_sha256"], predecessor.pointer_sha256)):
+                status = "EMPTY_NO_CHANGE"  # the cursor did not move: a verified repeat, NOT a new publication
+            else:
                 raise ValueError()
         except Exception:  # noqa: BLE001 - CheckpointRefused (stale pointer, lock, mode) or shape: one token
             _refuse("checkpoint_refused")
-        return _report("EMPTY_ADVANCED", generation=None, pointer_sha256=advanced["pointer_sha256"], artifacts=None,
+        return _report(status, generation=None, pointer_sha256=advanced["pointer_sha256"], artifacts=None,
                        records=0, public_policy_sha256=pins.public_policy_sha256)
     build_source = {"snapshot_result": result, "expected_anchor_sha256": pins.anchor_sha256, "mode": STATUS_MODE,
                     "public_policy_bytes": config.public_policy_bytes, "public_policy_sha256": pins.public_policy_sha256,
@@ -198,16 +220,17 @@ def publish_public_generation(*, enabled=False, request=None):
     start, end = source.cursor, result["candidate_cursor"]
     try:
         if predecessor is None:
-            checkpoint.commit_generation(root, request.generation, start, end, tasks, expected_pointer_sha256=None,
-                                         expected_artifacts=artifacts, initial_cursor=start, snapshot_result=result,
-                                         **checkpoint_pins, **public)
+            value = checkpoint.commit_generation(root, request.generation, start, end, tasks, expected_pointer_sha256=None,
+                                                 expected_artifacts=artifacts, initial_cursor=start, snapshot_result=result,
+                                                 **checkpoint_pins, **public)
             status = "PUBLISHED_GENESIS"
         else:
-            checkpoint.commit_history_generation(root, request.generation, start, end, tasks, snapshot_result=result,
-                                                 expected_pointer_sha256=predecessor.pointer_sha256,
-                                                 expected_artifacts=artifacts, **checkpoint_pins, **public)
+            value = checkpoint.commit_history_generation(root, request.generation, start, end, tasks, snapshot_result=result,
+                                                         expected_pointer_sha256=predecessor.pointer_sha256,
+                                                         expected_artifacts=artifacts, **checkpoint_pins, **public)
             status = "PUBLISHED_HISTORY"
+        pointer_sha256 = _locked_pointer_digest(value, request.generation, artifacts)  # the locked value, no root read
     except Exception:  # noqa: BLE001 - the built directory is RETAINED unpublished for the caller; nothing deleted
         _refuse("checkpoint_refused")
-    return _report(status, generation=request.generation, pointer_sha256=_pointer_digest(root), artifacts=artifacts,
+    return _report(status, generation=request.generation, pointer_sha256=pointer_sha256, artifacts=artifacts,
                    records=built["build_receipt"]["records"], public_policy_sha256=pins.public_policy_sha256)

@@ -3,6 +3,7 @@
 import io
 import json
 import hashlib
+import datetime as dt
 from dataclasses import replace
 
 from tools import wd_q4_agent_query as cli
@@ -80,6 +81,7 @@ def _answer():
 
 
 def test_typed_binding_invokes_launcher_with_query_on_stdin_only(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     seen = {}
     def launcher(**kwargs):
         seen.update(kwargs)
@@ -114,6 +116,7 @@ def test_invalid_binding_or_query_never_calls_launcher(monkeypatch):
 
 
 def test_scope_and_descriptor_mismatch_fail_closed(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     for mutation in ({"scope": "private-scope"}, {"descriptor_sha256": "0" * 64},
                      {"results": [{"ref_sha256": "9" * 64, "doc_id_sha256": "a" * 64,
                                    "ref_kind": None, "canonical_event": None}]}):
@@ -121,7 +124,7 @@ def test_scope_and_descriptor_mismatch_fail_closed(monkeypatch):
         answer.update(mutation)
         monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: answer)
         try:
-            cli.query_with_verified_config(_config(), io.BytesIO(b'{"situation":"s","time":"t"}'))
+            cli.query_with_verified_config(_config(), io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
         except cli.QueryRefused:
             pass
         else:
@@ -129,11 +132,12 @@ def test_scope_and_descriptor_mismatch_fail_closed(monkeypatch):
 
 
 def test_launcher_errors_are_sanitized(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     def fail(**_):
         raise RuntimeError("sensitive-query-or-path")
     monkeypatch.setattr(cli, "_invoke_launcher", fail)
     try:
-        cli.query_with_verified_config(_config(), io.BytesIO(b'{"situation":"s","time":"t"}'))
+        cli.query_with_verified_config(_config(), io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
     except cli.QueryRefused as exc:
         assert str(exc) == "launcher_refused"
         assert exc.__cause__ is None
@@ -142,7 +146,8 @@ def test_launcher_errors_are_sanitized(monkeypatch):
 
 
 def test_refusal_is_sanitized_and_abstain_keeps_scope(monkeypatch):
-    raw = b'{"situation":"s","time":"t"}'
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    raw = b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "reason": "sensitive"})
     assert cli.query_with_verified_config(_config(), io.BytesIO(raw)) == {
         "status": "REFUSED", "reason": "runtime_refused", "results": []}
@@ -224,6 +229,7 @@ def test_output_rejects_missing_or_forged_provenance():
 
 
 def test_run_verified_keeps_provenance_from_launcher(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: _answer())
     output = io.StringIO()
     raw = b'{"situation":"synthetic-query","time":"2026-10-31T12:00:00Z"}'
@@ -252,6 +258,7 @@ def _resolution_fixture():
 
 
 def test_query_and_resolve_binds_same_input_and_returns_only_projected_text(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     data, memory, tasks, record, result = _resolution_fixture()
     seen = []
     def launcher(**kwargs):
@@ -267,6 +274,7 @@ def test_query_and_resolve_binds_same_input_and_returns_only_projected_text(monk
 
 
 def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     data, memory, tasks, record, result = _resolution_fixture()
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: result)
     late = b'{"situation":"sensitive","time":"2026-10-31T12:02:00Z"}'
@@ -284,6 +292,7 @@ def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
 
 
 def test_query_and_resolve_refuses_runtime_refused(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     data, memory, tasks, _, _ = _resolution_fixture()
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "results": []})
     try:
@@ -296,6 +305,7 @@ def test_query_and_resolve_refuses_runtime_refused(monkeypatch):
 
 
 def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descriptor(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     data, memory, tasks, _, result = _resolution_fixture()
     class Counted(io.BytesIO):
         reads = 0
@@ -312,3 +322,45 @@ def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descrip
     else:
         raise AssertionError("forged descriptor accepted")
     assert stream.reads == 1
+
+
+def test_query_and_resolve_rejects_future_before_launcher_and_allows_now_and_past(monkeypatch):
+    data, memory, tasks, _, result = _resolution_fixture()
+    now = dt.datetime(2026, 10, 31, 12, 2, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(cli, "_utc_now", lambda: now, raising=False)
+    seen = []
+    def launch(**kwargs):
+        seen.append(kwargs["query"])
+        return result
+    monkeypatch.setattr(cli, "_invoke_launcher", launch)
+    def query_at(when):
+        return io.BytesIO(json.dumps({"situation": "synthetic", "time": when}).encode())
+    try:
+        cli.query_and_resolve(_config(), query_at("2026-10-31T12:02:00.000001Z"), memory, data, tasks)
+    except cli.QueryRefused as exc:
+        assert str(exc) == "resolution_refused"
+    else:
+        raise AssertionError("future timestamp accepted")
+    assert seen == []
+    for when in ("2026-10-31T12:02:00Z", "2026-10-31T12:01:59.999999Z"):
+        assert cli.query_and_resolve(_config(), query_at(when), memory, data, tasks)["status"] == "ANSWER"
+    assert len(seen) == 2
+
+
+def test_low_level_and_run_verified_reject_future_without_launch(monkeypatch):
+    now = dt.datetime(2026, 10, 31, 12, 2, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(cli, "_utc_now", lambda: now)
+    seen = []
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **kw: seen.append(kw) or _answer())
+    for stamp in ("2026-10-31T12:02:00.000001Z", "2026-10-31T12:02:00.0000001Z"):
+        raw = json.dumps({"situation": "synthetic", "time": stamp}).encode()
+        try:
+            cli.query_with_verified_config(_config(), io.BytesIO(raw))
+        except cli.QueryRefused:
+            pass
+        else:
+            raise AssertionError("future low-level query accepted")
+        output = io.StringIO()
+        assert cli.run_verified(_config(), io.BytesIO(raw), output) == 2
+        assert json.loads(output.getvalue())["status"] == "REFUSED"
+    assert seen == []

@@ -10,6 +10,7 @@ same-user race resistance, model asset provenance, or a whole-call deadline.
 """
 
 from dataclasses import dataclass
+import datetime as dt
 import io
 import json
 import math
@@ -62,6 +63,28 @@ def _verified_channel():
     # Deliberate refusal: a future reviewed implementation must establish the
     # independently anchored complete tuple, including model/runtime pins.
     return None
+
+
+def _utc_now():
+    """Local wall clock only; this does not establish a trusted clock."""
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _validated_query_time(raw):
+    """Use Q4's aware-UTC parsing with an exact local wall-clock upper bound."""
+    try:
+        query = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+        value = query["time"]
+        # datetime.fromisoformat truncates after microseconds; fail closed rather
+        # than accidentally treating a future fractional instant as current.
+        if re.search(r"[.,]\d{7,}", value):
+            raise ValueError()
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.astimezone(dt.timezone.utc) > _utc_now():
+            raise ValueError()
+        return value
+    except (ValueError, TypeError, KeyError, OverflowError, UnicodeError, RecursionError):
+        raise QueryRefused("invalid_query_time") from None
 
 
 @dataclass(frozen=True)
@@ -155,6 +178,7 @@ def query_with_verified_config(config, stdin):
     """
     _validate_config(config)
     query = read_query(stdin)
+    _validated_query_time(query)
     args = {"runtime-root": config.runtime_root, "runtime-manifest": config.runtime_manifest,
             "runtime-manifest-sha256": config.runtime_manifest_sha256,
             "runtime-generation": config.runtime_generation, "runtime-revision": config.runtime_revision,
@@ -215,10 +239,7 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                 or len(memory_manifest_bytes) > resolver.MAX_BYTES or len(projection_bytes) > resolver.MAX_BYTES):
             raise QueryRefused("resolution_refused")
         raw = read_query(stdin)
-        query = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
-        query_time = query["time"]
-        if resolver.sp.corpus_mod.parse_utc(query_time) is None:
-            raise QueryRefused("resolution_refused")
+        query_time = _validated_query_time(raw)
         result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
         if result["status"] == "REFUSED":
             raise QueryRefused("resolution_refused")

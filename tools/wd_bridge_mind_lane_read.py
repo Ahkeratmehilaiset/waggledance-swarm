@@ -48,6 +48,9 @@ _REF = re.compile(r"[0-9a-f]{64}\Z")
 _HEAD = re.compile(r"[0-9a-f]{40}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _CURSOR = re.compile(r"bc1\.[A-Za-z0-9_-]{1,2044}\Z")
+# A task id is a bare token or one lane/branch pair; no colon, no leading or doubled slash, no dot-only segment, so a
+# path-shaped value (drive letter, absolute path, nested folders, parent hop) can never be echoed (RCO2 N-a).
+_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,120})?\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,244}\Z")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
@@ -193,6 +196,13 @@ def _token_or_unknown(value: Any) -> str:
     return core.UNKNOWN if value == core.UNKNOWN else _safe(value, _TOKEN)
 
 
+def _task_or_unknown(value: Any) -> str:
+    """A task id outside the lane/branch shape is redacted to UNKNOWN, never echoed and never fatal for the view."""
+    if isinstance(value, str) and _TASK.fullmatch(value) and ".." not in value:
+        return value
+    return core.UNKNOWN
+
+
 def _time_or_unknown(value: Any) -> str:
     return core.UNKNOWN if value == core.UNKNOWN else _safe(value, _TIME)
 
@@ -242,7 +252,7 @@ def _lanes(snapshot: Mapping[str, Any]) -> dict:
         claims: list[dict] = []
         if isinstance(record.get("claims"), Mapping):
             for claim in record["claims"].get("by_task", []):
-                claims.append({"task_id": _token_or_unknown(claim["task_id"]),
+                claims.append({"task_id": _task_or_unknown(claim["task_id"]),
                                "lease_expires_utc": _time_or_unknown(claim["lease_expires_utc"]),
                                "expired": _flag(claim["expired"])})
         age = record["observation_age_seconds"]

@@ -290,3 +290,23 @@ def test_g2_rows_without_a_verified_identity_never_mark_a_lane_observed(tmp_path
     text = core.canonical_bytes(result).decode("utf-8")
     assert "fable-task" not in text and "absent" not in text.lower()
 
+
+@pytest.mark.parametrize("shaped", ["C:/Users/example/private", "/srv/data/x", "home/user/private/x", "x:y", "a/../b"])
+def test_na_path_shaped_task_ids_are_redacted_to_unknown_and_never_echoed(tmp_path, shaped):
+    """RCO2 N-a via Lead 08:47:06Z: a claim task_id shaped like a path must not reach the output; legitimate lane/branch
+    task ids keep working. Synthetic tokens only, no real private path."""
+    events = rows()
+    shaped_claim = event("codex-tools-1", "claim", "active", shaped, "2026-10-31T07:57:00Z",
+                         write_scope=["tools/x.py"], claim_lease_expires_utc="2026-10-31T08:30:00Z")
+    branch_claim = event("claude-rco-2", "claim", "active", "codex-lead-1/mind-live-read-20261031", "2026-10-31T07:57:30Z",
+                         write_scope=["tools/y.py"], claim_lease_expires_utc="2026-10-31T08:30:00Z")
+    audit, latest, _ = make_live(tmp_path, events=events + [shaped_claim, branch_claim])
+    result = read(audit, latest)
+    tools_claims = result["lanes"]["codex-tools-1"]["claims"]
+    assert [row["task_id"] for row in tools_claims] == [core.UNKNOWN]
+    assert [row["task_id"] for row in result["lanes"]["claude-rco-2"]["claims"]] == ["codex-lead-1/mind-live-read-20261031"]
+    assert [row["task_id"] for row in result["lanes"]["codex-lead-1"]["claims"]] == ["lead-task"]
+    text = core.canonical_bytes(result).decode("utf-8")
+    for fragment in ("Users", "example", "private", "srv", "data/x", "home", "x:y", "a/.."):
+        assert fragment not in text
+

@@ -1138,6 +1138,69 @@ class TestChatService:
             assert mock_hot_cache.set.called or True  # may or may not cache depending on frequency
         asyncio.run(_run())
 
+    def test_hybrid_error_log_omits_query_and_preserves_fallback(self, chat_service, caplog):
+        query = "synthetic-private-hybrid-query"
+        hybrid = MagicMock()
+        hybrid.retrieve = AsyncMock(side_effect=RuntimeError(query))
+        chat_service._hybrid_retrieval = hybrid
+
+        with caplog.at_level("DEBUG"):
+            result = asyncio.run(chat_service._try_hybrid_retrieval(
+                query, "chat", "en", "synthetic-cache-key", 0.0, "HOME"
+            ))
+
+        hybrid.retrieve.assert_awaited_once_with(query=query, intent="chat", k=5)
+        assert result is None
+        assert "Hybrid retrieval failed" in caplog.text and "RuntimeError" in caplog.text
+        assert query not in caplog.text
+
+    def test_hex_error_log_omits_query_and_preserves_fallback(self, chat_service, mock_orchestrator, caplog):
+        query = "tell me about hive layout synthetic-private-hex-query"
+        hex_assist = MagicMock()
+        hex_assist.enabled = True
+        hex_assist.resolve = AsyncMock(side_effect=RuntimeError(query))
+        chat_service._hex_neighbor_assist = hex_assist
+
+        with caplog.at_level("DEBUG"):
+            result = asyncio.run(chat_service.handle(ChatRequest(query=query)))
+
+        hex_assist.resolve.assert_awaited_once()
+        mock_orchestrator.handle_task.assert_awaited_once()
+        assert result is not None
+        assert "Hex mesh resolve failed" in caplog.text and "RuntimeError" in caplog.text
+        assert query not in caplog.text
+
+    def test_gap_error_log_omits_exception_text(self, chat_service, caplog):
+        query = "synthetic-private-gap-query"
+        detector = MagicMock()
+        detector.record.side_effect = RuntimeError(query)
+        chat_service._runtime_gap_detector = detector
+
+        with caplog.at_level("DEBUG"):
+            result = asyncio.run(chat_service._record_low_confidence_gap(
+                query=query, confidence=0.1, latency_ms=1.0, route_type="llm",
+                source="llm", language="en", profile="HOME", round_table_used=False,
+            ))
+
+        detector.record.assert_called_once()
+        assert result is None and "Failed to record low-confidence chat gap" in caplog.text
+        assert "RuntimeError" in caplog.text and query not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+
+    def test_case_error_log_omits_exception_text(self, chat_service, caplog):
+        query = "synthetic-private-case-query"
+        builder = MagicMock()
+        builder.build_from_legacy.side_effect = RuntimeError(query)
+        chat_service._case_builder = builder
+
+        with caplog.at_level("DEBUG"):
+            result = asyncio.run(chat_service._record_case(query, "synthetic-answer", 0.1, "llm", "llm", 1.0))
+
+        builder.build_from_legacy.assert_called_once()
+        assert result is None and "Failed to record chat case" in caplog.text
+        assert "RuntimeError" in caplog.text and query not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+
     def test_hybrid_shadow_hits_do_not_answer(
         self, mock_orchestrator, mock_memory_service, mock_hot_cache, mock_config
     ):

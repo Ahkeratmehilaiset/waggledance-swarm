@@ -65,7 +65,11 @@ BY_REF = dict(zip(REFS, EVENTS))
 DEEP = b"[" * 100000 + b"]" * 100000  # nested beyond the JSON parser's depth: a RecursionError, not a ValueError
 
 
-def position(offset, identity="log-a", generation=None):
+LOG_A = "windows-v1:0000abcd:0000000000000001"  # synthetic bridge log reader identities (the reader's own shape)
+LOG_B = "windows-v1:0000abcd:0000000000000002"
+
+
+def position(offset, identity=LOG_A, generation=None):
     """A compact position cursor of the tool's own form (tools/bridge_compact_view.py): bc1. and the unpadded
     url-safe base64 of the sorted-key JSON of its three keys."""
     data = json.dumps({"offset": offset, "file_identity": identity, "generation": generation}, sort_keys=True,
@@ -80,8 +84,8 @@ def offset_of(cursor):
 
 GOOD, STALE = position(3), position(99)  # a cursor the fake compact tool knows, and one it refuses
 AFTER, SEEDED = position(5), position(6)  # the cursors it hands out after a delta and a seed read (known too)
-OTHER_LOG = position(5, identity="log-b")  # a cursor into another bridge log
-SOURCE = {"file_identity": "log-a", "log_generation": None}  # the bridge log identity the log-a cursors name
+OTHER_LOG = position(5, identity=LOG_B)  # a cursor into another bridge log
+SOURCE = {"file_identity": LOG_A, "log_generation": None}  # the bridge log identity the log-a cursors name
 
 
 def answer(code, out):
@@ -658,7 +662,7 @@ def corrupt_state(space, case):
     elif case == "window_not_a_list":
         state["window"] = {}
     elif case == "a_cursor_not_naming_its_source":
-        state["source"] = {"file_identity": "log-b", "log_generation": None}
+        state["source"] = {"file_identity": LOG_B, "log_generation": None}
     elif case == "a_cursor_not_a_position":
         state["cursor"] = "bc1.eA"
     elif case == "window_sha256_altered":
@@ -1350,9 +1354,10 @@ OPEN_PR = {"state": "OPEN", "head": "a" * 40, "head_ref_name": "lane-a/case", "p
            "commit_authors": ["lane-a"]}
 
 
-def candidate_parts(space, rows=None):
+def candidate_parts(space, rows=None, cursor=GOOD):
     rows = rows_for(space, REFS[:3]) if rows is None else rows
     capture, manifest = space["capture_object"](rows)
+    capture["provenance"] = space["provenance_object"](cursor, space["cursor_source"](cursor))
     return capture, manifest, committed(space, rows, GOOD, 2)
 
 
@@ -1908,9 +1913,21 @@ def test_a_candidate_cycle_builds_one_immutable_dir_whose_last_ok_names_and_hash
     assert file_sha(live / first["state_file"]) == first["state_sha256"]
     assert (first["context_file"], first["context_sha256"], rec["previous"]) == (None, None, None)
     state = space["read_state"](live / first["state_file"], first["state_sha256"], 1)
+    # the pinned compact head repeats the state's binding fields and names the full state's digest, never a row
+    assert first["state_head_file"] == f"cycles/{first['cycle_dir']}/state.head.json"
+    assert file_sha(live / first["state_head_file"]) == first["state_head_sha256"]
+    head = json.loads((live / first["state_head_file"]).read_text(encoding="ascii"))
+    assert head == {"schema": "wd.bridge-mind-producer-state-head.v1", "generation": 1, "cursor": state["cursor"],
+                    "source": state["source"], "window_sha256": state["window_sha256"], "state_file": "state.json",
+                    "state_sha256": first["state_sha256"]}
+    assert (live / first["state_head_file"]).stat().st_size < 65536 and "window" not in head
     assert [row["ref"] for row in state["window"]] == REFS[-WINDOW:] and state["cursor"] == SEEDED
     snapshot = core.read_snapshot(live / first["publication_file"], audit_root=live.parent)
     assert hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest() == first["snapshot_sha256"]
+    # provenance: the capture carries the very cursor the state commits, and the publication names that bridge log
+    capture = json.loads((live / first["capture_file"]).read_text(encoding="utf-8"))
+    assert capture["provenance"] == {"reader_cursor": SEEDED, "file_identity": LOG_A, "log_generation": None}
+    assert snapshot["source"]["log_identity"] == "capture-window:" + LOG_A and snapshot["source"]["generation"] is None
     assert file_sha(live / first["board_file"]) == first["board_text_sha256"]
     kept = {path: file_sha(path) for path in (live / "cycles").rglob("*") if path.is_file()}
 
@@ -1920,6 +1937,8 @@ def test_a_candidate_cycle_builds_one_immutable_dir_whose_last_ok_names_and_hash
     assert bridge.calls[1 + WINDOW] == ["-AfterEvent", SEEDED] and rec["previous"] == "verified"
     again = space["read_state"](live / second["state_file"], second["state_sha256"], 2)
     assert again["window"] == state["window"] and again["cursor"] == AFTER
+    capture = json.loads((live / second["capture_file"]).read_text(encoding="utf-8"))
+    assert capture["provenance"]["reader_cursor"] == AFTER and capture["provenance"]["log_generation"] is None
     assert {path: file_sha(path) for path in kept} == kept  # the first cycle's files are never rewritten
 
 
@@ -2068,8 +2087,10 @@ def budget_candidate_space(tmp_path, room, run_files):
     (live / "cycles").mkdir(parents=True)
     space, budget = budget_load(live, room=room)
     payloads = {"capture.json": b"c" * 10, "detail-manifest.txt": b"m" * 5, "state.json": b"s" * 20}
-    space.update(advance=lambda state, seeded: ([], "cursor", {}, {"new_rows": 0}),
-                 state_envelope=lambda generation, cursor, source, rows: {"generation": generation},
+    space.update(advance=lambda state, seeded: ([], "cursor", {"file_identity": LOG_A, "log_generation": None},
+                                                {"new_rows": 0}),
+                 state_envelope=lambda generation, cursor, source, rows: {"generation": generation, "cursor": cursor,
+                                                                          "source": source, "window_sha256": "0" * 64},
                  capture_object=lambda rows: ({"observed_utc": "2026-10-23T00:00:00Z"}, b"m" * 5),
                  snapshot_prs=lambda capture: set(), pr_context=lambda cache_dir, needed=None: (None, {"ms": 0}),
                  prewrite=lambda capture, manifest, context, state: dict(payloads),
@@ -2086,9 +2107,20 @@ def budget_candidate_space(tmp_path, room, run_files):
                 "global_question": None}
 
     space["shadow"] = types.SimpleNamespace(run=run)
-    return space, budget, sum(len(data) for data in payloads.values())
+    return space, budget, sum(len(data) for data in payloads.values()) + HEAD_BYTES
 
 
+def head_bytes():
+    """The bytes of the compact head the budget candidate writes beside its 20-byte stand-in state: charged like
+    every candidate file, so every budget expectation below counts them."""
+    space, _ = load()
+    state = {"generation": 1, "cursor": "cursor", "source": {"file_identity": LOG_A, "log_generation": None},
+             "window_sha256": "0" * 64}
+    return len(space["compact"](space["state_head"](state, hashlib.sha256(b"s" * 20).hexdigest())))
+
+
+HEAD_BYTES = head_bytes()
+CANDIDATE_BYTES = 35 + HEAD_BYTES  # the three stand-in payloads plus the compact head
 BUDGET_RUN_FILES = {"board.txt": b"b" * 30, "reflected.publication.json": b"p" * 40, "receipt.json": b"r" * 50}
 
 
@@ -2101,7 +2133,7 @@ def test_a_candidate_is_charged_its_payloads_and_every_file_its_shadow_run_wrote
 
 def test_a_candidate_whose_writes_use_exactly_the_room_commits(tmp_path):
     run_bytes = sum(len(data) for data in BUDGET_RUN_FILES.values())
-    space, budget, payload_bytes = budget_candidate_space(tmp_path, 35 + run_bytes, BUDGET_RUN_FILES)
+    space, budget, payload_bytes = budget_candidate_space(tmp_path, CANDIDATE_BYTES + run_bytes, BUDGET_RUN_FILES)
     assert space["candidate_cycle"]({}, None, {})["generation"] == 1
     assert budget.spent == payload_bytes + run_bytes == budget.allowance - budget.reserve and not budget.exhausted
 
@@ -2110,13 +2142,13 @@ def test_a_shadow_output_past_the_allowance_is_refused_before_it_is_written(tmp_
     """Changed from the first B5 commit (counted after the run): one byte short of the last shadow output refuses
     that output before it exists."""
     run_bytes = sum(len(data) for data in BUDGET_RUN_FILES.values())
-    space, budget, payload_bytes = budget_candidate_space(tmp_path, 35 + run_bytes - 1, BUDGET_RUN_FILES)
-    assert payload_bytes == 35
+    space, budget, payload_bytes = budget_candidate_space(tmp_path, CANDIDATE_BYTES + run_bytes - 1, BUDGET_RUN_FILES)
+    assert payload_bytes == CANDIDATE_BYTES
     with budget_exhausted(space):
         space["candidate_cycle"]({}, None, {})
     run_dir = next((tmp_path / "live" / "cycles").iterdir()) / "run"
     assert sorted(os.listdir(run_dir)) == ["board.txt", "reflected.publication.json"]  # the receipt never existed
-    assert budget.exhausted is True and budget.spent == 35 + run_bytes - len(BUDGET_RUN_FILES["receipt.json"])
+    assert budget.exhausted is True and budget.spent == CANDIDATE_BYTES + run_bytes - len(BUDGET_RUN_FILES["receipt.json"])
 
 
 def test_a_shadow_run_without_the_charge_keyword_refuses_the_cycle_before_any_write(tmp_path):
@@ -2204,3 +2236,49 @@ def test_the_script_ends_after_the_cycle_that_exhausted_the_budget():
     check = loop.body[at + 1]
     assert isinstance(check, ast.If) and ast.unparse(check.test) == "OutputBudget.exhausted"
     assert ast.unparse(check.body[-1]) == "raise SystemExit(STOP_EXIT)"
+
+
+# -- producer-to-shadow provenance binding (Lead Source GO 2026-10-31) ----------------------------------------------
+
+def test_the_capture_provenance_is_the_committed_cursor_and_the_bridge_log_identity_it_names():
+    space, _ = load()
+    for cursor, generation in ((GOOD, None), (position(7, generation="g2"), "g2")):
+        provenance = space["provenance_object"](cursor, space["cursor_source"](cursor))
+        assert provenance == {"reader_cursor": cursor, "file_identity": LOG_A, "log_generation": generation}
+        capture, _ = space["capture_object"](rows_for(space, REFS[:2]))
+        capture["provenance"] = provenance
+        assert shadow.read_capture(json.loads(json.dumps(capture)))  # the shadow accepts and re-decodes the cursor
+
+
+def test_a_capture_whose_provenance_is_not_the_committed_cursor_is_refused_before_any_write(tmp_path):
+    space, _ = load(live=tmp_path)
+    capture, manifest, state = candidate_parts(space, cursor=OTHER_LOG)  # names log-b; the state commits GOOD (log-a)
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    capture, manifest, state = candidate_parts(space, cursor=AFTER)  # same log, another position than the state
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    capture, manifest, state = candidate_parts(space)
+    del capture["provenance"]  # a capture without provenance is never committed by this producer
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_log_generation_that_appears_or_changes_under_a_committed_state_refuses_the_cycle_without_a_reseed():
+    """Rotation: the committed state names (log-a, None); a listing whose cursor names log-a with a generation, or
+    another generation, is another bridge log for this producer and refuses the cycle with the fixed reason."""
+    for cursor in (position(5, generation="g2"), position(5, identity=LOG_B, generation="g2")):
+        space, bridge = load()
+        bridge.listing = view(REFS[3:4], cursor)
+        state = committed(space, rows_for(space, REFS[:3]), GOOD)
+        before = copy.deepcopy(state)
+        with refused(space["CaptureRefused"], "state_source_changed"):
+            space["advance"](state)
+        assert state == before and len(listings(bridge)) == 1
+    space, bridge = load()
+    generation_state = committed(space, rows_for(space, REFS[:3]), position(3, generation="g2"))
+    assert generation_state["source"] == {"file_identity": LOG_A, "log_generation": "g2"}
+    bridge.listing = view(REFS[3:4], position(5))  # the generation vanished: refused, never defaulted to the old one
+    with refused(space["CaptureRefused"], "state_source_changed"):
+        space["advance"](generation_state)

@@ -328,6 +328,8 @@ def _published_gate_paths(definition: dict) -> set[str]:
 
 MIND_MODULES = (
     "tools.wd_bridge_mind",
+    "tools.wd_bridge_mind_lane_read",
+    "tools.wd_bridge_mind_session",
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
     "tools.wd_bridge_mind_rebuild",
@@ -336,7 +338,10 @@ MIND_MODULES = (
 MIND_CLI_MODULES = (
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
+    "tools.wd_bridge_mind_session",
 )
+MIND_SESSION_DEPS = frozenset({"tools/bridge_compact_view.py", "tools/bridge_next_action.py",
+                               "waggledance/core/bridge_log_reader.py"})
 
 
 def _assert_mind_delivery(definition: dict) -> None:
@@ -345,6 +350,11 @@ def _assert_mind_delivery(definition: dict) -> None:
     assert not missing_files, f"mind_file_drop: {sorted(missing_files)}"
     missing_smoke = set(MIND_MODULES) - set(definition["import_smoke"]["package_modules"])
     assert not missing_smoke, f"mind_smoke_drop: {sorted(missing_smoke)}"
+    missing_session_deps = MIND_SESSION_DEPS - set(definition["python_files"])
+    assert not missing_session_deps, f"mind_session_dependency_drop: {sorted(missing_session_deps)}"
+    assert definition["python_entrypoints"].get("mind_session") == "tools/wd_bridge_mind_session.py", (
+        "mind_entrypoint_drop: mind_session must name its exact session CLI"
+    )
     published = set(definition["python_entrypoints"].values())
     cli_paths = {module.replace(".", "/") + ".py" for module in MIND_CLI_MODULES}
     assert cli_paths <= published, f"mind_entrypoint_drop: {sorted(cli_paths - published)}"
@@ -366,6 +376,39 @@ def _assert_mind_delivery(definition: dict) -> None:
 def test_mind_family_is_packaged_smoke_checked_and_real_clis_are_published():
     """RCO2 closure finding: dormant source must reach the bundle before it can be used."""
     _assert_mind_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation", ("drop", "retarget", "renamed_alias"))
+def test_mind_session_entrypoint_cannot_be_dropped(mutation):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "retarget":
+        mutant["python_entrypoints"]["mind_session"] = "tools/wd_bridge_mind.py"
+    else:
+        path = mutant["python_entrypoints"].pop("mind_session")
+        if mutation == "renamed_alias":
+            mutant["python_entrypoints"]["other_session"] = path
+    with pytest.raises(AssertionError, match="mind_entrypoint_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(MIND_SESSION_DEPS))
+def test_mind_session_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="mind_session_dependency_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("launcher", ("start-wd-agent.ps1", "start-wd-tools-consumer.ps1"))
+def test_mind_session_remains_discoverable_to_both_launchers(launcher):
+    text = (OPS_ROOT / launcher).read_text(encoding="utf-8")
+    assert "tools/wd_bridge_mind_session.py" in text
+    assert "WD_BRIDGE_PYTHON_WRAPPER" in text
+    assert "WD_MIND_READ_ENABLED" in text
 
 
 @pytest.mark.parametrize("mutation,module", [
@@ -777,6 +820,265 @@ SHADOW_RELEASE_CLI = {
     "mind_join_turn": "sandbox/mind/join_turn.py",
 }
 
+# Read-only Q4 source may be delivered as code only. Its numerical runtime and
+# query entrypoint are not authorized by this source-file declaration.
+Q4_READONLY_FILES = frozenset({
+    "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
+    "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
+    "sandbox/mind/step2/q4.py", "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
+    "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
+    "sandbox/mind/step2/shared_bridge_snapshot.py", "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/shared_index_builder.py",
+    "sandbox/mind/step2/shared_history.py",
+    "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
+    "sandbox/mind/step2/shared_public_producer.py",
+    "sandbox/mind/step2/shared_result_resolver.py",
+    "sandbox/mind/step2/status_metadata_producer.py",
+    "sandbox/mind/step2/wd_q4_private_read.py",
+})
+Q4_AGENT_API = "tools/wd_q4_agent_query.py"
+Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
+PUBLIC_STATUS_API = "tools/wd_mind_public_session.py"
+PUBLIC_STATUS_CLI = "tools/wd_mind_public_session_cli.py"
+Q4_PUBLIC_POINTER_RESOLVER = "tools/wd_q4_public_pointer_resolver.py"
+Q4_PUBLIC_POINTER_DEPS = frozenset({
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+})
+Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
+Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
+Q4_PUBLIC_OUTER = "tools/wd_q4_public_outer.py"
+Q4_LANE_LINK = "tools/wd_q4_lane_link.py"
+Q4_PUBLIC_OUTER_DEPS = frozenset({
+    "tools/wd_q4_public_child.py", "tools/wd_q4_public_plan.py", Q4_PUBLIC_QUERY,
+    Q4_PUBLIC_POINTER_RESOLVER, Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/runtime_manifest.py",
+})
+Q4_PUBLIC_PRODUCER = "sandbox/mind/step2/shared_public_producer.py"
+Q4_PRODUCER_DEP = "sandbox/mind/step2/shared_producer.py"
+Q4_PUBLIC_SLICE = (
+    "tools/wd_q4_public_plan.py",
+    "tools/wd_q4_public_child.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
+)
+Q4_PUBLIC_SLICE_DEPS = frozenset({
+    Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_projection.py",
+    Q4_PUBLIC_PRODUCER,
+})
+
+
+def _assert_public_outer_delivery(definition):
+    files = definition["python_files"]
+    assert files.count(Q4_PUBLIC_OUTER) == 1, "public_outer_drop_or_duplicate"
+    assert Q4_PUBLIC_OUTER_DEPS <= set(files), "public_outer_dependency_drop"
+    assert Q4_PUBLIC_OUTER not in definition["python_entrypoints"].values(), "public_outer_published"
+    assert Q4_PUBLIC_OUTER not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "public_outer_manual_published"
+    )
+    assert "tools.wd_q4_public_outer" not in definition["import_smoke"]["package_modules"], (
+        "public_outer_smoke_published"
+    )
+
+
+def _assert_q4_lane_link_delivery(definition):
+    assert definition["python_files"].count(Q4_LANE_LINK) == 1, "q4_lane_link_drop_or_duplicate"
+    assert Q4_LANE_LINK not in definition["python_entrypoints"].values(), "q4_lane_link_published"
+    assert Q4_LANE_LINK not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "q4_lane_link_manual_published"
+    )
+    assert "tools.wd_q4_lane_link" not in definition["import_smoke"]["package_modules"], (
+        "q4_lane_link_smoke_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_q4_lane_link_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_q4_lane_link_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_lane_link")
+        reason = "q4_lane_link_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_q4_lane_link_delivery(mutant)
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_public_outer_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_public_outer")
+        reason = "public_outer_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_outer_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_OUTER_DEPS))
+def test_public_outer_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_outer_dependency_drop"):
+        _assert_public_outer_delivery(mutant)
+
+
+def _assert_public_pointer_resolver_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_POINTER_RESOLVER in files, "public_pointer_resolver_drop"
+    assert Q4_PUBLIC_POINTER_DEPS <= files, "public_pointer_dependency_drop"
+    assert Q4_PUBLIC_POINTER_RESOLVER not in set(definition["python_entrypoints"].values()), (
+        "public_pointer_resolver_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "resolver_drop", "adapter_drop", "checkpoint_drop", "published"])
+def test_public_pointer_resolver_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_pointer_resolver_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "resolver_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_pointer_resolver_drop"
+    elif mutation in {"adapter_drop", "checkpoint_drop"}:
+        path = ("sandbox/mind/step2/shared_capture_adapter.py" if mutation == "adapter_drop"
+                else "sandbox/mind/step2/shared_index_checkpoint.py")
+        mutant["python_files"].remove(path)
+        reason = "public_pointer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_pointer"] = Q4_PUBLIC_POINTER_RESOLVER
+        reason = "public_pointer_resolver_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_pointer_resolver_delivery(mutant)
+
+
+def _assert_public_query_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_QUERY in files, "public_query_drop"
+    assert Q4_PUBLIC_QUERY_DEPS <= files, "public_query_dependency_drop"
+    assert Q4_PUBLIC_QUERY not in set(definition["python_entrypoints"].values()), "public_query_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "query_drop", "agent_drop", "resolver_drop", "published"])
+def test_public_query_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_query_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "query_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_QUERY)
+        reason = "public_query_drop"
+    elif mutation in {"agent_drop", "resolver_drop"}:
+        mutant["python_files"].remove(Q4_AGENT_API if mutation == "agent_drop" else Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_query_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_query"] = Q4_PUBLIC_QUERY
+        reason = "public_query_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_query_delivery(mutant)
+
+
+def _assert_public_producer_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_PRODUCER in files, "public_producer_drop"
+    assert Q4_PRODUCER_DEP in files, "public_producer_dependency_drop"
+    published = set(definition["python_entrypoints"].values())
+    assert not {Q4_PUBLIC_PRODUCER, Q4_PRODUCER_DEP} & published, "public_producer_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "producer_drop", "dependency_drop", "producer_entrypoint", "dependency_entrypoint"])
+def test_public_producer_and_dependency_are_delivered_only_as_libraries(mutation):
+    definition = _definition()
+    _assert_public_producer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "producer_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_PRODUCER)
+        reason = "public_producer_drop"
+    elif mutation == "dependency_drop":
+        mutant["python_files"].remove(Q4_PRODUCER_DEP)
+        reason = "public_producer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_producer"] = (
+            Q4_PUBLIC_PRODUCER if mutation == "producer_entrypoint" else Q4_PRODUCER_DEP
+        )
+        reason = "public_producer_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_producer_delivery(mutant)
+
+
+def _assert_public_slice_delivery(definition):
+    files = set(definition["python_files"])
+    assert set(Q4_PUBLIC_SLICE) <= files, "public_slice_drop"
+    assert Q4_PUBLIC_SLICE_DEPS <= files, "public_slice_dependency_drop"
+    assert not set(Q4_PUBLIC_SLICE) & set(definition["python_entrypoints"].values()), "public_slice_published"
+
+
+@pytest.mark.parametrize("path", Q4_PUBLIC_SLICE)
+@pytest.mark.parametrize("mutation", ["drop", "published"])
+def test_public_slice_modules_remain_delivery_only(path, mutation):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "drop":
+        mutant["python_files"].remove(path)
+        reason = "public_slice_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_slice"] = path
+        reason = "public_slice_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_slice_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_SLICE_DEPS))
+def test_public_slice_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_slice_dependency_drop"):
+        _assert_public_slice_delivery(mutant)
+
 
 def _assert_shadow_release_delivery(definition):
     _assert_mind_delivery(definition)  # Existing gates and manual capability stay unchanged.
@@ -787,10 +1089,19 @@ def _assert_shadow_release_delivery(definition):
     for name, path in SHADOW_RELEASE_CLI.items():
         assert definition["python_entrypoints"].get(name) == path, "shadow_entrypoint_drop"
     published = set(definition["python_entrypoints"].values())
+    assert Q4_AGENT_API in definition["python_files"], "q4_agent_api_drop"
+    assert Q4_AGENT_API not in published, "q4_agent_api_published"
+    assert Q4_RESOLVED_CHILD in definition["python_files"], "q4_resolved_child_drop"
+    assert Q4_RESOLVED_CHILD not in published, "q4_resolved_child_published"
+    assert PUBLIC_STATUS_API in definition["python_files"], "public_status_api_drop"
+    assert PUBLIC_STATUS_API not in published, "public_status_api_published"
+    assert PUBLIC_STATUS_CLI in definition["python_files"], "public_status_cli_drop"
+    assert PUBLIC_STATUS_CLI not in published, "public_status_cli_published"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
-    # These two frozen files are delivery-only, never newly published CLIs or smoke imports.
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES), "deferred_sandbox_file_published"
+    # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
+    assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
     assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
@@ -802,7 +1113,10 @@ def _assert_shadow_release_delivery(definition):
 @pytest.mark.parametrize("mutation", [
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
-    "deferred_shadow_entrypoint", "deferred_shadow_smoke",
+    "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
+    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop",
+    "q4_agent_api_drop", "q4_agent_api_published", "q4_resolved_child_drop", "q4_resolved_child_published",
+    "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop", "q4_checkpoint_drop", "q4_builder_drop",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -818,13 +1132,48 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_entrypoints"].pop("mind_join_turn")
     elif mutation == "shadow_library_published":
         mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
+    elif mutation == "q4_file_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/q4.py")
+    elif mutation == "q4_adapter_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/wd_q4_private_read.py")
+    elif mutation == "q4_slot_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/reader_slot.py")
+    elif mutation == "q4_runtime_manifest_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_manifest.py")
+    elif mutation == "q4_runtime_bootstrap_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_bootstrap.py")
+    elif mutation == "q4_runtime_launcher_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_launcher.py")
+    elif mutation == "q4_projection_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_projection.py")
+    elif mutation == "q4_resolver_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_result_resolver.py")
+    elif mutation == "q4_capture_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_capture_adapter.py")
+    elif mutation == "q4_snapshot_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_bridge_snapshot.py")
+    elif mutation == "q4_checkpoint_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_index_checkpoint.py")
+    elif mutation == "q4_builder_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_index_builder.py")
+    elif mutation == "q4_agent_api_drop":
+        mutant["python_files"].remove(Q4_AGENT_API)
+    elif mutation == "q4_agent_api_published":
+        mutant["python_entrypoints"]["unreviewed_q4_agent"] = Q4_AGENT_API
+    elif mutation == "q4_resolved_child_drop":
+        mutant["python_files"].remove(Q4_RESOLVED_CHILD)
+    elif mutation == "q4_resolved_child_published":
+        mutant["python_entrypoints"]["unreviewed_q4_resolved"] = Q4_RESOLVED_CHILD
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":
         mutant["import_smoke"]["package_modules"].append("sandbox.mind.deferred_memory")
     else:
         mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
-    with pytest.raises(AssertionError, match=mutation):
+    with pytest.raises(AssertionError, match="q4_file_drop" if mutation in {
+            "q4_adapter_drop", "q4_slot_drop", "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop",
+            "q4_runtime_launcher_drop", "q4_projection_drop", "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop",
+            "q4_checkpoint_drop", "q4_builder_drop"} else mutation):
         _assert_shadow_release_delivery(mutant)
     _assert_shadow_release_delivery(definition)
 

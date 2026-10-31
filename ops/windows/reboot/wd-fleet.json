@@ -1,6 +1,13 @@
 {
   "schema_version": 2,
   "fleet_name": "waggledance-five-agent-fleet",
+  "mind_read": {
+    "enabled": false,
+    "live_dir_mode": "shared_runtime_audit"
+  },
+  "q4_read": {
+    "enabled": false
+  },
   "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",
@@ -61,6 +68,10 @@
       "Watch-CodexPrompts.ps1",
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
+      "Get-WdMindPublicReadConfig.ps1",
+      "Get-WdQ4ReadConfig.ps1",
+      "Invoke-WdQ4Query.ps1",
+      "WdQ4ProcessJob.ps1",
       "Resolve-WdGrokModel.ps1",
       "Initialize-WdGrokRecovery.ps1",
       "Invoke-WdGrok.ps1",

@@ -135,7 +135,7 @@ function Invoke-WdMindShadowPublicationProbe {
     $loop = Join-Path $CodeRoot 'ops/windows/reboot/Invoke-WdLaneTurnLoop.ps1'
     $fixture = Join-Path $CodeRoot 'tests/windows/wd_mind_shadow_publication_fixture.py'
     $loopPin = Assert-WdPublicationFilePin $loop @('F598363D3A77B76A1FB4BB53A8F0B76511C143AE6C4C9DCF19C4AF284839B7C7','FEF4D7F152D7BBA9A345C6213E02C51A218E8BF61999A8058AF6FB20CACC84E9') -ReturnInfo
-    $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('93EDBADDC5B82ABE8ED454DB02F0668E281A586AA0C192BB026B50DC9F50CA9C','299DCE580D9D8FBDF3C5DBEB7FDC793C3D51DDB4913134A334456B7F282E8C61') -ReturnHash
+    $producerHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'sandbox/mind/mind_capture_producer.py') @('0B6DD73E2F2D3330FCACFD16CD163B6CD761C78B811F39E77258042C0218BC3B','C8850E6374B9B259235695243F488E1542EE7433A7B2864AD95BF52611EBAECD') -ReturnHash
     $coreHash = Assert-WdPublicationFilePin (Join-Path $CodeRoot 'tools/wd_bridge_mind.py') @('83C1C43D4E6038711C7A7E90781693F27733D38BA0DA51975A06AF17599A8BE1','8555BD3FDA512078BA61E3638AF7F17BA3DE55BE11E126F6A7740AE140A67211') -ReturnHash
     Assert-WdPublicationFilePin $fixture $ExpectedFixtureSha256
     Assert-WdPublicationFilePin $MyInvocation.MyCommand.ScriptBlock.File $ExpectedProbeSha256

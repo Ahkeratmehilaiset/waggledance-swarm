@@ -7,6 +7,7 @@ its cycle ``state.json`` with the pinned reader's position cursor, and a publica
 """
 from __future__ import annotations
 
+import ast
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -33,6 +34,8 @@ LOG_ID = "windows-v1:0000abcd:0000000000000001"  # bridge log reader identity sh
 OTHER_LOG_ID = "windows-v1:0000abcd:0000000000000002"
 SECRET_PATH = "tools/claimed_secret_scope_path.py"
 CYCLE = "20261031T075900Z"
+PRODUCER = Path(__file__).resolve().parents[2] / "sandbox" / "mind" / "mind_capture_producer.py"
+READER = "Read-AgentBridge.ps1 -Compact -EventId"  # the producer's READER; pinned against its source below
 
 
 def cursor(file_identity=LOG_ID, generation="g1", offset=10):
@@ -68,7 +71,45 @@ def rows():
     return [claim, note, opened, vote, veto]
 
 
-def make_live(tmp_path: Path, *, log_identity="bridge-log:" + LOG_ID, generation="g1", token=None, events=None):
+def producer_last_ok(name, digests, *, snapshot_sha256, board_text_sha256, context=False, observed_utc=AS_OF):
+    """The ``last_ok`` exactly as the producer's ``candidate_cycle`` returns it (sandbox/mind/mind_capture_producer.py
+    at c07334cd): 18 keys, exact file names under ``cycles/<name>/``, ``context_file``/``context_sha256`` None without
+    a context. ``test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source`` pins this mirror to the
+    producer's own return literal so the two cannot drift apart silently again (RCO2 G6)."""
+    return {
+        "cycle_dir": name, "generation": 1, "observed_utc": observed_utc,
+        "capture_file": f"cycles/{name}/capture.json", "capture_sha256": digests["capture.json"],
+        "context_file": f"cycles/{name}/context.json" if context else None,
+        "context_sha256": digests["context.json"] if context else None,
+        "state_file": f"cycles/{name}/state.json", "state_sha256": digests["state.json"],
+        "publication_file": f"cycles/{name}/run/reflected.publication.json",
+        "board_file": f"cycles/{name}/run/board.txt", "receipt_file": f"cycles/{name}/run/receipt.json",
+        "reader": READER, "snapshot_sha256": snapshot_sha256,
+        "board_text_sha256": board_text_sha256, "counts": {"events": 5, "lanes": 3},
+        "global_question": "synthetic question text",
+        "measures": {"capture_ms": 3, "context_ms": 0, "run_ms": 7, "events": 5, "new_rows": 5, "capture_bytes": 38,
+                     "board_bytes": 6, "publication_bytes": 1024},
+    }
+
+
+def producer_contract():
+    """``(READER, last_ok keys)`` read from the producer source itself: the module constant and the keys of the dict
+    literal ``candidate_cycle`` returns. Static ``ast`` only; the producer is never imported or run here."""
+    tree = ast.parse(PRODUCER.read_text(encoding="utf-8"))
+    reader = keys = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "READER" for t in node.targets):
+            reader = ast.literal_eval(node.value)
+        if isinstance(node, ast.FunctionDef) and node.name == "candidate_cycle":
+            returned = [n.value for n in ast.walk(node) if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict)]
+            assert len(returned) == 1
+            keys = {ast.literal_eval(k) for k in returned[0].keys}
+    assert reader is not None and keys is not None
+    return reader, keys
+
+
+def make_live(tmp_path: Path, *, log_identity="bridge-log:" + LOG_ID, generation="g1", token=None, events=None,
+              context=False):
     audit = tmp_path / ".codex-audit"
     audit.mkdir(parents=True)
     cycle = audit / "cycles" / CYCLE
@@ -87,10 +128,13 @@ def make_live(tmp_path: Path, *, log_identity="bridge-log:" + LOG_ID, generation
     state_bytes = json.dumps(state_obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
     (cycle / "state.json").write_bytes(state_bytes)
     (cycle / "run" / "board.txt").write_bytes(b"board\n")
-    last_ok = {"cycle_dir": CYCLE, "capture_file": f"cycles/{CYCLE}/capture.json", "state_file": f"cycles/{CYCLE}/state.json",
-               "publication_file": f"cycles/{CYCLE}/run/reflected.publication.json", "board_file": f"cycles/{CYCLE}/run/board.txt",
-               "generation": 1, "capture_sha256": sha(capture.read_bytes()), "state_sha256": sha(state_bytes),
-               "snapshot_sha256": digest}
+    (cycle / "run" / "receipt.json").write_bytes(b'{"schema":"wd.bridge-mind-shadow-receipt.v1"}')
+    digests = {"capture.json": sha(capture.read_bytes()), "state.json": sha(state_bytes)}
+    if context:
+        (cycle / "context.json").write_bytes(b'{"schema":"wd.bridge-mind-context.v1"}')
+        digests["context.json"] = sha((cycle / "context.json").read_bytes())
+    last_ok = producer_last_ok(CYCLE, digests, snapshot_sha256=digest, board_text_sha256=sha(b"board\n"),
+                               context=context)
     latest = {"schema": "wd.bridge-mind-shadow-latest.v2", "authority": "none", "scope": "shadow_observation_not_gate",
               "committed_utc": AS_OF, "last_ok": last_ok}
     latest_path = audit / "latest.json"
@@ -398,3 +442,153 @@ def test_na_path_shaped_task_ids_are_redacted_to_unknown_and_never_echoed(tmp_pa
     for fragment in ("Users", "example", "private", "srv", "data/x", "home", "x:y", "a/.."):
         assert fragment not in text
 
+
+# -- G6 (RCO2): the pointer schema is the producer's REQUIRED plus KNOWN_OPTIONAL last_ok, never a reduced one ----------
+
+def rewrite_pointer(latest: Path, change):
+    obj = json.loads(latest.read_text(encoding="utf-8"))
+    change(obj["last_ok"])
+    latest.write_text(json.dumps(obj), encoding="utf-8")
+
+
+def test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source():
+    reader, keys = producer_contract()
+    assert reader == READER == lane_read.READER
+    assert keys == lane_read.LAST_OK_REQUIRED | lane_read.LAST_OK_OPTIONAL
+    assert set(producer_last_ok(CYCLE, {"capture.json": "0" * 64, "state.json": "1" * 64}, snapshot_sha256="2" * 64,
+                                board_text_sha256="3" * 64)) == keys
+    assert lane_read.LAST_OK_REQUIRED.isdisjoint(lane_read.LAST_OK_OPTIONAL)
+    assert "receipt_file" in lane_read.LAST_OK_REQUIRED and "global_question" in lane_read.LAST_OK_OPTIONAL
+
+
+def test_g6_p1_a_pointer_exactly_as_the_producer_commits_it_is_accepted_and_only_four_fields_reach_the_output(tmp_path):
+    audit, latest, _ = make_live(tmp_path)  # 18 keys, context None
+    pointer = lane_read.read_pointer(latest, audit)
+    assert set(pointer) == lane_read.LAST_OK_REQUIRED  # the known optional fields never leave read_pointer
+    result = read(audit, latest)
+    assert result["refusal"] is None
+    assert set(result["pointer"]) == {"cycle_dir", "cycle_generation", "snapshot_sha256", "state_sha256"}
+    text = json.dumps(result)
+    for value in ("synthetic question text", "capture_ms", "board_text", READER, "observed_utc", "receipt.json"):
+        assert value not in text
+
+
+def test_g6_p2_a_pointer_with_a_context_file_and_digest_is_accepted(tmp_path):
+    audit, latest, _ = make_live(tmp_path, context=True)
+    assert read(audit, latest)["refusal"] is None
+
+
+def _p3_unknown_key(p):
+    p["extra_key"] = 1
+
+
+def _p3_producer_drift_key(p):
+    p["window_sha256"] = "0" * 64
+
+
+def _p4_receipt_missing(p):
+    del p["receipt_file"]
+
+
+def _p4_receipt_renamed(p):
+    p["receipt_file"] = f"cycles/{CYCLE}/run/receipt2.json"
+
+
+def _p5_board_traversal(p):
+    p["board_file"] = f"cycles/{CYCLE}/run/../board.txt"
+
+
+def _p5_board_other_name(p):
+    p["board_file"] = f"cycles/{CYCLE}/run/board.md"
+
+
+def _p5_publication_other_cycle(p):
+    p["publication_file"] = "cycles/20261031T000000Z/run/reflected.publication.json"
+
+
+def _p6_context_file_without_digest(p):
+    p["context_file"] = f"cycles/{CYCLE}/context.json"
+
+
+def _p6_digest_without_context_file(p):
+    p["context_sha256"] = "a" * 64
+
+
+def _p6_context_file_other_name(p):
+    p["context_file"], p["context_sha256"] = f"cycles/{CYCLE}/context2.json", "a" * 64
+
+
+def _p6_context_pair_half_present(p):
+    del p["context_sha256"]
+
+
+def _p8_generation_true(p):
+    p["generation"] = True
+
+
+def _p8_generation_zero(p):
+    p["generation"] = 0
+
+
+def _p9_reader_other_value(p):
+    p["reader"] = "Read-AgentBridge.ps1 -Compact"
+
+
+def _observed_utc_not_a_time(p):
+    p["observed_utc"] = "yesterday"
+
+
+def _board_text_sha_not_hex(p):
+    p["board_text_sha256"] = "zz"
+
+
+def _counts_not_an_object(p):
+    p["counts"] = [1, 2]
+
+
+def _measures_negative(p):
+    p["measures"] = {"capture_ms": -1}
+
+
+def _measures_bool(p):
+    p["measures"] = {"capture_ms": True}
+
+
+def _measures_string(p):
+    p["measures"] = {"capture_ms": "3"}
+
+
+def _legacy_nine_key_pointer(p):
+    for key in list(p):
+        if key not in {"cycle_dir", "generation", "capture_file", "state_file", "publication_file", "board_file",
+                       "capture_sha256", "state_sha256", "snapshot_sha256"}:
+            del p[key]
+
+
+@pytest.mark.parametrize("change", [
+    _p3_unknown_key, _p3_producer_drift_key, _p4_receipt_missing, _p4_receipt_renamed, _p5_board_traversal,
+    _p5_board_other_name, _p5_publication_other_cycle, _p6_context_file_without_digest, _p6_digest_without_context_file,
+    _p6_context_file_other_name, _p6_context_pair_half_present, _p8_generation_true, _p8_generation_zero,
+    _p9_reader_other_value, _observed_utc_not_a_time, _board_text_sha_not_hex, _counts_not_an_object,
+    _measures_negative, _measures_bool, _measures_string, _legacy_nine_key_pointer,
+], ids=lambda f: f.__name__.strip("_"))
+def test_g6_p3_to_p9_a_pointer_outside_the_producer_contract_is_refused_without_echo(tmp_path, change):
+    audit, latest, _ = make_live(tmp_path)
+    rewrite_pointer(latest, change)
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_invalid") as info:
+        read(audit, latest)
+    assert str(info.value) == "pointer_invalid"
+
+
+def test_g6_p7_free_text_in_the_pointer_never_reaches_the_output(tmp_path):
+    audit, latest, _ = make_live(tmp_path)
+    secrets = ("C:/Users/example/private/notes.txt", "token=sk-synthetic-0000", "user" + "_at_" + "example.invalid")
+
+    def change(p):
+        p["global_question"] = " ".join(secrets)
+        p["counts"] = {secrets[0]: 1}
+
+    rewrite_pointer(latest, change)
+    result = read(audit, latest)
+    text = json.dumps(result)
+    assert result["refusal"] is None and all(value not in text for value in secrets)

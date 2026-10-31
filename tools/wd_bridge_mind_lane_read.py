@@ -15,6 +15,12 @@ any reader observation, so this module refuses it with ``producer_binding_unavai
 producer change. Nothing here authenticates origin: the binding proves that the snapshot, the producer's committed
 cursor and the lane's own reader view name the same bridge log identity and generation, not which process wrote
 them. No clock, bridge, network, process or gate module is used; ``as_of`` is the caller's declared time.
+
+Pointer schema (RCO2 G6 on PR1964): ``read_pointer`` accepts exactly the ``last_ok`` the producer's
+``candidate_cycle`` commits: the REQUIRED keys (cycle dir, generation, five cycle files under their exact producer
+names, three digests) plus the producer's KNOWN_OPTIONAL fields (its time, context file and digest, reader label,
+board digest, counts, question text, measures), which are shape-checked and never leave ``read_pointer``. Any other
+key, a missing required key or a reduced legacy pointer is refused ``pointer_invalid``, so producer drift fails closed.
 """
 from __future__ import annotations
 
@@ -58,10 +64,17 @@ _IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 _TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|\+00:00)\Z")
 _CYCLE = re.compile(r"[0-9]{8}T[0-9]{6}Z\Z")
-_RELATIVE = re.compile(r"cycles/[0-9]{8}T[0-9]{6}Z/[A-Za-z0-9_./-]{1,80}\Z")
-_LAST_OK_FILES = ("capture_file", "state_file", "publication_file", "board_file")
+# The producer's own last_ok (sandbox/mind/mind_capture_producer.py candidate_cycle, c07334cd): exact file names under
+# cycles/<cycle_dir>/, its READER label, and the optional fields it carries. The test file pins these against the
+# producer source so the consumer can never again hide behind a reduced hand-written fixture (RCO2 G6).
+READER = "Read-AgentBridge.ps1 -Compact -EventId"
+_LAST_OK_FILES = {"capture_file": "capture.json", "state_file": "state.json",
+                  "publication_file": "run/reflected.publication.json", "board_file": "run/board.txt",
+                  "receipt_file": "run/receipt.json"}
 _LAST_OK_HASHES = ("capture_sha256", "state_sha256", "snapshot_sha256")
-_LAST_OK_KEYS = frozenset(("cycle_dir", "generation", *_LAST_OK_FILES, *_LAST_OK_HASHES))
+LAST_OK_REQUIRED = frozenset(("cycle_dir", "generation", *_LAST_OK_FILES, *_LAST_OK_HASHES))
+LAST_OK_OPTIONAL = frozenset({"observed_utc", "context_file", "context_sha256", "reader", "board_text_sha256", "counts",
+                              "global_question", "measures"})  # shape-checked, never read into the output
 _STATE_KEYS = frozenset({"schema", "generation", "cursor", "source", "window_sha256", "window"})
 _CI_TOKENS = frozenset({core.UNKNOWN, "reported_green", "reported_not_green"})
 _CLASS_TOKENS = frozenset({core.UNKNOWN, "a", "b", "on-allowlist"})
@@ -122,24 +135,49 @@ def _read_object(path: Path, audit_root: Path, reason: str) -> tuple[dict, bytes
 
 # -- the producer's pointer and state ----------------------------------------------------------------------------
 
+def _hex64(value: Any) -> bool:
+    return isinstance(value, str) and _REF.fullmatch(value) is not None
+
+
+def _known_optional_ok(last_ok: Mapping[str, Any], prefix: str) -> bool:
+    """Shape checks of the producer's KNOWN_OPTIONAL last_ok fields; none of their values is read anywhere else."""
+    if "observed_utc" in last_ok and not (isinstance(last_ok["observed_utc"], str)
+                                          and _TIME.fullmatch(last_ok["observed_utc"])):
+        return False
+    if "context_file" in last_ok:  # the pair travels together: None/None, or the exact name with its digest
+        context_file, context_sha256 = last_ok["context_file"], last_ok["context_sha256"]
+        if not (context_sha256 is None if context_file is None
+                else context_file == prefix + "context.json" and _hex64(context_sha256)):
+            return False
+    if "reader" in last_ok and last_ok["reader"] != READER:
+        return False
+    if "board_text_sha256" in last_ok and not _hex64(last_ok["board_text_sha256"]):
+        return False
+    if "counts" in last_ok and not isinstance(last_ok["counts"], dict):
+        return False
+    if "measures" in last_ok and not (isinstance(last_ok["measures"], dict) and all(
+            isinstance(key, str) and type(value) is int and value >= 0 for key, value in last_ok["measures"].items())):
+        return False
+    return True  # global_question: any value; it is free text and is never emitted
+
+
 def read_pointer(latest_path: Path, audit_root: Path) -> dict:
-    """The committed ``last_ok`` of a producer-shaped ``latest.json``: cycle dir, four cycle files, three digests."""
+    """The REQUIRED part of the committed ``last_ok`` of a producer-shaped ``latest.json``: cycle dir, generation,
+    the five cycle files under their exact producer names, three digests. The producer's KNOWN_OPTIONAL fields must
+    have their shapes but are dropped here; any other key (or a reduced legacy pointer) is ``pointer_invalid``."""
     latest, _ = _read_object(latest_path, audit_root, "pointer_invalid")
     last_ok = latest.get("last_ok")
     if (latest.get("schema") != LATEST_SCHEMA or latest.get("authority") != "none" or not isinstance(last_ok, dict)
-            or set(last_ok) != _LAST_OK_KEYS or not isinstance(last_ok["cycle_dir"], str)
-            or not _CYCLE.fullmatch(last_ok["cycle_dir"]) or type(last_ok["generation"]) is not int
-            or last_ok["generation"] < 1):
+            or not LAST_OK_REQUIRED <= set(last_ok) <= LAST_OK_REQUIRED | LAST_OK_OPTIONAL
+            or ("context_file" in last_ok) != ("context_sha256" in last_ok)
+            or not isinstance(last_ok["cycle_dir"], str) or not _CYCLE.fullmatch(last_ok["cycle_dir"])
+            or type(last_ok["generation"]) is not int or last_ok["generation"] < 1):
         raise LaneReadRefused("pointer_invalid")
     prefix = "cycles/" + last_ok["cycle_dir"] + "/"
-    for key in _LAST_OK_FILES:
-        value = last_ok[key]
-        if not isinstance(value, str) or not value.startswith(prefix) or not _RELATIVE.fullmatch(value):
-            raise LaneReadRefused("pointer_invalid")
-    for key in _LAST_OK_HASHES:
-        if not isinstance(last_ok[key], str) or not _REF.fullmatch(last_ok[key]):
-            raise LaneReadRefused("pointer_invalid")
-    return last_ok
+    if (any(last_ok[key] != prefix + name for key, name in _LAST_OK_FILES.items())
+            or any(not _hex64(last_ok[key]) for key in _LAST_OK_HASHES) or not _known_optional_ok(last_ok, prefix)):
+        raise LaneReadRefused("pointer_invalid")
+    return {key: last_ok[key] for key in LAST_OK_REQUIRED}
 
 
 def decode_cursor(token: Any) -> tuple[str, str | None]:

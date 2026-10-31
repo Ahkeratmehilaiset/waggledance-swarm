@@ -2006,15 +2006,15 @@ def test_public_v1_real_chain_indexes_only_marked_public_metadata_and_never_the_
     merged = json.loads((root / "gen-p2" / "projection.json").read_bytes())
     assert record_ids(merged) == record_ids(proj) | record_ids(second["projection"])
     assert SENTINEL.encode() not in _files_text(root / "gen-p2")
-    # The public A -> empty advance -> B watermark case (Lead finding 19:25:46Z) needs the Lead checkpoint's public
-    # mode keywords on read_verified_pointer / advance_empty_delta; it is added when that API is committed (and run
-    # when disk permits). Until then the seam test below pins the exact keywords this builder passes.
+    # The public A -> empty advance -> B watermark case is the real-checkpoint test at the end of this file.
 
 
-def test_public_v1_watermark_read_passes_the_mode_and_pinned_public_policy_to_the_lead_pointer_verifier(tmp_path, monkeypatch):
-    """Lead finding 19:25:46Z: the predecessor read of a PUBLIC series must not run under the legacy defaults. Seam
-    double over the Lead checkpoint module: it records the keywords (NOT verification); a verifier without the
-    keywords refuses the public path only."""
+def test_public_v1_watermark_read_passes_the_mode_and_public_policy_digest_to_the_lead_pointer_verifier(tmp_path, monkeypatch):
+    """Lead finding 19:25:46Z + API 19:35:47Z: the predecessor read of a PUBLIC series must not run under the legacy
+    defaults; it passes ``expected_mode`` and ``expected_public_policy_sha256`` only (the policy bytes stay a builder
+    matter). Seam double over the Lead checkpoint module: it records the keywords (NOT verification, and NOT a
+    detection of a real API mismatch: that is the real-checkpoint case below); a verifier without the keywords
+    refuses the public path only."""
     _adapter_module()
     import types
     from waggledance.core.bridge_log_reader import BridgeCursor
@@ -2047,7 +2047,7 @@ def test_public_v1_watermark_read_passes_the_mode_and_pinned_public_policy_to_th
     assert pointer_calls == [(tmp_path / "ckpt", APPROVED, {
         "expected_pointer_sha256": pointer_sha256, "policy_bytes": POLICY_BYTES, "policy_sha256": POLICY_SHA,
         "roster_bytes": ROSTER_BYTES, "roster_sha256": ROSTER_SHA, "expected_mode": "public-v1",
-        "public_policy_bytes": PUBLIC_POLICY_BYTES, "public_policy_sha256": PUBLIC_POLICY_SHA})]
+        "expected_public_policy_sha256": PUBLIC_POLICY_SHA})]  # the Lead API (19:35:47Z): mode + DIGEST, never the bytes
 
     def legacy_only_pointer(root, approved, *, expected_pointer_sha256, policy_bytes, policy_sha256, roster_bytes, roster_sha256):
         return dict(verified)  # the 9ff2568a signature: no mode keywords
@@ -2058,3 +2058,102 @@ def test_public_v1_watermark_read_passes_the_mode_and_pinned_public_policy_to_th
               source=_public_bound_source(token, delta, c2, BridgeCursor(offset=200, file_identity="synthetic-identity", generation="gen-synthetic")),
               predecessor=predecessor)
     assert not (tmp_path / "public-v3").exists()
+
+
+def _public_checkpoint_module():
+    """The Lead checkpoint WITH its public-v1 keywords (Lead API 19:35:47Z: ``read_verified_pointer`` takes
+    ``expected_mode`` + ``expected_public_policy_sha256``; the commit/advance keywords are the Lead's). The WIP lives in
+    the Lead worktree and is neither copied nor modified here: on a tree without the keywords this is SKIPPED as an
+    integration prerequisite, never doubled (Lead review supplement 19:36:04Z: a seam double cannot detect a real API
+    mismatch)."""
+    import inspect
+    checkpoint = _checkpoint_module()
+    reader_params = inspect.signature(checkpoint.read_verified_pointer).parameters
+    if not {"expected_mode", "expected_public_policy_sha256"} <= set(reader_params):
+        pytest.skip("integration prerequisite: read_verified_pointer public-v1 keywords (Lead) not committed in this tree")
+    for name in ("commit_generation", "advance_empty_delta"):
+        if "expected_mode" not in inspect.signature(getattr(checkpoint, name)).parameters:
+            pytest.skip(f"integration prerequisite: {name} public-v1 keywords (Lead) not committed in this tree")
+    return checkpoint
+
+
+def _public_mode_kwargs(function, anchor_bytes):
+    """The public keywords the Lead checkpoint function declares (mode + policy digest, and the exact anchor bytes when
+    it verifies the new snapshot itself); unknown keywords are never guessed, an absent one is simply not passed."""
+    import inspect
+    params = inspect.signature(function).parameters
+    kwargs = {"expected_mode": "public-v1"}
+    if "expected_public_policy_sha256" in params:
+        kwargs["expected_public_policy_sha256"] = PUBLIC_POLICY_SHA
+    if "expected_anchor_bytes" in params:
+        kwargs["expected_anchor_bytes"] = anchor_bytes
+    return kwargs
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint publication supports fixed Windows volumes only")
+def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_through_the_lead_checkpoint(tmp_path):
+    """The Lead case (finding 19:25:46Z, supplement 19:36:04Z) in PUBLIC mode with the REAL Lead chain and the REAL
+    checkpoint: public A is built from a real public delta and committed as the pointer; the log grows by rows that
+    are not public broadcasts (a strict EMPTY public delta: two targeted-private sentinel rows + one review-lane row)
+    and advance_empty_delta moves the watermark; public B is read from the watermark and built with A as predecessor
+    + the verified watermark through the builder's public pointer read. A legacy build of B over the public series
+    refuses. No mock anywhere; the sentinel never reaches a persisted file."""
+    snapshot, history, checkpoint = _snapshot_module(), _history_module(), _public_checkpoint_module()
+    if not hasattr(snapshot, "verify_public_anchor"):
+        pytest.skip("integration prerequisite: public-v1 snapshot mode not committed in this tree")
+    _adapter_module()
+    root = tmp_path / "mem"
+    root.mkdir()
+    a_result, a_anchor, a_bytes, start = _real_public_snapshot(snapshot, tmp_path / "log", MIXED_EVENTS)
+    first = build(root, name="gen-a", proj=a_result["projection"], approved_tasks=None, roster=None,
+                  source=_public_source(a_result, a_anchor, a_bytes), allow_unbound_source=False)
+    assert first["build_receipt"]["source_mode"] == PUBLIC_MODE and first["build_receipt"]["records"] == 3
+    artifacts = {"descriptor_sha256": first["descriptor_sha256"], "memory_sha256": first["memory_sha256"],
+                 "projection_sha256": first["projection_sha256"], "receipt_sha256": first["build_receipt_sha256"]}
+    checkpoint.commit_generation(root, "gen-a", start, a_result["candidate_cursor"], APPROVED, expected_pointer_sha256=None,
+                                 expected_artifacts=artifacts, initial_cursor=start, policy_bytes=POLICY_BYTES,
+                                 expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES, expected_roster_sha256=ROSTER_SHA,
+                                 expected_anchor_sha256=a_anchor, **_public_mode_kwargs(checkpoint.commit_generation, a_bytes))
+    p0 = sha((root / "q4-latest.json").read_bytes())
+    # a strict EMPTY public delta: targeted-private sentinel rows and a review-lane row arrive, none is a marked
+    # broadcast (excluded upstream, uncounted), the cursor still moves
+    empty_result, empty_anchor, empty_bytes, _ = _real_public_snapshot(
+        snapshot, tmp_path / "log", PRIVATE_EVENTS + [event(agent="claude-rco-1", ts_utc="2026-10-31T12:25:00Z")],
+        start=a_result["candidate_cursor"])
+    assert empty_result["projection"]["accepted"] == 0 and empty_result["projection"]["records"] == []
+    advanced = checkpoint.advance_empty_delta(root, empty_result, APPROVED, expected_pointer_sha256=p0, policy_bytes=POLICY_BYTES,
+                                              expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES,
+                                              expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=empty_anchor,
+                                              **_public_mode_kwargs(checkpoint.advance_empty_delta, empty_bytes))
+    assert advanced["status"] == "advanced"
+    p1 = advanced["pointer_sha256"]
+    assert p1 == sha((root / "q4-latest.json").read_bytes()) != p0
+    b_result, b_anchor, b_bytes, resume = _real_public_snapshot(snapshot, tmp_path / "log", LATER_PUBLIC_EVENTS,
+                                                                start=empty_result["candidate_cursor"])
+    assert b_result["projection"]["accepted"] == 2
+    predecessor = predecessor_of(root, "gen-a", first)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_discontinuous"):  # without the proof: fail closed
+        build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+              source=_public_source(b_result, b_anchor, b_bytes), allow_unbound_source=False, predecessor=predecessor)
+    with pytest.raises(build_mod.BuildRefused, match="watermark_refused"):  # the stale pre-advance pointer digest
+        build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+              source=_public_source(b_result, b_anchor, b_bytes), allow_unbound_source=False,
+              predecessor=dict(predecessor, watermark={"root": str(root), "pointer_sha256": p0}))
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):  # a public delta never binds as legacy
+        build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+              source={"snapshot_result": b_result, "expected_anchor_sha256": b_anchor}, allow_unbound_source=False,
+              predecessor=dict(predecessor, watermark={"root": str(root), "pointer_sha256": p1}))
+    out = build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+                source=_public_source(b_result, b_anchor, b_bytes), allow_unbound_source=False,
+                predecessor=dict(predecessor, watermark={"root": str(root), "pointer_sha256": p1}))
+    receipt = out["build_receipt"]
+    assert receipt["source_mode"] == PUBLIC_MODE and receipt["records"] == 5
+    assert receipt["history"]["continuity_route"] == "verified_watermark"
+    assert receipt["history"]["watermark"] == {"pointer_sha256": p1, "generation": "gen-a",
+                                               "watermark_sha256": sha(snapshot._token(empty_result["candidate_cursor"]))}
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(snapshot._token(resume)) == receipt["history"]["watermark"]["watermark_sha256"]
+    assert receipt["history"]["predecessor"]["cursor_end_sha256"] == sha(snapshot._token(a_result["candidate_cursor"]))
+    assert sorted(p.name for p in root.iterdir() if p.is_dir()) == ["gen-a", "gen-b"]
+    text = _files_text(root)
+    assert SENTINEL.encode() not in text and b"bc1." not in text and start.file_identity.encode() not in text
+    assert a_bytes not in text and b_bytes not in text and PUBLIC_POLICY_BYTES not in text

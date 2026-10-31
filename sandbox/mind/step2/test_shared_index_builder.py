@@ -2251,5 +2251,6 @@ def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_published_and
     assert (root / checkpoint.LOCK).read_bytes() == b""
     private_text = b"".join(path.read_bytes() for path in private_files)
     assert SENTINEL.encode() not in private_text and PUBLIC_POLICY_BYTES not in private_text
+    assert a_bytes not in private_text and empty_bytes not in private_text and b_bytes not in private_text
     assert start.file_identity.encode() in private_text  # the private pointer carries the file identity by design
     assert not any((root / name / "q4-latest.json").exists() for name in ("gen-a", "gen-b"))  # the private-root boundary

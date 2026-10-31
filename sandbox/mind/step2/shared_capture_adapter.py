@@ -118,17 +118,19 @@ def _unsafe_recipient(value):
 
 
 def _exclude_rco_event(event):
-    agent = event.get("agent")
+    fields = {key.lower(): value for key, value in event.items()}
+    agent = fields.get("agent")
     if not isinstance(agent, str) or agent in _RCO or _RCO_NAME.search(agent):
         return True
-    if any(_unsafe_recipient(event.get(key)) for key in ("to", "recipient")):
+    if any(_unsafe_recipient(fields.get(key)) for key in ("to", "recipient")):
         return True
-    payload = event.get("payload")
+    payload = fields.get("payload")
     if payload is None:
         return False
     if not isinstance(payload, dict):
         return True
-    return any(_unsafe_recipient(payload.get(key)) for key in ("to", "recipient"))
+    payload_fields = {key.lower(): value for key, value in payload.items()}
+    return any(_unsafe_recipient(payload_fields.get(key)) for key in ("to", "recipient"))
 
 
 def _event_budget(event):
@@ -147,7 +149,8 @@ def _event_budget(event):
         if kind is str:
             total += 2 + 6 * len(value)
         elif kind is dict:
-            if len(value) > _NODES_LIMIT or any(type(key) is not str for key in value):
+            if (len(value) > _NODES_LIMIT or any(type(key) is not str or not key.isascii() for key in value)
+                    or len({key.lower() for key in value}) != len(value)):
                 raise ValueError()
             total += 2 + 2 * len(value)
             stack.extend((item, depth + 1) for pair in value.items() for item in pair)

@@ -180,3 +180,34 @@ def test_batch_budget_applies_before_hashing_each_row(monkeypatch):
     with pytest.raises(adapter.AdapterRefused, match="^capture_refused$"):
         adapter.adapt_rows([first, first], snapshot(), TASKS, ttl_seconds=120)
     assert calls == [True]
+
+
+@pytest.mark.parametrize("field", ["To", "TO", "Recipient", "RECIPIENT"])
+def test_mixed_case_top_level_rco_recipient_is_excluded(monkeypatch, field):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    assert adapter.adapt_rows([row(**{field: "claude-rco-1"})], snapshot(), TASKS,
+                              ttl_seconds=120)["projection"]["accepted"] == 0
+
+
+@pytest.mark.parametrize("payload_key", ["payload", "Payload", "PAYLOAD"])
+@pytest.mark.parametrize("recipient_key", ["To", "Recipient"])
+def test_mixed_case_payload_and_recipient_rco_is_excluded(monkeypatch, payload_key, recipient_key):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    item = row()
+    item["event"].pop("payload")
+    item["event"][payload_key] = {recipient_key: "claude-rco-2"}
+    item["ref"] = event_id(item["event"])
+    item["row_sha256"] = producer.row_digest(item["event"])
+    assert adapter.adapt_rows([item], snapshot(), TASKS, ttl_seconds=120)["projection"]["accepted"] == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"to": "fable-5", "To": "claude-rco-1"},
+    {"payload": {"to": "fable-5", "TO": "claude-rco-1"}},
+    {"payload": {"x": 1}, "Payload": {"recipient": "claude-rco-1"}},
+    {"payload": {"unknown": {"x": 1, "X": 2}}},
+])
+def test_ascii_case_collisions_are_refused(monkeypatch, changes):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    with pytest.raises(adapter.AdapterRefused, match="^capture_refused$"):
+        adapter.adapt_rows([row(**changes)], snapshot(), TASKS, ttl_seconds=120)

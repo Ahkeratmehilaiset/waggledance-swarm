@@ -438,6 +438,9 @@ class _Inputs:
             raise WorkspaceError("snapshot source needs an explicit as_of_utc")
         self.source_ref = _match(REF, source.get("last_event_ref")) or UNKNOWN
         self.coverage = _effective_coverage(source)
+        identity = source.get("log_identity")
+        self.independent_coverage_gap = (source.get("coverage") != "complete" or
+                                         (isinstance(identity, str) and identity.startswith("capture-window:")))
         # The core contract: blocked is null, or {active: true, offset, reason}. Anything else is read as blocked.
         blocked = source.get("blocked")
         self.blocked = None
@@ -794,7 +797,7 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
 
 def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     tensions: list[dict[str, Any]] = []
-    if inputs.coverage != "complete" and inputs.blocked is None:
+    if inputs.coverage != "complete" and (inputs.blocked is None or inputs.independent_coverage_gap):
         tensions.append(_tension("coverage_unknown", "source", "the snapshot is one view of the bridge log",
                                  f"its coverage is {inputs.coverage}, so no list here is complete", [],
                                  [inputs.source_ref]))
@@ -995,15 +998,16 @@ def _entry(item: Mapping[str, Any] | None, who: str, partial: bool, blocked: boo
     if item is None:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     question = _question(item, who)
-    if partial and not blocked:
-        question += " Coverage is not complete, so check the exact head first."
+    if partial:
+        question += (" Coverage is not complete." if blocked else
+                     " Coverage is not complete, so check the exact head first.")
     if len(question) > QUESTION_LIMIT:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     return {"question": question, "attention_rank": item["rank"], "refs": list(item["refs"])}
 
 
 def derive_next_question(inputs: _Inputs, attention: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    partial = inputs.coverage != "complete"
+    partial = inputs.coverage != "complete" and (inputs.blocked is None or inputs.independent_coverage_gap)
     agents = ({lane["agent"] for lane in inputs.lanes} | {actor for item in attention for actor in item["actors"]}) - {UNKNOWN}
     # In the explicit interface a pseudo-lane keeps its entry, UNKNOWN: its facts stay visible but it is asked
     # nothing. The omitted interface asks it as main does.

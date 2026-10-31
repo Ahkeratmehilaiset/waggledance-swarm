@@ -428,6 +428,23 @@ def test_a_blocked_complete_source_is_not_rendered_as_complete():
     assert snapshot["source"]["coverage"] == "complete"
 
 
+@pytest.mark.parametrize("coverage,identity", [
+    ("complete", "capture-window:windows-v1:12345678:0123456789abcdef"),
+    ("partial", "fixture-log"),
+    ("unknown", "fixture-log"),
+])
+def test_blocking_does_not_hide_an_independent_coverage_gap(coverage, identity):
+    snapshot = _snapshot(coverage=coverage,
+                         blocked={"active": True, "offset": 4096, "reason": "canonical_event_invalid"})
+    snapshot["source"]["log_identity"] = identity
+
+    fields = mind.reflection(snapshot)
+
+    assert {"input_blocked", "coverage_unknown"} <= set(_rules(fields))
+    assert fields["next_question"]["global"]["question"].endswith("Coverage is not complete.")
+    assert "exact head" not in mind.canonical_json(fields["next_question"])
+
+
 def test_a_row_without_a_valid_ref_or_outside_the_allowlist_is_refused_by_position_only():
     """P5 / M2: missing and bad refs, free text and a lane key that does not match its identity are never used."""
     key, pr = _pr(7, votes=["codex-lead-1"], stale=[("claude-rco-2", OLD)])

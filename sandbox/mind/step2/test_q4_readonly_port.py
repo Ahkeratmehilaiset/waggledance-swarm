@@ -54,6 +54,43 @@ def test_q4_finds_synthetic_record_without_returning_its_text():
     assert "retry stale connection" not in str(answer)
 
 
+def test_q4_legacy_reference_does_not_claim_canonical_event():
+    answer = q4.Q4(fake_memory(), FakeEncoder()).ask("retry network", "2026-01-02T00:00:00Z")
+    assert answer["results"][0]["ref_kind"] is None
+    assert answer["results"][0]["canonical_event"] is None
+
+
+def test_two_events_with_same_projection_ref_keep_noncanonical_marker():
+    fake = fake_memory()
+    for row in fake.views["learning"].rows:
+        row["kind"] = "event"
+        row["provenance"].update(event_ref="a" * 64, ref_kind="sha256_of_projected_metadata",
+                                 canonical_event=False)
+    answer = q4.Q4(fake, FakeEncoder()).ask("retry network", "2026-01-02T00:00:00Z")
+    assert len(answer["results"]) >= 2
+    first, second = answer["results"][:2]
+    assert first["ref"] == second["ref"] == "a" * 64
+    assert all(item["ref_kind"] == "sha256_of_projected_metadata" and item["canonical_event"] is False
+               for item in (first, second))
+
+
+@pytest.mark.parametrize("ref_kind,canonical_event,event_ref", [
+    ("sha256_of_projected_metadata", True, "a" * 64),
+    ("sha256_of_projected_metadata", 0, "a" * 64),
+    ("sha256_of_projected_metadata", False, "C:/private/ref"),
+    ("canonical", True, "a" * 64),
+    ("C:/private/kind", False, "a" * 64),
+    (None, False, "a" * 64),
+])
+def test_q4_refuses_forged_or_inconsistent_reference_metadata(ref_kind, canonical_event, event_ref):
+    fake = fake_memory()
+    for row in fake.views["learning"].rows:
+        row["kind"] = "event"
+        row["provenance"].update(event_ref=event_ref, ref_kind=ref_kind, canonical_event=canonical_event)
+    with pytest.raises(memory.MemoryError_, match="^provenance_invalid$"):
+        q4.Q4(fake, FakeEncoder()).ask("retry network", "2026-01-02T00:00:00Z")
+
+
 def test_q4_refuses_invalid_time():
     engine = q4.Q4(fake_memory(), FakeEncoder())
     assert engine.ask("retry network", "not-a-time")["status"] == "REFUSED"

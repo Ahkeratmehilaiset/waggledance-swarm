@@ -17,6 +17,15 @@ RULE = {"version": "q4-rule-v1.2", "agree_depth": 3, "views": ["w", "d", "b"], "
         "bm25_k1": 1.2, "bm25_b": 0.75, "guard_band_s": 1.0, "self_match_shingle": 8, "self_match_share": 0.5}
 TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 WORDS = re.compile(r"[^\W_]+", re.UNICODE)
+PROJECTED_REF_KIND = "sha256_of_projected_metadata"
+
+
+def valid_reference_metadata(kind, ref, ref_kind, canonical_event):
+    """Validate declared reference type; this does not authenticate its source."""
+    if ref_kind is None and canonical_event is None:
+        return True  # Legacy records carry no evidence of canonical identity.
+    return (kind == "event" and ref_kind == PROJECTED_REF_KIND and canonical_event is False
+            and isinstance(ref, str) and re.fullmatch(r"[0-9a-f]{64}", ref) is not None)
 
 
 def tokens(text):
@@ -157,8 +166,13 @@ class Q4:
             ref = provenance["file"]
         else:
             ref = provenance["event_ref"]
+        ref_kind = provenance.get("ref_kind")
+        canonical_event = provenance.get("canonical_event")
+        if not valid_reference_metadata(entry["row"]["kind"], ref, ref_kind, canonical_event):
+            raise memory_mod.MemoryError_("provenance_invalid")
         return {"ref": ref, "doc_id": self.ids[position], "kind": entry["row"]["kind"], "score": round(cosine, 6),
                 "fused": round(fused, 6), "view_ranks": ranks, "cell": entry["cell"],
+                "ref_kind": ref_kind, "canonical_event": canonical_event,
                 "time_utc": entry["row"]["time_utc"], "tier": provenance["tier"]["source_type"],
                 "fallback": bool(self.quarantined)}
 

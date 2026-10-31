@@ -25,8 +25,9 @@ Fail-closed binding, checked before anything is loaded or encoded:
 The output is a projection of the Q4 result over an allowlist (``project_result``): status, reason code, the rule
 version Q4 reported for this run (whatever the port returns; not a frozen-v1 evidence claim), per result the kind,
 cell, tier, time, view ranks and scores, and every reference as its sha256 plus the reference itself only when it is
-hash-shaped (an event id). A lesson file name or any other path-like reference is never written; a lane resolves
-the digests against its own allowed list. Unexpected keys are dropped, unexpected shapes refuse.
+hash-shaped. Validated ``ref_kind`` and ``canonical_event`` values are retained; these are declarations, not proof
+of a canonical event. A lesson file name or any other path-like reference is never written; a lane resolves the
+digests against its own allowed list. Unexpected keys are dropped, unexpected shapes refuse.
 
 Nothing here authenticates the caller: no agent name is accepted or echoed, the output states
 ``caller_declared_not_authenticated``. An OS-managed lock file is the only write; no corpus, memory, vector or model
@@ -230,6 +231,9 @@ def project_result(result):
         ref, ref_sha256 = _opaque_ref(item.get("ref"))
         doc_id, doc_id_sha256 = _opaque_ref(item.get("doc_id"))
         kind, cell, tier, when = item.get("kind"), item.get("cell"), item.get("tier"), item.get("time_utc")
+        ref_kind, canonical_event = item.get("ref_kind"), item.get("canonical_event")
+        if not q4_mod.valid_reference_metadata(kind, item.get("ref"), ref_kind, canonical_event):
+            raise PrivateReadRefused("q4_result_shape")
         ranks = item.get("view_ranks")
         if (not _token(kind, TOKEN) or not _token(cell, TOKEN) or not _token(tier, TOKEN)
                 or not (when is None or _token(when, TIME))
@@ -239,6 +243,7 @@ def project_result(result):
                            for k in ("score", "fused"))):
             raise PrivateReadRefused("q4_result_shape")
         items.append({"ref": ref, "ref_sha256": ref_sha256, "doc_id": doc_id, "doc_id_sha256": doc_id_sha256,
+                      "ref_kind": ref_kind, "canonical_event": canonical_event,
                       "kind": kind, "cell": cell, "tier": tier, "time_utc": when, "view_ranks": dict(ranks),
                       "score": item["score"], "fused": item["fused"], "fallback": bool(item.get("fallback"))})
     degraded = []

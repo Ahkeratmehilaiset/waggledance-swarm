@@ -314,6 +314,39 @@ def test_projection_accepts_real_q4_result_shape_without_exposing_ref():
     assert "synthetic.md" not in json.dumps(projected)
 
 
+def test_private_projection_keeps_two_noncanonical_projection_references():
+    answer = FakeQ4(None, None).ask(SITUATION, WHEN)
+    answer["results"] = [dict(answer["results"][0], ref_kind="sha256_of_projected_metadata",
+                              canonical_event=False),
+                         dict(answer["results"][0], ref_kind="sha256_of_projected_metadata",
+                              canonical_event=False)]
+    projected = adapter.project_result(answer)
+    first, second = projected["results"]
+    assert first["ref"] == second["ref"] == EVENT_REF
+    assert all(item["ref_kind"] == "sha256_of_projected_metadata" and item["canonical_event"] is False
+               for item in (first, second))
+
+
+def test_private_projection_labels_legacy_reference_unknown():
+    projected = adapter.project_result(FakeQ4(None, None).ask(SITUATION, WHEN))
+    assert all(item["ref_kind"] is None and item["canonical_event"] is None for item in projected["results"])
+
+
+@pytest.mark.parametrize("ref_kind,canonical_event,ref", [
+    ("sha256_of_projected_metadata", True, EVENT_REF),
+    ("sha256_of_projected_metadata", 0, EVENT_REF),
+    ("sha256_of_projected_metadata", False, "C:/private/ref"),
+    ("canonical", True, EVENT_REF),
+    ("C:/private/kind", False, EVENT_REF),
+    (None, False, EVENT_REF),
+])
+def test_private_projection_refuses_forged_reference_metadata(ref_kind, canonical_event, ref):
+    answer = FakeQ4(None, None).ask(SITUATION, WHEN)
+    answer["results"][0].update(ref_kind=ref_kind, canonical_event=canonical_event, ref=ref)
+    with pytest.raises(adapter.PrivateReadRefused, match="^q4_result_shape$"):
+        adapter.project_result(answer)
+
+
 def test_the_output_is_guarded_whole(tmp_path, capsys, fakes, monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
 

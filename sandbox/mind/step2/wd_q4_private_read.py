@@ -1,6 +1,6 @@
 """HEX MEMORY STEP 2, private read: one lane asks Q4 over the frozen memory through stdin, read-only.
 
-usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> < query.json
+usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> --lock-file <absolute path> --lock-timeout <seconds> < query.json
 
 The query (``{"situation": "<text>", "time": "<aware UTC>"}``, at most ``STDIN_BUDGET`` bytes, no other key) is read
 from stdin only: the situation text never appears in process arguments, in a log, in a bridge event, on stderr or in
@@ -29,7 +29,8 @@ hash-shaped (an event id). A lesson file name or any other path-like reference i
 the digests against its own allowed list. Unexpected keys are dropped, unexpected shapes refuse.
 
 Nothing here authenticates the caller: no agent name is accepted or echoed, the output states
-``caller_declared_not_authenticated``. Nothing is written anywhere: no corpus, memory, vector or model build; the
+``caller_declared_not_authenticated``. An OS-managed lock file is the only write; no corpus, memory, vector or model
+build is performed. All callers must use the same trusted local lock path; this does not authenticate them. The
 only model execution is the one query encode after every check passed. Exit 0 with a Q4 status (ANSWER, ABSTAIN,
 DEGRADED, REFUSED) or exit 2 with a fixed adapter refusal reason; neither carries the query text.
 
@@ -52,6 +53,7 @@ try:
     from sandbox.mind.step2 import encode as encode_mod
     from sandbox.mind.step2 import memory as memory_mod
     from sandbox.mind.step2 import q4 as q4_mod
+    from sandbox.mind.step2.reader_slot import ReaderBusy, reader_slot
 except Exception:  # Missing native packages must not expose paths or traceback in the CLI.
     if __name__ != "__main__":
         raise
@@ -255,9 +257,8 @@ def project_result(result):
             "telemetry": numbers}
 
 
-def private_read(memory_dir, descriptor_path, descriptor_sha256, stream):
-    """One private Q4 read: query from ``stream``, bindings from the descriptor; the guarded output object."""
-    situation, when = read_query(stream)
+def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when):
+    """Perform a read with the shared reader slot already held."""
     descriptor = read_descriptor(descriptor_path, descriptor_sha256)
     memory = bind_memory(memory_dir, descriptor)
     bind_runtime_encoder(descriptor)
@@ -281,16 +282,36 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream):
     return out
 
 
+def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, lock_file, lock_timeout):
+    """Read stdin, then hold the shared slot across all memory/model access and output projection."""
+    situation, when = read_query(stream)
+    try:
+        path = Path(lock_file)
+        if not path.is_absolute():
+            raise PrivateReadRefused("reader_lock_invalid")
+        with reader_slot(path, timeout_seconds=lock_timeout):
+            return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when)
+    except ReaderBusy:
+        raise PrivateReadRefused("reader_busy") from None
+    except PrivateReadRefused:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise PrivateReadRefused("reader_lock_unavailable") from None
+
+
 def main(argv=None, stdin=None, stdout=None):
     parser = PrivateArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--memory", type=Path, required=True)
     parser.add_argument("--descriptor", type=Path, required=True)
     parser.add_argument("--descriptor-sha256", required=True)
+    parser.add_argument("--lock-file", type=Path, required=True)
+    parser.add_argument("--lock-timeout", type=float, required=True)
     args = parser.parse_args(argv)  # any other option, --situation included, is a usage error: nothing is read
     stdin = sys.stdin.buffer if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     try:
-        out = private_read(args.memory, args.descriptor, args.descriptor_sha256, stdin)
+        out = private_read(args.memory, args.descriptor, args.descriptor_sha256, stdin,
+                           lock_file=args.lock_file, lock_timeout=args.lock_timeout)
     except PrivateReadRefused as exc:
         stdout.write(json.dumps({"schema": SCHEMA, "identity": IDENTITY, "status": "REFUSED", "reason": str(exc),
                                  "results": []}, sort_keys=True) + "\n")

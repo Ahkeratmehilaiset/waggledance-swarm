@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -111,7 +112,8 @@ def run(memory_dir, descriptor, data, capsys, descriptor_sha256=None):
     if descriptor_sha256 is None:
         descriptor_sha256 = hashlib.sha256(descriptor.read_bytes()).hexdigest() if descriptor.exists() else "0" * 64
     code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
-                         "--descriptor-sha256", descriptor_sha256], stdin=io.BytesIO(data),
+                         "--descriptor-sha256", descriptor_sha256, "--lock-file", str(memory_dir.parent / "reader.lock"),
+                         "--lock-timeout", "1"], stdin=io.BytesIO(data),
                         stdout=out)
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
@@ -154,8 +156,11 @@ def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys,
 
 def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
     memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
     with pytest.raises(SystemExit) as raised:
-        adapter.main(["--memory", str(memory_dir), "--descriptor", str(write_descriptor(tmp_path, digest)),
+        adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--lock-file", str(tmp_path / "slot.lock"), "--lock-timeout", "0",
                       "--situation", SITUATION], stdin=io.BytesIO(b""), stdout=io.StringIO())
     assert raised.value.code == 2
     assert SITUATION not in capsys.readouterr().err
@@ -358,3 +363,125 @@ def test_a_memory_that_changes_between_digest_and_open_is_refused(tmp_path, caps
     monkeypatch.setattr(adapter, "MEMORY_FACTORY", swapping)
     code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "memory_descriptor_changed") and fakes["encoder"] == 0
+
+
+def test_lock_path_and_timeout_are_explicitly_required(tmp_path, capsys, fakes):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    with pytest.raises(SystemExit) as raised:
+        adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest()],
+                     stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
+    assert raised.value.code == 2
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_reader_busy_is_fixed_and_precedes_memory_and_model(tmp_path, fakes):
+    from sandbox.mind.step2.reader_slot import reader_slot
+
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    lock_path = tmp_path / "shared.lock"
+    out = io.StringIO()
+    with reader_slot(lock_path, timeout_seconds=0):
+        code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                             "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                             "--lock-file", str(lock_path), "--lock-timeout", "0"],
+                            stdin=io.BytesIO(query_bytes()), stdout=out)
+    assert code == 2 and json.loads(out.getvalue())["reason"] == "reader_busy"
+    assert str(lock_path) not in out.getvalue() and SITUATION not in out.getvalue()
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+@pytest.mark.parametrize("lock_kind,timeout,reason", [
+    ("relative", "0", "reader_lock_invalid"),
+    ("missing_parent", "0", "reader_lock_unavailable"),
+    ("absolute", "31", "reader_lock_unavailable"),
+])
+def test_unusable_lock_refuses_without_memory_or_path_leak(tmp_path, fakes, lock_kind, timeout, reason):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    lock_path = {"relative": Path("relative.lock"), "missing_parent": tmp_path / "absent" / "lock",
+                 "absolute": tmp_path / "slot.lock"}[lock_kind]
+    out = io.StringIO()
+    code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                         "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                         "--lock-file", str(lock_path), "--lock-timeout", timeout],
+                        stdin=io.BytesIO(query_bytes()), stdout=out)
+    assert code == 2 and json.loads(out.getvalue())["reason"] == reason
+    assert str(lock_path) not in out.getvalue() and SITUATION not in out.getvalue()
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_two_adapter_processes_share_slot_until_result_is_ready(tmp_path):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    descriptor_sha = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    lock_path = tmp_path / "shared.lock"
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    root = Path(__file__).resolve().parents[3]
+    child = r"""
+import sys, time
+from pathlib import Path
+from sandbox.mind.step2 import wd_q4_private_read as adapter
+from sandbox.mind.step2.test_wd_q4_private_read import ENCODER, FakeMemory, FakeQ4
+memory, descriptor, digest, lock, ready, release = sys.argv[1:]
+adapter.MEMORY_FACTORY = lambda path: FakeMemory()
+adapter.RUNTIME_IDENTITY = lambda: dict(ENCODER)
+adapter.Q4_FACTORY = FakeQ4
+def encoder(*, revision):
+    Path(ready).write_text('ready', encoding='utf-8')
+    deadline = time.monotonic() + 20
+    while not Path(release).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not Path(release).exists():
+        raise RuntimeError('synthetic release timed out')
+    return object()
+adapter.ENCODER_FACTORY = encoder
+sys.exit(adapter.main(['--memory', memory, '--descriptor', descriptor, '--descriptor-sha256', digest,
+                       '--lock-file', lock, '--lock-timeout', '0']))
+"""
+    args = [sys.executable, "-B", "-c", child, str(memory_dir), str(descriptor), descriptor_sha,
+            str(lock_path), str(ready), str(release)]
+    env = dict(os.environ, PYTHONPATH=str(root), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    first = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+    try:
+        first.stdin.write(query_bytes())
+        first.stdin.close()
+        first.stdin = None
+        deadline = time.monotonic() + 15
+        while not ready.exists() and time.monotonic() < deadline and first.poll() is None:
+            time.sleep(0.05)
+        assert ready.exists(), "first adapter did not enter synthetic encoder"
+        second = subprocess.run(args, input=query_bytes(), cwd=root, env=env, capture_output=True, timeout=15)
+        assert second.returncode == 2
+        assert json.loads(second.stdout)["reason"] == "reader_busy"
+        assert str(lock_path).encode() not in second.stdout and SITUATION.encode() not in second.stdout
+        assert second.stderr == b""
+        release.write_text("release", encoding="utf-8")
+        out, err = first.communicate(timeout=15)
+        assert first.returncode == 0 and json.loads(out)["status"] == "ANSWER" and err == b""
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.communicate(timeout=10)
+
+
+def test_slot_remains_held_while_projecting_answer(tmp_path, capsys, fakes, monkeypatch):
+    from sandbox.mind.step2.reader_slot import ReaderBusy, reader_slot
+
+    memory_dir, digest = write_memory(tmp_path)
+    original = adapter.project_result
+    observed = []
+
+    def project(result):
+        with pytest.raises(ReaderBusy):
+            with reader_slot(tmp_path / "reader.lock", timeout_seconds=0):
+                pytest.fail("adapter released slot before projecting")
+        observed.append(True)
+        return original(result)
+
+    monkeypatch.setattr(adapter, "project_result", project)
+    code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
+    assert code == 0 and out["status"] == "ANSWER" and observed == [True]

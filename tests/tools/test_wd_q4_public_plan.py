@@ -120,6 +120,17 @@ def test_config_must_name_a_direct_generation_and_its_descriptor(valid_plan):
             module().validate_public_plan({**valid_plan, "config": bad}, enabled=True)
 
 
+@pytest.mark.parametrize("memory,descriptor", [
+    (r"C:\Synthetic\index\gen-1", r"C:\Synthetic\index\gen-1\descriptor.json"),
+    (r"C:\synthetic\index\gen-1", r"C:\synthetic\index\gen-1\Descriptor.json"),
+])
+def test_plan_path_spelling_matches_exact_resolver_binding(valid_plan, memory, descriptor):
+    """The plan cannot approve a spelling that the query adapter will reject."""
+    config = dataclasses.replace(valid_plan["config"], memory=memory, descriptor=descriptor)
+    with pytest.raises(module().PublicPlanRefused, match="^public_plan_refused$"):
+        module().validate_public_plan({**valid_plan, "config": config}, enabled=True)
+
+
 def test_rehashed_invalid_policy_document_is_not_accepted(valid_plan):
     bad_bytes, bad_hash = pinned({"schema": "wd.mind-public-status-policy.v1",
                                    "public_tasks": ["not-approved"], "public_types": ["message"]})

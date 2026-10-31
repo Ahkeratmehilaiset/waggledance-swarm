@@ -97,8 +97,8 @@ def validate_public_plan(plan=None, *, enabled=False):
         for name in _CONFIG_PATHS:
             _root_syntax(getattr(config, name))
         if (_GENERATION.fullmatch(ntpath.basename(config.memory)) is None
-                or ntpath.dirname(config.memory).casefold() != root.casefold()
-                or ntpath.join(config.memory, "descriptor.json").casefold() != config.descriptor.casefold()):
+                or ntpath.dirname(config.memory) != root
+                or ntpath.join(config.memory, "descriptor.json") != config.descriptor):
             raise ValueError()
         tasks, _ = adapter.strict_pins(plan["policy_bytes"], plan["policy_sha256"],
                                        plan["roster_bytes"], plan["roster_sha256"])

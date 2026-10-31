@@ -35,14 +35,26 @@ record re-derived from its own approved fields through the same path as ``projec
 caller-pinned ``approved_tasks``; any difference refuses ``projection_invalid`` before anything is written. A UTC
 boundary instant whose offset conversion overflows is refused as ``time_invalid`` instead of aborting the batch.
 
+v4 (independent review of v3): shape-only ``pr`` and ``head`` can carry arbitrary producer-chosen bits and a
+caller-chosen output path could leave any intended output location. By default the projection now OMITS ``pr`` and
+``head`` (still shape-validated so a malformed one refuses the event; ``include_refs=True`` opts in, and the writer
+must be told the same or it refuses ``projection_invalid``), and the event time is FLOORED to the minute
+(``TIME_PRECISION_SECONDS``), so seconds and fractions carry nothing. Publication takes a caller-supplied trusted
+output ROOT plus one safe ``.json`` file NAME (``OUTPUT_NAME``: no separator, drive, leading dot, upper case or
+space): the root must be an existing real directory and never a symlink, junction or other reparse point, the
+target must not exist in any form (a link there is ``output_exists`` and is never followed), staging lives inside
+the root, and no directory is ever created. The writer cannot be pointed outside the root by its arguments.
+
 Trust assumptions, disclosed: revalidation is in-process (Python has no forgery-proof object), so it proves
 content, never who built it, and it is not authentication or canonical provenance; the Windows no-replace rename
 and the POSIX no-replace link are kernel semantics of local filesystems (verified here on NTFS), network or FUSE
-filesystems may differ and are then simply unsupported. Remaining bounded channels, disclosed rather than closed:
-``pr`` (a positive integer), ``head`` (40 lowercase hex characters) and ``ts_utc`` (a normalized timestamp) are
-validated by shape only; a producer could encode a few bytes in them; ``dropped_fields`` and the per-reason refusal
-counts are producer-influenced integers; batch order and size are observable. ``approved_tasks`` is trusted as
-given once it is safe-shaped.
+filesystems may differ and are then simply unsupported; the components ABOVE the output root are the caller's
+trust (the root is used as named, not resolved). Remaining bounded channels, disclosed rather than closed: with
+``include_refs=True`` ``pr`` (a positive integer) and ``head`` (40 lowercase hex characters) are shape-only
+producer-chosen values; ``ts_utc`` still carries the minute a producer chose (about 20 bits a day, far fewer when
+events are near real time); which lane, type, status and ci enum member an event carries is producer-chosen (a few
+bits); ``dropped_fields`` and the per-reason refusal counts are producer-influenced integers; batch order and size
+are observable. ``approved_tasks`` is trusted as given once it is safe-shaped.
 
 Default deny everywhere else: a lane outside ``LANES``, a type outside ``ALLOWED_TYPES`` (every peer-review and
 decision type is outside), a sealed-named approved task, a malformed time, PR or head, or any text field over its
@@ -55,11 +67,16 @@ import json
 import os
 import re
 import secrets
+import stat
 from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
 
-SCHEMA = "wd.bridge-mind-shared-projection.v3"
+SCHEMA = "wd.bridge-mind-shared-projection.v4"
+TIME_PRECISION_SECONDS = 60  # event time is floored to the minute; seconds and fractions never reach the record
+# One safe file name inside the trusted output root: no separator, no drive, no leading dot, lower case, .json
+OUTPUT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,122}\.json")
+_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 SCOPE = "shared_metadata_projection_not_gate"
 PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "accepted", "refused", "dropped_fields", "records"})
 META_KEYS = frozenset({"type", "status", "agent", "task_id", "pr", "head", "ci"})
@@ -76,6 +93,7 @@ SUPPORTED_PLATFORMS = frozenset({"nt", "posix"})
 _PLATFORM = os.name
 _rename = os.rename
 _link = getattr(os, "link", None)
+_fsync = os.fsync
 LANES = frozenset({"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"})
 ALLOWED_TYPES = frozenset({"message", "wake_request", "handoff", "test", "claim", "release", "done", "milestone",
                            "status", "progress"})
@@ -151,8 +169,12 @@ def _task(value, approved_tasks):
     return value
 
 
-def approved_fields(event, approved_tasks=frozenset()):
-    """The approved fields of one event, validated; forbidden and unknown keys are counted, never read."""
+def approved_fields(event, approved_tasks=frozenset(), include_refs=False):
+    """The approved fields of one event, validated; forbidden and unknown keys are counted, never read.
+
+    ``pr`` and ``head`` are always shape-validated (a malformed one refuses the event) but are projected as None
+    unless the caller opts in with ``include_refs=True``: they are producer-chosen integers and hex strings and so a
+    covert channel by default. The time is floored to ``TIME_PRECISION_SECONDS``."""
     if not isinstance(event, dict):
         raise ProjectionRefused("event_not_object")
     dropped = sum(1 for key in event if key not in APPROVED_FIELDS)
@@ -162,6 +184,8 @@ def approved_fields(event, approved_tasks=frozenset()):
         when = None
     if when is None:
         raise ProjectionRefused("time_invalid")
+    floored = (int(when.timestamp()) // TIME_PRECISION_SECONDS) * TIME_PRECISION_SECONDS
+    when = when.replace(microsecond=0) - type(when - when)(seconds=int(when.timestamp()) - floored)
     agent = _closed("agent", event.get("agent"), LANE, LANES)
     if agent is None:
         raise ProjectionRefused("agent_not_lane")
@@ -177,6 +201,8 @@ def approved_fields(event, approved_tasks=frozenset()):
     if head is not None and (not isinstance(head, str) or HEAD.fullmatch(head) is None):
         raise ProjectionRefused("head_invalid")
     ci = _enum("ci", event.get("ci"), ALLOWED_CI, empty=None)
+    if not include_refs:
+        pr, head = None, None  # validated above, omitted here: shape-only fields are a channel by default
     fields = {"ts_utc": corpus_mod.utc_text(when), "agent": agent, "type": kind, "status": status, "task_id": task,
               "pr": pr, "head": head, "ci": ci}
     return fields, dropped
@@ -202,9 +228,9 @@ def projected_ref(fields):
     return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def project_event(event, approved_tasks=frozenset()):
+def project_event(event, approved_tasks=frozenset(), include_refs=False):
     """One shared record from one event, or ProjectionRefused; nothing partial is returned."""
-    fields, dropped = approved_fields(event, approved_tasks)
+    fields, dropped = approved_fields(event, approved_tasks, include_refs)
     return _record(fields), dropped
 
 
@@ -234,18 +260,18 @@ def _projection(records, refused, dropped):
     return out
 
 
-def project_events(events, approved_tasks=None):
+def project_events(events, approved_tasks=None, include_refs=False):
     """Every acceptable event as a record; refusals are counted by reason only; a non-object input refuses whole.
 
     ``approved_tasks`` is a frozenset of safe-shaped task ids the caller pins from an operator-approved list; with
-    none, every task id renders as UNKNOWN."""
+    none, every task id renders as UNKNOWN. ``include_refs`` opts in to projecting pr and head (off by default)."""
     approved = _approved_tasks(approved_tasks)
     records, refused, dropped = [], {}, 0
     for event in events:
         if not isinstance(event, dict):
             raise ProjectionRefused("event_not_object")
         try:
-            record, count = project_event(event, approved)
+            record, count = project_event(event, approved, include_refs)
         except ProjectionRefused as exc:
             refused[str(exc)] = refused.get(str(exc), 0) + 1
             continue
@@ -259,7 +285,7 @@ def project_notes(notes, allowlist=None):
     raise ProjectionRefused("notes_excluded")
 
 
-def validate_projection(projection, approved_tasks=None):
+def validate_projection(projection, approved_tasks=None, include_refs=False):
     """Strict exact revalidation of a projection object before it is published.
 
     Every record is re-derived from its own approved fields through the same validation path as ``project_event``
@@ -287,7 +313,7 @@ def validate_projection(projection, approved_tasks=None):
             if set(meta) != META_KEYS or not isinstance(record.get("time_utc"), str):
                 raise ProjectionRefused("projection_invalid")
             synthetic = {"ts_utc": record["time_utc"], **meta}
-            fields, _ = approved_fields(synthetic, approved)
+            fields, _ = approved_fields(synthetic, approved, include_refs)
             if fields["ts_utc"] != record["time_utc"] or _record(fields) != record:
                 raise ProjectionRefused("projection_invalid")
     except ProjectionRefused:
@@ -325,24 +351,48 @@ def _publish(staging, path):
     raise ProjectionRefused("publication_unsupported")
 
 
-def write_projection(path, projection, approved_tasks=None):
-    """Revalidate strictly, guard the whole object, stage it in a unique exclusively created file, then publish it
-    atomically onto a path that must not exist yet. Only a staging file this call created is ever removed; a
+def _output_root(root):
+    """The caller-supplied trusted output root: an existing real directory, never a symlink, junction or other
+    reparse point (never followed); anything else refuses output_root_invalid. Components above the root are the
+    caller's trust: the root is used exactly as named, nothing is resolved through it."""
+    root = Path(root)
+    try:
+        info = os.lstat(root)
+    except OSError:
+        raise ProjectionRefused("output_root_invalid") from None
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & _REPARSE):
+        raise ProjectionRefused("output_root_invalid")
+    return root
+
+
+def write_projection(root, name, projection, approved_tasks=None, include_refs=False):
+    """Revalidate strictly, guard the whole object, then publish ``projection`` as ``root/name``: ``root`` is a
+    caller-supplied trusted directory (``_output_root``), ``name`` one safe ``.json`` file name (``OUTPUT_NAME``), so
+    nothing this call writes can leave the root. The data is staged in a unique exclusively created file inside the
+    root and published atomically onto a target that must not exist in any form (a symlink or reparse point at the
+    target is ``output_exists``, never followed). Only a staging file this call created is ever removed; a
     destination written by anyone else is never overwritten or deleted; on a refusal nothing of ours remains."""
-    validate_projection(projection, approved_tasks)
+    validate_projection(projection, approved_tasks, include_refs)
     try:
         corpus_mod.ws.guard_object(projection)
     except corpus_mod.ws.WorkspaceError:
         raise ProjectionRefused("output_guarded") from None
     if _PLATFORM not in SUPPORTED_PLATFORMS:
         raise ProjectionRefused("publication_unsupported")
+    if not isinstance(name, str) or OUTPUT_NAME.fullmatch(name) is None:
+        raise ProjectionRefused("output_name_invalid")
+    root = _output_root(root)
     data = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
-    path = Path(path)
+    path = root / name
     staging, owned = None, False
     try:
-        if path.exists():
-            raise ProjectionRefused("output_exists")  # advisory early exit; the publication step is authoritative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ProjectionRefused("output_exists")  # any entry, link or reparse point included; never followed
         staging = _staging_name(path)
         try:
             handle = open(staging, "xb")
@@ -352,7 +402,7 @@ def write_projection(path, projection, approved_tasks=None):
         with handle:
             handle.write(data)
             handle.flush()
-            os.fsync(handle.fileno())
+            _fsync(handle.fileno())
         _publish(staging, path)
     except ProjectionRefused:
         _discard_own(staging, owned)

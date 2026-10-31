@@ -7,6 +7,7 @@ Every input here is synthetic. Sentinels are plain words that must never reach a
 
 import hashlib
 import json
+import os
 import re
 
 import pytest
@@ -38,8 +39,13 @@ def event(**changes):
     return base
 
 
-def project(*events, approved=APPROVED):
-    return sp.project_events(list(events), approved_tasks=approved)
+def project(*events, approved=APPROVED, refs=False):
+    return sp.project_events(list(events), approved_tasks=approved, include_refs=refs)
+
+
+def write(out, projection, **kw):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return sp.write_projection(out.parent, out.name, projection, **kw)
 
 
 def no_sentinel(text):
@@ -47,7 +53,7 @@ def no_sentinel(text):
 
 
 def test_s1_encoder_input_equals_stored_text_and_only_approved_tokens_reach_it(capsys):
-    projection = project(event())
+    projection = project(event(), refs=True)  # v4: refs render only on opt-in; the default is covered by the v4 tests
     assert projection["accepted"] == 1 and projection["refused"] == {}
     record = projection["records"][0]
     assert sp.encoder_input(record) == record["stored_text"] == record["summary"]
@@ -140,19 +146,19 @@ def test_s7_a_refused_write_leaves_no_file_and_no_staging(tmp_path):
     projection["records"][0]["stored_text"] = "PRIVATE_" + "MARKER"  # only this test spells it, split for the scanner
     out = tmp_path / "out" / "projection.json"
     with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
-        sp.write_projection(out, projection, approved_tasks=APPROVED)  # v3: strict revalidation refuses before the guard
+        write(out, projection, approved_tasks=APPROVED)  # v3: strict revalidation refuses before the guard
     assert not out.exists() and list(tmp_path.rglob("*")) in ([], [tmp_path / "out"])
 
 
 def test_s7b_a_good_write_is_exclusive_atomic_and_returns_its_digest(tmp_path):
     out = tmp_path / "out" / "projection.json"
-    digest = sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    digest = write(out, project(event()), approved_tasks=APPROVED)
     assert out.exists() and digest == hashlib.sha256(out.read_bytes()).hexdigest()
     assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]
     assert no_sentinel(out.read_text(encoding="utf-8"))
     before = out.read_bytes()
     with pytest.raises(sp.ProjectionRefused, match="output_exists"):  # v2: never overwrite a published file
-        sp.write_projection(out, project(event(status="done")), approved_tasks=APPROVED)
+        write(out, project(event(status="done")), approved_tasks=APPROVED)
     assert out.read_bytes() == before and sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]
 
 
@@ -160,8 +166,8 @@ def test_s7c_a_filesystem_error_is_one_fixed_path_free_refusal(tmp_path):
     blocker = tmp_path / "file-not-dir"
     blocker.write_text("x", encoding="utf-8")
     with pytest.raises(sp.ProjectionRefused) as raised:
-        sp.write_projection(blocker / "sub" / "projection.json", project(event()), approved_tasks=APPROVED)
-    assert str(raised.value) == "write_failed"
+        sp.write_projection(blocker, "projection.json", project(event()), approved_tasks=APPROVED)
+    assert str(raised.value) == "output_root_invalid"
 
 
 @pytest.mark.parametrize("field,value,reason", [
@@ -252,7 +258,7 @@ def test_v3_a_staging_collision_never_removes_a_file_this_call_did_not_create(tm
     monkeypatch.setattr(sp, "_staging_name", lambda path: fixed)
     before = _foreign(fixed)
     with pytest.raises(sp.ProjectionRefused, match="staging_collision"):
-        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+        write(out, project(event()), approved_tasks=APPROVED)
     assert fixed.read_bytes() == before and not out.exists()
     assert sorted(p.name for p in out.parent.iterdir()) == [fixed.name]
 
@@ -270,7 +276,7 @@ def test_v3_a_concurrent_destination_is_never_overwritten_or_deleted(tmp_path, m
     monkeypatch.setattr(sp, "_PLATFORM", platform)
     monkeypatch.setattr(sp, binding, _racing(getattr(sp, binding), out))
     with pytest.raises(sp.ProjectionRefused, match="output_exists"):
-        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+        write(out, project(event()), approved_tasks=APPROVED)
     assert out.read_bytes() == b"foreign publication, never ours"
     assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]  # own staging cleaned, theirs kept
 
@@ -278,7 +284,7 @@ def test_v3_a_concurrent_destination_is_never_overwritten_or_deleted(tmp_path, m
 def test_v3_the_posix_strategy_publishes_by_link_then_unlinks_only_its_staging(tmp_path, monkeypatch):
     out = tmp_path / "out" / "projection.json"
     monkeypatch.setattr(sp, "_PLATFORM", "posix")
-    digest = sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+    digest = write(out, project(event()), approved_tasks=APPROVED)
     assert digest == hashlib.sha256(out.read_bytes()).hexdigest()
     assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"] and out.stat().st_nlink == 1
 
@@ -289,7 +295,7 @@ def test_v3_an_unsupported_publication_strategy_fails_closed_with_nothing_left(t
     monkeypatch.setattr(sp, "_PLATFORM", "posix")
     monkeypatch.setattr(sp, "_link", link)
     with pytest.raises(sp.ProjectionRefused, match="publication_unsupported"):
-        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
+        write(out, project(event()), approved_tasks=APPROVED)
     assert not out.exists() and list(out.parent.iterdir()) == []
 
 
@@ -297,8 +303,8 @@ def test_v3_an_unknown_platform_fails_closed_before_any_staging(tmp_path, monkey
     out = tmp_path / "out" / "projection.json"
     monkeypatch.setattr(sp, "_PLATFORM", "java")
     with pytest.raises(sp.ProjectionRefused, match="publication_unsupported"):
-        sp.write_projection(out, project(event()), approved_tasks=APPROVED)
-    assert not out.parent.exists()
+        write(out, project(event()), approved_tasks=APPROVED)
+    assert list(out.parent.iterdir()) == []
 
 
 def _forge(change):
@@ -332,26 +338,26 @@ def _forge(change):
 def test_v3_the_writer_revalidates_the_exact_schema_and_refuses_a_forged_projection(tmp_path, change):
     out = tmp_path / "out" / "projection.json"
     with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
-        sp.write_projection(out, _forge(change), approved_tasks=APPROVED)
+        write(out, _forge(change), approved_tasks=APPROVED)
     assert not out.exists() and (not out.parent.exists() or list(out.parent.iterdir()) == [])
 
 
 def test_v3_the_writer_needs_the_same_approved_set_to_accept_a_rendered_task(tmp_path):
     projection = project(event())
     with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
-        sp.write_projection(tmp_path / "a.json", projection)  # no set: every rendered task must be UNKNOWN
+        write(tmp_path / "a.json", projection)  # no set: every rendered task must be UNKNOWN
     with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
-        sp.write_projection(tmp_path / "b.json", projection, approved_tasks=frozenset({"other-task-1"}))
-    assert sp.write_projection(tmp_path / "c.json", projection, approved_tasks=APPROVED)
-    assert sp.write_projection(tmp_path / "d.json", project(event(), approved=None))
+        write(tmp_path / "b.json", projection, approved_tasks=frozenset({"other-task-1"}))
+    assert write(tmp_path / "c.json", projection, approved_tasks=APPROVED)
+    assert write(tmp_path / "d.json", project(event(), approved=None))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json", "d.json"]
 
 
 def test_v3_the_writer_refuses_a_non_projection_value_without_touching_the_filesystem(tmp_path):
     for bad in ("text", None, [], {"records": []}):
         with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
-            sp.write_projection(tmp_path / "out" / "projection.json", bad)
-    assert not (tmp_path / "out").exists()
+            write(tmp_path / "out" / "projection.json", bad)
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_v3_every_refusal_reason_is_a_member_of_the_closed_reason_set():
@@ -365,3 +371,93 @@ def test_v3_every_refusal_reason_is_a_member_of_the_closed_reason_set():
 def test_v3_a_boundary_timestamp_is_refused_as_time_invalid_instead_of_aborting_the_batch(ts):
     out = project(event(ts_utc=ts), event())
     assert out["refused"] == {"time_invalid": 1} and out["accepted"] == 1
+
+
+# v4: untrusted pr/head omitted by default, bounded time precision, publication confined to a trusted output root.
+
+def test_v4_the_default_projection_omits_pr_and_head_and_the_head_line_has_no_refs():
+    record = project(event())["records"][0]
+    assert record["meta"]["pr"] is None and record["meta"]["head"] is None
+    assert record["stored_text"] == f"message milestone codex-lead-1 {TASK} ci:green"
+    assert "pr:" not in record["stored_text"] and HEAD not in json.dumps(project(event()))
+
+
+def test_v4_refs_render_only_when_the_caller_opts_in_and_are_still_shape_validated():
+    out = sp.project_events([event()], approved_tasks=APPROVED, include_refs=True)
+    record = out["records"][0]
+    assert record["meta"]["pr"] == 1973 and record["meta"]["head"] == HEAD and f"head:{HEAD}" in record["stored_text"]
+    assert project(event(pr=True))["refused"] == {"pr_invalid": 1}  # malformed refs refuse even when omitted
+    assert project(event(head=SENTINEL_TOKEN))["refused"] == {"head_invalid": 1}
+
+
+def test_v4_time_is_floored_to_the_minute_so_seconds_and_fractions_carry_nothing():
+    assert sp.TIME_PRECISION_SECONDS == 60
+    record = project(event(ts_utc="2026-10-31T12:34:56.789012Z"))["records"][0]
+    assert record["time_utc"] == record["available_utc"] == "2026-10-31T12:34:00.000000Z"
+    assert record["provenance"]["available_utc"] == "2026-10-31T12:34:00.000000Z"
+    same = project(event(ts_utc="2026-10-31T12:34:00Z"))["records"][0]
+    assert same["record_id"] == record["record_id"]  # one minute, one digest
+
+
+def test_v4_the_writer_refuses_a_projection_carrying_refs_unless_told_they_were_opted_in(tmp_path):
+    with_refs = sp.project_events([event()], approved_tasks=APPROVED, include_refs=True)
+    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+        write(tmp_path / "a.json", with_refs, approved_tasks=APPROVED)
+    assert write(tmp_path / "b.json", with_refs, approved_tasks=APPROVED, include_refs=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.json"]
+
+
+@pytest.mark.parametrize("name", ["", "..", "../x.json", "sub/x.json", "sub" + chr(92) + "x.json", "C:/x.json", "/x.json",
+                                  ".hidden.json", "Upper.json", "x y.json", "x.json\x00", "a" * 129 + ".json",
+                                  "x.txt", "x"])
+def test_v4_an_output_name_must_be_one_safe_json_file_name_inside_the_root(tmp_path, name):
+    with pytest.raises(sp.ProjectionRefused, match="output_name_invalid"):
+        sp.write_projection(tmp_path, name, project(event()), approved_tasks=APPROVED)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_v4_the_output_root_must_be_an_existing_real_directory(tmp_path):
+    with pytest.raises(sp.ProjectionRefused, match="output_root_invalid"):
+        sp.write_projection(tmp_path / "missing", "x.json", project(event()), approved_tasks=APPROVED)
+    with pytest.raises(sp.ProjectionRefused, match="output_root_invalid"):
+        sp.write_projection(tmp_path / "missing" / "deeper", "x.json", project(event()), approved_tasks=APPROVED)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_v4_a_reparse_point_as_root_or_target_is_never_followed(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        import subprocess
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)], capture_output=True)
+        if done.returncode != 0:
+            pytest.skip("no symlink or junction privilege here")
+    with pytest.raises(sp.ProjectionRefused, match="output_root_invalid"):
+        sp.write_projection(link, "x.json", project(event()), approved_tasks=APPROVED)
+    assert list(real.iterdir()) == []
+    target_link = real / "y.json"
+    try:
+        os.symlink(tmp_path / "elsewhere.json", target_link)
+    except (OSError, NotImplementedError):
+        pytest.skip("no file symlink privilege here")
+    with pytest.raises(sp.ProjectionRefused, match="output_exists"):
+        sp.write_projection(real, "y.json", project(event()), approved_tasks=APPROVED)
+    assert not (tmp_path / "elsewhere.json").exists() and sorted(p.name for p in real.iterdir()) == ["y.json"]
+
+
+def test_v4_a_filesystem_error_after_staging_is_one_fixed_refusal_and_cleans_only_ours(tmp_path, monkeypatch):
+    def broken(fd):
+        raise OSError(5, "io error")
+    monkeypatch.setattr(sp, "_fsync", broken)
+    with pytest.raises(sp.ProjectionRefused, match="write_failed"):
+        sp.write_projection(tmp_path, "x.json", project(event()), approved_tasks=APPROVED)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_v4_the_published_file_and_nothing_else_lands_inside_the_root(tmp_path):
+    digest = sp.write_projection(tmp_path, "projection.json", project(event()), approved_tasks=APPROVED)
+    assert [p.name for p in tmp_path.iterdir()] == ["projection.json"]
+    assert hashlib.sha256((tmp_path / "projection.json").read_bytes()).hexdigest() == digest

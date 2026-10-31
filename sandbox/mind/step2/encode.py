@@ -25,13 +25,13 @@ def model_identity():
 class E5:
     """The fixed encode policy. Loading never touches the network."""
 
-    def __init__(self):
+    def __init__(self, *, revision):
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         import sentence_transformers
         import torch
         from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(MODEL, device="cpu", local_files_only=True)
+        self.model = SentenceTransformer(MODEL, device="cpu", local_files_only=True, revision=revision)
         self.policy = {"prefix_passage": "passage: ", "prefix_query": "query: ", "truncate_chars": TRUNCATE,
                        "passage_batch": PASSAGE_BATCH, "query_batch": 1, "normalize": True, "dtype": "float32",
                        "dim": DIM, "device": "cpu", "sentence_transformers": sentence_transformers.__version__,

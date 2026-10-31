@@ -99,11 +99,27 @@ def test_e5_query_contract_with_stubbed_dependencies(monkeypatch):
         __version__="synthetic", get_num_threads=lambda: 1))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    encoder = encode.E5()
+    encoder = encode.E5(revision="synthetic-verified-revision")
     result = encoder.query("synthetic query")
     assert calls[0][1]["local_files_only"] is True
     assert calls[1][0] == ["query: synthetic query"]
     assert result.tolist() == [1.0, 0.0]
+
+
+def test_e5_passes_the_verified_revision_to_the_offline_loader(monkeypatch):
+    calls = []
+
+    def fake_loader(name, **kwargs):
+        calls.append((name, kwargs))
+        return object()
+
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(
+        __version__="synthetic", SentenceTransformer=fake_loader))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        __version__="synthetic", get_num_threads=lambda: 1))
+    encode.E5(revision="synthetic-verified-revision")
+    assert calls == [(encode.MODEL, {"device": "cpu", "local_files_only": True,
+                                     "revision": "synthetic-verified-revision"})]
 
 
 def test_loads_and_queries_a_synthetic_faiss_generation_without_mutating_it(tmp_path):

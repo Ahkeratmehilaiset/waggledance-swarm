@@ -18,7 +18,9 @@ Fail-closed binding, checked before anything is loaded or encoded:
   healthy cell's receipt must carry exactly the descriptor's encoder identity (``encoder_identity_mismatch``);
 * the local runtime encoder (``encode.model_identity``: the cached revision and the weights sha256) must equal the
   descriptor before the model is loaded (``encoder_runtime_mismatch`` / ``encoder_runtime_unavailable``): a different
-  cached model would make the query vector incomparable to the stored ones.
+  cached model would make the query vector incomparable to the stored ones; the verified revision is explicitly
+  passed to the offline loader rather than resolving ``main`` again. This does not verify every model asset or close
+  a model-file replacement window between identity verification and loading.
 
 The output is a projection of the Q4 result over an allowlist (``project_result``): status, reason code, the rule
 version Q4 reported for this run (whatever the port returns; not a frozen-v1 evidence claim), per result the kind,
@@ -260,7 +262,7 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream):
     memory = bind_memory(memory_dir, descriptor)
     bind_runtime_encoder(descriptor)
     try:
-        encoder = ENCODER_FACTORY()
+        encoder = ENCODER_FACTORY(revision=descriptor["encoder"]["revision"])
     except Exception:  # noqa: BLE001 - a model that cannot load is one fixed reason, never its message
         raise PrivateReadRefused("encoder_load_failed") from None
     try:

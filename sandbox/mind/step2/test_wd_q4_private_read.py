@@ -90,7 +90,8 @@ def fakes(monkeypatch):
         loaded["memory"] += 1
         return FakeMemory()
 
-    def encoder_factory():
+    def encoder_factory(*, revision):
+        assert revision == ENCODER["revision"]
         loaded["encoder"] += 1
         return object()
 
@@ -134,6 +135,21 @@ def test_a_bound_query_answers_with_refs_only_and_never_echoes_the_situation(tmp
                                "memory_sha256": digest, "dim": 384, "encoder": ENCODER}
     assert SITUATION not in text and "zebra" not in text and "7f3a" not in text
     assert FakeQ4.calls == [(SITUATION, WHEN)] and fakes == {"memory": 1, "encoder": 1, "runtime": 1}
+
+
+def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys, fakes, monkeypatch):
+    seen = []
+
+    def encoder_factory(*, revision):
+        seen.append(revision)
+        return object()
+
+    monkeypatch.setattr(adapter, "ENCODER_FACTORY", encoder_factory)
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
+    assert code == 0 and out["status"] == "ANSWER"
+    assert seen == [ENCODER["revision"]]
 
 
 def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
@@ -258,7 +274,8 @@ def test_a_runtime_encoder_that_differs_from_the_descriptor_never_loads_the_mode
 def test_a_model_that_cannot_load_is_one_fixed_reason_without_its_message(tmp_path, capsys, fakes, monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
 
-    def failing():
+    def failing(*, revision):
+        assert revision == ENCODER["revision"]
         raise RuntimeError("secret path C:/private/model")
 
     monkeypatch.setattr(adapter, "ENCODER_FACTORY", failing)

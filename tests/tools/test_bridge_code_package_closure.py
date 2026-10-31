@@ -787,6 +787,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
     "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/wd_q4_private_read.py",
 })
+Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 
 
 def _assert_shadow_release_delivery(definition):
@@ -798,6 +799,8 @@ def _assert_shadow_release_delivery(definition):
     for name, path in SHADOW_RELEASE_CLI.items():
         assert definition["python_entrypoints"].get(name) == path, "shadow_entrypoint_drop"
     published = set(definition["python_entrypoints"].values())
+    assert Q4_AGENT_API in definition["python_files"], "q4_agent_api_drop"
+    assert Q4_AGENT_API not in published, "q4_agent_api_published"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
@@ -816,6 +819,7 @@ def _assert_shadow_release_delivery(definition):
     "shadow_library_published", "deferred_sandbox_file_published",
     "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
     "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop",
+    "q4_agent_api_drop", "q4_agent_api_published",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -845,6 +849,10 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_files"].remove("sandbox/mind/step2/runtime_launcher.py")
     elif mutation == "q4_projection_drop":
         mutant["python_files"].remove("sandbox/mind/step2/shared_projection.py")
+    elif mutation == "q4_agent_api_drop":
+        mutant["python_files"].remove(Q4_AGENT_API)
+    elif mutation == "q4_agent_api_published":
+        mutant["python_entrypoints"]["unreviewed_q4_agent"] = Q4_AGENT_API
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":

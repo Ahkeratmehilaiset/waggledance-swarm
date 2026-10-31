@@ -65,7 +65,7 @@ jobs:
     - name: Run pytest
       run: |
         python -m pytest tests/ -v --tb=short
-        python -m pytest sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py sandbox/mind/step2/test_q4_readonly_port.py sandbox/mind/step2/test_wd_q4_private_read.py sandbox/mind/step2/test_reader_slot.py sandbox/mind/step2/test_runtime_manifest.py sandbox/mind/step2/test_runtime_bootstrap.py sandbox/mind/step2/test_runtime_builder.py sandbox/mind/step2/test_runtime_launcher.py sandbox/mind/step2/test_shared_projection.py -v --tb=short
+        python -m pytest sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py sandbox/mind/step2/test_q4_readonly_port.py sandbox/mind/step2/test_wd_q4_private_read.py sandbox/mind/step2/test_reader_slot.py sandbox/mind/step2/test_runtime_manifest.py sandbox/mind/step2/test_runtime_bootstrap.py sandbox/mind/step2/test_runtime_builder.py sandbox/mind/step2/test_runtime_launcher.py sandbox/mind/step2/test_shared_projection.py sandbox/mind/step2/test_shared_projection_q4_synthetic.py -v --tb=short
 
     - name: Run benchmark baseline
       run: |

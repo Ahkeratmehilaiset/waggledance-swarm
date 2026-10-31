@@ -412,6 +412,18 @@ def vote_slot(agent: str, status: str) -> str | None:
     return None
 
 
+def _effective_coverage(source: Mapping[str, Any]) -> str:
+    """Distinguish a complete bounded window from complete bridge-log coverage."""
+    coverage = source.get("coverage")
+    coverage = coverage if coverage in ("complete", "partial", "unknown") else "unknown"
+    identity = source.get("log_identity")
+    if coverage == "complete" and (
+            (isinstance(identity, str) and identity.startswith("capture-window:"))
+            or source.get("blocked") is not None):
+        return "partial"
+    return coverage
+
+
 class _Inputs:
     """The usable rows of one core snapshot. A row that fails the allowlist is refused by position only."""
 
@@ -425,8 +437,7 @@ class _Inputs:
         if self.now is None:
             raise WorkspaceError("snapshot source needs an explicit as_of_utc")
         self.source_ref = _match(REF, source.get("last_event_ref")) or UNKNOWN
-        coverage = source.get("coverage")
-        self.coverage = coverage if coverage in ("complete", "partial", "unknown") else "unknown"
+        self.coverage = _effective_coverage(source)
         # The core contract: blocked is null, or {active: true, offset, reason}. Anything else is read as blocked.
         blocked = source.get("blocked")
         self.blocked = None
@@ -980,12 +991,13 @@ def _question(item: Mapping[str, Any], who: str) -> str:
     return f"How can {who} resolve {item['detail']}?"
 
 
-def _entry(item: Mapping[str, Any] | None, who: str, partial: bool) -> dict[str, Any]:
+def _entry(item: Mapping[str, Any] | None, who: str, partial: bool, blocked: bool = False) -> dict[str, Any]:
     if item is None:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     question = _question(item, who)
     if partial:
-        question += " Coverage is not complete, so check the exact head first."
+        question += (" Coverage is not complete." if blocked else
+                     " Coverage is not complete, so check the exact head first.")
     if len(question) > QUESTION_LIMIT:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     return {"question": question, "attention_rank": item["rank"], "refs": list(item["refs"])}
@@ -997,11 +1009,12 @@ def derive_next_question(inputs: _Inputs, attention: Sequence[Mapping[str, Any]]
     # In the explicit interface a pseudo-lane keeps its entry, UNKNOWN: its facts stay visible but it is asked
     # nothing. The omitted interface asks it as main does.
     lanes = {agent: _entry(None if inputs.explicit and agent in PSEUDO_AGENTS else
-                           next((item for item in attention if agent in item["actors"]), None), agent, partial)
+                           next((item for item in attention if agent in item["actors"]), None), agent, partial,
+                           inputs.blocked is not None)
              for agent in sorted(agents)}
     first = attention[0] if attention else None
     who = ", ".join(first["actors"]) if first and first["actors"] else "the fleet"
-    return {"global": _entry(first, who, partial), "lanes": lanes}
+    return {"global": _entry(first, who, partial, inputs.blocked is not None), "lanes": lanes}
 
 
 def _check_output(fields: Mapping[str, Any]) -> None:
@@ -1071,7 +1084,7 @@ def canonical_json(value: Any) -> str:
 
 
 def render_text(snapshot: Mapping[str, Any]) -> str:
-    lines = [f"as of {snapshot['source']['as_of_utc']} (coverage {snapshot['source'].get('coverage', UNKNOWN)})"]
+    lines = [f"as of {snapshot['source']['as_of_utc']} (coverage {_effective_coverage(snapshot['source'])})"]
     for item in snapshot["attention"]:
         lines.append(f"{item['rank']:>3} {item['kind']}: {item['detail']}"
                      + (f" [{', '.join(item['actors'])}]" if item["actors"] else ""))

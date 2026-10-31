@@ -24,7 +24,9 @@ def digest(value):
 @pytest.fixture
 def fields(tmp_path):
     source = tmp_path / "synthetic.jsonl"
-    generation = tmp_path / "generation.json"
+    mind_state = tmp_path / "mind-state"
+    mind_state.mkdir()
+    generation = mind_state / "generation.json"
     source.write_bytes(b"")
     generation.write_bytes(raw({"generation": "synthetic-generation"}))
     cursor = read_bridge_log(source, generation_path=generation).candidate_cursor
@@ -94,6 +96,33 @@ def test_noncanonical_paths_and_lexically_identical_paths_refused(fields, which)
         bad["generation_path"] = bad["source_path"]
     with pytest.raises(ValueError):
         issuer.issue_anchor(enabled=True, **bad)
+
+
+def test_generation_in_source_directory_is_refused(fields):
+    source_parent = os.path.dirname(fields["source_path"])
+    generation = os.path.join(source_parent, "mind-epoch.json")
+    with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+        issuer.issue_anchor(enabled=True, **{**fields, "generation_path": generation})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path names are case-insensitive")
+def test_source_directory_case_variant_is_still_refused(fields):
+    source_parent = os.path.dirname(fields["source_path"]).swapcase()
+    with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+        issuer.issue_anchor(enabled=True, **{**fields, "generation_path": os.path.join(source_parent, "epoch.json")})
+
+
+def test_generation_in_separate_directory_is_accepted(fields):
+    assert issuer.issue_anchor(enabled=True, **fields)[0]
+
+
+@pytest.mark.parametrize("name", ["events.generation.json", pytest.param("EVENTS.GENERATION.JSON",
+    marks=pytest.mark.skipif(os.name != "nt", reason="Windows path names are case-insensitive"))])
+def test_reserved_bridge_generation_basename_refused_in_any_directory(fields, tmp_path, name):
+    state = tmp_path / "other-mind-state"
+    state.mkdir()
+    with pytest.raises(ValueError, match="^anchor_input_invalid$"):
+        issuer.issue_anchor(enabled=True, **{**fields, "generation_path": str(state / name)})
 
 
 @pytest.mark.parametrize("path", [r"\\server\share\events.jsonl", r"\\?\C:\logs\events.jsonl",

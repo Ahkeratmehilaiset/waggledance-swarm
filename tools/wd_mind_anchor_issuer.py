@@ -59,7 +59,10 @@ def issue_anchor(*, enabled=False, source_path, generation_path, cursor,
             raise ValueError()
         source = _path(source_path)
         generation = _path(generation_path)
-        if os.path.normcase(source) == os.path.normcase(generation):
+        # The bridge reader probes this reserved basename automatically. Keep
+        # Mind's independently managed sidecar out of the source directory.
+        if (os.path.normcase(os.path.dirname(source)) == os.path.normcase(os.path.dirname(generation))
+                or os.path.normcase(os.path.basename(generation)) == os.path.normcase("events.generation.json")):
             raise ValueError()
         if (type(cursor) is not BridgeCursor or _validate_cursor(cursor) is not None
                 or cursor.offset >= 2**63

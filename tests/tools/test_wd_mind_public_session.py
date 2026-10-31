@@ -610,3 +610,112 @@ def test_attempt_contract_waits_on_the_same_lock_and_refuses_on_contention(state
                                           timeout_seconds=1) == "unchanged"
     assert session.prepare_status_attempt(audit, result, timeout_seconds=1, **_attempt_kwargs(pins, now, first)) == second
     assert (audit / session.LOCK_FILENAME).is_file()
+
+# ---- v3 (Lead lead-mind-status-digest-fable-20261031-v3): the preparation side effect is exactly the shared lock ----
+# ---- slot, never a publication; a prior whose exact digest is supplied is still refused when it is structurally ----
+# ---- incomplete, while a structurally complete old prior is never refused merely because it is stale. ----
+def test_prepare_creates_only_the_shared_lock_slot_and_never_a_publication(state):
+    from tools import wd_mind_public_session as session
+    audit, result, pins = state
+    now = datetime.now(timezone.utc)
+    assert sorted(p.name for p in audit.iterdir()) == []
+    intended = session.prepare_status_attempt(audit, result, **_attempt_kwargs(pins, now, None))
+    assert sorted(p.name for p in audit.iterdir()) == [session.LOCK_FILENAME]  # the lock slot, nothing else
+    assert (audit / session.LOCK_FILENAME).is_file() and (audit / session.LOCK_FILENAME).stat().st_size == 0
+    assert not (audit / session.FILENAME).exists()
+    assert session.prepare_status_attempt(audit, result, **_attempt_kwargs(pins, now, None)) == intended
+    assert sorted(p.name for p in audit.iterdir()) == [session.LOCK_FILENAME]
+    assert session.recover_status_attempt(audit, prior_sha256=None, attempt_sha256=intended, enabled=True) == "unchanged"
+    assert sorted(p.name for p in audit.iterdir()) == [session.LOCK_FILENAME]
+    assert session.publish_status(audit, result, attempt_sha256=intended, **_attempt_kwargs(pins, now, None)) == intended
+    assert sorted(p.name for p in audit.iterdir()) == sorted([session.LOCK_FILENAME, session.FILENAME])
+
+
+def _prior_variants(saved):
+    """Priors that keep the v2 schema and a valid revision but are structurally incomplete or malformed."""
+    doc = json.loads(saved)
+    variants = {}
+    no_body = dict(doc)
+    del no_body["body"]
+    variants["missing body"] = no_body
+    no_digest = dict(doc)
+    del no_digest["body_sha256"]
+    variants["missing body digest"] = no_digest
+    variants["empty body"] = dict(doc, body={})
+    variants["body digest mismatch"] = dict(doc, body_sha256="0" * 64)
+    variants["non-hex pin"] = dict(doc, anchor_sha256="x")
+    variants["missing pin"] = {k: v for k, v in doc.items() if k != "roster_sha256"}
+    variants["bad time"] = dict(doc, as_of_utc="not-a-time")
+    variants["extra key"] = dict(doc, recovered=True)
+    variants["wrong authority"] = dict(doc, authority="writer")
+    variants["wrong coverage"] = dict(doc, coverage="complete")
+    body = json.loads(json.dumps(doc["body"]))
+    body["records"].append({"time_utc": "2026-01-01T00:00:00.000000Z", "agent": "codex-lead-1", "type": "status"})
+    variants["record missing a key"] = dict(doc, body=body)
+    body = json.loads(json.dumps(doc["body"]))
+    body["records"].append({"time_utc": "2026-01-01T00:00:00.000000Z", "agent": "claude-rco-1", "type": "status",
+                            "status": "active", "task_id": "lead-mind-production-20261031"})
+    variants["review lane record"] = dict(doc, body=body)
+    body = json.loads(json.dumps(doc["body"]))
+    body["records"].append({"time_utc": "2026-01-01T00:00:00.000000Z", "agent": "codex-lead-1", "type": 7,
+                            "status": "active", "task_id": "lead-mind-production-20261031"})
+    variants["non-string record type"] = dict(doc, body=body)
+    for name, value in list(variants.items()):
+        if "body" in value and "body_sha256" in value and name not in ("body digest mismatch",):
+            value["body_sha256"] = hashlib.sha256(json.dumps(value["body"], sort_keys=True, separators=(",", ":"),
+                                                             ensure_ascii=True).encode("ascii")).hexdigest()
+    return {name: json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii") for name, value in variants.items()}
+
+
+def test_structurally_incomplete_prior_is_refused_with_its_exact_digest_but_a_stale_prior_is_not(state):
+    from tools import wd_mind_public_session as session
+    audit, result, pins = state
+    now = datetime.now(timezone.utc)
+    target = audit / session.FILENAME
+    first = session.publish_status(audit, result, **_attempt_kwargs(pins, now, None))
+    saved = target.read_bytes()
+    assert json.loads(saved)["body"]["records"], "the fixture publication must carry at least one record"
+    variants = _prior_variants(saved)
+    assert len(variants) == 13
+    for name, raw in variants.items():
+        doc = json.loads(raw)
+        assert doc["schema"] == session.SCHEMA and doc["revision"] == 1, name  # schema and revision alone pass
+        target.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        _refused(session.prepare_status_attempt, audit, result, **_attempt_kwargs(pins, now, digest))
+        _refused(session.publish_status, audit, result, **_attempt_kwargs(pins, now, digest))
+        assert target.read_bytes() == raw, name  # never repaired, removed or replaced
+        assert not [p for p in audit.iterdir() if p.name.startswith(".public-status-")], name
+    target.write_bytes(saved)
+    # a structurally complete prior is accepted although it is STALE by any reader bound
+    old = now - timedelta(days=2)
+    stale_first = session.publish_status(audit, result, **_attempt_kwargs(pins, old, first))
+    assert json.loads(target.read_bytes())["as_of_utc"] == old.isoformat()
+    _refused(session.read_status, audit, lane="codex-lead-1", agent_uuid=ROSTER["codex-lead-1"], as_of=now,
+             max_age_seconds=900, enabled=True, **pins)
+    second = session.prepare_status_attempt(audit, result, **_attempt_kwargs(pins, now, stale_first))
+    assert session.publish_status(audit, result, attempt_sha256=second, **_attempt_kwargs(pins, now, stale_first)) == second
+    assert json.loads(target.read_bytes())["revision"] == 3
+    # a complete prior under the SAME pins is also checked for policy membership of its records
+    doc = json.loads(target.read_bytes())
+    body = doc["body"]
+    body["records"].append({"time_utc": "2026-01-01T00:00:00.000000Z", "agent": "codex-lead-1", "type": "status",
+                            "status": "active", "task_id": "not-in-this-policy"})
+    doc["body_sha256"] = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                                   ensure_ascii=True).encode("ascii")).hexdigest()
+    foreign_task = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("ascii")
+    target.write_bytes(foreign_task)
+    _refused(session.prepare_status_attempt, audit, result,
+             **_attempt_kwargs(pins, now, hashlib.sha256(foreign_task).hexdigest()))
+    assert target.read_bytes() == foreign_task
+    # a complete prior under OTHER pins (pin rotation) is accepted on shape and digest only: its record membership
+    # under its own policy cannot be checked here and is NOT claimed (reported, not inferred)
+    rotated = dict(doc, anchor_sha256="1" * 64)
+    rotated_raw = json.dumps(rotated, sort_keys=True, separators=(",", ":")).encode("ascii")
+    target.write_bytes(rotated_raw)
+    rotated_digest = hashlib.sha256(rotated_raw).hexdigest()
+    third = session.prepare_status_attempt(audit, result, **_attempt_kwargs(pins, now, rotated_digest))
+    assert session.publish_status(audit, result, attempt_sha256=third, **_attempt_kwargs(pins, now, rotated_digest)) == third
+    assert json.loads(target.read_bytes())["revision"] == 4
+    assert json.loads(target.read_bytes())["anchor_sha256"] == pins["anchor_sha256"]
+

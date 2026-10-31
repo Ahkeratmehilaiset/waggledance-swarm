@@ -15,7 +15,8 @@ Before rollout, old v1 writers must be stopped or handed off externally: they
 do not honor the v2 lock. Revision is not an independent anti-rollback anchor.
 A writer that must survive an AMBIGUOUS publish failure (the replace may or
 may not have landed) first obtains the exact digest of the bytes it intends to
-write with ``prepare_status_attempt`` (same lock, same CAS, no write), passes it
+write with ``prepare_status_attempt`` (same lock, same CAS, no publication
+write; like every lock user it may create the empty lock slot file), passes it
 to ``publish_status`` as ``attempt_sha256`` (the publish refuses before any write
 if the bytes would differ), and after a failure asks ``recover_status_attempt``
 with its own prior digest and that attempt digest. Recovery answers only
@@ -67,6 +68,10 @@ def _object(raw):
     return value
 
 
+def _digest(value):
+    return type(value) is str and _HEX.fullmatch(value) is not None
+
+
 def _instant(value):
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError()
@@ -110,7 +115,13 @@ def _pins(anchor_bytes, anchor_sha256, policy_bytes, policy_sha256, roster_bytes
     return roster, public_tasks, public_types
 
 
-def _body(value, tasks, types):
+_PINS = ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256")
+_KEYS = frozenset({"schema", "revision", "authority", "coverage", "as_of_utc", *_PINS, "body_sha256", "body"})
+
+
+def _shape(value):
+    """Pin-free structural check of a status body: closed shape, floored UTC times, non-review lanes, allowed
+    statuses, string type and task fields. Policy MEMBERSHIP of type and task is checked by _body only."""
     if (type(value) is not dict or set(value) != {"schema", "authority", "scope", "freshness", "records"}
             or value["schema"] != "wd.mind-status-metadata.v1" or value["authority"] != "none"
             or value["scope"] != "in_memory_metadata_not_gate" or value["freshness"] != "UNKNOWN"
@@ -120,8 +131,8 @@ def _body(value, tasks, types):
         if (type(item) is not dict or set(item) != {"time_utc", "agent", "type", "status", "task_id"}
                 or type(item["time_utc"]) is not str or _FLOORED_UTC.fullmatch(item["time_utc"]) is None
                 or item["agent"] not in projection.LANES or item["agent"] in ("claude-rco-1", "claude-rco-2")
-                or item["type"] not in types or item["status"] not in projection.ALLOWED_STATUS
-                or item["task_id"] not in tasks):
+                or type(item["type"]) is not str or item["status"] not in projection.ALLOWED_STATUS
+                or type(item["task_id"]) is not str):
             raise ValueError()
         parsed = datetime.fromisoformat(item["time_utc"].replace("Z", "+00:00"))
         if parsed.tzinfo is None or parsed.utcoffset().total_seconds() != 0:
@@ -129,12 +140,34 @@ def _body(value, tasks, types):
     return value
 
 
-def _digest(value):
-    return type(value) is str and _HEX.fullmatch(value) is not None
+def _body(value, tasks, types):
+    _shape(value)
+    for item in value["records"]:
+        if item["type"] not in types or item["task_id"] not in tasks:
+            raise ValueError()
+    return value
+
+
+def _structure(raw):
+    """One structurally COMPLETE v2 publication, independent of pins and clock: closed key set, schema, revision
+    range, authority, coverage, hex pin digests, parseable aware as_of_utc, body shape and body digest. Returns the
+    document. It does not check pin equality, policy membership or age."""
+    doc = _object(raw)
+    if (set(doc) != _KEYS or doc["schema"] != SCHEMA or doc["authority"] != "none"
+            or type(doc["revision"]) is not int or not 1 <= doc["revision"] <= _MAX_REVISION
+            or doc["coverage"] != "last_delta_only" or any(not _digest(doc[name]) for name in _PINS)
+            or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40 or not _digest(doc["body_sha256"])):
+        raise ValueError()
+    _instant(datetime.fromisoformat(doc["as_of_utc"]))
+    _shape(doc["body"])
+    if hashlib.sha256(_json(doc["body"])).hexdigest() != doc["body_sha256"]:
+        raise ValueError()
+    return doc
 
 
 def _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins):
-    """Shared pre-lock checks of a publish attempt: switch, explicit prior, pins, clock, body and directory."""
+    """Shared pre-lock checks of a publish attempt: switch, explicit prior, pins, clock, body and directory.
+    Returns root, lock, body, now, tasks, types."""
     if enabled is not True or expected_previous_sha256 is _UNSET or (
             expected_previous_sha256 is not None and not _digest(expected_previous_sha256)):
         raise ValueError()
@@ -146,25 +179,28 @@ def _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_
     lock = root / LOCK_FILENAME
     if os.path.lexists(lock):
         _regular(lock)
-    return root, lock, body, now
+    return root, lock, body, now, tasks, types
 
 
-def _intended(target, expected_previous_sha256, body, now, pins):
+def _intended(target, expected_previous_sha256, body, now, pins, tasks, types):
     """The exact bytes this attempt writes over the CURRENT publication (the caller holds the lock): CAS on the
-    prior digest, explicit genesis, revision + 1, never a v1 or malformed prior."""
+    prior digest, explicit genesis, revision + 1. The prior must be a structurally COMPLETE v2 publication
+    (_structure) even when its exact digest is supplied; a prior under the SAME pins must also pass policy
+    membership of its records; a prior under other pins (rotation) is accepted on structure and digest only, its
+    membership under its own policy is not checkable here. Age is never a reason to refuse a prior."""
     revision = 1
     if os.path.lexists(target):
         _regular(target)
         with target.open("rb") as stream:
             old = stream.read(MAX_BYTES + 1)
-        old_doc = _object(old)
-        old_revision = old_doc.get("revision")
-        if (expected_previous_sha256 is None or
-                hashlib.sha256(old).hexdigest() != expected_previous_sha256 or
-                old_doc.get("schema") != SCHEMA or type(old_revision) is not int or
-                not 1 <= old_revision < _MAX_REVISION):
+        if expected_previous_sha256 is None or hashlib.sha256(old).hexdigest() != expected_previous_sha256:
             raise ValueError()
-        revision = old_revision + 1
+        old_doc = _structure(old)
+        if not old_doc["revision"] < _MAX_REVISION:
+            raise ValueError()
+        if all(old_doc[name] == pins[name] for name in _PINS):
+            _body(old_doc["body"], tasks, types)
+        revision = old_doc["revision"] + 1
     elif expected_previous_sha256 is not None:
         raise ValueError()
     doc = {"schema": SCHEMA, "revision": revision, "authority": "none",
@@ -181,14 +217,18 @@ def _intended(target, expected_previous_sha256, body, now, pins):
 def prepare_status_attempt(audit_root, snapshot_result, *, as_of, enabled=False,
                            expected_previous_sha256=_UNSET, timeout_seconds=0.2, **pins):
     """Bounded attempt preparation: the digest of the exact bytes publish_status would write for these inputs
-    over the current publication, computed under the same lock with the same CAS and WITHOUT writing. The caller
-    keeps it and passes it to publish_status(attempt_sha256=...) and, after an ambiguous failure, to
-    recover_status_attempt. Returns only the digest; every other outcome is the fixed refusal. OFF by default."""
+    over the current publication, computed under the same lock with the same CAS. It writes NO publication and no
+    staging file; its only filesystem side effect is the one every lock user has: the empty cooperating-writer lock
+    slot file may be created. The caller keeps the digest and passes it to publish_status(attempt_sha256=...) and,
+    after an ambiguous failure, to recover_status_attempt. Returns only the digest; every other outcome is the fixed
+    refusal. OFF by default."""
     try:
-        root, lock, body, now = _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins)
+        root, lock, body, now, tasks, types = _attempt(audit_root, snapshot_result, enabled,
+                                                       expected_previous_sha256, as_of, pins)
         with reader_slot(lock, timeout_seconds=timeout_seconds):
             _regular(lock)
-            return hashlib.sha256(_intended(root / FILENAME, expected_previous_sha256, body, now, pins)).hexdigest()
+            return hashlib.sha256(_intended(root / FILENAME, expected_previous_sha256, body, now, pins,
+                                            tasks, types)).hexdigest()
     except Exception:
         raise PublicStatusRefused("public_status_refused") from None
 
@@ -238,11 +278,12 @@ def publish_status(audit_root, snapshot_result, *, as_of, enabled=False, expecte
     try:
         if attempt_sha256 is not None and not _digest(attempt_sha256):
             raise ValueError()
-        root, lock, body, now = _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins)
+        root, lock, body, now, tasks, types = _attempt(audit_root, snapshot_result, enabled,
+                                                       expected_previous_sha256, as_of, pins)
         target = root / FILENAME
         with reader_slot(lock, timeout_seconds=timeout_seconds):
             _regular(lock)
-            payload = _intended(target, expected_previous_sha256, body, now, pins)
+            payload = _intended(target, expected_previous_sha256, body, now, pins, tasks, types)
             if attempt_sha256 is not None and hashlib.sha256(payload).hexdigest() != attempt_sha256:
                 raise ValueError()
             stage = root / (".public-status-" + secrets.token_hex(16) + ".tmp")
@@ -268,27 +309,16 @@ def publish_status(audit_root, snapshot_result, *, as_of, enabled=False, expecte
 
 
 def _publication(raw, pins, tasks, types, now, max_age_seconds):
-    """One validated v2 publication under THIS caller's pins: shape, pins, caller-clock age and body digest; returns
-    the validated body and the publication age. Anything else (v1, foreign pins, stale, tampered) refuses."""
-    doc = _object(raw)
-    if (set(doc) != {"schema", "revision", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
-                     "public_policy_sha256", "body_sha256", "body"}
-            or doc["schema"] != SCHEMA or doc["authority"] != "none"
-            or type(doc["revision"]) is not int or not 1 <= doc["revision"] <= _MAX_REVISION
-            or doc["coverage"] != "last_delta_only"
-            or any(doc[name] != pins[name] for name in
-                   ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"))
-            or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40
-            or type(doc["body_sha256"]) is not str or _HEX.fullmatch(doc["body_sha256"]) is None):
+    """One validated v2 publication under THIS caller's pins: structure (_structure), pin equality, caller-clock
+    age and policy membership; returns the validated body and the publication age. Anything else (v1, foreign pins,
+    stale, tampered, incomplete) refuses."""
+    doc = _structure(raw)
+    if any(doc[name] != pins[name] for name in _PINS):
         raise ValueError()
-    published = _instant(datetime.fromisoformat(doc["as_of_utc"]))
-    age = (now - published).total_seconds()
+    age = (now - _instant(datetime.fromisoformat(doc["as_of_utc"]))).total_seconds()
     if age < 0 or age > max_age_seconds:
         raise ValueError()
-    body = _body(doc["body"], tasks, types)
-    if hashlib.sha256(_json(body)).hexdigest() != doc["body_sha256"]:
-        raise ValueError()
-    return body, age
+    return _body(doc["body"], tasks, types), age
 
 
 def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled=False, **pins):

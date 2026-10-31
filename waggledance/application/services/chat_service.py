@@ -389,7 +389,7 @@ class ChatService:
                 if hex_result and hex_result.get("trace"):
                     hex_trace = hex_result.get("trace")
             except Exception as e:
-                log.debug("Hex mesh resolve failed: %s", e)
+                log.debug("Hex mesh resolve failed (error_type=%s)", type(e).__name__)
                 record_route_stage(
                     "hex_neighbor_assist_7_cell",
                     enabled=True,
@@ -523,8 +523,8 @@ class ChatService:
                 ))
 
             await asyncio.to_thread(_record_signal)
-        except Exception:
-            log.debug("Failed to record low-confidence chat gap", exc_info=True)
+        except Exception as e:
+            log.debug("Failed to record low-confidence chat gap (error_type=%s)", type(e).__name__)
 
     def _record_telemetry(self, route_type: str, confidence: float,
                            latency_ms: float, success: bool, query: str):
@@ -674,8 +674,8 @@ class ChatService:
                 )
             log.debug("Chat case recorded: %s grade=%s",
                       case.trajectory_id, case.quality_grade.value)
-        except Exception:
-            log.debug("Failed to record chat case", exc_info=True)
+        except Exception as e:
+            log.debug("Failed to record chat case (error_type=%s)", type(e).__name__)
 
     async def _try_hybrid_retrieval(
         self, query: str, intent: str, language: str,
@@ -771,7 +771,7 @@ class ChatService:
             return trace_dict
 
         except Exception as e:
-            log.debug("Hybrid retrieval failed: %s", e)
+            log.debug("Hybrid retrieval failed (error_type=%s)", type(e).__name__)
             return None
 
     @staticmethod

@@ -1,13 +1,16 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Plan or register a disabled, bounded, current-user Mind shadow refresh task.
+Plan or register a disabled, bounded, manually started Mind shadow pilot task.
 .DESCRIPTION
 The default only validates the supplied installed generation and prints a plan.
--Apply registers a DISABLED task; it never starts the task or the producer, and
-never replaces an existing task. Enabling the task is a separate decision. The
-task repeats every 20 minutes once enabled, with IgnoreNew and one bounded
-adapter invocation per trigger. This is not evidence that a producer ran,
+-Apply registers a DISABLED task with no trigger; it never starts the task or
+the producer and never replaces an existing task. Enabling and manually starting
+the task require separate authority. The adapter permits one bounded pilot run
+from a fresh LiveDir, but does not support resuming that directory on a later
+run. A missing publication is not proof that no earlier attempt ran, and this
+task does not enforce a durable one-attempt latch. No automatic retry or
+recurring refresh is configured. This is not evidence that a producer ran,
 that its data is suitable for production, or that process containment works.
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -116,7 +119,7 @@ if ([string]$state.source_commit -cne $ExpectedSourceCommit -or
 
 # Values are PowerShell single-quoted literals, not executable fragments. The
 # fixed bootstrap is encoded as UTF-16LE so paths and shell metacharacters are
-# not parsed by cmd.exe. Recheck pins before loading the adapter on each trigger;
+# not parsed by cmd.exe. Recheck pins before loading the adapter on manual start;
 # the adapter then performs its own state, identity, wrapper and package checks.
 # Hash-then-execute still has a TOCTOU interval and is not an OS isolation boundary.
 $bootstrap = @'
@@ -151,15 +154,16 @@ $values = [ordered]@{
 foreach ($key in $values.Keys) { $bootstrap = $bootstrap.Replace($key, (ConvertTo-WdRefreshLiteral $values[$key])) }
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
 $hostPath = Assert-WdRefreshPath -Path ([IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe'))
-$taskName = 'WD-MindShadowRefresh'
+$taskName = 'WD-MindShadowPilot'
 $plan = [ordered]@{
-    schema = 'wd.mind-shadow-refresh-plan.v1'; task = $taskName; registered = [bool]$Apply
+    schema = 'wd.mind-shadow-pilot-plan.v1'; task = $taskName; registered = [bool]$Apply
     enabled = $false; source_commit = $ExpectedSourceCommit; manifest_sha256 = $ExpectedManifestSha256
     adapter_sha256 = $ExpectedAdapterSha256; user_sid = $ApprovedUserSid; integrity = $ApprovedIntegrityLevel
     run_root = $runRoot; live_dir = $liveRoot; expected_peak_additional_bytes = $ExpectedPeakAdditionalBytes
-    repeat_minutes = 20; overlap = 'IgnoreNew'; logon = 'Interactive'; run_level = 'Limited'
+    trigger = 'none'; automatic_repetition = $false; overlap = 'IgnoreNew'; logon = 'Interactive'; run_level = 'Limited'
     deadline_seconds = $RunDeadlineSeconds; task_limit_minutes = 18; native_acceptance = 'NOT_RUN'
-    activation = 'separate_enable_required'; starting_the_task = 'not_performed'
+    activation = 'separate_enable_and_manual_start_required'; starting_the_task = 'not_performed'
+    limitation = 'fresh_live_dir_only; no durable one_attempt latch or restart continuity'
 }
 if (-not $Apply) { $plan | ConvertTo-Json -Depth 4; return }
 
@@ -167,8 +171,7 @@ if ($null -ne (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContin
     throw 'An existing task has this name; refusing to replace or alter it.'
 }
 $action = New-ScheduledTaskAction -Execute $hostPath -Argument ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + $encoded) -WorkingDirectory $bundle
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 20)
 $settings = New-ScheduledTaskSettingsSet -Disable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 18)
 $principal = New-ScheduledTaskPrincipal -UserId $ApprovedUserSid -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Principal $principal | Out-Null
 $plan | ConvertTo-Json -Depth 4

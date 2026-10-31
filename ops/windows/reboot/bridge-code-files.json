@@ -35,6 +35,7 @@
     "sandbox/mind/step2/memory.py",
     "sandbox/mind/step2/q4.py",
     "sandbox/mind/step2/reader_slot.py",
+    "sandbox/mind/step2/runtime_manifest.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
     "tools/__init__.py",
     "tools/agent_next_task.py",

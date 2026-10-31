@@ -6,8 +6,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("faiss")
 
 from sandbox.mind.step2 import cell, encode, memory, q4
 

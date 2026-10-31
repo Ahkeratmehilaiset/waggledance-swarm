@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("numpy")
+pytest.importorskip("faiss")
+
 from sandbox.mind.step2 import memory as memory_mod
 from sandbox.mind.step2 import wd_q4_private_read as adapter
 import tools.bridge_diff_privacy as privacy_mod

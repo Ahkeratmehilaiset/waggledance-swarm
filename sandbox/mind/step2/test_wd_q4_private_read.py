@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -485,3 +486,53 @@ def test_slot_remains_held_while_projecting_answer(tmp_path, capsys, fakes, monk
     monkeypatch.setattr(adapter, "project_result", project)
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
     assert code == 0 and out["status"] == "ANSWER" and observed == [True]
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, RuntimeError])
+def test_unexpected_reader_body_error_is_not_misclassified_as_a_lock_error(tmp_path, capsys, fakes, monkeypatch,
+                                                                           error_type):
+    from sandbox.mind.step2.reader_slot import reader_slot
+
+    memory_dir, digest = write_memory(tmp_path)
+
+    def broken(*args):
+        raise error_type(SITUATION + str(tmp_path))
+
+    monkeypatch.setattr(adapter, "_private_read_locked", broken)
+    code, out, text = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
+    assert code == 2 and out["reason"] == "q4_execution_failed"
+    assert SITUATION not in text and str(tmp_path) not in text
+    with reader_slot(tmp_path / "reader.lock", timeout_seconds=0):
+        pass  # A failed read must not retain the slot.
+
+
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError])
+@pytest.mark.parametrize("where", ["entry", "exit"])
+def test_unexpected_lock_entry_or_exit_error_refuses_without_private_detail(tmp_path, capsys, fakes, monkeypatch,
+                                                                           error_type, where):
+    memory_dir, digest = write_memory(tmp_path)
+
+    @contextmanager
+    def broken_slot(*args, **kwargs):
+        if where == "entry":
+            raise error_type(SITUATION + str(tmp_path))
+        yield
+        raise error_type(SITUATION + str(tmp_path))
+
+    monkeypatch.setattr(adapter, "reader_slot", broken_slot)
+    monkeypatch.setattr(adapter, "_private_read_locked", lambda *args: {"status": "ANSWER"})
+    code, out, text = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
+    assert code == 2 and out["reason"] == "reader_lock_unavailable"
+    assert SITUATION not in text and str(tmp_path) not in text
+
+
+def test_unexpected_stdin_error_refuses_without_exception_or_query(tmp_path, capsys, fakes, monkeypatch):
+    memory_dir, digest = write_memory(tmp_path)
+
+    def broken(stream):
+        raise RuntimeError(SITUATION + str(tmp_path))
+
+    monkeypatch.setattr(adapter, "read_query", broken)
+    code, out, text = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
+    assert code == 2 and out["reason"] == "q4_execution_failed"
+    assert SITUATION not in text and str(tmp_path) not in text

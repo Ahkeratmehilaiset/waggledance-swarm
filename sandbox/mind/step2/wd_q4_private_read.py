@@ -290,12 +290,17 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, lock
         if not path.is_absolute():
             raise PrivateReadRefused("reader_lock_invalid")
         with reader_slot(path, timeout_seconds=lock_timeout):
-            return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when)
+            try:
+                return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when)
+            except PrivateReadRefused:
+                raise
+            except Exception:
+                raise PrivateReadRefused("q4_execution_failed") from None
     except ReaderBusy:
         raise PrivateReadRefused("reader_busy") from None
     except PrivateReadRefused:
         raise
-    except (OSError, TypeError, ValueError):
+    except Exception:
         raise PrivateReadRefused("reader_lock_unavailable") from None
 
 
@@ -315,6 +320,10 @@ def main(argv=None, stdin=None, stdout=None):
     except PrivateReadRefused as exc:
         stdout.write(json.dumps({"schema": SCHEMA, "identity": IDENTITY, "status": "REFUSED", "reason": str(exc),
                                  "results": []}, sort_keys=True) + "\n")
+        return 2
+    except Exception:
+        stdout.write(json.dumps({"schema": SCHEMA, "identity": IDENTITY, "status": "REFUSED",
+                                 "reason": "q4_execution_failed", "results": []}, sort_keys=True) + "\n")
         return 2
     stdout.write(json.dumps(out, sort_keys=True) + "\n")
     return 0

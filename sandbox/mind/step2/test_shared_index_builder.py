@@ -1666,3 +1666,395 @@ def test_v4_synthetic_spliced_or_mismatched_binding_refuses_with_nothing_written
         build(tmp_path, proj=proj, source={"snapshot_result": result, "expected_anchor_sha256": expected_anchor},
               allow_unbound_source=False)
     assert list(tmp_path.iterdir()) == []
+
+
+# ---- public-v1 (Lead bound GO lead-mind-public-index-builder-20261031-v1, 19:13:42Z; design 19:08:45Z): a public ----
+# ---- index is a SEPARATE SERIES; the mode is pinned in the snapshot binding (Lead), in the generation (memory.json ----
+# ---- + receipt ``source_mode``, bound by the descriptor memory_sha256) and in the checkpoint walk (Lead). The ----
+# ---- builder never inspects events: its public defence is the pinned public policy over projected metadata. ----
+PUBLIC_POLICY_DOC = {"schema": "wd.mind-public-status-policy.v1", "public_tasks": [TASK], "public_types": ["message", "done"]}
+PUBLIC_POLICY_BYTES, PUBLIC_POLICY_SHA = pinned(PUBLIC_POLICY_DOC)
+PUBLIC_MODE = {"status_mode": "public-v1", "public_policy_sha256": PUBLIC_POLICY_SHA}
+LEGACY_MODE = {"status_mode": "legacy", "public_policy_sha256": None}
+SYNTHETIC_ANCHOR_BYTES = b"synthetic-anchor-bytes-not-a-real-anchor"
+SYNTHETIC_ANCHOR_SHA = sha(SYNTHETIC_ANCHOR_BYTES)
+
+
+def public_event(**changes):
+    """A broadcast-marked synthetic event in the exact shape the Lead adapter admits in public mode: an explicit
+    marker payload, an empty ``to``, an empty message, no paths, no ``ci`` (not an admitted public key)."""
+    base = event(payload={"public_status": True}, to="", message="", paths=[], run_id="run-public-synthetic")
+    base.pop("ci")
+    base.update(changes)
+    return base
+
+
+PUBLIC_EVENTS = [public_event(),
+                 public_event(type="done", status="done", agent="codex-tools-1", ts_utc="2026-10-31T12:05:00Z"),
+                 public_event(status="info", agent="fable-5", ts_utc="2026-10-31T12:10:00Z")]
+PRIVATE_EVENTS = [event(ts_utc="2026-10-31T12:12:00Z"),  # SENTINEL message + payload, addressed to one lane
+                  event(type="done", status="blocked", agent="codex-tools-1", ts_utc="2026-10-31T12:13:00Z")]
+MIXED_EVENTS = PUBLIC_EVENTS + PRIVATE_EVENTS + [event(agent="claude-rco-1", ts_utc="2026-10-31T12:14:00Z"),
+                                                 event(task_id="feature/pr-branch-task", ts_utc="2026-10-31T12:15:00Z")]
+LATER_PUBLIC_EVENTS = [public_event(status="done", ts_utc="2026-10-31T12:30:00Z"),
+                       public_event(type="done", status="info", agent="fable-5", ts_utc="2026-10-31T12:35:00Z"),
+                       event(ts_utc="2026-10-31T12:36:00Z")]
+
+
+def _public_source(result, anchor_sha256, anchor_bytes, *, policy_bytes=PUBLIC_POLICY_BYTES, policy_sha=PUBLIC_POLICY_SHA):
+    return {"snapshot_result": result, "expected_anchor_sha256": anchor_sha256, "mode": "public-v1",
+            "public_policy_bytes": policy_bytes, "public_policy_sha256": policy_sha, "anchor_bytes": anchor_bytes}
+
+
+def _recording_double():
+    """Import-seam stand-in for the Lead verifier that RECORDS its keyword arguments (NOT verification)."""
+    import types
+    calls = []
+
+    def token(cursor):
+        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
+
+    def verify(result, projection, **kw):
+        calls.append(kw)
+        return True
+    return types.SimpleNamespace(verify_anchored_projection=verify, _token=token), token, calls
+
+
+def _public_bound_source(token, proj, start, end, **changes):
+    source = dict(_bound_source(token, proj, start, end, SYNTHETIC_ANCHOR_SHA), mode="public-v1",
+                  public_policy_bytes=PUBLIC_POLICY_BYTES, public_policy_sha256=PUBLIC_POLICY_SHA,
+                  anchor_bytes=SYNTHETIC_ANCHOR_BYTES)
+    source.update(changes)
+    return source
+
+
+def _adapter_module():
+    adapter = pytest.importorskip(build_mod.ADAPTER_MODULE,
+                                  reason="integration prerequisite: Lead shared_capture_adapter not on this branch")
+    if not callable(getattr(adapter, "public_status_policy", None)):
+        pytest.skip("integration prerequisite: public_status_policy not committed in this tree")
+    return adapter
+
+
+def _real_public_snapshot(snapshot, root, events, *, start=None):
+    """The REAL Lead chain in PUBLIC mode over synthetic log bytes (no mock): anchor carries status_mode public-v1
+    and the public policy digest; returns ``(result, anchor_sha256, anchor_bytes, start_cursor)``."""
+    from dataclasses import asdict
+    from waggledance.core.bridge_log_reader import BridgeCursor, read_bridge_log
+    root.mkdir(exist_ok=True)
+    log, generation_path = root / "events.jsonl", root / "events.generation.json"
+    payload = b"".join(json.dumps(row, sort_keys=True).encode("utf-8") + b"\n" for row in events)
+    if start is None:
+        log.write_bytes(payload)
+        generation_path.write_text(json.dumps({"generation": "gen-synthetic"}), encoding="utf-8")
+        probe = read_bridge_log(log, generation_path=generation_path, max_bytes=1 << 20, max_rows=100)
+        assert probe.candidate_cursor is not None, probe.reason
+        start = BridgeCursor(offset=0, file_identity=probe.candidate_cursor.file_identity, generation="gen-synthetic")
+    else:
+        with open(log, "ab") as handle:
+            handle.write(payload)
+    anchor_bytes = json.dumps({"schema": "wd.q4-source-anchor.v1", "source_path": str(log),
+                               "generation_path": str(generation_path), "cursor_start": asdict(start),
+                               "policy_sha256": POLICY_SHA, "roster_sha256": ROSTER_SHA,
+                               "status_mode": "public-v1", "public_policy_sha256": PUBLIC_POLICY_SHA},
+                              sort_keys=True).encode("utf-8")
+    anchor_sha256 = sha(anchor_bytes)
+    result = snapshot.read_anchored_delta(log, start, APPROVED, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
+                                          generation_path=generation_path, max_bytes=1 << 20, max_rows=100,
+                                          policy_bytes=POLICY_BYTES, policy_sha256=POLICY_SHA,
+                                          roster_bytes=ROSTER_BYTES, roster_sha256=ROSTER_SHA,
+                                          public_policy_bytes=PUBLIC_POLICY_BYTES, public_policy_sha256=PUBLIC_POLICY_SHA)
+    return result, anchor_sha256, anchor_bytes, start
+
+
+def _files_text(root):
+    return b"".join(path.read_bytes() for path in root.rglob("*") if path.is_file())
+
+
+def test_public_v1_constants_and_the_legacy_default_record_source_mode(tmp_path, monkeypatch):
+    assert build_mod.PUBLIC_SOURCE_KEYS == {"snapshot_result", "expected_anchor_sha256", "mode", "public_policy_bytes",
+                                            "public_policy_sha256", "anchor_bytes"}
+    assert build_mod.SOURCE_KEYS == {"snapshot_result", "expected_anchor_sha256"}
+    assert build_mod.SOURCE_MODE_KEYS == {"status_mode", "public_policy_sha256"}
+    assert build_mod.STATUS_MODES == {"legacy", "public-v1"}
+    assert build_mod.ADAPTER_MODULE == "sandbox.mind.step2.shared_capture_adapter"
+    out = build(tmp_path)  # unbound synthetic route: legacy by construction
+    memory = json.loads((tmp_path / "shared-v1" / "memory.json").read_bytes())
+    assert out["build_receipt"]["source_mode"] == memory["source_mode"] == LEGACY_MODE
+    assert out["build_receipt"]["history"] is None and memory["history"] is None
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, calls = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    bound = build(tmp_path, name="bound", source=_bound_source(token, projection(), c0, c1), allow_unbound_source=False)
+    assert bound["build_receipt"]["source_mode"] == LEGACY_MODE
+    assert calls == [{"expected_anchor_sha256": "5" * 64, "expected_policy_sha256": POLICY_SHA,
+                      "expected_roster_sha256": ROSTER_SHA}]  # the legacy call stays kwargs-free: no mode keywords
+    assert set(bound["build_receipt"]["source_binding"]) == build_mod.SOURCE_BINDING_KEYS  # the binding shape is unchanged
+
+
+def test_public_v1_source_shape_refusals_write_nothing(tmp_path, monkeypatch):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, _ = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    proj = projection(PUBLIC_EVENTS)
+    good = _public_bound_source(token, proj, c0, c1)
+    bad_sources = [
+        {k: v for k, v in good.items() if k != "anchor_bytes"},  # a key short
+        dict(good, extra=1),
+        dict(good, mode="legacy"),  # legacy never carries the public keys
+        dict(good, mode="public-v2"),
+        dict(good, mode=None),
+        dict(good, public_policy_sha256="0" * 64),  # digest is not the digest of the bytes
+        dict(good, public_policy_bytes=PUBLIC_POLICY_BYTES.decode("utf-8")),  # not bytes
+        dict(good, public_policy_bytes=b"{" + b" " * build_mod.PUBLIC_POLICY_LIMIT + b"}"),  # over the bound
+        dict(good, anchor_bytes=b"other-bytes"),  # anchor bytes are not the pinned anchor digest
+        dict(good, anchor_bytes=SYNTHETIC_ANCHOR_BYTES.decode("utf-8")),
+        dict(good, anchor_bytes=b"a" * (build_mod.ANCHOR_LIMIT + 1), expected_anchor_sha256=sha(b"a" * (build_mod.ANCHOR_LIMIT + 1))),
+    ]
+    for source in bad_sources:
+        with pytest.raises(build_mod.BuildRefused, match="source_invalid"):
+            build(tmp_path, proj=proj, source=source, allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_public_v1_seam_double_gets_the_mode_keywords_and_the_generation_records_the_mode(tmp_path, monkeypatch):
+    _adapter_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, calls = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    proj = projection(PUBLIC_EVENTS)
+    out = build(tmp_path, proj=proj, source=_public_bound_source(token, proj, c0, c1), allow_unbound_source=False)
+    assert calls == [{"expected_anchor_sha256": SYNTHETIC_ANCHOR_SHA, "expected_policy_sha256": POLICY_SHA,
+                      "expected_roster_sha256": ROSTER_SHA, "expected_mode": "public-v1",
+                      "expected_public_policy_sha256": PUBLIC_POLICY_SHA, "expected_anchor_bytes": SYNTHETIC_ANCHOR_BYTES}]
+    receipt = out["build_receipt"]
+    memory = json.loads((tmp_path / "shared-v1" / "memory.json").read_bytes())
+    assert receipt["source_mode"] == memory["source_mode"] == PUBLIC_MODE
+    assert receipt["source_bound"] is True and receipt["source_authenticated"] is False and receipt["records"] == 3
+    assert receipt["source_binding"]["anchor_sha256"] == SYNTHETIC_ANCHOR_SHA
+    assert set(receipt["source_binding"]) == build_mod.SOURCE_BINDING_KEYS  # the checkpoint binding shape is unchanged
+    assert receipt["policy"] == STRICT_POLICY and receipt["history"] is None  # policy and history blocks unchanged
+    text = _files_text(tmp_path / "shared-v1")
+    assert SYNTHETIC_ANCHOR_BYTES not in text and PUBLIC_POLICY_BYTES not in text  # pinned BYTES are never persisted
+    assert b"bc1." not in text and b"synthetic-identity" not in text and SENTINEL.encode() not in text
+
+
+def test_public_v1_a_record_outside_the_pinned_public_policy_refuses_before_any_write(tmp_path, monkeypatch):
+    _adapter_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, _ = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    # the seam double accepts anything, so only the builder defence refuses these: a type outside public_types and an
+    # approved task outside public_tasks (the adapter filter would have excluded both upstream)
+    for events in ([public_event(type="test", status="info")], [public_event(task_id="other-task-1")],
+                   PUBLIC_EVENTS + [public_event(type="claim", status="active", ts_utc="2026-10-31T12:20:00Z")]):
+        proj = projection(events)
+        assert proj["accepted"] >= 1
+        with pytest.raises(build_mod.BuildRefused, match="public_record_refused"):
+            build(tmp_path, proj=proj, source=_public_bound_source(token, proj, c0, c1), allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_public_v1_policy_refusals_and_an_absent_policy_helper_fail_closed(tmp_path, monkeypatch):
+    _adapter_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, _ = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    proj = projection(PUBLIC_EVENTS)
+    wide_bytes, wide_sha = pinned(dict(PUBLIC_POLICY_DOC, public_tasks=[TASK, "not-an-approved-task"]))  # not a subset
+    with pytest.raises(build_mod.BuildRefused, match="public_policy_refused"):
+        build(tmp_path, proj=proj, allow_unbound_source=False,
+              source=_public_bound_source(token, proj, c0, c1, public_policy_bytes=wide_bytes, public_policy_sha256=wide_sha))
+    bad_bytes, bad_sha = pinned({"schema": "wd.mind-public-status-policy.v1", "public_tasks": [TASK]})  # shape
+    with pytest.raises(build_mod.BuildRefused, match="public_policy_refused"):
+        build(tmp_path, proj=proj, allow_unbound_source=False,
+              source=_public_bound_source(token, proj, c0, c1, public_policy_bytes=bad_bytes, public_policy_sha256=bad_sha))
+    monkeypatch.setitem(sys.modules, build_mod.ADAPTER_MODULE, None)
+    with pytest.raises(build_mod.BuildRefused, match="public_policy_unavailable"):
+        build(tmp_path, proj=proj, source=_public_bound_source(token, proj, c0, c1), allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+    assert "public_status_policy" not in build_mod.__dict__  # never re-implemented here
+
+
+def test_public_v1_an_older_verifier_signature_refuses_only_the_public_path(tmp_path, monkeypatch):
+    _adapter_module()
+    import types
+    from waggledance.core.bridge_log_reader import BridgeCursor
+
+    def token(cursor):
+        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
+
+    def old_verify(result, projection, *, expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256):
+        return True  # the f5868baa signature: no mode keywords
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE,
+                        types.SimpleNamespace(verify_anchored_projection=old_verify, _token=token))
+    c0, c1 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77))
+    proj = projection(PUBLIC_EVENTS)
+    with pytest.raises(build_mod.BuildRefused, match="source_verifier_unavailable"):
+        build(tmp_path, proj=proj, source=_public_bound_source(token, proj, c0, c1), allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+    legacy = build(tmp_path, proj=proj, source=_bound_source(token, proj, c0, c1), allow_unbound_source=False)
+    assert legacy["build_receipt"]["source_mode"] == LEGACY_MODE
+
+
+def _without_source_mode(root, name, out):
+    """A pre-source_mode generation rebuilt from a legacy one: memory.json and the receipt without the block, every
+    mutual pin recomputed (the receipt pins the new memory digest). Only the builder's own files are touched."""
+    src, dst = root / name, root / (name + "-pre")
+    dst.mkdir()
+    (dst / "projection.json").write_bytes((src / "projection.json").read_bytes())
+    memory = json.loads((src / "memory.json").read_bytes())
+    receipt = json.loads((src / "build_receipt.json").read_bytes())
+    assert memory.pop("source_mode") == LEGACY_MODE and receipt.pop("source_mode") == LEGACY_MODE
+    memory_bytes = cell_mod.canonical(memory).encode("utf-8")
+    receipt["memory_sha256"] = sha(memory_bytes)
+    receipt_bytes = cell_mod.canonical(receipt).encode("utf-8")
+    (dst / "memory.json").write_bytes(memory_bytes)
+    (dst / "build_receipt.json").write_bytes(receipt_bytes)
+    return {"memory_dir": str(dst), "memory_sha256": sha(memory_bytes), "projection_sha256": out["projection_sha256"],
+            "build_receipt_sha256": sha(receipt_bytes)}
+
+
+def test_public_v1_predecessor_mode_mixing_refuses_and_an_old_generation_stays_legacy(tmp_path, monkeypatch):
+    """Lead 19:15:51Z: a source_mode-ABSENT generation is legacy (a legacy build still accepts it as predecessor,
+    nothing existing is migrated); a public build refuses it; public and legacy never mix; a public policy change is
+    a series rollover (different digest refuses)."""
+    _history_module()
+    _adapter_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, _ = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150))
+    legacy_first = build(tmp_path, name="legacy-v1", source=_bound_source(token, projection(), c0, c1), allow_unbound_source=False)
+    public_proj = projection(PUBLIC_EVENTS)
+    public_first = build(tmp_path, name="public-v1", proj=public_proj, allow_unbound_source=False,
+                         source=_public_bound_source(token, public_proj, c0, c1))
+    public_delta, legacy_delta = projection(LATER_PUBLIC_EVENTS[:2]), projection(LATER_EVENTS)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_mode_mismatch"):  # legacy predecessor, public build
+        build(tmp_path, name="x", proj=public_delta, allow_unbound_source=False,
+              source=_public_bound_source(token, public_delta, c1, c2), predecessor=predecessor_of(tmp_path, "legacy-v1", legacy_first))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_mode_mismatch"):  # public predecessor, legacy build
+        build(tmp_path, name="x", proj=legacy_delta, allow_unbound_source=False,
+              source=_bound_source(token, legacy_delta, c1, c2), predecessor=predecessor_of(tmp_path, "public-v1", public_first))
+    other_bytes, other_sha = pinned(dict(PUBLIC_POLICY_DOC, public_types=["message", "done", "handoff"]))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_mode_mismatch"):  # a public policy change = rollover
+        build(tmp_path, name="x", proj=public_delta, allow_unbound_source=False,
+              source=_public_bound_source(token, public_delta, c1, c2, public_policy_bytes=other_bytes, public_policy_sha256=other_sha),
+              predecessor=predecessor_of(tmp_path, "public-v1", public_first))
+    pre = _without_source_mode(tmp_path, "legacy-v1", legacy_first)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_mode_mismatch"):  # absent = legacy: public refuses it
+        build(tmp_path, name="x", proj=public_delta, allow_unbound_source=False,
+              source=_public_bound_source(token, public_delta, c1, c2), predecessor=pre)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["legacy-v1", "legacy-v1-pre", "public-v1"]
+    kept = build(tmp_path, name="legacy-v2", proj=legacy_delta, allow_unbound_source=False,
+                 source=_bound_source(token, legacy_delta, c1, c2), predecessor=pre)  # absent = legacy: accepted as today
+    assert kept["build_receipt"]["source_mode"] == LEGACY_MODE and kept["build_receipt"]["history"]["predecessor"]["records"] == 4
+    grown = build(tmp_path, name="public-v2", proj=public_delta, allow_unbound_source=False,
+                  source=_public_bound_source(token, public_delta, c1, c2), predecessor=predecessor_of(tmp_path, "public-v1", public_first))
+    assert grown["build_receipt"]["source_mode"] == PUBLIC_MODE and grown["build_receipt"]["records"] == 5
+    assert grown["build_receipt"]["history"]["continuity_route"] == "receipt_end"
+
+
+def test_public_v1_real_chain_indexes_only_marked_public_metadata_and_never_the_private_rows(tmp_path):
+    """The minimum synthetic end-to-end proof (bound reply 19:12:46Z): the REAL Lead chain in public mode over
+    synthetic log bytes with 3 public-marked, 2 private (SENTINEL), 1 review-lane and 1 unapproved event; the public
+    index holds exactly the public metadata; the same delta refuses as legacy; a second public delta grows the series
+    through the v5 history route. No mock, no private event content inspected by the builder."""
+    snapshot, history = _snapshot_module(), _history_module()
+    if not hasattr(snapshot, "verify_public_anchor"):
+        pytest.skip("integration prerequisite: public-v1 snapshot mode not committed in this tree")
+    _adapter_module()
+    root = tmp_path / "public-root"
+    root.mkdir()
+    result, anchor_sha256, anchor_bytes, start = _real_public_snapshot(snapshot, tmp_path / "log", MIXED_EVENTS)
+    proj = result["projection"]
+    assert proj["accepted"] == 3 and len(proj["records"]) == 3  # the 4 unmarked rows are excluded upstream, uncounted
+    assert record_ids(proj) == {"event:" + record["record_id"][6:] for record in proj["records"]}
+    assert SENTINEL.encode() not in json.dumps(proj, sort_keys=True).encode("utf-8")
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):  # a public delta never binds as legacy
+        build(root, name="gen-p1", proj=proj, approved_tasks=None, roster=None, allow_unbound_source=False,
+              source={"snapshot_result": result, "expected_anchor_sha256": anchor_sha256})
+    assert list(root.iterdir()) == []
+    first = build(root, name="gen-p1", proj=proj, approved_tasks=None, roster=None, allow_unbound_source=False,
+                  source=_public_source(result, anchor_sha256, anchor_bytes))
+    receipt = first["build_receipt"]
+    assert receipt["source_mode"] == PUBLIC_MODE and receipt["records"] == 3 and receipt["source_bound"] is True
+    assert receipt["source_binding"]["anchor_sha256"] == anchor_sha256
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(snapshot._token(start))
+    text = _files_text(root / "gen-p1")
+    assert SENTINEL.encode() not in text and b"bc1." not in text and start.file_identity.encode() not in text
+    assert anchor_bytes not in text and PUBLIC_POLICY_BYTES not in text
+    descriptor = reader.read_descriptor(root / "gen-p1" / "descriptor.json", first["descriptor_sha256"])
+    memory = reader.bind_memory(root / "gen-p1", descriptor)
+    assert all(view.healthy for view in memory.views.values())
+    indexed = {json.loads(line)["provenance"]["record"]
+               for path in (root / "gen-p1" / "cells").rglob("provenance.jsonl") for line in path.read_text("utf-8").splitlines()}
+    assert indexed == record_ids(proj)  # exactly the three public-marked records are indexed, nothing else
+    second, second_anchor, second_bytes, resume = _real_public_snapshot(snapshot, tmp_path / "log", LATER_PUBLIC_EVENTS,
+                                                                        start=result["candidate_cursor"])
+    assert second["projection"]["accepted"] == 2  # the private row is excluded upstream, uncounted
+    out = build(root, name="gen-p2", proj=second["projection"], approved_tasks=None, roster=None, allow_unbound_source=False,
+                source=_public_source(second, second_anchor, second_bytes), predecessor=predecessor_of(root, "gen-p1", first))
+    assert out["build_receipt"]["source_mode"] == PUBLIC_MODE and out["build_receipt"]["records"] == 5
+    assert out["build_receipt"]["history"]["continuity_route"] == "receipt_end"
+    assert out["build_receipt"]["history"]["predecessor"]["cursor_end_sha256"] == sha(snapshot._token(resume))
+    merged = json.loads((root / "gen-p2" / "projection.json").read_bytes())
+    assert record_ids(merged) == record_ids(proj) | record_ids(second["projection"])
+    assert SENTINEL.encode() not in _files_text(root / "gen-p2")
+    # The public A -> empty advance -> B watermark case (Lead finding 19:25:46Z) needs the Lead checkpoint's public
+    # mode keywords on read_verified_pointer / advance_empty_delta; it is added when that API is committed (and run
+    # when disk permits). Until then the seam test below pins the exact keywords this builder passes.
+
+
+def test_public_v1_watermark_read_passes_the_mode_and_pinned_public_policy_to_the_lead_pointer_verifier(tmp_path, monkeypatch):
+    """Lead finding 19:25:46Z: the predecessor read of a PUBLIC series must not run under the legacy defaults. Seam
+    double over the Lead checkpoint module: it records the keywords (NOT verification); a verifier without the
+    keywords refuses the public path only."""
+    _adapter_module()
+    import types
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token, _ = _recording_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150))
+    public_proj = projection(PUBLIC_EVENTS)
+    first = build(tmp_path, name="public-v1", proj=public_proj, allow_unbound_source=False,
+                  source=_public_bound_source(token, public_proj, c0, c1))
+    receipt = json.loads((tmp_path / "public-v1" / "build_receipt.json").read_bytes())
+    pointer_sha256, watermark_sha256 = "a" * 64, sha(token(c2))
+    verified = _verified_pointer_of(first, pointer_sha256=pointer_sha256, anchor=SYNTHETIC_ANCHOR_SHA,
+                                    cursor_end_sha256=receipt["source_binding"]["cursor_end_sha256"],
+                                    watermark_sha256=watermark_sha256, generation="public-v1")
+    pointer_calls = []
+
+    def read_verified_pointer(root, approved, **kw):
+        pointer_calls.append((root, approved, kw))
+        return dict(verified)
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE,
+                        types.SimpleNamespace(read_verified_pointer=read_verified_pointer))
+    delta = projection(LATER_PUBLIC_EVENTS[:2])
+    predecessor = dict(predecessor_of(tmp_path, "public-v1", first),
+                       watermark={"root": str(tmp_path / "ckpt"), "pointer_sha256": pointer_sha256})
+    out = build(tmp_path, name="public-v2", proj=delta, allow_unbound_source=False,
+                source=_public_bound_source(token, delta, c2, BridgeCursor(offset=200, file_identity="synthetic-identity", generation="gen-synthetic")),
+                predecessor=predecessor)
+    assert out["build_receipt"]["history"]["continuity_route"] == "verified_watermark"
+    assert out["build_receipt"]["source_mode"] == PUBLIC_MODE
+    assert pointer_calls == [(tmp_path / "ckpt", APPROVED, {
+        "expected_pointer_sha256": pointer_sha256, "policy_bytes": POLICY_BYTES, "policy_sha256": POLICY_SHA,
+        "roster_bytes": ROSTER_BYTES, "roster_sha256": ROSTER_SHA, "expected_mode": "public-v1",
+        "public_policy_bytes": PUBLIC_POLICY_BYTES, "public_policy_sha256": PUBLIC_POLICY_SHA})]
+
+    def legacy_only_pointer(root, approved, *, expected_pointer_sha256, policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+        return dict(verified)  # the 9ff2568a signature: no mode keywords
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE,
+                        types.SimpleNamespace(read_verified_pointer=legacy_only_pointer))
+    with pytest.raises(build_mod.BuildRefused, match="watermark_verifier_unavailable"):
+        build(tmp_path, name="public-v3", proj=delta, allow_unbound_source=False,
+              source=_public_bound_source(token, delta, c2, BridgeCursor(offset=200, file_identity="synthetic-identity", generation="gen-synthetic")),
+              predecessor=predecessor)
+    assert not (tmp_path / "public-v3").exists()

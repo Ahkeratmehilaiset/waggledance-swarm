@@ -146,6 +146,22 @@ SOURCE_BINDING_KEYS = frozenset({"schema", "anchor_sha256", "projection_sha256",
                                  "cursor_end_sha256", "policy_sha256", "roster_sha256"})
 SOURCE_KEYS = frozenset({"snapshot_result", "expected_anchor_sha256"})
 SNAPSHOT_MODULE = "sandbox.mind.step2.shared_bridge_snapshot"  # Lead module; imported lazily, never re-implemented
+# public-v1 (Lead bound GO lead-mind-public-index-builder-20261031-v1 19:13:42Z, continued -v2 19:19:18Z; design
+# 19:08:45Z): a public index is a SEPARATE SERIES. The mode is pinned in the Lead snapshot binding (``status_mode`` +
+# public policy digest), checked here ONLY through the Lead verifier's mode keywords, and persisted as the closed
+# top-level ``source_mode`` block of memory.json (bound by the descriptor ``memory_sha256``) and of the receipt.
+# Legacy stays the default and an ABSENT block is legacy (Lead 19:15:51Z: old generations are never relabelled,
+# migrated or removed); the two modes never mix in one series and a public policy change is a series rollover.
+# The pinned public policy is parsed ONLY by the Lead adapter ``public_status_policy`` (never re-implemented) and
+# is the builder's own last defence over the projected metadata: every record's task AND type must be inside it.
+# The policy and anchor BYTES are used in-process only and are never persisted by the builder.
+PUBLIC_SOURCE_KEYS = SOURCE_KEYS | {"mode", "public_policy_bytes", "public_policy_sha256", "anchor_bytes"}
+STATUS_MODES = frozenset({"legacy", "public-v1"})
+SOURCE_MODE_KEYS = frozenset({"status_mode", "public_policy_sha256"})
+LEGACY_SOURCE_MODE = {"status_mode": "legacy", "public_policy_sha256": None}
+PUBLIC_POLICY_LIMIT = 65536  # the Lead adapter bound (_POLICY_LIMIT); checked here before the bytes travel anywhere
+ANCHOR_LIMIT = 16384  # the Lead snapshot bound (_ANCHOR_MAX_BYTES)
+ADAPTER_MODULE = "sandbox.mind.step2.shared_capture_adapter"  # Lead module; imported lazily, never re-implemented
 # v5 (Lead bound request lead-mind-shared-index-fable-20261031-v5, 17:55:13Z): bounded prior metadata history. The
 # merge is the PINNED Lead helper ``shared_history.merge_projections`` (history helper head 9caa041b), imported lazily
 # and never re-implemented here; the predecessor is the caller's pinned previous generation (directory + digests).
@@ -553,21 +569,103 @@ def _source_verifier():
     return verify, token
 
 
-def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256):
-    """The closed receipt ``source_binding`` for a snapshot result the Lead verifier accepted for THIS projection and
-    the pinned policy/roster digests. Cursor digests are taken from the verified ``source`` (``cursor_start_sha256``,
-    ``cursor_end_sha256``: sha256 of the snapshot token strings, the adapter never exposes the tokens) and the end
-    digest must equal sha256 of ``_token(candidate_cursor)``. Refuses ``source_invalid`` (shape),
-    ``source_verifier_unavailable`` or ``source_binding_refused`` (any verifier or binding failure, no text)."""
-    if (not isinstance(source, dict) or set(source) != SOURCE_KEYS or not isinstance(source["snapshot_result"], dict)
-            or not isinstance(source["expected_anchor_sha256"], str)
+def _public_policy_parser():
+    """The Lead adapter policy parser (``shared_capture_adapter.public_status_policy``), imported lazily; any import
+    failure or a module without that API refuses ``public_policy_unavailable`` (the parser is never re-implemented)."""
+    try:
+        module = importlib.import_module(ADAPTER_MODULE)
+        parser = module.public_status_policy
+    except Exception:  # noqa: BLE001 - ImportError, AttributeError or an import-time failure: one token
+        raise BuildRefused("public_policy_unavailable") from None
+    if not callable(parser):
+        raise BuildRefused("public_policy_unavailable")
+    return parser
+
+
+def _pinned_bytes(data, digest, limit):
+    """``data`` is bytes within ``limit`` whose sha256 is the hex ``digest`` (shape only, no parsing)."""
+    return (type(data) is bytes and len(data) <= limit and isinstance(digest, str) and HEX64.fullmatch(digest) is not None
+            and hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest))
+
+
+def validate_source_shape(source):
+    """The closed ``source`` request -> its ``source_mode`` record. Legacy is EXACTLY the two legacy keys (the public
+    keys never appear on a legacy request); public-v1 is exactly ``PUBLIC_SOURCE_KEYS`` with ``mode == "public-v1"``,
+    ``public_policy_bytes`` (bytes within ``PUBLIC_POLICY_LIMIT``) hashing to ``public_policy_sha256`` and
+    ``anchor_bytes`` (bytes within ``ANCHOR_LIMIT``) hashing to ``expected_anchor_sha256``. Anything else is
+    ``source_invalid``. Checking the digests here is integrity checking of what the caller supplied, never authenticity."""
+    if (not isinstance(source, dict) or not isinstance(source.get("snapshot_result"), dict)
+            or not isinstance(source.get("expected_anchor_sha256"), str)
             or HEX64.fullmatch(source["expected_anchor_sha256"]) is None):
         raise BuildRefused("source_invalid")
+    keys = set(source)
+    if keys == SOURCE_KEYS:
+        return dict(LEGACY_SOURCE_MODE)
+    if (keys != PUBLIC_SOURCE_KEYS or source["mode"] != "public-v1"
+            or not _pinned_bytes(source["public_policy_bytes"], source["public_policy_sha256"], PUBLIC_POLICY_LIMIT)
+            or not _pinned_bytes(source["anchor_bytes"], source["expected_anchor_sha256"], ANCHOR_LIMIT)):
+        raise BuildRefused("source_invalid")
+    return {"status_mode": "public-v1", "public_policy_sha256": source["public_policy_sha256"]}
+
+
+def check_public_records(source, projection, approved_tasks):
+    """The builder's own public defence: the pinned public policy is parsed by the Lead adapter against the resolved
+    approved set (``public_policy_refused`` on any refusal, no text) and EVERY projected record must carry a task in
+    ``public_tasks`` and a type in ``public_types`` (``public_record_refused``). The upstream adapter filter is the
+    primary exclusion; this is the last check before an index is built from the metadata, never a PII detector.
+    Lead findings 19:28:01Z / 19:28:23Z: a projected record no longer carries ``to``, the message or the broadcast
+    marker, so this check CANNOT establish that the original event was an authorized public broadcast; the public
+    snapshot producer lineage, the pinned policy and the publisher remain independently trusted preconditions, and
+    the mode label, the in-process binding and the hash pins are integrity checks against accidental splicing, never
+    proof against a same-process actor. Public mode is not a live privacy boundary before that validation."""
+    parser = _public_policy_parser()
+    try:
+        public_tasks, public_types = parser(source["public_policy_bytes"], source["public_policy_sha256"],
+                                            frozenset(approved_tasks))
+        if (not isinstance(public_tasks, frozenset) or not isinstance(public_types, frozenset)
+                or not public_tasks or not public_types
+                or any(not isinstance(item, str) for item in public_tasks | public_types)):
+            raise ValueError("policy")
+    except Exception:  # noqa: BLE001 - ValueError, AdapterRefused, TypeError: one token, never its text
+        raise BuildRefused("public_policy_refused") from None
+    for record in projection["records"]:
+        meta = record.get("meta") if isinstance(record, dict) else None
+        if (not isinstance(meta, dict) or meta.get("task_id") not in public_tasks
+                or meta.get("type") not in public_types):
+            raise BuildRefused("public_record_refused")
+
+
+def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256, approved_tasks=frozenset()):
+    """The closed receipt ``source_binding`` for a snapshot result the Lead verifier accepted for THIS projection and
+    the pinned policy/roster digests, together with the closed ``source_mode`` record. Cursor digests are taken from
+    the verified ``source`` (``cursor_start_sha256``, ``cursor_end_sha256``: sha256 of the snapshot token strings, the
+    adapter never exposes the tokens) and the end digest must equal sha256 of ``_token(candidate_cursor)``.
+    Legacy (the default shape) calls the verifier exactly as before, without mode keywords. public-v1 passes
+    ``expected_mode="public-v1"``, ``expected_public_policy_sha256`` and ``expected_anchor_bytes`` so the Lead verifier
+    re-checks the exact anchor bytes, the policy digest and the binding mode in-process, and runs
+    ``check_public_records`` first. Refuses ``source_invalid`` (shape), ``source_verifier_unavailable`` (no verifier, or a
+    verifier without the mode keywords on the public path) or ``source_binding_refused`` (any verifier or binding
+    failure, no text). The binding shape itself is unchanged by the mode: the mode lives in ``source_mode``."""
+    source_mode = validate_source_shape(source)
+    public = source_mode["status_mode"] == "public-v1"
+    if public:
+        check_public_records(source, projection, approved_tasks)
     verify, token = _source_verifier()
     result = source["snapshot_result"]
     try:
-        accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
-                          expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256)
+        if public:
+            try:
+                accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
+                                  expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256,
+                                  expected_mode="public-v1", expected_public_policy_sha256=source["public_policy_sha256"],
+                                  expected_anchor_bytes=source["anchor_bytes"])
+            except TypeError:
+                # the Lead verifier refuses everything under its own one token; a TypeError escaping the call is a
+                # verifier WITHOUT the mode keywords, which must never silently verify a public delta as legacy
+                raise BuildRefused("source_verifier_unavailable") from None
+        else:
+            accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
+                              expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256)
         # The verified ``source`` carries cursor DIGESTS only (the Lead adapter never returns raw cursor tokens,
         # Lead 17:33:37Z): take both from it and require the end digest to be the digest of the candidate cursor.
         start_sha256, end_sha256 = result["source"]["cursor_start_sha256"], result["source"]["cursor_end_sha256"]
@@ -577,14 +675,16 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
                 or not isinstance(end_sha256, str) or HEX64.fullmatch(end_sha256) is None
                 or not hmac.compare_digest(end_sha256, candidate_sha256)):
             raise ValueError("binding")
+    except BuildRefused:
+        raise
     except Exception:  # noqa: BLE001 - SnapshotRefused, KeyError, TypeError, ValueError: one token, never its text
         raise BuildRefused("source_binding_refused") from None
     binding = {"schema": SOURCE_BINDING_SCHEMA, "anchor_sha256": source["expected_anchor_sha256"],
                "projection_sha256": projection_sha256, "cursor_start_sha256": start_sha256,
                "cursor_end_sha256": end_sha256, "policy_sha256": policy_sha256, "roster_sha256": roster_sha256}
-    if set(binding) != SOURCE_BINDING_KEYS:
+    if set(binding) != SOURCE_BINDING_KEYS or set(source_mode) != SOURCE_MODE_KEYS:
         raise BuildRefused("source_binding_shape")
-    return binding
+    return binding, source_mode
 
 
 def _history_merger():
@@ -623,15 +723,34 @@ def _validate_watermark(watermark):
     return watermark
 
 
-def _verified_pointer(watermark, resolved, pins):
+def _verified_pointer(watermark, resolved, pins, source_mode=None, public_policy_bytes=None):
     """Call the Lead function with the SAME resolved pins and the caller's pointer digest; the answer must be the
-    closed six-key record with hex digests (``watermark_refused`` on a refusal or anything else)."""
+    closed six-key record with hex digests (``watermark_refused`` on a refusal or anything else).
+    public-v1 (Lead finding 19:25:46Z): the predecessor read of a public series passes ``expected_mode="public-v1"``
+    and the independently pinned public policy (``public_policy_bytes`` + ``public_policy_sha256``) so the Lead walk
+    verifies the historical chain's mode and policy itself; the legacy call keeps the legacy defaults unchanged. A
+    pointer verifier WITHOUT those keywords (a TypeError escaping the call) refuses ``watermark_verifier_unavailable``
+    on the public path: a public watermark is never verified under legacy defaults."""
     verifier = _pointer_verifier()
+    public = source_mode is not None and source_mode["status_mode"] == "public-v1"
     try:
-        verified = verifier(Path(watermark["root"]), frozenset(resolved["approved_tasks"]),
-                            expected_pointer_sha256=watermark["pointer_sha256"],
-                            policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
-                            roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"])
+        if public:
+            try:
+                verified = verifier(Path(watermark["root"]), frozenset(resolved["approved_tasks"]),
+                                    expected_pointer_sha256=watermark["pointer_sha256"],
+                                    policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
+                                    roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"],
+                                    expected_mode="public-v1", public_policy_bytes=public_policy_bytes,
+                                    public_policy_sha256=source_mode["public_policy_sha256"])
+            except TypeError:
+                raise BuildRefused("watermark_verifier_unavailable") from None
+        else:
+            verified = verifier(Path(watermark["root"]), frozenset(resolved["approved_tasks"]),
+                                expected_pointer_sha256=watermark["pointer_sha256"],
+                                policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
+                                roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"])
+    except BuildRefused:
+        raise
     except Exception:  # noqa: BLE001 - CheckpointRefused or any other failure: one token, no text
         raise BuildRefused("watermark_refused") from None
     digests = VERIFIED_POINTER_KEYS - {"generation", "artifacts"}
@@ -664,9 +783,32 @@ def _read_plain_file(path):
     return data
 
 
-def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None):
+def _predecessor_source_mode(memory, receipt):
+    """The predecessor's recorded ``source_mode``: ABSENT from both files is legacy (a pre-public generation is never
+    relabelled); present in both it must be the same closed valid record (``predecessor_mismatch`` otherwise, also
+    when only one file carries it)."""
+    in_memory, in_receipt = "source_mode" in memory, "source_mode" in receipt
+    if not in_memory and not in_receipt:
+        return dict(LEGACY_SOURCE_MODE)
+    mode = memory.get("source_mode")
+    if (not in_memory or not in_receipt or receipt.get("source_mode") != mode or not isinstance(mode, dict)
+            or set(mode) != SOURCE_MODE_KEYS or mode["status_mode"] not in STATUS_MODES
+            or (mode["status_mode"] == "legacy" and mode["public_policy_sha256"] is not None)
+            or (mode["status_mode"] == "public-v1" and (not isinstance(mode["public_policy_sha256"], str)
+                                                         or HEX64.fullmatch(mode["public_policy_sha256"]) is None))):
+        raise BuildRefused("predecessor_mismatch")
+    return dict(mode)
+
+
+def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None, source_mode=None,
+                     public_policy_bytes=None):
     """The caller's pinned previous generation -> (its validated canonical projection, a closed receipt summary,
     a closed continuity record ``{continuity_checked, continuity_route, watermark}``).
+
+    public-v1: ``source_mode`` is the CURRENT generation's record (``None`` = legacy); the predecessor's recorded
+    ``source_mode`` (absent = legacy, see ``_predecessor_source_mode``) must equal it exactly, status and public
+    policy digest (``predecessor_mode_mismatch``): a legacy generation never becomes the predecessor of a public one,
+    a public one never extends a legacy series, and a public policy change is a series rollover.
 
     ``predecessor`` is exactly ``{memory_dir, memory_sha256, projection_sha256, build_receipt_sha256}`` plus the
     OPTIONAL ``watermark = {root, pointer_sha256}`` (``predecessor_invalid`` / ``watermark_invalid``; a watermark
@@ -716,6 +858,8 @@ def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=
         raise BuildRefused("predecessor_mismatch")
     if memory.get("policy") != policy or receipt.get("policy") != policy:
         raise BuildRefused("predecessor_policy_mismatch")
+    if _predecessor_source_mode(memory, receipt) != (dict(LEGACY_SOURCE_MODE) if source_mode is None else source_mode):
+        raise BuildRefused("predecessor_mode_mismatch")  # legacy and public never mix; a policy change is a rollover
     binding = receipt.get("source_binding")
     bound = (isinstance(binding, dict) and set(binding) == SOURCE_BINDING_KEYS
              and binding["schema"] == SOURCE_BINDING_SCHEMA
@@ -733,7 +877,7 @@ def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=
                 raise BuildRefused("predecessor_discontinuous")
             continuity.update(continuity_checked=True, continuity_route="receipt_end")
         else:
-            verified = _verified_pointer(watermark, resolved, pins)
+            verified = _verified_pointer(watermark, resolved, pins, source_mode, public_policy_bytes)
             expected = {"descriptor_sha256": receipt.get("descriptor_sha256"),
                         "memory_sha256": predecessor["memory_sha256"],
                         "projection_sha256": predecessor["projection_sha256"],
@@ -786,7 +930,14 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     verified_watermark, ``watermark`` = the verified pointer digest, watermark digest and generation name or None).
     An empty delta refuses ``projection_empty`` even with a predecessor (a no-change advance is a checkpoint pointer
     event, Lead-owned); after such an advance the next generation passes ``predecessor["watermark"]`` and the
-    continuity is proven by the Lead's ``read_verified_pointer`` (``load_predecessor``), never by a caller digest. The builder publishes ONE directory; it is not
+    continuity is proven by the Lead's ``read_verified_pointer`` (``load_predecessor``), never by a caller digest.
+    public-v1: ``source`` may carry the public shape (``PUBLIC_SOURCE_KEYS``: ``mode="public-v1"``, the pinned public
+    policy bytes + digest and the exact anchor bytes); the Lead verifier is then called with its mode keywords and
+    the Lead adapter policy parser gates every projected record (``check_public_records``). The closed
+    ``source_mode = {status_mode, public_policy_sha256}`` is recorded top-level in ``memory.json`` (bound by the
+    descriptor) and in the receipt; legacy and the unbound synthetic route record ``LEGACY_SOURCE_MODE``. A
+    predecessor must record the same mode (absent = legacy; ``predecessor_mode_mismatch``), and a public watermark
+    read passes the mode and the pinned public policy to the Lead pointer verifier. The builder publishes ONE directory; it is not
     an atomic checkpoint publication and never moves a cursor. ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
     identity from a verified model directory instead (``runtime_identity``) and, when both are given, they must be
     equal (``encoder_identity_mismatch``). Every refusal is ``BuildRefused`` with a fixed token (projection refusals
@@ -816,16 +967,18 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     if source is None:
         if allow_unbound_source is not True:
             raise BuildRefused("source_binding_required")  # the strict publication path has no unbound memory
-        source_binding = None
+        source_binding, source_mode = None, dict(LEGACY_SOURCE_MODE)  # the synthetic route is legacy by construction
     else:
-        source_binding = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
-                                     resolved["roster_sha256"])  # binds the DELTA; never a merged projection
+        source_binding, source_mode = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
+                                                  resolved["roster_sha256"], approved_tasks)  # binds the DELTA only
+    public_policy_bytes = source["public_policy_bytes"] if source_mode["status_mode"] == "public-v1" else None
     delta_projection_sha256 = projection_sha256
     history, memory_history = None, None
     if predecessor is not None:
         if not projection["records"]:
             raise BuildRefused("projection_empty")  # an empty delta is a checkpoint pointer event, never a generation
-        previous, summary, continuity = load_predecessor(predecessor, policy, source_binding, resolved=resolved, pins=pins)
+        previous, summary, continuity = load_predecessor(predecessor, policy, source_binding, resolved=resolved, pins=pins,
+                                                         source_mode=source_mode, public_policy_bytes=public_policy_bytes)
         delta_ids = {record["record_id"] for record in projection["records"]}
         previous_ids = {record["record_id"] for record in previous["records"]}
         if len(previous_ids | delta_ids) > MAX_RECORDS:
@@ -920,7 +1073,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim, "placement": PLACEMENT_RULE,
                   "topology_source_sha256": cell_mod.file_sha256(TOPOLOGY_FILE), "cells": pointers,
                   "records": len(records), "duplicates": duplicates, "views": list(VIEWS),
-                  "independent_views": False, "policy": policy, "history": memory_history}
+                  "independent_views": False, "policy": policy, "history": memory_history,
+                  "source_mode": source_mode}
         sp.corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = hashlib.sha256(memory_bytes).hexdigest()
@@ -940,7 +1094,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                          "cells": {cell_id: row["count"] for cell_id, row in pointers.items()},
                          "cutoff_utc": cutoff_utc, "views": list(VIEWS), "independent_views": False,
                          "canonical_event": False, "authenticated": False, "policy": policy,
-                         "runtime": runtime_record, "source_binding": source_binding,
+                         "runtime": runtime_record, "source_binding": source_binding, "source_mode": source_mode,
                          "source_bound": source_binding is not None, "source_authenticated": False,
                          "bounds": {"max_records": MAX_RECORDS, "max_input_bytes": MAX_INPUT_BYTES,
                                     "encode_batch": ENCODE_BATCH},

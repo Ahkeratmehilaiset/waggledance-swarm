@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,218 @@ def binding(start, end, projection_sha256="c" * 64):
             "cursor_start_sha256": hashlib.sha256(_token(start).encode()).hexdigest(),
             "cursor_end_sha256": hashlib.sha256(_token(end).encode()).hexdigest(),
             "policy_sha256": STRICT["expected_policy_sha256"], "roster_sha256": STRICT["expected_roster_sha256"]}
+
+
+def _synthetic_anchored_delta(path, generation_path, start):
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    anchor = json.dumps({"schema": "wd.q4-source-anchor.v1", "source_path": str(path.resolve()),
+                         "generation_path": str(generation_path.resolve()), "cursor_start": asdict(start),
+                         "policy_sha256": STRICT["expected_policy_sha256"],
+                         "roster_sha256": STRICT["expected_roster_sha256"]}, sort_keys=True).encode()
+    anchor_sha = hashlib.sha256(anchor).hexdigest()
+    result = snapshot.read_anchored_delta(path, start, POLICY, anchor_bytes=anchor, anchor_sha256=anchor_sha,
+        generation_path=generation_path, max_bytes=1 << 20, max_rows=100, policy_bytes=POLICY_BYTES,
+        policy_sha256=STRICT["expected_policy_sha256"], roster_bytes=ROSTER_BYTES,
+        roster_sha256=STRICT["expected_roster_sha256"])
+    return result, anchor_sha
+
+
+def test_exact_256_pointer_history_is_valid_but_cannot_reserve_another(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import shared_projection as projection
+    from sandbox.mind.step2.shared_bridge_snapshot import _token
+    artifacts = {"descriptor_sha256": "a" * 64, "memory_sha256": "b" * 64,
+                 "projection_sha256": "c" * 64, "receipt_sha256": "d" * 64}
+    monkeypatch.setattr(checkpoint, "_verify_generation", lambda *args: {
+        "generation": "one", **artifacts, "source_binding": binding(cursor(0), cursor(1))})
+    pointer = {"schema": checkpoint.SCHEMA, "generation": "one", "artifacts": artifacts,
+        "policy_sha256": STRICT["expected_policy_sha256"], "roster_sha256": STRICT["expected_roster_sha256"],
+        "anchor_sha256": STRICT["expected_anchor_sha256"], "cursor_start": asdict(cursor(0)),
+        "cursor_end": asdict(cursor(1)), "watermark": asdict(cursor(1)), "empty_advance": None,
+        "previous": None, "previous_pointer_sha256": None}
+    archives = {}
+    empty_hash = hashlib.sha256(checkpoint._canonical(projection._projection([], {}, 0, ROSTER, True))).hexdigest()
+    token_hash = lambda value: hashlib.sha256(_token(value).encode()).hexdigest()
+    for offset in range(2, 257):
+        raw = checkpoint._canonical(pointer)
+        digest = hashlib.sha256(raw).hexdigest()
+        archives["q4-pointer-" + digest + ".json"] = raw
+        pointer = dict(pointer, watermark=asdict(cursor(offset)), previous="one", previous_pointer_sha256=digest,
+            empty_advance={"schema": "wd.q4-empty-watermark.v1", "anchor_sha256": "f" * 64,
+                "projection_sha256": empty_hash, "cursor_start_sha256": token_hash(cursor(offset - 1)),
+                "cursor_end_sha256": token_hash(cursor(offset)), "policy_sha256": STRICT["expected_policy_sha256"],
+                "roster_sha256": STRICT["expected_roster_sha256"]})
+    monkeypatch.setattr(checkpoint, "_read", lambda path, **kwargs: archives[path.name])
+    raw = checkpoint._canonical(pointer)
+    args = (tmp_path, raw, POLICY, ROSTER, STRICT["expected_policy_sha256"], STRICT["expected_roster_sha256"])
+    assert checkpoint._validated_previous(*args) == pointer
+    with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+        checkpoint._validated_previous(*args, reserve=1)
+
+
+@WINDOWS
+def test_real_verified_empty_deltas_advance_watermark_not_index_binding(tmp_path, monkeypatch):
+    from waggledance.core.bridge_log_reader import read_bridge_log
+    log = tmp_path / "synthetic-log.jsonl"
+    log.write_bytes(b"")
+    generation = tmp_path / "synthetic-generation.json"
+    generation.write_text('{"generation":"synthetic"}', encoding="utf-8")
+    initial = read_bridge_log(log, generation_path=generation).candidate_cursor
+    assert initial is not None
+    def append(event):
+        with log.open("ab") as out:
+            out.write(json.dumps(event, sort_keys=True).encode() + b"\n")
+    base = {"ts_utc": "2026-01-01T12:00:00Z", "type": "message", "status": "done",
+            "agent": "codex-lead-1", "agent_uuid": ROSTER["codex-lead-1"], "task_id": "synthetic-task"}
+    append(base)
+    initial_delta, _ = _synthetic_anchored_delta(log, generation, initial)
+    indexed_end = initial_delta["candidate_cursor"]
+    index_root = tmp_path / "index"
+    index_root.mkdir()
+    artifacts = {"descriptor_sha256": "a" * 64, "memory_sha256": "b" * 64,
+                 "projection_sha256": "c" * 64, "receipt_sha256": "d" * 64}
+    monkeypatch.setattr(checkpoint, "_verify_generation", lambda root, name, tasks, roster, ph, rh: {
+        "generation": name, **artifacts, "source_binding": binding(initial, indexed_end)})
+    checkpoint.commit_generation(index_root, "one", initial, indexed_end, POLICY, expected_pointer_sha256=None,
+        initial_cursor=initial, expected_artifacts=artifacts, **STRICT)
+    first_bytes = (index_root / "q4-latest.json").read_bytes()
+    first = json.loads(first_bytes)
+    append(dict(base, task_id="outside-policy"))
+    empty1, anchor1 = _synthetic_anchored_delta(log, generation, indexed_end)
+    assert empty1["projection"]["accepted"] == 0 and empty1["projection"]["refused"] == {}
+    first_hash = hashlib.sha256(first_bytes).hexdigest()
+    tampered = dict(empty1, source=dict(empty1["source"], cursor_start_sha256="0" * 64))
+    for candidate, cas, anchor in ((empty1, "0" * 64, anchor1), (empty1, first_hash, "0" * 64),
+                                   (tampered, first_hash, anchor1), (initial_delta, first_hash, anchor1)):
+        with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+            checkpoint.advance_empty_delta(index_root, candidate, POLICY, expected_pointer_sha256=cas,
+                **dict(STRICT, expected_anchor_sha256=anchor))
+        assert (index_root / "q4-latest.json").read_bytes() == first_bytes
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy = dict(first, schema="wd.q4-shared-checkpoint.v2")
+    legacy.pop("watermark")
+    legacy.pop("empty_advance")
+    legacy_bytes = json.dumps(legacy).encode()
+    (legacy_root / "q4-latest.json").write_bytes(legacy_bytes)
+    with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+        checkpoint.advance_empty_delta(legacy_root, empty1, POLICY,
+            expected_pointer_sha256=hashlib.sha256(legacy_bytes).hexdigest(),
+            **dict(STRICT, expected_anchor_sha256=anchor1))
+    assert (legacy_root / "q4-latest.json").read_bytes() == legacy_bytes
+    with monkeypatch.context() as context:
+        def interrupted_replace(*_args):
+            raise OSError("synthetic interruption")
+        context.setattr(checkpoint.os, "replace", interrupted_replace)
+        with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+            checkpoint.advance_empty_delta(index_root, empty1, POLICY, expected_pointer_sha256=first_hash,
+                **dict(STRICT, expected_anchor_sha256=anchor1))
+    assert (index_root / "q4-latest.json").read_bytes() == first_bytes
+    gate = threading.Barrier(2)
+    outcomes = []
+    def compete():
+        gate.wait()
+        try:
+            result = checkpoint.advance_empty_delta(index_root, empty1, POLICY, expected_pointer_sha256=first_hash,
+                **dict(STRICT, expected_anchor_sha256=anchor1))
+            outcomes.append(result["status"])
+        except checkpoint.CheckpointRefused:
+            outcomes.append("refused")
+    threads = [threading.Thread(target=compete) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert sorted(outcomes) == ["advanced", "refused"]
+    second_bytes = (index_root / "q4-latest.json").read_bytes()
+    second = json.loads(second_bytes)
+    assert second["watermark"] == asdict(empty1["candidate_cursor"])
+    assert second["cursor_start"] == first["cursor_start"] and second["cursor_end"] == first["cursor_end"]
+    assert second["artifacts"] == first["artifacts"]
+    assert second["previous_pointer_sha256"] == hashlib.sha256(first_bytes).hexdigest()
+    assert (index_root / ("q4-pointer-" + second["previous_pointer_sha256"] + ".json")).read_bytes() == first_bytes
+    append(dict(base, task_id="another-unapproved"))
+    empty2, anchor2 = _synthetic_anchored_delta(log, generation, empty1["candidate_cursor"])
+    result2 = checkpoint.advance_empty_delta(index_root, empty2, POLICY,
+        expected_pointer_sha256=hashlib.sha256(second_bytes).hexdigest(), **dict(STRICT, expected_anchor_sha256=anchor2))
+    third_bytes = (index_root / "q4-latest.json").read_bytes()
+    assert result2["status"] == "advanced" and json.loads(third_bytes)["cursor_end"] == first["cursor_end"]
+    none, anchor3 = _synthetic_anchored_delta(log, generation, empty2["candidate_cursor"])
+    result3 = checkpoint.advance_empty_delta(index_root, none, POLICY,
+        expected_pointer_sha256=hashlib.sha256(third_bytes).hexdigest(), **dict(STRICT, expected_anchor_sha256=anchor3))
+    assert result3["status"] == "no_change" and (index_root / "q4-latest.json").read_bytes() == third_bytes
+    for mutation in ("projection", "archive", "older_missing", "older_corrupt", "broken_continuity"):
+        copy_root = tmp_path / ("tamper-" + mutation)
+        shutil.copytree(index_root, copy_root)
+        pointer = copy_root / "q4-latest.json"
+        if mutation == "projection":
+            damaged = json.loads(third_bytes)
+            damaged["empty_advance"]["projection_sha256"] = "0" * 64
+            pointer.write_bytes(json.dumps(damaged).encode())
+        elif mutation == "archive":
+            previous = json.loads(third_bytes)["previous_pointer_sha256"]
+            (copy_root / ("q4-pointer-" + previous + ".json")).write_bytes(b"synthetic-corruption")
+        elif mutation == "broken_continuity":
+            damaged = json.loads(third_bytes)
+            previous_path = copy_root / ("q4-pointer-" + damaged["previous_pointer_sha256"] + ".json")
+            previous = json.loads(previous_path.read_bytes())
+            previous["watermark"]["offset"] -= 1
+            altered = checkpoint._canonical(previous)
+            altered_hash = hashlib.sha256(altered).hexdigest()
+            (copy_root / ("q4-pointer-" + altered_hash + ".json")).write_bytes(altered)
+            damaged["previous_pointer_sha256"] = altered_hash
+            pointer.write_bytes(checkpoint._canonical(damaged))
+        else:
+            previous = json.loads(third_bytes)["previous_pointer_sha256"]
+            previous_raw = (copy_root / ("q4-pointer-" + previous + ".json")).read_bytes()
+            older = json.loads(previous_raw)["previous_pointer_sha256"]
+            archive = copy_root / ("q4-pointer-" + older + ".json")
+            if mutation == "older_missing":
+                archive.unlink()
+            else:
+                archive.write_bytes(b"synthetic-corruption")
+        old_copy = pointer.read_bytes()
+        with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+            checkpoint.advance_empty_delta(copy_root, none, POLICY,
+                expected_pointer_sha256=hashlib.sha256(old_copy).hexdigest(),
+                **dict(STRICT, expected_anchor_sha256=anchor3))
+        assert pointer.read_bytes() == old_copy
+    # At capacity, an unchanged check succeeds without publishing, but a real
+    # advance must refuse before writing a pointer beyond the bound.
+    with monkeypatch.context() as context:
+        context.setattr(checkpoint, "_MAX_POINTER_HISTORY", 3)
+        unchanged = checkpoint.advance_empty_delta(index_root, none, POLICY,
+            expected_pointer_sha256=hashlib.sha256(third_bytes).hexdigest(),
+            **dict(STRICT, expected_anchor_sha256=anchor3))
+        assert unchanged["status"] == "no_change"
+        assert (index_root / "q4-latest.json").read_bytes() == third_bytes
+        append(dict(base, task_id="third-unapproved"))
+        more, more_anchor = _synthetic_anchored_delta(log, generation, empty2["candidate_cursor"])
+        with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+            checkpoint.advance_empty_delta(index_root, more, POLICY,
+                expected_pointer_sha256=hashlib.sha256(third_bytes).hexdigest(),
+                **dict(STRICT, expected_anchor_sha256=more_anchor))
+        assert (index_root / "q4-latest.json").read_bytes() == third_bytes
+    append(dict(base, status="info"))
+    next_end = read_bridge_log(log, cursor=empty2["candidate_cursor"], generation_path=generation).candidate_cursor
+    assert next_end is not None
+    def verified_after_advances(root, name, tasks, roster, ph, rh):
+        start, end = (initial, indexed_end) if name == "one" else (empty2["candidate_cursor"], next_end)
+        return {"generation": name, **artifacts, "source_binding": binding(start, end)}
+    monkeypatch.setattr(checkpoint, "_verify_generation", verified_after_advances)
+    next_index = checkpoint.commit_generation(index_root, "two", empty2["candidate_cursor"], next_end, POLICY,
+        expected_pointer_sha256=hashlib.sha256(third_bytes).hexdigest(), expected_artifacts=artifacts, **STRICT)
+    assert next_index["cursor_start"] == asdict(empty2["candidate_cursor"])
+    assert next_index["watermark"] == asdict(next_end)
+    fourth_bytes = (index_root / "q4-latest.json").read_bytes()
+    assert checkpoint._validated_previous(index_root, fourth_bytes, POLICY, ROSTER,
+        STRICT["expected_policy_sha256"], STRICT["expected_roster_sha256"]) == next_index
+    copied = tmp_path / "after-new-index"
+    shutil.copytree(index_root, copied)
+    older = json.loads(second_bytes)["previous_pointer_sha256"]
+    (copied / ("q4-pointer-" + older + ".json")).write_bytes(b"synthetic-corruption")
+    with pytest.raises(checkpoint.CheckpointRefused, match="^checkpoint_refused$"):
+        checkpoint._validated_previous(copied, fourth_bytes, POLICY, ROSTER,
+            STRICT["expected_policy_sha256"], STRICT["expected_roster_sha256"])
 
 
 @WINDOWS

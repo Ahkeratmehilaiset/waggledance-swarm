@@ -9,6 +9,10 @@ LOG_SCHEMA = "wd.bridge-mind-hex-cell-log.v1"
 ZERO = "0" * 64
 FILES = ("index", "meta", "vectors", "provenance")
 PROVENANCE_KEYS = ("record_id", "kind", "time_utc", "cell_id", "provenance")
+# These bounds apply only to control documents, not the memory's FAISS data.
+MAX_POINTER_BYTES = 64 * 1024
+MAX_RECEIPT_BYTES = 1024 * 1024
+MAX_LOG_BYTES = 16 * 1024 * 1024
 
 
 class CellError(Exception):
@@ -17,6 +21,18 @@ class CellError(Exception):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
+
+def _read_control(path, limit, kind):
+    """Read at most limit+1 bytes, including when a file grows during the read."""
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(limit + 1)
+    except OSError:
+        raise CellError(f"{kind}_unreadable") from None
+    if len(raw) > limit:
+        raise CellError(f"{kind}_over_budget")
+    return raw
 
 
 def sha256(data):
@@ -61,10 +77,7 @@ def read_log(cell_dir):
     if not log_path.exists():
         return []
     lines, previous = [], ZERO
-    try:
-        raw_lines = log_path.read_bytes().split(b"\n")
-    except OSError:
-        raise CellError("log_unreadable") from None
+    raw_lines = _read_control(log_path, MAX_LOG_BYTES, "log").split(b"\n")
     if raw_lines and raw_lines[-1] == b"":
         raw_lines.pop()
     for number, raw in enumerate(raw_lines, start=1):
@@ -114,10 +127,11 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
     receipt_path = gen_dir / "receipt.json"
     if not receipt_path.exists():
         raise CellError("receipt_missing")
-    if file_sha256(receipt_path) != receipt_sha:
+    receipt_bytes = _read_control(receipt_path, MAX_RECEIPT_BYTES, "receipt")
+    if sha256(receipt_bytes) != receipt_sha:
         raise CellError("receipt_mismatch")
     try:
-        receipt = json.loads(receipt_path.read_bytes())
+        receipt = json.loads(receipt_bytes)
         content = receipt["content"]
         if receipt.get("schema") != SCHEMA or receipt["content_sha256"] != sha256(canonical(content).encode("utf-8")):
             raise CellError("receipt_unverifiable")
@@ -197,7 +211,7 @@ def load(cell_dir, cell_id):
         if not pointer_path.exists():
             raise CellError("pointer_missing")
         try:
-            pointer = json.loads(pointer_path.read_bytes())
+            pointer = json.loads(_read_control(pointer_path, MAX_POINTER_BYTES, "pointer"))
             generation, seq, receipt_sha = int(pointer["generation"]), int(pointer["seq"]), str(pointer["receipt_sha256"])
         except (ValueError, KeyError, TypeError):
             raise CellError("pointer_unreadable") from None

@@ -166,3 +166,62 @@ def test_memory_manifest_over_budget_is_refused_before_json_parse(tmp_path):
         memory.memory_sha256(tmp_path)
     with pytest.raises(memory.MemoryError_, match="memory_unreadable"):
         memory.Memory(tmp_path)
+
+
+@pytest.mark.parametrize("which,limit,reason", [
+    ("pointer", 64 * 1024, "pointer_over_budget"),
+    ("receipt", 1024 * 1024, "receipt_over_budget"),
+    ("log", 16 * 1024 * 1024, "log_over_budget"),
+])
+def test_oversized_cell_control_is_quarantined(tmp_path, which, limit, reason):
+    cell_root = tmp_path / "cells" / "learning"
+    generation = cell_root / "gen-000001"
+    generation.mkdir(parents=True)
+    receipt = b"x" * (limit + 1) if which == "receipt" else b"{}"
+    (generation / "receipt.json").write_bytes(receipt)
+    pointer = {"generation": 1, "seq": 1, "receipt_sha256": cell.sha256(receipt)}
+    pointer_bytes = b"x" * (limit + 1) if which == "pointer" else cell.canonical(pointer).encode()
+    (cell_root / "current.json").write_bytes(pointer_bytes)
+    log = {"schema": cell.LOG_SCHEMA, "prev_line_sha256": cell.ZERO, **pointer}
+    log_bytes = b"x" * (limit + 1) if which == "log" else (cell.canonical(log) + "\n").encode()
+    (cell_root / "LOG.jsonl").write_bytes(log_bytes)
+    view = cell.load(cell_root, "learning")
+    assert (view.status, view.reason) == ("QUARANTINED", reason)
+
+
+@pytest.mark.parametrize("size", [0, 16, 64])
+def test_bounded_control_read_accepts_up_to_exact_limit(tmp_path, size):
+    path = tmp_path / "control.json"
+    body = b"x" * size
+    path.write_bytes(body)
+    assert cell._read_control(path, 64, "control") == body
+
+
+def test_bounded_control_never_requests_an_unbounded_read(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, size=-1):
+            calls.append(size)
+            return b"x" * size
+
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: FakeFile())
+    with pytest.raises(cell.CellError, match="control_over_budget"):
+        cell._read_control(tmp_path / "control.json", 64, "control")
+    assert calls == [65]
+
+
+def test_unreadable_control_fails_closed(monkeypatch, tmp_path):
+    def refused(*args, **kwargs):
+        raise PermissionError("synthetic path must not escape")
+
+    monkeypatch.setattr(Path, "open", refused)
+    with pytest.raises(cell.CellError, match="control_unreadable") as caught:
+        cell._read_control(tmp_path / "control.json", 64, "control")
+    assert "synthetic path" not in str(caught.value)

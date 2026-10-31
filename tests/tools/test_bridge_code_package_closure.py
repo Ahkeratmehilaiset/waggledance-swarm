@@ -788,6 +788,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/shared_bridge_snapshot.py", "sandbox/mind/step2/shared_capture_adapter.py",
     "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/shared_index_checkpoint.py",
     "sandbox/mind/step2/shared_index_builder.py",
+    "sandbox/mind/step2/shared_history.py",
     "sandbox/mind/step2/shared_result_resolver.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
 })

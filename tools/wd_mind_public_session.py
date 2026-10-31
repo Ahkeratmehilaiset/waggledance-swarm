@@ -6,6 +6,9 @@ caller also supplies the clock: freshness covers publication age only, not
 completeness or freshness of the source bridge. Filesystem checks and atomic
 replace do not prevent hostile same-user replacement or TOCTOU. The selected
 .codex-audit directory must already exist and be independently access-controlled.
+Each publication REPLACES the previous one with only its latest delta: empty
+records never mean that the source has no historical events. A single writer
+must be enforced externally; there is no lock, cursor CAS or merge of deltas.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -119,7 +122,7 @@ def publish_status(audit_root, snapshot_result, *, as_of, enabled=False, **pins)
         now = _instant(as_of)
         data = producer.build_status(snapshot_result, enabled=True, **pins)
         body = _body(_object(data), tasks, types)
-        doc = {"schema": SCHEMA, "authority": "none", "as_of_utc": now.isoformat(),
+        doc = {"schema": SCHEMA, "authority": "none", "coverage": "last_delta_only", "as_of_utc": now.isoformat(),
                "anchor_sha256": pins["anchor_sha256"], "policy_sha256": pins["policy_sha256"],
                "roster_sha256": pins["roster_sha256"], "public_policy_sha256": pins["public_policy_sha256"],
                "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
@@ -166,9 +169,10 @@ def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled
         _regular(path)
         with path.open("rb") as stream:
             doc = _object(stream.read(MAX_BYTES + 1))
-        if (set(doc) != {"schema", "authority", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
+        if (set(doc) != {"schema", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
                          "public_policy_sha256", "body_sha256", "body"}
                 or doc["schema"] != SCHEMA or doc["authority"] != "none"
+                or doc["coverage"] != "last_delta_only"
                 or any(doc[name] != pins[name] for name in
                        ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"))
                 or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40
@@ -181,7 +185,7 @@ def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled
         body = _body(doc["body"], tasks, types)
         if hashlib.sha256(_json(body)).hexdigest() != doc["body_sha256"]:
             raise ValueError()
-        return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "lane": lane,
+        return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only", "lane": lane,
                       "identity_verification": "caller_declared_not_authenticated",
                       "as_of_utc": now.isoformat(), "publication_age_seconds": age,
                       "source_freshness": "UNKNOWN", "records": body["records"]})

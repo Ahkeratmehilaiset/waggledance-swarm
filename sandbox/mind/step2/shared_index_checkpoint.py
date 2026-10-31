@@ -19,10 +19,12 @@ import stat
 import ctypes
 
 from sandbox.mind.step2.reader_slot import reader_slot
-from waggledance.core.bridge_log_reader import BridgeCursor
+from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
 
 SCHEMA = "wd.q4-shared-checkpoint.v3"
 HISTORY_SCHEMA = "wd.q4-shared-checkpoint.v4"
+PREFIX_SCHEMA = "wd.q4-shared-prefix-checkpoint.v1"
+PREFIX_HISTORY_SCHEMA = "wd.q4-shared-prefix-checkpoint.v2"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+)\Z")
@@ -336,7 +338,7 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
     memory = _parse(artifact(current, "memory_sha256"))
     old_receipt = _parse(artifact(previous, "receipt_sha256"))
     old_binding = old_receipt.get("source_binding")
-    previous_delta = (previous["artifacts"]["projection_sha256"] if previous["schema"] == SCHEMA
+    previous_delta = (previous["artifacts"]["projection_sha256"] if previous["schema"] in (SCHEMA, PREFIX_SCHEMA)
                       else previous["delta_projection_sha256"])
     if _canonical(old_binding) != _canonical(_source_binding(
             BridgeCursor(**previous["cursor_start"]), BridgeCursor(**previous["cursor_end"]),
@@ -383,7 +385,8 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
 
 
 def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, reserve=0,
-                        policy_bytes=None, roster_bytes=None, history_budget=None, expected_source_mode=None):
+                        policy_bytes=None, roster_bytes=None, history_budget=None, expected_source_mode=None,
+                        prefix_required=False):
     """Validate bounded archived transitions and the current index binding.
 
     The current pointer still needs an independent caller-provided anchor;
@@ -401,9 +404,14 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
             _refuse()
         value = _parse(data)
         schema = value.get("schema")
-        if (schema not in (SCHEMA, HISTORY_SCHEMA)
-                or set(value) != (fields if schema == SCHEMA else fields | {"delta_projection_sha256"})
-                or (schema == HISTORY_SCHEMA and (not isinstance(value["delta_projection_sha256"], str)
+        genesis_schema = PREFIX_SCHEMA if prefix_required else SCHEMA
+        history_schema = PREFIX_HISTORY_SCHEMA if prefix_required else HISTORY_SCHEMA
+        expected_fields = fields | ({"prefix_start_sha256", "prefix_watermark_sha256"} if prefix_required else set())
+        if (schema not in (genesis_schema, history_schema)
+                or set(value) != (expected_fields if schema == genesis_schema else expected_fields | {"delta_projection_sha256"})
+                or (prefix_required and any(not isinstance(value[k], str) or HEX.fullmatch(value[k]) is None
+                                            for k in ("prefix_start_sha256", "prefix_watermark_sha256")))
+                or (schema == history_schema and (not isinstance(value["delta_projection_sha256"], str)
                     or HEX.fullmatch(value["delta_projection_sha256"]) is None))
                 or value["policy_sha256"] != policy_sha or value["roster_sha256"] != roster_sha
                 or not isinstance(value["anchor_sha256"], str) or HEX.fullmatch(value["anchor_sha256"]) is None
@@ -427,7 +435,7 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
             or actual.get("source_mode", _requested_source_mode("legacy", None)) != expected_source_mode
             or actual.get("source_binding") != _source_binding(
                 BridgeCursor(**old["cursor_start"]), BridgeCursor(**old["cursor_end"]),
-                old["anchor_sha256"], old["artifacts"]["projection_sha256"] if old["schema"] == SCHEMA
+                old["anchor_sha256"], old["artifacts"]["projection_sha256"] if old["schema"] in (SCHEMA, PREFIX_SCHEMA)
                 else old["delta_projection_sha256"], policy_sha, roster_sha)):
         _refuse()
 
@@ -441,7 +449,8 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
         if advance is None and current["watermark"] != current["cursor_end"]:
             _refuse()
         if previous_hash is None:
-            if (current["schema"] != SCHEMA or current["previous"] is not None or advance is not None
+            if (current["schema"] != (PREFIX_SCHEMA if prefix_required else SCHEMA)
+                    or current["previous"] is not None or advance is not None
                     or depth + 1 + reserve > _MAX_POINTER_HISTORY):
                 _refuse()
             return old
@@ -453,6 +462,8 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
         if _sha(previous_raw) != previous_hash:
             _refuse()
         previous = parse_pointer(previous_raw)
+        if prefix_required and current["prefix_start_sha256"] != previous["prefix_watermark_sha256"]:
+            _refuse()
         generation_key = (previous["generation"], _canonical(previous["artifacts"]))
         # Historical generation artifacts were never required for old v3
         # legacy chains. Do not change that contract for legacy readers.
@@ -464,14 +475,14 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
             checked.add(generation_key)
         if current["previous"] != previous["generation"]:
             _refuse()
-        if current["schema"] == SCHEMA and previous["schema"] == HISTORY_SCHEMA:
+        if current["schema"] in (SCHEMA, PREFIX_SCHEMA) and previous["schema"] in (HISTORY_SCHEMA, PREFIX_HISTORY_SCHEMA):
             _refuse()  # A v4 history can never be replaced by legacy delta-only publication.
         if advance is None:
-            if expected_source_mode["status_mode"] == "public-v1" and current["schema"] == SCHEMA:
+            if expected_source_mode["status_mode"] == "public-v1" and current["schema"] in (SCHEMA, PREFIX_SCHEMA):
                 _refuse()  # A non-genesis public generation must prove its history union.
             if current["generation"] == previous["generation"] or current["cursor_start"] != previous["watermark"]:
                 _refuse()
-            if current["schema"] == HISTORY_SCHEMA:
+            if current["schema"] in (HISTORY_SCHEMA, PREFIX_HISTORY_SCHEMA):
                 _validate_history_transition(root, current, previous, previous_hash, tasks, roster,
                                              policy_sha, roster_sha, policy_bytes, roster_bytes, history_bytes)
         else:
@@ -493,7 +504,7 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
                            ("generation", "artifacts", "cursor_start", "cursor_end", "anchor_sha256"))):
                 _refuse()
             if (current["schema"] != previous["schema"]
-                    or (current["schema"] == HISTORY_SCHEMA
+                    or (current["schema"] in (HISTORY_SCHEMA, PREFIX_HISTORY_SCHEMA)
                         and current["delta_projection_sha256"] != previous["delta_projection_sha256"])):
                 _refuse()
             start, end = (BridgeCursor(**value) for value in (previous["watermark"], current["watermark"]))
@@ -562,10 +573,63 @@ def _publish_pointer(root, pointer, raw, old_hash, value):
     os.replace(staging, pointer)
 
 
+def read_verified_prefix_pointer(root, approved_tasks, *, expected_pointer_sha256,
+                                 policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                                 expected_public_policy_sha256):
+    """Trusted-caller view plus protected pin; never publish the returned pin.
+
+    Caller anchors the pointer digest and protects the source, writer and state
+    directory. This accessor verifies integrity, not identity or freshness.
+    """
+    try:
+        from sandbox.mind.step2.shared_capture_adapter import strict_pins
+        from sandbox.mind.step2.shared_bridge_snapshot import _token
+        root = _secure(root)
+        if (not root.is_dir() or not isinstance(expected_pointer_sha256, str)
+                or HEX.fullmatch(expected_pointer_sha256) is None):
+            _refuse()
+        tasks, roster = strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+            _refuse()
+        path = root / POINTER
+        raw = _read(path, max_bytes=_MAX_POINTER_BYTES)
+        if _sha(raw) != expected_pointer_sha256:
+            _refuse()
+        value = _validated_previous(root, raw, tasks, roster, policy_sha256, roster_sha256,
+            policy_bytes=policy_bytes, roster_bytes=roster_bytes, prefix_required=True,
+            expected_source_mode=_requested_source_mode("public-v1", expected_public_policy_sha256))
+        if _read(path, max_bytes=_MAX_POINTER_BYTES) != raw:
+            _refuse()
+        mark = BridgeCursor(**value["watermark"])
+        view = {"pointer_sha256": expected_pointer_sha256, "generation": value["generation"],
+                "artifacts": dict(value["artifacts"]), "anchor_sha256": value["anchor_sha256"],
+                "cursor_end_sha256": _sha(_token(BridgeCursor(**value["cursor_end"])).encode("utf-8")),
+                "watermark_sha256": _sha(_token(mark).encode("utf-8"))}
+        return view, BridgePrefixPin(mark, value["prefix_watermark_sha256"])
+    except Exception:
+        _refuse()
+
+
+def commit_prefix_genesis(*args, expected_start_prefix, **kwargs):
+    """Explicit new series only; never migrate an existing pointer."""
+    value = commit_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+    return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
+
+
+def advance_prefix_empty(*args, expected_start_prefix, **kwargs):
+    return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+
+
+def commit_prefix_history(*args, expected_start_prefix, **kwargs):
+    value = commit_history_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+    return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
+
+
 def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_pointer_sha256,
                         policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
                         expected_anchor_sha256, timeout=0.2, expected_mode="legacy",
-                        expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None):
+                        expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
+                        _prefix_required=False, _expected_start_prefix=None):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -587,6 +651,10 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             _refuse()
         mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
         mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
+        if _prefix_required:
+            if mode["status_mode"] != "public-v1" or type(_expected_start_prefix) is not BridgePrefixPin:
+                _refuse()
+            mode_args["expected_start_prefix"] = _expected_start_prefix
         delta = snapshot_result.get("projection")
         if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                 expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
@@ -611,9 +679,13 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             if _sha(raw) != expected_pointer_sha256:
                 _refuse()
             old = _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
-                                      policy_bytes=policy_bytes, roster_bytes=roster_bytes, expected_source_mode=mode)
+                                      policy_bytes=policy_bytes, roster_bytes=roster_bytes, expected_source_mode=mode,
+                                      prefix_required=_prefix_required)
             start = BridgeCursor(**old["watermark"])
             begin = _cursor(start)
+            if _prefix_required and (_expected_start_prefix.cursor != start or
+                    _expected_start_prefix.sha256 != old["prefix_watermark_sha256"]):
+                _refuse()
             if (source.get("cursor_start_sha256") != _sha(snapshot._token(start).encode("utf-8"))
                     or begin["file_identity"] != finish["file_identity"] or begin["generation"] != finish["generation"]
                     or finish["offset"] < begin["offset"]):
@@ -629,7 +701,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             # under the same writer lock before publishing that pointer.
             _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
                                 reserve=1, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
-                                expected_source_mode=mode)
+                                expected_source_mode=mode, prefix_required=_prefix_required)
             # The caller owns this mutable object; the writer lock does not.
             # Never publish a hash computed from a changed empty projection.
             if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
@@ -646,6 +718,12 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             if mode["status_mode"] == "public-v1":
                 value["empty_advance"]["schema"] = "wd.q4-empty-watermark.v2"
                 value["empty_advance"]["source_mode"] = dict(mode)
+            if _prefix_required:
+                candidate_prefix = snapshot_result.get("candidate_prefix")
+                if type(candidate_prefix) is not BridgePrefixPin or candidate_prefix.cursor != end:
+                    _refuse()
+                value["prefix_start_sha256"] = _expected_start_prefix.sha256
+                value["prefix_watermark_sha256"] = candidate_prefix.sha256
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
             return {"status": "advanced", "pointer_sha256": _sha(_canonical(value))}
     except Exception:
@@ -657,7 +735,7 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                       policy_bytes=None, expected_policy_sha256=None, roster_bytes=None,
                       expected_roster_sha256=None, expected_anchor_sha256=None, expected_mode="legacy",
                       expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
-                      snapshot_result=None):
+                      snapshot_result=None, _prefix_required=False, _expected_start_prefix=None):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -684,6 +762,11 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
             _refuse()
         mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
         mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
+        if _prefix_required:
+            if (mode["status_mode"] != "public-v1" or type(_expected_start_prefix) is not BridgePrefixPin
+                    or _expected_start_prefix.cursor != start or expected_pointer_sha256 is not None):
+                _refuse()
+            mode_args["expected_start_prefix"] = _expected_start_prefix
         if mode["status_mode"] == "public-v1":
             from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
             if type(snapshot_result) is not dict:
@@ -733,6 +816,12 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                      "watermark": finish, "empty_advance": None,
                      "previous": None if old is None else old["generation"],
                      "previous_pointer_sha256": None if old is None else expected_pointer_sha256}
+            if _prefix_required:
+                candidate_prefix = snapshot_result.get("candidate_prefix")
+                if type(candidate_prefix) is not BridgePrefixPin or candidate_prefix.cursor != end:
+                    _refuse()
+                value.update(schema=PREFIX_SCHEMA, prefix_start_sha256=_expected_start_prefix.sha256,
+                             prefix_watermark_sha256=candidate_prefix.sha256)
             if (mode["status_mode"] == "public-v1" and
                     snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                         expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
@@ -748,7 +837,8 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                               expected_pointer_sha256, expected_artifacts, timeout=0.2,
                               policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
                               expected_anchor_sha256, expected_mode="legacy", expected_public_policy_sha256=None,
-                              public_policy_bytes=None, expected_anchor_bytes=None):
+                              public_policy_bytes=None, expected_anchor_bytes=None,
+                              _prefix_required=False, _expected_start_prefix=None):
     """Publish a union only after verifying the exact bound delta under the writer lock.
 
     The delta is retained in the private state directory to permit later union
@@ -776,6 +866,11 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             _refuse()
         mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
         mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
+        if _prefix_required:
+            if (mode["status_mode"] != "public-v1" or type(_expected_start_prefix) is not BridgePrefixPin
+                    or _expected_start_prefix.cursor != start):
+                _refuse()
+            mode_args["expected_start_prefix"] = _expected_start_prefix
         delta = snapshot_result.get("projection")
         source = snapshot_result.get("source")
         if (type(source) is not dict or source.get("coverage") != "delta_only_not_complete_history"
@@ -792,7 +887,10 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             history_bytes = [0]
             old = _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
                                       reserve=1, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
-                                      history_budget=history_bytes, expected_source_mode=mode)
+                                      history_budget=history_bytes, expected_source_mode=mode,
+                                      prefix_required=_prefix_required)
+            if _prefix_required and _expected_start_prefix.sha256 != old["prefix_watermark_sha256"]:
+                _refuse()
             # A reader of the new generation also checks the formerly active
             # generation as archived metadata. Reserve those exact bytes before
             # publishing, using the same budget and mode check as that reader.
@@ -818,6 +916,12 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                      "anchor_sha256": expected_anchor_sha256, "cursor_start": begin, "cursor_end": finish,
                      "watermark": finish, "empty_advance": None, "previous": old["generation"],
                      "previous_pointer_sha256": expected_pointer_sha256, "delta_projection_sha256": digest}
+            if _prefix_required:
+                candidate_prefix = snapshot_result.get("candidate_prefix")
+                if type(candidate_prefix) is not BridgePrefixPin or candidate_prefix.cursor != end:
+                    _refuse()
+                value.update(schema=PREFIX_HISTORY_SCHEMA, prefix_start_sha256=_expected_start_prefix.sha256,
+                             prefix_watermark_sha256=candidate_prefix.sha256)
             _validate_history_transition(root, value, old, expected_pointer_sha256, tasks, roster,
                                          expected_policy_sha256, expected_roster_sha256,
                                          policy_bytes, roster_bytes, history_bytes, delta_bytes=delta_bytes)

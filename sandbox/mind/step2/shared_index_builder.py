@@ -156,6 +156,7 @@ SNAPSHOT_MODULE = "sandbox.mind.step2.shared_bridge_snapshot"  # Lead module; im
 # is the builder's own last defence over the projected metadata: every record's task AND type must be inside it.
 # The policy and anchor BYTES are used in-process only and are never persisted by the builder.
 PUBLIC_SOURCE_KEYS = SOURCE_KEYS | {"mode", "public_policy_bytes", "public_policy_sha256", "anchor_bytes"}
+PREFIX_PUBLIC_SOURCE_KEYS = PUBLIC_SOURCE_KEYS | {"expected_start_prefix"}
 STATUS_MODES = frozenset({"legacy", "public-v1"})
 SOURCE_MODE_KEYS = frozenset({"status_mode", "public_policy_sha256"})
 LEGACY_SOURCE_MODE = {"status_mode": "legacy", "public_policy_sha256": None}
@@ -601,7 +602,7 @@ def validate_source_shape(source):
     keys = set(source)
     if keys == SOURCE_KEYS:
         return dict(LEGACY_SOURCE_MODE)
-    if (keys != PUBLIC_SOURCE_KEYS or source["mode"] != "public-v1"
+    if (keys not in (PUBLIC_SOURCE_KEYS, PREFIX_PUBLIC_SOURCE_KEYS) or source["mode"] != "public-v1"
             or not _pinned_bytes(source["public_policy_bytes"], source["public_policy_sha256"], PUBLIC_POLICY_LIMIT)
             or not _pinned_bytes(source["anchor_bytes"], source["expected_anchor_sha256"], ANCHOR_LIMIT)):
         raise BuildRefused("source_invalid")
@@ -655,10 +656,12 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
     try:
         if public:
             try:
+                prefix_args = ({"expected_start_prefix": source["expected_start_prefix"]}
+                               if set(source) == PREFIX_PUBLIC_SOURCE_KEYS else {})
                 accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
                                   expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256,
                                   expected_mode="public-v1", expected_public_policy_sha256=source["public_policy_sha256"],
-                                  expected_anchor_bytes=source["anchor_bytes"])
+                                  expected_anchor_bytes=source["anchor_bytes"], **prefix_args)
             except TypeError:
                 # the Lead verifier refuses everything under its own one token; a TypeError escaping the call is a
                 # verifier WITHOUT the mode keywords, which must never silently verify a public delta as legacy
@@ -700,13 +703,13 @@ def _history_merger():
     return merge
 
 
-def _pointer_verifier():
+def _pointer_verifier(*, prefix_required=False):
     """The pinned Lead read-only checkpoint view (``shared_index_checkpoint.read_verified_pointer``), imported lazily;
     any import failure or a module without that API refuses ``watermark_verifier_unavailable`` (the pointer archive
     walk is never re-implemented here)."""
     try:
         module = importlib.import_module(CHECKPOINT_MODULE)
-        verifier = module.read_verified_pointer
+        verifier = module.read_verified_prefix_pointer if prefix_required else module.read_verified_pointer
     except Exception:  # noqa: BLE001 - ImportError, AttributeError or an import-time failure: one token
         raise BuildRefused("watermark_verifier_unavailable") from None
     if not callable(verifier):
@@ -723,7 +726,7 @@ def _validate_watermark(watermark):
     return watermark
 
 
-def _verified_pointer(watermark, resolved, pins, source_mode=None):
+def _verified_pointer(watermark, resolved, pins, source_mode=None, expected_start_prefix=None):
     """Call the Lead function with the SAME resolved pins and the caller's pointer digest; the answer must be the
     closed six-key record with hex digests (``watermark_refused`` on a refusal or anything else).
     public-v1 (Lead finding 19:25:46Z, API confirmed 19:35:47Z): the predecessor read of a public series passes
@@ -733,17 +736,24 @@ def _verified_pointer(watermark, resolved, pins, source_mode=None):
     unchanged and the six-field return shape is required in both modes. A pointer verifier WITHOUT those keywords (a
     TypeError escaping the call) refuses ``watermark_verifier_unavailable`` on the public path: a public watermark is
     never verified under legacy defaults."""
-    verifier = _pointer_verifier()
+    prefix_required = expected_start_prefix is not None
+    verifier = _pointer_verifier(prefix_required=prefix_required)
     public = source_mode is not None and source_mode["status_mode"] == "public-v1"
     try:
         if public:
             try:
+                mode_args = ({"expected_public_policy_sha256": source_mode["public_policy_sha256"]}
+                             if prefix_required else {"expected_mode": "public-v1",
+                                                      "expected_public_policy_sha256": source_mode["public_policy_sha256"]})
                 verified = verifier(Path(watermark["root"]), frozenset(resolved["approved_tasks"]),
                                     expected_pointer_sha256=watermark["pointer_sha256"],
                                     policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
                                     roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"],
-                                    expected_mode="public-v1",
-                                    expected_public_policy_sha256=source_mode["public_policy_sha256"])
+                                    **mode_args)
+                if prefix_required:
+                    verified, observed_prefix = verified
+                    if observed_prefix != expected_start_prefix:
+                        raise ValueError("prefix")
             except TypeError:
                 raise BuildRefused("watermark_verifier_unavailable") from None
         else:
@@ -802,7 +812,8 @@ def _predecessor_source_mode(memory, receipt):
     return dict(mode)
 
 
-def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None, source_mode=None):
+def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None, source_mode=None,
+                     expected_start_prefix=None):
     """The caller's pinned previous generation -> (its validated canonical projection, a closed receipt summary,
     a closed continuity record ``{continuity_checked, continuity_route, watermark}``).
 
@@ -841,6 +852,12 @@ def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=
         watermark = _validate_watermark(predecessor["watermark"])
         if delta_binding is None or resolved is None or pins is None:
             raise BuildRefused("watermark_invalid")  # an unbound delta has no cursor to prove; pins are mandatory
+    verified_prefix_watermark = None
+    if expected_start_prefix is not None:
+        if watermark is None or source_mode is None or source_mode.get("status_mode") != "public-v1":
+            raise BuildRefused("prefix_watermark_required")
+        verified_prefix_watermark = _verified_pointer(watermark, resolved, pins, source_mode,
+                                                      expected_start_prefix)
     directory = Path(predecessor["memory_dir"])
     contents = {key: _read_plain_file(directory / name) for key, name in PREDECESSOR_FILES.items()}
     for key, data in contents.items():
@@ -878,7 +895,8 @@ def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=
                 raise BuildRefused("predecessor_discontinuous")
             continuity.update(continuity_checked=True, continuity_route="receipt_end")
         else:
-            verified = _verified_pointer(watermark, resolved, pins, source_mode)
+            verified = (verified_prefix_watermark if expected_start_prefix is not None
+                        else _verified_pointer(watermark, resolved, pins, source_mode))
             expected = {"descriptor_sha256": receipt.get("descriptor_sha256"),
                         "memory_sha256": predecessor["memory_sha256"],
                         "projection_sha256": predecessor["projection_sha256"],
@@ -978,7 +996,9 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         if not projection["records"]:
             raise BuildRefused("projection_empty")  # an empty delta is a checkpoint pointer event, never a generation
         previous, summary, continuity = load_predecessor(predecessor, policy, source_binding, resolved=resolved, pins=pins,
-                                                         source_mode=source_mode)
+                                                         source_mode=source_mode,
+                                                         expected_start_prefix=(source.get("expected_start_prefix")
+                                                                                if source is not None else None))
         delta_ids = {record["record_id"] for record in projection["records"]}
         previous_ids = {record["record_id"] for record in previous["records"]}
         if len(previous_ids | delta_ids) > MAX_RECORDS:

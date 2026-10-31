@@ -19,6 +19,8 @@ param(
     [double] $TimeoutSeconds = 30
 )
 $script:WdQ4WrapperPath=$PSCommandPath
+$script:WdQ4PinnedJobHash=$null
+$script:WdQ4PinnedJobBlock=$null
 
 function ConvertFrom-WdQ4StrictJson {
     param([string] $Text)
@@ -183,6 +185,12 @@ function Get-WdQ4QueryPlan {
     . ([scriptblock]::Create($snapshots['Get-WdQ4ReadConfig.ps1'].Text))
     $cfg = Get-WdQ4ReadConfig -FleetPath $snapshots['wd-fleet.json'].Path -FleetSha256 $snapshots['wd-fleet.json'].Hash
     if ($null -eq $cfg) { return [pscustomobject]@{Enabled=$false} }
+    # No process is started unless the job helper is itself in the externally
+    # pinned deployment manifest; execute the verified bytes, not a later read.
+    $jobPin=$deployment.files.PSObject.Properties['WdQ4ProcessJob.ps1']
+    if ($null -eq $jobPin -or [string]$jobPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'binding_refused' }
+    $jobSnapshot=Read-WdQ4Snapshot (Join-Path $root 'WdQ4ProcessJob.ps1') 1048576
+    if ($jobSnapshot.Hash -cne ([string]$jobPin.Value).ToUpperInvariant()) { throw 'binding_refused' }
     $null = ConvertFrom-WdQ4StrictJson -Text $snapshots['bridge-code-files.json'].Text
     $package = Get-WdBridgeCodePackageDefinition -Path $snapshots['bridge-code-files.json'].Path
     if ($package.Hash -cne $snapshots['bridge-code-files.json'].Hash -or
@@ -205,7 +213,8 @@ function Get-WdQ4QueryPlan {
         throw 'binding_refused'
     }
     $scratch=Assert-WdQ4LocalPath -Path $cfg.WD_Q4_SCRATCH_ROOT -Directory $true
-    foreach ($other in @($root,$integrity.CodeRoot,$cfg.WD_Q4_RUNTIME_ROOT,$cfg.WD_Q4_MEMORY_ROOT)) {
+    foreach ($other in @($root,$integrity.CodeRoot,$cfg.WD_Q4_RUNTIME_ROOT,$cfg.WD_Q4_MEMORY_ROOT,
+                         $cfg.WD_Q4_RUNTIME_MANIFEST,$cfg.WD_Q4_DESCRIPTOR,$cfg.WD_Q4_LOCK_FILE)) {
         $left=$scratch.TrimEnd('\');$right=$other.TrimEnd('\')
         if ($left.Equals($right,[StringComparison]::OrdinalIgnoreCase) -or
             $left.StartsWith($right+'\',[StringComparison]::OrdinalIgnoreCase) -or
@@ -259,7 +268,8 @@ function Get-WdQ4QueryPlan {
         } catch { throw 'roster_fleet_mismatch' }
     }
     return [pscustomobject]@{Enabled=$true;CodeRoot=$integrity.CodeRoot;Config=$binding;
-        ResolvedInputs=$resolvedInputs;ResolvedPins=$resolvedPins}
+        ResolvedInputs=$resolvedInputs;ResolvedPins=$resolvedPins;
+        JobHelperBytes=$jobSnapshot.Bytes;JobHelperSha256=$jobSnapshot.Hash}
 }
 
 function Read-WdQ4QueryBytes {
@@ -351,65 +361,32 @@ except Exception:
             $stdinBytes=$frame.ToArray()
         } finally { $frame.Dispose() }
     }
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $Plan.Config.interpreter
+    if ($Plan.JobHelperBytes -isnot [byte[]] -or $Plan.JobHelperBytes.Length -gt 1048576 -or
+        [string]$Plan.JobHelperSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'binding_refused' }
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { $actual=[BitConverter]::ToString($sha.ComputeHash($Plan.JobHelperBytes)).Replace('-','') }
+    finally { $sha.Dispose() }
+    if ($actual -cne ([string]$Plan.JobHelperSha256).ToUpperInvariant()) { throw 'binding_refused' }
     $pinsJson=if($null -eq $Plan.ResolvedPins){'null'}else{ConvertTo-Json -InputObject $Plan.ResolvedPins -Depth 4 -Compress}
     $arguments = @('-I', '-S', '-B', '-c', $adapter, $Plan.CodeRoot,
-                   ($Plan.Config | ConvertTo-Json -Depth 6 -Compress),
-                   $pinsJson)
-    $start.Arguments = (@($arguments | ForEach-Object {ConvertTo-WdQ4Argument ([string]$_)}) -join ' ')
-    $start.UseShellExecute=$false
-    $start.CreateNoWindow=$true
-    $start.RedirectStandardInput=$true
-    $start.RedirectStandardOutput=$true
-    $start.RedirectStandardError=$true
-    $start.WorkingDirectory=$Plan.CodeRoot
-    $start.EnvironmentVariables.Clear()
-    foreach ($name in @('SYSTEMROOT','WINDIR')) {
-        $value=[Environment]::GetEnvironmentVariable($name, 'Process')
-        if ($value) { $start.EnvironmentVariables[$name]=$value }
+                   ($Plan.Config | ConvertTo-Json -Depth 6 -Compress), $pinsJson)
+    $seconds=[int][Math]::Floor([double]$Plan.Config.timeout)
+    if ($seconds -lt 1 -or $seconds -gt 1800) { throw 'runtime_refused' }
+    if ($null -eq $script:WdQ4PinnedJobBlock) {
+        $helperText=[Text.UTF8Encoding]::new($false,$true).GetString($Plan.JobHelperBytes).TrimStart([char]0xFEFF)
+        . ([scriptblock]::Create($helperText))
+        $script:WdQ4PinnedJobBlock=${function:Invoke-WdQ4ProcessJob}
+        if ($null -eq $script:WdQ4PinnedJobBlock) { throw 'binding_refused' }
+        $script:WdQ4PinnedJobHash=$actual
+    } elseif ($script:WdQ4PinnedJobHash -cne $actual) { throw 'binding_refused' }
+    $process=& $script:WdQ4PinnedJobBlock -Executable $Plan.Config.interpreter -Arguments ([string[]]$arguments) `
+        -WorkingDirectory $Plan.CodeRoot -ScratchRoot $Plan.Config.scratch_root -InputBytes $stdinBytes `
+        -TimeoutSeconds $seconds -MaxOutputBytes 262144
+    if ($null -eq $process -or $process.Stdout -isnot [byte[]] -or $process.Stdout.Length -gt 262144) {
+        throw 'runtime_refused'
     }
-    $process=[Diagnostics.Process]::new()
-    $process.StartInfo=$start
-    $output=[IO.MemoryStream]::new()
-    $started=$false
-    try {
-        if (-not $process.Start()) { throw 'runtime_refused' }
-        $started=$true
-        $clock=[Diagnostics.Stopwatch]::StartNew()
-        $outBuffer=New-Object byte[] 8192
-        $errBuffer=New-Object byte[] 8192
-        $outTask=$process.StandardOutput.BaseStream.ReadAsync($outBuffer,0,8192)
-        $errTask=$process.StandardError.BaseStream.ReadAsync($errBuffer,0,8192)
-        $write=$process.StandardInput.BaseStream.WriteAsync($stdinBytes,0,$stdinBytes.Length)
-        if (-not $write.Wait([int]($Plan.Config.timeout*1000))) { throw 'runtime_refused' }
-        $process.StandardInput.BaseStream.Close()
-        $total=0
-        while ($null -ne $outTask -or $null -ne $errTask) {
-            if ($clock.Elapsed.TotalSeconds -ge $Plan.Config.timeout) { throw 'runtime_refused' }
-            foreach ($which in @('out','err')) {
-                $task=if($which -ceq 'out'){$outTask}else{$errTask}
-                if ($null -eq $task -or -not $task.IsCompleted) { continue }
-                $count=$task.GetAwaiter().GetResult()
-                $total += $count
-                if ($total -gt 262144) { throw 'runtime_refused' }
-                if ($which -ceq 'out') {
-                    if ($count -eq 0) { $outTask=$null }
-                    else {
-                        $output.Write($outBuffer,0,$count)
-                        $outTask=$process.StandardOutput.BaseStream.ReadAsync($outBuffer,0,8192)
-                    }
-                } else {
-                    if ($count -eq 0) { $errTask=$null }
-                    else { $errTask=$process.StandardError.BaseStream.ReadAsync($errBuffer,0,8192) }
-                }
-            }
-            [Threading.Thread]::Sleep(5)
-        }
-        $remaining=[int][Math]::Max(0,($Plan.Config.timeout-$clock.Elapsed.TotalSeconds)*1000)
-        if (-not $process.WaitForExit($remaining)) { throw 'runtime_refused' }
-        $utf8=[Text.UTF8Encoding]::new($false,$true)
-        $json=$utf8.GetString($output.ToArray()).Trim()
+    $utf8=[Text.UTF8Encoding]::new($false,$true)
+    $json=$utf8.GetString($process.Stdout).Trim()
         # This protocol carries ASCII tokens/hashes, not arbitrary text. Reject
         # escapes before PS5 JSON can fold case/duplicate properties or arrays.
         if (-not $json.StartsWith('{') -or -not $json.EndsWith('}') -or
@@ -436,11 +413,6 @@ except Exception:
             ($data.status -ceq 'REFUSED') -ne ($process.ExitCode -eq 2) -or
             $process.ExitCode -notin @(0,2)) { throw 'runtime_refused' }
         return $data
-    } finally {
-        if ($started) { try { if(-not $process.HasExited){$process.Kill()} } catch {} }
-        $process.Dispose()
-        $output.Dispose()
-    }
 }
 
 function Test-WdQ4Hash {

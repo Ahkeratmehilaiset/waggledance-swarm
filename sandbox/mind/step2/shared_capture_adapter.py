@@ -257,16 +257,26 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
             if row["ref"] in seen:
                 continue
             seen.add(row["ref"])
-            if (_exclude_rco_event(event) or event.get("task_id") not in approved_non_review_tasks
-                    or (strict and _exclude_review_signal(event))
-                    or (strict and (event.get("agent") not in roster
-                                    or event.get("agent_uuid") != roster.get(event.get("agent"))))):
+            if strict:
+                # Unapproved tasks are policy exclusions. For an approved task,
+                # identity failure is not an exclusion and must never advance
+                # an upstream cursor as though the row had been accounted for.
+                if event.get("task_id") not in approved_non_review_tasks:
+                    continue
+                agent = event.get("agent")
+                if not isinstance(agent, str) or agent not in roster or event.get("agent_uuid") != roster[agent]:
+                    raise ValueError()
+                if _exclude_rco_event(event) or _exclude_review_signal(event):
+                    continue
+            elif _exclude_rco_event(event) or event.get("task_id") not in approved_non_review_tasks:
                 continue
             events.append(event)
         value = projection.project_events(events, approved_tasks=approved_non_review_tasks, include_refs=False,
                                           roster=roster, exclude_review_signal=strict)
         projection.validate_projection(value, approved_tasks=approved_non_review_tasks, include_refs=False,
                                        roster=roster, exclude_review_signal=strict)
+        if strict and value["refused"]:
+            raise ValueError()
         return {"projection": value, "source": source}
     except Exception:
         raise AdapterRefused("capture_refused") from None

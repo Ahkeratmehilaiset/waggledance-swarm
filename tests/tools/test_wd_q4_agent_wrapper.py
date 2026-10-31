@@ -82,6 +82,7 @@ def bundle(tmp_path):
     put("bridge-code-files.json", json.dumps(definition).encode())
     put("BridgeCodeContext.ps1", (OPS / "BridgeCodeContext.ps1").read_bytes())
     put("Get-WdQ4ReadConfig.ps1", (OPS / "Get-WdQ4ReadConfig.ps1").read_bytes())
+    put("WdQ4ProcessJob.ps1", (OPS / "WdQ4ProcessJob.ps1").read_bytes())
     put("Invoke-WdBridgePython.ps1", b"# synthetic; never run\n")
     # A missing Source wrapper is the intended pre-implementation RED.
     assert WRAPPER.is_file(), "tests-first RED: Q4 wrapper is missing"
@@ -131,6 +132,22 @@ def plan_call(bundle):
 
 
 @pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("field", ["runtime_manifest_path", "descriptor_path", "lock_file"])
+def test_scratch_must_not_contain_pinned_control_files(bundle, host, field):
+    path = Path(bundle["config"]["scratch_root"]) / "protected-control"
+    if field != "lock_file":
+        path.write_bytes(b"synthetic protected file")
+        hash_field = "runtime_manifest_sha256" if field == "runtime_manifest_path" else "descriptor_sha256"
+        bundle["config"][hash_field] = digest(path.read_bytes())
+    bundle["config"][field] = str(path)
+    bundle["put"]("wd-fleet.json", json.dumps({"q4_read": bundle["config"]}).encode())
+    bundle["seal"]()
+    script = "try{$p=" + plan_call(bundle) + ";$ok=$true}catch{$ok=$false}\n"
+    script += "@{ok=$ok}|ConvertTo-Json -Compress"
+    assert run_ps(host, script) == {"ok": False}
+
+
+@pytest.mark.parametrize("host", HOSTS)
 def test_missing_anchor_refuses_before_reading_or_launching(host):
     script = r"""
 function Read-WdQ4QueryBytes { throw 'read_called' }
@@ -160,7 +177,7 @@ def test_anchor_and_tuple_are_derived_without_starting_a_process(bundle, host):
 @pytest.mark.parametrize("host", HOSTS)
 @pytest.mark.parametrize("name", [
     "deployment-manifest.json", "BridgeCodeContext.ps1", "Get-WdQ4ReadConfig.ps1",
-    "Invoke-WdQ4Query.ps1", "wd-fleet.json", "bridge-code-files.json",
+    "Invoke-WdQ4Query.ps1", "WdQ4ProcessJob.ps1", "wd-fleet.json", "bridge-code-files.json",
     "tools-bootstrap/tools/wd_q4_agent_query.py",
     "tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py",
 ])
@@ -312,6 +329,8 @@ def test_real_transport_uses_only_a_synthetic_stdlib_child(tmp_path, host, mode)
     # Unit seam only: no trust claim is made by directly supplying a Plan.
     import sys
     root = tmp_path / "synthetic-code"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
     tools = root / "tools"
     tools.mkdir(parents=True)
     (tools / "__init__.py").write_text("", encoding="utf-8")
@@ -341,9 +360,11 @@ def query_with_verified_config(config,stream):
                                              '"status": "ABSTAIN", "status": "ABSTAIN"')
         implementation = "import sys\nprint(" + repr(encoded) + ")\nsys.exit(0)\n"
     (tools / "wd_q4_agent_query.py").write_text(implementation, encoding="utf-8")
-    script = "$script:plan=[pscustomobject]@{Enabled=$true;CodeRoot=" + quote(root)
+    script = "$h=[IO.File]::ReadAllBytes(" + quote(OPS / "WdQ4ProcessJob.ps1") + ")\n"
+    script += "$sha=[Security.Cryptography.SHA256]::Create();$hh=[BitConverter]::ToString($sha.ComputeHash($h)).Replace('-','');$sha.Dispose()\n"
+    script += "$script:plan=[pscustomobject]@{Enabled=$true;JobHelperBytes=$h;JobHelperSha256=$hh;CodeRoot=" + quote(root)
     script += ";Config=@{interpreter=" + quote(sys.executable)
-    script += ";timeout=1.5;descriptor_sha256=('7'*64)}}\n"
+    script += ";timeout=1.5;scratch_root=" + quote(scratch) + ";descriptor_sha256=('7'*64)}}\n"
     script += r"""
 function Get-WdQ4QueryPlan { $script:plan }
 $raw=[Text.Encoding]::UTF8.GetBytes('{"situation":"query-sensitive","time":"t"}')
@@ -576,11 +597,16 @@ def test_real_resolved_child_uses_pinned_stdin_and_rejects_unapproved_tasks(bund
         "descriptor_sha256": "7" * 64, "lock_file": str(tmp_path / "unused.lock"),
         "lock_timeout": "0", "timeout": 10, "scratch_root": str(tmp_path / "child-scratch"),
     }
+    (tmp_path / "child-scratch").mkdir()
     encoded = base64.b64encode(json.dumps({"Config": config,
         "CodeRoot": str(root), "ResolvedPins": {name + "_sha256": digest(value)
                                                for name, value in data.items()},
         "EncodedInputs": {name: base64.b64encode(value).decode() for name, value in data.items()}}).encode()).decode()
     script = "$script:plan=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(" + quote(encoded) + "))|ConvertFrom-Json\n"
+    script += "$h=[IO.File]::ReadAllBytes(" + quote(OPS / "WdQ4ProcessJob.ps1") + ")\n"
+    script += "$sha=[Security.Cryptography.SHA256]::Create();$hh=[BitConverter]::ToString($sha.ComputeHash($h)).Replace('-','');$sha.Dispose()\n"
+    script += "$script:plan|Add-Member -NotePropertyName JobHelperBytes -NotePropertyValue $h\n"
+    script += "$script:plan|Add-Member -NotePropertyName JobHelperSha256 -NotePropertyValue $hh\n"
     script += r"""
 $inputs=@{}
 foreach($p in $script:plan.EncodedInputs.PSObject.Properties){$inputs[$p.Name]=[Convert]::FromBase64String($p.Value)}

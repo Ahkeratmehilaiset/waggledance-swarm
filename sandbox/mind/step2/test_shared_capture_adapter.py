@@ -78,12 +78,11 @@ def test_strict_pins_fail_closed_on_ambiguous_or_incomplete_inputs(case):
         adapter.strict_pins(*pins)
 
 
-def test_strict_v6_removes_rco_targets_wrong_uuid_and_review_rows_before_counters(monkeypatch):
+def test_strict_v6_removes_rco_targets_and_review_rows_before_counters(monkeypatch):
     monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
     policy, fleet, roster = strict_inputs()
     rows = [row(agent_uuid=roster["codex-lead-1"]),
             row("codex-tools-1", agent_uuid=roster["codex-tools-1"]),
-            row("fable-5", agent_uuid=roster["codex-lead-1"]),
             row("claude-rco-1", agent_uuid=roster["claude-rco-1"]),
             row(agent_uuid=roster["codex-lead-1"], To="claude-rco-2"),
             row(agent_uuid=roster["codex-lead-1"], payload={"Recipient": "claude-rco-1"}),
@@ -96,6 +95,60 @@ def test_strict_v6_removes_rco_targets_wrong_uuid_and_review_rows_before_counter
     assert result["accepted"] == 2 and result["refused"] == {}
     assert result["review_signal_excluded"] is True
     assert {item["meta"]["agent"] for item in result["records"]} == {"codex-lead-1", "codex-tools-1"}
+
+
+@pytest.mark.parametrize("kind", ["unknown-agent", "missing-agent", "wrong-uuid", "missing-uuid", "rco-wrong-uuid"])
+def test_strict_approved_task_rejects_unverifiable_identity(monkeypatch, kind):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    policy, fleet, roster = strict_inputs()
+    if kind == "unknown-agent":
+        bad = row("not-a-lane", agent_uuid=roster["codex-lead-1"])
+    elif kind == "missing-agent":
+        bad = row(None, agent_uuid=roster["codex-lead-1"])
+    elif kind == "wrong-uuid":
+        bad = row("fable-5", agent_uuid=roster["codex-lead-1"])
+    elif kind == "rco-wrong-uuid":
+        bad = row("claude-rco-1", agent_uuid=roster["codex-lead-1"])
+    else:
+        bad = row()
+    p, ph, r, rh = encoded_pins(policy, fleet)
+    with pytest.raises(adapter.AdapterRefused, match="^capture_refused$"):
+        adapter.adapt_rows([bad], snapshot(), ttl_seconds=120, policy_bytes=p, policy_sha256=ph,
+                           roster_bytes=r, roster_sha256=rh)
+
+
+@pytest.mark.parametrize("change", [{"type": "not-a-valid-type"}, {"ts_utc": "not-a-time"},
+                                     {"pr": "bad-synthetic-pr"}])
+def test_strict_allowed_identity_projector_integrity_refusal_is_not_success(monkeypatch, change):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    policy, fleet, roster = strict_inputs()
+    p, ph, r, rh = encoded_pins(policy, fleet)
+    with pytest.raises(adapter.AdapterRefused, match="^capture_refused$"):
+        adapter.adapt_rows([row(agent_uuid=roster["codex-lead-1"], **change)], snapshot(), ttl_seconds=120,
+                           policy_bytes=p, policy_sha256=ph, roster_bytes=r, roster_sha256=rh)
+
+
+def test_strict_explicit_exclusions_are_silent_even_for_unapproved_task(monkeypatch):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    policy, fleet, roster = strict_inputs()
+    p, ph, r, rh = encoded_pins(policy, fleet)
+    rows = [row("claude-rco-1", agent_uuid=roster["claude-rco-1"]),
+            row(agent_uuid=roster["codex-lead-1"], status="veto"),
+            row("unknown-agent", task="outside-policy", agent_uuid="synthetic-bad")]
+    result = adapter.adapt_rows(rows, snapshot(), ttl_seconds=120, policy_bytes=p, policy_sha256=ph,
+                                roster_bytes=r, roster_sha256=rh)
+    assert result["projection"]["accepted"] == 0 and result["projection"]["refused"] == {}
+    assert result["projection"]["dropped_fields"] == 0
+    assert "claude-rco" not in json.dumps(result) and "outside-policy" not in json.dumps(result)
+
+
+def test_legacy_unpinned_policy_does_not_gain_a_false_identity_claim(monkeypatch):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    _, _, roster = strict_inputs()
+    result = adapter.adapt_rows([row("fable-5", agent_uuid=roster["codex-lead-1"])], snapshot(), TASKS,
+                                ttl_seconds=120)
+    assert result["projection"]["accepted"] == 1
+    assert result["projection"]["authorship"] == adapter.projection.AUTHORSHIP_UNVERIFIED
 
 
 def cursor(offset, generation="generation1", identity=IDENTITY):

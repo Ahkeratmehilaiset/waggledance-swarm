@@ -1,6 +1,7 @@
 """Synthetic in-memory transport checks; no live publisher, model, or native execution."""
 
 import hashlib
+import inspect
 import io
 import json
 from unittest.mock import patch
@@ -96,12 +97,10 @@ def test_supplied_query_function_cannot_forge_public_answer(inputs):
         called.append(True)
         return valid_response(inputs)
 
-    try:
-        code = child.run_public(valid_config(), io.BytesIO(b"synthetic-query"), out,
-                                enabled=True, query_fn=fake_query, **inputs)
-    except TypeError:
-        return  # Removing the callback argument also closes the injection seam.
-    assert code == 2 and json.loads(out.getvalue())["status"] == "REFUSED"
+    assert "query_fn" not in inspect.signature(child.run_public).parameters
+    with pytest.raises(TypeError, match="unexpected keyword argument 'query_fn'"):
+        child.run_public(valid_config(), io.BytesIO(b"synthetic-query"), out,
+                         enabled=True, query_fn=fake_query, **inputs)
     assert not called
 
 

@@ -844,12 +844,15 @@ def test_v4_the_policy_document_is_closed_and_duplicate_keys_or_review_tasks_ref
                  json.dumps({"schema": schema, "approved_tasks": [TASK, "lead-rco-1-finding"]}),  # review-task pattern
                  json.dumps({"schema": schema, "approved_tasks": [TASK, "peer.review.1"]}),
                  json.dumps({"schema": schema, "approved_tasks": [TASK, "fable-5/mind-x"]}),  # not a safe task id
-                 json.dumps({"schema": schema, "approved_tasks": [TASK] * 1 + ["t%d" % i for i in range(4096)]}),
+                 json.dumps({"schema": schema, "approved_tasks": [TASK] + ["t%d" % i for i in range(512)]}),  # 513 > reader 512
                  good.replace('"approved_tasks"', '"approved_tasks": [], "approved_tasks"', 1),  # duplicate key
                  good.replace("[", "[NaN, ", 1), "[]", "{", "null", good.encode("utf-16").decode("latin-1")):
         with pytest.raises(build_mod.BuildRefused, match="policy_invalid"):
             build(tmp_path, pins=with_policy(text))
     assert json.loads(good.replace('"approved_tasks"', '"approved_tasks": [], "approved_tasks"', 1)) == POLICY_DOC  # stdlib: last wins
+    assert build_mod.MAX_APPROVED_TASKS == 512  # the reader (wd_q4_resolved_child.MAX_TASKS) refuses more; the builder must not accept more
+    exactly_limit = json.dumps({"schema": schema, "approved_tasks": [TASK] + ["t%d" % i for i in range(511)]})
+    assert build_mod.resolve_pins(with_policy(exactly_limit))["approved_tasks"] >= {TASK}  # 512 is still accepted
     with pytest.raises(build_mod.BuildRefused, match="pin_caller_mismatch"):
         build(tmp_path, approved_tasks=frozenset({TASK}))  # the caller's approved set must equal the pinned one
     with pytest.raises(build_mod.BuildRefused, match="approved_tasks_invalid"):

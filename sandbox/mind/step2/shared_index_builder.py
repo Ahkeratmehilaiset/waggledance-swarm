@@ -130,7 +130,9 @@ DESCRIPTOR_KEYS = frozenset({"schema", "scope", "memory_sha256", "dim", "encoder
 PINS_KEYS = frozenset({"policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256"})
 POLICY_SCHEMA = "wd.q4-non-review-policy.v1"  # == shared_capture_adapter.strict_pins at the Lead integration head
 POLICY_LIMIT = 65536
-MAX_APPROVED_TASKS = 4096
+# == tools/wd_q4_resolved_child.MAX_TASKS at the Lead integration head (RCO2 via Lead 17:35:21Z: the builder must not
+# accept a policy the reader refuses); the adapter's 4096 is Lead's to align, a shared constant is proposed for sp.
+MAX_APPROVED_TASKS = 512
 REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[12]?)(?:$|[._-])", re.IGNORECASE)  # == the adapter's pattern
 # The roster snapshot is a SEPARATE immutable document (Lead 17:19:17Z): lanes + tools_supervisor identities only, no
 # memory or deployment fields, so memory.policy.roster_sha256 never hashes a document that itself pins a memory.

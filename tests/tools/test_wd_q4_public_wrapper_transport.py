@@ -2,6 +2,7 @@
 import json
 import hashlib
 import importlib.util
+import shutil
 import sys
 import subprocess
 from pathlib import Path
@@ -10,6 +11,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "ops/windows/reboot/Invoke-WdQ4Query.ps1"
+WINDOWS_POWERSHELL = shutil.which("powershell.exe")
+pytestmark = pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell executable is unavailable; this wrapper targets Windows PowerShell 5.1",
+)
 
 
 def validate(value, *, pointer="a" * 64):
@@ -25,7 +31,7 @@ def validate(value, *, pointer="a" * 64):
         "try {ConvertFrom-WdQ4PublicResult -Result $v -Expected $p | ConvertTo-Json -Depth 8 -Compress} "
         "catch {'{\"status\":\"REFUSED\"}'}"
     )
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
@@ -51,6 +57,26 @@ def test_public_envelope_is_bound_and_preserves_public_projection():
     assert result["results"][0]["stored_text"] == "PRIVATE_EXAMPLE"
     assert result["source_filter_attestation"] == "UNKNOWN"
     assert result["results"][0]["ref_sha256"] == "5" * 64
+
+
+@pytest.mark.parametrize("field", ["schema", "status", "ref_kind"])
+def test_public_envelope_rejects_single_element_array_for_scalar_string(field):
+    value = envelope()
+    if field in ("schema", "status"):
+        value[field] = [value[field]]
+    else:
+        value["results"][0][field] = [value["results"][0][field]]
+    assert validate(value)["status"] == "REFUSED"
+
+
+@pytest.mark.parametrize("field", ["descriptor_sha256", "encoder_sha256", "memory_sha256", "pointer_sha256",
+                                  "policy_sha256", "projection_sha256", "public_policy_sha256", "receipt_sha256",
+                                  "roster_sha256", "source_anchor_sha256", "ref_sha256", "doc_id_sha256"])
+def test_public_envelope_rejects_trailing_newline_in_each_hash(field):
+    value = envelope()
+    target = value["results"][0] if field in ("ref_sha256", "doc_id_sha256") else value["binding"]
+    target[field] += "\n"
+    assert validate(value)["status"] == "REFUSED"
 
 
 @pytest.mark.parametrize("mutation", ["pointer", "unknown_claim", "extra_field", "event"])
@@ -101,7 +127,7 @@ $doc=@{{pointer_sha256=('a'*64);source_anchor_sha256=('b'*64);encoder_sha256=('c
 $plan=@{{Base=$base;Document=$doc;Root='C:\\public';Inputs=@{{policy=[Text.Encoding]::UTF8.GetBytes('SECRET_POLICY');roster=[Text.Encoding]::UTF8.GetBytes('SECRET_ROSTER');public_policy=[Text.Encoding]::UTF8.GetBytes('SECRET_PUBLIC')}}}}
 Invoke-WdQ4PublicTransport -Plan $plan -Query ([Text.Encoding]::UTF8.GetBytes('SECRET_QUERY')) | ConvertTo-Json -Depth 8 -Compress
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout)["status"] == "ANSWER"
@@ -133,10 +159,36 @@ $wrong=try {{$null=Get-WdQ4PublicPlan -BasePlan $base -Path '{quote(plan_path)}'
 $tampered=try {{$null=Get-WdQ4PublicPlan -BasePlan $base -Path '{quote(plan_path)}' -ExpectedSha256 '{hashlib.sha256(raw).hexdigest()}';'accepted'}}catch{{'refused'}}
 @{{good=($good.Inputs.policy.Length -eq 2);wrong=$wrong;tampered=$tampered}} | ConvertTo-Json -Compress
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == {"good": True, "wrong": "refused", "tampered": "refused"}
+
+
+def test_public_plan_rejects_array_schema_even_with_exact_plan_pin(tmp_path):
+    root = tmp_path / "public"
+    root.mkdir()
+    document = {"schema": ["wd.q4-public-wrapper-plan.v1"], "root": str(root), "config": {},
+                "pointer_sha256": "a" * 64, "source_anchor_sha256": "b" * 64, "encoder_sha256": "c" * 64}
+    for name in ("policy", "roster", "public_policy"):
+        path = tmp_path / (name + ".json")
+        path.write_bytes(b"{}")
+        document[name + "_path"] = str(path)
+        document[name + "_sha256"] = hashlib.sha256(b"{}").hexdigest()
+    raw = json.dumps(document, separators=(",", ":")).encode()
+    path = tmp_path / "plan.json"
+    path.write_bytes(raw)
+    quote = lambda p: str(p).replace("'", "''")
+    script = f"""
+. '{quote(WRAPPER)}'
+$base=@{{Enabled=$true;PublicPins=@{{'tools/wd_q4_public_outer.py'=('1'*64);'tools/wd_q4_public_child.py'=('2'*64);'tools/wd_q4_public_query.py'=('3'*64)}}}}
+$status=try {{$null=Get-WdQ4PublicPlan -BasePlan $base -Path '{quote(path)}' -ExpectedSha256 '{hashlib.sha256(raw).hexdigest()}';'accepted'}}catch{{'refused'}}
+@{{status=$status}}|ConvertTo-Json -Compress
+"""
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
+                         capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)["status"] == "refused"
 
 
 def test_real_process_job_calls_fixed_outer_and_public_child_with_framed_input(tmp_path):
@@ -178,7 +230,7 @@ $plan=@{{Base=$base;Document=$doc;Root='C:\\public';Inputs=@{{policy=[Text.Encod
 $result=Invoke-WdQ4PublicTransport -Plan $plan -Query ([Text.Encoding]::UTF8.GetBytes('query-secret'))
 $result | ConvertTo-Json -Depth 8 -Compress
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=45)
     assert run.returncode == 0, (run.stdout, run.stderr)
     assert "secret" not in run.stdout + run.stderr
@@ -195,7 +247,7 @@ function Get-WdQ4QueryPlan {{{behavior}}}
 $result=Invoke-WdQ4Query -Public
 $result|ConvertTo-Json -Depth 8 -Compress
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     value = json.loads(run.stdout)
@@ -213,7 +265,7 @@ $script:WdQ4PinnedJobBlock={{throw 'process_started'}}
 $result=try {{Invoke-WdQ4PublicTransport $plan ([byte[]]@(1));'accepted'}} catch {{$_.Exception.Message}}
 @{{status=$result}}|ConvertTo-Json -Compress
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout)["status"] == "binding_refused"
@@ -233,7 +285,7 @@ $d=[pscustomobject]@{{config=[pscustomobject]$c}}
 try {{$v=Get-WdQ4PublicBinding -Document $d;@{{status='ok';memory=$v.WD_Q4_MEMORY_ROOT;legacy=($null -ne $v.PSObject.Properties['WD_Q4_READ_ENABLED'])}}|ConvertTo-Json -Compress}}
 catch {{'{{"status":"REFUSED"}}'}}
 """
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == {"status": "ok", "memory": r"C:\index\gen", "legacy": False}
@@ -282,7 +334,7 @@ def test_public_package_plan_works_with_disabled_legacy_fleet(tmp_path):
               " -Public -PublicPlanPath " + q(plan_path) + " -ExpectedPublicPlanSha256 " + q(hashlib.sha256(raw).hexdigest()) +
               ";@{status='ok';enabled=$p.Enabled;outer=$p.PublicPins['tools/wd_q4_public_outer.py']}|ConvertTo-Json -Compress}"
               "catch {@{status='refused';reason=$_.Exception.Message}|ConvertTo-Json -Compress}")
-    run = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
                          capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     result = json.loads(run.stdout)

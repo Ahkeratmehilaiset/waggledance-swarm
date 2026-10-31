@@ -178,3 +178,103 @@ def invoke(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expe
         return _result(raw, code)
     except Exception:
         raise LaneLinkRefused("transport_refused") from None
+
+
+_PUBLIC_PLAN_KEYS = frozenset({"schema", "config", "root", "policy_path", "roster_path", "public_policy_path",
+    "pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"})
+_PUBLIC_BIND_PINS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
+                               "roster_sha256", "public_policy_sha256", "descriptor_sha256"})
+_PUBLIC_BIND_KEYS = _PUBLIC_BIND_PINS | {"memory_sha256", "projection_sha256", "receipt_sha256"}
+_PUBLIC_UNKNOWN = frozenset({"freshness", "publisher_authentication", "source_filter_attestation", "same_user_aba"})
+
+
+def _public_plan(path, expected_sha256):
+    if type(expected_sha256) is not str or _HEX64.fullmatch(expected_sha256) is None:
+        raise ValueError()
+    path = _path(path, directory=False)
+    raw = _read(path, 65536)
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+        raise ValueError()
+    plan = _json(raw)
+    if (type(plan) is not dict or set(plan) != _PUBLIC_PLAN_KEYS
+            or plan["schema"] != "wd.q4-public-wrapper-plan.v1" or type(plan["config"]) is not dict
+            or any(type(plan[field]) is not str or not plan[field]
+                   for field in ("root", "policy_path", "roster_path", "public_policy_path"))):
+        raise ValueError()
+    pins = {key: (plan["config"].get(key) if key == "descriptor_sha256" else plan[key])
+            for key in _PUBLIC_BIND_PINS}
+    if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in pins.values()):
+        raise ValueError()
+    return str(path), raw, pins
+
+
+def _public_result(raw, code, pins):
+    if type(raw) is not bytes or len(raw) > 32768 or type(code) is not int:
+        raise ValueError()
+    value = _json(raw)
+    if type(value) is not dict or value.get("schema") != "wd.q4-public-query.v2":
+        raise ValueError()
+    if value.get("status") == "REFUSED":
+        if code != 2 or set(value) != {"schema", "status", "reason"} or type(value["reason"]) is not str:
+            raise ValueError()
+        return {"schema": "wd.q4-public-query.v2", "status": "REFUSED", "reason": "runtime_refused"}
+    if (code != 0 or value.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED")
+            or set(value) != ({"schema", "status", "binding", "results"} | _PUBLIC_UNKNOWN)
+            or any(value[key] != "UNKNOWN" for key in _PUBLIC_UNKNOWN)
+            or type(value["binding"]) is not dict or set(value["binding"]) != _PUBLIC_BIND_KEYS
+            or type(value["results"]) is not list or len(value["results"]) > 100
+            or (value["status"] == "ANSWER" and not value["results"])
+            or (value["status"] == "ABSTAIN" and value["results"])):
+        raise ValueError()
+    for key, binding in value["binding"].items():
+        if type(binding) is not str or _HEX64.fullmatch(binding) is None:
+            raise ValueError()
+        if key in pins and not hmac.compare_digest(binding, pins[key]):
+            raise ValueError()
+    for item in value["results"]:
+        if (type(item) is not dict or set(item) != {"stored_text", "ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or type(item["stored_text"]) is not str or len(item["stored_text"].encode("utf-8", errors="strict")) > 320
+                or item["ref_kind"] != "sha256_of_projected_metadata" or item["canonical_event"] is not False
+                or any(type(item[key]) is not str or _HEX64.fullmatch(item[key]) is None
+                       for key in ("ref_sha256", "doc_id_sha256"))):
+            raise ValueError()
+    return value
+
+
+def invoke_public(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
+                  public_plan_path, expected_public_plan_sha256, query_bytes, transport=None, enabled=False):
+    """Send a pinned public-plan call over caller-trusted transport, not caller authentication.
+
+    Plan path and pins occur in process arguments and may be visible to the OS.
+    The caller remains responsible for authenticating pins, transport and source,
+    for privacy/freshness, and for process-tree and whole-call time limits.
+    """
+    if enabled is not True:
+        raise LaneLinkRefused("disabled")
+    if type(lane) is not str or lane not in _LANES:
+        raise LaneLinkRefused("invalid_lane")
+    if not callable(transport):
+        raise LaneLinkRefused("transport_unavailable")
+    try:
+        root, wrapper = _binding(bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256)
+        path, raw_plan, pins = _public_plan(public_plan_path, expected_public_plan_sha256)
+    except Exception:
+        raise LaneLinkRefused("binding_refused") from None
+    if type(query_bytes) is not bytes or not query_bytes or len(query_bytes) > _MAX_QUERY:
+        raise LaneLinkRefused("invalid_query")
+    try:
+        if (_binding(bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256) != (root, wrapper)
+                or _public_plan(public_plan_path, expected_public_plan_sha256) != (path, raw_plan, pins)):
+            raise ValueError()
+    except Exception:
+        raise LaneLinkRefused("binding_refused") from None
+    try:
+        raw, code = transport(wrapper=wrapper, arguments=("-BundleRoot", root, "-ExpectedBundleCommit", expected_commit,
+            "-ExpectedManifestSha256", expected_manifest_sha256, "-Public", "-PublicPlanPath", path,
+            "-ExpectedPublicPlanSha256", expected_public_plan_sha256), stdin_bytes=query_bytes)
+        if (_binding(bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256) != (root, wrapper)
+                or _public_plan(public_plan_path, expected_public_plan_sha256) != (path, raw_plan, pins)):
+            raise ValueError()
+        return _public_result(raw, code, pins)
+    except Exception:
+        raise LaneLinkRefused("transport_refused") from None

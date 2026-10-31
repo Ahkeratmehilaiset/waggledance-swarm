@@ -445,7 +445,7 @@ except Exception:
 
 function Test-WdQ4Hash {
     param($Value)
-    return ($Value -is [string] -and $Value -cmatch '^[0-9a-f]{64}$')
+    return ($Value -is [string] -and $Value -cmatch '^[0-9a-f]{64}\z')
 }
 
 function Get-WdQ4PublicBinding {
@@ -487,7 +487,8 @@ function ConvertFrom-WdQ4PublicResult {
     $keys=[string[]]@($Result.PSObject.Properties.Name)
     [Array]::Sort($keys,[StringComparer]::Ordinal)
     if (($keys -join ',') -cne 'binding,freshness,publisher_authentication,results,same_user_aba,schema,source_filter_attestation,status' -or
-        $Result.schema -cne 'wd.q4-public-query.v2' -or $Result.status -cnotin @('ANSWER','ABSTAIN','DEGRADED') -or
+        $Result.schema -isnot [string] -or $Result.schema -cne 'wd.q4-public-query.v2' -or
+        $Result.status -isnot [string] -or $Result.status -cnotin @('ANSWER','ABSTAIN','DEGRADED') -or
         $Result.results -isnot [Array] -or $Result.results.Count -gt 100 -or
         ($Result.status -ceq 'ANSWER' -and $Result.results.Count -eq 0) -or
         ($Result.status -ceq 'ABSTAIN' -and $Result.results.Count -ne 0)) { throw 'runtime_refused' }
@@ -510,7 +511,7 @@ function ConvertFrom-WdQ4PublicResult {
         $names=[string[]]@($item.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
         if (($names -join ',') -cne 'canonical_event,doc_id_sha256,ref_kind,ref_sha256,stored_text' -or
             $item.stored_text -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($item.stored_text) -gt 320 -or
-            $item.ref_kind -cne 'sha256_of_projected_metadata' -or $item.canonical_event -isnot [bool] -or
+            $item.ref_kind -isnot [string] -or $item.ref_kind -cne 'sha256_of_projected_metadata' -or $item.canonical_event -isnot [bool] -or
             $item.canonical_event -ne $false -or -not (Test-WdQ4Hash $item.ref_sha256) -or
             -not (Test-WdQ4Hash $item.doc_id_sha256)) { throw 'runtime_refused' }
         $items+=@{stored_text=$item.stored_text;ref_sha256=$item.ref_sha256;doc_id_sha256=$item.doc_id_sha256;
@@ -530,7 +531,7 @@ function Get-WdQ4PublicPlan {
     $document=ConvertFrom-WdQ4StrictJson -Text $snapshot.Text
     $names=[string[]]@($document.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
     if (($names -join ',') -cne 'config,encoder_sha256,pointer_sha256,policy_path,policy_sha256,public_policy_path,public_policy_sha256,root,roster_path,roster_sha256,schema,source_anchor_sha256' -or
-        $document.schema -cne 'wd.q4-public-wrapper-plan.v1') { throw 'binding_refused' }
+        $document.schema -isnot [string] -or $document.schema -cne 'wd.q4-public-wrapper-plan.v1') { throw 'binding_refused' }
     foreach($name in @('encoder_sha256','pointer_sha256','policy_sha256','public_policy_sha256','roster_sha256','source_anchor_sha256')) {
         if (-not (Test-WdQ4Hash $document.$name)) { throw 'binding_refused' }
     }

@@ -25,6 +25,15 @@ Pointer schema (RCO2 G6 on PR1964): ``read_pointer`` accepts exactly the ``last_
 names, three digests) plus the producer's KNOWN_OPTIONAL fields (its time, context file and digest, reader label,
 board digest, counts, question text, measures), which are shape-checked and never leave ``read_pointer``. Any other
 key, a missing required key or a reduced legacy pointer is refused ``pointer_invalid``, so producer drift fails closed.
+
+State budget (RCO2 B2 on the Mind end-to-end review): the producer's ``state.json`` embeds the whole window
+(``state_envelope``: the rows plus their digest, cursor, source and generation). The producer bounds the window only
+by its count (``--window`` 1..99500 rows, default 3000) and the run by its artifact budget (``--max-output-bytes``,
+default 256 MiB); no per-row or per-file byte bound exists there, so a real state is far above the 64 KiB pointer
+budget. The reader therefore gives the state file its own ``STATE_BUDGET`` and enforces it BEFORE loading: the size
+is read from the file's metadata first, then at most ``STATE_BUDGET + 1`` bytes are read, and a larger file is refused
+``state_over_budget`` without parsing or hashing it. The pointer budget, the digest check against ``last_ok`` and the
+privacy rules are unchanged; nothing here derives, guesses or accepts a generation.
 """
 from __future__ import annotations
 
@@ -51,6 +60,9 @@ WINDOW_COVERAGE = "complete_over_window_only"  # the core's "complete" is comple
 MAX_AGE = timedelta(seconds=900)
 BUDGET = 65536
 POINTER_BUDGET = 65536
+# The producer state file carries the whole window (rows unbounded in bytes, count at most 99500, default 3000); the
+# reader loads at most this many bytes of it, read after a metadata size check, and refuses a larger file unparsed.
+STATE_BUDGET = 16 * 1024 * 1024
 MISSING_PRODUCER_CHANGE = (
     "shadow_materializer_run_source_declaration: a bindable publication declares source.log_identity as a capture window "
     "of a bridge log, capture-window:<file_identity> in the reader identity shape, with source.generation from the "
@@ -126,18 +138,36 @@ def _owned(path: Path, audit_root: Path) -> Path:
         raise LaneReadRefused("audit_path_refused") from None
 
 
-def _read_object(path: Path, audit_root: Path, reason: str) -> tuple[dict, bytes]:
+def _read_bounded(path: Path, audit_root: Path, budget: int, reason: str, over_budget: str) -> tuple[dict, bytes]:
+    """A JSON object of at most ``budget`` bytes from an owned file: the size is checked from the file's metadata
+    before any read, then at most ``budget + 1`` bytes are read and a longer file is refused ``over_budget`` without
+    being parsed or hashed; every other failure is refused ``reason``."""
     target = _owned(path, audit_root)
     try:
-        raw = target.read_bytes()
-        if len(raw) > POINTER_BUDGET:
-            raise LaneReadRefused(reason)
+        size = target.stat().st_size
+    except OSError:
+        raise LaneReadRefused(reason) from None
+    if size > budget:
+        raise LaneReadRefused(over_budget)
+    try:
+        with target.open("rb") as handle:
+            raw = handle.read(budget + 1)
+    except OSError:
+        raise LaneReadRefused(reason) from None
+    if len(raw) > budget:
+        raise LaneReadRefused(over_budget)
+    try:
         value = json.loads(raw.decode("utf-8"))
-    except (OSError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
         raise LaneReadRefused(reason) from None
     if not isinstance(value, dict):
         raise LaneReadRefused(reason)
     return value, raw
+
+
+def _read_object(path: Path, audit_root: Path, reason: str) -> tuple[dict, bytes]:
+    """A pointer-class object under the strict ``POINTER_BUDGET``; a larger file is refused ``reason`` as before."""
+    return _read_bounded(path, audit_root, POINTER_BUDGET, reason, reason)
 
 
 # -- the producer's pointer and state ----------------------------------------------------------------------------
@@ -225,7 +255,7 @@ def _pointer_digest_check(digest: str, expected: str) -> None:
 
 
 def _state_cursor(state_path: Path, audit_root: Path, expected_sha256: str) -> tuple[str, str | None, int]:
-    state, raw = _read_object(state_path, audit_root, "pointer_race_or_mismatch")
+    state, raw = _read_bounded(state_path, audit_root, STATE_BUDGET, "pointer_race_or_mismatch", "state_over_budget")
     _pointer_digest_check(hashlib.sha256(raw).hexdigest(), expected_sha256)
     if (state.get("schema") != STATE_SCHEMA or set(state) != _STATE_KEYS or type(state["generation"]) is not int
             or state["generation"] < 1):

@@ -55,6 +55,7 @@
     "tools/wd_mind_public_session_cli.py",
     "tools/wd_q4_agent_query.py",
     "tools/wd_q4_public_child.py",
+    "tools/wd_q4_public_outer.py",
     "tools/wd_q4_public_plan.py",
     "tools/wd_q4_public_pointer_resolver.py",
     "tools/wd_q4_public_query.py",

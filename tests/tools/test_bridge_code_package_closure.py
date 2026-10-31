@@ -849,6 +849,14 @@ Q4_PUBLIC_POINTER_DEPS = frozenset({
 })
 Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
 Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
+Q4_PUBLIC_OUTER = "tools/wd_q4_public_outer.py"
+Q4_PUBLIC_OUTER_DEPS = frozenset({
+    "tools/wd_q4_public_child.py", "tools/wd_q4_public_plan.py", Q4_PUBLIC_QUERY,
+    Q4_PUBLIC_POINTER_RESOLVER, Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/runtime_manifest.py",
+})
 Q4_PUBLIC_PRODUCER = "sandbox/mind/step2/shared_public_producer.py"
 Q4_PRODUCER_DEP = "sandbox/mind/step2/shared_producer.py"
 Q4_PUBLIC_SLICE = (
@@ -862,6 +870,55 @@ Q4_PUBLIC_SLICE_DEPS = frozenset({
     "sandbox/mind/step2/shared_projection.py",
     Q4_PUBLIC_PRODUCER,
 })
+
+
+def _assert_public_outer_delivery(definition):
+    files = definition["python_files"]
+    assert files.count(Q4_PUBLIC_OUTER) == 1, "public_outer_drop_or_duplicate"
+    assert Q4_PUBLIC_OUTER_DEPS <= set(files), "public_outer_dependency_drop"
+    assert Q4_PUBLIC_OUTER not in definition["python_entrypoints"].values(), "public_outer_published"
+    assert Q4_PUBLIC_OUTER not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "public_outer_manual_published"
+    )
+    assert "tools.wd_q4_public_outer" not in definition["import_smoke"]["package_modules"], (
+        "public_outer_smoke_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_public_outer_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_public_outer")
+        reason = "public_outer_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_outer_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_OUTER_DEPS))
+def test_public_outer_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_outer_dependency_drop"):
+        _assert_public_outer_delivery(mutant)
 
 
 def _assert_public_pointer_resolver_delivery(definition):

@@ -13,10 +13,16 @@ source-cursor CAS, a merge of deltas, or authentication of the writer. A v1
 publication is refused for both reads and writes, not migrated or overwritten.
 Before rollout, old v1 writers must be stopped or handed off externally: they
 do not honor the v2 lock. Revision is not an independent anti-rollback anchor.
-After an AMBIGUOUS publish failure (the replace may or may not have landed) a
-cooperating writer recovers the CURRENT publication digest under the same lock
-with ``current_publication_sha256``; it returns a digest or None (genesis) only,
-validated like a read: never records, pins, paths, a stale or a v1 document.
+A writer that must survive an AMBIGUOUS publish failure (the replace may or
+may not have landed) first obtains the exact digest of the bytes it intends to
+write with ``prepare_status_attempt`` (same lock, same CAS, no write), passes it
+to ``publish_status`` as ``attempt_sha256`` (the publish refuses before any write
+if the bytes would differ), and after a failure asks ``recover_status_attempt``
+with its own prior digest and that attempt digest. Recovery answers only
+"landed" or "unchanged" and refuses any third digest, so an unrelated
+publication by another writer is never taken as the authority for a retry and
+no digest is ever learned from the file. No freshness, anti-rollback or
+authenticity claim follows from any of this.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -123,20 +129,80 @@ def _body(value, tasks, types):
     return value
 
 
-def publish_status(audit_root, snapshot_result, *, as_of, enabled=False,
-                   expected_previous_sha256=_UNSET, timeout_seconds=0.2, **pins):
-    """Publish with a cooperating-writer CAS; return only the publication digest."""
-    stage = None
-    owned = False
-    try:
-        if (enabled is not True or expected_previous_sha256 is _UNSET or
-                (expected_previous_sha256 is not None and
-                 (type(expected_previous_sha256) is not str or _HEX.fullmatch(expected_previous_sha256) is None))):
+def _digest(value):
+    return type(value) is str and _HEX.fullmatch(value) is not None
+
+
+def _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins):
+    """Shared pre-lock checks of a publish attempt: switch, explicit prior, pins, clock, body and directory."""
+    if enabled is not True or expected_previous_sha256 is _UNSET or (
+            expected_previous_sha256 is not None and not _digest(expected_previous_sha256)):
+        raise ValueError()
+    _, tasks, types = _pins(**pins)
+    now = _instant(as_of)
+    data = producer.build_status(snapshot_result, enabled=True, **pins)
+    body = _body(_object(data), tasks, types)
+    root = _directory(audit_root)
+    lock = root / LOCK_FILENAME
+    if os.path.lexists(lock):
+        _regular(lock)
+    return root, lock, body, now
+
+
+def _intended(target, expected_previous_sha256, body, now, pins):
+    """The exact bytes this attempt writes over the CURRENT publication (the caller holds the lock): CAS on the
+    prior digest, explicit genesis, revision + 1, never a v1 or malformed prior."""
+    revision = 1
+    if os.path.lexists(target):
+        _regular(target)
+        with target.open("rb") as stream:
+            old = stream.read(MAX_BYTES + 1)
+        old_doc = _object(old)
+        old_revision = old_doc.get("revision")
+        if (expected_previous_sha256 is None or
+                hashlib.sha256(old).hexdigest() != expected_previous_sha256 or
+                old_doc.get("schema") != SCHEMA or type(old_revision) is not int or
+                not 1 <= old_revision < _MAX_REVISION):
             raise ValueError()
-        _, tasks, types = _pins(**pins)
-        now = _instant(as_of)
-        data = producer.build_status(snapshot_result, enabled=True, **pins)
-        body = _body(_object(data), tasks, types)
+        revision = old_revision + 1
+    elif expected_previous_sha256 is not None:
+        raise ValueError()
+    doc = {"schema": SCHEMA, "revision": revision, "authority": "none",
+           "coverage": "last_delta_only", "as_of_utc": now.isoformat(),
+           "anchor_sha256": pins["anchor_sha256"], "policy_sha256": pins["policy_sha256"],
+           "roster_sha256": pins["roster_sha256"], "public_policy_sha256": pins["public_policy_sha256"],
+           "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
+    payload = _json(doc)
+    if len(payload) > MAX_BYTES:
+        raise ValueError()
+    return payload
+
+
+def prepare_status_attempt(audit_root, snapshot_result, *, as_of, enabled=False,
+                           expected_previous_sha256=_UNSET, timeout_seconds=0.2, **pins):
+    """Bounded attempt preparation: the digest of the exact bytes publish_status would write for these inputs
+    over the current publication, computed under the same lock with the same CAS and WITHOUT writing. The caller
+    keeps it and passes it to publish_status(attempt_sha256=...) and, after an ambiguous failure, to
+    recover_status_attempt. Returns only the digest; every other outcome is the fixed refusal. OFF by default."""
+    try:
+        root, lock, body, now = _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            return hashlib.sha256(_intended(root / FILENAME, expected_previous_sha256, body, now, pins)).hexdigest()
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
+def recover_status_attempt(audit_root, *, prior_sha256, attempt_sha256, enabled=False, timeout_seconds=0.2):
+    """Recovery after an AMBIGUOUS publish failure, bound to the caller's own digests: under the same lock, answer
+    "landed" when the publication bytes are exactly the prepared attempt, "unchanged" when they are exactly the
+    caller's prior (None = genesis, no file), and refuse anything else, including a valid publication by another
+    writer. Never returns a digest, records, pins or paths; never repairs, removes or replaces the file. OFF by
+    default."""
+    try:
+        if (enabled is not True or not _digest(attempt_sha256) or
+                (prior_sha256 is not None and not _digest(prior_sha256)) or prior_sha256 == attempt_sha256):
+            raise ValueError()
         root = _directory(audit_root)
         target = root / FILENAME
         lock = root / LOCK_FILENAME
@@ -144,28 +210,40 @@ def publish_status(audit_root, snapshot_result, *, as_of, enabled=False,
             _regular(lock)
         with reader_slot(lock, timeout_seconds=timeout_seconds):
             _regular(lock)
-            revision = 1
-            if os.path.lexists(target):
-                _regular(target)
-                with target.open("rb") as stream:
-                    old = stream.read(MAX_BYTES + 1)
-                old_doc = _object(old)
-                old_revision = old_doc.get("revision")
-                if (expected_previous_sha256 is None or
-                        hashlib.sha256(old).hexdigest() != expected_previous_sha256 or
-                        old_doc.get("schema") != SCHEMA or type(old_revision) is not int or
-                        not 1 <= old_revision < _MAX_REVISION):
-                    raise ValueError()
-                revision = old_revision + 1
-            elif expected_previous_sha256 is not None:
+            if not os.path.lexists(target):
+                if prior_sha256 is None:
+                    return "unchanged"
                 raise ValueError()
-            doc = {"schema": SCHEMA, "revision": revision, "authority": "none",
-                   "coverage": "last_delta_only", "as_of_utc": now.isoformat(),
-                   "anchor_sha256": pins["anchor_sha256"], "policy_sha256": pins["policy_sha256"],
-                   "roster_sha256": pins["roster_sha256"], "public_policy_sha256": pins["public_policy_sha256"],
-                   "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
-            payload = _json(doc)
-            if len(payload) > MAX_BYTES:
+            _regular(target)
+            with target.open("rb") as stream:
+                raw = stream.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise ValueError()
+            present = hashlib.sha256(raw).hexdigest()
+            if present == attempt_sha256:
+                return "landed"
+            if present == prior_sha256:
+                return "unchanged"
+            raise ValueError()
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
+def publish_status(audit_root, snapshot_result, *, as_of, enabled=False, expected_previous_sha256=_UNSET,
+                   attempt_sha256=None, timeout_seconds=0.2, **pins):
+    """Publish with a cooperating-writer CAS; return only the publication digest. With attempt_sha256 (from
+    prepare_status_attempt) the publish refuses BEFORE any write unless the bytes are exactly that attempt."""
+    stage = None
+    owned = False
+    try:
+        if attempt_sha256 is not None and not _digest(attempt_sha256):
+            raise ValueError()
+        root, lock, body, now = _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_of, pins)
+        target = root / FILENAME
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            payload = _intended(target, expected_previous_sha256, body, now, pins)
+            if attempt_sha256 is not None and hashlib.sha256(payload).hexdigest() != attempt_sha256:
                 raise ValueError()
             stage = root / (".public-status-" + secrets.token_hex(16) + ".tmp")
             with stage.open("xb") as stream:
@@ -211,34 +289,6 @@ def _publication(raw, pins, tasks, types, now, max_age_seconds):
     if hashlib.sha256(_json(body)).hexdigest() != doc["body_sha256"]:
         raise ValueError()
     return body, age
-
-
-def current_publication_sha256(audit_root, *, as_of, max_age_seconds, enabled=False, timeout_seconds=0.2, **pins):
-    """Recovery after an AMBIGUOUS publish: the digest of the CURRENT publication under this writer's pins, taken
-    under the same cooperating-writer lock and validated like a read. Returns a digest, or None for explicit
-    genesis (no publication file); never records, pins or paths. A v1, malformed, foreign-pin or stale document
-    refuses with the fixed token and is never repaired, removed or replaced. OFF by default."""
-    try:
-        if enabled is not True or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 900:
-            raise ValueError()
-        _, tasks, types = _pins(**pins)
-        now = _instant(as_of)
-        root = _directory(audit_root)
-        target = root / FILENAME
-        lock = root / LOCK_FILENAME
-        if os.path.lexists(lock):
-            _regular(lock)
-        with reader_slot(lock, timeout_seconds=timeout_seconds):
-            _regular(lock)
-            if not os.path.lexists(target):
-                return None  # explicit genesis: the next publish must pass expected_previous_sha256=None
-            _regular(target)
-            with target.open("rb") as stream:
-                raw = stream.read(MAX_BYTES + 1)
-            _publication(raw, pins, tasks, types, now, max_age_seconds)
-            return hashlib.sha256(raw).hexdigest()
-    except Exception:
-        raise PublicStatusRefused("public_status_refused") from None
 
 
 def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled=False, **pins):

@@ -832,6 +832,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/shared_index_builder.py",
     "sandbox/mind/step2/shared_history.py",
     "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
     "sandbox/mind/step2/shared_public_producer.py",
     "sandbox/mind/step2/shared_result_resolver.py",
     "sandbox/mind/step2/status_metadata_producer.py",
@@ -850,6 +851,17 @@ Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
 Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
 Q4_PUBLIC_PRODUCER = "sandbox/mind/step2/shared_public_producer.py"
 Q4_PRODUCER_DEP = "sandbox/mind/step2/shared_producer.py"
+Q4_PUBLIC_SLICE = (
+    "tools/wd_q4_public_plan.py",
+    "tools/wd_q4_public_child.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
+)
+Q4_PUBLIC_SLICE_DEPS = frozenset({
+    Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_projection.py",
+    Q4_PUBLIC_PRODUCER,
+})
 
 
 def _assert_public_pointer_resolver_delivery(definition):
@@ -938,6 +950,39 @@ def test_public_producer_and_dependency_are_delivered_only_as_libraries(mutation
         reason = "public_producer_published"
     with pytest.raises(AssertionError, match=reason):
         _assert_public_producer_delivery(mutant)
+
+
+def _assert_public_slice_delivery(definition):
+    files = set(definition["python_files"])
+    assert set(Q4_PUBLIC_SLICE) <= files, "public_slice_drop"
+    assert Q4_PUBLIC_SLICE_DEPS <= files, "public_slice_dependency_drop"
+    assert not set(Q4_PUBLIC_SLICE) & set(definition["python_entrypoints"].values()), "public_slice_published"
+
+
+@pytest.mark.parametrize("path", Q4_PUBLIC_SLICE)
+@pytest.mark.parametrize("mutation", ["drop", "published"])
+def test_public_slice_modules_remain_delivery_only(path, mutation):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "drop":
+        mutant["python_files"].remove(path)
+        reason = "public_slice_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_slice"] = path
+        reason = "public_slice_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_slice_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_SLICE_DEPS))
+def test_public_slice_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_slice_dependency_drop"):
+        _assert_public_slice_delivery(mutant)
 
 
 def _assert_shadow_release_delivery(definition):

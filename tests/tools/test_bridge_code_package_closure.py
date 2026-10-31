@@ -791,6 +791,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/wd_q4_private_read.py",
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
+Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
 
 
 def _assert_shadow_release_delivery(definition):
@@ -804,6 +805,8 @@ def _assert_shadow_release_delivery(definition):
     published = set(definition["python_entrypoints"].values())
     assert Q4_AGENT_API in definition["python_files"], "q4_agent_api_drop"
     assert Q4_AGENT_API not in published, "q4_agent_api_published"
+    assert Q4_RESOLVED_CHILD in definition["python_files"], "q4_resolved_child_drop"
+    assert Q4_RESOLVED_CHILD not in published, "q4_resolved_child_published"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
@@ -822,7 +825,8 @@ def _assert_shadow_release_delivery(definition):
     "shadow_library_published", "deferred_sandbox_file_published",
     "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
     "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop",
-    "q4_agent_api_drop", "q4_agent_api_published", "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop",
+    "q4_agent_api_drop", "q4_agent_api_published", "q4_resolved_child_drop", "q4_resolved_child_published",
+    "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -862,6 +866,10 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_files"].remove(Q4_AGENT_API)
     elif mutation == "q4_agent_api_published":
         mutant["python_entrypoints"]["unreviewed_q4_agent"] = Q4_AGENT_API
+    elif mutation == "q4_resolved_child_drop":
+        mutant["python_files"].remove(Q4_RESOLVED_CHILD)
+    elif mutation == "q4_resolved_child_published":
+        mutant["python_entrypoints"]["unreviewed_q4_resolved"] = Q4_RESOLVED_CHILD
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":

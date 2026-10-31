@@ -1156,7 +1156,9 @@ def _assert_shadow_release_delivery(definition):
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
     assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES, "deferred_sandbox_file_published"
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | {
+        "sandbox/mind/step2/shared_prefix_public_producer.py",
+    }, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
     assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
@@ -1467,6 +1469,47 @@ M0_MEASUREMENT_TOOL_FILES = (
     "sandbox/mind/measurement_tools/m0_lite_hash_judge.py",
     "sandbox/mind/measurement_tools/m0_lite_refusal_recorder.py",
 )
+
+
+PREFIX_MIND_LIBRARY_FILES = (
+    "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "tools/wd_q4_prefix_public_query.py",
+    "tools/wd_q4_secure_transport.py",
+    "tools/wd_mind_live_reader.py",
+    "tools/wd_q4_roster_from_fleet.py",
+)
+
+
+def _assert_prefix_mind_library_only(definition, relative):
+    assert definition["python_files"].count(relative) == 1, "prefix_library_not_packaged_once"
+    assert relative not in definition["python_entrypoints"].values(), "prefix_entrypoint_not_authorized"
+    assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
+    assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+
+
+@pytest.mark.parametrize("relative", PREFIX_MIND_LIBRARY_FILES)
+def test_prefix_candidate_libraries_are_inert_and_present_once(relative):
+    _assert_prefix_mind_library_only(_definition(), relative)
+
+
+@pytest.mark.parametrize("relative", PREFIX_MIND_LIBRARY_FILES)
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_prefix_candidate_libraries_reject_delivery_mutants(relative, mutation):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [path for path in definition["python_files"] if path != relative] + [relative]
+    _assert_prefix_mind_library_only(definition, relative)
+    if mutation == "missing":
+        definition["python_files"].remove(relative)
+    elif mutation == "duplicate":
+        definition["python_files"].append(relative)
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = relative
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = relative
+    else:
+        definition["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_prefix_mind_library_only(definition, relative)
 
 
 def _assert_m0_measurement_tool_delivery(definition, relative):

@@ -1,6 +1,6 @@
 """HEX MEMORY STEP 2, private read: one lane asks Q4 over the frozen memory through stdin, read-only.
 
-usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> --model-dir <absolute path> --lock-file <absolute path> --lock-timeout <seconds> < query.json
+usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> --expected-runtime-revision <revision> --model-dir <absolute path> --lock-file <absolute path> --lock-timeout <seconds> < query.json
 
 The query (``{"situation": "<text>", "time": "<aware UTC>"}``, at most ``STDIN_BUDGET`` bytes, no other key) is read
 from stdin only: the situation text never appears in process arguments, in a log, in a bridge event, on stderr or in
@@ -18,6 +18,8 @@ Fail-closed binding, checked before anything is loaded or encoded:
 * ``memory.json`` must hash to the descriptor (``memory_descriptor_mismatch``), the memory must open and verify
   (``memory_unreadable``: every cell's receipt is checked by ``memory.Memory``), its dimension must match, and every
   healthy cell's receipt must carry exactly the descriptor's encoder identity (``encoder_identity_mismatch``);
+* the descriptor encoder revision must equal the externally verified runtime revision supplied by the trusted
+  bootstrap. A direct caller must independently authenticate that revision; this module does not;
 * the local runtime encoder's weights sha256, taken from the explicitly supplied absolute ``model_dir``, must match
   the descriptor before loading. The loader uses that same directory with ``local_files_only``. The revision is a
   caller-pinned declaration, not derived from the directory; the deployment must independently bind the directory,
@@ -281,9 +283,13 @@ def project_result(result):
             "telemetry": numbers}
 
 
-def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir):
+def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir,
+                         expected_runtime_revision):
     """Perform a read with the shared reader slot already held."""
     descriptor = read_descriptor(descriptor_path, descriptor_sha256)
+    if (not isinstance(expected_runtime_revision, str) or not expected_runtime_revision
+            or descriptor["encoder"]["revision"] != expected_runtime_revision):
+        raise PrivateReadRefused("runtime_revision_mismatch")
     memory = bind_memory(memory_dir, descriptor)
     bind_runtime_encoder(descriptor, model_dir)
     try:
@@ -307,7 +313,8 @@ def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situati
     return out
 
 
-def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, model_dir, lock_file, lock_timeout):
+def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, model_dir, lock_file, lock_timeout,
+                 expected_runtime_revision):
     """Read stdin, then hold the shared slot across all memory/model access and output projection."""
     situation, when = read_query(stream)
     try:
@@ -316,7 +323,8 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, mode
             raise PrivateReadRefused("reader_lock_invalid")
         with reader_slot(path, timeout_seconds=lock_timeout):
             try:
-                return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir)
+                return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir,
+                                            expected_runtime_revision)
             except PrivateReadRefused:
                 raise
             except Exception:
@@ -334,6 +342,7 @@ def main(argv=None, stdin=None, stdout=None):
     parser.add_argument("--memory", type=Path, required=True)
     parser.add_argument("--descriptor", type=Path, required=True)
     parser.add_argument("--descriptor-sha256", required=True)
+    parser.add_argument("--expected-runtime-revision", required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--lock-file", type=Path, required=True)
     parser.add_argument("--lock-timeout", type=float, required=True)
@@ -342,7 +351,8 @@ def main(argv=None, stdin=None, stdout=None):
     stdout = sys.stdout if stdout is None else stdout
     try:
         out = private_read(args.memory, args.descriptor, args.descriptor_sha256, stdin,
-                           model_dir=args.model_dir, lock_file=args.lock_file, lock_timeout=args.lock_timeout)
+                           model_dir=args.model_dir, lock_file=args.lock_file, lock_timeout=args.lock_timeout,
+                           expected_runtime_revision=args.expected_runtime_revision)
     except PrivateReadRefused as exc:
         stdout.write(json.dumps({"schema": SCHEMA, "identity": IDENTITY, "status": "REFUSED", "reason": str(exc),
                                  "results": []}, sort_keys=True) + "\n")

@@ -76,6 +76,7 @@ def main(argv=None):
     sys.argv = ["sandbox.mind.step2.wd_q4_private_read", "--memory", args.memory,
                 "--descriptor", args.descriptor, "--descriptor-sha256", args.descriptor_sha256,
                 "--lock-file", args.lock_file, "--lock-timeout", args.lock_timeout,
+                "--expected-runtime-revision", args.runtime_revision,
                 "--model-dir", str(model)]
     try:
         runpy.run_module("sandbox.mind.step2.wd_q4_private_read", run_name="__main__", alter_sys=True)

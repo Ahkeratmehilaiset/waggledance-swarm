@@ -65,6 +65,7 @@ def test_anchored_runtime_runs_reader_via_stdin(runtime):
     assert runtime[3].read_text() == "imported"
     assert payload["args"][-2:] == ["--model-dir", str(runtime[0] / "model")]
     assert payload["args"][payload["args"].index("--lock-timeout") + 1] == "0.25"
+    assert payload["args"][payload["args"].index("--expected-runtime-revision") + 1] == REVISION
 
 
 @pytest.mark.parametrize("kind", ["manifest_pin", "generation", "revision", "site", "reader"])

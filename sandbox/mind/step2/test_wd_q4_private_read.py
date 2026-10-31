@@ -113,12 +113,13 @@ def fakes(monkeypatch):
     return loaded
 
 
-def run(memory_dir, descriptor, data, capsys, descriptor_sha256=None):
+def run(memory_dir, descriptor, data, capsys, descriptor_sha256=None, expected_revision=ENCODER["revision"]):
     out = io.StringIO()
     if descriptor_sha256 is None:
         descriptor_sha256 = hashlib.sha256(descriptor.read_bytes()).hexdigest() if descriptor.exists() else "0" * 64
     code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                          "--descriptor-sha256", descriptor_sha256, "--model-dir", str(memory_dir.parent),
+                         "--expected-runtime-revision", expected_revision,
                          "--lock-file", str(memory_dir.parent / "reader.lock"),
                          "--lock-timeout", "1"], stdin=io.BytesIO(data),
                         stdout=out)
@@ -159,6 +160,18 @@ def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys,
     code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
     assert code == 0 and out["status"] == "ANSWER"
     assert seen == [(tmp_path, ENCODER["revision"])]
+
+
+@pytest.mark.parametrize("expected_revision", ["other-revision", "", " revision "])
+def test_runtime_revision_mismatch_refused_before_memory_and_model(tmp_path, capsys, fakes, expected_revision):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    code, out, text = run(memory_dir, descriptor, query_bytes(), capsys, expected_revision=expected_revision)
+    assert code == 2 and out["status"] == "REFUSED" and out["reason"] == "runtime_revision_mismatch"
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0} and FakeQ4.calls == []
+    assert SITUATION not in text
+    if expected_revision:
+        assert expected_revision not in text
 
 
 def test_descriptor_requires_explicit_shared_scope_before_opening_memory(tmp_path, capsys, fakes):
@@ -244,6 +257,7 @@ def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
     with pytest.raises(SystemExit) as raised:
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                       "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--expected-runtime-revision", ENCODER["revision"],
                       "--model-dir", str(tmp_path),
                       "--lock-file", str(tmp_path / "slot.lock"), "--lock-timeout", "0",
                       "--situation", SITUATION], stdin=io.BytesIO(b""), stdout=io.StringIO())
@@ -489,10 +503,23 @@ def test_lock_path_and_timeout_are_explicitly_required(tmp_path, capsys, fakes):
     with pytest.raises(SystemExit) as raised:
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                       "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--expected-runtime-revision", ENCODER["revision"],
                       "--model-dir", str(tmp_path)],
                      stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
     assert raised.value.code == 2
     assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_runtime_revision_is_explicitly_required(tmp_path, fakes):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    with pytest.raises(SystemExit) as raised:
+        adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--model-dir", str(tmp_path), "--lock-file", str(tmp_path / "lock"), "--lock-timeout", "0"],
+                     stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
+    assert raised.value.code == 2
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0} and FakeQ4.calls == []
 
 
 def test_model_directory_is_explicitly_required(tmp_path, capsys, fakes):
@@ -501,6 +528,7 @@ def test_model_directory_is_explicitly_required(tmp_path, capsys, fakes):
     with pytest.raises(SystemExit) as raised:
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                       "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--expected-runtime-revision", ENCODER["revision"],
                       "--lock-file", str(tmp_path / "lock"), "--lock-timeout", "0"],
                      stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
     assert raised.value.code == 2
@@ -517,6 +545,7 @@ def test_reader_busy_is_fixed_and_precedes_memory_and_model(tmp_path, fakes):
     with reader_slot(lock_path, timeout_seconds=0):
         code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                              "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                             "--expected-runtime-revision", ENCODER["revision"],
                              "--model-dir", str(tmp_path),
                              "--lock-file", str(lock_path), "--lock-timeout", "0"],
                             stdin=io.BytesIO(query_bytes()), stdout=out)
@@ -538,6 +567,7 @@ def test_unusable_lock_refuses_without_memory_or_path_leak(tmp_path, fakes, lock
     out = io.StringIO()
     code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                          "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                         "--expected-runtime-revision", ENCODER["revision"],
                          "--model-dir", str(tmp_path),
                          "--lock-file", str(lock_path), "--lock-timeout", timeout],
                         stdin=io.BytesIO(query_bytes()), stdout=out)
@@ -572,6 +602,7 @@ def encoder(*, model_dir, revision):
     return object()
 adapter.ENCODER_FACTORY = encoder
 sys.exit(adapter.main(['--memory', memory, '--descriptor', descriptor, '--descriptor-sha256', digest,
+                       '--expected-runtime-revision', ENCODER['revision'],
                        '--model-dir', str(Path(memory).parent),
                        '--lock-file', lock, '--lock-timeout', '0']))
 """

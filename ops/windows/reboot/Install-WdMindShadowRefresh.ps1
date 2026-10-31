@@ -62,6 +62,7 @@ function ConvertTo-WdRefreshLiteral {
 $bundle = Assert-WdRefreshPath -Path (Join-Path 'C:\Python\wd-reboot-bundles' $ExpectedSourceCommit) -Directory
 $manifestPath = Assert-WdRefreshPath -Path (Join-Path $bundle 'deployment-manifest.json')
 $adapterPath = Assert-WdRefreshPath -Path (Join-Path $bundle 'Start-WdMindShadowJob.ps1')
+$fleetPath = Assert-WdRefreshPath -Path (Join-Path $bundle 'wd-fleet.json')
 $statePath = Assert-WdRefreshPath -Path 'C:\Python\WD_REBOOT_STATE_CURRENT.json'
 $runRoot = Assert-WdRefreshPath -Path $ApprovedRunRoot -Directory
 $liveRoot = Assert-WdRefreshPath -Path $LiveDir -Directory
@@ -85,6 +86,24 @@ $adapterEntry = $manifest.files.PSObject.Properties['Start-WdMindShadowJob.ps1']
 if ([int]$manifest.schema_version -ne 1 -or [string]$manifest.source_commit -cne $ExpectedSourceCommit -or
     $null -eq $adapterEntry -or ([string]$adapterEntry.Value).ToUpperInvariant() -cne $ExpectedAdapterSha256) {
     throw 'The installed manifest does not bind this adapter and commit.'
+}
+$fleetEntry = $manifest.files.PSObject.Properties['wd-fleet.json']
+$fleetBytes = [IO.File]::ReadAllBytes($fleetPath)
+if ($null -eq $fleetEntry -or $fleetBytes.Length -gt 1048576) { throw 'The fleet pin is unavailable.' }
+$fleetHasher = [Security.Cryptography.SHA256]::Create()
+try { $fleetHash = [BitConverter]::ToString($fleetHasher.ComputeHash($fleetBytes)).Replace('-', '') }
+finally { $fleetHasher.Dispose() }
+if ($fleetHash -cne ([string]$fleetEntry.Value).ToUpperInvariant()) { throw 'The fleet bytes do not match the manifest.' }
+$fleet = [Text.Encoding]::UTF8.GetString($fleetBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
+$runtimeRoot = Assert-WdRefreshPath -Path ([string]$fleet.runtime_root) -Directory
+$mindConfig = $fleet.PSObject.Properties['mind_read']
+if ($null -ne $mindConfig -and $null -ne $mindConfig.Value -and
+    $null -ne $mindConfig.Value.PSObject.Properties['live_dir_mode'] -and
+    [string]$mindConfig.Value.live_dir_mode -ceq 'shared_runtime_audit') {
+    $expectedLive = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'shared\.codex-audit\mind-live'))
+    if (-not $liveRoot.TrimEnd('\').Equals($expectedLive.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The producer live directory does not match the fleet Mind location.'
+    }
 }
 $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$state.source_commit -cne $ExpectedSourceCommit -or
@@ -112,6 +131,7 @@ $env:WD_REBOOT_EXPECTED_MANIFEST_HASH = %MANIFEST_HASH%
 $env:WD_BRIDGE_CODE_ROOT = %CODE_ROOT%
 $env:WD_BRIDGE_BIN = %BIN_ROOT%
 $env:WD_BRIDGE_PYTHON_WRAPPER = %WRAPPER%
+$env:AGENT_BRIDGE_RUNTIME_ROOT = %RUNTIME_ROOT%
 & $adapter -ExpectedSourceCommit %COMMIT% -ExpectedManifestSha256 %MANIFEST_HASH% -ExpectedAdapterSha256 %ADAPTER_HASH% -ApprovedRunRoot %RUN_ROOT% -LiveDir %LIVE_ROOT% -ApprovedUserSid %SID% -ApprovedIntegrityLevel %INTEGRITY% -ExpectedPeakAdditionalBytes %PEAK% -CaptureWindow %WINDOW% -CaptureWorkers %WORKERS% -CaptureCycles %CYCLES% -CaptureIntervalSeconds %INTERVAL% -RunDeadlineSeconds %DEADLINE%
 if (-not $?) { exit 1 }
 exit 0
@@ -119,7 +139,7 @@ exit 0
 $values = [ordered]@{
     '%MANIFEST%' = $manifestPath; '%ADAPTER%' = $adapterPath; '%MANIFEST_HASH%' = $ExpectedManifestSha256
     '%ADAPTER_HASH%' = $ExpectedAdapterSha256; '%CODE_ROOT%' = $codeRoot; '%BIN_ROOT%' = $binRoot
-    '%WRAPPER%' = $wrapper; '%COMMIT%' = $ExpectedSourceCommit; '%RUN_ROOT%' = $runRoot
+    '%WRAPPER%' = $wrapper; '%RUNTIME_ROOT%' = $runtimeRoot; '%COMMIT%' = $ExpectedSourceCommit; '%RUN_ROOT%' = $runRoot
     '%LIVE_ROOT%' = $liveRoot; '%SID%' = $ApprovedUserSid; '%INTEGRITY%' = $ApprovedIntegrityLevel
     '%PEAK%' = $ExpectedPeakAdditionalBytes.ToString([Globalization.CultureInfo]::InvariantCulture)
     '%WINDOW%' = $CaptureWindow.ToString([Globalization.CultureInfo]::InvariantCulture)

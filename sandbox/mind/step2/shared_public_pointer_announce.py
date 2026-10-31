@@ -82,7 +82,7 @@ def _source_mode_ok(value):
 
 
 def _generation_ok(value):
-    return isinstance(value, str) and pub.builder.MEMORY_NAME.fullmatch(value) is not None
+    return isinstance(value, str) and pub.checkpoint.NAME.fullmatch(value) is not None
 
 
 def _view_ok(view):

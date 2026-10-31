@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sandbox.mind.step2 import shared_capture_adapter as adapter
-from sandbox.mind.step2 import shared_index_builder as builder
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
 from sandbox.mind.step2 import shared_producer as producer
 
@@ -89,7 +88,7 @@ def _validate_request(request):
     if (type(request) is not PublicPublishRequest or type(request.config) is not producer.PublicSourceConfig
             or type(request.config.source) is not producer.SourceConfig
             or not isinstance(request.root, (str, Path)) or not isinstance(request.generation, str)
-            or builder.MEMORY_NAME.fullmatch(request.generation) is None or not callable(request.encode)
+            or checkpoint.NAME.fullmatch(request.generation) is None or not callable(request.encode)
             or not isinstance(request.identity, dict) or type(request.dim) is not int
             or not isinstance(request.timeout, (int, float)) or isinstance(request.timeout, bool)
             or request.timeout <= 0
@@ -210,6 +209,9 @@ def publish_public_generation(*, enabled=False, request=None):
                                "build_receipt_sha256": predecessor.build_receipt_sha256,
                                "watermark": {"root": root, "pointer_sha256": predecessor.pointer_sha256}}
     try:
+        # Report/announcement and empty advances do not require the native
+        # index runtime. Import it only on the actual generation-build path.
+        from sandbox.mind.step2 import shared_index_builder as builder
         built = builder.build_memory(projection, request.encode, request.identity, request.dim, root, request.generation,
                                      exclude_review_signal=True, pins=builder_pins, source=build_source,
                                      predecessor=builder_predecessor)

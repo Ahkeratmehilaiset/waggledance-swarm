@@ -40,8 +40,11 @@ def _fleet_roster(path: Path, expected_sha256: str) -> dict[str, str]:
         raise ValueError("fleet_pin_mismatch")
     if not isinstance(fleet, dict) or not isinstance(fleet.get("lanes"), list):
         raise ValueError("fleet_invalid")
+    supervisor = fleet.get("tools_supervisor")
+    if not isinstance(supervisor, dict) or supervisor.get("agent") != "codex-tools-1":
+        raise ValueError("fleet_invalid")
     roster: dict[str, str] = {}
-    for entry in fleet["lanes"]:
+    for entry in [*fleet["lanes"], supervisor]:
         if not isinstance(entry, dict):
             raise ValueError("fleet_invalid")
         agent, uuid = entry.get("agent"), entry.get("agent_uuid")
@@ -77,7 +80,11 @@ def main(argv: list[str] | None = None) -> int:
                                        lane=agent, as_of=datetime.now(timezone.utc), binding=view, roster=roster)
         print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
         return 0
-    except (OSError, ValueError, UnicodeError, RecursionError):
+    except lane_reader.LaneReadRefused as exc:
+        print(json.dumps({"error": str(exc), "authority": "none"}, separators=(",", ":")), file=sys.stderr)
+        return 2
+    except Exception:
+        # Do not expose paths, raw event data, or interpreter traceback details.
         print('{"error":"mind_session_read_refused","authority":"none"}', file=sys.stderr)
         return 2
 

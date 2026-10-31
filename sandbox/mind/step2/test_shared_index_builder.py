@@ -1683,9 +1683,11 @@ SYNTHETIC_ANCHOR_SHA = sha(SYNTHETIC_ANCHOR_BYTES)
 def public_event(**changes):
     """A broadcast-marked synthetic event in the exact shape the Lead adapter admits in public mode: an explicit
     marker payload, an empty ``to``, an empty message, no paths, no ``ci`` (not an admitted public key)."""
-    base = event(payload={"public_status": True}, to="", message="", paths=[], run_id="run-public-synthetic")
-    base.pop("ci")
-    base.update(changes)
+    fields = {"payload": {"public_status": True}, "to": "", "message": "", "paths": [], "run_id": "run-public-synthetic"}
+    fields.update(changes)
+    base = event(**fields)  # through event() so the roster uuid follows the FINAL agent (identity-consistent rows)
+    if "ci" not in changes:
+        base.pop("ci")
     return base
 
 
@@ -2064,13 +2066,16 @@ def test_public_v1_watermark_read_passes_the_mode_and_public_policy_digest_to_th
 INTEGRATION_REQUIRED_ENV = "WD_MIND_INTEGRATION_REQUIRED"
 # The exact public-v1 keywords the Lead checkpoint declares (Lead 19:35:47Z: the reader takes the mode and the policy
 # DIGEST only; Lead 19:41:30Z: commit, empty advance and history commit also take the pinned policy BYTES, and the first
-# commit takes the snapshot result). Checked against each signature; nothing is guessed or adapted.
+# commit takes the snapshot result; Lead 20:07:47Z: those three also take the exact anchor BYTES of their own snapshot).
+# Checked against each signature; nothing is guessed or adapted.
 PUBLIC_CHECKPOINT_KEYWORDS = {
     "read_verified_pointer": {"expected_mode", "expected_public_policy_sha256"},
-    "commit_generation": {"snapshot_result", "expected_mode", "expected_public_policy_sha256", "public_policy_bytes"},
-    "advance_empty_delta": {"expected_mode", "expected_public_policy_sha256", "public_policy_bytes"},
-    "commit_history_generation": {"expected_mode", "expected_public_policy_sha256", "public_policy_bytes"},
-}
+    "commit_generation": {"snapshot_result", "expected_mode", "expected_public_policy_sha256", "public_policy_bytes",
+                          "expected_anchor_bytes"},
+    "advance_empty_delta": {"expected_mode", "expected_public_policy_sha256", "public_policy_bytes", "expected_anchor_bytes"},
+    "commit_history_generation": {"expected_mode", "expected_public_policy_sha256", "public_policy_bytes",
+                                  "expected_anchor_bytes"},
+}  # Lead v5 20:07:47Z: commit, advance and history commit also take the exact anchor BYTES of their own snapshot
 PUBLIC_CHECKPOINT_KWARGS = {"expected_mode": "public-v1", "expected_public_policy_sha256": PUBLIC_POLICY_SHA,
                             "public_policy_bytes": PUBLIC_POLICY_BYTES}
 PUBLIC_READ_KWARGS = {"expected_mode": "public-v1", "expected_public_policy_sha256": PUBLIC_POLICY_SHA}
@@ -2166,7 +2171,8 @@ def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_published_and
     checkpoint.commit_generation(root, "gen-a", start, a_result["candidate_cursor"], APPROVED, expected_pointer_sha256=None,
                                  expected_artifacts=a_artifacts, initial_cursor=start, snapshot_result=a_result,
                                  policy_bytes=POLICY_BYTES, expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES,
-                                 expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=a_anchor, **PUBLIC_CHECKPOINT_KWARGS)
+                                 expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=a_anchor,
+                                 expected_anchor_bytes=a_bytes, **PUBLIC_CHECKPOINT_KWARGS)
     p0 = sha((root / "q4-latest.json").read_bytes())
     verified_a = _public_pointer_read(checkpoint, root, p0)
     assert set(verified_a) == build_mod.VERIFIED_POINTER_KEYS  # the v1 six-field shape is unchanged in public mode
@@ -2182,7 +2188,7 @@ def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_published_and
     advanced = checkpoint.advance_empty_delta(root, empty_result, APPROVED, expected_pointer_sha256=p0, policy_bytes=POLICY_BYTES,
                                               expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES,
                                               expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=empty_anchor,
-                                              **PUBLIC_CHECKPOINT_KWARGS)
+                                              expected_anchor_bytes=empty_bytes, **PUBLIC_CHECKPOINT_KWARGS)
     assert advanced["status"] == "advanced"
     p1 = advanced["pointer_sha256"]
     assert p1 == sha((root / "q4-latest.json").read_bytes()) != p0
@@ -2217,7 +2223,7 @@ def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_published_and
                                          expected_pointer_sha256=p1, expected_artifacts=b_artifacts, policy_bytes=POLICY_BYTES,
                                          expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES,
                                          expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=b_anchor,
-                                         **PUBLIC_CHECKPOINT_KWARGS)
+                                         expected_anchor_bytes=b_bytes, **PUBLIC_CHECKPOINT_KWARGS)
     p2 = sha((root / "q4-latest.json").read_bytes())
     assert p2 != p1
     verified_b = _public_pointer_read(checkpoint, root, p2)

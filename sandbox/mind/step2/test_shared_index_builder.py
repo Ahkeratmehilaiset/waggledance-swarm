@@ -2246,7 +2246,9 @@ def test_public_v1_real_chain_a_then_verified_empty_advance_then_b_published_and
     private_files = [path for path in root.rglob("*") if path.is_file() and path.relative_to(root).parts[0] not in ("gen-a", "gen-b")]
     private_names = {path.relative_to(root).parts[0] for path in private_files}
     assert {"q4-latest.json", "q4-pointer-" + p0 + ".json", "q4-pointer-" + p1 + ".json"} <= private_names  # pointer + archives
-    assert all(name == "q4-latest.json" or name.startswith(("q4-pointer-", "q4-delta-")) for name in private_names)
+    assert all(name in ("q4-latest.json", checkpoint.LOCK) or name.startswith(("q4-pointer-", "q4-delta-"))
+               for name in private_names)
+    assert (root / checkpoint.LOCK).read_bytes() == b""
     private_text = b"".join(path.read_bytes() for path in private_files)
     assert SENTINEL.encode() not in private_text and PUBLIC_POLICY_BYTES not in private_text
     assert start.file_identity.encode() in private_text  # the private pointer carries the file identity by design

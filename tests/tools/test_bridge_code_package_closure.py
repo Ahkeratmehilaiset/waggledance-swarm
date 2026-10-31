@@ -850,6 +850,7 @@ Q4_PUBLIC_POINTER_DEPS = frozenset({
 Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
 Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
 Q4_PUBLIC_OUTER = "tools/wd_q4_public_outer.py"
+Q4_LANE_LINK = "tools/wd_q4_lane_link.py"
 Q4_PUBLIC_OUTER_DEPS = frozenset({
     "tools/wd_q4_public_child.py", "tools/wd_q4_public_plan.py", Q4_PUBLIC_QUERY,
     Q4_PUBLIC_POINTER_RESOLVER, Q4_AGENT_API,
@@ -883,6 +884,43 @@ def _assert_public_outer_delivery(definition):
     assert "tools.wd_q4_public_outer" not in definition["import_smoke"]["package_modules"], (
         "public_outer_smoke_published"
     )
+
+
+def _assert_q4_lane_link_delivery(definition):
+    assert definition["python_files"].count(Q4_LANE_LINK) == 1, "q4_lane_link_drop_or_duplicate"
+    assert Q4_LANE_LINK not in definition["python_entrypoints"].values(), "q4_lane_link_published"
+    assert Q4_LANE_LINK not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "q4_lane_link_manual_published"
+    )
+    assert "tools.wd_q4_lane_link" not in definition["import_smoke"]["package_modules"], (
+        "q4_lane_link_smoke_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_q4_lane_link_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_q4_lane_link_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_lane_link")
+        reason = "q4_lane_link_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_q4_lane_link_delivery(mutant)
 
 
 @pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])

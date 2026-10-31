@@ -844,6 +844,8 @@ Q4_PUBLIC_POINTER_DEPS = frozenset({
     "sandbox/mind/step2/shared_capture_adapter.py",
     "sandbox/mind/step2/shared_index_checkpoint.py",
 })
+Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
+Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
 
 
 def _assert_public_pointer_resolver_delivery(definition):
@@ -875,6 +877,33 @@ def test_public_pointer_resolver_is_delivered_only_as_a_library(mutation):
         reason = "public_pointer_resolver_published"
     with pytest.raises(AssertionError, match=reason):
         _assert_public_pointer_resolver_delivery(mutant)
+
+
+def _assert_public_query_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_QUERY in files, "public_query_drop"
+    assert Q4_PUBLIC_QUERY_DEPS <= files, "public_query_dependency_drop"
+    assert Q4_PUBLIC_QUERY not in set(definition["python_entrypoints"].values()), "public_query_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "query_drop", "agent_drop", "resolver_drop", "published"])
+def test_public_query_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_query_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "query_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_QUERY)
+        reason = "public_query_drop"
+    elif mutation in {"agent_drop", "resolver_drop"}:
+        mutant["python_files"].remove(Q4_AGENT_API if mutation == "agent_drop" else Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_query_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_query"] = Q4_PUBLIC_QUERY
+        reason = "public_query_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_query_delivery(mutant)
 
 
 def _assert_shadow_release_delivery(definition):

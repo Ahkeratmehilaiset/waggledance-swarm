@@ -1443,6 +1443,7 @@ def test_the_mind_view_shows_the_snapshot_prs_attention_and_questions_with_their
     assert view["observe_only"] is True and view["gate_evaluated"] is False
     assert view["snapshot_sha256"] == MIND_R_SHA256
     assert view["source"]["blocked"] is False and view["source"]["coverage"] == "complete"
+    assert view["source"]["scope"] == "declared_full_log" and view["source"]["declared_coverage"] == "complete"
     prs = {pr["pr"]: pr for pr in view["prs"]}
     assert list(prs) == [2001, 2002, 2003]
     assert prs[2001]["ci"]["green_at_head"] is True and prs[2001]["ci"]["head"] == H_2001
@@ -2072,3 +2073,76 @@ def test_declared_recusals_appear_only_when_the_reflected_snapshot_reports_them(
     assert all("declared_recusals" not in prs[number] for number in (2002, 2003))
     assert f"  declared recusal claude-rco-1 rco_recused@{record['head'][:12]} at head True" in \
         board.render_mind_text(view)
+
+
+# -- bounded or blocked coverage is never shown as full-log complete (Lead board GO 2026-10-31, RCO1 P2 limit) --------
+
+WINDOW_LOG = "capture-window:windows-v1:0000abcd:0000000000000001"  # the shadow's window identity for a bridge log
+
+
+def _text_view(tmp_path, capsys, value):
+    root = _audit(tmp_path / "text")  # own root: _view already made the audit folder under tmp_path
+    assert _mind(root, _put(root, value)) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    return captured.out
+
+
+@pytest.mark.parametrize("identity", [WINDOW_LOG, "capture-window:" + "0" * 64])
+def test_a_capture_window_source_with_coverage_complete_is_shown_as_a_bounded_window_not_a_full_log(tmp_path, capsys,
+                                                                                                    identity):
+    snapshot = _mind_r()
+    snapshot["source"]["log_identity"] = identity
+    assert snapshot["source"]["coverage"] == "complete"  # the core-forced token the workspace reflects
+    view = _view(tmp_path, capsys, snapshot)
+    assert view["source"]["scope"] == "bounded_window"
+    assert view["source"]["coverage"] == "complete_over_window_only"
+    assert view["source"]["declared_coverage"] == "complete" and view["source"]["log_identity"] == identity
+    json_text = json.dumps(view, indent=2, sort_keys=True)
+    assert '"coverage": "complete"' not in json_text
+    text = _text_view(tmp_path, capsys, snapshot)
+    first = text.splitlines()[0]
+    assert "coverage complete_over_window_only" in first and "scope bounded_window" in first
+    assert "coverage complete," not in text and "coverage complete " not in text
+
+
+@pytest.mark.parametrize("marker", ["object", "absent"])
+def test_a_blocked_or_unknown_block_source_is_never_shown_as_complete(tmp_path, capsys, marker):
+    snapshot = _mind_r()
+    if marker == "object":
+        snapshot["source"]["blocked"] = dict(MIND_RB_BLOCKED)
+    else:
+        del snapshot["source"]["blocked"]
+    view = _view(tmp_path, capsys, snapshot)
+    expected = "not_complete_source_blocked" if marker == "object" else "not_complete_block_unknown"
+    assert view["source"]["coverage"] == expected and view["source"]["declared_coverage"] == "complete"
+    assert view["source"]["scope"] == "declared_full_log"  # the declaration is kept as evidence, not as a claim
+    text = _text_view(tmp_path, capsys, snapshot)
+    assert f"coverage {expected}" in text.splitlines()[0] and "coverage complete," not in text
+
+
+def test_the_actual_blocked_reflection_is_not_shown_as_complete(tmp_path, capsys):
+    view = _view(tmp_path, capsys, _mind_rb())
+    assert view["source"]["blocked"] is True and view["source"]["coverage"] == "not_complete_source_blocked"
+
+
+def test_a_legacy_full_log_declaration_keeps_its_complete_coverage_control(tmp_path, capsys):
+    view = _view(tmp_path, capsys, _mind_r())  # log identity fixture-log, blocked null, coverage complete
+    assert view["source"]["coverage"] == "complete" and view["source"]["scope"] == "declared_full_log"
+    assert "coverage complete scope declared_full_log, source blocked False" in _text_view(tmp_path, capsys, _mind_r())
+
+
+def test_a_window_source_without_a_coverage_token_stays_unknown(tmp_path, capsys):
+    snapshot = _mind_r()
+    snapshot["source"]["log_identity"] = WINDOW_LOG
+    del snapshot["source"]["coverage"]
+    view = _view(tmp_path, capsys, snapshot)
+    assert view["source"]["coverage"] == "UNKNOWN" and view["source"]["declared_coverage"] == "UNKNOWN"
+    assert view["source"]["scope"] == "bounded_window"
+
+
+def test_the_coverage_tokens_pass_the_guard_and_are_fixed():
+    for token in ("complete_over_window_only", "not_complete_source_blocked", "not_complete_block_unknown",
+                  "bounded_window", "declared_full_log"):
+        assert not board._guarded_form(token)
+    assert board.SOURCE_VIEW_FIELDS == board.SOURCE_FIELDS + ("declared_coverage", "scope", "blocked", "blocked_reason")

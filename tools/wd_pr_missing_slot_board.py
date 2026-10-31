@@ -82,6 +82,12 @@ gate slot. Author, recusal and RCO presence are not in the snapshot, so they sta
   * A veto observation keeps activity ``UNKNOWN``.
 * **Blocked source.** A blocked source (``source.blocked`` not null) suppresses every PR suggestion and
   every question bound to one. CI-at-head then reads ``UNKNOWN``.
+* **Coverage is shown as scope, never as a full-log claim.** The core forces ``source.coverage`` to the token
+  ``complete`` for every publication, including a bounded capture window (``log_identity`` starting with
+  ``capture-window:``) and a blocked source. The view keeps that token as ``declared_coverage`` (evidence) and
+  shows ``coverage`` as ``complete_over_window_only`` for a window, ``not_complete_source_blocked`` for a blocked
+  source, ``not_complete_block_unknown`` when the block marker is missing, and the declared token only for a
+  non-window, unblocked declaration (``scope`` ``declared_full_log``, the legacy control).
 * **Output.** A refusal exits 2 with a fixed message and writes nothing. ``--out`` must be a new file in the
   same audit root, created exclusively.
 * **Paths.** ``..``, links, junctions and hard-linked inputs are refused.
@@ -467,6 +473,14 @@ ATTENTION_KEYS = frozenset({"kind", "subject", "actors", "detail", "refs", "rank
 QUESTION_KEYS = frozenset({"question", "attention_rank", "refs"})
 SOURCE_FIELDS = ("log_identity", "generation", "cursor_start", "cursor_end", "coverage", "event_count", "as_of_utc",
                  "last_event_ref")
+SOURCE_VIEW_FIELDS = SOURCE_FIELDS + ("declared_coverage", "scope", "blocked", "blocked_reason")
+WINDOW_PREFIX = "capture-window:"  # the shadow's window identity: a bounded capture window, never the whole log
+# What the view shows for coverage: the core-forced token is never shown as a whole-log claim for a window or a
+# blocked source; the declared token stays visible as declared_coverage.
+COVERAGE_WINDOW = "complete_over_window_only"
+COVERAGE_BLOCKED = "not_complete_source_blocked"
+COVERAGE_BLOCK_UNKNOWN = "not_complete_block_unknown"
+SCOPE_WINDOW, SCOPE_DECLARED_FULL_LOG = "bounded_window", "declared_full_log"
 # Not in the snapshot, so never guessed: no slot is read from an agent name, no recusal from a git author.
 NOT_IN_SNAPSHOT = ("author", "recusal", "rco_presence", "gate_slots")
 _REF = re.compile(r"[0-9a-f]{64}")
@@ -730,6 +744,18 @@ def build_mind_view(snapshot: Any, snapshot_sha256: str) -> dict[str, Any]:
         blocked, source_view["blocked"], source_view["blocked_reason"] = True, UNKNOWN, UNKNOWN
     else:
         raise MindRefused("the snapshot source does not match the reflected interface")
+    # Coverage as scope: a capture window is bounded whatever the core token says, a blocked or unknown-block source
+    # is not complete, and only a non-window unblocked declaration keeps its declared token (the legacy control).
+    declared = source_view["coverage"]
+    source_view["declared_coverage"] = declared
+    window = isinstance(source_view["log_identity"], str) and source_view["log_identity"].startswith(WINDOW_PREFIX)
+    source_view["scope"] = SCOPE_WINDOW if window else (SCOPE_DECLARED_FULL_LOG if declared == "complete" else UNKNOWN)
+    if source_view["blocked"] is True:
+        source_view["coverage"] = COVERAGE_BLOCKED
+    elif source_view["blocked"] == UNKNOWN:
+        source_view["coverage"] = COVERAGE_BLOCK_UNKNOWN
+    elif window and declared == "complete":
+        source_view["coverage"] = COVERAGE_WINDOW
     prs = snapshot["prs"]
     if not isinstance(prs, dict):
         raise MindRefused("the snapshot PRs do not match the reflected interface")
@@ -784,7 +810,8 @@ def render_mind_text(view: Mapping[str, Any]) -> str:
     """The view as text. Each observation, item and question carries the same refs as in the JSON view."""
     source = view["source"]
     lines = [f"mind snapshot {view['snapshot_sha256'][:12]} as of {source['as_of_utc']}, "
-             f"coverage {source['coverage']}, source blocked {source['blocked']}: observe only, no gate run; "
+             f"coverage {source['coverage']} scope {source['scope']}, source blocked {source['blocked']}: "
+             "observe only, no gate run; "
              "author, recusal and gate slots UNKNOWN",
              f"snapshot sha256 {view['snapshot_sha256']}"]
     for pr in view["prs"]:

@@ -329,6 +329,7 @@ def _published_gate_paths(definition: dict) -> set[str]:
 MIND_MODULES = (
     "tools.wd_bridge_mind",
     "tools.wd_bridge_mind_lane_read",
+    "tools.wd_bridge_mind_session",
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
     "tools.wd_bridge_mind_rebuild",
@@ -337,7 +338,10 @@ MIND_MODULES = (
 MIND_CLI_MODULES = (
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
+    "tools.wd_bridge_mind_session",
 )
+MIND_SESSION_DEPS = frozenset({"tools/bridge_compact_view.py", "tools/bridge_next_action.py",
+                               "waggledance/core/bridge_log_reader.py"})
 
 
 def _assert_mind_delivery(definition: dict) -> None:
@@ -346,6 +350,11 @@ def _assert_mind_delivery(definition: dict) -> None:
     assert not missing_files, f"mind_file_drop: {sorted(missing_files)}"
     missing_smoke = set(MIND_MODULES) - set(definition["import_smoke"]["package_modules"])
     assert not missing_smoke, f"mind_smoke_drop: {sorted(missing_smoke)}"
+    missing_session_deps = MIND_SESSION_DEPS - set(definition["python_files"])
+    assert not missing_session_deps, f"mind_session_dependency_drop: {sorted(missing_session_deps)}"
+    assert definition["python_entrypoints"].get("mind_session") == "tools/wd_bridge_mind_session.py", (
+        "mind_entrypoint_drop: mind_session must name its exact session CLI"
+    )
     published = set(definition["python_entrypoints"].values())
     cli_paths = {module.replace(".", "/") + ".py" for module in MIND_CLI_MODULES}
     assert cli_paths <= published, f"mind_entrypoint_drop: {sorted(cli_paths - published)}"
@@ -367,6 +376,39 @@ def _assert_mind_delivery(definition: dict) -> None:
 def test_mind_family_is_packaged_smoke_checked_and_real_clis_are_published():
     """RCO2 closure finding: dormant source must reach the bundle before it can be used."""
     _assert_mind_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation", ("drop", "retarget", "renamed_alias"))
+def test_mind_session_entrypoint_cannot_be_dropped(mutation):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "retarget":
+        mutant["python_entrypoints"]["mind_session"] = "tools/wd_bridge_mind.py"
+    else:
+        path = mutant["python_entrypoints"].pop("mind_session")
+        if mutation == "renamed_alias":
+            mutant["python_entrypoints"]["other_session"] = path
+    with pytest.raises(AssertionError, match="mind_entrypoint_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(MIND_SESSION_DEPS))
+def test_mind_session_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="mind_session_dependency_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("launcher", ("start-wd-agent.ps1", "start-wd-tools-consumer.ps1"))
+def test_mind_session_remains_discoverable_to_both_launchers(launcher):
+    text = (OPS_ROOT / launcher).read_text(encoding="utf-8")
+    assert "tools/wd_bridge_mind_session.py" in text
+    assert "WD_BRIDGE_PYTHON_WRAPPER" in text
+    assert "WD_MIND_READ_ENABLED" in text
 
 
 @pytest.mark.parametrize("mutation,module", [

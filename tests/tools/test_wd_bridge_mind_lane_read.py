@@ -26,12 +26,16 @@ NOW = datetime(2026, 10, 31, 7, 59, tzinfo=timezone.utc)
 HEAD = "84b6fe0f109f6753e8e78ec9562217a1a9f860a0"
 BASE = "23564ad4c0494b659bb726f1ed4c57cbbfbac1ba"
 UUIDS = {"codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101", "codex-tools-1": "11111111-2222-4333-8444-555555555555",
-         "claude-rco-1": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "claude-rco-2": "99999999-8888-4777-8666-555555555555"}
+         "claude-rco-1": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "claude-rco-2": "99999999-8888-4777-8666-555555555555",
+         "fable-5": "f5f5f5f5-0a0a-4b0b-8c0c-0d0d0d0d0d0d"}  # synthetic roster: lane -> uuid the caller trusts
+FOREIGN_UUID = "0f0f0f0f-1111-4222-8333-444444444444"
+LOG_ID = "windows-v1:0000abcd:0000000000000001"  # bridge log reader identity shape, synthetic values
+OTHER_LOG_ID = "windows-v1:0000abcd:0000000000000002"
 SECRET_PATH = "tools/claimed_secret_scope_path.py"
 CYCLE = "20261031T075900Z"
 
 
-def cursor(file_identity="synthetic-log", generation="g1", offset=10):
+def cursor(file_identity=LOG_ID, generation="g1", offset=10):
     body = json.dumps({"file_identity": file_identity, "generation": generation, "offset": offset},
                       sort_keys=True, separators=(",", ":"))
     return "bc1." + base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
@@ -64,7 +68,7 @@ def rows():
     return [claim, note, opened, vote, veto]
 
 
-def make_live(tmp_path: Path, *, log_identity="bridge-log:synthetic-log", generation="g1", token=None, events=None):
+def make_live(tmp_path: Path, *, log_identity="bridge-log:" + LOG_ID, generation="g1", token=None, events=None):
     audit = tmp_path / ".codex-audit"
     audit.mkdir(parents=True)
     cycle = audit / "cycles" / CYCLE
@@ -95,7 +99,7 @@ def make_live(tmp_path: Path, *, log_identity="bridge-log:synthetic-log", genera
 
 
 def read(audit, latest_path, **overrides):
-    args = dict(latest_path=latest_path, audit_root=audit, lane="codex-lead-1", as_of=NOW, binding=view())
+    args = dict(latest_path=latest_path, audit_root=audit, lane="codex-lead-1", as_of=NOW, binding=view(), roster=dict(UUIDS))
     args.update(overrides)
     return lane_read.lane_read(**args)
 
@@ -110,7 +114,7 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
     assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "not_seen_in_window"}
     assert result["source"]["window"] == {"cursor_start": 0, "cursor_end": 5, "coverage": "complete"}
     lead = result["lanes"]["codex-lead-1"]
-    assert lead["observed_in_window"] is True and lead["identity_verification"] == "declared" and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
+    assert lead["observed_in_window"] is True and lead["identity_verification"] == "roster_bound" and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
     pr = result["prs"]["1963"]
     assert pr["head"] == HEAD and pr["base"] == BASE and pr["reported_ci_status"] == "reported_green"
     assert pr["missing"] == ["gate_eligibility_UNKNOWN"]
@@ -118,10 +122,10 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
     text = core.canonical_bytes(result).decode("utf-8")
     assert SECRET_PATH not in text and "claimed_secret" not in text
     for peer in ("claude-rco-1", "claude-rco-2"):  # peer votes and vetoes are neither attributed nor counted
-        assert text.count(peer) == (2 if peer == lane else 1)  # the lanes key itself, plus the lane field when it is this lane
+        assert text.count(peer) == (3 if peer == lane else 2)  # lanes key + identity.bound_lanes, plus the lane field when it is this lane
     for value in UUIDS.values():
         assert value not in text
-    assert result["binding"] == {"file_identity": "synthetic-log", "generation": "g1", "origin": "lane_reader_view_not_authenticated"}
+    assert result["binding"] == {"file_identity": LOG_ID, "generation": "g1", "origin": "lane_reader_view_not_authenticated"}
     assert result["pointer"]["cycle_generation"] == 1 and result["source"]["generation"] == "g1"
     assert all("value" not in fact for fact in result["facts_meta"]) and result["facts_meta"]
 
@@ -151,7 +155,7 @@ def test_pointer_snapshot_digest_mismatch_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("binding, reason", [
-    (view(cursor(file_identity="other-log")), "log_identity_mismatch"),
+    (view(cursor(file_identity=OTHER_LOG_ID)), "log_identity_mismatch"),
     (view(cursor(generation="g2")), "log_identity_mismatch"),
     (view(cursor(generation=None)), "generation_unavailable"),
     (view("bc1.not-base64!"), "binding_invalid"),
@@ -165,9 +169,9 @@ def test_untrusted_or_absent_generation_binding_is_refused(tmp_path, binding, re
 
 
 def test_state_cursor_differing_from_snapshot_identity_is_refused(tmp_path):
-    audit, latest, _ = make_live(tmp_path, token=cursor(file_identity="other-log"))
+    audit, latest, _ = make_live(tmp_path, token=cursor(file_identity=OTHER_LOG_ID))
     with pytest.raises(lane_read.LaneReadRefused, match="log_identity_mismatch"):
-        read(audit, latest, binding=view(cursor(file_identity="other-log")))
+        read(audit, latest, binding=view(cursor(file_identity=OTHER_LOG_ID)))
 
 
 def test_fresh_stale_boundary_future_and_naive_clock(tmp_path):
@@ -267,16 +271,100 @@ def test_two_rco_noninterference_a_peer_decision_changes_nothing_in_the_projecti
     assert not [word for word in _DECISION_WORDS if word in text]
 
 
-def test_g2_conflicting_lane_identities_refuse_the_whole_output(tmp_path):
-    """RCO2 G2: a second declared uuid under a lane name must not override the real lane; the adapter cannot tell which
-    one is real, so it refuses everything."""
+def test_g2_r2_a_foreign_uuid_row_never_overrides_a_roster_bound_lane_and_never_blanks_the_view(tmp_path):
+    """RCO2 G2 + RCO1 R2: a second declared uuid under a lane name is ignored for that lane when the caller roster binds
+    the lane; the other lanes stay readable (no whole-view refusal)."""
     events = rows()
     foreign = event("claude-rco-1", "message", "milestone", "other-task", "2026-10-31T07:58:30Z")
-    foreign["event"]["agent_uuid"] = "0f0f0f0f-1111-4222-8333-444444444444"
+    foreign["event"]["agent_uuid"] = FOREIGN_UUID
     foreign["ref"] = event_id(foreign["event"])
     audit, latest, _ = make_live(tmp_path, events=events + [foreign])
-    with pytest.raises(lane_read.LaneReadRefused, match="lane_identity_conflict"):
+    result = read(audit, latest)
+    rco1 = result["lanes"]["claude-rco-1"]
+    assert rco1["observed_in_window"] is True and rco1["identity_verification"] == "roster_bound"
+    assert rco1["last_event_utc"] == "2026-10-31T07:53:00Z"  # the real row, not the later foreign one
+    assert result["lanes"]["codex-lead-1"]["observed_in_window"] is True
+    text = core.canonical_bytes(result).decode("utf-8")
+    assert "other-task" not in text and FOREIGN_UUID not in text and "0f0f0f0f" not in text
+
+
+def test_r1_a_lone_foreign_uuid_never_impersonates_a_silent_lane(tmp_path):
+    """RCO1 R1 P2: the real fable-5 lane is silent in the window; one fabricated well-formed uuid under its name must not
+    read as the lane. With a roster the row is unverified; without a roster nothing is authenticated."""
+    events = rows()
+    fake = event("fable-5", "claim", "active", "fake-task", "2026-10-31T07:58:30Z",
+                 write_scope=["tools/z.py"], claim_lease_expires_utc="2026-10-31T08:30:00Z")
+    fake["event"]["agent_uuid"] = FOREIGN_UUID
+    fake["ref"] = event_id(fake["event"])
+    audit, latest, _ = make_live(tmp_path, events=events + [fake])
+    result = read(audit, latest)
+    assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "unverified_identity_rows_only"}
+    text = core.canonical_bytes(result).decode("utf-8")
+    assert "fake-task" not in text and FOREIGN_UUID not in text and "roster_bound" in text
+    assert result["identity"] == {"roster": "caller_declared", "bound_lanes": sorted(UUIDS)}
+
+
+def test_r1_without_a_roster_every_observed_lane_is_unknown_and_bodyless(tmp_path):
+    audit, latest, _ = make_live(tmp_path)
+    for roster in (None, {}):
+        result = read(audit, latest, roster=roster)
+        assert result["identity"] == {"roster": "none", "bound_lanes": []}
+        for lane in ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2"):
+            assert result["lanes"][lane] == {"observed_in_window": core.UNKNOWN, "status": "roster_unbound",
+                                             "identity_verification": "declared_not_authenticated"}
+        assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "not_seen_in_window"}
+        text = core.canonical_bytes(result).decode("utf-8")
+        assert "lead-task" not in text and SECRET_PATH not in text and "roster_bound" not in text
+    partial = read(audit, latest, roster={"codex-lead-1": UUIDS["codex-lead-1"]})
+    assert partial["lanes"]["codex-lead-1"]["identity_verification"] == "roster_bound"
+    assert partial["lanes"]["codex-tools-1"]["status"] == "roster_unbound"
+    assert partial["identity"] == {"roster": "caller_declared", "bound_lanes": ["codex-lead-1"]}
+
+
+@pytest.mark.parametrize("roster", [{"codex-lead-1": "not-a-uuid"}, {"someone-else": UUIDS["codex-lead-1"]}, "codex-lead-1",
+                                    [("codex-lead-1", UUIDS["codex-lead-1"])], {"codex-lead-1": None}])
+def test_r1_a_malformed_roster_is_refused(tmp_path, roster):
+    audit, latest, _ = make_live(tmp_path)
+    with pytest.raises(lane_read.LaneReadRefused, match="roster_invalid"):
+        read(audit, latest, roster=roster)
+
+
+SHAPED = "C:/Users/example/private"
+
+
+@pytest.mark.parametrize("field", ["missing", "coverage", "log_identity", "fact_verification"])
+def test_r3_path_shaped_values_in_fixed_token_fields_are_refused_without_echo(tmp_path, monkeypatch, field):
+    """RCO1 R3: every output token field is pinned to its fixed vocabulary or exact shape, so a path can never ride a
+    generic token regex into the projection."""
+    audit, latest, _ = make_live(tmp_path)
+    original = core.read_snapshot
+
+    def tampered(path, *, audit_root):
+        value = original(path, audit_root=audit_root)
+        if field == "missing":
+            value["prs"]["1963"]["missing"] = [SHAPED]
+        elif field == "coverage":
+            value["source"]["coverage"] = SHAPED
+        elif field == "log_identity":
+            value["source"]["log_identity"] = "bridge-log:" + SHAPED
+        else:
+            value["facts"][0]["verification"] = SHAPED
+        return value
+
+    monkeypatch.setattr(lane_read.core, "read_snapshot", tampered)
+    monkeypatch.setattr(lane_read, "_pointer_digest_check", lambda *_: None)
+    with pytest.raises(lane_read.LaneReadRefused) as info:
         read(audit, latest)
+    assert str(info.value) in {"field_not_allowlisted", "log_identity_mismatch"} and "example" not in repr(info.value.__dict__)
+
+
+@pytest.mark.parametrize("identity", [SHAPED, "/srv/log", "windows-v1:0000abcd:../x", "posix-v1:C:/Users/x", "synthetic-log"])
+def test_r3_binding_file_identity_must_have_the_reader_identity_shape(tmp_path, identity):
+    audit, latest, _ = make_live(tmp_path)
+    with pytest.raises(lane_read.LaneReadRefused) as info:
+        read(audit, latest, binding=view(cursor(file_identity=identity)))
+    assert str(info.value) == "binding_invalid" and "Users" not in repr(info.value.__dict__)
+    assert lane_read.decode_cursor(cursor(file_identity="posix-v1:fd01:1a2b3c")) == ("posix-v1:fd01:1a2b3c", "g1")
 
 
 def test_g2_rows_without_a_verified_identity_never_mark_a_lane_observed(tmp_path):

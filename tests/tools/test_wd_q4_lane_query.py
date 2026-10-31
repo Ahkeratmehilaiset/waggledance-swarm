@@ -2,7 +2,10 @@
 
 No installed bundle, wrapper, model, runtime, bridge or environment is touched. The transport is a test fake; the
 caller under test never executes anything. v2: every returned text is re-derived from caller-pinned projection bytes,
-so an echoing transport or child can never return the situation (RED-first against the v1 module).
+so an echoing transport or child can never return the situation (RED-first against the v1 module). v3: the projection
+is revalidated with the REAL shared_projection.validate_projection under caller-pinned policy and roster bytes (via the
+Lead adapter strict_pins), available_utc is strictly canonical UTC, duplicate record identity refuses, and no refusal
+carries a chained exception (RED-first against the v2 module).
 """
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -24,19 +27,39 @@ BINDING_KEYS = PLAN_KEYS + ("descriptor_sha256", "projection_sha256")
 SECRET = "synthetic-secret-situation-7f3a"
 NOW = datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
 EVENT_TS = "2026-01-01T00:00:00Z"  # projected records become visible one minute later, long before NOW
+TASK = "synthetic-task"
+ROSTER = {name: f"{index:08x}-abcd-4ef0-8abc-00000000{index:04x}" for index, name in enumerate(LANES, 1)}
+TASKS = frozenset({TASK})
 
 
 def _event(**changes):
-    base = {"ts_utc": EVENT_TS, "agent": "codex-lead-1", "type": "message", "status": "milestone",
-            "task_id": "synthetic-task", "message": "synthetic-private message body", "to": "fable-5"}
+    agent = changes.get("agent", "codex-lead-1")
+    base = {"ts_utc": EVENT_TS, "agent": agent, "agent_uuid": ROSTER[agent], "type": "message", "status": "milestone",
+            "task_id": TASK, "message": "synthetic-private message body", "to": "fable-5"}
     base.update(changes)
     return base
 
 
-def _projection(events=None):
-    """Real Lead projection of synthetic events, serialized exactly as the builder publishes it (sort_keys, indent=1)."""
-    projection = sp.project_events(events if events is not None else [_event(), _event(status="done", agent="fable-5")])
-    return projection, json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+def _canonical(projection):
+    return json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+
+
+def _projection(events=None, *, tasks=TASKS, roster=ROSTER, exclude_review_signal=True):
+    """Real Lead projection of synthetic events under the pinned policy and roster, serialized exactly as the
+    builder publishes it (sort_keys, indent=1)."""
+    events = events if events is not None else [_event(), _event(status="done", agent="fable-5")]
+    projection = sp.project_events(events, approved_tasks=tasks, roster=roster, exclude_review_signal=exclude_review_signal)
+    return projection, _canonical(projection)
+
+
+def _policy_bytes(tasks=(TASK,)):
+    return json.dumps({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": list(tasks)}).encode()
+
+
+def _roster_bytes(roster=ROSTER):
+    lanes = [{"agent": name, "agent_uuid": roster[name]} for name in LANES if name != "codex-tools-1"]
+    return json.dumps({"schema": "wd.q4-roster-snapshot.v1", "lanes": lanes,
+                       "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}}).encode()
 
 
 def _digests(record):
@@ -62,11 +85,13 @@ def plan(tmp_path):
     manifest = {"schema_version": 1, "source_commit": "a" * 40, "files": {"Invoke-WdQ4Query.ps1": wrapper_sha}}
     raw = json.dumps(manifest, sort_keys=True).encode()
     (root / "deployment-manifest.json").write_bytes(raw)
+    policy_bytes, roster_bytes = _policy_bytes(), _roster_bytes()
     document = {"schema": "wd.q4-public-wrapper-plan.v1", "config": {"descriptor_sha256": "a" * 64},
                 "root": "synthetic-root", "policy_path": "synthetic-policy", "roster_path": "synthetic-roster",
                 "public_policy_path": "synthetic-public-policy", "pointer_sha256": "1" * 64,
                 "source_anchor_sha256": "2" * 64, "encoder_sha256": "3" * 64,
-                "policy_sha256": "4" * 64, "roster_sha256": "5" * 64, "public_policy_sha256": "6" * 64}
+                "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+                "roster_sha256": hashlib.sha256(roster_bytes).hexdigest(), "public_policy_sha256": "6" * 64}
     data = json.dumps(document, sort_keys=True).encode()
     path = tmp_path / "public-plan.json"
     path.write_bytes(data)
@@ -78,7 +103,8 @@ def plan(tmp_path):
     return {"bundle_root": root, "expected_commit": "a" * 40,
             "expected_manifest_sha256": hashlib.sha256(raw).hexdigest(), "expected_wrapper_sha256": wrapper_sha,
             "public_plan_path": path, "expected_public_plan_sha256": hashlib.sha256(data).hexdigest(),
-            "expected_binding": binding, "projection_bytes": projection_bytes}, document
+            "expected_binding": binding, "projection_bytes": projection_bytes, "policy_bytes": policy_bytes,
+            "roster_bytes": roster_bytes}, document
 
 
 def _reply(document, *, status="ANSWER", records=None, results=None):
@@ -86,8 +112,7 @@ def _reply(document, *, status="ANSWER", records=None, results=None):
     records = document["projection"]["records"][:1] if records is None else records
     binding = {key: document[key] for key in PLAN_KEYS}
     binding.update({"descriptor_sha256": document["config"]["descriptor_sha256"], "memory_sha256": "7" * 64,
-                    "projection_sha256": hashlib.sha256(json.dumps(document["projection"], sort_keys=True,
-                                                                   indent=1).encode()).hexdigest(),
+                    "projection_sha256": hashlib.sha256(_canonical(document["projection"])).hexdigest(),
                     "receipt_sha256": "9" * 64})
     if results is None:
         results = [{"stored_text": record["stored_text"], "ref_sha256": _digests(record)[0],
@@ -110,8 +135,9 @@ def _refused(reason, call, *args, **kwargs):
     module = _module()
     with pytest.raises(module.LaneQueryRefused, match="^" + reason + "$") as info:
         call(*args, **kwargs)
-    text = repr(info.value) + repr(info.value.args) + repr(getattr(info.value, "__cause__", None))
+    text = repr(info.value) + repr(info.value.args) + repr(info.value.__cause__) + repr(info.value.__context__)
     assert SECRET not in text and "synthetic-private" not in text
+    assert info.value.__cause__ is None and info.value.__context__ is None  # v3: never a chained child/parser error
     return info.value
 
 
@@ -205,6 +231,8 @@ def test_abstain_degraded_and_runtime_refusal_project_to_fixed_shapes(plan):
     ("bundle_root", None, "invalid_input"), ("public_plan_path", 7, "invalid_input"),
     ("projection_bytes", None, "invalid_input"), ("projection_bytes", "not bytes", "invalid_input"),
     ("projection_bytes", bytearray(b"{}"), "invalid_input"), ("projection_bytes", b"", "invalid_input"),
+    ("policy_bytes", None, "invalid_input"), ("policy_bytes", "str", "invalid_input"), ("policy_bytes", b"", "invalid_input"),
+    ("roster_bytes", None, "invalid_input"), ("roster_bytes", bytearray(b"{}"), "invalid_input"),
 ])
 def test_malformed_inputs_refuse_before_binding_or_transport(plan, field, value, reason):
     module = _module()
@@ -246,7 +274,9 @@ def test_mismatched_or_changed_binding_refuses_before_transport(plan, kind):
              transport=must_not_run, **arguments)
 
 
-@pytest.mark.parametrize("name", PLAN_KEYS + ("descriptor_sha256",))  # projection_sha256: refused before transport
+# policy/roster/projection pins differing from the caller bytes are refused BEFORE transport (pins/projection tests)
+@pytest.mark.parametrize("name", ["pointer_sha256", "source_anchor_sha256", "encoder_sha256", "public_policy_sha256",
+                                  "descriptor_sha256"])
 def test_caller_pins_must_equal_the_result_binding_even_when_the_plan_agrees(plan, name):
     module = _module()
     arguments, document = plan
@@ -310,7 +340,8 @@ def test_time_is_floored_to_seconds_and_normalized_to_utc(plan):
 def test_module_binds_nothing_from_environment_argv_or_logs_and_declares_the_transport_interface():
     module = _module()
     source = Path(module.__file__).read_text(encoding="utf-8")
-    for forbidden in ("os.environ", "sys.argv", "import logging", "print(", "subprocess", "open(", "warnings"):
+    for forbidden in ("os.environ", "sys.argv", "import logging", "print(", "subprocess", "open(", "warnings",
+                      " from None", "from exc"):
         assert forbidden not in source, forbidden
     assert module.BINDING_KEYS == frozenset(BINDING_KEYS) and module.MAX_PROJECTION_BYTES == 16 * 1024 * 1024
     assert module.TRANSPORT_INTERFACE == "transport(*, wrapper: str, arguments: tuple, stdin_bytes: bytes) -> (bytes, int)"
@@ -444,3 +475,142 @@ def test_abstain_needs_no_results_but_still_requires_a_verified_projection(plan)
     abstain = module.query_public(enabled=True, lane=LANES[4], situation=SECRET, time=NOW,
                                   transport=_transport(_reply(document, status="ABSTAIN")), **arguments)
     assert abstain["status"] == "ABSTAIN" and abstain["results"] == []
+
+
+# ---- v3: real Lead revalidation under caller-pinned policy/roster, strict UTC, duplicate identity, no exception chain ----
+
+
+def _repin(arguments, projection):
+    raw = _canonical(projection)
+    return dict(arguments, projection_bytes=raw,
+                expected_binding=dict(arguments["expected_binding"], projection_sha256=hashlib.sha256(raw).hexdigest()))
+
+
+@pytest.mark.parametrize("kind", ["policy_bytes", "policy_pin", "policy_review_task", "policy_schema", "roster_bytes",
+                                  "roster_missing_lane", "roster_duplicate_uuid", "roster_not_json"])
+def test_policy_and_roster_are_pinned_by_the_caller_and_checked_before_transport(plan, kind):
+    module = _module()
+    arguments, document = plan
+    binding = dict(arguments["expected_binding"])
+    if kind == "policy_bytes":
+        arguments["policy_bytes"] = _policy_bytes(("synthetic-task", "another-task"))  # pin kept: stale
+    elif kind == "policy_pin":
+        binding["policy_sha256"] = "0" * 64
+    elif kind == "policy_review_task":
+        arguments["policy_bytes"] = _policy_bytes(("synthetic-task", "lead-review-task"))
+        binding["policy_sha256"] = hashlib.sha256(arguments["policy_bytes"]).hexdigest()
+    elif kind == "policy_schema":
+        arguments["policy_bytes"] = _policy_bytes().replace(b"v1", b"v2")
+        binding["policy_sha256"] = hashlib.sha256(arguments["policy_bytes"]).hexdigest()
+    elif kind == "roster_bytes":
+        arguments["roster_bytes"] = _roster_bytes(dict(ROSTER, **{"fable-5": "0000ffff-abcd-4ef0-8abc-00000000ffff"}))
+    elif kind == "roster_missing_lane":
+        roster = json.loads(_roster_bytes())
+        roster["lanes"].pop()
+        arguments["roster_bytes"] = json.dumps(roster).encode()
+        binding["roster_sha256"] = hashlib.sha256(arguments["roster_bytes"]).hexdigest()
+    elif kind == "roster_duplicate_uuid":
+        arguments["roster_bytes"] = _roster_bytes(dict(ROSTER, **{"fable-5": ROSTER["codex-lead-1"]}))
+        binding["roster_sha256"] = hashlib.sha256(arguments["roster_bytes"]).hexdigest()
+    else:
+        arguments["roster_bytes"] = b"{synthetic-private not json"
+        binding["roster_sha256"] = hashlib.sha256(arguments["roster_bytes"]).hexdigest()
+    arguments["expected_binding"] = binding
+    _refused("pins_refused", module.query_public, enabled=True, lane=LANES[0], situation=SECRET, time=NOW,
+             transport=must_not_run, **arguments)
+
+
+# NOT a case: a projection built under a roster with a different uuid for the same lane. The uuid is compared at
+# projection time and never persisted, so validate_projection re-checks lane membership only (its documented limit).
+@pytest.mark.parametrize("kind", ["task_outside_policy", "no_roster_authorship", "review_signal_not_excluded",
+                                  "text_edited", "meta_edited"])
+def test_pinned_but_policy_invalid_projection_refuses_with_the_lead_validator(plan, kind):
+    module = _module()
+    arguments, document = plan
+    if kind == "task_outside_policy":
+        projection, _ = _projection([_event(task_id="another-task")], tasks=frozenset({TASK, "another-task"}))
+    elif kind == "no_roster_authorship":
+        projection, _ = _projection(roster=None)
+    elif kind == "review_signal_not_excluded":
+        projection, _ = _projection(exclude_review_signal=False)
+    elif kind == "text_edited":
+        projection = json.loads(arguments["projection_bytes"])
+        projection["records"][0]["stored_text"] = projection["records"][0]["stored_text"] + " extra"
+        projection["records"][0]["summary"] = projection["records"][0]["stored_text"]
+    else:
+        projection = json.loads(arguments["projection_bytes"])
+        projection["records"][0]["meta"]["status"] = "done"
+    if kind == "task_outside_policy":
+        assert projection["accepted"] >= 1  # the projection is valid under ITS inputs; only the caller pins differ
+    _refused("projection_refused", module.query_public, enabled=True, lane=LANES[1], situation=SECRET, time=NOW,
+             transport=must_not_run, **_repin(arguments, projection))
+
+
+def test_duplicate_record_identity_refuses_even_when_byte_identical(plan):
+    module = _module()
+    arguments, document = plan
+    projection = json.loads(arguments["projection_bytes"])
+    projection["records"].append(dict(projection["records"][0]))
+    projection["accepted"] = len(projection["records"])
+    _refused("projection_refused", module.query_public, enabled=True, lane=LANES[2], situation=SECRET, time=NOW,
+             transport=must_not_run, **_repin(arguments, projection))
+
+
+@pytest.mark.parametrize("value", ["", "not-a-time", "2026-01-01T00:01:00Z", "2026-01-01T00:01:00.000000+00:00",
+                                   "2026-01-01 00:01:00.000000Z", None, 0])
+def test_invalid_or_non_canonical_available_utc_refuses(plan, value):
+    module = _module()
+    arguments, document = plan
+    projection = json.loads(arguments["projection_bytes"])
+    projection["records"][0]["provenance"]["available_utc"] = value
+    projection["records"][0]["available_utc"] = value
+    _refused("projection_refused", module.query_public, enabled=True, lane=LANES[3], situation=SECRET, time=NOW,
+             transport=must_not_run, **_repin(arguments, projection))
+    assert sp.corpus_mod.utc_text(sp.corpus_mod.parse_utc(EVENT_TS)) == "2026-01-01T00:00:00.000000Z"
+
+
+@pytest.mark.parametrize("stage", ["input", "pins", "projection", "transport", "reply_parse", "result"])
+def test_every_refusal_is_raised_outside_the_handler_without_a_chained_exception(plan, stage):
+    module = _module()
+    arguments, document = plan
+    transport = must_not_run
+    if stage == "input":
+        arguments["time"] = "synthetic-private not a datetime"
+        reason = "invalid_input"
+    elif stage == "pins":
+        arguments["policy_bytes"] = b"{synthetic-private"
+        arguments["expected_binding"] = dict(arguments["expected_binding"],
+                                             policy_sha256=hashlib.sha256(arguments["policy_bytes"]).hexdigest())
+        reason = "pins_refused"
+    elif stage == "projection":
+        arguments["projection_bytes"] = b"{synthetic-private"
+        arguments["expected_binding"] = dict(arguments["expected_binding"],
+                                             projection_sha256=hashlib.sha256(arguments["projection_bytes"]).hexdigest())
+        reason = "projection_refused"
+    elif stage == "transport":
+        def transport(**_):
+            raise RuntimeError("synthetic-private transport detail")
+        reason = "transport_refused"
+    elif stage == "reply_parse":
+        transport = _transport(b"{synthetic-private not json")
+        reason = "transport_refused"
+    else:
+        transport = _transport(_reply(document, results=[_result("0" * 64, "1" * 64, "synthetic-private")]))
+        reason = "result_refused"
+    arguments.setdefault("time", NOW)
+    error = _refused(reason, module.query_public, enabled=True, lane=LANES[4], situation=SECRET,
+                     transport=transport, **arguments)
+    assert error.__cause__ is None and error.__context__ is None and error.__suppress_context__ is False
+    assert error.args == (reason,)
+
+
+def test_v3_happy_path_still_answers_from_the_projection_under_the_pinned_policy_and_roster(plan):
+    module = _module()
+    arguments, document = plan
+    answer = module.query_public(enabled=True, lane=LANES[0], situation=SECRET, time=NOW,
+                                 transport=_transport(_reply(document, records=document["projection"]["records"])),
+                                 **arguments)
+    assert answer["status"] == "ANSWER" and answer["result_count"] == 2
+    assert document["projection"]["authorship"] == sp.AUTHORSHIP_ROSTER
+    assert document["projection"]["review_signal_excluded"] is True
+    assert answer["trust"]["projection_public_attestation"] == "UNKNOWN"

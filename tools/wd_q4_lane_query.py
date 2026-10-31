@@ -3,25 +3,30 @@
 One lane turn asks the pinned public Q4 wrapper one bounded question and receives a closed answer. Everything
 this module needs comes from the caller as explicit arguments: the bundle root, commit, deployment-manifest and
 wrapper digests, the hash-pinned public plan, the caller's OWN expected binding digests (pointer, source anchor,
-encoder, policy, roster, public policy, descriptor, projection), the bytes of the projection those digests pin,
-and an injected transport. Nothing is read from the environment, argv, a log or a default location; the situation
-text travels only as in-memory stdin bytes to the transport, never in arguments, exceptions or output.
+encoder, policy, roster, public policy, descriptor, projection), the bytes those pins cover (projection, policy and
+roster) and an injected transport. Nothing is read from the environment, argv, a log or a default location; the
+situation text travels only as in-memory stdin bytes to the transport, never in arguments, exceptions or output.
 
-v2 (query-echo fix): no text returned by the child is ever output. The caller supplies ``projection_bytes`` whose
-sha256 must equal the caller's own ``expected_binding["projection_sha256"]`` (checked BEFORE any transport call);
-the bytes must be the builder's canonical serialization of a shared projection; every record is indexed by the
-same two digests the Q4 runtime reports (``sha256(provenance.event_ref)``, ``sha256(record_id)``). A result is
-accepted only if its two digests name one record of that verified projection, its ``stored_text`` equals that
-record's text byte for byte, and the record is visible at the query time; the text that is output is the
-record's, read from the caller-pinned bytes. A transport or child that echoes any part of the situation therefore
-fails ``result_refused``: the situation is not a projection record. Syntactic filtering of the child text was never
-a privacy proof and is no longer relied on; the closed character class remains only as defense in depth over the
-projected text. Raw query bytes and raw transport output are lane-local: they are never logged, posted or returned.
+v2 (query-echo fix): no text returned by the child is ever output. A result is accepted only if its two digests
+(``sha256(provenance.event_ref)``, ``sha256(record_id)``, exactly as the Q4 runtime reports them) name one record of
+the caller-pinned projection, its ``stored_text`` equals that record's text byte for byte and the record is visible at
+the query time; the text that is output is the record's, read from the caller-pinned bytes. An echoing transport or
+child therefore fails ``result_refused``: the situation is not a projection record.
 
-``lane`` is a declaration shared by the five known lanes; it is never authentication. A projection pin is integrity
-of what the caller supplied, not attestation that the projection is public, fresh or policy-conformant: this module
-does not re-pin policy membership or roster authorship of the projection (it has no policy bytes), and it does not
-prove freshness, publisher authentication, source filtering, same-user protection, process containment or a
+v3 (projection trust and exception chain): the projection is not trusted on its pin alone. The caller also supplies
+``policy_bytes`` and ``roster_bytes``; both are parsed by the Lead adapter ``shared_capture_adapter.strict_pins``
+against the caller's own ``policy_sha256`` / ``roster_sha256`` pins (``pins_refused``), and the projection is then
+revalidated with the REAL ``shared_projection.validate_projection`` under those approved tasks and that roster with
+``exclude_review_signal=True`` (every record re-derived from its own metadata, roster authorship and review exclusion
+re-pinned: ``projection_refused``). Every record's ``available_utc`` and ``time_utc`` must be canonical UTC text
+(``corpus.utc_text(corpus.parse_utc(x)) == x``); a repeated record identity refuses even when byte-identical. All of
+this happens BEFORE any transport call. Every refusal is raised after the handler that observed the failure has been
+left, so a child, transport or parser exception is never attached as ``__cause__`` or ``__context__``. Raw query bytes
+and raw transport output are lane-local: they are never logged, posted or returned.
+
+``lane`` is a declaration shared by the five known lanes; it is never authentication. Pins are integrity of what the
+caller supplied, not attestation that the projection, policy or roster are public, fresh or authentic; this module
+does not prove freshness, publisher authentication, source filtering, same-user protection, process containment or a
 whole-call time bound. Until a separately trusted transport exists (``TRANSPORT_INTERFACE``), only an injected
 synthetic callable can be used; nothing here enables, installs or activates a producer, runtime or model.
 """
@@ -32,6 +37,7 @@ import json
 from os import PathLike
 import re
 
+from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_projection as sp
 from tools import wd_q4_lane_link as link
 
@@ -41,6 +47,8 @@ MAX_SITUATION_CHARS = 4000
 MAX_QUERY_BYTES = 65536
 MAX_RESULTS = 100
 MAX_PROJECTION_BYTES = 16 * 1024 * 1024  # == shared_result_resolver.MAX_BYTES
+MAX_POLICY_BYTES = 65536  # == shared_capture_adapter._POLICY_LIMIT
+MAX_ROSTER_BYTES = sp.ROSTER_BUDGET
 VISIBILITY_GUARD_SECONDS = 1.0  # == the resolver guard band over shared_projection.visible_at
 REF_KIND = "sha256_of_projected_metadata"
 TRANSPORT_INTERFACE = "transport(*, wrapper: str, arguments: tuple, stdin_bytes: bytes) -> (bytes, int)"
@@ -59,22 +67,29 @@ _TRUST = {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN", "publisher_a
 
 
 class LaneQueryRefused(ValueError):
-    """Fixed public reason only: never the situation, a path, a pin, a reply, a record or a transport detail."""
+    """Fixed public reason only: never the situation, a path, a pin, a reply, a record or a transport detail; never
+    raised inside an exception handler, so it carries no ``__cause__`` and no ``__context__``."""
 
 
 def _hex(value, pattern):
     return type(value) is str and pattern.fullmatch(value) is not None
 
 
+def _bounded(value, limit):
+    return type(value) is bytes and 1 <= len(value) <= limit
+
+
 def _inputs(situation, time, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
-            expected_public_plan_sha256, expected_binding, bundle_root, public_plan_path, projection_bytes):
+            expected_public_plan_sha256, expected_binding, bundle_root, public_plan_path, projection_bytes,
+            policy_bytes, roster_bytes):
     """Syntax of every caller input, checked before any file is touched; returns the canonical query bytes."""
     if (not _hex(expected_commit, _HEX40) or not _hex(expected_manifest_sha256, _PIN64)
             or not _hex(expected_wrapper_sha256, _PIN64) or not _hex(expected_public_plan_sha256, _HEX64)
             or type(expected_binding) is not dict or set(expected_binding) != BINDING_KEYS
             or any(not _hex(expected_binding[key], _HEX64) for key in BINDING_KEYS)
             or not isinstance(bundle_root, (str, PathLike)) or not isinstance(public_plan_path, (str, PathLike))
-            or type(projection_bytes) is not bytes or not 1 <= len(projection_bytes) <= MAX_PROJECTION_BYTES):
+            or not _bounded(projection_bytes, MAX_PROJECTION_BYTES) or not _bounded(policy_bytes, MAX_POLICY_BYTES)
+            or not _bounded(roster_bytes, MAX_ROSTER_BYTES)):
         raise ValueError()
     if (type(situation) is not str or not 1 <= len(situation) <= MAX_SITUATION_CHARS
             or any(ord(char) < 0x20 or ord(char) == 0x7F for char in situation)):
@@ -102,14 +117,22 @@ def _pairs(pairs):
     return document
 
 
-def _records(projection_bytes, expected_sha256):
-    """The record index of the caller-pinned projection: ``(sha256(event_ref), sha256(record_id)) -> record``.
+def _canonical_utc(value):
+    """Exactly the ``corpus.utc_text`` form of a parseable aware instant; anything else refuses."""
+    if type(value) is not str or not value:
+        raise ValueError()
+    parsed = sp.corpus_mod.parse_utc(value)
+    if parsed is None or sp.corpus_mod.utc_text(parsed) != value:
+        raise ValueError()
+    return value
 
-    The bytes must hash to the caller's pin, be the builder's canonical serialization (``sort_keys``, ``indent=1``),
-    carry the shared-projection schema/scope/authority, and every record must be an event record with the
-    projected-metadata ref kind, ``canonical_event`` False and ``record_id == "event:" + event_ref``. Two different
-    records under one key refuse. Policy membership and roster authorship are NOT re-pinned here (see module doc).
-    """
+
+def _records(projection_bytes, expected_sha256, tasks, roster):
+    """The record index ``(sha256(event_ref), sha256(record_id)) -> record`` of a projection that hashes to the
+    caller's pin, is the builder's canonical serialization (``sort_keys``, ``indent=1``) and passes the Lead
+    ``validate_projection`` under the caller-pinned approved tasks and roster with review signal excluded; every
+    record must be an event record with the projected-metadata ref kind, ``canonical_event`` False, ``record_id ==
+    "event:" + event_ref`` and canonical UTC ``time_utc`` / ``available_utc``; any repeated identity refuses."""
     if not hmac.compare_digest(hashlib.sha256(projection_bytes).hexdigest(), expected_sha256):
         raise ValueError()
     projection = json.loads(projection_bytes.decode("utf-8", "strict"), object_pairs_hook=_pairs,
@@ -119,22 +142,25 @@ def _records(projection_bytes, expected_sha256):
             or projection.get("schema") != sp.SCHEMA or projection.get("scope") != sp.SCOPE
             or projection.get("authority") != "none" or type(projection.get("records")) is not list):
         raise ValueError()
+    sp.validate_projection(projection, approved_tasks=tasks, include_refs=False, roster=roster,
+                           exclude_review_signal=True)  # ProjectionRefused is a ValueError
     records = {}
     for record in projection["records"]:
         if type(record) is not dict or type(record.get("provenance")) is not dict:
             raise ValueError()
         provenance = record["provenance"]
         ref = provenance["event_ref"]
-        if (record["kind"] != "event"
-                or provenance["ref_kind"] != REF_KIND or provenance["canonical_event"] is not False
+        if (record["kind"] != "event" or provenance["ref_kind"] != REF_KIND or provenance["canonical_event"] is not False
                 or not _hex(ref, _HEX64) or record["record_id"] != "event:" + ref
-                or type(record["stored_text"]) is not str or type(provenance["available_utc"]) is not str):
+                or type(record["stored_text"]) is not str
+                or _canonical_utc(provenance["available_utc"]) != _canonical_utc(record["available_utc"])
+                or _canonical_utc(record["time_utc"]) > provenance["available_utc"]):
             raise ValueError()
         key = (hashlib.sha256(ref.encode("utf-8")).hexdigest(),
                hashlib.sha256(record["record_id"].encode("utf-8")).hexdigest())
-        if key in records and records[key] != record:
+        if key in records:
             raise ValueError()
-        records.setdefault(key, record)
+        records[key] = record
     return records
 
 
@@ -158,37 +184,44 @@ def _resolved(item, records, when, seen):
 
 
 def _answer(lane, value, expected_binding, records, when):
-    """Closed projection of a seam-validated reply; the caller's own pins and projection decide, never the child."""
+    """Closed projection of a seam-validated reply; the caller's own pins and projection decide, never the child.
+    Returns ``(answer, None)`` or ``(None, reason)``; it raises nothing itself."""
     if value["status"] == "REFUSED":
         return {"schema": SCHEMA, "lane": lane, "status": "REFUSED", "reason": "runtime_refused",
-                "result_count": 0, "results": [], "binding": None, "trust": dict(_TRUST)}
+                "result_count": 0, "results": [], "binding": None, "trust": dict(_TRUST)}, None
     binding = value["binding"]
     if any(not hmac.compare_digest(binding[key], expected_binding[key]) for key in BINDING_KEYS):
-        raise LaneQueryRefused("binding_refused")
+        return None, "binding_refused"
     results = value["results"]
     if type(results) is not list or len(results) > MAX_RESULTS:
-        raise LaneQueryRefused("result_refused")
-    seen = set()
-    try:
-        clean = [_resolved(item, records, when, seen) for item in results]
-    except Exception:
-        raise LaneQueryRefused("result_refused") from None
+        return None, "result_refused"
+    seen, clean = set(), []
+    for item in results:
+        try:
+            resolved = _resolved(item, records, when, seen)
+        except Exception:  # noqa: BLE001 - any failure of one item is one fixed refusal, raised outside the handler
+            resolved = None
+        if resolved is None:
+            return None, "result_refused"
+        clean.append(resolved)
     return {"schema": SCHEMA, "lane": lane, "status": value["status"], "reason": "", "result_count": len(clean),
             "results": clean, "binding": {key: expected_binding[key] for key in sorted(BINDING_KEYS)},
-            "trust": dict(_TRUST)}
+            "trust": dict(_TRUST)}, None
 
 
 def query_public(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,
                  expected_wrapper_sha256, public_plan_path, expected_public_plan_sha256, expected_binding,
-                 projection_bytes=None, transport=None, enabled=False):
+                 projection_bytes=None, policy_bytes=None, roster_bytes=None, transport=None, enabled=False):
     """One bounded public Q4 question for one declared lane over an injected transport; OFF by default.
 
-    Order: switch, lane, transport presence, input syntax (nothing read yet), canonical query bytes in memory,
-    the caller-pinned projection verified and indexed (``projection_refused``; no transport call on failure),
-    then ``wd_q4_lane_link.invoke_public`` (binds bundle, manifest, wrapper and plan, calls the transport once,
-    validates the reply against the plan pins), then the caller's own ``expected_binding`` (eight digests) must
-    equal the reply binding and every result must resolve to one visible record of the verified projection with
-    identical text (``result_refused``); the returned text is the record's. Any other outcome is a fixed refusal.
+    Order: switch, lane, transport presence, input syntax (nothing read yet), canonical query bytes in memory, the
+    caller-pinned policy and roster parsed by the Lead adapter (``pins_refused``), the caller-pinned projection
+    verified, revalidated and indexed (``projection_refused``; no transport call on failure), then
+    ``wd_q4_lane_link.invoke_public`` (binds bundle, manifest, wrapper and plan, calls the transport once, validates
+    the reply against the plan pins), then the caller's own ``expected_binding`` (eight digests) must equal the
+    reply binding and every result must resolve to one visible record of the verified projection with identical
+    text (``result_refused``); the returned text is the record's. Any other outcome is a fixed refusal, raised
+    outside every exception handler.
     """
     if enabled is not True:
         raise LaneQueryRefused("disabled")
@@ -196,16 +229,33 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
         raise LaneQueryRefused("invalid_lane")
     if not callable(transport):
         raise LaneQueryRefused("transport_unavailable")
+    prepared = None
     try:
-        query, when = _inputs(situation, time, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
-                              expected_public_plan_sha256, expected_binding, bundle_root, public_plan_path,
-                              projection_bytes)
-    except Exception:
-        raise LaneQueryRefused("invalid_input") from None
+        prepared = _inputs(situation, time, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
+                           expected_public_plan_sha256, expected_binding, bundle_root, public_plan_path,
+                           projection_bytes, policy_bytes, roster_bytes)
+    except Exception:  # noqa: BLE001 - one fixed refusal, raised outside the handler
+        prepared = None
+    if prepared is None:
+        raise LaneQueryRefused("invalid_input")
+    query, when = prepared
+    pinned = None
     try:
-        records = _records(projection_bytes, expected_binding["projection_sha256"])
-    except Exception:
-        raise LaneQueryRefused("projection_refused") from None
+        pinned = adapter.strict_pins(policy_bytes, expected_binding["policy_sha256"], roster_bytes,
+                                     expected_binding["roster_sha256"])
+    except Exception:  # noqa: BLE001
+        pinned = None
+    if pinned is None:
+        raise LaneQueryRefused("pins_refused")
+    tasks, roster = pinned
+    records = None
+    try:
+        records = _records(projection_bytes, expected_binding["projection_sha256"], tasks, roster)
+    except Exception:  # noqa: BLE001
+        records = None
+    if records is None:
+        raise LaneQueryRefused("projection_refused")
+    value, reason = None, None
     try:
         value = link.invoke_public(lane=lane, bundle_root=bundle_root, expected_commit=expected_commit,
                                    expected_manifest_sha256=expected_manifest_sha256,
@@ -215,12 +265,15 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
                                    query_bytes=query, transport=transport, enabled=True)
     except link.LaneLinkRefused as refusal:
         reason = refusal.args[0] if refusal.args and refusal.args[0] in _SEAM_REASONS else "transport_refused"
-        raise LaneQueryRefused(reason) from None
-    except Exception:
-        raise LaneQueryRefused("transport_refused") from None
+    except Exception:  # noqa: BLE001 - a transport or parser failure is one fixed refusal, never chained
+        reason = "transport_refused"
+    if reason is not None:
+        raise LaneQueryRefused(reason)
+    answer = None
     try:
-        return _answer(lane, value, expected_binding, records, when)
-    except LaneQueryRefused:
-        raise
-    except Exception:
-        raise LaneQueryRefused("result_refused") from None
+        answer, reason = _answer(lane, value, expected_binding, records, when)
+    except Exception:  # noqa: BLE001 - a malformed seam value is one fixed refusal
+        answer, reason = None, "result_refused"
+    if reason is not None or answer is None:
+        raise LaneQueryRefused(reason or "result_refused")
+    return answer

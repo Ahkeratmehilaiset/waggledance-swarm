@@ -723,14 +723,16 @@ def _validate_watermark(watermark):
     return watermark
 
 
-def _verified_pointer(watermark, resolved, pins, source_mode=None, public_policy_bytes=None):
+def _verified_pointer(watermark, resolved, pins, source_mode=None):
     """Call the Lead function with the SAME resolved pins and the caller's pointer digest; the answer must be the
     closed six-key record with hex digests (``watermark_refused`` on a refusal or anything else).
-    public-v1 (Lead finding 19:25:46Z): the predecessor read of a public series passes ``expected_mode="public-v1"``
-    and the independently pinned public policy (``public_policy_bytes`` + ``public_policy_sha256``) so the Lead walk
-    verifies the historical chain's mode and policy itself; the legacy call keeps the legacy defaults unchanged. A
-    pointer verifier WITHOUT those keywords (a TypeError escaping the call) refuses ``watermark_verifier_unavailable``
-    on the public path: a public watermark is never verified under legacy defaults."""
+    public-v1 (Lead finding 19:25:46Z, API confirmed 19:35:47Z): the predecessor read of a public series passes
+    ``expected_mode="public-v1"`` and ``expected_public_policy_sha256`` (the DIGEST only: the policy bytes are
+    validated by this builder through the Lead adapter, the checkpoint never claims to authenticate them) so the Lead
+    walk verifies the historical chain's mode and policy digest itself; the legacy call keeps the legacy defaults
+    unchanged and the six-field return shape is required in both modes. A pointer verifier WITHOUT those keywords (a
+    TypeError escaping the call) refuses ``watermark_verifier_unavailable`` on the public path: a public watermark is
+    never verified under legacy defaults."""
     verifier = _pointer_verifier()
     public = source_mode is not None and source_mode["status_mode"] == "public-v1"
     try:
@@ -740,8 +742,8 @@ def _verified_pointer(watermark, resolved, pins, source_mode=None, public_policy
                                     expected_pointer_sha256=watermark["pointer_sha256"],
                                     policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
                                     roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"],
-                                    expected_mode="public-v1", public_policy_bytes=public_policy_bytes,
-                                    public_policy_sha256=source_mode["public_policy_sha256"])
+                                    expected_mode="public-v1",
+                                    expected_public_policy_sha256=source_mode["public_policy_sha256"])
             except TypeError:
                 raise BuildRefused("watermark_verifier_unavailable") from None
         else:
@@ -800,8 +802,7 @@ def _predecessor_source_mode(memory, receipt):
     return dict(mode)
 
 
-def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None, source_mode=None,
-                     public_policy_bytes=None):
+def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None, source_mode=None):
     """The caller's pinned previous generation -> (its validated canonical projection, a closed receipt summary,
     a closed continuity record ``{continuity_checked, continuity_route, watermark}``).
 
@@ -877,7 +878,7 @@ def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=
                 raise BuildRefused("predecessor_discontinuous")
             continuity.update(continuity_checked=True, continuity_route="receipt_end")
         else:
-            verified = _verified_pointer(watermark, resolved, pins, source_mode, public_policy_bytes)
+            verified = _verified_pointer(watermark, resolved, pins, source_mode)
             expected = {"descriptor_sha256": receipt.get("descriptor_sha256"),
                         "memory_sha256": predecessor["memory_sha256"],
                         "projection_sha256": predecessor["projection_sha256"],
@@ -937,7 +938,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     ``source_mode = {status_mode, public_policy_sha256}`` is recorded top-level in ``memory.json`` (bound by the
     descriptor) and in the receipt; legacy and the unbound synthetic route record ``LEGACY_SOURCE_MODE``. A
     predecessor must record the same mode (absent = legacy; ``predecessor_mode_mismatch``), and a public watermark
-    read passes the mode and the pinned public policy to the Lead pointer verifier. The builder publishes ONE directory; it is not
+    read passes the mode and the public policy DIGEST to the Lead pointer verifier. The builder publishes ONE directory; it is not
     an atomic checkpoint publication and never moves a cursor. ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
     identity from a verified model directory instead (``runtime_identity``) and, when both are given, they must be
     equal (``encoder_identity_mismatch``). Every refusal is ``BuildRefused`` with a fixed token (projection refusals
@@ -971,14 +972,13 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     else:
         source_binding, source_mode = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
                                                   resolved["roster_sha256"], approved_tasks)  # binds the DELTA only
-    public_policy_bytes = source["public_policy_bytes"] if source_mode["status_mode"] == "public-v1" else None
     delta_projection_sha256 = projection_sha256
     history, memory_history = None, None
     if predecessor is not None:
         if not projection["records"]:
             raise BuildRefused("projection_empty")  # an empty delta is a checkpoint pointer event, never a generation
         previous, summary, continuity = load_predecessor(predecessor, policy, source_binding, resolved=resolved, pins=pins,
-                                                         source_mode=source_mode, public_policy_bytes=public_policy_bytes)
+                                                         source_mode=source_mode)
         delta_ids = {record["record_id"] for record in projection["records"]}
         previous_ids = {record["record_id"] for record in previous["records"]}
         if len(previous_ids | delta_ids) > MAX_RECORDS:

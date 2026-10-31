@@ -86,8 +86,11 @@ gate slot. Author, recusal and RCO presence are not in the snapshot, so they sta
   ``complete`` for every publication, including a bounded capture window (``log_identity`` starting with
   ``capture-window:``) and a blocked source. The view keeps that token as ``declared_coverage`` (evidence) and
   shows ``coverage`` as ``complete_over_window_only`` for a window, ``not_complete_source_blocked`` for a blocked
-  source, ``not_complete_block_unknown`` when the block marker is missing, and the declared token only for a
-  non-window, unblocked declaration (``scope`` ``declared_full_log``, the legacy control).
+  source, ``not_complete_block_unknown`` when the block marker is missing, and ``declared_complete_unverified`` for
+  any other identity: an unproven identity never claims full-log coverage. Only an identity whose scheme (the text
+  before the first ``:``) is in ``WHOLE_LOG_SCHEMES`` may show ``scope`` ``declared_full_log`` with the declared
+  token; that allowlist is empty because no producer in this repo declares a whole log (the step1 adapter's
+  ``bridge-log:`` names a reader page, a window).
 * **Output.** A refusal exits 2 with a fixed message and writes nothing. ``--out`` must be a new file in the
   same audit root, created exclusively.
 * **Paths.** ``..``, links, junctions and hard-linked inputs are refused.
@@ -480,7 +483,11 @@ WINDOW_PREFIX = "capture-window:"  # the shadow's window identity: a bounded cap
 COVERAGE_WINDOW = "complete_over_window_only"
 COVERAGE_BLOCKED = "not_complete_source_blocked"
 COVERAGE_BLOCK_UNKNOWN = "not_complete_block_unknown"
+COVERAGE_UNVERIFIED = "declared_complete_unverified"  # declared complete by an identity no allowlist proves whole-log
 SCOPE_WINDOW, SCOPE_DECLARED_FULL_LOG = "bounded_window", "declared_full_log"
+# Identity schemes (text before the first ":") allowed to claim the whole log. Empty on purpose: no producer in this
+# repo declares a whole log; bridge-log: (step1 adapter) names a reader page, capture-window: a bounded window.
+WHOLE_LOG_SCHEMES: tuple = ()
 # Not in the snapshot, so never guessed: no slot is read from an agent name, no recusal from a git author.
 NOT_IN_SNAPSHOT = ("author", "recusal", "rco_presence", "gate_slots")
 _REF = re.compile(r"[0-9a-f]{64}")
@@ -748,14 +755,19 @@ def build_mind_view(snapshot: Any, snapshot_sha256: str) -> dict[str, Any]:
     # is not complete, and only a non-window unblocked declaration keeps its declared token (the legacy control).
     declared = source_view["coverage"]
     source_view["declared_coverage"] = declared
-    window = isinstance(source_view["log_identity"], str) and source_view["log_identity"].startswith(WINDOW_PREFIX)
-    source_view["scope"] = SCOPE_WINDOW if window else (SCOPE_DECLARED_FULL_LOG if declared == "complete" else UNKNOWN)
+    identity = source_view["log_identity"]
+    window = isinstance(identity, str) and identity.startswith(WINDOW_PREFIX)
+    whole_log = (isinstance(identity, str) and ":" in identity and identity.split(":", 1)[0] in WHOLE_LOG_SCHEMES
+                 and declared == "complete")
+    source_view["scope"] = SCOPE_WINDOW if window else (SCOPE_DECLARED_FULL_LOG if whole_log else UNKNOWN)
     if source_view["blocked"] is True:
         source_view["coverage"] = COVERAGE_BLOCKED
     elif source_view["blocked"] == UNKNOWN:
         source_view["coverage"] = COVERAGE_BLOCK_UNKNOWN
     elif window and declared == "complete":
         source_view["coverage"] = COVERAGE_WINDOW
+    elif declared == "complete" and not whole_log:
+        source_view["coverage"] = COVERAGE_UNVERIFIED  # an unproven identity never claims full-log coverage
     prs = snapshot["prs"]
     if not isinstance(prs, dict):
         raise MindRefused("the snapshot PRs do not match the reflected interface")

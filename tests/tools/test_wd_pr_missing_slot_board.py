@@ -1442,8 +1442,8 @@ def test_the_mind_view_shows_the_snapshot_prs_attention_and_questions_with_their
     assert (view["schema"], view["mode"], view["authority"]) == (board.MIND_VIEW_SCHEMA, "mind_snapshot", "none")
     assert view["observe_only"] is True and view["gate_evaluated"] is False
     assert view["snapshot_sha256"] == MIND_R_SHA256
-    assert view["source"]["blocked"] is False and view["source"]["coverage"] == "complete"
-    assert view["source"]["scope"] == "declared_full_log" and view["source"]["declared_coverage"] == "complete"
+    assert view["source"]["blocked"] is False and view["source"]["coverage"] == "declared_complete_unverified"
+    assert view["source"]["scope"] == "UNKNOWN" and view["source"]["declared_coverage"] == "complete"
     prs = {pr["pr"]: pr for pr in view["prs"]}
     assert list(prs) == [2001, 2002, 2003]
     assert prs[2001]["ci"]["green_at_head"] is True and prs[2001]["ci"]["head"] == H_2001
@@ -2116,7 +2116,7 @@ def test_a_blocked_or_unknown_block_source_is_never_shown_as_complete(tmp_path, 
     view = _view(tmp_path, capsys, snapshot)
     expected = "not_complete_source_blocked" if marker == "object" else "not_complete_block_unknown"
     assert view["source"]["coverage"] == expected and view["source"]["declared_coverage"] == "complete"
-    assert view["source"]["scope"] == "declared_full_log"  # the declaration is kept as evidence, not as a claim
+    assert view["source"]["scope"] == "UNKNOWN"  # the declaration is kept as evidence, not as a claim
     text = _text_view(tmp_path, capsys, snapshot)
     assert f"coverage {expected}" in text.splitlines()[0] and "coverage complete," not in text
 
@@ -2126,10 +2126,12 @@ def test_the_actual_blocked_reflection_is_not_shown_as_complete(tmp_path, capsys
     assert view["source"]["blocked"] is True and view["source"]["coverage"] == "not_complete_source_blocked"
 
 
-def test_a_legacy_full_log_declaration_keeps_its_complete_coverage_control(tmp_path, capsys):
+def test_an_unproven_non_window_identity_never_claims_full_log_coverage(tmp_path, capsys):
     view = _view(tmp_path, capsys, _mind_r())  # log identity fixture-log, blocked null, coverage complete
-    assert view["source"]["coverage"] == "complete" and view["source"]["scope"] == "declared_full_log"
-    assert "coverage complete scope declared_full_log, source blocked False" in _text_view(tmp_path, capsys, _mind_r())
+    assert view["source"]["coverage"] == "declared_complete_unverified" and view["source"]["scope"] == "UNKNOWN"
+    assert view["source"]["declared_coverage"] == "complete"
+    assert "coverage declared_complete_unverified scope UNKNOWN, source blocked False" in \
+        _text_view(tmp_path, capsys, _mind_r())
 
 
 def test_a_window_source_without_a_coverage_token_stays_unknown(tmp_path, capsys):
@@ -2143,6 +2145,7 @@ def test_a_window_source_without_a_coverage_token_stays_unknown(tmp_path, capsys
 
 def test_the_coverage_tokens_pass_the_guard_and_are_fixed():
     for token in ("complete_over_window_only", "not_complete_source_blocked", "not_complete_block_unknown",
-                  "bounded_window", "declared_full_log"):
+                  "declared_complete_unverified", "bounded_window", "declared_full_log"):
         assert not board._guarded_form(token)
+    assert board.WHOLE_LOG_SCHEMES == ()  # no producer in this repo declares a whole log
     assert board.SOURCE_VIEW_FIELDS == board.SOURCE_FIELDS + ("declared_coverage", "scope", "blocked", "blocked_reason")

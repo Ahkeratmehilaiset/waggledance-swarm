@@ -1124,6 +1124,7 @@ foreach ($required in @(
         'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Get-WdNativeWakePrompt.ps1',
+        'Get-WdMindReadConfig.ps1',
         'Resolve-WdNativeWakeRejection.ps1',
         'WAKE_PROCEDURE_LEAD.md',
         'WAKE_PROCEDURE_TOOLS.md',

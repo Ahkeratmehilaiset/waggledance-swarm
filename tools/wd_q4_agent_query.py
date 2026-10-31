@@ -19,6 +19,7 @@ import sys
 
 MAX_QUERY = 65536
 MAX_SITUATION = 4000
+MAX_OUTPUT = 32768
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _REV = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SCOPE = "wd.q4-shared-projected-events.v1"
@@ -167,6 +168,49 @@ def query_with_verified_config(config, stdin):
     except Exception:
         raise QueryRefused("launcher_refused") from None
     return _project_result(result, config.descriptor_sha256)
+
+
+def _safe_result_for_output(result, config):
+    if not isinstance(result, dict):
+        raise QueryRefused("invalid_result")
+    status = result.get("status")
+    if status == "REFUSED":
+        return {"schema": "wd.q4-agent-query.v1", "status": "REFUSED", "reason": "runtime_refused"}
+    if (status not in ("ANSWER", "ABSTAIN", "DEGRADED")
+            or set(result) != {"status", "scope", "descriptor_sha256", "memory_sha256", "results"}
+            or result.get("scope") != _SCOPE or result.get("descriptor_sha256") != config.descriptor_sha256
+            or not isinstance(result.get("memory_sha256"), str) or not _HEX.fullmatch(result["memory_sha256"])):
+        raise QueryRefused("invalid_result")
+    items = result.get("results")
+    if not isinstance(items, list) or len(items) > 100:
+        raise QueryRefused("invalid_result")
+    clean = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"ref_sha256", "doc_id_sha256"}:
+            raise QueryRefused("invalid_result")
+        if any(not isinstance(item[key], str) or not _HEX.fullmatch(item[key]) for key in item):
+            raise QueryRefused("invalid_result")
+        clean.append({"ref_sha256": item["ref_sha256"], "doc_id_sha256": item["doc_id_sha256"]})
+    return {"status": status, "scope": _SCOPE, "descriptor_sha256": config.descriptor_sha256,
+            "memory_sha256": result["memory_sha256"], "results": clean}
+
+
+def run_verified(config, stdin, stdout):
+    """Write a bounded result from a caller-authenticated tuple; no CLI trust implied."""
+    try:
+        result = _safe_result_for_output(query_with_verified_config(config, stdin), config)
+        text = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        if len(text.encode("utf-8")) > MAX_OUTPUT:
+            raise QueryRefused("output_limit")
+        exit_code = 2 if result["status"] == "REFUSED" else 0
+    except Exception:
+        text = '{"schema":"wd.q4-agent-query.v1","status":"REFUSED","reason":"query_refused"}\n'
+        exit_code = 2
+    try:
+        stdout.write(text)
+    except Exception:
+        return 2
+    return exit_code
 
 
 def _refuse(out, reason):

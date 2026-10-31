@@ -149,3 +149,52 @@ def test_refusal_is_sanitized_and_abstain_keeps_scope(monkeypatch):
     answer.update(status="ABSTAIN", results=[])
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: answer)
     assert cli.query_with_verified_config(_config(), io.BytesIO(raw))["status"] == "ABSTAIN"
+
+
+def test_run_verified_prints_only_bounded_safe_projection(monkeypatch):
+    answer = {"status": "ANSWER", "scope": "wd.q4-shared-projected-events.v1",
+              "descriptor_sha256": "7" * 64, "memory_sha256": "8" * 64,
+              "results": [{"ref_sha256": "9" * 64, "doc_id_sha256": "a" * 64}]}
+    seen = []
+    def query(config, stdin):
+        seen.append(stdin.read())
+        return answer
+    monkeypatch.setattr(cli, "query_with_verified_config", query)
+    out = io.StringIO()
+    assert cli.run_verified(_config(), io.BytesIO(b"synthetic-secret"), out) == 0
+    assert seen == [b"synthetic-secret"]
+    assert "synthetic-secret" not in out.getvalue()
+    assert len(out.getvalue().encode("utf-8")) <= cli.MAX_OUTPUT
+    assert json.loads(out.getvalue()) == answer
+
+
+def test_run_verified_handles_refusal_without_echoing_exception(monkeypatch):
+    def fail(*_):
+        raise RuntimeError("private-sentinel")
+    monkeypatch.setattr(cli, "query_with_verified_config", fail)
+    out = io.StringIO()
+    assert cli.run_verified(_config(), io.BytesIO(b""), out) == 2
+    assert "private-sentinel" not in out.getvalue()
+    assert json.loads(out.getvalue()) == {"schema": "wd.q4-agent-query.v1", "status": "REFUSED", "reason": "query_refused"}
+
+
+def test_run_verified_refuses_oversized_and_malformed_results(monkeypatch):
+    for value in [
+        {"status": "ANSWER", "secret": "synthetic-sentinel"},
+        {"status": "ANSWER", "scope": "wd.q4-shared-projected-events.v1",
+         "descriptor_sha256": "7" * 64, "memory_sha256": "8" * 64,
+         "results": [{"ref_sha256": "9" * 64, "doc_id_sha256": "a" * 64}] * 1000},
+    ]:
+        monkeypatch.setattr(cli, "query_with_verified_config", lambda *_: value)
+        out = io.StringIO()
+        assert cli.run_verified(_config(), io.BytesIO(b""), out) == 2
+        assert "synthetic-sentinel" not in out.getvalue()
+        assert len(out.getvalue().encode("utf-8")) <= cli.MAX_OUTPUT
+
+
+def test_run_verified_propagates_no_backend_refusal_text(monkeypatch):
+    monkeypatch.setattr(cli, "query_with_verified_config", lambda *_: {
+        "status": "REFUSED", "reason": "private-sentinel", "results": []})
+    out = io.StringIO()
+    assert cli.run_verified(_config(), io.BytesIO(b""), out) == 2
+    assert "private-sentinel" not in out.getvalue()

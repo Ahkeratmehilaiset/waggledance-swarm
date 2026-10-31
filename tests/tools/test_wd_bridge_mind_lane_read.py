@@ -121,10 +121,11 @@ def shadow_source(file_identity=LOG_ID, generation="g1", events=None):
 
 
 def make_live(tmp_path: Path, *, log_identity=WINDOW + LOG_ID, generation="g1", token=None, events=None,
-              context=False):
+              context=False, nested=False):
     audit = tmp_path / ".codex-audit"
     audit.mkdir(parents=True)
-    cycle = audit / "cycles" / CYCLE
+    producer_root = audit / "producer" / "live" if nested else audit
+    cycle = producer_root / "cycles" / CYCLE
     (cycle / "run").mkdir(parents=True)
     events = rows() if events is None else events
     source = {"log_identity": log_identity, "generation": generation, "cursor_start": 0, "cursor_end": len(events),
@@ -149,7 +150,7 @@ def make_live(tmp_path: Path, *, log_identity=WINDOW + LOG_ID, generation="g1", 
                                context=context)
     latest = {"schema": "wd.bridge-mind-shadow-latest.v2", "authority": "none", "scope": "shadow_observation_not_gate",
               "committed_utc": AS_OF, "last_ok": last_ok}
-    latest_path = audit / "latest.json"
+    latest_path = producer_root / "latest.json"
     latest_path.write_text(json.dumps(latest, sort_keys=True), encoding="utf-8")
     return audit, latest_path, cycle
 
@@ -185,7 +186,7 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
         assert value not in text
     assert result["binding"] == {"file_identity": LOG_ID, "generation": "g1", "origin": "lane_reader_view_not_authenticated"}
     assert result["pointer"]["cycle_generation"] == 1 and result["source"]["generation"] == "g1"
-    assert all("value" not in fact for fact in result["facts_meta"]) and result["facts_meta"]
+    assert "facts_meta" not in result and "facts" not in result
 
 
 def test_current_producer_identity_fails_closed_and_names_the_missing_change(tmp_path):
@@ -266,6 +267,14 @@ def test_pointer_outside_the_audit_root_is_refused(tmp_path):
         read(audit, copy)
 
 
+def test_nested_latest_resolves_cycle_relative_to_its_own_directory(tmp_path):
+    audit, latest, cycle = make_live(tmp_path, nested=True)
+    assert not (audit / "cycles").exists()  # no accidental fallback to audit root
+    assert cycle == latest.parent / "cycles" / CYCLE
+    result = read(audit, latest)
+    assert result["refusal"] is None and result["pointer"]["cycle_dir"] == CYCLE
+
+
 def test_absent_pointer_and_absent_publication_are_refused(tmp_path):
     audit, latest, cycle = make_live(tmp_path)
     with pytest.raises(lane_read.LaneReadRefused, match="pointer_invalid"):
@@ -325,7 +334,8 @@ def test_two_rco_noninterference_a_peer_decision_changes_nothing_in_the_projecti
     one = read(audit_a, latest_a, lane=lane)
     other = read(audit_b, latest_b, lane=lane)
     assert core.canonical_bytes(one["prs"]) == core.canonical_bytes(other["prs"])
-    assert core.canonical_bytes(one["facts_meta"]) == core.canonical_bytes(other["facts_meta"])
+    assert "facts_meta" not in one and "facts_meta" not in other
+    assert "facts" not in one and "facts" not in other
     text = core.canonical_bytes(one).decode("utf-8").lower()
     assert not [word for word in _DECISION_WORDS if word in text]
 
@@ -470,7 +480,10 @@ def rewrite_pointer(latest: Path, change):
 def test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source():
     reader, keys = producer_contract()
     assert reader == READER == lane_read.READER
-    assert keys == lane_read.LAST_OK_REQUIRED | lane_read.LAST_OK_OPTIONAL
+    # The reader also accepts the optional pair used by the compact-state producer;
+    # this fixture mirrors the current non-compact candidate_cycle exactly.
+    compact_pair = {"state_head_file", "state_head_sha256"}
+    assert keys == (lane_read.LAST_OK_REQUIRED | lane_read.LAST_OK_OPTIONAL) - compact_pair
     assert set(producer_last_ok(CYCLE, {"capture.json": "0" * 64, "state.json": "1" * 64}, snapshot_sha256="2" * 64,
                                 board_text_sha256="3" * 64)) == keys
     assert lane_read.LAST_OK_REQUIRED.isdisjoint(lane_read.LAST_OK_OPTIONAL)
@@ -492,6 +505,44 @@ def test_g6_p1_a_pointer_exactly_as_the_producer_commits_it_is_accepted_and_only
 def test_g6_p2_a_pointer_with_a_context_file_and_digest_is_accepted(tmp_path):
     audit, latest, _ = make_live(tmp_path, context=True)
     assert read(audit, latest)["refusal"] is None
+
+
+def test_compact_state_descriptor_pair_is_shape_checked_but_not_exposed(tmp_path):
+    audit, latest, _ = make_live(tmp_path)
+    def add_pair(p):
+        p["state_head_file"] = f"cycles/{CYCLE}/state.head.json"
+        p["state_head_sha256"] = "a" * 64
+    rewrite_pointer(latest, add_pair)
+    result = read(audit, latest)
+    assert result["refusal"] is None
+    assert "state_head_file" not in json.dumps(result)
+    assert "a" * 64 not in json.dumps(result)
+
+
+@pytest.mark.parametrize("compact", [
+    {"state_head_file": f"cycles/{CYCLE}/state.head.json"},
+    {"state_head_sha256": "a" * 64},
+    {"state_head_file": f"cycles/{CYCLE}/../state.head.json", "state_head_sha256": "a" * 64},
+    {"state_head_file": f"cycles/{CYCLE}/state.head.json", "state_head_sha256": "bad"},
+    {"state_head_file": None, "state_head_sha256": None},
+])
+def test_compact_state_descriptor_half_pair_or_invalid_shape_is_refused(tmp_path, compact):
+    audit, latest, _ = make_live(tmp_path)
+    rewrite_pointer(latest, lambda p: p.update(compact))
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_invalid"):
+        read(audit, latest)
+
+
+def test_compact_descriptor_does_not_replace_full_state_hash_validation(tmp_path):
+    audit, latest, cycle = make_live(tmp_path)
+    def add_pair(p):
+        p.update(state_head_file=f"cycles/{CYCLE}/state.head.json", state_head_sha256="a" * 64)
+    rewrite_pointer(latest, add_pair)
+    assert read(audit, latest)["refusal"] is None
+    state = cycle / "state.json"
+    state.write_bytes(state.read_bytes() + b" ")
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_race_or_mismatch"):
+        read(audit, latest)
 
 
 def _p3_unknown_key(p):
@@ -664,6 +715,35 @@ def test_v5_only_a_window_of_the_lane_own_bridge_log_and_generation_binds(tmp_pa
         read(audit, latest)
     assert str(info.value) == reason
     assert "example" not in repr(info.value.__dict__)
+
+
+def test_null_generation_requires_explicit_opt_in_and_reports_unknown_continuity(tmp_path):
+    audit, latest, _ = make_live(tmp_path, generation=None, token=cursor(generation=None))
+    binding = view(cursor(generation=None))
+    with pytest.raises(lane_read.LaneReadRefused, match="generation_unavailable"):
+        read(audit, latest, binding=binding)
+    result = read(audit, latest, binding=binding, allow_unknown_generation=True)
+    assert result["binding"] == {"file_identity": LOG_ID, "generation": None, "origin": "UNKNOWN",
+                                 "generation_status": "UNKNOWN", "rotation_continuity": "UNKNOWN"}
+    assert result["source"]["generation"] is None and result["authority"] == "none"
+
+
+@pytest.mark.parametrize("source_generation,state_generation,view_generation", [
+    (None, None, "g1"), (None, "g1", None), ("g1", None, None),
+    ("g1", "g2", "g1"), ("g2", "g1", "g1"),
+])
+def test_opt_in_does_not_allow_mixed_or_differing_generations(
+        tmp_path, source_generation, state_generation, view_generation):
+    audit, latest, _ = make_live(tmp_path, generation=source_generation, token=cursor(generation=state_generation))
+    with pytest.raises(lane_read.LaneReadRefused, match="log_identity_mismatch"):
+        read(audit, latest, binding=view(cursor(generation=view_generation)), allow_unknown_generation=True)
+
+
+@pytest.mark.parametrize("opt_in", [None, 1, "true", [], {}])
+def test_unknown_generation_opt_in_must_be_a_boolean(tmp_path, opt_in):
+    audit, latest, _ = make_live(tmp_path, generation=None, token=cursor(generation=None))
+    with pytest.raises(lane_read.LaneReadRefused, match="invalid_context"):
+        read(audit, latest, binding=view(cursor(generation=None)), allow_unknown_generation=opt_in)
 
 
 def output_strings(value, strings=None):

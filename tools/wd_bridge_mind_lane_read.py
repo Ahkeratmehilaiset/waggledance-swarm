@@ -13,8 +13,10 @@ Fail-closed producer binding (RCO2 F2 on PR1963, RCO1 P1 on the producer branch)
 ``source.log_identity`` as a capture WINDOW of a bridge log, ``capture-window:<file_identity>`` with the reader's own
 identity shape, and the reader generation the producer's cursor carried. A window named only by its digest (the
 legacy declaration), an identity that names the log itself (``bridge-log:...``, which would claim the whole log) or a
-``None`` generation cannot be bound to any reader observation, so this module refuses it with
-``producer_binding_unavailable`` and names the missing producer change. The output describes the source as a bounded
+``None`` generation cannot prove rotation continuity. The strict default refuses it with
+``producer_binding_unavailable`` and names the missing producer change. An explicit ``allow_unknown_generation=True``
+accepts only three agreeing null generations as an observational view, labels origin and rotation continuity UNKNOWN,
+and never fabricates a generation. Mixed, malformed or unequal bindings still refuse. The output describes a bounded
 window of that log (``source.scope``, ``source.window.coverage`` complete over the window only) and never as the whole
 log. Nothing here authenticates origin: the binding proves that the snapshot, the producer's committed cursor and the
 lane's own reader view name the same bridge log identity and generation, not which process wrote them. No clock,
@@ -33,7 +35,8 @@ default 256 MiB); no per-row or per-file byte bound exists there, so a real stat
 budget. The reader therefore gives the state file its own ``STATE_BUDGET`` and enforces it BEFORE loading: the size
 is read from the file's metadata first, then at most ``STATE_BUDGET + 1`` bytes are read, and a larger file is refused
 ``state_over_budget`` without parsing or hashing it. The pointer budget, the digest check against ``last_ok`` and the
-privacy rules are unchanged; nothing here derives, guesses or accepts a generation.
+privacy rules remain fail-closed; no generation is derived or guessed. Decision-derived fact metadata is validated
+but never emitted, since its salience, refs and timestamps could disclose peer decisions.
 """
 from __future__ import annotations
 
@@ -93,7 +96,9 @@ _LAST_OK_FILES = {"capture_file": "capture.json", "state_file": "state.json",
 _LAST_OK_HASHES = ("capture_sha256", "state_sha256", "snapshot_sha256")
 LAST_OK_REQUIRED = frozenset(("cycle_dir", "generation", *_LAST_OK_FILES, *_LAST_OK_HASHES))
 LAST_OK_OPTIONAL = frozenset({"observed_utc", "context_file", "context_sha256", "reader", "board_text_sha256", "counts",
-                              "global_question", "measures"})  # shape-checked, never read into the output
+                              "global_question", "measures", "state_head_file", "state_head_sha256"})
+# Optional compact state-head descriptors are checked as a pair but never read into the output. This reader still
+# verifies the full state file, so accepting that pair does not replace the existing state-content hash check.
 _STATE_KEYS = frozenset({"schema", "generation", "cursor", "source", "window_sha256", "window"})
 _CI_TOKENS = frozenset({core.UNKNOWN, "reported_green", "reported_not_green"})
 _CLASS_TOKENS = frozenset({core.UNKNOWN, "a", "b", "on-allowlist"})
@@ -186,6 +191,9 @@ def _known_optional_ok(last_ok: Mapping[str, Any], prefix: str) -> bool:
         if not (context_sha256 is None if context_file is None
                 else context_file == prefix + "context.json" and _hex64(context_sha256)):
             return False
+    if "state_head_file" in last_ok:
+        if last_ok["state_head_file"] != prefix + "state.head.json" or not _hex64(last_ok["state_head_sha256"]):
+            return False
     if "reader" in last_ok and last_ok["reader"] != READER:
         return False
     if "board_text_sha256" in last_ok and not _hex64(last_ok["board_text_sha256"]):
@@ -207,6 +215,7 @@ def read_pointer(latest_path: Path, audit_root: Path) -> dict:
     if (latest.get("schema") != LATEST_SCHEMA or latest.get("authority") != "none" or not isinstance(last_ok, dict)
             or not LAST_OK_REQUIRED <= set(last_ok) <= LAST_OK_REQUIRED | LAST_OK_OPTIONAL
             or ("context_file" in last_ok) != ("context_sha256" in last_ok)
+            or ("state_head_file" in last_ok) != ("state_head_sha256" in last_ok)
             or not isinstance(last_ok["cycle_dir"], str) or not _CYCLE.fullmatch(last_ok["cycle_dir"])
             or type(last_ok["generation"]) is not int or last_ok["generation"] < 1):
         raise LaneReadRefused("pointer_invalid")
@@ -239,12 +248,12 @@ def decode_cursor(token: Any) -> tuple[str, str | None]:
     return identity, generation
 
 
-def _binding(view: Any) -> tuple[str, str]:
-    """The lane's own compact-reader view: its cursor must carry a file identity AND a generation."""
+def _binding(view: Any, *, allow_unknown_generation: bool = False) -> tuple[str, str | None]:
+    """The lane's own cursor; null is observational only and requires an explicit caller opt-in."""
     if not isinstance(view, Mapping) or view.get("schema") != VIEW_SCHEMA or view.get("authority") != "none":
         raise LaneReadRefused("binding_invalid")
     identity, generation = decode_cursor(view.get("cursor"))
-    if generation is None:
+    if generation is None and not allow_unknown_generation:
         raise LaneReadRefused("generation_unavailable")
     return identity, generation
 
@@ -406,7 +415,7 @@ def _facts(snapshot: Mapping[str, Any]) -> list:
     return result
 
 
-def _source(source: Mapping[str, Any]) -> dict:
+def _source(source: Mapping[str, Any], *, allow_unknown_generation: bool = False) -> dict:
     blocked = source.get("blocked")
     if blocked is not None:
         if not isinstance(blocked, Mapping) or blocked.get("reason") not in core.BLOCKED_REASONS:
@@ -418,7 +427,9 @@ def _source(source: Mapping[str, Any]) -> dict:
         raise LaneReadRefused("field_not_allowlisted")
     _fixed(source["coverage"], _COVERAGE_TOKENS)  # the core's own token is checked, then stated as window-only
     return {"log_identity": WINDOW_PREFIX + _safe(log_identity[len(WINDOW_PREFIX):], _IDENTITY),
-            "scope": SOURCE_SCOPE, "generation": _safe(source["generation"], _GENERATION),
+            "scope": SOURCE_SCOPE,
+            "generation": (None if allow_unknown_generation and source["generation"] is None
+                           else _safe(source["generation"], _GENERATION)),
             "as_of_utc": _safe(source["as_of_utc"], _TIME), "max_event_utc": _time_or_unknown(source["max_event_utc"]),
             "event_count": _count(source["event_count"]), "unique_event_count": _count(source["unique_event_count"]),
             "duplicate_count": _count(source["duplicate_count"]),
@@ -430,8 +441,9 @@ def _source(source: Mapping[str, Any]) -> dict:
 # -- the read ----------------------------------------------------------------------------------------------------
 
 def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime, binding: Any,
-              max_age: timedelta = MAX_AGE, roster: Any = None) -> dict:
-    """One verified, bound, allowlisted projection for ``lane``; refuses with a fixed reason otherwise.
+              max_age: timedelta = MAX_AGE, roster: Any = None,
+              allow_unknown_generation: bool = False) -> dict:
+    """One verified, allowlisted projection; neither origin nor rotation continuity is authenticated.
 
     ``roster`` is the caller's own ``{lane: agent_uuid}`` trust map (its pinned fleet roster). Lane rows are emitted
     only for roster-bound identities; without an entry the lane is UNKNOWN / declared_not_authenticated and bodyless.
@@ -443,26 +455,31 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         raise LaneReadRefused("invalid_context")
     if not isinstance(max_age, timedelta) or max_age <= timedelta(0) or max_age > MAX_AGE:
         raise LaneReadRefused("max_age_invalid")  # G1 (RCO2): the caller may narrow the window, never widen it
-    view_identity, view_generation = _binding(binding)
+    if type(allow_unknown_generation) is not bool:
+        raise LaneReadRefused("invalid_context")
+    view_identity, view_generation = _binding(binding, allow_unknown_generation=allow_unknown_generation)
     last_ok = read_pointer(latest_path, audit_root)
     root = Path(audit_root).absolute()
+    # Cycle names are producer-relative to latest.json, not relative to the audit trust boundary.
+    cycle_root = _owned(Path(latest_path), root).parent
     try:
-        snapshot = core.read_snapshot(root / last_ok["publication_file"], audit_root=root)
+        snapshot = core.read_snapshot(cycle_root / last_ok["publication_file"], audit_root=root)
     except core.ProjectionError as exc:
         reason = str(exc)
         raise LaneReadRefused(reason if reason in {"snapshot_read_refused", "snapshot_publication_invalid",
                               "snapshot_content_mismatch"} else "snapshot_read_refused") from None
     _pointer_digest_check(hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest(), last_ok["snapshot_sha256"])
-    state_identity, state_generation, cycle_generation = _state_cursor(root / last_ok["state_file"], root,
+    state_identity, state_generation, cycle_generation = _state_cursor(cycle_root / last_ok["state_file"], root,
                                                                        last_ok["state_sha256"])
     if cycle_generation != last_ok["generation"]:
         raise LaneReadRefused("pointer_race_or_mismatch")
     source = snapshot["source"]
     declared_identity, declared_generation = source.get("log_identity"), source.get("generation")
-    # Bindable only as a WINDOW of a bridge log in the reader identity shape with a generation: a digest-named window,
-    # an identity naming the log itself (which would claim the whole log) or a None generation is never bound.
+    # Identity must still name a WINDOW of the same bridge log. Missing generation can be observational only;
+    # the equality check below requires all three generations to be null or all three to be the same known token.
     if (not isinstance(declared_identity, str) or not declared_identity.startswith(WINDOW_PREFIX)
-            or not _IDENTITY.fullmatch(declared_identity[len(WINDOW_PREFIX):]) or declared_generation is None):
+            or not _IDENTITY.fullmatch(declared_identity[len(WINDOW_PREFIX):])
+            or (declared_generation is None and not allow_unknown_generation)):
         raise LaneReadRefused("producer_binding_unavailable", missing_producer_change=MISSING_PRODUCER_CHANGE)
     if ((state_identity, state_generation) != (view_identity, view_generation)
             or declared_identity != WINDOW_PREFIX + view_identity or declared_generation != view_generation):
@@ -473,18 +490,22 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         raise LaneReadRefused("future_snapshot")
     if age > max_age:
         raise LaneReadRefused("snapshot_stale")  # G1 (RCO2): a stale snapshot never yields a body
+    _facts(snapshot)  # Preserve validation; decision-derived metadata must not be exposed to peer lanes.
     result = {
         "schema": SCHEMA, "authority": "none", "scope": SCOPE, "lane": lane,
         "as_of_utc": as_of.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "binding": {"file_identity": view_identity, "generation": view_generation,
-                    "origin": "lane_reader_view_not_authenticated"},
+                    "origin": "UNKNOWN" if view_generation is None else "lane_reader_view_not_authenticated"},
         "pointer": {"cycle_dir": last_ok["cycle_dir"], "cycle_generation": cycle_generation,
                     "snapshot_sha256": last_ok["snapshot_sha256"], "state_sha256": last_ok["state_sha256"]},
         "freshness": {"age_seconds": age.total_seconds(), "max_age_seconds": max_age.total_seconds(), "status": "fresh"},
         "identity": {"roster": "caller_declared" if bound else "none", "bound_lanes": sorted(bound)},
-        "source": _source(source), "lanes": _lanes(snapshot, bound), "prs": _prs(snapshot), "facts_meta": _facts(snapshot),
+        "source": _source(source, allow_unknown_generation=allow_unknown_generation),
+        "lanes": _lanes(snapshot, bound), "prs": _prs(snapshot),
         "refusal": None,
     }
+    if view_generation is None:
+        result["binding"].update(generation_status="UNKNOWN", rotation_continuity="UNKNOWN")
     if len(core.canonical_bytes(result)) > BUDGET:
         raise LaneReadRefused("output_budget_exceeded")
     return result

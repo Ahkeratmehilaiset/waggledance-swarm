@@ -5,7 +5,7 @@
 names under one owned ``.codex-audit`` root, verifies the publication with the core's own ``read_snapshot``, binds
 the snapshot's declared log identity and generation to the pinned reader cursor the producer committed in
 ``state.json`` AND to the cursor of a compact-reader view the calling lane obtained itself, and returns a strict
-allowlist projection: counts, refs, heads, task ids, times and fixed tokens only. Paths, write scopes, message
+allowlist projection: source counts, refs, heads, task ids, times and fixed tokens only; no decision-derived aggregates. Paths, write scopes, message
 bodies, payloads, agent uuids and peer vote attributions never reach the output; any string outside the allowlist
 refuses the whole output without echoing it.
 
@@ -250,11 +250,12 @@ def _prs(snapshot: Mapping[str, Any]) -> dict:
         if ci not in _CI_TOKENS or record["class"] not in _CLASS_TOKENS:
             raise LaneReadRefused("field_not_allowlisted")
         missing = [_safe(item, _TOKEN) for item in record.get("missing", [])]
+        # Decision-derived aggregates (vote, stale vote, veto and recusal counts) are deliberately absent: a lane that
+        # knows its own decision is absent could infer a peer decision from any nonzero count (Lead finding candidate
+        # 2026-10-31). The projection must be identical whether or not a peer has decided; "missing" is the fixed core
+        # token list, never computed from votes.
         result[key] = {"pr": record["pr"], "head": head, "base": base, "class": record["class"], "reported_ci_status": ci,
-                       "votes_count": _count(len(record.get("votes", []))),
-                       "stale_votes_count": _count(len(record.get("stale_votes", []))),
-                       "veto_observations_count": _count(len(record.get("veto_observations", []))),
-                       "recusals_count": _count(len(record.get("recusals", []))), "missing": missing}
+                       "missing": missing}
     return result
 
 

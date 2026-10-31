@@ -64,12 +64,12 @@ def rows():
     return [claim, note, opened, vote, veto]
 
 
-def make_live(tmp_path: Path, *, log_identity="bridge-log:synthetic-log", generation="g1", token=None):
+def make_live(tmp_path: Path, *, log_identity="bridge-log:synthetic-log", generation="g1", token=None, events=None):
     audit = tmp_path / ".codex-audit"
-    audit.mkdir()
+    audit.mkdir(parents=True)
     cycle = audit / "cycles" / CYCLE
     (cycle / "run").mkdir(parents=True)
-    events = rows()
+    events = rows() if events is None else events
     source = {"log_identity": log_identity, "generation": generation, "cursor_start": 0, "cursor_end": len(events),
               "event_count": len(events), "coverage": "complete"}
     state = core.full_rebuild(events, source=source, as_of_utc=AS_OF)
@@ -112,10 +112,11 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
     assert lead["observed"] is True and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
     pr = result["prs"]["1963"]
     assert pr["head"] == HEAD and pr["base"] == BASE and pr["reported_ci_status"] == "reported_green"
-    assert pr["votes_count"] == 1 and pr["veto_observations_count"] == 1 and pr["missing"] == ["gate_eligibility_UNKNOWN"]
+    assert pr["missing"] == ["gate_eligibility_UNKNOWN"]
+    assert set(pr) == {"pr", "head", "base", "class", "reported_ci_status", "missing"}  # no decision-derived aggregates
     text = core.canonical_bytes(result).decode("utf-8")
     assert SECRET_PATH not in text and "claimed_secret" not in text
-    for peer in ("claude-rco-1", "claude-rco-2"):  # peer votes and vetoes are counted, never attributed
+    for peer in ("claude-rco-1", "claude-rco-2"):  # peer votes and vetoes are neither attributed nor counted
         assert text.count(peer) == (2 if peer == lane else 1)  # the lanes key itself, plus the lane field when it is this lane
     for value in UUIDS.values():
         assert value not in text
@@ -238,3 +239,24 @@ def test_module_reads_no_clock_network_process_or_gate():
     assert all(name.split(".")[0] in {"base64", "datetime", "hashlib", "json", "pathlib", "re", "stat", "typing", "tools", "__future__"} for name in imports), imports
     tools_imports = re.findall(r"^from tools import ([A-Za-z0-9_]+)", text, re.MULTILINE)
     assert tools_imports == ["wd_bridge_mind"], tools_imports  # the core only: no shadow pipeline, no sandbox, no gate
+
+
+_DECISION_WORDS = ("vote", "veto", "recusal", "decision", "rco_pass", "changes_requested", "consensus")
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_two_rco_noninterference_a_peer_decision_changes_nothing_in_the_projection(tmp_path, lane):
+    """Lead finding candidate 08:32:43Z: a reviewer who knows its own decision is absent must not be able to infer a peer
+    decision from any aggregate. The projection with one RCO decision must equal the projection with the same event
+    replaced by a plain message, for every lane, and no decision-derived key may exist at all."""
+    claim, note, opened, vote, _veto = rows()
+    silent = event("claude-rco-1", "message", "note", "codex-lead-1/mind-live-read-20261031", "2026-10-31T07:53:00Z")
+    audit_a, latest_a, _ = make_live(tmp_path / "a", events=[claim, note, opened, vote])
+    audit_b, latest_b, _ = make_live(tmp_path / "b", events=[claim, note, opened, silent])
+    one = read(audit_a, latest_a, lane=lane)
+    other = read(audit_b, latest_b, lane=lane)
+    assert core.canonical_bytes(one["prs"]) == core.canonical_bytes(other["prs"])
+    assert core.canonical_bytes(one["facts_meta"]) == core.canonical_bytes(other["facts_meta"])
+    text = core.canonical_bytes(one).decode("utf-8").lower()
+    assert not [word for word in _DECISION_WORDS if word in text]
+

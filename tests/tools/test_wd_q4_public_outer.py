@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import py_compile
 import subprocess
 import sys
 
@@ -91,6 +92,7 @@ def run_outer(plan, *, enabled=True, change=None, isolated=True, preload_untrust
             " output={'status':result['status'], 'before_equal':before==sys.path, "
             "'child_value': result['child'].run_public() if result['status']=='MODULES_IMPORTED' else None, "
             "'query_value': result['query'].query_public() if result['status']=='MODULES_IMPORTED' else None}\n"
+            " if result['status']=='MODULES_IMPORTED': output['code_root_closure']=result.get('code_root_closure')\n"
             "except outer.PublicOuterRefused as exc:\n"
             " output={'status':str(exc), 'before_equal':before==sys.path, "
             "'child_loaded':'tools.wd_q4_public_child' in sys.modules, "
@@ -115,7 +117,45 @@ def test_default_off_no_import_or_site_change(synthetic):
 def test_verified_site_precedes_public_import_and_pth_never_executes(synthetic):
     result = run_outer(synthetic)
     assert result == {"status": "MODULES_IMPORTED", "before_equal": False, "child_value": "verified-site",
-                      "query_value": "synthetic-query"}
+                      "query_value": "synthetic-query", "code_root_closure": "NOT_VERIFIED"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
+def test_existing_timestamp_valid_pyc_refuses_before_public_import(synthetic):
+    child = Path(synthetic["code_root"]) / "tools/wd_q4_public_child.py"
+    malicious = ("from pathlib import Path\nPath(%r).write_text('pyc')\ndef run_public(): return 'bad'\n"
+                 % str(synthetic["marker"])).encode()
+    good = b"def run_public(): return 'good'\n"
+    width = max(len(malicious), len(good)) + 1
+    malicious = malicious.ljust(width, b" ")
+    good = good.ljust(width, b" ")
+    child.write_bytes(malicious)
+    before = child.stat()
+    py_compile.compile(str(child), doraise=True)
+    child.write_bytes(good)
+    os.utime(child, ns=(before.st_atime_ns, before.st_mtime_ns))
+    result = run_outer(synthetic, change={"public_child_sha256": digest(good)})
+    assert result == {"status": "public_outer_refused", "before_equal": True,
+                      "child_loaded": False, "query_loaded": False}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
+def test_runtime_site_cannot_shadow_standard_library(synthetic):
+    child = Path(synthetic["code_root"]) / "tools/wd_q4_public_child.py"
+    raw = b"from fractions import Fraction\ndef run_public(): return str(Fraction(1, 2))\n"
+    child.write_bytes(raw)
+    site_shadow = Path(synthetic["runtime_root"]) / "site/fractions.py"
+    evil = ("from pathlib import Path\nPath(%r).write_text('shadow')\n" % str(synthetic["marker"])).encode()
+    site_shadow.write_bytes(evil)
+    manifest = Path(synthetic["runtime_manifest"])
+    document = json.loads(manifest.read_bytes())
+    document["files"].append({"path": "site/fractions.py", "size": len(evil), "sha256": digest(evil)})
+    manifest_bytes = json.dumps(document, sort_keys=True).encode()
+    manifest.write_bytes(manifest_bytes)
+    result = run_outer(synthetic, change={"public_child_sha256": digest(raw),
+                                          "runtime_manifest_sha256": digest(manifest_bytes)})
+    assert result == {"status": "MODULES_IMPORTED", "before_equal": False, "child_value": "1/2",
+                      "query_value": "synthetic-query", "code_root_closure": "NOT_VERIFIED"}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
@@ -133,9 +173,25 @@ def test_untrusted_prefix_before_code_root_refuses(synthetic):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
-@pytest.mark.parametrize("module_name", ["tools.wd_q4_agent_query", "tools.wd_q4_public_plan", "tools.other"])
+@pytest.mark.parametrize("module_name", ["tools.wd_q4_agent_query", "tools.wd_q4_public_plan", "tools.other",
+                                           "core", "core.faiss_store", "waggledance", "waggledance.core.bridge_log_reader"])
 def test_preloaded_code_root_dependency_refuses(synthetic, module_name):
     result = run_outer(synthetic, preloaded=module_name)
+    assert result == {"status": "public_outer_refused", "before_equal": True,
+                      "child_loaded": False, "query_loaded": False}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="runtime verifier requires Windows deployment semantics")
+def test_unpinned_code_root_file_with_hardlink_refuses(synthetic):
+    tools = Path(synthetic["code_root"]) / "tools"
+    original = tools / "other_synthetic.py"
+    original.write_bytes(b"# synthetic file, not a direct public module\n")
+    try:
+        os.link(original, tools / "other_synthetic_link.py")
+    except OSError as exc:
+        pytest.skip("hardlinks unavailable for synthetic filesystem: " + str(exc))
+    assert os.lstat(original).st_nlink > 1
+    result = run_outer(synthetic)
     assert result == {"status": "public_outer_refused", "before_equal": True,
                       "child_loaded": False, "query_loaded": False}
 

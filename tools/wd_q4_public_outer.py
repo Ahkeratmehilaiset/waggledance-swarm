@@ -32,6 +32,28 @@ class PublicOuterRefused(ValueError):
     """Fixed refusal; never contains a path, caller input, or exception text."""
 
 
+def _reject_cached_bytecode(root):
+    """Refuse cached bytecode/reparse trees, without authenticating the tree."""
+    pending = [root]
+    count = 0
+    while pending:
+        folder = pending.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                count += 1
+                if count > 100000 or entry.name.casefold() == "__pycache__" or entry.name.casefold().endswith(".pyc"):
+                    raise ValueError()
+                # On Windows DirEntry.stat() may return st_nlink == 0;
+                # lstat supplies the hard-link count used by runtime_manifest.
+                info = os.lstat(entry.path)
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:
+                    raise ValueError()
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(entry.path)
+                elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError()
+
+
 def _check_import_state(root, tools_path, site=None):
     """Reject protected-path cache injections, not arbitrary preloads or same-user races."""
     details = importlib._bootstrap_external._get_supported_file_loaders()
@@ -162,6 +184,8 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
         if (not root.is_dir() or verifier != root / "sandbox/mind/step2/runtime_manifest.py"
                 or any(name.startswith("tools.") and name != __name__ for name in sys.modules)
                 or any(name == "sandbox" or name.startswith("sandbox.") for name in sys.modules)
+                or any(name == "core" or name.startswith("core.") for name in sys.modules)
+                or any(name == "waggledance" or name.startswith("waggledance.") for name in sys.modules)
                 or any(name == "numpy" or name.startswith("numpy.") or name == "faiss" or name.startswith("faiss.")
                        for name in sys.modules)):
             raise ValueError()
@@ -179,6 +203,7 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
                 or os.path.normcase(os.path.abspath(sys.path[0])) != os.path.normcase(os.path.abspath(root))):
             raise ValueError()
         _check_import_state(root, tools_path[0])
+        _reject_cached_bytecode(root)
         # Isolated Python's remaining default entries must stay under its own
         # base prefix. This is not a digest check of Python's stdlib or DLLs.
         base = os.path.normcase(os.path.abspath(sys.base_prefix))
@@ -202,21 +227,21 @@ def bootstrap_public_imports(*, enabled=False, code_root=None, verifier_path=Non
                                     for p in sys.path if isinstance(p, str) and p):
             raise ValueError()
         _check_import_state(root, tools_path[0], site)
+        _reject_cached_bytecode(root)
         if (_pinned(verifier, verifier_sha256) != verifier_bytes or _pinned(child_path, public_child_sha256) != child_bytes
                 or _pinned(query_path, public_query_sha256) != query_bytes):
             raise ValueError()
-        # No site.addsitedir: .pth files must not be executed. CodeRoot remains
-        # ahead of site, so the runtime tree is not substituted for CodeRoot.
-        index = next(i for i, p in enumerate(sys.path) if p and os.path.normcase(os.path.abspath(p)) ==
-                     os.path.normcase(os.path.abspath(root)))
+        # No site.addsitedir: .pth files must not be executed. Runtime site is
+        # after the interpreter's existing stdlib and CodeRoot search entries.
         inserted = str(site)
-        sys.path.insert(index + 1, inserted)
+        sys.path.append(inserted)
         child = importlib.import_module(_PUBLIC[0])
         query = importlib.import_module(_PUBLIC[1])
         if not callable(getattr(child, "run_public", None)) or not callable(getattr(query, "query_public", None)):
             raise ValueError()
         return {"status": "MODULES_IMPORTED", "child": child, "query": query, "authority": "none",
                 "caller_authentication": "UNKNOWN", "source_authentication": "UNKNOWN",
+                "code_root_closure": "NOT_VERIFIED",
                 "runtime_to_code_compatibility": "UNKNOWN", "same_user_toctou": "UNKNOWN"}
     except Exception:
         if inserted is not None:

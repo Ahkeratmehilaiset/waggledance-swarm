@@ -18,8 +18,10 @@ Two functions, both OFF by default, both pure over caller-supplied values:
   WHOLE selection. Within one generation, distinct pointer digests are normal (empty advances) as long as the
   generation BINDING (artifacts, anchor, source mode) is identical; a differing binding, or one digest under two
   generations, is ``conflicting``; two distinct payloads at the newest instant are ``ambiguous``. Exact duplicate rows
-  collapse. When the caller hands in the view it verified for the selected digest, its consistency with the selected
-  payload is checked (``view_consistent``); that is consistency, never trust.
+  collapse. When the caller hands in the view it verified for the selected digest, the VIEW FIELDS (pointer, generation,
+  artifacts, anchor) are checked against the selected payload (``view_fields_consistent``); the six-field view carries
+  neither the source mode nor the public-policy pin, so ``source_mode_consistency`` is always UNKNOWN here: that is
+  field consistency, never trust and never a whole-payload claim.
 
 What a selection is NOT (Lead GO lead-mind-pointer-announce-fable-20261031-v1 + v2): it is advice. A writer-validated
 lane label does not authenticate a same-user origin, a timestamp proves neither freshness nor the absence of replay,
@@ -46,8 +48,9 @@ VIEW_KEYS = frozenset({"pointer_sha256", "generation", "artifacts", "anchor_sha2
 PAYLOAD_KEYS = frozenset({"schema", "kind", "generation", "pointer_sha256", "anchor_sha256", "artifacts", "source_mode",
                           "authenticity", "freshness"})
 SELECTION_KEYS = frozenset({"schema", "kind", "generation", "pointer_sha256", "anchor_sha256", "artifacts", "source_mode",
-                            "announced_ts_utc", "publisher_agent", "candidates", "advisory", "view_consistent",
-                            "authenticity", "freshness", "coverage", "ordering", "same_user_integrity"})
+                            "announced_ts_utc", "publisher_agent", "candidates", "advisory", "view_fields_consistent",
+                            "source_mode_consistency", "authenticity", "freshness", "coverage", "ordering",
+                            "same_user_integrity"})
 REFUSALS = frozenset({"request_invalid", "report_invalid", "no_change_not_announced", "view_required", "view_mismatch",
                       "rows_invalid", "no_candidate", "candidate_rejected", "ambiguous", "conflicting"})
 PAYLOAD_LIMIT = 4096
@@ -90,7 +93,8 @@ def _view_ok(view):
 
 def _payload_ok(value):
     """The closed announcement payload, exactly; any extra key, non-digest, unknown kind or trust claim fails."""
-    return (isinstance(value, dict) and set(value) == PAYLOAD_KEYS and value["schema"] == SCHEMA and value["kind"] in KINDS
+    return (isinstance(value, dict) and set(value) == PAYLOAD_KEYS and value["schema"] == SCHEMA
+            and isinstance(value["kind"], str) and value["kind"] in KINDS  # a non-string kind refuses, never a TypeError
             and _generation_ok(value["generation"]) and _hex(value["pointer_sha256"]) and _hex(value["anchor_sha256"])
             and _artifacts_ok(value["artifacts"]) and _source_mode_ok(value["source_mode"])
             and value["authenticity"] == UNKNOWN and value["freshness"] == UNKNOWN
@@ -112,9 +116,9 @@ def announcement_payload(report, anchor_sha256, *, verified_view=None, enabled=F
         _refuse("request_invalid")
     if not enabled:
         return {"status": "OFF"}
-    if (not isinstance(report, dict) or set(report) != pub.REPORT_KEYS
+    if (not isinstance(report, dict) or set(report) != pub.REPORT_KEYS or not isinstance(report["status"], str)
             or report["status"] not in ANNOUNCED_STATUSES | {"EMPTY_NO_CHANGE"}):
-        _refuse("report_invalid")  # a full-shape report never carries OFF; anything outside the producer statuses drifts
+        _refuse("report_invalid")  # non-string status (list/dict) and anything outside the producer statuses: fixed token
     if report["status"] == "EMPTY_NO_CHANGE":
         _refuse("no_change_not_announced")  # the pointer did not move: nothing new to announce
     if (not _hex(report["pointer_sha256"]) or not _source_mode_ok(report["source_mode"]) or type(report["records"]) is not int
@@ -171,7 +175,8 @@ def select_announced_pointer(rows, *, task_id, publisher_agent, roster, verified
     if not enabled:
         return {"status": "OFF"}
     if (not isinstance(task_id, str) or not 1 <= len(task_id.encode("utf-8")) <= projection.BYTE_CAPS["task_id"]
-            or publisher_agent not in projection.LANES or not isinstance(roster, dict) or publisher_agent not in roster
+            or not isinstance(publisher_agent, str) or publisher_agent not in projection.LANES
+            or not isinstance(roster, dict) or publisher_agent not in roster
             or not all(isinstance(agent, str) and isinstance(uuid, str) and projection.UUID.fullmatch(uuid) is not None
                        for agent, uuid in roster.items())):
         _refuse("request_invalid")
@@ -205,17 +210,17 @@ def select_announced_pointer(rows, *, task_id, publisher_agent, roster, verified
         if by_pointer.setdefault(payload["pointer_sha256"], payload["generation"]) != payload["generation"]:
             _refuse("conflicting")  # one pointer digest, two generations
     ts, payload = next(iter(newest.values()))
-    view_consistent = UNKNOWN
+    view_fields_consistent = UNKNOWN  # the view's four shared fields only; it carries no source mode or policy pin
     if verified_view is not None:
         _view_matches(verified_view, pointer_sha256=payload["pointer_sha256"], anchor_sha256=payload["anchor_sha256"],
                       generation=payload["generation"], artifacts=payload["artifacts"])
-        view_consistent = True
+        view_fields_consistent = True
     out = {"schema": SELECTION_SCHEMA, "kind": payload["kind"], "generation": payload["generation"],
            "pointer_sha256": payload["pointer_sha256"], "anchor_sha256": payload["anchor_sha256"],
            "artifacts": dict(payload["artifacts"]), "source_mode": dict(payload["source_mode"]), "announced_ts_utc": ts,
            "publisher_agent": publisher_agent, "candidates": len(candidates), "advisory": True,
-           "view_consistent": view_consistent, "authenticity": UNKNOWN, "freshness": UNKNOWN, "coverage": UNKNOWN,
-           "ordering": UNKNOWN, "same_user_integrity": UNKNOWN}
+           "view_fields_consistent": view_fields_consistent, "source_mode_consistency": UNKNOWN, "authenticity": UNKNOWN,
+           "freshness": UNKNOWN, "coverage": UNKNOWN, "ordering": UNKNOWN, "same_user_integrity": UNKNOWN}
     if set(out) != SELECTION_KEYS:
         _refuse("rows_invalid")
     return out

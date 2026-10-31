@@ -158,6 +158,13 @@ def _validate_output(raw, exit_code, expected_descriptor):
             if status != "REFUSED" or exit_code != 2 or set(data) != {"schema", "status", "reason"}:
                 raise ValueError()
             return {"schema": "wd.q4-runtime-bootstrap.v1", "status": "REFUSED", "reason": "runtime_refused"}
+        # Import failures happen before the reader defines IDENTITY.  Recognize
+        # only its exact fixed refusal, never a successful or caller-bound result.
+        if (data.get("schema") == "wd.bridge-mind-q4-private-read.v1" and status == "REFUSED"
+                and exit_code == 2 and reason == "runtime_unavailable" and data.get("results") == []
+                and set(data) == {"schema", "status", "reason", "results"}):
+            return {"schema": "wd.bridge-mind-q4-private-read.v1", "status": "REFUSED",
+                    "reason": "runtime_unavailable", "results": []}
         if data.get("schema") != "wd.bridge-mind-q4-private-read.v1" or data.get("identity") != "caller_declared_not_authenticated":
             raise ValueError()
         if (status == "REFUSED") != (exit_code == 2) or exit_code not in (0, 2):

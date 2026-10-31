@@ -119,6 +119,18 @@ def test_refusal_reason_is_fixed_not_child_supplied(candidate):
     assert "secret_reason" not in json.dumps(result)
 
 
+def test_early_missing_import_refusal_without_identity_is_fixed_shape():
+    early = {"schema": "wd.bridge-mind-q4-private-read.v1", "status": "REFUSED",
+             "reason": "runtime_unavailable", "results": []}
+    result = launcher._validate_output(json.dumps(early).encode(), 2, "b" * 64)
+    assert result == early
+    for alteration, code in (({"reason": "secret_reason"}, 2), ({"extra": "private"}, 2),
+                             ({"results": ["private"]}, 2), ({"status": "ANSWER"}, 2), ({}, 0)):
+        mutated = dict(early, **alteration)
+        with pytest.raises(launcher.LaunchRefused, match="invalid_output"):
+            launcher._validate_output(json.dumps(mutated).encode(), code, "b" * 64)
+
+
 def test_correct_shared_scope_is_required_and_forwarded():
     scope = "wd.q4-shared-projected-events.v1"
     payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",

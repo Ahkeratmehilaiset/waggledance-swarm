@@ -71,12 +71,9 @@ def rows():
     return [claim, note, opened, vote, veto]
 
 
-def producer_last_ok(name, digests, *, snapshot_sha256, board_text_sha256, context=False, observed_utc=AS_OF):
-    """The ``last_ok`` exactly as the producer's ``candidate_cycle`` returns it (sandbox/mind/mind_capture_producer.py
-    at c07334cd): 18 keys, exact file names under ``cycles/<name>/``, ``context_file``/``context_sha256`` None without
-    a context. ``test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source`` pins this mirror to the
-    producer's own return literal so the two cannot drift apart silently again (RCO2 G6)."""
-    return {
+def producer_last_ok(name, digests, *, snapshot_sha256, board_text_sha256, context=False, compact=False, observed_utc=AS_OF):
+    """Mirror the producer pointer; compact=False also exercises pointers from before compact heads existed."""
+    result = {
         "cycle_dir": name, "generation": 1, "observed_utc": observed_utc,
         "capture_file": f"cycles/{name}/capture.json", "capture_sha256": digests["capture.json"],
         "context_file": f"cycles/{name}/context.json" if context else None,
@@ -90,6 +87,9 @@ def producer_last_ok(name, digests, *, snapshot_sha256, board_text_sha256, conte
         "measures": {"capture_ms": 3, "context_ms": 0, "run_ms": 7, "events": 5, "new_rows": 5, "capture_bytes": 38,
                      "board_bytes": 6, "publication_bytes": 1024},
     }
+    if compact:
+        result.update(state_head_file=f"cycles/{name}/state.head.json", state_head_sha256="a" * 64)
+    return result
 
 
 def producer_contract():
@@ -480,12 +480,9 @@ def rewrite_pointer(latest: Path, change):
 def test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source():
     reader, keys = producer_contract()
     assert reader == READER == lane_read.READER
-    # The reader also accepts the optional pair used by the compact-state producer;
-    # this fixture mirrors the current non-compact candidate_cycle exactly.
-    compact_pair = {"state_head_file", "state_head_sha256"}
-    assert keys == (lane_read.LAST_OK_REQUIRED | lane_read.LAST_OK_OPTIONAL) - compact_pair
+    assert keys == lane_read.LAST_OK_REQUIRED | lane_read.LAST_OK_OPTIONAL
     assert set(producer_last_ok(CYCLE, {"capture.json": "0" * 64, "state.json": "1" * 64}, snapshot_sha256="2" * 64,
-                                board_text_sha256="3" * 64)) == keys
+                                board_text_sha256="3" * 64, compact=True)) == keys
     assert lane_read.LAST_OK_REQUIRED.isdisjoint(lane_read.LAST_OK_OPTIONAL)
     assert "receipt_file" in lane_read.LAST_OK_REQUIRED and "global_question" in lane_read.LAST_OK_OPTIONAL
 

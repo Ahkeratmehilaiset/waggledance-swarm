@@ -25,6 +25,11 @@ TASK = "lead-mind-shared-projection-fable-20261031-v1"
 APPROVED = frozenset({TASK, "other-task-1"})
 SENTINEL = "zebra-message-body-7f3a"
 IDENTITY = {"model": "fake-e5-small", "revision": "a" * 40, "weights_sha256": "b" * 64}
+# v6 strict policy: every builder input is projected under a pinned roster with the review signal excluded.
+ROSTER = {"codex-lead-1": "aaaa1111-1111-4111-8111-111111111aaa", "codex-tools-1": "bbbb2222-2222-4222-8222-222222222bbb",
+          "claude-rco-1": "cccc3333-3333-4333-8333-333333333ccc", "claude-rco-2": "dddd4444-4444-4444-8444-444444444ddd",
+          "fable-5": "eeee5555-5555-4555-8555-555555555eee"}
+RUNTIME = {"generation": "gen-20261031-synthetic", "manifest_sha256": "c" * 64}
 
 
 class FakeEncoder:
@@ -49,20 +54,25 @@ def event(**changes):
             "task_id": TASK, "ci": "green", "message": SENTINEL, "payload": {"detail": SENTINEL},
             "paths": ["C:/" + SENTINEL], "run_id": SENTINEL, "to": "fable-5"}
     base.update(changes)
+    base.setdefault("agent_uuid", ROSTER.get(base["agent"]))
     return base
 
 
-EVENTS = [event(), event(type="wake_request", status="requested", agent="claude-rco-1", ts_utc="2026-10-31T12:05:00Z"),
+EVENTS = [event(), event(type="wake_request", status="requested", agent="codex-tools-1", ts_utc="2026-10-31T12:05:00Z"),
           event(type="test", status="info", agent="fable-5", ts_utc="2026-10-31T12:10:59Z"),
           event(type="done", status="blocked", agent="codex-tools-1", ts_utc="2026-10-31T12:20:00Z")]
 
 
-def projection(events=None):
-    return sp.project_events(list(EVENTS if events is None else events), approved_tasks=APPROVED)
+def projection(events=None, **kw):
+    kw.setdefault("roster", ROSTER)
+    kw.setdefault("exclude_review_signal", True)
+    return sp.project_events(list(EVENTS if events is None else events), approved_tasks=APPROVED, **kw)
 
 
 def build(root, name="shared-v1", proj=None, encode=None, identity=IDENTITY, dim=DIM, **kw):
     kw.setdefault("approved_tasks", APPROVED)
+    kw.setdefault("roster", ROSTER)
+    kw.setdefault("exclude_review_signal", True)
     return build_mod.build_memory(projection() if proj is None else proj, encode or FakeEncoder(), identity, dim,
                                   root, name, **kw)
 
@@ -174,10 +184,11 @@ def test_the_validated_canonical_projection_is_persisted_once_and_reads_back_und
     assert memory["projection_schema"] == sp.SCHEMA == json.loads(raw)["schema"]
     receipt = json.loads((memory_dir / "cells" / "general" / "gen-000001" / "receipt.json").read_bytes())
     assert receipt["content"]["projection_sha256"] == sha
-    sp.validate_projection(json.loads(raw.decode("utf-8")), APPROVED, False)  # the persisted copy still validates
+    sp.validate_projection(json.loads(raw.decode("utf-8")), APPROVED, False, roster=ROSTER,
+                           exclude_review_signal=True)  # the persisted copy still validates under the same policy
     assert SENTINEL.encode() not in raw
     refs = {record["provenance"]["event_ref"] for record in json.loads(raw)["records"]}
-    answer = q4_mod.Q4(memory_mod.Memory(memory_dir), FakeEncoder()).ask("wake request from rco", "2026-10-31T13:00:00Z")
+    answer = q4_mod.Q4(memory_mod.Memory(memory_dir), FakeEncoder()).ask("wake request from tools", "2026-10-31T13:00:00Z")
     assert answer["status"] == "ANSWER" and {item["ref"] for item in answer["results"]} <= refs  # refs resolve
 
 
@@ -208,7 +219,7 @@ def test_memory_name_must_be_one_safe_directory_name(tmp_path, name):
 
 
 def test_root_must_be_a_real_directory_and_target_must_not_exist_in_any_form(tmp_path):
-    with pytest.raises(sp.ProjectionRefused, match="output_root_invalid"):
+    with pytest.raises(build_mod.BuildRefused, match="output_root_invalid"):
         build(tmp_path / "missing")
     (tmp_path / "taken").write_text("x", encoding="utf-8")
     with pytest.raises(build_mod.BuildRefused, match="memory_exists"):
@@ -226,18 +237,50 @@ def test_root_must_be_a_real_directory_and_target_must_not_exist_in_any_form(tmp
 def test_forged_or_untold_projection_is_refused_before_any_filesystem_action(tmp_path):
     forged = projection()
     forged["records"][0]["stored_text"] = SENTINEL
-    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):  # B4: one refusal class at the entry
         build(tmp_path, proj=forged)
-    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
         build(tmp_path, approved_tasks=None)  # rendered tasks need the same approved set
-    with_refs = sp.project_events([event(pr=7, head="c" * 40)], approved_tasks=APPROVED, include_refs=True)
-    with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):
+    with_refs = projection([event(pr=7, head="c" * 40)], include_refs=True)
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
         build(tmp_path, proj=with_refs)
-    with pytest.raises(sp.ProjectionRefused, match="include_refs_invalid"):
+    with pytest.raises(build_mod.BuildRefused, match="include_refs_invalid"):
         build(tmp_path, include_refs="false")
     with pytest.raises(build_mod.BuildRefused, match="projection_empty"):
         build(tmp_path, proj=projection([]))
     assert list(tmp_path.iterdir()) == []
+    assert issubclass(build_mod.BuildRefused, ValueError) and not issubclass(build_mod.BuildRefused, sp.ProjectionRefused)
+
+
+def test_the_builder_requires_the_strict_v6_policy_roster_and_review_exclusion(tmp_path):
+    loose = sp.project_events(list(EVENTS), approved_tasks=APPROVED)  # v5 behaviour: no roster, no exclusion
+    with pytest.raises(build_mod.BuildRefused, match="projection_policy_weak"):
+        build(tmp_path, proj=loose)
+    no_roster = sp.project_events(list(EVENTS), approved_tasks=APPROVED, exclude_review_signal=True)
+    with pytest.raises(build_mod.BuildRefused, match="projection_policy_weak"):
+        build(tmp_path, proj=no_roster)
+    not_excluded = sp.project_events(list(EVENTS), approved_tasks=APPROVED, roster=ROSTER)
+    with pytest.raises(build_mod.BuildRefused, match="projection_policy_weak"):
+        build(tmp_path, proj=not_excluded)
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
+        build(tmp_path, roster={k: v for k, v in ROSTER.items() if k != "fable-5"})  # a different roster pin
+    with pytest.raises(build_mod.BuildRefused, match="roster_required"):
+        build(tmp_path, roster=None)
+    with pytest.raises(build_mod.BuildRefused, match="roster_invalid"):
+        build(tmp_path, roster="not a roster")
+    for lax in (False, None, 1, "True"):
+        with pytest.raises(build_mod.BuildRefused, match="review_exclusion_required"):
+            build(tmp_path, exclude_review_signal=lax)  # the builder has no lax mode, not even a truthy non-bool
+    assert list(tmp_path.iterdir()) == []
+    with_rco = projection(list(EVENTS) + [event(agent="claude-rco-1", type="message", status="answered")])
+    assert with_rco["refused"] == {} and with_rco["accepted"] == 4  # the review row leaves no record and no count
+    out = build(tmp_path, proj=with_rco)
+    assert out["build_receipt"]["records"] == 4 and out["build_receipt"]["policy"] == {
+        "authorship": "declared_roster_consistent", "review_signal_excluded": True}
+    assert "claude-rco-1" not in json.dumps(out) and "cccc3333" not in json.dumps(out)
+    for path in (tmp_path / "shared-v1").rglob("*"):
+        if path.is_file():
+            assert b"cccc3333" not in path.read_bytes() and b"claude-rco-1" not in path.read_bytes()
 
 
 @pytest.mark.parametrize("identity", [
@@ -353,7 +396,156 @@ def test_the_e5_passage_adapter_builds_through_the_normal_route_with_a_stub_mode
 
 def test_a_non_callable_encoder_is_refused():
     with pytest.raises(build_mod.BuildRefused, match="encoder_invalid"):
-        build_mod.build_memory(projection(), "not callable", IDENTITY, DIM, ".", "x", approved_tasks=APPROVED)
+        build_mod.build_memory(projection(), "not callable", IDENTITY, DIM, ".", "x", approved_tasks=APPROVED,
+                               roster=ROSTER, exclude_review_signal=True)
+
+
+def _fake_model_dir(tmp_path, weights=b"synthetic-weights-" + b"\x00" * 64):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(weights)
+    return model_dir, hashlib.sha256(weights).hexdigest()
+
+
+def test_runtime_identity_is_derived_from_the_verified_model_dir_and_recorded_with_the_generation(tmp_path):
+    from sandbox.mind.step2 import encode as encode_mod
+    model_dir, weights_sha = _fake_model_dir(tmp_path)
+    runtime = dict(RUNTIME, model_dir=str(model_dir), revision="a" * 40)
+    derived = build_mod.runtime_identity(runtime)
+    assert derived["identity"] == {"model": encode_mod.MODEL, "revision": "a" * 40, "weights_sha256": weights_sha}
+    assert derived["weights_bytes"] == 18 + 64 and derived["generation"] == RUNTIME["generation"]
+    assert derived["manifest_sha256"] == RUNTIME["manifest_sha256"]
+    out = build(tmp_path, identity=None, runtime=runtime)  # identity DERIVED, not asserted by the caller
+    assert out["descriptor"]["encoder"] == derived["identity"]
+    receipt = out["build_receipt"]
+    assert receipt["runtime"] == {"generation": RUNTIME["generation"], "manifest_sha256": RUNTIME["manifest_sha256"],
+                                  "weights_bytes": 82, "identity_source": "encode.model_identity"}
+    assert str(model_dir) not in json.dumps(receipt) and "model_dir" not in json.dumps(receipt)
+    same = build(tmp_path, name="shared-asserted", identity=derived["identity"], runtime=runtime)  # both given: equal
+    assert same["descriptor"]["encoder"] == derived["identity"]
+    with pytest.raises(build_mod.BuildRefused, match="encoder_identity_mismatch"):
+        build(tmp_path, name="shared-wrong", identity=IDENTITY, runtime=runtime)  # asserted != derived
+    caller_only = build(tmp_path, name="shared-caller", identity=IDENTITY)  # synthetic route, no runtime
+    assert caller_only["build_receipt"]["runtime"] == {"identity_source": "caller_asserted"}
+
+
+@pytest.mark.parametrize("change, reason", [
+    (dict(model_dir="missing"), "encoder_identity_unavailable"),
+    (dict(revision=""), "encoder_identity_unavailable"),
+    (dict(generation="Bad Generation!"), "runtime_invalid"),
+    (dict(manifest_sha256="c" * 63), "runtime_invalid"),
+    (dict(extra=1), "runtime_invalid"),
+    ("not a dict", "runtime_invalid"),
+])
+def test_runtime_record_is_closed_and_a_missing_model_is_one_fixed_refusal(tmp_path, change, reason):
+    model_dir, _ = _fake_model_dir(tmp_path)
+    runtime = dict(RUNTIME, model_dir=str(model_dir), revision="a" * 40)
+    if isinstance(change, dict):
+        runtime.update(change)
+        if change.get("model_dir") == "missing":
+            runtime["model_dir"] = str(tmp_path / "nowhere")
+    else:
+        runtime = change
+    with pytest.raises(build_mod.BuildRefused, match=reason) as raised:
+        build(tmp_path, identity=None, runtime=runtime)
+    assert str(tmp_path) not in str(raised.value) and raised.value.__cause__ is None
+    assert not (tmp_path / "shared-v1").exists()
+
+
+def test_without_a_runtime_the_caller_identity_is_required():
+    with pytest.raises(build_mod.BuildRefused, match="encoder_identity_invalid"):
+        build_mod.build_memory(projection(), FakeEncoder(), None, DIM, ".", "x", approved_tasks=APPROVED, roster=ROSTER,
+                               exclude_review_signal=True)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("faiss " + SENTINEL), AttributeError("x " + SENTINEL), ZeroDivisionError()])
+def test_b1_any_backend_exception_after_creation_is_one_fixed_refusal_with_an_incomplete_report(tmp_path, monkeypatch, error):
+    def broken(*args, **kw):
+        raise error
+    monkeypatch.setattr(build_mod, "_publish_cell", broken)
+    with pytest.raises(build_mod.BuildRefused, match="write_failed") as raised:
+        build(tmp_path)
+    assert raised.value.__cause__ is None and SENTINEL not in repr(raised.value)
+    report = json.loads((tmp_path / "shared-v1" / "INCOMPLETE.json").read_bytes())
+    assert report["reason"] == "write_failed" and report["stage"] == "cells" and SENTINEL not in json.dumps(report)
+    assert not (tmp_path / "shared-v1" / "memory.json").exists()
+
+
+def test_p3_posix_commit_uses_link_and_a_competitor_written_after_the_check_is_preserved(tmp_path, monkeypatch):
+    competitor = b'{"schema": "competitor", "mine": true}'
+    monkeypatch.setattr(build_mod, "_PLATFORM", "posix")
+
+    def racing_link(src, dst):
+        with open(dst, "xb") as handle:  # a competitor wins between the lstat check and the link
+            handle.write(competitor)
+        return os.link(src, dst)
+    monkeypatch.setattr(build_mod, "_link", racing_link)
+    with pytest.raises(build_mod.BuildRefused, match="memory_exists"):
+        build(tmp_path)
+    memory_dir = tmp_path / "shared-v1"
+    assert (memory_dir / "memory.json").read_bytes() == competitor  # theirs, untouched
+    report = json.loads((memory_dir / "INCOMPLETE.json").read_bytes())
+    assert report["reason"] == "memory_exists" and report["stage"] == "memory"
+    staged = [path for path in memory_dir.iterdir() if path.name.startswith(".memory.json.staging-")]
+    assert len(staged) == 1  # ours is retained, never promoted, never removed
+
+
+def test_p3_nt_commit_refuses_when_a_competitor_appears_after_the_check(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("nt rename semantics are only exercised on Windows")
+    competitor = b'{"schema": "competitor"}'
+    monkeypatch.setattr(build_mod, "_PLATFORM", "nt")
+
+    def racing_rename(src, dst):
+        with open(dst, "xb") as handle:
+            handle.write(competitor)
+        return os.rename(src, dst)  # MoveFileEx without REPLACE_EXISTING: fails on an existing destination
+    monkeypatch.setattr(build_mod, "_rename", racing_rename)
+    with pytest.raises(build_mod.BuildRefused, match="memory_exists"):
+        build(tmp_path)
+    assert (tmp_path / "shared-v1" / "memory.json").read_bytes() == competitor
+
+
+def test_p3_posix_link_success_followed_by_staging_cleanup_failure_is_still_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_mod, "_PLATFORM", "posix")
+    monkeypatch.setattr(build_mod, "_link", os.link)  # NTFS supports hard links: the posix route runs for real here
+
+    def failing_unlink(path):
+        raise OSError(13, "permission " + SENTINEL)
+    monkeypatch.setattr(build_mod, "_unlink", failing_unlink)
+    out = build(tmp_path)
+    memory_dir = tmp_path / "shared-v1"
+    assert (memory_dir / "memory.json").exists() and not (memory_dir / "INCOMPLETE.json").exists()
+    assert out["memory_sha256"] == memory_mod.memory_sha256(memory_dir)
+    staged = [path for path in memory_dir.iterdir() if path.name.startswith(".memory.json.staging-")]
+    assert len(staged) == 1 and staged[0].read_bytes() == (memory_dir / "memory.json").read_bytes()  # same inode
+    descriptor = reader.read_descriptor(memory_dir / "descriptor.json", out["descriptor_sha256"])
+    assert reader.bind_memory(memory_dir, descriptor).views["general"].healthy  # published and readable
+
+
+def test_p3_posix_without_hard_links_and_an_unknown_platform_fail_closed_before_any_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_mod, "_PLATFORM", "posix")
+    monkeypatch.setattr(build_mod, "_link", None)
+    with pytest.raises(build_mod.BuildRefused, match="publication_unsupported"):
+        build(tmp_path)
+    monkeypatch.setattr(build_mod, "_PLATFORM", "java")
+    monkeypatch.setattr(build_mod, "_link", os.link)
+    with pytest.raises(build_mod.BuildRefused, match="publication_unsupported"):
+        build(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_p3_posix_link_refused_by_the_filesystem_at_commit_time_is_retained_as_incomplete(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_mod, "_PLATFORM", "posix")
+
+    def no_links(src, dst):
+        raise OSError(1, "EPERM " + SENTINEL)
+    monkeypatch.setattr(build_mod, "_link", no_links)
+    with pytest.raises(build_mod.BuildRefused, match="publication_unsupported"):
+        build(tmp_path)
+    report = json.loads((tmp_path / "shared-v1" / "INCOMPLETE.json").read_bytes())
+    assert report["reason"] == "publication_unsupported" and not (tmp_path / "shared-v1" / "memory.json").exists()
+    assert SENTINEL not in json.dumps(report)
 
 
 def test_a_failure_after_creation_retains_the_incomplete_directory_with_a_report_and_deletes_nothing(tmp_path,
@@ -550,7 +742,7 @@ def test_every_returned_ref_is_a_projected_ref_and_a_present_event_is_found_by_i
     assert unrelated["status"] in {"ANSWER", "ABSTAIN"}
     assert all(result["ref"] in projected for result in unrelated["results"])
     assert SENTINEL not in json.dumps(unrelated)
-    present = engine.ask("wake request from rco", "2026-10-31T13:00:00Z")
+    present = engine.ask("wake request from tools", "2026-10-31T13:00:00Z")
     wanted = projection()["records"][1]["provenance"]["event_ref"]
     assert present["status"] == "ANSWER" and present["results"][0]["ref"] == wanted
     assert SENTINEL not in json.dumps(present)

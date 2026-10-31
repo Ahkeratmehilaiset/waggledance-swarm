@@ -115,9 +115,13 @@ REASONS = frozenset({"event_not_object", "time_invalid", "agent_invalid", "agent
                      "task_id_invalid", "task_id_over_bytes", "sealed_named_excluded", "pr_invalid", "head_invalid",
                      "ci_invalid", "ci_over_bytes", "head_line_over_bytes",
                      "review_lane_excluded", "pr_branch_task_excluded", "agent_identity_mismatch"})
+# S5 exclusions leave NO trace in a batch projection: ``project_event`` raises them by name (in-process only), but
+# ``project_events`` neither records nor COUNTS them, since a ``review_lane_excluded`` count would itself disclose
+# that a review happened in that batch (Lead 2026-10-31 16:53Z). Other refusal reasons stay counted.
+SILENT_EXCLUSIONS = frozenset({"review_lane_excluded", "pr_branch_task_excluded"})
 # v6 (RCO2 production fix spec S5 + S2). S5: rows authored by a review lane, and rows whose task id names a PR
-# branch (contains "/"), are REFUSED (counted only) when the caller pins ``exclude_review_signal=True``, so a peer
-# review finishing never shows through message/claim/done rows. S2: with a pinned ``roster`` (lane -> uuid from the
+# branch (contains "/"), are REFUSED SILENTLY (no record, no count) when the caller pins
+# ``exclude_review_signal=True``, so a peer review finishing never shows through message/claim/done rows. S2: with a pinned ``roster`` (lane -> uuid from the
 # pinned wd-fleet.json) a row is projected only when its declared ``agent_uuid`` equals the roster entry; the uuid is
 # compared and never persisted. Authorship is then "declared_roster_consistent" - a declaration check, NOT
 # authentication (every lane runs as the same OS user); without a roster it is "declared_unverified".
@@ -244,7 +248,11 @@ def roster_from_fleet(document):
     if not isinstance(document, dict) or not isinstance(document.get("lanes"), list):
         raise ProjectionRefused("roster_invalid")
     roster = {}
-    for lane in document["lanes"]:
+    entries = list(document["lanes"])
+    supervisor = document.get("tools_supervisor")  # the real fleet file keeps the Tools lane here, not under lanes
+    if isinstance(supervisor, dict):
+        entries.append(supervisor)
+    for lane in entries:
         if not isinstance(lane, dict) or not isinstance(lane.get("agent"), str):
             raise ProjectionRefused("roster_invalid")
         if lane["agent"] not in LANES:
@@ -255,8 +263,20 @@ def roster_from_fleet(document):
     return _roster(roster)
 
 
+def _pairs_without_duplicates(pairs):
+    """``object_pairs_hook``: a JSON object that spells one key twice refuses instead of letting the last value win
+    (``json.loads`` default), so a second ``agent_uuid`` or a second ``lanes`` cannot shadow the pinned one."""
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ProjectionRefused("roster_duplicate_key")
+        out[key] = value
+    return out
+
+
 def load_roster(path, expected_sha256):
-    """The roster from the pinned fleet file: bytes within budget whose sha256 equals the caller's pin."""
+    """The roster from the pinned fleet file: bytes within budget whose sha256 equals the caller's pin, parsed with
+    duplicate JSON keys refused (``roster_duplicate_key``)."""
     if not isinstance(expected_sha256, str) or HEX64.fullmatch(expected_sha256) is None:
         raise ProjectionRefused("roster_pin_invalid")
     try:
@@ -269,7 +289,9 @@ def load_roster(path, expected_sha256):
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise ProjectionRefused("roster_pin_mismatch")
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_without_duplicates)
+    except ProjectionRefused:
+        raise  # roster_duplicate_key keeps its own token (ProjectionRefused is a ValueError)
     except (ValueError, RecursionError):
         raise ProjectionRefused("roster_unreadable") from None
     return roster_from_fleet(document)
@@ -423,6 +445,8 @@ def project_events(events, approved_tasks=None, include_refs=False, roster=None,
         try:
             record, count = project_event(event, approved, include_refs, roster, exclude_review_signal)
         except ProjectionRefused as exc:
+            if str(exc) in SILENT_EXCLUSIONS:
+                continue  # S5: not even a count, a per-reason count would itself say a review happened in this batch
             refused[str(exc)] = refused.get(str(exc), 0) + 1
             continue
         records.append(record)

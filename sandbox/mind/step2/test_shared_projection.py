@@ -527,16 +527,59 @@ FOREIGN_UUID = "ffff9999-9999-4999-8999-999999999fff"
 
 
 def fleet_document(roster=ROSTER):
-    return {"schema_version": 1, "fleet_name": "synthetic", "lanes": [{"agent": agent, "agent_uuid": uuid, "role": "x"}
-                                                                      for agent, uuid in roster.items()]}
+    """The real wd-fleet.json shape: interactive lanes under ``lanes``, the Tools lane under ``tools_supervisor``."""
+    lanes = [{"agent": agent, "agent_uuid": uuid, "role": "x"} for agent, uuid in roster.items() if agent != "codex-tools-1"]
+    document = {"schema_version": 1, "fleet_name": "synthetic", "lanes": lanes}
+    if "codex-tools-1" in roster:
+        document["tools_supervisor"] = {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"], "task_name": "x"}
+    return document
 
 
-def test_v6_review_lane_rows_are_refused_only_counted_when_the_exclusion_is_on():
+def test_v6_the_tools_lane_comes_from_tools_supervisor_and_a_lane_listed_twice_refuses():
+    assert sp.roster_from_fleet(fleet_document()) == ROSTER and "codex-tools-1" in sp.roster_from_fleet(fleet_document())
+    without_tools = {k: v for k, v in ROSTER.items() if k != "codex-tools-1"}
+    assert sp.roster_from_fleet(fleet_document(without_tools)) == without_tools  # no tools_supervisor: Tools absent
+    twice = fleet_document()
+    twice["lanes"].append({"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"]})  # also under lanes
+    with pytest.raises(sp.ProjectionRefused, match="roster_invalid"):
+        sp.roster_from_fleet(twice)
+    bad_tools = fleet_document()
+    bad_tools["tools_supervisor"] = {"agent": "codex-tools-1", "agent_uuid": "not-a-uuid"}
+    with pytest.raises(sp.ProjectionRefused, match="roster_invalid"):
+        sp.roster_from_fleet(bad_tools)
+    foreign_tools = fleet_document()
+    foreign_tools["tools_supervisor"] = {"agent": "someone-else", "agent_uuid": FOREIGN_UUID}  # not a projection lane
+    assert sp.roster_from_fleet(foreign_tools) == {k: v for k, v in ROSTER.items() if k != "codex-tools-1"}
+    assert sp.roster_from_fleet(dict(fleet_document(), tools_supervisor="x")) == without_tools  # shape ignored, not fatal
+
+
+def test_v6_load_roster_refuses_duplicate_json_keys_instead_of_last_wins(tmp_path):
+    path = tmp_path / "wd-fleet.json"
+    good = json.dumps(fleet_document(), indent=1)
+    dup_uuid = good.replace('"agent_uuid": "' + ROSTER["fable-5"] + '"',
+                            '"agent_uuid": "' + FOREIGN_UUID + '", "agent_uuid": "' + ROSTER["fable-5"] + '"', 1)
+    assert dup_uuid != good and json.loads(dup_uuid)["lanes"][-1]["agent_uuid"] == ROSTER["fable-5"]  # stdlib: last wins
+    for text in (dup_uuid, good.replace('"lanes":', '"lanes": [], "lanes":', 1),
+                 good.replace('"agent": "fable-5"', '"agent": "codex-lead-1", "agent": "fable-5"', 1)):
+        raw = text.encode("utf-8")
+        path.write_bytes(raw)
+        with pytest.raises(sp.ProjectionRefused, match="roster_duplicate_key"):
+            sp.load_roster(path, hashlib.sha256(raw).hexdigest())
+    raw = good.encode("utf-8")
+    path.write_bytes(raw)
+    assert sp.load_roster(path, hashlib.sha256(raw).hexdigest()) == ROSTER
+
+
+def test_v6_review_lane_rows_are_dropped_without_a_count_when_the_exclusion_is_on():
+    """Lead 16:53:59Z: a per-reason refusal count would itself leak that a review happened in that batch, so the
+    excluded rows leave NO trace: not a record, not a count, not the lane name. The exclusion is defence in depth;
+    the capture side must still pre-filter review lanes before projection (RCO2 spec S1)."""
     rco = event(agent="claude-rco-2", type="message", status="answered", agent_uuid=ROSTER["claude-rco-2"])
     strict = sp.project_events([rco], approved_tasks=APPROVED, exclude_review_signal=True)
-    assert strict["accepted"] == 0 and strict["refused"] == {"review_lane_excluded": 1}
+    assert strict["accepted"] == 0 and strict["refused"] == {} and strict["records"] == []
     assert strict["review_signal_excluded"] is True and strict["schema"] == sp.SCHEMA == "wd.bridge-mind-shared-projection.v6"
-    assert "claude-rco-2" not in json.dumps(strict)  # not even the lane name of the excluded row survives
+    serialized = json.dumps(strict)
+    assert "claude-rco-2" not in serialized and "review_lane" not in serialized and "pr_branch" not in serialized
     loose = project(rco)
     assert loose["accepted"] == 1 and loose["review_signal_excluded"] is False
     assert sp.REVIEW_LANES == frozenset({"claude-rco-1", "claude-rco-2"}) and sp.REVIEW_LANES < sp.LANES
@@ -544,14 +587,24 @@ def test_v6_review_lane_rows_are_refused_only_counted_when_the_exclusion_is_on()
         for kind in ("message", "claim", "done", "milestone"):
             out = sp.project_events([event(agent=lane, type=kind, status="done")], approved_tasks=APPROVED,
                                     exclude_review_signal=True)
-            assert out["refused"] == {"review_lane_excluded": 1}
+            assert out["accepted"] == 0 and out["refused"] == {}
+    with pytest.raises(sp.ProjectionRefused, match="review_lane_excluded"):
+        sp.project_event(rco, APPROVED, False, exclude_review_signal=True)  # the single-event API still names it
+    mixed = sp.project_events([rco, event(agent="codex-lead-1", agent_uuid=ROSTER["codex-lead-1"]),
+                               event(agent="codex-lead-1", type="unknown_type")], approved_tasks=APPROVED,
+                              exclude_review_signal=True)
+    assert mixed["accepted"] == 1 and mixed["refused"] == {"type_not_allowed": 1}  # other reasons still count
+    assert mixed["dropped_fields"] == sp.project_events([event(agent="codex-lead-1", agent_uuid=ROSTER["codex-lead-1"])],
+                                                        approved_tasks=APPROVED, exclude_review_signal=True)["dropped_fields"]
 
 
-def test_v6_a_task_id_with_a_slash_is_refused_instead_of_unknown_when_the_exclusion_is_on():
+def test_v6_a_task_id_with_a_slash_is_dropped_instead_of_unknown_when_the_exclusion_is_on():
     pr_branch = event(agent="codex-lead-1", task_id="fable-5/mind-x")
     strict = sp.project_events([pr_branch], approved_tasks=APPROVED, exclude_review_signal=True)
-    assert strict["accepted"] == 0 and strict["refused"] == {"pr_branch_task_excluded": 1}
+    assert strict["accepted"] == 0 and strict["refused"] == {} and strict["records"] == []
     assert "mind-x" not in json.dumps(strict)
+    with pytest.raises(sp.ProjectionRefused, match="pr_branch_task_excluded"):
+        sp.project_event(pr_branch, APPROVED, False, exclude_review_signal=True)
     loose = project(pr_branch)
     assert loose["accepted"] == 1 and loose["records"][0]["meta"]["task_id"] == "UNKNOWN"
     kept = sp.project_events([event(agent="codex-lead-1")], approved_tasks=APPROVED, exclude_review_signal=True)
@@ -635,19 +688,29 @@ def test_v6_roster_from_fleet_and_the_pinned_loader(tmp_path):
 def test_v6_the_real_fleet_file_on_this_branch_yields_a_roster_for_every_projection_lane():
     import pathlib
     fleet = pathlib.Path(sp.__file__).resolve().parents[3] / "ops" / "windows" / "reboot" / "wd-fleet.json"
-    roster = sp.roster_from_fleet(json.loads(fleet.read_bytes()))
-    assert {"codex-lead-1", "fable-5", "claude-rco-1", "claude-rco-2"} <= set(roster) <= sp.LANES
+    document = json.loads(fleet.read_bytes())
+    raw = fleet.read_bytes()
+    roster = sp.load_roster(fleet, hashlib.sha256(raw).hexdigest())  # the pinned route, duplicate keys refused
+    assert roster == sp.roster_from_fleet(document)
+    # the real shape: four interactive lanes under "lanes", the Tools lane under "tools_supervisor"; all five project
+    assert set(roster) == sp.LANES == {"codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2"}
+    assert "codex-tools-1" not in {lane["agent"] for lane in document["lanes"]}
+    assert document["tools_supervisor"]["agent"] == "codex-tools-1"
     assert all(sp.UUID.fullmatch(uuid) for uuid in roster.values()) and len(set(roster.values())) == len(roster)
-    # the repo copy at this base lists four lanes (no codex-tools-1): under this roster a Tools row cannot project
-    out = sp.project_events([event(agent="codex-tools-1", agent_uuid=FOREIGN_UUID)], approved_tasks=APPROVED, roster=roster)
-    assert out["accepted"] == (1 if "codex-tools-1" in roster else 0)
+    out = sp.project_events([event(agent="codex-tools-1", agent_uuid=roster["codex-tools-1"])], approved_tasks=APPROVED,
+                            roster=roster, exclude_review_signal=True)
+    assert out["accepted"] == 1 and out["records"][0]["meta"]["agent"] == "codex-tools-1"
+    assert roster["codex-tools-1"] not in json.dumps(out)  # compared, never persisted
+    foreign = sp.project_events([event(agent="codex-tools-1", agent_uuid=FOREIGN_UUID)], approved_tasks=APPROVED,
+                                roster=roster, exclude_review_signal=True)
+    assert foreign["accepted"] == 0 and foreign["refused"] == {"agent_identity_mismatch": 1}
 
 
 def test_v6_validate_projection_binds_authorship_and_the_exclusion_flag():
     events = [event(agent="codex-lead-1", agent_uuid=ROSTER["codex-lead-1"]),
               event(agent="claude-rco-1", agent_uuid=ROSTER["claude-rco-1"], type="message", status="answered")]
     strict = sp.project_events(events, approved_tasks=APPROVED, roster=ROSTER, exclude_review_signal=True)
-    assert strict["accepted"] == 1 and strict["refused"] == {"review_lane_excluded": 1}
+    assert strict["accepted"] == 1 and strict["refused"] == {}
     assert sp.validate_projection(strict, APPROVED, False, roster=ROSTER, exclude_review_signal=True) is strict
     for kw in (dict(roster=None, exclude_review_signal=True), dict(roster=ROSTER, exclude_review_signal=False), {}):
         with pytest.raises(sp.ProjectionRefused, match="projection_invalid"):

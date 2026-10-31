@@ -59,7 +59,26 @@ only the approved-metadata head line. This module builds the same frozen layout 
   leaves no ``memory.json`` (``memory.Memory`` refuses ``memory_unreadable``; the Lead reader refuses
   ``descriptor_unreadable`` or ``memory_descriptor_unreadable``), and ``INCOMPLETE.json`` never coexists with a
   promoted ``memory.json``. A torn or altered ``memory.json`` after the fact is caught by the descriptor digest
-  (``memory_descriptor_mismatch``), not prevented.
+  (``memory_descriptor_mismatch``), not prevented. The promotion primitive is per platform (nt no-replace rename,
+  posix no-replace link + best-effort unlink, else fail closed before any write); a competitor that appears between
+  the lstat check and the primitive keeps its bytes and this build refuses ``memory_exists``; once the primitive
+  succeeds the generation is published and a failing staging unlink only leaves a second hard link;
+* STRICT v6 POLICY (RCO2 spec S2 + S5): the projection must have been built under a pinned roster
+  (``authorship == declared_roster_consistent``) with the review signal excluded (``review_signal_excluded True``),
+  is re-validated under the builder's own roster, and both are recorded as ``policy`` in ``memory.json`` and the
+  build receipt; a v5-style projection refuses ``projection_policy_weak``. The labels are CALLER ASSERTIONS re-pinned
+  by this builder's own roster, not proof: a relabelled projection cannot be told apart in-process, and the capture
+  side must still pre-filter review lanes and bind its source (RCO2 spec S1/S3) before anything reaches here;
+* ENCODER IDENTITY (RCO1 B2): with ``runtime`` the identity is derived by ``encode.model_identity`` from the verified
+  model directory (weights sha256, fixed model name, pinned revision) and the build receipt records the runtime
+  generation, manifest sha256, weights size and ``identity_source``; a caller-asserted identity, when also given,
+  must equal the derived one. The caller-asserted route alone remains for synthetic tests and is labelled
+  ``caller_asserted`` in the receipt;
+* NOT PROVED, disclosed: ``core.faiss_store.FaissCollection.save`` writes index.faiss and meta.json with ordinary
+  (replacing) writes inside the fresh staging directory, not ``xb``; the staging directory names carry 16 random hex
+  characters but all lanes run as one OS user, so a same-user writer racing inside the memory directory is not
+  proved absent (the receipt digests detect, they do not prevent); the resolver-side consumer must still compare
+  ``memory.json`` bytes to the descriptor pin.
 
 Synthetic only: no real events, notes, model, index or deployment are touched by this module or its tests. Trust
 assumptions, disclosed: the encoder identity is recorded as given (the caller pins it from receipts; a wrong identity
@@ -81,6 +100,7 @@ import numpy as np
 
 from core.faiss_store import FaissCollection
 from sandbox.mind.step2 import cell as cell_mod
+from sandbox.mind.step2 import encode as encode_mod
 from sandbox.mind.step2 import memory as memory_mod
 from sandbox.mind.step2 import shared_projection as sp
 from waggledance.core import hex_cell_topology as topology_mod
@@ -116,7 +136,20 @@ BLOCKED_CELL = topology_mod.CELL_SAFETY
 PLACEMENT_RULE = "shared-projection-v1: closed table over projected type; status blocked -> safety"
 TOPOLOGY_FILE = Path(topology_mod.__file__)
 WATCHDOG_RULE = "external process watchdog required: synchronous encoder call, wall-clock limit + memory cap"
-_rename = os.rename  # bound once so tests can inject a commit-point failure; nt rename never replaces an existing file
+# Commit-point primitive per platform (the same policy as shared_projection._publish): nt -> os.rename, which is
+# MoveFileEx WITHOUT REPLACE_EXISTING and fails on an existing destination; posix -> os.link, which never replaces
+# (EEXIST) and is atomic on local filesystems, then the staging name is unlinked best-effort. Anything else, or a
+# filesystem without hard links, fails closed BEFORE any write (publication_unsupported). Bound once so tests can
+# pin them deterministically.
+SUPPORTED_PLATFORMS = frozenset({"nt", "posix"})
+_PLATFORM = os.name
+_rename = os.rename
+_link = getattr(os, "link", None)
+_unlink = os.unlink
+# B2: the encoder identity may be DERIVED from a verified runtime model directory (encode.model_identity hashes the
+# weights; the revision is the caller's pinned declaration) together with the runtime generation and manifest pin.
+RUNTIME_KEYS = frozenset({"model_dir", "revision", "generation", "manifest_sha256"})
+GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 class BuildRefused(ValueError):
@@ -152,6 +185,29 @@ def check_dim(dim):
     if type(dim) is not int or dim < 1 or dim > MAX_DIM:
         raise BuildRefused("dim_invalid")
     return dim
+
+
+def runtime_identity(runtime):
+    """Derive the encoder identity from a verified runtime: ``runtime`` is a closed record {model_dir, revision,
+    generation, manifest_sha256}; the identity comes from ``encode.model_identity`` (sha256 of model.safetensors in
+    that directory, the fixed model name, the pinned revision), never from the caller's assertion. Returns the
+    three-key identity plus ``weights_bytes``, ``generation`` and ``manifest_sha256`` for the build receipt. Any
+    problem reading the model is the fixed refusal ``encoder_identity_unavailable`` (no path in the message)."""
+    if (not isinstance(runtime, dict) or set(runtime) != RUNTIME_KEYS
+            or not isinstance(runtime["model_dir"], str) or not isinstance(runtime["revision"], str)
+            or not isinstance(runtime["generation"], str) or GENERATION.fullmatch(runtime["generation"]) is None
+            or not isinstance(runtime["manifest_sha256"], str) or HEX64.fullmatch(runtime["manifest_sha256"]) is None):
+        raise BuildRefused("runtime_invalid")
+    try:
+        derived = encode_mod.model_identity(model_dir=runtime["model_dir"], revision=runtime["revision"])
+    except (OSError, ValueError, TypeError, KeyError):
+        raise BuildRefused("encoder_identity_unavailable") from None
+    identity = encoder_identity({key: derived[key] for key in ENCODER_IDENTITY_KEYS if key in derived})
+    weights_bytes = derived.get("weights_bytes")
+    if type(weights_bytes) is not int or weights_bytes < 1:
+        raise BuildRefused("encoder_identity_unavailable")
+    return {"identity": identity, "weights_bytes": weights_bytes, "generation": runtime["generation"],
+            "manifest_sha256": runtime["manifest_sha256"]}
 
 
 def e5_passage_encoder(model):
@@ -309,10 +365,25 @@ def _publish_cell(cell_dir, cell_id, rows, vectors, **kw):
     return pointer
 
 
+def _publication_supported():
+    """Fail closed before any write when no atomic no-replace primitive exists on this platform."""
+    if _PLATFORM == "nt":
+        return
+    if _PLATFORM == "posix" and _link is not None:
+        return
+    raise BuildRefused("publication_unsupported")
+
+
 def _commit_memory(memory_dir, memory_bytes):
     """The single commit point of a generation: fully write + fsync ``memory.json`` under a staging name inside the
-    memory directory, then promote it with one no-replace rename. A failure before or during the rename leaves no
-    ``memory.json`` (the staging copy is retained, never promoted, never removed)."""
+    memory directory, then promote it with one atomic NO-REPLACE primitive: nt ``rename`` (fails on an existing
+    destination), posix ``link`` (EEXIST when a competitor won; its bytes are never touched) followed by a
+    best-effort unlink of the staging name. The lstat pre-check is only a cheap early refusal, not the guarantee;
+    the primitive is. A competitor that appears between the check and the primitive is preserved and this build
+    refuses ``memory_exists``. A posix filesystem that refuses links fails closed ``publication_unsupported``. Once
+    the primitive has succeeded the generation IS published: a failing staging unlink leaves an extra hard link and
+    nothing else (never INCOMPLETE). A failure before or during the primitive leaves no ``memory.json`` (the staging
+    copy is retained, never promoted, never removed)."""
     target = memory_dir / "memory.json"
     try:
         os.lstat(target)
@@ -322,7 +393,25 @@ def _commit_memory(memory_dir, memory_bytes):
         raise BuildRefused("memory_exists")  # only a foreign writer could have put it there; never replace it
     staging = memory_dir / f".memory.json.staging-{secrets.token_hex(8)}"
     _write_new(staging, memory_bytes)
-    _rename(staging, target)
+    if _PLATFORM == "nt":
+        try:
+            _rename(staging, target)  # MoveFileEx without REPLACE_EXISTING: fails when the destination exists
+        except FileExistsError:
+            raise BuildRefused("memory_exists") from None
+        return
+    if _PLATFORM == "posix" and _link is not None:
+        try:
+            _link(staging, target)  # link(2) never replaces: EEXIST when another writer won
+        except FileExistsError:
+            raise BuildRefused("memory_exists") from None
+        except OSError:
+            raise BuildRefused("publication_unsupported") from None  # no hard links here: fail closed
+        try:  # published from here on: the staging name is a second link to the same bytes
+            _unlink(staging)
+        except OSError:
+            pass
+        return
+    raise BuildRefused("publication_unsupported")
 
 
 def _report_incomplete(memory_dir, name, reason, stage):
@@ -337,22 +426,56 @@ def _report_incomplete(memory_dir, name, reason, stage):
         pass
 
 
-def build_memory(projection, encode, identity, dim, root, name, *, approved_tasks=None, include_refs=False):
+def build_memory(projection, encode, identity, dim, root, name, *, approved_tasks=None, include_refs=False,
+                 roster=None, exclude_review_signal=False, runtime=None):
     """Build ``root/name`` from a validated projection; returns the exact reader descriptor, the build receipt and
     their sha256 digests.
 
-    Refuses (nothing written) on an invalid projection, identity, dim, root or name, a bound violation, a failing
-    encoder, or an existing target; after the memory directory exists, any failure retains the incomplete output,
-    adds ``INCOMPLETE.json`` and removes nothing. ``memory.json`` is written last (``_commit_memory``), so it exists
-    only for a complete generation."""
-    sp.validate_projection(projection, approved_tasks, include_refs)
-    encoder = encoder_identity(identity)
+    ``roster`` (REQUIRED, lane -> uuid, see ``shared_projection.load_roster``) and ``exclude_review_signal``
+    (REQUIRED ``True``; ``review_exclusion_required`` otherwise, the production path has no lax mode) are the strict
+    v6 policy: the projection must carry ``authorship == declared_roster_consistent`` and
+    ``review_signal_excluded is True`` (``projection_policy_weak`` otherwise) and is re-validated under this exact
+    roster with the exclusion pinned. Both are recorded as ``policy`` in ``memory.json`` (bound by the descriptor's
+    ``memory_sha256``) and in the build receipt; the descriptor itself keeps the reader's exact five keys. ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
+    identity from a verified model directory instead (``runtime_identity``) and, when both are given, they must be
+    equal (``encoder_identity_mismatch``). Every refusal is ``BuildRefused`` with a fixed token (projection refusals
+    are re-raised under their own token). Refuses (nothing written) on an invalid projection, policy, identity, dim,
+    root or name, a bound violation, a failing encoder, an unsupported platform or an existing target; after the
+    memory directory exists, ANY failure retains the incomplete output, adds ``INCOMPLETE.json`` and removes nothing.
+    ``memory.json`` is written last (``_commit_memory``), so it exists only for a complete generation."""
+    if (not isinstance(projection, dict) or projection.get("authorship") != sp.AUTHORSHIP_ROSTER
+            or projection.get("review_signal_excluded") is not True):
+        raise BuildRefused("projection_policy_weak")
+    if roster is None:
+        raise BuildRefused("roster_required")
+    if exclude_review_signal is not True:
+        raise BuildRefused("review_exclusion_required")
+    try:
+        roster = sp._roster(roster)
+        sp.validate_projection(projection, approved_tasks, include_refs, roster, exclude_review_signal)
+    except sp.ProjectionRefused as refused:
+        raise BuildRefused(str(refused)) from None  # B4: one refusal class at the entry, same fixed tokens
+    runtime_record = {"identity_source": "caller_asserted"}
+    if runtime is not None:
+        derived = runtime_identity(runtime)
+        if identity is not None and encoder_identity(identity) != derived["identity"]:
+            raise BuildRefused("encoder_identity_mismatch")
+        encoder = derived["identity"]
+        runtime_record = {"generation": derived["generation"], "manifest_sha256": derived["manifest_sha256"],
+                          "weights_bytes": derived["weights_bytes"], "identity_source": "encode.model_identity"}
+    else:
+        encoder = encoder_identity(identity)
     dim = check_dim(dim)
     if not callable(encode):
         raise BuildRefused("encoder_invalid")
     if not isinstance(name, str) or MEMORY_NAME.fullmatch(name) is None:
         raise BuildRefused("memory_name_invalid")
-    root = sp._output_root(root)
+    _publication_supported()
+    try:
+        root = sp._output_root(root)
+    except sp.ProjectionRefused as refused:
+        raise BuildRefused(str(refused)) from None
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True}
     _check_bounds(projection["records"])
     projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
     projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
@@ -399,7 +522,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim, "placement": PLACEMENT_RULE,
                   "topology_source_sha256": cell_mod.file_sha256(TOPOLOGY_FILE), "cells": pointers,
                   "records": len(records), "duplicates": duplicates, "views": list(VIEWS),
-                  "independent_views": False}
+                  "independent_views": False, "policy": policy}
         sp.corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = hashlib.sha256(memory_bytes).hexdigest()
@@ -417,7 +540,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                          "dim": dim, "records": len(records), "duplicates": duplicates,
                          "cells": {cell_id: row["count"] for cell_id, row in pointers.items()},
                          "cutoff_utc": cutoff_utc, "views": list(VIEWS), "independent_views": False,
-                         "canonical_event": False, "authenticated": False,
+                         "canonical_event": False, "authenticated": False, "policy": policy,
+                         "runtime": runtime_record,
                          "bounds": {"max_records": MAX_RECORDS, "max_input_bytes": MAX_INPUT_BYTES,
                                     "encode_batch": ENCODE_BATCH},
                          "watchdog": WATCHDOG_RULE, "built_utc": _utc_now()}
@@ -435,8 +559,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     except sp.corpus_mod.ws.WorkspaceError:
         _report_incomplete(memory_dir, name, "output_guarded", stage)
         raise BuildRefused("output_guarded") from None
-    except (OSError, ValueError, TypeError, KeyError, cell_mod.CellError):
-        _report_incomplete(memory_dir, name, "write_failed", stage)
+    except Exception:  # noqa: BLE001 - B1: faiss RuntimeError, AttributeError or anything else after mkdir is one
+        _report_incomplete(memory_dir, name, "write_failed", stage)  # fixed token with INCOMPLETE, never its text
         raise BuildRefused("write_failed") from None
     return {"memory_sha256": memory_sha256, "descriptor_sha256": descriptor_sha256, "descriptor": descriptor,
             "build_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(), "build_receipt": build_receipt,

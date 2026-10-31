@@ -490,7 +490,7 @@ def test_g6_the_fixture_and_the_contract_are_derived_from_the_producer_source():
 def test_g6_p1_a_pointer_exactly_as_the_producer_commits_it_is_accepted_and_only_four_fields_reach_the_output(tmp_path):
     audit, latest, _ = make_live(tmp_path)  # 18 keys, context None
     pointer = lane_read.read_pointer(latest, audit)
-    assert set(pointer) == lane_read.LAST_OK_REQUIRED  # the known optional fields never leave read_pointer
+    assert set(pointer) == lane_read.LAST_OK_REQUIRED  # legacy pointer drops its descriptive optional fields
     result = read(audit, latest)
     assert result["refusal"] is None
     assert set(result["pointer"]) == {"cycle_dir", "cycle_generation", "snapshot_sha256", "state_sha256"}
@@ -504,16 +504,14 @@ def test_g6_p2_a_pointer_with_a_context_file_and_digest_is_accepted(tmp_path):
     assert read(audit, latest)["refusal"] is None
 
 
-def test_compact_state_descriptor_pair_is_shape_checked_but_not_exposed(tmp_path):
-    audit, latest, _ = make_live(tmp_path)
-    def add_pair(p):
-        p["state_head_file"] = f"cycles/{CYCLE}/state.head.json"
-        p["state_head_sha256"] = "a" * 64
-    rewrite_pointer(latest, add_pair)
+def test_compact_state_descriptor_pair_is_hash_checked_but_paths_are_not_exposed(tmp_path):
+    audit, latest, cycle, _ = compact_live(tmp_path)
     result = read(audit, latest)
     assert result["refusal"] is None
     assert "state_head_file" not in json.dumps(result)
-    assert "a" * 64 not in json.dumps(result)
+    assert str(cycle) not in json.dumps(result)
+    assert result["pointer"]["state_head_sha256"] == sha((cycle / "state.head.json").read_bytes())
+    assert result["pointer"]["head_to_state_content"] == "UNVERIFIED"
 
 
 @pytest.mark.parametrize("compact", [
@@ -530,11 +528,8 @@ def test_compact_state_descriptor_half_pair_or_invalid_shape_is_refused(tmp_path
         read(audit, latest)
 
 
-def test_compact_descriptor_does_not_replace_full_state_hash_validation(tmp_path):
+def test_pointer_without_compact_descriptor_keeps_full_state_hash_validation(tmp_path):
     audit, latest, cycle = make_live(tmp_path)
-    def add_pair(p):
-        p.update(state_head_file=f"cycles/{CYCLE}/state.head.json", state_head_sha256="a" * 64)
-    rewrite_pointer(latest, add_pair)
     assert read(audit, latest)["refusal"] is None
     state = cycle / "state.json"
     state.write_bytes(state.read_bytes() + b" ")
@@ -763,3 +758,146 @@ def test_v5_the_output_never_carries_a_whole_log_or_bare_complete_token(tmp_path
     strings = output_strings(result)
     assert "complete" not in strings and not any(s.startswith("bridge-log:") for s in strings)
     assert any(s == "bounded_window_of_bridge_log_not_whole_log" for s in strings)
+
+
+# -- compact state-head observations (Tools proposal; apply these tests before reader Source) --------------------
+
+def compact_live(tmp_path, *, nested=False, generation="g1"):
+    audit, latest, cycle = make_live(tmp_path, nested=nested, generation=generation,
+                                    token=cursor(generation=generation))
+    state = json.loads((cycle / "state.json").read_text(encoding="utf-8"))
+    head = {key: state[key] for key in ("generation", "cursor", "source", "window_sha256")}
+    head.update(schema="wd.bridge-mind-producer-state-head.v1", state_file="state.json",
+                state_sha256=sha((cycle / "state.json").read_bytes()))
+    repin_compact_head(latest, cycle, head)
+    return audit, latest, cycle, head
+
+
+def repin_compact_head(latest, cycle, head):
+    raw = json.dumps(head, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    (cycle / "state.head.json").write_bytes(raw)
+    pointer = json.loads(latest.read_text(encoding="utf-8"))
+    pointer["last_ok"].update(state_head_file=f"cycles/{CYCLE}/state.head.json", state_head_sha256=sha(raw))
+    latest.write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_compact_head_avoids_full_state_and_labels_unverified_correspondence(tmp_path, monkeypatch, nested):
+    audit, latest, cycle, head = compact_live(tmp_path, nested=nested)
+
+    def full_state_must_not_be_read(*args, **kwargs):
+        raise AssertionError("compact metadata must not read or hash the full state body")
+
+    monkeypatch.setattr(lane_read, "_state_cursor", full_state_must_not_be_read)
+    # Deliberately break body correspondence. Acceptance must disclose that this was NOT verified.
+    (cycle / "state.json").write_bytes(b"synthetic body does not match the declared digest")
+    result = read(audit, latest)
+    assert result["binding"]["origin"] == "UNKNOWN"
+    assert result["pointer"]["state_read_mode"] == "compact_head"
+    assert result["pointer"]["state_head_origin"] == "UNVERIFIED"
+    assert result["pointer"]["head_to_state_content"] == "UNVERIFIED"
+    assert result["pointer"]["state_sha256"] == head["state_sha256"]
+    assert result["pointer"]["state_head_sha256"] == sha((cycle / "state.head.json").read_bytes())
+    assert result["authority"] == "none" and result["scope"] == lane_read.SCOPE
+    assert str(cycle) not in json.dumps(result) and "facts_meta" not in result
+
+
+def test_legacy_pointer_still_hash_checks_full_state(tmp_path, monkeypatch):
+    audit, latest, cycle = make_live(tmp_path)
+    seen = []
+    original = lane_read._state_cursor
+
+    def track(path, *args, **kwargs):
+        seen.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(lane_read, "_state_cursor", track)
+    assert read(audit, latest)["refusal"] is None
+    assert seen == [cycle / "state.json"]
+    (cycle / "state.json").write_bytes(b"synthetic mismatch")
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_race_or_mismatch"):
+        read(audit, latest)
+
+
+def test_compact_null_generation_is_only_an_opt_in_observation(tmp_path):
+    audit, latest, cycle, head = compact_live(tmp_path, generation=None)
+    binding = view(cursor(generation=None))
+    with pytest.raises(lane_read.LaneReadRefused, match="generation_unavailable"):
+        read(audit, latest, binding=binding)
+    result = read(audit, latest, binding=binding, allow_unknown_generation=True)
+    assert result["binding"]["generation"] is None
+    assert result["binding"]["rotation_continuity"] == "UNKNOWN"
+    assert result["pointer"]["head_to_state_content"] == "UNVERIFIED"
+
+
+@pytest.mark.parametrize("change,reason", [
+    (lambda h: h.update(schema="wrong"), "state_head_invalid"),
+    (lambda h: h.update(extra="unexpected"), "state_head_invalid"),
+    (lambda h: h.pop("window_sha256"), "state_head_invalid"),
+    (lambda h: h.update(generation=True), "state_head_invalid"),
+    (lambda h: h.update(generation=0), "state_head_invalid"),
+    (lambda h: h.update(state_file="../state.json"), "state_head_invalid"),
+    (lambda h: h.update(state_sha256="not-a-digest"), "state_head_invalid"),
+    (lambda h: h.update(window_sha256="not-a-digest"), "state_head_invalid"),
+    (lambda h: h.update(source=[]), "state_head_invalid"),
+    (lambda h: h["source"].update(extra="unexpected"), "state_head_invalid"),
+    (lambda h: h["source"].update(event_count=True), "state_head_invalid"),
+    (lambda h: h.update(cursor="bad"), "binding_invalid"),
+    (lambda h: h.update(generation=2), "pointer_race_or_mismatch"),
+    (lambda h: h.update(state_sha256="a" * 64), "pointer_race_or_mismatch"),
+    (lambda h: h["source"].update(log_identity=WINDOW + OTHER_LOG_ID), "state_head_binding_mismatch"),
+    (lambda h: h.update(cursor=cursor(file_identity=OTHER_LOG_ID)), "log_identity_mismatch"),
+    (lambda h: h.update(cursor=cursor(generation=None)), "log_identity_mismatch"),
+])
+def test_compact_head_class_sweep_refuses_malformed_or_inconsistent_metadata(tmp_path, change, reason):
+    audit, latest, cycle, head = compact_live(tmp_path)
+    change(head)
+    repin_compact_head(latest, cycle, head)
+    with pytest.raises(lane_read.LaneReadRefused) as info:
+        read(audit, latest)
+    assert str(info.value) == reason
+
+
+def test_compact_head_digest_tampering_refuses_without_full_state_fallback(tmp_path, monkeypatch):
+    audit, latest, cycle, head = compact_live(tmp_path)
+    (cycle / "state.head.json").write_bytes((cycle / "state.head.json").read_bytes() + b" ")
+    monkeypatch.setattr(lane_read, "_state_cursor", lambda *a, **k: pytest.fail("no fallback allowed"))
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_race_or_mismatch"):
+        read(audit, latest)
+
+
+def test_compact_head_uses_pointer_budget_not_state_budget(tmp_path):
+    audit, latest, cycle, head = compact_live(tmp_path)
+    head["padding"] = "x" * lane_read.POINTER_BUDGET
+    repin_compact_head(latest, cycle, head)
+    assert (cycle / "state.head.json").stat().st_size > lane_read.POINTER_BUDGET
+    with pytest.raises(lane_read.LaneReadRefused, match="state_head_invalid"):
+        read(audit, latest)
+
+
+@pytest.mark.parametrize("removed", ["state_head_file", "state_head_sha256"])
+def test_compact_pointer_half_pair_never_falls_back(tmp_path, removed):
+    audit, latest, cycle, head = compact_live(tmp_path)
+    rewrite_pointer(latest, lambda p: p.pop(removed))
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_invalid"):
+        read(audit, latest)
+
+
+@pytest.mark.parametrize("path", [
+    f"cycles/{CYCLE}/state.json", "state.head.json", f"cycles/{CYCLE}/../state.head.json",
+    "cycles/20261030T075900Z/state.head.json",
+])
+def test_compact_pointer_requires_exact_same_cycle_filename(tmp_path, path):
+    audit, latest, cycle, head = compact_live(tmp_path)
+    rewrite_pointer(latest, lambda p: p.update(state_head_file=path))
+    with pytest.raises(lane_read.LaneReadRefused, match="pointer_invalid"):
+        read(audit, latest)
+
+
+def test_missing_compact_head_never_uses_legacy_state_fallback(tmp_path, monkeypatch):
+    audit, latest, cycle = make_live(tmp_path)
+    rewrite_pointer(latest, lambda p: p.update(state_head_file=f"cycles/{CYCLE}/state.head.json",
+                                             state_head_sha256="0" * 64))
+    monkeypatch.setattr(lane_read, "_state_cursor", lambda *a, **k: pytest.fail("no fallback allowed"))
+    with pytest.raises(lane_read.LaneReadRefused, match="state_head_invalid"):
+        read(audit, latest)

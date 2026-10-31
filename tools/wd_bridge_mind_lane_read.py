@@ -35,7 +35,13 @@ default 256 MiB); no per-row or per-file byte bound exists there, so a real stat
 budget. The reader therefore gives the state file its own ``STATE_BUDGET`` and enforces it BEFORE loading: the size
 is read from the file's metadata first, then at most ``STATE_BUDGET + 1`` bytes are read, and a larger file is refused
 ``state_over_budget`` without parsing or hashing it. The pointer budget, the digest check against ``last_ok`` and the
-privacy rules remain fail-closed; no generation is derived or guessed. Decision-derived fact metadata is validated
+privacy rules remain fail-closed; no generation is derived or guessed. A validated compact descriptor pair selects
+``state.head.json`` under the pointer byte budget instead of reading the full state. Its exact schema, own digest,
+cycle generation, cursor, source metadata and declared full-state digest are checked. Matching metadata and hashes
+are not proof that the head fields correspond to the full state contents: the head does not contain those bytes.
+The output labels both head origin and head-to-state content correspondence UNVERIFIED; old pointers still verify
+the full state file. This is an observational bridge status projection, never semantic Mind or a gate input.
+Decision-derived fact metadata is validated
 but never emitted, since its salience, refs and timestamps could disclose peer decisions.
 """
 from __future__ import annotations
@@ -56,6 +62,7 @@ SCOPE = "read_only_lane_view_not_gate"
 LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 LATEST_SCHEMA = "wd.bridge-mind-shadow-latest.v2"
 STATE_SCHEMA = "wd.bridge-mind-producer-state.v1"
+STATE_HEAD_SCHEMA = "wd.bridge-mind-producer-state-head.v1"
 VIEW_SCHEMA = "wd.bridge.compact-view.v1"
 WINDOW_PREFIX = "capture-window:"  # the shadow materializer's window marker (its WINDOW_PREFIX at producer head d13531fa)
 SOURCE_SCOPE = "bounded_window_of_bridge_log_not_whole_log"
@@ -97,9 +104,11 @@ _LAST_OK_HASHES = ("capture_sha256", "state_sha256", "snapshot_sha256")
 LAST_OK_REQUIRED = frozenset(("cycle_dir", "generation", *_LAST_OK_FILES, *_LAST_OK_HASHES))
 LAST_OK_OPTIONAL = frozenset({"observed_utc", "context_file", "context_sha256", "reader", "board_text_sha256", "counts",
                               "global_question", "measures", "state_head_file", "state_head_sha256"})
-# Optional compact state-head descriptors are checked as a pair but never read into the output. This reader still
-# verifies the full state file, so accepting that pair does not replace the existing state-content hash check.
+# Optional compact descriptors are an exact pair. A compact head is hash-checked metadata, not proof that its
+# claimed fields match the full state bytes; that correspondence and writer origin remain explicitly UNVERIFIED.
 _STATE_KEYS = frozenset({"schema", "generation", "cursor", "source", "window_sha256", "window"})
+_STATE_HEAD_KEYS = frozenset({"schema", "generation", "cursor", "source", "window_sha256",
+                              "state_file", "state_sha256"})
 _CI_TOKENS = frozenset({core.UNKNOWN, "reported_green", "reported_not_green"})
 _CLASS_TOKENS = frozenset({core.UNKNOWN, "a", "b", "on-allowlist"})
 _FACT_KINDS = frozenset({"lane_observation", "pr_observation"})
@@ -223,7 +232,10 @@ def read_pointer(latest_path: Path, audit_root: Path) -> dict:
     if (any(last_ok[key] != prefix + name for key, name in _LAST_OK_FILES.items())
             or any(not _hex64(last_ok[key]) for key in _LAST_OK_HASHES) or not _known_optional_ok(last_ok, prefix)):
         raise LaneReadRefused("pointer_invalid")
-    return {key: last_ok[key] for key in LAST_OK_REQUIRED}
+    result = {key: last_ok[key] for key in LAST_OK_REQUIRED}
+    if "state_head_file" in last_ok:  # validated pair; used internally, never echoed as a path
+        result.update(state_head_file=last_ok["state_head_file"], state_head_sha256=last_ok["state_head_sha256"])
+    return result
 
 
 def decode_cursor(token: Any) -> tuple[str, str | None]:
@@ -271,6 +283,27 @@ def _state_cursor(state_path: Path, audit_root: Path, expected_sha256: str) -> t
         raise LaneReadRefused("pointer_invalid")
     identity, generation = decode_cursor(state["cursor"])
     return identity, generation, state["generation"]
+
+
+def _state_head_cursor(path: Path, audit_root: Path, expected_head_sha256: str,
+                       expected_state_sha256: str, snapshot_source: Mapping[str, Any]) -> tuple[str, str | None, int]:
+    """A bounded, hash-pinned metadata claim only; the full state is not opened or authenticated here."""
+    head, raw = _read_object(path, audit_root, "state_head_invalid")
+    _pointer_digest_check(hashlib.sha256(raw).hexdigest(), expected_head_sha256)
+    if (head.get("schema") != STATE_HEAD_SCHEMA or set(head) != _STATE_HEAD_KEYS
+            or type(head["generation"]) is not int or head["generation"] < 1
+            or head["state_file"] != "state.json" or not _hex64(head["state_sha256"])
+            or not _hex64(head["window_sha256"]) or not isinstance(head["source"], dict)):
+        raise LaneReadRefused("state_head_invalid")
+    _pointer_digest_check(head["state_sha256"], expected_state_sha256)
+    try:
+        core._source(head["source"], head["source"].get("event_count"))
+    except core.ProjectionError:
+        raise LaneReadRefused("state_head_invalid") from None
+    if head["source"] != {key: snapshot_source[key] for key in head["source"]}:
+        raise LaneReadRefused("state_head_binding_mismatch")
+    identity, generation = decode_cursor(head["cursor"])
+    return identity, generation, head["generation"]
 
 
 # -- allowlist projection ----------------------------------------------------------------------------------------
@@ -469,8 +502,14 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         raise LaneReadRefused(reason if reason in {"snapshot_read_refused", "snapshot_publication_invalid",
                               "snapshot_content_mismatch"} else "snapshot_read_refused") from None
     _pointer_digest_check(hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest(), last_ok["snapshot_sha256"])
-    state_identity, state_generation, cycle_generation = _state_cursor(cycle_root / last_ok["state_file"], root,
-                                                                       last_ok["state_sha256"])
+    compact_state = "state_head_file" in last_ok
+    if compact_state:
+        state_identity, state_generation, cycle_generation = _state_head_cursor(
+            cycle_root / last_ok["state_head_file"], root, last_ok["state_head_sha256"],
+            last_ok["state_sha256"], snapshot["source"])
+    else:
+        state_identity, state_generation, cycle_generation = _state_cursor(
+            cycle_root / last_ok["state_file"], root, last_ok["state_sha256"])
     if cycle_generation != last_ok["generation"]:
         raise LaneReadRefused("pointer_race_or_mismatch")
     source = snapshot["source"]
@@ -504,6 +543,10 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         "lanes": _lanes(snapshot, bound), "prs": _prs(snapshot),
         "refusal": None,
     }
+    if compact_state:
+        result["binding"]["origin"] = "UNKNOWN"
+        result["pointer"].update(state_read_mode="compact_head", state_head_sha256=last_ok["state_head_sha256"],
+                                 state_head_origin="UNVERIFIED", head_to_state_content="UNVERIFIED")
     if view_generation is None:
         result["binding"].update(generation_status="UNKNOWN", rotation_continuity="UNKNOWN")
     if len(core.canonical_bytes(result)) > BUDGET:

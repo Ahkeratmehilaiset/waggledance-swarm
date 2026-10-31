@@ -831,6 +831,8 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/shared_index_checkpoint.py",
     "sandbox/mind/step2/shared_index_builder.py",
     "sandbox/mind/step2/shared_history.py",
+    "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_producer.py",
     "sandbox/mind/step2/shared_result_resolver.py",
     "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
@@ -846,6 +848,8 @@ Q4_PUBLIC_POINTER_DEPS = frozenset({
 })
 Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
 Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
+Q4_PUBLIC_PRODUCER = "sandbox/mind/step2/shared_public_producer.py"
+Q4_PRODUCER_DEP = "sandbox/mind/step2/shared_producer.py"
 
 
 def _assert_public_pointer_resolver_delivery(definition):
@@ -904,6 +908,36 @@ def test_public_query_is_delivered_only_as_a_library(mutation):
         reason = "public_query_published"
     with pytest.raises(AssertionError, match=reason):
         _assert_public_query_delivery(mutant)
+
+
+def _assert_public_producer_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_PRODUCER in files, "public_producer_drop"
+    assert Q4_PRODUCER_DEP in files, "public_producer_dependency_drop"
+    published = set(definition["python_entrypoints"].values())
+    assert not {Q4_PUBLIC_PRODUCER, Q4_PRODUCER_DEP} & published, "public_producer_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "producer_drop", "dependency_drop", "producer_entrypoint", "dependency_entrypoint"])
+def test_public_producer_and_dependency_are_delivered_only_as_libraries(mutation):
+    definition = _definition()
+    _assert_public_producer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "producer_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_PRODUCER)
+        reason = "public_producer_drop"
+    elif mutation == "dependency_drop":
+        mutant["python_files"].remove(Q4_PRODUCER_DEP)
+        reason = "public_producer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_producer"] = (
+            Q4_PUBLIC_PRODUCER if mutation == "producer_entrypoint" else Q4_PRODUCER_DEP
+        )
+        reason = "public_producer_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_producer_delivery(mutant)
 
 
 def _assert_shadow_release_delivery(definition):

@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -171,7 +172,13 @@ def test_q4_small_candidate_guard_obeys_configured_agreement_depth():
     assert answer["status"] == "ANSWER"
 
 
-def test_e5_query_contract_with_stubbed_dependencies(monkeypatch):
+@pytest.fixture
+def preserve_cache_environment(monkeypatch):
+    for name in encode.CACHE_ENV + ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.setenv(name, os.environ.get(name, "synthetic-original"))
+
+
+def test_e5_query_contract_with_stubbed_dependencies(tmp_path, monkeypatch, preserve_cache_environment):
     calls = []
 
     class StubModel:
@@ -188,14 +195,14 @@ def test_e5_query_contract_with_stubbed_dependencies(monkeypatch):
         __version__="synthetic", get_num_threads=lambda: 1))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    encoder = encode.E5(revision="synthetic-verified-revision")
+    encoder = encode.E5(model_dir=tmp_path, revision="synthetic-verified-revision")
     result = encoder.query("synthetic query")
     assert calls[0][1]["local_files_only"] is True
     assert calls[1][0] == ["query: synthetic query"]
     assert result.tolist() == [1.0, 0.0]
 
 
-def test_e5_passes_the_verified_revision_to_the_offline_loader(monkeypatch):
+def test_e5_passes_the_explicit_local_directory_to_the_offline_loader(tmp_path, monkeypatch, preserve_cache_environment):
     calls = []
 
     def fake_loader(name, **kwargs):
@@ -206,9 +213,40 @@ def test_e5_passes_the_verified_revision_to_the_offline_loader(monkeypatch):
         __version__="synthetic", SentenceTransformer=fake_loader))
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
         __version__="synthetic", get_num_threads=lambda: 1))
-    encode.E5(revision="synthetic-verified-revision")
-    assert calls == [(encode.MODEL, {"device": "cpu", "local_files_only": True,
-                                     "revision": "synthetic-verified-revision"})]
+    encode.E5(model_dir=tmp_path, revision="synthetic-verified-revision")
+    assert calls == [(str(tmp_path), {"device": "cpu", "local_files_only": True})]
+
+
+def test_e5_identity_and_loader_use_same_explicit_local_model_directory(tmp_path, monkeypatch, preserve_cache_environment):
+    import hashlib
+
+    model_dir = tmp_path / "verified-model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(b"synthetic-weights")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "untrusted-other-cache"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "another-cache"))
+    calls = []
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(
+        __version__="synthetic", SentenceTransformer=lambda name, **kw: calls.append((name, kw))))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(__version__="synthetic", get_num_threads=lambda: 1))
+    identity = encode.model_identity(model_dir=model_dir, revision="synthetic-revision")
+    encode.E5(model_dir=model_dir, revision="synthetic-revision")
+    assert identity["weights_sha256"] == hashlib.sha256(b"synthetic-weights").hexdigest()
+    assert identity["revision"] == "synthetic-revision"
+    assert calls == [(str(model_dir), {"device": "cpu", "local_files_only": True})]
+    assert all(os.environ[name] == os.devnull for name in encode.CACHE_ENV)
+    assert os.environ["HF_HUB_OFFLINE"] == os.environ["TRANSFORMERS_OFFLINE"] == "1"
+
+
+def test_e5_rejects_a_relative_model_directory():
+    with pytest.raises(ValueError):
+        encode.model_identity(model_dir=Path("relative-model"), revision="synthetic")
+
+
+def test_e5_refuses_a_preloaded_hub_with_uncontrolled_cache(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", SimpleNamespace())
+    with pytest.raises(ValueError, match="^encoder_runtime_preloaded$"):
+        encode.E5(model_dir=tmp_path, revision="synthetic")
 
 
 def test_loads_and_queries_a_synthetic_faiss_generation_without_mutating_it(tmp_path):

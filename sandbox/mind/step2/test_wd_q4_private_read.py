@@ -92,12 +92,14 @@ def fakes(monkeypatch):
         loaded["memory"] += 1
         return FakeMemory()
 
-    def encoder_factory(*, revision):
+    def encoder_factory(*, model_dir, revision):
+        assert model_dir.is_absolute()
         assert revision == ENCODER["revision"]
         loaded["encoder"] += 1
         return object()
 
-    def runtime_identity():
+    def runtime_identity(*, model_dir, revision):
+        assert model_dir.is_absolute() and revision == ENCODER["revision"]
         loaded["runtime"] += 1
         return dict(ENCODER, weights_bytes=1)
 
@@ -113,7 +115,8 @@ def run(memory_dir, descriptor, data, capsys, descriptor_sha256=None):
     if descriptor_sha256 is None:
         descriptor_sha256 = hashlib.sha256(descriptor.read_bytes()).hexdigest() if descriptor.exists() else "0" * 64
     code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
-                         "--descriptor-sha256", descriptor_sha256, "--lock-file", str(memory_dir.parent / "reader.lock"),
+                         "--descriptor-sha256", descriptor_sha256, "--model-dir", str(memory_dir.parent),
+                         "--lock-file", str(memory_dir.parent / "reader.lock"),
                          "--lock-timeout", "1"], stdin=io.BytesIO(data),
                         stdout=out)
     captured = capsys.readouterr()
@@ -143,8 +146,8 @@ def test_a_bound_query_answers_with_refs_only_and_never_echoes_the_situation(tmp
 def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys, fakes, monkeypatch):
     seen = []
 
-    def encoder_factory(*, revision):
-        seen.append(revision)
+    def encoder_factory(*, model_dir, revision):
+        seen.append((model_dir, revision))
         return object()
 
     monkeypatch.setattr(adapter, "ENCODER_FACTORY", encoder_factory)
@@ -152,7 +155,7 @@ def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys,
     descriptor = write_descriptor(tmp_path, digest)
     code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
     assert code == 0 and out["status"] == "ANSWER"
-    assert seen == [ENCODER["revision"]]
+    assert seen == [(tmp_path, ENCODER["revision"])]
 
 
 def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
@@ -161,6 +164,7 @@ def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
     with pytest.raises(SystemExit) as raised:
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                       "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--model-dir", str(tmp_path),
                       "--lock-file", str(tmp_path / "slot.lock"), "--lock-timeout", "0",
                       "--situation", SITUATION], stdin=io.BytesIO(b""), stdout=io.StringIO())
     assert raised.value.code == 2
@@ -265,9 +269,9 @@ def test_an_unverifiable_memory_is_refused_with_one_fixed_reason(tmp_path, capsy
 
 
 @pytest.mark.parametrize("runtime,reason", [
-    (lambda: dict(ENCODER, revision="other"), "encoder_runtime_mismatch"),
-    (lambda: {"model": ENCODER["model"]}, "encoder_runtime_mismatch"),
-    (lambda: (_ for _ in ()).throw(OSError("no cache")), "encoder_runtime_unavailable"),
+    (lambda **kwargs: dict(ENCODER, revision="other"), "encoder_runtime_mismatch"),
+    (lambda **kwargs: {"model": ENCODER["model"]}, "encoder_runtime_mismatch"),
+    (lambda **kwargs: (_ for _ in ()).throw(OSError("no cache")), "encoder_runtime_unavailable"),
 ])
 def test_a_runtime_encoder_that_differs_from_the_descriptor_never_loads_the_model(tmp_path, capsys, fakes,
                                                                                   monkeypatch, runtime, reason):
@@ -280,7 +284,7 @@ def test_a_runtime_encoder_that_differs_from_the_descriptor_never_loads_the_mode
 def test_a_model_that_cannot_load_is_one_fixed_reason_without_its_message(tmp_path, capsys, fakes, monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
 
-    def failing(*, revision):
+    def failing(*, model_dir, revision):
         assert revision == ENCODER["revision"]
         raise RuntimeError("secret path C:/private/model")
 
@@ -404,7 +408,20 @@ def test_lock_path_and_timeout_are_explicitly_required(tmp_path, capsys, fakes):
     descriptor = write_descriptor(tmp_path, digest)
     with pytest.raises(SystemExit) as raised:
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
-                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest()],
+                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--model-dir", str(tmp_path)],
+                     stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
+    assert raised.value.code == 2
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_model_directory_is_explicitly_required(tmp_path, capsys, fakes):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    with pytest.raises(SystemExit) as raised:
+        adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
+                      "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                      "--lock-file", str(tmp_path / "lock"), "--lock-timeout", "0"],
                      stdin=io.BytesIO(query_bytes()), stdout=io.StringIO())
     assert raised.value.code == 2
     assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
@@ -420,6 +437,7 @@ def test_reader_busy_is_fixed_and_precedes_memory_and_model(tmp_path, fakes):
     with reader_slot(lock_path, timeout_seconds=0):
         code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                              "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                             "--model-dir", str(tmp_path),
                              "--lock-file", str(lock_path), "--lock-timeout", "0"],
                             stdin=io.BytesIO(query_bytes()), stdout=out)
     assert code == 2 and json.loads(out.getvalue())["reason"] == "reader_busy"
@@ -440,6 +458,7 @@ def test_unusable_lock_refuses_without_memory_or_path_leak(tmp_path, fakes, lock
     out = io.StringIO()
     code = adapter.main(["--memory", str(memory_dir), "--descriptor", str(descriptor),
                          "--descriptor-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+                         "--model-dir", str(tmp_path),
                          "--lock-file", str(lock_path), "--lock-timeout", timeout],
                         stdin=io.BytesIO(query_bytes()), stdout=out)
     assert code == 2 and json.loads(out.getvalue())["reason"] == reason
@@ -461,9 +480,9 @@ from sandbox.mind.step2 import wd_q4_private_read as adapter
 from sandbox.mind.step2.test_wd_q4_private_read import ENCODER, FakeMemory, FakeQ4
 memory, descriptor, digest, lock, ready, release = sys.argv[1:]
 adapter.MEMORY_FACTORY = lambda path: FakeMemory()
-adapter.RUNTIME_IDENTITY = lambda: dict(ENCODER)
+adapter.RUNTIME_IDENTITY = lambda **kwargs: dict(ENCODER)
 adapter.Q4_FACTORY = FakeQ4
-def encoder(*, revision):
+def encoder(*, model_dir, revision):
     Path(ready).write_text('ready', encoding='utf-8')
     deadline = time.monotonic() + 20
     while not Path(release).exists() and time.monotonic() < deadline:
@@ -473,6 +492,7 @@ def encoder(*, revision):
     return object()
 adapter.ENCODER_FACTORY = encoder
 sys.exit(adapter.main(['--memory', memory, '--descriptor', descriptor, '--descriptor-sha256', digest,
+                       '--model-dir', str(Path(memory).parent),
                        '--lock-file', lock, '--lock-timeout', '0']))
 """
     args = [sys.executable, "-B", "-c", child, str(memory_dir), str(descriptor), descriptor_sha,

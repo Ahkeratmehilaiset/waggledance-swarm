@@ -2,18 +2,29 @@
 import hashlib
 import os
 from pathlib import Path
+import sys
 import numpy as np
 
 MODEL = "intfloat/multilingual-e5-small"
 DIM = 384
 TRUNCATE = 2000
 PASSAGE_BATCH = 32
-HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub" / "models--intfloat--multilingual-e5-small"
+CACHE_ENV = ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
+             "HF_ASSETS_CACHE", "SENTENCE_TRANSFORMERS_HOME")
 
-def model_identity():
-    """The cached model revision and the sha256 of its weights, so a vector file names exactly what made it."""
-    revision = (HF_CACHE / "refs" / "main").read_text(encoding="ascii").strip()
-    weights = HF_CACHE / "snapshots" / revision / "model.safetensors"
+
+def _model_directory(model_dir):
+    path = Path(model_dir)
+    if not path.is_absolute() or not path.is_dir():
+        raise ValueError("model_directory_invalid")
+    return path
+
+
+def model_identity(*, model_dir, revision):
+    """Hash weights in the explicit directory; revision is a caller-pinned declaration."""
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("revision_invalid")
+    weights = _model_directory(model_dir) / "model.safetensors"
     digest = hashlib.sha256()
     with open(weights, "rb") as handle:
         for block in iter(lambda: handle.read(1 << 22), b""):
@@ -25,13 +36,24 @@ def model_identity():
 class E5:
     """The fixed encode policy. Loading never touches the network."""
 
-    def __init__(self, *, revision):
+    def __init__(self, *, model_dir, revision):
+        path = _model_directory(model_dir)
+        if not isinstance(revision, str) or not revision:
+            raise ValueError("revision_invalid")
+        # The hub caches its paths at import time. Never silently reuse settings
+        # from a previously imported hub with an uncontrolled cache root.
+        if "huggingface_hub.constants" in sys.modules:
+            raise ValueError("encoder_runtime_preloaded")
+        # A local-only model directory must not fall back to another user's HF
+        # cache. A device file cannot be a cache directory or persist files.
+        for name in CACHE_ENV:
+            os.environ[name] = os.devnull
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         import sentence_transformers
         import torch
         from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(MODEL, device="cpu", local_files_only=True, revision=revision)
+        self.model = SentenceTransformer(str(path), device="cpu", local_files_only=True)
         self.policy = {"prefix_passage": "passage: ", "prefix_query": "query: ", "truncate_chars": TRUNCATE,
                        "passage_batch": PASSAGE_BATCH, "query_batch": 1, "normalize": True, "dtype": "float32",
                        "dim": DIM, "device": "cpu", "sentence_transformers": sentence_transformers.__version__,

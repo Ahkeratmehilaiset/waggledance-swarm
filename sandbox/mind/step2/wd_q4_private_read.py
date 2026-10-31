@@ -1,6 +1,6 @@
 """HEX MEMORY STEP 2, private read: one lane asks Q4 over the frozen memory through stdin, read-only.
 
-usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> --lock-file <absolute path> --lock-timeout <seconds> < query.json
+usage: python -m sandbox.mind.step2.wd_q4_private_read --memory <memory dir> --descriptor <descriptor.json> --descriptor-sha256 <sha256> --model-dir <absolute path> --lock-file <absolute path> --lock-timeout <seconds> < query.json
 
 The query (``{"situation": "<text>", "time": "<aware UTC>"}``, at most ``STDIN_BUDGET`` bytes, no other key) is read
 from stdin only: the situation text never appears in process arguments, in a log, in a bridge event, on stderr or in
@@ -16,11 +16,11 @@ Fail-closed binding, checked before anything is loaded or encoded:
 * ``memory.json`` must hash to the descriptor (``memory_descriptor_mismatch``), the memory must open and verify
   (``memory_unreadable``: every cell's receipt is checked by ``memory.Memory``), its dimension must match, and every
   healthy cell's receipt must carry exactly the descriptor's encoder identity (``encoder_identity_mismatch``);
-* the local runtime encoder (``encode.model_identity``: the cached revision and the weights sha256) must equal the
-  descriptor before the model is loaded (``encoder_runtime_mismatch`` / ``encoder_runtime_unavailable``): a different
-  cached model would make the query vector incomparable to the stored ones; the verified revision is explicitly
-  passed to the offline loader rather than resolving ``main`` again. This does not verify every model asset or close
-  a model-file replacement window between identity verification and loading.
+* the local runtime encoder's weights sha256, taken from the explicitly supplied absolute ``model_dir``, must match
+  the descriptor before loading. The loader uses that same directory with ``local_files_only``. The revision is a
+  caller-pinned declaration, not derived from the directory; the deployment must independently bind the directory,
+  revision and every model asset to the verified runtime manifest. These checks do not close a model-file replacement
+  window between identity verification and loading.
 
 The output is a projection of the Q4 result over an allowlist (``project_result``): status, reason code, the rule
 version Q4 reported for this run (whatever the port returns; not a frozen-v1 evidence claim), per result the kind,
@@ -192,10 +192,10 @@ def bind_memory(memory_dir, descriptor):
     return memory
 
 
-def bind_runtime_encoder(descriptor):
+def bind_runtime_encoder(descriptor, model_dir):
     """The local encoder identity must equal the descriptor before any model is loaded."""
     try:
-        runtime = _identity_of(RUNTIME_IDENTITY())
+        runtime = _identity_of(RUNTIME_IDENTITY(model_dir=model_dir, revision=descriptor["encoder"]["revision"]))
     except (OSError, ValueError, KeyError, TypeError):
         raise PrivateReadRefused("encoder_runtime_unavailable") from None
     if runtime != descriptor["encoder"]:
@@ -262,13 +262,13 @@ def project_result(result):
             "telemetry": numbers}
 
 
-def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when):
+def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir):
     """Perform a read with the shared reader slot already held."""
     descriptor = read_descriptor(descriptor_path, descriptor_sha256)
     memory = bind_memory(memory_dir, descriptor)
-    bind_runtime_encoder(descriptor)
+    bind_runtime_encoder(descriptor, model_dir)
     try:
-        encoder = ENCODER_FACTORY(revision=descriptor["encoder"]["revision"])
+        encoder = ENCODER_FACTORY(model_dir=model_dir, revision=descriptor["encoder"]["revision"])
     except Exception:  # noqa: BLE001 - a model that cannot load is one fixed reason, never its message
         raise PrivateReadRefused("encoder_load_failed") from None
     try:
@@ -287,7 +287,7 @@ def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situati
     return out
 
 
-def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, lock_file, lock_timeout):
+def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, model_dir, lock_file, lock_timeout):
     """Read stdin, then hold the shared slot across all memory/model access and output projection."""
     situation, when = read_query(stream)
     try:
@@ -296,7 +296,7 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, lock
             raise PrivateReadRefused("reader_lock_invalid")
         with reader_slot(path, timeout_seconds=lock_timeout):
             try:
-                return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when)
+                return _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situation, when, model_dir)
             except PrivateReadRefused:
                 raise
             except Exception:
@@ -314,6 +314,7 @@ def main(argv=None, stdin=None, stdout=None):
     parser.add_argument("--memory", type=Path, required=True)
     parser.add_argument("--descriptor", type=Path, required=True)
     parser.add_argument("--descriptor-sha256", required=True)
+    parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--lock-file", type=Path, required=True)
     parser.add_argument("--lock-timeout", type=float, required=True)
     args = parser.parse_args(argv)  # any other option, --situation included, is a usage error: nothing is read
@@ -321,7 +322,7 @@ def main(argv=None, stdin=None, stdout=None):
     stdout = sys.stdout if stdout is None else stdout
     try:
         out = private_read(args.memory, args.descriptor, args.descriptor_sha256, stdin,
-                           lock_file=args.lock_file, lock_timeout=args.lock_timeout)
+                           model_dir=args.model_dir, lock_file=args.lock_file, lock_timeout=args.lock_timeout)
     except PrivateReadRefused as exc:
         stdout.write(json.dumps({"schema": SCHEMA, "identity": IDENTITY, "status": "REFUSED", "reason": str(exc),
                                  "results": []}, sort_keys=True) + "\n")

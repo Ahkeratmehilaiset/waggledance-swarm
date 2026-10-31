@@ -8,7 +8,7 @@ publisher identity and source authenticity as UNKNOWN because nothing in this ch
 import hashlib
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 import pytest
@@ -211,6 +211,12 @@ def test_absent_or_mismatched_caller_pins_refuse_before_anything_is_written(tmp_
     _refused(_request(tampered, root, "gen-a", pins=_pins(config)), "pins_mismatch")
     swapped = _config(log, generation_path, start, public_policy=(PUBLIC_POLICY_BYTES + b"\n", PUBLIC_POLICY_SHA))
     _refused(_request(swapped, root, "gen-a", pins=_pins(config)), "pins_mismatch")
+    # A non-ASCII configured digest must fail closed before compare_digest.
+    for field in ("policy_sha256", "roster_sha256", "anchor_sha256"):
+        malformed = replace(config, source=replace(config.source, **{field: "\u00e4" * 64}))
+        _refused(_request(malformed, root, "gen-a", pins=_pins(config)), "pins_mismatch")
+    malformed = replace(config, public_policy_sha256="\u00e4" * 64)
+    _refused(_request(malformed, root, "gen-a", pins=_pins(config)), "pins_mismatch")
     assert _files(root) == []  # no generation, no pointer, no lock
 
 

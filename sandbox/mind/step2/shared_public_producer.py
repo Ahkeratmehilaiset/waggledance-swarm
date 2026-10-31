@@ -116,7 +116,7 @@ def _bind_pins(request):
              (pins.public_policy_sha256, config.public_policy_sha256, config.public_policy_bytes),
              (pins.anchor_sha256, source.anchor_sha256, source.anchor_bytes))
     for caller, configured, data in pairs:
-        if not isinstance(configured, str) or not hmac.compare_digest(caller, configured) or not _digest_of(data, caller):
+        if not _hex(configured) or not hmac.compare_digest(caller, configured) or not _digest_of(data, caller):
             _refuse("pins_mismatch")
 
 

@@ -25,6 +25,7 @@ SITUATION = "zebra-quartz-lantern situation text that must never leak 7f3a"
 WHEN = "2026-10-20T12:00:00Z"
 EVENT_REF = "a" * 64
 LESSON_FILE = "my-secret-lesson-title.md"
+SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
 
 
 class FakeView:
@@ -32,6 +33,8 @@ class FakeView:
         self.status = "HEALTHY" if healthy else "QUARANTINED"
         self.reason = None if healthy else "memory_binding_mismatch"
         self.receipt = {"content": {"encoder": dict(ENCODER if encoder is None else encoder)}}
+        self.rows = [{"kind": "event", "provenance": {"ref_kind": "sha256_of_projected_metadata",
+                                                     "canonical_event": False, "event_ref": EVENT_REF}}]
 
     @property
     def healthy(self):
@@ -71,7 +74,7 @@ def write_memory(tmp_path, dim=384):
 
 
 def write_descriptor(tmp_path, memory_sha256, changes=None):
-    descriptor = {"schema": adapter.DESCRIPTOR_SCHEMA, "memory_sha256": memory_sha256, "dim": 384,
+    descriptor = {"schema": adapter.DESCRIPTOR_SCHEMA, "scope": SHARED_SCOPE, "memory_sha256": memory_sha256, "dim": 384,
                   "encoder": dict(ENCODER)}
     descriptor.update(changes or {})
     path = tmp_path / "descriptor.json"
@@ -138,7 +141,7 @@ def test_a_bound_query_answers_with_refs_only_and_never_echoes_the_situation(tmp
     assert out["telemetry"] == {"records": 2, "candidates": 2, "ms": 0.1} and out["degraded_cells"] == []
     assert out["schema"] == adapter.SCHEMA and out["identity"] == "caller_declared_not_authenticated"
     assert out["binding"] == {"descriptor_sha256": hashlib.sha256((tmp_path / "descriptor.json").read_bytes()).hexdigest(),
-                               "memory_sha256": digest, "dim": 384, "encoder": ENCODER}
+                               "memory_sha256": digest, "dim": 384, "encoder": ENCODER, "scope": SHARED_SCOPE}
     assert SITUATION not in text and "zebra" not in text and "7f3a" not in text
     assert FakeQ4.calls == [(SITUATION, WHEN)] and fakes == {"memory": 1, "encoder": 1, "runtime": 1}
 
@@ -156,6 +159,83 @@ def test_verified_descriptor_revision_is_bound_to_encoder_load(tmp_path, capsys,
     code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
     assert code == 0 and out["status"] == "ANSWER"
     assert seen == [(tmp_path, ENCODER["revision"])]
+
+
+def test_descriptor_requires_explicit_shared_scope_before_opening_memory(tmp_path, capsys, fakes):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest)
+    data = json.loads(descriptor.read_text(encoding="utf-8"))
+    del data["scope"]
+    descriptor.write_text(json.dumps(data), encoding="utf-8")
+    code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
+    assert (code, out["reason"]) == (2, "descriptor_scope_mismatch")
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_legacy_v1_descriptor_is_refused_even_with_shared_scope(tmp_path, capsys, fakes):
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest, {"schema": "wd.bridge-mind-q4-memory-descriptor.v1"})
+    code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
+    assert (code, out["reason"]) == (2, "descriptor_shape")
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_v2_descriptor_with_shared_scope_is_accepted(tmp_path, capsys, fakes):
+    assert adapter.DESCRIPTOR_SCHEMA == "wd.bridge-mind-q4-memory-descriptor.v2"
+    memory_dir, digest = write_memory(tmp_path)
+    descriptor = write_descriptor(tmp_path, digest, {"schema": "wd.bridge-mind-q4-memory-descriptor.v2"})
+    code, out, _ = run(memory_dir, descriptor, query_bytes(), capsys)
+    assert code == 0 and out["binding"]["scope"] == SHARED_SCOPE
+
+
+@pytest.mark.parametrize("scope", [None, "legacy", "private", "wd.q4-shared-projected-events.v2"])
+def test_descriptor_refuses_wrong_or_unknown_scope_before_opening_memory(tmp_path, capsys, fakes, scope):
+    memory_dir, digest = write_memory(tmp_path)
+    code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest, {"scope": scope}), query_bytes(), capsys)
+    assert (code, out["reason"]) == (2, "descriptor_scope_mismatch")
+    assert fakes == {"memory": 0, "encoder": 0, "runtime": 0}
+
+
+def test_explicit_shared_scope_accepts_shared_rows(tmp_path, capsys, fakes, monkeypatch):
+    memory_dir, digest = write_memory(tmp_path)
+    fake = FakeMemory()
+    fake.views["learning"].rows = [{"kind": "event", "provenance": {
+        "ref_kind": "sha256_of_projected_metadata", "canonical_event": False, "event_ref": EVENT_REF}}]
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: fake)
+    code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest, {"scope": SHARED_SCOPE}), query_bytes(), capsys)
+    assert code == 0 and out["status"] == "ANSWER" and fakes["encoder"] == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"kind": "lesson"},
+    {"provenance": {"ref_kind": "sha256_of_projected_metadata", "canonical_event": True, "event_ref": EVENT_REF}},
+    {"provenance": {"ref_kind": "sha256_of_projected_metadata", "canonical_event": 0, "event_ref": EVENT_REF}},
+    {"provenance": {"ref_kind": "canonical", "canonical_event": False, "event_ref": EVENT_REF}},
+    {"provenance": {"ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
+                    "event_ref": "C:/private/path"}},
+    {"provenance": {}},
+])
+def test_every_healthy_cell_row_is_shared_before_encoder_or_query(tmp_path, capsys, fakes, monkeypatch, change):
+    memory_dir, digest = write_memory(tmp_path)
+    good = {"kind": "event", "provenance": {"ref_kind": "sha256_of_projected_metadata",
+                                            "canonical_event": False, "event_ref": EVENT_REF}}
+    first, second = FakeView(), FakeView()
+    first.rows = [good]
+    second.rows = [good, dict(good, **change)]  # the final row of the final healthy cell must be inspected
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(views={"a": first, "b": second}))
+    code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest, {"scope": SHARED_SCOPE}), query_bytes(), capsys)
+    assert (code, out["reason"]) == (2, "memory_scope_mismatch")
+    assert fakes["runtime"] == fakes["encoder"] == 0 and FakeQ4.calls == []
+
+
+def test_missing_healthy_cell_rows_is_not_assumed_shared(tmp_path, capsys, fakes, monkeypatch):
+    memory_dir, digest = write_memory(tmp_path)
+    view = FakeView()
+    del view.rows
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(views={"a": view}))
+    code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
+    assert (code, out["reason"]) == (2, "memory_scope_mismatch")
+    assert fakes["runtime"] == fakes["encoder"] == 0 and FakeQ4.calls == []
 
 
 def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):

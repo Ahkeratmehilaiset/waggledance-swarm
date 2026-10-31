@@ -11,8 +11,10 @@ Fail-closed binding, checked before anything is loaded or encoded:
 
 * the descriptor file (``DESCRIPTOR_SCHEMA``) names the immutable memory by the sha256 of its ``memory.json``, the
   vector dimension and the expected encoder identity (``model``, ``revision``, ``weights_sha256``, as
-  ``encode.model_identity`` writes it into every cell receipt); the lane's procedure pins the descriptor, this module
-  never derives it;
+  ``encode.model_identity`` writes it into every cell receipt), plus an explicit shared projected-event scope; the
+  lane's procedure pins the descriptor, this module never derives it. Every row in each healthy cell must declare
+  that event scope before any encoder or Q4 execution. These declarations do not authenticate the producer or
+  prove that record text is safe: a separately trusted source and source pin are still required;
 * ``memory.json`` must hash to the descriptor (``memory_descriptor_mismatch``), the memory must open and verify
   (``memory_unreadable``: every cell's receipt is checked by ``memory.Memory``), its dimension must match, and every
   healthy cell's receipt must carry exactly the descriptor's encoder identity (``encoder_identity_mismatch``);
@@ -63,7 +65,8 @@ except Exception:  # Missing native packages must not expose paths or traceback 
     sys.exit(2)
 
 SCHEMA = "wd.bridge-mind-q4-private-read.v1"
-DESCRIPTOR_SCHEMA = "wd.bridge-mind-q4-memory-descriptor.v1"
+DESCRIPTOR_SCHEMA = "wd.bridge-mind-q4-memory-descriptor.v2"
+SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
 STDIN_BUDGET = 65536
 DESCRIPTOR_BUDGET = 65536
 SITUATION_MAX_CHARS = 4000
@@ -123,7 +126,7 @@ def read_query(stream):
 
 
 def read_descriptor(path, expected_sha256):
-    """The pinned memory descriptor: schema, memory_sha256 (hex64), dim (int) and the encoder identity keys."""
+    """The pinned descriptor with explicit shared-projected-event scope and encoder identity."""
     if not _hex64(expected_sha256):
         raise PrivateReadRefused("descriptor_pin_invalid")
     try:
@@ -138,7 +141,9 @@ def read_descriptor(path, expected_sha256):
         raise
     except (OSError, ValueError, RecursionError):
         raise PrivateReadRefused("descriptor_unreadable") from None
-    if (not isinstance(descriptor, dict) or set(descriptor) != {"schema", "memory_sha256", "dim", "encoder"}
+    if isinstance(descriptor, dict) and descriptor.get("scope") != SHARED_SCOPE:
+        raise PrivateReadRefused("descriptor_scope_mismatch")
+    if (not isinstance(descriptor, dict) or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
             or descriptor["schema"] != DESCRIPTOR_SCHEMA or not _hex64(descriptor["memory_sha256"])
             or type(descriptor["dim"]) is not int or descriptor["dim"] < 1
             or not isinstance(descriptor["encoder"], dict) or set(descriptor["encoder"]) != set(ENCODER_KEYS)
@@ -189,6 +194,20 @@ def bind_memory(memory_dir, descriptor):
             recorded = None
         if recorded != descriptor["encoder"]:
             raise PrivateReadRefused("encoder_identity_mismatch")
+        rows = getattr(view, "rows", None)
+        if not isinstance(rows, list):
+            raise PrivateReadRefused("memory_scope_mismatch")
+        for row in rows:
+            if not isinstance(row, dict) or row.get("kind") != "event":
+                raise PrivateReadRefused("memory_scope_mismatch")
+            provenance = row.get("provenance")
+            if (not isinstance(provenance, dict)
+                    or provenance.get("ref_kind") != q4_mod.PROJECTED_REF_KIND
+                    or provenance.get("canonical_event") is not False
+                    or not q4_mod.valid_reference_metadata("event", provenance.get("event_ref"),
+                                                           provenance.get("ref_kind"),
+                                                           provenance.get("canonical_event"))):
+                raise PrivateReadRefused("memory_scope_mismatch")
     return memory
 
 
@@ -279,6 +298,7 @@ def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situati
         raise PrivateReadRefused("q4_execution_failed") from None
     out = dict(project_result(result), schema=SCHEMA, identity=IDENTITY,
                binding={"descriptor_sha256": descriptor_sha256, "memory_sha256": descriptor["memory_sha256"], "dim": descriptor["dim"],
+                        "scope": descriptor["scope"],
                         "encoder": dict(descriptor["encoder"])})
     try:
         corpus_mod.ws.guard_object(out)

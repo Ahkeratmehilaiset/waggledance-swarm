@@ -3,6 +3,9 @@
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -136,6 +139,19 @@ def test_the_situation_is_never_accepted_from_argv(tmp_path, capsys):
         adapter.main(["--memory", str(memory_dir), "--descriptor", str(write_descriptor(tmp_path, digest)),
                       "--situation", SITUATION], stdin=io.BytesIO(b""), stdout=io.StringIO())
     assert raised.value.code == 2
+    assert SITUATION not in capsys.readouterr().err
+
+
+def test_cli_missing_runtime_refuses_without_traceback_or_private_paths():
+    root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ, PYTHONPATH=str(root), PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run([sys.executable, "-S", "-B", "-m", "sandbox.mind.step2.wd_q4_private_read",
+                             "--memory", "synthetic-memory", "--descriptor", "synthetic-descriptor",
+                             "--descriptor-sha256", "0" * 64],
+                            input=b"{}", capture_output=True, cwd=root, env=env, timeout=30)
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "runtime_unavailable"
+    assert b"Traceback" not in result.stderr and str(root).encode() not in result.stderr
 
 
 @pytest.mark.parametrize("data,reason", [

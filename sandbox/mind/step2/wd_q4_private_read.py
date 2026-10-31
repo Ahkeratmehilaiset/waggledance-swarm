@@ -44,10 +44,17 @@ import re
 import sys
 from pathlib import Path
 
-from sandbox.mind.step2 import corpus as corpus_mod
-from sandbox.mind.step2 import encode as encode_mod
-from sandbox.mind.step2 import memory as memory_mod
-from sandbox.mind.step2 import q4 as q4_mod
+try:
+    from sandbox.mind.step2 import corpus as corpus_mod
+    from sandbox.mind.step2 import encode as encode_mod
+    from sandbox.mind.step2 import memory as memory_mod
+    from sandbox.mind.step2 import q4 as q4_mod
+except Exception:  # Missing native packages must not expose paths or traceback in the CLI.
+    if __name__ != "__main__":
+        raise
+    print(json.dumps({"schema": "wd.bridge-mind-q4-private-read.v1", "status": "REFUSED",
+                      "reason": "runtime_unavailable", "results": []}, sort_keys=True))
+    sys.exit(2)
 
 SCHEMA = "wd.bridge-mind-q4-private-read.v1"
 DESCRIPTOR_SCHEMA = "wd.bridge-mind-q4-memory-descriptor.v1"
@@ -74,6 +81,13 @@ MEMORY_DIGEST = memory_mod.memory_sha256
 
 class PrivateReadRefused(ValueError):
     """A fixed refusal reason; never carries the query, a path or a caller value."""
+
+
+class PrivateArgumentParser(argparse.ArgumentParser):
+    """Invalid arguments must not be reflected into logs or the terminal."""
+
+    def error(self, message):
+        self.exit(2, "invalid_arguments\n")
 
 
 def _hex64(value):
@@ -265,7 +279,7 @@ def private_read(memory_dir, descriptor_path, descriptor_sha256, stream):
 
 
 def main(argv=None, stdin=None, stdout=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
+    parser = PrivateArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--memory", type=Path, required=True)
     parser.add_argument("--descriptor", type=Path, required=True)
     parser.add_argument("--descriptor-sha256", required=True)

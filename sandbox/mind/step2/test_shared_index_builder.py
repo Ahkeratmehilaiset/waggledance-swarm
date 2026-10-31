@@ -935,12 +935,14 @@ def _snapshot_module():
     return snapshot
 
 
-def _synthetic_snapshot(snapshot, proj, anchor_sha256, policy_sha256, roster_sha256, *, end_offset=512):
+def _synthetic_snapshot(snapshot, proj, anchor_sha256, policy_sha256, roster_sha256, *, end_offset=512, end_sha256=None):
+    """A snapshot result in the Lead adapter's shape: ``source`` carries cursor DIGESTS, never raw tokens."""
     from waggledance.core.bridge_log_reader import BridgeCursor
     start = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
     end = BridgeCursor(offset=end_offset, file_identity="synthetic-identity", generation="gen-synthetic")
-    source = {"cursor_start": snapshot._token(start), "cursor_end": snapshot._token(end),
-              "coverage": "delta_only_not_complete_history"}
+    source = {"cursor_start_sha256": sha(snapshot._token(start)),
+              "cursor_end_sha256": end_sha256 or sha(snapshot._token(end)),
+              "verification": "caller_asserted_not_authenticated", "coverage": "delta_only_not_complete_history"}
     result = {"projection": proj, "source": source, "candidate_cursor": end}
     result["_projection_binding"] = snapshot._ProjectionBinding(snapshot._canonical(proj), snapshot._canonical(source),
                                                                 end, anchor_sha256, policy_sha256, roster_sha256)
@@ -963,7 +965,84 @@ def test_v4_source_binding_is_written_only_after_the_lead_verifier_accepts(tmp_p
     assert "synthetic-identity" not in serialized and "bc1." not in serialized  # tokens are hashed, never persisted
 
 
-@pytest.mark.parametrize("wrong", ["projection", "end", "anchor", "policy", "roster", "spliced_source"])
+def test_v4_a_real_lead_snapshot_feeds_the_builder_without_any_mock(tmp_path):
+    """Lead 17:33:37Z: real snapshot -> builder, not a mock. Synthetic bridge-log BYTES in tmp_path are read by the
+    REAL Lead chain (read_anchored_delta -> adapter -> projection) and the result goes into build_memory unchanged.
+    No real events, no real log. SKIPPED until the Lead chain is committed on this branch (integration prerequisite)."""
+    snapshot = _snapshot_module()
+    if not hasattr(snapshot, "read_anchored_delta"):
+        pytest.skip("integration prerequisite: read_anchored_delta not committed in this tree")
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    log = tmp_path / "events.jsonl"
+    rows = [dict(e, agent_uuid=ROSTER[e["agent"]]) for e in EVENTS]
+    log.write_bytes(b"".join(json.dumps(row, sort_keys=True).encode("utf-8") + b"\n" for row in rows))
+    generation_path = tmp_path / "events.generation.json"
+    generation_path.write_text(json.dumps({"generation": "gen-synthetic"}), encoding="utf-8")
+    cursor = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
+    from dataclasses import asdict
+    anchor_bytes = json.dumps({"schema": "wd.q4-source-anchor.v1", "source_path": str(log),
+                               "generation_path": str(generation_path), "cursor_start": asdict(cursor),
+                               "policy_sha256": POLICY_SHA, "roster_sha256": ROSTER_SHA}, sort_keys=True).encode("utf-8")
+    anchor_sha256 = sha(anchor_bytes)
+    try:
+        result = snapshot.read_anchored_delta(log, cursor, APPROVED, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
+                                              generation_path=generation_path, max_bytes=1 << 20, max_rows=100,
+                                              policy_bytes=POLICY_BYTES, policy_sha256=POLICY_SHA,
+                                              roster_bytes=ROSTER_BYTES, roster_sha256=ROSTER_SHA)
+    except snapshot.SnapshotRefused:
+        pytest.skip("integration prerequisite: the Lead reader refused this synthetic log/cursor shape; align fixtures on the integration branch")
+    out = build(tmp_path / "out", proj=result["projection"], approved_tasks=None, roster=None,
+                source={"snapshot_result": result, "expected_anchor_sha256": anchor_sha256}, allow_unbound_source=False)
+    binding = out["build_receipt"]["source_binding"]
+    assert binding["anchor_sha256"] == anchor_sha256 and binding["policy_sha256"] == POLICY_SHA
+    assert binding["cursor_end_sha256"] == sha(snapshot._token(result["candidate_cursor"])) == result["source"]["cursor_end_sha256"]
+    assert binding["cursor_start_sha256"] == result["source"]["cursor_start_sha256"]
+    assert out["build_receipt"]["source_bound"] is True and out["build_receipt"]["source_authenticated"] is False
+    assert "bc1." not in json.dumps(out) and SENTINEL not in json.dumps(out)
+
+
+def test_v4_binding_takes_the_cursor_digests_from_the_verified_source_import_seam_double(tmp_path, monkeypatch):
+    """Import-seam double, NOT verification: a stand-in module whose verifier accepts everything, so that THIS
+    builder's own binding steps are observable here (digests come from ``source``, the end digest must be the digest
+    of the candidate cursor, nothing raw is persisted). The real verifier tests above stay the acceptance proof."""
+    import types
+    from waggledance.core.bridge_log_reader import BridgeCursor
+
+    def token(cursor):
+        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
+
+    double = types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: True, _token=token)
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    start = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
+    end = BridgeCursor(offset=77, file_identity="synthetic-identity", generation="gen-synthetic")
+    source_meta = {"cursor_start_sha256": sha(token(start)), "cursor_end_sha256": sha(token(end)), "coverage": "x"}
+    result = {"projection": projection(), "source": source_meta, "candidate_cursor": end}
+    anchor = "5" * 64
+    out = build(tmp_path, source={"snapshot_result": result, "expected_anchor_sha256": anchor}, allow_unbound_source=False)
+    binding = out["build_receipt"]["source_binding"]
+    assert binding["cursor_start_sha256"] == sha(token(start)) and binding["cursor_end_sha256"] == sha(token(end))
+    assert binding["anchor_sha256"] == anchor and binding["projection_sha256"] == out["projection_sha256"]
+    assert binding["policy_sha256"] == POLICY_SHA and binding["roster_sha256"] == ROSTER_SHA
+    assert "bc1." not in json.dumps(out) and "synthetic-identity" not in json.dumps(out)
+    # the end digest in source must be the digest of the candidate cursor, even when the verifier accepted
+    for bad_meta in (dict(source_meta, cursor_end_sha256=sha(token(start))), dict(source_meta, cursor_end_sha256="z" * 64),
+                     {k: v for k, v in source_meta.items() if k != "cursor_start_sha256"},
+                     dict(source_meta, cursor_start="bc1.raw-token")):
+        bad = {"projection": projection(), "source": bad_meta, "candidate_cursor": end}
+        if "cursor_start" in bad_meta:
+            bad["source"] = {k: v for k, v in bad_meta.items() if k != "cursor_start_sha256"}
+        with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
+            build(tmp_path, name="bad", source={"snapshot_result": bad, "expected_anchor_sha256": anchor},
+                  allow_unbound_source=False)
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):  # a verifier that does not say True
+        monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE,
+                            types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: 1, _token=token))
+        build(tmp_path, name="bad2", source={"snapshot_result": result, "expected_anchor_sha256": anchor},
+              allow_unbound_source=False)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+
+
+@pytest.mark.parametrize("wrong", ["projection", "end", "anchor", "policy", "roster", "spliced_source", "end_digest"])
 def test_v4_a_spliced_or_mismatched_source_binding_refuses_with_nothing_written(tmp_path, wrong):
     snapshot = _snapshot_module()
     from waggledance.core.bridge_log_reader import BridgeCursor
@@ -981,7 +1060,9 @@ def test_v4_a_spliced_or_mismatched_source_binding_refuses_with_nothing_written(
     elif wrong == "roster":
         result, _, _ = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, "4" * 64)
     elif wrong == "spliced_source":
-        result["source"] = dict(result["source"], cursor_end=snapshot._token(start))  # end token swapped under the binding
+        result["source"] = dict(result["source"], cursor_end_sha256=sha(snapshot._token(start)))  # changed under the binding
+    elif wrong == "end_digest":  # a consistent binding whose end digest is not the candidate cursor's digest
+        result, _, _ = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, ROSTER_SHA, end_sha256=sha(snapshot._token(start)))
     with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
         build(tmp_path, proj=proj, source={"snapshot_result": result, "expected_anchor_sha256": expected_anchor},
               allow_unbound_source=False)

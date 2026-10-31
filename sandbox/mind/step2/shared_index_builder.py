@@ -532,8 +532,9 @@ def _source_verifier():
 
 def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256):
     """The closed receipt ``source_binding`` for a snapshot result the Lead verifier accepted for THIS projection and
-    the pinned policy/roster digests. Cursor digests are sha256 of the snapshot token strings (never the tokens);
-    the end token must be the token of the result's candidate cursor. Refuses ``source_invalid`` (shape),
+    the pinned policy/roster digests. Cursor digests are taken from the verified ``source`` (``cursor_start_sha256``,
+    ``cursor_end_sha256``: sha256 of the snapshot token strings, the adapter never exposes the tokens) and the end
+    digest must equal sha256 of ``_token(candidate_cursor)``. Refuses ``source_invalid`` (shape),
     ``source_verifier_unavailable`` or ``source_binding_refused`` (any verifier or binding failure, no text)."""
     if (not isinstance(source, dict) or set(source) != SOURCE_KEYS or not isinstance(source["snapshot_result"], dict)
             or not isinstance(source["expected_anchor_sha256"], str)
@@ -544,17 +545,20 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
     try:
         accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
                           expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256)
-        start, end = result["source"]["cursor_start"], result["source"]["cursor_end"]
-        if (accepted is not True or not isinstance(start, str) or not start or not isinstance(end, str) or not end
-                or end != token(result["candidate_cursor"])):
+        # The verified ``source`` carries cursor DIGESTS only (the Lead adapter never returns raw cursor tokens,
+        # Lead 17:33:37Z): take both from it and require the end digest to be the digest of the candidate cursor.
+        start_sha256, end_sha256 = result["source"]["cursor_start_sha256"], result["source"]["cursor_end_sha256"]
+        candidate_sha256 = hashlib.sha256(token(result["candidate_cursor"]).encode("utf-8")).hexdigest()
+        if (accepted is not True
+                or not isinstance(start_sha256, str) or HEX64.fullmatch(start_sha256) is None
+                or not isinstance(end_sha256, str) or HEX64.fullmatch(end_sha256) is None
+                or not hmac.compare_digest(end_sha256, candidate_sha256)):
             raise ValueError("binding")
     except Exception:  # noqa: BLE001 - SnapshotRefused, KeyError, TypeError, ValueError: one token, never its text
         raise BuildRefused("source_binding_refused") from None
     binding = {"schema": SOURCE_BINDING_SCHEMA, "anchor_sha256": source["expected_anchor_sha256"],
-               "projection_sha256": projection_sha256,
-               "cursor_start_sha256": hashlib.sha256(start.encode("utf-8")).hexdigest(),
-               "cursor_end_sha256": hashlib.sha256(end.encode("utf-8")).hexdigest(),
-               "policy_sha256": policy_sha256, "roster_sha256": roster_sha256}
+               "projection_sha256": projection_sha256, "cursor_start_sha256": start_sha256,
+               "cursor_end_sha256": end_sha256, "policy_sha256": policy_sha256, "roster_sha256": roster_sha256}
     if set(binding) != SOURCE_BINDING_KEYS:
         raise BuildRefused("source_binding_shape")
     return binding

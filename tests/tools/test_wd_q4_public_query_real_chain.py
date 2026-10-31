@@ -72,6 +72,17 @@ def test_real_public_snapshot_builder_checkpoint_resolver_query(monkeypatch, tmp
         descriptor_sha256=artifacts["descriptor_sha256"], lock_file=r"C:\synthetic\reader.lock",
         lock_timeout="1", timeout=5, scratch_root=r"C:\synthetic\scratch",
     )
+    # Structure validation is intentionally not proof that caller-provided
+    # pins, policy origins, runtime, or publisher are trustworthy.
+    from tools import wd_q4_public_plan as public_plan
+    plan = public_plan.validate_public_plan({
+        "schema": "wd.q4-public-plan.v1", "config": config, "root": str(root),
+        **{k: v for k, v in pins.items() if k != "enabled"},
+        "expected_source_sha256": anchor_hash,
+        "expected_encoder_sha256": encoder_sha,
+    }, enabled=True)
+    assert plan.status == "VALIDATED_STRUCTURE_ONLY"
+    assert plan.pointer_target == "NOT_CHECKED"
     calls = []
 
     # Only the actual runtime launcher/model backend is replaced. Both the
@@ -115,3 +126,21 @@ def test_real_public_snapshot_builder_checkpoint_resolver_query(monkeypatch, tmp
         with pytest.raises(public_query.PublicQueryRefused, match="^public_query_refused$"):
             query(**{field: "0" * 64})
         assert len(calls) == 1
+
+    # Exercise the actual child adapter with the real public resolver and
+    # verifier. Only the launcher/model backend above is synthetic.
+    from tools import wd_q4_public_child as child
+    raw = json.dumps({"situation": "synthetic", "time": datetime.now(timezone.utc).isoformat()}).encode()
+    child_output = io.StringIO()
+    code = child.run_public(config, io.BytesIO(raw), child_output, root=root,
+                            query_fn=public_query.query_public, **query_pins)
+    assert code == 0
+    assert json.loads(child_output.getvalue()) == output
+    assert len(calls) == 2
+    refused_output = io.StringIO()
+    code = child.run_public(config, io.BytesIO(raw), refused_output, root=root,
+                            query_fn=public_query.query_public,
+                            **{**query_pins, "expected_pointer_sha256": "0" * 64})
+    assert code == 2
+    assert json.loads(refused_output.getvalue())["status"] == "REFUSED"
+    assert len(calls) == 2

@@ -25,6 +25,12 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Inherited shell values are not an authorization or a deployment descriptor.
+# A future verified configuration source must set these after this scrub.
+foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
+    if (Test-Path -LiteralPath "Env:$mindName") { Remove-Item -LiteralPath "Env:$mindName" }
+}
+
 # A lane must never inherit another Claude Code session's identity. Started from an
 # agent's tool shell, these markers make Claude Code treat an interactive lane as a
 # nested child session that writes no transcript and no sessions/<pid>.json

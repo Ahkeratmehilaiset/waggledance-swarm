@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fleet-sha256", required=True)
     args = parser.parse_args(argv)
     try:
+        if os.environ.get("WD_MIND_READ_ENABLED") != "1":
+            raise ValueError("mind_read_not_enabled")
         agent = os.environ.get("AGENT_BRIDGE_AGENT")
         uuid = os.environ.get("AGENT_BRIDGE_AGENT_UUID")
         roster = _fleet_roster(args.fleet, args.fleet_sha256.lower())

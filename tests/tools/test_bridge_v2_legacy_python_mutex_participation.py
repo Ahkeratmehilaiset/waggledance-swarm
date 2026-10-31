@@ -4,8 +4,8 @@
 tools/work_queue.py claim, release and heartbeat now run inside NamedMutexPort().hold(mutex_name(root)), the same
 Windows named mutex every v2 writer takes first, so a v2 participant holding it excludes the legacy write: the CLI
 waits a bounded time and refuses without writing. tools/work_queue_sweep_stale.py --apply takes the same mutex
-(fable-5 foreman call 2026-10-01, inventory option a); its dry run takes none. Fixture roots only; the lane
-environment is scrubbed.
+(fable-5 foreman call 2026-10-01, inventory option a); its dry run takes none. Fixture roots only; owner identity is isolated
+without dropping inherited WD pins or pytest options.
 
 Scope stated, not claimed: these two tools are the only production callers of the waggledance.core.work_queue
 writers (a static inventory, 2026-10-01). The legacy PowerShell writers take the same kernel object through
@@ -28,6 +28,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -35,6 +36,7 @@ import pytest
 from tools import work_queue as wq_cli
 from tools import work_queue_sweep_stale as sweep_cli
 from tools.bridge_v2_queue_transactions import QueueTransactionError, mutex_name
+from waggledance.core.bridge_resource_scope import _unalias
 from waggledance.core.work_queue import claim_task
 
 REPO = Path(__file__).resolve().parents[2]
@@ -68,14 +70,49 @@ CLAIM = ["claim", "--agent", "fable-5", "--task-id", "team/s2", "--summary", "s2
          "--write-scope", "tools/x.py"]
 
 
+_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT", "AGENT_BRIDGE_OWNER_SESSION_ID", "AGENT_BRIDGE_OWNER_TOKEN",
+    "AGENT_BRIDGE_RUN_ID", "AGENT_BRIDGE_OWNER_PID", "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+)
+
+
+def _fixture_repo_cwd(monkeypatch):
+    """Owned test data outside every repository; never consult the checkout's Git admin dir."""
+    temp_root = Path(tempfile.gettempdir()).absolute()
+    audit_root = temp_root / ".codex-audit"
+    parent = Path(os.environ.get("WD_TEST_REPO_PARENT", str(audit_root)))
+    try:
+        if not parent.is_absolute() or not parent.is_relative_to(audit_root):
+            raise ValueError("fixture parent must be under the existing temp audit root")
+        _unalias(parent)  # The real guard rejects links, reparse points and ambiguous aliases.
+        if not parent.resolve().is_relative_to(audit_root.resolve()):
+            raise ValueError("fixture parent escapes the existing temp audit root")
+        for ancestor in (parent, *parent.parents):
+            try:
+                (ancestor / ".git").lstat()
+            except FileNotFoundError:
+                continue
+            raise ValueError("fixture parent is inside a repository")
+    except (OSError, ValueError):
+        pytest.fail("synthetic repo parent must be a nonnested, unaliased temp path", pytrace=False)
+    parent.mkdir(parents=True, exist_ok=True)
+    repo = Path(tempfile.mkdtemp(prefix="wd-repo-cwd-", dir=parent))
+    for name in ("objects", "refs"):
+        (repo / ".git" / name).mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    return repo  # Retained as budgeted evidence; no automatic deletion.
+
+
 def _env() -> dict:
-    return {k: v for k, v in os.environ.items() if not k.upper().startswith(("AGENT_BRIDGE", "WD_"))}
+    return {k: v for k, v in os.environ.items() if k.upper() not in _IDENTITY_ENV}
 
 
 @pytest.fixture
 def bridge(tmp_path, monkeypatch):
-    for name in [k for k in os.environ if k.upper().startswith(("AGENT_BRIDGE", "WD_"))]:
-        monkeypatch.delenv(name)
+    for name in _IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    _fixture_repo_cwd(monkeypatch)
     monkeypatch.setattr(wq_cli, "LOCK_TIMEOUT_SECONDS", 0.5, raising=False)
     root = tmp_path / "bridge"
     (root / "work_queue" / "claims").mkdir(parents=True)
@@ -205,13 +242,14 @@ def test_an_abandoned_root_mutex_refuses_once_and_is_never_silently_recovered(br
 def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypatch, capsys):
     # A behaviour change, pinned (fable-5 23:19:55Z): the mutex name needs the canonical absolute root, so a writer
     # given a relative --bridge-root is refused before it writes (fail-closed); reads take no mutex and still work.
+    claim_cwd = Path.cwd()
     monkeypatch.chdir(bridge.parent)
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) == 2 and _claims(bridge) == []  # input error
     assert "runtime-root mutex: runtime root" in capsys.readouterr().out
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
-    # RS7 (legacy core): a claim cwd must be a repository top level, and tmp_path is none, so the absolute twin claims
-    # from REPO as every other claim in this file does; the twin is about the absolute root, not about the cwd.
-    monkeypatch.chdir(REPO)
+    # Restore the owned top-level fixture cwd, not the checkout's linked Git metadata.
+    # The twin is about the absolute bridge root, not about changing the claim cwd.
+    monkeypatch.chdir(claim_cwd)
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin
 
 
@@ -483,3 +521,44 @@ def test_a_mutex_cleanup_failure_after_an_applied_sweep_reports_the_archive_and_
     assert [row["task_id"] for row in report["archived"]] == ["team/stale"] and report["mutex_cleanup_error"]
     assert _claims(bridge) == [] and len(_done(bridge)) == 1        # archived once, never retried
     _python_holder(bridge).release()
+
+
+@pytest.mark.parametrize("context", ["child", "parent"])
+def test_fixture_environment_keeps_inherited_wd_context(tmp_path, monkeypatch, context):
+    from types import SimpleNamespace
+
+    # Never copy, read or mutate real owner credentials or trust-pin values in this unit test.
+    synthetic = {
+        "AGENT_BRIDGE_AGENT": "fixture-agent",
+        "AGENT_BRIDGE_OWNER_SESSION_ID": "fixture-session",
+        "AGENT_BRIDGE_OWNER_TOKEN": "fixture-token",
+        "AGENT_BRIDGE_RUN_ID": "fixture-session",
+        "AGENT_BRIDGE_OWNER_PID": "123",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": "2026-01-01T00:00:00Z",
+        "AGENT_BRIDGE_RUNTIME_ROOT": "synthetic-runtime-root",
+        "WD_TEST_INHERITED_CONTEXT": "synthetic-pin",
+        "PYTEST_ADDOPTS": "synthetic-addopts",
+    }
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "os", SimpleNamespace(environ=synthetic))
+    # Isolate this test-fixture unit only; real CLI/mutex tests still use the actual repo guard.
+    monkeypatch.setattr(module, "_fixture_repo_cwd", lambda patch: None, raising=False)
+
+    class SyntheticMonkeyPatch:
+        def delenv(self, name, raising=True):
+            if raising:
+                synthetic.pop(name)
+            else:
+                synthetic.pop(name, None)
+
+        def setattr(self, target, name, value, **kwargs):
+            assert target is wq_cli and name == "LOCK_TIMEOUT_SECONDS"
+
+    if context == "parent":
+        bridge.__wrapped__(tmp_path, SyntheticMonkeyPatch())
+        inherited = synthetic
+    else:
+        inherited = _env()
+    assert inherited.get("WD_TEST_INHERITED_CONTEXT") == "synthetic-pin"
+    assert inherited.get("AGENT_BRIDGE_RUNTIME_ROOT") == "synthetic-runtime-root"
+    assert inherited.get("PYTEST_ADDOPTS") == "synthetic-addopts"

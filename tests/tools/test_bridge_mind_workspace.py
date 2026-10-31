@@ -161,7 +161,7 @@ def test_each_tension_rule_is_derived_with_its_refs():
     fields = mind.reflection(_snapshot(blocked=blocked, lanes=lanes, prs=prs, facts=facts))
     rules = _rules(fields)
     assert set(rules) == {"claim_overlap", "expired_claim", "stale_vote", "veto_observed", "unacknowledged_command",
-                          "input_blocked", "coverage_unknown"}
+                          "input_blocked"}
     assert [tension["rule"] for tension in fields["tensions"]].count("claim_overlap") == 1
     overlap = rules["claim_overlap"]
     assert overlap["actors"] == ["claude-rco-2", "fable-5"] and overlap["severity"] == "high"
@@ -304,9 +304,9 @@ def test_a_blocked_source_makes_no_head_bound_suggestion(blocked):
     """P6c: blocked input (or a blocked field that is not the core shape) is not current, even with complete coverage."""
     prs = [_pr(10, votes=ALMOST), _pr(20, klass="a", votes=EVERY)]
     fields = mind.reflection(_snapshot(blocked=blocked, prs=prs))
-    assert [item["kind"] for item in fields["attention"]] == ["tension_high", "tension_high"]
-    assert {tension["rule"] for tension in fields["tensions"]} == {"input_blocked", "coverage_unknown"}
-    assert fields["next_question"]["global"]["question"].startswith("How can the fleet resolve ")
+    assert [item["kind"] for item in fields["attention"]] == ["tension_high"]
+    assert [tension["rule"] for tension in fields["tensions"]] == ["input_blocked"]
+    assert fields["next_question"]["global"]["question"].startswith("How can the fleet resolve input_blocked:")
     assert "exact head" not in mind.canonical_json(fields["next_question"])
     # The unblocked and the unknown-coverage controls keep their suggestions, and stay distinct.
     unblocked = mind.reflection(_snapshot(prs=prs))
@@ -423,7 +423,7 @@ def test_a_blocked_complete_source_is_not_rendered_as_complete():
 
     reflected = mind.reflect(snapshot)
 
-    assert "coverage_unknown" in _rules(reflected)
+    assert "input_blocked" in _rules(reflected)
     assert "coverage partial" in mind.render_text(reflected).splitlines()[0]
     assert snapshot["source"]["coverage"] == "complete"
 
@@ -1982,9 +1982,9 @@ def test_an_actual_core_blocked_view_makes_no_head_bound_suggestion():
     assert _sha256(blocked) == CORE_BLOCKED_SHA256
     assert (blocked["tensions"], blocked["attention"]) == ([], [])
     reflected = mind.reflect(blocked)
-    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 7 + ["tension"] * 3
+    assert [item["kind"] for item in reflected["attention"]] == ["tension_high"] * 6 + ["tension"] * 3
     rules = _rules(reflected)
-    assert sorted(rules) == ["claim_overlap", "coverage_unknown", "expired_claim", "input_blocked", "stale_vote", "veto_observed"]
+    assert sorted(rules) == ["claim_overlap", "expired_claim", "input_blocked", "stale_vote", "veto_observed"]
     assert rules["input_blocked"]["subject"] == "offset:1500" and "canonical_event_invalid" in rules["input_blocked"][
         "observation"]
     assert rules["input_blocked"]["refs"] == [blocked["source"]["last_event_ref"]]

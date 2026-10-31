@@ -794,7 +794,7 @@ def _context_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
 
 def derive_tensions(inputs: _Inputs) -> list[dict[str, Any]]:
     tensions: list[dict[str, Any]] = []
-    if inputs.coverage != "complete":
+    if inputs.coverage != "complete" and inputs.blocked is None:
         tensions.append(_tension("coverage_unknown", "source", "the snapshot is one view of the bridge log",
                                  f"its coverage is {inputs.coverage}, so no list here is complete", [],
                                  [inputs.source_ref]))
@@ -995,9 +995,8 @@ def _entry(item: Mapping[str, Any] | None, who: str, partial: bool, blocked: boo
     if item is None:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     question = _question(item, who)
-    if partial:
-        question += (" Coverage is not complete." if blocked else
-                     " Coverage is not complete, so check the exact head first.")
+    if partial and not blocked:
+        question += " Coverage is not complete, so check the exact head first."
     if len(question) > QUESTION_LIMIT:
         return {"question": UNKNOWN, "attention_rank": None, "refs": [UNKNOWN]}
     return {"question": question, "attention_rank": item["rank"], "refs": list(item["refs"])}

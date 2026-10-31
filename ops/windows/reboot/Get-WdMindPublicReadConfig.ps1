@@ -54,7 +54,8 @@ function Get-WdMindPublicReadConfig {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $FleetPath,
-        [Parameter(Mandatory)] [string] $FleetSha256
+        [Parameter(Mandatory)] [string] $FleetSha256,
+        [Parameter(Mandatory)] [string] $Agent
     )
 
     function Assert-PublicPath {
@@ -148,7 +149,7 @@ function Get-WdMindPublicReadConfig {
         if ($legacyEnabled.Value) { throw 'mind_public_config_mode_conflict' }
     }
     $names = @('anchor','policy','roster','public_policy')
-    $required = @('enabled','audit_root','max_age_seconds')
+    $required = @('enabled','lanes','audit_root','max_age_seconds')
     foreach ($name in $names) { $required += @(($name+'_path'),($name+'_sha256')) }
     foreach ($name in @($config.PSObject.Properties.Name)) {
         if ($required -cnotcontains $name) { throw 'mind_public_config_unknown_field' }
@@ -156,6 +157,19 @@ function Get-WdMindPublicReadConfig {
     foreach ($name in $required) {
         if ($null -eq $config.PSObject.Properties[$name]) { throw 'mind_public_config_field_missing' }
     }
+    # Configuration scopes which launcher may export the route; the Agent
+    # string is not an authentication boundary or proof of a live session.
+    $knownLanes = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+    if ($knownLanes -cnotcontains $Agent -or $config.lanes -isnot [array] -or
+        $config.lanes.Count -lt 1 -or $config.lanes.Count -gt $knownLanes.Count) {
+        throw 'mind_public_config_lanes_invalid'
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($selectedLane in $config.lanes) {
+        if ($selectedLane -isnot [string] -or $knownLanes -cnotcontains $selectedLane -or
+            -not $seen.Add($selectedLane)) { throw 'mind_public_config_lanes_invalid' }
+    }
+    if (-not $seen.Contains($Agent)) { return $null }
     if ($config.audit_root -isnot [string]) { throw 'mind_public_config_path_invalid' }
     $auditRoot = Assert-PublicPath -Value $config.audit_root -Kind Directory
     $age = $config.max_age_seconds

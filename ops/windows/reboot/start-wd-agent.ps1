@@ -1876,7 +1876,7 @@ if ($null -ne $manifest.PSObject.Properties['mind_public_read']) {
     throw 'mind_public_config_helper_pin_mismatch'
   }
   . ([scriptblock]::Create([string]$publicMindSnapshot.Text))
-  $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+  $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value) -Agent $Agent
   if ($null -ne $publicMindValues) {
     $publicMindCli = Join-Path $PSScriptRoot 'tools-bootstrap/tools/wd_mind_public_session_cli.py'
     [void](Assert-LanePathWithoutReparse -Path $publicMindCli -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)

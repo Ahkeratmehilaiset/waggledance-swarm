@@ -3407,7 +3407,7 @@ if ($isDeployedLauncher) {
             throw 'mind_public_config_helper_pin_mismatch'
         }
         . ([scriptblock]::Create([string]$publicMindSnapshot.Text))
-        $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value)
+        $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value) -Agent $agent
         if ($null -ne $publicMindValues) {
             $publicMindCli = Join-Path $PSScriptRoot 'tools-bootstrap/tools/wd_mind_public_session_cli.py'
             Assert-FilePathWithoutReparse -Candidate $publicMindCli -Root $toolsTrustedDrive

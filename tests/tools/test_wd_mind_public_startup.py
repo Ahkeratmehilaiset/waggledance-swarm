@@ -101,7 +101,7 @@ def test_both_launchers_rescrub_identical_mind_namespace_before_export():
 def fixture_config(tmp_path):
     audit = tmp_path / ".codex-audit"
     audit.mkdir(exist_ok=True)
-    config = {"enabled": True, "audit_root": str(audit), "max_age_seconds": 300}
+    config = {"enabled": True, "lanes": ["codex-lead-1"], "audit_root": str(audit), "max_age_seconds": 300}
     for name in PINS:
         path = tmp_path / ("synthetic-" + name + ".json")
         data = json.dumps({"synthetic_pin": name}, sort_keys=True).encode("ascii")
@@ -111,7 +111,7 @@ def fixture_config(tmp_path):
     return config
 
 
-def invoke(tmp_path, config=MISSING, *, legacy=False, digest=None):
+def invoke(tmp_path, config=MISSING, *, legacy=False, digest=None, agent="codex-lead-1"):
     fleet = {} if config is MISSING else {"mind_public_read": config}
     fleet["mind_read"] = {"enabled": legacy}
     path = tmp_path / "synthetic-fleet.json"
@@ -124,12 +124,78 @@ def invoke(tmp_path, config=MISSING, *, legacy=False, digest=None):
         "$env:WD_MIND_PUBLIC_ENABLED='synthetic-inherited'\n"
         "try {\n"
         + f". {quote(HELPER)}\n"
-        + f"$v=Get-WdMindPublicReadConfig -FleetPath {quote(path)} -FleetSha256 {quote(expected)}\n"
+        + f"$v=Get-WdMindPublicReadConfig -FleetPath {quote(path)} -FleetSha256 {quote(expected)} -Agent {quote(agent)}\n"
         + "[ordered]@{ok=$true;value=$v;inherited=$env:WD_MIND_PUBLIC_ENABLED}"
         + "|ConvertTo-Json -Depth 8 -Compress\n"
         + "} catch { [ordered]@{ok=$false;reason=$_.Exception.Message}"
         + "|ConvertTo-Json -Compress }\n"
     )
+
+
+@WINDOWS
+@pytest.mark.parametrize("agent", ["codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"])
+def test_lead_only_pilot_does_not_export_public_values_to_other_lanes(tmp_path, agent):
+    result = invoke(tmp_path, fixture_config(tmp_path), agent=agent)
+    assert result == {"ok": True, "value": None, "inherited": "synthetic-inherited"}
+
+
+@WINDOWS
+def test_legacy_enabled_fleet_without_lane_or_caller_never_exports(tmp_path):
+    config = fixture_config(tmp_path)
+    del config["lanes"]
+    path = tmp_path / "synthetic-fleet.json"
+    data = json.dumps({"mind_public_read": config}).encode("ascii")
+    path.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    result = powershell(
+        "$ErrorActionPreference='Stop'\ntry {\n"
+        + f". {quote(HELPER)}\n"
+        + f"$v=Get-WdMindPublicReadConfig -FleetPath {quote(path)} -FleetSha256 {quote(digest)}\n"
+        + "[ordered]@{enabled=($null -ne $v)}|ConvertTo-Json -Compress\n"
+        + "} catch { [ordered]@{enabled=$false}|ConvertTo-Json -Compress }\n"
+    )
+    assert result == {"enabled": False}
+
+
+@WINDOWS
+@pytest.mark.parametrize("lanes", [None, [], "codex-lead-1", [""], ["unknown"],
+                                    ["CODEX-LEAD-1"], ["codex-lead-1", "codex-lead-1"],
+                                    ["codex-lead-1", 3]])
+def test_enabled_missing_or_invalid_lane_allowlist_fails_closed(tmp_path, lanes):
+    config = fixture_config(tmp_path)
+    if lanes is None:
+        del config["lanes"]
+    else:
+        config["lanes"] = lanes
+    result = invoke(tmp_path, config)
+    assert not result["ok"]
+    assert result["reason"].startswith("mind_public_config_")
+
+
+@WINDOWS
+@pytest.mark.parametrize("agent", ["", "unknown", "CODEX-LEAD-1"])
+def test_missing_or_invalid_caller_identity_is_refused(tmp_path, agent):
+    result = invoke(tmp_path, fixture_config(tmp_path), agent=agent)
+    assert not result["ok"]
+
+
+@WINDOWS
+def test_explicit_full_allowlist_can_configure_each_lane(tmp_path):
+    config = fixture_config(tmp_path)
+    config["lanes"] = ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"]
+    for agent in config["lanes"]:
+        result = invoke(tmp_path, config, agent=agent)
+        assert result["ok"] and result["value"]["WD_MIND_PUBLIC_ENABLED"] == "1"
+
+
+def test_launcher_passes_its_own_identity_to_the_public_config_helper():
+    patterns = {
+        "start-wd-agent.ps1": r"Get-WdMindPublicReadConfig -FleetPath .* -Agent \$Agent\b",
+        "start-wd-tools-consumer.ps1": r"Get-WdMindPublicReadConfig -FleetPath .* -Agent \$agent\b",
+    }
+    for launcher, pattern in patterns.items():
+        text = (OPS / launcher).read_text(encoding="utf-8-sig")
+        assert re.search(pattern, text)
 
 
 @WINDOWS

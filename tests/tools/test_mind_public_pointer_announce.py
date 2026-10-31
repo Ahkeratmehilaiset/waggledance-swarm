@@ -78,8 +78,9 @@ def test_surface_is_closed_and_off_by_default():
     assert ann.PAYLOAD_KEYS == {"schema", "kind", "generation", "pointer_sha256", "anchor_sha256", "artifacts", "source_mode",
                                 "authenticity", "freshness"}
     assert ann.SELECTION_KEYS == {"schema", "kind", "generation", "pointer_sha256", "anchor_sha256", "artifacts", "source_mode",
-                                  "announced_ts_utc", "publisher_agent", "candidates", "advisory", "view_consistent",
-                                  "authenticity", "freshness", "coverage", "ordering", "same_user_integrity"}
+                                  "announced_ts_utc", "publisher_agent", "candidates", "advisory", "view_fields_consistent",
+                                  "source_mode_consistency", "authenticity", "freshness", "coverage", "ordering",
+                                  "same_user_integrity"}
     assert ann.REFUSALS == {"request_invalid", "report_invalid", "no_change_not_announced", "view_required", "view_mismatch",
                             "rows_invalid", "no_candidate", "candidate_rejected", "ambiguous", "conflicting"}
     assert ann.ANNOUNCED_STATUSES == {"PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED"}
@@ -122,6 +123,8 @@ def test_payload_is_closed_and_built_only_from_a_publication_report():
     _refused(lambda: ann.announcement_payload(report(), ANCHOR_SHA, verified_view=dict(view_b, pointer_sha256=POINTER_A, generation="gen-z"),
                                               enabled=True), "view_mismatch")
     _refused(lambda: ann.announcement_payload({"status": "OFF"}, ANCHOR_SHA, enabled=True), "report_invalid")
+    for odd in ([SENTINEL], {"k": SENTINEL}, 7, None, b"PUBLISHED_GENESIS"):  # v3: unhashable or non-string status
+        _refused(lambda: ann.announcement_payload(dict(report(), status=odd), ANCHOR_SHA, enabled=True), "report_invalid")
     _refused(lambda: ann.announcement_payload(None, ANCHOR_SHA, enabled=True), "report_invalid")
     _refused(lambda: ann.announcement_payload(dict(report(), extra=SENTINEL), ANCHOR_SHA, enabled=True), "report_invalid")
     _refused(lambda: ann.announcement_payload(dict(report(), pointer_sha256=POINTER_A.upper()), ANCHOR_SHA, enabled=True),
@@ -151,12 +154,17 @@ def test_selection_picks_the_newest_matching_announcement_and_reports_only_unkno
     assert out["artifacts"] == ARTIFACTS and out["source_mode"] == {"status_mode": "public-v1", "public_policy_sha256": POLICY_SHA}
     assert out["announced_ts_utc"] == "2026-10-31T20:00:00.0000000Z" and out["publisher_agent"] == PUBLISHER
     assert out["candidates"] == 3 and out["advisory"] is True and out["kind"] == "publication"
-    for key in ("authenticity", "freshness", "coverage", "ordering", "same_user_integrity", "view_consistent"):
+    for key in ("authenticity", "freshness", "coverage", "ordering", "same_user_integrity", "view_fields_consistent",
+                "source_mode_consistency"):
         assert out[key] == "UNKNOWN"
     # the caller may hand in the checkpoint view it verified for the selected digest: consistency is checked, never trust
     view = {"pointer_sha256": POINTER_B, "generation": "gen-b", "artifacts": dict(ARTIFACTS), "anchor_sha256": ANCHOR_SHA,
             "cursor_end_sha256": sha("end"), "watermark_sha256": sha("wm")}
-    assert _select(rows, verified_view=view)["view_consistent"] is True
+    with_view = _select(rows, verified_view=view)
+    # v3: the six-field view carries neither source_mode nor the public-policy pin, so only the VIEW FIELDS are called
+    # consistent (pointer, generation, artifacts, anchor); the source-mode binding stays UNKNOWN, never implied
+    assert with_view["view_fields_consistent"] is True and with_view["source_mode_consistency"] == "UNKNOWN"
+    assert "view_consistent" not in with_view
     _refused(lambda: _select(rows, verified_view=dict(view, pointer_sha256=POINTER_A)), "view_mismatch")
     _refused(lambda: _select(rows, verified_view=dict(view, artifacts=dict(ARTIFACTS, memory_sha256=sha("x")))), "view_mismatch")
     _refused(lambda: _select(rows, verified_view="view"), "view_mismatch")
@@ -195,6 +203,11 @@ def test_selection_refuses_malformed_ambiguous_conflicting_and_forged_candidates
     assert _select([row(ts="2026-10-31T19:00:00.0000000Z"),
                     row(ts="2026-10-31T20:00:00.0000000Z", payload=payload(pointer_sha256=POINTER_B))])["pointer_sha256"] == POINTER_B
     _refused(lambda: _select([row(payload=payload(kind="unknown-kind"))]), "candidate_rejected")
+    for odd in (["publication"], {"kind": SENTINEL}, 3, None):  # v3: unhashable or non-string kind is a fixed refusal
+        _refused(lambda: _select([row(payload=payload(kind=odd))]), "candidate_rejected")
+    for odd in ([PUBLISHER], {"agent": PUBLISHER}, None):  # v3: unhashable publisher names refuse, never TypeError
+        _refused(lambda: _select([row()], publisher_agent=odd), "request_invalid")
+    _refused(lambda: _select([row(payload=payload(schema=[ann.SCHEMA]))]), "no_candidate")  # a list schema is not the schema
     _refused(lambda: _select([row(ts="2026-10-31T19:00:00.0000000Z"),
                               row(ts="2026-10-31T20:00:00.0000000Z", payload=payload(pointer_sha256=POINTER_B, anchor_sha256=sha("other")))]),
              "conflicting")  # same generation, different anchor binding
@@ -235,7 +248,7 @@ def test_real_chain_publish_a_then_empty_advance_is_announced_selected_and_follo
              "type": "message", "status": "milestone", "task_id": task, "message": "", "to": "", "payload": payload_a}]
     selected = ann.select_announced_pointer(rows, task_id=task, publisher_agent="codex-lead-1", roster=roster,
                                             verified_view=view_a, enabled=True)
-    assert selected["pointer_sha256"] == p0 and selected["view_consistent"] is True
+    assert selected["pointer_sha256"] == p0 and selected["view_fields_consistent"] is True
     # the strict empty delta: pointer advances, generation and artifacts stay; NO_CHANGE needs no announcement
     predecessor = chain.pub.Predecessor(pointer_sha256=p0, memory_dir=root / "gen-a",
                                         memory_sha256=report_a["artifacts"]["memory_sha256"],

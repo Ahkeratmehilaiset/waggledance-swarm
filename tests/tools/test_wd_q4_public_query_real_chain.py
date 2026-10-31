@@ -132,14 +132,12 @@ def test_real_public_snapshot_builder_checkpoint_resolver_query(monkeypatch, tmp
     from tools import wd_q4_public_child as child
     raw = json.dumps({"situation": "synthetic", "time": datetime.now(timezone.utc).isoformat()}).encode()
     child_output = io.StringIO()
-    code = child.run_public(config, io.BytesIO(raw), child_output, root=root,
-                            query_fn=public_query.query_public, **query_pins)
+    code = child.run_public(config, io.BytesIO(raw), child_output, root=root, **query_pins)
     assert code == 0
     assert json.loads(child_output.getvalue()) == output
     assert len(calls) == 2
     refused_output = io.StringIO()
     code = child.run_public(config, io.BytesIO(raw), refused_output, root=root,
-                            query_fn=public_query.query_public,
                             **{**query_pins, "expected_pointer_sha256": "0" * 64})
     assert code == 2
     assert json.loads(refused_output.getvalue())["status"] == "REFUSED"

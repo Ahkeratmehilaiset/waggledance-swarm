@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -20,7 +21,7 @@ def valid_config():
         bootstrap=r"C:\synthetic\bootstrap.py", bootstrap_sha256="9" * 64, verifier_sha256="a" * 64,
         runtime_root=r"C:\synthetic\runtime", runtime_manifest=r"C:\synthetic\runtime.json",
         runtime_manifest_sha256="b" * 64, runtime_generation="c" * 40, runtime_revision="d" * 40,
-        memory=r"C:\synthetic\memory", descriptor=r"C:\synthetic\descriptor.json", descriptor_sha256="4" * 64,
+        memory=r"C:\synthetic\index\gen-1", descriptor=r"C:\synthetic\index\gen-1\descriptor.json", descriptor_sha256="4" * 64,
         lock_file=r"C:\synthetic\lock", lock_timeout="1", timeout=30.0, scratch_root=r"C:\synthetic\scratch",
     )
 
@@ -29,8 +30,8 @@ def test_mismatched_descriptor_is_not_released(inputs):
     result = valid_response(inputs)
     result["binding"]["descriptor_sha256"] = "f" * 64
     out = io.StringIO()
-    code = child.run_public(valid_config(), io.BytesIO(b"query"), out, enabled=True,
-                            query_fn=lambda *a, **k: result, **inputs)
+    with patch("tools.wd_q4_public_query.query_public", return_value=result):
+        code = child.run_public(valid_config(), io.BytesIO(b"query"), out, enabled=True, **inputs)
     assert code == 2 and json.loads(out.getvalue())["status"] == "REFUSED"
 
 
@@ -41,16 +42,24 @@ def test_unvalidated_config_is_refused_before_stdin_or_backend(inputs):
             reads.append(True)
             raise AssertionError("must not read")
     out = io.StringIO()
-    code = child.run_public(object(), NoRead(), out, enabled=True,
-                            query_fn=lambda *a, **k: valid_response(inputs), **inputs)
+    with patch("tools.wd_q4_public_query.query_public", return_value=valid_response(inputs)):
+        code = child.run_public(object(), NoRead(), out, enabled=True, **inputs)
     assert code == 2 and json.loads(out.getvalue())["status"] == "REFUSED" and not reads
 
 
 @pytest.fixture
 def inputs():
-    policy, roster, public_policy = b"synthetic-policy", b"synthetic-roster", b"synthetic-public-policy"
+    lanes = ["codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5"]
+    roster_value = {"schema": "wd.q4-roster-snapshot.v1",
+        "lanes": [{"agent": name, "agent_uuid": f"{i:08x}-1111-4111-8111-111111111111"}
+                  for i, name in enumerate(lanes, 1)],
+        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": "00000005-1111-4111-8111-111111111111"}}
+    policy = json.dumps({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": ["public-task"]}).encode()
+    roster = json.dumps(roster_value).encode()
+    public_policy = json.dumps({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
+                                "public_types": ["message"]}).encode()
     return {
-        "root": "synthetic-root",
+        "root": r"C:\synthetic\index",
         "expected_pointer_sha256": "1" * 64,
         "expected_source_sha256": "2" * 64,
         "expected_encoder_sha256": "3" * 64,
@@ -78,9 +87,47 @@ def valid_response(inputs):
     }
 
 
+def test_supplied_query_function_cannot_forge_public_answer(inputs):
+    """F1: A caller-supplied callback cannot stand in for the public resolver."""
+    out = io.StringIO()
+    called = []
+
+    def fake_query(*args, **kwargs):
+        called.append(True)
+        return valid_response(inputs)
+
+    try:
+        code = child.run_public(valid_config(), io.BytesIO(b"synthetic-query"), out,
+                                enabled=True, query_fn=fake_query, **inputs)
+    except TypeError:
+        return  # Removing the callback argument also closes the injection seam.
+    assert code == 2 and json.loads(out.getvalue())["status"] == "REFUSED"
+    assert not called
+
+
+def test_exact_plan_is_required_before_query_callback(inputs, monkeypatch):
+    """F2: No callback may run for an unvalidated root or policy tuple."""
+    from tools import wd_q4_public_query
+
+    called = []
+
+    def fake_query(*args, **kwargs):
+        called.append(True)
+        return valid_response(inputs)
+
+    monkeypatch.setattr(wd_q4_public_query, "query_public", fake_query)
+    out = io.StringIO()
+    # Relative roots do not form a structurally valid, direct generation plan.
+    invalid = {**inputs, "root": "synthetic-root"}
+    code = child.run_public(valid_config(), io.BytesIO(b"synthetic-query"), out, enabled=True, **invalid)
+    assert code == 2 and json.loads(out.getvalue())["status"] == "REFUSED"
+    assert not called
+
+
 def run(inputs, query_fn, query=b"synthetic-query", *, enabled=True, stdout=None):
     out = io.StringIO() if stdout is None else stdout
-    code = child.run_public(valid_config(), io.BytesIO(query), out, enabled=enabled, query_fn=query_fn, **inputs)
+    with patch("tools.wd_q4_public_query.query_public", new=query_fn):
+        code = child.run_public(valid_config(), io.BytesIO(query), out, enabled=enabled, **inputs)
     return code, out
 
 
@@ -89,7 +136,7 @@ def test_default_off_does_not_touch_stdin_or_call_query(inputs):
         def read(self, *args):
             raise AssertionError("must not read")
     out = io.StringIO()
-    assert child.run_public(object(), NoRead(), out, query_fn=lambda *a, **k: pytest.fail("called"), **inputs) == 2
+    assert child.run_public(object(), NoRead(), out, **inputs) == 2
     assert json.loads(out.getvalue())["status"] == "REFUSED"
 
 
@@ -115,7 +162,8 @@ def test_chunked_input_is_collected_to_eof(inputs):
     def query(config, stream, **kwargs):
         seen.append(stream.read())
         return valid_response(inputs)
-    assert child.run_public(valid_config(), Chunked(), out, enabled=True, query_fn=query, **inputs) == 0
+    with patch("tools.wd_q4_public_query.query_public", new=query):
+        assert child.run_public(valid_config(), Chunked(), out, enabled=True, **inputs) == 0
     assert seen == [b"first-second"]
 
 
@@ -133,7 +181,8 @@ def test_missing_pin_refuses_before_read_and_query(inputs, name):
         def read(self, *args):
             raise AssertionError("must not read")
     out = io.StringIO()
-    assert child.run_public(valid_config(), NoRead(), out, enabled=True, query_fn=lambda *a, **k: pytest.fail("called"), **inputs) == 2
+    with patch("tools.wd_q4_public_query.query_public", side_effect=AssertionError("called")):
+        assert child.run_public(valid_config(), NoRead(), out, enabled=True, **inputs) == 2
     assert json.loads(out.getvalue())["status"] == "REFUSED"
 
 

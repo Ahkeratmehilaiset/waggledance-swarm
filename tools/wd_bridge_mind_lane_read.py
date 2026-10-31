@@ -5,9 +5,11 @@
 names under one owned ``.codex-audit`` root, verifies the publication with the core's own ``read_snapshot``, binds
 the snapshot's declared log identity and generation to the pinned reader cursor the producer committed in
 ``state.json`` AND to the cursor of a compact-reader view the calling lane obtained itself, and returns a strict
-allowlist projection: source counts, refs, heads, task ids, times and fixed tokens only; no decision-derived aggregates. Paths, write scopes, message
+allowlist projection: source counts, heads, task ids, times and fixed tokens only; no decision-derived aggregates. Paths, write scopes, message
 bodies, payloads, agent uuids and peer vote attributions never reach the output; any string outside the allowlist
 refuses the whole output without echoing it.
+Content-dependent publication/state digests and the last event reference are checked internally but never returned:
+they could otherwise enable guessing of private peer events. This does not establish general noninterference.
 
 Fail-closed producer binding (RCO2 F2 on PR1963, RCO1 P1 on the producer branch): a bindable publication declares
 ``source.log_identity`` as a capture WINDOW of a bridge log, ``capture-window:<file_identity>`` with the reader's own
@@ -282,6 +284,12 @@ def _state_cursor(state_path: Path, audit_root: Path, expected_sha256: str) -> t
             or state["generation"] < 1):
         raise LaneReadRefused("pointer_invalid")
     identity, generation = decode_cursor(state["cursor"])
+    # The producer's state source is the exact cursor-derived pair, not the
+    # six-field capture-window source in the public snapshot. The hash above
+    # binds the bytes, but cannot make a mismatched declaration consistent.
+    if (type(state["source"]) is not dict
+            or state["source"] != {"file_identity": identity, "log_generation": generation}):
+        raise LaneReadRefused("state_binding_mismatch")
     return identity, generation, state["generation"]
 
 
@@ -296,13 +304,21 @@ def _state_head_cursor(path: Path, audit_root: Path, expected_head_sha256: str,
             or not _hex64(head["window_sha256"]) or not isinstance(head["source"], dict)):
         raise LaneReadRefused("state_head_invalid")
     _pointer_digest_check(head["state_sha256"], expected_state_sha256)
-    try:
-        core._source(head["source"], head["source"].get("event_count"))
-    except core.ProjectionError:
+    # Producer state/head source is cursor_source, not the core snapshot's
+    # six-field capture-window source.  Bind both independently to the same
+    # decoded cursor; neither metadata claim authenticates the writer.
+    source = head["source"]
+    if (set(source) != {"file_identity", "log_generation"}
+            or not isinstance(source["file_identity"], str) or not _IDENTITY.fullmatch(source["file_identity"])
+            or (source["log_generation"] is not None
+                and (not isinstance(source["log_generation"], str)
+                     or not _GENERATION.fullmatch(source["log_generation"])) )):
         raise LaneReadRefused("state_head_invalid") from None
-    if head["source"] != {key: snapshot_source[key] for key in head["source"]}:
-        raise LaneReadRefused("state_head_binding_mismatch")
     identity, generation = decode_cursor(head["cursor"])
+    if (source["file_identity"] != identity or source["log_generation"] != generation
+            or snapshot_source.get("log_identity") != WINDOW_PREFIX + identity
+            or snapshot_source.get("generation") != generation):
+        raise LaneReadRefused("state_head_binding_mismatch")
     return identity, generation, head["generation"]
 
 
@@ -455,6 +471,8 @@ def _source(source: Mapping[str, Any], *, allow_unknown_generation: bool = False
             raise LaneReadRefused("field_not_allowlisted")
         blocked = {"active": True, "reason": blocked["reason"]}
     last_ref = source["last_event_ref"]
+    if last_ref is not None:
+        _safe(last_ref, _REF)  # validate internally; a content hash is not a lane-safe output
     log_identity = source["log_identity"]
     if not isinstance(log_identity, str) or not log_identity.startswith(WINDOW_PREFIX):
         raise LaneReadRefused("field_not_allowlisted")
@@ -468,7 +486,7 @@ def _source(source: Mapping[str, Any], *, allow_unknown_generation: bool = False
             "duplicate_count": _count(source["duplicate_count"]),
             "window": {"cursor_start": _count(source["cursor_start"]), "cursor_end": _count(source["cursor_end"]),
                        "coverage": WINDOW_COVERAGE},
-            "last_event_ref": None if last_ref is None else _safe(last_ref, _REF), "blocked": blocked}
+            "blocked": blocked}
 
 
 # -- the read ----------------------------------------------------------------------------------------------------
@@ -535,8 +553,7 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         "as_of_utc": as_of.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "binding": {"file_identity": view_identity, "generation": view_generation,
                     "origin": "UNKNOWN" if view_generation is None else "lane_reader_view_not_authenticated"},
-        "pointer": {"cycle_dir": last_ok["cycle_dir"], "cycle_generation": cycle_generation,
-                    "snapshot_sha256": last_ok["snapshot_sha256"], "state_sha256": last_ok["state_sha256"]},
+        "pointer": {"cycle_dir": last_ok["cycle_dir"], "cycle_generation": cycle_generation},
         "freshness": {"age_seconds": age.total_seconds(), "max_age_seconds": max_age.total_seconds(), "status": "fresh"},
         "identity": {"roster": "caller_declared" if bound else "none", "bound_lanes": sorted(bound)},
         "source": _source(source, allow_unknown_generation=allow_unknown_generation),
@@ -545,8 +562,8 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
     }
     if compact_state:
         result["binding"]["origin"] = "UNKNOWN"
-        result["pointer"].update(state_read_mode="compact_head", state_head_sha256=last_ok["state_head_sha256"],
-                                 state_head_origin="UNVERIFIED", head_to_state_content="UNVERIFIED")
+        result["pointer"].update(state_read_mode="compact_head", state_head_origin="UNVERIFIED",
+                                 head_to_state_content="UNVERIFIED")
     if view_generation is None:
         result["binding"].update(generation_status="UNKNOWN", rotation_continuity="UNKNOWN")
     if len(core.canonical_bytes(result)) > BUDGET:

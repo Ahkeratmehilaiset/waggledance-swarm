@@ -20,6 +20,7 @@ import pytest
 from tools import wd_bridge_mind as core
 from tools import wd_bridge_mind_lane_read as lane_read
 from tools.bridge_compact_view import event_id
+from sandbox.mind import mind_capture_producer as producer
 
 LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 AS_OF = "2026-10-31T07:59:00Z"
@@ -136,8 +137,9 @@ def make_live(tmp_path: Path, *, log_identity=WINDOW + LOG_ID, generation="g1", 
     digest = core.write_snapshot(snapshot, publication, audit_root=audit)
     capture = cycle / "capture.json"
     capture.write_bytes(b'{"schema":"wd.bridge-mind-capture.v1"}')
-    state_obj = {"schema": "wd.bridge-mind-producer-state.v1", "generation": 1, "cursor": token or cursor(),
-                 "source": source, "window_sha256": "0" * 64, "window": []}
+    state_cursor = token or cursor()
+    state_obj = {"schema": "wd.bridge-mind-producer-state.v1", "generation": 1, "cursor": state_cursor,
+                 "source": producer.cursor_source(state_cursor), "window_sha256": "0" * 64, "window": []}
     state_bytes = json.dumps(state_obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
     (cycle / "state.json").write_bytes(state_bytes)
     (cycle / "run" / "board.txt").write_bytes(b"board\n")
@@ -493,7 +495,7 @@ def test_g6_p1_a_pointer_exactly_as_the_producer_commits_it_is_accepted_and_only
     assert set(pointer) == lane_read.LAST_OK_REQUIRED  # legacy pointer drops its descriptive optional fields
     result = read(audit, latest)
     assert result["refusal"] is None
-    assert set(result["pointer"]) == {"cycle_dir", "cycle_generation", "snapshot_sha256", "state_sha256"}
+    assert set(result["pointer"]) == {"cycle_dir", "cycle_generation"}
     text = json.dumps(result)
     for value in ("synthetic question text", "capture_ms", "board_text", READER, "observed_utc", "receipt.json"):
         assert value not in text
@@ -510,7 +512,7 @@ def test_compact_state_descriptor_pair_is_hash_checked_but_paths_are_not_exposed
     assert result["refusal"] is None
     assert "state_head_file" not in json.dumps(result)
     assert str(cycle) not in json.dumps(result)
-    assert result["pointer"]["state_head_sha256"] == sha((cycle / "state.head.json").read_bytes())
+    assert "state_head_sha256" not in result["pointer"]
     assert result["pointer"]["head_to_state_content"] == "UNVERIFIED"
 
 
@@ -669,7 +671,7 @@ def test_v5_a_producer_shaped_window_publication_binds_and_is_reported_as_a_boun
     capture = cycle / "capture.json"
     capture.write_bytes(b'{"schema":"wd.bridge-mind-capture.v1"}')
     state_obj = {"schema": "wd.bridge-mind-producer-state.v1", "generation": 1, "cursor": cursor(),
-                 "source": shadow_source(), "window_sha256": "0" * 64, "window": []}
+                 "source": producer.cursor_source(cursor()), "window_sha256": "0" * 64, "window": []}
     state_bytes = json.dumps(state_obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
     (cycle / "state.json").write_bytes(state_bytes)
     (cycle / "run" / "board.txt").write_bytes(b"board\n")
@@ -796,8 +798,8 @@ def test_compact_head_avoids_full_state_and_labels_unverified_correspondence(tmp
     assert result["pointer"]["state_read_mode"] == "compact_head"
     assert result["pointer"]["state_head_origin"] == "UNVERIFIED"
     assert result["pointer"]["head_to_state_content"] == "UNVERIFIED"
-    assert result["pointer"]["state_sha256"] == head["state_sha256"]
-    assert result["pointer"]["state_head_sha256"] == sha((cycle / "state.head.json").read_bytes())
+    assert "state_sha256" not in result["pointer"]
+    assert "state_head_sha256" not in result["pointer"]
     assert result["authority"] == "none" and result["scope"] == lane_read.SCOPE
     assert str(cycle) not in json.dumps(result) and "facts_meta" not in result
 
@@ -816,6 +818,27 @@ def test_legacy_pointer_still_hash_checks_full_state(tmp_path, monkeypatch):
     assert seen == [cycle / "state.json"]
     (cycle / "state.json").write_bytes(b"synthetic mismatch")
     with pytest.raises(lane_read.LaneReadRefused, match="pointer_race_or_mismatch"):
+        read(audit, latest)
+
+
+@pytest.mark.parametrize("change", [
+    lambda source: source.update(file_identity=OTHER_LOG_ID),
+    lambda source: source.update(log_generation="g2"),
+    lambda source: source.update(log_generation=None),
+    lambda source: source.update(log_generation=True),
+    lambda source: source.update(extra="synthetic"),
+    lambda source: source.pop("file_identity"),
+])
+def test_legacy_state_source_must_match_cursor_even_after_repin(tmp_path, change):
+    audit, latest, cycle = make_live(tmp_path)
+    assert read(audit, latest)["refusal"] is None
+    state_file = cycle / "state.json"
+    state = json.loads(state_file.read_bytes())
+    change(state["source"])
+    raw = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    state_file.write_bytes(raw)
+    rewrite_pointer(latest, lambda last_ok: last_ok.update(state_sha256=sha(raw)))
+    with pytest.raises(lane_read.LaneReadRefused, match="^state_binding_mismatch$"):
         read(audit, latest)
 
 
@@ -841,13 +864,16 @@ def test_compact_null_generation_is_only_an_opt_in_observation(tmp_path):
     (lambda h: h.update(window_sha256="not-a-digest"), "state_head_invalid"),
     (lambda h: h.update(source=[]), "state_head_invalid"),
     (lambda h: h["source"].update(extra="unexpected"), "state_head_invalid"),
-    (lambda h: h["source"].update(event_count=True), "state_head_invalid"),
+    (lambda h: h["source"].pop("log_generation"), "state_head_invalid"),
+    (lambda h: h["source"].update(file_identity="bad"), "state_head_invalid"),
+    (lambda h: h["source"].update(log_generation=True), "state_head_invalid"),
     (lambda h: h.update(cursor="bad"), "binding_invalid"),
     (lambda h: h.update(generation=2), "pointer_race_or_mismatch"),
     (lambda h: h.update(state_sha256="a" * 64), "pointer_race_or_mismatch"),
-    (lambda h: h["source"].update(log_identity=WINDOW + OTHER_LOG_ID), "state_head_binding_mismatch"),
-    (lambda h: h.update(cursor=cursor(file_identity=OTHER_LOG_ID)), "log_identity_mismatch"),
-    (lambda h: h.update(cursor=cursor(generation=None)), "log_identity_mismatch"),
+    (lambda h: h["source"].update(file_identity=OTHER_LOG_ID), "state_head_binding_mismatch"),
+    (lambda h: h["source"].update(log_generation="g2"), "state_head_binding_mismatch"),
+    (lambda h: h.update(cursor=cursor(file_identity=OTHER_LOG_ID)), "state_head_binding_mismatch"),
+    (lambda h: h.update(cursor=cursor(generation=None)), "state_head_binding_mismatch"),
 ])
 def test_compact_head_class_sweep_refuses_malformed_or_inconsistent_metadata(tmp_path, change, reason):
     audit, latest, cycle, head = compact_live(tmp_path)

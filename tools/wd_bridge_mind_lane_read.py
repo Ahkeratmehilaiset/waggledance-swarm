@@ -9,12 +9,16 @@ allowlist projection: source counts, refs, heads, task ids, times and fixed toke
 bodies, payloads, agent uuids and peer vote attributions never reach the output; any string outside the allowlist
 refuses the whole output without echoing it.
 
-Fail-closed producer binding (RCO2 F2 on PR1963): the current shadow pipeline declares the log identity from the
-capture digest and generation ``None`` (the shadow materializer source declaration in its run step). Such a snapshot cannot be bound to
-any reader observation, so this module refuses it with ``producer_binding_unavailable`` and names the missing
-producer change. Nothing here authenticates origin: the binding proves that the snapshot, the producer's committed
-cursor and the lane's own reader view name the same bridge log identity and generation, not which process wrote
-them. No clock, bridge, network, process or gate module is used; ``as_of`` is the caller's declared time.
+Fail-closed producer binding (RCO2 F2 on PR1963, RCO1 P1 on the producer branch): a bindable publication declares
+``source.log_identity`` as a capture WINDOW of a bridge log, ``capture-window:<file_identity>`` with the reader's own
+identity shape, and the reader generation the producer's cursor carried. A window named only by its digest (the
+legacy declaration), an identity that names the log itself (``bridge-log:...``, which would claim the whole log) or a
+``None`` generation cannot be bound to any reader observation, so this module refuses it with
+``producer_binding_unavailable`` and names the missing producer change. The output describes the source as a bounded
+window of that log (``source.scope``, ``source.window.coverage`` complete over the window only) and never as the whole
+log. Nothing here authenticates origin: the binding proves that the snapshot, the producer's committed cursor and the
+lane's own reader view name the same bridge log identity and generation, not which process wrote them. No clock,
+bridge, network, process or gate module is used; ``as_of`` is the caller's declared time.
 
 Pointer schema (RCO2 G6 on PR1964): ``read_pointer`` accepts exactly the ``last_ok`` the producer's
 ``candidate_cycle`` commits: the REQUIRED keys (cycle dir, generation, five cycle files under their exact producer
@@ -41,14 +45,17 @@ LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable
 LATEST_SCHEMA = "wd.bridge-mind-shadow-latest.v2"
 STATE_SCHEMA = "wd.bridge-mind-producer-state.v1"
 VIEW_SCHEMA = "wd.bridge.compact-view.v1"
-LOG_PREFIX = "bridge-log:"
+WINDOW_PREFIX = "capture-window:"  # the shadow materializer's window marker (its WINDOW_PREFIX at producer head d13531fa)
+SOURCE_SCOPE = "bounded_window_of_bridge_log_not_whole_log"
+WINDOW_COVERAGE = "complete_over_window_only"  # the core's "complete" is complete over the window rows, never the log
 MAX_AGE = timedelta(seconds=900)
 BUDGET = 65536
 POINTER_BUDGET = 65536
 MISSING_PRODUCER_CHANGE = (
-    "shadow_materializer_run_source_declaration: the materializer declares source.log_identity from the capture digest and generation None; "
-    "the producer must pass its pinned reader position cursor so the shadow derives source.log_identity "
-    "bridge-log:<file_identity> and source.generation from that cursor")
+    "shadow_materializer_run_source_declaration: a bindable publication declares source.log_identity as a capture window "
+    "of a bridge log, capture-window:<file_identity> in the reader identity shape, with source.generation from the "
+    "producer's pinned reader position cursor; a digest-named window or a generation None cannot be bound, and an "
+    "identity naming the log itself (bridge-log:...) is never bound because it would claim the whole log")
 
 _REF = re.compile(r"[0-9a-f]{64}\Z")
 _HEAD = re.compile(r"[0-9a-f]{40}\Z")
@@ -377,15 +384,16 @@ def _source(source: Mapping[str, Any]) -> dict:
         blocked = {"active": True, "reason": blocked["reason"]}
     last_ref = source["last_event_ref"]
     log_identity = source["log_identity"]
-    if not isinstance(log_identity, str) or not log_identity.startswith(LOG_PREFIX):
+    if not isinstance(log_identity, str) or not log_identity.startswith(WINDOW_PREFIX):
         raise LaneReadRefused("field_not_allowlisted")
-    return {"log_identity": LOG_PREFIX + _safe(log_identity[len(LOG_PREFIX):], _IDENTITY),
-            "generation": _safe(source["generation"], _GENERATION),
+    _fixed(source["coverage"], _COVERAGE_TOKENS)  # the core's own token is checked, then stated as window-only
+    return {"log_identity": WINDOW_PREFIX + _safe(log_identity[len(WINDOW_PREFIX):], _IDENTITY),
+            "scope": SOURCE_SCOPE, "generation": _safe(source["generation"], _GENERATION),
             "as_of_utc": _safe(source["as_of_utc"], _TIME), "max_event_utc": _time_or_unknown(source["max_event_utc"]),
             "event_count": _count(source["event_count"]), "unique_event_count": _count(source["unique_event_count"]),
             "duplicate_count": _count(source["duplicate_count"]),
             "window": {"cursor_start": _count(source["cursor_start"]), "cursor_end": _count(source["cursor_end"]),
-                       "coverage": _fixed(source["coverage"], _COVERAGE_TOKENS)},
+                       "coverage": WINDOW_COVERAGE},
             "last_event_ref": None if last_ref is None else _safe(last_ref, _REF), "blocked": blocked}
 
 
@@ -421,11 +429,13 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         raise LaneReadRefused("pointer_race_or_mismatch")
     source = snapshot["source"]
     declared_identity, declared_generation = source.get("log_identity"), source.get("generation")
-    if (not isinstance(declared_identity, str) or not declared_identity.startswith(LOG_PREFIX)
-            or declared_generation is None):
+    # Bindable only as a WINDOW of a bridge log in the reader identity shape with a generation: a digest-named window,
+    # an identity naming the log itself (which would claim the whole log) or a None generation is never bound.
+    if (not isinstance(declared_identity, str) or not declared_identity.startswith(WINDOW_PREFIX)
+            or not _IDENTITY.fullmatch(declared_identity[len(WINDOW_PREFIX):]) or declared_generation is None):
         raise LaneReadRefused("producer_binding_unavailable", missing_producer_change=MISSING_PRODUCER_CHANGE)
     if ((state_identity, state_generation) != (view_identity, view_generation)
-            or declared_identity != LOG_PREFIX + view_identity or declared_generation != view_generation):
+            or declared_identity != WINDOW_PREFIX + view_identity or declared_generation != view_generation):
         raise LaneReadRefused("log_identity_mismatch")
     snapshot_as_of = _utc(source["as_of_utc"])
     age = as_of.astimezone(timezone.utc) - snapshot_as_of

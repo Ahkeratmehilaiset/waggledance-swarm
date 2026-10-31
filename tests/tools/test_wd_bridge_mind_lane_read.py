@@ -108,7 +108,19 @@ def producer_contract():
     return reader, keys
 
 
-def make_live(tmp_path: Path, *, log_identity="bridge-log:" + LOG_ID, generation="g1", token=None, events=None,
+WINDOW = "capture-window:"  # the shadow's window marker at producer head d13531fa (tools/wd_bridge_mind_shadow.py WINDOW_PREFIX)
+
+
+def shadow_source(file_identity=LOG_ID, generation="g1", events=None):
+    """The ``source`` exactly as the d13531fa shadow declares it for a provenance capture: a capture WINDOW of the
+    bridge log the reader cursor names, the reader generation as reported (None stays None), the window's own row
+    range and the core-forced ``complete`` (complete over the window only)."""
+    count = len(rows() if events is None else events)
+    return {"log_identity": WINDOW + file_identity, "generation": generation, "cursor_start": 0, "cursor_end": count,
+            "event_count": count, "coverage": "complete"}
+
+
+def make_live(tmp_path: Path, *, log_identity=WINDOW + LOG_ID, generation="g1", token=None, events=None,
               context=False):
     audit = tmp_path / ".codex-audit"
     audit.mkdir(parents=True)
@@ -156,7 +168,9 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
     assert result["freshness"]["status"] == "fresh" and result["refusal"] is None
     assert set(result["lanes"]) == set(LANES)
     assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "not_seen_in_window"}
-    assert result["source"]["window"] == {"cursor_start": 0, "cursor_end": 5, "coverage": "complete"}
+    assert result["source"]["window"] == {"cursor_start": 0, "cursor_end": 5, "coverage": "complete_over_window_only"}
+    assert result["source"]["scope"] == "bounded_window_of_bridge_log_not_whole_log"
+    assert result["source"]["log_identity"] == WINDOW + LOG_ID
     lead = result["lanes"]["codex-lead-1"]
     assert lead["observed_in_window"] is True and lead["identity_verification"] == "roster_bound" and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
     pr = result["prs"]["1963"]
@@ -180,6 +194,7 @@ def test_current_producer_identity_fails_closed_and_names_the_missing_change(tmp
         read(audit, latest)
     assert str(info.value) == "producer_binding_unavailable"
     assert "shadow_materializer_run_source_declaration" in info.value.missing_producer_change and "generation None" in info.value.missing_producer_change
+    assert "capture-window:<file_identity>" in info.value.missing_producer_change
 
 
 def test_pointer_race_state_replaced_after_commit_is_refused(tmp_path):
@@ -390,7 +405,7 @@ def test_r3_path_shaped_values_in_fixed_token_fields_are_refused_without_echo(tm
         elif field == "coverage":
             value["source"]["coverage"] = SHAPED
         elif field == "log_identity":
-            value["source"]["log_identity"] = "bridge-log:" + SHAPED
+            value["source"]["log_identity"] = WINDOW + SHAPED
         else:
             value["facts"][0]["verification"] = SHAPED
         return value
@@ -399,7 +414,8 @@ def test_r3_path_shaped_values_in_fixed_token_fields_are_refused_without_echo(tm
     monkeypatch.setattr(lane_read, "_pointer_digest_check", lambda *_: None)
     with pytest.raises(lane_read.LaneReadRefused) as info:
         read(audit, latest)
-    assert str(info.value) in {"field_not_allowlisted", "log_identity_mismatch"} and "example" not in repr(info.value.__dict__)
+    assert str(info.value) in {"field_not_allowlisted", "log_identity_mismatch", "producer_binding_unavailable"}
+    assert "example" not in repr(info.value.__dict__)
 
 
 @pytest.mark.parametrize("identity", [SHAPED, "/srv/log", "windows-v1:0000abcd:../x", "posix-v1:C:/Users/x", "synthetic-log"])
@@ -592,3 +608,81 @@ def test_g6_p7_free_text_in_the_pointer_never_reaches_the_output(tmp_path):
     result = read(audit, latest)
     text = json.dumps(result)
     assert result["refusal"] is None and all(value not in text for value in secrets)
+
+
+# -- v5 (RCO1 P1 / Lead): the reader binds the shadow's window-scoped identity and never describes the whole log ----
+
+def test_v5_a_producer_shaped_window_publication_binds_and_is_reported_as_a_bounded_window(tmp_path):
+    """Synthetic producer-to-reader case: the publication source is built by shadow_source exactly as the d13531fa
+    shadow declares it; the reader binds it to the lane's own view and reports a bounded window, never the log."""
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir(parents=True)
+    cycle = audit / "cycles" / CYCLE
+    (cycle / "run").mkdir(parents=True)
+    events = rows()
+    state = core.full_rebuild(events, source=shadow_source(), as_of_utc=AS_OF)
+    publication = cycle / "run" / "reflected.publication.json"
+    digest = core.write_snapshot(core.snapshot(state, as_of_utc=AS_OF), publication, audit_root=audit)
+    capture = cycle / "capture.json"
+    capture.write_bytes(b'{"schema":"wd.bridge-mind-capture.v1"}')
+    state_obj = {"schema": "wd.bridge-mind-producer-state.v1", "generation": 1, "cursor": cursor(),
+                 "source": shadow_source(), "window_sha256": "0" * 64, "window": []}
+    state_bytes = json.dumps(state_obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    (cycle / "state.json").write_bytes(state_bytes)
+    (cycle / "run" / "board.txt").write_bytes(b"board\n")
+    (cycle / "run" / "receipt.json").write_bytes(b"{}")
+    last_ok = producer_last_ok(CYCLE, {"capture.json": sha(capture.read_bytes()), "state.json": sha(state_bytes)},
+                               snapshot_sha256=digest, board_text_sha256=sha(b"board\n"))
+    latest = audit / "latest.json"
+    latest.write_text(json.dumps({"schema": "wd.bridge-mind-shadow-latest.v2", "authority": "none",
+                                  "scope": "shadow_observation_not_gate", "committed_utc": AS_OF, "last_ok": last_ok}),
+                      encoding="utf-8")
+    result = read(audit, latest)
+    assert result["refusal"] is None
+    assert result["binding"] == {"file_identity": LOG_ID, "generation": "g1", "origin": "lane_reader_view_not_authenticated"}
+    assert result["source"]["log_identity"] == WINDOW + LOG_ID and result["source"]["generation"] == "g1"
+    assert result["source"]["scope"] == "bounded_window_of_bridge_log_not_whole_log"
+    assert result["source"]["window"] == {"cursor_start": 0, "cursor_end": len(events), "coverage": "complete_over_window_only"}
+    strings = output_strings(result)
+    assert "complete" not in strings and not any(s.startswith("bridge-log:") for s in strings)
+
+
+@pytest.mark.parametrize("log_identity, generation, reason", [
+    ("bridge-log:" + LOG_ID, "g1", "producer_binding_unavailable"),  # the log itself is named: not a window, never bound
+    ("capture-window:" + "a" * 64, "g1", "producer_binding_unavailable"),  # a digest-named legacy window: no bridge log
+    (WINDOW + LOG_ID, None, "producer_binding_unavailable"),  # the window names the log but no generation
+    (WINDOW + "windows-v1:0000abcd:0000000000000001:extra", "g1", "producer_binding_unavailable"),  # not the reader shape
+    (WINDOW + OTHER_LOG_ID, "g1", "log_identity_mismatch"),  # another bridge log than the lane's own view
+    (WINDOW + LOG_ID, "g2", "log_identity_mismatch"),  # another generation than the lane's own view
+])
+def test_v5_only_a_window_of_the_lane_own_bridge_log_and_generation_binds(tmp_path, log_identity, generation, reason):
+    audit, latest, _ = make_live(tmp_path, log_identity=log_identity, generation=generation,
+                                 token=cursor(file_identity=log_identity[len(WINDOW):] if log_identity.startswith(WINDOW)
+                                              and lane_read._IDENTITY.fullmatch(log_identity[len(WINDOW):]) else LOG_ID,
+                                              generation=generation if generation is not None else "g1"))
+    with pytest.raises(lane_read.LaneReadRefused) as info:
+        read(audit, latest)
+    assert str(info.value) == reason
+    assert "example" not in repr(info.value.__dict__)
+
+
+def output_strings(value, strings=None):
+    """Every string value in the output tree."""
+    strings = [] if strings is None else strings
+    if isinstance(value, dict):
+        for item in value.values():
+            output_strings(item, strings)
+    elif isinstance(value, list):
+        for item in value:
+            output_strings(item, strings)
+    elif isinstance(value, str):
+        strings.append(value)
+    return strings
+
+
+def test_v5_the_output_never_carries_a_whole_log_or_bare_complete_token(tmp_path):
+    audit, latest, _ = make_live(tmp_path)
+    result = read(audit, latest)
+    strings = output_strings(result)
+    assert "complete" not in strings and not any(s.startswith("bridge-log:") for s in strings)
+    assert any(s == "bounded_window_of_bridge_log_not_whole_log" for s in strings)

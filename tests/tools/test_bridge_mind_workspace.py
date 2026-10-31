@@ -405,6 +405,46 @@ def test_coverage_that_is_not_complete_is_never_shown_as_complete(coverage, last
     assert "coverage_unknown" not in _rules(mind.reflection(_snapshot()))
 
 
+def test_a_complete_capture_window_is_not_complete_coverage_of_the_bridge_log():
+    snapshot = _snapshot(prs=[_pr(10, votes=["codex-lead-1", "codex-tools-1"])])
+    snapshot["source"]["log_identity"] = "capture-window:windows-v1:12345678:0123456789abcdef"
+
+    reflected = mind.reflect(snapshot)
+
+    assert "coverage_unknown" in _rules(reflected)
+    assert reflected["next_question"]["global"]["question"].endswith(
+        "Coverage is not complete, so check the exact head first.")
+    assert "coverage partial" in mind.render_text(reflected).splitlines()[0]
+    assert snapshot["source"]["coverage"] == "complete"
+
+
+def test_a_blocked_complete_source_is_not_rendered_as_complete():
+    snapshot = _snapshot(blocked={"active": True, "offset": 4096, "reason": "canonical_event_invalid"})
+
+    reflected = mind.reflect(snapshot)
+
+    assert "input_blocked" in _rules(reflected)
+    assert "coverage partial" in mind.render_text(reflected).splitlines()[0]
+    assert snapshot["source"]["coverage"] == "complete"
+
+
+@pytest.mark.parametrize("coverage,identity", [
+    ("complete", "capture-window:windows-v1:12345678:0123456789abcdef"),
+    ("partial", "fixture-log"),
+    ("unknown", "fixture-log"),
+])
+def test_blocking_does_not_hide_an_independent_coverage_gap(coverage, identity):
+    snapshot = _snapshot(coverage=coverage,
+                         blocked={"active": True, "offset": 4096, "reason": "canonical_event_invalid"})
+    snapshot["source"]["log_identity"] = identity
+
+    fields = mind.reflection(snapshot)
+
+    assert {"input_blocked", "coverage_unknown"} <= set(_rules(fields))
+    assert fields["next_question"]["global"]["question"].endswith("Coverage is not complete.")
+    assert "exact head" not in mind.canonical_json(fields["next_question"])
+
+
 def test_a_row_without_a_valid_ref_or_outside_the_allowlist_is_refused_by_position_only():
     """P5 / M2: missing and bad refs, free text and a lane key that does not match its identity are never used."""
     key, pr = _pr(7, votes=["codex-lead-1"], stale=[("claude-rco-2", OLD)])

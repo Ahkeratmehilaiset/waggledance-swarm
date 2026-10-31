@@ -212,11 +212,10 @@ def _validate_output(raw, exit_code, expected_descriptor):
             if when is not None and (not isinstance(when, str) or not _TIME.fullmatch(when)):
                 raise ValueError()
             kind, canonical = item.get("ref_kind"), item.get("canonical_event")
-            legacy = kind is None and canonical is None
             projected = (kind == "sha256_of_projected_metadata" and canonical is False
                          and item["kind"] == "event" and isinstance(reference, str)
                          and _HEX.fullmatch(reference) is not None)
-            if not (legacy or projected):
+            if not projected:
                 raise ValueError()
             clean.update(ref_kind=kind, canonical_event=canonical)
             for key in ("score", "fused"):

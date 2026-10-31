@@ -100,8 +100,9 @@ def test_projected_result_keeps_only_hash_checked_refs(candidate):
 def test_untrusted_tokens_are_never_forwarded(candidate):
     ref = "a" * 64
     item = {"ref": ref, "ref_sha256": hashlib.sha256(ref.encode()).hexdigest(), "doc_id": None,
-            "doc_id_sha256": "b" * 64, "kind": "secret_kind", "cell": "secret_cell",
-            "tier": "secret_tier", "time_utc": None, "ref_kind": None, "canonical_event": None,
+            "doc_id_sha256": "b" * 64, "kind": "event", "cell": "secret_cell",
+            "tier": "secret_tier", "time_utc": None, "ref_kind": "sha256_of_projected_metadata",
+            "canonical_event": False,
             "score": 1, "fused": 1}
     payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
                "status": "ANSWER", "reason": "secret_reason", "rule": "secret_rule",
@@ -144,6 +145,31 @@ def test_correct_shared_scope_is_required_and_forwarded():
             payload["binding"]["scope"] = bad_scope
         with pytest.raises(launcher.LaunchRefused, match="invalid_output"):
             launcher._validate_output(json.dumps(payload).encode(), 0, "b" * 64)
+
+
+def test_legacy_reference_is_refused_even_with_shared_binding():
+    ref = "a" * 64
+    item = {"ref": ref, "ref_sha256": hashlib.sha256(ref.encode()).hexdigest(), "doc_id": None,
+            "doc_id_sha256": "b" * 64, "kind": "event", "cell": "c", "tier": "t", "time_utc": None,
+            "ref_kind": None, "canonical_event": None, "score": 1, "fused": 1}
+    payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
+               "status": "ANSWER", "rule": "v1", "binding": {"descriptor_sha256": "b" * 64,
+               "memory_sha256": "c" * 64, "scope": "wd.q4-shared-projected-events.v1"}, "results": [item]}
+    with pytest.raises(launcher.LaunchRefused, match="invalid_output"):
+        launcher._validate_output(json.dumps(payload).encode(), 0, "b" * 64)
+
+
+@pytest.mark.parametrize("kind,ref", [("lesson", "a" * 64), ("event", "a" * 40),
+                                      ("event", "event:" + "a" * 64), ("event", None)])
+def test_shared_binding_rejects_nonprojected_reference(kind, ref):
+    item = {"ref": ref, "ref_sha256": hashlib.sha256((ref or "empty").encode()).hexdigest(), "doc_id": None,
+            "doc_id_sha256": "b" * 64, "kind": kind, "cell": "c", "tier": "t", "time_utc": None,
+            "ref_kind": "sha256_of_projected_metadata", "canonical_event": False, "score": 1, "fused": 1}
+    payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
+               "status": "ANSWER", "rule": "v1", "binding": {"descriptor_sha256": "b" * 64,
+               "memory_sha256": "c" * 64, "scope": "wd.q4-shared-projected-events.v1"}, "results": [item]}
+    with pytest.raises(launcher.LaunchRefused, match="invalid_output"):
+        launcher._validate_output(json.dumps(payload).encode(), 0, "b" * 64)
 
 
 @pytest.mark.parametrize("canonical", [0, True, None])

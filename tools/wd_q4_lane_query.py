@@ -13,6 +13,13 @@ the caller-pinned projection, its ``stored_text`` equals that record's text byte
 the query time; the text that is output is the record's, read from the caller-pinned bytes. An echoing transport or
 child therefore fails ``result_refused``: the situation is not a projection record.
 
+v4 (plan before query): the pinned public plan is read through the seam's own reader
+(``wd_q4_lane_link._public_plan``: path, caller digest, closed schema) and every caller binding pin the plan carries
+(the six plan pins and ``config.descriptor_sha256``) is cross-compared with ``expected_binding`` BEFORE the query is
+sent; a disagreeing plan refuses ``binding_refused`` with the transport never invoked. ``projection_sha256`` is not a
+plan field; it is bound by the caller's projection bytes before transport and by the reply binding after. The seam
+repeats the plan check inside ``invoke_public`` (its own binding), so the reply re-check is unchanged.
+
 v3 (projection trust and exception chain): the projection is not trusted on its pin alone. The caller also supplies
 ``policy_bytes`` and ``roster_bytes``; both are parsed by the Lead adapter ``shared_capture_adapter.strict_pins``
 against the caller's own ``policy_sha256`` / ``roster_sha256`` pins (``pins_refused``), and the projection is then
@@ -52,6 +59,7 @@ MAX_ROSTER_BYTES = sp.ROSTER_BUDGET
 VISIBILITY_GUARD_SECONDS = 1.0  # == the resolver guard band over shared_projection.visible_at
 REF_KIND = "sha256_of_projected_metadata"
 TRANSPORT_INTERFACE = "transport(*, wrapper: str, arguments: tuple, stdin_bytes: bytes) -> (bytes, int)"
+PLAN_READER = "wd_q4_lane_link._public_plan(path, expected_sha256) -> (path, raw, pins)"
 BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                           "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -216,7 +224,8 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
 
     Order: switch, lane, transport presence, input syntax (nothing read yet), canonical query bytes in memory, the
     caller-pinned policy and roster parsed by the Lead adapter (``pins_refused``), the caller-pinned projection
-    verified, revalidated and indexed (``projection_refused``; no transport call on failure), then
+    verified, revalidated and indexed (``projection_refused``), the pinned plan read through the seam reader and
+    cross-compared with every caller pin it carries (``binding_refused``; still no transport call), then
     ``wd_q4_lane_link.invoke_public`` (binds bundle, manifest, wrapper and plan, calls the transport once, validates
     the reply against the plan pins), then the caller's own ``expected_binding`` (eight digests) must equal the
     reply binding and every result must resolve to one visible record of the verified projection with identical
@@ -255,6 +264,15 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
         records = None
     if records is None:
         raise LaneQueryRefused("projection_refused")
+    plan_pins = None
+    try:
+        plan_pins = link._public_plan(public_plan_path, expected_public_plan_sha256)[2]
+    except Exception:  # noqa: BLE001 - unreadable, unpinned or malformed plan: one fixed refusal, no transport
+        plan_pins = None
+    if (type(plan_pins) is not dict or not plan_pins
+            or any(key not in expected_binding or type(plan_pins[key]) is not str
+                   or not hmac.compare_digest(plan_pins[key], expected_binding[key]) for key in plan_pins)):
+        raise LaneQueryRefused("binding_refused")
     value, reason = None, None
     try:
         value = link.invoke_public(lane=lane, bundle_root=bundle_root, expected_commit=expected_commit,

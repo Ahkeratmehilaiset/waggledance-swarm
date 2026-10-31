@@ -5,7 +5,9 @@ caller under test never executes anything. v2: every returned text is re-derived
 so an echoing transport or child can never return the situation (RED-first against the v1 module). v3: the projection
 is revalidated with the REAL shared_projection.validate_projection under caller-pinned policy and roster bytes (via the
 Lead adapter strict_pins), available_utc is strictly canonical UTC, duplicate record identity refuses, and no refusal
-carries a chained exception (RED-first against the v2 module).
+carries a chained exception (RED-first against the v2 module). v4: the pinned plan is read and every caller binding
+pin it covers is cross-compared BEFORE the query is sent; a mismatched plan refuses with the transport never called
+(RED-first against the v3 module).
 """
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -277,14 +279,14 @@ def test_mismatched_or_changed_binding_refuses_before_transport(plan, kind):
 # policy/roster/projection pins differing from the caller bytes are refused BEFORE transport (pins/projection tests)
 @pytest.mark.parametrize("name", ["pointer_sha256", "source_anchor_sha256", "encoder_sha256", "public_policy_sha256",
                                   "descriptor_sha256"])
-def test_caller_pins_must_equal_the_result_binding_even_when_the_plan_agrees(plan, name):
+def test_caller_pins_that_disagree_with_the_pinned_plan_refuse_before_transport(plan, name):
     module = _module()
     arguments, document = plan
     arguments["expected_binding"] = dict(arguments["expected_binding"], **{name: "f" * 64})
     calls = []
     _refused("binding_refused", module.query_public, enabled=True, lane=LANES[2], situation=SECRET, time=NOW,
              transport=_transport(_reply(document), calls), **arguments)
-    assert len(calls) == 1  # the plan matched, so the seam ran; the caller's own pin still decides
+    assert len(calls) == 0  # v4: the plan disagrees with the caller, so the query is never sent
 
 
 @pytest.mark.parametrize("text", [
@@ -463,7 +465,9 @@ def test_descriptor_and_projection_pins_are_the_callers_and_must_equal_the_reply
     calls = []
     _refused("binding_refused", module.query_public, enabled=True, lane=LANES[3], situation=SECRET, time=NOW,
              transport=_transport(reply, calls), **arguments)
-    assert len(calls) == 1  # the seam ran and passed; the caller's own pin still decides
+    # v4: a plan that disagrees with the caller refuses before transport; projection_sha256 is not a plan field,
+    # so only the reply re-check can catch it (one transport call)
+    assert len(calls) == (0 if name == "descriptor_sha256" else 1)
 
 
 def test_abstain_needs_no_results_but_still_requires_a_verified_projection(plan):
@@ -614,3 +618,66 @@ def test_v3_happy_path_still_answers_from_the_projection_under_the_pinned_policy
     assert document["projection"]["authorship"] == sp.AUTHORSHIP_ROSTER
     assert document["projection"]["review_signal_excluded"] is True
     assert answer["trust"]["projection_public_attestation"] == "UNKNOWN"
+
+
+# ---- v4: the pinned plan is verified and cross-compared with the caller pins BEFORE any transport call ----
+
+
+PLAN_PIN_KEYS = PLAN_KEYS + ("descriptor_sha256",)  # projection_sha256 is not in the plan: reply + bytes cover it
+
+
+def _write_plan(arguments, document):
+    data = json.dumps({k: v for k, v in document.items() if k != "projection"}, sort_keys=True).encode()
+    arguments["public_plan_path"].write_bytes(data)
+    arguments["expected_public_plan_sha256"] = hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("name", PLAN_PIN_KEYS)
+def test_a_pinned_plan_that_disagrees_with_the_caller_refuses_before_any_transport(plan, name):
+    """The plan on disk is correctly pinned (its own digest matches) but one of its pins differs from the caller's."""
+    module = _module()
+    arguments, document = plan
+    if name == "descriptor_sha256":
+        document["config"]["descriptor_sha256"] = "f" * 64
+    else:
+        document[name] = "f" * 64
+    _write_plan(arguments, document)
+    if name in ("policy_sha256", "roster_sha256"):
+        # the caller's own bytes still hash to the caller's pins; only the PLAN disagrees
+        pass
+    _refused("binding_refused", module.query_public, enabled=True, lane=LANES[0], situation=SECRET, time=NOW,
+             transport=must_not_run, **arguments)
+
+
+def test_plan_cross_compare_runs_after_projection_checks_and_before_transport(plan):
+    """Order pin: a bad projection pin still wins over a bad plan (projection_refused), both before transport."""
+    module = _module()
+    arguments, document = plan
+    document["pointer_sha256"] = "f" * 64
+    _write_plan(arguments, document)
+    broken = dict(arguments, expected_binding=dict(arguments["expected_binding"], projection_sha256="0" * 64))
+    _refused("projection_refused", module.query_public, enabled=True, lane=LANES[1], situation=SECRET, time=NOW,
+             transport=must_not_run, **broken)
+    _refused("binding_refused", module.query_public, enabled=True, lane=LANES[1], situation=SECRET, time=NOW,
+             transport=must_not_run, **arguments)
+
+
+def test_plan_is_read_through_the_seam_helper_and_a_matching_plan_still_sends_exactly_one_query(plan):
+    module = _module()
+    arguments, document = plan
+    assert callable(getattr(link, "_public_plan", None))  # the seam's own plan reader; no second parser here
+    assert module.PLAN_READER == "wd_q4_lane_link._public_plan(path, expected_sha256) -> (path, raw, pins)"
+    calls = []
+    answer = module.query_public(enabled=True, lane=LANES[2], situation=SECRET, time=NOW,
+                                 transport=_transport(_reply(document), calls), **arguments)
+    assert answer["status"] == "ANSWER" and len(calls) == 1
+
+
+def test_plan_refusals_carry_no_exception_chain(plan):
+    module = _module()
+    arguments, document = plan
+    arguments["public_plan_path"].write_bytes(b"{synthetic-private not a plan")
+    arguments["expected_public_plan_sha256"] = hashlib.sha256(b"{synthetic-private not a plan").hexdigest()
+    error = _refused("binding_refused", module.query_public, enabled=True, lane=LANES[3], situation=SECRET, time=NOW,
+                     transport=must_not_run, **arguments)
+    assert error.__context__ is None and error.__cause__ is None

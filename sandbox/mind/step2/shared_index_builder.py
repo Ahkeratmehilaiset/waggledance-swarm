@@ -74,6 +74,18 @@ only the approved-metadata head line. This module builds the same frozen layout 
   generation, manifest sha256, weights size and ``identity_source``; a caller-asserted identity, when also given,
   must equal the derived one. The caller-asserted route alone remains for synthetic tests and is labelled
   ``caller_asserted`` in the receipt;
+* PINNED INPUTS + SOURCE BINDING (v4, Lead bound request 17:13:50Z, supplements 17:13:59Z/17:15:50Z/17:19:17Z):
+  the caller supplies the policy document and a SEPARATE roster snapshot as bytes with their sha256 digests
+  (``resolve_pins``); the approved set and the roster are derived from those bytes, and ``memory.policy`` binds the
+  exact ``policy_sha256`` + ``roster_sha256`` (pinned through the descriptor), so replacing one roster uuid and
+  recomputing a digest is a different memory a consumer can tell apart. The roster snapshot carries lane identities
+  only (no memory or deployment fields), which keeps the digest graph acyclic (a wd-fleet.json that pins a memory
+  digest is refused). On the strict publication path the build receipt records a closed ``source_binding``
+  (``wd.q4-shared-index-source-binding.v1``: anchor, projection, cursor start/end as sha256 of the snapshot tokens,
+  policy, roster) only after the Lead verifier ``shared_bridge_snapshot.verify_anchored_projection`` accepted the
+  snapshot result for this projection with independently supplied expected digests; a missing source, an unavailable
+  verifier or any verifier refusal fails closed before any write. Nothing here authenticates the source: a matching
+  caller-provided hash is integrity checking of what the caller supplied (``source_authenticated False``);
 * NOT PROVED, disclosed: ``core.faiss_store.FaissCollection.save`` writes index.faiss and meta.json with ordinary
   (replacing) writes inside the fresh staging directory, not ``xb``; the staging directory names carry 16 random hex
   characters but all lanes run as one OS user, so a same-user writer racing inside the memory directory is not
@@ -90,6 +102,8 @@ agrees, which is a ranking property, not a proof.
 
 import datetime as dt
 import hashlib
+import hmac
+import importlib
 import json
 import os
 import re
@@ -112,6 +126,23 @@ SCOPE = "wd.q4-shared-projected-events.v1"  # one scope token for receipts, memo
 VIEWS = ("w", "d")
 ENCODER_IDENTITY_KEYS = frozenset({"model", "revision", "weights_sha256"})  # == wd_q4_private_read.ENCODER_KEYS
 DESCRIPTOR_KEYS = frozenset({"schema", "scope", "memory_sha256", "dim", "encoder"})  # == the reader's exact set
+# v4 (Lead bound request lead-mind-shared-index-fable-20261031-v4): caller-PINNED policy and roster snapshot bytes.
+PINS_KEYS = frozenset({"policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256"})
+POLICY_SCHEMA = "wd.q4-non-review-policy.v1"  # == shared_capture_adapter.strict_pins at the Lead integration head
+POLICY_LIMIT = 65536
+MAX_APPROVED_TASKS = 4096
+REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[12]?)(?:$|[._-])", re.IGNORECASE)  # == the adapter's pattern
+# The roster snapshot is a SEPARATE immutable document (Lead 17:19:17Z): lanes + tools_supervisor identities only, no
+# memory or deployment fields, so memory.policy.roster_sha256 never hashes a document that itself pins a memory.
+ROSTER_SNAPSHOT_SCHEMA = "wd.q4-roster-snapshot.v1"
+ROSTER_SNAPSHOT_KEYS = frozenset({"schema", "lanes", "tools_supervisor"})
+ROSTER_ENTRY_KEYS = frozenset({"agent", "agent_uuid", "role"})
+# The source binding recorded in the build receipt after the Lead verifier accepted the snapshot/projection pair.
+SOURCE_BINDING_SCHEMA = "wd.q4-shared-index-source-binding.v1"
+SOURCE_BINDING_KEYS = frozenset({"schema", "anchor_sha256", "projection_sha256", "cursor_start_sha256",
+                                 "cursor_end_sha256", "policy_sha256", "roster_sha256"})
+SOURCE_KEYS = frozenset({"snapshot_result", "expected_anchor_sha256"})
+SNAPSHOT_MODULE = "sandbox.mind.step2.shared_bridge_snapshot"  # Lead module; imported lazily, never re-implemented
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -426,8 +457,112 @@ def _report_incomplete(memory_dir, name, reason, stage):
         pass
 
 
+def _no_constant(_name):
+    raise ValueError("constant")
+
+
+def _parse_pinned_json(raw, token):
+    """Closed JSON parse of pinned bytes: duplicate keys, NaN/Infinity, bad UTF-8 or any syntax error -> ``token``."""
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=sp._pairs_without_duplicates, parse_constant=_no_constant)
+    except (ValueError, RecursionError):  # ProjectionRefused (duplicate key) and UnicodeDecodeError are ValueErrors
+        raise BuildRefused(token) from None
+
+
+def resolve_pins(pins):
+    """The caller's pinned policy + roster snapshot -> {approved_tasks, roster, policy_sha256, roster_sha256}.
+
+    Each byte string must hash to its digest (``pin_mismatch``); the policy is exactly
+    ``{"schema": POLICY_SCHEMA, "approved_tasks": [...]}`` with distinct safe-shaped non-review task ids
+    (``policy_invalid``); the roster snapshot is exactly ``{"schema", "lanes", "tools_supervisor"}`` whose entries carry
+    only ``agent``/``agent_uuid`` (optionally ``role``) and name every projection lane once
+    (``roster_snapshot_invalid``). A matching digest is integrity checking of what the caller supplied, not
+    authentication of its origin."""
+    if pins is None:
+        raise BuildRefused("pins_required")
+    if not isinstance(pins, dict) or set(pins) != PINS_KEYS:
+        raise BuildRefused("pins_invalid")
+    for raw_key, digest_key, limit in (("policy_bytes", "policy_sha256", POLICY_LIMIT),
+                                       ("roster_bytes", "roster_sha256", sp.ROSTER_BUDGET)):
+        raw, digest = pins[raw_key], pins[digest_key]
+        if (type(raw) is not bytes or len(raw) > limit or not isinstance(digest, str)
+                or HEX64.fullmatch(digest) is None):
+            raise BuildRefused("pins_invalid")
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), digest):
+            raise BuildRefused("pin_mismatch")
+    policy = _parse_pinned_json(pins["policy_bytes"], "policy_invalid")
+    if (not isinstance(policy, dict) or set(policy) != {"schema", "approved_tasks"} or policy["schema"] != POLICY_SCHEMA
+            or not isinstance(policy["approved_tasks"], list) or len(policy["approved_tasks"]) > MAX_APPROVED_TASKS
+            or any(not isinstance(task, str) or REVIEW_TASK.search(task) for task in policy["approved_tasks"])
+            or len(set(policy["approved_tasks"])) != len(policy["approved_tasks"])):
+        raise BuildRefused("policy_invalid")
+    try:
+        approved = sp._approved_tasks(frozenset(policy["approved_tasks"]))
+    except sp.ProjectionRefused:
+        raise BuildRefused("policy_invalid") from None
+    snapshot = _parse_pinned_json(pins["roster_bytes"], "roster_snapshot_invalid")
+    if (not isinstance(snapshot, dict) or set(snapshot) != ROSTER_SNAPSHOT_KEYS
+            or snapshot["schema"] != ROSTER_SNAPSHOT_SCHEMA or not isinstance(snapshot["lanes"], list)
+            or not isinstance(snapshot["tools_supervisor"], dict)
+            or any(not isinstance(entry, dict) or not set(entry) <= ROSTER_ENTRY_KEYS
+                   for entry in snapshot["lanes"] + [snapshot["tools_supervisor"]])):
+        raise BuildRefused("roster_snapshot_invalid")
+    try:
+        roster = sp.roster_from_fleet(snapshot)
+    except sp.ProjectionRefused:
+        raise BuildRefused("roster_snapshot_invalid") from None
+    if set(roster) != sp.LANES:
+        raise BuildRefused("roster_snapshot_invalid")
+    return {"approved_tasks": approved, "roster": roster, "policy_sha256": pins["policy_sha256"],
+            "roster_sha256": pins["roster_sha256"]}
+
+
+def _source_verifier():
+    """The Lead verifier (``shared_bridge_snapshot.verify_anchored_projection`` + ``_token``), imported lazily; any
+    import failure or a module without that API refuses ``source_verifier_unavailable`` (nothing is re-implemented)."""
+    try:
+        module = importlib.import_module(SNAPSHOT_MODULE)
+        verify, token = module.verify_anchored_projection, module._token
+    except Exception:  # noqa: BLE001 - ImportError, AttributeError or an import-time failure: one token
+        raise BuildRefused("source_verifier_unavailable") from None
+    if not callable(verify) or not callable(token):
+        raise BuildRefused("source_verifier_unavailable")
+    return verify, token
+
+
+def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256):
+    """The closed receipt ``source_binding`` for a snapshot result the Lead verifier accepted for THIS projection and
+    the pinned policy/roster digests. Cursor digests are sha256 of the snapshot token strings (never the tokens);
+    the end token must be the token of the result's candidate cursor. Refuses ``source_invalid`` (shape),
+    ``source_verifier_unavailable`` or ``source_binding_refused`` (any verifier or binding failure, no text)."""
+    if (not isinstance(source, dict) or set(source) != SOURCE_KEYS or not isinstance(source["snapshot_result"], dict)
+            or not isinstance(source["expected_anchor_sha256"], str)
+            or HEX64.fullmatch(source["expected_anchor_sha256"]) is None):
+        raise BuildRefused("source_invalid")
+    verify, token = _source_verifier()
+    result = source["snapshot_result"]
+    try:
+        accepted = verify(result, projection, expected_anchor_sha256=source["expected_anchor_sha256"],
+                          expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256)
+        start, end = result["source"]["cursor_start"], result["source"]["cursor_end"]
+        if (accepted is not True or not isinstance(start, str) or not start or not isinstance(end, str) or not end
+                or end != token(result["candidate_cursor"])):
+            raise ValueError("binding")
+    except Exception:  # noqa: BLE001 - SnapshotRefused, KeyError, TypeError, ValueError: one token, never its text
+        raise BuildRefused("source_binding_refused") from None
+    binding = {"schema": SOURCE_BINDING_SCHEMA, "anchor_sha256": source["expected_anchor_sha256"],
+               "projection_sha256": projection_sha256,
+               "cursor_start_sha256": hashlib.sha256(start.encode("utf-8")).hexdigest(),
+               "cursor_end_sha256": hashlib.sha256(end.encode("utf-8")).hexdigest(),
+               "policy_sha256": policy_sha256, "roster_sha256": roster_sha256}
+    if set(binding) != SOURCE_BINDING_KEYS:
+        raise BuildRefused("source_binding_shape")
+    return binding
+
+
 def build_memory(projection, encode, identity, dim, root, name, *, approved_tasks=None, include_refs=False,
-                 roster=None, exclude_review_signal=False, runtime=None):
+                 roster=None, exclude_review_signal=False, runtime=None, pins=None, source=None,
+                 allow_unbound_source=False):
     """Build ``root/name`` from a validated projection; returns the exact reader descriptor, the build receipt and
     their sha256 digests.
 
@@ -436,7 +571,15 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     v6 policy: the projection must carry ``authorship == declared_roster_consistent`` and
     ``review_signal_excluded is True`` (``projection_policy_weak`` otherwise) and is re-validated under this exact
     roster with the exclusion pinned. Both are recorded as ``policy`` in ``memory.json`` (bound by the descriptor's
-    ``memory_sha256``) and in the build receipt; the descriptor itself keeps the reader's exact five keys. ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
+    ``memory_sha256``) and in the build receipt; the descriptor itself keeps the reader's exact five keys.
+    v4: ``pins`` (REQUIRED, ``resolve_pins``) supplies the pinned policy and roster snapshot bytes with their digests;
+    the approved set and the roster are DERIVED from them (a caller ``approved_tasks``/``roster``, when also given,
+    must be equal: ``pin_caller_mismatch``) and ``memory.policy`` binds the exact ``policy_sha256`` and
+    ``roster_sha256`` (Lead 17:15:50Z), so a consumer compares them before any query. ``source`` is the snapshot
+    result the Lead verifier binds to this projection (``bind_source``): on the strict publication path (the default)
+    a missing source refuses ``source_binding_required``; ``allow_unbound_source=True`` is the synthetic route and
+    records ``source_binding None`` / ``source_bound False``. A caller-provided hash is integrity checking of what the
+    caller supplied, never source authenticity (``source_authenticated False`` always). ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
     identity from a verified model directory instead (``runtime_identity``) and, when both are given, they must be
     equal (``encoder_identity_mismatch``). Every refusal is ``BuildRefused`` with a fixed token (projection refusals
     are re-raised under their own token). Refuses (nothing written) on an invalid projection, policy, identity, dim,
@@ -446,15 +589,27 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     if (not isinstance(projection, dict) or projection.get("authorship") != sp.AUTHORSHIP_ROSTER
             or projection.get("review_signal_excluded") is not True):
         raise BuildRefused("projection_policy_weak")
-    if roster is None:
-        raise BuildRefused("roster_required")
     if exclude_review_signal is not True:
         raise BuildRefused("review_exclusion_required")
+    resolved = resolve_pins(pins)
     try:
-        roster = sp._roster(roster)
+        if roster is not None and sp._roster(roster) != resolved["roster"]:
+            raise BuildRefused("pin_caller_mismatch")
+        if approved_tasks is not None and sp._approved_tasks(approved_tasks) != resolved["approved_tasks"]:
+            raise BuildRefused("pin_caller_mismatch")
+        roster, approved_tasks = resolved["roster"], resolved["approved_tasks"]
         sp.validate_projection(projection, approved_tasks, include_refs, roster, exclude_review_signal)
     except sp.ProjectionRefused as refused:
         raise BuildRefused(str(refused)) from None  # B4: one refusal class at the entry, same fixed tokens
+    projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+    projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
+    if source is None:
+        if allow_unbound_source is not True:
+            raise BuildRefused("source_binding_required")  # the strict publication path has no unbound memory
+        source_binding = None
+    else:
+        source_binding = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
+                                     resolved["roster_sha256"])
     runtime_record = {"identity_source": "caller_asserted"}
     if runtime is not None:
         derived = runtime_identity(runtime)
@@ -475,10 +630,9 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         root = sp._output_root(root)
     except sp.ProjectionRefused as refused:
         raise BuildRefused(str(refused)) from None
-    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True}
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True,
+              "policy_sha256": resolved["policy_sha256"], "roster_sha256": resolved["roster_sha256"]}
     _check_bounds(projection["records"])
-    projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
-    projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
     records, duplicates = distinct_records(projection["records"])
     if not records:
         raise BuildRefused("projection_empty")
@@ -541,7 +695,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                          "cells": {cell_id: row["count"] for cell_id, row in pointers.items()},
                          "cutoff_utc": cutoff_utc, "views": list(VIEWS), "independent_views": False,
                          "canonical_event": False, "authenticated": False, "policy": policy,
-                         "runtime": runtime_record,
+                         "runtime": runtime_record, "source_binding": source_binding,
+                         "source_bound": source_binding is not None, "source_authenticated": False,
                          "bounds": {"max_records": MAX_RECORDS, "max_input_bytes": MAX_INPUT_BYTES,
                                     "encode_batch": ENCODE_BATCH},
                          "watchdog": WATCHDOG_RULE, "built_utc": _utc_now()}

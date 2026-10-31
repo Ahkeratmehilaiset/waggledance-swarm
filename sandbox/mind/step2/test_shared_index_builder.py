@@ -8,6 +8,7 @@ Lead reader (``wd_q4_private_read.read_descriptor`` + ``bind_memory``) and the r
 import hashlib
 import json
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -30,6 +31,30 @@ ROSTER = {"codex-lead-1": "aaaa1111-1111-4111-8111-111111111aaa", "codex-tools-1
           "claude-rco-1": "cccc3333-3333-4333-8333-333333333ccc", "claude-rco-2": "dddd4444-4444-4444-8444-444444444ddd",
           "fable-5": "eeee5555-5555-4555-8555-555555555eee"}
 RUNTIME = {"generation": "gen-20261031-synthetic", "manifest_sha256": "c" * 64}
+FOREIGN_UUID = "ffff9999-9999-4999-8999-999999999fff"
+
+
+def sha(raw):
+    return hashlib.sha256(raw if isinstance(raw, bytes) else raw.encode("utf-8")).hexdigest()
+
+
+def pinned(document):
+    raw = json.dumps(document, sort_keys=True, indent=1).encode("utf-8")
+    return raw, sha(raw)
+
+
+# v4 (Lead bound request 17:13:50Z + 17:15:50Z): the builder takes the caller's PINNED policy and roster snapshot bytes
+# with their digests; the roster snapshot is a separate immutable document (lanes + tools_supervisor only, no memory or
+# deployment fields, Lead 17:19:17Z) so the memory.policy digest chain is acyclic.
+POLICY_DOC = {"schema": "wd.q4-non-review-policy.v1", "approved_tasks": sorted(APPROVED)}
+ROSTER_DOC = {"schema": "wd.q4-roster-snapshot.v1",
+              "lanes": [{"agent": agent, "agent_uuid": uuid} for agent, uuid in ROSTER.items() if agent != "codex-tools-1"],
+              "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"]}}
+POLICY_BYTES, POLICY_SHA = pinned(POLICY_DOC)
+ROSTER_BYTES, ROSTER_SHA = pinned(ROSTER_DOC)
+PINS = {"policy_bytes": POLICY_BYTES, "policy_sha256": POLICY_SHA, "roster_bytes": ROSTER_BYTES, "roster_sha256": ROSTER_SHA}
+STRICT_POLICY = {"authorship": "declared_roster_consistent", "review_signal_excluded": True,
+                 "policy_sha256": POLICY_SHA, "roster_sha256": ROSTER_SHA}
 
 
 class FakeEncoder:
@@ -73,6 +98,8 @@ def build(root, name="shared-v1", proj=None, encode=None, identity=IDENTITY, dim
     kw.setdefault("approved_tasks", APPROVED)
     kw.setdefault("roster", ROSTER)
     kw.setdefault("exclude_review_signal", True)
+    kw.setdefault("pins", PINS)
+    kw.setdefault("allow_unbound_source", True)  # synthetic route: no snapshot, recorded as unbound in the receipt
     return build_mod.build_memory(projection() if proj is None else proj, encode or FakeEncoder(), identity, dim,
                                   root, name, **kw)
 
@@ -239,8 +266,9 @@ def test_forged_or_untold_projection_is_refused_before_any_filesystem_action(tmp
     forged["records"][0]["stored_text"] = SENTINEL
     with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):  # B4: one refusal class at the entry
         build(tmp_path, proj=forged)
-    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
-        build(tmp_path, approved_tasks=None)  # rendered tasks need the same approved set
+    narrower_policy = json.dumps({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": ["other-task-1"]}).encode()
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):  # rendered tasks need the PINNED approved set
+        build(tmp_path, approved_tasks=None, pins=dict(PINS, policy_bytes=narrower_policy, policy_sha256=sha(narrower_policy)))
     with_refs = projection([event(pr=7, head="c" * 40)], include_refs=True)
     with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
         build(tmp_path, proj=with_refs)
@@ -262,10 +290,10 @@ def test_the_builder_requires_the_strict_v6_policy_roster_and_review_exclusion(t
     not_excluded = sp.project_events(list(EVENTS), approved_tasks=APPROVED, roster=ROSTER)
     with pytest.raises(build_mod.BuildRefused, match="projection_policy_weak"):
         build(tmp_path, proj=not_excluded)
-    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
-        build(tmp_path, roster={k: v for k, v in ROSTER.items() if k != "fable-5"})  # a different roster pin
-    with pytest.raises(build_mod.BuildRefused, match="roster_required"):
-        build(tmp_path, roster=None)
+    with pytest.raises(build_mod.BuildRefused, match="pin_caller_mismatch"):
+        build(tmp_path, roster={k: v for k, v in ROSTER.items() if k != "fable-5"})  # not the pinned roster snapshot
+    with pytest.raises(build_mod.BuildRefused, match="pins_required"):
+        build(tmp_path, pins=None)
     with pytest.raises(build_mod.BuildRefused, match="roster_invalid"):
         build(tmp_path, roster="not a roster")
     for lax in (False, None, 1, "True"):
@@ -275,8 +303,7 @@ def test_the_builder_requires_the_strict_v6_policy_roster_and_review_exclusion(t
     with_rco = projection(list(EVENTS) + [event(agent="claude-rco-1", type="message", status="answered")])
     assert with_rco["refused"] == {} and with_rco["accepted"] == 4  # the review row leaves no record and no count
     out = build(tmp_path, proj=with_rco)
-    assert out["build_receipt"]["records"] == 4 and out["build_receipt"]["policy"] == {
-        "authorship": "declared_roster_consistent", "review_signal_excluded": True}
+    assert out["build_receipt"]["records"] == 4 and out["build_receipt"]["policy"] == STRICT_POLICY
     assert "claude-rco-1" not in json.dumps(out) and "cccc3333" not in json.dumps(out)
     for path in (tmp_path / "shared-v1").rglob("*"):
         if path.is_file():
@@ -397,7 +424,7 @@ def test_the_e5_passage_adapter_builds_through_the_normal_route_with_a_stub_mode
 def test_a_non_callable_encoder_is_refused():
     with pytest.raises(build_mod.BuildRefused, match="encoder_invalid"):
         build_mod.build_memory(projection(), "not callable", IDENTITY, DIM, ".", "x", approved_tasks=APPROVED,
-                               roster=ROSTER, exclude_review_signal=True)
+                               roster=ROSTER, exclude_review_signal=True, pins=PINS, allow_unbound_source=True)
 
 
 def _fake_model_dir(tmp_path, weights=b"synthetic-weights-" + b"\x00" * 64):
@@ -455,7 +482,7 @@ def test_runtime_record_is_closed_and_a_missing_model_is_one_fixed_refusal(tmp_p
 def test_without_a_runtime_the_caller_identity_is_required():
     with pytest.raises(build_mod.BuildRefused, match="encoder_identity_invalid"):
         build_mod.build_memory(projection(), FakeEncoder(), None, DIM, ".", "x", approved_tasks=APPROVED, roster=ROSTER,
-                               exclude_review_signal=True)
+                               exclude_review_signal=True, pins=PINS, allow_unbound_source=True)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("faiss " + SENTINEL), AttributeError("x " + SENTINEL), ZeroDivisionError()])
@@ -758,3 +785,204 @@ def test_a_tampered_provenance_row_is_quarantined_by_the_receipt_checksum(tmp_pa
     path.write_text(chr(10).join(rows) + chr(10), encoding="utf-8")
     assert memory_mod.Memory(tmp_path / "shared-v1").views["system"].status == "QUARANTINED"
     assert memory_mod.Memory(tmp_path / "shared-v1").views["system"].reason == "provenance_checksum"
+
+
+# ---- v4 (Lead bound request lead-mind-shared-index-fable-20261031-v4, 17:13:50Z; supplements 17:13:59Z, 17:15:50Z) ----
+
+
+def test_v4_memory_policy_binds_the_exact_policy_and_roster_digests_and_the_descriptor_pins_them(tmp_path):
+    out = build(tmp_path)
+    assert out["build_receipt"]["policy"] == STRICT_POLICY
+    memory = json.loads((tmp_path / "shared-v1" / "memory.json").read_bytes())
+    assert memory["policy"] == STRICT_POLICY  # in memory.json, which the descriptor pins, not only in the receipt
+    descriptor = reader.read_descriptor(tmp_path / "shared-v1" / "descriptor.json", out["descriptor_sha256"])
+    assert descriptor["memory_sha256"] == out["memory_sha256"] == sha((tmp_path / "shared-v1" / "memory.json").read_bytes())
+    # the Lead finding 17:15:50Z: a roster with one replaced uuid and a recomputed digest must not be the same memory
+    other_roster = dict(ROSTER, **{"fable-5": FOREIGN_UUID})
+    other_doc = dict(ROSTER_DOC, lanes=[dict(lane, agent_uuid=other_roster[lane["agent"]]) for lane in ROSTER_DOC["lanes"]])
+    other_bytes, other_sha = pinned(other_doc)
+    events = [dict(e, agent_uuid=other_roster[e["agent"]]) for e in EVENTS]
+    other = build(tmp_path, name="other", proj=projection(events, roster=other_roster), roster=other_roster,
+                  pins=dict(PINS, roster_bytes=other_bytes, roster_sha256=other_sha))
+    assert other["build_receipt"]["policy"]["roster_sha256"] == other_sha != ROSTER_SHA
+    assert other["memory_sha256"] != out["memory_sha256"] and other["descriptor_sha256"] != out["descriptor_sha256"]
+    assert FOREIGN_UUID not in json.dumps(other) and "eeee5555" not in json.dumps(out)  # digests only, never the uuids
+    for path in (tmp_path / "other").rglob("*"):
+        if path.is_file():
+            assert FOREIGN_UUID.encode() not in path.read_bytes()
+
+
+def test_v4_pins_are_required_closed_and_digest_checked_with_nothing_written(tmp_path):
+    with pytest.raises(build_mod.BuildRefused, match="pins_required"):
+        build(tmp_path, pins=None)
+    for bad in ("x", {}, [PINS], dict(PINS, extra=1), {k: v for k, v in PINS.items() if k != "roster_sha256"},
+                dict(PINS, policy_bytes=POLICY_BYTES.decode()), dict(PINS, policy_sha256="zz"),
+                dict(PINS, roster_sha256=ROSTER_SHA.upper()), dict(PINS, roster_bytes=bytearray(ROSTER_BYTES)),
+                dict(PINS, policy_bytes=b"{" * (build_mod.POLICY_LIMIT + 1)),
+                dict(PINS, roster_bytes=b"{" * (sp.ROSTER_BUDGET + 1))):
+        with pytest.raises(build_mod.BuildRefused, match="pins_invalid"):
+            build(tmp_path, pins=bad)
+    for mismatch in (dict(PINS, policy_sha256="0" * 64), dict(PINS, roster_sha256=POLICY_SHA),
+                     dict(PINS, roster_bytes=ROSTER_BYTES + b"\n"), dict(PINS, policy_bytes=POLICY_BYTES.replace(b"v1", b"v2"))):
+        with pytest.raises(build_mod.BuildRefused, match="pin_mismatch"):
+            build(tmp_path, pins=mismatch)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_v4_the_policy_document_is_closed_and_duplicate_keys_or_review_tasks_refuse(tmp_path):
+    def with_policy(text):
+        raw = text.encode("utf-8")
+        return dict(PINS, policy_bytes=raw, policy_sha256=sha(raw))
+
+    schema = "wd.q4-non-review-policy.v1"
+    good = json.dumps(POLICY_DOC)
+    for text in (json.dumps({"schema": "wd.q4-non-review-policy.v0", "approved_tasks": sorted(APPROVED)}),
+                 json.dumps({"schema": schema, "approved_tasks": sorted(APPROVED), "memory_sha256": "0" * 64}),
+                 json.dumps({"schema": schema}), json.dumps({"schema": schema, "approved_tasks": "not-a-list"}),
+                 json.dumps({"schema": schema, "approved_tasks": [TASK, TASK]}),
+                 json.dumps({"schema": schema, "approved_tasks": [TASK, 7]}),
+                 json.dumps({"schema": schema, "approved_tasks": [TASK, "lead-rco-1-finding"]}),  # review-task pattern
+                 json.dumps({"schema": schema, "approved_tasks": [TASK, "peer.review.1"]}),
+                 json.dumps({"schema": schema, "approved_tasks": [TASK, "fable-5/mind-x"]}),  # not a safe task id
+                 json.dumps({"schema": schema, "approved_tasks": [TASK] * 1 + ["t%d" % i for i in range(4096)]}),
+                 good.replace('"approved_tasks"', '"approved_tasks": [], "approved_tasks"', 1),  # duplicate key
+                 good.replace("[", "[NaN, ", 1), "[]", "{", "null", good.encode("utf-16").decode("latin-1")):
+        with pytest.raises(build_mod.BuildRefused, match="policy_invalid"):
+            build(tmp_path, pins=with_policy(text))
+    assert json.loads(good.replace('"approved_tasks"', '"approved_tasks": [], "approved_tasks"', 1)) == POLICY_DOC  # stdlib: last wins
+    with pytest.raises(build_mod.BuildRefused, match="pin_caller_mismatch"):
+        build(tmp_path, approved_tasks=frozenset({TASK}))  # the caller's approved set must equal the pinned one
+    with pytest.raises(build_mod.BuildRefused, match="approved_tasks_invalid"):
+        build(tmp_path, approved_tasks={TASK})  # not a frozenset
+    assert list(tmp_path.iterdir()) == []
+    out = build(tmp_path, approved_tasks=None)  # the approved set is derived from the pinned policy
+    assert out["build_receipt"]["policy"]["policy_sha256"] == POLICY_SHA and out["build_receipt"]["records"] == 4
+
+
+def test_v4_the_roster_snapshot_is_acyclic_closed_and_must_name_all_five_lanes(tmp_path):
+    def with_roster(document):
+        raw = json.dumps(document).encode("utf-8")
+        return dict(PINS, roster_bytes=raw, roster_sha256=sha(raw))
+
+    fleet_like = dict(ROSTER_DOC, resolved_inputs={"memory_sha256": "0" * 64})  # a data-bearing fleet document = cycle
+    deployment_lane = dict(ROSTER_DOC, lanes=[dict(ROSTER_DOC["lanes"][0], worktree="C:/x")] + ROSTER_DOC["lanes"][1:])
+    deployment_tools = dict(ROSTER_DOC, tools_supervisor=dict(ROSTER_DOC["tools_supervisor"], task_name="x"))
+    four = {k: v for k, v in ROSTER_DOC.items() if k != "tools_supervisor"}
+    missing_lane = dict(ROSTER_DOC, lanes=ROSTER_DOC["lanes"][1:])
+    twice = dict(ROSTER_DOC, lanes=ROSTER_DOC["lanes"] + [ROSTER_DOC["tools_supervisor"]])
+    bad_uuid = dict(ROSTER_DOC, lanes=[dict(ROSTER_DOC["lanes"][0], agent_uuid="not-a-uuid")] + ROSTER_DOC["lanes"][1:])
+    wrong_schema = dict(ROSTER_DOC, schema="wd-fleet.v1")
+    no_schema = {k: v for k, v in ROSTER_DOC.items() if k != "schema"}
+    for document in (fleet_like, deployment_lane, deployment_tools, four, missing_lane, twice, bad_uuid, wrong_schema,
+                     no_schema, [], {"lanes": "x"}, dict(ROSTER_DOC, lanes="x"), dict(ROSTER_DOC, tools_supervisor="x")):
+        with pytest.raises(build_mod.BuildRefused, match="roster_snapshot_invalid"):
+            build(tmp_path, pins=with_roster(document))
+    raw = json.dumps(ROSTER_DOC).replace('"lanes"', '"lanes": [], "lanes"', 1).encode("utf-8")  # duplicate key
+    with pytest.raises(build_mod.BuildRefused, match="roster_snapshot_invalid"):
+        build(tmp_path, pins=dict(PINS, roster_bytes=raw, roster_sha256=sha(raw)))
+    with pytest.raises(build_mod.BuildRefused, match="pin_caller_mismatch"):
+        build(tmp_path, roster=dict(ROSTER, **{"fable-5": FOREIGN_UUID}))  # caller roster differs from the snapshot
+    with pytest.raises(build_mod.BuildRefused, match="roster_invalid"):
+        build(tmp_path, roster="not a roster")
+    assert list(tmp_path.iterdir()) == []
+    assert build(tmp_path, roster=None)["build_receipt"]["policy"]["roster_sha256"] == ROSTER_SHA  # derived from pins
+
+
+def test_v4_the_strict_publication_path_requires_a_verified_source_binding(tmp_path):
+    for lax in (False, None, 1, "True"):
+        with pytest.raises(build_mod.BuildRefused, match="source_binding_required"):
+            build(tmp_path, allow_unbound_source=lax)  # the production default: no source, no publication
+    for bad in ("x", {}, [], {"snapshot_result": {}, "expected_anchor_sha256": "zz"},
+                {"snapshot_result": {}, "expected_anchor_sha256": "0" * 64, "extra": 1},
+                {"snapshot_result": 5, "expected_anchor_sha256": "0" * 64}, {"snapshot_result": {}}):
+        with pytest.raises(build_mod.BuildRefused, match="source_invalid"):
+            build(tmp_path, source=bad, allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+    out = build(tmp_path)  # synthetic route: explicitly allowed, recorded as unbound
+    receipt = out["build_receipt"]
+    assert receipt["source_binding"] is None and receipt["source_bound"] is False
+    assert receipt["source_authenticated"] is False  # a caller-provided hash is never source authenticity
+    assert build_mod.SOURCE_BINDING_SCHEMA == "wd.q4-shared-index-source-binding.v1"
+    assert build_mod.SOURCE_BINDING_KEYS == {"schema", "anchor_sha256", "projection_sha256", "cursor_start_sha256",
+                                             "cursor_end_sha256", "policy_sha256", "roster_sha256"}
+
+
+def test_v4_an_unavailable_source_verifier_fails_closed_before_any_write(tmp_path, monkeypatch):
+    source = {"snapshot_result": {"candidate_cursor": None, "source": {}}, "expected_anchor_sha256": "0" * 64}
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, None)  # the import raises ImportError
+    with pytest.raises(build_mod.BuildRefused, match="source_verifier_unavailable"):
+        build(tmp_path, source=source, allow_unbound_source=False)
+    with pytest.raises(build_mod.BuildRefused, match="source_verifier_unavailable"):
+        build(tmp_path, source=source)  # a given source is verified even on the synthetic route
+
+    class Half:  # a module without the verifier API
+        _token = staticmethod(lambda cursor: "bc1.x")
+
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, Half())
+    with pytest.raises(build_mod.BuildRefused, match="source_verifier_unavailable"):
+        build(tmp_path, source=source, allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []
+    assert "verify" not in build_mod.__dict__ and not hasattr(build_mod, "verify_anchored_projection")  # not re-implemented
+
+
+def _snapshot_module():
+    """The Lead source-anchor verifier; absent on this branch -> the dependent test is SKIPPED (integration
+    prerequisite, Lead 17:13:59Z: do not manufacture verification, do not modify Lead files)."""
+    snapshot = pytest.importorskip(build_mod.SNAPSHOT_MODULE,
+                                   reason="integration prerequisite: Lead shared_bridge_snapshot not on this branch")
+    if not all(hasattr(snapshot, name) for name in ("verify_anchored_projection", "_ProjectionBinding", "_token", "_canonical")):
+        pytest.skip("integration prerequisite: verify_anchored_projection not committed in this tree")
+    return snapshot
+
+
+def _synthetic_snapshot(snapshot, proj, anchor_sha256, policy_sha256, roster_sha256, *, end_offset=512):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    start = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
+    end = BridgeCursor(offset=end_offset, file_identity="synthetic-identity", generation="gen-synthetic")
+    source = {"cursor_start": snapshot._token(start), "cursor_end": snapshot._token(end),
+              "coverage": "delta_only_not_complete_history"}
+    result = {"projection": proj, "source": source, "candidate_cursor": end}
+    result["_projection_binding"] = snapshot._ProjectionBinding(snapshot._canonical(proj), snapshot._canonical(source),
+                                                                end, anchor_sha256, policy_sha256, roster_sha256)
+    return result, start, end
+
+
+def test_v4_source_binding_is_written_only_after_the_lead_verifier_accepts(tmp_path):
+    snapshot = _snapshot_module()
+    proj, anchor = projection(), "1" * 64
+    result, start, end = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, ROSTER_SHA)
+    out = build(tmp_path, proj=proj, source={"snapshot_result": result, "expected_anchor_sha256": anchor},
+                allow_unbound_source=False)
+    receipt = out["build_receipt"]
+    assert receipt["source_binding"] == {
+        "schema": "wd.q4-shared-index-source-binding.v1", "anchor_sha256": anchor,
+        "projection_sha256": out["projection_sha256"], "cursor_start_sha256": sha(snapshot._token(start)),
+        "cursor_end_sha256": sha(snapshot._token(end)), "policy_sha256": POLICY_SHA, "roster_sha256": ROSTER_SHA}
+    assert receipt["source_bound"] is True and receipt["source_authenticated"] is False
+    serialized = json.dumps(out) + (tmp_path / "shared-v1" / "build_receipt.json").read_text("utf-8")
+    assert "synthetic-identity" not in serialized and "bc1." not in serialized  # tokens are hashed, never persisted
+
+
+@pytest.mark.parametrize("wrong", ["projection", "end", "anchor", "policy", "roster", "spliced_source"])
+def test_v4_a_spliced_or_mismatched_source_binding_refuses_with_nothing_written(tmp_path, wrong):
+    snapshot = _snapshot_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    proj, anchor = projection(), "1" * 64
+    result, start, end = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, ROSTER_SHA)
+    expected_anchor = anchor
+    if wrong == "projection":
+        proj = projection(list(EVENTS[:2]))  # a valid projection that is not the bound one
+    elif wrong == "end":
+        result["candidate_cursor"] = BridgeCursor(offset=999, file_identity="synthetic-identity", generation="gen-synthetic")
+    elif wrong == "anchor":
+        expected_anchor = "2" * 64
+    elif wrong == "policy":
+        result, _, _ = _synthetic_snapshot(snapshot, proj, anchor, "3" * 64, ROSTER_SHA)
+    elif wrong == "roster":
+        result, _, _ = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, "4" * 64)
+    elif wrong == "spliced_source":
+        result["source"] = dict(result["source"], cursor_end=snapshot._token(start))  # end token swapped under the binding
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
+        build(tmp_path, proj=proj, source={"snapshot_result": result, "expected_anchor_sha256": expected_anchor},
+              allow_unbound_source=False)
+    assert list(tmp_path.iterdir()) == []

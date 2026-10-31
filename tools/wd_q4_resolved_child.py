@@ -12,6 +12,8 @@ import json
 import re
 
 from sandbox.mind.step2 import shared_projection as sp
+from sandbox.mind.step2 import shared_capture_adapter as adapter
+from sandbox.mind.step2 import shared_result_resolver as resolver
 from tools import wd_q4_agent_query as q4
 
 MAX_POLICY = 65536
@@ -55,7 +57,7 @@ def _policy(data):
     return tasks
 
 
-def _validate_projection(data, tasks):
+def _validate_projection(data, tasks, roster):
     """Refuse UNKNOWN/unapproved tasks and RCO origins before invoking Q4.
 
     Projection loses recipient information; this check does not authenticate
@@ -65,7 +67,8 @@ def _validate_projection(data, tasks):
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     if json.dumps(value, sort_keys=True, indent=1).encode("utf-8") != data:
         raise ValueError()
-    sp.validate_projection(value, approved_tasks=tasks, include_refs=False)
+    sp.validate_projection(value, approved_tasks=tasks, include_refs=False,
+                           roster=roster, exclude_review_signal=True)
     for record in value["records"]:
         meta = record["meta"]
         if meta["task_id"] not in tasks or meta["agent"] in ("claude-rco-1", "claude-rco-2"):
@@ -94,15 +97,27 @@ def _result(value):
 
 
 def run_resolved(config, stdin, stdout, *, policy_bytes, policy_sha256, memory_bytes, memory_sha256,
-                 projection_bytes, projection_sha256):
+                 projection_bytes, projection_sha256, roster_bytes=None, roster_sha256=None):
     """Emit bounded resolved metadata from caller-asserted and pinned inputs."""
     try:
         _pinned(policy_bytes, policy_sha256, MAX_POLICY)
         _pinned(memory_bytes, memory_sha256, MAX_ARTIFACT)
         _pinned(projection_bytes, projection_sha256, MAX_ARTIFACT)
-        tasks = _policy(policy_bytes)
-        _validate_projection(projection_bytes, tasks)
-        result = _result(q4.query_and_resolve(config, stdin, memory_bytes, projection_bytes, tasks))
+        tasks, roster = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if tasks != _policy(policy_bytes):
+            raise ValueError()
+        _validate_projection(projection_bytes, tasks, roster)
+        # Validate the exact pinned tuple before invoking Q4. This empty-result
+        # call checks schema and pin consistency; it does not assert clock or
+        # source authenticity, nor does it make a query against the index.
+        resolver.resolve_results(memory_manifest=memory_bytes, expected_memory_sha256=memory_sha256,
+                                 projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
+                                 policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                                 roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+        result = _result(q4.query_and_resolve(config, stdin, memory_bytes, projection_bytes, tasks,
+                         policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                         roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                         expected_memory_sha256=memory_sha256))
         text = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
         if len(text.encode("utf-8")) > MAX_OUTPUT:
             raise ValueError()

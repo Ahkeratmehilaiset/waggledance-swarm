@@ -71,6 +71,22 @@ Default deny everywhere else: a lane outside ``LANES``, a type outside ``ALLOWED
 decision type is outside), a sealed-named approved task, a malformed time, PR or head, or any text field over its
 UTF-8 byte cap (a 4-byte character costs four) refuses that event whole with one fixed reason. Synthetic only: no
 real capture, memory, index or model is touched by this module or its tests.
+
+v6 (RCO2 production fix spec, operator 16:35Z "solve them"): two pinned policy parameters, both recorded in the
+projection and re-pinned by ``validate_projection`` / ``write_projection`` so a projection built under a weaker
+policy can never pass as a stricter one. S5 ``exclude_review_signal=True``: every row authored by a review lane
+(``REVIEW_LANES``) refuses ``review_lane_excluded`` and every row whose task id contains ``/`` (a PR branch, the
+canonical decision task) refuses ``pr_branch_task_excluded`` instead of rendering UNKNOWN, so message/claim/done
+rows can no longer reveal that a peer review finished. S2 ``roster`` (lane -> uuid from the pinned wd-fleet.json via
+``load_roster(path, sha256)`` / ``roster_from_fleet``): a row projects only when its declared ``agent_uuid`` equals
+the roster entry of its lane (``agent_identity_mismatch`` otherwise); the uuid is compared and never persisted, and
+the projection records ``authorship = declared_roster_consistent``. This is a declaration-consistency check, NOT
+authentication (all lanes run as one OS user; HMAC Phase A is observe-only elsewhere); without a roster the
+projection records ``declared_unverified``. DEVIATION from the spec wording "required": both parameters default to
+the v5 behaviour because the Lead synthetic suite at 3c19279f (``test_shared_projection_q4_synthetic``) projects
+review-lane rows without uuids and this module must not break a consumer it may not edit; the production chain is
+made strict by the BUILDER, which refuses any projection not built under both policies. Flipping the defaults is a
+one-line Lead decision once that suite carries a roster.
 """
 
 import datetime as dt
@@ -84,19 +100,37 @@ from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
 
-SCHEMA = "wd.bridge-mind-shared-projection.v5"
+SCHEMA = "wd.bridge-mind-shared-projection.v6"
 TIME_PRECISION_SECONDS = 60  # event time is floored to the minute; seconds and fractions never reach the record
 # One safe file name inside the trusted output root: no separator, no drive, no leading dot, lower case, .json
 OUTPUT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,122}\.json")
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 SCOPE = "shared_metadata_projection_not_gate"
-PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "accepted", "refused", "dropped_fields", "records"})
+PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "accepted", "refused", "dropped_fields", "records",
+                             "authorship", "review_signal_excluded"})
 META_KEYS = frozenset({"type", "status", "agent", "task_id", "pr", "head", "ci"})
 # Every per-event refusal reason the projection may count; a refused key outside this set is a forged projection.
 REASONS = frozenset({"event_not_object", "time_invalid", "agent_invalid", "agent_over_bytes", "agent_not_lane",
                      "type_invalid", "type_over_bytes", "type_not_allowed", "status_invalid", "status_over_bytes",
                      "task_id_invalid", "task_id_over_bytes", "sealed_named_excluded", "pr_invalid", "head_invalid",
-                     "ci_invalid", "ci_over_bytes", "head_line_over_bytes"})
+                     "ci_invalid", "ci_over_bytes", "head_line_over_bytes",
+                     "review_lane_excluded", "pr_branch_task_excluded", "agent_identity_mismatch"})
+# S5 exclusions leave NO trace in a batch projection: ``project_event`` raises them by name (in-process only), but
+# ``project_events`` neither records nor COUNTS them, since a ``review_lane_excluded`` count would itself disclose
+# that a review happened in that batch (Lead 2026-10-31 16:53Z). Other refusal reasons stay counted.
+SILENT_EXCLUSIONS = frozenset({"review_lane_excluded", "pr_branch_task_excluded"})
+# v6 (RCO2 production fix spec S5 + S2). S5: rows authored by a review lane, and rows whose task id names a PR
+# branch (contains "/"), are REFUSED SILENTLY (no record, no count) when the caller pins
+# ``exclude_review_signal=True``, so a peer review finishing never shows through message/claim/done rows. S2: with a pinned ``roster`` (lane -> uuid from the
+# pinned wd-fleet.json) a row is projected only when its declared ``agent_uuid`` equals the roster entry; the uuid is
+# compared and never persisted. Authorship is then "declared_roster_consistent" - a declaration check, NOT
+# authentication (every lane runs as the same OS user); without a roster it is "declared_unverified".
+REVIEW_LANES = frozenset({"claude-rco-1", "claude-rco-2"})
+AUTHORSHIP_ROSTER = "declared_roster_consistent"
+AUTHORSHIP_UNVERIFIED = "declared_unverified"
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+ROSTER_BUDGET = 1 << 20  # the pinned fleet file is read through a byte budget and a sha256 pin
 # Publication strategy per platform (module bindings so tests can pin them deterministically):
 # nt    -> os.rename, which on Windows is MoveFileEx WITHOUT REPLACE_EXISTING and fails if the destination exists;
 # posix -> os.link, which never replaces (EEXIST) and is atomic on local filesystems; unlink the staging after.
@@ -188,6 +222,81 @@ def _strict_flag(include_refs):
     return include_refs
 
 
+def _exclude_flag(exclude_review_signal):
+    """``exclude_review_signal`` must be a real bool for the same reason."""
+    if type(exclude_review_signal) is not bool:
+        raise ProjectionRefused("exclude_review_signal_invalid")
+    return exclude_review_signal
+
+
+def _roster(roster):
+    """None, or a closed non-empty mapping whose keys are projection lanes and whose values are distinct lowercase
+    uuids. A lane absent from the roster cannot project while the roster is pinned (``agent_identity_mismatch``)."""
+    if roster is None:
+        return None
+    if (not isinstance(roster, dict) or not roster or not set(roster) <= LANES
+            or not all(isinstance(uuid, str) and UUID.fullmatch(uuid) is not None for uuid in roster.values())
+            or len(set(roster.values())) != len(roster)):
+        raise ProjectionRefused("roster_invalid")
+    return {agent: roster[agent] for agent in sorted(roster)}
+
+
+def roster_from_fleet(document):
+    """The lane -> uuid roster of a parsed wd-fleet.json: each listed projection lane once with a valid uuid; lanes
+    outside ``LANES`` are ignored (they never project); a duplicate lane or a bad uuid refuses; a projection lane the
+    fleet file does not list is simply absent (and then cannot project under this roster)."""
+    if not isinstance(document, dict) or not isinstance(document.get("lanes"), list):
+        raise ProjectionRefused("roster_invalid")
+    roster = {}
+    entries = list(document["lanes"])
+    supervisor = document.get("tools_supervisor")  # the real fleet file keeps the Tools lane here, not under lanes
+    if isinstance(supervisor, dict):
+        entries.append(supervisor)
+    for lane in entries:
+        if not isinstance(lane, dict) or not isinstance(lane.get("agent"), str):
+            raise ProjectionRefused("roster_invalid")
+        if lane["agent"] not in LANES:
+            continue
+        if lane["agent"] in roster:
+            raise ProjectionRefused("roster_invalid")
+        roster[lane["agent"]] = lane.get("agent_uuid")
+    return _roster(roster)
+
+
+def _pairs_without_duplicates(pairs):
+    """``object_pairs_hook``: a JSON object that spells one key twice refuses instead of letting the last value win
+    (``json.loads`` default), so a second ``agent_uuid`` or a second ``lanes`` cannot shadow the pinned one."""
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ProjectionRefused("roster_duplicate_key")
+        out[key] = value
+    return out
+
+
+def load_roster(path, expected_sha256):
+    """The roster from the pinned fleet file: bytes within budget whose sha256 equals the caller's pin, parsed with
+    duplicate JSON keys refused (``roster_duplicate_key``)."""
+    if not isinstance(expected_sha256, str) or HEX64.fullmatch(expected_sha256) is None:
+        raise ProjectionRefused("roster_pin_invalid")
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(ROSTER_BUDGET + 1)
+    except OSError:
+        raise ProjectionRefused("roster_unreadable") from None
+    if len(raw) > ROSTER_BUDGET:
+        raise ProjectionRefused("roster_over_budget")
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ProjectionRefused("roster_pin_mismatch")
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_without_duplicates)
+    except ProjectionRefused:
+        raise  # roster_duplicate_key keeps its own token (ProjectionRefused is a ValueError)
+    except (ValueError, RecursionError):
+        raise ProjectionRefused("roster_unreadable") from None
+    return roster_from_fleet(document)
+
+
 def _available(ts_text):
     """Conservative availability: the NEXT minute boundary after the floored display minute, so a record is never
     visible inside the minute its event happened in; past the last representable minute it refuses."""
@@ -212,13 +321,16 @@ def visible_at(record, query_utc, guard_band_s=0):
     return record["provenance"]["available_utc"] < limit
 
 
-def approved_fields(event, approved_tasks=frozenset(), include_refs=False):
+def approved_fields(event, approved_tasks=frozenset(), include_refs=False, roster=None, exclude_review_signal=False):
     """The approved fields of one event, validated; forbidden and unknown keys are counted, never read.
 
     ``pr`` and ``head`` are always shape-validated (a malformed one refuses the event) but are projected as None
     unless the caller opts in with ``include_refs=True`` (a strict bool): they are producer-chosen integers and hex
-    strings and so a covert channel by default. The time is floored to ``TIME_PRECISION_SECONDS``."""
+    strings and so a covert channel by default. The time is floored to ``TIME_PRECISION_SECONDS``. With a
+    ``roster`` the declared ``agent_uuid`` must equal the roster entry of the lane (compared, never kept); with
+    ``exclude_review_signal`` a review-lane row or a PR-branch task id refuses instead of projecting."""
     include_refs = _strict_flag(include_refs)
+    exclude_review_signal = _exclude_flag(exclude_review_signal)
     if not isinstance(event, dict):
         raise ProjectionRefused("event_not_object")
     dropped = sum(1 for key in event if key not in APPROVED_FIELDS)
@@ -233,10 +345,18 @@ def approved_fields(event, approved_tasks=frozenset(), include_refs=False):
     agent = _closed("agent", event.get("agent"), LANE, LANES)
     if agent is None:
         raise ProjectionRefused("agent_not_lane")
+    if exclude_review_signal and agent in REVIEW_LANES:
+        raise ProjectionRefused("review_lane_excluded")
+    if roster is not None:
+        declared = event.get("agent_uuid")  # read for the compare only; it is not an approved field
+        if not isinstance(declared, str) or declared != roster.get(agent):
+            raise ProjectionRefused("agent_identity_mismatch")
     kind = _closed("type", event.get("type"), TYPE, ALLOWED_TYPES)
     if kind is None:
         raise ProjectionRefused("type_not_allowed")
     status = _enum("status", event.get("status"), ALLOWED_STATUS, empty="none")
+    if exclude_review_signal and isinstance(event.get("task_id"), str) and "/" in event["task_id"]:
+        raise ProjectionRefused("pr_branch_task_excluded")  # a PR branch is the canonical decision task: refuse
     task = _task(event.get("task_id"), approved_tasks)
     pr = event.get("pr")
     if pr is not None and (type(pr) is not int or pr < 1 or pr > PR_MAX):
@@ -272,9 +392,10 @@ def projected_ref(fields):
     return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def project_event(event, approved_tasks=frozenset(), include_refs=False):
+def project_event(event, approved_tasks=frozenset(), include_refs=False, roster=None, exclude_review_signal=False):
     """One shared record from one event, or ProjectionRefused; nothing partial is returned."""
-    fields, dropped = approved_fields(event, approved_tasks, _strict_flag(include_refs))
+    fields, dropped = approved_fields(event, approved_tasks, _strict_flag(include_refs), _roster(roster),
+                                      _exclude_flag(exclude_review_signal))
     return _record(fields), dropped
 
 
@@ -297,33 +418,40 @@ def encoder_input(record):
     return record["stored_text"]
 
 
-def _projection(records, refused, dropped):
+def _projection(records, refused, dropped, roster, exclude_review_signal):
     out = {"schema": SCHEMA, "authority": "none", "scope": SCOPE,
            "accepted": len(records), "refused": dict(sorted(refused.items())), "dropped_fields": dropped,
-           "records": records}
+           "records": records, "authorship": AUTHORSHIP_ROSTER if roster is not None else AUTHORSHIP_UNVERIFIED,
+           "review_signal_excluded": exclude_review_signal}
     corpus_mod.ws.guard_object(out)
     return out
 
 
-def project_events(events, approved_tasks=None, include_refs=False):
+def project_events(events, approved_tasks=None, include_refs=False, roster=None, exclude_review_signal=False):
     """Every acceptable event as a record; refusals are counted by reason only; a non-object input refuses whole.
 
     ``approved_tasks`` is a frozenset of safe-shaped task ids the caller pins from an operator-approved list; with
-    none, every task id renders as UNKNOWN. ``include_refs`` opts in to projecting pr and head (off by default)."""
+    none, every task id renders as UNKNOWN. ``include_refs`` opts in to projecting pr and head (off by default).
+    ``roster`` (lane -> uuid, see ``load_roster``) turns on the S2 authorship compare; ``exclude_review_signal``
+    turns on the S5 refusals. Both are recorded in the projection and re-pinned by ``validate_projection``."""
     include_refs = _strict_flag(include_refs)
+    exclude_review_signal = _exclude_flag(exclude_review_signal)
     approved = _approved_tasks(approved_tasks)
+    roster = _roster(roster)
     records, refused, dropped = [], {}, 0
     for event in events:
         if not isinstance(event, dict):
             raise ProjectionRefused("event_not_object")
         try:
-            record, count = project_event(event, approved, include_refs)
+            record, count = project_event(event, approved, include_refs, roster, exclude_review_signal)
         except ProjectionRefused as exc:
+            if str(exc) in SILENT_EXCLUSIONS:
+                continue  # S5: not even a count, a per-reason count would itself say a review happened in this batch
             refused[str(exc)] = refused.get(str(exc), 0) + 1
             continue
         records.append(record)
         dropped += count
-    return _projection(records, refused, dropped)
+    return _projection(records, refused, dropped, roster, exclude_review_signal)
 
 
 def project_notes(notes, allowlist=None):
@@ -331,27 +459,35 @@ def project_notes(notes, allowlist=None):
     raise ProjectionRefused("notes_excluded")
 
 
-def validate_projection(projection, approved_tasks=None, include_refs=False):
+def validate_projection(projection, approved_tasks=None, include_refs=False, roster=None, exclude_review_signal=False):
     """Strict exact revalidation of a projection object before it is published.
 
     Every record is re-derived from its own approved fields through the same validation path as ``project_event``
     (closed sets, byte caps, the caller-pinned approved set) and must be byte-for-byte equal to the re-derivation;
     the top level must carry exactly the projection keys with closed values, refusal reasons from ``REASONS`` and
-    non-negative integer counts. Anything else refuses with ``projection_invalid`` and nothing is written. This is
-    in-process validation, not authentication: Python offers no forgery-proof object, so the writer trusts the
-    content only after re-deriving it, never because of who built it."""
+    non-negative integer counts. The caller re-pins the v6 policy: ``authorship`` must match whether a ``roster``
+    is given (the uuid itself is not persisted, so only lane membership in the roster is re-checked) and
+    ``review_signal_excluded`` must equal ``exclude_review_signal`` (then no record may come from a review lane).
+    Anything else refuses with ``projection_invalid`` and nothing is written. This is in-process validation, not
+    authentication: Python offers no forgery-proof object, so the writer trusts the content only after re-deriving
+    it, never because of who built it."""
     include_refs = _strict_flag(include_refs)
+    exclude_review_signal = _exclude_flag(exclude_review_signal)
     approved = _approved_tasks(approved_tasks)
+    roster = _roster(roster)
     try:
         if not isinstance(projection, dict) or set(projection) != PROJECTION_KEYS:
             raise ProjectionRefused("projection_invalid")
         records, refused, dropped = projection["records"], projection["refused"], projection["dropped_fields"]
+        expected_authorship = AUTHORSHIP_ROSTER if roster is not None else AUTHORSHIP_UNVERIFIED
         if (projection["schema"] != SCHEMA or projection["authority"] != "none" or projection["scope"] != SCOPE
                 or not isinstance(records, list) or type(projection["accepted"]) is not int
                 or projection["accepted"] != len(records) or type(dropped) is not int or dropped < 0
                 or not isinstance(refused, dict)
                 or any(reason not in REASONS or type(count) is not int or count < 1
-                       for reason, count in refused.items())):
+                       for reason, count in refused.items())
+                or projection["authorship"] != expected_authorship
+                or projection["review_signal_excluded"] is not exclude_review_signal):
             raise ProjectionRefused("projection_invalid")
         for record in records:
             if not isinstance(record, dict) or not isinstance(record.get("meta"), dict):
@@ -359,8 +495,10 @@ def validate_projection(projection, approved_tasks=None, include_refs=False):
             meta = record["meta"]
             if set(meta) != META_KEYS or not isinstance(record.get("time_utc"), str):
                 raise ProjectionRefused("projection_invalid")
+            if roster is not None and meta["agent"] not in roster:
+                raise ProjectionRefused("projection_invalid")
             synthetic = {"ts_utc": record["time_utc"], **meta}
-            fields, _ = approved_fields(synthetic, approved, include_refs)
+            fields, _ = approved_fields(synthetic, approved, include_refs, None, exclude_review_signal)
             if fields["ts_utc"] != record["time_utc"] or _record(fields) != record:
                 raise ProjectionRefused("projection_invalid")
     except ProjectionRefused:
@@ -413,14 +551,15 @@ def _output_root(root):
     return root
 
 
-def write_projection(root, name, projection, approved_tasks=None, include_refs=False):
+def write_projection(root, name, projection, approved_tasks=None, include_refs=False, roster=None,
+                     exclude_review_signal=False):
     """Revalidate strictly, guard the whole object, then publish ``projection`` as ``root/name``: ``root`` is a
     caller-supplied trusted directory (``_output_root``), ``name`` one safe ``.json`` file name (``OUTPUT_NAME``), so
     nothing this call writes can leave the root. The data is staged in a unique exclusively created file inside the
     root and published atomically onto a target that must not exist in any form (a symlink or reparse point at the
     target is ``output_exists``, never followed). Only a staging file this call created is ever removed; a
     destination written by anyone else is never overwritten or deleted; on a refusal nothing of ours remains."""
-    validate_projection(projection, approved_tasks, _strict_flag(include_refs))
+    validate_projection(projection, approved_tasks, _strict_flag(include_refs), roster, _exclude_flag(exclude_review_signal))
     try:
         corpus_mod.ws.guard_object(projection)
     except corpus_mod.ws.WorkspaceError:

@@ -21,13 +21,20 @@ def digest(path):
 
 @pytest.fixture
 def candidate(tmp_path):
-    bootstrap = tmp_path / "runtime_bootstrap.py"
-    bootstrap.write_text("""import json,sys\nsys.stdin.buffer.read()\nprint(json.dumps({'schema':'wd.bridge-mind-q4-private-read.v1','identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'synthetic','results':[]}))\nprint('private stderr',file=sys.stderr)\nsys.exit(2)\n""", encoding="utf-8")
-    verifier = tmp_path / "runtime_manifest.py"
+    code = tmp_path / "code"
+    code.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    bootstrap = code / "runtime_bootstrap.py"
+    bootstrap.write_text("""import json,sys\nsys.stdin.buffer.read()\nprint(json.dumps({'schema':'wd.bridge-mind-q4-private-read.v1','identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'reader_busy','results':[]}))\nprint('private stderr',file=sys.stderr)\nsys.exit(2)\n""", encoding="utf-8")
+    verifier = code / "runtime_manifest.py"
     verifier.write_text("# synthetic only\n", encoding="utf-8")
     return dict(interpreter=Path(sys.executable), interpreter_sha256=digest(sys.executable),
                 bootstrap=bootstrap, bootstrap_sha256=digest(bootstrap), verifier_sha256=digest(verifier),
-                tuple_args={"runtime-root": str(tmp_path), "runtime-manifest": str(tmp_path / "manifest.json"),
+                scratch_root=scratch,
+                tuple_args={"runtime-root": str(runtime), "runtime-manifest": str(tmp_path / "manifest.json"),
                             "runtime-manifest-sha256": "a" * 64, "runtime-generation": "generation",
                             "runtime-revision": "revision", "memory": str(tmp_path / "memory"),
                             "descriptor": str(tmp_path / "descriptor.json"), "descriptor-sha256": "b" * 64,
@@ -38,7 +45,7 @@ def candidate(tmp_path):
 def test_private_stderr_suppressed_and_stdin_not_in_args(candidate, capsys):
     result = launcher.launch(**candidate)
     assert result == {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
-                      "status": "REFUSED", "reason": "reader_refused", "results": []}
+                      "status": "REFUSED", "reason": "reader_busy", "results": []}
     assert capsys.readouterr().err == ""
 
 
@@ -49,7 +56,7 @@ def test_query_is_delivered_only_on_stdin_in_isolated_mode(candidate):
         "assert b'synthetic_secret' in query and all('synthetic_secret' not in a for a in sys.argv)\n"
         "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
         "print(json.dumps({'schema':'wd.bridge-mind-q4-private-read.v1',"
-        "'identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'synthetic','results':[]}))\n"
+        "'identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'reader_busy','results':[]}))\n"
         "sys.exit(2)\n", encoding="utf-8")
     candidate["bootstrap_sha256"] = digest(candidate["bootstrap"])
     candidate["query"] = b'{"situation":"synthetic_secret","time":"2026-01-01T00:00:00Z"}'
@@ -60,7 +67,7 @@ def test_extra_private_output_fields_are_discarded(candidate):
     candidate["bootstrap"].write_text(
         "import json,sys\n"
         "print(json.dumps({'schema':'wd.bridge-mind-q4-private-read.v1',"
-        "'identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'synthetic',"
+        "'identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'reader_busy',"
         "'results':[], 'extra_private_field':'private text'}))\n"
         "sys.exit(2)\n", encoding="utf-8")
     candidate["bootstrap_sha256"] = digest(candidate["bootstrap"])
@@ -112,12 +119,86 @@ def test_untrusted_tokens_are_never_forwarded(candidate):
     assert "secret_" not in json.dumps(result)
 
 
-def test_refusal_reason_is_fixed_not_child_supplied(candidate):
+def test_unknown_refusal_reason_fails_closed(candidate):
     payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
                "status": "REFUSED", "reason": "secret_reason", "results": []}
-    result = launcher._validate_output(json.dumps(payload).encode(), 2, "b" * 64)
-    assert result["reason"] == "reader_refused"
-    assert "secret_reason" not in json.dumps(result)
+    with pytest.raises(launcher.LaunchRefused, match="^invalid_output$"):
+        launcher._validate_output(json.dumps(payload).encode(), 2, "b" * 64)
+
+
+def test_known_reader_refusal_survives_and_unknown_bootstrap_refuses():
+    payload = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
+               "status": "REFUSED", "reason": "reader_busy", "results": []}
+    assert launcher._validate_output(json.dumps(payload).encode(), 2, "b" * 64)["reason"] == "reader_busy"
+    bootstrap = {"schema": "wd.q4-runtime-bootstrap.v1", "status": "REFUSED", "reason": "synthetic_secret"}
+    with pytest.raises(launcher.LaunchRefused, match="^invalid_output$"):
+        launcher._validate_output(json.dumps(bootstrap).encode(), 2, "b" * 64)
+
+
+def test_scratch_must_be_explicit(candidate):
+    del candidate["scratch_root"]
+    with pytest.raises(launcher.LaunchRefused, match="^scratch_required$"):
+        launcher.launch(**candidate)
+
+
+def test_fresh_temp_and_tmp_inside_explicit_scratch(candidate, monkeypatch):
+    monkeypatch.setenv("TEMP", "synthetic-parent-temp")
+    monkeypatch.setenv("TMP", "synthetic-parent-tmp")
+    monkeypatch.setenv("WD_Q4_SECRET", "synthetic-parent-secret")
+    candidate["bootstrap"].write_text(
+        "import json,os,pathlib,sys,tempfile\n"
+        "assert 'WD_Q4_SECRET' not in os.environ\n"
+        "temp=pathlib.Path(os.environ['TEMP'])\n"
+        "assert temp==pathlib.Path(os.environ['TMP']) and temp.is_dir()\n"
+        "assert temp.parent==pathlib.Path(" + repr(str(candidate["scratch_root"])) + ")\n"
+        "assert pathlib.Path(tempfile.gettempdir())==temp\n"
+        "print(json.dumps({'schema':'wd.bridge-mind-q4-private-read.v1',"
+        "'identity':'caller_declared_not_authenticated','status':'REFUSED','reason':'reader_busy','results':[]}))\n"
+        "sys.exit(2)\n", encoding="utf-8")
+    candidate["bootstrap_sha256"] = digest(candidate["bootstrap"])
+    before = set(candidate["scratch_root"].iterdir())
+    assert launcher.launch(**candidate)["reason"] == "reader_busy"
+    assert launcher.launch(**candidate)["reason"] == "reader_busy"
+    after = set(candidate["scratch_root"].iterdir())
+    assert len(after - before) == 2
+    assert os.environ["TEMP"] == "synthetic-parent-temp"
+    assert os.environ["TMP"] == "synthetic-parent-tmp"
+
+
+@pytest.mark.parametrize("target", ["code", "runtime", "memory", "common_ancestor"])
+def test_scratch_must_not_overlap_protected_directories(candidate, target):
+    memory = Path(candidate["tuple_args"]["memory"])
+    memory.mkdir()
+    protected = {"code": candidate["bootstrap"].parent,
+                 "runtime": Path(candidate["tuple_args"]["runtime-root"]),
+                 "memory": memory, "common_ancestor": candidate["scratch_root"].parent}
+    candidate["scratch_root"] = protected[target]
+    with pytest.raises(launcher.LaunchRefused, match="^scratch_refused$"):
+        launcher.launch(**candidate)
+    assert not list(protected[target].glob("wd-q4-*"))
+
+
+def test_scratch_reparse_point_is_refused_before_creating_child(candidate, monkeypatch):
+    from types import SimpleNamespace
+    path = candidate["scratch_root"]
+    original = launcher.os.lstat
+
+    def fake_lstat(value, *args, **kwargs):
+        result = original(value, *args, **kwargs)
+        if Path(value) == path:
+            return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+        return result
+
+    monkeypatch.setattr(launcher.os, "lstat", fake_lstat)
+    with pytest.raises(launcher.LaunchRefused, match="^scratch_refused$"):
+        launcher.launch(**candidate)
+    assert not list(path.iterdir())
+
+
+@pytest.mark.parametrize("reason", sorted(launcher._BOOTSTRAP_REFUSALS))
+def test_only_known_bootstrap_refusal_codes_are_forwarded(reason):
+    value = {"schema": "wd.q4-runtime-bootstrap.v1", "status": "REFUSED", "reason": reason}
+    assert launcher._validate_output(json.dumps(value).encode(), 2, "b" * 64)["reason"] == reason
 
 
 def test_early_missing_import_refusal_without_identity_is_fixed_shape():

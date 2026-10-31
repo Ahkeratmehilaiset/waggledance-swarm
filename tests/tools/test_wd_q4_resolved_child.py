@@ -21,17 +21,29 @@ def config():
         runtime_root=r"C:\fake\runtime", runtime_manifest=r"C:\fake\runtime.json", runtime_manifest_sha256="4" * 64,
         runtime_generation="5" * 40, runtime_revision="6" * 40, memory=r"C:\fake\memory",
         descriptor=r"C:\fake\descriptor.json", descriptor_sha256="7" * 64, lock_file=r"C:\fake\lock",
-        lock_timeout="2", timeout=30)
+        lock_timeout="2", timeout=30, scratch_root=r"C:\fake-scratch")
 
 
 def fixture():
     policy = json.dumps({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": ["synthetic-task"]}).encode()
+    roster = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+    fleet = json.dumps({"lanes": [{"agent": name, "agent_uuid": uid} for name, uid in roster.items()
+                                    if name != "codex-tools-1"],
+                        "tools_supervisor": {"agent": "codex-tools-1",
+                                             "agent_uuid": roster["codex-tools-1"]}}).encode()
     event = {"ts_utc": "2026-10-31T12:00:10Z", "agent": "codex-lead-1", "type": "message", "status": "done",
-             "task_id": "synthetic-task", "message": "private-body-sentinel"}
-    projection = sp.project_events([event], approved_tasks=frozenset({"synthetic-task"}))
+             "task_id": "synthetic-task", "agent_uuid": roster["codex-lead-1"], "message": "private-body-sentinel"}
+    projection = sp.project_events([event], approved_tasks=frozenset({"synthetic-task"}),
+                                   roster=roster, exclude_review_signal=True)
     projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode()
     memory = json.dumps({"scope": "wd.q4-shared-projected-events.v1", "projection_schema": sp.SCHEMA,
-                         "projection_sha256": sha(projection_bytes), "unused": "private-memory-sentinel"}).encode()
+                         "projection_sha256": sha(projection_bytes), "unused": "private-memory-sentinel",
+                         "policy": {"authorship": "declared_roster_consistent", "review_signal_excluded": True,
+                                    "policy_sha256": sha(policy), "roster_sha256": sha(fleet)}}).encode()
     record = projection["records"][0]
     result = {"status": "ANSWER", "scope": "wd.q4-shared-projected-events.v1", "descriptor_sha256": "7" * 64,
               "memory_sha256": sha(memory), "results": [{"ref_kind": "sha256_of_projected_metadata",
@@ -39,7 +51,7 @@ def fixture():
               "doc_id_sha256": sha(record["record_id"].encode())}]}
     data = {"policy_bytes": policy, "policy_sha256": sha(policy), "memory_bytes": memory,
             "memory_sha256": sha(memory), "projection_bytes": projection_bytes,
-            "projection_sha256": sha(projection_bytes)}
+            "projection_sha256": sha(projection_bytes), "roster_bytes": fleet, "roster_sha256": sha(fleet)}
     return data, result, record
 
 
@@ -61,11 +73,33 @@ def test_synthetic_real_resolution_only_prints_approved_metadata(monkeypatch):
     assert all(secret not in output for secret in ("private-body-sentinel", "private-query-sentinel", "private-memory-sentinel"))
 
 
-@pytest.mark.parametrize("pin", ["policy_sha256", "memory_sha256", "projection_sha256"])
+def test_replaced_roster_is_rejected_before_launcher_even_with_matching_new_caller_pin(monkeypatch):
+    data, _, _ = fixture()
+    fleet = json.loads(data["roster_bytes"])
+    fleet["lanes"][0]["agent_uuid"] = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    replacement = json.dumps(fleet).encode()
+    data.update(roster_bytes=replacement, roster_sha256=sha(replacement))
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: pytest.fail("launcher reached"))
+    code, output = run(data)
+    assert code == 2 and json.loads(output)["status"] == "REFUSED"
+
+
+def test_memory_policy_rejects_integer_one_before_launcher(monkeypatch):
+    data, _, _ = fixture()
+    memory = json.loads(data["memory_bytes"])
+    memory["policy"]["review_signal_excluded"] = 1
+    encoded = json.dumps(memory).encode()
+    data.update(memory_bytes=encoded, memory_sha256=sha(encoded))
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: pytest.fail("launcher reached"))
+    code, output = run(data)
+    assert code == 2 and json.loads(output)["status"] == "REFUSED"
+
+
+@pytest.mark.parametrize("pin", ["policy_sha256", "memory_sha256", "projection_sha256", "roster_sha256"])
 def test_wrong_pin_refuses_before_query(monkeypatch, pin):
     data, _, _ = fixture()
     data[pin] = "0" * 64
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: pytest.fail("query called"))
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: pytest.fail("query called"))
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
     assert "private-query-sentinel" not in output
@@ -81,7 +115,7 @@ def test_wrong_pin_refuses_before_query(monkeypatch, pin):
 def test_bad_policy_is_refused_even_when_its_pin_matches(monkeypatch, policy):
     data, _, _ = fixture()
     data.update(policy_bytes=policy, policy_sha256=sha(policy))
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: pytest.fail("query called"))
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: pytest.fail("query called"))
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
 
@@ -90,7 +124,7 @@ def test_bad_policy_is_refused_even_when_its_pin_matches(monkeypatch, policy):
                                   {"status": "ANSWER", "results": [{"stored_text": "x" * 100000}]}])
 def test_unexpected_or_oversized_result_never_echoes_content(monkeypatch, value):
     data, _, _ = fixture()
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: value)
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: value)
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
     assert "private-sentinel" not in output and len(output.encode()) <= child.MAX_OUTPUT
@@ -100,7 +134,7 @@ def test_valid_shape_exceeding_total_output_budget_is_refused(monkeypatch):
     data, _, _ = fixture()
     item = {"ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64, "stored_text": "x" * 320,
             "ref_kind": "sha256_of_projected_metadata", "canonical_event": False}
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: {"status": "ANSWER", "results": [item] * 100})
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: {"status": "ANSWER", "results": [item] * 100})
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
     assert len(output.encode()) <= child.MAX_OUTPUT
@@ -110,7 +144,7 @@ def test_policy_size_cap_refuses_before_query(monkeypatch):
     data, _, _ = fixture()
     data["policy_bytes"] = b"x" * (child.MAX_POLICY + 1)
     data["policy_sha256"] = sha(data["policy_bytes"])
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: pytest.fail("query called"))
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: pytest.fail("query called"))
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
 
@@ -119,7 +153,7 @@ def test_policy_size_cap_refuses_before_query(monkeypatch):
 @pytest.mark.parametrize("refused", [False, True])
 def test_short_or_failed_output_never_returns_success(monkeypatch, written, refused):
     data, _, _ = fixture()
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: {"status": "ABSTAIN", "results": []})
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: {"status": "ABSTAIN", "results": []})
     if refused:
         data["policy_sha256"] = "0" * 64
     class ShortWriter:
@@ -156,7 +190,7 @@ def test_projection_requires_explicit_task_policy_and_non_rco_agent_before_query
     data.update(policy_bytes=policy, policy_sha256=sha(policy), memory_bytes=memory, memory_sha256=sha(memory),
                 projection_bytes=projection_bytes, projection_sha256=sha(projection_bytes))
     seen = []
-    monkeypatch.setattr(q4, "query_and_resolve", lambda *_: seen.append(True) or {"status": "ABSTAIN", "results": []})
+    monkeypatch.setattr(q4, "query_and_resolve", lambda *_, **__: seen.append(True) or {"status": "ABSTAIN", "results": []})
     code, output = run(data)
     assert code == 2 and json.loads(output)["status"] == "REFUSED"
     assert seen == [] and "private-body-sentinel" not in output

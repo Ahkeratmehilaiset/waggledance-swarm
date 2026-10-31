@@ -13,9 +13,10 @@ import json
 import re
 
 from sandbox.mind.step2 import shared_projection as sp
+from sandbox.mind.step2 import shared_capture_adapter as adapter
 
 SCOPE = "wd.q4-shared-projected-events.v1"
-PROJECTION_SCHEMA = "wd.bridge-mind-shared-projection.v5"
+PROJECTION_SCHEMA = "wd.bridge-mind-shared-projection.v6"
 REF_KIND = "sha256_of_projected_metadata"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_RESULTS = 100
@@ -53,8 +54,22 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _strict_memory_policy(value, policy_sha256, roster_sha256):
+    return (type(value) is dict
+            and set(value) == {"authorship", "review_signal_excluded", "policy_sha256", "roster_sha256"}
+            and value["authorship"] == sp.AUTHORSHIP_ROSTER
+            and value["review_signal_excluded"] is True
+            and type(value["policy_sha256"]) is str
+            and type(value["roster_sha256"]) is str
+            and HEX.fullmatch(value["policy_sha256"]) is not None
+            and HEX.fullmatch(value["roster_sha256"]) is not None
+            and hmac.compare_digest(value["policy_sha256"], policy_sha256)
+            and hmac.compare_digest(value["roster_sha256"], roster_sha256))
+
+
 def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes, results, query_utc,
-                    approved_tasks=None):
+                    approved_tasks=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
+                    roster_sha256=None):
     """Return approved stored text only for exact, time-visible projected Q4 hits.
 
     Both Q4 hash fields and explicit projected/noncanonical labels must match
@@ -63,6 +78,16 @@ def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes
     clock; the caller must bind it to the actual Q4 query. Source identity and
     projection recency are not established by a hash pin.
     """
+    strict = any(value is not None for value in (policy_bytes, policy_sha256, roster_bytes, roster_sha256))
+    roster = None
+    if strict:
+        try:
+            tasks, roster = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+            if approved_tasks is not None and approved_tasks != tasks:
+                _invalid()
+            approved_tasks = tasks
+        except (ValueError, TypeError, RecursionError, UnicodeError):
+            _invalid()
     if (not isinstance(expected_memory_sha256, str) or HEX.fullmatch(expected_memory_sha256) is None
             or not isinstance(memory_manifest, bytes) or len(memory_manifest) > MAX_BYTES
             or not hmac.compare_digest(_sha(memory_manifest), expected_memory_sha256)):
@@ -73,14 +98,16 @@ def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes
             or not isinstance(manifest.get("projection_sha256"), str)
             or HEX.fullmatch(manifest["projection_sha256"]) is None
             or not isinstance(projection_bytes, bytes) or len(projection_bytes) > MAX_BYTES
-            or not hmac.compare_digest(_sha(projection_bytes), manifest["projection_sha256"])):
+            or not hmac.compare_digest(_sha(projection_bytes), manifest["projection_sha256"])
+            or (strict and not _strict_memory_policy(manifest.get("policy"), policy_sha256, roster_sha256))):
         _invalid()
     projection = _parse(projection_bytes)
     try:
         if (sp.SCHEMA != PROJECTION_SCHEMA or
                 json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes):
             _invalid()
-        sp.validate_projection(projection, approved_tasks=approved_tasks, include_refs=False)
+        sp.validate_projection(projection, approved_tasks=approved_tasks, include_refs=False,
+                               roster=roster, exclude_review_signal=strict)
         if not isinstance(query_utc, str) or sp.corpus_mod.parse_utc(query_utc) is None:
             _invalid()
     except (sp.ProjectionRefused, ValueError, TypeError, OverflowError, RecursionError, UnicodeError):

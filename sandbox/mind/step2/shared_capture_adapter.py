@@ -33,6 +33,8 @@ _DEPTH_LIMIT = 32
 _RCO = frozenset({"claude-rco-1", "claude-rco-2"})
 _RCO_NAME = re.compile(r"(?<![a-z0-9])(?:claude[-_]rco[-_]?[12]|rco[-_ ]?[12])(?![a-z0-9])", re.IGNORECASE)
 MAX_TTL_SECONDS = 900
+_POLICY_LIMIT = 65536
+_REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[12]?)(?:$|[._-])", re.IGNORECASE)
 
 
 class AdapterRefused(ValueError):
@@ -50,6 +52,43 @@ def _pairs(pairs):
             raise ValueError()
         out[key] = value
     return out
+
+
+def _strict_pairs(pairs):
+    out, seen = {}, set()
+    for key, value in pairs:
+        if key.lower() in seen:
+            raise ValueError()
+        seen.add(key.lower())
+        out[key] = value
+    return out
+
+
+def strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+    """Validate caller-anchored bytes; their origin is not authenticated here."""
+    for raw, digest, limit in ((policy_bytes, policy_sha256, _POLICY_LIMIT),
+                               (roster_bytes, roster_sha256, projection.ROSTER_BUDGET)):
+        if (type(raw) is not bytes or len(raw) > limit or not isinstance(digest, str)
+                or not _HEX.fullmatch(digest)
+                or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), digest)):
+            raise ValueError()
+    parse = lambda raw: json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs,
+                                   parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    policy = parse(policy_bytes)
+    if (type(policy) is not dict or set(policy) != {"schema", "approved_tasks"}
+            or policy["schema"] != "wd.q4-non-review-policy.v1"
+            or type(policy["approved_tasks"]) is not list
+            # Keep the producer boundary aligned with the resolved child's limit.
+            or len(policy["approved_tasks"]) > 512
+            or any(type(task) is not str or _REVIEW_TASK.search(task) for task in policy["approved_tasks"])
+            or len(set(policy["approved_tasks"])) != len(policy["approved_tasks"])):
+        raise ValueError()
+    tasks = frozenset(policy["approved_tasks"])
+    projection._approved_tasks(tasks)
+    roster = projection.roster_from_fleet(parse(roster_bytes))
+    if type(roster) is not dict or set(roster) != projection.LANES:
+        raise ValueError()
+    return tasks, roster
 
 
 def _cursor(value):
@@ -133,6 +172,14 @@ def _exclude_rco_event(event):
     return any(_unsafe_recipient(payload_fields.get(key)) for key in ("to", "recipient"))
 
 
+def _exclude_review_signal(event):
+    """Suppress review-specific event/status metadata before projection counts."""
+    fields = {key.lower(): value for key, value in event.items()}
+    kind, status = fields.get("type"), fields.get("status")
+    return any(isinstance(value, str) and value.lower() in projection.EXCLUDED_TYPES
+               for value in (kind, status))
+
+
 def _event_budget(event):
     """Bound JSON size/depth before either canonical serializer sees a row.
 
@@ -174,10 +221,19 @@ def _event_budget(event):
     return total
 
 
-def adapt_rows(rows, snapshot, approved_non_review_tasks, *, ttl_seconds):
-    """Validate supplied rows and produce an in-memory metadata-only projection."""
+def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
+               policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None):
+    """Validate rows; pins enable strict v6. The unpinned API is legacy only."""
     try:
         source = _snapshot(snapshot, ttl_seconds)
+        pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        strict = any(value is not None for value in pins) or approved_non_review_tasks is None
+        roster = None
+        if strict:
+            tasks, roster = strict_pins(*pins)
+            if approved_non_review_tasks is not None and approved_non_review_tasks != tasks:
+                raise ValueError()
+            approved_non_review_tasks = tasks
         if type(approved_non_review_tasks) is not frozenset:
             raise ValueError()
         # Enforce the shared projection's own task-shape/marker rules.
@@ -201,11 +257,16 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks, *, ttl_seconds):
             if row["ref"] in seen:
                 continue
             seen.add(row["ref"])
-            if _exclude_rco_event(event) or event.get("task_id") not in approved_non_review_tasks:
+            if (_exclude_rco_event(event) or event.get("task_id") not in approved_non_review_tasks
+                    or (strict and _exclude_review_signal(event))
+                    or (strict and (event.get("agent") not in roster
+                                    or event.get("agent_uuid") != roster.get(event.get("agent"))))):
                 continue
             events.append(event)
-        value = projection.project_events(events, approved_tasks=approved_non_review_tasks, include_refs=False)
-        projection.validate_projection(value, approved_tasks=approved_non_review_tasks, include_refs=False)
+        value = projection.project_events(events, approved_tasks=approved_non_review_tasks, include_refs=False,
+                                          roster=roster, exclude_review_signal=strict)
+        projection.validate_projection(value, approved_tasks=approved_non_review_tasks, include_refs=False,
+                                       roster=roster, exclude_review_signal=strict)
         return {"projection": value, "source": source}
     except Exception:
         raise AdapterRefused("capture_refused") from None

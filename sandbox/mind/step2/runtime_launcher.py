@@ -28,6 +28,8 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
+import tempfile
 import threading
 import time
 
@@ -47,6 +49,16 @@ _PATHS = ("runtime-root", "runtime-manifest", "memory", "descriptor", "lock-file
 _MAX_QUERY = 65536
 _MAX_OUTPUT = 262144
 _SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
+_BOOTSTRAP_REFUSALS = frozenset({"isolation_required", "runtime_verification_failed", "reader_execution_failed"})
+_READER_REFUSALS = frozenset({
+    "stdin_unreadable", "stdin_over_budget", "stdin_not_json", "query_shape", "situation_invalid", "time_invalid",
+    "descriptor_pin_invalid", "descriptor_over_budget", "descriptor_pin_mismatch", "descriptor_unreadable",
+    "descriptor_scope_mismatch", "descriptor_shape", "memory_descriptor_mismatch", "memory_descriptor_unreadable",
+    "memory_unreadable", "memory_descriptor_changed", "memory_dim_mismatch", "memory_no_healthy_cell",
+    "encoder_identity_mismatch", "memory_scope_mismatch", "encoder_runtime_unavailable", "encoder_runtime_mismatch",
+    "q4_result_shape", "runtime_revision_mismatch", "encoder_load_failed", "q4_execution_failed", "output_guarded",
+    "reader_lock_invalid", "reader_busy", "reader_lock_unavailable", "runtime_unavailable",
+})
 _TRAMPOLINE = ("import sys,runpy; "
                "assert sys.stdin.buffer.read(1)==b'\\0'; "
                "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')")
@@ -77,6 +89,53 @@ def _matches(path, expected):
     except OSError:
         return False
     return digest.hexdigest() == expected
+
+
+def _scratch_dir(root, protected):
+    """Create one unshared local scratch directory, without deleting anything.
+
+    Caller authorizes the root; fixed drive/reparse checks do not authenticate
+    ACLs and cannot prevent same-user replacement or filesystem TOCTOU.
+    """
+    if root is None:
+        raise LaunchRefused("scratch_required")
+    try:
+        if os.name != "nt":
+            raise ValueError()
+        path = _path(root)
+        if any(part in (".", "..") or part.endswith((" ", ".")) for part in path.parts[1:]):
+            raise ValueError()
+        drive_type = ctypes.WinDLL("kernel32", use_last_error=True).GetDriveTypeW
+        drive_type.argtypes = (wintypes.LPCWSTR,)
+        drive_type.restype = wintypes.UINT
+        if drive_type(path.anchor) != 3:  # DRIVE_FIXED
+            raise ValueError()
+        current = path
+        while True:
+            info = os.lstat(current)
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or (
+                    getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise ValueError()
+            if current.parent == current:
+                break
+            current = current.parent
+        scratch = os.path.normcase(os.path.realpath(str(path)))
+        for target in protected:
+            other = os.path.normcase(os.path.realpath(str(target)))
+            try:
+                common = os.path.commonpath((scratch, other))
+            except ValueError:  # Different drives cannot overlap lexically.
+                continue
+            if common in (scratch, other):
+                raise ValueError()
+        child = Path(tempfile.mkdtemp(prefix="wd-q4-", dir=str(path)))
+        info = os.lstat(child)
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or (
+                getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise ValueError()
+        return child
+    except (OSError, TypeError, ValueError, LaunchRefused):
+        raise LaunchRefused("scratch_refused") from None
 
 
 class _BasicLimit(ctypes.Structure):
@@ -155,9 +214,10 @@ def _validate_output(raw, exit_code, expected_descriptor):
         if reason is not None and (not isinstance(reason, str) or not _REASON.fullmatch(reason)):
             raise ValueError()
         if data.get("schema") == "wd.q4-runtime-bootstrap.v1":
-            if status != "REFUSED" or exit_code != 2 or set(data) != {"schema", "status", "reason"}:
+            if (status != "REFUSED" or exit_code != 2 or set(data) != {"schema", "status", "reason"}
+                    or reason not in _BOOTSTRAP_REFUSALS):
                 raise ValueError()
-            return {"schema": "wd.q4-runtime-bootstrap.v1", "status": "REFUSED", "reason": "runtime_refused"}
+            return {"schema": "wd.q4-runtime-bootstrap.v1", "status": "REFUSED", "reason": reason}
         # Import failures happen before the reader defines IDENTITY.  Recognize
         # only its exact fixed refusal, never a successful or caller-bound result.
         if (data.get("schema") == "wd.bridge-mind-q4-private-read.v1" and status == "REFUSED"
@@ -175,8 +235,9 @@ def _validate_output(raw, exit_code, expected_descriptor):
         out = {"schema": "wd.bridge-mind-q4-private-read.v1", "identity": "caller_declared_not_authenticated",
                "status": status, "reason": "reader_refused" if status == "REFUSED" else None, "results": []}
         if status == "REFUSED":
-            if results:
+            if results or reason not in _READER_REFUSALS:
                 raise ValueError()
+            out["reason"] = reason
             return out
         binding = data.get("binding")
         if not isinstance(binding, dict) or binding.get("descriptor_sha256") != expected_descriptor:
@@ -229,8 +290,10 @@ def _validate_output(raw, exit_code, expected_descriptor):
 
 
 def launch(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256, verifier_sha256,
-           tuple_args, query, timeout):
+           tuple_args, query, timeout, scratch_root=None):
     """Return only validated, reduced Q4 JSON; emit no raw stderr or traceback."""
+    if scratch_root is None:
+        raise LaunchRefused("scratch_required")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800:
         raise LaunchRefused("invalid_timeout")
     if not isinstance(query, bytes) or len(query) > _MAX_QUERY:
@@ -254,6 +317,8 @@ def launch(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256, veri
     if not (_matches(interpreter, interpreter_sha256) and _matches(bootstrap, bootstrap_sha256)
             and _matches(bootstrap.with_name("runtime_manifest.py"), verifier_sha256)):
         raise LaunchRefused("trust_pin_mismatch")
+    scratch = _scratch_dir(scratch_root, [bootstrap.parent, interpreter.parent] +
+                           [_path(tuple_args[key]) for key in _PATHS])
     args = [str(interpreter), "-I", "-S", "-B", "-c", _TRAMPOLINE, str(bootstrap)]
     for key in _KEYS:
         args.extend(("--" + key, tuple_args[key]))
@@ -263,6 +328,7 @@ def launch(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256, veri
     try:
         # Only OS location variables are passed; no PYTHON*, HF*, or caller secrets.
         env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+        env.update(TEMP=str(scratch), TMP=str(scratch))
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                    cwd=str(bootstrap.parent), env=env, creationflags=subprocess.CREATE_NO_WINDOW)
         job.attach(process)

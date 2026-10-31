@@ -10,8 +10,12 @@ proof of currentness after the snapshot; no pagination is implemented.
 
 import base64
 import datetime as dt
+import hashlib
+import hmac
 import json
-from dataclasses import asdict
+import os
+import re
+from dataclasses import asdict, dataclass, field
 
 from sandbox.mind import mind_capture_producer as producer
 from sandbox.mind.step2 import shared_capture_adapter as adapter
@@ -20,6 +24,8 @@ from waggledance.core.bridge_log_reader import BridgeCursor, BridgeReadStatus, r
 
 MAX_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 10000
+_ANCHOR_MAX_BYTES = 16384
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class SnapshotRefused(ValueError):
@@ -32,9 +38,25 @@ def _token(cursor):
     return "bc1." + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def read_shared_delta(path, cursor, approved_non_review_tasks, *, max_bytes, max_rows, generation_path=None):
-    """Return projection, caller-asserted source metadata and an uncommitted candidate cursor."""
+def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes, max_rows, generation_path=None,
+                      policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
+                      _commitment_anchor=None):
+    """Return an uncommitted delta; unpinned positional-policy calls are legacy only."""
     try:
+        pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        strict = any(value is not None for value in pins) or approved_non_review_tasks is None
+        if strict:
+            tasks, _ = adapter.strict_pins(*pins)
+            if approved_non_review_tasks is not None and approved_non_review_tasks != tasks:
+                raise ValueError()
+            approved_non_review_tasks = tasks
+        if _commitment_anchor is not None:
+            if (not strict or not isinstance(_commitment_anchor, str)
+                    or _SHA256.fullmatch(_commitment_anchor) is None):
+                raise ValueError()
+            chain = _semantic_start(cursor, _commitment_anchor, policy_sha256, roster_sha256)
+        else:
+            chain = None
         if (type(cursor) is not BridgeCursor or type(cursor.offset) is not int or cursor.offset < 0
                 or type(max_bytes) is not int or not 1 <= max_bytes <= MAX_BYTES
                 or type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS
@@ -59,19 +81,174 @@ def read_shared_delta(path, cursor, approved_non_review_tasks, *, max_bytes, max
                 or (result.status == BridgeReadStatus.OK and (not result.rows or result.bytes_consumed == 0))):
             raise ValueError()
         rows, budget = [], 0
-        for event in result.rows:
+        for index, event in enumerate(result.rows):
             budget += adapter._event_budget(event)
             if budget > adapter._BATCH_LIMIT:
                 raise ValueError()
-            rows.append({"event": event, "ref": event_id(event), "row_sha256": producer.row_digest(event),
+            ref = event_id(event)
+            if chain is not None:
+                chain = _semantic_row(chain, index, ref)
+            rows.append({"event": event, "ref": ref, "row_sha256": producer.row_digest(event),
                          "source": "detail"})
         snap = {"file_identity": cursor.file_identity, "cursor_start": _token(cursor),
                 "cursor_end": _token(candidate), "generation": cursor.generation,
                 "snapshot_length": result.snapshot_length, "position": candidate.offset,
                 "unconsumed_bytes": result.snapshot_length - candidate.offset, "observed_utc": observed}
-        value = adapter.adapt_rows(rows, snap, approved_non_review_tasks, ttl_seconds=900)
+        kwargs = (dict(policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                       roster_bytes=roster_bytes, roster_sha256=roster_sha256) if strict else {})
+        value = adapter.adapt_rows(rows, snap, approved_non_review_tasks, ttl_seconds=900, **kwargs)
         value["source"]["coverage"] = "delta_only_not_complete_history"
         value["candidate_cursor"] = candidate
+        if chain is not None:
+            value["_semantic_state"] = (chain, len(result.rows))
         return value
+    except Exception:
+        raise SnapshotRefused("snapshot_refused") from None
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      allow_nan=False).encode("ascii")
+
+
+def _frame(value):
+    return len(value).to_bytes(8, "big") + value
+
+
+def _semantic_start(cursor, anchor_sha256, policy_sha256, roster_sha256):
+    if type(cursor) is not BridgeCursor:
+        raise ValueError()
+    fields = (_canonical(asdict(cursor)), bytes.fromhex(anchor_sha256),
+              bytes.fromhex(policy_sha256), bytes.fromhex(roster_sha256))
+    return hashlib.sha256(b"wd.q4.semantic-delta.start.v1\x00" + b"".join(_frame(x) for x in fields)).digest()
+
+
+def _semantic_row(chain, index, ref):
+    return hashlib.sha256(b"wd.q4.semantic-delta.row.v1\x00" + _frame(chain)
+                          + index.to_bytes(8, "big") + _frame(bytes.fromhex(ref))).digest()
+
+
+def _semantic_end(chain, row_count, cursor, projection_bytes):
+    parts = (chain, row_count.to_bytes(8, "big"), _canonical(asdict(cursor)),
+             hashlib.sha256(projection_bytes).digest())
+    return hashlib.sha256(b"wd.q4.semantic-delta.end.v1\x00" + b"".join(_frame(x) for x in parts)).hexdigest()
+
+
+def _unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError()
+        result[key] = value
+    return result
+
+
+def _absolute_path(value):
+    value = os.fspath(value)
+    if not isinstance(value, str) or not os.path.isabs(value):
+        raise ValueError()
+    return os.path.normcase(os.path.normpath(value))
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionBinding:
+    """Accidental-mixup guard, not a capability or an authenticity proof."""
+    projection: bytes
+    source: bytes
+    candidate: BridgeCursor
+    anchor_sha256: str
+    policy_sha256: str
+    roster_sha256: str
+    row_commitment: bytes = field(repr=False)
+    row_count: int = field(repr=False)
+    semantic_commitment: str = field(repr=False)
+
+
+def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
+                        generation_path, max_bytes, max_rows,
+                        policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+    """Read using an externally authenticated anchor and retain a delta binding.
+
+    The caller must independently authenticate anchor_bytes and its expected
+    digest, source path, producer, policy and starting cursor. A matching hash
+    is integrity checking only. This does not prevent same-user replacement,
+    same-file log rewrites or filesystem TOCTOU; it neither publishes nor
+    binds the resulting projection and cursor to an atomic index checkpoint.
+    The in-memory semantic commitment includes all parsed rows in order before
+    filtering, including duplicates; it is not a hash of original JSONL bytes
+    and does not prove origin or correct computation by an untrusted caller.
+    Do not publish it: it can expose guesses about filtered private rows.
+    """
+    try:
+        if (type(anchor_bytes) is not bytes or len(anchor_bytes) > _ANCHOR_MAX_BYTES
+                or not isinstance(anchor_sha256, str) or _SHA256.fullmatch(anchor_sha256) is None
+                or not hmac.compare_digest(hashlib.sha256(anchor_bytes).hexdigest(), anchor_sha256)
+                or type(cursor) is not BridgeCursor or cursor.generation is None
+                or type(tasks) is not frozenset or generation_path is None):
+            raise ValueError()
+        parsed_tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if tasks != parsed_tasks:
+            raise ValueError()
+        anchor = json.loads(anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if (type(anchor) is not dict
+                or set(anchor) != {"schema", "source_path", "generation_path", "cursor_start", "policy_sha256",
+                                   "roster_sha256"}
+                or anchor["schema"] != "wd.q4-source-anchor.v1"
+                or _absolute_path(anchor["source_path"]) != _absolute_path(path)
+                or _absolute_path(anchor["generation_path"]) != _absolute_path(generation_path)
+                or type(anchor["cursor_start"]) is not dict
+                or _canonical(anchor["cursor_start"]) != _canonical(asdict(cursor))
+                or not isinstance(anchor["policy_sha256"], str)
+                or not hmac.compare_digest(anchor["policy_sha256"], policy_sha256)
+                or not isinstance(anchor["roster_sha256"], str)
+                or not hmac.compare_digest(anchor["roster_sha256"], roster_sha256)):
+            raise ValueError()
+        result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
+                                   generation_path=generation_path, policy_bytes=policy_bytes,
+                                   policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+                                   roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256)
+        chain, count = result.pop("_semantic_state")
+        projection_data = _canonical(result["projection"])
+        commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)
+        result["_projection_binding"] = _ProjectionBinding(
+            projection_data, _canonical(result["source"]), result["candidate_cursor"],
+            anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment)
+        return result
+    except Exception:
+        raise SnapshotRefused("snapshot_refused") from None
+
+
+def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_sha256,
+                               expected_policy_sha256, expected_roster_sha256):
+    """Reject accidental snapshot/projection splicing in this process only.
+
+    Binding objects and their caller are not authenticated. In particular this
+    method does not establish that a producer or filesystem is trustworthy.
+    """
+    try:
+        if type(snapshot_result) is not dict:
+            raise ValueError()
+        binding = snapshot_result.get("_projection_binding")
+        if (type(binding) is not _ProjectionBinding or type(projection) is not dict
+                or any(not isinstance(value, str) or _SHA256.fullmatch(value) is None
+                       for value in (expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256))
+                or not hmac.compare_digest(binding.anchor_sha256, expected_anchor_sha256)
+                or not hmac.compare_digest(binding.policy_sha256, expected_policy_sha256)
+                or not hmac.compare_digest(binding.roster_sha256, expected_roster_sha256)
+                or type(binding.row_commitment) is not bytes or len(binding.row_commitment) != 32
+                or type(binding.row_count) is not int or not 0 <= binding.row_count <= MAX_ROWS
+                or not isinstance(binding.semantic_commitment, str)
+                or _SHA256.fullmatch(binding.semantic_commitment) is None
+                or not hmac.compare_digest(binding.semantic_commitment,
+                         _semantic_end(binding.row_commitment, binding.row_count,
+                                       binding.candidate, binding.projection))
+                or type(snapshot_result.get("candidate_cursor")) is not BridgeCursor
+                or snapshot_result["candidate_cursor"] != binding.candidate
+                or _canonical(snapshot_result.get("source")) != binding.source
+                or _canonical(snapshot_result.get("projection")) != binding.projection
+                or _canonical(projection) != binding.projection):
+            raise ValueError()
+        return True
     except Exception:
         raise SnapshotRefused("snapshot_refused") from None

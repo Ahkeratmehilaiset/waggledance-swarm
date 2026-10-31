@@ -36,7 +36,10 @@ def powershell(script):
 
 
 def enabled(tmp_path):
+    scratch = tmp_path / "synthetic-scratch"
+    scratch.mkdir(exist_ok=True)
     return {
+        "scratch_root": str(scratch),
         "schema": "wd.q4-read-config.v1", "enabled": True,
         "memory_root": str(tmp_path / "synthetic-memory"),
         "runtime_root": str(tmp_path / "synthetic-runtime"),
@@ -99,12 +102,13 @@ def test_enabled_returns_only_pinned_configuration_not_connection_proof(tmp_path
     assert out["WD_Q4_PYTHON_SHA256"] == cfg["python_sha256"]
     assert out["WD_Q4_CODE_COMMIT"] == cfg["code_commit"]
     assert out["WD_Q4_LOCK_FILE"] == cfg["lock_file"] and out["WD_Q4_LOCK_TIMEOUT"] == "0.25"
-    assert len(out) == 18 and all(k.startswith("WD_Q4_") for k in out)
+    assert out["WD_Q4_SCRATCH_ROOT"] == cfg["scratch_root"]
+    assert len(out) == 19 and all(k.startswith("WD_Q4_") for k in out)
     assert not any("CONNECTED" in k or "QUERY" in k for k in out)
 
 
 REQUIRED = [
-    "schema", "memory_root", "runtime_root", "runtime_generation", "runtime_revision", "descriptor_path", "descriptor_sha256", "python_path", "python_sha256",
+    "schema", "memory_root", "runtime_root", "scratch_root", "runtime_generation", "runtime_revision", "descriptor_path", "descriptor_sha256", "python_path", "python_sha256",
     "runtime_manifest_path", "runtime_manifest_sha256", "code_manifest_path", "code_manifest_sha256",
     "code_commit", "lock_file", "lock_timeout_seconds",
 ]

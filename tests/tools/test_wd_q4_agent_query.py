@@ -6,6 +6,8 @@ import hashlib
 import datetime as dt
 from dataclasses import replace
 
+import pytest
+
 from tools import wd_q4_agent_query as cli
 
 
@@ -69,7 +71,7 @@ def _config():
         runtime_generation="5" * 40, runtime_revision="6" * 40,
         memory=r"C:\synthetic\memory", descriptor=r"C:\synthetic\descriptor.json",
         descriptor_sha256="7" * 64, lock_file=r"C:\synthetic\q4.lock",
-        lock_timeout="2", timeout=30,
+        lock_timeout="2", timeout=30, scratch_root=r"C:\synthetic-scratch",
     )
 
 
@@ -95,6 +97,19 @@ def test_typed_binding_invokes_launcher_with_query_on_stdin_only(monkeypatch, ca
     assert result["results"][0]["ref_sha256"] == "9" * 64
     assert "synthetic-query-sensitive" not in repr(result)
     assert capsys.readouterr() == ("", "")
+
+
+def test_explicit_scratch_root_is_forwarded_and_missing_refuses_before_input(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    seen = {}
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **kwargs: seen.update(kwargs) or _answer())
+    config = replace(_config(), scratch_root=r"C:\synthetic-scratch")
+    cli.query_with_verified_config(config, io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
+    assert seen["scratch_root"] == r"C:\synthetic-scratch"
+    seen.clear()
+    with pytest.raises(cli.QueryRefused):
+        cli.query_with_verified_config(replace(config, scratch_root=""), Unreadable())
+    assert seen == {}
 
 
 def test_invalid_binding_or_query_never_calls_launcher(monkeypatch):
@@ -155,6 +170,20 @@ def test_refusal_is_sanitized_and_abstain_keeps_scope(monkeypatch):
     answer.update(status="ABSTAIN", results=[])
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: answer)
     assert cli.query_with_verified_config(_config(), io.BytesIO(raw))["status"] == "ABSTAIN"
+
+
+def test_known_refusal_is_preserved_but_unknown_never_echoed(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    raw = b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "reason": "reader_busy"})
+    output = io.StringIO()
+    assert cli.run_verified(_config(), io.BytesIO(raw), output) == 2
+    assert json.loads(output.getvalue())["reason"] == "reader_busy"
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "reason": "private-fake-reason"})
+    output = io.StringIO()
+    assert cli.run_verified(_config(), io.BytesIO(raw), output) == 2
+    assert json.loads(output.getvalue())["reason"] == "runtime_refused"
+    assert "private-fake-reason" not in output.getvalue()
 
 
 def test_run_verified_prints_only_bounded_safe_projection(monkeypatch):
@@ -240,33 +269,68 @@ def test_run_verified_keeps_provenance_from_launcher(monkeypatch):
     assert "synthetic-query" not in output.getvalue()
 
 
+def test_run_verified_short_write_is_not_success(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: _answer())
+    class ShortWriter:
+        def write(self, text):
+            return len(text) - 1
+    raw = b'{"situation":"synthetic-query","time":"2026-10-31T12:00:00Z"}'
+    assert cli.run_verified(_config(), io.BytesIO(raw), ShortWriter()) == 2
+
+
 def _resolution_fixture():
     from sandbox.mind.step2 import shared_projection as sp
+    roster = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+    fleet = json.dumps({"lanes": [{"agent": name, "agent_uuid": uid} for name, uid in roster.items()
+                                   if name != "codex-tools-1"],
+                        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}}).encode()
+    policy = json.dumps({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": ["synthetic-task"]}).encode()
+    pins = {"policy_bytes": policy, "policy_sha256": hashlib.sha256(policy).hexdigest(),
+            "roster_bytes": fleet, "roster_sha256": hashlib.sha256(fleet).hexdigest()}
     event = {"ts_utc": "2026-10-31T12:00:30Z", "agent": "codex-lead-1", "type": "message",
-             "status": "done", "task_id": "synthetic-task", "message": "do-not-expose"}
+             "status": "done", "task_id": "synthetic-task", "agent_uuid": roster["codex-lead-1"],
+             "message": "do-not-expose"}
     tasks = frozenset({"synthetic-task"})
-    projection = sp.project_events([event], approved_tasks=tasks)
+    projection = sp.project_events([event], approved_tasks=tasks, roster=roster, exclude_review_signal=True)
     data = json.dumps(projection, sort_keys=True, indent=1).encode()
     memory = json.dumps({"scope": "wd.q4-shared-projected-events.v1", "projection_schema": sp.SCHEMA,
-                         "projection_sha256": hashlib.sha256(data).hexdigest()}, sort_keys=True).encode()
+                         "projection_sha256": hashlib.sha256(data).hexdigest(),
+                         "policy": {"authorship": "declared_roster_consistent", "review_signal_excluded": True,
+                                    "policy_sha256": pins["policy_sha256"],
+                                    "roster_sha256": pins["roster_sha256"]}}, sort_keys=True).encode()
+    pins["expected_memory_sha256"] = hashlib.sha256(memory).hexdigest()
     record = projection["records"][0]
     result = _answer()
     result["memory_sha256"] = hashlib.sha256(memory).hexdigest()
     result["results"][0]["ref_sha256"] = hashlib.sha256(record["provenance"]["event_ref"].encode()).hexdigest()
     result["results"][0]["doc_id_sha256"] = hashlib.sha256(record["record_id"].encode()).hexdigest()
-    return data, memory, tasks, record, result
+    return data, memory, tasks, record, result, pins
+
+
+def test_query_and_resolve_requires_all_pins_before_reading_or_launching(monkeypatch):
+    data, memory, tasks, _, _, _ = _resolution_fixture()
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher reached"))
+    stream = io.BytesIO(b'{"situation":"synthetic","time":"2026-10-31T12:02:00Z"}')
+    with pytest.raises(cli.QueryRefused, match="resolution_refused"):
+        cli.query_and_resolve(_config(), stream, memory, data, tasks)
+    assert stream.tell() == 0
 
 
 def test_query_and_resolve_binds_same_input_and_returns_only_projected_text(monkeypatch):
     monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
-    data, memory, tasks, record, result = _resolution_fixture()
+    data, memory, tasks, record, result, pins = _resolution_fixture()
     seen = []
     def launcher(**kwargs):
         seen.append(kwargs["query"])
         return result
     monkeypatch.setattr(cli, "_invoke_launcher", launcher)
     raw = b'{"situation":"sensitive query","time":"2026-10-31T12:02:00Z"}'
-    got = cli.query_and_resolve(_config(), io.BytesIO(raw), memory, data, tasks)
+    got = cli.query_and_resolve(_config(), io.BytesIO(raw), memory, data, tasks, **pins)
     assert seen == [raw]
     assert got["status"] == "ANSWER" and got["results"][0]["stored_text"] == record["stored_text"]
     assert got["results"][0]["canonical_event"] is False
@@ -275,7 +339,7 @@ def test_query_and_resolve_binds_same_input_and_returns_only_projected_text(monk
 
 def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
     monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
-    data, memory, tasks, record, result = _resolution_fixture()
+    data, memory, tasks, record, result, pins = _resolution_fixture()
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: result)
     late = b'{"situation":"sensitive","time":"2026-10-31T12:02:00Z"}'
     early = b'{"situation":"sensitive","time":"2026-10-31T12:00:45Z"}'
@@ -284,7 +348,7 @@ def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
                                        (late, memory + b" ", data, tasks), (late, memory, data + b" ", tasks),
                                        (late, memory, data, frozenset()), (late, memory, data, None)]:
         try:
-            cli.query_and_resolve(_config(), io.BytesIO(query), mem, proj, approved)
+            cli.query_and_resolve(_config(), io.BytesIO(query), mem, proj, approved, **pins)
         except cli.QueryRefused as exc:
             assert str(exc) == "resolution_refused" and "sensitive" not in str(exc)
         else:
@@ -293,11 +357,11 @@ def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
 
 def test_query_and_resolve_refuses_runtime_refused(monkeypatch):
     monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
-    data, memory, tasks, _, _ = _resolution_fixture()
+    data, memory, tasks, _, _, pins = _resolution_fixture()
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "results": []})
     try:
         cli.query_and_resolve(_config(), io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:02:00Z"}'),
-                              memory, data, tasks)
+                              memory, data, tasks, **pins)
     except cli.QueryRefused as exc:
         assert str(exc) == "resolution_refused"
     else:
@@ -306,7 +370,7 @@ def test_query_and_resolve_refuses_runtime_refused(monkeypatch):
 
 def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descriptor(monkeypatch):
     monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
-    data, memory, tasks, _, result = _resolution_fixture()
+    data, memory, tasks, _, result, pins = _resolution_fixture()
     class Counted(io.BytesIO):
         reads = 0
         def read(self, *args):
@@ -316,7 +380,7 @@ def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descrip
     monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: result)
     stream = Counted(b'{"situation":"s","time":"2026-10-31T12:02:00Z"}')
     try:
-        cli.query_and_resolve(_config(), stream, memory, data, tasks)
+        cli.query_and_resolve(_config(), stream, memory, data, tasks, **pins)
     except cli.QueryRefused as exc:
         assert str(exc) == "resolution_refused"
     else:
@@ -325,7 +389,7 @@ def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descrip
 
 
 def test_query_and_resolve_rejects_future_before_launcher_and_allows_now_and_past(monkeypatch):
-    data, memory, tasks, _, result = _resolution_fixture()
+    data, memory, tasks, _, result, pins = _resolution_fixture()
     now = dt.datetime(2026, 10, 31, 12, 2, tzinfo=dt.timezone.utc)
     monkeypatch.setattr(cli, "_utc_now", lambda: now, raising=False)
     seen = []
@@ -336,14 +400,14 @@ def test_query_and_resolve_rejects_future_before_launcher_and_allows_now_and_pas
     def query_at(when):
         return io.BytesIO(json.dumps({"situation": "synthetic", "time": when}).encode())
     try:
-        cli.query_and_resolve(_config(), query_at("2026-10-31T12:02:00.000001Z"), memory, data, tasks)
+        cli.query_and_resolve(_config(), query_at("2026-10-31T12:02:00.000001Z"), memory, data, tasks, **pins)
     except cli.QueryRefused as exc:
         assert str(exc) == "resolution_refused"
     else:
         raise AssertionError("future timestamp accepted")
     assert seen == []
     for when in ("2026-10-31T12:02:00Z", "2026-10-31T12:01:59.999999Z"):
-        assert cli.query_and_resolve(_config(), query_at(when), memory, data, tasks)["status"] == "ANSWER"
+        assert cli.query_and_resolve(_config(), query_at(when), memory, data, tasks, **pins)["status"] == "ANSWER"
     assert len(seen) == 2
 
 

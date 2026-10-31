@@ -94,7 +94,10 @@ def bundle(tmp_path):
     descriptor.write_bytes(b"synthetic descriptor; not executed")
     memory = tmp_path / "memory"
     memory.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
     cfg = {
+        "scratch_root": str(scratch),
         "schema": "wd.q4-read-config.v1", "enabled": True, "code_commit": COMMIT,
         "memory_root": str(memory), "runtime_root": str(runtime),
         "runtime_generation": "b" * 40, "runtime_revision": "c" * 64,
@@ -395,3 +398,358 @@ function Invoke-WdQ4QueryTransport {
     script += "$s=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{}'))\n"
     script += "Invoke-WdQ4Query -InputStream $s|ConvertTo-Json -Depth 8 -Compress"
     assert run_ps(host, script)["status"] == "REFUSED"
+
+
+# v2: resolved interface remains caller-pinned, synthetic and default off.
+def add_resolved_fixture(bundle, *, task="synthetic-task", approved=("synthetic-task",)):
+    from sandbox.mind.step2 import shared_projection as sp
+    roster = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddD".lower(),
+              "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+    event = {"ts_utc": "2026-10-31T12:00:10Z", "agent": "codex-lead-1",
+             "agent_uuid": roster["codex-lead-1"],
+             "type": "message", "status": "done", "task_id": task,
+             "message": "raw-private-payload-sentinel"}
+    projection = sp.project_events([event], approved_tasks=frozenset(approved),
+                                   roster=roster, exclude_review_signal=True)
+    projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode()
+    roster_doc = {"schema": "wd.q4-roster-snapshot.v1", "lanes": [{"agent": agent, "agent_uuid": uid} for agent, uid in roster.items()
+                            if agent != "codex-tools-1"],
+                  "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}}
+    roster_bytes = json.dumps(roster_doc).encode()
+    policy = json.dumps({"schema": "wd.q4-non-review-policy.v1",
+                         "approved_tasks": list(approved)}).encode()
+    memory = json.dumps({"scope": "wd.q4-shared-projected-events.v1",
+                         "projection_schema": sp.SCHEMA,
+                         "projection_sha256": digest(projection_bytes),
+                         "policy": {"authorship": "declared_roster_consistent",
+                                    "review_signal_excluded": True,
+                                    "policy_sha256": digest(policy),
+                                    "roster_sha256": digest(roster_bytes)}}).encode()
+    spec = {"schema": "wd.q4-resolved-inputs.v1"}
+    artifacts = {}
+    for name, data in (("memory", memory), ("projection", projection_bytes), ("policy", policy), ("roster", roster_bytes)):
+        path = bundle["root"].parent / (name + ".json")
+        path.write_bytes(data)
+        spec[name + "_path"] = str(path)
+        spec[name + "_sha256"] = digest(data)
+        artifacts[name] = data
+    bundle["config"]["resolved_inputs"] = spec
+    definition = json.loads((bundle["root"] / "bridge-code-files.json").read_bytes())
+    relative = "tools/wd_q4_resolved_child.py"
+    definition["python_files"].append(relative)
+    bundle["put"]("tools-bootstrap/" + relative, b"# synthetic; not executed\n")
+    bundle["put"]("bridge-code-files.json", json.dumps(definition).encode())
+    bundle["config"]["code_manifest_sha256"] = bundle["files"]["bridge-code-files.json"]
+    fleet = {"q4_read": bundle["config"], **roster_doc}
+    bundle["put"]("wd-fleet.json", json.dumps(fleet).encode())
+    bundle["seal"]()
+    return spec, artifacts, projection
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_resolved_artifacts_derive_only_from_anchored_fleet(bundle, host):
+    spec, artifacts, _ = add_resolved_fixture(bundle)
+    script = "$p=" + plan_call(bundle) + "\n"
+    script += r"""
+$v=@{resolved=($null -ne $p.ResolvedInputs);pins=$p.ResolvedPins;
+ counts=@($p.ResolvedInputs.memory.Length,$p.ResolvedInputs.projection.Length,$p.ResolvedInputs.policy.Length,$p.ResolvedInputs.roster.Length)}
+$v|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = run_ps(host, script)
+    assert result["resolved"] is True
+    assert result["pins"] == {name + "_sha256": digest(artifacts[name])
+                              for name in ("memory", "projection", "policy", "roster")}
+    assert result["counts"] == [len(artifacts[name]) for name in ("memory", "projection", "policy", "roster")]
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("name", ["memory", "projection", "policy", "roster"])
+def test_each_resolved_byte_pin_refuses_before_query(bundle, host, name):
+    spec, _, _ = add_resolved_fixture(bundle)
+    with Path(spec[name + "_path"]).open("ab") as out:
+        out.write(b"mutation")
+    script = "function Read-WdQ4QueryBytes {throw 'query_was_read'}\n"
+    script += "$v=try{$p=" + plan_call(bundle) + ";@{ok=$true}}catch{@{ok=$false}}\n"
+    script += "$v|ConvertTo-Json -Compress"
+    assert run_ps(host, script)["ok"] is False
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("change", [
+    {"schema": "unknown"}, {"policy_sha256": ["0" * 64]},
+    {"memory_path": r"..\private-memory"}, {"extra": "private-payload-sentinel"},
+])
+def test_resolved_configuration_is_closed_not_a_discovery_route(bundle, host, change):
+    spec, _, _ = add_resolved_fixture(bundle)
+    spec.update(change)
+    bundle["put"]("wd-fleet.json", json.dumps({"q4_read": bundle["config"]}).encode())
+    bundle["seal"]()
+    script = "$v=try{$p=" + plan_call(bundle) + ";@{ok=$true}}catch{@{ok=$false}}\n"
+    script += "$v|ConvertTo-Json -Compress"
+    assert run_ps(host, script)["ok"] is False
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("caller", [
+    "codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5",
+])
+def test_five_simulated_callers_share_tuple_without_identity_claim(bundle, host, caller):
+    spec, _, _ = add_resolved_fixture(bundle)
+    script = "$script:caller=" + quote(caller) + "\n$p=" + plan_call(bundle) + "\n"
+    script += r"""
+$v=[pscustomobject]@{schema='wd.q4-resolved-child.v1';status='ANSWER';results=@(
+ [pscustomobject]@{ref_sha256=('9'*64);doc_id_sha256=('a'*64);
+ stored_text='message done codex-lead-1 synthetic-task';
+ ref_kind='sha256_of_projected_metadata';canonical_event=$false})}
+ConvertFrom-WdQ4ResolvedResult -Result $v -Plan $p|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = run_ps(host, script)
+    assert result["status"] == "ANSWER"
+    assert result["content_mode"] == "sanitized_projected_metadata"
+    assert result["memory_sha256"] == spec["memory_sha256"]
+    assert result["policy_sha256"] == spec["policy_sha256"]
+    assert result["projection_sha256"] == spec["projection_sha256"]
+    assert "caller" not in result and "agent_uuid" not in result
+    assert result["results"][0]["stored_text"] == "message done codex-lead-1 synthetic-task"
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("change", [
+    {"schema": "unknown"}, {"status": ["ANSWER"]}, {"extra": "raw-private-payload-sentinel"},
+    {"results": None}, {"status": "ANSWER", "results": []},
+    {"results": [{"stored_text": "raw-private-payload-sentinel"}]},
+])
+def test_resolved_outer_boundary_refuses_unknown_shape_without_echo(bundle, host, change):
+    add_resolved_fixture(bundle)
+    encoded = base64.b64encode(json.dumps(change).encode()).decode()
+    script = "$p=" + plan_call(bundle) + "\n"
+    script += "$mutation=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(" + quote(encoded) + "))|ConvertFrom-Json\n"
+    script += r"""
+$v=[ordered]@{schema='wd.q4-resolved-child.v1';status='ABSTAIN';results=@()}
+foreach($prop in $mutation.PSObject.Properties){$v[$prop.Name]=$prop.Value}
+$r=try{ConvertFrom-WdQ4ResolvedResult -Result ([pscustomobject]$v) -Plan $p}catch{@{status='REFUSED'}}
+$r|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = run_ps(host, script)
+    assert result["status"] == "REFUSED"
+    assert "raw-private-payload-sentinel" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("task,approved", [
+    ("synthetic-task", ("synthetic-task",)),
+    ("unknown-task", ()), ("review-task", ("synthetic-task",)),
+])
+def test_real_resolved_child_uses_pinned_stdin_and_rejects_unapproved_tasks(bundle, tmp_path, host, task, approved):
+    # Execute only a stdlib child with real policy validation and a replaced Q4
+    # backend. No installed runtime, memory, model or real lane is opened.
+    import sys
+    _, data, projection = add_resolved_fixture(bundle, task=task, approved=approved)
+    root = tmp_path / "resolved-synthetic-child"
+    tools_dir = root / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "__init__.py").write_text(
+        "import sys\nsys.path.append(" + repr(str(ROOT)) + ")\n__path__.append(" + repr(str(ROOT / "tools")) + ")\n", encoding="utf-8")
+    implementation = (
+        "import importlib.util,sys\nsys.path.append(" + repr(str(ROOT)) + ")\n"
+        "from tools import wd_q4_agent_query as q4\n"
+        "spec=importlib.util.spec_from_file_location('synthetic_real_child',"
+        + repr(str(ROOT / "tools/wd_q4_resolved_child.py")) + ")\n"
+        "real=importlib.util.module_from_spec(spec);spec.loader.exec_module(real)\n"
+        "def query(config,stdin,*args,**kwargs):\n"
+        " raw=stdin.read()\n assert b'query-sensitive' in raw\n"
+        " assert all('query-sensitive' not in a and 'raw-private-payload-sentinel' not in a for a in sys.argv)\n"
+        " return {'status':'ABSTAIN','results':[]}\n"
+        "q4.query_and_resolve=query\nrun_resolved=real.run_resolved\n"
+    )
+    (tools_dir / "wd_q4_resolved_child.py").write_text(implementation, encoding="utf-8")
+    config = {
+        "interpreter": sys.executable, "interpreter_sha256": "1" * 64,
+        "bootstrap": str(tmp_path / "fake.py"), "bootstrap_sha256": "2" * 64,
+        "verifier_sha256": "3" * 64, "runtime_root": str(tmp_path),
+        "runtime_manifest": str(tmp_path / "runtime.json"), "runtime_manifest_sha256": "4" * 64,
+        "runtime_generation": "5" * 40, "runtime_revision": "6" * 40,
+        "memory": str(tmp_path / "unused-memory"), "descriptor": str(tmp_path / "descriptor.json"),
+        "descriptor_sha256": "7" * 64, "lock_file": str(tmp_path / "unused.lock"),
+        "lock_timeout": "0", "timeout": 10, "scratch_root": str(tmp_path / "child-scratch"),
+    }
+    encoded = base64.b64encode(json.dumps({"Config": config,
+        "CodeRoot": str(root), "ResolvedPins": {name + "_sha256": digest(value)
+                                               for name, value in data.items()},
+        "EncodedInputs": {name: base64.b64encode(value).decode() for name, value in data.items()}}).encode()).decode()
+    script = "$script:plan=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(" + quote(encoded) + "))|ConvertFrom-Json\n"
+    script += r"""
+$inputs=@{}
+foreach($p in $script:plan.EncodedInputs.PSObject.Properties){$inputs[$p.Name]=[Convert]::FromBase64String($p.Value)}
+$script:plan|Add-Member -NotePropertyName ResolvedInputs -NotePropertyValue $inputs
+$script:plan|Add-Member -NotePropertyName Enabled -NotePropertyValue $true
+function Get-WdQ4QueryPlan {$script:plan}
+$raw=[Text.Encoding]::UTF8.GetBytes('{"situation":"query-sensitive","time":"2026-10-31T12:02:00Z"}')
+$s=[IO.MemoryStream]::new([byte[]]$raw)
+Invoke-WdQ4Query -InputStream $s|ConvertTo-Json -Depth 8 -Compress
+"""
+    result = run_ps(host, script)
+    assert result["status"] == ("ABSTAIN" if task == "synthetic-task" else "REFUSED")
+    assert "raw-private-payload-sentinel" not in json.dumps(result)
+
+
+def test_resolved_route_has_no_new_cli_environment_or_raw_file_discovery():
+    text = WRAPPER.read_text(encoding="utf-8-sig")
+    assert "run_resolved" in text, "RED: resolved child is not wired"
+    assert "ResolvedInputs" in text
+    assert "ConvertFrom-WdQ4ResolvedResult" in text
+    assert "$env:WD_Q4" not in text
+    assert "Get-ChildItem" not in text
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("where", ["fleet-root", "nested-identical", "nested-conflicting",
+                                   "nested-escaped", "manifest", "definition"])
+def test_duplicate_keys_refuse_even_when_raw_manifest_pins_match(bundle, host, where):
+    spec, _, _ = add_resolved_fixture(bundle)
+    cfg = bundle["config"]
+    if where == "manifest":
+        bundle["seal"]()
+        path = bundle["root"] / "deployment-manifest.json"
+        raw = path.read_text()
+        raw = raw.replace('"schema_version": 1', '"schema_version": 1,"schema_version": 1')
+        path.write_bytes(raw.encode())
+        bundle["pin"] = digest(raw.encode())
+    elif where == "definition":
+        path = bundle["root"] / "bridge-code-files.json"
+        raw = path.read_text()
+        raw = raw.replace('"schema": "wd.bridge-code-package.v1"',
+                          '"schema": "wd.bridge-code-package.v1","schema": "wd.bridge-code-package.v1"')
+        bundle["put"]("bridge-code-files.json", raw.encode())
+        cfg["code_manifest_sha256"] = digest(raw.encode())
+        bundle["put"]("wd-fleet.json", json.dumps({"q4_read": cfg}).encode())
+        bundle["seal"]()
+    else:
+        raw = json.dumps({"q4_read": cfg})
+        if where == "fleet-root":
+            raw = '{"q4_read":' + json.dumps(cfg) + ',"q4_read":' + json.dumps(cfg) + '}'
+        else:
+            needle = '"policy_sha256": ' + json.dumps(spec["policy_sha256"])
+            first = "0" * 64 if where == "nested-conflicting" else spec["policy_sha256"]
+            key = '"policy_sha\\u0032\\u0035\\u0036"' if where == "nested-escaped" else '"policy_sha256"'
+            raw = raw.replace(needle, key + ':' + json.dumps(first) + ',' + needle)
+        bundle["put"]("wd-fleet.json", raw.encode())
+        bundle["seal"]()
+    script = "$v=try{$p=" + plan_call(bundle) + ";@{ok=$true}}catch{@{ok=$false}}\n"
+    script += "$v|ConvertTo-Json -Compress"
+    assert run_ps(host, script)["ok"] is False
+
+
+def test_duplicate_preflight_is_identical_at_both_independently_pinned_entries():
+    import re
+    pattern = r"(?ms)^function ConvertFrom-WdQ4StrictJson \{.*?^\}"
+    bodies = [re.search(pattern, (OPS / name).read_text(encoding="utf-8-sig"))
+              for name in ("Invoke-WdQ4Query.ps1", "Get-WdQ4ReadConfig.ps1")]
+    assert all(bodies), "RED: duplicate-key guard missing"
+    assert bodies[0].group(0) == bodies[1].group(0)
+
+
+def test_absent_resolved_control_has_an_explicit_json_null_argv():
+    # Real legacy transport behavior remains covered by test_real_transport...
+    # This RED keeps the optional-control regression before its one-line fix.
+    text = WRAPPER.read_text(encoding="utf-8-sig")
+    assert "$pinsJson=if($null -eq $Plan.ResolvedPins){'null'}" in text
+    assert "$Plan.Config | ConvertTo-Json" in text
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("collision", [False, True])
+def test_snapshot_schema_and_unique_lane_uuids_are_checked_before_query(host, collision):
+    entries = [{"agent": name, "agent_uuid": f"{i:08x}-0000-4000-8000-000000000000", "role": "synthetic"}
+               for i, name in enumerate(("codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5", "codex-tools-1"), 1)]
+    if collision:
+        entries[1]["agent_uuid"] = entries[0]["agent_uuid"]
+    doc = {"schema": "wd.q4-roster-snapshot.v1", "lanes": entries[:4], "tools_supervisor": entries[4]}
+    script = "$doc=ConvertFrom-Json -InputObject " + quote(json.dumps(doc)) + "\n"
+    script += "$v=try{$p=Get-WdQ4RosterPairs -Document $doc -Snapshot $true;@{ok=$true;count=$p.Count}}catch{@{ok=$false}}\n"
+    script += "$v|ConvertTo-Json -Compress"
+    result = run_ps(host, script)
+    assert result["ok"] is not collision
+    if not collision:
+        assert result["count"] == 5
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_matching_fleet_and_snapshot_must_not_share_a_uuid(host):
+    names = ("codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5", "codex-tools-1")
+    entries = [{"agent": name, "agent_uuid": f"{i:08x}-0000-4000-8000-000000000000"}
+               for i, name in enumerate(names, 1)]
+    entries[1]["agent_uuid"] = entries[0]["agent_uuid"]
+    doc = {"lanes": entries[:4], "tools_supervisor": entries[4]}
+    script = "$doc=ConvertFrom-Json -InputObject " + quote(json.dumps(doc)) + "\n"
+    script += "$v=try{$p=Get-WdQ4RosterPairs -Document $doc;@{ok=$true}}catch{@{ok=$false}}\n"
+    script += "$v|ConvertTo-Json -Compress"
+    assert run_ps(host, script)["ok"] is False
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_resolved_roster_is_acyclic_separate_and_matches_pinned_fleet_values(bundle, host):
+    _, data, _ = add_resolved_fixture(bundle)
+    script = "$p=" + plan_call(bundle) + "\n"
+    script += "@{hash=$p.ResolvedPins.roster_sha256;bytes=[Convert]::ToBase64String($p.ResolvedInputs.roster)}|ConvertTo-Json -Compress"
+    result = run_ps(host, script)
+    fleet = json.loads((bundle["root"] / "wd-fleet.json").read_bytes())
+    snapshot = json.loads(data["roster"])
+    assert result["hash"] == digest(data["roster"])
+    assert base64.b64decode(result["bytes"]) == data["roster"]
+    assert set(snapshot) == {"schema", "lanes", "tools_supervisor"}
+    assert snapshot["lanes"] == fleet["lanes"] and snapshot["tools_supervisor"] == fleet["tools_supervisor"]
+    memory = json.loads(data["memory"])
+    assert memory["policy"]["roster_sha256"] == digest(data["roster"])
+    assert memory["policy"]["policy_sha256"] == digest(data["policy"])
+    assert fleet["q4_read"]["resolved_inputs"]["memory_sha256"] == digest(data["memory"])
+    assert "memory_sha256" not in data["roster"].decode()
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("change", ["stale", "missing", "duplicate", "unknown"])
+def test_roster_fleet_identity_mismatch_refuses_before_query(bundle, host, change):
+    spec, data, _ = add_resolved_fixture(bundle)
+    roster = json.loads(data["roster"])
+    if change == "stale":
+        roster["lanes"][0]["agent_uuid"] = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    elif change == "missing":
+        roster["lanes"].pop()
+    elif change == "duplicate":
+        roster["lanes"].append(dict(roster["lanes"][0]))
+    else:
+        roster["tools_supervisor"]["agent"] = "unknown-lane"
+    raw = json.dumps(roster).encode()
+    Path(spec["roster_path"]).write_bytes(raw)
+    spec["roster_sha256"] = digest(raw)
+    fleet = json.loads((bundle["root"] / "wd-fleet.json").read_bytes())
+    fleet["q4_read"] = bundle["config"]
+    bundle["put"]("wd-fleet.json", json.dumps(fleet).encode())
+    bundle["seal"]()
+    script = "function Read-WdQ4QueryBytes {throw 'query_was_read'}\n"
+    script += "$v=Invoke-WdQ4Query -BundleRoot " + quote(bundle["root"])
+    script += " -ExpectedBundleCommit " + quote(COMMIT) + " -ExpectedManifestSha256 " + quote(bundle["pin"])
+    script += "\n$v|ConvertTo-Json -Depth 8 -Compress"
+    result = run_ps(host, script)
+    assert result["status"] == "REFUSED"
+    assert result["reason"] == "roster_fleet_mismatch"
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_scratch_root_is_explicit_and_bound_in_the_plan(bundle, host):
+    result = run_ps(host, "$p=" + plan_call(bundle) + "\n@{scratch=$p.Config.scratch_root}|ConvertTo-Json -Compress")
+    assert result["scratch"] == bundle["config"]["scratch_root"]
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("target", ["memory_root", "runtime_root", "bundle"])
+def test_scratch_cannot_overlap_code_runtime_or_memory(bundle, host, target):
+    bundle["config"]["scratch_root"] = str(bundle["root"]) if target == "bundle" else bundle["config"][target]
+    fleet = {"q4_read": bundle["config"]}
+    bundle["put"]("wd-fleet.json", json.dumps(fleet).encode())
+    bundle["seal"]()
+    script = "$v=try{$p=" + plan_call(bundle) + ";@{ok=$true}}catch{@{ok=$false}}\n$v|ConvertTo-Json -Compress"
+    assert run_ps(host, script)["ok"] is False

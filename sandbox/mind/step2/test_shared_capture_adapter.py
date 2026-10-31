@@ -1,6 +1,7 @@
 """Synthetic in-memory capture projection; never reads a real bridge or memory."""
 import base64
 import datetime as dt
+import hashlib
 import json
 
 import pytest
@@ -12,6 +13,89 @@ from tools.bridge_compact_view import event_id
 NOW = dt.datetime(2026, 10, 31, 12, 2, tzinfo=dt.timezone.utc)
 IDENTITY = "windows-v1:0000abcd:0000000000000001"
 TASKS = frozenset({"synthetic-task"})
+
+
+def strict_inputs():
+    roster = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+    policy = {"schema": "wd.q4-non-review-policy.v1", "approved_tasks": sorted(TASKS)}
+    fleet = {"lanes": [{"agent": agent, "agent_uuid": uuid} for agent, uuid in roster.items()
+                       if agent != "codex-tools-1"],
+             "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}}
+    return policy, fleet, roster
+
+
+def encoded_pins(policy, fleet):
+    encode = lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
+    p, r = encode(policy), encode(fleet)
+    return (p, hashlib.sha256(p).hexdigest(), r, hashlib.sha256(r).hexdigest())
+
+
+def test_strict_pins_include_tools_supervisor():
+    policy, fleet, roster = strict_inputs()
+    assert adapter.strict_pins(*encoded_pins(policy, fleet)) == (TASKS, roster)
+
+
+def test_strict_pins_match_reader_policy_task_limit():
+    policy, fleet, _ = strict_inputs()
+    policy["approved_tasks"] = [f"synthetic-{i}" for i in range(512)]
+    assert len(adapter.strict_pins(*encoded_pins(policy, fleet))[0]) == 512
+    policy["approved_tasks"].append("synthetic-512")
+    with pytest.raises(ValueError):
+        adapter.strict_pins(*encoded_pins(policy, fleet))
+
+
+@pytest.mark.parametrize("case", ["missing-tools", "duplicate-lane", "duplicate-uuid", "duplicate-task",
+                                  "review-task", "extra-policy-field", "policy-case-collision",
+                                  "fleet-case-collision", "policy-pin", "roster-pin"])
+def test_strict_pins_fail_closed_on_ambiguous_or_incomplete_inputs(case):
+    policy, fleet, roster = strict_inputs()
+    if case == "missing-tools":
+        fleet.pop("tools_supervisor")
+    elif case == "duplicate-lane":
+        fleet["lanes"].append(dict(fleet["tools_supervisor"]))
+    elif case == "duplicate-uuid":
+        fleet["tools_supervisor"]["agent_uuid"] = roster["codex-lead-1"]
+    elif case == "duplicate-task":
+        policy["approved_tasks"].append("synthetic-task")
+    elif case == "review-task":
+        policy["approved_tasks"].append("pr-review")
+    elif case == "extra-policy-field":
+        policy["extra"] = True
+    elif case == "policy-case-collision":
+        policy["Schema"] = policy["schema"]
+    elif case == "fleet-case-collision":
+        fleet["Lanes"] = []
+    pins = list(encoded_pins(policy, fleet))
+    if case == "policy-pin":
+        pins[1] = "0" * 64
+    elif case == "roster-pin":
+        pins[3] = "0" * 64
+    with pytest.raises(ValueError):
+        adapter.strict_pins(*pins)
+
+
+def test_strict_v6_removes_rco_targets_wrong_uuid_and_review_rows_before_counters(monkeypatch):
+    monkeypatch.setattr(adapter, "_utc_now", lambda: NOW)
+    policy, fleet, roster = strict_inputs()
+    rows = [row(agent_uuid=roster["codex-lead-1"]),
+            row("codex-tools-1", agent_uuid=roster["codex-tools-1"]),
+            row("fable-5", agent_uuid=roster["codex-lead-1"]),
+            row("claude-rco-1", agent_uuid=roster["claude-rco-1"]),
+            row(agent_uuid=roster["codex-lead-1"], To="claude-rco-2"),
+            row(agent_uuid=roster["codex-lead-1"], payload={"Recipient": "claude-rco-1"}),
+            row(agent_uuid=roster["codex-lead-1"], type="review"),
+            row(agent_uuid=roster["codex-lead-1"], status="veto"),
+            row("fable-5", task="pr-review", agent_uuid=roster["fable-5"])]
+    p, ph, r, rh = encoded_pins(policy, fleet)
+    result = adapter.adapt_rows(rows, snapshot(), ttl_seconds=120, policy_bytes=p, policy_sha256=ph,
+                                roster_bytes=r, roster_sha256=rh)["projection"]
+    assert result["accepted"] == 2 and result["refused"] == {}
+    assert result["review_signal_excluded"] is True
+    assert {item["meta"]["agent"] for item in result["records"]} == {"codex-lead-1", "codex-tools-1"}
 
 
 def cursor(offset, generation="generation1", identity=IDENTITY):

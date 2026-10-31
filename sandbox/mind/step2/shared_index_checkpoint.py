@@ -5,6 +5,8 @@ does not authenticate the caller, root, policy, generation or operating-system
 clock, and cannot defeat hostile same-user replacement or filesystem TOCTOU.
 The caller must externally anchor those inputs and the manifest/pointer it uses.
 No shadow producer state is read or written by this module.
+The source_binding is a caller-supplied build-receipt commitment, not proof
+that an independently authenticated source actually produced the delta.
 """
 from dataclasses import asdict
 import hashlib
@@ -19,7 +21,7 @@ import ctypes
 from sandbox.mind.step2.reader_slot import reader_slot
 from waggledance.core.bridge_log_reader import BridgeCursor
 
-SCHEMA = "wd.q4-shared-checkpoint.v1"
+SCHEMA = "wd.q4-shared-checkpoint.v2"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+)\Z")
@@ -117,15 +119,15 @@ def _cursor(value):
     return asdict(value)
 
 
-def _policy(tasks):
-    from sandbox.mind.step2 import shared_projection as sp
-    if type(tasks) is not frozenset:
-        _refuse()
-    sp._approved_tasks(tasks)
-    return _sha(json.dumps(sorted(tasks), separators=(",", ":"), ensure_ascii=True).encode("ascii"))
+def _source_binding(start, end, anchor, projection, policy, roster):
+    from sandbox.mind.step2.shared_bridge_snapshot import _token
+    return {"schema": "wd.q4-shared-index-source-binding.v1", "anchor_sha256": anchor,
+            "projection_sha256": projection, "cursor_start_sha256": _sha(_token(start).encode("utf-8")),
+            "cursor_end_sha256": _sha(_token(end).encode("utf-8")), "policy_sha256": policy,
+            "roster_sha256": roster}
 
 
-def _verify_generation(root, name, tasks):
+def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
     """Verify the reader-compatible builder artifacts and healthy cell receipts."""
     from sandbox.mind.step2 import shared_projection as sp, wd_q4_private_read as reader
     if not isinstance(name, str) or NAME.fullmatch(name) is None:
@@ -142,7 +144,8 @@ def _verify_generation(root, name, tasks):
     projection = _parse(contents["projection_sha256"])
     if json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != contents["projection_sha256"]:
         _refuse()
-    sp.validate_projection(projection, approved_tasks=tasks, include_refs=False)
+    sp.validate_projection(projection, approved_tasks=tasks, include_refs=False,
+                           roster=roster, exclude_review_signal=True)
     for record in projection["records"]:
         meta = record["meta"]
         if meta["task_id"] == sp.UNKNOWN or meta["task_id"] not in tasks or meta["agent"] in ("claude-rco-1", "claude-rco-2"):
@@ -150,8 +153,16 @@ def _verify_generation(root, name, tasks):
     memory = _parse(contents["memory_sha256"])
     receipt = _parse(contents["receipt_sha256"])
     descriptor = reader.read_descriptor(directory / "descriptor.json", hashes["descriptor_sha256"])
+    def strict_policy(value):
+        return (type(value) is dict
+                and set(value) == {"authorship", "review_signal_excluded", "policy_sha256", "roster_sha256"}
+                and value["authorship"] == sp.AUTHORSHIP_ROSTER
+                and value["review_signal_excluded"] is True
+                and value["policy_sha256"] == policy_sha256
+                and value["roster_sha256"] == roster_sha256)
     if (descriptor["memory_sha256"] != hashes["memory_sha256"]
             or memory.get("scope") != reader.SHARED_SCOPE or memory.get("projection_schema") != sp.SCHEMA
+            or not strict_policy(memory.get("policy")) or not strict_policy(receipt.get("policy"))
             or memory.get("projection_sha256") != hashes["projection_sha256"]
             or receipt.get("schema") != "wd.bridge-mind-shared-index-build-receipt.v1"
             or receipt.get("scope") != reader.SHARED_SCOPE
@@ -187,7 +198,7 @@ def _verify_generation(root, name, tasks):
             observed.add(key)
     if observed != expected:
         _refuse()
-    return {"generation": name, **hashes}
+    return {"generation": name, **hashes, "source_binding": receipt.get("source_binding")}
 
 
 def _write_new(path, data):
@@ -203,7 +214,9 @@ def _canonical(obj):
 
 
 def commit_generation(root, generation, start, end, approved_tasks, *, expected_pointer_sha256,
-                      expected_artifacts, initial_cursor=None, timeout=0.2):
+                      expected_artifacts, initial_cursor=None, timeout=0.2,
+                      policy_bytes=None, expected_policy_sha256=None, roster_bytes=None,
+                      expected_roster_sha256=None, expected_anchor_sha256=None):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -222,7 +235,13 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
         if (begin["file_identity"] != finish["file_identity"] or begin["generation"] != finish["generation"]
                 or finish["offset"] < begin["offset"]):
             _refuse()
-        policy_sha = _policy(approved_tasks)
+        from sandbox.mind.step2.shared_capture_adapter import strict_pins
+        if not isinstance(expected_anchor_sha256, str) or HEX.fullmatch(expected_anchor_sha256) is None:
+            _refuse()
+        tasks, roster = strict_pins(policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256)
+        if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+            _refuse()
+        policy_sha = expected_policy_sha256
         pointer, lock = root / POINTER, root / LOCK
         _secure(lock, missing_leaf=True)
         with reader_slot(lock, timeout_seconds=timeout):
@@ -234,23 +253,37 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                         or _sha(raw) != expected_pointer_sha256 or initial_cursor is not None):
                     _refuse()
                 old = _parse(raw)
-                if (set(old) != {"schema", "generation", "artifacts", "policy_sha256", "cursor_start", "cursor_end",
+                if (set(old) != {"schema", "generation", "artifacts", "policy_sha256", "roster_sha256", "anchor_sha256", "cursor_start", "cursor_end",
                                  "previous", "previous_pointer_sha256"} or old["schema"] != SCHEMA
-                        or old["policy_sha256"] != policy_sha or old["cursor_end"] != begin
+                        or old["policy_sha256"] != policy_sha or old["roster_sha256"] != expected_roster_sha256
+                        or not isinstance(old["anchor_sha256"], str) or HEX.fullmatch(old["anchor_sha256"]) is None
+                        or old["cursor_end"] != begin
                         or not isinstance(old["generation"], str) or NAME.fullmatch(old["generation"]) is None
                         or old["generation"] == generation
                         or not isinstance(old["artifacts"], dict) or set(old["artifacts"]) != set(ARTIFACTS)):
                     _refuse()
-                previous_artifacts = _verify_generation(root, old["generation"], approved_tasks)
-                if {key: previous_artifacts[key] for key in ARTIFACTS} != old["artifacts"]:
+                previous_artifacts = _verify_generation(root, old["generation"], tasks, roster,
+                                                        policy_sha, expected_roster_sha256)
+                old_start = BridgeCursor(**old["cursor_start"])
+                old_end = BridgeCursor(**old["cursor_end"])
+                _cursor(old_start)
+                _cursor(old_end)
+                if ({key: previous_artifacts[key] for key in ARTIFACTS} != old["artifacts"]
+                        or previous_artifacts.get("source_binding") != _source_binding(
+                            old_start, old_end, old["anchor_sha256"], old["artifacts"]["projection_sha256"],
+                            policy_sha, expected_roster_sha256)):
                     _refuse()
             elif expected_pointer_sha256 is not None or initial_cursor is None or _cursor(initial_cursor) != begin:
                 _refuse()
-            actual = _verify_generation(root, generation, approved_tasks)
-            if {key: actual[key] for key in ARTIFACTS} != expected_artifacts:
+            actual = _verify_generation(root, generation, tasks, roster, policy_sha, expected_roster_sha256)
+            if ({key: actual[key] for key in ARTIFACTS} != expected_artifacts
+                    or actual.get("source_binding") != _source_binding(
+                        start, end, expected_anchor_sha256, expected_artifacts["projection_sha256"],
+                        policy_sha, expected_roster_sha256)):
                 _refuse()
             value = {"schema": SCHEMA, "generation": generation, "artifacts": dict(expected_artifacts),
-                     "policy_sha256": policy_sha, "cursor_start": begin, "cursor_end": finish,
+                     "policy_sha256": policy_sha, "roster_sha256": expected_roster_sha256,
+                     "anchor_sha256": expected_anchor_sha256, "cursor_start": begin, "cursor_end": finish,
                      "previous": None if old is None else old["generation"],
                      "previous_pointer_sha256": None if old is None else expected_pointer_sha256}
             if old is not None:

@@ -106,6 +106,7 @@ class VerifiedQ4Config:
     lock_file: str
     lock_timeout: str
     timeout: float
+    scratch_root: str
 
 
 def _invoke_launcher(**kwargs):
@@ -117,7 +118,7 @@ def _validate_config(config):
     if type(config) is not VerifiedQ4Config:
         raise QueryRefused("invalid_binding")
     for value in (config.interpreter, config.bootstrap, config.runtime_root, config.runtime_manifest,
-                  config.memory, config.descriptor, config.lock_file):
+                  config.memory, config.descriptor, config.lock_file, config.scratch_root):
         if (not isinstance(value, str) or not re.match(r"^[A-Za-z]:\\", value)
                 or ":" in value[2:] or "\x00" in value or ntpath.normpath(value) != value):
             raise QueryRefused("invalid_binding")
@@ -140,6 +141,13 @@ def _validate_config(config):
         raise QueryRefused("invalid_binding") from None
 
 
+def _safe_refusal(reason):
+    from sandbox.mind.step2.runtime_launcher import _BOOTSTRAP_REFUSALS, _READER_REFUSALS
+    if type(reason) is str and reason in (_BOOTSTRAP_REFUSALS | _READER_REFUSALS):
+        return reason
+    return "runtime_refused"
+
+
 def _project_result(result, descriptor_sha256):
     if not isinstance(result, dict) or result.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED", "REFUSED"):
         raise QueryRefused("invalid_result")
@@ -147,7 +155,7 @@ def _project_result(result, descriptor_sha256):
     if status == "REFUSED":
         if result.get("results") not in (None, []):
             raise QueryRefused("invalid_result")
-        return {"status": "REFUSED", "reason": "runtime_refused", "results": []}
+        return {"status": "REFUSED", "reason": _safe_refusal(result.get("reason")), "results": []}
     if (result.get("scope") != _SCOPE or result.get("descriptor_sha256") != descriptor_sha256
             or not isinstance(result.get("memory_sha256"), str) or not _HEX.fullmatch(result["memory_sha256"])):
         raise QueryRefused("invalid_result")
@@ -189,7 +197,7 @@ def query_with_verified_config(config, stdin):
         result = _invoke_launcher(interpreter=config.interpreter, interpreter_sha256=config.interpreter_sha256,
                                   bootstrap=config.bootstrap, bootstrap_sha256=config.bootstrap_sha256,
                                   verifier_sha256=config.verifier_sha256, tuple_args=args, query=query,
-                                  timeout=config.timeout)
+                                  timeout=config.timeout, scratch_root=config.scratch_root)
     except Exception:
         raise QueryRefused("launcher_refused") from None
     return _project_result(result, config.descriptor_sha256)
@@ -200,7 +208,7 @@ def _safe_result_for_output(result, config):
         raise QueryRefused("invalid_result")
     status = result.get("status")
     if status == "REFUSED":
-        return {"schema": "wd.q4-agent-query.v1", "status": "REFUSED", "reason": "runtime_refused"}
+        return {"schema": "wd.q4-agent-query.v1", "status": "REFUSED", "reason": _safe_refusal(result.get("reason"))}
     if (status not in ("ANSWER", "ABSTAIN", "DEGRADED")
             or set(result) != {"status", "scope", "descriptor_sha256", "memory_sha256", "results"}
             or result.get("scope") != _SCOPE or result.get("descriptor_sha256") != config.descriptor_sha256
@@ -224,7 +232,9 @@ def _safe_result_for_output(result, config):
             "memory_sha256": result["memory_sha256"], "results": clean}
 
 
-def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks):
+def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks, *,
+                      policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
+                      expected_memory_sha256=None):
     """Resolve one query using caller-authenticated tuple and approved-task policy.
 
     This in-memory boundary does not authenticate config, data origin, clock or
@@ -238,6 +248,14 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                 or not isinstance(projection_bytes, bytes)
                 or len(memory_manifest_bytes) > resolver.MAX_BYTES or len(projection_bytes) > resolver.MAX_BYTES):
             raise QueryRefused("resolution_refused")
+        if any(value is None for value in (policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                                           expected_memory_sha256)):
+            raise QueryRefused("resolution_refused")
+        # A mismatched tuple must not start the backend or consume the query.
+        resolver.resolve_results(memory_manifest=memory_manifest_bytes, expected_memory_sha256=expected_memory_sha256,
+                    projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
+                    approved_tasks=approved_tasks, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
         raw = read_query(stdin)
         query_time = _validated_query_time(raw)
         result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
@@ -248,7 +266,9 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
             raise QueryRefused("resolution_refused")
         resolved = resolver.resolve_results(memory_manifest=memory_manifest_bytes,
                     expected_memory_sha256=result["memory_sha256"], projection_bytes=projection_bytes,
-                    results=result["results"], query_utc=query_time, approved_tasks=approved_tasks)
+                    results=result["results"], query_utc=query_time, approved_tasks=approved_tasks,
+                    policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
         output = {"status": result["status"], "results": resolved}
         if len(json.dumps(output, ensure_ascii=True, separators=(",", ":")).encode("utf-8")) > MAX_OUTPUT:
             raise QueryRefused("resolution_refused")
@@ -269,7 +289,9 @@ def run_verified(config, stdin, stdout):
         text = '{"schema":"wd.q4-agent-query.v1","status":"REFUSED","reason":"query_refused"}\n'
         exit_code = 2
     try:
-        stdout.write(text)
+        written = stdout.write(text)
+        if type(written) is not int or written != len(text):
+            return 2
     except Exception:
         return 2
     return exit_code

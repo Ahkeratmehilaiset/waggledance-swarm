@@ -68,6 +68,43 @@ def _item(kind, subject, rank, actors=()):
 BUILDS = (("codex-lead-1", "build_consensus_pass"), ("codex-tools-1", "build_consensus_pass"))
 
 
+def test_a_row_leaving_a_bounded_window_is_not_reported_as_removed_from_the_log():
+    """A tail window cannot establish that an older PR disappeared from the bridge."""
+    identity = "capture-window:windows-v1:12345678:0123456789abcdef"
+    previous = _snapshot(log_identity=identity, prs=[_pr(1)])
+    current = _snapshot(as_of="2026-01-01T00:31:00Z", log_identity=identity, prs=[_pr(2)])
+
+    changes = push.delta(previous, current)
+
+    assert changes[1:] == [{"schema": "wd.bridge-mind.delta.v0", "type": "rebuild_required",
+                            "reason": "bounded_window_changed"}]
+    assert all(change.get("type") != "removed" for change in changes)
+    with pytest.raises(push.DeltaError, match="rebuild required"):
+        push.apply_delta(push.view(previous), changes)
+
+
+def test_a_nested_observation_change_in_a_bounded_window_requires_a_rebuild():
+    identity = "capture-window:windows-v1:12345678:0123456789abcdef"
+    previous = _snapshot(log_identity=identity, prs=[_pr(1, votes=BUILDS)])
+    current = _snapshot(as_of="2026-01-01T00:31:00Z", log_identity=identity,
+                        prs=[_pr(1, votes=BUILDS[:1])])
+
+    changes = push.delta(previous, current)
+
+    assert changes[1]["type"] == "rebuild_required"
+    assert changes[1]["reason"] == "bounded_window_changed"
+
+
+def test_an_unchanged_bounded_view_can_update_its_as_of_time():
+    identity = "capture-window:windows-v1:12345678:0123456789abcdef"
+    previous = _snapshot(log_identity=identity, prs=[_pr(1)])
+    current = _snapshot(as_of="2026-01-01T00:31:00Z", log_identity=identity, prs=[_pr(1)])
+
+    changes = push.delta(previous, current)
+
+    assert push.apply_delta(push.view(previous), changes) == push.view(current)
+
+
 def test_the_pushed_changes_turn_the_previous_view_into_the_current_view():
     """M9 / P9: applying the delta to the previous view gives exactly the current view."""
     previous = _snapshot(prs=[_pr(1895, ci="UNKNOWN", votes=BUILDS[:1]),

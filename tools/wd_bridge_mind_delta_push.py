@@ -42,6 +42,9 @@ change is ``rebuild_required`` with a fixed reason: the previous view cannot be 
 unidentified log, and the rejected value is never printed. The reconstruction contract is at the level of
 this identifier view, not the full snapshot. Not on the gate verdict path. The guard is a copy of the workspace's (a dormant tool may not import another dormant tool, so
 neither becomes wired by the other).
+
+For a ``capture-window:`` source, a changed observation may simply have aged out of the bounded window.
+When its non-source view changes, request a fresh bounded rebuild instead of implying a log-level change.
 """
 from __future__ import annotations
 
@@ -238,6 +241,9 @@ def delta(previous: Mapping[str, Any], current: Mapping[str, Any]) -> list[dict[
             return [header, {"schema": DELTA_SCHEMA, "type": "rebuild_required", "reason": f"{name}_unknown"}]
         if old["source"][name] != new["source"][name]:
             return [header, {"schema": DELTA_SCHEMA, "type": "rebuild_required", "reason": f"{name}_changed"}]
+    if (old["source"]["log_identity"].startswith("capture-window:")
+            and any(old[section] != new[section] for section in SECTIONS if section != "source")):
+        return [header, {"schema": DELTA_SCHEMA, "type": "rebuild_required", "reason": "bounded_window_changed"}]
     changes = []
     for section in SECTIONS:
         for key in sorted(set(old[section]) | set(new[section])):

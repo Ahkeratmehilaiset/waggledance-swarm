@@ -10,6 +10,7 @@ same-user race resistance, model asset provenance, or a whole-call deadline.
 """
 
 from dataclasses import dataclass
+import io
 import json
 import math
 import ntpath
@@ -135,7 +136,7 @@ def _project_result(result, descriptor_sha256):
         if (not isinstance(item, dict) or item.get("ref_kind") != "sha256_of_projected_metadata"
                 or item.get("canonical_event") is not False):
             raise QueryRefused("invalid_result")
-        hashes = {}
+        hashes = {"ref_kind": "sha256_of_projected_metadata", "canonical_event": False}
         for name in ("ref_sha256", "doc_id_sha256"):
             if not isinstance(item.get(name), str) or not _HEX.fullmatch(item[name]):
                 raise QueryRefused("invalid_result")
@@ -186,13 +187,53 @@ def _safe_result_for_output(result, config):
         raise QueryRefused("invalid_result")
     clean = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != {"ref_sha256", "doc_id_sha256"}:
+        if (not isinstance(item, dict)
+                or set(item) != {"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or item["ref_kind"] != "sha256_of_projected_metadata" or item["canonical_event"] is not False):
             raise QueryRefused("invalid_result")
-        if any(not isinstance(item[key], str) or not _HEX.fullmatch(item[key]) for key in item):
+        if any(not isinstance(item[key], str) or not _HEX.fullmatch(item[key])
+               for key in ("ref_sha256", "doc_id_sha256")):
             raise QueryRefused("invalid_result")
-        clean.append({"ref_sha256": item["ref_sha256"], "doc_id_sha256": item["doc_id_sha256"]})
+        clean.append({"ref_sha256": item["ref_sha256"], "doc_id_sha256": item["doc_id_sha256"],
+                      "ref_kind": "sha256_of_projected_metadata", "canonical_event": False})
     return {"status": status, "scope": _SCOPE, "descriptor_sha256": config.descriptor_sha256,
             "memory_sha256": result["memory_sha256"], "results": clean}
+
+
+def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks):
+    """Resolve one query using caller-authenticated tuple and approved-task policy.
+
+    This in-memory boundary does not authenticate config, data origin, clock or
+    caller, and does not prevent concurrent filesystem changes or tool logging.
+    Returned text is approved projected metadata, not a canonical event.
+    """
+    try:
+        from sandbox.mind.step2 import shared_result_resolver as resolver
+        _validate_config(config)
+        if (type(approved_tasks) is not frozenset or not isinstance(memory_manifest_bytes, bytes)
+                or not isinstance(projection_bytes, bytes)
+                or len(memory_manifest_bytes) > resolver.MAX_BYTES or len(projection_bytes) > resolver.MAX_BYTES):
+            raise QueryRefused("resolution_refused")
+        raw = read_query(stdin)
+        query = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+        query_time = query["time"]
+        if resolver.sp.corpus_mod.parse_utc(query_time) is None:
+            raise QueryRefused("resolution_refused")
+        result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
+        if result["status"] == "REFUSED":
+            raise QueryRefused("resolution_refused")
+        if ((result["status"] == "ANSWER" and not result["results"])
+                or (result["status"] == "ABSTAIN" and result["results"])):
+            raise QueryRefused("resolution_refused")
+        resolved = resolver.resolve_results(memory_manifest=memory_manifest_bytes,
+                    expected_memory_sha256=result["memory_sha256"], projection_bytes=projection_bytes,
+                    results=result["results"], query_utc=query_time, approved_tasks=approved_tasks)
+        output = {"status": result["status"], "results": resolved}
+        if len(json.dumps(output, ensure_ascii=True, separators=(",", ":")).encode("utf-8")) > MAX_OUTPUT:
+            raise QueryRefused("resolution_refused")
+        return output
+    except Exception:
+        raise QueryRefused("resolution_refused") from None
 
 
 def run_verified(config, stdin, stdout):

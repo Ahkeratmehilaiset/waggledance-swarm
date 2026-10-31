@@ -2,6 +2,7 @@
 
 import io
 import json
+import hashlib
 from dataclasses import replace
 
 from tools import wd_q4_agent_query as cli
@@ -154,7 +155,8 @@ def test_refusal_is_sanitized_and_abstain_keeps_scope(monkeypatch):
 def test_run_verified_prints_only_bounded_safe_projection(monkeypatch):
     answer = {"status": "ANSWER", "scope": "wd.q4-shared-projected-events.v1",
               "descriptor_sha256": "7" * 64, "memory_sha256": "8" * 64,
-              "results": [{"ref_sha256": "9" * 64, "doc_id_sha256": "a" * 64}]}
+              "results": [{"ref_sha256": "9" * 64, "doc_id_sha256": "a" * 64,
+                           "ref_kind": "sha256_of_projected_metadata", "canonical_event": False}]}
     seen = []
     def query(config, stdin):
         seen.append(stdin.read())
@@ -198,3 +200,115 @@ def test_run_verified_propagates_no_backend_refusal_text(monkeypatch):
     out = io.StringIO()
     assert cli.run_verified(_config(), io.BytesIO(b""), out) == 2
     assert "private-sentinel" not in out.getvalue()
+
+
+def test_projection_preserves_verified_provenance_through_serialization():
+    result = cli._project_result(_answer(), _config().descriptor_sha256)
+    assert result["results"][0]["ref_kind"] == "sha256_of_projected_metadata"
+    assert result["results"][0]["canonical_event"] is False
+    output = cli._safe_result_for_output(result, _config())
+    assert output["results"][0]["ref_kind"] == "sha256_of_projected_metadata"
+    assert output["results"][0]["canonical_event"] is False
+
+
+def test_output_rejects_missing_or_forged_provenance():
+    for mutation in ({"ref_kind": None}, {"canonical_event": True}, {"canonical_event": 0}):
+        result = cli._project_result(_answer(), _config().descriptor_sha256)
+        result["results"][0].update(mutation)
+        try:
+            cli._safe_result_for_output(result, _config())
+        except cli.QueryRefused:
+            pass
+        else:
+            raise AssertionError("unverified provenance accepted")
+
+
+def test_run_verified_keeps_provenance_from_launcher(monkeypatch):
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: _answer())
+    output = io.StringIO()
+    raw = b'{"situation":"synthetic-query","time":"2026-10-31T12:00:00Z"}'
+    assert cli.run_verified(_config(), io.BytesIO(raw), output) == 0
+    item = json.loads(output.getvalue())["results"][0]
+    assert item["ref_kind"] == "sha256_of_projected_metadata"
+    assert item["canonical_event"] is False
+    assert "synthetic-query" not in output.getvalue()
+
+
+def _resolution_fixture():
+    from sandbox.mind.step2 import shared_projection as sp
+    event = {"ts_utc": "2026-10-31T12:00:30Z", "agent": "codex-lead-1", "type": "message",
+             "status": "done", "task_id": "synthetic-task", "message": "do-not-expose"}
+    tasks = frozenset({"synthetic-task"})
+    projection = sp.project_events([event], approved_tasks=tasks)
+    data = json.dumps(projection, sort_keys=True, indent=1).encode()
+    memory = json.dumps({"scope": "wd.q4-shared-projected-events.v1", "projection_schema": sp.SCHEMA,
+                         "projection_sha256": hashlib.sha256(data).hexdigest()}, sort_keys=True).encode()
+    record = projection["records"][0]
+    result = _answer()
+    result["memory_sha256"] = hashlib.sha256(memory).hexdigest()
+    result["results"][0]["ref_sha256"] = hashlib.sha256(record["provenance"]["event_ref"].encode()).hexdigest()
+    result["results"][0]["doc_id_sha256"] = hashlib.sha256(record["record_id"].encode()).hexdigest()
+    return data, memory, tasks, record, result
+
+
+def test_query_and_resolve_binds_same_input_and_returns_only_projected_text(monkeypatch):
+    data, memory, tasks, record, result = _resolution_fixture()
+    seen = []
+    def launcher(**kwargs):
+        seen.append(kwargs["query"])
+        return result
+    monkeypatch.setattr(cli, "_invoke_launcher", launcher)
+    raw = b'{"situation":"sensitive query","time":"2026-10-31T12:02:00Z"}'
+    got = cli.query_and_resolve(_config(), io.BytesIO(raw), memory, data, tasks)
+    assert seen == [raw]
+    assert got["status"] == "ANSWER" and got["results"][0]["stored_text"] == record["stored_text"]
+    assert got["results"][0]["canonical_event"] is False
+    assert "sensitive query" not in repr(got) and "do-not-expose" not in repr(got)
+
+
+def test_query_and_resolve_refuses_wrong_time_hash_and_scope(monkeypatch):
+    data, memory, tasks, record, result = _resolution_fixture()
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: result)
+    late = b'{"situation":"sensitive","time":"2026-10-31T12:02:00Z"}'
+    early = b'{"situation":"sensitive","time":"2026-10-31T12:00:45Z"}'
+    invalid = b'{"situation":"sensitive","time":"not-time"}'
+    for query, mem, proj, approved in [(early, memory, data, tasks), (invalid, memory, data, tasks),
+                                       (late, memory + b" ", data, tasks), (late, memory, data + b" ", tasks),
+                                       (late, memory, data, frozenset()), (late, memory, data, None)]:
+        try:
+            cli.query_and_resolve(_config(), io.BytesIO(query), mem, proj, approved)
+        except cli.QueryRefused as exc:
+            assert str(exc) == "resolution_refused" and "sensitive" not in str(exc)
+        else:
+            raise AssertionError("bad binding accepted")
+
+
+def test_query_and_resolve_refuses_runtime_refused(monkeypatch):
+    data, memory, tasks, _, _ = _resolution_fixture()
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: {"status": "REFUSED", "results": []})
+    try:
+        cli.query_and_resolve(_config(), io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:02:00Z"}'),
+                              memory, data, tasks)
+    except cli.QueryRefused as exc:
+        assert str(exc) == "resolution_refused"
+    else:
+        raise AssertionError("runtime refusal accepted")
+
+
+def test_query_and_resolve_reads_original_stream_once_and_rejects_forged_descriptor(monkeypatch):
+    data, memory, tasks, _, result = _resolution_fixture()
+    class Counted(io.BytesIO):
+        reads = 0
+        def read(self, *args):
+            self.reads += 1
+            return super().read(*args)
+    result["descriptor_sha256"] = "0" * 64
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: result)
+    stream = Counted(b'{"situation":"s","time":"2026-10-31T12:02:00Z"}')
+    try:
+        cli.query_and_resolve(_config(), stream, memory, data, tasks)
+    except cli.QueryRefused as exc:
+        assert str(exc) == "resolution_refused"
+    else:
+        raise AssertionError("forged descriptor accepted")
+    assert stream.reads == 1

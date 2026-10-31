@@ -1,7 +1,7 @@
 """The bounded Mind release is executed AND collected, never all of sandbox.
 
 Only parse workflow text here: no Mind import, dataset discovery or CLI launch.
-The final composition supplies 32 explicitly admitted synthetic test files.
+The final composition supplies 33 explicitly admitted synthetic test files.
 """
 from copy import deepcopy
 import os
@@ -50,6 +50,7 @@ MIND_TESTS = (
     "sandbox/mind/step2/test_shared_index_history_commit.py",
     "sandbox/mind/step2/test_status_metadata_producer.py",
     "sandbox/mind/step2/test_status_public_filter.py",
+    "sandbox/mind/step2/test_shared_producer.py",
 )
 
 
@@ -163,8 +164,8 @@ def test_mutant_whole_sandbox_collection_is_killed():
         _assert_collection(mutant)
 
 
-def test_scope_contains_only_32_unique_explicit_python_test_files():
-    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 32
+def test_scope_contains_only_33_unique_explicit_python_test_files():
+    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 33
     assert all(p.startswith("sandbox/mind/") and Path(p).name.startswith("test_")
                and p.endswith(".py") and ".." not in Path(p).parts for p in MIND_TESTS)
     assert not any("remember" in p or "learn" in p or "run_" in Path(p).name for p in MIND_TESTS)

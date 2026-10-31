@@ -832,6 +832,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/shared_index_builder.py",
     "sandbox/mind/step2/shared_history.py",
     "sandbox/mind/step2/shared_result_resolver.py",
+    "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"

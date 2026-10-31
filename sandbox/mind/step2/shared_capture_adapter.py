@@ -91,6 +91,73 @@ def strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256):
     return tasks, roster
 
 
+def public_status_policy(data, digest, tasks):
+    """Parse a separately pinned disclosure policy; pin origin is caller-owned."""
+    if (type(data) is not bytes or len(data) > _POLICY_LIMIT or not isinstance(digest, str)
+            or _HEX.fullmatch(digest) is None or not hmac.compare_digest(hashlib.sha256(data).hexdigest(), digest)
+            or type(tasks) is not frozenset):
+        raise ValueError()
+    value = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_pairs,
+                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    if (type(value) is not dict or set(value) != {"schema", "public_tasks", "public_types"}
+            or value["schema"] != "wd.mind-public-status-policy.v1"
+            or type(value["public_tasks"]) is not list or type(value["public_types"]) is not list
+            or not 1 <= len(value["public_tasks"]) <= 512 or not 1 <= len(value["public_types"]) <= 64
+            or any(type(x) is not str for x in value["public_tasks"] + value["public_types"])
+            or len(set(value["public_tasks"])) != len(value["public_tasks"])
+            or len(set(value["public_types"])) != len(value["public_types"])):
+        raise ValueError()
+    public_tasks, public_types = frozenset(value["public_tasks"]), frozenset(value["public_types"])
+    if not public_tasks <= tasks or not public_types <= projection.ALLOWED_TYPES:
+        raise ValueError()
+    projection._approved_tasks(public_tasks)
+    return public_tasks, public_types
+
+
+_PUBLIC_ROUTING_KEYS = frozenset({"to", "to_list", "recipient", "recipients", "recipient_agent", "target",
+    "target_agent", "target_agents", "destination", "destinations", "audience", "visibility", "private",
+    "reply_to", "expected_responders", "responders"})
+_PUBLIC_EVENT_KEYS = frozenset({"ts_utc", "agent", "agent_uuid", "type", "task_id", "status", "severity",
+    "to", "message", "paths", "write_scope", "run_id", "pid", "cwd", "payload", "role", "session_id",
+    "capabilities"})
+
+
+def _public_status_event(event, public_tasks, public_types):
+    """Only an explicitly marked broadcast under the pinned policy is eligible.
+
+    The flag is a producer declaration, not authentication or a PII detector.
+    Unknown/ambiguous routing markers exclude the entire event without counts.
+    """
+    if event.get("task_id") not in public_tasks or event.get("type") not in public_types:
+        return False
+    payload = event.get("payload")
+    # An explicit marker alone cannot make unknown metadata or free text public.
+    # Keep only the known writer envelope and an otherwise empty marker payload;
+    # private/targeted semantics hidden in message, scopes or unknown aliases are
+    # not safe to classify. A dedicated publisher must emit this narrow shape.
+    if (type(payload) is not dict or set(payload) != {"public_status"} or payload["public_status"] is not True
+            or "to" not in event or type(event["to"]) is not str or event["to"] != ""
+            or not set(event) <= _PUBLIC_EVENT_KEYS
+            or ("message" in event and (type(event["message"]) is not str or event["message"] != ""))
+            or any(key in event and (type(event[key]) is not list or event[key] != [])
+                   for key in ("paths", "write_scope", "capabilities"))):
+        return False
+    stack = [(event, True)]
+    while stack:
+        value, top = stack.pop()
+        if type(value) is dict:
+            for key, item in value.items():
+                normalized = key.lower()
+                if normalized in _PUBLIC_ROUTING_KEYS:
+                    # The canonical writer always emits exactly to="" for a broadcast.
+                    if not (top and key == "to" and type(item) is str and item == ""):
+                        return False
+                stack.append((item, False))
+        elif type(value) is list:
+            stack.extend((item, False) for item in value)
+    return True
+
+
 def _cursor(value):
     if not isinstance(value, str) or not producer.CURSOR.fullmatch(value):
         raise ValueError()
@@ -222,7 +289,8 @@ def _event_budget(event):
 
 
 def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
-               policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None):
+               policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
+               _public_tasks=None, _public_types=None):
     """Validate rows; pins enable strict v6. The unpinned API is legacy only."""
     try:
         source = _snapshot(snapshot, ttl_seconds)
@@ -235,6 +303,11 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
                 raise ValueError()
             approved_non_review_tasks = tasks
         if type(approved_non_review_tasks) is not frozenset:
+            raise ValueError()
+        public_mode = _public_tasks is not None or _public_types is not None
+        if public_mode and (not strict or type(_public_tasks) is not frozenset or type(_public_types) is not frozenset
+                            or not _public_tasks <= approved_non_review_tasks
+                            or not _public_types <= projection.ALLOWED_TYPES):
             raise ValueError()
         # Enforce the shared projection's own task-shape/marker rules.
         projection._approved_tasks(approved_non_review_tasks)
@@ -257,6 +330,8 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
             if row["ref"] in seen:
                 continue
             seen.add(row["ref"])
+            if public_mode and not _public_status_event(event, _public_tasks, _public_types):
+                continue
             if strict:
                 # Unapproved tasks are policy exclusions. For an approved task,
                 # identity failure is not an exclusion and must never advance

@@ -40,7 +40,7 @@ def _token(cursor):
 
 def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes, max_rows, generation_path=None,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-                      _commitment_anchor=None):
+                      _commitment_anchor=None, _public_tasks=None, _public_types=None):
     """Return an uncommitted delta; unpinned positional-policy calls are legacy only."""
     try:
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
@@ -96,6 +96,10 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
                 "unconsumed_bytes": result.snapshot_length - candidate.offset, "observed_utc": observed}
         kwargs = (dict(policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                        roster_bytes=roster_bytes, roster_sha256=roster_sha256) if strict else {})
+        if _public_tasks is not None or _public_types is not None:
+            if _commitment_anchor is None:
+                raise ValueError()
+            kwargs.update(_public_tasks=_public_tasks, _public_types=_public_types)
         value = adapter.adapt_rows(rows, snap, approved_non_review_tasks, ttl_seconds=900, **kwargs)
         value["source"]["coverage"] = "delta_only_not_complete_history"
         value["candidate_cursor"] = candidate
@@ -162,11 +166,14 @@ class _ProjectionBinding:
     row_commitment: bytes = field(repr=False)
     row_count: int = field(repr=False)
     semantic_commitment: str = field(repr=False)
+    status_mode: str = "legacy"
+    public_policy_sha256: str | None = None
 
 
 def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
                         generation_path, max_bytes, max_rows,
-                        policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+                        policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                        public_policy_bytes=None, public_policy_sha256=None):
     """Read using an externally authenticated anchor and retain a delta binding.
 
     The caller must independently authenticate anchor_bytes and its expected
@@ -189,12 +196,21 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
         parsed_tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         if tasks != parsed_tasks:
             raise ValueError()
+        public_mode = public_policy_bytes is not None or public_policy_sha256 is not None
+        if public_mode:
+            public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
+        else:
+            public_tasks = public_types = None
         anchor = json.loads(anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        expected_keys = {"schema", "source_path", "generation_path", "cursor_start", "policy_sha256", "roster_sha256"}
+        if public_mode:
+            expected_keys |= {"status_mode", "public_policy_sha256"}
         if (type(anchor) is not dict
-                or set(anchor) != {"schema", "source_path", "generation_path", "cursor_start", "policy_sha256",
-                                   "roster_sha256"}
+                or set(anchor) != expected_keys
                 or anchor["schema"] != "wd.q4-source-anchor.v1"
+                or (public_mode and (anchor["status_mode"] != "public-v1"
+                                     or anchor["public_policy_sha256"] != public_policy_sha256))
                 or _absolute_path(anchor["source_path"]) != _absolute_path(path)
                 or _absolute_path(anchor["generation_path"]) != _absolute_path(generation_path)
                 or type(anchor["cursor_start"]) is not dict
@@ -207,20 +223,64 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
         result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
                                    generation_path=generation_path, policy_bytes=policy_bytes,
                                    policy_sha256=policy_sha256, roster_bytes=roster_bytes,
-                                   roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256)
+                                   roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256,
+                                   _public_tasks=public_tasks, _public_types=public_types)
         chain, count = result.pop("_semantic_state")
         projection_data = _canonical(result["projection"])
         commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)
         result["_projection_binding"] = _ProjectionBinding(
             projection_data, _canonical(result["source"]), result["candidate_cursor"],
-            anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment)
+            anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment,
+            "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None)
         return result
     except Exception:
         raise SnapshotRefused("snapshot_refused") from None
 
 
+def verify_public_anchor(snapshot_result, anchor_bytes, *, expected_anchor_sha256, expected_policy_sha256,
+                         expected_roster_sha256, expected_public_policy_sha256):
+    """Recheck caller-anchored public-policy bytes and cursor linkage in-process.
+
+    This prevents accidental legacy-mode splicing; it does not authenticate
+    the caller or defend against a hostile actor in this Python process.
+    """
+    try:
+        if (type(anchor_bytes) is not bytes or len(anchor_bytes) > _ANCHOR_MAX_BYTES
+                or not isinstance(expected_anchor_sha256, str) or _SHA256.fullmatch(expected_anchor_sha256) is None
+                or not hmac.compare_digest(hashlib.sha256(anchor_bytes).hexdigest(), expected_anchor_sha256)):
+            raise ValueError()
+        anchor = json.loads(anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if (type(anchor) is not dict or set(anchor) != {"schema", "source_path", "generation_path", "cursor_start",
+                "policy_sha256", "roster_sha256", "status_mode", "public_policy_sha256"}
+                or anchor["schema"] != "wd.q4-source-anchor.v1" or anchor["status_mode"] != "public-v1"
+                or anchor["policy_sha256"] != expected_policy_sha256
+                or anchor["roster_sha256"] != expected_roster_sha256
+                or anchor["public_policy_sha256"] != expected_public_policy_sha256
+                or type(anchor["cursor_start"]) is not dict):
+            raise ValueError()
+        _absolute_path(anchor["source_path"])
+        _absolute_path(anchor["generation_path"])
+        start = BridgeCursor(**anchor["cursor_start"])
+        end = snapshot_result["candidate_cursor"]
+        source = snapshot_result["source"]
+        if (type(start.offset) is not int or start.offset < 0 or not isinstance(start.file_identity, str)
+                or not isinstance(start.generation, str) or type(end) is not BridgeCursor
+                or type(end.offset) is not int or end.offset < start.offset
+                or end.file_identity != start.file_identity or end.generation != start.generation
+                or type(source) is not dict
+                or source.get("cursor_start_sha256") != hashlib.sha256(_token(start).encode("utf-8")).hexdigest()
+                or source.get("cursor_end_sha256") != hashlib.sha256(_token(end).encode("utf-8")).hexdigest()):
+            raise ValueError()
+        return True
+    except Exception:
+        raise SnapshotRefused("snapshot_refused") from None
+
+
 def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_sha256,
-                               expected_policy_sha256, expected_roster_sha256):
+                               expected_policy_sha256, expected_roster_sha256,
+                               expected_mode="legacy", expected_public_policy_sha256=None,
+                               expected_anchor_bytes=None):
     """Reject accidental snapshot/projection splicing in this process only.
 
     Binding objects and their caller are not authenticated. In particular this
@@ -229,8 +289,18 @@ def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_s
     try:
         if type(snapshot_result) is not dict:
             raise ValueError()
+        if expected_mode == "public-v1":
+            verify_public_anchor(snapshot_result, expected_anchor_bytes, expected_anchor_sha256=expected_anchor_sha256,
+                expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                expected_public_policy_sha256=expected_public_policy_sha256)
         binding = snapshot_result.get("_projection_binding")
         if (type(binding) is not _ProjectionBinding or type(projection) is not dict
+                or expected_mode not in ("legacy", "public-v1")
+                or binding.status_mode != expected_mode
+                or (expected_mode == "legacy" and expected_public_policy_sha256 is not None)
+                or (expected_mode == "public-v1" and (not isinstance(expected_public_policy_sha256, str)
+                    or _SHA256.fullmatch(expected_public_policy_sha256) is None))
+                or binding.public_policy_sha256 != expected_public_policy_sha256
                 or any(not isinstance(value, str) or _SHA256.fullmatch(value) is None
                        for value in (expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256))
                 or not hmac.compare_digest(binding.anchor_sha256, expected_anchor_sha256)

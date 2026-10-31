@@ -50,7 +50,16 @@ only the approved-metadata head line. This module builds the same frozen layout 
   every file is created with ``xb``; NOTHING is ever overwritten or removed by this module. On a failure after the
   directory exists the incomplete generation is RETAINED as is and an ``INCOMPLETE.json`` report (fixed reason token,
   stage, no exception text) is added beside it; the retained directory refuses any later build under the same name
-  (``memory_exists``) and never loads as a memory (no ``memory.json``). Clean-up is an operator decision.
+  (``memory_exists``) and never loads as a memory (no ``memory.json``). Clean-up is an operator decision;
+* WRITE ORDER = the completeness boundary (Lead independent review 16:29:34Z): ``projection.json`` first, then the
+  cells, then every final object is computed and guarded in memory (stage ``finalize``), then ``build_receipt.json``,
+  then ``descriptor.json``, and LAST ``memory.json`` as the single commit point: its bytes are written and fsynced to a
+  staging name (``.memory.json.staging-<hex>``) and promoted by one no-replace rename. Hence a loadable
+  ``memory.json`` exists only when every other file of the generation is complete; a failure at any earlier stage
+  leaves no ``memory.json`` (``memory.Memory`` refuses ``memory_unreadable``; the Lead reader refuses
+  ``descriptor_unreadable`` or ``memory_descriptor_unreadable``), and ``INCOMPLETE.json`` never coexists with a
+  promoted ``memory.json``. A torn or altered ``memory.json`` after the fact is caught by the descriptor digest
+  (``memory_descriptor_mismatch``), not prevented.
 
 Synthetic only: no real events, notes, model, index or deployment are touched by this module or its tests. Trust
 assumptions, disclosed: the encoder identity is recorded as given (the caller pins it from receipts; a wrong identity
@@ -107,6 +116,7 @@ BLOCKED_CELL = topology_mod.CELL_SAFETY
 PLACEMENT_RULE = "shared-projection-v1: closed table over projected type; status blocked -> safety"
 TOPOLOGY_FILE = Path(topology_mod.__file__)
 WATCHDOG_RULE = "external process watchdog required: synchronous encoder call, wall-clock limit + memory cap"
+_rename = os.rename  # bound once so tests can inject a commit-point failure; nt rename never replaces an existing file
 
 
 class BuildRefused(ValueError):
@@ -299,6 +309,22 @@ def _publish_cell(cell_dir, cell_id, rows, vectors, **kw):
     return pointer
 
 
+def _commit_memory(memory_dir, memory_bytes):
+    """The single commit point of a generation: fully write + fsync ``memory.json`` under a staging name inside the
+    memory directory, then promote it with one no-replace rename. A failure before or during the rename leaves no
+    ``memory.json`` (the staging copy is retained, never promoted, never removed)."""
+    target = memory_dir / "memory.json"
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        pass
+    else:
+        raise BuildRefused("memory_exists")  # only a foreign writer could have put it there; never replace it
+    staging = memory_dir / f".memory.json.staging-{secrets.token_hex(8)}"
+    _write_new(staging, memory_bytes)
+    _rename(staging, target)
+
+
 def _report_incomplete(memory_dir, name, reason, stage):
     """Best-effort retained-failure report beside the incomplete generation: a fixed reason token and the stage,
     never exception text. Its own failure is ignored so the original refusal is what the caller sees."""
@@ -317,7 +343,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
 
     Refuses (nothing written) on an invalid projection, identity, dim, root or name, a bound violation, a failing
     encoder, or an existing target; after the memory directory exists, any failure retains the incomplete output,
-    adds ``INCOMPLETE.json`` and removes nothing."""
+    adds ``INCOMPLETE.json`` and removes nothing. ``memory.json`` is written last (``_commit_memory``), so it exists
+    only for a complete generation."""
     sp.validate_projection(projection, approved_tasks, include_refs)
     encoder = encoder_identity(identity)
     dim = check_dim(dim)
@@ -366,7 +393,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
             pointer = _publish_cell(memory_dir / "cells" / cell_id, cell_id, rows, vectors, dim=dim,
                                     cutoff_utc=cutoff_utc, encoder=encoder, projection_sha256=projection_sha256)
             pointers[cell_id] = dict(pointer, count=len(rows))
-        stage = "memory"
+        stage = "finalize"  # every final object is computed and guarded before any of them is written
         memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": SCOPE, "cutoff_utc": cutoff_utc,
                   "projection_sha256": projection_sha256, "projection_schema": sp.SCHEMA,
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim, "placement": PLACEMENT_RULE,
@@ -375,8 +402,6 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                   "independent_views": False}
         sp.corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
-        _write_new(memory_dir / "memory.json", memory_bytes)
-        stage = "descriptor"
         memory_sha256 = hashlib.sha256(memory_bytes).hexdigest()
         descriptor = {"schema": DESCRIPTOR_SCHEMA, "scope": SCOPE, "memory_sha256": memory_sha256, "dim": dim,
                       "encoder": encoder}
@@ -384,8 +409,6 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
             raise BuildRefused("descriptor_shape")
         sp.corpus_mod.ws.guard_object(descriptor)
         descriptor_bytes = cell_mod.canonical(descriptor).encode("utf-8")
-        _write_new(memory_dir / "descriptor.json", descriptor_bytes)
-        stage = "build_receipt"
         descriptor_sha256 = hashlib.sha256(descriptor_bytes).hexdigest()
         build_receipt = {"schema": BUILD_RECEIPT_SCHEMA, "authority": "none", "scope": SCOPE, "memory_name": name,
                          "memory_sha256": memory_sha256, "descriptor_sha256": descriptor_sha256,
@@ -400,7 +423,12 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                          "watchdog": WATCHDOG_RULE, "built_utc": _utc_now()}
         sp.corpus_mod.ws.guard_object(build_receipt)
         receipt_bytes = cell_mod.canonical(build_receipt).encode("utf-8")
+        stage = "build_receipt"
         _write_new(memory_dir / "build_receipt.json", receipt_bytes)
+        stage = "descriptor"
+        _write_new(memory_dir / "descriptor.json", descriptor_bytes)
+        stage = "memory"  # the commit point: memory.json is the LAST file and appears only complete
+        _commit_memory(memory_dir, memory_bytes)
     except BuildRefused as refused:
         _report_incomplete(memory_dir, name, str(refused), stage)
         raise

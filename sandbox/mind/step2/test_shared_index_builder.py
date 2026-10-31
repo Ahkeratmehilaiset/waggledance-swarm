@@ -414,8 +414,99 @@ def test_a_guarded_object_after_creation_is_reported_as_output_guarded(tmp_path,
     with pytest.raises(build_mod.BuildRefused, match="output_guarded"):
         build(tmp_path)
     report = json.loads((tmp_path / "shared-v1" / "INCOMPLETE.json").read_bytes())
-    assert report["reason"] == "output_guarded" and report["stage"] == "memory"
+    assert report["reason"] == "output_guarded" and report["stage"] == "finalize"
     assert not (tmp_path / "shared-v1" / "memory.json").exists()
+    assert not (tmp_path / "shared-v1" / "descriptor.json").exists()
+    assert not (tmp_path / "shared-v1" / "build_receipt.json").exists()
+
+
+def _assert_unloadable_and_refused_by_the_real_reader(memory_dir):
+    """An incomplete generation: no memory.json, Memory() refuses, and the real reader refuses on every route."""
+    assert not (memory_dir / "memory.json").exists()
+    assert not any(path.name.startswith(".memory.json") for path in memory_dir.iterdir())  # no torn staging left loadable
+    with pytest.raises(memory_mod.MemoryError_):
+        memory_mod.Memory(memory_dir)
+    descriptor_path = memory_dir / "descriptor.json"
+    if descriptor_path.exists():
+        pin = hashlib.sha256(descriptor_path.read_bytes()).hexdigest()
+        descriptor = reader.read_descriptor(descriptor_path, pin)  # a complete descriptor may exist ...
+        with pytest.raises(reader.PrivateReadRefused, match="memory_descriptor_unreadable"):
+            reader.bind_memory(memory_dir, descriptor)  # ... but it can never bind: there is no memory.json
+    else:
+        with pytest.raises(reader.PrivateReadRefused, match="descriptor_unreadable"):
+            reader.read_descriptor(descriptor_path, "0" * 64)
+
+
+@pytest.mark.parametrize("target, stage", [("build_receipt.json", "build_receipt"), ("descriptor.json", "descriptor"),
+                                           ("memory.json", "memory")])
+def test_an_injected_write_failure_of_any_final_file_leaves_no_loadable_memory(tmp_path, monkeypatch, target, stage):
+    original = build_mod._write_new
+
+    def failing(path, data):
+        if target in os.path.basename(str(path)):
+            raise OSError(28, "no space " + SENTINEL)
+        return original(path, data)
+    monkeypatch.setattr(build_mod, "_write_new", failing)
+    with pytest.raises(build_mod.BuildRefused, match="write_failed"):
+        build(tmp_path)
+    memory_dir = tmp_path / "shared-v1"
+    report = json.loads((memory_dir / "INCOMPLETE.json").read_bytes())
+    assert report["reason"] == "write_failed" and report["stage"] == stage and SENTINEL not in json.dumps(report)
+    _assert_unloadable_and_refused_by_the_real_reader(memory_dir)
+    assert all((memory_dir / "cells" / cell_id / "gen-000001" / "receipt.json").exists()
+               for cell_id in ("general", "system", "learning", "safety"))  # the cells themselves are retained
+    with pytest.raises(build_mod.BuildRefused, match="memory_exists"):
+        build(tmp_path)
+
+
+def test_a_rename_failure_at_the_commit_point_leaves_no_memory_json(tmp_path, monkeypatch):
+    def refuse(src, dst):
+        raise OSError(5, "io " + SENTINEL)
+    monkeypatch.setattr(build_mod, "_rename", refuse)
+    with pytest.raises(build_mod.BuildRefused, match="write_failed"):
+        build(tmp_path)
+    memory_dir = tmp_path / "shared-v1"
+    report = json.loads((memory_dir / "INCOMPLETE.json").read_bytes())
+    assert report["reason"] == "write_failed" and report["stage"] == "memory"
+    assert not (memory_dir / "memory.json").exists() and (memory_dir / "descriptor.json").exists()
+    with pytest.raises(memory_mod.MemoryError_):
+        memory_mod.Memory(memory_dir)
+    staged = [path for path in memory_dir.iterdir() if path.name.startswith(".memory.json.staging-")]
+    assert len(staged) == 1  # the fully written staging copy is retained, never promoted
+
+
+def test_memory_json_is_the_last_file_written_and_the_commit_point_of_a_generation(tmp_path, monkeypatch):
+    order = []
+    original_write, original_rename = build_mod._write_new, build_mod._rename
+
+    def recording_write(path, data):
+        order.append(("write", os.path.basename(str(path))))
+        return original_write(path, data)
+
+    def recording_rename(src, dst):
+        order.append(("rename", os.path.basename(str(dst))))
+        return original_rename(src, dst)
+    monkeypatch.setattr(build_mod, "_write_new", recording_write)
+    monkeypatch.setattr(build_mod, "_rename", recording_rename)
+    build(tmp_path)
+    names = [name for _, name in order]
+    assert names[0] == "projection.json" and order[-1] == ("rename", "memory.json")
+    assert names.index("build_receipt.json") < names.index("descriptor.json") < len(names) - 1
+    assert all(name.startswith(".memory.json.staging-") for kind, name in order[-2:-1])
+    assert not any(path.name.startswith(".memory.json") for path in (tmp_path / "shared-v1").iterdir())
+    assert not (tmp_path / "shared-v1" / "INCOMPLETE.json").exists()
+
+
+def test_a_truncated_memory_json_is_refused_by_the_loader_and_the_real_reader(tmp_path):
+    out = build(tmp_path)
+    memory_dir = tmp_path / "shared-v1"
+    raw = (memory_dir / "memory.json").read_bytes()
+    (memory_dir / "memory.json").write_bytes(raw[: len(raw) // 2])  # a torn manifest, simulated after the fact
+    with pytest.raises(memory_mod.MemoryError_):
+        memory_mod.Memory(memory_dir)
+    descriptor = reader.read_descriptor(memory_dir / "descriptor.json", out["descriptor_sha256"])
+    with pytest.raises(reader.PrivateReadRefused, match="memory_descriptor_mismatch"):
+        reader.bind_memory(memory_dir, descriptor)
 
 
 def test_memory_json_binds_every_cell_and_a_rolled_back_receipt_is_quarantined(tmp_path):
@@ -448,13 +539,17 @@ def test_duplicate_events_in_one_minute_are_one_record_deterministically(tmp_pat
     assert first["content_sha256"] == second["content_sha256"]  # same content, independent of the duplicate
 
 
-def test_an_absent_event_is_never_found_and_a_present_one_is_found_by_its_projected_ref(tmp_path):
+def test_every_returned_ref_is_a_projected_ref_and_a_present_event_is_found_by_its_own_ref(tmp_path):
+    """NOT a proof of absence: Q4 may still ANSWER an unrelated situation with projected records (ranking only
+    consensus, no absent-query rejection). The claim here is only that no ref outside the projection can appear,
+    and that the status is one of the closed Q4 statuses."""
     build(tmp_path)
     engine = q4_mod.Q4(memory_mod.Memory(tmp_path / "shared-v1"), FakeEncoder())
-    absent = engine.ask("thermal seasonal energy forecast", "2026-10-31T13:00:00Z")
-    assert absent["status"] != "ANSWER" or all(
-        result["ref"] in {record["provenance"]["event_ref"] for record in projection()["records"]}
-        for result in absent["results"])
+    projected = {record["provenance"]["event_ref"] for record in projection()["records"]}
+    unrelated = engine.ask("thermal seasonal energy forecast", "2026-10-31T13:00:00Z")
+    assert unrelated["status"] in {"ANSWER", "ABSTAIN"}
+    assert all(result["ref"] in projected for result in unrelated["results"])
+    assert SENTINEL not in json.dumps(unrelated)
     present = engine.ask("wake request from rco", "2026-10-31T13:00:00Z")
     wanted = projection()["records"][1]["provenance"]["event_ref"]
     assert present["status"] == "ANSWER" and present["results"][0]["ref"] == wanted

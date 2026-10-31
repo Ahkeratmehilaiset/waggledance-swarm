@@ -785,7 +785,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
     "sandbox/mind/step2/q4.py", "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
     "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
-    "sandbox/mind/step2/wd_q4_private_read.py",
+    "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/wd_q4_private_read.py",
 })
 
 
@@ -815,7 +815,7 @@ def _assert_shadow_release_delivery(definition):
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
     "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
-    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop",
+    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -843,6 +843,8 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_files"].remove("sandbox/mind/step2/runtime_bootstrap.py")
     elif mutation == "q4_runtime_launcher_drop":
         mutant["python_files"].remove("sandbox/mind/step2/runtime_launcher.py")
+    elif mutation == "q4_projection_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_projection.py")
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":
@@ -851,7 +853,7 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
     with pytest.raises(AssertionError, match="q4_file_drop" if mutation in {
             "q4_adapter_drop", "q4_slot_drop", "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop",
-            "q4_runtime_launcher_drop"} else mutation):
+            "q4_runtime_launcher_drop", "q4_projection_drop"} else mutation):
         _assert_shadow_release_delivery(mutant)
     _assert_shadow_release_delivery(definition)
 

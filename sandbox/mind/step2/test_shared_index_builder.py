@@ -13,8 +13,7 @@ import sys
 import numpy as np
 import pytest
 
-# FAISS is an optional runtime dependency and is absent from the CI base set.
-# A skip is not evidence that the vector-backed builder was exercised.
+# FAISS is optional in the CI base; a skip is not proof of vector execution.
 pytest.importorskip("faiss")
 
 from sandbox.mind.step2 import cell as cell_mod
@@ -937,11 +936,639 @@ def _snapshot_module():
     prerequisite, Lead 17:13:59Z: do not manufacture verification, do not modify Lead files)."""
     snapshot = pytest.importorskip(build_mod.SNAPSHOT_MODULE,
                                    reason="integration prerequisite: Lead shared_bridge_snapshot not on this branch")
-    if not all(hasattr(snapshot, name) for name in ("verify_anchored_projection", "_ProjectionBinding", "_token", "_canonical")):
-        pytest.skip("integration prerequisite: verify_anchored_projection not committed in this tree")
+    if not all(hasattr(snapshot, name) for name in ("verify_anchored_projection", "_ProjectionBinding", "_token",
+                                                       "_canonical", "read_anchored_delta", "SnapshotRefused")):
+        pytest.skip("integration prerequisite: the anchored snapshot chain is not committed in this tree")
     return snapshot
 
 
+def _real_snapshot(snapshot, root, events, *, pins=PINS, approved=APPROVED, start=None):
+    """A snapshot result from the REAL Lead chain over synthetic bridge-log BYTES written here (``read_bridge_log`` ->
+    ``read_anchored_delta`` -> capture adapter -> projection): no mock and no binding built by hand (the Lead binding
+    carries an in-process semantic commitment that only the real reader can produce). With ``start`` the events are
+    APPENDED to the existing log and read from that cursor (the next delta of the same source). Returns
+    ``(result, anchor_sha256, start_cursor)``. No real events, no real log."""
+    from dataclasses import asdict
+    from waggledance.core.bridge_log_reader import BridgeCursor, read_bridge_log
+    root.mkdir(exist_ok=True)
+    log, generation_path = root / "events.jsonl", root / "events.generation.json"
+    payload = b"".join(json.dumps(row, sort_keys=True).encode("utf-8") + b"\n" for row in events)
+    if start is None:
+        log.write_bytes(payload)
+        generation_path.write_text(json.dumps({"generation": "gen-synthetic"}), encoding="utf-8")
+        probe = read_bridge_log(log, generation_path=generation_path, max_bytes=1 << 20, max_rows=100)
+        assert probe.candidate_cursor is not None, probe.reason  # the reader's own identity of this synthetic file
+        start = BridgeCursor(offset=0, file_identity=probe.candidate_cursor.file_identity, generation="gen-synthetic")
+    else:
+        with open(log, "ab") as handle:
+            handle.write(payload)
+    anchor_bytes = json.dumps({"schema": "wd.q4-source-anchor.v1", "source_path": str(log),
+                               "generation_path": str(generation_path), "cursor_start": asdict(start),
+                               "policy_sha256": pins["policy_sha256"], "roster_sha256": pins["roster_sha256"]},
+                              sort_keys=True).encode("utf-8")
+    anchor_sha256 = sha(anchor_bytes)
+    result = snapshot.read_anchored_delta(log, start, approved, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
+                                          generation_path=generation_path, max_bytes=1 << 20, max_rows=100,
+                                          policy_bytes=pins["policy_bytes"], policy_sha256=pins["policy_sha256"],
+                                          roster_bytes=pins["roster_bytes"], roster_sha256=pins["roster_sha256"])
+    return result, anchor_sha256, start
+
+
+def test_v4_source_binding_is_written_only_after_the_lead_verifier_accepts(tmp_path):
+    """Lead 17:33:37Z: a REAL snapshot feeds the builder, not a mock; the binding digests are the reader's own."""
+    snapshot = _snapshot_module()
+    result, anchor, start = _real_snapshot(snapshot, tmp_path / "log", EVENTS)
+    out = build(tmp_path, proj=result["projection"], approved_tasks=None, roster=None,
+                source={"snapshot_result": result, "expected_anchor_sha256": anchor}, allow_unbound_source=False)
+    receipt = out["build_receipt"]
+    assert receipt["source_binding"] == {
+        "schema": "wd.q4-shared-index-source-binding.v1", "anchor_sha256": anchor,
+        "projection_sha256": out["projection_sha256"], "cursor_start_sha256": sha(snapshot._token(start)),
+        "cursor_end_sha256": sha(snapshot._token(result["candidate_cursor"])), "policy_sha256": POLICY_SHA,
+        "roster_sha256": ROSTER_SHA}
+    assert receipt["source_binding"]["cursor_start_sha256"] == result["source"]["cursor_start_sha256"]
+    assert receipt["source_binding"]["cursor_end_sha256"] == result["source"]["cursor_end_sha256"]
+    assert receipt["source_bound"] is True and receipt["source_authenticated"] is False
+    assert receipt["records"] == 4 and receipt["delta_projection_sha256"] == out["projection_sha256"]
+    serialized = json.dumps(out) + (tmp_path / "shared-v1" / "build_receipt.json").read_text("utf-8")
+    assert start.file_identity not in serialized and "bc1." not in serialized  # identity and tokens are hashed only
+    assert SENTINEL not in serialized and "_projection_binding" not in serialized
+
+
+def test_v5_two_consecutive_real_lead_deltas_build_a_continuous_history_chain_without_any_mock(tmp_path):
+    """The whole route with the real Lead chain and the real Lead merge helper: delta 1 -> generation 1; the log
+    grows; delta 2 from generation 1's cursor end -> generation 2 with generation 1 as its pinned predecessor."""
+    snapshot, history = _snapshot_module(), _history_module()
+    first_result, first_anchor, start = _real_snapshot(snapshot, tmp_path / "log", EVENTS)
+    first = build(tmp_path, proj=first_result["projection"], approved_tasks=None, roster=None,
+                  source={"snapshot_result": first_result, "expected_anchor_sha256": first_anchor}, allow_unbound_source=False)
+    second_result, second_anchor, resume = _real_snapshot(snapshot, tmp_path / "log", LATER_EVENTS,
+                                                          start=first_result["candidate_cursor"])
+    assert resume == first_result["candidate_cursor"] and second_result["projection"]["accepted"] == 3
+    out = build(tmp_path, name="shared-v2", proj=second_result["projection"], approved_tasks=None, roster=None,
+                source={"snapshot_result": second_result, "expected_anchor_sha256": second_anchor}, allow_unbound_source=False,
+                predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    receipt = out["build_receipt"]
+    delta_sha = sha(json.dumps(second_result["projection"], sort_keys=True, indent=1).encode("utf-8"))
+    assert receipt["source_binding"]["projection_sha256"] == delta_sha == receipt["delta_projection_sha256"]
+    assert receipt["source_binding"]["anchor_sha256"] == second_anchor
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(snapshot._token(resume)) == receipt["history"]["predecessor"]["cursor_end_sha256"]
+    assert receipt["source_binding"]["cursor_end_sha256"] == sha(snapshot._token(second_result["candidate_cursor"]))
+    assert receipt["history"]["continuity_checked"] is True and receipt["history"]["predecessor"]["source_bound"] is True
+    assert receipt["records"] == 6 == receipt["history"]["merged_records"] and receipt["history"]["overlap_records"] == 1
+    merged = json.loads((tmp_path / "shared-v2" / "projection.json").read_bytes())
+    assert record_ids(merged) == record_ids(first_result["projection"]) | record_ids(second_result["projection"])
+    assert receipt["projection_sha256"] == sha((tmp_path / "shared-v2" / "projection.json").read_bytes()) != delta_sha
+    # a third delta that does NOT start at generation 2's cursor end is refused as discontinuous (real cursors)
+    third_result, third_anchor, _ = _real_snapshot(snapshot, tmp_path / "log", [event(ts_utc="2026-10-31T12:50:00Z")],
+                                                   start=first_result["candidate_cursor"])
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_discontinuous"):
+        build(tmp_path, name="shared-v3", proj=third_result["projection"], approved_tasks=None, roster=None,
+              source={"snapshot_result": third_result, "expected_anchor_sha256": third_anchor}, allow_unbound_source=False,
+              predecessor=predecessor_of(tmp_path, "shared-v2", out))
+    serialized = json.dumps(out) + json.dumps(merged)
+    assert "bc1." not in serialized and start.file_identity not in serialized and SENTINEL not in serialized
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["log", "shared-v1", "shared-v2"]
+
+
+def test_v4_binding_takes_the_cursor_digests_from_the_verified_source_import_seam_double(tmp_path, monkeypatch):
+    """Import-seam double, NOT verification: a stand-in module whose verifier accepts everything, so that THIS
+    builder's own binding steps are observable here (digests come from ``source``, the end digest must be the digest
+    of the candidate cursor, nothing raw is persisted). The real verifier tests above stay the acceptance proof."""
+    import types
+    from waggledance.core.bridge_log_reader import BridgeCursor
+
+    def token(cursor):
+        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
+
+    double = types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: True, _token=token)
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    start = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
+    end = BridgeCursor(offset=77, file_identity="synthetic-identity", generation="gen-synthetic")
+    source_meta = {"cursor_start_sha256": sha(token(start)), "cursor_end_sha256": sha(token(end)), "coverage": "x"}
+    result = {"projection": projection(), "source": source_meta, "candidate_cursor": end}
+    anchor = "5" * 64
+    out = build(tmp_path, source={"snapshot_result": result, "expected_anchor_sha256": anchor}, allow_unbound_source=False)
+    binding = out["build_receipt"]["source_binding"]
+    assert binding["cursor_start_sha256"] == sha(token(start)) and binding["cursor_end_sha256"] == sha(token(end))
+    assert binding["anchor_sha256"] == anchor and binding["projection_sha256"] == out["projection_sha256"]
+    assert binding["policy_sha256"] == POLICY_SHA and binding["roster_sha256"] == ROSTER_SHA
+    assert "bc1." not in json.dumps(out) and "synthetic-identity" not in json.dumps(out)
+    # the end digest in source must be the digest of the candidate cursor, even when the verifier accepted
+    for bad_meta in (dict(source_meta, cursor_end_sha256=sha(token(start))), dict(source_meta, cursor_end_sha256="z" * 64),
+                     {k: v for k, v in source_meta.items() if k != "cursor_start_sha256"},
+                     dict(source_meta, cursor_start="bc1.raw-token")):
+        bad = {"projection": projection(), "source": bad_meta, "candidate_cursor": end}
+        if "cursor_start" in bad_meta:
+            bad["source"] = {k: v for k, v in bad_meta.items() if k != "cursor_start_sha256"}
+        with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
+            build(tmp_path, name="bad", source={"snapshot_result": bad, "expected_anchor_sha256": anchor},
+                  allow_unbound_source=False)
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):  # a verifier that does not say True
+        monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE,
+                            types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: 1, _token=token))
+        build(tmp_path, name="bad2", source={"snapshot_result": result, "expected_anchor_sha256": anchor},
+              allow_unbound_source=False)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+
+
+@pytest.mark.parametrize("wrong", ["projection", "end", "anchor", "policy", "roster", "spliced_source"])
+def test_v4_a_spliced_or_mismatched_source_binding_refuses_with_nothing_written(tmp_path, wrong):
+    """Each case starts from a REAL Lead snapshot result and changes exactly one thing under the binding (the
+    ``end_digest`` case, a source whose end digest is not the candidate's, cannot be produced by the real reader and
+    is the builder's own check in the import-seam test above)."""
+    snapshot = _snapshot_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    result, anchor, start = _real_snapshot(snapshot, tmp_path / "log", EVENTS)
+    proj, expected_anchor, pins = result["projection"], anchor, PINS
+    if wrong == "projection":
+        proj = projection(list(EVENTS[:2]))  # a valid projection that is not the bound one
+    elif wrong == "end":
+        result["candidate_cursor"] = BridgeCursor(offset=999, file_identity=start.file_identity, generation=start.generation)
+    elif wrong == "anchor":
+        expected_anchor = "2" * 64
+    elif wrong == "policy":  # a different (superset) pinned policy: the projection still validates, the digest differs
+        other_bytes, other_sha = pinned(dict(POLICY_DOC, approved_tasks=sorted(APPROVED | {"other-task-2"})))
+        pins = dict(PINS, policy_bytes=other_bytes, policy_sha256=other_sha)
+    elif wrong == "roster":  # the same lanes and uuids with role fields: a different roster digest
+        other_doc = dict(ROSTER_DOC, lanes=[dict(lane, role="synthetic") for lane in ROSTER_DOC["lanes"]])
+        other_bytes, other_sha = pinned(other_doc)
+        pins = dict(PINS, roster_bytes=other_bytes, roster_sha256=other_sha)
+    elif wrong == "spliced_source":
+        result["source"] = dict(result["source"], cursor_end_sha256=result["source"]["cursor_start_sha256"])  # changed under the binding
+    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
+        build(tmp_path, proj=proj, approved_tasks=None, roster=None, pins=pins,
+              source={"snapshot_result": result, "expected_anchor_sha256": expected_anchor}, allow_unbound_source=False)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["log"]
+
+
+# ---- v5 (Lead bound request lead-mind-shared-index-fable-20261031-v5, 17:55:13Z; supplement 17:56:10Z): bounded ----
+# ---- prior metadata history: the NEXT complete frozen generation is built from a pinned predecessor + one delta ----
+
+# The delta of the second generation: two new records and one record that is ALSO in EVENTS (same projected metadata
+# in the same minute -> the same record id), so the overlap path is exercised by every history test.
+LATER_EVENTS = [event(ts_utc="2026-10-31T12:30:00Z", status="done"),
+                event(type="progress", status="info", agent="fable-5", ts_utc="2026-10-31T12:35:00Z"),
+                event(type="done", status="blocked", agent="codex-tools-1", ts_utc="2026-10-31T12:20:00Z")]
+
+
+def predecessor_of(root, name, out):
+    """The caller's pinned predecessor record: the directory plus the three digests the previous build returned."""
+    return {"memory_dir": str(root / name), "memory_sha256": out["memory_sha256"],
+            "projection_sha256": out["projection_sha256"], "build_receipt_sha256": out["build_receipt_sha256"]}
+
+
+def _history_module():
+    """The pinned Lead merge helper (``shared_history.merge_projections`` at 9caa041b); absent on this branch -> the
+    dependent test is SKIPPED (integration prerequisite, Lead 17:55:13Z: report skips, never manufacture the helper)."""
+    history = pytest.importorskip(build_mod.HISTORY_MODULE,
+                                  reason="integration prerequisite: Lead shared_history not on this branch")
+    if not callable(getattr(history, "merge_projections", None)):
+        pytest.skip("integration prerequisite: merge_projections not committed in this tree")
+    return history
+
+
+def record_ids(proj):
+    return {record["record_id"] for record in proj["records"]}
+
+
+def test_v5_a_first_generation_records_no_history_and_equal_merged_and_delta_digests(tmp_path):
+    out = build(tmp_path)
+    receipt = out["build_receipt"]
+    assert receipt["history"] is None
+    assert receipt["delta_projection_sha256"] == receipt["projection_sha256"] == out["projection_sha256"]
+    memory = json.loads((tmp_path / "shared-v1" / "memory.json").read_bytes())
+    assert memory["history"] is None and memory["projection_sha256"] == out["projection_sha256"]
+    assert build_mod.HISTORY_SCHEMA == "wd.q4-shared-index-history.v1"
+    assert build_mod.PREDECESSOR_KEYS == {"memory_dir", "memory_sha256", "projection_sha256", "build_receipt_sha256"}
+
+
+def test_v5_a_predecessor_and_a_delta_build_one_generation_that_retains_prior_records(tmp_path):
+    _history_module()
+    first = build(tmp_path)
+    before = {path: path.read_bytes() for path in (tmp_path / "shared-v1").rglob("*") if path.is_file()}
+    delta = projection(LATER_EVENTS)
+    delta_sha = sha(json.dumps(delta, sort_keys=True, indent=1).encode("utf-8"))
+    out = build(tmp_path, name="shared-v2", proj=delta, predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    receipt = out["build_receipt"]
+    merged_bytes = (tmp_path / "shared-v2" / "projection.json").read_bytes()
+    merged = json.loads(merged_bytes)
+    # the index contains the MERGED set; the receipt says explicitly which digest is merged and which is the delta
+    assert record_ids(merged) == record_ids(projection()) | record_ids(delta) and merged["accepted"] == 6
+    assert receipt["records"] == 6 and receipt["projection_sha256"] == out["projection_sha256"] == sha(merged_bytes)
+    assert receipt["delta_projection_sha256"] == delta_sha != receipt["projection_sha256"]
+    assert receipt["history"] == {
+        "schema": "wd.q4-shared-index-history.v1", "helper": build_mod.HISTORY_MODULE,
+        "predecessor": {"memory_sha256": first["memory_sha256"], "projection_sha256": first["projection_sha256"],
+                        "build_receipt_sha256": first["build_receipt_sha256"], "records": 4, "source_bound": False,
+                        "cursor_end_sha256": None},
+        "delta_projection_sha256": delta_sha, "delta_records": 3, "delta_refused": {}, "overlap_records": 1,
+        "merged_records": 6, "merged_projection_sha256": out["projection_sha256"], "continuity_checked": False,
+        "continuity_route": "none", "watermark": None}
+    memory = json.loads((tmp_path / "shared-v2" / "memory.json").read_bytes())
+    assert memory["history"] == {"predecessor_memory_sha256": first["memory_sha256"],
+                                 "predecessor_projection_sha256": first["projection_sha256"],
+                                 "delta_projection_sha256": delta_sha}
+    assert memory["records"] == 6 and memory["projection_sha256"] == out["projection_sha256"]
+    # every cell receipt binds the MERGED projection digest, so a ref resolves against the persisted projection.json
+    for path in (tmp_path / "shared-v2" / "cells").rglob("receipt.json"):
+        assert json.loads(path.read_bytes())["content"]["projection_sha256"] == out["projection_sha256"]
+    # the predecessor generation is untouched (history by retention, never by appending into an index)
+    assert {path: path.read_bytes() for path in (tmp_path / "shared-v1").rglob("*") if path.is_file()} == before
+    # the REAL Lead reader binds the new generation and a record that exists ONLY in the predecessor is found by its ref
+    descriptor = reader.read_descriptor(tmp_path / "shared-v2" / "descriptor.json", out["descriptor_sha256"])
+    opened = reader.bind_memory(tmp_path / "shared-v2", descriptor)
+    engine = q4_mod.Q4(opened, FakeEncoder())
+    projected = {record["provenance"]["event_ref"] for record in merged["records"]}
+    present = engine.ask("wake request from tools", "2026-10-31T13:00:00Z")
+    wanted = projection()["records"][1]["provenance"]["event_ref"]
+    assert present["status"] == "ANSWER" and present["results"][0]["ref"] == wanted and wanted in projected
+    later = engine.ask("progress info from fable", "2026-10-31T13:00:00Z")
+    assert later["status"] == "ANSWER" and later["results"][0]["ref"] == delta["records"][1]["provenance"]["event_ref"]
+    for answer in (present, later, engine.ask("thermal seasonal energy forecast", "2026-10-31T13:00:00Z")):
+        assert all(result["ref"] in projected for result in answer["results"])
+    everything = json.dumps(out) + merged_bytes.decode("utf-8") + json.dumps(memory)
+    assert SENTINEL not in everything and "review_lane_excluded" not in everything and "pr_branch" not in everything
+
+
+def test_v5_duplicates_across_generations_are_one_record_and_a_conflicting_id_refuses(tmp_path):
+    _history_module()
+    first = build(tmp_path)
+    twice = projection([event(), event(message="other body", ts_utc="2026-10-31T12:00:59Z")] + LATER_EVENTS)
+    assert twice["accepted"] == 5  # two in-minute duplicates of the first EVENTS record plus the three later ones
+    out = build(tmp_path, name="shared-v2", proj=twice, predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    assert out["build_receipt"]["records"] == 6 and out["build_receipt"]["history"]["merged_records"] == 6
+    assert out["build_receipt"]["history"]["overlap_records"] == 2 and out["build_receipt"]["history"]["delta_records"] == 5
+    # a record id is the digest of its approved fields, so a delta that reuses a known id with other text is not a
+    # valid projection at all: it refuses at validation, before the predecessor is read or the helper runs (the
+    # helper's own same-id/different-content guard is defence in depth behind that)
+    conflicting = projection(LATER_EVENTS)
+    conflicting["records"][2]["stored_text"] = conflicting["records"][2]["summary"] = "forged text for a known id"
+    with pytest.raises(build_mod.BuildRefused, match="projection_invalid"):
+        build(tmp_path, name="shared-v3", proj=conflicting, predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    # and a merge result that is not exactly previous | delta refuses even when the helper returned it
+    import types
+    dropped = build_mod.build_memory.__globals__  # the module namespace, for the seam below
+    real_merge = _history_module().merge_projections
+
+    def lossy_merge(previous, delta, **pins):
+        merged = real_merge(previous, delta, **pins)
+        merged["records"] = merged["records"][1:]
+        merged["accepted"] -= 1
+        return merged
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, build_mod.HISTORY_MODULE, types.SimpleNamespace(merge_projections=lossy_merge))
+        with pytest.raises(build_mod.BuildRefused, match="history_refused"):
+            build(tmp_path, name="shared-v3", proj=projection(LATER_EVENTS), predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    assert dropped is build_mod.__dict__ and sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1", "shared-v2"]
+
+
+def test_v5_the_4096_cap_holds_for_the_merged_set_and_is_checked_before_the_helper_and_any_write(tmp_path):
+    history = _history_module()
+    assert build_mod.MAX_RECORDS == 4096 == history.MAX_RECORDS
+    many = [event(ts_utc="2026-11-%02dT%02d:%02d:00Z" % (1 + n // 1440, (n // 60) % 24, n % 60)) for n in range(4095)]
+    first = build(tmp_path, proj=projection(many))
+    assert first["build_receipt"]["records"] == 4095
+    one_more = projection([event(ts_utc="2026-11-05T00:00:00Z", status="done")])
+    full = build(tmp_path, name="full", proj=one_more, predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    assert full["build_receipt"]["records"] == 4096 == full["build_receipt"]["history"]["merged_records"]
+    over = projection([event(ts_utc="2026-11-05T00:01:00Z", status="done")])
+    with pytest.raises(build_mod.BuildRefused, match="records_over_bound"):
+        build(tmp_path, name="over", proj=over, predecessor=predecessor_of(tmp_path, "full", full))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["full", "shared-v1"]
+
+
+def test_v5_the_merged_bound_is_checked_before_the_helper_import_and_before_any_write(tmp_path, monkeypatch):
+    first = build(tmp_path)  # four records
+    monkeypatch.setattr(build_mod, "MAX_RECORDS", 5)
+    monkeypatch.setitem(sys.modules, build_mod.HISTORY_MODULE, None)  # the helper import would raise ImportError
+    with pytest.raises(build_mod.BuildRefused, match="records_over_bound"):  # 4 + 2 new (1 overlap) = 6 > 5
+        build(tmp_path, name="shared-v2", proj=projection(LATER_EVENTS), predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    with pytest.raises(build_mod.BuildRefused, match="history_helper_unavailable"):  # 4 + 1 new = 5: bound passed first
+        build(tmp_path, name="shared-v2", proj=projection(LATER_EVENTS[:1]), predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+
+
+def test_v5_an_unavailable_history_helper_fails_closed_before_any_write(tmp_path, monkeypatch):
+    first = build(tmp_path)
+    predecessor = predecessor_of(tmp_path, "shared-v1", first)
+    monkeypatch.setitem(sys.modules, build_mod.HISTORY_MODULE, None)
+    with pytest.raises(build_mod.BuildRefused, match="history_helper_unavailable"):
+        build(tmp_path, name="shared-v2", proj=projection(LATER_EVENTS), predecessor=predecessor)
+
+    class Half:  # a module without the merge API
+        MAX_RECORDS = 4096
+
+    monkeypatch.setitem(sys.modules, build_mod.HISTORY_MODULE, Half())
+    with pytest.raises(build_mod.BuildRefused, match="history_helper_unavailable"):
+        build(tmp_path, name="shared-v2", proj=projection(LATER_EVENTS), predecessor=predecessor)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+    assert "merge_projections" not in build_mod.__dict__  # the merge is the pinned Lead helper, never re-implemented
+    assert build_mod.HISTORY_MODULE == "sandbox.mind.step2.shared_history"
+
+
+def test_v5_predecessor_shape_digest_and_policy_mismatches_refuse_before_any_write(tmp_path):
+    first = build(tmp_path)
+    good = predecessor_of(tmp_path, "shared-v1", first)
+    delta = projection(LATER_EVENTS)
+    for bad in ("x", {}, [good], dict(good, extra=1), {k: v for k, v in good.items() if k != "build_receipt_sha256"},
+                dict(good, memory_dir=5), dict(good, memory_sha256="zz"), dict(good, projection_sha256=first["projection_sha256"].upper())):
+        with pytest.raises(build_mod.BuildRefused, match="predecessor_invalid"):
+            build(tmp_path, name="shared-v2", proj=delta, predecessor=bad)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_unreadable"):
+        build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, memory_dir=str(tmp_path / "absent")))
+    for key in ("memory_sha256", "projection_sha256", "build_receipt_sha256"):
+        with pytest.raises(build_mod.BuildRefused, match="predecessor_mismatch"):
+            build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, **{key: "0" * 64}))
+    # a byte-altered predecessor projection (copy of the generation, one record relabelled) fails its pinned digest
+    import shutil
+    shutil.copytree(tmp_path / "shared-v1", tmp_path / "copy")
+    path = tmp_path / "copy" / "projection.json"
+    altered = json.loads(path.read_bytes())
+    altered["records"][0]["meta"]["status"] = "done"
+    path.write_bytes(json.dumps(altered, sort_keys=True, indent=1).encode("utf-8"))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_mismatch"):
+        build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, memory_dir=str(tmp_path / "copy")))
+    # a predecessor built under OTHER pins is a different series: never carried silently into this one
+    other_roster = dict(ROSTER, **{"fable-5": FOREIGN_UUID})
+    other_doc = dict(ROSTER_DOC, lanes=[dict(lane, agent_uuid=other_roster[lane["agent"]]) for lane in ROSTER_DOC["lanes"]])
+    other_bytes, other_sha = pinned(other_doc)
+    events = [dict(e, agent_uuid=other_roster[e["agent"]]) for e in EVENTS]
+    other = build(tmp_path, name="other", proj=projection(events, roster=other_roster), roster=other_roster,
+                  pins=dict(PINS, roster_bytes=other_bytes, roster_sha256=other_sha))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_policy_mismatch"):
+        build(tmp_path, name="shared-v2", proj=delta, predecessor=predecessor_of(tmp_path, "other", other))
+    # the predecessor must be a complete generation: an incomplete directory (no memory.json) is refused
+    shutil.copytree(tmp_path / "shared-v1", tmp_path / "incomplete")
+    (tmp_path / "incomplete" / "memory.json").unlink()
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_unreadable"):
+        build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, memory_dir=str(tmp_path / "incomplete")))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["copy", "incomplete", "other", "shared-v1"]
+    assert FOREIGN_UUID not in json.dumps(other)
+
+
+def test_v5_an_empty_or_all_filtered_delta_never_builds_a_generation_even_with_a_predecessor(tmp_path):
+    first = build(tmp_path)
+    predecessor = predecessor_of(tmp_path, "shared-v1", first)
+    for empty in (projection([]), projection([event(agent="claude-rco-1", ts_utc="2026-10-31T12:40:00Z")]),
+                  projection([event(task_id="feature/pr-branch-task", ts_utc="2026-10-31T12:41:00Z")])):
+        assert empty["accepted"] == 0
+        with pytest.raises(build_mod.BuildRefused, match="projection_empty"):  # an empty delta is a cursor event, not a generation
+            build(tmp_path, name="shared-v2", proj=empty, predecessor=predecessor)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+
+
+def _seam_double():
+    """The import-seam stand-in for the Lead verifier (NOT verification, see the v4 seam test)."""
+    import types
+
+    def token(cursor):
+        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
+    return types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: True, _token=token), token
+
+
+def _bound_source(token, proj, start, end, anchor="5" * 64):
+    meta = {"cursor_start_sha256": sha(token(start)), "cursor_end_sha256": sha(token(end)), "coverage": "x"}
+    return {"snapshot_result": {"projection": proj, "source": meta, "candidate_cursor": end}, "expected_anchor_sha256": anchor}
+
+
+def test_v5_a_bound_delta_requires_a_bound_and_continuous_predecessor_import_seam_double(tmp_path, monkeypatch):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token = _seam_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2, other = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150, 9))
+    bound_first = build(tmp_path, source=_bound_source(token, projection(), c0, c1), allow_unbound_source=False)
+    unbound_first = build(tmp_path, name="unbound", proj=projection())
+    delta = projection(LATER_EVENTS)
+    # the delta's cursor start digest must equal the predecessor's recorded cursor end digest (an in-process part of
+    # RCO2 H1; the checkpoint CAS against the current pointer remains the Lead's authority)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_discontinuous"):
+        build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, other, c2), allow_unbound_source=False,
+              predecessor=predecessor_of(tmp_path, "shared-v1", bound_first))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_unbound"):  # a bound delta never extends an unbound series
+        build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, c1, c2), allow_unbound_source=False,
+              predecessor=predecessor_of(tmp_path, "unbound", unbound_first))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1", "unbound"]
+    assert "bc1." not in json.dumps(bound_first) and "synthetic-identity" not in json.dumps(bound_first)
+
+
+def test_v5_a_continuous_bound_chain_records_the_delta_binding_and_the_predecessor_cursor_end(tmp_path, monkeypatch):
+    _history_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token = _seam_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150))
+    first = build(tmp_path, source=_bound_source(token, projection(), c0, c1), allow_unbound_source=False)
+    delta = projection(LATER_EVENTS)
+    delta_sha = sha(json.dumps(delta, sort_keys=True, indent=1).encode("utf-8"))
+    out = build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, c1, c2), allow_unbound_source=False,
+                predecessor=predecessor_of(tmp_path, "shared-v1", first))
+    receipt = out["build_receipt"]
+    # the source binding binds the DELTA (what the verifier saw), never the merged projection
+    assert receipt["source_binding"]["projection_sha256"] == delta_sha == receipt["delta_projection_sha256"]
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(token(c1)) == receipt["history"]["predecessor"]["cursor_end_sha256"]
+    assert receipt["source_binding"]["cursor_end_sha256"] == sha(token(c2))
+    assert receipt["history"]["predecessor"]["source_bound"] is True and receipt["history"]["continuity_checked"] is True
+    assert receipt["history"]["continuity_route"] == "receipt_end" and receipt["history"]["watermark"] is None
+    assert receipt["projection_sha256"] != delta_sha and receipt["records"] == 6
+    assert "bc1." not in json.dumps(out) and "synthetic-identity" not in json.dumps(out)
+
+
+# ---- v5 watermark route (Lead 18:19:12Z A -> empty -> B; agreed design 18:23:02Z; Lead API read_verified_pointer ----
+# ---- at f5868baa): after a verified EMPTY advance the checkpoint watermark moves while the predecessor receipt ----
+# ---- cursor_end stays, so the next delta starts at the watermark. The builder accepts that only through the ----
+# ---- Lead's read-only verified-pointer function (same pins), never through a caller digest. ----
+
+
+def _pointer_double(result=None, error=None, calls=None):
+    """Import-seam stand-in for shared_index_checkpoint.read_verified_pointer (NOT verification): returns ``result``
+    or raises ``error``; records every call so the builder's own arguments are observable."""
+    import types
+
+    def read_verified_pointer(root, approved_tasks, **kw):
+        if calls is not None:
+            calls.append((root, approved_tasks, kw))
+        if error is not None:
+            raise error
+        return result
+    return types.SimpleNamespace(read_verified_pointer=read_verified_pointer)
+
+
+def _verified_pointer_of(first, *, pointer_sha256, anchor, cursor_end_sha256, watermark_sha256, generation="shared-v1"):
+    return {"pointer_sha256": pointer_sha256, "generation": generation,
+            "artifacts": {"descriptor_sha256": first["descriptor_sha256"], "memory_sha256": first["memory_sha256"],
+                          "projection_sha256": first["projection_sha256"], "receipt_sha256": first["build_receipt_sha256"]},
+            "anchor_sha256": anchor, "cursor_end_sha256": cursor_end_sha256, "watermark_sha256": watermark_sha256}
+
+
+def test_v5w_watermark_shape_is_closed_and_needs_a_bound_delta(tmp_path, monkeypatch):
+    assert build_mod.WATERMARK_KEYS == {"root", "pointer_sha256"}
+    assert build_mod.CHECKPOINT_MODULE == "sandbox.mind.step2.shared_index_checkpoint"
+    assert build_mod.PREDECESSOR_KEYS == {"memory_dir", "memory_sha256", "projection_sha256", "build_receipt_sha256"}
+    first = build(tmp_path)
+    good = predecessor_of(tmp_path, "shared-v1", first)
+    delta = projection(LATER_EVENTS)
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, _pointer_double(result={}))
+    for bad in ("x", {}, [], {"root": str(tmp_path)}, {"root": str(tmp_path), "pointer_sha256": "zz"},
+                {"root": 5, "pointer_sha256": "0" * 64}, {"root": str(tmp_path), "pointer_sha256": "0" * 64, "extra": 1}):
+        with pytest.raises(build_mod.BuildRefused, match="watermark_invalid"):
+            build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, watermark=bad))
+    with pytest.raises(build_mod.BuildRefused, match="watermark_invalid"):  # an unbound (synthetic) delta has no cursor to prove
+        build(tmp_path, name="shared-v2", proj=delta, predecessor=dict(good, watermark={"root": str(tmp_path), "pointer_sha256": "0" * 64}))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+
+
+def test_v5w_an_unavailable_pointer_verifier_fails_closed_before_any_write(tmp_path, monkeypatch):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token = _seam_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2, c3 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150, 220))
+    first = build(tmp_path, source=_bound_source(token, projection(), c0, c1), allow_unbound_source=False)
+    delta = projection(LATER_EVENTS)
+    watermark = {"root": str(tmp_path), "pointer_sha256": "7" * 64}
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, None)
+    with pytest.raises(build_mod.BuildRefused, match="watermark_verifier_unavailable"):
+        build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, c2, c3), allow_unbound_source=False,
+              predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+
+    class Half:  # a module without the function
+        POINTER = "q4-latest.json"
+
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, Half())
+    with pytest.raises(build_mod.BuildRefused, match="watermark_verifier_unavailable"):
+        build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, c2, c3), allow_unbound_source=False,
+              predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
+    assert "read_verified_pointer" not in build_mod.__dict__ and "_validated_previous" not in build_mod.__dict__
+
+
+def test_v5w_the_verified_watermark_route_import_seam_double(tmp_path, monkeypatch):
+    """Import-seam double for BOTH Lead functions (NOT verification): makes the builder's own steps observable: the
+    pointer function is called with the resolved pins and the caller's pointer digest; the returned generation must be
+    the predecessor (all four artifact digests, anchor, cursor end, name); the watermark must equal the delta start."""
+    _history_module()
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    double, token = _seam_double()
+    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
+    c0, c1, c2, c3 = (BridgeCursor(offset=n, file_identity="synthetic-identity", generation="gen-synthetic") for n in (0, 77, 150, 220))
+    anchor = "5" * 64
+    first = build(tmp_path, source=_bound_source(token, projection(), c0, c1, anchor), allow_unbound_source=False)
+    delta = projection(LATER_EVENTS)
+    pointer_sha = "7" * 64
+    verified = _verified_pointer_of(first, pointer_sha256=pointer_sha, anchor=anchor,
+                                    cursor_end_sha256=sha(token(c1)), watermark_sha256=sha(token(c2)))
+    calls = []
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, _pointer_double(result=verified, calls=calls))
+    watermark = {"root": str(tmp_path), "pointer_sha256": pointer_sha}
+    out = build(tmp_path, name="shared-v2", proj=delta, source=_bound_source(token, delta, c2, c3, anchor), allow_unbound_source=False,
+                predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+    receipt = out["build_receipt"]
+    assert receipt["history"]["continuity_route"] == "verified_watermark" and receipt["history"]["continuity_checked"] is True
+    assert receipt["history"]["watermark"] == {"pointer_sha256": pointer_sha, "watermark_sha256": sha(token(c2)),
+                                               "generation": "shared-v1"}
+    assert receipt["history"]["predecessor"]["cursor_end_sha256"] == sha(token(c1))  # the receipt end stays A's end
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(token(c2))  # B starts at the verified watermark
+    assert len(calls) == 1
+    root, tasks, kw = calls[0]
+    assert str(root) == str(tmp_path) and tasks == APPROVED
+    assert kw == {"expected_pointer_sha256": pointer_sha, "policy_bytes": POLICY_BYTES, "policy_sha256": POLICY_SHA,
+                  "roster_bytes": ROSTER_BYTES, "roster_sha256": ROSTER_SHA}
+    assert "bc1." not in json.dumps(out) and "synthetic-identity" not in json.dumps(out)
+    # every deviation of the verified pointer from the predecessor refuses before any write
+    wrong_cases = {
+        "memory": dict(verified, artifacts=dict(verified["artifacts"], memory_sha256="0" * 64)),
+        "projection": dict(verified, artifacts=dict(verified["artifacts"], projection_sha256="0" * 64)),
+        "receipt": dict(verified, artifacts=dict(verified["artifacts"], receipt_sha256="0" * 64)),
+        "descriptor": dict(verified, artifacts=dict(verified["artifacts"], descriptor_sha256="0" * 64)),
+        "anchor": dict(verified, anchor_sha256="6" * 64),
+        "cursor_end": dict(verified, cursor_end_sha256=sha(token(c2))),
+        "generation": dict(verified, generation="other"),
+        "pointer": dict(verified, pointer_sha256="8" * 64),
+    }
+    for name, wrong in wrong_cases.items():
+        monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, _pointer_double(result=wrong))
+        with pytest.raises(build_mod.BuildRefused, match="watermark_generation_mismatch"):
+            build(tmp_path, name="shared-v3", proj=delta, source=_bound_source(token, delta, c2, c3, anchor), allow_unbound_source=False,
+                  predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+    # a verified watermark that is not where the delta starts is a discontinuity, not an override
+    monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, _pointer_double(result=dict(verified, watermark_sha256=sha(token(c3)))))
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_discontinuous"):
+        build(tmp_path, name="shared-v3", proj=delta, source=_bound_source(token, delta, c2, c3, anchor), allow_unbound_source=False,
+              predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+    # the Lead function refusing, or returning anything but the closed record, is one fixed token
+    for broken in (_pointer_double(error=ValueError("checkpoint_refused")), _pointer_double(result=None),
+                   _pointer_double(result={k: v for k, v in verified.items() if k != "watermark_sha256"}),
+                   _pointer_double(result=dict(verified, extra=1))):
+        monkeypatch.setitem(sys.modules, build_mod.CHECKPOINT_MODULE, broken)
+        with pytest.raises(build_mod.BuildRefused, match="watermark_refused"):
+            build(tmp_path, name="shared-v3", proj=delta, source=_bound_source(token, delta, c2, c3, anchor), allow_unbound_source=False,
+                  predecessor=dict(predecessor_of(tmp_path, "shared-v1", first), watermark=watermark))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1", "shared-v2"]
+
+
+def _checkpoint_module():
+    checkpoint = pytest.importorskip(build_mod.CHECKPOINT_MODULE,
+                                     reason="integration prerequisite: Lead shared_index_checkpoint not on this branch")
+    if not all(callable(getattr(checkpoint, name, None)) for name in ("read_verified_pointer", "commit_generation", "advance_empty_delta")):
+        pytest.skip("integration prerequisite: the verified-pointer checkpoint API is not committed in this tree")
+    return checkpoint
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint publication supports fixed Windows volumes only")
+def test_v5w_real_chain_a_then_verified_empty_advance_then_b_through_the_lead_checkpoint(tmp_path):
+    """The exact Lead case with the REAL Lead chain and REAL checkpoint: build A from a real delta and commit it as the
+    pointer; the log grows by review-lane rows only (a strict EMPTY delta) and advance_empty_delta moves the watermark;
+    B is read from the watermark and built with A as predecessor + the verified watermark. No mock anywhere."""
+    snapshot, history, checkpoint = _snapshot_module(), _history_module(), _checkpoint_module()
+    root = tmp_path / "mem"
+    root.mkdir()
+    a_result, a_anchor, start = _real_snapshot(snapshot, tmp_path / "log", EVENTS)
+    first = build(root, name="gen-a", proj=a_result["projection"], approved_tasks=None, roster=None,
+                  source={"snapshot_result": a_result, "expected_anchor_sha256": a_anchor}, allow_unbound_source=False)
+    artifacts = {"descriptor_sha256": first["descriptor_sha256"], "memory_sha256": first["memory_sha256"],
+                 "projection_sha256": first["projection_sha256"], "receipt_sha256": first["build_receipt_sha256"]}
+    checkpoint.commit_generation(root, "gen-a", start, a_result["candidate_cursor"], APPROVED, expected_pointer_sha256=None,
+                                 expected_artifacts=artifacts, initial_cursor=start, policy_bytes=POLICY_BYTES,
+                                 expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES, expected_roster_sha256=ROSTER_SHA,
+                                 expected_anchor_sha256=a_anchor)
+    p0 = sha((root / "q4-latest.json").read_bytes())
+    # a strict EMPTY delta: only review-lane rows arrive (policy exclusion, no record, no count), the cursor still moves
+    empty_result, empty_anchor, _ = _real_snapshot(snapshot, tmp_path / "log",
+                                                   [event(agent="claude-rco-1", ts_utc="2026-10-31T12:25:00Z")],
+                                                   start=a_result["candidate_cursor"])
+    assert empty_result["projection"]["accepted"] == 0 and empty_result["projection"]["records"] == []
+    advanced = checkpoint.advance_empty_delta(root, empty_result, APPROVED, expected_pointer_sha256=p0, policy_bytes=POLICY_BYTES,
+                                              expected_policy_sha256=POLICY_SHA, roster_bytes=ROSTER_BYTES,
+                                              expected_roster_sha256=ROSTER_SHA, expected_anchor_sha256=empty_anchor)
+    assert advanced["status"] == "advanced"
+    p1 = advanced["pointer_sha256"]
+    assert p1 == sha((root / "q4-latest.json").read_bytes()) != p0
+    b_result, b_anchor, resume = _real_snapshot(snapshot, tmp_path / "log", LATER_EVENTS, start=empty_result["candidate_cursor"])
+    predecessor = predecessor_of(root, "gen-a", first)
+    with pytest.raises(build_mod.BuildRefused, match="predecessor_discontinuous"):  # without the proof: fail closed
+        build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+              source={"snapshot_result": b_result, "expected_anchor_sha256": b_anchor}, allow_unbound_source=False,
+              predecessor=predecessor)
+    with pytest.raises(build_mod.BuildRefused, match="watermark_refused"):  # the stale pre-advance pointer digest
+        build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+              source={"snapshot_result": b_result, "expected_anchor_sha256": b_anchor}, allow_unbound_source=False,
+              predecessor=dict(predecessor, watermark={"root": str(root), "pointer_sha256": p0}))
+    out = build(root, name="gen-b", proj=b_result["projection"], approved_tasks=None, roster=None,
+                source={"snapshot_result": b_result, "expected_anchor_sha256": b_anchor}, allow_unbound_source=False,
+                predecessor=dict(predecessor, watermark={"root": str(root), "pointer_sha256": p1}))
+    receipt = out["build_receipt"]
+    assert receipt["history"]["continuity_route"] == "verified_watermark"
+    assert receipt["history"]["watermark"] == {"pointer_sha256": p1, "generation": "gen-a",
+                                               "watermark_sha256": sha(snapshot._token(empty_result["candidate_cursor"]))}
+    assert receipt["source_binding"]["cursor_start_sha256"] == sha(snapshot._token(resume)) == receipt["history"]["watermark"]["watermark_sha256"]
+    assert receipt["history"]["predecessor"]["cursor_end_sha256"] == sha(snapshot._token(a_result["candidate_cursor"]))
+    assert receipt["records"] == 6 and receipt["history"]["overlap_records"] == 1
+    assert sorted(p.name for p in root.iterdir() if p.is_dir()) == ["gen-a", "gen-b"]
+    serialized = json.dumps(out)
+    assert "bc1." not in serialized and start.file_identity not in serialized and SENTINEL not in serialized
+
+
+# Lead integration fixtures retained alongside Fable's independent real-snapshot tests.
 def _synthetic_snapshot(snapshot, proj, anchor_sha256, policy_sha256, roster_sha256, *, end_offset=512, end_sha256=None):
     """Unit-test binding double; does not prove an authenticated source or a real row commitment."""
     from waggledance.core.bridge_log_reader import BridgeCursor
@@ -961,7 +1588,7 @@ def _synthetic_snapshot(snapshot, proj, anchor_sha256, policy_sha256, roster_sha
     return result, start, end
 
 
-def test_v4_source_binding_is_written_only_after_the_lead_verifier_accepts(tmp_path):
+def test_v4_synthetic_binding_is_written_only_after_the_lead_verifier_accepts(tmp_path):
     snapshot = _snapshot_module()
     proj, anchor = projection(), "1" * 64
     result, start, end = _synthetic_snapshot(snapshot, proj, anchor, POLICY_SHA, ROSTER_SHA)
@@ -1013,49 +1640,9 @@ def test_v4_a_real_lead_snapshot_feeds_the_builder_without_any_mock(tmp_path):
     assert "bc1." not in json.dumps(out) and SENTINEL not in json.dumps(out)
 
 
-def test_v4_binding_takes_the_cursor_digests_from_the_verified_source_import_seam_double(tmp_path, monkeypatch):
-    """Import-seam double, NOT verification: a stand-in module whose verifier accepts everything, so that THIS
-    builder's own binding steps are observable here (digests come from ``source``, the end digest must be the digest
-    of the candidate cursor, nothing raw is persisted). The real verifier tests above stay the acceptance proof."""
-    import types
-    from waggledance.core.bridge_log_reader import BridgeCursor
-
-    def token(cursor):
-        return "bc1." + json.dumps([cursor.offset, cursor.file_identity, cursor.generation])
-
-    double = types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: True, _token=token)
-    monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE, double)
-    start = BridgeCursor(offset=0, file_identity="synthetic-identity", generation="gen-synthetic")
-    end = BridgeCursor(offset=77, file_identity="synthetic-identity", generation="gen-synthetic")
-    source_meta = {"cursor_start_sha256": sha(token(start)), "cursor_end_sha256": sha(token(end)), "coverage": "x"}
-    result = {"projection": projection(), "source": source_meta, "candidate_cursor": end}
-    anchor = "5" * 64
-    out = build(tmp_path, source={"snapshot_result": result, "expected_anchor_sha256": anchor}, allow_unbound_source=False)
-    binding = out["build_receipt"]["source_binding"]
-    assert binding["cursor_start_sha256"] == sha(token(start)) and binding["cursor_end_sha256"] == sha(token(end))
-    assert binding["anchor_sha256"] == anchor and binding["projection_sha256"] == out["projection_sha256"]
-    assert binding["policy_sha256"] == POLICY_SHA and binding["roster_sha256"] == ROSTER_SHA
-    assert "bc1." not in json.dumps(out) and "synthetic-identity" not in json.dumps(out)
-    # the end digest in source must be the digest of the candidate cursor, even when the verifier accepted
-    for bad_meta in (dict(source_meta, cursor_end_sha256=sha(token(start))), dict(source_meta, cursor_end_sha256="z" * 64),
-                     {k: v for k, v in source_meta.items() if k != "cursor_start_sha256"},
-                     dict(source_meta, cursor_start="bc1.raw-token")):
-        bad = {"projection": projection(), "source": bad_meta, "candidate_cursor": end}
-        if "cursor_start" in bad_meta:
-            bad["source"] = {k: v for k, v in bad_meta.items() if k != "cursor_start_sha256"}
-        with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):
-            build(tmp_path, name="bad", source={"snapshot_result": bad, "expected_anchor_sha256": anchor},
-                  allow_unbound_source=False)
-    with pytest.raises(build_mod.BuildRefused, match="source_binding_refused"):  # a verifier that does not say True
-        monkeypatch.setitem(sys.modules, build_mod.SNAPSHOT_MODULE,
-                            types.SimpleNamespace(verify_anchored_projection=lambda *a, **k: 1, _token=token))
-        build(tmp_path, name="bad2", source={"snapshot_result": result, "expected_anchor_sha256": anchor},
-              allow_unbound_source=False)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["shared-v1"]
-
 
 @pytest.mark.parametrize("wrong", ["projection", "end", "anchor", "policy", "roster", "spliced_source", "end_digest"])
-def test_v4_a_spliced_or_mismatched_source_binding_refuses_with_nothing_written(tmp_path, wrong):
+def test_v4_synthetic_spliced_or_mismatched_binding_refuses_with_nothing_written(tmp_path, wrong):
     snapshot = _snapshot_module()
     from waggledance.core.bridge_log_reader import BridgeCursor
     proj, anchor = projection(), "1" * 64

@@ -108,6 +108,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from pathlib import Path
 
 import numpy as np
@@ -145,6 +146,26 @@ SOURCE_BINDING_KEYS = frozenset({"schema", "anchor_sha256", "projection_sha256",
                                  "cursor_end_sha256", "policy_sha256", "roster_sha256"})
 SOURCE_KEYS = frozenset({"snapshot_result", "expected_anchor_sha256"})
 SNAPSHOT_MODULE = "sandbox.mind.step2.shared_bridge_snapshot"  # Lead module; imported lazily, never re-implemented
+# v5 (Lead bound request lead-mind-shared-index-fable-20261031-v5, 17:55:13Z): bounded prior metadata history. The
+# merge is the PINNED Lead helper ``shared_history.merge_projections`` (history helper head 9caa041b), imported lazily
+# and never re-implemented here; the predecessor is the caller's pinned previous generation (directory + digests).
+HISTORY_MODULE = "sandbox.mind.step2.shared_history"
+HISTORY_SCHEMA = "wd.q4-shared-index-history.v1"
+PREDECESSOR_KEYS = frozenset({"memory_dir", "memory_sha256", "projection_sha256", "build_receipt_sha256"})
+PREDECESSOR_FILES = {"memory_sha256": "memory.json", "projection_sha256": "projection.json",
+                     "build_receipt_sha256": "build_receipt.json"}
+PREDECESSOR_FILE_LIMIT = 64 * 1024 * 1024
+# v5 watermark route (Lead 18:19:12Z A -> empty -> B, design agreed 18:23:02Z, Lead API at f5868baa): after a verified
+# EMPTY advance the checkpoint watermark moves while the predecessor receipt ``cursor_end`` stays, so the next delta
+# starts at the watermark. The builder accepts that ONLY through the Lead's read-only ``read_verified_pointer``
+# (same pins; it re-reads the pointer, walks the archive chain and re-verifies the generation); a caller digest alone
+# is never a proof. ``predecessor["watermark"] = {root, pointer_sha256}`` is the optional closed request for it.
+CHECKPOINT_MODULE = "sandbox.mind.step2.shared_index_checkpoint"  # Lead module; imported lazily, never re-implemented
+WATERMARK_KEYS = frozenset({"root", "pointer_sha256"})
+VERIFIED_POINTER_KEYS = frozenset({"pointer_sha256", "generation", "artifacts", "anchor_sha256", "cursor_end_sha256",
+                                   "watermark_sha256"})
+POINTER_ARTIFACT_KEYS = frozenset({"descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256"})
+CONTINUITY_ROUTES = frozenset({"none", "receipt_end", "verified_watermark"})
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -566,9 +587,177 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
     return binding
 
 
+def _history_merger():
+    """The pinned Lead merge helper (``shared_history.merge_projections``), imported lazily; any import failure or a
+    module without that API refuses ``history_helper_unavailable`` (the merge is never re-implemented here)."""
+    try:
+        module = importlib.import_module(HISTORY_MODULE)
+        merge = module.merge_projections
+    except Exception:  # noqa: BLE001 - ImportError, AttributeError or an import-time failure: one token
+        raise BuildRefused("history_helper_unavailable") from None
+    if not callable(merge):
+        raise BuildRefused("history_helper_unavailable")
+    return merge
+
+
+def _pointer_verifier():
+    """The pinned Lead read-only checkpoint view (``shared_index_checkpoint.read_verified_pointer``), imported lazily;
+    any import failure or a module without that API refuses ``watermark_verifier_unavailable`` (the pointer archive
+    walk is never re-implemented here)."""
+    try:
+        module = importlib.import_module(CHECKPOINT_MODULE)
+        verifier = module.read_verified_pointer
+    except Exception:  # noqa: BLE001 - ImportError, AttributeError or an import-time failure: one token
+        raise BuildRefused("watermark_verifier_unavailable") from None
+    if not callable(verifier):
+        raise BuildRefused("watermark_verifier_unavailable")
+    return verifier
+
+
+def _validate_watermark(watermark):
+    """``predecessor["watermark"]`` is exactly ``{root, pointer_sha256}`` (``watermark_invalid``)."""
+    if (not isinstance(watermark, dict) or set(watermark) != WATERMARK_KEYS
+            or not isinstance(watermark["root"], (str, Path)) or not isinstance(watermark["pointer_sha256"], str)
+            or HEX64.fullmatch(watermark["pointer_sha256"]) is None):
+        raise BuildRefused("watermark_invalid")
+    return watermark
+
+
+def _verified_pointer(watermark, resolved, pins):
+    """Call the Lead function with the SAME resolved pins and the caller's pointer digest; the answer must be the
+    closed six-key record with hex digests (``watermark_refused`` on a refusal or anything else)."""
+    verifier = _pointer_verifier()
+    try:
+        verified = verifier(Path(watermark["root"]), frozenset(resolved["approved_tasks"]),
+                            expected_pointer_sha256=watermark["pointer_sha256"],
+                            policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
+                            roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"])
+    except Exception:  # noqa: BLE001 - CheckpointRefused or any other failure: one token, no text
+        raise BuildRefused("watermark_refused") from None
+    digests = VERIFIED_POINTER_KEYS - {"generation", "artifacts"}
+    if (not isinstance(verified, dict) or set(verified) != VERIFIED_POINTER_KEYS
+            or not isinstance(verified["generation"], str) or MEMORY_NAME.fullmatch(verified["generation"]) is None
+            or not isinstance(verified["artifacts"], dict) or set(verified["artifacts"]) != POINTER_ARTIFACT_KEYS
+            or any(not isinstance(verified[key], str) or HEX64.fullmatch(verified[key]) is None for key in digests)
+            or any(not isinstance(verified["artifacts"][key], str) or HEX64.fullmatch(verified["artifacts"][key]) is None
+                   for key in POINTER_ARTIFACT_KEYS)):
+        raise BuildRefused("watermark_refused")
+    return verified
+
+
+def _read_plain_file(path):
+    """Bounded read of one regular file that is neither a symlink nor a Windows reparse point (junction); any
+    filesystem problem is the fixed token ``predecessor_unreadable``, no path ever leaves this function."""
+    try:
+        info = os.lstat(path)
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or reparse or not stat.S_ISREG(info.st_mode):
+            raise BuildRefused("predecessor_unreadable")
+        if info.st_size > PREDECESSOR_FILE_LIMIT:
+            raise BuildRefused("predecessor_over_bytes")
+        with open(path, "rb") as handle:
+            data = handle.read(PREDECESSOR_FILE_LIMIT + 1)
+    except OSError:
+        raise BuildRefused("predecessor_unreadable") from None
+    if len(data) > PREDECESSOR_FILE_LIMIT:
+        raise BuildRefused("predecessor_over_bytes")
+    return data
+
+
+def load_predecessor(predecessor, policy, delta_binding, *, resolved=None, pins=None):
+    """The caller's pinned previous generation -> (its validated canonical projection, a closed receipt summary,
+    a closed continuity record ``{continuity_checked, continuity_route, watermark}``).
+
+    ``predecessor`` is exactly ``{memory_dir, memory_sha256, projection_sha256, build_receipt_sha256}`` plus the
+    OPTIONAL ``watermark = {root, pointer_sha256}`` (``predecessor_invalid`` / ``watermark_invalid``; a watermark
+    is accepted only with a source-bound delta, there is nothing to prove otherwise, and it needs the resolved pins).
+    Watermark route (Lead A -> empty -> B): the Lead's read-only ``shared_index_checkpoint.read_verified_pointer``
+    is called with the SAME pins and the caller's pointer digest (``watermark_verifier_unavailable`` when absent,
+    ``watermark_refused`` on its refusal or a non-closed answer); the verified pointer must BE this predecessor
+    (all four artifact digests, the anchor, the receipt ``cursor_end_sha256`` and the directory name:
+    ``watermark_generation_mismatch``) and its ``watermark_sha256`` must equal the delta's ``cursor_start_sha256``
+    (``predecessor_discontinuous``). A caller digest is only integrity checking of WHICH pointer bytes to verify, the
+    proof is the Lead archive walk; the builder re-implements none of it.
+    ``memory.json``, ``projection.json`` and ``build_receipt.json`` are read bounded from a
+    plain directory (``predecessor_unreadable``/``predecessor_over_bytes``), must hash to the pinned digests and bind
+    each other (memory.json and the receipt pin the projection digest, the receipt pins memory.json, the projection is
+    its exact canonical bytes: ``predecessor_mismatch``), and must carry EXACTLY the current ``policy`` digests
+    (``predecessor_policy_mismatch``: a policy or roster pin change is a series rollover, never a silent carry).
+    Continuity (the in-process part of RCO2 H1): when the delta is source-bound the predecessor must be bound too
+    (``predecessor_unbound``) and its recorded ``cursor_end_sha256`` must equal the delta's ``cursor_start_sha256``
+    (``predecessor_discontinuous``). Whether this predecessor IS the current checkpoint pointer generation is the Lead
+    checkpoint's CAS authority and not provable here; the receipt records the digests so the checkpoint can require
+    them. Matching digests are integrity checking of what the caller supplied, never authenticity."""
+    if (not isinstance(predecessor, dict) or set(predecessor) - {"watermark"} != PREDECESSOR_KEYS
+            or not isinstance(predecessor["memory_dir"], (str, Path))
+            or any(not isinstance(predecessor[key], str) or HEX64.fullmatch(predecessor[key]) is None
+                   for key in PREDECESSOR_FILES)):
+        raise BuildRefused("predecessor_invalid")
+    watermark = None
+    if "watermark" in predecessor:
+        watermark = _validate_watermark(predecessor["watermark"])
+        if delta_binding is None or resolved is None or pins is None:
+            raise BuildRefused("watermark_invalid")  # an unbound delta has no cursor to prove; pins are mandatory
+    directory = Path(predecessor["memory_dir"])
+    contents = {key: _read_plain_file(directory / name) for key, name in PREDECESSOR_FILES.items()}
+    for key, data in contents.items():
+        if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), predecessor[key]):
+            raise BuildRefused("predecessor_mismatch")
+    memory = _parse_pinned_json(contents["memory_sha256"], "predecessor_invalid")
+    receipt = _parse_pinned_json(contents["build_receipt_sha256"], "predecessor_invalid")
+    projection = _parse_pinned_json(contents["projection_sha256"], "predecessor_invalid")
+    if (not isinstance(memory, dict) or not isinstance(receipt, dict) or not isinstance(projection, dict)
+            or json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != contents["projection_sha256"]
+            or not isinstance(projection.get("records"), list)
+            or memory.get("scope") != SCOPE or memory.get("projection_sha256") != predecessor["projection_sha256"]
+            or receipt.get("schema") != BUILD_RECEIPT_SCHEMA or receipt.get("scope") != SCOPE
+            or receipt.get("projection_sha256") != predecessor["projection_sha256"]
+            or receipt.get("memory_sha256") != predecessor["memory_sha256"]):
+        raise BuildRefused("predecessor_mismatch")
+    if memory.get("policy") != policy or receipt.get("policy") != policy:
+        raise BuildRefused("predecessor_policy_mismatch")
+    binding = receipt.get("source_binding")
+    bound = (isinstance(binding, dict) and set(binding) == SOURCE_BINDING_KEYS
+             and binding["schema"] == SOURCE_BINDING_SCHEMA
+             and all(isinstance(binding[key], str) and HEX64.fullmatch(binding[key]) is not None
+                     for key in SOURCE_BINDING_KEYS - {"schema"}))
+    if binding is not None and not bound:
+        raise BuildRefused("predecessor_mismatch")
+    continuity = {"continuity_checked": False, "continuity_route": "none", "watermark": None}
+    if delta_binding is not None:
+        if not bound:
+            raise BuildRefused("predecessor_unbound")  # a bound delta never extends an unbound (synthetic) series
+        if watermark is None:
+            # no advance happened: the delta starts exactly where the predecessor's verified delta ended
+            if not hmac.compare_digest(binding["cursor_end_sha256"], delta_binding["cursor_start_sha256"]):
+                raise BuildRefused("predecessor_discontinuous")
+            continuity.update(continuity_checked=True, continuity_route="receipt_end")
+        else:
+            verified = _verified_pointer(watermark, resolved, pins)
+            expected = {"descriptor_sha256": receipt.get("descriptor_sha256"),
+                        "memory_sha256": predecessor["memory_sha256"],
+                        "projection_sha256": predecessor["projection_sha256"],
+                        "receipt_sha256": predecessor["build_receipt_sha256"]}
+            if (verified["artifacts"] != expected or verified["generation"] != directory.name
+                    or not hmac.compare_digest(verified["pointer_sha256"], watermark["pointer_sha256"])
+                    or not hmac.compare_digest(verified["anchor_sha256"], binding["anchor_sha256"])
+                    or not hmac.compare_digest(verified["cursor_end_sha256"], binding["cursor_end_sha256"])):
+                raise BuildRefused("watermark_generation_mismatch")  # the verified pointer is not THIS predecessor
+            if not hmac.compare_digest(verified["watermark_sha256"], delta_binding["cursor_start_sha256"]):
+                raise BuildRefused("predecessor_discontinuous")  # a verified watermark elsewhere is not an override
+            continuity.update(continuity_checked=True, continuity_route="verified_watermark",
+                              watermark={"pointer_sha256": verified["pointer_sha256"],
+                                         "watermark_sha256": verified["watermark_sha256"],
+                                         "generation": verified["generation"]})
+    summary = {"memory_sha256": predecessor["memory_sha256"], "projection_sha256": predecessor["projection_sha256"],
+               "build_receipt_sha256": predecessor["build_receipt_sha256"], "records": len(projection["records"]),
+               "source_bound": bound, "cursor_end_sha256": binding["cursor_end_sha256"] if bound else None}
+    return projection, summary, continuity
+
+
 def build_memory(projection, encode, identity, dim, root, name, *, approved_tasks=None, include_refs=False,
                  roster=None, exclude_review_signal=False, runtime=None, pins=None, source=None,
-                 allow_unbound_source=False):
+                 allow_unbound_source=False, predecessor=None):
     """Build ``root/name`` from a validated projection; returns the exact reader descriptor, the build receipt and
     their sha256 digests.
 
@@ -585,7 +774,20 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
     result the Lead verifier binds to this projection (``bind_source``): on the strict publication path (the default)
     a missing source refuses ``source_binding_required``; ``allow_unbound_source=True`` is the synthetic route and
     records ``source_binding None`` / ``source_bound False``. A caller-provided hash is integrity checking of what the
-    caller supplied, never source authenticity (``source_authenticated False`` always). ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
+    caller supplied, never source authenticity (``source_authenticated False`` always).
+    v5: ``predecessor`` (optional, ``load_predecessor``) pins the PREVIOUS generation; the new generation then indexes
+    the pinned Lead merge ``shared_history.merge_projections(previous, delta)`` of the predecessor projection and this
+    delta (``history_refused`` on any helper refusal or a merged id set that is not exactly previous | delta), bounded
+    by ``MAX_RECORDS`` BEFORE the helper runs (``records_over_bound``), while the source binding still binds the
+    DELTA only (the verifier is never called on a merged projection). The receipt and ``memory.json`` record both
+    digests explicitly: ``projection_sha256`` = the MERGED projection that is persisted and indexed,
+    ``delta_projection_sha256`` = what ``source_binding`` binds; ``history`` carries the predecessor digests, counts
+    and the continuity record (``continuity_checked``, ``continuity_route`` = none | receipt_end |
+    verified_watermark, ``watermark`` = the verified pointer digest, watermark digest and generation name or None).
+    An empty delta refuses ``projection_empty`` even with a predecessor (a no-change advance is a checkpoint pointer
+    event, Lead-owned); after such an advance the next generation passes ``predecessor["watermark"]`` and the
+    continuity is proven by the Lead's ``read_verified_pointer`` (``load_predecessor``), never by a caller digest. The builder publishes ONE directory; it is not
+    an atomic checkpoint publication and never moves a cursor. ``identity`` is the caller-asserted three-key encoder identity (synthetic route); ``runtime`` derives the
     identity from a verified model directory instead (``runtime_identity``) and, when both are given, they must be
     equal (``encoder_identity_mismatch``). Every refusal is ``BuildRefused`` with a fixed token (projection refusals
     are re-raised under their own token). Refuses (nothing written) on an invalid projection, policy, identity, dim,
@@ -607,6 +809,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         sp.validate_projection(projection, approved_tasks, include_refs, roster, exclude_review_signal)
     except sp.ProjectionRefused as refused:
         raise BuildRefused(str(refused)) from None  # B4: one refusal class at the entry, same fixed tokens
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True,
+              "policy_sha256": resolved["policy_sha256"], "roster_sha256": resolved["roster_sha256"]}
     projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
     projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
     if source is None:
@@ -615,7 +819,43 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         source_binding = None
     else:
         source_binding = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
-                                     resolved["roster_sha256"])
+                                     resolved["roster_sha256"])  # binds the DELTA; never a merged projection
+    delta_projection_sha256 = projection_sha256
+    history, memory_history = None, None
+    if predecessor is not None:
+        if not projection["records"]:
+            raise BuildRefused("projection_empty")  # an empty delta is a checkpoint pointer event, never a generation
+        previous, summary, continuity = load_predecessor(predecessor, policy, source_binding, resolved=resolved, pins=pins)
+        delta_ids = {record["record_id"] for record in projection["records"]}
+        previous_ids = {record["record_id"] for record in previous["records"]}
+        if len(previous_ids | delta_ids) > MAX_RECORDS:
+            raise BuildRefused("records_over_bound")  # the merged set is bounded before the helper and before any write
+        merge = _history_merger()
+        try:
+            merged = merge(previous, projection, policy_bytes=pins["policy_bytes"], policy_sha256=resolved["policy_sha256"],
+                           roster_bytes=pins["roster_bytes"], roster_sha256=resolved["roster_sha256"])
+            if (not isinstance(merged, dict) or merged.get("authorship") != sp.AUTHORSHIP_ROSTER
+                    or merged.get("review_signal_excluded") is not True):
+                raise ValueError("merge")
+            sp.validate_projection(merged, approved_tasks, include_refs, roster, exclude_review_signal)
+            if {record["record_id"] for record in merged["records"]} != previous_ids | delta_ids:
+                raise ValueError("merge")  # every prior and every delta record survives, nothing else appears
+        except Exception:  # noqa: BLE001 - HistoryRefused, ProjectionRefused, KeyError, TypeError: one token, no text
+            raise BuildRefused("history_refused") from None
+        delta_rows, delta_refused = len(projection["records"]), dict(sorted(projection["refused"].items()))
+        projection = merged
+        projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+        projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
+        # delta_refused repeats the delta's own refusal counters (policy exclusions are never counted by the
+        # projection, so no review-signal count can appear here); the refused-row contract itself is Lead's.
+        history = {"schema": HISTORY_SCHEMA, "helper": HISTORY_MODULE, "predecessor": summary,
+                   "delta_projection_sha256": delta_projection_sha256, "delta_records": delta_rows,
+                   "delta_refused": delta_refused, "overlap_records": len(previous_ids & delta_ids),
+                   "merged_records": len(projection["records"]), "merged_projection_sha256": projection_sha256,
+                   **continuity}
+        memory_history = {"predecessor_memory_sha256": summary["memory_sha256"],
+                          "predecessor_projection_sha256": summary["projection_sha256"],
+                          "delta_projection_sha256": delta_projection_sha256}
     runtime_record = {"identity_source": "caller_asserted"}
     if runtime is not None:
         derived = runtime_identity(runtime)
@@ -636,8 +876,6 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         root = sp._output_root(root)
     except sp.ProjectionRefused as refused:
         raise BuildRefused(str(refused)) from None
-    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True,
-              "policy_sha256": resolved["policy_sha256"], "roster_sha256": resolved["roster_sha256"]}
     _check_bounds(projection["records"])
     records, duplicates = distinct_records(projection["records"])
     if not records:
@@ -682,7 +920,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim, "placement": PLACEMENT_RULE,
                   "topology_source_sha256": cell_mod.file_sha256(TOPOLOGY_FILE), "cells": pointers,
                   "records": len(records), "duplicates": duplicates, "views": list(VIEWS),
-                  "independent_views": False, "policy": policy}
+                  "independent_views": False, "policy": policy, "history": memory_history}
         sp.corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = hashlib.sha256(memory_bytes).hexdigest()
@@ -696,6 +934,7 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         build_receipt = {"schema": BUILD_RECEIPT_SCHEMA, "authority": "none", "scope": SCOPE, "memory_name": name,
                          "memory_sha256": memory_sha256, "descriptor_sha256": descriptor_sha256,
                          "descriptor_schema": DESCRIPTOR_SCHEMA, "projection_sha256": projection_sha256,
+                         "delta_projection_sha256": delta_projection_sha256, "history": history,
                          "projection_schema": sp.SCHEMA, "projection_file": "projection.json", "encoder": encoder,
                          "dim": dim, "records": len(records), "duplicates": duplicates,
                          "cells": {cell_id: row["count"] for cell_id, row in pointers.items()},

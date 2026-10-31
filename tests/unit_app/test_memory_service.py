@@ -1,10 +1,12 @@
 """Unit tests for MemoryService — ingest, retrieve, correction."""
 
-from unittest.mock import AsyncMock, MagicMock
+from collections import OrderedDict
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from waggledance.application.services.memory_service import MemoryService
+from waggledance.adapters.memory.chroma_vector_store import ChromaVectorStore
 from waggledance.core.domain.events import EventType
 from waggledance.core.domain.memory_record import MemoryRecord
 
@@ -208,7 +210,7 @@ class TestMemoryServiceRetrieve:
         assert event.payload["results"] == 1
 
     @pytest.mark.asyncio
-    async def test_retrieve_event_truncates_query(
+    async def test_retrieve_event_omits_query_without_changing_search(
         self, mock_vector_store, mock_memory_repo, mock_event_bus
     ):
         mock_memory_repo.search.return_value = [
@@ -218,10 +220,13 @@ class TestMemoryServiceRetrieve:
             )
         ]
         svc = MemoryService(mock_vector_store, mock_memory_repo, mock_event_bus)
-        long_query = "a" * 200
-        await svc.retrieve_context(long_query)
+        query = "synthetic-private-query-" + "a" * 200
+        results = await svc.retrieve_context(query)
+        mock_memory_repo.search.assert_awaited_once_with(query=query, limit=5, language="en")
         event = mock_event_bus.publish.call_args[0][0]
-        assert len(event.payload["query"]) == 50
+        assert event.payload == {"results": 1}
+        assert "synthetic-private-query" not in repr(event)
+        assert len(results) == 1
 
 
 class TestMemoryServiceCorrection:
@@ -247,13 +252,103 @@ class TestMemoryServiceCorrection:
         assert event.type == EventType.CORRECTION_RECORDED
 
     @pytest.mark.asyncio
-    async def test_correction_truncates_query_in_event(
+    async def test_correction_event_omits_query_without_changing_storage(
         self, mock_vector_store, mock_memory_repo, mock_event_bus
     ):
         svc = MemoryService(mock_vector_store, mock_memory_repo, mock_event_bus)
-        await svc.record_correction("x" * 100, "bad", "good")
+        query = "synthetic-private-correction-" + "x" * 100
+        await svc.record_correction(query, "bad", "good")
+        mock_memory_repo.store_correction.assert_awaited_once_with(query, "bad", "good")
         event = mock_event_bus.publish.call_args[0][0]
-        assert len(event.payload["query"]) == 50
+        assert event.payload == {}
+        assert "synthetic-private-correction" not in repr(event)
+
+
+class TestChromaQueryPrivacy:
+    """Synthetic query contents must not enter failure logs."""
+
+    @pytest.mark.asyncio
+    async def test_successful_query_preserves_search_results(self):
+        store = object.__new__(ChromaVectorStore)
+        store._breaker = MagicMock()
+        store._breaker.allow_request.return_value = True
+        store._embed_text = MagicMock(return_value=[0.1, 0.2])
+        collection = MagicMock()
+        collection.count.return_value = 1
+        collection.query.return_value = {
+            "ids": [["doc-1"]], "documents": [["synthetic result"]],
+            "metadatas": [[{"kind": "test"}]], "distances": [[0.2]],
+        }
+        store._get_collection = MagicMock(return_value=collection)
+        query = "synthetic-private-success-query"
+
+        results = await store.query(query, n_results=3)
+        store._embed_text.assert_called_once_with(query, "search_query: ")
+        collection.query.assert_called_once_with(
+            query_embeddings=[[0.1, 0.2]], n_results=1,
+            include=["documents", "metadatas", "distances"],
+        )
+        assert results == [{"id": "doc-1", "text": "synthetic result",
+                            "metadata": {"kind": "test"}, "score": 0.9}]
+        store._breaker.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_embedding_failure_does_not_log_query(self, caplog):
+        store = object.__new__(ChromaVectorStore)
+        store._breaker = MagicMock()
+        store._breaker.allow_request.return_value = True
+        store._embed_text = MagicMock(return_value=None)
+        query = "synthetic-private-embed-query"
+
+        with caplog.at_level("WARNING"):
+            assert await store.query(query) == []
+        store._embed_text.assert_called_once_with(query, "search_query: ")
+        assert "Query embedding failed" in caplog.text
+        assert query not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_backend_exception_does_not_log_exception_text(self, caplog):
+        store = object.__new__(ChromaVectorStore)
+        store._breaker = MagicMock()
+        store._breaker.allow_request.return_value = True
+        store._embed_text = MagicMock(return_value=[0.1, 0.2])
+        collection = MagicMock()
+        collection.count.return_value = 1
+        query = "synthetic-private-backend-query"
+        collection.query.side_effect = RuntimeError(query)
+        store._get_collection = MagicMock(return_value=collection)
+
+        with caplog.at_level("ERROR"):
+            assert await store.query(query) == []
+        assert query not in caplog.text
+        store._breaker.record_failure.assert_called_once()
+
+    def test_embed_exception_does_not_log_exception_text(self, caplog):
+        store = object.__new__(ChromaVectorStore)
+        store._embed_cache = OrderedDict()
+        store._embed_cache_max = 1
+        store._ollama_base_url = "http://127.0.0.1:11434"
+        store._embedding_model = "synthetic-model"
+        store._embed_timeout = 1
+        query = "synthetic-private-exception-query"
+
+        with patch("requests.post", side_effect=RuntimeError(query)), caplog.at_level("ERROR"):
+            assert store._embed_text(query, "search_query: ") is None
+        assert query not in caplog.text
+
+    def test_embed_timeout_does_not_log_exception_text(self, caplog):
+        store = object.__new__(ChromaVectorStore)
+        store._embed_cache = OrderedDict()
+        store._embed_cache_max = 1
+        store._ollama_base_url = "http://127.0.0.1:11434"
+        store._embedding_model = "synthetic-model"
+        store._embed_timeout = 1
+        query = "synthetic-private-timeout-query"
+
+        with patch("requests.post", side_effect=TimeoutError(f"timed out: {query}")), caplog.at_level("WARNING"):
+            assert store._embed_text(query, "search_query: ") is None
+        assert "Ollama embed timeout" in caplog.text
+        assert query not in caplog.text
 
 
 class TestMemoryServiceInit:

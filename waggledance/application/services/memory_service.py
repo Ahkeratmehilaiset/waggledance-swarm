@@ -159,7 +159,7 @@ class MemoryService:
         if results:
             await self._event_bus.publish(DomainEvent(
                 type=EventType.MEMORY_RETRIEVED,
-                payload={"query": query[:50], "results": len(results)},
+                payload={"results": len(results)},
                 timestamp=time.time(),
                 source="memory_service",
             ))
@@ -177,7 +177,7 @@ class MemoryService:
 
         await self._event_bus.publish(DomainEvent(
             type=EventType.CORRECTION_RECORDED,
-            payload={"query": query[:50]},
+            payload={},
             timestamp=time.time(),
             source="memory_service",
         ))

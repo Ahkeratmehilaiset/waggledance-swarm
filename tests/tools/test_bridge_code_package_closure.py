@@ -837,6 +837,7 @@ Q4_READONLY_FILES = frozenset({
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
+PUBLIC_STATUS_API = "tools/wd_mind_public_session.py"
 
 
 def _assert_shadow_release_delivery(definition):
@@ -852,6 +853,8 @@ def _assert_shadow_release_delivery(definition):
     assert Q4_AGENT_API not in published, "q4_agent_api_published"
     assert Q4_RESOLVED_CHILD in definition["python_files"], "q4_resolved_child_drop"
     assert Q4_RESOLVED_CHILD not in published, "q4_resolved_child_published"
+    assert PUBLIC_STATUS_API in definition["python_files"], "public_status_api_drop"
+    assert PUBLIC_STATUS_API not in published, "public_status_api_published"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.

@@ -1350,9 +1350,10 @@ OPEN_PR = {"state": "OPEN", "head": "a" * 40, "head_ref_name": "lane-a/case", "p
            "commit_authors": ["lane-a"]}
 
 
-def candidate_parts(space, rows=None):
+def candidate_parts(space, rows=None, cursor=GOOD):
     rows = rows_for(space, REFS[:3]) if rows is None else rows
     capture, manifest = space["capture_object"](rows)
+    capture["provenance"] = space["provenance_object"](cursor, space["cursor_source"](cursor))
     return capture, manifest, committed(space, rows, GOOD, 2)
 
 
@@ -1911,6 +1912,10 @@ def test_a_candidate_cycle_builds_one_immutable_dir_whose_last_ok_names_and_hash
     assert [row["ref"] for row in state["window"]] == REFS[-WINDOW:] and state["cursor"] == SEEDED
     snapshot = core.read_snapshot(live / first["publication_file"], audit_root=live.parent)
     assert hashlib.sha256(core.canonical_bytes(snapshot)).hexdigest() == first["snapshot_sha256"]
+    # provenance: the capture carries the very cursor the state commits, and the publication names that bridge log
+    capture = json.loads((live / first["capture_file"]).read_text(encoding="utf-8"))
+    assert capture["provenance"] == {"reader_cursor": SEEDED, "file_identity": "log-a", "log_generation": None}
+    assert snapshot["source"]["log_identity"] == "bridge-log:log-a" and snapshot["source"]["generation"] is None
     assert file_sha(live / first["board_file"]) == first["board_text_sha256"]
     kept = {path: file_sha(path) for path in (live / "cycles").rglob("*") if path.is_file()}
 
@@ -1920,6 +1925,8 @@ def test_a_candidate_cycle_builds_one_immutable_dir_whose_last_ok_names_and_hash
     assert bridge.calls[1 + WINDOW] == ["-AfterEvent", SEEDED] and rec["previous"] == "verified"
     again = space["read_state"](live / second["state_file"], second["state_sha256"], 2)
     assert again["window"] == state["window"] and again["cursor"] == AFTER
+    capture = json.loads((live / second["capture_file"]).read_text(encoding="utf-8"))
+    assert capture["provenance"]["reader_cursor"] == AFTER and capture["provenance"]["log_generation"] is None
     assert {path: file_sha(path) for path in kept} == kept  # the first cycle's files are never rewritten
 
 
@@ -2068,7 +2075,8 @@ def budget_candidate_space(tmp_path, room, run_files):
     (live / "cycles").mkdir(parents=True)
     space, budget = budget_load(live, room=room)
     payloads = {"capture.json": b"c" * 10, "detail-manifest.txt": b"m" * 5, "state.json": b"s" * 20}
-    space.update(advance=lambda state, seeded: ([], "cursor", {}, {"new_rows": 0}),
+    space.update(advance=lambda state, seeded: ([], "cursor", {"file_identity": "log-a", "log_generation": None},
+                                                {"new_rows": 0}),
                  state_envelope=lambda generation, cursor, source, rows: {"generation": generation},
                  capture_object=lambda rows: ({"observed_utc": "2026-10-23T00:00:00Z"}, b"m" * 5),
                  snapshot_prs=lambda capture: set(), pr_context=lambda cache_dir, needed=None: (None, {"ms": 0}),
@@ -2204,3 +2212,49 @@ def test_the_script_ends_after_the_cycle_that_exhausted_the_budget():
     check = loop.body[at + 1]
     assert isinstance(check, ast.If) and ast.unparse(check.test) == "OutputBudget.exhausted"
     assert ast.unparse(check.body[-1]) == "raise SystemExit(STOP_EXIT)"
+
+
+# -- producer-to-shadow provenance binding (Lead Source GO 2026-10-31) ----------------------------------------------
+
+def test_the_capture_provenance_is_the_committed_cursor_and_the_bridge_log_identity_it_names():
+    space, _ = load()
+    for cursor, generation in ((GOOD, None), (position(7, generation="g2"), "g2")):
+        provenance = space["provenance_object"](cursor, space["cursor_source"](cursor))
+        assert provenance == {"reader_cursor": cursor, "file_identity": "log-a", "log_generation": generation}
+        capture, _ = space["capture_object"](rows_for(space, REFS[:2]))
+        capture["provenance"] = provenance
+        assert shadow.read_capture(json.loads(json.dumps(capture)))  # the shadow accepts and re-decodes the cursor
+
+
+def test_a_capture_whose_provenance_is_not_the_committed_cursor_is_refused_before_any_write(tmp_path):
+    space, _ = load(live=tmp_path)
+    capture, manifest, state = candidate_parts(space, cursor=OTHER_LOG)  # names log-b; the state commits GOOD (log-a)
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    capture, manifest, state = candidate_parts(space, cursor=AFTER)  # same log, another position than the state
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    capture, manifest, state = candidate_parts(space)
+    del capture["provenance"]  # a capture without provenance is never committed by this producer
+    with refused(space["CaptureRefused"], "candidate_invalid"):
+        space["prewrite"](capture, manifest, None, state)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_log_generation_that_appears_or_changes_under_a_committed_state_refuses_the_cycle_without_a_reseed():
+    """Rotation: the committed state names (log-a, None); a listing whose cursor names log-a with a generation, or
+    another generation, is another bridge log for this producer and refuses the cycle with the fixed reason."""
+    for cursor in (position(5, generation="g2"), position(5, identity="log-b", generation="g2")):
+        space, bridge = load()
+        bridge.listing = view(REFS[3:4], cursor)
+        state = committed(space, rows_for(space, REFS[:3]), GOOD)
+        before = copy.deepcopy(state)
+        with refused(space["CaptureRefused"], "state_source_changed"):
+            space["advance"](state)
+        assert state == before and len(listings(bridge)) == 1
+    space, bridge = load()
+    generation_state = committed(space, rows_for(space, REFS[:3]), position(3, generation="g2"))
+    assert generation_state["source"] == {"file_identity": "log-a", "log_generation": "g2"}
+    bridge.listing = view(REFS[3:4], position(5))  # the generation vanished: refused, never defaulted to the old one
+    with refused(space["CaptureRefused"], "state_source_changed"):
+        space["advance"](generation_state)

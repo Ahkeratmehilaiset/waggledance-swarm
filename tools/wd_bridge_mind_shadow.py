@@ -15,8 +15,12 @@ process and never writes a bridge event. One run is a pure function of its input
 
 1. Envelopes ``{ref, event}``: each ref is the canonical event id of the captured row. It is capture-derived: a
    row the reader truncated has a ref that is not the log's own, so the capture digest travels with every output.
-2. ``tools/wd_bridge_mind.py`` ``full_rebuild`` over the capture window, declared as its own complete log
-   (``log_identity`` names the capture digest). Nothing before the window is seen; it is never whole-log coverage.
+2. ``tools/wd_bridge_mind.py`` ``full_rebuild`` over the capture window. With a capture ``provenance`` (the pinned
+   compact reader's own position cursor plus the file identity and log generation it decodes to, re-decoded here and
+   required to agree) the source names that bridge log (``bridge-log:<file_identity>``) and carries its generation
+   as the reader reported it: ``None`` stays ``None`` and is reported UNKNOWN, never invented. Without provenance
+   the legacy declaration stays (``log_identity`` names the capture digest, generation ``None``). Either way the
+   cursor range is the window's own rows: nothing before the window is seen; it is never whole-log coverage.
 3. ``tools/bridge_mind_workspace.py`` ``reflect`` with the previous reflected snapshot and the context.
 4. The reflected snapshot is published with the core's ``write_snapshot`` and read back with its
    ``read_snapshot``, so the envelope digest, the audit root and the path guards are verified. The previous
@@ -33,6 +37,7 @@ Every refusal is a fixed message that never echoes input content.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib
 import json
@@ -52,6 +57,12 @@ from waggledance.core.bridge_log_reader import parse_bridge_json_object  # noqa:
 
 CAPTURE_SCHEMA = "wd.bridge-mind-capture.v1"
 CAPTURE_KEYS = frozenset({"schema", "reader", "reader_stdout_sha256", "observed_utc", "events"})
+# Optional capture provenance: the compact reader's position cursor the producer committed, with the file identity
+# and log generation that cursor decodes to (re-decoded and compared here, never taken on the producer's word).
+PROVENANCE_KEYS = frozenset({"reader_cursor", "file_identity", "log_generation"})
+_CURSOR = re.compile(r"bc1\.[A-Za-z0-9_-]{1,2044}\Z")
+_LOG_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,244}\Z")  # the reader's volume:index form; no slash
+_LOG_GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # The inherited pinned readers a capture may come from; the reader string is a label, not authentication.
 READERS = frozenset({"Read-AgentBridge.ps1 -Raw", "Read-AgentBridge.ps1 -Compact -EventId"})
 RECEIPT_SCHEMA = "wd.bridge-mind-shadow-receipt.v1"
@@ -59,6 +70,8 @@ INPUT_LIMIT = 64 * 1024 * 1024
 _SHA = re.compile(r"[0-9a-f]{64}")
 LIMITS = (
     "capture window only: nothing before the first captured event is seen, never whole-log coverage",
+    "provenance binds the window to the bridge log and generation the pinned reader's cursor names; a null "
+    "generation stays UNKNOWN and is never invented; the cursor proves a position, not who read it",
     "refs are capture-derived event ids; a row the pinned reader truncated has a ref that is not the log's own",
     "a digest proves bytes, not truth; identities are declared, never authenticated",
     "observe only: no gate, no verdict, no merge, no activation, no bridge write",
@@ -114,9 +127,50 @@ def _read_object(path: Path) -> tuple[dict[str, Any], str]:
     return value, hashlib.sha256(data).hexdigest()
 
 
+def decode_position(token: Any) -> tuple[str, str | None, int]:
+    """``(file_identity, generation, offset)`` of a canonical compact-reader position cursor, else a fixed refusal.
+    The body must re-encode to the very token (no padding, canonical key order), the identity must have the
+    reader's token form, the generation must be ``None`` or a token and the offset a non-negative int."""
+    if not isinstance(token, str) or not _CURSOR.fullmatch(token):
+        raise ShadowRefused("the capture provenance is not a canonical compact-reader position cursor")
+    body = token[len("bc1."):]
+    try:
+        value = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8"))
+    except (ValueError, RecursionError):  # binascii.Error and UnicodeDecodeError are ValueErrors
+        raise ShadowRefused("the capture provenance is not a canonical compact-reader position cursor") from None
+    if not isinstance(value, dict) or set(value) != {"file_identity", "generation", "offset"}:
+        raise ShadowRefused("the capture provenance is not a canonical compact-reader position cursor")
+    identity, generation, offset = value["file_identity"], value["generation"], value["offset"]
+    if (not isinstance(identity, str) or not _LOG_IDENTITY.fullmatch(identity) or type(offset) is not int or offset < 0
+            or (generation is not None and (not isinstance(generation, str) or not _LOG_GENERATION.fullmatch(generation)))):
+        raise ShadowRefused("the capture provenance is not a canonical compact-reader position cursor")
+    canonical = json.dumps({"file_identity": identity, "generation": generation, "offset": offset},
+                           sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=") != body:
+        raise ShadowRefused("the capture provenance is not a canonical compact-reader position cursor")
+    return identity, generation, offset
+
+
+def read_provenance(value: Any) -> dict[str, Any] | None:
+    """The capture's provenance with the cursor re-decoded, or ``None`` for a legacy capture without one."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != PROVENANCE_KEYS:
+        raise ShadowRefused("the capture provenance is not {reader_cursor, file_identity, log_generation}")
+    identity, generation, _ = decode_position(value["reader_cursor"])
+    if value["file_identity"] != identity or value["log_generation"] != generation:
+        raise ShadowRefused("the capture provenance does not match its reader cursor")
+    return {"reader_cursor": value["reader_cursor"], "file_identity": identity, "log_generation": generation}
+
+
 def read_capture(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != CAPTURE_KEYS or value["schema"] != CAPTURE_SCHEMA:
+    if not isinstance(value, dict) or value.get("schema") != CAPTURE_SCHEMA \
+            or set(value) not in (CAPTURE_KEYS, CAPTURE_KEYS | {"provenance"}):
         raise ShadowRefused("the capture is not a wd.bridge-mind-capture.v1 object")
+    if "provenance" in value:
+        if not isinstance(value["provenance"], dict):
+            raise ShadowRefused("the capture provenance is not {reader_cursor, file_identity, log_generation}")
+        read_provenance(value["provenance"])
     if value["reader"] not in READERS or not isinstance(value["reader_stdout_sha256"], str) \
             or not _SHA.fullmatch(value["reader_stdout_sha256"]) or workspace.parse_time(value["observed_utc"]) is None:
         raise ShadowRefused("the capture does not name its pinned reader, output digest and observation time")
@@ -150,7 +204,13 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
     out = _owned(out_dir, audit_root, new=True)
     events = capture["events"]
     as_of = capture["observed_utc"]
-    source = {"log_identity": "capture-window:" + capture_sha, "generation": None, "cursor_start": 0,
+    provenance = read_provenance(capture.get("provenance"))
+    if provenance is None:  # legacy capture: the window is its own log, named by its digest
+        log_identity, generation = "capture-window:" + capture_sha, None
+    else:  # the bridge log the committed reader cursor names; a null generation stays None (UNKNOWN), never invented
+        log_identity, generation = "bridge-log:" + provenance["file_identity"], provenance["log_generation"]
+    # cursor_start/cursor_end are the window's own row range ("complete" over that range), never a whole-log claim.
+    source = {"log_identity": log_identity, "generation": generation, "cursor_start": 0,
               "cursor_end": len(events), "event_count": len(events), "coverage": "complete"}
     try:
         previous = None if previous_path is None else core.read_snapshot(_owned(previous_path, audit_root),
@@ -191,7 +251,12 @@ def run(capture_path: Path, audit_root: Path, out_dir: Path, *, context_path: Pa
         "schema": RECEIPT_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
         "capture": {"path": str(capture_file), "sha256": capture_sha, "reader": capture["reader"],
                     "reader_stdout_sha256": capture["reader_stdout_sha256"], "observed_utc": as_of,
-                    "events": len(events)},
+                    "events": len(events),
+                    "provenance": None if provenance is None else {
+                        "file_identity": provenance["file_identity"],
+                        "log_generation": "UNKNOWN" if generation is None else generation,
+                        "reader_cursor_sha256": hashlib.sha256(provenance["reader_cursor"].encode("ascii")).hexdigest(),
+                        "coverage": "bounded_window_not_whole_log"}},
         "context": None if context_path is None else {"path": str(Path(os.path.abspath(context_path))),
                                                       "sha256": context_sha},
         "previous": None if previous_path is None else {"path": str(Path(os.path.abspath(previous_path))),

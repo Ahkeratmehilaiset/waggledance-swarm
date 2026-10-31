@@ -36,6 +36,7 @@ def test_append_returns_cursor_and_prefix_pin_together(anchored):
     assert result.rows == ({"event": "second"},)
     assert result.candidate_prefix.cursor == result.candidate_cursor
     assert result.candidate_prefix.sha256 == digest(first + delta)
+    assert digest(first + delta) not in repr(result)
 
 
 def test_rewrite_and_regrow_same_file_is_refused(anchored):

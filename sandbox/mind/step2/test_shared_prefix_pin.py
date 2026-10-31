@@ -7,7 +7,7 @@ import pytest
 
 from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
 from sandbox.mind.step2.test_shared_source_anchor import TASKS, _bytes, _line, _pins, _verify, synthetic
-from waggledance.core.bridge_log_reader import read_bridge_log
+from waggledance.core.bridge_log_reader import BridgePrefixPin, read_bridge_log
 
 
 def test_anchored_delta_returns_cursor_bound_prefix_pin(tmp_path):
@@ -30,12 +30,22 @@ def test_anchored_delta_returns_cursor_bound_prefix_pin(tmp_path):
     assert pin.cursor == result["candidate_cursor"]
     assert pin.sha256 == hashlib.sha256(first + next_row).hexdigest()
     anchor_obj = json.loads(anchor)
-    assert _verify(result, result["projection"], anchor_obj)
+    start_pin = BridgePrefixPin(cursor, hashlib.sha256(first).hexdigest())
+    assert result["start_prefix"] == start_pin
+    assert _verify(result, result["projection"], anchor_obj, expected_start_prefix=start_pin)
     for changed in ({k: v for k, v in result.items() if k != "candidate_prefix"},
                     {**result, "candidate_prefix": replace(pin, sha256="0" * 64)},
-                    {**result, "candidate_prefix": replace(pin, cursor=cursor)}):
+                    {**result, "candidate_prefix": replace(pin, cursor=cursor)},
+                    {k: v for k, v in result.items() if k != "start_prefix"},
+                    {**result, "start_prefix": replace(start_pin, sha256="0" * 64)},
+                    {**result, "start_prefix": replace(start_pin, cursor=pin.cursor)}):
         with pytest.raises(snapshot.SnapshotRefused):
-            _verify(changed, changed["projection"], anchor_obj)
+            _verify(changed, changed["projection"], anchor_obj, expected_start_prefix=start_pin)
+    with pytest.raises(snapshot.SnapshotRefused):
+        _verify(result, result["projection"], anchor_obj,
+                expected_start_prefix=replace(start_pin, sha256="0" * 64))
+    with pytest.raises(snapshot.SnapshotRefused):
+        _verify(result, result["projection"], anchor_obj)
     with source.open("r+b") as stream:
         stream.seek(0)
         stream.write(b"x")
@@ -45,10 +55,13 @@ def test_anchored_delta_returns_cursor_bound_prefix_pin(tmp_path):
 
 def test_legacy_result_cannot_be_falsely_labeled_prefix_checked(synthetic):
     from sandbox.mind.step2.test_shared_source_anchor import _read
-    from waggledance.core.bridge_log_reader import BridgePrefixPin
     path, generation, cursor, anchor = synthetic
     result = _read(path, generation, cursor, anchor)
     assert _verify(result, result["projection"], anchor)
     result["candidate_prefix"] = BridgePrefixPin(result["candidate_cursor"], "0" * 64)
+    with pytest.raises(snapshot.SnapshotRefused):
+        _verify(result, result["projection"], anchor)
+    del result["candidate_prefix"]
+    result["start_prefix"] = BridgePrefixPin(cursor, "0" * 64)
     with pytest.raises(snapshot.SnapshotRefused):
         _verify(result, result["projection"], anchor)

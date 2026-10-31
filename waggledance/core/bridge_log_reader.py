@@ -14,7 +14,7 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -70,7 +70,7 @@ class BridgePrefixPin:
     """Candidate cursor and hash of bytes before it; caller must protect both."""
 
     cursor: BridgeCursor
-    sha256: str
+    sha256: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)

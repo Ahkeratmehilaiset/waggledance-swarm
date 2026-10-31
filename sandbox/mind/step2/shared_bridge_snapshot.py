@@ -111,6 +111,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             prefix = getattr(result, "candidate_prefix", None)
             if prefix is None or prefix.cursor != candidate:
                 raise ValueError()
+            value["start_prefix"] = BridgePrefixPin(cursor, expected_prefix_sha256)
             value["candidate_prefix"] = prefix
         if chain is not None:
             value["_semantic_state"] = (chain, len(result.rows))
@@ -177,7 +178,8 @@ class _ProjectionBinding:
     semantic_commitment: str = field(repr=False)
     status_mode: str = "legacy"
     public_policy_sha256: str | None = None
-    candidate_prefix: BridgePrefixPin | None = None
+    candidate_prefix: BridgePrefixPin | None = field(default=None, repr=False)
+    start_prefix: BridgePrefixPin | None = field(default=None, repr=False)
 
 
 def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
@@ -248,7 +250,7 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
             projection_data, _canonical(result["source"]), result["candidate_cursor"],
             anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment,
             "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None,
-            result.get("candidate_prefix"))
+            result.get("candidate_prefix"), result.get("start_prefix"))
         return result
     except Exception:
         raise SnapshotRefused("snapshot_refused") from None
@@ -297,11 +299,13 @@ def verify_public_anchor(snapshot_result, anchor_bytes, *, expected_anchor_sha25
 def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_sha256,
                                expected_policy_sha256, expected_roster_sha256,
                                expected_mode="legacy", expected_public_policy_sha256=None,
-                               expected_anchor_bytes=None):
+                               expected_anchor_bytes=None, expected_start_prefix=None):
     """Reject accidental snapshot/projection splicing in this process only.
 
     Binding objects and their caller are not authenticated. In particular this
     method does not establish that a producer or filesystem is trustworthy.
+    Prefix-checked results additionally require the caller's independently
+    protected prior cursor and digest; do not publish those digest values.
     """
     try:
         if type(snapshot_result) is not dict:
@@ -324,6 +328,18 @@ def verify_anchored_projection(snapshot_result, projection, *, expected_anchor_s
                 or not hmac.compare_digest(binding.policy_sha256, expected_policy_sha256)
                 or not hmac.compare_digest(binding.roster_sha256, expected_roster_sha256)
                 or type(binding.row_commitment) is not bytes or len(binding.row_commitment) != 32
+                or (binding.start_prefix is None and
+                    ("start_prefix" in snapshot_result or expected_start_prefix is not None
+                     or binding.candidate_prefix is not None))
+                or (binding.start_prefix is not None and
+                    (type(binding.start_prefix) is not BridgePrefixPin
+                     or type(binding.start_prefix.sha256) is not str
+                     or _SHA256.fullmatch(binding.start_prefix.sha256) is None
+                     or type(snapshot_result.get("start_prefix")) is not BridgePrefixPin
+                     or snapshot_result.get("start_prefix") != binding.start_prefix
+                     or type(expected_start_prefix) is not BridgePrefixPin
+                     or expected_start_prefix != binding.start_prefix
+                     or binding.candidate_prefix is None))
                 or (binding.candidate_prefix is None and "candidate_prefix" in snapshot_result)
                 or (binding.candidate_prefix is not None and
                     (type(binding.candidate_prefix) is not BridgePrefixPin

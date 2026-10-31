@@ -133,6 +133,47 @@ def _source_binding(start, end, anchor, projection, policy, roster):
             "roster_sha256": roster}
 
 
+def _requested_source_mode(expected_mode, expected_public_policy_sha256):
+    if expected_mode == "legacy" and expected_public_policy_sha256 is None:
+        return {"status_mode": "legacy", "public_policy_sha256": None}
+    if (expected_mode == "public-v1" and isinstance(expected_public_policy_sha256, str)
+            and HEX.fullmatch(expected_public_policy_sha256) is not None):
+        return {"status_mode": "public-v1", "public_policy_sha256": expected_public_policy_sha256}
+    _refuse()
+
+
+def _source_mode(memory, receipt):
+    """Require an identical persistent mode/policy in both hashed artifacts.
+
+    Only old artifacts with the field absent from both are treated as legacy.
+    The hashes are integrity pins, not proof against a hostile same-user writer.
+    """
+    if type(memory) is not dict or type(receipt) is not dict:
+        _refuse()
+    if "source_mode" not in memory and "source_mode" not in receipt:
+        return _requested_source_mode("legacy", None)
+    if "source_mode" not in memory or "source_mode" not in receipt:
+        _refuse()
+    mode = memory["source_mode"]
+    if (type(mode) is not dict or set(mode) != {"status_mode", "public_policy_sha256"}
+            or receipt["source_mode"] != mode):
+        _refuse()
+    return _requested_source_mode(mode["status_mode"], mode["public_policy_sha256"])
+
+
+def _snapshot_mode_args(tasks, mode, public_policy_bytes, anchor_bytes):
+    if mode["status_mode"] == "legacy":
+        if public_policy_bytes is not None or anchor_bytes is not None:
+            _refuse()
+        return {}
+    from sandbox.mind.step2.shared_capture_adapter import public_status_policy
+    public_status_policy(public_policy_bytes, mode["public_policy_sha256"], tasks)
+    if type(anchor_bytes) is not bytes:
+        _refuse()
+    return {"expected_mode": "public-v1", "expected_public_policy_sha256": mode["public_policy_sha256"],
+            "expected_anchor_bytes": anchor_bytes}
+
+
 def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
     """Verify the reader-compatible builder artifacts and healthy cell receipts."""
     from sandbox.mind.step2 import shared_projection as sp, wd_q4_private_read as reader
@@ -204,7 +245,8 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
             observed.add(key)
     if observed != expected:
         _refuse()
-    return {"generation": name, **hashes, "source_binding": receipt.get("source_binding")}
+    return {"generation": name, **hashes, "source_binding": receipt.get("source_binding"),
+            "source_mode": _source_mode(memory, receipt)}
 
 
 def _write_new(path, data):
@@ -217,6 +259,23 @@ def _write_new(path, data):
 
 def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+
+
+def _archived_generation_mode(root, pointer, budget):
+    """Hash-check only the retained metadata needed for mode continuity.
+
+    Historical FAISS cells are intentionally not opened here; the existing
+    active-generation verifier still opens only the active index. The metadata
+    bytes counted here share the bounded history-transition budget.
+    """
+    values = {}
+    for kind in ("memory_sha256", "receipt_sha256"):
+        raw = _read(root / pointer["generation"] / ARTIFACTS[kind])
+        budget[0] += len(raw)
+        if budget[0] > _MAX_HISTORY_BYTES or _sha(raw) != pointer["artifacts"][kind]:
+            _refuse()
+        values[kind] = _parse(raw)
+    return _source_mode(values["memory_sha256"], values["receipt_sha256"])
 
 
 def _validate_history_transition(root, current, previous, previous_hash, tasks, roster, policy_sha, roster_sha,
@@ -324,7 +383,7 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
 
 
 def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, reserve=0,
-                        policy_bytes=None, roster_bytes=None, history_budget=None):
+                        policy_bytes=None, roster_bytes=None, history_budget=None, expected_source_mode=None):
     """Validate bounded archived transitions and the current index binding.
 
     The current pointer still needs an independent caller-provided anchor;
@@ -362,13 +421,17 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
 
     old = parse_pointer(raw)
     actual = _verify_generation(root, old["generation"], tasks, roster, policy_sha, roster_sha)
+    expected_source_mode = (expected_source_mode if expected_source_mode is not None
+                            else _requested_source_mode("legacy", None))
     if ({key: actual[key] for key in ARTIFACTS} != old["artifacts"]
+            or actual.get("source_mode", _requested_source_mode("legacy", None)) != expected_source_mode
             or actual.get("source_binding") != _source_binding(
                 BridgeCursor(**old["cursor_start"]), BridgeCursor(**old["cursor_end"]),
                 old["anchor_sha256"], old["artifacts"]["projection_sha256"] if old["schema"] == SCHEMA
                 else old["delta_projection_sha256"], policy_sha, roster_sha)):
         _refuse()
 
+    checked = {(old["generation"], _canonical(old["artifacts"]))}
     current = old
     seen = {_sha(raw)}
     history_bytes = [0] if history_budget is None else history_budget
@@ -390,20 +453,38 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
         if _sha(previous_raw) != previous_hash:
             _refuse()
         previous = parse_pointer(previous_raw)
+        generation_key = (previous["generation"], _canonical(previous["artifacts"]))
+        # Historical generation artifacts were never required for old v3
+        # legacy chains. Do not change that contract for legacy readers.
+        # Public histories instead require each retained generation to carry
+        # the same independently pinned public-mode artifact binding.
+        if expected_source_mode["status_mode"] == "public-v1" and generation_key not in checked:
+            if _archived_generation_mode(root, previous, history_bytes) != expected_source_mode:
+                _refuse()
+            checked.add(generation_key)
         if current["previous"] != previous["generation"]:
             _refuse()
         if current["schema"] == SCHEMA and previous["schema"] == HISTORY_SCHEMA:
             _refuse()  # A v4 history can never be replaced by legacy delta-only publication.
         if advance is None:
+            if expected_source_mode["status_mode"] == "public-v1" and current["schema"] == SCHEMA:
+                _refuse()  # A non-genesis public generation must prove its history union.
             if current["generation"] == previous["generation"] or current["cursor_start"] != previous["watermark"]:
                 _refuse()
             if current["schema"] == HISTORY_SCHEMA:
                 _validate_history_transition(root, current, previous, previous_hash, tasks, roster,
                                              policy_sha, roster_sha, policy_bytes, roster_bytes, history_bytes)
         else:
-            if (type(advance) is not dict or set(advance) != {"schema", "anchor_sha256", "projection_sha256",
-                    "cursor_start_sha256", "cursor_end_sha256", "policy_sha256", "roster_sha256"}
-                    or advance["schema"] != "wd.q4-empty-watermark.v1"
+            advance_fields = {"schema", "anchor_sha256", "projection_sha256", "cursor_start_sha256",
+                              "cursor_end_sha256", "policy_sha256", "roster_sha256"}
+            if expected_source_mode["status_mode"] == "public-v1":
+                advance_fields.add("source_mode")
+                advance_schema = "wd.q4-empty-watermark.v2"
+            else:
+                advance_schema = "wd.q4-empty-watermark.v1"
+            if (type(advance) is not dict or set(advance) != advance_fields
+                    or advance["schema"] != advance_schema
+                    or (advance_schema.endswith(".v2") and advance["source_mode"] != expected_source_mode)
                     or any(not isinstance(advance[k], str) or HEX.fullmatch(advance[k]) is None for k in
                            ("anchor_sha256", "projection_sha256", "cursor_start_sha256", "cursor_end_sha256"))
                     or advance["policy_sha256"] != policy_sha or advance["roster_sha256"] != roster_sha
@@ -426,7 +507,8 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
 
 
 def read_verified_pointer(root, approved_tasks, *, expected_pointer_sha256,
-                          policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+                          policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                          expected_mode="legacy", expected_public_policy_sha256=None):
     """Return a narrow, hash-pinned view of the current verified checkpoint.
 
     This function is read-only and does not create a lock. It checks the
@@ -451,7 +533,8 @@ def read_verified_pointer(root, approved_tasks, *, expected_pointer_sha256,
         if _sha(raw) != expected_pointer_sha256:
             _refuse()
         value = _validated_previous(root, raw, tasks, roster, policy_sha256, roster_sha256,
-                                    policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+                                    policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                    expected_source_mode=_requested_source_mode(expected_mode, expected_public_policy_sha256))
         if _read(path, max_bytes=_MAX_POINTER_BYTES) != raw:
             _refuse()
         return {"pointer_sha256": expected_pointer_sha256, "generation": value["generation"],
@@ -481,7 +564,8 @@ def _publish_pointer(root, pointer, raw, old_hash, value):
 
 def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_pointer_sha256,
                         policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
-                        expected_anchor_sha256, timeout=0.2):
+                        expected_anchor_sha256, timeout=0.2, expected_mode="legacy",
+                        expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -501,14 +585,18 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         tasks, roster = adapter.strict_pins(policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256)
         if type(approved_tasks) is not frozenset or tasks != approved_tasks or type(snapshot_result) is not dict:
             _refuse()
+        mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
+        mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
         delta = snapshot_result.get("projection")
         if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256) is not True:
+                expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                **mode_args) is not True:
             _refuse()
         projection.validate_projection(delta, approved_tasks=tasks, include_refs=False, roster=roster,
                                        exclude_review_signal=True)
         if delta["accepted"] != 0 or delta["records"] != [] or delta["refused"] != {} or delta["dropped_fields"] != 0:
             _refuse()
+        empty_delta_bytes = _canonical(delta)
         end = snapshot_result.get("candidate_cursor")
         finish = _cursor(end)
         source = snapshot_result.get("source")
@@ -523,7 +611,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             if _sha(raw) != expected_pointer_sha256:
                 _refuse()
             old = _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
-                                      policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+                                      policy_bytes=policy_bytes, roster_bytes=roster_bytes, expected_source_mode=mode)
             start = BridgeCursor(**old["watermark"])
             begin = _cursor(start)
             if (source.get("cursor_start_sha256") != _sha(snapshot._token(start).encode("utf-8"))
@@ -532,21 +620,32 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                 _refuse()
             # Recheck the in-process binding immediately before any write.
             if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256) is not True:
+                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                    **mode_args) is not True:
                 _refuse()
             if finish == begin:
                 return {"status": "no_change", "pointer_sha256": expected_pointer_sha256}
             # Only a real advance needs room for another pointer. Revalidate
             # under the same writer lock before publishing that pointer.
             _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
-                                reserve=1, policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+                                reserve=1, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                expected_source_mode=mode)
+            # The caller owns this mutable object; the writer lock does not.
+            # Never publish a hash computed from a changed empty projection.
+            if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
+                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                    **mode_args) is not True or _canonical(delta) != empty_delta_bytes):
+                _refuse()
             value = dict(old)
             value.update(watermark=finish, previous=old["generation"], previous_pointer_sha256=expected_pointer_sha256,
                 empty_advance={"schema": "wd.q4-empty-watermark.v1", "anchor_sha256": expected_anchor_sha256,
-                    "projection_sha256": _sha(_canonical(delta)),
+                    "projection_sha256": _sha(empty_delta_bytes),
                     "cursor_start_sha256": _sha(snapshot._token(start).encode("utf-8")),
                     "cursor_end_sha256": _sha(snapshot._token(end).encode("utf-8")),
                     "policy_sha256": expected_policy_sha256, "roster_sha256": expected_roster_sha256})
+            if mode["status_mode"] == "public-v1":
+                value["empty_advance"]["schema"] = "wd.q4-empty-watermark.v2"
+                value["empty_advance"]["source_mode"] = dict(mode)
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
             return {"status": "advanced", "pointer_sha256": _sha(_canonical(value))}
     except Exception:
@@ -556,7 +655,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
 def commit_generation(root, generation, start, end, approved_tasks, *, expected_pointer_sha256,
                       expected_artifacts, initial_cursor=None, timeout=0.2,
                       policy_bytes=None, expected_policy_sha256=None, roster_bytes=None,
-                      expected_roster_sha256=None, expected_anchor_sha256=None):
+                      expected_roster_sha256=None, expected_anchor_sha256=None, expected_mode="legacy",
+                      expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
+                      snapshot_result=None):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -581,6 +682,24 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
         tasks, roster = strict_pins(policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256)
         if type(approved_tasks) is not frozenset or approved_tasks != tasks:
             _refuse()
+        mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
+        mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
+        if mode["status_mode"] == "public-v1":
+            from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+            if type(snapshot_result) is not dict:
+                _refuse()
+            delta = snapshot_result.get("projection")
+            source = snapshot_result.get("source")
+            if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
+                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                    **mode_args) is not True
+                    or type(source) is not dict
+                    or source.get("cursor_start_sha256") != _sha(snapshot._token(start).encode("utf-8"))
+                    or source.get("cursor_end_sha256") != _sha(snapshot._token(end).encode("utf-8"))
+                    or _cursor(snapshot_result.get("candidate_cursor")) != finish
+                    or _sha(json.dumps(delta, sort_keys=True, indent=1).encode("utf-8"))
+                       != expected_artifacts["projection_sha256"]):
+                _refuse()
         policy_sha = expected_policy_sha256
         pointer, lock = root / POINTER, root / LOCK
         _secure(lock, missing_leaf=True)
@@ -593,13 +712,17 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                         or _sha(raw) != expected_pointer_sha256 or initial_cursor is not None):
                     _refuse()
                 old = _validated_previous(root, raw, tasks, roster, policy_sha, expected_roster_sha256, reserve=1,
-                                          policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+                                          policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                          expected_source_mode=mode)
+                if mode["status_mode"] == "public-v1":
+                    _refuse()  # Subsequent public generations must preserve history via the union/CAS route.
                 if old["schema"] != SCHEMA or old["watermark"] != begin or old["generation"] == generation:
                     _refuse()
             elif expected_pointer_sha256 is not None or initial_cursor is None or _cursor(initial_cursor) != begin:
                 _refuse()
             actual = _verify_generation(root, generation, tasks, roster, policy_sha, expected_roster_sha256)
             if ({key: actual[key] for key in ARTIFACTS} != expected_artifacts
+                    or actual.get("source_mode", _requested_source_mode("legacy", None)) != mode
                     or actual.get("source_binding") != _source_binding(
                         start, end, expected_anchor_sha256, expected_artifacts["projection_sha256"],
                         policy_sha, expected_roster_sha256)):
@@ -610,6 +733,11 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                      "watermark": finish, "empty_advance": None,
                      "previous": None if old is None else old["generation"],
                      "previous_pointer_sha256": None if old is None else expected_pointer_sha256}
+            if (mode["status_mode"] == "public-v1" and
+                    snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
+                        expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                        **mode_args) is not True):
+                _refuse()
             _publish_pointer(root, pointer, None if old is None else raw, expected_pointer_sha256, value)
             return value
     except Exception:
@@ -619,7 +747,8 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
 def commit_history_generation(root, generation, start, end, approved_tasks, *, snapshot_result,
                               expected_pointer_sha256, expected_artifacts, timeout=0.2,
                               policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
-                              expected_anchor_sha256):
+                              expected_anchor_sha256, expected_mode="legacy", expected_public_policy_sha256=None,
+                              public_policy_bytes=None, expected_anchor_bytes=None):
     """Publish a union only after verifying the exact bound delta under the writer lock.
 
     The delta is retained in the private state directory to permit later union
@@ -645,6 +774,8 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
         tasks, roster = adapter.strict_pins(policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256)
         if type(approved_tasks) is not frozenset or approved_tasks != tasks:
             _refuse()
+        mode = _requested_source_mode(expected_mode, expected_public_policy_sha256)
+        mode_args = _snapshot_mode_args(tasks, mode, public_policy_bytes, expected_anchor_bytes)
         delta = snapshot_result.get("projection")
         source = snapshot_result.get("source")
         if (type(source) is not dict or source.get("coverage") != "delta_only_not_complete_history"
@@ -661,18 +792,26 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             history_bytes = [0]
             old = _validated_previous(root, raw, tasks, roster, expected_policy_sha256, expected_roster_sha256,
                                       reserve=1, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
-                                      history_budget=history_bytes)
+                                      history_budget=history_bytes, expected_source_mode=mode)
+            # A reader of the new generation also checks the formerly active
+            # generation as archived metadata. Reserve those exact bytes before
+            # publishing, using the same budget and mode check as that reader.
+            if mode["status_mode"] == "public-v1":
+                if _archived_generation_mode(root, old, history_bytes) != mode:
+                    _refuse()
             if old["watermark"] != begin or old["generation"] == generation:
                 _refuse()
             if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256) is not True:
+                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                    **mode_args) is not True:
                 _refuse()
             delta_bytes = json.dumps(delta, sort_keys=True, indent=1).encode("utf-8")
             if len(delta_bytes) > _MAX:
                 _refuse()
             digest = _sha(delta_bytes)
             actual = _verify_generation(root, generation, tasks, roster, expected_policy_sha256, expected_roster_sha256)
-            if {key: actual[key] for key in ARTIFACTS} != expected_artifacts:
+            if ({key: actual[key] for key in ARTIFACTS} != expected_artifacts
+                    or actual.get("source_mode", _requested_source_mode("legacy", None)) != mode):
                 _refuse()
             value = {"schema": HISTORY_SCHEMA, "generation": generation, "artifacts": dict(expected_artifacts),
                      "policy_sha256": expected_policy_sha256, "roster_sha256": expected_roster_sha256,
@@ -683,7 +822,8 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                                          expected_policy_sha256, expected_roster_sha256,
                                          policy_bytes, roster_bytes, history_bytes, delta_bytes=delta_bytes)
             if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256) is not True
+                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
+                    **mode_args) is not True
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes
                     or _read(pointer, max_bytes=_MAX_POINTER_BYTES) != raw):
                 _refuse()
@@ -704,7 +844,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or snapshot.verify_anchored_projection(snapshot_result, delta,
                         expected_anchor_sha256=expected_anchor_sha256,
                         expected_policy_sha256=expected_policy_sha256,
-                        expected_roster_sha256=expected_roster_sha256) is not True
+                        expected_roster_sha256=expected_roster_sha256, **mode_args) is not True
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes):
                 _refuse()
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)

@@ -107,9 +107,10 @@ def test_every_lane_gets_the_same_safe_projection_without_paths_or_peer_identiti
     assert result["schema"] == lane_read.SCHEMA and result["authority"] == "none" and result["lane"] == lane
     assert result["freshness"]["status"] == "fresh" and result["refusal"] is None
     assert set(result["lanes"]) == set(LANES)
-    assert result["lanes"]["fable-5"] == {"observed": False}
+    assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "not_seen_in_window"}
+    assert result["source"]["window"] == {"cursor_start": 0, "cursor_end": 5, "coverage": "complete"}
     lead = result["lanes"]["codex-lead-1"]
-    assert lead["observed"] is True and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
+    assert lead["observed_in_window"] is True and lead["identity_verification"] == "declared" and lead["claims"] == [{"task_id": "lead-task", "lease_expires_utc": "2026-10-31T08:20:00Z", "expired": False}]
     pr = result["prs"]["1963"]
     assert pr["head"] == HEAD and pr["base"] == BASE and pr["reported_ci_status"] == "reported_green"
     assert pr["missing"] == ["gate_eligibility_UNKNOWN"]
@@ -172,8 +173,13 @@ def test_state_cursor_differing_from_snapshot_identity_is_refused(tmp_path):
 def test_fresh_stale_boundary_future_and_naive_clock(tmp_path):
     audit, latest, _ = make_live(tmp_path)
     assert read(audit, latest, as_of=NOW + timedelta(seconds=900))["freshness"]["status"] == "fresh"
-    stale = read(audit, latest, as_of=NOW + timedelta(seconds=901))
-    assert stale["freshness"]["status"] == "stale" and stale["prs"]["1963"]["head"] == HEAD
+    with pytest.raises(lane_read.LaneReadRefused, match="snapshot_stale"):  # G1: stale never returns a body
+        read(audit, latest, as_of=NOW + timedelta(seconds=901))
+    with pytest.raises(lane_read.LaneReadRefused, match="snapshot_stale"):
+        read(audit, latest, as_of=NOW + timedelta(seconds=301), max_age=timedelta(seconds=300))
+    for bad in (timedelta(seconds=901), timedelta(0), timedelta(seconds=-1), 900, None):  # caller cannot widen the window
+        with pytest.raises(lane_read.LaneReadRefused, match="max_age_invalid"):
+            read(audit, latest, max_age=bad)
     with pytest.raises(lane_read.LaneReadRefused, match="future_snapshot"):
         read(audit, latest, as_of=NOW - timedelta(seconds=1))
     with pytest.raises(lane_read.LaneReadRefused, match="invalid_context"):
@@ -259,4 +265,28 @@ def test_two_rco_noninterference_a_peer_decision_changes_nothing_in_the_projecti
     assert core.canonical_bytes(one["facts_meta"]) == core.canonical_bytes(other["facts_meta"])
     text = core.canonical_bytes(one).decode("utf-8").lower()
     assert not [word for word in _DECISION_WORDS if word in text]
+
+
+def test_g2_conflicting_lane_identities_refuse_the_whole_output(tmp_path):
+    """RCO2 G2: a second declared uuid under a lane name must not override the real lane; the adapter cannot tell which
+    one is real, so it refuses everything."""
+    events = rows()
+    foreign = event("claude-rco-1", "message", "milestone", "other-task", "2026-10-31T07:58:30Z")
+    foreign["event"]["agent_uuid"] = "0f0f0f0f-1111-4222-8333-444444444444"
+    foreign["ref"] = event_id(foreign["event"])
+    audit, latest, _ = make_live(tmp_path, events=events + [foreign])
+    with pytest.raises(lane_read.LaneReadRefused, match="lane_identity_conflict"):
+        read(audit, latest)
+
+
+def test_g2_rows_without_a_verified_identity_never_mark_a_lane_observed(tmp_path):
+    events = rows()
+    row = {"agent": "fable-5", "session_id": "s1", "run_id": "r1", "type": "message", "status": "milestone",
+           "task_id": "fable-task", "ts_utc": "2026-10-31T07:58:30Z", "payload": {}}  # no agent_uuid at all
+    unverified = {"event": row, "ref": event_id(row)}
+    audit, latest, _ = make_live(tmp_path, events=events + [unverified])
+    result = read(audit, latest)
+    assert result["lanes"]["fable-5"] == {"observed_in_window": False, "status": "unverified_identity_rows_only"}
+    text = core.canonical_bytes(result).decode("utf-8")
+    assert "fable-task" not in text and "absent" not in text.lower()
 

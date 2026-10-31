@@ -50,6 +50,7 @@ _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _CURSOR = re.compile(r"bc1\.[A-Za-z0-9_-]{1,2044}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,244}\Z")
+_UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 _TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|\+00:00)\Z")
 _CYCLE = re.compile(r"[0-9]{8}T[0-9]{6}Z\Z")
 _RELATIVE = re.compile(r"cycles/[0-9]{8}T[0-9]{6}Z/[A-Za-z0-9_./-]{1,80}\Z")
@@ -213,14 +214,27 @@ def _utc(value: str) -> datetime:
 
 
 def _lanes(snapshot: Mapping[str, Any]) -> dict:
-    result = {lane: {"observed": False} for lane in LANES}
+    # G4 (RCO2): a lane without a row is "not seen in this window", never "absent"; the window bounds travel in
+    # source.window. G2 (RCO2): only rows whose identity the core marked declared (agent + well-formed uuid) can mark
+    # a lane observed; two distinct declared uuids under one lane name are a conflict the adapter cannot resolve,
+    # so the whole output is refused rather than letting either row win.
+    result: dict[str, dict] = {lane: {"observed_in_window": False, "status": "not_seen_in_window"} for lane in LANES}
     newest: dict[str, datetime] = {}
+    uuids: dict[str, set] = {}
     for record in snapshot.get("lanes", {}).values():
         if not isinstance(record, Mapping):
             raise LaneReadRefused("field_not_allowlisted")
         agent = record.get("agent")
         if agent not in LANES:
             continue  # a pseudo or unknown agent is not a lane; nothing of it is emitted
+        uuid = record.get("agent_uuid")
+        if record.get("verification") != "declared" or not isinstance(uuid, str) or not _UUID.fullmatch(uuid):
+            if not result[agent]["observed_in_window"]:
+                result[agent] = {"observed_in_window": False, "status": "unverified_identity_rows_only"}
+            continue  # an identity-less row never marks or overrides a lane
+        uuids.setdefault(agent, set()).add(uuid.lower())
+        if len(uuids[agent]) > 1:
+            raise LaneReadRefused("lane_identity_conflict")
         when = _utc(record["last_event_utc"])
         if agent in newest and newest[agent] >= when:
             continue
@@ -234,7 +248,8 @@ def _lanes(snapshot: Mapping[str, Any]) -> dict:
         age = record["observation_age_seconds"]
         if type(age) not in (int, float) or age < 0:
             raise LaneReadRefused("field_not_allowlisted")
-        result[agent] = {"observed": True, "last_event_utc": _safe(record["last_event_utc"], _TIME),
+        result[agent] = {"observed_in_window": True, "identity_verification": "declared",
+                         "last_event_utc": _safe(record["last_event_utc"], _TIME),
                          "observation_age_seconds": age, "claims": claims}
     return result
 
@@ -285,6 +300,8 @@ def _source(source: Mapping[str, Any]) -> dict:
             "as_of_utc": _safe(source["as_of_utc"], _TIME), "max_event_utc": _time_or_unknown(source["max_event_utc"]),
             "event_count": _count(source["event_count"]), "unique_event_count": _count(source["unique_event_count"]),
             "duplicate_count": _count(source["duplicate_count"]),
+            "window": {"cursor_start": _count(source["cursor_start"]), "cursor_end": _count(source["cursor_end"]),
+                       "coverage": _safe(source["coverage"], _TOKEN)},
             "last_event_ref": None if last_ref is None else _safe(last_ref, _REF), "blocked": blocked}
 
 
@@ -297,6 +314,8 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
         raise LaneReadRefused("lane_unknown")
     if not isinstance(as_of, datetime) or as_of.tzinfo is None or as_of.utcoffset() is None:
         raise LaneReadRefused("invalid_context")
+    if not isinstance(max_age, timedelta) or max_age <= timedelta(0) or max_age > MAX_AGE:
+        raise LaneReadRefused("max_age_invalid")  # G1 (RCO2): the caller may narrow the window, never widen it
     view_identity, view_generation = _binding(binding)
     last_ok = read_pointer(latest_path, audit_root)
     root = Path(audit_root).absolute()
@@ -323,6 +342,8 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
     age = as_of.astimezone(timezone.utc) - snapshot_as_of
     if age < timedelta(0):
         raise LaneReadRefused("future_snapshot")
+    if age > max_age:
+        raise LaneReadRefused("snapshot_stale")  # G1 (RCO2): a stale snapshot never yields a body
     result = {
         "schema": SCHEMA, "authority": "none", "scope": SCOPE, "lane": lane,
         "as_of_utc": as_of.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -330,8 +351,7 @@ def lane_read(*, latest_path: Path, audit_root: Path, lane: Any, as_of: datetime
                     "origin": "lane_reader_view_not_authenticated"},
         "pointer": {"cycle_dir": last_ok["cycle_dir"], "cycle_generation": cycle_generation,
                     "snapshot_sha256": last_ok["snapshot_sha256"], "state_sha256": last_ok["state_sha256"]},
-        "freshness": {"age_seconds": age.total_seconds(), "max_age_seconds": max_age.total_seconds(),
-                      "status": "fresh" if age <= max_age else "stale"},
+        "freshness": {"age_seconds": age.total_seconds(), "max_age_seconds": max_age.total_seconds(), "status": "fresh"},
         "source": _source(source), "lanes": _lanes(snapshot), "prs": _prs(snapshot), "facts_meta": _facts(snapshot),
         "refusal": None,
     }

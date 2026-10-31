@@ -22,7 +22,8 @@ def ready(tmp_path, monkeypatch):
     result, pins, _ = read_fixture(source, [event(message="")])
     audit = tmp_path / ".codex-audit"
     audit.mkdir()
-    session.publish_status(audit, result, as_of=datetime.now(timezone.utc), enabled=True, **pins)
+    session.publish_status(audit, result, as_of=datetime.now(timezone.utc), enabled=True,
+                           expected_previous_sha256=None, **pins)
     for item in ("anchor", "policy", "roster", "public_policy"):
         file = tmp_path / (item + ".json")
         file.write_bytes(pins[item + "_bytes"])

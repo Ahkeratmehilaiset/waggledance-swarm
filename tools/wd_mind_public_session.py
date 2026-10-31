@@ -7,8 +7,12 @@ completeness or freshness of the source bridge. Filesystem checks and atomic
 replace do not prevent hostile same-user replacement or TOCTOU. The selected
 .codex-audit directory must already exist and be independently access-controlled.
 Each publication REPLACES the previous one with only its latest delta: empty
-records never mean that the source has no historical events. A single writer
-must be enforced externally; there is no lock, cursor CAS or merge of deltas.
+records never mean that the source has no historical events. Cooperating
+v2 writers serialize and compare the prior publication digest; this is not a
+source-cursor CAS, a merge of deltas, or authentication of the writer. A v1
+publication is refused for both reads and writes, not migrated or overwritten.
+Before rollout, old v1 writers must be stopped or handed off externally: they
+do not honor the v2 lock. Revision is not an independent anti-rollback anchor.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -21,9 +25,13 @@ import stat
 
 from sandbox.mind.step2 import shared_capture_adapter as adapter, shared_projection as projection
 from sandbox.mind.step2 import status_metadata_producer as producer
+from sandbox.mind.step2.reader_slot import reader_slot
 
-SCHEMA = "wd.mind-public-status-publication.v1"
+SCHEMA = "wd.mind-public-status-publication.v2"
 FILENAME = "public-status.json"
+LOCK_FILENAME = ".public-status.lock"
+_UNSET = object()
+_MAX_REVISION = (1 << 63) - 1
 MAX_BYTES = 1024 * 1024
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _FLOORED_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00\.000000Z\Z")
@@ -111,40 +119,62 @@ def _body(value, tasks, types):
     return value
 
 
-def publish_status(audit_root, snapshot_result, *, as_of, enabled=False, **pins):
-    """Publish one verified synthetic snapshot; returns no path, cursor or digest."""
+def publish_status(audit_root, snapshot_result, *, as_of, enabled=False,
+                   expected_previous_sha256=_UNSET, timeout_seconds=0.2, **pins):
+    """Publish with a cooperating-writer CAS; return only the publication digest."""
     stage = None
     owned = False
     try:
-        if enabled is not True:
+        if (enabled is not True or expected_previous_sha256 is _UNSET or
+                (expected_previous_sha256 is not None and
+                 (type(expected_previous_sha256) is not str or _HEX.fullmatch(expected_previous_sha256) is None))):
             raise ValueError()
         _, tasks, types = _pins(**pins)
         now = _instant(as_of)
         data = producer.build_status(snapshot_result, enabled=True, **pins)
         body = _body(_object(data), tasks, types)
-        doc = {"schema": SCHEMA, "authority": "none", "coverage": "last_delta_only", "as_of_utc": now.isoformat(),
-               "anchor_sha256": pins["anchor_sha256"], "policy_sha256": pins["policy_sha256"],
-               "roster_sha256": pins["roster_sha256"], "public_policy_sha256": pins["public_policy_sha256"],
-               "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
-        payload = _json(doc)
-        if len(payload) > MAX_BYTES:
-            raise ValueError()
         root = _directory(audit_root)
         target = root / FILENAME
-        if os.path.lexists(target):
-            _regular(target)
-        stage = root / (".public-status-" + secrets.token_hex(16) + ".tmp")
-        with stage.open("xb") as stream:
-            owned = True
-            if stream.write(payload) != len(payload):
-                raise OSError("short_write")
-            stream.flush()
-            os.fsync(stream.fileno())
-        if os.path.lexists(target):
-            _regular(target)
-        os.replace(stage, target)
-        owned = False
-        return None
+        lock = root / LOCK_FILENAME
+        if os.path.lexists(lock):
+            _regular(lock)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            revision = 1
+            if os.path.lexists(target):
+                _regular(target)
+                with target.open("rb") as stream:
+                    old = stream.read(MAX_BYTES + 1)
+                old_doc = _object(old)
+                old_revision = old_doc.get("revision")
+                if (expected_previous_sha256 is None or
+                        hashlib.sha256(old).hexdigest() != expected_previous_sha256 or
+                        old_doc.get("schema") != SCHEMA or type(old_revision) is not int or
+                        not 1 <= old_revision < _MAX_REVISION):
+                    raise ValueError()
+                revision = old_revision + 1
+            elif expected_previous_sha256 is not None:
+                raise ValueError()
+            doc = {"schema": SCHEMA, "revision": revision, "authority": "none",
+                   "coverage": "last_delta_only", "as_of_utc": now.isoformat(),
+                   "anchor_sha256": pins["anchor_sha256"], "policy_sha256": pins["policy_sha256"],
+                   "roster_sha256": pins["roster_sha256"], "public_policy_sha256": pins["public_policy_sha256"],
+                   "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
+            payload = _json(doc)
+            if len(payload) > MAX_BYTES:
+                raise ValueError()
+            stage = root / (".public-status-" + secrets.token_hex(16) + ".tmp")
+            with stage.open("xb") as stream:
+                owned = True
+                if stream.write(payload) != len(payload):
+                    raise OSError("short_write")
+                stream.flush()
+                os.fsync(stream.fileno())
+            if os.path.lexists(target):
+                _regular(target)
+            os.replace(stage, target)
+            owned = False
+            return hashlib.sha256(payload).hexdigest()
     except Exception:
         raise PublicStatusRefused("public_status_refused") from None
     finally:
@@ -169,9 +199,10 @@ def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled
         _regular(path)
         with path.open("rb") as stream:
             doc = _object(stream.read(MAX_BYTES + 1))
-        if (set(doc) != {"schema", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
+        if (set(doc) != {"schema", "revision", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
                          "public_policy_sha256", "body_sha256", "body"}
                 or doc["schema"] != SCHEMA or doc["authority"] != "none"
+                or type(doc["revision"]) is not int or not 1 <= doc["revision"] <= _MAX_REVISION
                 or doc["coverage"] != "last_delta_only"
                 or any(doc[name] != pins[name] for name in
                        ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"))

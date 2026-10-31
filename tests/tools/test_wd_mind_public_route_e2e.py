@@ -71,7 +71,7 @@ def test_public_snapshot_reaches_each_declared_synthetic_lane_without_raw_data(t
     pins = dict(anchor_bytes=anchor, anchor_sha256=sha(anchor), policy_bytes=policy, policy_sha256=sha(policy),
                 roster_bytes=roster, roster_sha256=sha(roster), public_policy_bytes=public,
                 public_policy_sha256=sha(public))
-    session.publish_status(audit, result, as_of=instant, enabled=True, **pins)
+    session.publish_status(audit, result, as_of=instant, enabled=True, expected_previous_sha256=None, **pins)
     fleet = audit / "synthetic-fleet.json"
     fleet.write_bytes(roster)
     monkeypatch.setenv("WD_MIND_READ_ENABLED", "1")

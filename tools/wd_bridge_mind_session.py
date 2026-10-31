@@ -18,7 +18,12 @@ from pathlib import Path
 import re
 import sys
 
-from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
+try:
+    from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
+except ImportError:
+    # A missing packaged dependency must not print interpreter paths.
+    print('{"error":"mind_session_import_refused","authority":"none"}', file=sys.stderr)
+    raise SystemExit(2) from None
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FLEET_LIMIT = 1024 * 1024

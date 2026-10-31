@@ -417,3 +417,129 @@ def test_duplicate_or_over_budget_publication_refused(state, monkeypatch, conten
     with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
         session.read_status(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"], as_of=now,
                             max_age_seconds=900, enabled=True, **pins)
+
+# ---- RCO1 U1 P3 (Lead Source GO lead-mind-status-digest-fable-20261031-v1): after an AMBIGUOUS publish failure ----
+# ---- (the replace may or may not have landed) a cooperating writer needs the CURRENT publication digest, taken ----
+# ---- under the same lock, validated like a read, never event data, never a path, never a stale or v1 document. ----
+def _digest_kwargs(pins, now):
+    return dict(as_of=now, max_age_seconds=900, enabled=True, **pins)
+
+
+def test_current_digest_recovers_after_ambiguous_replace_in_both_directions(state, monkeypatch):
+    from tools import wd_mind_public_session as session
+    audit, result, pins = state
+    now = datetime.now(timezone.utc)
+    target = audit / session.FILENAME
+    assert session.current_publication_sha256(audit, **_digest_kwargs(pins, now)) is None  # explicit genesis
+    first = session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=None, **pins)
+    assert session.current_publication_sha256(audit, **_digest_kwargs(pins, now)) == first
+    real_replace = session.os.replace
+
+    def landed_then_failed(src, dst):  # the replace happened, the caller still sees a failure
+        real_replace(src, dst)
+        raise OSError("synthetic ambiguous failure after replace")
+
+    monkeypatch.setattr(session.os, "replace", landed_then_failed)
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=first, **pins)
+    monkeypatch.setattr(session.os, "replace", real_replace)
+    recovered = session.current_publication_sha256(audit, **_digest_kwargs(pins, now))
+    assert recovered != first and recovered == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert json.loads(target.read_bytes())["revision"] == 2
+    with pytest.raises(session.PublicStatusRefused):  # the stale expectation is refused, the recovered one proceeds
+        session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=first, **pins)
+    third = session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=recovered, **pins)
+    assert json.loads(target.read_bytes())["revision"] == 3
+
+    def failed_before_replace(src, dst):  # the replace never happened
+        raise OSError("synthetic failure before replace")
+
+    monkeypatch.setattr(session.os, "replace", failed_before_replace)
+    with pytest.raises(session.PublicStatusRefused):
+        session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=third, **pins)
+    monkeypatch.setattr(session.os, "replace", real_replace)
+    assert session.current_publication_sha256(audit, **_digest_kwargs(pins, now)) == third
+    assert not [p for p in audit.iterdir() if p.name.startswith(".public-status-")]  # no orphan staging left
+
+
+def test_current_digest_is_bounded_and_fail_closed(state):
+    from tools import wd_mind_public_session as session
+    audit, result, pins = state
+    now = datetime.now(timezone.utc)
+    kwargs = _digest_kwargs(pins, now)
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):  # OFF by default
+        session.current_publication_sha256(audit, **dict(kwargs, enabled=False))
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.current_publication_sha256(audit, **dict(kwargs, enabled=1))
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):  # pins are validated first
+        session.current_publication_sha256(audit, **dict(kwargs, roster_sha256="0" * 64))
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.current_publication_sha256(audit / "nested", **kwargs)  # not a .codex-audit directory
+    digest = session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=None, **pins)
+    out = session.current_publication_sha256(audit, **kwargs)
+    assert type(out) is str and out == digest and session._HEX.fullmatch(out)
+    target = audit / session.FILENAME
+    saved = target.read_bytes()
+    # a publication under OTHER pins is not this writer's current publication
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.current_publication_sha256(audit, **dict(kwargs, public_policy_sha256="1" * 64))
+    # stale by the caller clock, or a clock before publication, refuses
+    for as_of in (now + timedelta(seconds=901), now - timedelta(seconds=1)):
+        with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+            session.current_publication_sha256(audit, **dict(kwargs, as_of=as_of))
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.current_publication_sha256(audit, **dict(kwargs, max_age_seconds=0))
+    # malformed, tampered, extra-key and v1 documents refuse and are never repaired or removed
+    doc = json.loads(saved)
+    variants = []
+    tampered = json.loads(saved)
+    tampered["body"]["records"][0]["task_id"] = "tampered"
+    variants.append(json.dumps(tampered))
+    extra = json.loads(saved)
+    extra["recovered"] = True
+    variants.append(json.dumps(extra))
+    legacy = json.loads(saved)
+    legacy["schema"] = "wd.mind-public-status-publication.v1"
+    del legacy["revision"]
+    variants.append(json.dumps(legacy))
+    norev = json.loads(saved)
+    norev["revision"] = 0
+    variants.append(json.dumps(norev))
+    variants.append("{not json")
+    variants.append(json.dumps(doc) + "x" * (session.MAX_BYTES + 1))
+    for text in variants:
+        target.write_text(text, encoding="utf-8")
+        with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+            session.current_publication_sha256(audit, **kwargs)
+        assert target.read_bytes() == text.encode("utf-8")
+    target.write_bytes(saved)
+    assert session.current_publication_sha256(audit, **kwargs) == digest
+    # a non-regular target refuses
+    target.unlink()
+    target.mkdir()
+    with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+        session.current_publication_sha256(audit, **kwargs)
+
+
+def test_current_digest_waits_on_the_same_lock_and_refuses_on_contention(state):
+    from tools import wd_mind_public_session as session
+    audit, result, pins = state
+    now = datetime.now(timezone.utc)
+    first = session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=None, **pins)
+    script = ('import sys; from sandbox.mind.step2.reader_slot import reader_slot; '
+              'p=reader_slot(sys.argv[1], timeout_seconds=1); p.__enter__(); '
+              'print("LOCKED", flush=True); sys.stdin.readline(); p.__exit__(None,None,None)')
+    process = subprocess.Popen([sys.executable, "-B", "-c", script, str(audit / session.LOCK_FILENAME)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        _expect_ready(process, "LOCKED")
+        with pytest.raises(session.PublicStatusRefused, match="^public_status_refused$"):
+            session.current_publication_sha256(audit, timeout_seconds=0.05, **_digest_kwargs(pins, now))
+    finally:
+        try:
+            process.communicate("release\n", timeout=10)
+        finally:
+            _reap(process)
+    assert session.current_publication_sha256(audit, timeout_seconds=1, **_digest_kwargs(pins, now)) == first
+    assert (audit / session.LOCK_FILENAME).is_file()
+

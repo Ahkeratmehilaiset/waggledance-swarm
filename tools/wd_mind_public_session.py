@@ -13,6 +13,10 @@ source-cursor CAS, a merge of deltas, or authentication of the writer. A v1
 publication is refused for both reads and writes, not migrated or overwritten.
 Before rollout, old v1 writers must be stopped or handed off externally: they
 do not honor the v2 lock. Revision is not an independent anti-rollback anchor.
+After an AMBIGUOUS publish failure (the replace may or may not have landed) a
+cooperating writer recovers the CURRENT publication digest under the same lock
+with ``current_publication_sha256``; it returns a digest or None (genesis) only,
+validated like a read: never records, pins, paths, a stale or a v1 document.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -185,6 +189,58 @@ def publish_status(audit_root, snapshot_result, *, as_of, enabled=False,
                 pass  # An orphan is never interpreted as the commit pointer.
 
 
+def _publication(raw, pins, tasks, types, now, max_age_seconds):
+    """One validated v2 publication under THIS caller's pins: shape, pins, caller-clock age and body digest; returns
+    the validated body and the publication age. Anything else (v1, foreign pins, stale, tampered) refuses."""
+    doc = _object(raw)
+    if (set(doc) != {"schema", "revision", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
+                     "public_policy_sha256", "body_sha256", "body"}
+            or doc["schema"] != SCHEMA or doc["authority"] != "none"
+            or type(doc["revision"]) is not int or not 1 <= doc["revision"] <= _MAX_REVISION
+            or doc["coverage"] != "last_delta_only"
+            or any(doc[name] != pins[name] for name in
+                   ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"))
+            or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40
+            or type(doc["body_sha256"]) is not str or _HEX.fullmatch(doc["body_sha256"]) is None):
+        raise ValueError()
+    published = _instant(datetime.fromisoformat(doc["as_of_utc"]))
+    age = (now - published).total_seconds()
+    if age < 0 or age > max_age_seconds:
+        raise ValueError()
+    body = _body(doc["body"], tasks, types)
+    if hashlib.sha256(_json(body)).hexdigest() != doc["body_sha256"]:
+        raise ValueError()
+    return body, age
+
+
+def current_publication_sha256(audit_root, *, as_of, max_age_seconds, enabled=False, timeout_seconds=0.2, **pins):
+    """Recovery after an AMBIGUOUS publish: the digest of the CURRENT publication under this writer's pins, taken
+    under the same cooperating-writer lock and validated like a read. Returns a digest, or None for explicit
+    genesis (no publication file); never records, pins or paths. A v1, malformed, foreign-pin or stale document
+    refuses with the fixed token and is never repaired, removed or replaced. OFF by default."""
+    try:
+        if enabled is not True or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 900:
+            raise ValueError()
+        _, tasks, types = _pins(**pins)
+        now = _instant(as_of)
+        root = _directory(audit_root)
+        target = root / FILENAME
+        lock = root / LOCK_FILENAME
+        if os.path.lexists(lock):
+            _regular(lock)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            if not os.path.lexists(target):
+                return None  # explicit genesis: the next publish must pass expected_previous_sha256=None
+            _regular(target)
+            with target.open("rb") as stream:
+                raw = stream.read(MAX_BYTES + 1)
+            _publication(raw, pins, tasks, types, now, max_age_seconds)
+            return hashlib.sha256(raw).hexdigest()
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
 def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled=False, **pins):
     """Read a publication with declared roster identity; never returns pins."""
     try:
@@ -198,24 +254,8 @@ def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled
         path = _directory(audit_root) / FILENAME
         _regular(path)
         with path.open("rb") as stream:
-            doc = _object(stream.read(MAX_BYTES + 1))
-        if (set(doc) != {"schema", "revision", "authority", "coverage", "as_of_utc", "anchor_sha256", "policy_sha256", "roster_sha256",
-                         "public_policy_sha256", "body_sha256", "body"}
-                or doc["schema"] != SCHEMA or doc["authority"] != "none"
-                or type(doc["revision"]) is not int or not 1 <= doc["revision"] <= _MAX_REVISION
-                or doc["coverage"] != "last_delta_only"
-                or any(doc[name] != pins[name] for name in
-                       ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"))
-                or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40
-                or type(doc["body_sha256"]) is not str or _HEX.fullmatch(doc["body_sha256"]) is None):
-            raise ValueError()
-        published = _instant(datetime.fromisoformat(doc["as_of_utc"]))
-        age = (now - published).total_seconds()
-        if age < 0 or age > max_age_seconds:
-            raise ValueError()
-        body = _body(doc["body"], tasks, types)
-        if hashlib.sha256(_json(body)).hexdigest() != doc["body_sha256"]:
-            raise ValueError()
+            raw = stream.read(MAX_BYTES + 1)
+        body, age = _publication(raw, pins, tasks, types, now, max_age_seconds)
         return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only", "lane": lane,
                       "identity_verification": "caller_declared_not_authenticated",
                       "as_of_utc": now.isoformat(), "publication_age_seconds": age,

@@ -120,6 +120,11 @@ _PUBLIC_ROUTING_KEYS = frozenset({"to", "to_list", "recipient", "recipients", "r
 _PUBLIC_EVENT_KEYS = frozenset({"ts_utc", "agent", "agent_uuid", "type", "task_id", "status", "severity",
     "to", "message", "paths", "write_scope", "run_id", "pid", "cwd", "payload", "role", "session_id",
     "capabilities"})
+# Known non-review writer capabilities from wd-fleet.json and the Tools
+# supervisor config. They are classification-only and never projected; an
+# unknown capability requires an explicit policy/code decision, not guessing.
+_PUBLIC_WRITER_CAPABILITIES = frozenset({"implementation", "magma", "source_changes", "tests",
+                                        "bridge_event", "work_queue", "docs"})
 
 
 def _public_status_event(event, public_tasks, public_types):
@@ -140,7 +145,11 @@ def _public_status_event(event, public_tasks, public_types):
             or not set(event) <= _PUBLIC_EVENT_KEYS
             or ("message" in event and (type(event["message"]) is not str or event["message"] != ""))
             or any(key in event and (type(event[key]) is not list or event[key] != [])
-                   for key in ("paths", "write_scope", "capabilities"))):
+                   for key in ("paths", "write_scope"))
+            or ("capabilities" in event and (type(event["capabilities"]) is not list
+                or len(event["capabilities"]) > 64
+                or any(type(value) is not str or value not in _PUBLIC_WRITER_CAPABILITIES
+                       for value in event["capabilities"])))):
         return False
     stack = [(event, True)]
     while stack:

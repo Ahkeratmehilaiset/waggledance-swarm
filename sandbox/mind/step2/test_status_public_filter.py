@@ -60,8 +60,46 @@ def event(**changes):
     return item
 
 
+@pytest.mark.parametrize("agent,capabilities", [
+    ("codex-lead-1", ["implementation", "magma", "source_changes", "tests", "bridge_event", "work_queue"]),
+    ("codex-tools-1", ["implementation", "tests", "bridge_event", "work_queue"]),
+    ("fable-5", ["implementation", "tests", "docs", "bridge_event", "work_queue"]),
+])
+def test_public_writer_envelope_with_inherited_capabilities_emits_metadata_only(tmp_path, agent, capabilities):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    row = event(agent=agent, agent_uuid=ROSTER[agent], capabilities=capabilities, severity="", message="",
+                paths=[], write_scope=[], run_id="synthetic-run", pid=1234,
+                cwd="C:\\synthetic-private-cwd", role="synthetic_role", session_id="synthetic-session")
+    result, pins, _ = read_fixture(tmp_path, [row])
+    output = producer.build_status(result, enabled=True, **pins)
+    records = json.loads(output)["records"]
+    assert len(records) == 1 and records[0]["agent"] == agent and records[0]["task_id"] == "public-task"
+    for forbidden in (b"capabilities", b"source_changes", b"work_queue", b"synthetic-private-cwd",
+                      b"synthetic-session", b"synthetic-run", b"synthetic_role", b"1234"):
+        assert forbidden not in output
+
+
+@pytest.mark.parametrize("capabilities", ["implementation", [None], [123], ["private"], ["recipient:fable-5"],
+                                           [{"recipient": "fable-5"}], ["implementation"] * 65])
+def test_unknown_or_malformed_capability_metadata_is_not_public(tmp_path, capabilities):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    result, pins, _ = read_fixture(tmp_path, [event(capabilities=capabilities)])
+    assert json.loads(producer.build_status(result, enabled=True, **pins))["records"] == []
+
+
+def test_capability_variations_do_not_change_projected_identity_or_output_record(tmp_path):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    result, pins, _ = read_fixture(tmp_path, [event(capabilities=["tests"]),
+                                             event(capabilities=["implementation", "work_queue"])])
+    records = result["projection"]["records"]
+    assert len(records) == 2 and records[0] == records[1]
+    public_records = json.loads(producer.build_status(result, enabled=True, **pins))["records"]
+    assert len(public_records) == 2 and public_records[0] == public_records[1]
+
+
 @pytest.mark.parametrize("changed", [
     {"to": "codex-tools-1"}, {"To": "fable-5"}, {"to": ["codex-tools-1"]}, {"to": None},
+    {"to": "codex-tools-1", "capabilities": ["tests"]},
     {"to": " "}, {"recipient": "codex-tools-1"}, {"recipients": ["fable-5"]},
     {"payload": {"public_status": True, "to": "fable-5"}},
     {"payload": {"public_status": True, "ReCiPiEnT": "codex-tools-1"}},

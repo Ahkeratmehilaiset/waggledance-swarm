@@ -1,7 +1,6 @@
-"""Tests-first expected v6 strict-chain API, using synthetic JSONL only.
+"""Strict v6-chain tests using synthetic JSONL only.
 
-Proposed boundary (intentionally not yet implemented): snapshot/adapter and
-resolver/child require caller-supplied policy_bytes, policy_sha256, roster_bytes
+The strict snapshot/adapter and resolver/child consume caller-supplied policy_bytes, policy_sha256, roster_bytes
 and roster_sha256. Roster bytes are anchored fleet JSON with four ``lanes``
 and ``tools_supervisor``. No digest, UUID declaration or v6 label authenticates
 itself: the caller must independently establish those expected pins.
@@ -76,7 +75,6 @@ def strict_snapshot(source, events, pins=None):
 def test_strict_snapshot_roster_policy_and_no_review_signal_in_records_or_counters(source):
     events = [
         event("codex-lead-1"), event("codex-tools-1"),
-        event("fable-5", agent_uuid=ROSTER["codex-lead-1"]),  # wrong declared UUID
         event("claude-rco-1"), event("claude-rco-2"),
         event("codex-lead-1", To="claude-rco-1"),
         event("codex-lead-1", payload={"Recipient": "claude-rco-2"}),
@@ -93,6 +91,15 @@ def test_strict_snapshot_roster_policy_and_no_review_signal_in_records_or_counte
     assert all(row["meta"]["task_id"] == TASK for row in projection["records"])
     assert "private-body-sentinel" not in repr(result) and "private-payload-sentinel" not in repr(result)
     assert "review-task" not in repr(result) and "fable-5/review" not in repr(result)
+
+
+def test_strict_snapshot_refuses_wrong_uuid_on_approved_task_without_partial_result(source):
+    events = [event("codex-lead-1"), event("claude-rco-1"),
+              event("fable-5", agent_uuid=ROSTER["codex-lead-1"])]
+    with pytest.raises(snapshot.SnapshotRefused, match="^snapshot_refused$") as raised:
+        strict_snapshot(source, events)
+    assert "private-body-sentinel" not in str(raised.value)
+    assert "private-payload-sentinel" not in str(raised.value)
 
 
 @pytest.mark.parametrize("missing", ["policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256"])

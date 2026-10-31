@@ -1157,6 +1157,7 @@ def _assert_shadow_release_delivery(definition):
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
     assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
     assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | {
+        "sandbox/mind/step2/prefix_private_state.py",
         "sandbox/mind/step2/shared_prefix_public_producer.py",
     }, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
@@ -1472,6 +1473,7 @@ M0_MEASUREMENT_TOOL_FILES = (
 
 
 PREFIX_MIND_LIBRARY_FILES = (
+    "sandbox/mind/step2/prefix_private_state.py",
     "sandbox/mind/step2/shared_prefix_public_producer.py",
     "tools/wd_q4_prefix_public_query.py",
     "tools/wd_q4_secure_transport.py",

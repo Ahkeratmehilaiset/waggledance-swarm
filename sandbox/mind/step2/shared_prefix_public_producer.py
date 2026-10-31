@@ -19,6 +19,7 @@ from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
 from sandbox.mind.step2 import shared_producer as producer
 from sandbox.mind.step2 import shared_public_producer as public
+from sandbox.mind.step2 import prefix_private_state as private_state
 from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, MAX_PREFIX_BYTES
 
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -41,6 +42,7 @@ class PrefixPublicRequest:
     identity: object = field(repr=False)
     dim: int
     timeout: float = 0.2
+    private_state_root: object = field(default=None, repr=False)
 
 
 def _fail(reason):
@@ -106,6 +108,23 @@ def publish_public_prefix(*, enabled=False, request=None):
         return {"status": "OFF"}
     _validate(request)
     _bind(request)
+    try:
+        with private_state.locked_state(request.private_state_root, request.root,
+                                        enabled=True, timeout=request.timeout) as state:
+            state.require(request.expected_pointer_sha256, request.start_prefix)
+            if request.expected_pointer_sha256 is None:
+                pointer = checkpoint._secure(Path(request.root) / checkpoint.POINTER, missing_leaf=True)
+                if pointer.exists():
+                    raise private_state.StateRefused("private_state_refused")
+            return _publish_locked(request, state)
+    except PrefixProducerRefused:
+        raise
+    except Exception:
+        pass
+    _fail("private_state_refused")
+
+
+def _publish_locked(request, state):
     config, source, pins = request.config, request.config.source, request.pins
     try:
         tasks, _ = adapter.strict_pins(source.policy_bytes, pins.policy_sha256, source.roster_bytes, pins.roster_sha256)
@@ -134,7 +153,15 @@ def publish_public_prefix(*, enabled=False, request=None):
         if type(projection) is not dict or type(projection.get("records")) is not list:
             raise ValueError()
     except Exception:
-        _fail("prepare_refused")
+        pass
+    else:
+        return _publish_prepared(request, state, result, projection, tasks, previous)
+    _fail("prepare_refused")
+
+
+def _publish_prepared(request, state, result, projection, tasks, previous):
+    config, source, pins = request.config, request.config.source, request.pins
+    root = Path(request.root)
     common = dict(policy_bytes=source.policy_bytes, expected_policy_sha256=pins.policy_sha256,
                   roster_bytes=source.roster_bytes, expected_roster_sha256=pins.roster_sha256,
                   expected_anchor_sha256=pins.anchor_sha256, expected_mode="public-v1",
@@ -145,17 +172,22 @@ def publish_public_prefix(*, enabled=False, request=None):
         if previous is None:
             _fail("empty_genesis")
         try:
+            candidate = result["candidate_prefix"]
+            state.begin(request.expected_pointer_sha256)
             advanced = checkpoint.advance_prefix_empty(root, result, tasks,
                 expected_pointer_sha256=request.expected_pointer_sha256, **common)
             if type(advanced) is not dict or set(advanced) != {"status", "pointer_sha256"}:
                 raise ValueError()
             if advanced["status"] == "no_change" and advanced["pointer_sha256"] == request.expected_pointer_sha256:
+                state.finish()
                 return _report("EMPTY_NO_CHANGE", advanced["pointer_sha256"], None)
             if advanced["status"] != "advanced":
                 raise ValueError()
+            state.commit(request.expected_pointer_sha256, advanced["pointer_sha256"], candidate)
             return _report("EMPTY_ADVANCED", advanced["pointer_sha256"], None)
         except Exception:
-            _fail("publication_state_unknown")
+            pass
+        _fail("publication_state_unknown")
     try:
         from sandbox.mind.step2 import shared_index_builder as builder
         predecessor = None
@@ -175,8 +207,16 @@ def publish_public_prefix(*, enabled=False, request=None):
         artifacts = {"descriptor_sha256": built["descriptor_sha256"], "memory_sha256": built["memory_sha256"],
                      "projection_sha256": built["projection_sha256"], "receipt_sha256": built["build_receipt_sha256"]}
     except Exception:
-        _fail("build_refused")
+        pass
+    else:
+        return _commit_prepared(request, state, result, tasks, previous, common, artifacts, root, source)
+    _fail("build_refused")
+
+
+def _commit_prepared(request, state, result, tasks, previous, common, artifacts, root, source):
     try:
+        candidate = result["candidate_prefix"]
+        state.begin(request.expected_pointer_sha256)
         if previous is None:
             receipt = checkpoint.commit_prefix_genesis(root, request.generation, source.cursor,
                 result["candidate_cursor"], tasks, expected_pointer_sha256=None, expected_artifacts=artifacts,
@@ -189,6 +229,8 @@ def publish_public_prefix(*, enabled=False, request=None):
             status = "PUBLISHED_HISTORY"
         if type(receipt) is not dict or set(receipt) != {"status", "pointer_sha256"} or receipt["status"] != "committed":
             raise ValueError()
+        state.commit(request.expected_pointer_sha256, receipt["pointer_sha256"], candidate)
         return _report(status, receipt["pointer_sha256"], request.generation)
     except Exception:
-        _fail("publication_state_unknown")
+        pass
+    _fail("publication_state_unknown")

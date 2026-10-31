@@ -31,7 +31,7 @@ STATUS_MODE = "public-v1"
 UNKNOWN = "UNKNOWN"
 STATUSES = frozenset({"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED", "EMPTY_NO_CHANGE"})
 REFUSALS = frozenset({"request_invalid", "pins_absent", "pins_mismatch", "prepare_refused", "empty_genesis",
-                      "build_refused", "checkpoint_refused"})
+                      "build_refused", "checkpoint_refused", "publication_state_unknown"})
 REPORT_KEYS = frozenset({"status", "generation", "pointer_sha256", "artifacts", "records", "source_mode",
                          "publisher_identity", "source_authenticity", "freshness", "authenticated", "pins_bound"})
 
@@ -136,7 +136,7 @@ def _locked_pointer_digest(value, generation, artifacts):
     """The receipt digest comes from the EXACT pointer value the checkpoint returned while it held the writer lock,
     serialized with the checkpoint's own canonical form (the bytes it published). A later root read could name a
     pointer another publication replaced ours with, so no file is read here. The value must name OUR generation and
-    artifacts, or the receipt binds nothing (``checkpoint_refused``; the published directory is retained)."""
+    artifacts, or the receipt binds nothing; publication state must then be checked independently."""
     if (not isinstance(value, dict) or value.get("generation") != generation or value.get("artifacts") != artifacts
             or not isinstance(value.get("schema"), str)):
         raise ValueError()
@@ -194,8 +194,8 @@ def publish_public_generation(*, enabled=False, request=None):
                 status = "EMPTY_NO_CHANGE"  # the cursor did not move: a verified repeat, NOT a new publication
             else:
                 raise ValueError()
-        except Exception:  # noqa: BLE001 - CheckpointRefused (stale pointer, lock, mode) or shape: one token
-            _refuse("checkpoint_refused")
+        except Exception:  # noqa: BLE001 - an exception does not prove that the pointer was not updated
+            _refuse("publication_state_unknown")
         return _report(status, generation=None, pointer_sha256=advanced["pointer_sha256"], artifacts=None,
                        records=0, public_policy_sha256=pins.public_policy_sha256)
     build_source = {"snapshot_result": result, "expected_anchor_sha256": pins.anchor_sha256, "mode": STATUS_MODE,
@@ -230,7 +230,7 @@ def publish_public_generation(*, enabled=False, request=None):
                                                          expected_artifacts=artifacts, **checkpoint_pins, **public)
             status = "PUBLISHED_HISTORY"
         pointer_sha256 = _locked_pointer_digest(value, request.generation, artifacts)  # the locked value, no root read
-    except Exception:  # noqa: BLE001 - the built directory is RETAINED unpublished for the caller; nothing deleted
-        _refuse("checkpoint_refused")
+    except Exception:  # noqa: BLE001 - the pointer may already be published; re-check before retrying
+        _refuse("publication_state_unknown")
     return _report(status, generation=request.generation, pointer_sha256=pointer_sha256, artifacts=artifacts,
                    records=built["build_receipt"]["records"], public_policy_sha256=pins.public_policy_sha256)

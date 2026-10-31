@@ -189,7 +189,7 @@ def test_primitive_is_off_by_default_and_its_surface_is_closed():
     assert issubclass(pub.PublicProducerRefused, ValueError)
     assert pub.STATUSES == {"OFF", "PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED", "EMPTY_NO_CHANGE"}
     assert pub.REFUSALS == {"request_invalid", "pins_absent", "pins_mismatch", "prepare_refused", "empty_genesis",
-                            "build_refused", "checkpoint_refused"}
+                            "build_refused", "checkpoint_refused", "publication_state_unknown"}
     assert pub.REPORT_KEYS == {"status", "generation", "pointer_sha256", "artifacts", "records", "source_mode",
                                "publisher_identity", "source_authenticity", "freshness", "authenticated", "pins_bound"}
     assert pub.STATUS_MODE == "public-v1" and pub.UNKNOWN == "UNKNOWN"
@@ -264,7 +264,7 @@ def test_synthetic_public_a_then_empty_advance_then_b_through_the_primitive_with
                                     projection_sha256=report_a["artifacts"]["projection_sha256"],
                                     build_receipt_sha256=report_a["artifacts"]["receipt_sha256"])
     # a second genesis on the same root is refused by the checkpoint (a pointer already exists); nothing is deleted
-    _refused(_request(config_a, root, "gen-a2"), "checkpoint_refused")
+    _refused(_request(config_a, root, "gen-a2"), "publication_state_unknown")
     assert (root / "gen-a2").is_dir() and sha((root / checkpoint.POINTER).read_bytes()) == p0  # retained unpublished
     # strict EMPTY public delta (targeted-private sentinel rows + a review-lane row): a pointer advance, never a generation
     log, generation_path, resume_empty = _log(tmp_path / "log", EMPTY_EVENTS, start=verified_cursor(config_a, root, p0))
@@ -421,19 +421,32 @@ def test_pointer_receipt_binds_the_locked_commit_value_not_a_later_root_read(tmp
     root = tmp_path / "mismatch"
     root.mkdir()
     _after_commit(monkeypatch, "commit_generation", lambda root_, value: dict(value, generation="gen-other"))
-    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+    _refused(_request(config_a, root, "gen-a"), "publication_state_unknown")
     assert (root / "gen-a").is_dir()
+    assert (root / checkpoint.POINTER).is_file()  # The pointer was already published.
     monkeypatch.undo()
     root = tmp_path / "mismatch-artifacts"
     root.mkdir()
     _after_commit(monkeypatch, "commit_generation",
                   lambda root_, value: dict(value, artifacts=dict(value["artifacts"], memory_sha256="0" * 64)))
-    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+    _refused(_request(config_a, root, "gen-a"), "publication_state_unknown")
+    assert (root / checkpoint.POINTER).is_file()
     monkeypatch.undo()
     root = tmp_path / "not-a-value"
     root.mkdir()
     _after_commit(monkeypatch, "commit_generation", lambda root_, value: {"status": "advanced"})
-    _refused(_request(config_a, root, "gen-a"), "checkpoint_refused")
+    _refused(_request(config_a, root, "gen-a"), "publication_state_unknown")
+    assert (root / checkpoint.POINTER).is_file()
+    monkeypatch.undo()
+    root = tmp_path / "post-commit-error"
+    root.mkdir()
+
+    def fail_after_commit(root_, value):
+        raise OSError("synthetic failure after publication")
+
+    _after_commit(monkeypatch, "commit_generation", fail_after_commit)
+    _refused(_request(config_a, root, "gen-a"), "publication_state_unknown")
+    assert (root / checkpoint.POINTER).is_file()
 
 
 @WINDOWS_ONLY
@@ -471,7 +484,7 @@ def test_repeated_empty_delta_is_a_verified_no_change_not_a_refusal_and_not_a_pu
     assert (root / checkpoint.POINTER).read_bytes() == pointer_bytes
     assert sorted(str(path) for path in _files(root)) == files_before and not (root / "gen-y").exists()
     # a no_change against a STALE predecessor pointer is still refused (the checkpoint compares the pointer digest)
-    _refused(_request(config_same, root, "gen-y", predecessor=predecessor_a), "checkpoint_refused")
+    _refused(_request(config_same, root, "gen-y", predecessor=predecessor_a), "publication_state_unknown")
     # and the series continues normally from the unchanged pointer
     log, generation_path, resume_b = _log(tmp_path / "log", LATER_PUBLIC_EVENTS, start=resume_same)
     config_b = _config(log, generation_path, resume_b)
